@@ -93,11 +93,11 @@ export const terminalsHandlers = {
    * does the work. What is left for the handler once the ladder has run is the containment
    * obligation — a container-scoped opener may only be born where its token lives.
    *
-   * `program` and `env` arrive here judged by shape and otherwise unjudged: no rule about
-   * WHICH argv or WHICH keys a principal may name exists yet, and when one does it is a line
-   * in this function. It runs before anything is minted or sent — the gateway asks this door
-   * and only then hands the same frame to the broker — so a refusal here costs nothing to
-   * undo.
+   * `cwd`, `program`, and `env` arrive here judged by shape and otherwise unjudged: no rule
+   * about WHICH launch overrides a principal may name exists yet, and when one does it is a
+   * line in this function. It runs before anything is minted or sent — the gateway asks this
+   * door and only then hands the same frame to the broker — so a refusal here costs nothing
+   * to undo.
    */
   async open(
     ctx: TerminalsCtx,
@@ -106,6 +106,7 @@ export const terminalsHandlers = {
       elementId: string;
       cols: number;
       rows: number;
+      cwd?: string;
       machineId?: string;
       placement?: "element" | "tile";
       program?: TerminalProgram;
@@ -115,8 +116,11 @@ export const terminalsHandlers = {
   ): Promise<Outcome<Record<string, never> | { traceId: number }>> {
     const outside = ctx.outsideScope(args.containerId);
     if (outside !== null) return outside;
-    if (args.runtime && (args.program !== undefined || args.env !== undefined))
-      return { refused: "runtime excludes program and environment overrides" };
+    if (
+      args.runtime &&
+      (args.cwd !== undefined || args.program !== undefined || args.env !== undefined)
+    )
+      return { refused: "runtime excludes cwd, program, and environment overrides" };
     return args.runtime ? { traceId: ctx.traceId } : {};
   },
 

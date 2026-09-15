@@ -1039,12 +1039,11 @@ export class SessionGateway {
           reply is socket traffic (ADR 0013 — terminal policy is a plugin, terminal bytes are
           floor).
 
-          The program and env go to the door FROM THIS FRAME, and the broker receives the
-          same frame only once the door allowed: one value, read at one place, judged before
-          anything is minted or sent (issue #192). A door that never saw the program would be
-          authorizing "a shell" while the machine was asked for something else, which is the
-          gap the door's input closes. `cwd` stays the transport's: it is where the shell
-          starts, never what runs.
+          The cwd, program, and env go to the door FROM THIS FRAME, and the broker receives
+          the same frame only once the door allowed: one value, read at one place, judged before
+          anything is minted or sent (issues #192 and #407). A door that never saw these launch
+          overrides would be authorizing different execution facts from those the machine
+          receives.
 
           Creation dies with the plugin and cleanup does not, and now that is a property of
           the ROSTER rather than of this file: `open` is an ordinary action, so a disabled
@@ -1056,6 +1055,7 @@ export class SessionGateway {
           elementId: message.elementId,
           cols: message.cols,
           rows: message.rows,
+          ...(message.cwd === undefined ? {} : { cwd: message.cwd }),
           ...(message.machineId === undefined ? {} : { machineId: message.machineId }),
           ...(message.placement === undefined ? {} : { placement: message.placement }),
           ...(message.program === undefined ? {} : { program: message.program }),

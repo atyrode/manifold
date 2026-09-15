@@ -6,7 +6,7 @@ import { BindingOverridesSchema, PluginRosterSchema, PluginSettingValuesSchema }
 import { PrincipalSchema } from "./principal.ts";
 import { ManifoldRefSchema } from "./uri.ts";
 import { InstanceOriginSchema } from "./origin.ts";
-import { MachinePathSchema, TerminalExecutionSchema } from "./machine.ts";
+import { TerminalCwdSchema, TerminalExecutionSchema } from "./machine.ts";
 
 /** REST door schemas. Auth: `Authorization: Bearer <token-or-owner-key>`. */
 
@@ -330,8 +330,8 @@ export const TerminalSummarySchema = z.strictObject({
   createdAt: z.number().int().nonnegative(),
   status: z.enum(["running", "exited"]),
   exitCode: z.number().int().nullable(),
-  /** Omitted until an owner has observed the session leader's directory. */
-  cwd: MachinePathSchema.optional(),
+  /** Launch intent may be relative until the owner reports an observed absolute directory. */
+  cwd: TerminalCwdSchema.optional(),
   /** The composition this terminal lives in: solo from birth, shared once merged. */
   homeId: z.string().min(1),
   /** True while nothing references `homeId`: the terminal sits at the index's top level. */

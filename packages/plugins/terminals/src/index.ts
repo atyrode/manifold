@@ -1,6 +1,7 @@
 import { defineAction } from "@manifold/plugin";
 import {
   ContainerTerminalSummarySchema,
+  TerminalCwdSchema,
   TerminalEnvSchema,
   TerminalProgramSchema,
   TerminalRuntimeSchema,
@@ -117,13 +118,12 @@ export const terminalsActions = [
       for whether an action should ever create one).
      */
     /*
-      Since issue #192 that includes WHAT the terminal is born running. `program` and `env`
-      are the FRAME's own fields, handed to this door by the gateway before the broker hears
-      of the frame, so what the door judged and what the machine is asked to exec are one
-      value read once: a socket cannot present a shell here and a program there. The trace
-      the ladder writes is the durable record of the program (`env` is redacted by name, like
-      every env the ledger sees), and a denial here means no token was minted and no `create`
-      left the server. An argv or env rule lands in the handler and nowhere else.
+      Since issues #192 and #407 that includes the launch directory and WHAT the terminal is
+      born running. `cwd`, `program`, and `env` are the FRAME's own fields, handed to this door
+      by the gateway before the broker hears of the frame, so what the door judged and what the
+      machine receives are one value read once. The trace the ladder writes is the durable
+      record of those arguments (`env` is redacted by name, like every env the ledger sees),
+      and a denial here means no token was minted and no `create` left the server.
      */
     name: "open",
     title: "Authorize a new terminal in a container",
@@ -135,6 +135,8 @@ export const terminalsActions = [
       /** The opener's correlation token, echoed on every reply and error. */
       elementId: z.string().min(1),
       ...geometry,
+      /** The working directory passed unchanged to the terminal owner. */
+      cwd: TerminalCwdSchema.optional(),
       /** An explicit machine choice; absent leaves the fleet rule to the broker. */
       machineId: z.string().min(1).optional(),
       /** Who authors the placement — the canvas opener, or the composition itself. */

@@ -939,10 +939,11 @@ const ENGINE_BUILTIN_DEFS: readonly ServerPluginDef[] = [
  * How much of a door's arguments the ledger keeps. Arguments are CALLER-CONTROLLED, so an
  * unbounded copy of every dispatch's body is a door onto the disk: the bound is what keeps a
  * ledger row the size of a record rather than the size of a request. Over the bound the row
- * keeps the shape — how many bytes, and which keys — because "somebody called this door with
- * something enormous" is the auditable fact, and the bytes themselves were never it.
+ * keeps a deterministic shape summary. Prefixes are capped independently as well as by the
+ * serialized row bound, so an early value cannot consume the entire audit record.
  */
 const TRACE_PAYLOAD_MAX_CHARS = 4_096;
+const TRACE_PREFIX_MAX_CHARS = 256;
 
 /**
  * The authority the ladder discharged, in one string an auditor can read.
@@ -986,6 +987,235 @@ function traceContainer(auth: AuthContext, rawArgs: unknown): string | null {
  */
 const RESERVED_TRACE_KEYS = ["origin", "parentTrace", "agentDeclaration"] as const;
 
+interface TraceStringSummary {
+  prefix: string;
+  length: number;
+  truncated: boolean;
+}
+
+interface TraceIndexedStringSummary extends TraceStringSummary {
+  index: number;
+}
+
+interface TerminalOpenTraceSummary extends Record<string, unknown> {
+  oversize: number;
+  program?: {
+    argv0: TraceStringSummary;
+    args: TraceIndexedStringSummary[];
+    itemCount: number;
+    argsTruncated: boolean;
+  };
+  cwd?: TraceStringSummary;
+}
+
+interface GenericTraceSummary extends Record<string, unknown> {
+  oversize: number;
+  keys: TraceStringSummary[];
+  keyCount: number;
+  keysTruncated: boolean;
+}
+
+function tracePayloadFits(payload: Readonly<Record<string, unknown>>): boolean {
+  return JSON.stringify(payload).length <= TRACE_PAYLOAD_MAX_CHARS;
+}
+
+function tracePrefix(value: string, requestedLength: number): string {
+  let end = Math.min(requestedLength, value.length);
+  if (
+    end > 0 &&
+    end < value.length &&
+    value.charCodeAt(end - 1) >= 0xd800 &&
+    value.charCodeAt(end - 1) <= 0xdbff &&
+    value.charCodeAt(end) >= 0xdc00 &&
+    value.charCodeAt(end) <= 0xdfff
+  ) {
+    end -= 1;
+  }
+  return value.slice(0, end);
+}
+
+function minimumTracePrefixLength(value: string): number {
+  if (value.length === 0) return 0;
+  return tracePrefix(value, 1).length === 0 ? 2 : 1;
+}
+
+/**
+ * Admit the longest prefix which keeps the complete serialized summary in bounds. JSON escaping
+ * makes source length an inaccurate proxy, so every admission decision measures the actual row.
+ */
+function admitTracePrefix(
+  payload: Readonly<Record<string, unknown>>,
+  value: string,
+  setPrefix: (prefix: string) => void,
+  minimum: number,
+): void {
+  let low = minimum;
+  let high = Math.min(value.length, TRACE_PREFIX_MAX_CHARS);
+  setPrefix(tracePrefix(value, low));
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    setPrefix(tracePrefix(value, middle));
+    if (tracePayloadFits(payload)) {
+      low = middle;
+    } else {
+      high = middle - 1;
+    }
+  }
+  setPrefix(tracePrefix(value, low));
+}
+
+function terminalOpenTraceSummary(
+  redacted: Readonly<Record<string, unknown>>,
+  oversize: number,
+): TerminalOpenTraceSummary {
+  const summary: TerminalOpenTraceSummary = { oversize };
+
+  const cwd = Object.hasOwn(redacted, "cwd") ? redacted.cwd : undefined;
+  if (typeof cwd === "string") {
+    const prefix = tracePrefix(cwd, minimumTracePrefixLength(cwd));
+    summary.cwd = {
+      prefix,
+      length: cwd.length,
+      truncated: prefix.length < cwd.length,
+    };
+  }
+
+  const program = Object.hasOwn(redacted, "program") ? redacted.program : undefined;
+  const argvValue =
+    program !== null &&
+    typeof program === "object" &&
+    !Array.isArray(program) &&
+    Object.hasOwn(program, "argv")
+      ? Reflect.get(program, "argv")
+      : undefined;
+  const argv =
+    Array.isArray(argvValue) &&
+    argvValue.every((value): value is string => typeof value === "string")
+      ? argvValue
+      : [];
+  if (argv.length > 0) {
+    const argv0 = argv[0];
+    if (argv0 === undefined) throw new Error("terminal argv unexpectedly empty");
+    const prefix = tracePrefix(argv0, minimumTracePrefixLength(argv0));
+    summary.program = {
+      argv0: { prefix, length: argv0.length, truncated: prefix.length < argv0.length },
+      args: [],
+      itemCount: argv.length,
+      argsTruncated: argv.length > 1,
+    };
+    admitTracePrefix(
+      summary,
+      argv0,
+      (prefix) => {
+        if (summary.program === undefined) return;
+        summary.program.argv0.prefix = prefix;
+        summary.program.argv0.truncated = prefix.length < argv0.length;
+      },
+      minimumTracePrefixLength(argv0),
+    );
+    if (summary.cwd !== undefined && typeof cwd === "string") {
+      admitTracePrefix(
+        summary,
+        cwd,
+        (prefix) => {
+          if (summary.cwd === undefined) return;
+          summary.cwd.prefix = prefix;
+          summary.cwd.truncated = prefix.length < cwd.length;
+        },
+        minimumTracePrefixLength(cwd),
+      );
+    }
+    for (let index = 1; index < argv.length; index += 1) {
+      const value = argv[index];
+      if (value === undefined) break;
+      const prefix = tracePrefix(value, minimumTracePrefixLength(value));
+      const item: TraceIndexedStringSummary = {
+        index,
+        prefix,
+        length: value.length,
+        truncated: prefix.length < value.length,
+      };
+      summary.program.args.push(item);
+      summary.program.argsTruncated = index + 1 < argv.length;
+      if (!tracePayloadFits(summary)) {
+        summary.program.args.pop();
+        summary.program.argsTruncated = true;
+        break;
+      }
+    }
+
+    for (const item of summary.program.args) {
+      const value = argv[item.index];
+      if (value === undefined) continue;
+      admitTracePrefix(
+        summary,
+        value,
+        (prefix) => {
+          item.prefix = prefix;
+          item.truncated = prefix.length < value.length;
+        },
+        minimumTracePrefixLength(value),
+      );
+    }
+  }
+
+  if (argv.length === 0 && summary.cwd !== undefined && typeof cwd === "string") {
+    admitTracePrefix(
+      summary,
+      cwd,
+      (prefix) => {
+        if (summary.cwd === undefined) return;
+        summary.cwd.prefix = prefix;
+        summary.cwd.truncated = prefix.length < cwd.length;
+      },
+      minimumTracePrefixLength(cwd),
+    );
+  }
+  return summary;
+}
+
+function genericTraceSummary(
+  redacted: Readonly<Record<string, unknown>>,
+  oversize: number,
+): GenericTraceSummary {
+  const names = Object.keys(redacted);
+  const summary: GenericTraceSummary = {
+    oversize,
+    keys: [],
+    keyCount: names.length,
+    keysTruncated: names.length > 0,
+  };
+  for (const name of names) {
+    const key: TraceStringSummary = {
+      prefix: "",
+      length: name.length,
+      truncated: name.length > 0,
+    };
+    summary.keys.push(key);
+    summary.keysTruncated = summary.keys.length < names.length;
+    if (!tracePayloadFits(summary)) {
+      summary.keys.pop();
+      summary.keysTruncated = true;
+      break;
+    }
+  }
+  for (let index = 0; index < summary.keys.length; index += 1) {
+    const key = summary.keys[index];
+    const name = names[index];
+    if (key === undefined || name === undefined) continue;
+    admitTracePrefix(
+      summary,
+      name,
+      (prefix) => {
+        key.prefix = prefix;
+        key.truncated = prefix.length < name.length;
+      },
+      0,
+    );
+  }
+  return summary;
+}
+
 /**
  * The arguments as the ledger keeps them. The authoring door is projected to bounded audit
  * facts before anything durable sees it: its `files` values are executable source, not audit
@@ -1000,12 +1230,16 @@ const RESERVED_TRACE_KEYS = ["origin", "parentTrace", "agentDeclaration"] as con
 function tracePayload(door: string, rawArgs: unknown): Record<string, unknown> {
   if (door === ENGINE_AUTHOR_ACTION) return projectPluginAuthorFacts(rawArgs);
   if (rawArgs === null || typeof rawArgs !== "object" || Array.isArray(rawArgs)) return {};
-  // `redactFields` answers with a fresh object, so this drops nothing a caller can observe.
+  // From this point onward summaries inspect only this fresh, recursively redacted copy.
   const redacted = redactFields(rawArgs as Record<string, unknown>);
   for (const reserved of RESERVED_TRACE_KEYS) delete redacted[reserved];
   const text = JSON.stringify(redacted);
   if (text.length <= TRACE_PAYLOAD_MAX_CHARS) return redacted;
-  return { oversize: text.length, keys: Object.keys(redacted) };
+  if (door !== "core.terminals.open") return genericTraceSummary(redacted, text.length);
+  const terminal = terminalOpenTraceSummary(redacted, text.length);
+  return terminal.program === undefined && terminal.cwd === undefined
+    ? genericTraceSummary(redacted, text.length)
+    : terminal;
 }
 
 /** Emissions and explicit targets share one canonical, deduplicated address set. */
