@@ -64,6 +64,8 @@ export function liveFixture(beforeRequest?: () => void) {
     readDoorCaps: [`${pluginId}:read`] as ActionSummary["caps"],
     readDoorRequiredInput: false,
     pluginEnabled: true,
+    pluginHeld: null as PluginRosterEntry["held"] | null,
+    pluginLifecycle: "ok" as NonNullable<PluginRosterEntry["lifecycle"]>,
     servicesMissing: false,
     machineDoorPresent: true,
     invalidInventory: false,
@@ -149,7 +151,8 @@ export function liveFixture(beforeRequest?: () => void) {
     },
     enabled: state.pluginEnabled,
     source: "plugin",
-    lifecycle: "ok",
+    lifecycle: state.pluginLifecycle,
+    ...(state.pluginHeld ? { held: state.pluginHeld } : {}),
     actions: declarations().filter((door) => door.name.startsWith(`${pluginId}.`)),
     install: {
       sha256: hash,
@@ -395,14 +398,28 @@ test("a disappeared or disabled enabled service never becomes an empty successfu
   }
 });
 
-test("missing plugins or declared read doors refuse the candidate instead of invoking a write", async () => {
+test("a plugin without an argument-less read door is verified by its roster, never a guessed door", async () => {
   const fixture = liveFixture();
   try {
-    const before = await snapshotLive(fixture.target);
     fixture.state.readDoorPresent = false;
+    const before = await snapshotLive(fixture.target);
+    expect(before.plugins).toEqual([{ pluginId, enabled: true, readDoor: null }]);
+    await pollLive(fixture.target, before, fixture.state.build, shortPoll);
+    fixture.state.pluginHeld = { reason: "repack_required", minimum: 2 };
     await expect(pollLive(fixture.target, before, fixture.state.build, shortPoll)).rejects.toThrow(
-      /plugin example.live.*no declared read-only door/,
+      /plugin example.live roster: held: repack_required/,
     );
+    fixture.state.pluginHeld = null;
+    fixture.state.pluginLifecycle = "isolate_crashed";
+    await expect(pollLive(fixture.target, before, fixture.state.build, shortPoll)).rejects.toThrow(
+      /plugin example.live roster: lifecycle isolate_crashed/,
+    );
+    fixture.state.pluginLifecycle = "ok";
+    fixture.state.pluginEnabled = false;
+    await expect(pollLive(fixture.target, before, fixture.state.build, shortPoll)).rejects.toThrow(
+      /plugin example.live: enablement changed; expected true; observed false/,
+    );
+    fixture.state.pluginEnabled = true;
     fixture.state.pluginPresent = false;
     await expect(pollLive(fixture.target, before, fixture.state.build, shortPoll)).rejects.toThrow(
       /plugin example.live.*missing plugin inventory/,
@@ -430,14 +447,10 @@ test("read-looking writes, required resource IDs, and disabled installed plugins
   const fixture = liveFixture();
   try {
     fixture.state.readDoorCaps = [`${pluginId}:write`];
-    await expect(snapshotLive(fixture.target)).rejects.toThrow(
-      /plugin example.live.*no declared read-only door/,
-    );
+    expect((await snapshotLive(fixture.target)).plugins[0]?.readDoor).toBeNull();
     fixture.state.readDoorCaps = [`${pluginId}:read`];
     fixture.state.readDoorRequiredInput = true;
-    await expect(snapshotLive(fixture.target)).rejects.toThrow(
-      /plugin example.live.*no declared read-only door/,
-    );
+    expect((await snapshotLive(fixture.target)).plugins[0]?.readDoor).toBeNull();
     fixture.state.readDoorRequiredInput = false;
     fixture.state.pluginEnabled = false;
     const before = await snapshotLive(fixture.target);

@@ -43,7 +43,9 @@ export const LiveSnapshotSchema = z.strictObject({
   machines: z.array(id),
   installations: z.array(installationSchema),
   services: z.array(serviceSchema),
-  plugins: z.array(z.strictObject({ pluginId: id, enabled: z.boolean(), readDoor: id })),
+  plugins: z.array(
+    z.strictObject({ pluginId: id, enabled: z.boolean(), readDoor: id.nullable() }),
+  ),
 });
 export type LiveSnapshot = z.infer<typeof LiveSnapshotSchema>;
 export interface LiveTarget {
@@ -209,7 +211,13 @@ function readOnly(action: ActionSummary): boolean {
     (!action.runAccess || action.runAccess === "inspect")
   );
 }
-function readDoor(plugin: PluginRosterEntry, protocol: ActionProtocol): ActionSummary {
+/**
+ * The one read door a plugin can be probed through without arguments, or null when it declares
+ * none. Not every plugin has an argument-less read (babel's doors all take a target), and a
+ * deploy must not be refused for that: such a plugin is verified by its roster row instead.
+ * A door that exists but takes required input is never guessed at.
+ */
+function readDoor(plugin: PluginRosterEntry, protocol: ActionProtocol): ActionSummary | null {
   const candidates = protocol.actions
     .filter(
       (action) =>
@@ -221,12 +229,13 @@ function readDoor(plugin: PluginRosterEntry, protocol: ActionProtocol): ActionSu
         inputAccepts(action, {}),
     )
     .sort((a, b) => a.name.localeCompare(b.name));
-  if (!candidates[0])
-    fail(
-      `plugin ${plugin.manifest.id}`,
-      "no declared read-only door accepting {} in protocol and roster",
-    );
-  return candidates[0];
+  return candidates[0] ?? null;
+}
+/** Roster facts that must hold for a plugin the verifier cannot probe through a door. */
+function rosterHealthy(plugin: PluginRosterEntry, item: string): void {
+  if (plugin.held) fail(item, `held: ${plugin.held.reason}`);
+  if (plugin.lifecycle !== undefined && plugin.lifecycle !== "ok")
+    fail(item, `lifecycle ${plugin.lifecycle}`);
 }
 function unique<T>(rows: T[], key: (row: T) => string, item: string): void {
   if (new Set(rows.map(key)).size !== rows.length) fail(item, "duplicate inventory identity");
@@ -322,7 +331,7 @@ export async function snapshotLive(
     .map((plugin) => ({
       pluginId: plugin.manifest.id,
       enabled: plugin.enabled,
-      readDoor: readDoor(plugin, protocol).name,
+      readDoor: readDoor(plugin, protocol)?.name ?? null,
     }));
   if ((await reader.build()) !== build) fail("/healthz", "build changed during snapshot");
   return LiveSnapshotSchema.parse({
@@ -403,6 +412,17 @@ async function parity(reader: Reader, before: LiveSnapshot, expectedBuild: strin
   }
   for (const plugin of plugins.filter((row) => row.install !== undefined)) {
     const door = readDoor(plugin, protocol);
+    const previous = before.plugins.find((row) => row.pluginId === plugin.manifest.id);
+    if (previous && previous.enabled !== plugin.enabled)
+      fail(
+        `plugin ${plugin.manifest.id}`,
+        `enablement changed; expected ${previous.enabled}; observed ${plugin.enabled}`,
+      );
+    if (door === null) {
+      rosterHealthy(plugin, `plugin ${plugin.manifest.id} roster`);
+      reader.resolved.add(`plugin ${plugin.manifest.id}`);
+      continue;
+    }
     const item = `plugin ${plugin.manifest.id} read door ${door.name}`;
     let resultSchema: z.ZodType;
     try {
