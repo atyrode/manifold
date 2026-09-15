@@ -230,6 +230,292 @@ async function instanceFixture(path = ":memory:", protocolVersion = JOB_OWNER_PR
   return { f, policy, provider, start, revision: configured.configuration.revision };
 }
 
+test.each(["same build", "rollback"] as const)(
+  "platform-cancelled instance service readmission on %s is automatic and traced (#632)",
+  async (recovery) => {
+    const dir = mkdtempSync(join(tmpdir(), "job-instance-readmission-"));
+    const path = join(dir, "hub.sqlite");
+    const { f, policy, provider, start, revision } = await instanceFixture(path);
+    const restart = () => {
+      f.service.offline(f.channel);
+      f.store.close();
+      f.store = new ServerStore(openDatabase(path));
+      f.auth = new AuthService(f.store, key, f.runtime);
+      f.root = f.auth.authenticate(key);
+      f.service = new JobService(f.store, f.auth, f.runtime);
+      f.service.setLifecycleRecorder((record) => f.store.appendTrace(record));
+      f.service.setManifestResolver((id) => (id === pluginId ? provider : null));
+      f.commands.length = 0;
+    };
+    const fact = (command: Extract<JobCommand, { type: "start" }>) => ({
+      jobId: command.request.jobId,
+      requestDigest: command.request.requestDigest,
+      ownerId: command.permit.ownerId,
+      ownerGeneration: command.permit.ownerGeneration,
+    });
+    const ready = (command: Extract<JobCommand, { type: "start" }>) => {
+      f.service.event(f.channel, { type: "state", ...fact(command), state: "started" });
+      f.service.event(f.channel, {
+        type: "service_ready",
+        jobId: command.request.jobId,
+        service: command.request.service!,
+      });
+    };
+    const finish = (command: Extract<JobCommand, { type: "start" }>) => {
+      f.service.event(f.channel, {
+        type: "result",
+        result: {
+          ...fact(command),
+          state: "cancelled",
+          reason: "cancelled",
+          exitCode: null,
+          startedAt: f.runtime.now(),
+          finishedAt: f.runtime.now(),
+          usage: null,
+          limits: command.request.limits,
+          outputs: [],
+        },
+      });
+      f.service.tick();
+      expect(f.service.instanceServices.get(policy.serviceId)?.jobId).toBe(command.request.jobId);
+      f.service.event(f.channel, { type: "workload_empty", ...fact(command) });
+    };
+    const description = () =>
+      f.service.describeInstanceService(f.root, { serviceId: policy.serviceId });
+    try {
+      ready(start);
+      expect(description().state).toBe("ready");
+      if (recovery === "rollback") restart();
+      f.commands.length = 0;
+      f.service.setHeldPlugins([pluginId]);
+      if (recovery === "rollback") prove(f);
+      expect(f.service.jobs.cancellation(start.request.jobId)).toEqual({
+        mode: "cancel",
+        reason: "plugin_held",
+      });
+      expect(f.commands).toContainEqual(
+        expect.objectContaining({
+          type: "cancel",
+          jobId: start.request.jobId,
+          reason: "plugin_held",
+        }),
+      );
+      finish(start);
+      expect(f.service.jobs.get(start.request.jobId)).toMatchObject({
+        state: "cancelled",
+        ownerClosed: true,
+      });
+      f.service.tick();
+      expect(description()).toMatchObject({ state: "unavailable", reason: "plugin_held" });
+      expect(f.commands.filter((command) => command.type === "start")).toEqual([]);
+      if (recovery === "rollback") restart();
+      f.service.setHeldPlugins([]);
+      expect(f.service.jobs.installation(f.machineId, pluginId)?.ready).toBe(false);
+      if (recovery === "rollback") prove(f);
+      else
+        f.service.event(f.channel, {
+          type: "installed",
+          pluginId,
+          installationRevision: "r1",
+          artifactSha256: hash,
+        });
+      f.service.tick();
+      const starts = f.commands.filter((command) => command.type === "start");
+      expect(starts).toHaveLength(1);
+      const replacement = starts[0]!;
+      expect(replacement.request.jobId).not.toBe(start.request.jobId);
+      ready(replacement);
+      expect(description()).toMatchObject({
+        state: "ready",
+        configuration: { revision, enabled: true },
+      });
+      expect(f.service.instanceServices.get(policy.serviceId)?.credential).toEqual(
+        start.request.credential,
+      );
+      const readmissions = () =>
+        f.store.db
+          .query<{ door: string; payload: string }, []>(
+            "SELECT door,payload FROM events WHERE json_extract(payload,'$.jobLifecycle')='readmitted'",
+          )
+          .all()
+          .map(({ door, payload }) => ({ door, ...(JSON.parse(payload) as object) }));
+      expect(readmissions()).toEqual([
+        expect.objectContaining({
+          door: "engine.services.configureInstance",
+          jobId: replacement.request.jobId,
+          previousJobId: start.request.jobId,
+          cancelReason: "plugin_held",
+        }),
+      ]);
+      f.service.tick();
+      expect(readmissions()).toHaveLength(1);
+      expect(f.commands.filter((command) => command.type === "start")).toEqual(starts);
+
+      // Retained operator cancellations must not turn a later proof or hold release into consent.
+      for (const [reason, mode] of [
+        ["plugin_held", "retire"],
+        ["instance_service_disabled", "cancel"],
+        ["credential_revoked", "cancel"],
+      ] as const) {
+        f.service.jobs.cancel(replacement.request.jobId, reason, mode);
+        expect(f.service.jobs.cancellation(replacement.request.jobId)).toEqual({ reason, mode });
+        if (reason === "credential_revoked")
+          f.store.revokeToken(replacement.request.credential.tokenId!, f.runtime.now());
+        finish(replacement);
+        f.commands.length = 0;
+        f.service.setHeldPlugins([pluginId]);
+        f.service.setHeldPlugins([]);
+        prove(f);
+        f.service.tick();
+        expect(f.commands.filter((command) => command.type === "start")).toEqual([]);
+        expect(f.service.instanceServices.get(policy.serviceId)?.jobId).toBe(
+          replacement.request.jobId,
+        );
+        expect(description().state).toBe("unavailable");
+      }
+    } finally {
+      f.store.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);
+
+test("platform cancellation is rediscovered after empty proof consumes its start wakeup (#632)", async () => {
+  const { f, policy, start } = await instanceFixture();
+  const fact = {
+    jobId: start.request.jobId,
+    requestDigest: start.request.requestDigest,
+    ownerId: start.permit.ownerId,
+    ownerGeneration: start.permit.ownerGeneration,
+  };
+  try {
+    f.service.event(f.channel, { type: "state", ...fact, state: "started" });
+    f.service.setHeldPlugins([pluginId]);
+    f.service.setHeldPlugins([]);
+    f.service.event(f.channel, {
+      type: "installed",
+      pluginId,
+      installationRevision: "r1",
+      artifactSha256: hash,
+    });
+    f.commands.length = 0;
+    f.service.event(f.channel, { type: "workload_empty", ...fact });
+    f.service.tick();
+    expect(f.commands.filter((command) => command.type === "start")).toEqual([]);
+    f.service.event(f.channel, {
+      type: "refusal",
+      jobId: start.request.jobId,
+      reason: "job_unknown",
+    });
+    expect(f.service.jobs.get(start.request.jobId)).toMatchObject({
+      state: "interrupted",
+      ownerClosed: true,
+    });
+    expect(f.service.jobs.cancellation(start.request.jobId)?.reason).toBe("plugin_held");
+    f.service.tick();
+    const replacement = f.commands.find((command) => command.type === "start");
+    expect(replacement).toBeDefined();
+    expect(replacement!.request.jobId).not.toBe(start.request.jobId);
+    f.service.event(f.channel, {
+      type: "state",
+      jobId: replacement!.request.jobId,
+      requestDigest: replacement!.request.requestDigest,
+      ownerId: replacement!.permit.ownerId,
+      ownerGeneration: replacement!.permit.ownerGeneration,
+      state: "started",
+    });
+    f.service.event(f.channel, {
+      type: "service_ready",
+      jobId: replacement!.request.jobId,
+      service: replacement!.request.service!,
+    });
+    expect(f.service.describeInstanceService(f.root, { serviceId: policy.serviceId }).state).toBe(
+      "ready",
+    );
+  } finally {
+    f.store.close();
+  }
+});
+
+test.each([
+  "installation_changed",
+  "owner_fenced",
+  "owner_restart_effects_unknown",
+  "credential_revoked",
+])(
+  "instance recovery preserves the %s lifetime and cancellation boundary (#632)",
+  async (reason) => {
+    const { f, policy, start } = await instanceFixture();
+    const fact = {
+      jobId: start.request.jobId,
+      requestDigest: start.request.requestDigest,
+      ownerId: start.permit.ownerId,
+      ownerGeneration: start.permit.ownerGeneration,
+    };
+    try {
+      f.service.event(f.channel, { type: "state", ...fact, state: "started" });
+      if (reason === "owner_restart_effects_unknown") {
+        f.service.offline(f.channel);
+        f.owner.generation++;
+        prove(f);
+      } else f.service.jobs.cancel(start.request.jobId, reason);
+      if (reason === "credential_revoked")
+        f.store.revokeToken(start.request.credential.tokenId!, f.runtime.now());
+      f.commands.length = 0;
+      f.service.tick();
+      expect(f.service.instanceServices.get(policy.serviceId)?.credential).toEqual(
+        start.request.credential,
+      );
+      f.service.event(f.channel, {
+        type: "result",
+        result: {
+          ...fact,
+          state: reason === "owner_restart_effects_unknown" ? "interrupted" : "cancelled",
+          reason: reason === "owner_restart_effects_unknown" ? reason : "cancelled",
+          exitCode: null,
+          startedAt: f.runtime.now(),
+          finishedAt: f.runtime.now(),
+          usage: null,
+          limits: start.request.limits,
+          outputs: [],
+        },
+      });
+      f.service.tick();
+      expect(f.commands.filter((command) => command.type === "start")).toEqual([]);
+      expect(f.service.instanceServices.get(policy.serviceId)?.jobId).toBe(start.request.jobId);
+      if (reason === "owner_restart_effects_unknown")
+        expect(
+          f.service.describeInstanceService(f.root, { serviceId: policy.serviceId }).reason,
+        ).toBe("instance_service_lifetime_unconfirmed");
+      f.service.event(f.channel, { type: "workload_empty", ...fact });
+      f.service.tick();
+      const replacement = f.commands.find((command) => command.type === "start");
+      if (reason === "credential_revoked") {
+        expect(f.service.jobs.cancellation(start.request.jobId)?.reason).toBe(reason);
+        expect(replacement).toBeUndefined();
+        expect(f.service.instanceServices.get(policy.serviceId)?.credential).toEqual(
+          start.request.credential,
+        );
+      } else {
+        expect(replacement).toBeDefined();
+        expect(replacement!.request.jobId).not.toBe(start.request.jobId);
+        expect(replacement!.permit.ownerGeneration).toBe(f.owner.generation);
+        expect(
+          f.store.db
+            .query<{ previousJobId: string; cancelReason: string }, []>(
+              `SELECT json_extract(payload,'$.previousJobId') AS previousJobId,
+               json_extract(payload,'$.cancelReason') AS cancelReason FROM events
+               WHERE json_extract(payload,'$.jobLifecycle')='readmitted'`,
+            )
+            .all(),
+        ).toEqual([{ previousJobId: start.request.jobId, cancelReason: reason }]);
+      }
+    } finally {
+      f.store.close();
+    }
+  },
+);
+
 test.each(["running", "exited", "awaiting-empty", "awaiting-result"] as const)(
   "hub restart preserves enabled instance identity and recovers a %s workload",
   async (workload) => {
