@@ -23,8 +23,8 @@ ownership come from `AXIOMS.md`, `REGISTRY.md` and `docs/CONTRACTS.md` §Topolog
 inventory in `AGENTS.md`. Out: `docs/PLAN.md` (vision, not contract), `docs/decisions/*` (reasoning,
 covered by `decisions-compaction.md`), `CHANGELOG.md`,
 and prose-vs-prose disagreements between two docs (covered by `docs-consistency.md`). Anything the
-gate already asserts is out: if `verify:axioms` is green on the audited revision, S1–S17 are not
-findings here even when the prose around them reads oddly.
+gate already asserts is out: if `verify:axioms` is green on the audited revision, the current S
+rows in `REGISTRY.md` §Gates are not findings here even when the prose around them reads oddly.
 
 ## Method
 
@@ -39,8 +39,8 @@ findings here even when the prose around them reads oddly.
 3. **Wire frames.** Read `docs/CONTRACTS.md` §WS /ws/session, §WS /ws/machine and §WS /ws/instance
    against `packages/protocol/src/*.ts`. Every frame kind named in prose must be a schema member and
    every schema member must be named. Where the prose states a protocol version as CURRENT, it must
-   equal `PROTOCOL_VERSION` in `packages/protocol/src/version.ts` (22 at the time of writing);
-   a version named as history ("v19 changed…") is not a claim about now.
+   equal `PROTOCOL_VERSION` in `packages/protocol/src/version.ts`; a version named as history
+   ("v19 changed…") is not a claim about now.
 4. **Environment and processes.** `docs/CONTRACTS.md` §Runtime contracts lists every env variable
    with its default. `grep -rn 'process.env.MANIFOLD_\|Bun.env.MANIFOLD_' packages/ scripts/` and
    diff both ways. Same for `docs/SELF-HOST.md` against `compose.yaml`, `Dockerfile`,
@@ -73,7 +73,9 @@ findings here even when the prose around them reads oddly.
    §Topology and `REGISTRY.md`'s foundation/plugin inventories. Check the remaining `AGENTS.md`
    commands, boundaries and task-specific routes, and the process claims in their scoped owners,
    against the tree; `bun run <script>` claims are checked against `package.json` `scripts`.
-8. **REGISTRY.md prose, not rows.** The gate reads the tables; read the paragraphs. §Decisions
+8. **REGISTRY.md prose, not rows.** S19 checks decision-record status-block structure, successor
+   targets, unique record numbers and the generated index; it does not establish whether a
+   free-text `Ratified:` value is substantively true. Read the remaining paragraphs. §Decisions
    awaiting ratification's "Nothing is waiting as of <date>" must agree with the `Status:` lines
    in `docs/decisions/`; the per-axiom round table must name only checks that exist in the table
    above it; every "(ADR NNNN §M)" pointer must land on a section that says what the row claims.
@@ -115,5 +117,5 @@ Body:
 
 ## Revisit this brief when
 
-`REGISTRY.md` §Gates gains a check that mechanizes one of steps 2–8 (then delete that step), or
-`docs/CONTRACTS.md` is split into more than one file (then update Scope).
+`REGISTRY.md` §Gates gains checks that fully mechanize the remaining subject of a step in 2–8
+(then delete that step), or `docs/CONTRACTS.md` is split into more than one file (then update Scope).
