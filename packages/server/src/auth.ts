@@ -76,7 +76,10 @@ import {
   type Share,
   type ShareGrant,
   type PrincipalCredentials,
+  type PrincipalAccessPauseRequest,
+  type PrincipalAccessPauseResult,
   type PreviewIdentityClaims,
+  PrincipalAccessPauseRequestSchema,
   type TokenGrant,
 } from "@manifold/protocol";
 import type {
@@ -502,10 +505,18 @@ export class AuthService {
   private readonly authority = new WeakMap<AuthContext, ContextAuthority>();
   /** Bumped by every grant write; a cached verdict from an older epoch is discarded unread. */
   private grantsEpoch = 0;
+  /** Durable lifecycle pause state mirrored in memory for the authority hot path. */
+  private readonly pausedPrincipals = new Map<string, number>();
   private readonly authorityChangedListeners = new Set<() => void>();
   private agentPolicy: AgentPolicySet;
   private liveRunConnections: (runId: string) => readonly string[] = () => [];
   private agentChangeListener: (agentId: string, runId?: string) => void = () => {};
+  private accessPauseChangeListener: (
+    kind: "principal_access_paused" | "principal_access_resumed",
+    principalId: string,
+    at: number,
+    actorId: string,
+  ) => void = () => {};
   private agentProfileValidator: (harness: string, profile: unknown) => void = (
     harness,
     profile,
@@ -529,6 +540,16 @@ export class AuthService {
 
   setAgentChangeListener(listener: (agentId: string, runId?: string) => void): void {
     this.agentChangeListener = listener;
+  }
+  setAccessPauseChangeListener(
+    listener: (
+      kind: "principal_access_paused" | "principal_access_resumed",
+      principalId: string,
+      at: number,
+      actorId: string,
+    ) => void,
+  ): void {
+    this.accessPauseChangeListener = listener;
   }
 
   private agentChanged(agentId: string, runId?: string): void {
@@ -600,6 +621,12 @@ export class AuthService {
       };
       store.createPrincipal(this.ownerPrincipal, runtime.now());
       store.setMeta(OWNER_PRINCIPAL_META, id);
+    }
+    for (const pause of store.listPrincipalAccessPauses()) {
+      // Break-glass owner authority is evaluator law; stale or corrupt storage cannot suspend it.
+      if (pause.principalId !== this.ownerPrincipal.id) {
+        this.pausedPrincipals.set(pause.principalId, pause.pausedAt);
+      }
     }
     this.expireAgentRuns();
     this.installAgentPolicy(this.agentPolicy, null);
@@ -760,6 +787,11 @@ export class AuthService {
    * is to answer yes or no.
    */
   effectiveCaps(context: AuthContext, node: string): ReadonlySet<AskableCap> {
+    if (
+      context.principal.id !== this.ownerPrincipal.id &&
+      this.pausedPrincipals.has(context.principal.id)
+    )
+      return new Set();
     if (context.agentRunnerId !== undefined) {
       const agent = this.store.getAgent(context.agentRunnerId);
       const token = context.tokenId === null ? null : this.store.getToken(context.tokenId);
@@ -2813,9 +2845,100 @@ export class AuthService {
         }));
       const service =
         principal.kind === "service" ? this.store.getNativeServiceIdentity(principal.id) : null;
-      rows.push({ principal, createdAt, sessions, ...service });
+      const pausedAt = this.pausedPrincipals.get(principal.id);
+      rows.push({
+        principal,
+        createdAt,
+        sessions,
+        ...(pausedAt === undefined ? {} : { pausedAt }),
+        ...service,
+      });
     }
     return rows;
+  }
+  private accessPauseAdministrator(actor: AuthContext): AuthContext {
+    const current = this.restoreCredential(this.credentialReference(actor));
+    if (
+      current === null ||
+      current.containerScope !== null ||
+      !current.isRoot ||
+      (current.principal.id !== this.ownerPrincipal.id &&
+        this.pausedPrincipals.has(current.principal.id))
+    ) {
+      throw new ServiceError("forbidden", "root capability required");
+    }
+    return current;
+  }
+
+  /**
+   * Suspends future authority checks without revoking credentials, closing connections, or
+   * settling work. The lifecycle gate in effectiveCaps dominates every descendant grant.
+   */
+  pausePrincipalAccess(
+    input: PrincipalAccessPauseRequest,
+    actor: AuthContext,
+  ): PrincipalAccessPauseResult {
+    const { principalId } = PrincipalAccessPauseRequestSchema.parse(input);
+    const current = this.accessPauseAdministrator(actor);
+    if (principalId === this.ownerPrincipal.id) {
+      throw new ServiceError("forbidden", "workspace owner access cannot be paused");
+    }
+    if (this.store.getPrincipal(principalId) === null) {
+      throw new ServiceError("not_found", "principal not found");
+    }
+    const existing = this.pausedPrincipals.get(principalId);
+    if (existing !== undefined) return { principalId, pausedAt: existing };
+    const pausedAt = this.runtime.now();
+    this.store.transaction(() => {
+      if (!this.store.pausePrincipalAccess(principalId, pausedAt, current.principal.id)) {
+        throw new ServiceError("conflict", "principal access pause raced");
+      }
+      this.store.afterCommit(() => {
+        this.pausedPrincipals.set(principalId, pausedAt);
+        this.authorityChanged();
+        this.accessPauseChangeListener(
+          "principal_access_paused",
+          principalId,
+          pausedAt,
+          current.principal.id,
+        );
+      });
+    });
+    return { principalId, pausedAt };
+  }
+
+  /** Restores the same credentials and grants without reauthentication or token replacement. */
+  resumePrincipalAccess(
+    input: PrincipalAccessPauseRequest,
+    actor: AuthContext,
+  ): PrincipalAccessPauseResult {
+    const { principalId } = PrincipalAccessPauseRequestSchema.parse(input);
+    const current = this.accessPauseAdministrator(actor);
+    if (principalId === this.ownerPrincipal.id) {
+      throw new ServiceError("forbidden", "workspace owner access cannot be paused");
+    }
+    if (this.store.getPrincipal(principalId) === null) {
+      throw new ServiceError("not_found", "principal not found");
+    }
+    const existing = this.pausedPrincipals.get(principalId);
+    if (existing === undefined) return { principalId, pausedAt: null };
+    const resumedAt = this.runtime.now();
+    this.store.transaction(() => {
+      if (!this.store.resumePrincipalAccess(principalId)) {
+        throw new ServiceError("conflict", "principal access resume raced");
+      }
+      this.store.afterCommit(() => {
+        this.pausedPrincipals.delete(principalId);
+        this.authorityChanged();
+        this.accessPauseChangeListener(
+          "principal_access_resumed",
+          principalId,
+          resumedAt,
+          current.principal.id,
+        );
+      });
+    });
+    return { principalId, pausedAt: null };
   }
 
   /** Revokes a server-issued short-lived identity after a failed terminal create. */

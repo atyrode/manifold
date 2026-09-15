@@ -15,6 +15,8 @@ import {
   IndexResponseSchema,
   PlaceRequestSchema,
   PlaceResponseSchema,
+  PrincipalAccessPauseRequestSchema,
+  PrincipalAccessPauseResultSchema,
   RevokeMachineRequestSchema,
   RevokeRequestSchema,
   RevokeResultSchema,
@@ -47,6 +49,7 @@ import {
   type PresencePayload,
   type PresenceState,
   type Principal,
+  type PrincipalAccessPauseResult,
   type RevokeResult,
   type ResolveResponse,
   type SceneElement,
@@ -1195,6 +1198,21 @@ export class SessionClient {
     const request = RevokeRequestSchema.parse({ principalId });
     return this.accessDoor("core.access.revoke", request, (result) =>
       RevokeResultSchema.parse(result),
+    );
+  }
+  /** Pauses future requests for one non-owner principal without revoking its credentials. */
+  async pauseAccess(principalId: string): Promise<AccessOutcome<PrincipalAccessPauseResult>> {
+    const request = PrincipalAccessPauseRequestSchema.parse({ principalId });
+    return this.accessDoor("core.access.pause", request, (result) =>
+      PrincipalAccessPauseResultSchema.parse(result),
+    );
+  }
+
+  /** Resumes the same principal credentials without requiring a new authentication. */
+  async resumeAccess(principalId: string): Promise<AccessOutcome<PrincipalAccessPauseResult>> {
+    const request = PrincipalAccessPauseRequestSchema.parse({ principalId });
+    return this.accessDoor("core.access.resume", request, (result) =>
+      PrincipalAccessPauseResultSchema.parse(result),
     );
   }
 

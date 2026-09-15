@@ -32,6 +32,8 @@ import type {
   MintTokenRequest,
   OpenDialRequest,
   PrincipalCredentials,
+  PrincipalAccessPauseRequest,
+  PrincipalAccessPauseResult,
   RegisterAgentRequest,
   RegisterAgentResult,
   ReportRunActivityRequest,
@@ -105,6 +107,12 @@ interface AccessCtx {
     finishAgentRun(input: FinishAgentRunRequest): IdentityAnswer<FinishAgentRunResult>;
     reloadAgentPolicy(): IdentityAnswer<ReloadAgentPolicyResult>;
     revokePrincipal(principalId: string): IdentityAnswer<number>;
+    pausePrincipalAccess(
+      input: PrincipalAccessPauseRequest,
+    ): IdentityAnswer<PrincipalAccessPauseResult>;
+    resumePrincipalAccess(
+      input: PrincipalAccessPauseRequest,
+    ): IdentityAnswer<PrincipalAccessPauseResult>;
     /*
       The credential READ (ADR 0019 §3), on the identity door because a credential is what
       this door hands out: the list and the revoke it aims are the same concept read and
@@ -330,6 +338,21 @@ export const accessHandlers = {
     // principal whose tokens are already dead is precisely what a nervous administrator
     // does. The refusals above it are about entitlement, never about the outcome being nil.
     return revoked.ok ? { revoked: revoked.value } : { refused: revoked.message };
+  },
+  async pause(
+    ctx: AccessCtx,
+    args: PrincipalAccessPauseRequest,
+  ): Promise<Outcome<PrincipalAccessPauseResult>> {
+    const paused = ctx.identity.pausePrincipalAccess(args);
+    return paused.ok ? paused.value : { refused: paused.message };
+  },
+
+  async resume(
+    ctx: AccessCtx,
+    args: PrincipalAccessPauseRequest,
+  ): Promise<Outcome<PrincipalAccessPauseResult>> {
+    const resumed = ctx.identity.resumePrincipalAccess(args);
+    return resumed.ok ? resumed.value : { refused: resumed.message };
   },
 
   /**

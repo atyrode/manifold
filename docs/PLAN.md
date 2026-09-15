@@ -9,7 +9,7 @@ rebuilds it agent-native, from scratch. No code is carried over; only lessons.
 | Principle                                         | Consequence                                                                                                                                                                                                                                   |
 | ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | manifold is the space, not the brain              | No agent runtime/orchestration/prompt tooling inside. Agents (pi, Claude Code, Codex, …) run in terminals; manifold gives them eyes (read scene, subscribe events) and hands (mutate scene, drive terminals). Bring your own brain + compute. |
-| Agents are principals; the human is root of trust | One identity model for humans and agents across presence, ownership, terminals. Uniform identity ≠ uniform authority: capability-scoped revocable tokens; freeze is a first-class verb.                                                       |
+| Agents are principals; the human is root of trust | One identity model for humans and agents across presence, ownership, terminals. Uniform identity ≠ uniform authority: capability-scoped revocable tokens; pause is a first-class reversible verb.                                             |
 | The protocol is the product                       | One typed contract (`@manifold/protocol`). Browser, SDK, CLI, MCP are adapters. If the protocol can't exercise a feature, the feature isn't done.                                                                                             |
 | Presence is the supervision surface               | Roster with agent states, cursors, selections, terminal focus, attribution. Watching includes intervening.                                                                                                                                    |
 | The repo is an agent habitat                      | One-command deterministic gates, zero-service tests, SDK-as-test-harness, machine-legible runtime. North star: manifold is developed inside manifold.                                                                                         |
@@ -42,9 +42,9 @@ owner-key bootstrap; scoped agent tokens + env injection
 introspection endpoint; unit + e2e gates.
 
 Deferred (seams named): remote-machine onboarding UX (protocol already supports it), padctl
-CLI + MCP adapter (thin layers over the SDK), follow-mode camera, freeze button in roster UI
-(revoke works via API), version-history UI (snapshot ring exists), web/iframe embeds, image
-file sync, tmux-beneath-agent, multi-node rooms (RoomHost seam), TLS/domain hardening.
+CLI + MCP adapter (thin layers over the SDK), follow-mode camera, version-history UI
+(snapshot ring exists), web/iframe embeds, image file sync, tmux-beneath-agent, multi-node rooms
+(RoomHost seam), TLS/domain hardening.
 
 Explicit non-goals: accounts/SSO, ACL/sharing flows, editor embeds, analytics, E2E
 encryption (conflicts with server-side scene validation — deliberate), provisioning compute

@@ -2042,6 +2042,39 @@ export class ServerStore {
       .all()
       .map((row) => ({ principal: toPrincipal(row), createdAt: row.created_at }));
   }
+  listPrincipalAccessPauses(): {
+    readonly principalId: string;
+    readonly pausedAt: number;
+    readonly pausedBy: string;
+  }[] {
+    return this.db
+      .query<{ principalId: string; pausedAt: number; pausedBy: string }, []>(
+        `SELECT principal_id AS principalId, paused_at AS pausedAt, paused_by AS pausedBy
+         FROM principal_access_pauses ORDER BY paused_at, principal_id`,
+      )
+      .all();
+  }
+
+  /** Writes lifecycle state; the AuthService caller owns the surrounding event transaction. */
+  pausePrincipalAccess(principalId: string, pausedAt: number, pausedBy: string): boolean {
+    return (
+      this.db
+        .query<void, [string, number, string]>(
+          `INSERT OR IGNORE INTO principal_access_pauses(principal_id,paused_at,paused_by)
+           VALUES (?,?,?)`,
+        )
+        .run(principalId, pausedAt, pausedBy).changes > 0
+    );
+  }
+
+  /** Removes lifecycle state; the AuthService caller owns the surrounding event transaction. */
+  resumePrincipalAccess(principalId: string): boolean {
+    return (
+      this.db
+        .query<void, [string]>("DELETE FROM principal_access_pauses WHERE principal_id = ?")
+        .run(principalId).changes > 0
+    );
+  }
 
   createAgent(record: AgentRecord): void {
     this.db

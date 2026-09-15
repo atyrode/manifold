@@ -13,7 +13,7 @@
   needs and nothing else has.
 */
 
-/* A principal row: colour pip, name over its meta line, and the withdraw control. */
+/* A principal row: colour pip, name over its meta line, and its access controls. */
 .credential-row {
   display: grid;
   min-height: 2.1rem;
@@ -62,6 +62,40 @@
   font-size: 0.66rem;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.credential-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+}
+
+.credential-access-toggle {
+  min-height: 1.45rem;
+  padding: 0.15rem 0.35rem;
+  border: 1px solid #495057;
+  border-radius: var(--border-radius-md, 0.4rem);
+  color: #dee2e6;
+  background: #252930;
+  cursor: pointer;
+  font-size: 0.62rem;
+  white-space: nowrap;
+}
+
+.credential-access-toggle:hover,
+.credential-access-toggle:focus-visible {
+  border-color: #868e96;
+  background: #343a40;
+}
+
+.credential-access-toggle[data-paused="true"] {
+  border-color: #2f9e44;
+  color: #b2f2bb;
+  background: rgb(47 158 68 / 14%);
+}
+
+.credential-access-toggle:disabled {
+  cursor: default;
+  opacity: 0.4;
 }
 
 .credential-revoke {
