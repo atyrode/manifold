@@ -182,12 +182,10 @@ export async function checkInstalledCandidate(snapshot: InstalledPluginsSnapshot
 }
 
 if (import.meta.main) {
-  const file = process.argv[2];
-  if (!file) throw new Error("usage: bun scripts/installed-bundles-candidate.ts SNAPSHOT.json");
+  if (process.argv.length !== 2)
+    throw new Error("usage: bun scripts/installed-bundles-candidate.ts < SNAPSHOT.json");
   try {
-    await checkInstalledCandidate(
-      InstalledPluginsSnapshotSchema.parse(await Bun.file(file).json()),
-    );
+    await checkInstalledCandidate(InstalledPluginsSnapshotSchema.parse(await Bun.stdin.json()));
   } catch (error) {
     console.error(error instanceof Error ? error.message : "installed-bundles candidate failed");
     process.exit(1);

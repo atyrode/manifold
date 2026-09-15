@@ -888,6 +888,8 @@ Both `deploy-dev.yml` and `deploy-hub.yml` also require the `installed-bundles` 
 the switch. It builds the candidate image for that exact revision, invokes the
 running target's root-only `engine.plugins.exportInstalled` door, then boots the candidate
 against copies of the returned bundles and safe install rows in temporary data directories.
+The export travels through private stdin rather than a host bind mount, so differing
+runner/candidate identities require neither shared file ownership nor broader file permissions.
 It checks original enablement and a second disposable all-enabled copy so a disabled module
 cannot hide a load failure. No production data volume, network, installer credential or owner
 key is mounted into the candidate. Any held, missing, unverified or load-failed bundle refuses

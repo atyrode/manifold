@@ -3774,7 +3774,7 @@ describe("enabled bundle replacement retains native execution", () => {
     },
   );
 
-  test("the supported installer replaces a parent without changing its usable broker or enabled dependent", async () => {
+  test("repeated supported replacements preserve one usable broker and its enabled dependent", async () => {
     const f = await retainedServiceFixture();
     try {
       const childId = `${SAMPLE_ID}.part`;
@@ -3793,33 +3793,36 @@ describe("enabled bundle replacement retains native execution", () => {
       const policy = f.jobs.readInstanceServiceConfiguration(f.fixture.owner, {
         serviceId: f.policy.serviceId,
       }).policy;
-      const updated = f.fixture.drop({ ...f.manifest, version: "2.0.0" });
-      expect((await installBundle({ ...updated, hub: f.hub })).outcome).toBe("replaced");
-      expect((await installBundle({ ...updated, hub: f.hub })).outcome).toBe("unchanged");
-      expect(f.host.enabled(childId)).toBe(true);
-      expect(f.fixture.store.disabledPlugins().size).toBe(0);
-      expect(await f.host.dispatch(f.fixture.owner, `${SAMPLE_ID}.ping`, {})).toEqual({
-        ok: true,
-        result: { version: "2.0.0" },
-      });
-      f.jobs.tick();
-      await f.readService();
-      expect(
-        f.jobs.describe(f.fixture.owner, { machineId: f.machineId, pluginId: SAMPLE_ID }),
-      ).toEqual(before);
-      expect(f.jobs.jobs.installation(f.machineId, SAMPLE_ID)).toEqual(native);
-      expect(f.jobs.jobs.get(f.start.request.jobId)?.request).toEqual(f.start.request);
-      expect(f.jobs.jobs.cancellation(f.start.request.jobId)).toBeNull();
-      expect(
-        f.jobs.jobs.instanceServiceJobs(f.policy.serviceId).map((job) => job.request.jobId),
-      ).toEqual([f.start.request.jobId]);
-      expect(
-        f.jobs.readInstanceServiceConfiguration(f.fixture.owner, { serviceId: f.policy.serviceId })
-          .policy,
-      ).toEqual(policy);
-      expect(
-        f.jobs.describeInstanceService(f.fixture.owner, { serviceId: f.policy.serviceId }).state,
-      ).toBe("ready");
+      for (const version of ["2.0.0", "2.0.1", "2.0.2"]) {
+        const updated = f.fixture.drop({ ...f.manifest, version });
+        expect((await installBundle({ ...updated, hub: f.hub })).outcome).toBe("replaced");
+        expect((await installBundle({ ...updated, hub: f.hub })).outcome).toBe("unchanged");
+        expect(f.host.enabled(childId)).toBe(true);
+        expect(f.fixture.store.disabledPlugins().size).toBe(0);
+        expect(await f.host.dispatch(f.fixture.owner, `${SAMPLE_ID}.ping`, {})).toEqual({
+          ok: true,
+          result: { version },
+        });
+        f.jobs.tick();
+        await f.readService();
+        expect(
+          f.jobs.describe(f.fixture.owner, { machineId: f.machineId, pluginId: SAMPLE_ID }),
+        ).toEqual(before);
+        expect(f.jobs.jobs.installation(f.machineId, SAMPLE_ID)).toEqual(native);
+        expect(f.jobs.jobs.get(f.start.request.jobId)?.request).toEqual(f.start.request);
+        expect(f.jobs.jobs.cancellation(f.start.request.jobId)).toBeNull();
+        expect(
+          f.jobs.jobs.instanceServiceJobs(f.policy.serviceId).map((job) => job.request.jobId),
+        ).toEqual([f.start.request.jobId]);
+        expect(
+          f.jobs.readInstanceServiceConfiguration(f.fixture.owner, {
+            serviceId: f.policy.serviceId,
+          }).policy,
+        ).toEqual(policy);
+        expect(
+          f.jobs.describeInstanceService(f.fixture.owner, { serviceId: f.policy.serviceId }).state,
+        ).toBe("ready");
+      }
     } finally {
       f.close();
     }
@@ -3841,19 +3844,6 @@ describe("enabled bundle replacement retains native execution", () => {
             failure === "child-load" ? "9.0.0" : failure === "action-collision" ? "8.0.0" : "2.0.0",
           ...(failure === "assembly"
             ? { dependencies: { "vendor.absent": { type: "required" as const } } }
-            : {}),
-          ...(failure === "child-load"
-            ? {
-                machine: {
-                  ...f.machine,
-                  operations: {
-                    [f.operationId]: {
-                      ...f.machine.operations[f.operationId]!,
-                      network: "host" as const,
-                    },
-                  },
-                },
-              }
             : {}),
         });
         await expect(installBundle({ ...candidate, hub: f.hub })).rejects.toThrow(
@@ -4014,24 +4004,41 @@ describe("enabled bundle replacement retains native execution", () => {
   });
 
   test.each(["declaration", "artifact", "resources", "operator-disable"] as const)(
-    "%s never inherits execution through replacement or an assembly enable",
+    "%s replacement preserves native execution until an explicit disable and never copies approval",
     async (change) => {
       const f = await retainedServiceFixture();
       try {
         const original = f.jobs.jobs.installation(f.machineId, SAMPLE_ID)!;
         const machine = structuredClone(f.machine);
-        if (change === "operator-disable")
-          expect(await f.host.setEnabled(SAMPLE_ID, false, f.fixture.owner.principal.id)).toEqual({
-            ok: true,
-          });
-        else if (change === "declaration") machine.operations[f.operationId]!.network = "host";
+        if (change === "declaration") machine.operations[f.operationId]!.network = "host";
         else if (change === "artifact") {
           machine.artifacts["linux-x64"]!.sha256 = "c".repeat(64);
           machine.artifacts["linux-x64"]!.entrySha256 = "c".repeat(64);
-        } else machine.requiresResourceBindings = true;
+        } else if (change === "resources") machine.requiresResourceBindings = true;
         const candidate = f.fixture.drop({ ...f.manifest, version: "2.0.0", machine });
+        if (change !== "operator-disable") {
+          await expect(installBundle({ ...candidate, hub: f.hub })).rejects.toThrow(
+            "still_enabled",
+          );
+          expect(installedRow(f.host, SAMPLE_ID).install?.sha256).toBe(f.first.sha256);
+          expect(await f.host.dispatch(f.fixture.owner, `${SAMPLE_ID}.ping`, {})).toEqual({
+            ok: true,
+            result: { version: f.manifest.version },
+          });
+          f.jobs.tick();
+          await f.readService();
+          expect(f.jobs.jobs.cancellation(f.start.request.jobId)).toBeNull();
+          expect(
+            f.jobs.describeInstanceService(f.fixture.owner, {
+              serviceId: f.policy.serviceId,
+            }).state,
+          ).toBe("ready");
+        }
+        expect(await f.host.setEnabled(SAMPLE_ID, false, f.fixture.owner.principal.id)).toEqual({
+          ok: true,
+        });
         expect((await installBundle({ ...candidate, hub: f.hub })).outcome).toBe("replaced");
-        expect(f.host.enabled(SAMPLE_ID)).toBe(change !== "operator-disable");
+        expect(f.host.enabled(SAMPLE_ID)).toBe(false);
         expect(await f.host.setEnabled(SAMPLE_ID, true, f.fixture.owner.principal.id)).toEqual({
           ok: true,
         });
