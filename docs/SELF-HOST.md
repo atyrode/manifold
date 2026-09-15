@@ -922,6 +922,20 @@ Rollback restores application code, **not the database or other shared data**, a
 restarts the native execution owner. Manual compatibility review and the receiver's existing
 ordering and retained-container safety holds still apply.
 
+Live snapshots use format 2 and record the source protocol. A pre-native hub, such as
+v0.14.0 on protocol 25, has no governed native inventory: that capability first appeared
+in protocol 27. Its schema-compatible HTTP metadata is inspected using the existing
+root-only `core.access.listGrants` read to prove authority; the grant response is discarded,
+not captured. Native inventory is considered absent only below that protocol boundary
+and without contradictory native declarations. Missing or partial modern native APIs,
+inconsistent protocol metadata, and protocols newer than the verifier supports are fatal.
+This does not change the SDK's exact-version runtime negotiation. Enrolled-machine and
+installed-plugin continuity remains required, including ordinary rollback; a snapshot
+from a native-capable hub cannot be verified against a pre-native target. Capture with the
+current verifier before switching, then retain that same snapshot rather than replacing
+its baseline after the upgrade. A pre-native snapshot cannot prove preservation of native
+installations that the old hub did not support.
+
 An enabled native installation's revision and enablement are durable intent: a hub restart
 or data-only record rewrite is not a new deployment. Enabled instance services on proved
 owners are re-admitted after restart without an operator call, including when their previous
