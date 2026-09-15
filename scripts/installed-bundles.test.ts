@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -105,9 +105,22 @@ test("an in-realm module exiting cleanly during load cannot pass the candidate g
   );
 }, 30_000);
 
-async function exportGateAttempt(bootstrap: boolean, reply: unknown, status = 200) {
+async function exportGateAttempt(
+  bootstrap: boolean,
+  reply: unknown,
+  status = 200,
+  candidateExitCode?: number,
+) {
   const root = mkdtempSync(join(tmpdir(), "installed-bootstrap-"));
   const summaryPath = join(root, "summary");
+  const outputPath = join(root, "output");
+  if (candidateExitCode !== undefined) {
+    writeFileSync(
+      join(root, "docker"),
+      `#!/bin/sh\nif [ "$1" = run ]; then exit ${candidateExitCode}; fi\nexit 0\n`,
+      { mode: 0o700 },
+    );
+  }
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -127,14 +140,20 @@ async function exportGateAttempt(bootstrap: boolean, reply: unknown, status = 20
   });
   try {
     const child = Bun.spawn(
-      [process.execPath, join(import.meta.dir, "installed-bundles.ts"), "--invalid-candidate"],
+      [
+        process.execPath,
+        join(import.meta.dir, "installed-bundles.ts"),
+        candidateExitCode === undefined ? "--invalid-candidate" : "fixture-candidate",
+      ],
       {
         env: {
           ...process.env,
+          PATH: `${root}:${process.env.PATH ?? ""}`,
           INSTALLED_BUNDLES_ORIGIN: server.url.origin,
           INSTALLED_BUNDLES_TOKEN: "test-only-token",
           INSTALLED_BUNDLES_BOOTSTRAP_GATE: String(bootstrap),
           GITHUB_STEP_SUMMARY: summaryPath,
+          GITHUB_OUTPUT: outputPath,
         },
         stdout: "pipe",
         stderr: "pipe",
@@ -149,6 +168,7 @@ async function exportGateAttempt(bootstrap: boolean, reply: unknown, status = 20
       code,
       output: stdout + stderr,
       summary: existsSync(summaryPath) ? readFileSync(summaryPath, "utf8") : "",
+      jobOutput: existsSync(outputPath) ? readFileSync(outputPath, "utf8") : "",
       target: server.url.origin,
     };
   } finally {
@@ -167,6 +187,7 @@ test("a missing export door fails closed without explicit bootstrap", async () =
   expect(attempt.code).toBe(1);
   expect(attempt.output).not.toContain("::warning::");
   expect(attempt.summary).toBe("");
+  expect(attempt.jobOutput).toBe("");
 });
 
 test("explicit bootstrap passes only an unknown export door and records target and reason", async () => {
@@ -178,6 +199,7 @@ test("explicit bootstrap passes only an unknown export door and records target a
   expect(attempt.summary).toContain(attempt.target);
   expect(attempt.summary).toContain("unknown_action");
   expect(attempt.summary).toContain("bootstrap_gate=true");
+  expect(attempt.jobOutput).toBe("bootstrap_required=true\n");
 });
 
 test("bootstrap does not bypass candidate validation when the export door exists", async () => {
@@ -189,6 +211,22 @@ test("bootstrap does not bypass candidate validation when the export door exists
   expect(attempt.output).toContain("candidate image");
   expect(attempt.output).not.toContain("::warning::");
   expect(attempt.summary).toBe("");
+  expect(attempt.jobOutput).toBe("");
+});
+
+test("an export-capable hub emits ordinary verification only after its candidate passes", async () => {
+  const reply = {
+    ok: true,
+    result: { format: 1, developerMode: false, plugins: [] },
+  };
+  const failed = await exportGateAttempt(true, reply, 200, 1);
+  expect(failed.code).toBe(1);
+  expect(failed.jobOutput).toBe("");
+
+  const passed = await exportGateAttempt(true, reply, 200, 0);
+  expect(passed.code).toBe(0);
+  expect(passed.jobOutput).toBe("bootstrap_required=false\n");
+  expect(passed.summary).toBe("");
 });
 
 test("bootstrap never turns authorization or HTTP failures into a missing-door exception", async () => {
@@ -200,5 +238,6 @@ test("bootstrap never turns authorization or HTTP failures into a missing-door e
     expect(attempt.code).toBe(1);
     expect(attempt.output).not.toContain("::warning::");
     expect(attempt.summary).toBe("");
+    expect(attempt.jobOutput).toBe("");
   }
 });

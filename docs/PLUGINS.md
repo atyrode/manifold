@@ -2626,6 +2626,12 @@ discipline is tiled. One word per concept (`AXIOMS.md` §Lexicon law, `REGISTRY.
   integer plugin-kit contract. It applies to unstamped and outside-set installed bundles,
   before importing either half or spawning a hardened child. Repack once and replace the
   pinned artifact; toggling cannot repair executable bytes and editing the stamp is not repacking.
+  The root-only metadata read `engine.plugins.listInstalled {}` returns
+  `{ plugins: [{ pluginId, sha256, enabled }] }`, where `enabled` is the persisted configured
+  intent, not this effective roster flag. The read is serialized with install, uninstall
+  and enablement changes and includes disabled and held installs. It returns no bundle
+  bytes, source, grants or credentials; an inspector can bind intent to the roster's artifact
+  hash without loading a package or mistaking a compatibility hold for deliberate disablement.
 - **Action caps must be a subset of manifest capabilities**, checked at assembly, not at
   dispatch.
 - **Enable/disable is hot, workspace-global, and an ENGINE door.**

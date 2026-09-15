@@ -197,7 +197,7 @@ test("an unrecognized manual operation is not treated as a rollback or deploymen
   ).rejects.toThrow();
 });
 
-test("deployment completion refuses failed or skipped live verification before pinning", async () => {
+test("deployment completion requires successful verification with an explicit maintenance result", async () => {
   for (const [file, job] of [
     ["deploy-dev.yml", "owner-pin"],
     ["deploy-hub.yml", "fleet-pin"],
@@ -209,21 +209,22 @@ test("deployment completion refuses failed or skipped live verification before p
       (step) => step.name === "Require successful switch and live verification",
     )?.run;
     if (!guard) throw new Error(`${file} has no deployment completion guard`);
-    const complete = (switchResult: string, verifyResult: string) =>
+    const complete = (switchResult: string, verifyResult: string, maintenanceRequired: string) =>
       Bun.spawnSync(["bash", "-e", "-c", guard], {
         env: {
           ...process.env,
           SWITCH_RESULT: switchResult,
           VERIFY_RESULT: verifyResult,
+          MAINTENANCE_REQUIRED: maintenanceRequired,
         },
         stdout: "pipe",
         stderr: "pipe",
       });
-    expect(complete("success", "success").exitCode).toBe(0);
-    const skipped = complete("success", "skipped");
-    expect(skipped.exitCode).toBe(1);
-    expect(skipped.stdout.toString()).toContain("verify-live");
-    expect(complete("success", "failure").exitCode).toBe(1);
-    expect(complete("failure", "success").exitCode).toBe(1);
+    expect(complete("success", "success", "false").exitCode).toBe(0);
+    expect(complete("success", "success", "true").exitCode).toBe(0);
+    expect(complete("success", "success", "").exitCode).toBe(1);
+    expect(complete("success", "skipped", "false").exitCode).toBe(1);
+    expect(complete("success", "failure", "false").exitCode).toBe(1);
+    expect(complete("failure", "success", "false").exitCode).toBe(1);
   }
 });

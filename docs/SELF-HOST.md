@@ -900,8 +900,8 @@ machine/plugin identifiers, installation revisions and enablement, and instance-
 it contains no bundles, authored source, environment, credentials or policy bodies. A missing
 credential, inventory door or unambiguous previous build refuses the switch.
 
-Using the same root credentials as `installed-bundles`, live verification has one **five-minute
-deadline**, including requests and retries. It checks the expected `/healthz` build, requires
+Using the same root credentials as `installed-bundles`, ordinary live verification has one
+**five-minute deadline**, including requests and retries. It checks the expected `/healthz` build, requires
 every previously ready native installation to retain its revision and enablement and become
 ready again, and requires every previously enabled instance service to remain enabled and reach
 `ready`. Every installed plugin must also stay present and keep its enablement. A plugin that
@@ -921,6 +921,33 @@ failed recovery stays visible rather than claiming that the previous revision is
 Rollback restores application code, **not the database or other shared data**, and never
 restarts the native execution owner. Manual compatibility review and the receiver's existing
 ordering and retained-container safety holds still apply.
+A previous binary can refuse a database already migrated to a newer schema. At that boundary,
+code-only rollback is not a recovery path: verify a consistent full-state checkpoint and its
+recovery procedure before the live upgrade. The bootstrap flag neither restores database
+state nor bypasses schema-version admission.
+
+Live snapshots use format 2 and record the source protocol. A pre-native hub, such as
+v0.14.0 on protocol 25, has no governed native inventory: that capability first appeared
+in protocol 27. Its schema-compatible HTTP metadata is inspected using the existing
+root-only `core.access.listGrants` read to prove authority; the grant response is discarded,
+not captured. Native inventory is considered absent only below that protocol boundary
+and without contradictory native declarations. Missing or partial modern native APIs,
+inconsistent protocol metadata, and protocols newer than the verifier supports are fatal.
+This does not change the SDK's exact-version runtime negotiation. Enrolled-machine and
+installed-plugin continuity remains required, including ordinary rollback; a snapshot
+from a native-capable hub cannot be verified against a pre-native target. Capture with the
+current verifier before switching, then retain that same snapshot rather than replacing
+its baseline after the upgrade. A pre-native snapshot cannot prove preservation of native
+installations that the old hub did not support.
+
+Plugin snapshots record configured enablement, not the effective `enabled` value that becomes
+false under a compatibility hold. The root-only `engine.plugins.listInstalled {}` read returns
+only installed plugin identities, artifact hashes and configured enablement; the verifier
+matches those identities and hashes to the roster before trusting the intent. It does not
+fetch bundle bytes for that check. On an older target without this door, held rows and
+unavailable disabled rows are refused rather than treated as an operator's disablement.
+Only the explicit maintenance exception below permits held effective state with unchanged
+configured intent.
 
 An enabled native installation's revision and enablement are durable intent: a hub restart
 or data-only record rewrite is not a new deployment. Enabled instance services on proved
@@ -942,10 +969,36 @@ For a target predating the export door, both workflows accept an explicit
 one-time bootstrap for the upgrade that introduces the door: only an authenticated export
 invocation returning the structured `unknown_action` refusal permits the installed-bundles
 job to pass without checking inventory. It emits an Actions `::warning::` naming the target
-and reason and records both in the step summary. HTTP errors (including a generic 404),
-authentication failures, other refusals and candidate failures still fail closed. When the
-door exists, the flag has no effect: the ordinary candidate gate always runs.
-`bootstrap_gate` never bypasses the pre-switch live snapshot, `verify-live`, or automatic rollback.
+and reason, records both in the step summary, and writes `bootstrap_required=true` to
+`GITHUB_OUTPUT`. An ordinary successful candidate writes `bootstrap_required=false`; a
+failed gate emits no success output. HTTP errors (including a generic 404), authentication
+failures, other refusals and candidate failures still fail closed. When the door exists,
+the raw flag has no effect: the ordinary candidate gate and ordinary live verification run.
+
+Only the installed-bundles job's proven `bootstrap_required=true` output enables
+`VERIFY_LIVE_BOOTSTRAP_GATE=true` on the forward candidate's live-verification step. This
+one-deployment maintenance check may defer installed plugins held specifically for
+`repack_required`, and an unchanged configured native instance service that is `unavailable`
+with reason `plugin_held` directly attributable to such a plugin. The service must retain
+its machine/plugin identity and its owner must remain online and connected, not draining
+or revoked. A previously ready native installation may also defer readiness only when its
+revision and enablement are unchanged, its owner is connected and online, neither draining
+nor revoked, no purge is requested, and its nonempty operation descriptions all report
+`plugin_held` for the same repack-held plugin. Missing operation descriptions cannot support
+that exception. These refusals take precedence over resource checks, so they do not prove
+that the underlying resources are healthy. Other holds and reported failures are not
+deferred. Build and snapshot identity, installed plugins and their configured enablement,
+native installation identity, revisions and enablement remain strict. The verifier names every held plugin, deferred
+installation and deferred service rather than claiming full health.
+
+The candidate step publishes `maintenance_required=true` while any repack hold remains,
+otherwise `false`, and the `verify-live` job exposes that result. A successful maintenance
+run permits this one hub deployment to remain installed, but dispatches neither a
+preview-owner pin nor a production fleet pin and does not claim ordinary verification.
+An absent maintenance result also blocks pinning. The pre-switch snapshot, exact-build
+check, five-minute deadline and automatic rollback remain required. Automatic recovery
+always verifies the previous revision without the maintenance flag; explicit development
+rollback also uses ordinary live verification.
 
 For production, `bun run promote vX.Y.Z --bootstrap-gate` dispatches `deploy-hub.yml` with the
 published `tag` introducing the door and `bootstrap_gate=true`. For development, dispatch `deploy-dev.yml` from `main` with
@@ -957,16 +1010,28 @@ guard. Exact-revision full CI, deployment ordering and environment approval rema
 Automatic development deployments never opt into bootstrap.
 
 Use the exception only for that first upgrade, then leave it false. A bootstrap receipt is
-not a successful installed-bundle check; stale bundles may need the repack named by the new
-hub's held roster before a later ordinary deployment can pass the gate.
+not a successful installed-bundle check. Install the repacked plugins named by the new hub's
+held roster, preserving native installation intent, then run ordinary live verification
+against the retained pre-switch snapshot and the deployed expected build with
+`VERIFY_LIVE_BOOTSTRAP_GATE` unset. Only a successful ordinary check, including the previously
+deferred product reads, native installations and service readiness, ends maintenance. That check does not
+rewrite the original workflow receipt or resume its skipped pin steps: perform the
+separately authorized pin follow-through after ordinary verification, or let a subsequent
+ordinary deployment verify and dispatch its pin. Neither repacking nor owner replacement
+is automatic; occupied terminal owners still require the drained maintenance procedure.
+
 Self-hosted automation can run the same `scripts/installed-bundles.ts IMAGE` with
 `INSTALLED_BUNDLES_ORIGIN` and `INSTALLED_BUNDLES_TOKEN` supplied through its secret environment.
 Its equivalent explicit opt-in is `INSTALLED_BUNDLES_BOOTSTRAP_GATE=true`; when
 `GITHUB_STEP_SUMMARY` names a file, the same bootstrap receipt is appended there.
 The live equivalent is `scripts/verify-live.ts snapshot PATH` before the switch, then
 `scripts/verify-live.ts verify PATH EXPECTED_BUILD` afterwards, with `VERIFY_LIVE_ORIGIN`
-and `VERIFY_LIVE_TOKEN` supplied through the environment. Replacement automation owns its
-rollback operation when verification exits nonzero.
+and `VERIFY_LIVE_TOKEN` supplied through the environment. Forward only the installed gate's
+actual `bootstrap_required=true` output as `VERIFY_LIVE_BOOTSTRAP_GATE=true` for that
+candidate, never the input flag alone or a rollback. Successful live verification writes
+`maintenance_required=true` or `false` to `GITHUB_OUTPUT`; gate pinning and health claims on
+an explicit `false`. Replacement automation owns its rollback operation when verification
+exits nonzero, and must use ordinary verification for the restored revision.
 
 **Release.** `bun run release -- <major|minor|patch|x.y.z>` publishes versioned artifacts from an
 exact `main` revision with successful full `main` CI — the GitHub Release, the fleet binaries, the
@@ -991,8 +1056,9 @@ Production is the GitHub Environment `production`; its deployment
 history is the ledger of what production ran, and protection rules attach there. Promotion is
 never a side effect of a release or of a different green `main` revision.
 
-**Fleet pin after promotion.** Once `verify-live` proves the promoted build and live state, `deploy-hub.yml`
-dispatches `update-pins.yml` in atyrode/dotfiles so the spokes follow the hub in that order
+**Fleet pin after promotion.** Once `verify-live` proves the promoted build and ordinary live
+state with `maintenance_required=false`, `deploy-hub.yml` dispatches `update-pins.yml` in
+atyrode/dotfiles so the spokes follow the hub in that order
 (invariant 10) instead of racing it on the pin cron. The step runs only when the repository
 secret `DOTFILES_DISPATCH_TOKEN` exists; absent or expired, it is skipped and the dotfiles cron
 with its `/healthz` hold remains the floor, so promotion itself never fails on it. The token is
@@ -1001,9 +1067,11 @@ repository atyrode/dotfiles with Actions: read and write and nothing else; the c
 **expires 2026-12-05**. Renewal: mint the same-shaped token at
 `github.com/settings/personal-access-tokens`, then on an operator device
 `gh secret set DOTFILES_DISPATCH_TOKEN --repo atyrode/manifold < <file>` and shred the file —
-the value never enters argv, a log or a chat. An agent that sees the "Dispatch the fleet pin"
-step skipped or failing on a promotion run, or that reads this paragraph within a month of the
-expiry date, tells the operator to renew; the date above is updated in the same commit as the
+the value never enters argv, a log or a chat. A pin intentionally skipped for
+`maintenance_required=true` needs the plugin continuation above, not token renewal.
+Otherwise, an agent that sees the "Dispatch the fleet pin" step skipped or failing on a
+promotion run, or that reads this paragraph within a month of the expiry date, tells the
+operator to renew; the date above is updated in the same commit as the
 renewal.
 
 **Development** is the operator's second instance. Every green `main` normally deploys
@@ -1052,7 +1120,8 @@ build/configuration validation, without terminal retirement/resume, recursive da
 changes or spoke rebuild/restart. The native execution-only profile remains separately declared
 and supervised. Numbered previews retain their explicitly disposable development-image lifecycle.
 
-After successful development `verify-live`, `deploy-dev.yml` dispatches dotfiles'
+After successful ordinary development `verify-live` with `maintenance_required=false`,
+`deploy-dev.yml` dispatches dotfiles'
 `update-preview-owner.yml` with `target=preview-owner` and `revision=<deployed SHA>`, using
 `DOTFILES_DISPATCH_TOKEN`. The receiver updates only the preview-owner pin and must no-op
 when that exact revision is already pinned; the operator's next apply or scheduled fleet

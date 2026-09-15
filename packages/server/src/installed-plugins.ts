@@ -4,10 +4,23 @@ import {
   HARDENED_CONTRACT_MINIMUM,
   ISOLATE_MAX_ARTIFACT_BYTES,
   PluginIdSchema,
+  type InstalledPluginStates,
   type InstalledPluginsSnapshot,
 } from "@manifold/protocol";
 import { installLayout, parseBundle } from "./plugin-installs.ts";
 import { sha256Hex, type ServerStore } from "./stores.ts";
+
+/** Configured intent remains inspectable even when bundle loading is held or broken. */
+export function listInstalledPlugins(store: ServerStore): InstalledPluginStates {
+  const disabled = store.disabledPlugins();
+  return {
+    plugins: store.pluginInstalls().map(({ pluginId, sha256 }) => ({
+      pluginId,
+      sha256,
+      enabled: !disabled.has(pluginId),
+    })),
+  };
+}
 
 /** Read only the installed bundle inventory, with an allowlisted persistence projection. */
 export function exportInstalledPlugins(

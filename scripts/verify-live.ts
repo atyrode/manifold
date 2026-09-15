@@ -1,24 +1,29 @@
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { z } from "zod";
 import {
+  ActionProtocolSchema,
   HealthResponseSchema,
   InstanceServiceDescriptionSchema,
   InstanceServicesDescriptionSchema,
+  InstalledPluginStatesSchema,
   JobDescriptionSchema,
   MachinesResponseSchema,
   PluginsResponseSchema,
+  PROTOCOL_VERSION,
   type ActionProtocol,
   type ActionSummary,
+  type InstanceServiceDescription,
   type PluginRosterEntry,
 } from "../packages/protocol/src/index.ts";
 import {
   ActionHttpError,
-  discoverActions,
   invokeAction,
   type ActionHttpOptions,
 } from "../packages/sdk/src/index.ts";
 
 export const VERIFY_LIVE_DEADLINE_MS = 5 * 60_000;
+// Governed native execution first entered the protocol in revision 27.
+const FIRST_NATIVE_PROTOCOL_VERSION = 27;
 const id = z.string().min(1).max(512);
 const installationSchema = z.strictObject({
   machineId: id,
@@ -35,16 +40,26 @@ const serviceSchema = z.strictObject({
   state: InstanceServiceDescriptionSchema.shape.state,
 });
 /** Deliberately projected: no manifests, policies, source, env, credentials or bundle bytes. */
-export const LiveSnapshotSchema = z.strictObject({
-  format: z.literal(1),
-  origin: z.string().url(),
-  build: id,
-  capturedAt: z.number().int().nonnegative(),
-  machines: z.array(id),
-  installations: z.array(installationSchema),
-  services: z.array(serviceSchema),
-  plugins: z.array(z.strictObject({ pluginId: id, enabled: z.boolean(), readDoor: id.nullable() })),
-});
+export const LiveSnapshotSchema = z
+  .strictObject({
+    format: z.literal(2),
+    protocolVersion: z.number().int().positive(),
+    origin: z.string().url(),
+    build: id,
+    capturedAt: z.number().int().nonnegative(),
+    machines: z.array(id),
+    installations: z.array(installationSchema),
+    services: z.array(serviceSchema),
+    plugins: z.array(
+      z.strictObject({ pluginId: id, enabled: z.boolean(), readDoor: id.nullable() }),
+    ),
+  })
+  .refine(
+    (snapshot) =>
+      snapshot.protocolVersion >= FIRST_NATIVE_PROTOCOL_VERSION ||
+      (snapshot.installations.length === 0 && snapshot.services.length === 0),
+    { message: "pre-native snapshot contains native state" },
+  );
 export type LiveSnapshot = z.infer<typeof LiveSnapshotSchema>;
 export interface LiveTarget {
   origin: string;
@@ -56,6 +71,13 @@ export interface LivePollOptions {
   intervalMs?: number;
   requestTimeoutMs?: number;
   onDivergence?: (failure: LiveVerificationError) => void;
+  /** Only the explicit first-upgrade receipt permits temporary repack holds. */
+  bootstrapGate?: boolean;
+}
+export interface LiveVerificationResult {
+  heldPlugins: { pluginId: string; minimum: number }[];
+  deferredServices: string[];
+  deferredInstallations: { machineId: string; pluginId: string; revision: string }[];
 }
 export class LiveVerificationError extends Error {
   constructor(
@@ -101,6 +123,7 @@ class Reader {
   readonly signal: AbortSignal;
   readonly requestTimeoutMs: number;
   readonly resolved = new Set<string>();
+  healthProtocolVersion: number | null = null;
   constructor(target: LiveTarget, options: LivePollOptions) {
     this.target = targetOptions(target);
     const timeout = bounded(options.timeoutMs, VERIFY_LIVE_DEADLINE_MS, VERIFY_LIVE_DEADLINE_MS);
@@ -168,7 +191,16 @@ class Reader {
     });
   }
   async protocol(): Promise<ActionProtocol> {
-    return this.guard("/api/protocol", () => discoverActions(this.options("/api/protocol")));
+    // Deployment inspection must read older schema-compatible HTTP inventories without
+    // changing the SDK's exact-version runtime negotiation.
+    const protocol = await this.json("/api/protocol", ActionProtocolSchema);
+    if (
+      protocol.protocolVersion > PROTOCOL_VERSION ||
+      protocol.protocolVersion !== this.healthProtocolVersion
+    )
+      fail("/api/protocol", "unsupported protocol or inconsistent health metadata");
+    unique(protocol.actions, (action) => action.name, "/api/protocol");
+    return protocol;
   }
   async action<T>(name: string, args: unknown, schema: z.ZodType<T>, item = name): Promise<T> {
     return this.guard(item, async () => {
@@ -180,6 +212,7 @@ class Reader {
   async build(): Promise<string> {
     const health = await this.json("/healthz", HealthResponseSchema);
     if (!health.build) fail("/healthz", "missing build identity");
+    this.healthProtocolVersion = health.protocolVersion;
     return health.build;
   }
 }
@@ -231,6 +264,7 @@ function readDoor(plugin: PluginRosterEntry, protocol: ActionProtocol): ActionSu
 }
 /** Roster facts that must hold for a plugin the verifier cannot probe through a door. */
 function rosterHealthy(plugin: PluginRosterEntry, item: string): void {
+  if (plugin.install?.refusal) fail(item, `installed artifact: ${plugin.install.refusal}`);
   if (plugin.held) fail(item, `held: ${plugin.held.reason}`);
   if (plugin.lifecycle !== undefined && plugin.lifecycle !== "ok")
     fail(item, `lifecycle ${plugin.lifecycle}`);
@@ -247,35 +281,90 @@ async function discovery(reader: Reader, before?: LiveSnapshot) {
       "missing plugin inventory",
     );
   unique(plugins, (plugin) => plugin.manifest.id, "/api/plugins");
-  for (const name of [
-    "engine.jobs.describe",
-    "engine.services.listInstances",
-    "engine.services.describeInstance",
-  ])
-    declared(protocol, name);
-  // listInstances is authority-filtered. Prove root before trusting an empty inventory,
-  // using an existing root-only read and a discovered plugin identity, never bundle export.
-  const rootDoor = declared(protocol, "engine.jobs.listDeployments");
+  const native = protocol.protocolVersion >= FIRST_NATIVE_PROTOCOL_VERSION;
+  if (
+    !native &&
+    ((before && before.protocolVersion >= FIRST_NATIVE_PROTOCOL_VERSION) ||
+      protocol.actions.some(
+        (action) =>
+          action.name.startsWith("engine.jobs.") || action.name.startsWith("engine.services."),
+      ) ||
+      plugins.some(
+        (plugin) =>
+          plugin.manifest.machine !== undefined ||
+          plugin.manifest.id === "engine.jobs" ||
+          plugin.manifest.id === "engine.services",
+      ))
+  )
+    fail("native inventory", "native state is incompatible with a pre-native protocol");
+  if (native) {
+    for (const name of [
+      "engine.jobs.describe",
+      "engine.services.listInstances",
+      "engine.services.describeInstance",
+    ])
+      declared(protocol, name);
+  }
+  // Effective enablement becomes false under a hold. Read configured intent separately,
+  // binding it to this roster's artifacts rather than inferring an operator's choice.
+  const stateDoor = protocol.actions.find(
+    (action) => action.name === "engine.plugins.listInstalled",
+  );
+  const rootDoor =
+    stateDoor ??
+    declared(protocol, native ? "engine.jobs.listDeployments" : "core.access.listGrants");
   if (!rootDoor.caps.includes("*")) fail(rootDoor.name, "root-only declaration missing");
-  const rootArgs = { pluginId: plugins[0]!.manifest.id, limit: 1 };
+  const rootArgs = stateDoor || !native ? {} : { pluginId: plugins[0]!.manifest.id, limit: 1 };
   if (!inputAccepts(rootDoor, rootArgs))
     fail(rootDoor.name, "root read input contract unavailable");
-  await reader.action(rootDoor.name, rootArgs, z.unknown(), "credentials/root inventory");
+  const installed = new Map<string, PluginRosterEntry>();
+  for (const plugin of plugins) if (plugin.install) installed.set(plugin.manifest.id, plugin);
+  const configuredEnablement = new Map<string, boolean>();
+  if (stateDoor) {
+    const states = await reader.action(
+      stateDoor.name,
+      {},
+      InstalledPluginStatesSchema,
+      "credentials/root inventory",
+    );
+    for (const state of states.plugins) {
+      const plugin = installed.get(state.pluginId);
+      if (!plugin || plugin.install!.sha256 !== state.sha256)
+        fail(`plugin ${state.pluginId}`, "configured inventory does not match roster artifact");
+      configuredEnablement.set(state.pluginId, state.enabled);
+    }
+    for (const pluginId of installed.keys())
+      if (!configuredEnablement.has(pluginId))
+        fail(`plugin ${pluginId}`, "missing from configured inventory");
+  } else {
+    // The older root-only read proves authority, but not the intent behind an unavailable row.
+    await reader.action(rootDoor.name, rootArgs, z.unknown(), "credentials/root inventory");
+    for (const [pluginId, plugin] of installed) {
+      if (
+        plugin.held ||
+        (!plugin.enabled &&
+          (plugin.install!.refusal ||
+            (plugin.lifecycle !== undefined && plugin.lifecycle !== "ok")))
+      )
+        fail(`plugin ${pluginId}`, "configured enablement unavailable on older hub");
+      configuredEnablement.set(pluginId, plugin.enabled);
+    }
+  }
   const machineDoor = declared(protocol, "core.machines.list");
   if (!readOnly(machineDoor) || !inputAccepts(machineDoor, {}))
     fail(machineDoor.name, "machine listing read contract unavailable");
   const { machines } = await reader.action(machineDoor.name, {}, MachinesResponseSchema);
   unique(machines, (machine) => machine.id, "machines");
-  return { protocol, plugins, machines };
+  return { protocol, plugins, machines, native, configuredEnablement };
 }
-async function services(reader: Reader): Promise<LiveSnapshot["services"]> {
+async function services(reader: Reader): Promise<InstanceServiceDescription[]> {
   const inventory = await reader.action(
     "engine.services.listInstances",
     {},
     InstanceServicesDescriptionSchema,
   );
   unique(inventory.services, (service) => service.serviceId, "instance services");
-  const result: LiveSnapshot["services"] = [];
+  const result: InstanceServiceDescription[] = [];
   for (const row of inventory.services) {
     const description = await reader.action(
       "engine.services.describeInstance",
@@ -285,13 +374,7 @@ async function services(reader: Reader): Promise<LiveSnapshot["services"]> {
     );
     if (description.serviceId !== row.serviceId)
       fail(`service ${row.serviceId}`, "description identity mismatch");
-    result.push({
-      serviceId: row.serviceId,
-      machineId: description.owner?.machineId ?? null,
-      pluginId: description.configuration?.pluginId ?? null,
-      enabled: description.configuration?.enabled ?? false,
-      state: description.state,
-    });
+    result.push(description);
   }
   return result;
 }
@@ -302,44 +385,54 @@ export async function snapshotLive(
 ): Promise<LiveSnapshot> {
   const reader = new Reader(target, options);
   const build = await reader.build();
-  const { protocol, plugins, machines } = await discovery(reader);
+  const { protocol, plugins, machines, native, configuredEnablement } = await discovery(reader);
   const installations: LiveSnapshot["installations"] = [];
-  for (const machine of machines) {
-    for (const plugin of plugins) {
-      if (plugin.source !== "plugin") continue;
-      const args = { machineId: machine.id, pluginId: plugin.manifest.id };
-      const item = `installation ${args.machineId}/${args.pluginId}`;
-      const description = await reader.action(
-        "engine.jobs.describe",
-        args,
-        JobDescriptionSchema,
-        item,
-      );
-      if (description.machineId !== args.machineId || description.pluginId !== args.pluginId)
-        fail(item, "description identity mismatch");
-      if (description.installation) {
-        const { revision, enabled, ready } = description.installation;
-        installations.push({ ...args, revision, enabled, ready });
+  if (native) {
+    for (const machine of machines) {
+      for (const plugin of plugins) {
+        if (plugin.source !== "plugin") continue;
+        const args = { machineId: machine.id, pluginId: plugin.manifest.id };
+        const item = `installation ${args.machineId}/${args.pluginId}`;
+        const description = await reader.action(
+          "engine.jobs.describe",
+          args,
+          JobDescriptionSchema,
+          item,
+        );
+        if (description.machineId !== args.machineId || description.pluginId !== args.pluginId)
+          fail(item, "description identity mismatch");
+        if (description.installation) {
+          const { revision, enabled, ready } = description.installation;
+          installations.push({ ...args, revision, enabled, ready });
+        }
       }
     }
   }
-  const instances = await services(reader);
+  const instances = native ? await services(reader) : [];
   const installed = plugins
     .filter((plugin) => plugin.install !== undefined)
     .map((plugin) => ({
       pluginId: plugin.manifest.id,
-      enabled: plugin.enabled,
+      enabled: configuredEnablement.get(plugin.manifest.id)!,
       readDoor: readDoor(plugin, protocol)?.name ?? null,
     }));
-  if ((await reader.build()) !== build) fail("/healthz", "build changed during snapshot");
+  if ((await reader.build()) !== build || reader.healthProtocolVersion !== protocol.protocolVersion)
+    fail("/healthz", "build or protocol changed during snapshot");
   return LiveSnapshotSchema.parse({
-    format: 1,
+    format: 2,
+    protocolVersion: protocol.protocolVersion,
     origin: reader.target.origin,
     build,
     capturedAt: Date.now(),
     machines: machines.map((machine) => machine.id),
     installations,
-    services: instances,
+    services: instances.map((description) => ({
+      serviceId: description.serviceId,
+      machineId: description.owner?.machineId ?? null,
+      pluginId: description.configuration?.pluginId ?? null,
+      enabled: description.configuration?.enabled ?? false,
+      state: description.state,
+    })),
     plugins: installed,
   });
 }
@@ -360,26 +453,79 @@ export function readLiveSnapshot(path: string): LiveSnapshot {
     return fail("snapshot", "missing or invalid safe state snapshot");
   }
 }
-async function parity(reader: Reader, before: LiveSnapshot, expectedBuild: string): Promise<void> {
+async function parity(
+  reader: Reader,
+  before: LiveSnapshot,
+  expectedBuild: string,
+  bootstrapGate: boolean,
+): Promise<LiveVerificationResult> {
   const build = await reader.build();
   if (build !== expectedBuild)
     fail("/healthz build", `expected ${expectedBuild}; observed ${build}`);
   reader.resolved.add("/healthz build");
-  const { protocol, plugins, machines } = await discovery(reader, before);
-  const currentServices = await services(reader);
+  const { protocol, plugins, machines, native, configuredEnablement } = await discovery(
+    reader,
+    before,
+  );
+  const heldPlugins = new Map<string, number>();
+  const deferredServices: string[] = [];
+  const deferredInstallations: LiveVerificationResult["deferredInstallations"] = [];
+  if (bootstrapGate) {
+    for (const plugin of plugins) {
+      const previous = before.plugins.find((row) => row.pluginId === plugin.manifest.id);
+      if (
+        previous &&
+        previous.enabled === configuredEnablement.get(plugin.manifest.id) &&
+        plugin.install &&
+        plugin.install.refusal === undefined &&
+        (plugin.lifecycle === undefined || plugin.lifecycle === "ok") &&
+        plugin.held?.reason === "repack_required" &&
+        plugin.held.minimum !== undefined
+      )
+        heldPlugins.set(plugin.manifest.id, plugin.held.minimum);
+    }
+  }
+  for (const machineId of before.machines)
+    if (!machines.some((machine) => machine.id === machineId))
+      fail(`machine ${machineId}`, "missing from inventory");
+  const currentServices = native ? await services(reader) : [];
   // Native workload failures precede generic plugin checks so the first failure is actionable.
   for (const service of before.services.filter((row) => row.enabled)) {
     const item = `service ${service.serviceId} (machine ${service.machineId ?? "unknown"}, plugin ${service.pluginId ?? "unknown"})`;
     const current = currentServices.find((row) => row.serviceId === service.serviceId);
     if (!current) fail(item, "missing from instance inventory");
-    if (!current.enabled) fail(item, "was enabled; observed disabled");
-    if (current.state !== "ready") fail(item, `expected ready; observed ${current.state}`);
+    if (!current.configuration?.enabled) fail(item, "was enabled; observed disabled");
+    if (
+      current.configuration.pluginId !== service.pluginId ||
+      (current.owner?.machineId ?? null) !== service.machineId
+    )
+      fail(item, "service owner or plugin changed");
+    if (current.state !== "ready") {
+      if (
+        service.pluginId !== null &&
+        heldPlugins.has(service.pluginId) &&
+        current.state === "unavailable" &&
+        current.reason === "plugin_held" &&
+        current.connected &&
+        current.owner?.online &&
+        machines.some(
+          (machine) =>
+            machine.id === service.machineId &&
+            machine.online &&
+            !machine.draining &&
+            !machine.revoked,
+        )
+      )
+        deferredServices.push(service.serviceId);
+      else fail(item, `expected ready; observed ${current.state}`);
+    }
     reader.resolved.add(item);
   }
   for (const installation of before.installations.filter((row) => row.ready)) {
     const { machineId, pluginId } = installation;
     const item = `installation ${machineId}/${pluginId}`;
-    if (!machines.some((row) => row.id === machineId)) fail(item, "machine missing from inventory");
+    const machine = machines.find((row) => row.id === machineId);
+    if (!machine) fail(item, "machine missing from inventory");
     if (!plugins.some((row) => row.manifest.id === pluginId))
       fail(item, "plugin missing from roster");
     const description = await reader.action(
@@ -402,7 +548,22 @@ async function parity(reader: Reader, before: LiveSnapshot, expectedBuild: strin
         item,
         `enablement changed; expected ${installation.enabled}; observed ${current.enabled}`,
       );
-    if (!current.ready) fail(item, "expected ready; observed not ready");
+    if (!current.ready) {
+      const operations = Object.values(description.operations ?? {});
+      if (
+        heldPlugins.has(pluginId) &&
+        description.connected &&
+        machine.online &&
+        !machine.draining &&
+        !machine.revoked &&
+        current.enabled &&
+        !current.purgeRequested &&
+        operations.length > 0 &&
+        operations.every((operation) => !operation.ready && operation.reason === "plugin_held")
+      )
+        deferredInstallations.push({ machineId, pluginId, revision: current.revision });
+      else fail(item, "expected ready; observed not ready");
+    }
   }
   for (const plugin of before.plugins) {
     if (!plugins.some((row) => row.manifest.id === plugin.pluginId && row.install !== undefined))
@@ -411,13 +572,20 @@ async function parity(reader: Reader, before: LiveSnapshot, expectedBuild: strin
   for (const plugin of plugins.filter((row) => row.install !== undefined)) {
     const door = readDoor(plugin, protocol);
     const previous = before.plugins.find((row) => row.pluginId === plugin.manifest.id);
-    if (previous && previous.enabled !== plugin.enabled)
+    const configured = configuredEnablement.get(plugin.manifest.id)!;
+    if (previous && previous.enabled !== configured)
       fail(
         `plugin ${plugin.manifest.id}`,
-        `enablement changed; expected ${previous.enabled}; observed ${plugin.enabled}`,
+        `enablement changed; expected ${previous.enabled}; observed ${configured}`,
       );
+    if (heldPlugins.has(plugin.manifest.id)) {
+      reader.resolved.add(`plugin ${plugin.manifest.id}`);
+      continue;
+    }
+    rosterHealthy(plugin, `plugin ${plugin.manifest.id} roster`);
+    if (plugin.enabled !== configured)
+      fail(`plugin ${plugin.manifest.id}`, "effective enablement differs from configured intent");
     if (door === null) {
-      rosterHealthy(plugin, `plugin ${plugin.manifest.id} roster`);
       reader.resolved.add(`plugin ${plugin.manifest.id}`);
       continue;
     }
@@ -434,6 +602,13 @@ async function parity(reader: Reader, before: LiveSnapshot, expectedBuild: strin
   const finalBuild = await reader.build();
   if (finalBuild !== expectedBuild)
     fail("/healthz build", `expected ${expectedBuild}; observed ${finalBuild}`);
+  if (reader.healthProtocolVersion !== protocol.protocolVersion)
+    fail("/api/protocol", "protocol changed during verification");
+  return {
+    heldPlugins: Array.from(heldPlugins, ([pluginId, minimum]) => ({ pluginId, minimum })),
+    deferredServices,
+    deferredInstallations,
+  };
 }
 /** One monotonic deadline includes discovery, all SDK calls, body reads and retry sleeps. */
 export async function pollLive(
@@ -441,7 +616,7 @@ export async function pollLive(
   before: LiveSnapshot,
   expectedBuild: string,
   options: LivePollOptions = {},
-): Promise<void> {
+): Promise<LiveVerificationResult> {
   const reader = new Reader(target, options);
   if (before.origin !== reader.target.origin)
     fail("snapshot", "target origin does not match snapshot");
@@ -451,9 +626,9 @@ export async function pollLive(
   while (reader.remaining() > 0) {
     reader.resolved.clear();
     try {
-      await parity(reader, before, expectedBuild);
+      const result = await parity(reader, before, expectedBuild, options.bootstrapGate === true);
       if (!reader.remaining()) fail("deadline", "whole verification deadline exhausted");
-      return;
+      return result;
     } catch (error) {
       if (!(error instanceof LiveVerificationError)) throw error;
       // A partial last pass must not hide the latest proved divergence behind a timer
@@ -507,14 +682,49 @@ if (import.meta.main) {
       );
     } else {
       const before = readLiveSnapshot(path);
-      await pollLive(target, before, expectedBuild!, {
+      const result = await pollLive(target, before, expectedBuild!, {
+        bootstrapGate: process.env.VERIFY_LIVE_BOOTSTRAP_GATE === "true",
         onDivergence: (failure) => report(failure.message, target.token, true),
       });
-      report(
-        `verified build ${expectedBuild}: live native state and installed read doors are ready`,
-        target.token,
-        false,
-      );
+      const maintenanceRequired = result.heldPlugins.length > 0;
+      if (process.env.GITHUB_OUTPUT)
+        appendFileSync(process.env.GITHUB_OUTPUT, `maintenance_required=${maintenanceRequired}\n`);
+      if (maintenanceRequired) {
+        report(
+          `MAINTENANCE REQUIRED on ${target.origin}, build ${expectedBuild}: temporary repack holds accepted for this deployment only; plugin and native workload health is NOT verified`,
+          target.token,
+          false,
+        );
+        for (const plugin of result.heldPlugins)
+          report(
+            `plugin ${plugin.pluginId}: repack and install with a supported hardened contract (minimum ${plugin.minimum})`,
+            target.token,
+            false,
+          );
+        for (const installation of result.deferredInstallations)
+          report(
+            `installation ${installation.machineId}/${installation.pluginId} (${installation.revision}): readiness deferred for reported plugin_held operations`,
+            target.token,
+            false,
+          );
+        for (const serviceId of result.deferredServices)
+          report(
+            `service ${serviceId}: readiness deferred for reported plugin_held`,
+            target.token,
+            false,
+          );
+        report(
+          "Install the repacked plugins, then run ordinary verification against the original snapshot without VERIFY_LIVE_BOOTSTRAP_GATE before pinning machines or declaring maintenance complete.",
+          target.token,
+          false,
+        );
+      } else {
+        report(
+          `verified build ${expectedBuild}: retained inventory and required product checks passed`,
+          target.token,
+          false,
+        );
+      }
     }
   } catch (error) {
     report(

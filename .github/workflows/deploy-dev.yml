@@ -175,6 +175,8 @@ jobs:
     needs: [request]
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    outputs:
+      bootstrap_required: ${{ steps.installed.outputs.bootstrap_required }}
     env:
       SHA: ${{ needs.request.outputs.sha }}
     steps:
@@ -191,6 +193,7 @@ jobs:
           docker build --tag "installed-bundles:$SHA" \
             --build-arg MANIFOLD_VERSION --build-arg MANIFOLD_BUILD --build-arg MANIFOLD_CHANNEL .
       - name: Check the running instance's installed bundles without changing it
+        id: installed
         env:
           INSTALLED_BUNDLES_ORIGIN: ${{ vars.DEV_DEPLOY_URL }}
           INSTALLED_BUNDLES_TOKEN: ${{ secrets.DEV_INSTALLED_BUNDLES_TOKEN }}
@@ -301,10 +304,12 @@ jobs:
 
   verify-live:
     name: verify-live
-    needs: [request, deploy]
+    needs: [request, installed-bundles, deploy]
     if: always() && !cancelled() && needs.deploy.outputs.switch_started == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    outputs:
+      maintenance_required: ${{ steps.candidate.outputs.maintenance_required }}
     env:
       VERIFY_LIVE_ORIGIN: ${{ vars.DEV_DEPLOY_URL }}
       VERIFY_LIVE_TOKEN: ${{ secrets.DEV_INSTALLED_BUNDLES_TOKEN }}
@@ -319,8 +324,10 @@ jobs:
           name: verify-live-development-${{ github.run_id }}
           path: ${{ runner.temp }}
       - name: Verify the candidate's live state within five minutes
+        id: candidate
         env:
           EXPECTED_BUILD: ${{ needs.deploy.outputs.expected_build }}
+          VERIFY_LIVE_BOOTSTRAP_GATE: ${{ needs.request.outputs.rollback == 'false' && needs.installed-bundles.outputs.bootstrap_required == 'true' }}
         run: bun scripts/verify-live.ts verify "$RUNNER_TEMP/verify-live.json" "$EXPECTED_BUILD"
       - name: Restore the previous revision through the guarded receiver
         if: failure() || needs.deploy.result != 'success'
@@ -360,16 +367,27 @@ jobs:
         env:
           SWITCH_RESULT: ${{ needs.deploy.result }}
           VERIFY_RESULT: ${{ needs.verify-live.result }}
+          MAINTENANCE_REQUIRED: ${{ needs.verify-live.outputs.maintenance_required }}
         run: |
           if [ "$SWITCH_RESULT" != success ] || [ "$VERIFY_RESULT" != success ]; then
             echo "::error::Development deployment requires a successful switch and verify-live; got $SWITCH_RESULT and $VERIFY_RESULT"
             exit 1
           fi
+          if [ "$MAINTENANCE_REQUIRED" != true ] && [ "$MAINTENANCE_REQUIRED" != false ]; then
+            echo "::error::Development verification returned no explicit maintenance result; owner pin remains blocked"
+            exit 1
+          fi
+
+      - name: Continue development maintenance before pinning the owner
+        if: needs.verify-live.outputs.maintenance_required == 'true'
+        run: |
+          echo "::warning::Development $SHA requires plugin maintenance, not full-health acceptance. No preview-owner pin was dispatched. Install the named repacked plugins and run ordinary verify-live without VERIFY_LIVE_BOOTSTRAP_GATE before pinning."
+          printf '### Development maintenance required\n\nRevision `%s` passed only the one-deployment maintenance check. No preview-owner pin was dispatched. Install the repacked plugins named by verify-live, retain the pre-switch snapshot, and run ordinary `scripts/verify-live.ts verify PATH EXPECTED_BUILD` with `VERIFY_LIVE_BOOTSTRAP_GATE` unset. Only ordinary verification ends maintenance and permits the owner pin.\n\n' "$SHA" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Dispatch the preview owner pin
         # The release fleet follows production; this receiver follows ONLY the preview owner.
         # atyrode/dotfiles#687 must provide this target/revision contract and no-op when current.
-        if: env.GH_TOKEN != ''
+        if: needs.verify-live.outputs.maintenance_required == 'false' && env.GH_TOKEN != ''
         env:
           GH_TOKEN: ${{ secrets.DOTFILES_DISPATCH_TOKEN }}
         run: >-

@@ -1106,7 +1106,9 @@ export {
 } from "./http.ts";
 export {
   InstalledPluginRowSchema,
+  InstalledPluginStatesSchema,
   InstalledPluginsSnapshotSchema,
   type InstalledPluginRow,
+  type InstalledPluginStates,
   type InstalledPluginsSnapshot,
 } from "./installed-plugins.ts";

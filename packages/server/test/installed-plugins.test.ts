@@ -5,8 +5,11 @@ import { join } from "node:path";
 import {
   ActionOutcomeSchema,
   defaultRuntime,
+  HARDENED_CONTRACT_MINIMUM,
   HARDENED_CONTRACT_VERSION,
   InstalledPluginsSnapshotSchema,
+  InstalledPluginStatesSchema,
+  PluginsResponseSchema,
 } from "@manifold/protocol";
 import { AuthService } from "../src/auth.ts";
 import { loadConfig } from "../src/config.ts";
@@ -23,7 +26,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function fixture() {
+function fixture({ enabled = false, unstamped = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), "installed-export-test-"));
   roots.push(root);
   const dataDir = join(root, "source");
@@ -40,7 +43,7 @@ function fixture() {
   const bytes = Buffer.from(
     JSON.stringify({
       format: 1,
-      hardenedContract: HARDENED_CONTRACT_VERSION,
+      hardenedContract: unstamped ? undefined : HARDENED_CONTRACT_VERSION,
       manifest: {
         id: pluginId,
         version: "1.0.0",
@@ -68,8 +71,18 @@ function fixture() {
     actions: [],
     installer: { ...auth.credentialReference(owner), tokenId: "private-token-lineage" },
   });
-  store.setPluginEnabled(pluginId, false, owner.principal.id, 123);
-  return { root, dataDir, store, ownerKey, manager: manager.token, bytes, bundlePath, pluginId };
+  store.setPluginEnabled(pluginId, enabled, owner.principal.id, 123);
+  return {
+    root,
+    dataDir,
+    store,
+    ownerKey,
+    manager: manager.token,
+    bytes,
+    sha256,
+    bundlePath,
+    pluginId,
+  };
 }
 
 test("root export follows the action ladder and returns exact disabled bundle bytes without credentials or source secrets", async () => {
@@ -130,6 +143,67 @@ test("root export follows the action ladder and returns exact disabled bundle by
     } finally {
       copy.close();
     }
+  } finally {
+    await running.stop();
+  }
+});
+
+test("root installed metadata distinguishes a repack hold from explicit disablement", async () => {
+  // Legacy installed bytes have no contract stamp; the real assembly derives the hold.
+  const f = fixture({ enabled: true, unstamped: true });
+  f.store.close();
+  const running = await startServer({
+    config: loadConfig({
+      MANIFOLD_DATA_DIR: f.dataDir,
+      MANIFOLD_PORT: "0",
+      MANIFOLD_SPAWN_AGENT: "0",
+      MANIFOLD_OWNER_KEY: f.ownerKey,
+    }),
+    logger: silentLogger,
+    announce: false,
+  });
+  try {
+    const call = async (name: string, body: unknown = {}, token = f.ownerKey) => {
+      const response = await fetch(`${running.publicUrl}/api/actions/${name}`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      return ActionOutcomeSchema.parse(await response.json());
+    };
+    const rosterEntry = async () => {
+      const response = await fetch(`${running.publicUrl}/api/plugins`, {
+        headers: { authorization: `Bearer ${f.ownerKey}` },
+      });
+      return PluginsResponseSchema.parse(await response.json()).plugins.find(
+        (entry) => entry.manifest.id === f.pluginId,
+      );
+    };
+    const listInstalled = async () => {
+      const outcome = await call("engine.plugins.listInstalled");
+      if (!outcome.ok) throw new Error(outcome.denial.message);
+      return InstalledPluginStatesSchema.parse(outcome.result);
+    };
+    const heldRuntimeState = {
+      enabled: false,
+      held: { reason: "repack_required", minimum: HARDENED_CONTRACT_MINIMUM },
+    };
+    expect(await rosterEntry()).toMatchObject(heldRuntimeState);
+    expect(await call("engine.plugins.listInstalled", {}, f.manager)).toMatchObject({
+      ok: false,
+      denial: { rule: "forbidden" },
+    });
+    expect(await listInstalled()).toEqual({
+      plugins: [{ pluginId: f.pluginId, sha256: f.sha256, enabled: true }],
+    });
+
+    expect(
+      await call("engine.plugins.setEnabled", { id: f.pluginId, enabled: false }),
+    ).toMatchObject({ ok: true });
+    expect(await listInstalled()).toEqual({
+      plugins: [{ pluginId: f.pluginId, sha256: f.sha256, enabled: false }],
+    });
+    expect(await rosterEntry()).toMatchObject(heldRuntimeState);
   } finally {
     await running.stop();
   }
