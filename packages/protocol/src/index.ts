@@ -196,6 +196,8 @@ export {
   type JobResourceRequirements,
 } from "./job-resources.ts";
 export {
+  JobInferenceUsageTotalSchema,
+  type JobInferenceUsageTotal,
   JobLimitsSchema,
   MachineOperationLimitsSchema,
   jobLimits,

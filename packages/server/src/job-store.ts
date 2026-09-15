@@ -7,6 +7,7 @@ import type { AuthorityEvidence } from "./auth.ts";
 import {
   canonicalJobJson,
   JobLifecycleEventSchema,
+  JobInferenceUsageTotalSchema,
   JobRequestSchema,
   JobResultSchema,
   MachineHalfSchema,
@@ -14,6 +15,8 @@ import {
   type JobRequest,
   type JobResult,
   type JobJournalPage,
+  type JobInferenceCallEvent,
+  type JobInferenceUsageTotal,
   type JobLifecycleEvent,
   type JobPermit,
   type MachineHalf,
@@ -517,19 +520,87 @@ export class JobStore {
    * there.
    */
   appendJournal(jobId: string, seq: number, at: number, event: JobLifecycleEvent): void {
-    this.store.transaction(() => {
+    this.store.transaction(() => this.appendJournalRecord(jobId, seq, at, event));
+  }
+  /**
+   * Persist one accepted metered call and fold it into the whole-job total in the same
+   * transaction. A nullable row is a migration sentinel: its retained suffix is deliberately
+   * never promoted to an exact total.
+   */
+  appendInferenceCall(
+    jobId: string,
+    seq: number,
+    at: number,
+    event: JobInferenceCallEvent,
+  ): JobInferenceUsageTotal | null {
+    return this.store.transaction(() => {
+      const inserted = this.appendJournalRecord(jobId, seq, at, event);
+      const row = this.store.db
+        .query<{ usage: string | null }, [string]>(
+          "SELECT usage FROM machine_job_inference_usage WHERE job_id=?",
+        )
+        .get(jobId);
+      if (!inserted)
+        return row?.usage == null
+          ? null
+          : JobInferenceUsageTotalSchema.parse(JSON.parse(row.usage));
+      if (row?.usage === null) return null;
+      const previous =
+        row == null
+          ? {
+              calls: 0,
+              inputTokens: 0,
+              outputTokens: 0,
+              cachedInputTokens: 0,
+              costMicros: 0,
+              lastModel: event.model,
+            }
+          : JobInferenceUsageTotalSchema.parse(JSON.parse(row.usage));
+      const add = (spent: number, more: number) => Math.min(spent + more, Number.MAX_SAFE_INTEGER);
+      const total: JobInferenceUsageTotal = {
+        calls: add(previous.calls, 1),
+        inputTokens: add(previous.inputTokens, event.inputTokens),
+        outputTokens: add(previous.outputTokens, event.outputTokens),
+        cachedInputTokens: add(previous.cachedInputTokens, event.cachedInputTokens),
+        costMicros: add(previous.costMicros, event.costMicros),
+        lastModel: event.model,
+      };
+      this.store.db
+        .query(
+          `INSERT INTO machine_job_inference_usage(job_id,usage) VALUES(?,?)
+           ON CONFLICT(job_id) DO UPDATE SET usage=excluded.usage`,
+        )
+        .run(jobId, canonicalJobJson(total));
+      return total;
+    });
+  }
+  private appendJournalRecord(
+    jobId: string,
+    seq: number,
+    at: number,
+    event: JobLifecycleEvent,
+  ): boolean {
+    const inserted =
       this.store.db
         .query(
           "INSERT INTO machine_job_journal(job_id,seq,at,event) VALUES(?,?,?,?) ON CONFLICT(job_id,seq) DO NOTHING",
         )
-        .run(jobId, seq, at, canonicalJobJson(event));
-      this.store.db
-        .query(
-          `DELETE FROM machine_job_journal WHERE job_id=? AND seq<=COALESCE(
-           (SELECT seq FROM machine_job_journal WHERE job_id=? ORDER BY seq DESC LIMIT 1 OFFSET ?),-1)`,
-        )
-        .run(jobId, jobId, MAX_JOB_JOURNAL_EVENTS);
-    });
+        .run(jobId, seq, at, canonicalJobJson(event)).changes === 1;
+    this.store.db
+      .query(
+        `DELETE FROM machine_job_journal WHERE job_id=? AND seq<=COALESCE(
+         (SELECT seq FROM machine_job_journal WHERE job_id=? ORDER BY seq DESC LIMIT 1 OFFSET ?),-1)`,
+      )
+      .run(jobId, jobId, MAX_JOB_JOURNAL_EVENTS);
+    return inserted;
+  }
+  inferenceUsage(jobId: string): JobInferenceUsageTotal | null {
+    const row = this.store.db
+      .query<{ usage: string | null }, [string]>(
+        "SELECT usage FROM machine_job_inference_usage WHERE job_id=?",
+      )
+      .get(jobId);
+    return row?.usage == null ? null : JobInferenceUsageTotalSchema.parse(JSON.parse(row.usage));
   }
   journal(jobId: string, after: number, limit: number): JobJournalPage {
     const rows = this.store.db
@@ -549,6 +620,7 @@ export class JobStore {
     }));
     return {
       jobId,
+      inferenceUsage: this.inferenceUsage(jobId),
       events,
       firstSeq: retained?.seq ?? null,
       nextAfter: events.length === limit ? (events.at(-1)?.seq ?? null) : null,
@@ -556,11 +628,18 @@ export class JobStore {
   }
   /** Purge destroys a plugin's retained job metadata with the rest of its bounded state. */
   purgeJournal(pluginId: string): void {
-    this.store.db
-      .query(
-        "DELETE FROM machine_job_journal WHERE job_id IN (SELECT job_id FROM machine_jobs WHERE plugin_id=?)",
-      )
-      .run(pluginId);
+    this.store.transaction(() => {
+      this.store.db
+        .query(
+          "DELETE FROM machine_job_journal WHERE job_id IN (SELECT job_id FROM machine_jobs WHERE plugin_id=?)",
+        )
+        .run(pluginId);
+      this.store.db
+        .query(
+          "DELETE FROM machine_job_inference_usage WHERE job_id IN (SELECT job_id FROM machine_jobs WHERE plugin_id=?)",
+        )
+        .run(pluginId);
+    });
   }
   installation(machineId: string, pluginId: string, revision?: string): JobInstallation | null {
     const r = this.store.db

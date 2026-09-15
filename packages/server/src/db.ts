@@ -9,7 +9,7 @@ import { JOB_SCHEDULE_SCHEMA_SQL } from "./job-schedules.ts";
 import { migrateToDurableAgents } from "./migrate-agents.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 39;
+export const SCHEMA_VERSION = 40;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
@@ -906,6 +906,30 @@ UPDATE terminals SET run_id = (
 ) WHERE run_id IS NULL;
 INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','39');
 `,
+  /**
+   * Running inference totals cannot be reconstructed from the bounded lifecycle journal.
+   * A nullable row is also the explicit incomplete sentinel for jobs that were already
+   * running when this authority first existed: later calls must not turn their suffix into
+   * a purported whole-job total.
+   */
+  40: {
+    backup: false,
+    apply(db) {
+      db.exec(`
+CREATE TABLE IF NOT EXISTS machine_job_inference_usage(
+  job_id TEXT PRIMARY KEY,
+  usage TEXT CHECK(usage IS NULL OR json_valid(usage))
+);
+`);
+      const columns = db.query<{ name: string }, []>("PRAGMA table_info(machine_jobs)").all();
+      if (columns.some((column) => column.name === "state"))
+        db.exec(`
+INSERT OR IGNORE INTO machine_job_inference_usage(job_id,usage)
+SELECT job_id,NULL FROM machine_jobs WHERE state='started';
+`);
+      db.exec("INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','40')");
+    },
+  },
 };
 
 interface TableRow {

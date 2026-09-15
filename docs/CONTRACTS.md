@@ -3628,11 +3628,18 @@ provider handling and postconditions belong to plugins, never the common floor.
   proxy in one job so each pre-call check sees one authoritative total. It never cuts a call
   mid-stream: a call that would pass a ceiling is refused `service_ceiling_exceeded` (HTTP 429, no
   `Retry-After`) and a cost ceiling over an unpriced model is refused `service_price_unknown`
-  (HTTP 422), while a call already in flight is relayed to its end. Refusals are not calls. Each
-  call appends
-  `inference_call` and each refusal `inference_ceiling` to the job's journal, admitted by the same
-  owner facts as a `state` event and only while the job is `started`; the settled record's
-  `usage.inference` carries the totals. Spend is read from those records, never from what the
+  (HTTP 422), while a call already in flight is relayed to its end. Refusals are not calls.
+  Each accepted call atomically appends `inference_call` to the 128-event lifecycle ring and
+  advances the server's durable aggregate outside that ring; each refusal appends
+  `inference_ceiling`. Both use the same owner facts as a `state` event and are admitted only
+  while the job is `started`. The aggregate is
+  `{ calls, inputTokens, outputTokens, cachedInputTokens, costMicros, lastModel }`, is authoritative
+  for every call the server accepted even after history rolls off, and is removed when the job is
+  purged. A new job becomes exact with its first accepted call. Nullable aggregate state means the
+  server has no complete total: either no call has yet been accepted, or migration found the job
+  already started and permanently marked its aggregate legacy/incomplete rather than publishing a
+  partial post-upgrade sum. The owner's settled `usage.inference` retains its existing five-counter
+  result shape and authority. Spend is read from these server/owner records, never from what the
   workload reports about itself.
 - **Output and privacy.** `child_exit` is execution observation with `outputsSealed: false`,
   not a final result, writer-drain acknowledgement or closure proof. Sealing waits for the
@@ -3691,12 +3698,17 @@ provider handling and postconditions belong to plugins, never the common floor.
 - **Follow and retention.** The public `PluginJobContext` exported from `@manifold/plugin`
   types `ctx.jobs`; `ctx.jobs.follow(node, receive)` returns a watermark snapshot and a
   close handle. `GuestJobs.follow` supplies the asynchronous contract across isolation.
-  The snapshot includes state/result, `seq`, `firstSeq`, retained events and explicit
-  `unavailable` ranges. Replay is bounded to 128 events/256 KiB per job, with bounded
-  aggregate retention; it is not a durable transcript. Live updates carry monotonic
-  sequence or an explicit close (`authority_revoked`, `gap`, `limit`, `consumer_failed`,
-  `closed`). A consumer must surface unavailable data rather than infer continuity.
-  Follow is authority-bearing and delivery is rechecked; raw bytes are not public events.
+  The snapshot includes state/result, `seq`, `firstSeq`, retained events, explicit `unavailable`
+  ranges and nullable `inferenceUsage`, read from the durable server aggregate rather than rebuilt
+  from retained calls. Replay is bounded to 128 events/256 KiB per job, with bounded aggregate
+  retention; it is not a durable transcript. Live lifecycle updates carry monotonic sequence or an
+  explicit close (`authority_revoked`, `gap`, `limit`, `consumer_failed`, `closed`). Immediately
+  after each accepted `inference_call` lifecycle update, a follower receives exactly one
+  non-sequenced `{ type: "inference_usage", inferenceUsage }` current-value update. It neither
+  consumes lifecycle sequence nor enters lifecycle replay; a reconnect obtains the persisted
+  current value in its snapshot. A consumer must surface unavailable lifecycle data rather than
+  infer continuity. Follow is authority-bearing and delivery is rechecked; raw bytes are not
+  public events.
   Durable job/result identity and output references resolve through their original immutable
   installation declaration across replacement and hub restart, not through the newest
   artifact. Access still requires current A5 authority and that original revision's exact
@@ -3990,7 +4002,7 @@ to this hub with least-privilege credentials and provider-appropriate integrity 
 controls. Restoring from storage writable by an untrusted party requires an authenticity mechanism
 whose verification secret is kept outside that store; Manifold does not currently provide one.
 
-Schema version 38 (10 added `plugin_kv`; 11 is the lexicon cut; 12 is cross-instance sharing
+Schema version 40 (10 added `plugin_kv`; 11 is the lexicon cut; 12 is cross-instance sharing
 — `shares`, `share_tickets`, `dials` and `principals.origin`; 13 is the permission waterfall's
 `grants` substrate; 14 is the trace ledger — five nullable columns on `events`; 15 is credential
 expiry — `tokens.expires_at`; 16 retires the grant rows of already-revoked tokens, the same rule
@@ -4021,6 +4033,11 @@ current `native_instance_services.credential` principal references and historica
 `token_minted { subjectPrincipalId, serviceId, machineId }` events. It preserves unrelated
 agents and humans, credential values/hashes, expiry and revocation state; retained mint events
 continue to identify credentials after a service replaces them.
+Migration 40 adds `machine_job_inference_usage`, the single whole-job aggregate outside the
+lifecycle ring. It inserts a nullable legacy/incomplete sentinel only for jobs already in
+`started` state, because no migration can reconstruct calls that the ring discarded; later calls
+must not turn that suffix into a purported total. Other existing and all new jobs create their
+exact aggregate on their first accepted call.
 Migrations 12, 14, 15, 17, 18 and 20 are plain SQL for the same reason: none touches a stored
 document and existing rows need no backfill, since absence already means the right thing — a
 NULL origin means "this instance", a NULL `door` means "this row is an event, not a trace", a

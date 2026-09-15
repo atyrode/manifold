@@ -60,6 +60,7 @@ import {
   type MachineOperation,
   type JobInputBinding,
   type JobFollowEvent,
+  type JobInferenceUsageTotal,
   type JobJournalPage,
   type JobOutputPage,
   type JobAuthority,
@@ -2661,6 +2662,7 @@ export class JobService {
     jobId: string;
     seq: number;
     event: JobFollowEvent;
+    inferenceUsage: JobInferenceUsageTotal | null;
     reason: "gap" | "limit" | null;
   }[] = [];
   private publishingFollow = false;
@@ -2697,6 +2699,7 @@ export class JobService {
         jobId: node.jobId,
         state: job.state,
         result: structuredClone(job.result),
+        inferenceUsage: this.jobs.inferenceUsage(node.jobId),
         seq: follower.seq,
         firstSeq,
         events: frames.map(({ seq, event }) => ({ seq, event: structuredClone(event) })),
@@ -2783,15 +2786,26 @@ export class JobService {
     this.store.db
       .query("UPDATE machine_jobs SET event_seq=?,output_seq=? WHERE job_id=?")
       .run(seq, event.type === "output" ? event.seq : previous.output_seq, jobId);
+    const inferenceUsage =
+      event.type === "inference_call"
+        ? this.jobs.appendInferenceCall(jobId, seq, this.runtime.now(), event)
+        : null;
+    if (event.type !== "output" && event.type !== "inference_call")
+      this.jobs.appendJournal(jobId, seq, this.runtime.now(), event);
     this.retainJobEvent(jobId, seq, event, reason !== null);
-    if (event.type !== "output") this.jobs.appendJournal(jobId, seq, this.runtime.now(), event);
     if (event.type === "result") this.wakeOwner(jobId);
     if (this.followQueue.length >= 64) {
       for (const follower of [...this.followers]) this.closeFollower(follower, "limit");
       this.followQueue.length = 0;
       return;
     }
-    this.followQueue.push({ jobId, seq, event: structuredClone(event), reason });
+    this.followQueue.push({
+      jobId,
+      seq,
+      event: structuredClone(event),
+      inferenceUsage,
+      reason,
+    });
     if (this.publishingFollow) return;
     this.publishingFollow = true;
     try {
@@ -2821,6 +2835,11 @@ export class JobService {
           follower.seq = next.seq;
           try {
             follower.receive({ type: "event", seq: next.seq, event: structuredClone(next.event) });
+            if (next.inferenceUsage !== null && this.followers.has(follower))
+              follower.receive({
+                type: "inference_usage",
+                inferenceUsage: structuredClone(next.inferenceUsage),
+              });
           } catch {
             this.closeFollower(follower, "consumer_failed");
           }

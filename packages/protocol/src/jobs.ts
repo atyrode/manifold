@@ -45,6 +45,7 @@ export function jobOwnerSupports(protocolVersion: number, capability: JobOwnerCa
 const id = z.string().min(1).max(128);
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
 const count = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+const inferenceModel = z.string().min(1).max(256);
 const component = z
   .string()
   .regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/)
@@ -90,6 +91,12 @@ export const JobInferenceUsageSchema = z.strictObject({
   costMicros: count,
 });
 export type JobInferenceUsage = z.infer<typeof JobInferenceUsageSchema>;
+/** The durable exact aggregate for a non-legacy job, including its most recently metered model. */
+export const JobInferenceUsageTotalSchema = z.strictObject({
+  ...JobInferenceUsageSchema.shape,
+  lastModel: inferenceModel,
+});
+export type JobInferenceUsageTotal = z.infer<typeof JobInferenceUsageTotalSchema>;
 /**
  * An operation declares more than one job carries: `concurrentJobs` bounds how many of this
  * operation's jobs one machine runs at once. The operation's author bounds that fan, never the
@@ -1047,7 +1054,7 @@ export const JobInferenceCallEventSchema = z.strictObject({
   ownerGeneration: count,
   serviceId: id,
   operationId: id,
-  model: z.string().min(1).max(256),
+  model: inferenceModel,
   inputTokens: count,
   outputTokens: count,
   cachedInputTokens: count,
@@ -1212,6 +1219,7 @@ export const JobFollowSnapshotSchema = z.strictObject({
   jobId: id,
   state: JobStateSchema,
   result: JobResultSchema.nullable(),
+  inferenceUsage: JobInferenceUsageTotalSchema.nullable(),
   seq: count,
   firstSeq: count.nullable(),
   events: z
@@ -1222,6 +1230,10 @@ export const JobFollowSnapshotSchema = z.strictObject({
 export type JobFollowSnapshot = z.infer<typeof JobFollowSnapshotSchema>;
 export const JobFollowUpdateSchema = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("event"), seq: count, event: JobFollowEventSchema }),
+  z.strictObject({
+    type: z.literal("inference_usage"),
+    inferenceUsage: JobInferenceUsageTotalSchema,
+  }),
   z.strictObject({
     type: z.literal("closed"),
     reason: z.enum(["authority_revoked", "gap", "limit", "consumer_failed", "closed"]),
@@ -1250,6 +1262,7 @@ export type JobLifecycleEvent = z.infer<typeof JobLifecycleEventSchema>;
 export const MAX_JOB_JOURNAL_EVENTS = 128;
 export const JobJournalPageSchema = z.strictObject({
   jobId: id,
+  inferenceUsage: JobInferenceUsageTotalSchema.nullable(),
   events: z
     .array(z.strictObject({ seq: count, at: count, event: JobLifecycleEventSchema }))
     .max(MAX_JOB_JOURNAL_EVENTS),

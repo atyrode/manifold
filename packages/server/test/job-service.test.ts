@@ -4200,7 +4200,7 @@ describe("metered inference journal and ceilings", () => {
       });
       expect(
         updates.map((update) => (update.type === "event" ? update.event.type : update.type)),
-      ).toEqual(["inference_call", "inference_ceiling"]);
+      ).toEqual(["inference_call", "inference_usage", "inference_ceiling"]);
       const delivered = updates[0];
       if (delivered?.type !== "event" || delivered.event.type !== "inference_call")
         throw new Error("metered call missing from the follow stream");
@@ -4220,6 +4220,97 @@ describe("metered inference journal and ceilings", () => {
       ).toEqual(["state", "inference_call", "inference_ceiling", "result"]);
     } finally {
       f.store.close();
+    }
+  });
+
+  test("five hundred metered calls retain an exact durable total outside the bounded journal", () => {
+    const dir = mkdtempSync(join(tmpdir(), "job-inference-usage-"));
+    const path = join(dir, "hub.sqlite");
+    const f = fixture(path);
+    try {
+      const request = started(f);
+      consent(f, "jobs:read");
+      const total = (calls: number) => ({
+        calls,
+        inputTokens: (calls * (calls + 1)) / 2,
+        outputTokens: (calls * (calls + 1)) / 2 + calls,
+        cachedInputTokens: Math.floor((calls * calls) / 4),
+        costMicros: calls * (calls + 1),
+        lastModel: `openai/gpt-${calls}`,
+      });
+      const report = (index: number) =>
+        f.service.event(
+          f.channel,
+          call(f, request, {
+            model: `openai/gpt-${index}`,
+            inputTokens: index,
+            outputTokens: index + 1,
+            cachedInputTokens: Math.floor(index / 2),
+            costMicros: index * 2,
+          }),
+        );
+      for (let index = 1; index <= 400; index++) report(index);
+
+      // Recreate the service so the late follower can only learn the total from durable state.
+      f.service = new JobService(f.store, f.auth, f.runtime);
+      f.service.setLifecycleRecorder((record) => f.store.appendTrace(record));
+      f.service.setManifestResolver((id) => (id === pluginId ? machine : null));
+      f.commands.length = 0;
+      prove(f);
+      const updates: JobFollowUpdate[] = [];
+      const follow = f.service.follow(f.root, node(f), (update) => updates.push(update));
+      expect(follow.snapshot.inferenceUsage).toEqual(total(400));
+
+      report(401);
+      const firstCall = updates[0];
+      if (firstCall?.type !== "event" || firstCall.event.type !== "inference_call")
+        throw new Error("metered call 401 missing from the follow stream");
+      expect(firstCall.event.model).toBe("openai/gpt-401");
+      expect(updates[1]).toEqual({
+        type: "inference_usage",
+        inferenceUsage: total(401),
+      });
+      expect(updates).toHaveLength(2);
+
+      for (let index = 402; index <= 500; index++) report(index);
+      expect(updates).toHaveLength(200);
+      for (let offset = 0; offset < 100; offset++) {
+        const index = offset + 401;
+        const delivered = updates[offset * 2];
+        if (delivered?.type !== "event" || delivered.event.type !== "inference_call")
+          throw new Error(`metered call ${index} missing or out of order`);
+        expect(delivered.event.model).toBe(`openai/gpt-${index}`);
+        expect(updates[offset * 2 + 1]).toEqual({
+          type: "inference_usage",
+          inferenceUsage: total(index),
+        });
+      }
+      follow.close();
+
+      const exact = total(500);
+      const settledUsage = {
+        calls: exact.calls,
+        inputTokens: exact.inputTokens,
+        outputTokens: exact.outputTokens,
+        cachedInputTokens: exact.cachedInputTokens,
+        costMicros: exact.costMicros,
+      };
+      settle(f, request, settledUsage);
+      const page = f.service.journal(f.root, node(f), 0, 128);
+      expect(page.events).toHaveLength(128);
+      expect(page.firstSeq).toBe(375);
+      expect(page.events[0]).toMatchObject({
+        seq: 375,
+        event: { type: "inference_call", model: "openai/gpt-374" },
+      });
+      expect(page.inferenceUsage).toEqual(exact);
+      expect(f.service.status(f.root, node(f)).result?.usage?.inference).toEqual(settledUsage);
+      expect(f.service.status(f.root, node(f)).result?.usage?.inference).not.toHaveProperty(
+        "lastModel",
+      );
+    } finally {
+      f.store.close();
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 
