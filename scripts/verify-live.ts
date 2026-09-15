@@ -43,9 +43,7 @@ export const LiveSnapshotSchema = z.strictObject({
   machines: z.array(id),
   installations: z.array(installationSchema),
   services: z.array(serviceSchema),
-  plugins: z.array(
-    z.strictObject({ pluginId: id, enabled: z.boolean(), readDoor: id.nullable() }),
-  ),
+  plugins: z.array(z.strictObject({ pluginId: id, enabled: z.boolean(), readDoor: id.nullable() })),
 });
 export type LiveSnapshot = z.infer<typeof LiveSnapshotSchema>;
 export interface LiveTarget {
