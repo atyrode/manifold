@@ -130,6 +130,7 @@ interface OwnedJob {
   startupCleanup: (() => Promise<void>) | undefined;
   emptyObserved: boolean;
   context: JobContext | null;
+  contextActive: boolean;
   locations: Map<string, JobLocation>;
   inputFiles: LinuxJobBind[];
   boundInputs: JobBoundInput[];
@@ -2216,6 +2217,10 @@ export class MachineJobOwner {
         service: (call, signal) => this.jobServiceCall(job, call, signal),
         serviceReady: (port) => this.announceServiceReady(job, port),
         progress: (frame) => job.progress.report(frame),
+        activity: () => {
+          job.contextActive = true;
+          this.closeRetiredContext(job);
+        },
         failure: (reason) => {
           const pending = [...(job.context?.invocations.values() ?? [])].some(
             (invocation) =>
@@ -2381,7 +2386,7 @@ export class MachineJobOwner {
         .then((result) => this.finish(job, result, parent))
         .catch(() => this.interrupt(job));
       if (job.cancelRequested) await job.handle?.cancel();
-      else if (job.retirement?.signal.aborted) job.context.close();
+      else this.closeRetiredContext(job);
     } catch (error) {
       if (!spawnAttempted || (error instanceof LinuxJobRefusal && error.workloadEmpty))
         job.resolveEmpty();
@@ -2577,15 +2582,19 @@ export class MachineJobOwner {
     job.progress.close();
   }
 
+  private closeRetiredContext(job: OwnedJob): void {
+    if (!job.contextActive || !job.retirement?.signal.aborted) return;
+    job.context?.closeAfterWrites();
+  }
+
   private async retire(job: OwnedJob): Promise<void> {
     if (!job.retirement) throw new Error("retire_requires_instance_service");
     if (job.cancelRequested || job.retirement.signal.aborted || job.emptyObserved) return;
     job.retirement.abort();
     const closed = this.closeServices(job, true);
-    // During launch the runtime still borrows childFd. The launch continuation closes
-    // the channel after handoff; closing it here could turn retirement into a failed
-    // native launch and enter forceful containment.
-    if (job.handle) job.context?.close();
+    // An inactive context remains open so the workload's first valid frame receives the
+    // retirement refusal. Once a frame has been handled, close only after its reply is queued.
+    this.closeRetiredContext(job);
     await closed;
     // finish() alone observes natural exit and releases writers/service exclusion.
     // In particular, no timeout and no wait for job.empty may block a later cancel.
@@ -2671,6 +2680,7 @@ export class MachineJobOwner {
       startupCleanup: undefined,
       emptyObserved: false,
       context: null,
+      contextActive: false,
       locations: new Map(),
       inputFiles: [],
       boundInputs: [],
