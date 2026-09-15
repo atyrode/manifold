@@ -296,6 +296,7 @@ async function probeHost(base: Fixture): Promise<PluginHost> {
       base.runtime,
       assemblyPlacementVocabulary(() => []),
       assemblyItemNouns(() => []),
+      testTileTrees,
     ),
     {
       isOnline: () => false,

@@ -237,6 +237,12 @@ export class PlaceExecutor {
      * hold a plugin's kind.
      */
     private readonly elementNoun: (kind: string) => string,
+    /**
+     * The same declaration-derived tile-tree predicate RoomManager and TerminalBroker use.
+     * Production derives it from `vocabulary`; narrow fixtures may supply their assembled
+     * predicate while deliberately omitting unrelated contributed item traits.
+     */
+    private readonly tileTrees: TileTreeDisciplines = assemblyTileTrees(vocabulary),
   ) {}
 
   /**
@@ -366,6 +372,11 @@ export class PlaceExecutor {
     return itemTraitsFor(kind, this.lookup()).homed === "on_claim";
   }
 
+  /** Whether a persisted discipline declares containers addressable as tile trees. */
+  private holdsTileTree(discipline: ContainerDiscipline | null): discipline is ContainerDiscipline {
+    return discipline !== null && this.tileTrees(discipline);
+  }
+
   /**
    * What a composition of ONE holds, with the terminal id when that item is a terminal. The
    * algebra only needs the classification; the executor also needs the terminal, and reading
@@ -377,7 +388,7 @@ export class PlaceExecutor {
     const room = this.rooms.get(containerId);
     if (room === null) return null;
     const census = room.census();
-    if (census.discipline !== "composition") return null;
+    if (!this.holdsTileTree(census.discipline)) return null;
     const solo = censusSolo(census);
     if (solo === null) return null;
     return {
@@ -431,13 +442,15 @@ export class PlaceExecutor {
         };
       }
       case "tile": {
+        const discipline = this.store.getContainer(ref.containerId)?.discipline ?? null;
+        if (!this.holdsTileTree(discipline)) return "not_found";
         const tile = this.rooms.get(ref.containerId)?.tileLayout()?.[ref.tileId];
         if (tile === undefined || tile.dir !== null) return "not_found";
         const occupant = tile.ref;
         const terminalId = occupant?.kind === "terminal" ? occupant.terminalId : null;
         return {
           containerId: ref.containerId,
-          discipline: "composition",
+          discipline,
           addressed: ref.tileId,
           terminalId,
           homeId: terminalId === null ? null : ref.containerId,
@@ -562,7 +575,7 @@ export class PlaceExecutor {
    */
   private deleteIfEmptied(containerId: string): void {
     const container = this.store.getContainer(containerId);
-    if (container === null || container.discipline !== "composition") return;
+    if (container === null || !this.holdsTileTree(container.discipline)) return;
     const room = this.rooms.get(containerId);
     if (room === null || room.census().items.length > 0) return;
     this.deleteContainer(containerId);
@@ -623,6 +636,8 @@ export class PlaceExecutor {
     tileId: string,
     ref: PlacementRef,
   ): EvictedOccupant | PlaceOutcome {
+    const discipline = this.store.getContainer(containerId)?.discipline ?? null;
+    if (!this.holdsTileTree(discipline)) return { status: "failed", failure: "conflict" };
     const occupant = composition.tileLayout()?.[tileId]?.ref ?? null;
     // An empty leaf holds no item, so there is nothing to move aside and the caller was
     // asking about a spot that is not actually taken.
@@ -668,7 +683,7 @@ export class PlaceExecutor {
         .terminalLabel(occupant.terminalId, "terminal")
         .slice(0, MAX_CONTAINER_NAME),
       createdAt: this.runtime.now(),
-      discipline: "composition",
+      discipline,
     });
     const home = this.rooms.get(homeId);
     const leafId = home?.placeTerminalTile(occupant.terminalId, null, null) ?? null;
@@ -975,7 +990,7 @@ export class PlaceExecutor {
           answers `not_swappable`: only the canvas door does.
          */
         const seated =
-          source.discipline === "composition" &&
+          this.holdsTileTree(source.discipline) &&
           source.containerId !== null &&
           source.addressed !== null;
         if (seated) {
@@ -1066,11 +1081,13 @@ export class PlaceExecutor {
     }
     const home = this.rooms.get(source.homeId);
     if (home === null) return null;
+    const discipline = this.store.getContainer(source.homeId)?.discipline ?? null;
+    if (!this.holdsTileTree(discipline)) return null;
     const leafId = terminalLeafIds(home.tileLayout(), source.terminalId)[0] ?? null;
     if (leafId === null) return null;
     return {
       containerId: source.homeId,
-      discipline: "composition",
+      discipline,
       addressed: leafId,
       terminalId: source.terminalId,
       homeId: source.homeId,
@@ -1164,7 +1181,7 @@ export class PlaceExecutor {
   ): PlaceOutcome {
     const fromContainerId = source.containerId;
     const fromTileId = source.addressed;
-    if (source.discipline !== "composition" || fromContainerId === null || fromTileId === null) {
+    if (!this.holdsTileTree(source.discipline) || fromContainerId === null || fromTileId === null) {
       return {
         status: "denied",
         denial: { rule: "not_swappable", ref, container: { kind: "composition", containerId } },
@@ -1489,6 +1506,8 @@ export class PlaceExecutor {
       return { status: "failed", failure: "not_found" };
     }
 
+    const discipline = this.store.getContainer(targetHomeId)?.discipline ?? null;
+    if (!this.holdsTileTree(discipline)) return { status: "failed", failure: "conflict" };
     const compositionId = this.runtime.newId();
     const name = `${this.refLabel(targetSolo.item, {
       ...NO_SOURCE,
@@ -1499,7 +1518,7 @@ export class PlaceExecutor {
       id: compositionId,
       name: name.slice(0, MAX_CONTAINER_NAME),
       createdAt: this.runtime.now(),
-      discipline: "composition",
+      discipline,
     });
     const composition = this.rooms.get(compositionId);
     const rootTileId = composition?.placeTile(targetRef, null, null) ?? null;
@@ -1777,7 +1796,7 @@ export class PlaceExecutor {
   removeTile(containerId: string, tileId: string): "ok" | PlaceFailure {
     const container = this.store.getContainer(containerId);
     if (container === null) return "not_found";
-    if (container.discipline !== "composition") return "conflict";
+    if (!this.holdsTileTree(container.discipline)) return "conflict";
     const room = this.rooms.get(containerId);
     if (room === null) return "not_found";
     const tile = room.tileLayout()?.[tileId];
@@ -1871,7 +1890,7 @@ export class PlaceExecutor {
    */
   retireHome(containerId: string): void {
     const container = this.store.getContainer(containerId);
-    if (container === null || container.discipline !== "composition") return;
+    if (container === null || !this.holdsTileTree(container.discipline)) return;
     const room = this.rooms.get(containerId);
     if (room === null || room.census().items.length > 0) return;
     this.deleteContainer(containerId);

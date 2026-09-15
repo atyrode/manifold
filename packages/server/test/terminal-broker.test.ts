@@ -79,6 +79,7 @@ function brokerSetup(terminalExecution: MachineChannel["terminalExecution"] = "u
       runtime,
       assemblyPlacementVocabulary(() => []),
       assemblyItemNouns(() => []),
+      testTileTrees,
     ),
   );
   const enrollment = auth.enrollMachine("fake", root);
