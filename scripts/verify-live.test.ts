@@ -59,6 +59,10 @@ export function liveFixture(beforeRequest?: () => void) {
     installationEnabled: true,
     serviceState: "ready" as InstanceServiceDescription["state"],
     serviceEnabled: true,
+    serviceReason: null as string | null,
+    serviceConnected: true,
+    servicePluginId: pluginId,
+    serviceMachineId: machineId,
     pluginPresent: true,
     readDoorPresent: true,
     readDoorCaps: [`${pluginId}:read`] as ActionSummary["caps"],
@@ -81,17 +85,17 @@ export function liveFixture(beforeRequest?: () => void) {
   const owner = { machineId, name: "Fixture owner", online: true };
   const service = (): InstanceServiceDescription => ({
     serviceId,
-    owner,
+    owner: { ...owner, machineId: state.serviceMachineId },
     defaultOwner: owner,
     configuration: {
       revision: "service-before",
-      pluginId,
+      pluginId: state.servicePluginId,
       enabled: state.serviceEnabled,
       policySha256: hash,
     },
-    connected: true,
+    connected: state.serviceConnected,
     state: state.serviceState,
-    reason: state.serviceState === "ready" ? null : "cancelled",
+    reason: state.serviceState === "ready" ? null : (state.serviceReason ?? "cancelled"),
   });
   const readAction = () =>
     action(
@@ -294,12 +298,15 @@ test("CLI snapshots only safe inventory, reads it back, and verifies the switche
   const root = mkdtempSync(join(tmpdir(), "verify-live-"));
   const path = join(root, "snapshot.json");
   const summary = join(root, "summary");
-  const run = async (args: string[]) => {
+  const outputPath = join(root, "outputs");
+  const run = async (args: string[], bootstrapGate = false) => {
     const child = Bun.spawn([process.execPath, join(import.meta.dir, "verify-live.ts"), ...args], {
       env: {
         ...process.env,
         VERIFY_LIVE_ORIGIN: fixture.target.origin,
         VERIFY_LIVE_TOKEN: fixture.target.token,
+        VERIFY_LIVE_BOOTSTRAP_GATE: String(bootstrapGate),
+        GITHUB_OUTPUT: outputPath,
         GITHUB_STEP_SUMMARY: summary,
       },
       stdout: "pipe",
@@ -326,6 +333,19 @@ test("CLI snapshots only safe inventory, reads it back, and verifies the switche
     expect((await run(["verify", path, fixture.state.build])).code).toBe(0);
     expect(readFileSync(summary, "utf8")).toContain("&lt;em&gt;");
     expect(readFileSync(summary, "utf8")).not.toContain("<em>");
+    fixture.state.readDoorPresent = false;
+    fixture.state.pluginHeld = { reason: "repack_required", minimum: 2 };
+    fixture.state.serviceState = "unavailable";
+    fixture.state.serviceReason = "plugin_held";
+    const maintenance = await run(["verify", path, fixture.state.build], true);
+    expect(maintenance.code).toBe(0);
+    expect(maintenance.output).not.toContain(fixture.target.token);
+    expect(readFileSync(outputPath, "utf8")).toMatch(/maintenance_required=true\n$/);
+    fixture.state.pluginHeld = null;
+    fixture.state.readDoorPresent = true;
+    fixture.state.serviceState = "ready";
+    expect((await run(["verify", path, fixture.state.build])).code).toBe(0);
+    expect(readFileSync(outputPath, "utf8")).toMatch(/maintenance_required=false\n$/);
     expect(fixture.state.writes).toBe(0);
   } finally {
     await fixture.close();
@@ -425,6 +445,84 @@ test("a plugin without an argument-less read door is verified by its roster, nev
       /plugin example.live.*missing plugin inventory/,
     );
     expect(fixture.state.writes).toBe(0);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("maintenance defers only the repack hold and ends only after ordinary health returns", async () => {
+  const fixture = liveFixture();
+  try {
+    const before = await snapshotLive(fixture.target);
+    fixture.state.build = "1.1.0";
+    fixture.state.readDoorPresent = false;
+    fixture.state.pluginHeld = { reason: "repack_required", minimum: 2 };
+    fixture.state.serviceState = "unavailable";
+    fixture.state.serviceReason = "plugin_held";
+    await expect(pollLive(fixture.target, before, "1.1.0", shortPoll)).rejects.toThrow(
+      LiveVerificationError,
+    );
+    expect(
+      await pollLive(fixture.target, before, "1.1.0", { ...shortPoll, bootstrapGate: true }),
+    ).toEqual({
+      heldPlugins: [{ pluginId, minimum: 2 }],
+      deferredServices: [serviceId],
+    });
+    fixture.state.pluginHeld = null;
+    fixture.state.readDoorPresent = true;
+    await expect(pollLive(fixture.target, before, "1.1.0", shortPoll)).rejects.toThrow(
+      LiveVerificationError,
+    );
+    fixture.state.serviceState = "ready";
+    expect(await pollLive(fixture.target, before, "1.1.0", shortPoll)).toEqual({
+      heldPlugins: [],
+      deferredServices: [],
+    });
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("maintenance cannot excuse unrelated failures or changed native identities", async () => {
+  const fixture = liveFixture();
+  const held = {
+    build: "1.1.0",
+    readDoorPresent: false,
+    pluginHeld: { reason: "repack_required", minimum: 2 },
+    pluginLifecycle: "ok" as const,
+    pluginEnabled: true,
+    serviceState: "unavailable" as const,
+    serviceReason: "plugin_held",
+    serviceEnabled: true,
+    serviceConnected: true,
+    servicePluginId: pluginId,
+    serviceMachineId: machineId,
+    installationReady: true,
+    installationEnabled: true,
+    revision: "deployment-before",
+  };
+  try {
+    const before = await snapshotLive(fixture.target);
+    const failures: Partial<typeof fixture.state>[] = [
+      { pluginHeld: { reason: "dependency_missing", by: "another.plugin" } },
+      { pluginLifecycle: "isolate_crashed" },
+      { pluginEnabled: false },
+      { serviceReason: "credential_revoked_or_expired" },
+      { serviceState: "stopping", serviceReason: "instance_service_stopping" },
+      { serviceEnabled: false },
+      { serviceConnected: false },
+      { servicePluginId: "another.plugin" },
+      { serviceMachineId: "another-machine" },
+      { installationReady: false },
+      { installationEnabled: false },
+      { revision: "replacement-installation" },
+    ];
+    for (const failure of failures) {
+      Object.assign(fixture.state, held, failure);
+      await expect(
+        pollLive(fixture.target, before, "1.1.0", { ...shortPoll, bootstrapGate: true }),
+      ).rejects.toBeInstanceOf(LiveVerificationError);
+    }
   } finally {
     await fixture.close();
   }

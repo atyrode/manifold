@@ -54,4 +54,6 @@ if (run === undefined) throw new Error(`deploy-hub.yml did not start for ${tag}`
 const watched = await $`gh run watch ${run} --exit-status`.nothrow();
 if (watched.exitCode !== 0) throw new Error(`deploy-hub.yml failed for ${tag} (run ${run})`);
 
-console.log(`Production now runs ${tag}; pin the fleet to ${tag} (atyrode/dotfiles).`);
+console.log(
+  `deploy-hub.yml completed for ${tag} (run ${run}); read its summary for ordinary verification or required plugin maintenance. Pin the fleet only after ordinary verify-live passes.`,
+);

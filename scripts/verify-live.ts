@@ -9,6 +9,7 @@ import {
   PluginsResponseSchema,
   type ActionProtocol,
   type ActionSummary,
+  type InstanceServiceDescription,
   type PluginRosterEntry,
 } from "../packages/protocol/src/index.ts";
 import {
@@ -56,6 +57,12 @@ export interface LivePollOptions {
   intervalMs?: number;
   requestTimeoutMs?: number;
   onDivergence?: (failure: LiveVerificationError) => void;
+  /** Only the explicit first-upgrade receipt permits temporary repack holds. */
+  bootstrapGate?: boolean;
+}
+export interface LiveVerificationResult {
+  heldPlugins: { pluginId: string; minimum: number }[];
+  deferredServices: string[];
 }
 export class LiveVerificationError extends Error {
   constructor(
@@ -268,14 +275,14 @@ async function discovery(reader: Reader, before?: LiveSnapshot) {
   unique(machines, (machine) => machine.id, "machines");
   return { protocol, plugins, machines };
 }
-async function services(reader: Reader): Promise<LiveSnapshot["services"]> {
+async function services(reader: Reader): Promise<InstanceServiceDescription[]> {
   const inventory = await reader.action(
     "engine.services.listInstances",
     {},
     InstanceServicesDescriptionSchema,
   );
   unique(inventory.services, (service) => service.serviceId, "instance services");
-  const result: LiveSnapshot["services"] = [];
+  const result: InstanceServiceDescription[] = [];
   for (const row of inventory.services) {
     const description = await reader.action(
       "engine.services.describeInstance",
@@ -285,13 +292,7 @@ async function services(reader: Reader): Promise<LiveSnapshot["services"]> {
     );
     if (description.serviceId !== row.serviceId)
       fail(`service ${row.serviceId}`, "description identity mismatch");
-    result.push({
-      serviceId: row.serviceId,
-      machineId: description.owner?.machineId ?? null,
-      pluginId: description.configuration?.pluginId ?? null,
-      enabled: description.configuration?.enabled ?? false,
-      state: description.state,
-    });
+    result.push(description);
   }
   return result;
 }
@@ -339,7 +340,13 @@ export async function snapshotLive(
     capturedAt: Date.now(),
     machines: machines.map((machine) => machine.id),
     installations,
-    services: instances,
+    services: instances.map((description) => ({
+      serviceId: description.serviceId,
+      machineId: description.owner?.machineId ?? null,
+      pluginId: description.configuration?.pluginId ?? null,
+      enabled: description.configuration?.enabled ?? false,
+      state: description.state,
+    })),
     plugins: installed,
   });
 }
@@ -360,20 +367,60 @@ export function readLiveSnapshot(path: string): LiveSnapshot {
     return fail("snapshot", "missing or invalid safe state snapshot");
   }
 }
-async function parity(reader: Reader, before: LiveSnapshot, expectedBuild: string): Promise<void> {
+async function parity(
+  reader: Reader,
+  before: LiveSnapshot,
+  expectedBuild: string,
+  bootstrapGate: boolean,
+): Promise<LiveVerificationResult> {
   const build = await reader.build();
   if (build !== expectedBuild)
     fail("/healthz build", `expected ${expectedBuild}; observed ${build}`);
   reader.resolved.add("/healthz build");
   const { protocol, plugins, machines } = await discovery(reader, before);
+  const heldPlugins = new Map<string, number>();
+  const deferredServices: string[] = [];
+  if (bootstrapGate) {
+    for (const plugin of plugins) {
+      const previous = before.plugins.find((row) => row.pluginId === plugin.manifest.id);
+      if (
+        previous &&
+        previous.enabled === plugin.enabled &&
+        plugin.install &&
+        (plugin.lifecycle === undefined || plugin.lifecycle === "ok") &&
+        plugin.held?.reason === "repack_required" &&
+        plugin.held.minimum !== undefined
+      )
+        heldPlugins.set(plugin.manifest.id, plugin.held.minimum);
+    }
+    for (const machineId of before.machines)
+      if (!machines.some((machine) => machine.id === machineId))
+        fail(`machine ${machineId}`, "missing from inventory");
+  }
   const currentServices = await services(reader);
   // Native workload failures precede generic plugin checks so the first failure is actionable.
   for (const service of before.services.filter((row) => row.enabled)) {
     const item = `service ${service.serviceId} (machine ${service.machineId ?? "unknown"}, plugin ${service.pluginId ?? "unknown"})`;
     const current = currentServices.find((row) => row.serviceId === service.serviceId);
     if (!current) fail(item, "missing from instance inventory");
-    if (!current.enabled) fail(item, "was enabled; observed disabled");
-    if (current.state !== "ready") fail(item, `expected ready; observed ${current.state}`);
+    if (!current.configuration?.enabled) fail(item, "was enabled; observed disabled");
+    if (
+      current.configuration.pluginId !== service.pluginId ||
+      (current.owner?.machineId ?? null) !== service.machineId
+    )
+      fail(item, "service owner or plugin changed");
+    if (current.state !== "ready") {
+      if (
+        service.pluginId !== null &&
+        heldPlugins.has(service.pluginId) &&
+        current.state === "unavailable" &&
+        current.reason === "plugin_held" &&
+        current.connected &&
+        current.owner?.online
+      )
+        deferredServices.push(service.serviceId);
+      else fail(item, `expected ready; observed ${current.state}`);
+    }
     reader.resolved.add(item);
   }
   for (const installation of before.installations.filter((row) => row.ready)) {
@@ -416,8 +463,12 @@ async function parity(reader: Reader, before: LiveSnapshot, expectedBuild: strin
         `plugin ${plugin.manifest.id}`,
         `enablement changed; expected ${previous.enabled}; observed ${plugin.enabled}`,
       );
+    if (heldPlugins.has(plugin.manifest.id)) {
+      reader.resolved.add(`plugin ${plugin.manifest.id}`);
+      continue;
+    }
+    rosterHealthy(plugin, `plugin ${plugin.manifest.id} roster`);
     if (door === null) {
-      rosterHealthy(plugin, `plugin ${plugin.manifest.id} roster`);
       reader.resolved.add(`plugin ${plugin.manifest.id}`);
       continue;
     }
@@ -434,6 +485,10 @@ async function parity(reader: Reader, before: LiveSnapshot, expectedBuild: strin
   const finalBuild = await reader.build();
   if (finalBuild !== expectedBuild)
     fail("/healthz build", `expected ${expectedBuild}; observed ${finalBuild}`);
+  return {
+    heldPlugins: Array.from(heldPlugins, ([pluginId, minimum]) => ({ pluginId, minimum })),
+    deferredServices,
+  };
 }
 /** One monotonic deadline includes discovery, all SDK calls, body reads and retry sleeps. */
 export async function pollLive(
@@ -441,7 +496,7 @@ export async function pollLive(
   before: LiveSnapshot,
   expectedBuild: string,
   options: LivePollOptions = {},
-): Promise<void> {
+): Promise<LiveVerificationResult> {
   const reader = new Reader(target, options);
   if (before.origin !== reader.target.origin)
     fail("snapshot", "target origin does not match snapshot");
@@ -451,9 +506,9 @@ export async function pollLive(
   while (reader.remaining() > 0) {
     reader.resolved.clear();
     try {
-      await parity(reader, before, expectedBuild);
+      const result = await parity(reader, before, expectedBuild, options.bootstrapGate === true);
       if (!reader.remaining()) fail("deadline", "whole verification deadline exhausted");
-      return;
+      return result;
     } catch (error) {
       if (!(error instanceof LiveVerificationError)) throw error;
       // A partial last pass must not hide the latest proved divergence behind a timer
@@ -507,14 +562,43 @@ if (import.meta.main) {
       );
     } else {
       const before = readLiveSnapshot(path);
-      await pollLive(target, before, expectedBuild!, {
+      const result = await pollLive(target, before, expectedBuild!, {
+        bootstrapGate: process.env.VERIFY_LIVE_BOOTSTRAP_GATE === "true",
         onDivergence: (failure) => report(failure.message, target.token, true),
       });
-      report(
-        `verified build ${expectedBuild}: live native state and installed read doors are ready`,
-        target.token,
-        false,
-      );
+      const maintenanceRequired = result.heldPlugins.length > 0;
+      if (process.env.GITHUB_OUTPUT)
+        appendFileSync(process.env.GITHUB_OUTPUT, `maintenance_required=${maintenanceRequired}\n`);
+      if (maintenanceRequired) {
+        report(
+          `MAINTENANCE REQUIRED on ${target.origin}, build ${expectedBuild}: temporary repack holds accepted for this deployment only; plugin/service health is NOT verified`,
+          target.token,
+          false,
+        );
+        for (const plugin of result.heldPlugins)
+          report(
+            `plugin ${plugin.pluginId}: repack and install with a supported hardened contract (minimum ${plugin.minimum})`,
+            target.token,
+            false,
+          );
+        for (const serviceId of result.deferredServices)
+          report(
+            `service ${serviceId}: readiness deferred solely for plugin_held`,
+            target.token,
+            false,
+          );
+        report(
+          "Install the repacked plugins, then run ordinary verification against the original snapshot without VERIFY_LIVE_BOOTSTRAP_GATE before pinning machines or declaring maintenance complete.",
+          target.token,
+          false,
+        );
+      } else {
+        report(
+          `verified build ${expectedBuild}: live native state and installed read doors are ready`,
+          target.token,
+          false,
+        );
+      }
     }
   } catch (error) {
     report(

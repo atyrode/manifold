@@ -83,6 +83,8 @@ jobs:
     needs: [release]
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    outputs:
+      bootstrap_required: ${{ steps.installed.outputs.bootstrap_required }}
     env:
       SHA: ${{ needs.release.outputs.sha }}
       TAG: ${{ inputs.tag }}
@@ -100,6 +102,7 @@ jobs:
             --build-arg MANIFOLD_VERSION="${TAG#v}" \
             --build-arg MANIFOLD_BUILD="${TAG#v}" --build-arg MANIFOLD_CHANNEL=release .
       - name: Check production's installed bundles without changing it
+        id: installed
         env:
           INSTALLED_BUNDLES_ORIGIN: ${{ vars.MANIFOLD_HUB_ORIGIN }}
           INSTALLED_BUNDLES_TOKEN: ${{ secrets.HUB_INSTALLED_BUNDLES_TOKEN }}
@@ -170,10 +173,12 @@ jobs:
 
   verify-live:
     name: verify-live
-    needs: [release, clever]
+    needs: [release, installed-bundles, clever]
     if: always() && !cancelled() && needs.clever.outputs.switch_started == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      maintenance_required: ${{ steps.candidate.outputs.maintenance_required }}
     env:
       VERIFY_LIVE_ORIGIN: ${{ vars.MANIFOLD_HUB_ORIGIN }}
       VERIFY_LIVE_TOKEN: ${{ secrets.HUB_INSTALLED_BUNDLES_TOKEN }}
@@ -191,8 +196,10 @@ jobs:
           name: verify-live-production-${{ github.run_id }}
           path: ${{ runner.temp }}
       - name: Verify the promoted release's live state within five minutes
+        id: candidate
         env:
           TAG: ${{ inputs.tag }}
+          VERIFY_LIVE_BOOTSTRAP_GATE: ${{ needs.installed-bundles.outputs.bootstrap_required == 'true' }}
         run: bun scripts/verify-live.ts verify "$RUNNER_TEMP/verify-live.json" "${TAG#v}"
       - name: Restore the previous production revision
         if: failure() || needs.clever.result != 'success'
@@ -221,21 +228,33 @@ jobs:
         env:
           SWITCH_RESULT: ${{ needs.clever.result }}
           VERIFY_RESULT: ${{ needs.verify-live.result }}
+          MAINTENANCE_REQUIRED: ${{ needs.verify-live.outputs.maintenance_required }}
         run: |
           if [ "$SWITCH_RESULT" != success ] || [ "$VERIFY_RESULT" != success ]; then
             echo "::error::Production deployment requires a successful switch and verify-live; got $SWITCH_RESULT and $VERIFY_RESULT"
             exit 1
           fi
+          if [ "$MAINTENANCE_REQUIRED" != true ] && [ "$MAINTENANCE_REQUIRED" != false ]; then
+            echo "::error::Production verification returned no explicit maintenance result; fleet pin remains blocked"
+            exit 1
+          fi
+
+      - name: Continue production maintenance before pinning the fleet
+        if: needs.verify-live.outputs.maintenance_required == 'true'
+        run: |
+          echo "::warning::Production $TAG requires plugin maintenance, not full-health acceptance. No fleet pin was dispatched. Install the named repacked plugins and run ordinary verify-live without VERIFY_LIVE_BOOTSTRAP_GATE before pinning."
+          printf '### Production maintenance required\n\nRelease `%s` passed only the one-deployment maintenance check. No fleet pin was dispatched. Install the repacked plugins named by verify-live, retain the pre-switch snapshot, and run ordinary `scripts/verify-live.ts verify PATH EXPECTED_BUILD` with `VERIFY_LIVE_BOOTSTRAP_GATE` unset. Only ordinary verification ends maintenance and permits the fleet pin.\n\n' "$TAG" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Dispatch the fleet pin
         # Hub first, then the fleet (docs/CONTRACTS.md §Protocol and compatibility), as a SEQUENCE rather than a cron racing a
         # guard: the dotfiles pin workflow bumps the agent to this release. Skipped when the
         # token is absent; the dotfiles cron and its /healthz hold stay as the floor. The token,
         # its scope and its expiry: docs/SELF-HOST.md §Fleet pin after promotion.
-        if: env.GH_TOKEN != ''
+        if: needs.verify-live.outputs.maintenance_required == 'false' && env.GH_TOKEN != ''
         env:
           GH_TOKEN: ${{ secrets.DOTFILES_DISPATCH_TOKEN }}
         run: gh workflow run update-pins.yml --repo atyrode/dotfiles
 
       - name: Production now runs this release
+        if: needs.verify-live.outputs.maintenance_required == 'false'
         run: echo "Production now runs $TAG; pin the fleet to $TAG (atyrode/dotfiles)"

@@ -148,6 +148,9 @@ if (import.meta.main) {
       process.env.INSTALLED_BUNDLES_BOOTSTRAP_GATE === "true",
     );
     if (snapshot !== null) await runInstalledBundleGate(image, snapshot);
+    if (process.env.GITHUB_OUTPUT) {
+      appendFileSync(process.env.GITHUB_OUTPUT, `bootstrap_required=${snapshot === null}\n`);
+    }
   } catch (error) {
     console.error(error instanceof Error ? error.message : "installed-bundles failed");
     process.exitCode = 1;
