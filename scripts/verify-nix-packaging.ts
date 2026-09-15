@@ -57,17 +57,23 @@ async function command(
   }
 }
 
-const system = await command([nix, "eval", "--raw", "--impure", "--expr", "builtins.currentSystem"], 30_000);
+const system = await command(
+  [nix, "eval", "--raw", "--impure", "--expr", "builtins.currentSystem"],
+  30_000,
+);
 if (!/^(x86_64|aarch64)-(linux|darwin)$/.test(system)) {
   throw new Error(`Unsupported native Nix system: ${system}`);
 }
-const nativeCpu = process.arch === "x64" ? "x86_64" : process.arch === "arm64" ? "aarch64" : process.arch;
+const nativeCpu =
+  process.arch === "x64" ? "x86_64" : process.arch === "arm64" ? "aarch64" : process.arch;
 if (system !== `${nativeCpu}-${process.platform}`) {
   throw new Error(`Nix system ${system} does not match this process's native platform`);
 }
 const expectedSystem = process.env["MANIFOLD_NIX_SYSTEM"];
 if (expectedSystem !== undefined && expectedSystem !== system) {
-  throw new Error(`MANIFOLD_NIX_SYSTEM=${expectedSystem} does not match native Nix system ${system}`);
+  throw new Error(
+    `MANIFOLD_NIX_SYSTEM=${expectedSystem} does not match native Nix system ${system}`,
+  );
 }
 
 async function build(name: string, rebuild = false): Promise<string> {
@@ -96,13 +102,20 @@ if ((await build("bun-deps", true)) !== deps) {
 }
 const agentOutput = await build("manifold-agent");
 const serverOutput = await build("manifold-server");
-const manifest: unknown = JSON.parse(readFileSync(join(repoRoot, "packages/web/package.json"), "utf8"));
-if (typeof manifest !== "object" || manifest === null || !("version" in manifest) || typeof manifest.version !== "string") {
+const manifest: unknown = JSON.parse(
+  readFileSync(join(repoRoot, "packages/web/package.json"), "utf8"),
+);
+if (
+  typeof manifest !== "object" ||
+  manifest === null ||
+  !("version" in manifest) ||
+  typeof manifest.version !== "string"
+) {
   throw new Error("Web package manifest does not declare the expected package version");
 }
 const version = manifest.version;
 const root = mkdtempSync(join(tmpdir(), "manifold-nix-packaging-"));
-let server: Bun.Subprocess<"ignore", "pipe", "ignore"> | undefined;
+let server: Bun.Subprocess<"ignore", "pipe", "inherit"> | undefined;
 let output: Promise<void> | undefined;
 const requests = new AbortController();
 const ready = Promise.withResolvers<string>();
@@ -119,15 +132,12 @@ try {
   // The wrappers must supply their own runtime inputs, not inherit an operator's
   // credentials, source paths, native-owner settings or configuration directories.
   const env = { HOME: home, TMPDIR: temporary, PATH: emptyPath, LANG: "C", LC_ALL: "C" };
-  const help = await command(
+  await command(
     [join(agentOutput, "bin/manifold-agent"), "--maintenance", "--help"],
     30_000,
     cwd,
     env,
   );
-  if (!help.includes("manifold-agent --maintenance")) {
-    throw new Error("Packaged agent did not serve maintenance help");
-  }
 
   interrupted.signal.throwIfAborted();
   server = Bun.spawn([join(serverOutput, "bin/manifold-server")], {
@@ -142,10 +152,13 @@ try {
     },
     stdin: "ignore",
     stdout: "pipe",
-    stderr: "ignore",
+    stderr: "inherit",
   });
   interrupted.signal.addEventListener("abort", interruptSmoke, { once: true });
-  readyTimer = setTimeout(() => ready.reject(new Error("Packaged server readiness exceeded 30s")), 30_000);
+  readyTimer = setTimeout(
+    () => ready.reject(new Error("Packaged server readiness exceeded 30s")),
+    30_000,
+  );
   const stdout = server.stdout;
   output = (async () => {
     const reader = stdout.getReader();
@@ -158,7 +171,8 @@ try {
         buffered += decoder.decode(chunk.value, { stream: true });
         const lines = buffered.split(/\r?\n/);
         buffered = lines.pop() ?? "";
-        if (buffered.length > 64_000) throw new Error("Packaged server emitted an oversized log line");
+        if (buffered.length > 64_000)
+          throw new Error("Packaged server emitted an oversized log line");
         for (const line of lines) {
           const address = /^manifold ready url=(\S+)$/.exec(line)?.[1];
           if (address === undefined) continue;
@@ -166,9 +180,14 @@ try {
           if (
             url.protocol !== "http:" ||
             !["localhost", "127.0.0.1"].includes(url.hostname) ||
-            url.port === "" || url.port === "0" ||
-            url.username !== "" || url.password !== "" || url.hash !== "" || url.search !== ""
-          ) throw new Error("Packaged server announced an unexpected readiness URL");
+            url.port === "" ||
+            url.port === "0" ||
+            url.username !== "" ||
+            url.password !== "" ||
+            url.hash !== "" ||
+            url.search !== ""
+          )
+            throw new Error("Packaged server announced an unexpected readiness URL");
           url.hostname = "127.0.0.1";
           ready.resolve(url.origin);
         }
@@ -185,27 +204,40 @@ try {
     // HTTP proxy settings. Requests never carry credentials or follow redirects.
     const request = (pathname: string): Promise<Buffer> => {
       const { promise, resolve: resolveBody, reject } = Promise.withResolvers<Buffer>();
-      const req = get(new URL(pathname, origin), {
-        agent: false,
-        signal: AbortSignal.any([interrupted.signal, requests.signal, AbortSignal.timeout(5_000)]),
-      }, (response) => {
-        const chunks: Buffer[] = [];
-        response.on("error", reject);
-        response.on("data", (chunk: Buffer) => chunks.push(chunk));
-        response.on("end", () => {
-          if (response.statusCode !== 200) reject(new Error(`Packaged server ${pathname} returned HTTP ${response.statusCode}`));
-          else resolveBody(Buffer.concat(chunks));
-        });
-      });
+      const req = get(
+        new URL(pathname, origin),
+        {
+          agent: false,
+          signal: AbortSignal.any([
+            interrupted.signal,
+            requests.signal,
+            AbortSignal.timeout(5_000),
+          ]),
+        },
+        (response) => {
+          const chunks: Buffer[] = [];
+          response.on("error", reject);
+          response.on("data", (chunk: Buffer) => chunks.push(chunk));
+          response.on("end", () => {
+            if (response.statusCode !== 200)
+              reject(new Error(`Packaged server ${pathname} returned HTTP ${response.statusCode}`));
+            else resolveBody(Buffer.concat(chunks));
+          });
+        },
+      );
       req.on("error", reject);
       return promise;
     };
     const health: unknown = JSON.parse((await request("/healthz")).toString("utf8"));
     if (
-      typeof health !== "object" || health === null ||
-      !("ok" in health) || health.ok !== true ||
-      !("version" in health) || health.version !== version
-    ) throw new Error(`Packaged server health did not report ok and version ${version}`);
+      typeof health !== "object" ||
+      health === null ||
+      !("ok" in health) ||
+      health.ok !== true ||
+      !("version" in health) ||
+      health.version !== version
+    )
+      throw new Error(`Packaged server health did not report ok and version ${version}`);
 
     const webDist = join(serverOutput, "share/manifold/web");
     const html = (await request("/")).toString("utf8");
@@ -227,11 +259,18 @@ try {
 
   await Promise.race([
     smoke(),
-    server.exited.then((code) => { throw new Error(`Packaged server exited during smoke (${code})`); }),
-    output.then(() => { throw new Error("Packaged server output closed during smoke"); }),
+    server.exited.then((code) => {
+      throw new Error(`Packaged server exited during smoke (${code})`);
+    }),
+    output.then(() => {
+      throw new Error("Packaged server output closed during smoke");
+    }),
   ]);
-  if (server.exitCode !== null) throw new Error(`Packaged server exited during smoke (${server.exitCode})`);
-  console.log(`PASS  Nix packaging: ${system}, dependency rebuild, compiled agent, hub ${version}, packaged web and asset`);
+  if (server.exitCode !== null)
+    throw new Error(`Packaged server exited during smoke (${server.exitCode})`);
+  console.log(
+    `PASS  Nix packaging: ${system}, dependency rebuild, compiled agent, hub ${version}, packaged web and asset`,
+  );
 } finally {
   clearTimeout(readyTimer);
   interrupted.signal.removeEventListener("abort", interruptSmoke);

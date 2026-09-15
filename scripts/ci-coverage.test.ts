@@ -156,10 +156,7 @@ describe("risk-selected CI topology coverage", () => {
   });
 
   test("cannot present a tolerated Nix failure as full proof", () => {
-    const toleratedFailure = ci.replace(
-      "  nix:\n",
-      "  nix:\n    continue-on-error: true\n",
-    );
+    const toleratedFailure = ci.replace("  nix:\n", "  nix:\n    continue-on-error: true\n");
     expect(ciCoverageErrors(registry, toleratedFailure)).toContain(
       "nix job must retain every native result without tolerating failure",
     );

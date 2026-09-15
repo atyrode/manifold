@@ -147,16 +147,18 @@ in [`docs/PLUGINS.md`](docs/PLUGINS.md); deployment and release commands are rou
   operation must wait for its evidence. Fast PR green, another tree's artifact or a later unrelated
   green run is not a substitute.
 - `bun run gate` remains the authoritative memory-bounded full local proof, and CI schedules the
-  same task registry from [`scripts/gate.ts`](scripts/gate.ts). Every registry change must update
-  the CI topology and pass `bun scripts/ci-coverage.ts`; no assertion may be removed or weakened
-  for speed without explicit operator acceptance.
+  same task registry from [`scripts/gate.ts`](scripts/gate.ts). Its `nix` group requires native
+  Nix and checks cold dependency reproducibility plus compiled packages; the ordinary local
+  baseline remains separate. Every registry change must update the CI topology and pass
+  `bun scripts/ci-coverage.ts`; no assertion may be removed or weakened for speed without
+  explicit operator acceptance.
 - The fast pull-request target is **1–2 minutes**. The separate full-suite SLO remains **under
   7 minutes p95** execution wall clock over recent clean runs with sufficient hosted-runner
   concurrency; record execution and queue delay separately and triage from per-job receipts.
 - A build artifact is reusable only for its exact source tree and expires after one day. After
   expiry rerun the whole workflow. Required jobs have bounded timeouts, and the always-run `gate`
   rejects required failures and unexpected skips. Full CI retains both plain-preview and
-  integrated-preview runtime proofs.
+  integrated-preview runtime proofs, plus the native Nix package matrix.
 - Contributors may opt into cheap pre-commit diff or formatting checks. Do not install hooks,
   change Git configuration, or put the full gate in a hook automatically; hooks are convenience,
   never a security or merge boundary.

@@ -184,7 +184,7 @@ const workflowJobDisplayNames = (workflow: YamlMap): string[] => {
         axis === "include"
           ? map(rawValue, `CI workflow job ${id} matrix include entry`)
           : { [axis]: rawValue };
-      let expanded = name;
+      let expanded: string = name;
       for (const [key, value] of Object.entries(combination)) {
         if (
           !/^[a-z][a-z0-9-]*$/.test(key) ||
