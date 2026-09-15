@@ -4,7 +4,7 @@ An agent-native shared spatial workspace: an infinite canvas with terminals in i
 multiplayer with first-class presence — for humans and AI agents alike.
 
 - `AGENTS.md` — how to operate this repo (humans and agents)
-- `docs/PLAN.md` — vision, axioms, scope
+- `docs/PLAN.md` — vision, roadmap, scope
 - `docs/CONTRACTS.md` — the integration authority
 
 ```bash
