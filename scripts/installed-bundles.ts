@@ -1,6 +1,4 @@
-import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { appendFileSync } from "node:fs";
 import {
   InstalledPluginsSnapshotSchema,
   type InstalledPluginsSnapshot,
@@ -69,15 +67,12 @@ export async function runInstalledBundleGate(
 ): Promise<void> {
   if (!image || image.startsWith("-")) throw new Error("a candidate image reference is required");
   const parsed = InstalledPluginsSnapshotSchema.parse(snapshot);
-  const root = mkdtempSync(join(tmpdir(), "manifold-installed-export-"));
   const name = `manifold-installed-bundles-${crypto.randomUUID()}`;
-  const path = join(root, "snapshot.json");
-  writeFileSync(path, JSON.stringify(parsed), { mode: 0o600 });
   let timedOut = false;
   let cleanupFailed = false;
   try {
-    // No production volume, network, owner key, installer credential, or Docker socket is
-    // visible to the candidate. Its own script and loader come from this exact image.
+    // Stdin crosses host/container identities without exposing a snapshot file. No production
+    // volume, network, owner key, installer credential, or Docker socket reaches the candidate.
     const child = Bun.spawn(
       [
         "docker",
@@ -91,15 +86,13 @@ export async function runInstalledBundleGate(
         "ALL",
         "--security-opt",
         "no-new-privileges",
-        "--mount",
-        `type=bind,src=${path},dst=/snapshot.json,readonly`,
+        "--interactive",
         "--entrypoint",
         "bun",
         image,
         "scripts/installed-bundles-candidate.ts",
-        "/snapshot.json",
       ],
-      { stdout: "inherit", stderr: "inherit" },
+      { stdin: Buffer.from(JSON.stringify(parsed)), stdout: "inherit", stderr: "inherit" },
     );
     const deadline = setTimeout(() => {
       timedOut = true;
@@ -120,14 +113,13 @@ export async function runInstalledBundleGate(
     }
   } finally {
     // Also handles timeout/cancellation of docker's client; removing our unique container
-    // releases any runner children before the temporary export is deleted.
+    // releases any runner children before this attempt finishes.
     const cleanup = Bun.spawn(["docker", "rm", "--force", name], {
       stdout: "ignore",
       stderr: "pipe",
     });
     const detail = await new Response(cleanup.stderr).text();
     const code = await cleanup.exited;
-    rmSync(root, { recursive: true, force: true });
     cleanupFailed = code !== 0 && !detail.includes("No such container");
   }
   if (cleanupFailed) throw new Error("installed-bundles candidate container cleanup failed");
