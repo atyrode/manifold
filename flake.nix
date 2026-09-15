@@ -41,25 +41,33 @@
         aarch64-darwin = "sha256-PL/Ez5Y4VYgmzziKupeE+ySsRuDt1WCt7cXW7S5dl5E=";
       };
 
-      # Input of the vendored-dependency FOD. Deliberately not `self`: keying it
-      # on the whole workspace re-derives the FOD on every unrelated commit, so
-      # nothing is ever reused from the store and each commit re-runs a cold,
-      # live-network `bun install` — re-rolling the dice on exactly the
-      # nondeterminism issue #51 tracks, and re-downloading ~240 MB to produce a
-      # tree that did not change. bun needs only the dependency-defining files:
-      # it resolves the `workspace:*` members from their package.json manifests
-      # and links them as relative symlinks without reading their sources.
-      # Verified: installing from this subset yields a node_modules tree
-      # byte-identical to installing from the full workspace, so the FOD is now
-      # rebuilt only when the dependencies themselves change.
+      # Keep the dependency input independent of unrelated workspace sources.
+      # Bun reads the manifests to resolve workspaces, but only creates their
+      # .bin links when the declared targets exist. Include those actual files
+      # as well as the lockfile, install configuration and patches; a missing
+      # declared target must fail fileset evaluation rather than silently
+      # producing an incomplete vendored tree.
+      packageManifests = nixpkgs.lib.fileset.unions [
+        ./package.json
+        (nixpkgs.lib.fileset.fileFilter (file: file.name == "package.json") ./packages)
+      ];
+      packageBins = nixpkgs.lib.concatMap (
+        manifestPath:
+        let
+          manifest = builtins.fromJSON (builtins.readFile manifestPath);
+          bin = manifest.bin or { };
+          targets = if builtins.isString bin then [ bin ] else builtins.attrValues bin;
+        in
+        map (target: (builtins.dirOf manifestPath) + "/${target}") targets
+      ) (nixpkgs.lib.fileset.toList packageManifests);
       bunDepsSrc = nixpkgs.lib.fileset.toSource {
         root = ./.;
         fileset = nixpkgs.lib.fileset.unions [
           ./bun.lock
           ./bunfig.toml
-          ./package.json
+          packageManifests
           ./patches
-          (nixpkgs.lib.fileset.fileFilter (file: file.name == "package.json") ./packages)
+          (nixpkgs.lib.fileset.unions packageBins)
         ];
       };
     in
