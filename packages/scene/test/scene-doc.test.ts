@@ -15,6 +15,7 @@ import {
   readElement,
   readElements,
   removeElement,
+  stampElementAuthorship,
   writeElement,
 } from "@manifold/scene";
 
@@ -121,6 +122,27 @@ describe("scene document", () => {
     // The refusal follows the SHAPE, not the name: a field that is not a shared type patches.
     writeElement(doc, text("flat"), LOCAL_ORIGIN);
     expect(patchElement(doc, "flat", { text: "replacement" }, LOCAL_ORIGIN)).toBeTrue();
+  });
+
+  test("stamps one accepted update across surviving elements in one transaction", () => {
+    const doc = createSceneDoc();
+    writeElement(doc, portal("one"), LOCAL_ORIGIN);
+    writeElement(doc, portal("two"), LOCAL_ORIGIN);
+    const updates: Uint8Array[] = [];
+    doc.on("update", (update) => updates.push(update));
+
+    expect(
+      stampElementAuthorship(doc, ["one", "missing", "two"], "principal-1", 42, "server"),
+    ).toBe(2);
+    expect(readElement(doc, "one")).toMatchObject({
+      lastEditedBy: "principal-1",
+      lastEditedAt: 42,
+    });
+    expect(readElement(doc, "two")).toMatchObject({
+      lastEditedBy: "principal-1",
+      lastEditedAt: 42,
+    });
+    expect(updates).toHaveLength(1);
   });
 
   test("reports changed ids synchronously for root and nested edits", () => {

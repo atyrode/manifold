@@ -3,6 +3,7 @@ import {
   IDENTITY_ATTRIBUTES,
   IDENTITY_SELECTOR,
   declarationOf,
+  ELEMENT_CONTAINER_ATTRIBUTE,
   distinctDoors,
   type Declared,
 } from "./identity.ts";
@@ -14,7 +15,10 @@ import {
  * a document.
  */
 
-const ATTRIBUTE_NAMES: readonly string[] = Object.values(IDENTITY_ATTRIBUTES);
+const ATTRIBUTE_NAMES: readonly string[] = [
+  ...Object.values(IDENTITY_ATTRIBUTES),
+  ELEMENT_CONTAINER_ATTRIBUTE,
+];
 
 /**
  * One element as the pure layer reads it. Only the attributes that layer understands are copied

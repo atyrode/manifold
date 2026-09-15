@@ -6,6 +6,7 @@ export {
   REMOTE_ORIGIN,
   REPAIR_ORIGIN,
   SERVER_PLACE_ORIGIN,
+  SERVER_AUTHORSHIP_ORIGIN,
   changedElementIds,
   collaborativeTextFields,
   createSceneDoc,
@@ -18,6 +19,7 @@ export {
   readElement,
   readElements,
   removeElement,
+  stampElementAuthorship,
   writeElement,
   type ScenePatch,
 } from "./scene-doc.ts";

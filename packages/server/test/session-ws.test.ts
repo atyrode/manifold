@@ -452,7 +452,7 @@ describe("SessionGateway channel multiplexing", () => {
       .frames()
       .filter((frame) => frame.type === "doc_update")
       .map((frame) => (frame.type === "doc_update" ? frame.ch : null));
-    expect(routed).toEqual(["a", "b"]);
+    expect(routed).toEqual(["a", "a", "b", "b"]);
 
     fixture.gateway.shutdown();
     fixture.store.close();
@@ -1520,13 +1520,17 @@ describe("SessionGateway scene writes", () => {
     send(fixture.gateway, "reader", CH, { type: "resync_request" });
     expect(readerSocket.messages().map((message) => message.type)).toEqual(["resync"]);
 
-    // And the gate lets the authorized write through unchanged: the reader sees the owner's.
+    // And the gate lets the authorized write through: the reader sees both the owner's update
+    // and its server-authored summary.
     readerSocket.clear();
     send(fixture.gateway, "writer", CH, {
       type: "doc_update",
       update: docUpdateFor("owner-element"),
     });
-    expect(readerSocket.messages().map((message) => message.type)).toEqual(["doc_update"]);
+    expect(readerSocket.messages().map((message) => message.type)).toEqual([
+      "doc_update",
+      "doc_update",
+    ]);
 
     fixture.gateway.shutdown();
     fixture.store.close();

@@ -33,6 +33,11 @@ export const IDENTITY_ATTRIBUTES = {
   door: "data-action",
 } as const;
 
+/** Extra declarations carried by element boxes without becoming identity kinds of their own. */
+export const ELEMENT_CONTAINER_ATTRIBUTE = "data-element-container-id";
+export const ELEMENT_AUTHOR_ATTRIBUTE = "data-last-edited-by";
+export const ELEMENT_EDITED_AT_ATTRIBUTE = "data-last-edited-at";
+
 /** What one declaration names. `door` is an action name; the rest are ids. */
 export type DeclarationKind = keyof typeof IDENTITY_ATTRIBUTES;
 
@@ -80,6 +85,8 @@ export interface Declaration {
   readonly owner: string | null;
   /** Set for `tile` only: which of the three trees this box belongs to. */
   readonly tree: TileTree | null;
+  /** Explicit for tiled elements whose document is not necessarily the routed container. */
+  readonly containerId?: string;
 }
 
 /**
@@ -102,6 +109,7 @@ const KIND_PRECEDENCE: readonly DeclarationKind[] = [
 
 /** React Flow's node wrapper. Its `data-id` is only an element id on this class. */
 const CANVAS_NODE_CLASS = "react-flow__node";
+const ELEMENT_OUTLET_CLASS = "manifold-element";
 
 function treeOf(classes: readonly string[]): TileTree | null {
   for (const className of classes) {
@@ -118,9 +126,15 @@ export function declarationOf(element: Declared): Declaration | null {
     const attribute = IDENTITY_ATTRIBUTES[kind];
     const id = element.attributes[attribute];
     if (id === undefined || id === "") continue;
-    // `data-id` is React Flow's on a node and a handle's on a handle; only the node wrapper's
-    // is an element id, so the class is part of the declaration rather than decoration.
-    if (kind === "element" && !element.classes.includes(CANVAS_NODE_CLASS)) continue;
+    // React Flow's `data-id` is meaningful only on its node wrapper. Composition element
+    // outlets deliberately carry the same id on a dedicated box, plus their owning container.
+    if (
+      kind === "element" &&
+      !element.classes.includes(CANVAS_NODE_CLASS) &&
+      !element.classes.includes(ELEMENT_OUTLET_CLASS)
+    ) {
+      continue;
+    }
     const owner = element.attributes[IDENTITY_ATTRIBUTES.plugin];
     return {
       kind,
@@ -128,6 +142,9 @@ export function declarationOf(element: Declared): Declaration | null {
       attribute,
       owner: kind === "plugin" ? id : (owner ?? null),
       tree: kind === "tile" ? treeOf(element.classes) : null,
+      ...(kind === "element" && element.attributes[ELEMENT_CONTAINER_ATTRIBUTE] !== undefined
+        ? { containerId: element.attributes[ELEMENT_CONTAINER_ATTRIBUTE] }
+        : {}),
     };
   }
   return null;
@@ -195,14 +212,16 @@ export function declarationAddress(
             tileId: declaration.id,
           })
         : null;
-    case "element":
-      return routedContainerId === null
+    case "element": {
+      const containerId = declaration.containerId ?? routedContainerId;
+      return containerId === null
         ? null
         : formatManifoldUri({
             kind: "element",
-            containerId: routedContainerId,
+            containerId,
             elementId: declaration.id,
           });
+    }
     case "plugin":
       return formatManifoldUri({ kind: "plugin", pluginId: declaration.id });
     case "section":

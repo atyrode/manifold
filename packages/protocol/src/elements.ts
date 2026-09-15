@@ -53,6 +53,8 @@ const IS_ENVELOPE_KEY = {
   width: true,
   height: true,
   zIndex: true,
+  lastEditedBy: true,
+  lastEditedAt: true,
 } as const satisfies Readonly<Record<string, true>>;
 
 export type ElementEnvelopeKey = keyof typeof IS_ENVELOPE_KEY;
@@ -160,6 +162,13 @@ export const SceneElementSchema = z
     width: z.number().finite().positive(),
     height: z.number().finite().positive(),
     zIndex: z.number().int(),
+    /**
+     * Server-authored summary of the last accepted document update that changed this element.
+     * Optional so documents written before the attribution cutover remain valid and honestly
+     * read as unknown rather than acquiring invented history.
+     */
+    lastEditedBy: z.string().min(1).max(128).optional(),
+    lastEditedAt: z.number().int().nonnegative().optional(),
   })
   .check((ctx) => {
     const payload: Record<string, unknown> = {};

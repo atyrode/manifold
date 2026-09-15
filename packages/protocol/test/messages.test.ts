@@ -396,6 +396,18 @@ describe("session channel schemas", () => {
 
   test("the envelope validates geometry and carries a payload it does not interpret", () => {
     expect(SceneElementSchema.parse(element("portal-1"))).toEqual(element("portal-1"));
+    const attributed = SceneElementSchema.parse({
+      ...element("attributed"),
+      lastEditedBy: "principal-1",
+      lastEditedAt: 42,
+    });
+    expect(elementPayload(attributed)).toEqual({ containerId: "solo-attributed" });
+    expect(
+      SceneElementSchema.safeParse({ ...element("bad-author"), lastEditedBy: "" }).success,
+    ).toBe(false);
+    expect(
+      SceneElementSchema.safeParse({ ...element("bad-time"), lastEditedAt: 1.5 }).success,
+    ).toBe(false);
     expect(
       SceneElementSchema.safeParse({
         id: "text-1",

@@ -38,6 +38,8 @@ import {
   declarationAddress,
   declarationNoun,
   identify,
+  ELEMENT_AUTHOR_ATTRIBUTE,
+  ELEMENT_EDITED_AT_ATTRIBUTE,
   type CompositionLookup,
   type Declaration,
   type Identity,
@@ -116,6 +118,7 @@ interface Aim {
   readonly x: number;
   readonly y: number;
   readonly element: Element;
+  readonly readAt: number;
 }
 
 /** A pinned reading: the identity, plus everything only a pin is allowed to go and ask for. */
@@ -258,6 +261,32 @@ function painterOf(subject: Declaration | null, registry: ProjectionRegistry): P
   };
 }
 
+interface ElementAuthorship {
+  readonly principalId: string;
+  readonly editedAt: number;
+}
+
+/** Reads only the server-authored pair; a partial or legacy record is honestly unknown. */
+function elementAuthorship(
+  box: Element | null,
+  subject: Declaration | null,
+): ElementAuthorship | null {
+  if (box === null || subject?.kind !== "element") return null;
+  const principalId = box.getAttribute(ELEMENT_AUTHOR_ATTRIBUTE);
+  const rawEditedAt = box.getAttribute(ELEMENT_EDITED_AT_ATTRIBUTE);
+  if (principalId === null || principalId === "" || rawEditedAt === null) return null;
+  const editedAt = Number(rawEditedAt);
+  return Number.isInteger(editedAt) && editedAt >= 0 ? { principalId, editedAt } : null;
+}
+
+function relativeAge(then: number, now: number): string {
+  const elapsed = Math.max(0, now - then);
+  if (elapsed < 60_000) return "just now";
+  if (elapsed < 3_600_000) return `${String(Math.floor(elapsed / 60_000))}m ago`;
+  if (elapsed < 86_400_000) return `${String(Math.floor(elapsed / 3_600_000))}h ago`;
+  return `${String(Math.floor(elapsed / 86_400_000))}d ago`;
+}
+
 /**
  * The chip and the card share their identity block: noun, address, owner, painter. The card adds
  * to it rather than restating it, so what a reader learns by hovering never disagrees with what
@@ -272,12 +301,16 @@ function IdentityBlock({
   identity,
   host,
   painter,
+  authorship,
+  readAt,
   onCopy,
   onNavigate,
 }: {
   readonly identity: Identity;
   readonly host: WorkspaceOverlayProps["host"];
   readonly painter: Painter | null;
+  readonly authorship: ElementAuthorship | null;
+  readonly readAt: number;
   readonly onCopy: ((uri: string) => void) | null;
   readonly onNavigate: ((uri: string) => void) | null;
 }): ReactElement {
@@ -341,6 +374,18 @@ function IdentityBlock({
           </>
         )}
       </KeyValueRow>
+      {identity.subject?.kind !== "element" ? null : (
+        <KeyValueRow label="written">
+          {authorship === null ? (
+            <span className="inspector-absent">unknown</span>
+          ) : (
+            <>
+              by <Who id={authorship.principalId} />,{" "}
+              <span className="inspector-muted">{relativeAge(authorship.editedAt, readAt)}</span>
+            </>
+          )}
+        </KeyValueRow>
+      )}
       <KeyValueRow label="painted by">
         {painter === null ? (
           <span className="inspector-absent">the engine</span>
@@ -639,6 +684,8 @@ function PinCard({
         identity={pin.identity}
         host={host}
         painter={painter}
+        authorship={elementAuthorship(pin.scope, pin.identity.subject)}
+        readAt={pin.aim.readAt}
         onCopy={onCopy}
         onNavigate={navigate}
       />
@@ -980,7 +1027,12 @@ export function Inspector({ host }: WorkspaceOverlayProps): ReactElement | null 
     const onMove = (event: PointerEvent): void => {
       const target = event.target;
       if (!(target instanceof Element)) return;
-      pendingAim.current = { x: event.clientX, y: event.clientY, element: target };
+      pendingAim.current = {
+        x: event.clientX,
+        y: event.clientY,
+        element: target,
+        readAt: Date.now(),
+      };
       if (frame.current !== null) return;
       frame.current = window.requestAnimationFrame(() => {
         frame.current = null;
@@ -1030,7 +1082,7 @@ export function Inspector({ host }: WorkspaceOverlayProps): ReactElement | null 
       const attribute = identity.subject?.attribute;
       const scope = attribute === undefined ? target : (target.closest(`[${attribute}]`) ?? target);
       setPin({
-        aim: { x: event.clientX, y: event.clientY, element: target },
+        aim: { x: event.clientX, y: event.clientY, element: target, readAt: Date.now() },
         scope,
         identity,
         subtree: subtreeOf(scope),
@@ -1344,6 +1396,8 @@ export function Inspector({ host }: WorkspaceOverlayProps): ReactElement | null 
             identity={hovered}
             host={host}
             painter={painterOf(hovered.subject, registry)}
+            authorship={elementAuthorship(subjectBox, hovered.subject)}
+            readAt={aim.readAt}
             onCopy={null}
             onNavigate={null}
           />
