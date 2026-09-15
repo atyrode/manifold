@@ -102,6 +102,18 @@
 .inspector-declared {
   margin-left: 0.3rem;
 }
+.inspector-label {
+  cursor: help;
+  text-decoration: underline dotted #868e96;
+  text-underline-offset: 0.15em;
+}
+
+.inspector-label__cue {
+  margin-left: 0.15rem;
+  font-weight: 700;
+  color: #adb5bd;
+  font-size: 0.6rem;
+}
 
 .inspector-absent {
   color: #ffa8a8;
@@ -168,11 +180,29 @@
   align-items: baseline;
   gap: 0.25rem;
 }
+.inspector-grant-group > summary.inspector-grant {
+  display: list-item;
+  cursor: pointer;
+}
+
+.inspector-grant-group > summary.inspector-grant::marker {
+  color: #868e96;
+}
+
+.inspector-grant-members {
+  display: grid;
+  gap: 0.15rem;
+  margin: 0.2rem 0 0 0.9rem;
+}
+
+.inspector-grant-members > span {
+  display: block;
+}
 
 /* The rule between entries is what makes five of them read as five rather than as fifteen
    lines. Between, never around: a border under the last one would fence the section off from
    the row below it. */
-.inspector-grant + .inspector-grant,
+.inspector-grants > * + *,
 .inspector-trace + .inspector-trace {
   border-top: 1px solid #343a40;
   padding-top: 0.2rem;
