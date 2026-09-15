@@ -170,19 +170,20 @@ export class JobStore {
       machineId === undefined
         ? this.store.db
             .query<{ job_id: string }, []>(
-              "SELECT job_id FROM machine_jobs WHERE state IN ('queued','admitted','start-committed','started')",
+              "SELECT job_id FROM machine_jobs WHERE state IN ('queued','admitted','start-committed','started') ORDER BY rowid ASC",
             )
             .all()
         : this.store.db
             .query<{ job_id: string }, [string]>(
-              "SELECT job_id FROM machine_jobs WHERE machine_id=? AND state IN ('queued','admitted','start-committed','started')",
+              "SELECT job_id FROM machine_jobs WHERE machine_id=? AND state IN ('queued','admitted','start-committed','started') ORDER BY rowid ASC",
             )
             .all(machineId);
     return rows.map((r) => this.get(r.job_id)!);
   }
   /**
-   * How many of one operation's jobs this machine still owes an outcome, counted from the hub's
-   * own rows rather than an owner's report, so admission never trusts the fan it is bounding.
+   * How many of one operation's jobs occupy this candidate's concurrency slots. Every non-queued
+   * unsettled job occupies a slot; queued jobs do so only for later reservations in durable rowid
+   * FIFO order. Count from the hub's own rows so admission never trusts the fan it is bounding.
    */
   activeOperationJobs(
     machineId: string,
@@ -193,16 +194,23 @@ export class JobStore {
   ): number {
     return (
       this.store.db
-        .query<{ count: number }, [string, string, string, string, string | null, string | null]>(
+        .query<
+          { count: number },
+          [string, string, string, string, string, string, string | null, string | null]
+        >(
           `SELECT COUNT(*) AS count FROM machine_jobs
        WHERE machine_id=? AND plugin_id=? AND json_extract(request,'$.operationId')=?
          AND job_id!=? AND state IN ('queued','admitted','start-committed','started')
+         AND (state!='queued' OR (SELECT rowid FROM machine_jobs WHERE job_id=?) IS NULL
+           OR rowid < (SELECT rowid FROM machine_jobs WHERE job_id=?))
          AND (? IS NULL OR json_extract(request,'$.terminal.terminalId') IS NOT ?)`,
         )
         .get(
           machineId,
           pluginId,
           operationId,
+          exceptJobId,
+          exceptJobId,
           exceptJobId,
           replacingTerminalId,
           replacingTerminalId,
