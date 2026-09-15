@@ -755,12 +755,12 @@ test("socket output backpressure closes the transport for reconnect recovery", a
   }
 });
 
-test("a create naming a program execs it in place of the shell; a missing program is a named create_error", async () => {
+test("a create naming a program execs it in place of the shell; an ambiguous spawn failure is named", async () => {
   /*
-    Issue #192. The pinned test shell is the DEFAULT, not an override: a create that names a
-    program runs that program, so the first bytes on the wire are the program's own — no
-    prompt, no rc file, nothing typed. And an argv[0] the machine cannot exec is answered
-    with the program's name, never with a shell that garbles it or a bare `posix_spawn`.
+    Issue #192 and #406. The pinned test shell is the DEFAULT, not an override: a create that
+    names a program runs that program, so the first bytes on the wire are the program's own.
+    Bun reports a missing absolute program and a missing cwd with identical ENOENT metadata,
+    so the local diagnostic names both possible causes instead of falsely blaming argv[0].
   */
   const socket = new ScriptedSocket();
   const created = Promise.withResolvers<void>();
@@ -824,7 +824,7 @@ test("a create naming a program execs it in place of the shell; a missing progra
     });
     const failure = await createError.promise;
     expect(failure.terminalId).toBe("no-such-program");
-    expect(failure.message).toBe("program not found: /nonexistent/bin");
+    expect(failure.message).toBe("program or working directory not found: /nonexistent/bin");
     expect(host.terminalCount).toBe(1);
   } finally {
     await agent.shutdown();

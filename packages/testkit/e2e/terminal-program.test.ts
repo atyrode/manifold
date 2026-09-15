@@ -286,7 +286,7 @@ test("a program the machine cannot exec is a named create_error, and the opener 
         agent.output.stdout.some(
           (line) =>
             line.includes('"evt":"create_error"') &&
-            line.includes("program not found: /nonexistent/bin"),
+            line.includes("program or working directory not found: /nonexistent/bin"),
         ),
       10_000,
       20,

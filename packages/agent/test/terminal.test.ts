@@ -437,6 +437,20 @@ test("spawn failure disposes the mirror allocated during construction", () => {
         onOutput: () => {},
         createMirror: (options) => new DisposeSpyTerminal(options),
       }),
-  ).toThrow();
+  ).toThrow(`program or working directory not found: ${BASH}`);
   expect(disposed).toBe(true);
+});
+
+test("a failed PATH lookup retains the precise missing-program reason", () => {
+  const program = "manifold-definitely-missing-program";
+  expect(
+    () =>
+      new PtyTerminal({
+        terminalId: "path-spawn-failure",
+        cols: 80,
+        rows: 24,
+        command: [program],
+        onOutput: () => {},
+      }),
+  ).toThrow(`program not found: ${program}`);
 });

@@ -2973,10 +2973,14 @@ files, durable image storage, download URLs or arbitrary file transfer; that sep
   program before any machine hears of it, and what the ledger records as authorized is what the
   terminal host is then asked to exec through the agent — neither socket has a second place
   to present a different program. `cwd` is the shell's starting directory, never what runs.
-  The opener receives `error { code:"conflict" }` "terminal creation failed" when the terminal host could not exec `argv[0]`,
-  whose named reason (`program not found: <argv0>`, `program not executable: <argv0>`) travels
-  the machine channel as `create_error.message` and is logged on the machine, never on the
-  session channel (machine diagnostics stay off the client wire, as for every create failure).
+  The opener receives `error { code:"conflict" }` "terminal creation failed" when the terminal host
+  could not spawn the requested terminal. Its bounded machine-local reason distinguishes
+  `program not executable: <argv0>` and a failed PATH lookup's
+  `program not found: <argv0>`, identifies `working directory not found` only when runtime
+  metadata does, and otherwise reports the truthful
+  `program or working directory not found: <argv0>` ambiguity. That reason travels the machine
+  channel as `create_error.message` and is logged on the machine, never on the session channel
+  (machine diagnostics stay off the client wire, as for every create failure).
 - **A terminal is born with a home** (`homed: "eager"`). The home id is minted BEFORE the
   PTY, because the terminal-scoped agent token and the `MANIFOLD_CONTAINER` a program inside the
   terminal reads must both name the container the terminal LIVES in — and a canvas is never
@@ -3221,9 +3225,9 @@ data }`, `resize`, `kill`, `snapshot_request { terminalId }`, `ping`,
 at the door instead, because it would ignore the frame as an unknown type). `create.env` is the
 opener's `terminal_open.env` (if any) with the four minted `MANIFOLD_*` keys written LAST, so
 those always win; `create.program { argv }` is the opener's `terminal_open.program` verbatim, and
-the terminal host execs `argv[0]` with `argv.slice(1)` in place of `$SHELL` → `bash` → `sh`. A missing
-or unrunnable `argv[0]` is `create_error { message: "program not found: <argv0>" }` (or
-`program not executable`), never a shell standing in for it.
+the terminal host execs `argv[0]` with `argv.slice(1)` in place of `$SHELL` → `bash` → `sh`. An
+unrunnable `argv[0]` or missing launch path is a bounded machine-local `create_error`; ambiguous
+`ENOENT` names both possible causes, never a shell standing in for the program.
 Agent→server: `created { terminalId }` | `create_error { terminalId, message }`,
 `output { terminalId, seq, data }` (seq: monotonic per terminal, assigned at emission),
 `snapshot { terminalId, seq, data }`, `exited { terminalId, exitCode }`, `pong`,
