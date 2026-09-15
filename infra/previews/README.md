@@ -117,11 +117,15 @@ supervisor restart. The existing named volume must already exist; missing data f
 Before any retained stop, the **actual incumbent** must also prove server-only:
 its existing container configuration explicitly disables local spawning, uses the
 supported ordinary entrypoint without execution overrides or non-data mounts, and
-a credential-free `/proc` probe finds only the PID1 hub, the stock read-only
+a credential-free `/proc` probe finds no live processes beyond the PID1 hub, the stock read-only
 healthcheck and installed server-plugin isolates matching the hub loader's complete
 direct-child command, bundle path, process identity, control descriptor and minimal
 environment fingerprint. Those isolates are supervised parts of the hub: they stop
 with it, reload from their pinned bundles after replacement and own no native execution.
+An already terminated, single-threaded kernel zombie is non-owning only after two observations
+confirm state `Z`, one thread and the same starttime. A zombie group leader with surviving
+threads, an unreadable identity or a reused PID still holds; an absent executable alone
+is not evidence of death.
 Desired replacement settings never prove the old process tree safe.
 A stopped failed candidate still counts as the incumbent for ordering. Replacement retains the
 existing running-process safety requirement: explicit recovery of that same retained container
@@ -148,9 +152,10 @@ private local deployment fixture, real Docker/Compose, SDK clients and Chromium.
 It exercises root-to-developer migration, native terminal interaction and
 reattachment, home recreation and non-disruptive preflight refusals. Pass `--integrated`
 to exercise server-only retained replacement through the actual `deploy-dev.sh` with a unique
-`manifold-dev-N` project, private checkout, loopback port and volume. It checks persisted
-canvas/identity, unchanged nonstandard data ownership and network selection, no local owner,
-and non-disruptive configuration refusals with the disposable pin/lifecycle helper absent.
+`manifold-dev-N` project, private checkout, loopback port and volume. It checks a real
+single-threaded zombie alongside a live server-plugin isolate, persisted canvas/identity,
+unchanged nonstandard data ownership and network selection, no local owner, and non-disruptive
+configuration refusals with the disposable pin/lifecycle helper absent.
 Actual-incumbent volume, machine, network and writable-layer data-root mismatches, plus
 desired base/final-overlay data-root, volume-subpath and network overrides, must leave
 the original container generation, identity, data ownership and canvas state unchanged.

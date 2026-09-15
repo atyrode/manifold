@@ -1328,11 +1328,71 @@ console.log(JSON.stringify({
       // A shared hub must not consult the disposable image pin or lifecycle program.
       rmSync(pinPath);
       rmSync(join(tooling, "terminal-lifecycle.ts"));
+      // Gate a short-lived shell on a FIFO so its parent exits before it can.
+      // PID1 must inherit and retain the actual zombie; no mocked /proc or killed process.
+      const zombieFifo = `/tmp/retained-zombie-${number}`;
+      const zombiePid = (
+        await docker([
+          "exec",
+          "--user",
+          `${appUid}:${appUid}`,
+          incumbentId,
+          "/bin/sh",
+          "-c",
+          'mkfifo "$1" || exit 1; (read -r release < "$1") </dev/null >/dev/null 2>&1 & printf "%s\\n" "$!"',
+          "retained-zombie",
+          zombieFifo,
+        ])
+      ).out.trim();
+      requireThat(/^[1-9]\d*$/.test(zombiePid) && zombiePid !== "1", "invalid orphan fixture PID");
+      const zombieState = `import { readFileSync } from "node:fs";
+const stat = readFileSync("/proc/${zombiePid}/stat", "utf8");
+const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+console.log([fields[0], fields[1], fields[19], readFileSync("/proc/${zombiePid}/cmdline").length, fields[17]].join(" "));`;
+      const orphan = (await execBun(zombieState)).split(" ");
+      requireThat(
+        orphan[0] !== "Z" && orphan[1] === "1" && /^\d+$/.test(orphan[2] ?? ""),
+        "FIFO-gated child was not inherited alive by PID1",
+      );
+      await execBun(`import { writeFileSync, unlinkSync } from "node:fs";
+writeFileSync(${JSON.stringify(zombieFifo)}, "exit\\n");
+unlinkSync(${JSON.stringify(zombieFifo)});`);
+      const terminalState = `Z 1 ${orphan[2]} 0 1`;
+      await until(
+        async () => {
+          const observed = await execBun(zombieState);
+          requireThat(
+            observed.split(" ")[2] === orphan[2],
+            "orphan fixture PID was reused before terminal state Z",
+          );
+          return observed === terminalState;
+        },
+        10_000,
+        "the orphaned shell to reach single-threaded kernel state Z under PID1 with an empty cmdline",
+      );
+      const proof = await docker(["exec", "-i", incumbentId, "bun", "--no-env-file", "-"], {
+        input: readFileSync(join(tooling, "retained-server-only.ts"), "utf8"),
+      });
+      requireThat(
+        proof.out.trim() === "retained-processes-server-only",
+        "retained process proof refused the live plugin isolate and observed zombie",
+      );
+      requireThat(
+        (await execBun(zombieState)) === terminalState,
+        "the zombie disappeared or changed identity during the retained process proof",
+      );
+      metrics["retainedZombie"] = {
+        pid: Number(zombiePid),
+        state: "Z",
+        ppid: 1,
+        threads: 1,
+        starttime: orphan[2],
+      };
       await up();
       await ready();
       requireThat(
         (await inspectContainer()).Id !== incumbentId,
-        "retained deployment did not replace the incumbent with a live plugin isolate",
+        "retained deployment did not replace the incumbent with a live plugin isolate and zombie",
       );
       requireThat(
         (await counter()) === 2,

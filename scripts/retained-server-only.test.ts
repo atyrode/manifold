@@ -8,14 +8,28 @@ const classifier = pathToFileURL(
   join(import.meta.dir, "../infra/previews/retained-server-only.ts"),
 ).href;
 
-for (const scenario of ["gone", "reused", "unreadable", "unknown"] as const) {
-  test(`retained process snapshot ${scenario === "gone" ? "admits" : "refuses"} a ${scenario} process`, async () => {
+for (const scenario of [
+  "gone",
+  "reused",
+  "unreadable",
+  "unknown",
+  "zombie",
+  "zombie-with-live-threads",
+  "zombie-reused",
+  "zombie-unreadable",
+] as const) {
+  const admitted = scenario === "gone" || scenario === "zombie";
+  test(`retained process snapshot ${admitted ? "admits" : "refuses"} a ${scenario} process`, async () => {
     // Run the real streamed classifier in an isolated process. Fault injection makes
     // the /proc enumeration/read race deterministic without altering any real PID.
     const script = `
 import { mock } from "bun:test";
 const scenario = ${JSON.stringify(scenario)};
-const stat = "1 (bun) " + Array.from({ length: 20 }, (_, index) => index === 19 ? "12345" : "0").join(" ");
+const statFor = (state = "S", threads = "1", started = "12345") =>
+  "1 (bun) " + Array.from({ length: 20 }, (_, index) =>
+    index === 0 ? state : index === 17 ? threads : index === 19 ? started : "0").join(" ");
+const stat = statFor();
+let statReads = 0;
 const fail = (code) => { throw Object.assign(new Error("private proc metadata"), { code }); };
 mock.module("node:fs", () => ({
   readdirSync: () => ["1", "99999999"],
@@ -26,6 +40,15 @@ mock.module("node:fs", () => ({
     if (path === "/proc/1/cmdline") return "bun\\0packages/server/src/main.ts\\0";
     if (path === "/proc/99999999/stat") {
       if (scenario === "gone") return fail("ENOENT");
+      if (scenario.startsWith("zombie")) {
+        statReads++;
+        if (scenario === "zombie-unreadable" && statReads > 1) return fail("EACCES");
+        return statFor(
+          "Z",
+          scenario === "zombie-with-live-threads" ? "2" : "1",
+          scenario === "zombie-reused" && statReads > 1 ? "54321" : "12345",
+        );
+      }
       return stat;
     }
     if (path === "/proc/99999999/cmdline") {
@@ -59,8 +82,8 @@ await import(${JSON.stringify(classifier)});
         new Response(child.stdout).text(),
         new Response(child.stderr).text(),
       ]);
-      expect(code).toBe(scenario === "gone" ? 0 : 1);
-      expect(stdout.includes("retained-processes-server-only")).toBe(scenario === "gone");
+      expect(code).toBe(admitted ? 0 : 1);
+      expect(stdout.includes("retained-processes-server-only")).toBe(admitted);
       expect(stderr).not.toContain("private proc metadata");
     } finally {
       rmSync(directory, { recursive: true });
