@@ -57,6 +57,13 @@ export function liveFixture(beforeRequest?: () => void) {
     revision: "deployment-before",
     installationReady: true,
     installationEnabled: true,
+    installationConnected: true,
+    installationPurgeRequested: false,
+    operationDescriptionsPresent: true,
+    operationReason: null as string | null,
+    machineOnline: true,
+    machineDraining: false,
+    machineRevoked: false,
     serviceState: "ready" as InstanceServiceDescription["state"],
     serviceEnabled: true,
     serviceReason: null as string | null,
@@ -85,7 +92,7 @@ export function liveFixture(beforeRequest?: () => void) {
   const owner = { machineId, name: "Fixture owner", online: true };
   const service = (): InstanceServiceDescription => ({
     serviceId,
-    owner: { ...owner, machineId: state.serviceMachineId },
+    owner: { ...owner, machineId: state.serviceMachineId, online: state.machineOnline },
     defaultOwner: owner,
     configuration: {
       revision: "service-before",
@@ -222,7 +229,17 @@ export function liveFixture(beforeRequest?: () => void) {
         case "core.machines.list":
           result = state.invalidInventory
             ? {}
-            : { machines: [{ id: machineId, name: "Fixture owner", online: true }] };
+            : {
+                machines: [
+                  {
+                    id: machineId,
+                    name: "Fixture owner",
+                    online: state.machineOnline,
+                    draining: state.machineDraining,
+                    revoked: state.machineRevoked,
+                  },
+                ],
+              };
           break;
         case "engine.services.listInstances":
           result = { defaultOwner: owner, services: state.servicesMissing ? [] : [service()] };
@@ -241,14 +258,23 @@ export function liveFixture(beforeRequest?: () => void) {
             machineId,
             pluginId,
             admissionPublicKey: "-----BEGIN PUBLIC KEY-----fixture",
-            connected: true,
+            connected: state.installationConnected,
             platforms: [],
+            operations: state.operationDescriptionsPresent
+              ? {
+                  [`${pluginId}.run`]: {
+                    ready: state.installationReady && state.operationReason === null,
+                    reason: state.operationReason,
+                    resourceBindingDigest: hash,
+                  },
+                }
+              : undefined,
             installation: {
               revision: state.revision,
               artifactSha256: hash,
               enabled: state.installationEnabled,
               ready: state.installationReady,
-              purgeRequested: false,
+              purgeRequested: state.installationPurgeRequested,
             },
             retainedInstallations: [],
             consents: [],
@@ -337,13 +363,18 @@ test("CLI snapshots only safe inventory, reads it back, and verifies the switche
     fixture.state.pluginHeld = { reason: "repack_required", minimum: 2 };
     fixture.state.serviceState = "unavailable";
     fixture.state.serviceReason = "plugin_held";
+    fixture.state.installationReady = false;
+    fixture.state.operationReason = "plugin_held";
     const maintenance = await run(["verify", path, fixture.state.build], true);
     expect(maintenance.code).toBe(0);
     expect(maintenance.output).not.toContain(fixture.target.token);
+    expect(maintenance.output).toContain(`${machineId}/${pluginId}`);
     expect(readFileSync(outputPath, "utf8")).toMatch(/maintenance_required=true\n$/);
     fixture.state.pluginHeld = null;
     fixture.state.readDoorPresent = true;
     fixture.state.serviceState = "ready";
+    fixture.state.installationReady = true;
+    fixture.state.operationReason = null;
     expect((await run(["verify", path, fixture.state.build])).code).toBe(0);
     expect(readFileSync(outputPath, "utf8")).toMatch(/maintenance_required=false\n$/);
     expect(fixture.state.writes).toBe(0);
@@ -459,6 +490,8 @@ test("maintenance defers only the repack hold and ends only after ordinary healt
     fixture.state.pluginHeld = { reason: "repack_required", minimum: 2 };
     fixture.state.serviceState = "unavailable";
     fixture.state.serviceReason = "plugin_held";
+    fixture.state.installationReady = false;
+    fixture.state.operationReason = "plugin_held";
     await expect(pollLive(fixture.target, before, "1.1.0", shortPoll)).rejects.toThrow(
       LiveVerificationError,
     );
@@ -467,6 +500,7 @@ test("maintenance defers only the repack hold and ends only after ordinary healt
     ).toEqual({
       heldPlugins: [{ pluginId, minimum: 2 }],
       deferredServices: [serviceId],
+      deferredInstallations: [{ machineId, pluginId, revision: "deployment-before" }],
     });
     fixture.state.pluginHeld = null;
     fixture.state.readDoorPresent = true;
@@ -474,9 +508,15 @@ test("maintenance defers only the repack hold and ends only after ordinary healt
       LiveVerificationError,
     );
     fixture.state.serviceState = "ready";
+    await expect(pollLive(fixture.target, before, "1.1.0", shortPoll)).rejects.toThrow(
+      /installation .*not ready/,
+    );
+    fixture.state.installationReady = true;
+    fixture.state.operationReason = null;
     expect(await pollLive(fixture.target, before, "1.1.0", shortPoll)).toEqual({
       heldPlugins: [],
       deferredServices: [],
+      deferredInstallations: [],
     });
   } finally {
     await fixture.close();
@@ -497,7 +537,14 @@ test("maintenance cannot excuse unrelated failures or changed native identities"
     serviceConnected: true,
     servicePluginId: pluginId,
     serviceMachineId: machineId,
-    installationReady: true,
+    installationReady: false,
+    installationConnected: true,
+    installationPurgeRequested: false,
+    operationDescriptionsPresent: true,
+    operationReason: "plugin_held",
+    machineOnline: true,
+    machineDraining: false,
+    machineRevoked: false,
     installationEnabled: true,
     revision: "deployment-before",
   };
@@ -513,7 +560,13 @@ test("maintenance cannot excuse unrelated failures or changed native identities"
       { serviceConnected: false },
       { servicePluginId: "another.plugin" },
       { serviceMachineId: "another-machine" },
-      { installationReady: false },
+      { installationConnected: false },
+      { installationPurgeRequested: true },
+      { operationDescriptionsPresent: false },
+      { operationReason: "resource_owner_unavailable" },
+      { machineOnline: false },
+      { machineDraining: true },
+      { machineRevoked: true },
       { installationEnabled: false },
       { revision: "replacement-installation" },
     ];

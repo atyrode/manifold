@@ -953,11 +953,16 @@ Only the installed-bundles job's proven `bootstrap_required=true` output enables
 one-deployment maintenance check may defer installed plugins held specifically for
 `repack_required`, and an unchanged configured native instance service that is `unavailable`
 with reason `plugin_held` directly attributable to such a plugin. The service must retain
-its machine/plugin identity and its owner must remain online and connected. Other holds,
-failures and unavailable states are not deferred. Build and snapshot identity, machines,
-installed plugins and their enablement, native installation revisions, enablement and
-readiness remain strict. The verifier names the held plugins and every deferred service
-check in its warning and summary rather than claiming full health.
+its machine/plugin identity and its owner must remain online and connected, not draining
+or revoked. A previously ready native installation may also defer readiness only when its
+revision and enablement are unchanged, its owner is connected and online, neither draining
+nor revoked, no purge is requested, and its nonempty operation descriptions all report
+`plugin_held` for the same repack-held plugin. Missing operation descriptions cannot support
+that exception. These refusals take precedence over resource checks, so they do not prove
+that the underlying resources are healthy. Other holds and reported failures are not
+deferred. Build and snapshot identity, installed plugins, native installation identity,
+revisions and enablement remain strict. The verifier names every held plugin, deferred
+installation and deferred service rather than claiming full health.
 
 The candidate step publishes `maintenance_required=true` while any repack hold remains,
 otherwise `false`, and the `verify-live` job exposes that result. A successful maintenance
@@ -982,7 +987,7 @@ not a successful installed-bundle check. Install the repacked plugins named by t
 held roster, preserving native installation intent, then run ordinary live verification
 against the retained pre-switch snapshot and the deployed expected build with
 `VERIFY_LIVE_BOOTSTRAP_GATE` unset. Only a successful ordinary check, including the previously
-deferred product reads and native service readiness, ends maintenance. That check does not
+deferred product reads, native installations and service readiness, ends maintenance. That check does not
 rewrite the original workflow receipt or resume its skipped pin steps: perform the
 separately authorized pin follow-through after ordinary verification, or let a subsequent
 ordinary deployment verify and dispatch its pin. Neither repacking nor owner replacement

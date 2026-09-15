@@ -63,6 +63,7 @@ export interface LivePollOptions {
 export interface LiveVerificationResult {
   heldPlugins: { pluginId: string; minimum: number }[];
   deferredServices: string[];
+  deferredInstallations: { machineId: string; pluginId: string; revision: string }[];
 }
 export class LiveVerificationError extends Error {
   constructor(
@@ -380,6 +381,7 @@ async function parity(
   const { protocol, plugins, machines } = await discovery(reader, before);
   const heldPlugins = new Map<string, number>();
   const deferredServices: string[] = [];
+  const deferredInstallations: LiveVerificationResult["deferredInstallations"] = [];
   if (bootstrapGate) {
     for (const plugin of plugins) {
       const previous = before.plugins.find((row) => row.pluginId === plugin.manifest.id);
@@ -416,7 +418,14 @@ async function parity(
         current.state === "unavailable" &&
         current.reason === "plugin_held" &&
         current.connected &&
-        current.owner?.online
+        current.owner?.online &&
+        machines.some(
+          (machine) =>
+            machine.id === service.machineId &&
+            machine.online &&
+            !machine.draining &&
+            !machine.revoked,
+        )
       )
         deferredServices.push(service.serviceId);
       else fail(item, `expected ready; observed ${current.state}`);
@@ -426,7 +435,8 @@ async function parity(
   for (const installation of before.installations.filter((row) => row.ready)) {
     const { machineId, pluginId } = installation;
     const item = `installation ${machineId}/${pluginId}`;
-    if (!machines.some((row) => row.id === machineId)) fail(item, "machine missing from inventory");
+    const machine = machines.find((row) => row.id === machineId);
+    if (!machine) fail(item, "machine missing from inventory");
     if (!plugins.some((row) => row.manifest.id === pluginId))
       fail(item, "plugin missing from roster");
     const description = await reader.action(
@@ -449,7 +459,22 @@ async function parity(
         item,
         `enablement changed; expected ${installation.enabled}; observed ${current.enabled}`,
       );
-    if (!current.ready) fail(item, "expected ready; observed not ready");
+    if (!current.ready) {
+      const operations = Object.values(description.operations ?? {});
+      if (
+        heldPlugins.has(pluginId) &&
+        description.connected &&
+        machine.online &&
+        !machine.draining &&
+        !machine.revoked &&
+        current.enabled &&
+        !current.purgeRequested &&
+        operations.length > 0 &&
+        operations.every((operation) => !operation.ready && operation.reason === "plugin_held")
+      )
+        deferredInstallations.push({ machineId, pluginId, revision: current.revision });
+      else fail(item, "expected ready; observed not ready");
+    }
   }
   for (const plugin of before.plugins) {
     if (!plugins.some((row) => row.manifest.id === plugin.pluginId && row.install !== undefined))
@@ -488,6 +513,7 @@ async function parity(
   return {
     heldPlugins: Array.from(heldPlugins, ([pluginId, minimum]) => ({ pluginId, minimum })),
     deferredServices,
+    deferredInstallations,
   };
 }
 /** One monotonic deadline includes discovery, all SDK calls, body reads and retry sleeps. */
@@ -571,7 +597,7 @@ if (import.meta.main) {
         appendFileSync(process.env.GITHUB_OUTPUT, `maintenance_required=${maintenanceRequired}\n`);
       if (maintenanceRequired) {
         report(
-          `MAINTENANCE REQUIRED on ${target.origin}, build ${expectedBuild}: temporary repack holds accepted for this deployment only; plugin/service health is NOT verified`,
+          `MAINTENANCE REQUIRED on ${target.origin}, build ${expectedBuild}: temporary repack holds accepted for this deployment only; plugin and native workload health is NOT verified`,
           target.token,
           false,
         );
@@ -581,9 +607,15 @@ if (import.meta.main) {
             target.token,
             false,
           );
+        for (const installation of result.deferredInstallations)
+          report(
+            `installation ${installation.machineId}/${installation.pluginId} (${installation.revision}): readiness deferred for reported plugin_held operations`,
+            target.token,
+            false,
+          );
         for (const serviceId of result.deferredServices)
           report(
-            `service ${serviceId}: readiness deferred solely for plugin_held`,
+            `service ${serviceId}: readiness deferred for reported plugin_held`,
             target.token,
             false,
           );
