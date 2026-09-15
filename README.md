@@ -7,6 +7,9 @@ multiplayer with first-class presence — for humans and AI agents alike.
 - `docs/PLAN.md` — vision, roadmap, scope
 - `docs/CONTRACTS.md` — the integration authority
 
+For installation and operation of a self-hosted hub, follow
+[`docs/SELF-HOST.md`](docs/SELF-HOST.md). The commands below are for development.
+
 ```bash
 bun install
 bun run dev:server   # :7777, prints a pre-authed URL
