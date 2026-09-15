@@ -275,6 +275,9 @@ these hold:
    a `Refs` PR has a complete post-merge handoff, not missing implementation disguised as follow-up.
 2. The required PR `gate` is green on the current head and integration base:
    `gh pr checks <n> --required` exits 0.
+   Both that exit and a concluded successful `ci.yml` run for the exact head are necessary: the
+   command can exit 0 while a required context has not reported, whereas the workflow run proves
+   the gate completed for that head.
 3. The newest `## Verdict:` comment is `pass` and is dated after the head commit was pushed.
 4. The change is within the current operator request or an applicable recorded standing/bounded
    grant, recorded and linked through the §Holds decision receipt. No unresolved `needs-operator` hold, design
