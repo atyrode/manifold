@@ -1556,19 +1556,22 @@ exactly what [One authoritative implementation](#one-authoritative-implementatio
 `kill` is `cleanup: true` (removal survives a disable), the rename broadcasts
 `terminal_event { kind:"renamed", name }` into the home, and the kill sweeps the terminal, its home,
 and every portal onto that home. `open { containerId, elementId, cols, rows, machineId?,
-placement?, program?, env? }` carries `terminals:spawn` at `scope: "container"`, because a
+placement?, program?, cwd?, env? }` carries `terminals:spawn` at `scope: "container"`, because a
 terminal is born inside one container and the per-terminal agent token minted for it is
 container-scoped
 with that cap — a workspace-graded creation door would have quietly ended agents spawning their own
-terminals. `program { argv }` and `env` (issue #192) are the SAME shapes and bounds the
-`terminal_open` frame carries (§Terminals over the session channel), and they are in the door's
-input so the policy door judges WHAT a terminal is born running, not only who may open where: the
-gateway hands the door the frame's own program and env before anything is minted or sent, and
-the broker receives that frame only once the door allowed, so a socket cannot present a shell to
-the policy and a program to the machine — one value, read once. The trace of the dispatch is the
-durable record of the program (`env` is redacted from the ledger by name, like every env the
-ledger sees). Today the handler judges neither beyond their shape; an argv or env rule lands in
-`core.terminals.open` and nowhere else.
+terminals. `program { argv }`, `cwd`, and `env` are the SAME shapes and bounds the
+`terminal_open` frame carries (§Terminals over the session channel): `cwd` is at most 4096
+characters and deliberately permits both relative and absolute launch paths. All three fields are
+in the door's input so the policy door judges WHAT a terminal is born running and where it starts,
+not only who may open where. The gateway hands the door the frame's own values before anything is
+minted or sent, and the broker receives that frame only once the door allowed, so a socket cannot
+present one launch to policy and another to the machine — each value is read once and forwarded
+unchanged. This adds audit context, not filesystem authority: arbitrary argv already grants the
+process the same OS reach, and cwd resolution remains the terminal owner's existing execution
+semantics. The trace is the durable record of program and cwd; `env` is redacted from the ledger by
+name, like every env the ledger sees. Today the handler judges none of them beyond their shape; a
+program, cwd, or env rule lands in `core.terminals.open` and nowhere else.
 The reads are doors too: `listByContainer` is `scope: "container"` (the route it replaces
 answered a
 scoped token with its own container's rows), while `listAll` keeps the default because the terminal
@@ -1578,8 +1581,8 @@ replaces refused scoped tokens outright. Mutating affordances in the DOM carry
 
 Two things about that door are worth stating because they are what "one door per concept" cost here.
 The session channel now DISPATCHES the action rather than duplicating its authority:
-`terminal_open` calls `core.terminals.open` first — with the frame's own `program` and `env` in
-the door's input — and only then asks the broker (a create is a machine round trip whose reply
+`terminal_open` calls `core.terminals.open` first — with the frame's own `program`, `cwd`, and `env`
+in the door's input — and only then asks the broker (a create is a machine round trip whose reply
 is socket traffic, so the PTY is still born on the channel), and
 `terminal_kill` dispatches `core.terminals.kill` — `broker.kill(channel, …)` is deleted, so one door
 answers for both the UI and the channel, and the surviving rule is the stricter one: an exited
@@ -1922,8 +1925,16 @@ meaning the HTTP action door. The `payload` of a trace row is the ARGUMENTS as r
 through the same field redaction the JSONL log applies (case-insensitive substrings
 `token`/`key`/`authorization`/`bearer`/`secret`/`password`/`passwd`/`credential`/`passphrase`,
 plus exact field names `data`/`env`/`payload`/`terminalData`, also case-insensitive —
-[Data and credential boundaries](#data-and-credential-boundaries)) and bounded at 4 KiB, past which the row keeps
-`{ oversize, keys }` instead of the bytes.
+[Data and credential boundaries](#data-and-credential-boundaries)) and hard-bounded at 4096
+serialized JSON characters. A generic oversize row keeps `{ oversize, keys, keyCount,
+keysTruncated }`, where each admitted key is only `{ prefix, length, truncated }`; key order is
+deterministic and exact serialization, not raw source length, decides admission. An oversize
+`core.terminals.open` instead keeps redacted launch facts: `program.argv0` is always a nonempty
+`{ prefix, length, truncated }` for valid program input, later `program.args` carry ordered
+`{ index, prefix, length, truncated }` entries plus `itemCount` and `argsTruncated`, and `cwd`
+carries its own prefix, length, and truncation fact. Prefixes are independently bounded, unrelated
+fields cannot evict argv0, and neither env nor a secret field is read back from the raw request
+after redaction.
 
 Every action handler receives `ctx.traceId: number`, the id of its already-durable write-ahead
 row — exactly the `id` returned by `core.events.list` with `kind: "trace"`. It is available
@@ -2966,13 +2977,16 @@ files, durable image storage, download URLs or arbitrary file transfer; that sep
   exactly the pre-v22 gesture. `env` is an allowlist the opener adds to the PTY: at most 32
   keys, each an upper-case POSIX name (`^[A-Z_][A-Z0-9_]*$`), values at most 4096 chars, and
   NEVER the `MANIFOLD_` prefix — refused `invalid` at the frame by shape, and merged UNDER the
-  four fixed keys so those always win even so. Both fields go THROUGH THE DOOR FIRST: the
-  gateway dispatches `core.terminals.open` with this frame's `program` and `env` in its input
+  four fixed keys so those always win even so. `cwd` is bounded at 4096 characters on both
+  session and machine frames while preserving the terminal owner's existing relative and absolute
+  launch semantics. All three fields go THROUGH THE DOOR FIRST: the gateway
+  dispatches `core.terminals.open` with this frame's `program`, `cwd`, and `env` in its input
   (§Terminal administration) before anything is minted or sent, so a policy denial
   (`error { code:"forbidden" }`, the door's own message, on the opener's `ref`) refuses the
-  program before any machine hears of it, and what the ledger records as authorized is what the
-  terminal host is then asked to exec through the agent — neither socket has a second place
-  to present a different program. `cwd` is the shell's starting directory, never what runs.
+  launch before any machine hears of it, and what the ledger records as authorized is what the
+  terminal host is then asked to execute through the agent — neither socket has a second place
+  to present a different program or working directory. `cwd` changes where the shell starts,
+  never what may run.
   The opener receives `error { code:"conflict" }` "terminal creation failed" when the terminal host
   could not spawn the requested terminal. Its bounded machine-local reason distinguishes
   `program not executable: <argv0>` and a failed PATH lookup's

@@ -40,10 +40,6 @@ export const TerminalProgramSchema = z.strictObject({
 });
 export type TerminalProgram = z.infer<typeof TerminalProgramSchema>;
 
-/** An owner declaration, never inferred from whether its native job socket is reachable. */
-export const TerminalExecutionSchema = z.enum(["unconfined", "governed"]);
-export type TerminalExecution = z.infer<typeof TerminalExecutionSchema>;
-
 /**
  * THE MACHINE PATH a repository fact is asked about (issue #529). Absolute because a
  * relative path names nothing without a working directory the asker cannot see, and the
@@ -60,6 +56,17 @@ export const MachinePathSchema = z
   .refine((path) => path.startsWith("/") && !path.includes("\0"), {
     message: "path must be absolute and contain no NUL",
   });
+
+/**
+ * A caller-selected PTY working directory. Relative paths deliberately remain valid: the
+ * terminal owner resolves them with the same launch semantics it has always used.
+ */
+export const MAX_TERMINAL_CWD_CHARS = 4096;
+export const TerminalCwdSchema = z.string().max(MAX_TERMINAL_CWD_CHARS);
+
+/** An owner declaration, never inferred from whether its native job socket is reachable. */
+export const TerminalExecutionSchema = z.enum(["unconfined", "governed"]);
+export type TerminalExecution = z.infer<typeof TerminalExecutionSchema>;
 
 /** A normalized `host/owner/repo`; bounded well under a path because it is three names. */
 export const MAX_MACHINE_REMOTE_CHARS = 512;
@@ -218,7 +225,7 @@ export type AgentMessage = z.infer<typeof AgentMessageSchema>;
 /** Creation and replacement use one launch contract, including its signed runtime boundary. */
 const TerminalLaunchSchema = z.strictObject({
   ...geometry,
-  cwd: z.string().optional(),
+  cwd: TerminalCwdSchema.optional(),
   /**
    * Injected into the PTY: the opener's own `env` (if any) UNDER the four fixed keys
    * MANIFOLD_URL / MANIFOLD_CONTAINER / MANIFOLD_ELEMENT / MANIFOLD_TOKEN, which the server

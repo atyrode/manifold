@@ -156,10 +156,10 @@ remember to fill in, and the cost of forgetting is a credential in a durable tab
 fails the other way — an innocent field called `key` is dropped from a record — which costs an
 auditor one field and costs nobody a secret.
 
-The payload is also BOUNDED (4 KiB). Over the bound the row keeps the shape instead of the bytes:
-`{ oversize, keys }`. Arguments are caller-controlled, so an unbounded copy of every dispatch body
-is a door onto the disk; and "somebody called this door with something enormous" is the auditable
-fact, which the shape carries.
+The payload is also BOUNDED (4 KiB). At adoption an over-bound row kept the shape instead of the
+bytes: `{ oversize, keys }`. Arguments are caller-controlled, so an unbounded copy of every
+dispatch body is a door onto the disk. Later hardening kept the same bound while making hostile
+key names bounded summaries and letting action-specific projections preserve selected audit facts.
 
 ### 6. Exemptions, listed rather than implied
 

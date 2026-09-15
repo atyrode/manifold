@@ -674,10 +674,11 @@ describe("session channel terminal verbs speak the ladder", () => {
     expect(errors(socket)).toEqual([]);
   });
 
-  test("the program and env a frame names are judged at the door, and the ledger records the program", async () => {
+  test("the program, cwd, and env a frame names are judged at the door and fully forwarded", async () => {
     const base = await fixture();
     const { id, socket } = joinedSocket(base, OWNER_KEY);
     const argv: TerminalProgram["argv"] = ["/bin/sh", "-c", "printf CMD_OK; exec cat"];
+    const cwd = "./workspace";
 
     base.gateway.message(
       id,
@@ -689,20 +690,21 @@ describe("session channel terminal verbs speak the ladder", () => {
         rows: 24,
         placement: "tile",
         program: { argv },
+        cwd,
         env: { CODE_TEST: "launch-7" },
       }),
     );
     await settled();
 
-    // One value, read once: what the door was asked about is what rides to the machine.
+    // One value, read once: everything the door judges rides unchanged to the machine.
     expect(errors(socket)).toEqual([]);
     const create = base.machine.sent.find((message) => message.type === "create");
     if (create === undefined || create.type !== "create") throw new Error("missing create request");
     expect(create.program).toEqual({ argv });
+    expect(create.cwd).toBe(cwd);
     expect(create.env.CODE_TEST).toBe("launch-7");
 
-    // The trace is the durable record of the program (docs/CONTRACTS.md §Data and credential boundaries). The env never reaches
-    // the ledger: `env` is a redacted field name, so neither its keys nor its values persist.
+    // Program and cwd are durable policy context; env remains recursively redacted.
     const trace = newestOpenTrace(base);
     expect(trace.outcome).toBe("ok");
     expect(JSON.parse(trace.payload)).toEqual({
@@ -712,8 +714,77 @@ describe("session channel terminal verbs speak the ladder", () => {
       rows: 24,
       placement: "tile",
       program: { argv },
+      cwd,
     });
     expect(trace.payload).not.toContain("launch-7");
+  });
+
+  test("an oversize terminal trace retains bounded redacted program and cwd facts", async () => {
+    const base = await fixture();
+    const { id, socket } = joinedSocket(base, OWNER_KEY);
+    const argv0 = `/usr/local/bin/${"tool".repeat(1_000)}`;
+    const argv: TerminalProgram["argv"] = [
+      argv0,
+      ...Array.from({ length: 63 }, (_, index) => `${index}:${'\\"'.repeat(2_046)}`),
+    ];
+    const cwd = `./${'\\"'.repeat(2_047)}`;
+    const envSecret = "terminal-env-secret-407";
+
+    base.gateway.message(
+      id,
+      JSON.stringify({
+        ch: "c1",
+        type: "terminal_open",
+        elementId: "el-oversize-program",
+        cols: 80,
+        rows: 24,
+        placement: "tile",
+        program: { argv },
+        cwd,
+        env: { API_TOKEN: envSecret },
+      }),
+    );
+    await settled();
+
+    expect(errors(socket)).toEqual([]);
+    const create = base.machine.sent.find((message) => message.type === "create");
+    if (create === undefined || create.type !== "create") throw new Error("missing create request");
+    expect(create).toMatchObject({ program: { argv }, cwd });
+    expect(create.env.API_TOKEN).toBe(envSecret);
+
+    const row = newestOpenTrace(base);
+    const payload = JSON.parse(row.payload) as {
+      oversize: number;
+      program: {
+        argv0: { prefix: string; length: number; truncated: boolean };
+        itemCount: number;
+        argsTruncated: boolean;
+        args: Array<{ index: number; prefix: string; length: number; truncated: boolean }>;
+      };
+      cwd: { prefix: string; length: number; truncated: boolean };
+    };
+    expect(payload.oversize).toBeGreaterThan(4_096);
+    expect(payload.program.argv0).toEqual({
+      prefix: argv0.slice(0, 256),
+      length: argv0.length,
+      truncated: true,
+    });
+    expect(payload.program.itemCount).toBe(64);
+    expect(payload.program.argsTruncated).toBeTrue();
+    expect(payload.program.args.length).toBeGreaterThan(0);
+    expect(payload.program.args.length).toBeLessThan(63);
+    expect(payload.program.args[0]?.index).toBe(1);
+    expect(payload.program.args[0]?.prefix.length).toBeGreaterThan(0);
+    expect(argv[1]?.startsWith(payload.program.args[0]?.prefix ?? "")).toBeTrue();
+    expect(payload.program.args[0]?.length).toBe(4_094);
+    expect(payload.program.args[0]?.truncated).toBeTrue();
+    expect(payload.cwd.prefix.startsWith("./")).toBeTrue();
+    expect(payload.cwd.prefix.length).toBe(256);
+    expect(payload.cwd.length).toBe(4_096);
+    expect(payload.cwd.truncated).toBeTrue();
+    expect(row.payload.length).toBeLessThanOrEqual(4_096);
+    expect(row.payload).not.toContain(envSecret);
+    expect(row.payload).not.toContain("API_TOKEN");
   });
 
   test("a program the door refuses never reaches the machine, and the refusal names it", async () => {

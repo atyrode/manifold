@@ -1158,6 +1158,47 @@ describe("TerminalBroker restart in place", () => {
     f.store.close();
   });
 
+  test("a relative launch cwd remains restart intent, not an observed cwd", async () => {
+    const f = brokerSetup();
+    f.broker.open(f.opener, {
+      type: "terminal_open",
+      placement: "tile",
+      elementId: "relative",
+      cols: 80,
+      rows: 24,
+      cwd: "./project",
+    });
+    const create = f.machine.sent.find((message) => message.type === "create");
+    if (!create || create.type !== "create") throw new Error("missing create");
+    f.broker.onCreated(f.machine.machineId, create.terminalId);
+    f.broker.onOwnerLost(f.machine.machineId);
+
+    const replacement = new FakeMachine(f.machine.machineId, "replacement-relative");
+    const broker = new TerminalBroker(
+      f.store,
+      f.auth,
+      f.rooms,
+      f.runtime,
+      f.clock,
+      silentLogger,
+      () => "http://localhost:7777",
+      testTileTrees,
+    );
+    broker.setMachineOnline(replacement);
+    const result = broker.restartById(create.terminalId, f.root.principal.id);
+    const command = replacement.sent.find((message) => message.type === "terminal_restart");
+    if (command?.type !== "terminal_restart") throw new Error("missing restart");
+    expect(command.cwd).toBeUndefined();
+    expect(command.create?.cwd).toBe("./project");
+
+    broker.onRestarted(f.machine.machineId, {
+      type: "terminal_restarted",
+      terminalId: create.terminalId,
+    });
+    expect(await result).toBe("ok");
+    f.store.close();
+  });
+
   test("running restart resets sequence numbers and snapshots before new output", async () => {
     const f = brokerFixture();
     const terminalId = f.create.terminalId;

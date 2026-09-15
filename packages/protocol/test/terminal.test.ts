@@ -5,6 +5,7 @@ import {
   ClientMessageBodySchema,
   MACHINE_PROTOCOL_COMPAT_VERSIONS,
   MAX_TERMINAL_ARGV_ITEMS,
+  MAX_TERMINAL_CWD_CHARS,
   MAX_TERMINAL_ENV_KEYS,
   PROTOCOL_VERSION,
   ServerMessageBodySchema,
@@ -16,11 +17,11 @@ import {
 } from "@manifold/protocol";
 
 /**
- * The program and env a `terminal_open` may carry (issue #192), and the one shape both wires
- * share for it. The lifecycle a program runs under is the agent's and the broker's to prove;
- * this file proves what the FRAME admits and refuses.
+ * The launch overrides a `terminal_open` may carry, and the shared shapes used by both wires.
+ * The lifecycle a program runs under is the agent's and broker's to prove; this file proves
+ * what the FRAME admits and refuses.
  */
-describe("terminal_open program and env", () => {
+describe("terminal_open launch overrides", () => {
   const argv: TerminalProgram["argv"] = ["/bin/sh", "-c", 'printf "%s" ""', ""];
   const open = {
     type: "terminal_open" as const,
@@ -68,6 +69,28 @@ describe("terminal_open program and env", () => {
     const atCap = ["/bin/sh", ...Array<string>(MAX_TERMINAL_ARGV_ITEMS - 1).fill("x")];
     expect(openWith({ program: { argv: atCap } })).toBe(true);
     expect(openWith({ program: { argv: [...atCap, "x"] } })).toBe(false);
+  });
+
+  test("cwd keeps its launch semantics and bound on both wires", () => {
+    const atCap = "x".repeat(MAX_TERMINAL_CWD_CHARS);
+    const overCap = `${atCap}x`;
+    const accepted = ["relative/project", "/absolute/project", ""];
+    for (const cwd of accepted) expect(openWith({ cwd })).toBe(true);
+    expect(openWith({ cwd: atCap })).toBe(true);
+    expect(openWith({ cwd: overCap })).toBe(false);
+
+    const create = {
+      type: "create" as const,
+      terminalId: "t1",
+      cols: 80,
+      rows: 24,
+      env: {},
+    };
+    for (const cwd of accepted) {
+      expect(ServerToAgentMessageSchema.safeParse({ ...create, cwd }).success).toBe(true);
+    }
+    expect(ServerToAgentMessageSchema.safeParse({ ...create, cwd: atCap }).success).toBe(true);
+    expect(ServerToAgentMessageSchema.safeParse({ ...create, cwd: overCap }).success).toBe(false);
   });
 
   test("the machine wire carries the same program shape verbatim", () => {

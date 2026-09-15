@@ -58,13 +58,18 @@ afterEach(() => {
   policyDirectories.clear();
 });
 
-/**
- * What the ledger keeps instead of an oversize argument list: the shape, never the bytes.
- * Declared as a schema so the assertion reads a validated value rather than an asserted one.
- */
+const TraceStringSummarySchema = z.strictObject({
+  prefix: z.string(),
+  length: z.number().int().nonnegative(),
+  truncated: z.boolean(),
+});
+
+/** What the ledger keeps instead of an oversize generic argument list: bounded key facts. */
 const OversizePayloadSchema = z.strictObject({
   oversize: z.number().int(),
-  keys: z.array(z.string()),
+  keys: z.array(TraceStringSummarySchema),
+  keyCount: z.number().int().nonnegative(),
+  keysTruncated: z.boolean(),
 });
 
 interface Fixture {
@@ -868,16 +873,98 @@ describe("the trace ledger records every exercise of authority", () => {
     }
   });
 
-  test("an oversize argument list is recorded as a shape, not as bytes", async () => {
+  test("an oversize runtime-only terminal open retains its generic key facts", async () => {
+    const base = await fixture();
+    const created = await base.host.dispatch(base.owner, "core.index.createContainer", {
+      name: "runtime trace",
+    });
+    if (!created.ok) throw new Error("fixture container was refused");
+    const containerId = ContainerResponseSchema.parse(created.result).container.id;
+
+    await base.host.dispatch(base.owner, "core.terminals.open", {
+      containerId,
+      elementId: "runtime-terminal",
+      cols: 80,
+      rows: 24,
+      runtime: {
+        machineId: "unavailable-machine",
+        pluginId: "test.runtime",
+        operationId: "run",
+        installationRevision: "r1",
+        artifactSha256: "a".repeat(64),
+        input: { padding: "x".repeat(8_000) },
+        resourceBindingDigest: "b".repeat(64),
+      },
+    });
+
+    const row = newestTrace(base);
+    expect(row.door).toBe("core.terminals.open");
+    const payload = OversizePayloadSchema.parse(JSON.parse(row.payload));
+    expect(payload.keys.some((key) => key.prefix === "runtime")).toBeTrue();
+    expect(JSON.stringify(payload).length).toBeLessThanOrEqual(4_096);
+    base.store.close();
+  });
+
+  test("an inherited launch shape cannot forge an oversize terminal trace", async () => {
+    const base = await fixture();
+    const raw: Record<string, unknown> = { padding: "x".repeat(8_000) };
+    Object.defineProperty(raw, "__proto__", {
+      enumerable: true,
+      value: { program: { argv: ["/bin/forged"] }, cwd: "/forged" },
+    });
+
+    await base.host.dispatch(base.owner, "core.terminals.open", raw);
+
+    const row = newestTrace(base);
+    expect(row.door).toBe("core.terminals.open");
+    const payload = OversizePayloadSchema.parse(JSON.parse(row.payload));
+    expect(payload.keys).toEqual([
+      { prefix: "padding", length: "padding".length, truncated: false },
+    ]);
+    base.store.close();
+  });
+
+  test("an oversize argument list keeps only a hard-bounded key summary", async () => {
     const base = await fixture();
 
     await base.host.dispatch(base.owner, "core.index.createContainer", { name: "x".repeat(8_000) });
 
-    const row = newestTrace(base);
-    const payload = OversizePayloadSchema.parse(JSON.parse(row.payload));
-    expect(payload.keys).toEqual(["name"]);
+    let row = newestTrace(base);
+    let payload = OversizePayloadSchema.parse(JSON.parse(row.payload));
+    expect(payload).toEqual({
+      oversize: payload.oversize,
+      keys: [{ prefix: "name", length: 4, truncated: false }],
+      keyCount: 1,
+      keysTruncated: false,
+    });
     expect(payload.oversize).toBeGreaterThan(4_096);
-    expect(row.payload.length).toBeLessThan(1_000);
+    expect(JSON.stringify(payload).length).toBeLessThanOrEqual(4_096);
+
+    const hostileKeys = Object.fromEntries(
+      Array.from({ length: 100 }, (_, index) => [`${'\\"'.repeat(3_000)}${index}`, "visible"]),
+    );
+    await base.host.dispatch(base.owner, "core.index.createContainer", hostileKeys);
+    row = newestTrace(base);
+    payload = OversizePayloadSchema.parse(JSON.parse(row.payload));
+    expect(payload.keyCount).toBe(100);
+    expect(payload.keysTruncated).toBeTrue();
+    const firstKey = payload.keys[0];
+    expect(firstKey).toBeDefined();
+    expect(firstKey?.prefix.length).toBeGreaterThan(0);
+    expect(Object.keys(hostileKeys)[0]?.startsWith(firstKey?.prefix ?? "")).toBeTrue();
+    expect(firstKey?.length).toBe(6_001);
+    expect(firstKey?.truncated).toBeTrue();
+    expect(JSON.stringify(payload).length).toBeLessThanOrEqual(4_096);
+
+    const surrogateBoundaryKey = `${"x".repeat(255)}😀${"z".repeat(8_000)}`;
+    await base.host.dispatch(base.owner, "core.index.createContainer", {
+      [surrogateBoundaryKey]: "visible",
+    });
+    row = newestTrace(base);
+    payload = OversizePayloadSchema.parse(JSON.parse(row.payload));
+    expect(payload.keys[0]?.prefix).toBe("x".repeat(255));
+    expect(surrogateBoundaryKey.startsWith(payload.keys[0]?.prefix ?? "")).toBeTrue();
+    expect(JSON.stringify(payload).length).toBeLessThanOrEqual(4_096);
     base.store.close();
   });
 

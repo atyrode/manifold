@@ -1,5 +1,6 @@
 import {
   hasCap,
+  MachinePathSchema,
   canonicalJobJson,
   TERMINAL_RESTART_PROTOCOL_VERSION,
   type LaunchRunRequest,
@@ -1520,11 +1521,17 @@ export class TerminalBroker implements TerminalPlacementPort {
         : this.auth.mintSessionAgentToken(terminalId, stored.containerId, principalId);
       pending.agentPrincipalId = grant?.principal.id ?? null;
       pending.dispatched = true;
+      // A relative launch cwd belongs in the restart recipe. Only an observed absolute cwd
+      // may occupy the precedence field older agents already parse as MachinePathSchema.
+      const restartCwd =
+        terminal.info.cwd !== undefined && MachinePathSchema.safeParse(terminal.info.cwd).success
+          ? terminal.info.cwd
+          : undefined;
       const sent = machine.send({
         type: "terminal_restart",
         terminalId,
         ...(recipe === undefined && stored.runId === undefined ? { noRecipe: true } : {}),
-        ...(terminal.info.cwd === undefined ? {} : { cwd: terminal.info.cwd }),
+        ...(restartCwd === undefined ? {} : { cwd: restartCwd }),
         create: {
           cols: terminal.info.cols,
           rows: terminal.info.rows,

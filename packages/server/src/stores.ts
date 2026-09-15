@@ -43,7 +43,7 @@ import {
   IndexEntrySchema,
   PluginSettingValuesSchema,
   PrincipalSchema,
-  MachinePathSchema,
+  TerminalCwdSchema,
   TerminalEnvSchema,
   TerminalProgramSchema,
   TerminalRuntimeSchema,
@@ -570,7 +570,7 @@ export interface DialRecord {
 export const TerminalLaunchRecipeSchema = z.strictObject({
   cols: z.number().int().positive().max(1000),
   rows: z.number().int().positive().max(1000),
-  cwd: MachinePathSchema.optional(),
+  cwd: TerminalCwdSchema.optional(),
   env: TerminalEnvSchema,
   program: TerminalProgramSchema.optional(),
   runtime: TerminalRuntimeSchema.optional(),
