@@ -1044,26 +1044,41 @@ try {
   const marksWhileEngaged = await browser.evaluate<number>(
     `document.querySelectorAll(${JSON.stringify(`${portalTiles} .xterm[data-gate-mark]`)}).length`,
   );
-  // Pressing outside the portal drops occupancy: the socket swaps back the other way.
+  // Pressing outside the portal starts the occupant → spectator swap. The veil
+  // reacts to engagement immediately, before the replacement socket is promoted
+  // and its snapshot has finished repainting the retained xterm hosts. Observe all
+  // three boundaries together so a pre-swap buffer cannot satisfy the leave proof.
   await clickAt(browser, { x: paneFrame.paneLeft + 30, y: paneFrame.paneTop + 30 });
-  const disengaged = await settles(async () => {
-    const state = await veils();
-    return state.total === 2 && state.dimmed === 2;
-  }, 15_000);
+  const spectatorReplayed = await settles(
+    () =>
+      browser!.evaluate<boolean>(
+        `(() => {
+          const root = document.querySelector(${JSON.stringify(
+            `.react-flow__node[data-id="${anchor.id}"] .portal`,
+          )});
+          return root !== null &&
+            !root.matches('.portal--engaged, .portal--engaging') &&
+            [...document.querySelectorAll(${JSON.stringify(
+              `${portalTiles} .xterm-rows`,
+            )})].some((rows) => (rows.textContent || '').includes('COMPOSED_TILE_LIVE'));
+        })()`,
+      ),
+    15_000,
+  );
   const marksAfter = await browser.evaluate<number>(
     `document.querySelectorAll(${JSON.stringify(`${portalTiles} .xterm[data-gate-mark]`)}).length`,
   );
-  const bufferKept = await browser.evaluate<boolean>(
-    `[...document.querySelectorAll(${JSON.stringify(`${portalTiles} .xterm-rows`)})].some(
-       (rows) => (rows.textContent || '').includes('COMPOSED_TILE_LIVE'),
-     )`,
-  );
+  const afterLeave = await veils();
   check(
     "engaging and leaving a portal keeps the same xterm hosts and their buffers",
-    marksWhileEngaged === 2 && marksAfter === 2 && disengaged && bufferKept,
-    `marks engaged=${String(marksWhileEngaged)} after=${String(marksAfter)} reveiled=${String(
-      disengaged,
-    )} scrollback=${String(bufferKept)}`,
+    marksWhileEngaged === 2 &&
+      marksAfter === 2 &&
+      afterLeave.total === 2 &&
+      afterLeave.dimmed === 2 &&
+      spectatorReplayed,
+    `marks engaged=${String(marksWhileEngaged)} after=${String(marksAfter)} atRest=${String(
+      afterLeave.dimmed,
+    )}/${String(afterLeave.total)} scrollback=${String(spectatorReplayed)}`,
   );
   // The composed row is read from a FRESH mount (the tree does not poll).
   await openCanvas(watcher, composeContainerId, "watcher mounted the compose canvas");
