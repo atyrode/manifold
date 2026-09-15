@@ -5,6 +5,7 @@ import {
   ProjectionProvider,
   RoomPipeRegistrationProvider,
   ViewportRegistrationProvider,
+  findTileElement,
   sessionUrl,
   type ContainerOverlayProps,
   type OverlayRegistrations,
@@ -1228,10 +1229,7 @@ function openPanelFor(
       it). Null with no tree mounted, where there is nothing to reveal and nothing to fake.
     */
     const root = tree.getTreeElement() as HTMLElement | null;
-    const box =
-      root === null || root.getAttribute("data-tile-id") === opening.tileId
-        ? root
-        : root.querySelector<HTMLElement>(`[data-tile-id="${CSS.escape(opening.tileId)}"]`);
+    const box = root === null ? null : findTileElement(root, opening.tileId);
     box?.querySelector<HTMLElement>(FOCUSABLE_IN_TILE)?.focus();
   }
   return { ok: true, tileId: opening.tileId, placed: opening.placed };

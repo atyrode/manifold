@@ -213,6 +213,7 @@ export {
   PORTAL_TREE_CLASSES,
   COMPOSITION_TREE_CLASSES,
   TileTree,
+  findTileElement,
   WORKSPACE_TREE_CLASSES,
   type TileTreeClasses,
   type TileTreeProps,

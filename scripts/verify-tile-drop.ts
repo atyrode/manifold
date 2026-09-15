@@ -25,6 +25,8 @@
  *      the seam's VISIBLE centre at canvas zoom, without neighbouring content stealing it.
  *   9. LIVE RESIZE DOES NOT SCALE CONTENT — ratio updates change the rendered layout
  *      without stretching or trailing live contents; structural transitions still animate.
+ *  10. TILE IDS ARE TREE-LOCAL — a workspace panel re-seated as local `t1` never steals the
+ *      content seat or Arrange geometry of an earlier canvas portal's own local `t1`.
  *
  * Self-contained: builds the web bundle to a temp dir, spawns its own server + agent,
  * cleans up. Env: MANIFOLD_CHROMIUM (else system chromium).
@@ -37,6 +39,7 @@ import {
   MachinesResponseSchema,
   ContainerResponseSchema,
   PlaceResponseSchema,
+  LayoutResponseSchema,
   ROOT_TILE_ID,
   TerminalsResponseSchema,
   type PlaceResponse,
@@ -1742,6 +1745,254 @@ try {
           sample.motion[stableLeafC]?.moved === false,
       ),
     "accepted release preserved insert/prune semantics, retained all three occupants, and landed B in the promised ghost",
+  );
+
+  /* ── #420: identical local ids in nested TileTrees never cross their ownership boundary ── */
+  /*
+    This canvas already contains the first-party portal authored in Round 4. Its composition
+    was built by inserting B beside A, so B is local `t1`. The workspace starts with Sidebar
+    before Active view; shelving Sidebar collapses Active view to the root, and re-seating
+    Sidebar performs the same first insertion locally, making that later leaf `t1` as well.
+
+    That DOM order is the regression: the portal's `t1` is painted before the re-seated
+    workspace `t1`. A descendant-wide seat lookup therefore moves Sidebar's stable content
+    host into `.portal__slot`, while a tree-scoped lookup seats it in the workspace leaf.
+    Equalize reads the same geometry surface as Arrange's grips, so both seating and geometry
+    are exercised before the mode is left, then the whole shelf/re-seat cycle is repeated.
+  */
+  const SIDEBAR_PANEL_ID = "core.shell.sidebar";
+  const COLLIDING_TILE_ID = "t1";
+  const workspaceToken = await browser.evaluate<string | null>(
+    `(() => {
+       const raw = window.localStorage.getItem('manifold.identity');
+       if (raw === null) return null;
+       try {
+         const identity = JSON.parse(raw);
+         return typeof identity?.token === 'string' ? identity.token : null;
+       } catch {
+         return null;
+       }
+     })()`,
+  );
+  if (workspaceToken === null) throw new Error("#420 could not read the browser principal");
+
+  const workspaceLayout = async (): Promise<TileLayout> => {
+    const response = await fetch(`${origin}/api/layout`, {
+      headers: { authorization: `Bearer ${workspaceToken}` },
+    });
+    if (!response.ok) throw new Error(`#420 workspace layout answered ${String(response.status)}`);
+    return LayoutResponseSchema.parse(await response.json()).layout;
+  };
+  const panelLeaf = (layout: TileLayout, panelId: string): string =>
+    Object.values(layout).find((node) => node.ref?.kind === "panel" && node.ref.panelId === panelId)
+      ?.id ?? "";
+  const pressF8 = async (): Promise<void> => {
+    for (const type of ["rawKeyDown", "keyUp"]) {
+      await browser!.send("Input.dispatchKeyEvent", {
+        type,
+        key: "F8",
+        code: "F8",
+        windowsVirtualKeyCode: 119,
+        nativeVirtualKeyCode: 119,
+      });
+    }
+    await sleep(400);
+  };
+  const tapPanelGrip = async (panelId: string): Promise<boolean> => {
+    const point = await browser!.evaluate<{ x: number; y: number } | null>(
+      `(() => {
+         const grip = document.querySelector(
+           '.arrange-grip[data-panel-id=' + ${JSON.stringify(JSON.stringify(panelId))} + ']',
+         );
+         if (grip === null) return null;
+         const box = grip.getBoundingClientRect();
+         return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+       })()`,
+    );
+    if (point === null) return false;
+    await browser!.drag([point], 0);
+    await sleep(300);
+    return browser!.evaluate<boolean>(
+      `document.querySelector(
+         '.arrange-grip.is-selected[data-panel-id=' +
+           ${JSON.stringify(JSON.stringify(panelId))} + ']',
+       ) !== null`,
+    );
+  };
+  const shelfAndReseat = async (round: string): Promise<boolean> => {
+    if (!(await tapPanelGrip(SIDEBAR_PANEL_ID))) return false;
+    await browser!.clickTestId("toolbar-shelf");
+    const shelved = await settles(
+      async () => panelLeaf(await workspaceLayout(), SIDEBAR_PANEL_ID) === "",
+      8_000,
+    );
+    if (!shelved) return false;
+    await until(
+      () =>
+        browser!.evaluate<boolean>(
+          `document.querySelector('[data-testid="arrange-shelf-item"]') !== null`,
+        ),
+      8_000,
+      `#420 ${round} shelf entry`,
+    );
+    await browser!.clickTestId("arrange-shelf-item");
+    return settles(
+      async () => panelLeaf(await workspaceLayout(), SIDEBAR_PANEL_ID) === COLLIDING_TILE_ID,
+      8_000,
+    );
+  };
+
+  await browser.goto(`${origin}/p/${canvasContainerId}`);
+  const collisionPortalSelector = `${portalSelector} .portal__slot[data-tile-id="${COLLIDING_TILE_ID}"]`;
+  await until(
+    () =>
+      browser!.evaluate<boolean>(
+        `(() => {
+           const slot = document.querySelector(${JSON.stringify(collisionPortalSelector)});
+           return slot !== null && slot.querySelector('.tile-content-host .xterm') !== null;
+         })()`,
+      ),
+    20_000,
+    "#420 portal local t1 mounted before workspace re-seat",
+  );
+  const portalStamped = await browser.evaluate<boolean>(
+    `(() => {
+       const slot = document.querySelector(${JSON.stringify(collisionPortalSelector)});
+       const host = slot?.querySelector(':scope > .tile-content-host');
+       if (!(host instanceof HTMLElement)) return false;
+       host.dataset.issue420PortalHost = 'live';
+       return true;
+     })()`,
+  );
+  check(
+    "#420 deterministic local-id collision",
+    leafB === COLLIDING_TILE_ID && portalStamped,
+    `first inserted composition leaf ${leafB || "missing"}; portal t1 host ${portalStamped ? "live" : "missing"}`,
+  );
+
+  interface ScopedWorkspaceSeat {
+    readonly storedLeaf: string;
+    readonly storedShare: number;
+    readonly ownerIsWorkspace: boolean;
+    readonly leafIsWorkspaceT1: boolean;
+    readonly insidePortal: boolean;
+    readonly visible: boolean;
+    readonly arrangeGeometryAgrees: boolean;
+    readonly arrangeGripAbsent: boolean;
+    readonly paintedShare: number;
+    readonly portalStillLive: boolean;
+  }
+  const scopedWorkspaceSeat = async (): Promise<ScopedWorkspaceSeat> => {
+    const layout = await workspaceLayout();
+    const storedLeaf = panelLeaf(layout, SIDEBAR_PANEL_ID);
+    const root = layout[ROOT_TILE_ID];
+    let storedShare = 0;
+    if (root !== undefined && root.dir !== null) {
+      const index = root.children.indexOf(storedLeaf);
+      const total = root.ratios.reduce((sum, ratio) => sum + ratio, 0);
+      storedShare = index < 0 || total <= 0 ? 0 : (root.ratios[index] ?? 0) / total;
+    }
+    return browser!.evaluate<ScopedWorkspaceSeat>(
+      `(() => {
+         const workspaceRoot = document.querySelector('.workspace > [data-tile-tree-root]');
+         const sidebar = document.querySelector('.sidebar');
+         const host = sidebar?.closest('.tile-content-host') ?? null;
+         const arrangeGrip = document.querySelector(
+           '.arrange-grip[data-panel-id="core.shell.sidebar"]',
+         );
+         const gripHostBox = arrangeGrip?.parentElement?.getBoundingClientRect() ?? null;
+         const leaf = host?.parentElement ?? null;
+         const owner = sidebar?.closest('[data-tile-tree-root]') ?? null;
+         const leafBox = leaf?.getBoundingClientRect() ?? null;
+         const rootBox = workspaceRoot?.getBoundingClientRect() ?? null;
+         const visible = leafBox !== null &&
+           leafBox.width > 1 && leafBox.height > 1 &&
+           leafBox.left >= -1 && leafBox.top >= -1 &&
+           leafBox.right <= window.innerWidth + 1 && leafBox.bottom <= window.innerHeight + 1;
+         const portalSlot = document.querySelector(${JSON.stringify(collisionPortalSelector)});
+         const portalHost = portalSlot?.querySelector(
+           ':scope > .tile-content-host[data-issue420-portal-host="live"]',
+         );
+         return {
+           storedLeaf: ${JSON.stringify(storedLeaf)},
+           storedShare: ${String(storedShare)},
+           ownerIsWorkspace: workspaceRoot !== null && owner === workspaceRoot,
+           leafIsWorkspaceT1:
+             leaf?.matches('.workspace-pane[data-tile-id="t1"]') === true &&
+             leaf.parentElement === workspaceRoot,
+           insidePortal: host?.closest('.portal__slot') !== null,
+           visible,
+           paintedShare:
+             leafBox === null || rootBox === null || rootBox.width <= 0
+               ? 0
+               : leafBox.width / rootBox.width,
+           arrangeGeometryAgrees:
+             leafBox !== null &&
+             gripHostBox !== null &&
+             Math.abs(leafBox.left - gripHostBox.left) <= 2 &&
+             Math.abs(leafBox.top - gripHostBox.top) <= 2 &&
+             Math.abs(leafBox.width - gripHostBox.width) <= 2 &&
+             Math.abs(leafBox.height - gripHostBox.height) <= 2,
+           arrangeGripAbsent: arrangeGrip === null,
+           portalStillLive:
+             portalHost instanceof HTMLElement && portalHost.querySelector('.xterm') !== null,
+         };
+       })()`,
+    );
+  };
+  const seatAgrees = (seat: ScopedWorkspaceSeat, expectArrangeGeometry: boolean): boolean =>
+    seat.storedLeaf === COLLIDING_TILE_ID &&
+    Math.abs(seat.storedShare - 0.5) <= 0.001 &&
+    seat.ownerIsWorkspace &&
+    seat.leafIsWorkspaceT1 &&
+    !seat.insidePortal &&
+    seat.visible &&
+    seat.paintedShare > 0.45 &&
+    seat.paintedShare < 0.55 &&
+    (expectArrangeGeometry ? seat.arrangeGeometryAgrees : seat.arrangeGripAbsent) &&
+    seat.portalStillLive;
+  await pressF8();
+  const arranging = await browser.evaluate<boolean>(
+    `document.querySelector('.workspace')?.classList.contains('is-arranging') === true`,
+  );
+  const firstReseated = arranging && (await shelfAndReseat("first"));
+  await browser.clickTestId("toolbar-equalize");
+  const firstEqualized = await settles(async () => {
+    const layout = await workspaceLayout();
+    const root = layout[ROOT_TILE_ID];
+    return (
+      root !== undefined &&
+      root.dir !== null &&
+      root.ratios.length === 2 &&
+      root.ratios.every((ratio) => Math.abs(ratio - 0.5) <= 0.001)
+    );
+  }, 8_000);
+  await settles(async () => seatAgrees(await scopedWorkspaceSeat(), true), 8_000);
+  const firstSeat = await scopedWorkspaceSeat();
+  const secondReseated = await shelfAndReseat("second");
+  await pressF8();
+  const leftArrange = await browser.evaluate<boolean>(
+    `document.querySelector('.workspace')?.classList.contains('is-arranging') === false`,
+  );
+  await settles(async () => seatAgrees(await scopedWorkspaceSeat(), false), 8_000);
+  const finalSeat = await scopedWorkspaceSeat();
+  check(
+    "#420 workspace and portal local t1 seats stay tree-scoped",
+    firstReseated &&
+      firstEqualized &&
+      seatAgrees(firstSeat, true) &&
+      secondReseated &&
+      leftArrange &&
+      seatAgrees(finalSeat, false),
+    JSON.stringify({
+      arranging,
+      firstReseated,
+      firstEqualized,
+      firstSeat,
+      secondReseated,
+      leftArrange,
+      finalSeat,
+    }),
   );
 } catch (error) {
   failures.push(error instanceof Error ? error.message : String(error));

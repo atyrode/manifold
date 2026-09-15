@@ -2652,8 +2652,12 @@ engaged is a socket role rather than a UI mode anyone has to learn.
   references resolve, nothing is reachable twice, ratios stay parallel to children, refs
   sit on leaves only, a `sections` arrangement sits on a panel leaf and names each section at
   most once, and a container never tiles itself; unreachable tiles are inert garbage
-  the next structural write prunes. Ratio drags are CRDT writes (`setTileRatios` through the
-  SDK); every STRUCTURAL mutation goes through a door — the actions `core.space.place` and
+  the next structural write prunes. Tile ids belong to the individual `TileLayout` that declares
+  them; independently authored workspace and composition layouts MAY reuse the same id. Each
+  rendered `TileTree` marks its own DOM root, and DOM resolution for a tile is confined to that
+  owning root: a matching descendant whose nearest TileTree root is a nested tree (including one
+  rendered through a portal) is not a match. Ratio drags are CRDT writes (`setTileRatios` through
+  the SDK); every STRUCTURAL mutation goes through a door — the actions `core.space.place` and
   `core.space.removeTile` — applied under `SERVER_PLACE_ORIGIN`, which client undo managers never track.
 - **Portal elements.** A canvas record `{ type:"portal", containerId, ...geometry }` renders
   another container in place. This is also how a TERMINAL appears on a canvas: the portal
