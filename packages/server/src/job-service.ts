@@ -215,6 +215,8 @@ export class JobService {
   readonly instanceServices: InstanceServiceStore;
   private readonly effectiveServices = new Map<string, ServiceConfiguration>();
   private readonly instanceStarts = new Set<string>();
+  /** Runtime projection of assembly holds, never installation enablement intent. */
+  private heldPlugins = new Set<string>();
   private readonly instanceFailures = new Map<string, { revision: string; reason: string }>();
   private readonly instanceReadiness = new Map<
     string,
@@ -319,6 +321,7 @@ export class JobService {
   }
   private instanceReason(record: InstanceServiceRecord): string | null {
     if (!record.enabled) return "instance_service_disabled";
+    if (this.heldPlugins.has(record.pluginId)) return "plugin_held";
     if (this.store.getMachine(record.machineId)?.draining) return "machine_draining";
     const live = this.channels.get(record.machineId);
     if (!live?.proved) return "resource_owner_unavailable";
@@ -1235,6 +1238,7 @@ export class JobService {
       this.store.disabledPlugins().has(install.pluginId)
     )
       return "installation_disabled";
+    if (this.heldPlugins.has(install.pluginId)) return "plugin_held";
     const live = this.channels.get(install.machineId);
     if (live?.retirementOnly) return "owner_protocol_unsupported";
     if (!live?.proved) return "resource_owner_unavailable";
@@ -3358,6 +3362,7 @@ export class JobService {
     this.accessChanged();
   }
   private requirements(request: JobRequest, retiring = false): AuthorityRequirement[] {
+    if (this.heldPlugins.has(request.pluginId)) fail("plugin_held");
     const install = this.jobs.installation(request.machineId, request.pluginId);
     const op = install?.machine.operations[request.operationId];
     if (
@@ -4166,6 +4171,7 @@ export class JobService {
     if (!live?.proved) return;
     const machine = jobOwnerMachine(live.owner.protocolVersion, install.machine);
     if (!machine) return;
+    const enabled = install.enabled && !this.heldPlugins.has(install.pluginId);
     live.channel.send({
       type: "job_command",
       command: JobCommandSchema.parse({
@@ -4175,7 +4181,7 @@ export class JobService {
         artifactSha256: install.artifact,
         machine,
         ...(install.resourceBindings ? { resourceBindings: install.resourceBindings } : {}),
-        ...(install.enabled && !install.purgeRequested
+        ...(enabled && !install.purgeRequested
           ? // An unavailable former bundle must refuse acquisition, not disconnect retained reads.
             (this.artifactDelivery(
               install.pluginId,
@@ -4186,7 +4192,7 @@ export class JobService {
           : {}),
         ...(install.purgeRequested
           ? { action: "purge" as const }
-          : install.enabled
+          : enabled
             ? {}
             : { action: "disable" as const }),
       }),
@@ -4274,7 +4280,7 @@ export class JobService {
       }
       this.reconcileAuthority();
       for (const record of this.instanceServices.list())
-        if (record.enabled && record.machineId === channel.machineId && record.jobId === null)
+        if (record.enabled && record.machineId === channel.machineId)
           this.instanceStarts.add(record.serviceId);
       for (const install of this.jobs.installations(channel.machineId)) this.sendInstall(install);
       channel.send({
@@ -4592,6 +4598,7 @@ export class JobService {
         install.revision !== event.installationRevision ||
         install.artifact !== event.artifactSha256 ||
         !install.enabled ||
+        this.heldPlugins.has(event.pluginId) ||
         install.purgeRequested ||
         this.store.disabledPlugins().has(event.pluginId)
       )
@@ -4607,6 +4614,13 @@ export class JobService {
       this.store.db
         .query("UPDATE machine_job_installs SET ready=1 WHERE machine_id=? AND plugin_id=?")
         .run(channel.machineId, event.pluginId);
+      for (const record of this.instanceServices.list())
+        if (
+          record.enabled &&
+          record.machineId === channel.machineId &&
+          record.pluginId === event.pluginId
+        )
+          this.instanceStarts.add(record.serviceId);
       this.reconcileAuthority();
       this.accessChanged();
       for (const job of this.jobs.active(channel.machineId))
@@ -4711,6 +4725,8 @@ export class JobService {
         const serviceId = job.request.service?.serviceId;
         if (serviceId && this.instanceReadiness.get(serviceId)?.jobId === job.request.jobId)
           this.instanceReadiness.delete(serviceId);
+        if (serviceId && this.instanceServices.get(serviceId)?.enabled)
+          this.instanceStarts.add(serviceId);
         this.accessChanged();
       }
       return;
@@ -4764,6 +4780,10 @@ export class JobService {
           .run(node, job.request.jobId, job.request.pluginId, canonicalJobJson(output));
       }
     });
+    // Result and owner-empty can arrive in either order, with a tick between them.
+    const serviceId = job.request.service?.serviceId;
+    if (serviceId && this.instanceServices.get(serviceId)?.enabled)
+      this.instanceStarts.add(serviceId);
     this.jobSchedules.finishInvocation(job.request.jobId);
     this.publishJobEvent(job.request.jobId, event);
   }
@@ -5138,6 +5158,32 @@ export class JobService {
       fail("invalid_journal_read");
     return this.jobs.journal(job.request.jobId, after, limit);
   }
+  /** Assembly alone owns holds; losing executable availability cannot revoke operator intent. */
+  setHeldPlugins(pluginIds: readonly string[]): void {
+    const next = new Set(pluginIds);
+    const changed = new Set([
+      ...pluginIds.filter((id) => !this.heldPlugins.has(id)),
+      ...[...this.heldPlugins].filter((id) => !next.has(id)),
+    ]);
+    if (!changed.size) return;
+    this.heldPlugins = next;
+    for (const install of this.jobs.installations()) {
+      if (!changed.has(install.pluginId)) continue;
+      if (next.has(install.pluginId))
+        this.store.db
+          .query("UPDATE machine_job_installs SET ready=0 WHERE machine_id=? AND plugin_id=?")
+          .run(install.machineId, install.pluginId);
+      this.sendInstall(install);
+    }
+    for (const record of this.instanceServices.list())
+      if (record.enabled && changed.has(record.pluginId)) {
+        this.instanceReadiness.delete(record.serviceId);
+        this.instanceStarts.add(record.serviceId);
+      }
+    this.reconcileAuthority();
+    this.accessChanged();
+  }
+
   disablePlugin(pluginId: string): void {
     this.store.db
       .query("UPDATE machine_job_installs SET enabled=0 WHERE plugin_id=?")

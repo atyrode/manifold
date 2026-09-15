@@ -111,6 +111,10 @@ jobs:
     needs: [release, installed-bundles]
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      switch_started: ${{ steps.switch.outputs.started }}
+      previous_sha: ${{ steps.snapshot.outputs.previous_sha }}
+      previous_build: ${{ steps.snapshot.outputs.previous_build }}
     # Production protection remains on the switch, after the read-only candidate gate.
     environment:
       name: production
@@ -122,18 +126,41 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ needs.release.outputs.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
-        with:
-          bun-version: "1.4.2"
+          persist-credentials: false
+      - uses: ./.github/actions/bun-workspace
 
       - name: Link the application
         run: bunx clever-tools@4.10.0 link "${{ vars.CLEVER_HUB_APP_ID }}" --org "${{ vars.CLEVER_ORG_ID }}"
 
+      - name: Snapshot live state before the switch
+        id: snapshot
+        env:
+          VERIFY_LIVE_ORIGIN: ${{ vars.MANIFOLD_HUB_ORIGIN }}
+          VERIFY_LIVE_TOKEN: ${{ secrets.HUB_INSTALLED_BUNDLES_TOKEN }}
+        run: |
+          bun scripts/verify-live.ts snapshot "$RUNNER_TEMP/verify-live.json"
+          source infra/previews/deployment-order.sh
+          fail() { echo "::error::$*" >&2; exit 1; }
+          previous_build="$(jq -er .build "$RUNNER_TEMP/verify-live.json")"
+          [[ "$previous_build" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail 'Production rollback requires an exact release build'
+          previous_sha="$(legacy_image_revision "$GITHUB_WORKSPACE" "$previous_build")"
+          printf 'previous_sha=%s\nprevious_build=%s\n' "$previous_sha" "$previous_build" >> "$GITHUB_OUTPUT"
+
+      - name: Retain the pre-switch snapshot for verification and rollback
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: verify-live-production-${{ github.run_id }}
+          path: ${{ runner.temp }}/verify-live.json
+          retention-days: 1
+          if-no-files-found: error
+
       - name: Stamp the build
+        id: switch
         # What /healthz will answer (scripts/build-identity.ts): a release is its tag.
         run: |
+          echo 'started=true' >> "$GITHUB_OUTPUT"
           bunx clever-tools@4.10.0 env set MANIFOLD_VERSION "${TAG#v}"
           bunx clever-tools@4.10.0 env set MANIFOLD_BUILD "${TAG#v}"
           bunx clever-tools@4.10.0 env set MANIFOLD_CHANNEL release
@@ -141,15 +168,64 @@ jobs:
       - name: Deploy the tag
         run: bunx clever-tools@4.10.0 deploy --tag "$TAG" --force
 
-      - name: Hub answers with this build
+  verify-live:
+    name: verify-live
+    needs: [release, clever]
+    if: always() && !cancelled() && needs.clever.outputs.switch_started == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      VERIFY_LIVE_ORIGIN: ${{ vars.MANIFOLD_HUB_ORIGIN }}
+      VERIFY_LIVE_TOKEN: ${{ secrets.HUB_INSTALLED_BUNDLES_TOKEN }}
+      CLEVER_TOKEN: ${{ secrets.CLEVER_TOKEN }}
+      CLEVER_SECRET: ${{ secrets.CLEVER_SECRET }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/bun-workspace
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: verify-live-production-${{ github.run_id }}
+          path: ${{ runner.temp }}
+      - name: Verify the promoted release's live state within five minutes
         env:
-          ORIGIN: ${{ vars.MANIFOLD_HUB_ORIGIN }}
+          TAG: ${{ inputs.tag }}
+        run: bun scripts/verify-live.ts verify "$RUNNER_TEMP/verify-live.json" "${TAG#v}"
+      - name: Restore the previous production revision
+        if: failure() || needs.clever.result != 'success'
+        env:
+          PREVIOUS_SHA: ${{ needs.clever.outputs.previous_sha }}
+          PREVIOUS_BUILD: ${{ needs.clever.outputs.previous_build }}
         run: |
-          for _ in $(seq 1 40); do
-            if [ "$(curl -fsS "$ORIGIN/healthz" | jq -r .build)" = "${TAG#v}" ]; then exit 0; fi
-            sleep 15
-          done
-          echo "hub at $ORIGIN never reported build ${TAG#v}"; exit 1
+          printf '### Automatic production rollback\n\nSwitch or live verification failed. Restoring `%s`; this run remains failed.\n\n' "$PREVIOUS_SHA" >> "$GITHUB_STEP_SUMMARY"
+          bunx clever-tools@4.10.0 link "${{ vars.CLEVER_HUB_APP_ID }}" --org "${{ vars.CLEVER_ORG_ID }}"
+          bunx clever-tools@4.10.0 env set MANIFOLD_VERSION "$PREVIOUS_BUILD"
+          bunx clever-tools@4.10.0 env set MANIFOLD_BUILD "$PREVIOUS_BUILD"
+          bunx clever-tools@4.10.0 env set MANIFOLD_CHANNEL release
+          bunx clever-tools@4.10.0 restart --commit "$PREVIOUS_SHA"
+          bun scripts/verify-live.ts verify "$RUNNER_TEMP/verify-live.json" "$PREVIOUS_BUILD"
+          printf 'The previous revision `%s` is serving and its live-state parity is verified.\n\n' "$PREVIOUS_SHA" >> "$GITHUB_STEP_SUMMARY"
+
+  fleet-pin:
+    name: Pin the verified production fleet
+    needs: [release, clever, verify-live]
+    if: always() && !cancelled() && needs.release.result == 'success'
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag }}
+    steps:
+      - name: Require successful switch and live verification
+        env:
+          SWITCH_RESULT: ${{ needs.clever.result }}
+          VERIFY_RESULT: ${{ needs.verify-live.result }}
+        run: |
+          if [ "$SWITCH_RESULT" != success ] || [ "$VERIFY_RESULT" != success ]; then
+            echo "::error::Production deployment requires a successful switch and verify-live; got $SWITCH_RESULT and $VERIFY_RESULT"
+            exit 1
+          fi
 
       - name: Dispatch the fleet pin
         # Hub first, then the fleet (docs/CONTRACTS.md §Protocol and compatibility), as a SEQUENCE rather than a cron racing a
