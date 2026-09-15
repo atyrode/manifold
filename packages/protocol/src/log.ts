@@ -64,8 +64,9 @@ export const LOG_EVENTS = [
   "local_agent_prepared",
 
   // Server: machine transport — enrolment, version negotiation, supersession, liveness,
-  // (#278) admission: a claimant refused for unproven continuity, and the drain round trip,
-  // and (#529) the repository round trip: an answer nobody waited for, and one that never came.
+  // (#278) admission: a claimant refused for unproven continuity, (#405) an already-claimed
+  // reported name, and the drain round trip, plus (#529) the repository round trip: an answer
+  // nobody waited for, and one that never came.
   "machine_admission_refused",
   "machine_drain_status",
   "machine_drain_timeout",
@@ -73,6 +74,7 @@ export const LOG_EVENTS = [
   "machine_hello_timeout",
   "machine_liveness_timeout",
   "machine_malformed_frame",
+  "machine_name_conflict",
   "machine_rejected",
   "machine_repository_timeout",
   "machine_repository_unmatched",

@@ -44,12 +44,15 @@ function machineMessages(socket: FakeSocket): ServerToAgentMessage[] {
 
 class CaptureLogger implements Logger {
   readonly events: { evt: string; fields: Readonly<Record<string, unknown>> | undefined }[] = [];
+  readonly warnings: { evt: string; fields: Readonly<Record<string, unknown>> | undefined }[] = [];
 
   info(evt: string, fields?: Readonly<Record<string, unknown>>): void {
     this.events.push({ evt, fields });
   }
 
-  warn(): void {}
+  warn(evt: string, fields?: Readonly<Record<string, unknown>>): void {
+    this.warnings.push({ evt, fields });
+  }
 
   error(): void {}
 }
@@ -430,6 +433,71 @@ describe("machine hello reconciliation", () => {
     const rejected = warned.find((w) => w.evt === "machine_version_rejected");
     expect(rejected?.fields?.agentProtocolVersion).toBe(PROTOCOL_VERSION + 1);
     expect(rejected?.fields?.serverProtocolVersion).toBe(PROTOCOL_VERSION);
+    gateway.shutdown();
+    store.close();
+  });
+
+  test("refuses a duplicate reported name without mutating either machine", () => {
+    const runtime = new FakeRuntime();
+    const clock = new FakeClock(runtime);
+    const store = testStore();
+    const auth = new AuthService(store, "n".repeat(64), runtime);
+    const root = auth.authenticate("n".repeat(64));
+    const incumbent = auth.enrollMachine("incumbent", root);
+    const claimant = auth.enrollMachine("claimant", root);
+    const rooms = new RoomManager(store, runtime, clock, silentLogger, testTileTrees);
+    const broker = new TerminalBroker(
+      store,
+      auth,
+      rooms,
+      runtime,
+      clock,
+      silentLogger,
+      () => "http://localhost:7777",
+      testTileTrees,
+    );
+    const logger = new CaptureLogger();
+    const gateway = new MachineGateway(auth, store, broker, clock, logger, "server-epoch", runtime);
+    const hello = (token: string, name: string) =>
+      JSON.stringify({
+        type: "hello",
+        token,
+        name,
+        agentVersion: "test",
+        protocolVersion: PROTOCOL_VERSION,
+        terminals: [],
+      });
+
+    const incumbentSocket = new FakeSocket();
+    gateway.open("incumbent", incumbentSocket);
+    gateway.message("incumbent", hello(incumbent.machineToken, "shared-name"));
+    const incumbentBefore = store.getMachine(incumbent.machine.id);
+    const claimantBefore = store.getMachine(claimant.machine.id);
+
+    const claimantSocket = new FakeSocket();
+    gateway.open("claimant", claimantSocket);
+    gateway.message("claimant", hello(claimant.machineToken, "shared-name"));
+
+    expect(claimantSocket.closed).toEqual({
+      code: 4003,
+      reason: "machine name already in use",
+    });
+    expect(machineMessages(claimantSocket)).toEqual([]);
+    expect(store.getMachine(claimant.machine.id)).toEqual(claimantBefore);
+    expect(store.getMachine(incumbent.machine.id)).toEqual(incumbentBefore);
+    expect(gateway.isOnline(incumbent.machine.id)).toBe(true);
+    expect(incumbentSocket.closed).toBeNull();
+    expect(logger.warnings).toContainEqual({
+      evt: "machine_name_conflict",
+      fields: { machineId: claimant.machine.id, machineName: "shared-name" },
+    });
+
+    clock.advance(10_000);
+    expect(claimantSocket.closed).toEqual({
+      code: 4003,
+      reason: "machine name already in use",
+    });
+    expect(logger.warnings.map((entry) => entry.evt)).not.toContain("machine_hello_timeout");
     gateway.shutdown();
     store.close();
   });

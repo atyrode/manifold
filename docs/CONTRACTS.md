@@ -3116,8 +3116,11 @@ and fresh on host restart; it is not the machine token or a durable terminal che
 disconnected; absence is equivalent to `null`. Such exited terminals are retained through
 the next `hello`, then forgotten when `welcome` acknowledges it (or when `kill` arrives).
 Server replies `welcome { machineId, serverEpoch }` or closes: 4401 unauthorized,
-4403 revoked, 4409 version, or 4003 admission refused (incumbent continuity mismatch or
-supersession damp). Version acceptance uses `MACHINE_PROTOCOL_COMPAT_VERSIONS`, currently
+4403 revoked, 4409 version, or 4003 admission refused (`machine name already in use`,
+incumbent continuity mismatch, or `supersession damped`). A name conflict is decided by the
+same atomic write that would admit the hello; it sends no welcome, changes neither machine row,
+and leaves an incumbent connection untouched. Version acceptance uses
+`MACHINE_PROTOCOL_COMPAT_VERSIONS`, currently
 `{30, 31, 32, 33}`; session/browser joins remain strictly current at protocol 33. An unchanged machine
 wire may add a version to the set. A strictly additive-optional change may also add it only
 when old frames still parse and absent fields preserve the old semantics. Other changes
