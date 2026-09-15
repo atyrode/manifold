@@ -904,8 +904,12 @@ export class HttpApp {
     switch (ref.kind) {
       case "terminal": {
         const terminal = this.store.getTerminal(ref.terminalId);
-        if (terminal === null) return { exists: false, title: null };
-        this.requireCap(context, "containers:read", terminal.containerId);
+        if (
+          terminal === null ||
+          !this.auth.allows(context, "containers:read", terminal.containerId)
+        ) {
+          return { exists: false, title: null };
+        }
         return { exists: true, title: terminal.name };
       }
       case "container": {
