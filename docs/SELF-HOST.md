@@ -904,10 +904,11 @@ Using the same root credentials as `installed-bundles`, live verification has on
 deadline**, including requests and retries. It checks the expected `/healthz` build, requires
 every previously ready native installation to retain its revision and enablement and become
 ready again, and requires every previously enabled instance service to remain enabled and reach
-`ready`. Every installed plugin must also answer a declared read door with valid arguments and
-results. Discovery selects only read-capability doors accepting an empty object, never invents
-resource identifiers or calls a write, and fails closed by plugin id if none exists. Disabled
-installed plugins are not silently excluded from this check.
+`ready`. Every installed plugin must also stay present and keep its enablement. A plugin that
+declares a read-capability door accepting an empty object must answer it with valid results;
+discovery never invents resource identifiers or calls a write. A plugin whose reads all take
+arguments is verified by its roster row instead, and refused when that row is held or carries a
+failed lifecycle. Disabled installed plugins are not silently excluded from this check.
 
 The first unresolved divergence is named in the failing job and step summary. A failed switch
 or verification automatically restores the snapshotted application revision: development uses
