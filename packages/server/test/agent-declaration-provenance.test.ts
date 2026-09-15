@@ -112,6 +112,7 @@ function restorePreCutoverSchema(f: Fixture): void {
       ALTER TABLE terminals DROP COLUMN cwd;
       ALTER TABLE terminals DROP COLUMN launch_recipe;
       DROP TABLE agents;
+      DROP TABLE principal_access_pauses;
     `);
     f.store.setMeta("schema_version", "35");
     f.store.db.query("DELETE FROM meta WHERE key=?").run(CUTOVER);

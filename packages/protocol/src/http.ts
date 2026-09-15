@@ -239,6 +239,8 @@ export const PrincipalCredentialsSchema = z.strictObject({
   createdAt: z.number().int().nonnegative(),
   /** Live credentials only: neither revoked nor past its expiry. Empty is a real answer. */
   sessions: z.array(CredentialSchema),
+  /** Present while every credential exercise for this non-owner principal is paused. */
+  pausedAt: z.number().int().nonnegative().optional(),
   /** Native service identity and owner machine; populated together for service principals. */
   serviceId: z.string().min(1).optional(),
   machineId: z.string().min(1).optional(),
@@ -249,6 +251,18 @@ export const CredentialsResponseSchema = z.strictObject({
   principals: z.array(PrincipalCredentialsSchema),
 });
 export type CredentialsResponse = z.infer<typeof CredentialsResponseSchema>;
+/** One principal whose credential exercise is being paused or resumed. */
+export const PrincipalAccessPauseRequestSchema = z.strictObject({
+  principalId: z.string().min(1),
+});
+export type PrincipalAccessPauseRequest = z.infer<typeof PrincipalAccessPauseRequestSchema>;
+
+/** The durable pause state after the requested idempotent transition. */
+export const PrincipalAccessPauseResultSchema = z.strictObject({
+  principalId: z.string().min(1),
+  pausedAt: z.number().int().nonnegative().nullable(),
+});
+export type PrincipalAccessPauseResult = z.infer<typeof PrincipalAccessPauseResultSchema>;
 
 export const RevokeRequestSchema = z.strictObject({
   principalId: z.string().min(1),

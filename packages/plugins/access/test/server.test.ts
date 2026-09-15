@@ -179,6 +179,8 @@ function recorder(options: {
           calls.push({ kind: "revoke", payload: principalId });
           return answer(options.revoke, 0);
         },
+        pausePrincipalAccess: unused,
+        resumePrincipalAccess: unused,
         listCredentials: () => {
           calls.push({ kind: "listCredentials", payload: null });
           return answer(options.listCredentials, [credentials]);

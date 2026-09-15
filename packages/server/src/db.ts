@@ -9,7 +9,7 @@ import { JOB_SCHEDULE_SCHEMA_SQL } from "./job-schedules.ts";
 import { migrateToDurableAgents } from "./migrate-agents.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 40;
+export const SCHEMA_VERSION = 41;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
@@ -930,6 +930,18 @@ SELECT job_id,NULL FROM machine_jobs WHERE state='started';
       db.exec("INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','40')");
     },
   },
+  /**
+   * Access pause is credential lifecycle state rather than a grant row: it must dominate every
+   * descendant allow without changing ADR 0011's waterfall, and survive a process restart.
+   */
+  41: `
+CREATE TABLE principal_access_pauses(
+  principal_id TEXT PRIMARY KEY REFERENCES principals(id) ON DELETE CASCADE,
+  paused_at INTEGER NOT NULL,
+  paused_by TEXT NOT NULL
+);
+INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','41');
+`,
 };
 
 interface TableRow {

@@ -3,6 +3,7 @@ import type { Agent } from "@manifold/protocol";
 import {
   AccessBrowser,
   admittedRun,
+  at,
   agent,
   credentials,
   inspection,
@@ -117,6 +118,59 @@ test("human and legacy Sessions remain logins while linked Agent principals expo
   await ui.text("Agent credential withdrawal is not authorized");
 }, 60_000);
 
+test("Sessions pause and resume the same principal without destructive confirmation", async () => {
+  await ui.reset("sessions");
+  await ui.answer("core.access.listCredentials", credentials);
+  await ui.answer("core.access.listAgents", {
+    agents: [agent],
+    truncated: false,
+    canRegister: true,
+  });
+  await ui.answer("core.access.listRuns", inventory);
+
+  await ui.click("Pause access for Human reader");
+  await ui.outcome("core.access.pause", {
+    ok: true,
+    result: { principalId: "human-one", pausedAt: at + 1_000 },
+  });
+  await ui.answer("core.access.listCredentials", {
+    principals: credentials.principals.map((row) =>
+      row.principal.id === "human-one" ? { ...row, pausedAt: at + 1_000 } : row,
+    ),
+  });
+  await ui.answer("core.access.listAgents", {
+    agents: [agent],
+    truncated: false,
+    canRegister: true,
+  });
+  await ui.answer("core.access.listRuns", inventory);
+  expect(
+    await ui.browser.evaluate<string>(
+      'document.querySelector("[data-principal=human-one]").innerText',
+    ),
+  ).toContain("access paused");
+  await ui.text("Resume access");
+
+  await ui.click("Resume access for Human reader");
+  await ui.outcome("core.access.resume", {
+    ok: true,
+    result: { principalId: "human-one", pausedAt: null },
+  });
+  await ui.answer("core.access.listCredentials", credentials);
+  await ui.answer("core.access.listAgents", {
+    agents: [agent],
+    truncated: false,
+    canRegister: true,
+  });
+  await ui.answer("core.access.listRuns", inventory);
+  expect(
+    await ui.browser.evaluate<string>(
+      'document.querySelector("[data-principal=human-one]").innerText',
+    ),
+  ).not.toContain("access paused");
+  await ui.text("Pause access");
+}, 60_000);
+
 test("native service Sessions identify their owner, open their plugin and never expose Agent or revoke controls", async () => {
   await ui.reset("sessions");
   await ui.answer("core.access.listCredentials", {
@@ -145,7 +199,10 @@ test("native service Sessions identify their owner, open their plugin and never 
     await ui.browser.evaluate<string[]>(
       '[...document.querySelectorAll("[data-principal=service-one] button")].map(button => button.getAttribute("aria-label"))',
     ),
-  ).toEqual(["Open native service native.accounts.broker in Plugins"]);
+  ).toEqual([
+    "Open native service native.accounts.broker in Plugins",
+    "Pause access for Accounts broker",
+  ]);
   expect(
     await ui.browser.evaluate<string[]>(
       '[...document.querySelectorAll("[data-action=\\"core.access.revoke\\"]")].map(button => button.closest("[data-principal]").dataset.principal)',

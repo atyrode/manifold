@@ -530,6 +530,13 @@ Reasoning and rejected alternatives: [ADR 0019](decisions/0019-identity-posture.
   grant at `manifold://container/<id>`, which is what it always meant; the field did not move.
 - Revocation: durable; server closes live sockets of revoked tokens with code 4403 and
   message `revoked`.
+- **Pause** (ADR 0046): durable principal lifecycle state, evaluated before Run policy and the
+  ADR 0011 grant waterfall. A paused non-owner principal authenticates normally but has an empty
+  effective capability set on every subsequent request, including on existing sockets and at
+  descendant nodes with more-specific allows. Pause does not revoke tokens or grants, close
+  transports, settle Runs, stop work, or delete data. Resume restores the same unexpired,
+  unrevoked credentials without reauthentication. The owner is unpausable in both mutation and
+  evaluation paths so the owner key remains the break-glass recovery path.
 - Automation principal isolation, policy, delegation and teardown are specified in
   [Automation credential lifecycle](#automation-credential-lifecycle) and recorded by
   [ADR 0039](decisions/0039-accountable-agent-runs.md).
@@ -1733,9 +1740,9 @@ declaring a second copy. Presentation that was derived per client is wire data n
 lets any principal render the same badge.
 
 **Access administration (`core.access`).** `POST /api/principals`, `POST /api/tokens` and
-`POST /api/tokens/revoke` are deleted; the identity MECHANISM (hashing, bearer authentication,
-attenuation, the revocation fence) stays floor and unchanged. The three doors, plus the five
-cross-instance ones below:
+`POST /api/tokens/revoke` are deleted; the identity mechanism — hashing, bearer authentication,
+attenuation, lifecycle pause and the revocation fence — stays on the floor. Its administrative
+doors include:
 
 | Action                        | Caps              | Scope                              | Args → Result                                                                                        |
 | ----------------------------- | ----------------- | ---------------------------------- | ---------------------------------------------------------------------------------------------------- |
@@ -1743,6 +1750,8 @@ cross-instance ones below:
 | `core.access.mint`            | `tokens:mint`     | container                          | `{ principal \| principalId, caps, containerId? }` → `TokenGrant`                                    |
 | `core.access.revoke`          | `tokens:mint`     | container                          | `{ principalId }` → `{ revoked: <count> }` — **`cleanup: true`**                                     |
 | `core.access.listCredentials` | `tokens:mint`     | workspace                          | `{}` → `{ principals: PrincipalCredentials[] }`                                                      |
+| `core.access.pause`           | `*`               | workspace                          | `{ principalId }` → `{ principalId, pausedAt }`                                                      |
+| `core.access.resume`          | `*`               | workspace                          | `{ principalId }` → `{ principalId, pausedAt: null }`                                                |
 | `core.access.listAgents`      | identity-relative | workspace / `runAccess: "inspect"` | `{}` → `{ agents, truncated, canRegister }`                                                          |
 | `core.access.getAgent`        | identity-relative | workspace / `runAccess: "inspect"` | `{ agentId }` → `{ agent, canManage }`                                                               |
 | `core.access.listRuns`        | identity-relative | workspace / `runAccess: "inspect"` | `{ agentId? }` → `ListRunsResult` (at most 100 safe Run summaries, including authorized descendants) |
@@ -1763,6 +1772,16 @@ carrying the mechanism's own wording verbatim (`cannot mint capability <cap>`, `
 container
 scope`, `principal not found`, `cannot revoke another principal`); a cap the caller does not hold
 is `forbidden` at the door, one rung earlier.
+`pause` and `resume` are root-only, workspace-scoped and idempotent (ADR 0046). Both refuse an
+unknown principal and the workspace owner. Schema 41 stores one pause row per principal; the
+authority mechanism loads it into memory and checks it before every waterfall evaluation without
+a per-request database read. A real transition invalidates cached authority and emits exactly one
+declared `principal_access_paused` or `principal_access_resumed` event on
+`manifold://plugin/core.access`; repeats emit nothing. `PrincipalCredentials.pausedAt?` is the
+durable state projection. Sessions exposes Pause access / Resume access for non-self rows with live
+credentials. As with the Commands surface, drawing a door does not claim the viewer may open it:
+the authoritative root-only refusal is rendered if a non-root viewer tries. The revocation control
+remains separate and destructive.
 
 **Native service credentials are managed by their service, not by Sessions (#594).**
 `listCredentials` projects `kind: "service"` with optional top-level `serviceId` and `machineId`,
@@ -1770,7 +1789,8 @@ populated together when the native service identity is recorded. The metadata co
 bearer value or hash: mint-event attribution identifies retained/replaced principals, with the
 current `native_instance_services.credential` reference as the fallback. Sessions renders
 “Native service · <serviceId> · owned by <machine>”, links to that service in Plugins, and offers
-no Revoke control; human and Agent rows keep their existing behavior.
+no Revoke control. Root may reversibly pause its request authority without changing configuration,
+credential ownership, or the service process; human and Agent rows use the same pause lifecycle.
 `core.access.revoke` and `revokePrincipal` refuse a service principal with
 `service_credential_managed_by_service` as the refusal-message prefix, including for root. The refusal names the `serviceId`
 and `engine.services.configureInstance`; disabling (`{ enabled: false }`), replacing or

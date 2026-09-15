@@ -33,6 +33,8 @@ import {
   MintShareRequestSchema,
   MintTokenRequestSchema,
   OpenDialRequestSchema,
+  PrincipalAccessPauseRequestSchema,
+  PrincipalAccessPauseResultSchema,
   RegisterAgentRequestSchema,
   RegisterAgentResultSchema,
   ReportRunActivityRequestSchema,
@@ -117,7 +119,7 @@ import { z } from "zod";
  */
 export const accessManifest: PluginManifest = {
   id: "core.access",
-  version: "1.4.0",
+  version: "1.5.0",
   title: "Access",
   description:
     "Registers durable Agents, admits bounded Runs, enforces exact policy acknowledgement, and inspects authorized work alongside credentials, grants and shares — share UI: deferred, door-only; grant UI: deferred, door-only",
@@ -173,6 +175,8 @@ export const accessManifest: PluginManifest = {
     events: [
       { id: "agent_changed", title: "Agent changed" },
       { id: "run_changed", title: "Run changed" },
+      { id: "principal_access_paused", title: "Principal access paused" },
+      { id: "principal_access_resumed", title: "Principal access resumed" },
       { id: "dial_online", title: "Dial live" },
       { id: "dial_offline", title: "Dial offline" },
       { id: "dial_revoked", title: "Dial revoked by its host" },
@@ -186,6 +190,8 @@ export const accessManifest: PluginManifest = {
  */
 export const ACCESS_LIST_CREDENTIALS_ACTION = `${accessManifest.id}.listCredentials`;
 export const ACCESS_REVOKE_ACTION = `${accessManifest.id}.revoke`;
+export const ACCESS_PAUSE_ACTION = `${accessManifest.id}.pause`;
+export const ACCESS_RESUME_ACTION = `${accessManifest.id}.resume`;
 export const ACCESS_REGISTER_AGENT_ACTION = `${accessManifest.id}.registerAgent`;
 export const ACCESS_LIST_AGENTS_ACTION = `${accessManifest.id}.listAgents`;
 export const ACCESS_GET_AGENT_ACTION = `${accessManifest.id}.getAgent`;
@@ -461,6 +467,22 @@ export const accessActions = [
     scope: "workspace",
     input: z.strictObject({}),
     result: CredentialsResponseSchema,
+  }),
+  defineAction({
+    name: "pause",
+    title: "Pause a principal's access",
+    caps: ["*"],
+    scope: "workspace",
+    input: PrincipalAccessPauseRequestSchema,
+    result: PrincipalAccessPauseResultSchema,
+  }),
+  defineAction({
+    name: "resume",
+    title: "Resume a principal's access",
+    caps: ["*"],
+    scope: "workspace",
+    input: PrincipalAccessPauseRequestSchema,
+    result: PrincipalAccessPauseResultSchema,
   }),
 
   /*

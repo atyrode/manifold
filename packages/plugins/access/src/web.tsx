@@ -6,6 +6,7 @@ import {
   CredentialsResponseSchema,
   InstanceServiceDescriptionSchema,
   ListAgentsResultSchema,
+  PrincipalAccessPauseResultSchema,
   RevokeResultSchema,
   formatManifoldUri,
   type PrincipalCredentials,
@@ -15,6 +16,8 @@ import {
   ACCESS_LIST_AGENTS_ACTION,
   ACCESS_LIST_CREDENTIALS_ACTION,
   ACCESS_LIST_RUNS_ACTION,
+  ACCESS_PAUSE_ACTION,
+  ACCESS_RESUME_ACTION,
   ACCESS_REVOKE_ACTION,
 } from "./index.ts";
 import { useAccessRead } from "./reads.ts";
@@ -34,6 +37,9 @@ function metaLine(row: PrincipalCredentials, now: number): string {
   const parts: string[] = [row.principal.kind];
   if (row.principal.origin !== undefined) parts.push(row.principal.origin);
   parts.push(`since ${new Date(row.createdAt).toLocaleDateString()}`);
+  if (row.pausedAt !== undefined) {
+    parts.push(`access paused ${new Date(row.pausedAt).toLocaleDateString()}`);
+  }
   if (row.sessions.length === 0) parts.push("no live credential");
   else {
     const soonest = row.sessions.reduce<number | undefined>(
@@ -142,6 +148,7 @@ function CredentialSessions({ host }: SectionProps): ReactElement {
   // Revocation fences live sockets, so the first press must disclose what the second does.
   const [armedId, setArmedId] = useState<string | null>(null);
   const [pendingId, setPendingId] = useState<string | null>(null);
+  const [pendingAccessId, setPendingAccessId] = useState<string | null>(null);
   const [inactiveOpen, setInactiveOpen] = useState(false);
   const revoke = async (principalId: string): Promise<void> => {
     setPendingId(principalId);
@@ -163,6 +170,41 @@ function CredentialSessions({ host }: SectionProps): ReactElement {
     } finally {
       setPendingId(null);
       setArmedId(null);
+    }
+  };
+  const setAccessPaused = async (row: PrincipalCredentials): Promise<void> => {
+    const pausing = row.pausedAt === undefined;
+    setPendingAccessId(row.principal.id);
+    setFailure(null);
+    try {
+      const outcome = await host.client.action(
+        pausing ? ACCESS_PAUSE_ACTION : ACCESS_RESUME_ACTION,
+        { principalId: row.principal.id },
+      );
+      if (!outcome.ok) {
+        setFailure(outcome.denial.message);
+        return;
+      }
+      const parsed = PrincipalAccessPauseResultSchema.safeParse(outcome.result);
+      if (!parsed.success) {
+        setFailure(
+          pausing
+            ? "Access was paused, but the durable state could not be read"
+            : "Access was resumed, but the durable state could not be read",
+        );
+        return;
+      }
+      setRevision((current) => current + 1);
+    } catch (reason: unknown) {
+      setFailure(
+        reason instanceof Error
+          ? reason.message
+          : pausing
+            ? "Could not pause access"
+            : "Could not resume access",
+      );
+    } finally {
+      setPendingAccessId(null);
     }
   };
   const rows = read.state === "ready" ? read.result.principals : [];
@@ -209,18 +251,23 @@ function CredentialSessions({ host }: SectionProps): ReactElement {
         <span className="credential-name">
           <strong>{row.principal.name}</strong>
           {row.principal.kind === "service" ? (
-            row.serviceId === undefined || row.machineId === undefined ? (
-              <span className="credential-inspection-note">
-                Native service · identity unavailable
+            <>
+              <span className="credential-meta">
+                {metaLine(row, read.state === "ready" ? read.observedAt : 0)}
               </span>
-            ) : (
-              <NativeServiceCredential
-                host={host}
-                serviceId={row.serviceId}
-                machineId={row.machineId}
-                revision={revision}
-              />
-            )
+              {row.serviceId === undefined || row.machineId === undefined ? (
+                <span className="credential-inspection-note">
+                  Native service · identity unavailable
+                </span>
+              ) : (
+                <NativeServiceCredential
+                  host={host}
+                  serviceId={row.serviceId}
+                  machineId={row.machineId}
+                  revision={revision}
+                />
+              )}
+            </>
           ) : (
             <>
               <span className="credential-meta">
@@ -267,35 +314,52 @@ function CredentialSessions({ host }: SectionProps): ReactElement {
             </>
           )}
         </span>
-        {row.principal.kind !== "service" && mayRevoke && row.sessions.length > 0 ? (
-          <button
-            className="credential-revoke"
-            type="button"
-            data-action={ACCESS_REVOKE_ACTION}
-            data-testid="credential-revoke"
-            data-confirming={armed}
-            aria-label={
-              armed
-                ? `Confirm withdrawing every credential of ${row.principal.name}`
-                : `Withdraw every credential of ${row.principal.name}`
-            }
-            title={
-              armed
-                ? `Press again to withdraw ${String(row.sessions.length)} credential(s)${self ? " — including this browser's" : ""}`
-                : `Withdraw every credential of ${row.principal.name}`
-            }
-            disabled={pendingId !== null}
-            onBlur={() => {
-              if (armed) setArmedId(null);
-            }}
-            onClick={() => {
-              if (!armed) setArmedId(row.principal.id);
-              else void revoke(row.principal.id);
-            }}
-          >
-            <ControlIcon kind="revoke" {...ROW_ICON} />
-          </button>
-        ) : null}
+        <span className="credential-controls">
+          {!self && row.sessions.length > 0 ? (
+            <button
+              className="credential-access-toggle"
+              type="button"
+              data-action={row.pausedAt === undefined ? ACCESS_PAUSE_ACTION : ACCESS_RESUME_ACTION}
+              data-testid="credential-access-toggle"
+              data-paused={row.pausedAt !== undefined}
+              aria-label={`${row.pausedAt === undefined ? "Pause" : "Resume"} access for ${row.principal.name}`}
+              title={`${row.pausedAt === undefined ? "Pause" : "Resume"} access for ${row.principal.name}`}
+              disabled={pendingAccessId !== null || pendingId !== null}
+              onClick={() => void setAccessPaused(row)}
+            >
+              {row.pausedAt === undefined ? "Pause access" : "Resume access"}
+            </button>
+          ) : null}
+          {row.principal.kind !== "service" && mayRevoke && row.sessions.length > 0 ? (
+            <button
+              className="credential-revoke"
+              type="button"
+              data-action={ACCESS_REVOKE_ACTION}
+              data-testid="credential-revoke"
+              data-confirming={armed}
+              aria-label={
+                armed
+                  ? `Confirm withdrawing every credential of ${row.principal.name}`
+                  : `Withdraw every credential of ${row.principal.name}`
+              }
+              title={
+                armed
+                  ? `Press again to withdraw ${String(row.sessions.length)} credential(s)${self ? " — including this browser's" : ""}`
+                  : `Withdraw every credential of ${row.principal.name}`
+              }
+              disabled={pendingId !== null || pendingAccessId !== null}
+              onBlur={() => {
+                if (armed) setArmedId(null);
+              }}
+              onClick={() => {
+                if (!armed) setArmedId(row.principal.id);
+                else void revoke(row.principal.id);
+              }}
+            >
+              <ControlIcon kind="revoke" {...ROW_ICON} />
+            </button>
+          ) : null}
+        </span>
       </div>
     );
   };

@@ -939,6 +939,8 @@ export {
   CredentialSchema,
   CredentialsResponseSchema,
   PrincipalCredentialsSchema,
+  PrincipalAccessPauseRequestSchema,
+  PrincipalAccessPauseResultSchema,
   RevokeMachineRequestSchema,
   ForgetMachineRequestSchema,
   ForgetMachineResultSchema,
@@ -963,6 +965,8 @@ export {
   type Credential,
   type CredentialsResponse,
   type PrincipalCredentials,
+  type PrincipalAccessPauseRequest,
+  type PrincipalAccessPauseResult,
   type RevokeMachineRequest,
 } from "./http.ts";
 export { defaultRuntime, type RuntimeDeps } from "./runtime.ts";

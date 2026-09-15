@@ -126,6 +126,8 @@ import type {
   PluginRoster,
   Principal,
   PrincipalCredentials,
+  PrincipalAccessPauseRequest,
+  PrincipalAccessPauseResult,
   RuntimeDeps,
   Share,
   ShareGrant,
@@ -274,6 +276,14 @@ export interface IdentityDoor {
   reloadAgentPolicy(): IdentityResult<ReloadAgentPolicyResult>;
   /** Revokes a principal's tokens the caller is entitled to revoke; answers the count. */
   revokePrincipal(principalId: string): IdentityResult<number>;
+  /** Pauses every future authority check without revoking credentials or stopping work. */
+  pausePrincipalAccess(
+    input: PrincipalAccessPauseRequest,
+  ): IdentityResult<PrincipalAccessPauseResult>;
+  /** Restores the same credentials and grants without requiring reauthentication. */
+  resumePrincipalAccess(
+    input: PrincipalAccessPauseRequest,
+  ): IdentityResult<PrincipalAccessPauseResult>;
   /** Enrolls a machine, refusing a scoped or `machines:mint`-less caller. */
   enrollMachine(name: string): IdentityResult<MachineEnrollment>;
   /** Re-mints an enrolled machine's secret, revoking the previous one. */
@@ -1723,6 +1733,12 @@ export class PluginHost {
       events.emit("core.access", { kind: "agent", agentId }, "agent_changed", null, {});
       if (runId !== undefined)
         events.emit("core.access", { kind: "run", runId }, "run_changed", null, {});
+    });
+    authService.setAccessPauseChangeListener((kind, principalId, at, actorId) => {
+      events.emit("core.access", { kind: "plugin", pluginId: "core.access" }, kind, actorId, {
+        principalId,
+        at,
+      });
     });
     return host;
   }
@@ -4173,6 +4189,10 @@ export class PluginHost {
         reloadAgentPolicy: () => identityCall(() => this.authService.reloadAgentPolicy(auth)),
         revokePrincipal: (principalId) =>
           identityCall(() => this.authService.revokePrincipal(principalId, auth)),
+        pausePrincipalAccess: (input) =>
+          identityCall(() => this.authService.pausePrincipalAccess(input, auth)),
+        resumePrincipalAccess: (input) =>
+          identityCall(() => this.authService.resumePrincipalAccess(input, auth)),
         enrollMachine: (name) => identityCall(() => this.authService.enrollMachine(name, auth)),
         rotateMachineToken: (machine) =>
           identityCall(() => this.authService.rotateMachineToken(machine, auth.principal.id)),

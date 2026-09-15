@@ -4,6 +4,8 @@ import {
   ShareGrantSchema,
   TokenGrantSchema,
   CredentialsResponseSchema,
+  PrincipalAccessPauseResultSchema,
+  formatManifoldUri,
   type ActionOutcome,
   type Cap,
   type Grant,
@@ -23,6 +25,7 @@ import {
   testStore,
   testTileTrees,
 } from "./helpers.ts";
+import { createExternalRun } from "./agent-fixtures.ts";
 
 /**
  * THE ACCESS DOOR — `core.access`, rung by rung, over the real assembly.
@@ -409,6 +412,145 @@ describe("core.access ladder", () => {
     // a nil count is the honest answer, never a refusal.
     expect(result(first)).toEqual({ revoked: 2 });
     expect(result(again)).toEqual({ revoked: 0 });
+    fix.store.close();
+  });
+  test("pause dominates deeper grants and resume restores the same live credential", async () => {
+    const fix = await fixture();
+    const containerId = accessContainer(fix);
+    const victim = grant(fix, ["tokens:mint"]);
+    const actor = fix.auth.authenticate(victim.token);
+    const target = formatManifoldUri({ kind: "container", containerId });
+    fix.auth.grant(
+      {
+        principal: { kind: "principal", id: victim.principal.id },
+        node: target,
+        caps: ["scenes:write"],
+        effect: "allow",
+        reach: "subtree",
+      },
+      fix.owner,
+    );
+    expect(fix.auth.allows(actor, "scenes:write", containerId)).toBe(true);
+    expect(result(await fix.host.dispatch(actor, "core.access.listCredentials", {}))).toBeDefined();
+    expect(
+      denial(
+        await fix.host.dispatch(actor, "core.access.pause", {
+          principalId: victim.principal.id,
+        }),
+      ).rule,
+    ).toBe("forbidden");
+    let revoked = false;
+    const stop = fix.auth.onRevoked(() => {
+      revoked = true;
+    });
+
+    const first = PrincipalAccessPauseResultSchema.parse(
+      result(
+        await fix.host.dispatch(fix.owner, "core.access.pause", {
+          principalId: victim.principal.id,
+        }),
+      ),
+    );
+    const again = PrincipalAccessPauseResultSchema.parse(
+      result(
+        await fix.host.dispatch(fix.owner, "core.access.pause", {
+          principalId: victim.principal.id,
+        }),
+      ),
+    );
+    if (first.pausedAt === null) throw new Error("pause returned a resumed state");
+
+    expect(again).toEqual(first);
+    expect(denial(await fix.host.dispatch(actor, "core.access.listCredentials", {})).rule).toBe(
+      "forbidden",
+    );
+    expect(fix.auth.allows(actor, "scenes:write", containerId)).toBe(false);
+    expect(fix.store.listTokensByPrincipal(victim.principal.id)[0]?.revokedAt).toBeNull();
+    expect(revoked).toBe(false);
+    expect(
+      CredentialsResponseSchema.parse(
+        result(await fix.host.dispatch(fix.owner, "core.access.listCredentials", {})),
+      ).principals.find((row) => row.principal.id === victim.principal.id)?.pausedAt,
+    ).toBe(first.pausedAt);
+    expect(fix.store.listEvents({ type: "principal_access_paused", limit: 10 })).toHaveLength(1);
+
+    const restarted = new AuthService(fix.store, OWNER_KEY, fix.runtime);
+    const restartedActor = restarted.authenticate(victim.token);
+    expect(restarted.allows(restartedActor, "scenes:write", containerId)).toBe(false);
+    expect(restarted.allows(restarted.authenticate(OWNER_KEY), "scenes:write", containerId)).toBe(
+      true,
+    );
+
+    const resumed = PrincipalAccessPauseResultSchema.parse(
+      result(
+        await fix.host.dispatch(fix.owner, "core.access.resume", {
+          principalId: victim.principal.id,
+        }),
+      ),
+    );
+    expect(resumed).toEqual({ principalId: victim.principal.id, pausedAt: null });
+    expect(
+      result(
+        await fix.host.dispatch(fix.owner, "core.access.resume", {
+          principalId: victim.principal.id,
+        }),
+      ),
+    ).toEqual(resumed);
+    expect(result(await fix.host.dispatch(actor, "core.access.listCredentials", {}))).toBeDefined();
+    expect(fix.auth.allows(actor, "scenes:write", containerId)).toBe(true);
+    expect(fix.store.listEvents({ type: "principal_access_resumed", limit: 10 })).toHaveLength(1);
+
+    const ownerPause = denial(
+      await fix.host.dispatch(fix.owner, "core.access.pause", {
+        principalId: fix.auth.ownerPrincipal.id,
+      }),
+    );
+    expect(ownerPause).toEqual({
+      rule: "refused",
+      message: "workspace owner access cannot be paused",
+    });
+    stop();
+    fix.store.close();
+  });
+
+  test("pausing an active Run principal does not settle its work", async () => {
+    const fix = await fixture();
+    const containerId = accessContainer(fix);
+    const created = createExternalRun(fix, {
+      name: "paused runner",
+      purpose: "Prove suspension leaves active work intact",
+      target: formatManifoldUri({ kind: "container", containerId }),
+      reach: "subtree",
+      caps: ["containers:read"],
+    });
+    const actor = fix.auth.authenticate(created.credential.token);
+    const policy = fix.auth.agentPolicyChallenge(actor);
+    fix.auth.acknowledgeAgentPolicy(
+      {
+        revision: policy.revision,
+        acknowledgements: policy.required.map(({ id, digest }) => ({ id, digest })),
+      },
+      actor,
+    );
+    expect(fix.store.getAgentRun(created.run.id)?.state).toBe("active");
+    expect(fix.auth.allows(actor, "containers:read", containerId)).toBe(true);
+
+    result(
+      await fix.host.dispatch(fix.owner, "core.access.pause", {
+        principalId: created.run.principal.id,
+      }),
+    );
+    expect(fix.store.getAgentRun(created.run.id)?.state).toBe("active");
+    expect(fix.store.getToken(actor.tokenId!)?.revokedAt).toBeNull();
+    expect(fix.auth.allows(actor, "containers:read", containerId)).toBe(false);
+
+    result(
+      await fix.host.dispatch(fix.owner, "core.access.resume", {
+        principalId: created.run.principal.id,
+      }),
+    );
+    expect(fix.store.getAgentRun(created.run.id)?.state).toBe("active");
+    expect(fix.auth.allows(actor, "containers:read", containerId)).toBe(true);
     fix.store.close();
   });
 
