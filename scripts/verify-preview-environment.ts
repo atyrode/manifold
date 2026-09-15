@@ -142,7 +142,12 @@ async function command(
       proc.exited,
     ]);
     if (!options.confidential)
-      commandTail = redact(`${argv[0]} ${argv[1] ?? ""}:\n${out}\n${err}`).slice(-24_000);
+      commandTail = (
+        commandTail +
+        redact(
+          `\n${new Date().toISOString()} ${argv[0]} ${argv[1] ?? ""} (${code}):\n${out}\n${err}`,
+        )
+      ).slice(-24_000);
     if (timedOut)
       throw new Error(`${argv[0]} ${argv[1] ?? ""} exceeded its bounded execution deadline`);
     if (code !== 0 && !options.allowFailure)
@@ -204,7 +209,14 @@ async function containerId(): Promise<string> {
 }
 async function inspectContainer(): Promise<{
   Id: string;
-  State: { Status: string; StartedAt: string; Health?: { Status: string } };
+  State: {
+    Status: string;
+    StartedAt: string;
+    FinishedAt: string;
+    ExitCode: number;
+    OOMKilled: boolean;
+    Health?: { Status: string };
+  };
   Image: string;
   SizeRw?: number;
 }> {
@@ -215,7 +227,7 @@ async function inspectContainer(): Promise<{
         "--size",
         await containerId(),
         "--format",
-        '{"Id":{{json .Id}},"State":{"Status":{{json .State.Status}},"StartedAt":{{json .State.StartedAt}},"Health":{"Status":{{if .State.Health}}{{json .State.Health.Status}}{{else}}null{{end}}}},"Image":{{json .Image}},"SizeRw":{{json .SizeRw}}}',
+        '{"Id":{{json .Id}},"State":{"Status":{{json .State.Status}},"StartedAt":{{json .State.StartedAt}},"FinishedAt":{{json .State.FinishedAt}},"ExitCode":{{json .State.ExitCode}},"OOMKilled":{{json .State.OOMKilled}},"Health":{"Status":{{if .State.Health}}{{json .State.Health.Status}}{{else}}null{{end}}}},"Image":{{json .Image}},"SizeRw":{{json .SizeRw}}}',
       ])
     ).out,
   );
@@ -235,7 +247,7 @@ async function ready(): Promise<void> {
           lastObservation = `healthz ok=${String(result.ok)} build=${result.build}`;
           return result.ok && result.build === expectedBuild;
         } catch (error) {
-          lastObservation = `healthz unavailable (${error instanceof Error ? error.name : "unknown error"})`;
+          lastObservation = `healthz unavailable (${error instanceof Error ? redact(error.message) : "unknown error"})`;
           return false;
         }
       },
@@ -1949,6 +1961,12 @@ console.log(JSON.stringify(rows.sort((a, b) => Number(a.pid) - Number(b.pid))));
         input: readFileSync(join(tooling, "terminal-lifecycle.ts"), "utf8"),
       });
       await compose(finalImage(), ["stop", "manifold"]);
+      // Engine 28 wakes stop waiters before checkpointing its container-list replica.
+      // Compose can read stale "running" state and skip start. Inspect acquires the
+      // container lock held through that checkpoint; observe exit before handing off.
+      const stopped = await inspectContainer();
+      requireThat(stopped.State.Status === "exited", "the stopped container has completed exit");
+      metrics["stoppedContainer"] = stopped.State;
       await compose(finalImage(), ["start", "manifold"]);
       await ready();
       await compose(finalImage(), ["exec", "-T", "manifold", "bun", "-", "resume"], {
