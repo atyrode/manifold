@@ -94,6 +94,21 @@ try {
   for (const pid of pids) {
     if (Number(pid) === process.pid) continue;
     try {
+      const stat = procFields(pid);
+      if (pid !== "1" && stat[0] === "Z") {
+        // A lone zombie owns no live work. A zombie group leader with other threads may.
+        // Confirm the same terminal identity; a reaped-and-reused PID still holds.
+        const confirmed = procFields(pid);
+        if (
+          stat[17] !== "1" ||
+          confirmed[0] !== "Z" ||
+          confirmed[17] !== "1" ||
+          !stat[19] ||
+          confirmed[19] !== stat[19]
+        )
+          throw new Error();
+        continue;
+      }
       const args = nullFields(`/proc/${pid}/cmdline`);
       const executable = readlinkSync(`/proc/${pid}/exe`);
       if (pid === "1") {
