@@ -2673,6 +2673,26 @@ export class PluginHost {
     };
   }
 
+  private nativeReplacementRefusal(manifest: ServerPluginDef["manifest"]): InstallRefusal | null {
+    if (this.jobs === null) return null;
+    const candidate = canonicalJobJson(manifest.machine ?? null);
+    const incompatible = this.jobs.jobs
+      .installations()
+      .some(
+        (installation) =>
+          installation.pluginId === manifest.id &&
+          installation.enabled &&
+          canonicalJobJson(installation.machine) !== candidate,
+      );
+    return incompatible
+      ? new InstallRefusal(
+          "still_enabled",
+          `"${manifest.id}" has an enabled native installation with a different declaration; ` +
+            "the existing runtime is unchanged. Plan an explicit disable and native review before replacing it",
+        )
+      : null;
+  }
+
   /**
    * The install and replacement door. Artifact integrity, assembly and data compatibility
    * are preflighted before committing an installation. A replacement preserves the durable
@@ -2681,7 +2701,7 @@ export class PluginHost {
    * Enabled modules use the same lifecycle as an authored edit: old onDisable, new onEnable.
    * These are module notifications, NOT an operator disable of native authority. Unchanged
    * machine declarations retain the exact installations, consents and running service jobs;
-   * a changed declaration fences native execution at commit and still needs native review.
+   * a changed declaration refuses before retirement while a native installation is enabled.
    *
    * A failed candidate restores the old module or boot-unverified placeholder, reloading only
    * a prior hardened child. Migrations and their ledger commit with the install row or roll
@@ -2744,7 +2764,7 @@ export class PluginHost {
               `"${id}" is installed at ${existing.row.sha256}; pass replace to upgrade it`,
             );
           }
-          return null;
+          return this.nativeReplacementRefusal(bundle.manifest);
         },
       });
     } catch (error) {
@@ -2846,6 +2866,9 @@ export class PluginHost {
           );
         }
         const publish = (): void => {
+          // Native admission can occur while candidate loading or migration awaits.
+          const nativeRefusal = this.nativeReplacementRefusal(bundle.manifest);
+          if (nativeRefusal !== null) throw nativeRefusal;
           this.store.putPluginInstall(row);
           const types = bundle.manifest.contributes.elements.map((element) => element.type);
           if (types.length > 0) this.store.claimElementTypes(id, types);
@@ -2854,6 +2877,7 @@ export class PluginHost {
         else this.store.transaction(publish);
       } catch (error) {
         staged?.discard();
+        if (error instanceof InstallRefusal) throw error;
         throw new InstallRefusal(
           "artifact_invalid",
           error instanceof Error ? error.message : "migration failed",

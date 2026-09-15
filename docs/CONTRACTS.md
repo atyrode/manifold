@@ -2350,7 +2350,12 @@ share the live replacement path: the old module hears `onDisable`, the row is re
 fresh, and `onEnable` fans out without changing durable target/dependent enablement. The
 unpacked installer remains whoever first admitted it, and the previous artifact leaves the disk.
 An unchanged verified machine declaration preserves native installation, consent and service
-identity; changed or unverifiable scope disables native execution until separately reviewed.
+identity. A candidate that differs from an enabled native installation refuses with
+`still_enabled` before retiring the old module or publishing the replacement. Admission is
+checked again at commit because native installation can occur while module loading awaits.
+An operator must plan an explicit native disable before that replacement; installing or
+re-enabling the plugin never grants approval to the changed runtime. An unverifiable old
+declaration remains fenced until separately reviewed.
 Same bytes (same hash) replace nothing and publish
 nothing. A build error, a manifest the schema refuses, an `AssemblyError` in the edit or a
 manifest whose `id` is not the directory's answers `artifact_invalid: <detail>`, logs
