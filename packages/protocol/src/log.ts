@@ -203,3 +203,38 @@ export const LOG_EVENTS = [
 
 /** One name from the operational log vocabulary; the `evt` field of every JSONL record. */
 export type LogEvent = (typeof LOG_EVENTS)[number];
+
+/**
+ * THE GENERIC REDACTION RULE, by field name.
+ *
+ * Server and agent logs, plus the server trace ledger, are durable records and therefore use
+ * this single policy. Secret-like names remove bearer material and terminal-content names
+ * remove workload bytes. A typed sensitive body must project its explicit safe facts before
+ * this generic boundary rather than teaching this matcher an action vocabulary.
+ *
+ * Matching by name is deliberate. It can drop an innocent field with a sensitive-looking
+ * name, but cannot detect secrets embedded in arbitrary free-form strings.
+ */
+const SECRET_FIELD =
+  /(token|key|authorization|bearer|secret|password|passwd|credential|passphrase)/i;
+const TERMINAL_FIELD = /^(data|env|payload|terminalData)$/i;
+
+function redactValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(redactValue);
+  if (value !== null && typeof value === "object") return redactObject(value);
+  return value;
+}
+
+function redactObject(fields: object): Record<string, unknown> {
+  const safe: Record<string, unknown> = {};
+  for (const [name, value] of Object.entries(fields)) {
+    if (SECRET_FIELD.test(name) || TERMINAL_FIELD.test(name)) continue;
+    safe[name] = redactValue(value);
+  }
+  return safe;
+}
+
+/** Returns a recursively sanitized copy, removing secret and terminal-content fields by name. */
+export function redactFields(fields: Readonly<Record<string, unknown>>): Record<string, unknown> {
+  return redactObject(fields);
+}

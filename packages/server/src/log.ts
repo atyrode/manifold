@@ -1,9 +1,12 @@
 import {
   AGENT_JUSTIFICATION_MAX_LENGTH,
   PluginIdSchema,
+  redactFields,
   type LogEvent,
   type RuntimeDeps,
 } from "@manifold/protocol";
+
+export { redactFields } from "@manifold/protocol";
 
 /** Allowed severity labels for the server's JSONL operational stream. */
 export type LogLevel = "info" | "warn" | "error";
@@ -21,26 +24,6 @@ export interface Logger {
   warn(evt: LogEvent, fields?: Readonly<Record<string, unknown>>): void;
   error(evt: LogEvent, fields?: Readonly<Record<string, unknown>>): void;
 }
-
-/**
- * THE GENERIC REDACTION RULE, by field name.
- *
- * It was written for the JSONL stream and is now also what the trace ledger writes an
- * ordinary argument object through (axiom A6, ADR 0018 §5): both are durable records of what a
- * principal did, and generic secrets need one shared answer. `SECRET_FIELD` is
- * docs/CONTRACTS.md §Data and credential boundaries — no owner key, token or bearer secret,
- * anywhere — and `TERMINAL_FIELD` applies the same law to terminal bytes. A door with a typed
- * sensitive body, such as authored source, must project its explicit safe facts before this
- * generic boundary rather than teaching this name matcher a second action vocabulary.
- *
- * Matching by NAME rather than by declaration is deliberate. A per-action `redact` list would
- * be another vocabulary a door author must remember to fill in, and the failure mode of
- * forgetting is a secret in the ledger; a name rule fails the other way — an innocent field
- * called `key` is dropped from a record — which costs an auditor one field and costs nobody a
- * credential.
- */
-const SECRET_FIELD = /(token|key|authorization|secret|password|passwd|credential|passphrase)/i;
-const TERMINAL_FIELD = /^(data|env|payload|terminalData)$/i;
 
 /**
  * The facts a durable record may retain about one authoring request. Source values and
@@ -98,28 +81,6 @@ export function normalizeAgentDeclaration(value: string): string | null {
     return null;
   }
   return normalized;
-}
-
-export function redactFields(fields: Readonly<Record<string, unknown>>): Record<string, unknown> {
-  const safe: Record<string, unknown> = {};
-  for (const [name, value] of Object.entries(fields)) {
-    if (SECRET_FIELD.test(name) || TERMINAL_FIELD.test(name)) continue;
-    if (Array.isArray(value)) {
-      safe[name] = value.map((entry) => {
-        if (entry !== null && typeof entry === "object") {
-          return redactFields(Object.fromEntries(Object.entries(entry)));
-        }
-        return entry;
-      });
-      continue;
-    }
-    if (value !== null && typeof value === "object") {
-      safe[name] = redactFields(Object.fromEntries(Object.entries(value)));
-      continue;
-    }
-    safe[name] = value;
-  }
-  return safe;
 }
 
 class JsonLogger implements Logger {

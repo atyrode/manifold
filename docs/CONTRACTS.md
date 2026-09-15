@@ -1920,7 +1920,7 @@ flight — the ledger is written AHEAD of the handler, so an unsettled row is a 
 came back rather than a row somebody forgot to finish; `session` is the socket it arrived on, NULL
 meaning the HTTP action door. The `payload` of a trace row is the ARGUMENTS as received, run
 through the same field redaction the JSONL log applies (case-insensitive substrings
-`token`/`key`/`authorization`/`secret`/`password`/`passwd`/`credential`/`passphrase`,
+`token`/`key`/`authorization`/`bearer`/`secret`/`password`/`passwd`/`credential`/`passphrase`,
 plus exact field names `data`/`env`/`payload`/`terminalData`, also case-insensitive —
 [Data and credential boundaries](#data-and-credential-boundaries)) and bounded at 4 KiB, past which the row keeps
 `{ oversize, keys }` instead of the bytes.
@@ -4270,7 +4270,12 @@ content, URLs and continuous per-frame traffic are never logged.
 The log is the OPERATIONAL stream and it is not the audit: the durable record of who exercised
 what is the journal's trace family, read through `core.events.list` (axiom A6, §The journal and
 its two families). The two say the same word for the same dispatch — the `action` line's
-`outcome` and the trace row's `outcome` are the same vocabulary — and the shared field rule
-redacts generic secrets from both (`redactFields`, `packages/server/src/log.ts`). Typed sensitive
-doors project one safe fact shape before either durable boundary: `engine.plugins.author` keeps
-only the plugin id and changed-file count, never file names, source values or build diagnostics.
+`outcome` and the trace row's `outcome` are the same vocabulary. The server and agent JSONL
+sinks and durable trace payloads use the same recursively applied field-name policy
+(`redactFields`, `packages/protocol/src/log.ts`); the detailed trace-payload field list above is
+the canonical list, including for fields nested in objects and arrays. The policy retains useful
+non-sensitive diagnostic IDs, codes and counts. It is structural redaction, not secret-content
+detection: it does not scan arbitrary free-form string values, so producers must not place secrets
+in them. Typed sensitive doors project one safe fact shape before either durable boundary:
+`engine.plugins.author` keeps only the plugin id and changed-file count, never file names, source
+values or build diagnostics.

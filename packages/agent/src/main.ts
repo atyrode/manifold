@@ -6,7 +6,7 @@ import {
   TERMINAL_HOST_SOCKET_ENV,
 } from "@manifold/protocol";
 import { Agent } from "./agent.ts";
-import type { AgentLogRecord } from "./log.ts";
+import { createAgentLogSink } from "./log.ts";
 import { resolveMachineToken } from "./machine-token.ts";
 import { runMaintenanceCLI } from "./maintenance.ts";
 import { unixTerminalHostDialer } from "./terminal-host-link.ts";
@@ -46,9 +46,7 @@ function requireEnv(name: string): string {
   return value;
 }
 
-function stdoutSink(record: AgentLogRecord): void {
-  process.stdout.write(`${JSON.stringify(record)}\n`);
-}
+const stdoutSink = createAgentLogSink((line) => process.stdout.write(line));
 
 /** Runs `stop` once on SIGTERM/SIGINT; a second signal exits 1 without waiting. */
 function onShutdownSignal(stop: () => Promise<void>): void {
