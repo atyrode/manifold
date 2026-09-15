@@ -24,8 +24,9 @@ hourly and on issue events. The only other automatic tracker writer is trusted f
 feedback: [`.github/workflows/ci-feedback.yml`](../.github/workflows/ci-feedback.yml) handles only
 completed same-repository `main` push/manual-dispatch CI, running default-branch code with
 read-only actions, contents and pull-request metadata plus issue write. It may create or update a
-bounded CI-repair issue from public metadata; it executes no artifacts, copies no raw logs, writes
-no other resource and cannot close arbitrary issues.
+bounded CI run incident from public metadata and close it on exact-revision recovery (§Exit).
+It executes no artifacts, copies no raw logs, writes no other resource and cannot close arbitrary
+issues.
 
 ## Label model
 
@@ -231,12 +232,14 @@ executable mapping.
    a superseded pending revision is not a bug, while the latest full failure remains visible. This
    is asynchronous follow-through, never permission to hide a failure: `bun run ci:status` makes
    one bounded query and names failed jobs, the repair issue and next action; it does not poll.
-   Trusted feedback creates/updates the bounded `p1` CI-repair issue with `bug`, `area:infra` and
+   Trusted feedback creates/updates the bounded `p1` CI run incident with `bug`, `area:infra` and
    initially `needs-triage`, assigns a resolvable merged-PR author as triage/repair owner rather
    than alleging fault, and gives safe reproduce/repair/revert guidance. The standing operator
-   scope permits `agent-ready` only after complete acceptance criteria are present. That owner
-   treats repair or revert as priority; unrelated safe work need not freeze while the full run
-   completes.
+   scope permits `agent-ready` only after complete acceptance criteria are present. Assignment
+   routes work; it does not launch a repair agent. The owner diagnoses the failure and links
+   repeated occurrences to one evidenced underlying defect rather than treating every run as a
+   separate bug. Exact-revision recovery closes the run incident under §Exit, not the underlying
+   defect. Unrelated safe work need not freeze while the full run completes.
 4. **Deployment and release.** Integrated development requires successful full `main` push or
    manual-dispatch CI evidence for its exact revision. Release starts from an exact full-`main`
    predecessor, and promotion separately
@@ -295,7 +298,7 @@ This grant remains bounded; it does not touch `bun run release` or `bun run prom
 which remain explicitly authorized actions under [`AGENTS.md`](../AGENTS.md) Boundaries. A merge
 starts asynchronous full `main` proof. Do not wait before continuing unrelated safe work; use
 `bun run ci:status -- --sha <merge-sha>` when its state is needed. Trusted feedback files a `p1`
-repair issue with a named triage owner for a failed or timed-out full run. Deployment/release work
+run incident with a named triage owner for a failed or timed-out full run. Deployment/release work
 must wait for the exact-revision full result. Development deployment failure tracking remains
 separate and `p0`: the agent that merged the revision owns recording a failed `deploy-dev.yml` run
 with its SHA, run link and named repair owner. Delegating monitoring does not leave that failure
@@ -335,10 +338,25 @@ Closing as not planned requires a comment beginning `Disposition:` and naming on
 - `superseded by #N` — after preserving anything unique to the closed issue
 - `invalid` — with the reason
 
-No automation closes arbitrary issues. Trusted failed-`main` feedback may create and update its
-bounded CI-repair issue, but a later green run does not auto-close it or auto-revert code. `aging`
-is a signal that an issue has gone quiet, applied and removed from human activity alone; it is
-never grounds for a close, and a stale-bot is not a triage system.
+No automation closes arbitrary issues. Trusted full-`main` feedback may close its own run incident
+when full verification succeeds for the **same exact revision**, retaining the original failure
+and recording the successful run. This is **recovered**, not proof that an underlying bug was
+fixed. A later green revision, green PR checks, or a successful unrelated workflow is not enough.
+Modified or repurposed issues remain for owner review; deployment incidents and diagnosed defects
+retain their own acceptance criteria. Automation never retries or reverts code.
+
+Automatic closure requires an intact automation-owned incident body and run/SHA identity,
+the generated incident title and triage/ready labels, a single valid assignee, and no comments
+other than recognized recovery receipts. Editing the incident or adding diagnosis/claim comments
+leaves closure to its owner. Existing recovery comments do not prevent an interrupted closure
+from completing; legacy receipts receive the new recovery explanation before closure.
+
+For a recurring failure, investigate before grouping: the same failing job name is not proof of
+the same cause. Reuse one actionable defect issue per evidenced cause, link its occurrences, and
+keep that defect open until its repair acceptance is satisfied even when an individual run
+recovers. Historical run incidents may be closed as duplicates only after preserving their
+unique evidence and routing remaining work. Do not require a code change merely to close a
+recovered run. `aging` remains only a quiet-issue signal, never grounds for closure.
 
 ## Runbooks
 

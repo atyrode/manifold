@@ -4456,10 +4456,16 @@ build target and nothing branches on which instance is being looked at.
   integrated-`main`, release or production evidence. None of these boundaries infer proof from
   fast PR green, another tree's artifact or a later unrelated run. Source, CI, deployment and
   runtime observations remain distinct.
-- **Failure ownership**: a failed or timed-out full `main` run remains red and creates or updates
-  one bounded repair issue from trusted default-branch automation. Its assigned merged-PR author
-  is the triage owner, not a proven culprit; repair or safe revert has priority without freezing
-  unrelated safe work. Later green evidence neither auto-closes that issue nor auto-reverts code.
+- **Failure ownership**: a failed or timed-out full `main` run remains visible and creates or
+  updates one bounded run incident from trusted default-branch automation. Its assigned
+  merged-PR author is the triage owner, not a proven culprit; assignment is not automatic agent
+  execution. Full verification passing for that exact revision closes the automation-owned
+  incident as recovered, retaining both results; it does not establish a root-cause fix.
+  Human-repurposed issues, diagnosed defects and deployment incidents retain their own
+  acceptance. Repeated failures with a demonstrated shared cause belong to one linked defect
+  issue, not one permanent bug per run. Later unrelated green evidence cannot close an incident.
+  [Triage §Exit](TRIAGE.md#exit) owns the closure boundary. Automation never retries or reverts
+  code, and unrelated safe work need not freeze.
 
 - **Preview admission coverage** (#332): `packages/server/test/preview-identity.test.ts`
   exercises two real servers, an initial handoff, then authority key rotation while the same
