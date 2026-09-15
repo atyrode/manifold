@@ -115,6 +115,7 @@ async function fixture(): Promise<TerminalsFixture> {
       runtime,
       assemblyPlacementVocabulary(() => []),
       assemblyItemNouns(() => []),
+      testTileTrees,
     ),
   );
   const enrollment = auth.enrollMachine("fake", owner);

@@ -7,6 +7,7 @@ import {
   type Attendance,
   type CensusItem,
   type ClientMessageBody,
+  type ContainerDiscipline,
   type ContainerCensus,
   type EventKind,
   type ConnectionLocation,
@@ -63,13 +64,14 @@ const QUIET_SAVE_MS = 1_500;
 const MAX_SAVE_MS = 10_000;
 
 /**
- * The census of one container, derived from its document alone: a composition is counted
- * by its occupied leaves, a canvas by its elements. Free of `Room` so the same derivation
- * serves a resident room and a container whose document is only on disk — two answers to
- * "what does this container hold" would be two answers too many.
+ * The census of one container, derived from its durable discipline and document: a tile-tree
+ * discipline is counted by occupied leaves, a canvas-shaped discipline by its elements. Free
+ * of `Room` so the same derivation serves a resident room and a container whose document is
+ * only on disk — two answers to "what does this container hold" would be two answers too many.
  */
 export function censusFor(
   containerId: string,
+  discipline: ContainerDiscipline,
   layout: TileLayout | null,
   elements: readonly SceneElement[],
 ): ContainerCensus {
@@ -114,7 +116,6 @@ export function censusFor(
       items.push({ kind, containerId: null, terminalId: null });
     }
   }
-  const discipline = layout === null ? "canvas" : "composition";
   return { containerId, discipline, items, references };
 }
 
@@ -195,6 +196,7 @@ export class Room {
 
   constructor(
     readonly containerId: string,
+    readonly discipline: ContainerDiscipline,
     private readonly store: ServerStore,
     private readonly runtime: RuntimeDeps,
     private readonly timers: RoomTimers,
@@ -986,7 +988,7 @@ export class Room {
 
   /** This container's census, from its live document. */
   census(): ContainerCensus {
-    return censusFor(this.containerId, this.tileLayout(), this.elements());
+    return censusFor(this.containerId, this.discipline, this.tileLayout(), this.elements());
   }
 
   /** Returns the principal-level live attendance without cursor or viewport payloads. */
@@ -1142,6 +1144,7 @@ export class RoomManager {
         Y.applyUpdate(doc, record.doc);
         census = censusFor(
           container.id,
+          container.discipline,
           this.holdsTileTree(container.discipline) ? readTileLayout(doc, container.id) : null,
           [...readElements(doc).values()].sort(compareElements),
         );
@@ -1172,6 +1175,7 @@ export class RoomManager {
     if (room === undefined) {
       room = new Room(
         containerId,
+        container.discipline,
         this.store,
         this.runtime,
         this.timers,

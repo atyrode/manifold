@@ -520,13 +520,12 @@ tile and edge. The placement algebra reads the target's declaration, matches the
 against `accepts`, and applies item/container guards. `compose` creates a composition from canvas
 elements and `unplaced` enters no container; neither invents a new destination form for your plugin.
 
-> **Current limitation — [#134](https://github.com/atyrode/manifold/issues/134).** Declaring
-> `destinations: ["tile"]` does not yet make a third-party discipline a working tile tree.
-> The [placement executor](../packages/server/src/placement.ts) still decides tile-tree-ness by
-> the literal `"composition"` in execution/lifecycle paths and mints homes with that discipline;
-> the census also reports the shipped composition kind. A custom declaration and renderer can
-> register, but tile placement, removal and retirement are not an end-to-end third-party
-> contract yet. Do not copy the composition row above under a new id expecting a working tile tree.
+Declaring `destinations: ["tile"]` gives a discipline the complete tile-tree lifecycle: the
+server seeds its root, admits tile placements, reports its own discipline in the census, preserves
+that discipline when an occupant is re-homed, and retires the tree when its last item leaves or is
+removed. A terminal born without a destination still begins in the shipped `composition`
+discipline because no destination exists to supply another declaration; after it enters a
+contributed tile tree, later re-homing inherits that tree's discipline.
 
 ---
 

@@ -285,6 +285,7 @@ async function fixture(defs: readonly ServerPluginDef[] = pair()): Promise<Fixtu
       runtime,
       assemblyPlacementVocabulary(() => []),
       assemblyItemNouns(() => []),
+      testTileTrees,
     ),
     OFFLINE_MACHINES,
     new InstanceDialer(store, runtime, silentLogger, () => "http://localhost:7777"),

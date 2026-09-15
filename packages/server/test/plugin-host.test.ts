@@ -139,6 +139,7 @@ function testPlacement(fixture: HostFixture): PlaceExecutor {
     fixture.runtime,
     assemblyPlacementVocabulary(() => []),
     assemblyItemNouns(() => []),
+    testTileTrees,
   );
 }
 

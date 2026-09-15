@@ -126,8 +126,8 @@ function roomFixture(
   };
   const socket = new FakeSocket();
   const peer = new SessionChannel(runtime.newId(), socket, context, container.id, "c1");
-  // The eighth argument is the element-payload boundary (ADR 0013 §16), the ninth is the
-  // attendance announcement (ADR 0012) and the tenth is whether this container holds a tile
+  // The ninth argument is the element-payload boundary (ADR 0013 §16), the tenth is the
+  // attendance announcement (ADR 0012) and the eleventh is whether this container holds a tile
   // tree (#125). These fixtures compose no plugins, so nothing declares a payload schema and
   // the honest stand-in accepts every record; the announcement writes straight to the durable
   // trail, which is what an unwired production room does until the assembly and the event
@@ -135,6 +135,7 @@ function roomFixture(
   // fixture that spelled it would seed roots the server does not.
   const room = new Room(
     container.id,
+    container.discipline,
     store,
     runtime,
     clock,
@@ -238,6 +239,7 @@ describe("Room Yjs document consistency", () => {
     const socket = peer.socket as FakeSocket;
     const room = new Room(
       container.id,
+      container.discipline,
       store,
       runtime,
       new FakeClock(runtime),

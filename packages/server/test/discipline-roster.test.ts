@@ -12,10 +12,17 @@ import {
   type PluginRoster,
 } from "@manifold/protocol";
 import { assembleRoster, type PluginDef } from "@manifold/plugin";
+import { tileIdForRef } from "@manifold/scene";
 import { SERVER_PLUGIN_DEFS } from "../src/assembly.ts";
 import { AuthService } from "../src/auth.ts";
 import { silentLogger } from "../src/log.ts";
-import { assemblyPlacementVocabulary, assemblyTileTrees } from "../src/placement.ts";
+import {
+  assemblyItemNouns,
+  assemblyPlacementVocabulary,
+  assemblyTileTrees,
+  PlaceExecutor,
+  type TerminalPlacementPort,
+} from "../src/placement.ts";
 import { RoomManager } from "../src/room.ts";
 import { SessionChannel } from "../src/session-channel.ts";
 import type { ServerStore } from "../src/stores.ts";
@@ -251,6 +258,71 @@ function contributedContainers(store: ServerStore): void {
   }
 }
 
+class LifecycleTerminals implements TerminalPlacementPort {
+  readonly homes = new Map<string, string>();
+
+  placedTerminal(terminalId: string): { readonly containerId: string } | null {
+    const containerId = this.homes.get(terminalId);
+    return containerId === undefined ? null : { containerId };
+  }
+
+  terminalLabel(terminalId: string, fallback: string): string {
+    return this.homes.has(terminalId) ? terminalId : fallback;
+  }
+
+  rebindTerminal(
+    terminalId: string,
+    _fromContainerId: string,
+    toContainerId: string,
+    _placementId: string,
+  ): void {
+    this.homes.set(terminalId, toContainerId);
+  }
+
+  reapTerminal(terminalId: string): void {
+    this.homes.delete(terminalId);
+  }
+
+  dropContainer(containerId: string): void {
+    for (const [terminalId, homeId] of this.homes) {
+      if (homeId === containerId) this.homes.delete(terminalId);
+    }
+  }
+}
+
+function lifecycleFixture(): {
+  readonly runtime: FakeRuntime;
+  readonly store: ServerStore;
+  readonly rooms: RoomManager;
+  readonly terminals: LifecycleTerminals;
+  readonly placement: PlaceExecutor;
+  readonly createTree: (id: string) => void;
+} {
+  const runtime = new FakeRuntime();
+  const store = testStore();
+  const rooms = new RoomManager(store, runtime, new FakeClock(runtime), silentLogger, tileTrees);
+  const terminals = new LifecycleTerminals();
+  const vocabulary = assemblyPlacementVocabulary(() => OPEN_ROSTER);
+  const placement = new PlaceExecutor(
+    store,
+    rooms,
+    terminals,
+    runtime,
+    vocabulary,
+    assemblyItemNouns(() => OPEN_ROSTER),
+  );
+  return {
+    runtime,
+    store,
+    rooms,
+    terminals,
+    placement,
+    createTree: (id) => {
+      store.createContainer({ id, name: id, createdAt: runtime.now(), discipline: "sheets" });
+    },
+  };
+}
+
 describe("a contributed tile-tree discipline reaches the floor", () => {
   test("a room of one is seeded with a root; a discipline declaring no tile form is not", () => {
     const runtime = new FakeRuntime();
@@ -326,5 +398,99 @@ describe("a contributed tile-tree discipline reaches the floor", () => {
       code: "conflict",
     });
     store.close();
+  });
+});
+
+describe("a contributed tile-tree discipline owns its complete lifecycle", () => {
+  test("census reports the container's declared discipline", () => {
+    const fixture = lifecycleFixture();
+    fixture.createTree("sheet");
+    expect(fixture.rooms.get("sheet")?.census()).toMatchObject({
+      containerId: "sheet",
+      discipline: "sheets",
+    });
+    fixture.store.close();
+  });
+
+  test("moving the final leaf retires a contributed source tree", () => {
+    const fixture = lifecycleFixture();
+    fixture.createTree("source");
+    fixture.createTree("target");
+    fixture.store.createContainer({
+      id: "paper",
+      name: "paper",
+      createdAt: 0,
+      discipline: "paper",
+    });
+    const source = fixture.rooms.get("source");
+    if (source === null) throw new Error("missing source tree");
+    const leafId = source.placeTile({ kind: "container", containerId: "paper" }, null, null);
+    if (leafId === null) throw new Error("source tree refused fixture leaf");
+
+    expect(
+      fixture.placement.place({
+        ref: { kind: "tile", containerId: "source", tileId: leafId },
+        destination: {
+          kind: "tile",
+          containerId: "target",
+          targetTileId: ROOT_TILE_ID,
+          edge: "center",
+        },
+      }),
+    ).toMatchObject({ status: "placed" });
+    expect(fixture.store.getContainer("source")).toBeNull();
+    fixture.store.close();
+  });
+
+  test("removeTile accepts and retires a contributed tree", () => {
+    const fixture = lifecycleFixture();
+    fixture.createTree("source");
+    fixture.store.createContainer({
+      id: "paper",
+      name: "paper",
+      createdAt: 0,
+      discipline: "paper",
+    });
+    const source = fixture.rooms.get("source");
+    if (source === null) throw new Error("missing source tree");
+    const leafId = source.placeTile({ kind: "container", containerId: "paper" }, null, null);
+    if (leafId === null) throw new Error("source tree refused fixture leaf");
+
+    expect(fixture.placement.removeTile("source", leafId)).toBe("ok");
+    expect(fixture.store.getContainer("source")).toBeNull();
+    fixture.store.close();
+  });
+
+  test("re-homing a terminal preserves its source tree discipline", () => {
+    const fixture = lifecycleFixture();
+    fixture.createTree("source");
+    fixture.store.createContainer({
+      id: "paper",
+      name: "paper",
+      createdAt: 0,
+      discipline: "paper",
+    });
+    const source = fixture.rooms.get("source");
+    if (source === null) throw new Error("missing source tree");
+    const terminalId = "terminal";
+    fixture.terminals.homes.set(terminalId, "source");
+    source.placeTerminalTile(terminalId, null, null);
+    source.placeTile({ kind: "container", containerId: "paper" }, ROOT_TILE_ID, "right");
+    const terminalLeafId = tileIdForRef(source.tileLayout(), {
+      kind: "terminal",
+      terminalId,
+    });
+    if (terminalLeafId === null) throw new Error("missing terminal fixture leaf");
+
+    expect(
+      fixture.placement.place({
+        ref: { kind: "tile", containerId: "source", tileId: terminalLeafId },
+        destination: { kind: "unplaced" },
+      }),
+    ).toMatchObject({ status: "placed", result: { op: "unplace" } });
+    const newHomeId = fixture.terminals.homes.get(terminalId);
+    expect(newHomeId).toBeDefined();
+    expect(fixture.store.getContainer(newHomeId ?? "")).toMatchObject({ discipline: "sheets" });
+    fixture.store.close();
   });
 });
