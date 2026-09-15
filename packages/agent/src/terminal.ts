@@ -142,14 +142,24 @@ export function resolveShellCommand(): readonly string[] {
 }
 
 /**
- * Names a spawn that never produced a process. Bun reports a missing or unrunnable `argv[0]`
- * as an errno error naming the syscall; an opener that asked for a program deserves the
- * program's name back as the `create_error` reason, never a garbled shell and never
- * `posix_spawn`. Anything else is rethrown untouched.
+ * Names a spawn that never produced a process. Bun currently reports missing `cwd` and
+ * missing absolute `argv[0]` with identical `ENOENT` metadata on Linux, so ambiguous errors
+ * must not accuse the program. If a future runtime identifies the working directory through
+ * `path` or `syscall`, preserve that more precise reason. Anything else is rethrown untouched.
  */
-function spawnFailure(error: unknown, argv0: string): unknown {
+function spawnFailure(error: unknown, argv0: string, cwd: string | undefined): unknown {
   const code = typeof error === "object" && error !== null ? Reflect.get(error, "code") : undefined;
-  if (code === "ENOENT") return new PtyError(`program not found: ${argv0}`);
+  if (code === "ENOENT") {
+    const path = Reflect.get(error as object, "path");
+    const syscall = Reflect.get(error as object, "syscall");
+    if (syscall === "chdir" || (path === cwd && path !== argv0)) {
+      return new PtyError("working directory not found");
+    }
+    if (syscall === undefined && path === argv0) {
+      return new PtyError(`program not found: ${argv0}`);
+    }
+    return new PtyError(`program or working directory not found: ${argv0}`);
+  }
   if (code === "EACCES") return new PtyError(`program not executable: ${argv0}`);
   return error;
 }
@@ -197,7 +207,7 @@ export interface PtyTerminalOptions {
   /**
    * The argv to exec: an opener's `create.program` (issue #192), or the pinned shell a PTY
    * test names. Defaults to {@link resolveShellCommand} (`$SHELL` → `bash` → `sh` on PATH).
-   * A missing or unrunnable `argv[0]` throws {@link PtyError} naming the program.
+   * A missing or unrunnable launch target throws a bounded {@link PtyError}.
    */
   readonly command?: readonly string[];
   /** Native owner-only launch callback; no shell or ambient environment is used. */
@@ -372,7 +382,7 @@ export class PtyTerminal {
       this.pasteMode.dispose();
       this.graphics.dispose();
       this.mirror.dispose();
-      throw spawnFailure(error, command[0] ?? "");
+      throw spawnFailure(error, command[0] ?? "", this.originalCwd);
     }
   }
 
