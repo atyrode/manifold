@@ -130,6 +130,8 @@ jobs:
                 "convergence", "terminal-selection", "terminal-mirror", "tile-drop", "budgets",
                 "pwa", "axioms", "runtime-jobs", "runtime-browser",
                 "preview-environment (plain)", "preview-environment (integrated)", "gate",
+                "nix (x86_64-linux)", "nix (aarch64-linux)",
+                "nix (x86_64-darwin)", "nix (aarch64-darwin)",
               ]);
               const proof = data.workflow_runs.find((run) =>
                 run.head_sha === pr.head.sha &&

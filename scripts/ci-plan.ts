@@ -19,6 +19,7 @@ export const EXTRA_CHECKS = [
   "runtime-jobs",
   "runtime-browser",
   "preview-environment",
+  "nix",
 ] as const;
 export const ALL_CHECKS = [...MANDATORY_CHECKS, ...EXTRA_CHECKS] as const;
 

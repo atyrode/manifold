@@ -19,6 +19,7 @@ const requiredGroups = [
   "budgets",
   "pwa",
   "axioms",
+  "nix",
 ] as const;
 
 interface GateRunResult {

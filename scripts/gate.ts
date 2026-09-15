@@ -23,7 +23,8 @@ type Group =
   | "tile-drop"
   | "budgets"
   | "pwa"
-  | "axioms";
+  | "axioms"
+  | "nix";
 type Phase = "prepare" | "build" | "static" | "post-static" | "convergence" | "browser";
 
 interface GateTask {
@@ -126,6 +127,12 @@ const tasks: readonly GateTask[] = [
     group: "trace",
     phase: "static",
     command: fixed("bun", "scripts/verify-trace.ts"),
+  },
+  {
+    name: "verify:nix-packaging",
+    group: "nix",
+    phase: "static",
+    command: fixed("bun", "scripts/verify-nix-packaging.ts"),
   },
   { name: "lint", group: "style", phase: "static", command: fixed("bunx", "eslint", ".") },
   {

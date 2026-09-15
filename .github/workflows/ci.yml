@@ -502,6 +502,47 @@ jobs:
           if-no-files-found: warn
           retention-days: 1
 
+  nix:
+    name: nix (${{ matrix.system }})
+    needs: plan
+    if: contains(fromJSON(needs.plan.outputs.checks), 'nix')
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - system: x86_64-linux
+            runner: ubuntu-24.04
+          - system: aarch64-linux
+            runner: ubuntu-24.04-arm
+          - system: x86_64-darwin
+            runner: macos-15-intel
+          - system: aarch64-darwin
+            runner: macos-15
+    env:
+      MANIFOLD_NIX_SYSTEM: ${{ matrix.system }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: "1.4.2"
+      - name: Install Nix
+        uses: nixbuild/nix-quick-install-action@9f63be77f412a248c9d9a65a4c82cf066cdf8f0c # v35
+        with:
+          nix_conf: |
+            experimental-features = nix-command flakes
+            sandbox = true
+      - name: Verify native Nix packaging
+        uses: ./.github/actions/gate-slice
+        with:
+          task: nix
+
   gate:
     name: gate
     if: always()
@@ -526,6 +567,7 @@ jobs:
       - runtime-jobs
       - runtime-browser
       - preview-environment
+      - nix
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -536,7 +578,7 @@ jobs:
           EXPECTED_CHECKS: ${{ needs.plan.outputs.checks }}
           NEEDS_JSON: ${{ toJSON(needs) }}
         run: |
-          universe='["build","types","style","smoke","targeted","trace","unit","e2e-rest","e2e-preview-recovery","convergence","terminal-selection","terminal-mirror","tile-drop","budgets","pwa","axioms","runtime-jobs","runtime-browser","preview-environment"]'
+          universe='["build","types","style","smoke","targeted","trace","unit","e2e-rest","e2e-preview-recovery","convergence","terminal-selection","terminal-mirror","tile-drop","budgets","pwa","axioms","runtime-jobs","runtime-browser","preview-environment","nix"]'
           mandatory='["build","types","style","smoke","targeted"]'
           failed=0
 

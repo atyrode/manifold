@@ -45,6 +45,7 @@ describe("CI impact policy", () => {
       "runtime-jobs",
       "runtime-browser",
       "preview-environment",
+      "nix",
     ]);
     expect(new Set(ALL_CHECKS).size).toBe(ALL_CHECKS.length);
   });
