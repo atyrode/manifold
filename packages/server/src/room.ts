@@ -27,6 +27,7 @@ import {
   DEFAULT_TERMINAL_HEIGHT,
   DEFAULT_TERMINAL_WIDTH,
   REPAIR_ORIGIN,
+  SERVER_AUTHORSHIP_ORIGIN,
   SERVER_PLACE_ORIGIN,
   Y,
   changedElementIds,
@@ -44,6 +45,7 @@ import {
   removeElement,
   removeTileLeaf,
   swapTileLeaves,
+  stampElementAuthorship,
   writeElement,
   writeTileLeaf,
   writeTileLeafRef,
@@ -479,10 +481,14 @@ export class Room {
       update has already merged by the time anything can be read, so the repair is a second
       transaction that broadcasts like any other.
     */
+    const surviving: string[] = [];
     for (const id of changed) {
       const element = readElement(this.doc, id);
       const refusal = element === null ? null : this.payloadRefusal(element);
-      if (element !== null && refusal === null) continue;
+      if (element !== null && refusal === null) {
+        surviving.push(id);
+        continue;
+      }
       if (!removeElement(this.doc, id, REPAIR_ORIGIN)) continue;
       this.logger.warn("scene_element_repaired", {
         containerId: this.containerId,
@@ -492,6 +498,19 @@ export class Room {
           : { type: refusal.type, plugin: refusal.plugin, problems: refusal.problems.join("; ") }),
       });
     }
+    /*
+      Authorship is a SUMMARY of server acceptance order, not field-level causality. One
+      accepted update may change several elements, so they share one server clock reading and
+      one stamping transaction. Repairs and deletions are absent from `surviving`, and server
+      placement paths never call this seam, preserving prior stamps without inventing a person.
+    */
+    stampElementAuthorship(
+      this.doc,
+      surviving,
+      peer.auth.principal.id,
+      this.runtime.now(),
+      SERVER_AUTHORSHIP_ORIGIN,
+    );
     return true;
   }
 

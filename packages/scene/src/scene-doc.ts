@@ -5,12 +5,15 @@ export const LOCAL_ORIGIN: unique symbol = Symbol("manifold.local");
 export const REMOTE_ORIGIN: unique symbol = Symbol("manifold.remote");
 export const REPAIR_ORIGIN: unique symbol = Symbol("manifold.repair");
 export const SERVER_PLACE_ORIGIN: unique symbol = Symbol("manifold.serverPlace");
+export const SERVER_AUTHORSHIP_ORIGIN: unique symbol = Symbol("manifold.serverAuthorship");
 export const ELEMENTS_KEY = "elements";
 
 export const DEFAULT_TERMINAL_WIDTH = 720;
 export const DEFAULT_TERMINAL_HEIGHT = 480;
 
-type PatchOf<T> = T extends SceneElement ? Partial<Omit<T, "id" | "type">> : never;
+type PatchOf<T> = T extends SceneElement
+  ? Partial<Omit<T, "id" | "type" | "lastEditedBy" | "lastEditedAt">>
+  : never;
 export type ScenePatch = PatchOf<SceneElement>;
 
 export function createSceneDoc(): Y.Doc {
@@ -120,6 +123,33 @@ export function patchElement(doc: Y.Doc, id: string, patch: ScenePatch, origin: 
     }
   }, origin);
   return true;
+}
+
+/**
+ * Stamps one accepted update's durable last-editor summary without interpreting payloads.
+ *
+ * The room supplies only surviving valid element ids. All of them are written in one Yjs
+ * transaction because one accepted multi-element update has one actor and one timestamp.
+ */
+export function stampElementAuthorship(
+  doc: Y.Doc,
+  ids: readonly string[],
+  principalId: string,
+  editedAt: number,
+  origin: unknown,
+): number {
+  const maps = ids.flatMap((id) => {
+    const map = elementsMap(doc).get(id);
+    return map instanceof Y.Map ? [map] : [];
+  });
+  if (maps.length === 0) return 0;
+  doc.transact(() => {
+    for (const map of maps) {
+      map.set("lastEditedBy", principalId);
+      map.set("lastEditedAt", editedAt);
+    }
+  }, origin);
+  return maps.length;
 }
 
 export function removeElement(doc: Y.Doc, id: string, origin: unknown): boolean {

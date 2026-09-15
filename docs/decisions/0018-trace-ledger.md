@@ -253,21 +253,25 @@ ordered by what each one buys:
    who did not run the process. Any of those makes the chain load-bearing; none of them is true
    yet, and hash-chaining a table that its own operator can rewrite is theatre.
 
-## Named first follow-up: attributing the document plane
+## Named document-plane follow-up
 
-The exact seam, so this is a deferral rather than a gap:
+Issue #137 added a deliberately smaller reader-facing answer without pretending to complete this
+follow-up: each surviving scene element carries the authenticated principal and server time of the
+last accepted document update that changed it. The debug inspector renders that durable summary.
+Server acceptance order decides concurrent updates at whole-element granularity; it is not
+field-level blame, edit history, or a claim about collaborative character causality. Documents
+written before the envelope fields existed remain valid and read as unknown.
+
+The A6 exemption remains. Its exact deferred seam is still:
 
 - **Where.** `Room.flushSnapshot` (`packages/server/src/room.ts`) is the document plane's durable
-  commit point, and `this.doc.on("update", (update, origin) => …)` in the same file already
-  receives the contributing principal id as the Yjs `origin` — `Y.applyUpdate(this.doc, update,
-peer.auth.principal.id)` at the socket. Collecting those ids per flush window and writing ONE
-  attributed batch row at the flush is a contained change in one file.
-- **Why it is not in this change.** The trace record is single-actor and door-keyed; a flush is
-  neither. Writing it into the trace family would put rows in the ledger whose `door` column is a
-  fiction, and widening `actor` to a set on a guess is the kind of vocabulary change an axiom
-  should not make before it has a reader. The volume question is real too: a flush fires per quiet
-  window per active room, so the batch family needs its own retention answer rather than
-  inheriting the per-dispatch one.
+  commit point, and `this.doc.on("update", (update, origin) => …)` in the same file receives the
+  contributing principal id as the Yjs `origin`. Collecting those ids per flush window and writing
+  one attributed batch row at the flush remains a contained change.
+- **Why the element summary does not close it.** A flush may contain several actors and elements,
+  including edits to collaborative fields. The trace record is single-actor and door-keyed; a
+  flush is neither. Writing it into the trace family would put rows in the ledger whose `door`
+  column is a fiction, and the batch family still needs its own retention answer.
 - **What it would say.** `{ rev, bytes, contributors: [principalId…] }` on the container's node —
   an attributed batch at a commit point, which is exactly the phrase A6's exemption uses.
 

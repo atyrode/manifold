@@ -480,7 +480,13 @@ function PortalLeaf({
               middle={<TitlebarOutlet scope={scope} />}
               dragProps={dragProps}
             />
-            <div className="portal__occupant-body">
+            <div
+              className="portal__occupant-body manifold-element"
+              data-id={ref.elementId}
+              data-element-container-id={containerId}
+              data-last-edited-by={element?.lastEditedBy}
+              data-last-edited-at={element?.lastEditedAt}
+            >
               <ElementOutlet
                 type={kind}
                 elementId={ref.elementId}

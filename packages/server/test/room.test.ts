@@ -17,6 +17,7 @@ import {
   decodeUpdate,
   elementsMap,
   encodeUpdate,
+  patchElement,
   readElement,
   readElements,
   writeElement,
@@ -269,19 +270,70 @@ describe("Room Yjs document consistency", () => {
     const update = encodedElements(portal());
     expect(fixture.room.applyDocUpdate(fixture.peer, update)).toBeTrue();
 
-    expect(fixture.room.rev).toBe(1);
-    expect(readElement(fixture.room.doc, "element-1")).toEqual(portal());
+    expect(fixture.room.rev).toBe(2);
+    expect(readElement(fixture.room.doc, "element-1")).toEqual(
+      portal("element-1", {
+        lastEditedBy: fixture.peer.auth.principal.id,
+        lastEditedAt: 0,
+      }),
+    );
     const messages = fixture.socket.messages();
-    expect(messages).toHaveLength(1);
+    expect(messages).toHaveLength(2);
     expect(messages[0]).toMatchObject({
       type: "doc_update",
       by: fixture.peer.auth.principal.id,
     });
-
+    expect(messages[1]).toMatchObject({ type: "doc_update", by: "server" });
     fixture.socket.clear();
     fixture.room.applyDocUpdate(fixture.peer, update);
-    expect(fixture.room.rev).toBe(1);
+    expect(fixture.room.rev).toBe(2);
     expect(fixture.socket.messages()).toEqual([]);
+    fixture.store.close();
+  });
+
+  test("server acceptance order stamps whole changed elements with one update time", () => {
+    const fixture = roomFixture();
+    fixture.runtime.time = 10;
+    fixture.room.applyDocUpdate(fixture.peer, encodedElements(portal("first"), note("second")));
+    expect(readElement(fixture.room.doc, "first")).toMatchObject({
+      lastEditedBy: fixture.peer.auth.principal.id,
+      lastEditedAt: 10,
+    });
+    expect(readElement(fixture.room.doc, "second")).toMatchObject({
+      lastEditedBy: fixture.peer.auth.principal.id,
+      lastEditedAt: 10,
+    });
+
+    const principal: Principal = {
+      id: fixture.runtime.newId(),
+      kind: "agent",
+      name: "second editor",
+      color: "#dc2626",
+    };
+    fixture.store.createPrincipal(principal, fixture.runtime.now());
+    const peer = new SessionChannel(
+      fixture.runtime.newId(),
+      new FakeSocket(),
+      { ...fixture.peer.auth, principal },
+      fixture.container.id,
+      "c2",
+    );
+    const replica = createSceneDoc();
+    Y.applyUpdate(replica, Y.encodeStateAsUpdate(fixture.room.doc));
+    const before = Y.encodeStateVector(replica);
+    patchElement(replica, "first", { x: 99 }, LOCAL_ORIGIN);
+    fixture.runtime.time = 20;
+    fixture.room.applyDocUpdate(peer, encodeUpdate(Y.encodeStateAsUpdate(replica, before)));
+
+    expect(readElement(fixture.room.doc, "first")).toMatchObject({
+      x: 99,
+      lastEditedBy: principal.id,
+      lastEditedAt: 20,
+    });
+    expect(readElement(fixture.room.doc, "second")).toMatchObject({
+      lastEditedBy: fixture.peer.auth.principal.id,
+      lastEditedAt: 10,
+    });
     fixture.store.close();
   });
 
@@ -434,10 +486,15 @@ describe("Room document persistence", () => {
 
     fixture.clock.advance(1_500);
     const record = fixture.store.latestDoc(fixture.container.id);
-    expect(record?.rev).toBe(1);
+    expect(record?.rev).toBe(2);
     const restored = createSceneDoc();
     Y.applyUpdate(restored, record?.doc ?? new Uint8Array());
-    expect(readElement(restored, "quiet")).toEqual(portal("quiet"));
+    expect(readElement(restored, "quiet")).toEqual(
+      portal("quiet", {
+        lastEditedBy: fixture.peer.auth.principal.id,
+        lastEditedAt: 0,
+      }),
+    );
     expect(fixture.socket.messages().at(-1)?.type).toBe("saved");
     fixture.store.close();
   });
@@ -452,7 +509,7 @@ describe("Room document persistence", () => {
     expect(store.latestDoc(fixture.container.id)).toBeNull();
     store.failingContainers.delete(fixture.container.id);
     fixture.clock.advance(1_500);
-    expect(store.latestDoc(fixture.container.id)?.rev).toBe(1);
+    expect(store.latestDoc(fixture.container.id)?.rev).toBe(2);
     store.close();
   });
 
@@ -489,7 +546,7 @@ describe("Room document persistence", () => {
 
     room.leave(peer);
     expect(manager.introspect()).toHaveLength(0);
-    expect(store.latestDoc(container.id)?.rev).toBe(1);
+    expect(store.latestDoc(container.id)?.rev).toBe(2);
     store.close();
   });
 
@@ -605,10 +662,15 @@ describe("Room element rules", () => {
     const revAfterAuthoring = fixture.room.rev;
 
     expect(fixture.room.repointPortal("mirror", "new-home")).toBeTrue();
-    // A merge repoints instead of re-authoring precisely so nothing observable moves: same
-    // id, same geometry, same z-order, so no portal blinks and no selection is lost.
+    // A merge repoints instead of re-authoring: geometry, z-order, and the last human edit
+    // summary survive the server-origin rewrite, so it invents no editor.
     expect(fixture.room.element("mirror")).toEqual(
-      portal("mirror", { containerId: "new-home", ...geometry }),
+      portal("mirror", {
+        containerId: "new-home",
+        ...geometry,
+        lastEditedBy: fixture.peer.auth.principal.id,
+        lastEditedAt: 0,
+      }),
     );
     expect(fixture.room.rev).toBe(revAfterAuthoring + 1);
 
@@ -619,7 +681,12 @@ describe("Room element rules", () => {
     // Only a REFERENCE can be repointed. Furniture has no target to change.
     expect(fixture.room.repointPortal("caption", "new-home")).toBeFalse();
     expect(fixture.room.repointPortal("absent", "new-home")).toBeFalse();
-    expect(fixture.room.element("caption")).toEqual(note("caption"));
+    expect(fixture.room.element("caption")).toEqual(
+      note("caption", {
+        lastEditedBy: fixture.peer.auth.principal.id,
+        lastEditedAt: 0,
+      }),
+    );
     fixture.store.close();
   });
 

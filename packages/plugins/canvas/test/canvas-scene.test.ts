@@ -53,6 +53,25 @@ describe("flow scene", () => {
     ]);
   });
 
+  test("projects authorship beside payload without exposing it to element renderers", () => {
+    const projected = projectElements(
+      new Map([
+        [
+          text.id,
+          { ...text, lastEditedBy: "principal-1", lastEditedAt: 42 } satisfies SceneElement,
+        ],
+      ]),
+      new Map(),
+    );
+    expect(projected[0]).toMatchObject({
+      lastEditedBy: "principal-1",
+      lastEditedAt: 42,
+      data: { text: "", fontSize: 20, color: "#123456" },
+    });
+    expect(projected[0]?.data).not.toHaveProperty("lastEditedBy");
+    expect(projected[0]?.data).not.toHaveProperty("lastEditedAt");
+  });
+
   test("uses a live gesture override for projected geometry", () => {
     const override: GestureOverride = {
       connId: "peer-connection",

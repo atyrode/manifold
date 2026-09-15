@@ -83,6 +83,10 @@ export function reconcileNodes(next: readonly Node[], current: Node[]): Node[] {
       previous.zIndex === node.zIndex &&
       (previous.selected ?? false) === (node.selected ?? false) &&
       previous.dragHandle === node.dragHandle &&
+      shallowDataEqual(
+        (previous.domAttributes ?? {}) as Record<string, unknown>,
+        (node.domAttributes ?? {}) as Record<string, unknown>,
+      ) &&
       shallowDataEqual(previous.data, node.data)
     ) {
       if (previous !== current[index]) reusedAll = false;
@@ -118,6 +122,8 @@ export interface ProjectedNode {
   readonly zIndex: number;
   readonly type: string;
   readonly data: SceneElementPayload;
+  readonly lastEditedBy?: string;
+  readonly lastEditedAt?: number;
 }
 
 /**
@@ -153,6 +159,9 @@ export function projectElements(
       width: override?.width ?? element.width,
       height: override?.height ?? element.height,
       zIndex: element.zIndex,
+      ...(element.lastEditedBy === undefined || element.lastEditedAt === undefined
+        ? {}
+        : { lastEditedBy: element.lastEditedBy, lastEditedAt: element.lastEditedAt }),
       data: elementPayload(element),
     };
   });

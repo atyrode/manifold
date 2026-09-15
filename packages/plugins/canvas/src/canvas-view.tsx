@@ -876,6 +876,14 @@ export function CanvasView({
               "titlebar"
             ? { dragHandle: ".canvas-element__bar" }
             : {}),
+        ...(element.lastEditedBy === undefined || element.lastEditedAt === undefined
+          ? {}
+          : {
+              domAttributes: {
+                "data-last-edited-by": element.lastEditedBy,
+                "data-last-edited-at": String(element.lastEditedAt),
+              } as unknown as NonNullable<Node["domAttributes"]>,
+            }),
         data: element.data,
       })),
     [projected, projection],

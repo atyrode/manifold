@@ -76,6 +76,14 @@ describe("what one element declares", () => {
     expect(declarationOf(element({ "data-id": "e1" }, "react-flow__node"))?.kind).toBe("element");
     // React Flow puts `data-id` on handles and toolbars too; those name no element.
     expect(declarationOf(element({ "data-id": "rf-h" }, "react-flow__handle"))).toBeNull();
+    expect(
+      declarationOf(
+        element(
+          { "data-id": "composition", "data-element-container-id": "inner" },
+          "manifold-element",
+        ),
+      ),
+    ).toMatchObject({ kind: "element", id: "composition", containerId: "inner" });
   });
 
   test("an element declaring nothing this module understands declares nothing", () => {
@@ -116,6 +124,12 @@ describe("addresses", () => {
     expect(declarationAddress(pane!, "room-1")).toBeNull();
     // And no routed container means no container-relative address at all.
     expect(declarationAddress(tile!, null)).toBeNull();
+    const compositionElement = declarationOf(
+      element({ "data-id": "e2", "data-element-container-id": "inner" }, "manifold-element"),
+    );
+    expect(declarationAddress(compositionElement!, "outer")).toBe(
+      "manifold://container/inner/element/e2",
+    );
   });
 
   test("a door is addressed as an action, and a plugin as a plugin", () => {

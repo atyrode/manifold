@@ -1125,7 +1125,13 @@ export function CompositionView({
               closeLabel={`Delete ${itemNoun(kind, roster)}`}
               closeTooltip={`Delete this ${itemNoun(kind, roster)}`}
             />
-            <div className="composition-tile__body">
+            <div
+              className="composition-tile__body manifold-element"
+              data-id={ref.elementId}
+              data-element-container-id={containerId}
+              data-last-edited-by={element?.lastEditedBy}
+              data-last-edited-at={element?.lastEditedAt}
+            >
               <ElementOutlet
                 // The occupant's OWN type, rendered by the declaring plugin.
                 type={kind}

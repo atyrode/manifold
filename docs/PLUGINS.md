@@ -1205,6 +1205,13 @@ directly and declares no action at all.** A per-element edit whose worst-case me
 is document traffic (§5), so `core.notes` and `core.canvas.draw` both ship with zero actions. If you find
 yourself wanting an action for a keystroke, re-read the plane table.
 
+The neutral element envelope also reserves optional `lastEditedBy` and `lastEditedAt` fields. The
+server writes the pair after each accepted peer update for every surviving changed element; plugin
+payloads do not receive them and `ScenePatch` cannot set them. They are a whole-element,
+server-acceptance-order summary for the debug inspector, not field or character blame. Older
+documents omit both and read as unknown, while server placement rewrites preserve an existing pair
+without inventing an editor.
+
 **You implement nothing for dormancy, and there is no seam for it.** Both mount sites decide before
 your component is ever constructed, asking the same three questions in the same order: unknown
 element type → placeholder `state="unknown"`, owning plugin disabled → `"disabled"`, type declared
