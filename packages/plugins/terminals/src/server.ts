@@ -1,3 +1,4 @@
+import { formatManifoldUri } from "@manifold/protocol";
 import type {
   Cap,
   ContainerTerminalSummary,
@@ -6,6 +7,7 @@ import type {
   TerminalEnv,
   TerminalProgram,
   TerminalRuntime,
+  TerminalInfo,
   TerminalSummary,
 } from "@manifold/protocol";
 
@@ -70,6 +72,26 @@ interface TerminalsCtx {
   };
   readonly rooms: { censuses(): readonly { readonly references: readonly string[] }[] };
   readonly broker: {
+    create(
+      credential: TerminalsCtx["credential"],
+      containerId: string,
+      input: {
+        readonly type: "terminal_open";
+        readonly elementId: string;
+        readonly cols: number;
+        readonly rows: number;
+        readonly cwd?: string;
+        readonly machineId?: string;
+        readonly placement?: "tile";
+        readonly program?: TerminalProgram;
+        readonly env?: TerminalEnv;
+        readonly runtime?: TerminalRuntime;
+      },
+      traceId?: number,
+    ): Promise<
+      | { readonly ok: true; readonly terminal: TerminalInfo }
+      | { readonly ok: false; readonly reason: string }
+    >;
     rename(terminalId: string, name: string): "ok" | "not_found";
     killById(terminalId: string): "ok" | "not_found";
     restartById(
@@ -85,6 +107,31 @@ interface TerminalsCtx {
 
 /** Either the result the action publishes, or a refusal the door turns into a denial. */
 type Outcome<T> = { refused: string } | T;
+interface TerminalCreationArgs {
+  readonly containerId: string;
+  readonly elementId: string;
+  readonly cols: number;
+  readonly rows: number;
+  readonly cwd?: string;
+  readonly machineId?: string;
+  readonly placement?: "element" | "tile";
+  readonly program?: TerminalProgram;
+  readonly env?: TerminalEnv;
+  readonly runtime?: TerminalRuntime;
+}
+
+/** The one policy answer shared by socket authorization and bearer-reachable birth. */
+function creationRefusal(
+  ctx: TerminalsCtx,
+  args: TerminalCreationArgs,
+): { refused: string } | null {
+  const outside = ctx.outsideScope(args.containerId);
+  if (outside !== null) return outside;
+  return args.runtime &&
+    (args.cwd !== undefined || args.program !== undefined || args.env !== undefined)
+    ? { refused: "runtime excludes cwd, program, and environment overrides" }
+    : null;
+}
 
 export const terminalsHandlers = {
   /**
@@ -101,27 +148,35 @@ export const terminalsHandlers = {
    */
   async open(
     ctx: TerminalsCtx,
-    args: {
-      containerId: string;
-      elementId: string;
-      cols: number;
-      rows: number;
-      cwd?: string;
-      machineId?: string;
-      placement?: "element" | "tile";
-      program?: TerminalProgram;
-      env?: TerminalEnv;
-      runtime?: TerminalRuntime;
-    },
+    args: TerminalCreationArgs,
   ): Promise<Outcome<Record<string, never> | { traceId: number }>> {
-    const outside = ctx.outsideScope(args.containerId);
-    if (outside !== null) return outside;
-    if (
-      args.runtime &&
-      (args.cwd !== undefined || args.program !== undefined || args.env !== undefined)
-    )
-      return { refused: "runtime excludes cwd, program, and environment overrides" };
+    const refusal = creationRefusal(ctx, args);
+    if (refusal !== null) return refusal;
     return args.runtime ? { traceId: ctx.traceId } : {};
+  },
+  /**
+   * The bearer-reachable birth door. The broker resolves only after the owner acknowledged
+   * creation and the durable terminal/home rows committed; every failure before that point
+   * is compensated by the broker and becomes this door's refusal.
+   */
+  async create(
+    ctx: TerminalsCtx,
+    args: Omit<TerminalCreationArgs, "placement"> & { readonly placement?: "tile" },
+  ): Promise<Outcome<{ terminal: TerminalInfo; uri: string }>> {
+    const refusal = creationRefusal(ctx, args);
+    if (refusal !== null) return refusal;
+    const outcome = await ctx.broker.create(
+      ctx.credential,
+      args.containerId,
+      { type: "terminal_open", ...args },
+      ctx.traceId,
+    );
+    return outcome.ok
+      ? {
+          terminal: outcome.terminal,
+          uri: formatManifoldUri({ kind: "terminal", terminalId: outcome.terminal.id }),
+        }
+      : { refused: outcome.reason };
   },
 
   /**

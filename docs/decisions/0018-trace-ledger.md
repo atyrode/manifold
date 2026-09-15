@@ -169,9 +169,9 @@ a hole:
 - **Presence** is never persisted (invariant 5), so it has no trace to keep. Its authority is
   discharged at the socket, and its whole content dies with the connection.
 - **Continuous streams** — PTY bytes, cursor motion, live drags — are channel traffic by the
-  plane rule. Their LIFECYCLE is traced, because the lifecycle is actions: `core.terminals.open`,
-  `take`, `kill` are doors and every one of them lands in the ledger. The bytes themselves are
-  exempt by invariant 5 and always will be.
+  plane rule. Their LIFECYCLE is traced, because the lifecycle is actions:
+  `core.terminals.open`/`create`, `take`, and `kill` are doors and every one lands in the ledger.
+  The bytes themselves are exempt by invariant 5 and always will be.
 - **The document plane.** A Yjs delta's authority is discharged at the `doc_update` frame's cap
   check, and its durable commit point is the debounced snapshot flush, which is neither
   single-actor nor door-keyed. It is exempt, and the upgrade is named below rather than pretended.

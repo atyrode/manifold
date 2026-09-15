@@ -2,11 +2,12 @@ import { expect, test } from "bun:test";
 import {
   HttpErrorSchema,
   PlaceRequestSchema,
+  TerminalInfoSchema,
   type ActionOutcome,
   type HttpError,
   type TerminalSummary,
 } from "@manifold/protocol";
-import type { SessionClient } from "@manifold/sdk";
+import { base64ToText, type SessionClient } from "@manifold/sdk";
 import {
   callAction,
   connect,
@@ -71,6 +72,69 @@ async function invokeAction(
 ): Promise<ActionOutcome> {
   return await callAction(server, server.ownerKey, name, args);
 }
+
+test("a bearer creates over HTTP, observes the durable row, and attaches later", async () => {
+  const servers: TestServer[] = [];
+  const agents: TestAgent[] = [];
+  const clients: SessionClient[] = [];
+  try {
+    const server = await startServer();
+    servers.push(server);
+    const container = await createContainer(server, "HTTP terminal canvas");
+    const enrolled = await enrollMachine(server, "http-terminal-agent");
+    agents.push(
+      await startAgent({
+        serverUrl: server.url,
+        machineToken: enrolled.machineToken,
+        name: "http-terminal-agent",
+      }),
+    );
+
+    const outcome = await callAction(server, server.ownerKey, "core.terminals.create", {
+      containerId: container.id,
+      elementId: "http-created",
+      cols: 80,
+      rows: 24,
+      program: { argv: ["/bin/sh", "-lc", "printf http-born; sleep 30"] },
+    });
+    if (!outcome.ok) throw new Error(`HTTP terminal creation refused: ${outcome.denial.message}`);
+    if (typeof outcome.result !== "object" || outcome.result === null)
+      throw new Error("HTTP terminal creation returned no result");
+    const terminal = TerminalInfoSchema.parse(Reflect.get(outcome.result, "terminal"));
+    expect(Reflect.get(outcome.result, "uri")).toBe(`manifold://terminal/${terminal.id}`);
+    expect(await terminalRow(server, terminal.id)).toMatchObject({
+      id: terminal.id,
+      homeId: terminal.containerId,
+      status: "running",
+      unplaced: true,
+    });
+
+    const later = await connect(server, {
+      containerId: terminal.containerId,
+      token: server.ownerKey,
+      reconnect: false,
+    });
+    clients.push(later);
+    const snapshot = nextMessage(
+      later,
+      "terminal_snapshot",
+      15_000,
+      (message) => message.terminalId === terminal.id,
+    );
+    later.attachTerminal(terminal.id);
+    expect(base64ToText((await snapshot).data)).toContain("http-born");
+
+    expect(await invokeAction(server, "core.terminals.kill", { terminalId: terminal.id })).toEqual({
+      ok: true,
+      result: {},
+    });
+  } catch (error) {
+    throw e2eFailure(error, [...servers, ...agents]);
+  } finally {
+    closeClients(clients);
+    await stopProcesses([...agents, ...servers]);
+  }
+}, 60_000);
 
 test("the terminal index lists every terminal, placed or not, and renames and kills through it", async () => {
   const servers: TestServer[] = [];

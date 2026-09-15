@@ -1250,7 +1250,8 @@ function tracePayload(door: string, rawArgs: unknown): Record<string, unknown> {
   for (const reserved of RESERVED_TRACE_KEYS) delete redacted[reserved];
   const text = JSON.stringify(redacted);
   if (text.length <= TRACE_PAYLOAD_MAX_CHARS) return redacted;
-  if (door !== "core.terminals.open") return genericTraceSummary(redacted, text.length);
+  if (door !== "core.terminals.open" && door !== "core.terminals.create")
+    return genericTraceSummary(redacted, text.length);
   const terminal = terminalOpenTraceSummary(redacted, text.length);
   return terminal.program === undefined && terminal.cwd === undefined
     ? genericTraceSummary(redacted, text.length)

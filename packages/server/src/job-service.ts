@@ -3486,7 +3486,9 @@ export class JobService {
         (restarting
           ? this.store.getTerminal(request.terminal.terminalId)?.containerId !==
             request.terminal.containerId
-          : !terminalOrigin?.containerId || terminalOrigin.door !== "core.terminals.open"))
+          : !terminalOrigin?.containerId ||
+            (terminalOrigin.door !== "core.terminals.open" &&
+              terminalOrigin.door !== "core.terminals.create")))
     )
       fail("terminal_spawn_origin_missing");
     const invocation: AuthorityRequirement[] = [];

@@ -11,6 +11,7 @@ import {
   type AgentMessage,
   type ClientMessageBody,
   type EventKind,
+  type ErrorCode,
   type EventPayload,
   type MachineDrainStatus,
   type RuntimeDeps,
@@ -104,6 +105,9 @@ interface RuntimeTerminal {
   snapshotGeneration: number;
   snapshotRequestOutstanding: boolean;
 }
+type TerminalCreateOutcome =
+  | { readonly ok: true; readonly terminal: TerminalInfo }
+  | { readonly ok: false; readonly reason: string };
 
 interface PendingOpen {
   terminalId: string;
@@ -133,7 +137,8 @@ interface PendingOpen {
   createdAt: number;
   cols: number;
   rows: number;
-  opener: SessionChannel;
+  opener: SessionChannel | null;
+  resolve: (outcome: TerminalCreateOutcome) => void;
   agentPrincipalId: string | null;
   cancelDeadline: (() => void) | null;
   launchRecipe: TerminalLaunchRecipe;
@@ -424,12 +429,13 @@ export class TerminalBroker implements TerminalPlacementPort {
     for (const [terminalId, pending] of this.pendingOpens) {
       if (pending.machineId !== channel.machineId) continue;
       pending.cancelDeadline?.();
-      pending.opener.send({
-        type: "error",
-        code: "no_machine",
-        message: "machine disconnected while opening terminal",
-        ref: pending.ref,
-      });
+      this.answerOpen(
+        pending.opener,
+        pending.resolve,
+        "no_machine",
+        "machine disconnected while opening terminal",
+        pending.ref,
+      );
       this.abandonOpen(pending);
       this.pendingOpens.delete(terminalId);
       this.rooms.evictIfIdle(pending.containerId);
@@ -764,97 +770,108 @@ export class TerminalBroker implements TerminalPlacementPort {
     if (this.machines.size !== 1) return null;
     return this.machines.values().next().value ?? null;
   }
+  private answerOpen(
+    opener: SessionChannel | null,
+    resolve: (outcome: TerminalCreateOutcome) => void,
+    code: ErrorCode,
+    message: string,
+    ref: string,
+  ): void {
+    opener?.send({ type: "error", code, message, ref });
+    resolve({ ok: false, reason: message });
+  }
 
   /**
-   * Starts a PTY create request. Spawn AUTHORITY is not asked here any more: the session
-   * gateway dispatches `core.terminals.open` before it calls this, and that door carries
-   * `terminals:spawn` at the container's scope (ADR 0013 — terminal policy is a plugin,
-   * terminal bytes are floor). The door saw THIS frame's `program` and `env`, so what rides
-   * to the agent below is what the ledger recorded as authorized (issue #192). What remains
-   * is mechanism: placement discipline, machine selection, and the create round trip.
+   * Starts a PTY create request after the caller has passed `core.terminals.open` or
+   * `core.terminals.create`. Policy remains in the plugin; this is the one mechanism for
+   * placement, machine selection, acknowledgement, durable commit and compensation.
    */
   open(channel: SessionChannel, message: TerminalOpen, traceId?: number): void {
+    this.beginOpen(channel.auth, channel.containerId, channel, message, () => {}, traceId);
+  }
+
+  /**
+   * The HTTP action's broker boundary. It has no session channel to own a reply, so the
+   * completion resolves only after the machine acknowledgement and durable terminal commit.
+   * A stale credential is refused before any id, token, job or machine request is created.
+   */
+  create(
+    credential: CredentialReference,
+    containerId: string,
+    message: TerminalOpen,
+    traceId?: number,
+  ): Promise<TerminalCreateOutcome> {
+    const auth = this.auth.restoreCredential(credential);
+    if (auth === null)
+      return Promise.resolve({ ok: false, reason: "credential expired or revoked" });
+    const completion = Promise.withResolvers<TerminalCreateOutcome>();
+    this.beginOpen(auth, containerId, null, message, completion.resolve, traceId);
+    return completion.promise;
+  }
+
+  private beginOpen(
+    auth: AuthContext,
+    containerId: string,
+    opener: SessionChannel | null,
+    message: TerminalOpen,
+    resolve: (outcome: TerminalCreateOutcome) => void,
+    traceId?: number,
+  ): void {
+    const refuse = (code: ErrorCode, reason: string): void =>
+      this.answerOpen(opener, resolve, code, reason, message.elementId);
     if (
       message.runtime &&
       (message.program !== undefined || message.env !== undefined || message.cwd !== undefined)
     ) {
-      channel.send({
-        type: "error",
-        code: "forbidden",
-        message: "runtime excludes program, cwd and environment overrides",
-        ref: message.elementId,
-      });
+      refuse("forbidden", "runtime excludes program, cwd and environment overrides");
       return;
     }
     /*
       Discipline decides who authors the placement, and it decides it from its DECLARATION
       (#125): a container that holds a tile tree is placed into server-side by naming a leaf,
       any other container by the opener authoring an element. A mismatch is refused rather
-      than spawning a PTY nothing would ever render — an opener that forgot its element, or a
-      tile-tree opener that thinks it authors one.
+      than spawning a PTY nothing would ever render.
     */
-    const container = this.store.getContainer(channel.containerId);
+    const container = this.store.getContainer(containerId);
     const placement = message.placement ?? "element";
     const tileTree = container !== null && this.holdsTileTree(container.discipline);
     if (tileTree !== (placement === "tile")) {
-      channel.send({
-        type: "error",
-        code: "conflict",
-        message:
-          placement === "tile"
-            ? 'placement "tile" requires a container that holds a tile tree'
-            : 'this container places terminals server-side: send placement "tile"',
-        ref: message.elementId,
-      });
+      refuse(
+        "conflict",
+        placement === "tile"
+          ? 'placement "tile" requires a container that holds a tile tree'
+          : 'this container places terminals server-side: send placement "tile"',
+      );
       return;
     }
     const machine = this.selectMachine(message.machineId);
     if (machine === null) {
-      channel.send({
-        type: "error",
-        code: "no_machine",
-        message: "no unambiguous online machine",
-        ref: message.elementId,
-      });
+      refuse("no_machine", "no unambiguous online machine");
       return;
     }
     if (this.draining.has(machine.machineId)) {
-      /*
-        THE LATCH (#278). Checked on the machine the open would actually reach, after
-        selection, so a drained machine that is the only one online refuses by name rather
-        than being silently picked. Nothing is minted before this line: a refused open leaves
-        no token and no pending row for a replacement to discover.
-      */
-      channel.send({
-        type: "error",
-        code: "conflict",
-        message: "machine is draining: new terminals are refused until the drain is cancelled",
-        ref: message.elementId,
-      });
+      refuse(
+        "conflict",
+        "machine is draining: new terminals are refused until the drain is cancelled",
+      );
       return;
     }
     if (!message.runtime && machine.terminalExecution !== "unconfined") {
-      channel.send({
-        type: "error",
-        code: machine.terminalExecution === "governed" ? "forbidden" : "unsupported",
-        message:
-          machine.terminalExecution === "governed"
-            ? "machine requires a declared terminal runtime"
-            : "terminal owner has not declared unconfined terminal support",
-        ref: message.elementId,
-      });
+      refuse(
+        machine.terminalExecution === "governed" ? "forbidden" : "unsupported",
+        machine.terminalExecution === "governed"
+          ? "machine requires a declared terminal runtime"
+          : "terminal owner has not declared unconfined terminal support",
+      );
       return;
     }
 
     const terminalId = this.runtime.newId();
     /*
-      The home is decided here, before the PTY exists, because the agent token and the
-      `MANIFOLD_CONTAINER` a program inside the terminal reads both have to name the container
-      the terminal LIVES in — and a canvas is never that. A composition opener already is the
-      home; a canvas opener gets a solo composition, whose ROW is created when the PTY lands
-      so a create that fails leaves nothing behind to clean up.
-     */
-    const homeId = placement === "tile" ? channel.containerId : this.runtime.newId();
+      The home is decided before the PTY exists because both its credential and
+      `MANIFOLD_CONTAINER` must name the composition it lives in from the first byte.
+    */
+    const homeId = placement === "tile" ? containerId : this.runtime.newId();
     let runtime: Extract<ServerToAgentMessage, { type: "create" }>["runtime"];
     if (message.runtime) {
       try {
@@ -865,13 +882,9 @@ export class TerminalBroker implements TerminalPlacementPort {
             throw new ServiceError("forbidden", "run_launch_protocol_unsupported");
           this.jobs.assertRunLaunchSupported(machine.machineId);
         }
-        const privateEnv = this.consumeRunLaunch(
-          message.runtime,
-          channel.auth,
-          channel.containerId,
-        );
+        const privateEnv = this.consumeRunLaunch(message.runtime, auth, containerId);
         runtime = this.jobs.admitTerminal(
-          channel.auth,
+          auth,
           message.runtime,
           machine.machineId,
           {
@@ -884,35 +897,33 @@ export class TerminalBroker implements TerminalPlacementPort {
           privateEnv,
         );
       } catch (error) {
-        channel.send({
-          type: "error",
-          code: "forbidden",
-          message:
-            error instanceof ServiceError &&
+        refuse(
+          "forbidden",
+          error instanceof ServiceError &&
             (error.message === "run_launch_protocol_unsupported" ||
               error.message === "run_launch_owner_unavailable")
-              ? error.message
-              : "terminal runtime admission refused",
-          ref: message.elementId,
-        });
+            ? error.message
+            : "terminal runtime admission refused",
+        );
         return;
       }
     }
     const grant = runtime
       ? null
-      : this.auth.mintSessionAgentToken(terminalId, homeId, channel.auth.principal.id);
+      : this.auth.mintSessionAgentToken(terminalId, homeId, auth.principal.id);
     const pending: PendingOpen = {
       terminalId,
-      containerId: channel.containerId,
+      containerId,
       homeId,
       ref: message.elementId,
       placement,
       machineId: machine.machineId,
-      createdBy: channel.auth.principal.id,
+      createdBy: auth.principal.id,
       createdAt: this.runtime.now(),
       cols: message.cols,
       rows: message.rows,
-      opener: channel,
+      opener,
+      resolve,
       agentPrincipalId: grant?.principal.id ?? null,
       cancelDeadline: null,
       ...(runtime?.request.terminal?.runId === undefined
@@ -935,12 +946,13 @@ export class TerminalBroker implements TerminalPlacementPort {
       this.pendingOpens.delete(terminalId);
       this.machines.get(machine.machineId)?.send({ type: "kill", terminalId });
       this.abandonOpen(pending);
-      pending.opener.send({
-        type: "error",
-        code: "no_machine",
-        message: "terminal creation timed out",
-        ref: pending.ref,
-      });
+      this.answerOpen(
+        pending.opener,
+        pending.resolve,
+        "no_machine",
+        "terminal creation timed out",
+        pending.ref,
+      );
       this.logger.warn("terminal_create_timeout", {
         machineId: machine.machineId,
         terminalId,
@@ -956,14 +968,8 @@ export class TerminalBroker implements TerminalPlacementPort {
       env: runtime
         ? {}
         : {
-            // The opener's own keys go FIRST so the fixed keys below always win. The schema
-            // already refuses the `MANIFOLD_` prefix; the order makes the rule true even if it
-            // did not.
             ...message.env,
             MANIFOLD_URL: this.publicUrl(),
-            // The container the terminal LIVES in, which is what a program inside it should see
-            // when it asks where it is. `MANIFOLD_ELEMENT` is only meaningful for a canvas
-            // opener, which authors its portal under exactly that id.
             MANIFOLD_CONTAINER: homeId,
             ...(placement === "tile" ? {} : { MANIFOLD_ELEMENT: message.elementId }),
             MANIFOLD_TOKEN: grant!.token,
@@ -975,12 +981,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       pending.cancelDeadline?.();
       this.pendingOpens.delete(terminalId);
       this.abandonOpen(pending);
-      channel.send({
-        type: "error",
-        code: "no_machine",
-        message: "machine connection unavailable",
-        ref: message.elementId,
-      });
+      refuse("no_machine", "machine connection unavailable");
       this.rooms.evictIfIdle(pending.containerId);
     }
   }
@@ -1008,12 +1009,13 @@ export class TerminalBroker implements TerminalPlacementPort {
       // Nothing durable exists yet, so the PTY is the only thing to undo.
       this.machines.get(machineId)?.send({ type: "kill", terminalId });
       this.abandonOpen(pending);
-      pending.opener.send({
-        type: "error",
-        code: "conflict",
-        message: "this terminal could not be given a home",
-        ref: pending.ref,
-      });
+      this.answerOpen(
+        pending.opener,
+        pending.resolve,
+        "conflict",
+        "this terminal could not be given a home",
+        pending.ref,
+      );
       this.logger.warn("terminal_home_failed", {
         containerId: pending.containerId,
         terminalId,
@@ -1062,7 +1064,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       about a terminal is canvas state. A canvas learns about the new terminal the same way
       it learns about anything else on it — the portal element arriving in its document.
      */
-    pending.opener.send({
+    pending.opener?.send({
       type: "terminal_opened",
       elementId: pending.placement === "tile" ? home : pending.ref,
       terminal: info,
@@ -1072,7 +1074,7 @@ export class TerminalBroker implements TerminalPlacementPort {
     homeRoom?.broadcast(
       { type: "terminal_opened", elementId: home, terminal: info },
       false,
-      pending.opener,
+      pending.opener ?? undefined,
     );
     homeRoom?.broadcast({ type: "terminal_event", terminalId, kind: "opened" });
     // THE BIRTH, announced once, on the terminals collection: nobody could have subscribed to a
@@ -1083,6 +1085,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       machineId,
       elementId: home,
     });
+    pending.resolve({ ok: true, terminal: info });
     this.rooms.evictIfIdle(pending.containerId);
     if (pending.homeId !== pending.containerId) this.rooms.evictIfIdle(pending.homeId);
   }
@@ -1099,12 +1102,13 @@ export class TerminalBroker implements TerminalPlacementPort {
     this.pendingOpens.delete(terminalId);
     pending.cancelDeadline?.();
     this.abandonOpen(pending);
-    pending.opener.send({
-      type: "error",
-      code: "conflict",
-      message: "terminal creation failed",
-      ref: pending.ref,
-    });
+    this.answerOpen(
+      pending.opener,
+      pending.resolve,
+      "conflict",
+      "terminal creation failed",
+      pending.ref,
+    );
     this.logger.warn("terminal_create_failed", { machineId, terminalId });
     this.rooms.evictIfIdle(pending.containerId);
   }
@@ -1906,12 +1910,13 @@ export class TerminalBroker implements TerminalPlacementPort {
       pending.cancelDeadline?.();
       this.machines.get(pending.machineId)?.send({ type: "kill", terminalId });
       this.abandonOpen(pending);
-      pending.opener.send({
-        type: "error",
-        code: "not_found",
-        message: "container deleted while opening terminal",
-        ref: pending.ref,
-      });
+      this.answerOpen(
+        pending.opener,
+        pending.resolve,
+        "not_found",
+        "container deleted while opening terminal",
+        pending.ref,
+      );
       this.pendingOpens.delete(terminalId);
     }
     for (const [terminalId, terminal] of this.terminals) {
