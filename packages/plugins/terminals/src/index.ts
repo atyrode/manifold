@@ -5,6 +5,7 @@ import {
   TerminalEnvSchema,
   TerminalProgramSchema,
   TerminalRuntimeSchema,
+  TerminalInfoSchema,
   TerminalSummarySchema,
   type PluginManifest,
 } from "@manifold/protocol";
@@ -18,9 +19,9 @@ import { z } from "zod";
  * The PTY plane stays floor and always will: the broker, the attach state machine, the
  * no-gap snapshot invariant and the byte frames (`terminal_input`, `terminal_resize`,
  * output) are a plane transport, neutral over what runs in the shell (ADR 0013 §Terminals).
- * The session channel therefore still carries `terminal_open`/`terminal_kill` as FRAMES —
- * a creation is a socket gesture whose reply is a socket reply — but the transport no
- * longer decides anything: it asks this plugin's doors first and moves bytes afterwards.
+ * The session channel still carries terminal byte/control frames, while `core.terminals.create`
+ * gives bearer-only callers the same birth mechanism without pretending HTTP owns a PTY stream.
+ * Both paths converge in the broker; policy stays in this plugin and bytes stay on the floor.
  *
  * Disabling refuses new terminals and administration, and never touches removal:
  * `kill` is `cleanup`, so nobody is locked out of tidying up by an administrator turning a
@@ -83,14 +84,13 @@ const geometry = {
 };
 
 /**
- * Seven doors, three authorities, and two scopes — every one of them chosen to reproduce the
+ * Eight doors, three authorities, and two scopes — every one of them chosen to reproduce the
  * authority the replaced ref enforced rather than to look tidy:
  *
- * - `open` carries `terminals:spawn`, the cap the broker itself demanded before this door
- *   existed, and is `scope: "container"` because a terminal is born INSIDE one container and the
- *   per-terminal agent token minted for it is container-scoped WITH that cap (`auth.ts`
- *   `mint`). A workspace-graded creation door would have quietly ended
- *   agents spawning their own terminals, which is A2's whole promise.
+ * - `open` is the session frame's policy gate and `create` is the bearer-reachable birth door.
+ *   Both carry `terminals:spawn` at `scope: "container"` because a terminal is born INSIDE one
+ *   container and the per-terminal agent token minted for it is container-scoped with that cap.
+ *   The broker is their one mechanism; `create` additionally waits for its durable commit.
  * - `rename`, `take`, `restart` and `kill` carry `terminals:write` at `scope: "container"`: the authority the
  *   terminal channel's `terminal_kill` verb has always enforced, and the one the browser's own
  *   `canKill` rule is computed from. The deleted `PATCH/DELETE /api/terminals/:id` routes
@@ -105,17 +105,10 @@ const geometry = {
 export const terminalsActions = [
   defineAction({
     /*
-      The CREATION POLICY door. Its result is the decision, not the terminal: the PTY is
-      born on the session channel, because a create is a round trip to a machine whose
-      reply — snapshot watermark, controller lease, the opener's correlation ref — is
-      socket traffic the floor owns. So `core.terminals.open` answers "may a terminal be
-      created here, now, by you", and `terminal_open` on the channel is the gesture that
-      asks it and then moves the bytes. Everything a policy could want to judge is in the
-      arguments, including the machine, so a future rule (fleet allowlists, geometry caps)
-      lands here and nowhere else — the RULE, never the birth. Dispatching this door over
-      `POST /api/actions/…` creates nothing; the birth is `terminal_open` on the session
-      socket, which the gateway sends through here first (`docs/PLUGINS.md` §3, issue #185
-      for whether an action should ever create one).
+      The session channel's CREATION POLICY door. Its result is the decision, not the terminal:
+      `terminal_open` dispatches it before asking the broker, so a socket frame and this policy
+      trace carry the same launch facts. Bearer-only callers use `core.terminals.create`, which
+      applies the same policy and waits on the same broker mechanism for durable birth.
      */
     /*
       Since issues #192 and #407 that includes the launch directory and WHAT the terminal is
@@ -151,6 +144,34 @@ export const terminalsActions = [
       env: TerminalEnvSchema.optional(),
     }),
     result: z.strictObject({ traceId: z.number().int().positive().optional() }),
+  }),
+  defineAction({
+    /*
+      The BEARER-REACHABLE birth door. Unlike `open`, this action waits for the machine's
+      acknowledgement and the broker's durable terminal/home commit, then returns both the
+      terminal state and its canonical address. It owns no output channel: callers observe
+      lifecycle through the terminal indexes/events and attach later with any SessionClient.
+     */
+    name: "create",
+    title: "Create a terminal and wait for its durable reference",
+    caps: ["terminals:spawn"],
+    scope: "container",
+    input: z.strictObject({
+      containerId: z.string().min(1),
+      /** Correlation id and, for canvas placement, the id a caller may author a portal under. */
+      elementId: z.string().min(1),
+      ...geometry,
+      cwd: TerminalCwdSchema.optional(),
+      machineId: z.string().min(1).optional(),
+      placement: z.literal("tile").optional(),
+      program: TerminalProgramSchema.optional(),
+      runtime: TerminalRuntimeSchema.optional(),
+      env: TerminalEnvSchema.optional(),
+    }),
+    result: z.strictObject({
+      terminal: TerminalInfoSchema,
+      uri: z.string().startsWith("manifold://terminal/"),
+    }),
   }),
   defineAction({
     name: "rename",

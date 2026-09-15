@@ -63,6 +63,7 @@ class FakeMachine implements MachineChannel {
 
 interface TerminalsFixture {
   readonly runtime: FakeRuntime;
+  readonly clock: FakeClock;
   readonly store: ServerStore;
   readonly auth: AuthService;
   readonly owner: AuthContext;
@@ -153,7 +154,7 @@ async function fixture(): Promise<TerminalsFixture> {
     runtime,
     events,
   );
-  return { runtime, store, auth, owner, container, broker, machine, host, gateway };
+  return { runtime, clock, store, auth, owner, container, broker, machine, host, gateway };
 }
 
 /** A minted token, so authority is exercised through real attenuation. */
@@ -221,6 +222,77 @@ describe("core.terminals doors", () => {
       ok: true,
       result: {},
     });
+  });
+  test("HTTP creation waits for durable birth and the returned terminal attaches later", async () => {
+    const base = await fixture();
+    const pending = base.host.dispatch(base.owner, "core.terminals.create", {
+      containerId: base.container.id,
+      elementId: "http-terminal",
+      cols: 80,
+      rows: 24,
+      placement: "tile",
+    });
+    await Promise.resolve();
+    const create = base.machine.sent.find((message) => message.type === "create");
+    if (create === undefined || create.type !== "create") throw new Error("missing create request");
+    expect(base.store.getTerminal(create.terminalId)).toBeNull();
+
+    base.broker.onCreated(base.machine.machineId, create.terminalId);
+    expect(await pending).toMatchObject({
+      ok: true,
+      result: {
+        uri: `manifold://terminal/${create.terminalId}`,
+        terminal: {
+          id: create.terminalId,
+          containerId: base.container.id,
+          status: "running",
+        },
+      },
+    });
+    expect(base.store.getTerminal(create.terminalId)).not.toBeNull();
+
+    base.machine.clear();
+    const later = new SessionChannel(
+      base.runtime.newId(),
+      new FakeSocket(),
+      base.owner,
+      base.container.id,
+      "later",
+    );
+    base.broker.attach(later, { type: "terminal_attach", terminalId: create.terminalId });
+    expect(base.machine.sent).toEqual([
+      { type: "snapshot_request", terminalId: create.terminalId },
+    ]);
+  });
+
+  test("HTTP creation names placement mistakes and compensates acknowledgement timeout", async () => {
+    const base = await fixture();
+    const args = {
+      containerId: base.container.id,
+      elementId: "http-terminal",
+      cols: 80,
+      rows: 24,
+    };
+    expect(denial(await base.host.dispatch(base.owner, "core.terminals.create", args))).toEqual({
+      rule: "refused",
+      message: 'this container places terminals server-side: send placement "tile"',
+    });
+    expect(base.machine.sent).toEqual([]);
+
+    const pending = base.host.dispatch(base.owner, "core.terminals.create", {
+      ...args,
+      placement: "tile",
+    });
+    await Promise.resolve();
+    const create = base.machine.sent.find((message) => message.type === "create");
+    if (create === undefined || create.type !== "create") throw new Error("missing create request");
+    base.clock.advance(10_000);
+    expect(denial(await pending)).toEqual({
+      rule: "refused",
+      message: "terminal creation timed out",
+    });
+    expect(base.store.getTerminal(create.terminalId)).toBeNull();
+    expect(base.machine.sent.at(-1)).toEqual({ type: "kill", terminalId: create.terminalId });
   });
 
   test("a container-scoped opener cannot have a terminal born in another container", async () => {

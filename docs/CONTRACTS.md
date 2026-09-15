@@ -817,10 +817,9 @@ scoping arrives with the permission waterfall (§Authority (planned)).
 
 **But a door's audience is declared, not inferred from whether it mutates.** An action declares
 `scope: "container"` if and only if the door it replaces was reachable by a container-scoped
-token — reads
-(`core.index.read`, `core.terminals.listByContainer`, `core.machines.list`) and mutations
-(`core.terminals.open`/`rename`/`take`/`kill`, `core.index.renameContainer`,
-`core.access.mint`/`revoke`)
+token — reads (`core.index.read`, `core.terminals.listByContainer`, `core.machines.list`) and
+mutations (`core.terminals.open`/`create`/`rename`/`take`/`restart`/`kill`,
+`core.index.renameContainer`, `core.access.mint`/`revoke`)
 alike. `scope: "container"` skips ladder rung 3 and creates an obligation with an exact division
 of
 labour: the ladder proves the caller's caps hold for the caller's OWN container, and only the
@@ -1562,12 +1561,14 @@ which is
 exactly what [One authoritative implementation](#one-authoritative-implementation) forbids, so the cutover took the channel's answer rather than the route's.
 `kill` is `cleanup: true` (removal survives a disable), the rename broadcasts
 `terminal_event { kind:"renamed", name }` into the home, and the kill sweeps the terminal, its home,
-and every portal onto that home. `open { containerId, elementId, cols, rows, machineId?,
-placement?, program?, cwd?, env? }` carries `terminals:spawn` at `scope: "container"`, because a
-terminal is born inside one container and the per-terminal agent token minted for it is
-container-scoped
-with that cap — a workspace-graded creation door would have quietly ended agents spawning their own
-terminals. `program { argv }`, `cwd`, and `env` are the SAME shapes and bounds the
+and every portal onto that home. `open` and `create` accept `{ containerId, elementId, cols, rows,
+machineId?, placement?, program?, cwd?, env? }` and carry `terminals:spawn` at
+`scope: "container"`, because a terminal is born inside one container and the per-terminal agent
+token minted for it is container-scoped with that cap. `open` is the session frame's policy gate;
+`create` is the HTTP-reachable birth operation and returns `{ terminal, uri }` only after durable
+commit. A workspace-graded creation door would have quietly ended agents spawning their own
+terminals.
+`program { argv }`, `cwd`, and `env` use the same shapes and bounds the
 `terminal_open` frame carries (§Terminals over the session channel): `cwd` is at most 4096
 characters and deliberately permits both relative and absolute launch paths. All three fields are
 in the door's input so the policy door judges WHAT a terminal is born running and where it starts,
@@ -1577,8 +1578,18 @@ present one launch to policy and another to the machine — each value is read o
 unchanged. This adds audit context, not filesystem authority: arbitrary argv already grants the
 process the same OS reach, and cwd resolution remains the terminal owner's existing execution
 semantics. The trace is the durable record of program and cwd; `env` is redacted from the ledger by
-name, like every env the ledger sees. Today the handler judges none of them beyond their shape; a
-program, cwd, or env rule lands in `core.terminals.open` and nowhere else.
+name, like every env the ledger sees. Today the handler judges none beyond their shape; a future
+program, cwd, or env rule lands in the shared policy behind `open` and `create`, nowhere else.
+`core.terminals.create` and the socket path converge before machine selection: one broker
+implementation owns placement discipline, the create round trip and compensation. The action's
+canonical `manifold://terminal/<id>` result is durable; callers can poll `listAll` /
+`listByContainer` or terminal lifecycle events without a socket, then attach a later
+`SessionClient` to that id for snapshot-plus-tail output. An unacknowledged create times out after
+ten seconds. Timeout, machine disconnect, owner refusal or home-placement failure kills any
+possibly-created PTY, revokes its minted terminal principal, cancels its admitted terminal job
+when present, and commits no terminal/home row. HTTP abort/disconnect cancels the caller's wait,
+not the admitted server operation; the bounded operation still commits one terminal or compensates
+to absence. Once committed, `core.terminals.kill` is the explicit cancellation/cleanup path.
 The reads are doors too: `listByContainer` is `scope: "container"` (the route it replaces
 answered a
 scoped token with its own container's rows), while `listAll` keeps the default because the terminal
@@ -1586,11 +1597,10 @@ index it
 replaces refused scoped tokens outright. Mutating affordances in the DOM carry
 `data-action="<action name>"`, which is how the gate proves the UI and the API share one door.
 
-Two things about that door are worth stating because they are what "one door per concept" cost here.
-The session channel now DISPATCHES the action rather than duplicating its authority:
-`terminal_open` calls `core.terminals.open` first — with the frame's own `program`, `cwd`, and `env`
-in the door's input — and only then asks the broker (a create is a machine round trip whose reply
-is socket traffic, so the PTY is still born on the channel), and
+Two things about these doors are worth stating because they are what "one door per concept" cost
+here. The session channel DISPATCHES `core.terminals.open` rather than duplicating its authority,
+then asks the same broker that `core.terminals.create` awaits. The action has no synthetic session
+channel and owns no terminal bytes; attachment remains an explicit later channel operation.
 `terminal_kill` dispatches `core.terminals.kill` — `broker.kill(channel, …)` is deleted, so one door
 answers for both the UI and the channel, and the surviving rule is the stricter one: an exited
 terminal is
@@ -1606,9 +1616,8 @@ obstacle, since claiming first is the documented way out of `kill`'s lease refus
 The broker's own `terminals:spawn` and `terminals:write` checks are deleted; authority lives at
 the door and nowhere
 else. And containment behaves differently by shape: it FILTERS a listing (`listByContainer` answers
-a
-scoped reader its own container's rows) and REFUSES on the five doors that name one terminal, all
-through `ctx.outsideScope`.
+a scoped reader its own container's rows) and REFUSES on the six doors that name a container or
+one terminal, all through `ctx.outsideScope`.
 
 **Index and container administration (`core.index`).** `GET`/`POST /api/pads`,
 `GET`/`PATCH`/`DELETE /api/pads/:id`, `GET`/`PUT /api/pad-tree` and the three `/api/pad-folders`
@@ -1949,7 +1958,8 @@ plus exact field names `data`/`env`/`payload`/`terminalData`, also case-insensit
 serialized JSON characters. A generic oversize row keeps `{ oversize, keys, keyCount,
 keysTruncated }`, where each admitted key is only `{ prefix, length, truncated }`; key order is
 deterministic and exact serialization, not raw source length, decides admission. An oversize
-`core.terminals.open` instead keeps redacted launch facts: `program.argv0` is always a nonempty
+`core.terminals.open` or `core.terminals.create` instead keeps redacted launch facts:
+`program.argv0` is always a nonempty
 `{ prefix, length, truncated }` for valid program input, later `program.args` carry ordered
 `{ index, prefix, length, truncated }` entries plus `itemCount` and `argsTruncated`, and `cwd`
 carries its own prefix, length, and truncation fact. Prefixes are independently bounded, unrelated

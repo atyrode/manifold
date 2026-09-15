@@ -627,15 +627,32 @@ and they are the only ones:
 
 Caps and schemas still apply in both cases: a carve-out skips one rung, never the intersection.
 
-One door in that list is easy to misread. **`core.terminals.open` never creates a terminal.** It
-is the authorization gate: it answers "may a terminal be created here, now, by you", and the
-session channel dispatches it before it honours a `terminal_open` frame. The PTY itself is born on
-the session socket — `host.client.openTerminal` from plugin code, `SessionClient.openTerminal`
-from an agent or a tool (§Host services names the whole terminal surface) — because a create is a
-round trip to a machine whose reply — snapshot watermark, controller lease, the opener's
-correlation ref — is channel traffic the floor owns. Dispatching `core.terminals.open` over
-`POST /api/actions/…` returns the decision and nothing else, and there is no action that creates
-a terminal; whether there should be one is the open design question in #185.
+Two terminal doors are easy to confuse. **`core.terminals.open` is the session frame's policy
+gate; `core.terminals.create` is the bearer-reachable birth.** The session channel dispatches
+`open` before it honours a `terminal_open` frame. A caller with no session socket instead posts
+the same launch facts to `create`; that action waits for the machine acknowledgement and the
+durable terminal/home commit, then returns `{ terminal, uri }`, where `uri` is the canonical
+`manifold://terminal/<id>` reference. Both paths use the broker's one placement, machine
+selection, acknowledgement and compensation mechanism.
+The SDK's authenticated HTTP transport is sufficient; no `SessionClient` exists during birth:
+
+```ts
+const { outcome } = await invokeAction(
+  { origin, token, timeoutMs: 15_000 },
+  "core.terminals.create",
+  { containerId, elementId: crypto.randomUUID(), cols: 80, rows: 24 },
+);
+```
+
+`create` does not turn PTY output into HTTP. Poll `core.terminals.listAll` or
+`core.terminals.listByContainer`, or observe terminal lifecycle events, using the returned id;
+open a `SessionClient` later and call `attachTerminal(id)` for snapshot-plus-tail bytes. The
+broker bounds an unacknowledged create at ten seconds. Timeout, machine disconnect, owner create
+error, or home-placement failure kills any possibly-created PTY, revokes its minted terminal
+principal, cancels its admitted terminal job when present, and leaves no terminal/home row.
+Aborting or disconnecting the HTTP client cancels only that client's wait: the already-admitted
+server operation still reaches exactly one bounded outcome — durable terminal or compensated
+absence. After success, cancellation is the ordinary `core.terminals.kill` cleanup door.
 
 Every handler can declare a `{ readonly traceId: number }` context slice to reference the
 write-ahead trace authorizing its dispatch. This is the ledger row's `id`, exactly as
