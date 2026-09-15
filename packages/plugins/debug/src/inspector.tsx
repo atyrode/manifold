@@ -9,6 +9,7 @@ import {
 } from "@manifold/plugin/hooks";
 import { Chip, KeyValueList, KeyValueRow } from "@manifold/ui";
 import {
+  CredentialsResponseSchema,
   GrantsSchema,
   MANIFOLD_ROOT_URI,
   containmentPath,
@@ -166,8 +167,9 @@ function unreadable(denial: ActionDenial | null, fallback: string): Answer<never
 }
 
 /**
- * The two foreign doors, by published name. See the module note on why they are strings.
+ * Foreign doors, by published name. See the module note on why they are strings.
  */
+const CREDENTIALS_DOOR = "core.access.listCredentials";
 const GRANTS_DOOR = "core.access.listGrants";
 const EVENTS_DOOR = "core.events.list";
 
@@ -286,6 +288,29 @@ function relativeAge(then: number, now: number): string {
   if (elapsed < 86_400_000) return `${String(Math.floor(elapsed / 3_600_000))}h ago`;
   return `${String(Math.floor(elapsed / 86_400_000))}d ago`;
 }
+type ExplainedLabel = "claimed by" | "path" | "holds" | "doors" | "authority";
+
+const LABEL_HELP = {
+  "claimed by": "The assembled plugin that claims this DOM node, not the person who wrote it.",
+  path: "The containment chain from the workspace to this node.",
+  holds: "How many declared things sit inside this node.",
+  doors: "The actions declared beneath this node that can change workspace state.",
+  authority:
+    "Every grant that reaches this node; subtree grants filed at ancestors flow down (ADR 0011).",
+} as const satisfies Readonly<Record<ExplainedLabel, string>>;
+
+/** A compact label whose native hover help also remains explicit to assistive technology. */
+function HelpLabel({ label }: { readonly label: ExplainedLabel }): ReactElement {
+  const help = LABEL_HELP[label];
+  return (
+    <span className="inspector-label" title={help} aria-label={`${label}: ${help}`}>
+      {label}
+      <span className="inspector-label__cue" aria-hidden="true">
+        ?
+      </span>
+    </span>
+  );
+}
 
 /**
  * The chip and the card share their identity block: noun, address, owner, painter. The card adds
@@ -344,16 +369,17 @@ function IdentityBlock({
           </>
         )}
       </KeyValueRow>
-      <KeyValueRow label="owner">
+      <KeyValueRow label={<HelpLabel label="claimed by" />}>
         {owner === null ? (
-          <span className="inspector-absent">unowned</span>
+          <span className="inspector-absent">no plugin claims this node</span>
         ) : (
           <>
             {/*
-              THE OWNER IS AN ADDRESS, so it is navigable like every other address on this card.
-              A plugin's `manifold://plugin/<id>` is one of the seven forms (docs/CONTRACTS.md §Reference nodes) and
-              the host's own navigation is the one door onto "put the viewer there" — the
-              inspector neither knows nor cares what the plugin manager does when it arrives.
+              THE CLAIMANT IS AN ADDRESS, so it is navigable like every other address on this card.
+              A plugin's `manifold://plugin/<id>` is one of the seven forms (docs/CONTRACTS.md
+              §Reference nodes), and the host's own navigation is the one door onto "put the viewer
+              there" — the inspector neither knows nor cares what the plugin manager does when it
+              arrives.
             */}
             {onNavigate === null ? (
               owner.manifest.title
@@ -522,8 +548,17 @@ function CrumbHop({
           },
         };
   if (crumb.uri === null) {
+    const explanation =
+      box === null
+        ? "No address to navigate to, and this hop has no box to outline in the workspace."
+        : "No address to navigate to — hovering outlines it in the workspace.";
     return (
-      <Chip className="inspector-hop is-inert" {...aiming}>
+      <Chip
+        className="inspector-hop is-inert"
+        title={explanation}
+        aria-label={`${crumb.label}: ${explanation}`}
+        {...aiming}
+      >
         {crumb.label}
       </Chip>
     );
@@ -565,14 +600,31 @@ function Who({ id }: { readonly id: string }): ReactElement {
 }
 
 /**
- * WHO a grant row names, in words rather than in its discriminator. The class forms are the
- * reason grants exist as rows at all (ADR 0011), so they read as the sentences they are; only
- * the one form that carries an opaque id is abbreviated.
+ * WHO a grant row names, in words rather than in its discriminator. A known durable principal
+ * leads with its display name while retaining the abbreviated id for disambiguation and copying.
+ * A missing credential row stays explicit instead of inventing a name.
  */
-function Grantee({ principal }: { readonly principal: GrantPrincipal }): ReactElement {
+function Grantee({
+  principal,
+  principalNames,
+}: {
+  readonly principal: GrantPrincipal;
+  readonly principalNames: ReadonlyMap<string, string>;
+}): ReactElement {
   switch (principal.kind) {
-    case "principal":
-      return <Who id={principal.id} />;
+    case "principal": {
+      const name = principalNames.get(principal.id);
+      return (
+        <>
+          {name === undefined ? (
+            <span className="inspector-absent">unknown principal</span>
+          ) : (
+            <span>{name}</span>
+          )}{" "}
+          <Who id={principal.id} />
+        </>
+      );
+    }
     case "any-human":
       return <>any human</>;
     case "any-agent":
@@ -584,6 +636,77 @@ function Grantee({ principal }: { readonly principal: GrantPrincipal }): ReactEl
       return exhaustive;
     }
   }
+}
+
+interface GrantGroup {
+  readonly key: string;
+  readonly rows: readonly Reaching[];
+}
+
+/** Groups grants that differ only in the named principal, preserving first-seen order. */
+function groupGrants(rows: readonly Reaching[]): readonly GrantGroup[] {
+  const groups = new Map<string, Reaching[]>();
+  for (const row of rows) {
+    const { grant } = row;
+    const principalClass =
+      grant.principal.kind === "principal" ? "principal" : JSON.stringify(grant.principal);
+    const key = JSON.stringify([grant.effect, grant.caps, grant.reach, grant.node, principalClass]);
+    const group = groups.get(key);
+    if (group === undefined) groups.set(key, [row]);
+    else group.push(row);
+  }
+  return [...groups].map(([key, grouped]) => ({ key, rows: grouped }));
+}
+
+function grantLocation(grant: Grant): string {
+  return `${grant.reach}, filed at ${addressLabel(grant.node)}`;
+}
+function GrantReading({
+  group,
+  principalNames,
+}: {
+  readonly group: GrantGroup;
+  readonly principalNames: ReadonlyMap<string, string>;
+}): ReactElement {
+  const first = group.rows[0];
+  if (first === undefined) return <></>;
+  const { grant } = first;
+  const namedPrincipals = group.rows.every(({ grant: row }) => row.principal.kind === "principal");
+  if (group.rows.length > 1 && namedPrincipals) {
+    return (
+      <details className="inspector-grant-group">
+        <summary className="inspector-grant">
+          <strong>{String(group.rows.length)} principals</strong> hold{" "}
+          <span className={grant.effect === "deny" ? "inspector-absent" : "inspector-noun"}>
+            {grant.effect}
+          </span>{" "}
+          <code className="inspector-door">{grant.caps.join(" ")}</code>{" "}
+          <span className="inspector-muted">— {grantLocation(grant)}</span>
+        </summary>
+        <span className="inspector-grant-members">
+          {group.rows.map(({ grant: row }) => (
+            <span key={row.id}>
+              <Grantee principal={row.principal} principalNames={principalNames} />
+            </span>
+          ))}
+        </span>
+      </details>
+    );
+  }
+  return (
+    <>
+      {group.rows.map(({ grant: row }) => (
+        <span key={row.id} className="inspector-grant">
+          <span className={row.effect === "deny" ? "inspector-absent" : "inspector-noun"}>
+            {row.effect}
+          </span>{" "}
+          <code className="inspector-door">{row.caps.join(" ")}</code> for{" "}
+          <Grantee principal={row.principal} principalNames={principalNames} />{" "}
+          <span className="inspector-muted">— {grantLocation(row)}</span>
+        </span>
+      ))}
+    </>
+  );
 }
 
 /**
@@ -643,6 +766,7 @@ function PinCard({
   resolved,
   occupants,
   grants,
+  principalDirectory,
   traces,
   shown,
   onCopy,
@@ -656,6 +780,7 @@ function PinCard({
   readonly resolved: ResolveResponse | null;
   readonly occupants: readonly Principal[] | null;
   readonly grants: Answer<readonly Reaching[]>;
+  readonly principalDirectory: Answer<readonly Principal[]>;
   readonly traces: Answer<TraceReading>;
   readonly shown: number;
   readonly onCopy: (uri: string) => void;
@@ -665,6 +790,15 @@ function PinCard({
 }): ReactElement {
   const roster = host.assembly.roster();
   const path = pathOf(pin, host.containerId);
+  const principalNames = useMemo(
+    () =>
+      new Map(
+        principalDirectory.state === "answered"
+          ? principalDirectory.value.map((principal) => [principal.id, principal.name])
+          : [],
+      ),
+    [principalDirectory],
+  );
   const navigate = (uri: string): void => {
     host.navigate(uri);
   };
@@ -703,7 +837,7 @@ function PinCard({
             <span className="inspector-absent">the workspace holds no such node</span>
           )}
         </KeyValueRow>
-        <KeyValueRow label="path">
+        <KeyValueRow label={<HelpLabel label="path" />}>
           <span className="inspector-path">
             {path.map((crumb, index) => (
               <Fragment key={`${crumb.label}:${String(index)}`}>
@@ -717,7 +851,7 @@ function PinCard({
             ))}
           </span>
         </KeyValueRow>
-        <KeyValueRow label="holds">
+        <KeyValueRow label={<HelpLabel label="holds" />}>
           {String(pin.subtree.children)} declared {pin.subtree.children === 1 ? "thing" : "things"}
         </KeyValueRow>
         {/*
@@ -726,7 +860,7 @@ function PinCard({
           `host.client.action` — the inspector as the no-code console. A declared door the
           assembly does not hold stays an inert chip: unreachable is an answer, not a gap.
         */}
-        <KeyValueRow label="doors">
+        <KeyValueRow label={<HelpLabel label="doors" />}>
           {pin.subtree.doors.length === 0 ? (
             <span className="inspector-absent">none — nothing under here mutates</span>
           ) : (
@@ -760,7 +894,7 @@ function PinCard({
           a `node` grant at an ancestor does not. Printing only the rows filed at this exact
           address would answer a different question than the evaluator asks.
         */}
-        <KeyValueRow label="authority">
+        <KeyValueRow label={<HelpLabel label="authority" />}>
           {pin.identity.uri === null ? (
             <span className="inspector-absent">no address to hold authority over</span>
           ) : grants.state === "asking" ? (
@@ -771,17 +905,8 @@ function PinCard({
             <span className="inspector-muted">no grant reaches this node</span>
           ) : (
             <span className="inspector-grants">
-              {grants.value.map(({ grant, inherited }) => (
-                <span key={grant.id} className="inspector-grant">
-                  <span className={grant.effect === "deny" ? "inspector-absent" : "inspector-noun"}>
-                    {grant.effect}
-                  </span>{" "}
-                  <code className="inspector-door">{grant.caps.join(" ")}</code>{" "}
-                  <Grantee principal={grant.principal} />{" "}
-                  <span className="inspector-muted">
-                    {inherited ? `${grant.reach} · from ${addressLabel(grant.node)}` : grant.reach}
-                  </span>
-                </span>
+              {groupGrants(grants.value).map((group) => (
+                <GrantReading key={group.key} group={group} principalNames={principalNames} />
               ))}
             </span>
           )}
@@ -931,6 +1056,8 @@ export function Inspector({ host }: WorkspaceOverlayProps): ReactElement | null 
   const [resolved, setResolved] = useState<ResolveResponse | null>(null);
   const [occupants, setOccupants] = useState<readonly Principal[] | null>(null);
   const [grants, setGrants] = useState<Answer<readonly Reaching[]>>(ASKING);
+  const [principalDirectory, setPrincipalDirectory] =
+    useState<Answer<readonly Principal[]>>(ASKING);
   const [traces, setTraces] = useState<Answer<TraceReading>>(ASKING);
   /**
    * HOW FAR THE LEDGER HAS BEEN ASKED, and how much of what came back is on screen. Two numbers
@@ -1189,6 +1316,7 @@ export function Inspector({ host }: WorkspaceOverlayProps): ReactElement | null 
     setResolved(null);
     setOccupants(null);
     setGrants(ASKING);
+    setPrincipalDirectory(ASKING);
     setTraces(ASKING);
   }
 
@@ -1275,6 +1403,41 @@ export function Inspector({ host }: WorkspaceOverlayProps): ReactElement | null 
         if (live) setGrants(unreadable(null, "the workspace could not be asked"));
       }
     })();
+    return () => {
+      live = false;
+    };
+  }, [uri, host.client]);
+  /**
+   * PRINCIPAL DISPLAY NAMES come from the access plugin's credential inventory, the durable
+   * root-only read that owns this identity list. A refusal does not hide grants: their opaque ids
+   * remain and render with an explicit unknown-principal fallback.
+   */
+  useEffect(() => {
+    if (uri === null) return;
+    let live = true;
+    void host.client
+      .action(CREDENTIALS_DOOR, {})
+      .then((outcome) => {
+        if (!live) return;
+        if (!outcome.ok) {
+          setPrincipalDirectory(unreadable(outcome.denial, ""));
+          return;
+        }
+        const parsed = CredentialsResponseSchema.safeParse(outcome.result);
+        if (!parsed.success) {
+          setPrincipalDirectory(unreadable(null, "the principal names could not be read"));
+          return;
+        }
+        setPrincipalDirectory({
+          state: "answered",
+          value: parsed.data.principals.map((row) => row.principal),
+        });
+      })
+      .catch(() => {
+        if (live) {
+          setPrincipalDirectory(unreadable(null, "the workspace could not be asked"));
+        }
+      });
     return () => {
       live = false;
     };
@@ -1413,6 +1576,7 @@ export function Inspector({ host }: WorkspaceOverlayProps): ReactElement | null 
           resolved={resolved}
           occupants={occupants}
           grants={grants}
+          principalDirectory={principalDirectory}
           traces={traces}
           shown={shown}
           onCopy={copy}
