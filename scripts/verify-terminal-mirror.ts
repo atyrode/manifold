@@ -90,6 +90,7 @@ let watcher: Browser | null = null;
 let observer: SessionClient | null = null;
 let embedded: SessionClient | null = null;
 let composed: SessionClient | null = null;
+let replayProbe: SessionClient | null = null;
 
 const check = checkInto(failures);
 
@@ -866,6 +867,8 @@ try {
     0.5,
   );
   if (anchorBody === null) throw new Error("the anchor terminal has no body to work in");
+  const anchorTerminalId = await terminalHomedIn(elementString(anchor, "containerId") ?? "");
+  if (anchorTerminalId === "") throw new Error("the anchor portal has no terminal");
   await clickAt(browser, anchorBody);
   await sleep(900);
   await browser.typeText("clear; echo COMPOSED_TILE_LIVE");
@@ -1025,13 +1028,28 @@ try {
         };
       })()`,
     );
+  const replayContainer = composed.elements.get(anchor.id);
+  const replayContainerId = replayContainer && elementString(replayContainer, "containerId");
+  if (!replayContainerId) throw new Error("the composed portal has no terminal room");
+  replayProbe = new SessionClient({
+    url: `${origin.replace(/^http/, "ws")}/ws/session`,
+    containerId: replayContainerId,
+    token: ownerKey,
+    reconnect: false,
+  });
+  await replayProbe.connect();
   const atRest = await veils();
   const engageAt = await pointIn(browser, `${portalTiles} .xterm`, 0.5, 0.5);
   if (engageAt === null) throw new Error("the composed portal offers no tile to engage");
   await clickAt(browser, engageAt);
   const engagedVeils = await settles(async () => {
     const state = await veils();
-    return state.total === 2 && state.dimmed === 1;
+    const occupant = await browser!.evaluate<boolean>(
+      `document.querySelector(${JSON.stringify(
+        `.react-flow__node[data-id="${anchor.id}"] .portal--engaged .terminal-idle-veil:not(.terminal-idle-veil--on)`,
+      )}) !== null`,
+    );
+    return state.total === 2 && state.dimmed === 1 && occupant;
   }, 15_000);
   const afterEngage = await veils();
   check(
@@ -1044,26 +1062,65 @@ try {
   const marksWhileEngaged = await browser.evaluate<number>(
     `document.querySelectorAll(${JSON.stringify(`${portalTiles} .xterm[data-gate-mark]`)}).length`,
   );
-  // Pressing outside the portal drops occupancy: the socket swaps back the other way.
+  // A role flip precedes snapshot repaint, and the veil has its own opacity transition.
+  // Once the portal rests as a spectator, produce new PTY output through the SDK.
+  // Seeing that fresh marker alongside the old one proves the replacement stream
+  // has repainted; the pre-swap DOM cannot satisfy this assertion.
+  const replayMarker = `AFTER_SWAP_${crypto.randomUUID()}`;
+  let replayControlRequested = false;
+  let replaySent = false;
   await clickAt(browser, { x: paneFrame.paneLeft + 30, y: paneFrame.paneTop + 30 });
-  const disengaged = await settles(async () => {
-    const state = await veils();
-    return state.total === 2 && state.dimmed === 2;
+  const spectatorReplayed = await settles(async () => {
+    const resting = await browser!.evaluate<boolean>(
+      `(() => {
+        const root = document.querySelector(${JSON.stringify(
+          `.react-flow__node[data-id="${anchor.id}"] .portal`,
+        )});
+        const veils = [...document.querySelectorAll(${JSON.stringify(
+          `${portalTiles} .terminal-idle-veil`,
+        )})];
+        return root !== null && !root.matches('.portal--engaged, .portal--engaging') &&
+          veils.length === 2 && veils.every((veil) => getComputedStyle(veil).opacity === "1");
+      })()`,
+    );
+    if (!resting) return false;
+    if (!replayControlRequested) {
+      replayProbe!.takeTerminal(anchorTerminalId);
+      replayControlRequested = true;
+    }
+    // terminal_take is policy-checked asynchronously; input must wait for the
+    // server's controller_changed event to update the SDK's canonical roster.
+    const controllerId = replayProbe!.terminals.get(anchorTerminalId)?.controllerId;
+    if (!controllerId || controllerId !== replayProbe!.self?.id) return false;
+    if (!replaySent) {
+      replayProbe!.sendTerminalInput(
+        anchorTerminalId,
+        `printf '%s%s\\n' '${replayMarker.slice(0, 11)}' '${replayMarker.slice(11)}'\r`,
+      );
+      replaySent = true;
+    }
+    return browser!.evaluate<boolean>(
+      `[...document.querySelectorAll(${JSON.stringify(`${portalTiles} .xterm-rows`)})]
+        .some((rows) => {
+          const text = rows.textContent || '';
+          return text.includes('COMPOSED_TILE_LIVE') && text.includes(${JSON.stringify(replayMarker)});
+        })`,
+    );
   }, 15_000);
   const marksAfter = await browser.evaluate<number>(
     `document.querySelectorAll(${JSON.stringify(`${portalTiles} .xterm[data-gate-mark]`)}).length`,
   );
-  const bufferKept = await browser.evaluate<boolean>(
-    `[...document.querySelectorAll(${JSON.stringify(`${portalTiles} .xterm-rows`)})].some(
-       (rows) => (rows.textContent || '').includes('COMPOSED_TILE_LIVE'),
-     )`,
-  );
+  const afterLeave = await veils();
   check(
     "engaging and leaving a portal keeps the same xterm hosts and their buffers",
-    marksWhileEngaged === 2 && marksAfter === 2 && disengaged && bufferKept,
-    `marks engaged=${String(marksWhileEngaged)} after=${String(marksAfter)} reveiled=${String(
-      disengaged,
-    )} scrollback=${String(bufferKept)}`,
+    marksWhileEngaged === 2 &&
+      marksAfter === 2 &&
+      afterLeave.total === 2 &&
+      afterLeave.dimmed === 2 &&
+      spectatorReplayed,
+    `marks engaged=${String(marksWhileEngaged)} after=${String(marksAfter)} atRest=${String(
+      afterLeave.dimmed,
+    )}/${String(afterLeave.total)} scrollback=${String(spectatorReplayed)}`,
   );
   // The composed row is read from a FRESH mount (the tree does not poll).
   await openCanvas(watcher, composeContainerId, "watcher mounted the compose canvas");
@@ -1282,6 +1339,7 @@ try {
   observer?.close();
   embedded?.close();
   composed?.close();
+  replayProbe?.close();
   await teardownServer(server, dataDir);
   cleanupDist();
 }

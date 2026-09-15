@@ -13,6 +13,7 @@ import { randomUUID } from "node:crypto";
 import type { Readable } from "node:stream";
 import type { Socket } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
+import { dlopen, FFIType, type Library } from "bun:ffi";
 import {
   MachineLocationSchema,
   MachineOperationSchema,
@@ -31,6 +32,29 @@ import {
   isSealedByteFile,
   type PrivateSocketPair,
 } from "./job-files.ts";
+
+const CHILD_FD_SYMBOLS = {
+  fcntl: { args: [FFIType.i32, FFIType.i32, FFIType.i32], returns: FFIType.i32 },
+} as const;
+let childFdLibc: Library<typeof CHILD_FD_SYMBOLS> | undefined;
+/**
+ * Bun maps extended stdio directly into child fd numbers. A borrowed source fd may itself
+ * occupy an earlier destination slot: mapping that slot first replaces the source before a
+ * later mount can inherit it. Duplicate only those colliding sources above every destination;
+ * the caller keeps owning the original descriptors.
+ */
+function stageChildStdio(stdio: Exclude<StdioOptions, string>, staged: number[]): void {
+  for (let target = 3; target < stdio.length; target++) {
+    const source = stdio[target];
+    if (typeof source !== "number" || source === target || source >= stdio.length) continue;
+    childFdLibc ??= dlopen("libc.so.6", CHILD_FD_SYMBOLS);
+    // F_DUPFD_CLOEXEC: dup2/posix_spawn clears CLOEXEC on the eventual child destination.
+    const duplicate = childFdLibc.symbols.fcntl(source, 1030, stdio.length);
+    if (duplicate < 0) throw new Error("child_stdio_duplication_failed");
+    stdio[target] = duplicate;
+    staged.push(duplicate);
+  }
+}
 
 /** All paths/argv below are resolved by the trusted manifest admission layer, never RPC input. */
 export interface LinuxJobBind {
@@ -785,6 +809,7 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
     }
   });
   const inputFds: number[] = [];
+  const stagedChildFds: number[] = [];
   let harnessControl: PrivateSocketPair | undefined;
   try {
     if (spec.privateEnv && spec.terminal && spec.bidirectional) {
@@ -824,6 +849,7 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
         : `/runtime/bin/${spec.executableRuntimeTool}`,
       ...spec.argv,
     );
+    stageChildStdio(stdio, stagedChildFds);
     if (spec.terminal) {
       const proc = Bun.spawn([`/proc/${process.pid}/fd/${spec.bubblewrapFd}`, ...args], {
         stdio: [
@@ -866,6 +892,7 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
     if (harnessControl) closeSync(harnessControl.childFd);
     delete spec.privateEnv;
     for (const fd of inputFds) closeSync(fd);
+    for (const fd of stagedChildFds) closeSync(fd);
   }
   // Avoid an unhandled rejection while the launch gate is being attached.
   void exited.catch(() => {});

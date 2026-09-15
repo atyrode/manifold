@@ -1380,8 +1380,25 @@ test.skipIf(!realLinux || !outputRoot)(
       await withLinux(
         '/bin/busybox dd if=/dev/zero of=/outputs/result/oversized bs=4096 count=64 2>/tmp/error; status=$?; test "$status" -ne 0 || exit 41; printf bounded; read line; test "$line" = release',
         async (spec) => {
+          // Force the output source descriptor to be overwritten by an earlier child
+          // destination without closing/reusing any unrelated parent descriptor (#605).
+          // Runtime mounts start at child fd 8; padding through directory.fd makes the
+          // output mount read that original source into the following child slot.
+          if (directory.fd < 8 || directory.fd > 250)
+            throw new Error(
+              `output collision fixture descriptor outside mount budget: ${directory.fd}`,
+            );
+          const runtime = [
+            ...spec.runtime,
+            ...Array.from({ length: directory.fd - 8 }, (_, index) => ({
+              fd: spec.runtime[0]!.fd,
+              target: `/runtime/bin/collision-padding-${index}`,
+              writable: false,
+            })),
+          ];
           const handle = await startLinuxJob({
             ...spec,
+            runtime,
             outputs: [{ fd: directory.fd, target: "/outputs/result", writable: true }],
             limits: { ...spec.limits, outputBytes: 128 * 1024 },
             onOutput: (frame) => {

@@ -185,10 +185,10 @@ try {
   await until(
     () =>
       browser!.evaluate<boolean>(
-        "document.querySelector('.terminal-idle-veil:not(.terminal-idle-veil--on)') !== null",
+        "document.querySelector('.portal--engaged .terminal-idle-veil:not(.terminal-idle-veil--on)') !== null",
       ),
     20_000,
-    "terminal activated",
+    "terminal occupant socket activated",
   );
   const screenBox = await browser.evaluate<{ x: number; y: number }>(
     "(() => { const s = document.querySelector('.xterm-screen').getBoundingClientRect(); return { x: s.x + s.width / 2, y: s.y + s.height / 2 }; })()",
@@ -212,7 +212,11 @@ try {
   await until(
     () =>
       browser!.evaluate<boolean>(
-        `(() => { const rows = [...document.querySelector('.xterm-rows').children].map(row => row.textContent.trim()); return rows.includes(${JSON.stringify(completionSentinel)}); })()`,
+        `(() => {
+          const painted = document.querySelector('.xterm-rows').textContent || '';
+          return painted.includes('ROW-40 selection clipboard target') &&
+            painted.includes(${JSON.stringify(completionSentinel)});
+        })()`,
       ),
     20_000,
     "known terminal output through row 40 and explicit completion sentinel painted",
