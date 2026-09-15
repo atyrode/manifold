@@ -242,10 +242,17 @@ async function ready(): Promise<void> {
       150_000,
       "matching preview healthz within 150 seconds",
     );
-  } catch {
-    const inspect = await inspectContainer();
+  } catch (error) {
+    let container = "container inspection unavailable";
+    try {
+      const inspect = await inspectContainer();
+      container = `container status=${inspect.State.Status} health=${inspect.State.Health?.Status ?? "none"}`;
+    } catch {
+      // A missing container must not replace the original readiness timeout.
+    }
     throw new Error(
-      `timed out waiting for matching preview healthz within 150 seconds; ${lastObservation}; container status=${inspect.State.Status} health=${inspect.State.Health?.Status ?? "none"}`,
+      `timed out waiting for matching preview healthz within 150 seconds; ${lastObservation}; ${container}`,
+      { cause: error },
     );
   }
   const inspect = await inspectContainer();

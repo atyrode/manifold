@@ -43,14 +43,11 @@ let childFdLibc: Library<typeof CHILD_FD_SYMBOLS> | undefined;
  * later mount can inherit it. Duplicate only those colliding sources above every destination;
  * the caller keeps owning the original descriptors.
  */
-function stageChildStdio(
-  stdio: Exclude<StdioOptions, string>,
-  staged: number[],
-): void {
-  childFdLibc ??= dlopen("libc.so.6", CHILD_FD_SYMBOLS);
+function stageChildStdio(stdio: Exclude<StdioOptions, string>, staged: number[]): void {
   for (let target = 3; target < stdio.length; target++) {
     const source = stdio[target];
     if (typeof source !== "number" || source === target || source >= stdio.length) continue;
+    childFdLibc ??= dlopen("libc.so.6", CHILD_FD_SYMBOLS);
     // F_DUPFD_CLOEXEC: dup2/posix_spawn clears CLOEXEC on the eventual child destination.
     const duplicate = childFdLibc.symbols.fcntl(source, 1030, stdio.length);
     if (duplicate < 0) throw new Error("child_stdio_duplication_failed");
