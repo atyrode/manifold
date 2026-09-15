@@ -1943,18 +1943,30 @@ terminates that response, counts as one call, and makes every later metered call
 and does not count against `calls`. A stream is never cut for crossing a budget, so the overrun
 after the last permitted call is bounded by one response's `maxResponseBytes`.
 
-Every metered call appends one journal frame,
+Every metered call appends one lifecycle frame,
 `inference_call { serviceId, operationId, model, inputTokens, outputTokens, cachedInputTokens,
 costMicros, elapsedMs, status }`, and every refusal appends
 `inference_ceiling { serviceId, operationId, ceiling, reached }` — never a prompt, never a byte of
 the answer. Both arrive live on `ctx.jobs.follow(node, receive)` and survive in
-`ctx.jobs.journal({ node })` under the same 128-frame retention as the rest of the journal; the
-journal read refuses `job_unfinished` while the run is live, because watching one is what `follow`
-is for. The settled job's `result.usage.inference` — read through `ctx.jobs.status(node)` — carries
-`{ calls, inputTokens, outputTokens, cachedInputTokens, costMicros }` as totals whenever the job
-bound a metered operation, zeros if it made no call. Take spend from those two reads, never from
-what the workload reports about itself. `onJobSettled`'s `SettledJob` names the node and the
-terminal facts only; it does not carry usage.
+`ctx.jobs.journal({ node })` only while present in the same 128-frame ring as other lifecycle
+events; the journal read refuses `job_unfinished` while the run is live.
+
+The server also atomically advances one durable aggregate outside that ring for each accepted call:
+`{ calls, inputTokens, outputTokens, cachedInputTokens, costMicros, lastModel }`. Read it as
+`inferenceUsage` on a journal page or follow snapshot; it remains exact when older calls roll off
+and after a hub restart. A follower receives the sequenced `inference_call` first, then exactly one
+non-sequenced `{ type: "inference_usage", inferenceUsage }` current-value update. Usage updates do
+not consume a lifecycle sequence or replay; reconnect instead gets the persisted current value in
+the snapshot. `null` means the server has no complete aggregate: no call has yet been accepted, or
+the job was already started when aggregate storage was introduced and is permanently
+legacy/incomplete rather than exposing a partial post-upgrade sum.
+
+The settled job's `result.usage.inference` — read through `ctx.jobs.status(node)` — retains its
+authoritative `{ calls, inputTokens, outputTokens, cachedInputTokens, costMicros }` result shape
+whenever the job bound a metered operation, with zeros if it made no call; `lastModel` belongs only
+to the server aggregate. Take spend from these server and settled-result reads, never by summing
+the bounded call ring or trusting what the workload reports about itself. `onJobSettled`'s
+`SettledJob` names the node and the terminal facts only; it does not carry usage.
 
 `ctx.jobs.execute({ jobId, machineId, operationId, input, outputs, limits? })` returns safe
 job metadata. `outputs` contains exact `{ name, locationId, components }` bindings.
@@ -2035,11 +2047,12 @@ authority. Registering a schedule is idempotent by `scheduleId` and `revision`, 
 makes reconciling on every enable the right shape.
 
 **Follow privately; publish deliberately.** `ctx.jobs.follow(node, receive)` supplies a
-snapshot (`state`, `result`, `seq`, `firstSeq`, bounded `events`, `unavailable`) and close
-handle, then sequenced event/closed updates. The hardened `GuestJobs.follow` returns a
-promise of the same snapshot contract and an asynchronous `close()`. Inspect unavailable
-ranges and `gap` closure; the 128-event/256-KiB job replay is not a durable transcript.
-Consume the snapshot and subsequent watermarks without duplicate effects or hidden loss.
+snapshot (`jobId`, `state`, `result`, nullable `inferenceUsage`, `seq`, `firstSeq`, bounded
+`events`, `unavailable`) and close handle, then sequenced `event`, non-sequenced
+`inference_usage`, or `closed` updates. The hardened `GuestJobs.follow` returns a promise of the
+same snapshot contract and an asynchronous `close()`. Inspect unavailable ranges and `gap`
+closure; the 128-event/256-KiB job replay is not a durable transcript. Consume the snapshot and
+subsequent watermarks without duplicate effects or hidden loss.
 Release the follow when its consumer ends, rather than repeatedly polling `status`.
 
 **Read what a finished job left behind.** `ctx.jobs.outputs({ node, name, offset, limit })`
@@ -2050,9 +2063,11 @@ owner-minted output ID is disclosed rather than demanded — a plugin addresses 
 and a name. An unfinished job refuses `job_unfinished` (a result is the only evidence anything
 was sealed), a name the result never sealed refuses, and another plugin's job refuses exactly
 as `status` does. `ctx.jobs.journal({ node, after?, limit? })` reads that finished job's
-retained LIFECYCLE frames — `{ jobId, events: [{ seq, at, event }], firstSeq, nextAfter }`, at
-most 128 per job — through the same authority walk. Byte frames are never journaled, so holes
-in `seq` are stdout/stderr passing and never loss; `firstSeq` is the oldest sequence retention
+retained LIFECYCLE frames —
+`{ jobId, inferenceUsage, events: [{ seq, at, event }], firstSeq, nextAfter }`, at most 128 per
+job — through the same authority walk. `inferenceUsage` is the nullable whole-job aggregate, not
+a sum of that page. Byte frames are never journaled, so holes in `seq` are stdout/stderr passing
+and never loss; `firstSeq` is the oldest sequence retention
 kept and `nextAfter` continues the page. Browser halves dispatch `engine.jobs.outputs` and
 `engine.jobs.journal` with the same arguments. Neither is a substitute for `follow`: they
 answer after the fact, and following a running job is still the live plane.
