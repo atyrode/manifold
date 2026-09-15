@@ -72,6 +72,20 @@ export interface TileTreeProps {
   readonly renderLeaf: (node: Tile) => ReactNode;
 }
 
+/**
+ * Resolve a tile only within this tree. Nested TileTrees have their own local id namespace.
+ */
+export function findTileElement(root: HTMLElement, tileId: string): HTMLElement | null {
+  if (root.getAttribute("data-tile-id") === tileId) return root;
+  const matches = root.querySelectorAll<HTMLElement>(`[data-tile-id="${CSS.escape(tileId)}"]`);
+  for (let index = 0; index < matches.length; index += 1) {
+    const match = matches.item(index);
+    if (match !== null && match.closest("[data-tile-tree-root], .tile-content-host") === root)
+      return match;
+  }
+  return null;
+}
+
 /** Leaves in tree order, so duplicate-ref suffixes stay stable across renders. */
 function leafNodesInOrder(layout: TileLayout): readonly Tile[] {
   const out: Tile[] = [];
@@ -262,10 +276,7 @@ class TileMotionBoundary extends Component<
     for (const { node, key } of keyed) {
       const host = hosts.get(key);
       if (host === undefined) continue;
-      const box =
-        root.getAttribute("data-tile-id") === node.id
-          ? root
-          : root.querySelector<HTMLElement>(`[data-tile-id="${CSS.escape(node.id)}"]`);
+      const box = findTileElement(root, node.id);
       if (box !== null && host.parentElement !== box) box.appendChild(host);
     }
   }
@@ -432,6 +443,7 @@ export function TileTree({
         <div
           className={classes.pane}
           data-tile-id={ROOT_TILE_ID}
+          data-tile-tree-root=""
           style={{ flexGrow: 1 }}
           ref={attachRoot}
         />
@@ -553,6 +565,7 @@ function TileSplit({
     <div
       className={`${classes.split} is-${node.dir ?? "leaf"}`}
       data-tile-id={node.id}
+      data-tile-tree-root={attachRoot === undefined ? undefined : ""}
       ref={(element) => {
         boxRef.current = element;
         attachRoot?.(element);

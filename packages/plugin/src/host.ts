@@ -293,9 +293,10 @@ export interface AuthoringHandle {
  * code always read its tree area live rather than holding it: the tree can remount (a layout
  * arriving after the boot fetch replaces the whole subtree), and a cached element would go
  * stale silently. Every tile in the returned element carries `data-tile-id` — splits and
- * leaves alike (`TileTree`) — so a caller locates tile `id`'s own box the exact way the tree
- * seats its own content hosts: the element itself if its own attribute matches, else
- * `querySelector('[data-tile-id="..."]')` beneath it.
+ * leaves alike (`TileTree`) — but those IDs are TREE-LOCAL: nested workspace, composition,
+ * or portal trees may reuse them. Browser callers must resolve a tile with `findTileElement`
+ * from `@manifold/plugin/hooks`, never with a bare descendant `querySelector`, so lookup
+ * remains inside this handle's owning tree.
  *
  * Typed `unknown` rather than `HTMLElement` because this file is read by every consumer of
  * `@manifold/plugin`, the SERVER included, and the server's own `tsconfig.json` carries no

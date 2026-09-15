@@ -11,7 +11,7 @@ import {
 import { ControlIcon, ItemIcon } from "@manifold/ui";
 import type { TileDropSignal, TileDropStore } from "./tile-drop-store.ts";
 import type { TileDropPipeline, TileDropState } from "./use-tile-drop.ts";
-import { projectTileMotion, resetTileMotion } from "./tile-tree.tsx";
+import { findTileElement, projectTileMotion, resetTileMotion } from "./tile-tree.tsx";
 import { carriedSnapshot, subscribeCarry } from "./item-envelope.ts";
 import type { GestureOverride } from "./presence/remote-gestures.ts";
 
@@ -79,7 +79,15 @@ function paneElement(
   fromTileId: string,
   singleLeaf: boolean,
 ): HTMLElement | null {
-  const match = area.querySelector<HTMLElement>(`[data-tile-id="${CSS.escape(fromTileId)}"]`);
+  let root: HTMLElement | null = null;
+  for (let index = 0; index < area.children.length; index += 1) {
+    const child = area.children.item(index);
+    if (child instanceof HTMLElement && child.hasAttribute("data-tile-tree-root")) {
+      root = child;
+      break;
+    }
+  }
+  const match = root === null ? null : findTileElement(root, fromTileId);
   const pane = match ?? (singleLeaf ? area.firstElementChild : null);
   if (!(pane instanceof HTMLElement)) return null;
   // Only leaves fade. A nested split and its descendants must never both dim.

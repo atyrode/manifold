@@ -3,6 +3,7 @@ import {
   WORKSPACE_TREE_CLASSES,
   areaUnits,
   carriesItem,
+  findTileElement,
   heldStructure,
   holdStructure,
   keyCapLabel,
@@ -151,14 +152,11 @@ function loadToolbarOffset(): ToolbarOffset {
   }
 }
 
-/** Every tile id's own painted box, keyed off the tree's `data-tile-id` markup — splits too. */
+/** Every tree-local tile id's own painted box — splits too. */
 function measureRects(root: HTMLElement, layout: TileLayout): ReadonlyMap<string, DOMRect> {
   const rects = new Map<string, DOMRect>();
   for (const id of Object.keys(layout)) {
-    const element =
-      root.getAttribute("data-tile-id") === id
-        ? root
-        : root.querySelector<HTMLElement>(`[data-tile-id="${CSS.escape(id)}"]`);
+    const element = findTileElement(root, id);
     if (element !== null) rects.set(id, element.getBoundingClientRect());
   }
   return rects;
