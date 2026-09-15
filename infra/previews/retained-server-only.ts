@@ -93,42 +93,55 @@ try {
   let server = false;
   for (const pid of pids) {
     if (Number(pid) === process.pid) continue;
-    // Any disappearing/unreadable process makes the snapshot unknown, not empty.
-    const args = nullFields(`/proc/${pid}/cmdline`);
-    const executable = readlinkSync(`/proc/${pid}/exe`);
-    if (pid === "1") {
+    try {
+      const args = nullFields(`/proc/${pid}/cmdline`);
+      const executable = readlinkSync(`/proc/${pid}/exe`);
+      if (pid === "1") {
+        if (
+          args.length !== 2 ||
+          !bun(args[0]) ||
+          args[1] !== "packages/server/src/main.ts" ||
+          executable !== "/usr/local/bin/bun" ||
+          readlinkSync("/proc/1/cwd") !== "/app"
+        )
+          throw new Error();
+        server = true;
+        continue;
+      }
+      // The stock read-only Docker healthcheck may overlap the snapshot.
       if (
-        args.length !== 2 ||
-        !bun(args[0]) ||
-        args[1] !== "packages/server/src/main.ts" ||
-        executable !== "/usr/local/bin/bun" ||
-        readlinkSync("/proc/1/cwd") !== "/app"
+        args.length === 3 &&
+        bun(args[0]) &&
+        args[1] === "-e" &&
+        args[2] === healthSource &&
+        executable === "/usr/local/bin/bun"
       )
-        throw new Error();
-      server = true;
-      continue;
+        continue;
+      if (
+        args.length === 3 &&
+        args[0] === "/bin/sh" &&
+        args[1] === "-c" &&
+        args[2] === healthCommand &&
+        executable === "/usr/bin/dash"
+      )
+        continue;
+      // An installed server plugin is supervised by PID1 and restarts with it. Admit only the
+      // loader's complete process fingerprint; an owner, workload, wrapper or lookalike still holds.
+      if (serverOwnedIsolate(pid, args, executable, serverIdentity, serverEnvironment)) continue;
+      throw new Error();
+    } catch (error) {
+      // A healthcheck or isolate can exit between listing /proc and reading its fingerprint.
+      // It no longer owns work that replacement could destroy. Admit only a proven-gone PID:
+      // unreadable live processes and a reused PID remain unknown and therefore HOLD.
+      if (error instanceof Error && Reflect.get(error, "code") === "ENOENT") {
+        try {
+          readFileSync(`/proc/${pid}/stat`, "utf8");
+        } catch (absence) {
+          if (absence instanceof Error && Reflect.get(absence, "code") === "ENOENT") continue;
+        }
+      }
+      throw error;
     }
-    // The stock read-only Docker healthcheck may overlap the snapshot.
-    if (
-      args.length === 3 &&
-      bun(args[0]) &&
-      args[1] === "-e" &&
-      args[2] === healthSource &&
-      executable === "/usr/local/bin/bun"
-    )
-      continue;
-    if (
-      args.length === 3 &&
-      args[0] === "/bin/sh" &&
-      args[1] === "-c" &&
-      args[2] === healthCommand &&
-      executable === "/usr/bin/dash"
-    )
-      continue;
-    // An installed server plugin is supervised by PID1 and restarts with it. Admit only the
-    // loader's complete process fingerprint; an owner, workload, wrapper or lookalike still holds.
-    if (serverOwnedIsolate(pid, args, executable, serverIdentity, serverEnvironment)) continue;
-    throw new Error();
   }
   // starttime is stable across the probe, unlike CPU counters in /proc/1/stat.
   const starttime = (stat: string): string | undefined =>

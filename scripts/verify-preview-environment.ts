@@ -226,18 +226,28 @@ async function health(): Promise<{ build: string; ok: boolean }> {
   return (await response.json()) as { build: string; ok: boolean };
 }
 async function ready(): Promise<void> {
-  await until(
-    async () => {
-      try {
-        const result = await health();
-        return result.ok && result.build === expectedBuild;
-      } catch {
-        return false;
-      }
-    },
-    150_000,
-    "matching preview healthz within 150 seconds",
-  );
+  let lastObservation = "healthz unavailable";
+  try {
+    await until(
+      async () => {
+        try {
+          const result = await health();
+          lastObservation = `healthz ok=${String(result.ok)} build=${result.build}`;
+          return result.ok && result.build === expectedBuild;
+        } catch (error) {
+          lastObservation = `healthz unavailable (${error instanceof Error ? error.name : "unknown error"})`;
+          return false;
+        }
+      },
+      150_000,
+      "matching preview healthz within 150 seconds",
+    );
+  } catch {
+    const inspect = await inspectContainer();
+    throw new Error(
+      `timed out waiting for matching preview healthz within 150 seconds; ${lastObservation}; container status=${inspect.State.Status} health=${inspect.State.Health?.Status ?? "none"}`,
+    );
+  }
   const inspect = await inspectContainer();
   const elapsedMs = Date.now() - Date.parse(inspect.State.StartedAt);
   requireThat(
@@ -2170,12 +2180,15 @@ console.log(JSON.stringify(rows.sort((a, b) => Number(a.pid) - Number(b.pid))));
   writeFileSync(join(evidence, "command-tail.txt"), redact(commandTail));
   if (active) {
     try {
+      const id = await containerId();
+      const logs = await docker(["logs", "--tail", "150", id], { confidential: true });
       writeFileSync(
         join(evidence, "container-logs.txt"),
-        redact(
-          (await docker(["logs", "--tail", "150", await containerId()], { confidential: true }))
-            .out,
-        ),
+        redact(`stdout:\n${logs.out}\nstderr:\n${logs.err}`),
+      );
+      writeFileSync(
+        join(evidence, "container-inspect.json"),
+        JSON.stringify(await inspectContainer(), null, 2) + "\n",
       );
     } catch {
       /* Partial deployment need not have a container yet. */
