@@ -3582,9 +3582,15 @@ provider handling and postconditions belong to plugins, never the common floor.
   Empty PTY inventories say nothing about jobs. Drain closes both admission paths without
   merging their lifecycles; cancellation closes input and terminates the execution tree.
 - **Instance-service retirement.** Replacing or disabling an instance-service configuration
-  durably requests cooperative retirement. The owner closes its worker context and service
-  authority, refusing new governed invocations while preserving admitted work without an
-  automatic kill deadline. A dedicated service credential and ownership remain attached to
+  durably requests cooperative retirement and immediately revokes its service authority, so
+  new governed invocations are refused while admitted work is preserved without an automatic
+  kill deadline. An active worker context — one that has processed at least one valid workload
+  request frame and queued its applicable response — is closed gracefully after pending writes
+  drain, notifying the provider of retirement. If retirement arrives before that first valid
+  request frame, the owner keeps the context open long enough to process the frame and queue its
+  applicable response (`service_closed` for service readiness), then closes it gracefully. Only
+  finalization hard-closes any
+  remaining context resources. A dedicated service credential and ownership remain attached to
   that workload until fenced `workload_empty` proof; an interrupted hub state, lost transport
   or leader exit does not release them. Descriptions report `stopping` until that proof.
   Reconciliation replays the retained result as well as empty proof, and replacement waits

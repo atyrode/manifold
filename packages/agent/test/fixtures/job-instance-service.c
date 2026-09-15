@@ -40,6 +40,9 @@ int main(void) {
   state = fopen("/home/job/service-state/starts", "w");
   if (!state || fprintf(state, "%u\n", ++starts) < 0 || fflush(state) ||
       fsync(fileno(state)) || fclose(state)) return 13;
+  if (getenv("WAIT_FOR_READY_GATE")) {
+    while (access("/home/job/service-state/ready-allowed", F_OK)) usleep(1000);
+  }
   /* Capture before readiness: a successor cannot claim a flush completed later. */
   unsigned shutdowns = 0;
   state = fopen("/home/job/service-state/shutdowns", "r");
@@ -54,21 +57,27 @@ int main(void) {
       listen(listener, 8)) return 14;
   socklen_t size = sizeof(address);
   if (getsockname(listener, (struct sockaddr *)&address, &size)) return 15;
-  /* Force the first readiness write to follow retirement instead of racing the owner's close. */
-  if (getenv("WAIT_FOR_CONTEXT_CLOSE")) {
-    struct pollfd closure = { .fd = channel };
-    if (poll(&closure, 1, 10000) != 1 || !(closure.revents & POLLHUP)) return 26;
-  }
-  if (dprintf(channel, "{\"type\":\"service_ready\",\"requestId\":\"ready\",\"port\":%u}\n",
-              ntohs(address.sin_port)) < 0) {
-    if (errno == EPIPE || errno == ECONNRESET) return retire(shutdowns);
+  char ready_frame[128];
+  int ready_length = snprintf(ready_frame, sizeof(ready_frame),
+    "{\"type\":\"service_ready\",\"requestId\":\"ready\",\"port\":%u}\n",
+    ntohs(address.sin_port));
+  if (ready_length < 0 || ready_length >= (int)sizeof(ready_frame)) return 16;
+  if (send(channel, ready_frame, ready_length, MSG_NOSIGNAL) != ready_length) {
+    if (errno == EPIPE || errno == ECONNRESET) {
+      if (getenv("REQUIRE_CONTEXT_REPLY")) return 27;
+      return retire(shutdowns);
+    }
     return 16;
   }
   FILE *frames = fdopen(dup(channel), "r");
   char frame[8192];
   if (!frames) return 17;
-  do { if (!fgets(frame, sizeof(frame), frames)) return retire(shutdowns); }
-  while (!strstr(frame, "\"type\":\"service_ready_result\""));
+  do {
+    if (!fgets(frame, sizeof(frame), frames)) {
+      if (getenv("REQUIRE_CONTEXT_REPLY")) return 28;
+      return retire(shutdowns);
+    }
+  } while (!strstr(frame, "\"type\":\"service_ready_result\""));
   if (!strstr(frame, "\"ok\":true")) {
     if (strstr(frame, "\"refusal\":\"service_closed\"")) return retire(shutdowns);
     return 19;

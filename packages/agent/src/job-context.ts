@@ -43,6 +43,7 @@ export class JobContext {
   private readonly serviceController = new AbortController();
   private readonly serviceRequests = new Set<string>();
   private serviceReadyRequested = false;
+  private activityReported = false;
 
   private pendingBytes = 0;
   constructor(
@@ -53,6 +54,7 @@ export class JobContext {
       service?(request: ServiceCall, signal: AbortSignal): Promise<ServiceReply>;
       serviceReady?(port: number): Promise<void>;
       progress?(frame: WorkerProgress): void;
+      activity?: () => void;
       failure(reason: string): void;
     },
   ) {
@@ -79,6 +81,7 @@ export class JobContext {
           if (this.pendingBytes > MAX_CONTEXT_BYTES) throw new Error("context_input_limit");
           this.chain = this.chain
             .then(() => this.receive(raw))
+            .then(() => this.reportActivity())
             .catch(() => this.fail("context_protocol_error"))
             .finally(() => {
               this.pendingBytes -= size;
@@ -261,12 +264,25 @@ export class JobContext {
   abortServices(): void {
     this.serviceController.abort();
   }
-  close(): void {
+  closeAfterWrites(): void {
     if (this.closed) return;
     this.closed = true;
     this.abortServices();
     this.releaseChildFd();
+    this.socket.end();
+  }
+  close(): void {
+    if (!this.closed) {
+      this.closed = true;
+      this.abortServices();
+      this.releaseChildFd();
+    }
     this.socket.destroy();
+  }
+  private reportActivity(): void {
+    if (this.activityReported) return;
+    this.activityReported = true;
+    this.callbacks.activity?.();
   }
   private fail(reason: string): void {
     if (this.closed) return;

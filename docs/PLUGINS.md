@@ -1866,12 +1866,18 @@ listeners receive an ownership exception. A server that still waits for request 
 before accepting cannot satisfy this boundary.
 
 An instance-owned service has its own governed lifetime. On replacement or disable,
-the native owner closes its worker context and signals retirement without immediately
-killing its workload. A provider must stop accepting work, await admitted mutations and
-durable cleanup, and then exit; do not terminate the process before cleanup settles.
-The configuration remains `stopping` until whole-workload emptiness is proved, and its
-replacement cannot start early. Explicit cancellation and authority revocation still
-force termination. See [instance-service retirement](CONTRACTS.md#governed-machine-jobs).
+the native owner immediately revokes its service authority, refusing new governed invocations
+without immediately killing its workload. An active worker context — one that has processed at
+least one valid workload request frame and queued its applicable response — closes gracefully
+after pending writes drain. If retirement arrives before that first valid request frame, the
+owner keeps the context open long enough to process the frame and queue its applicable response
+(`service_closed` for service readiness), then closes it gracefully. Only finalization
+hard-closes any remaining context resources.
+A provider must stop accepting work, await admitted mutations and durable cleanup, and then
+exit; do not terminate the process before cleanup settles. The configuration remains `stopping`
+until whole-workload emptiness is proved, and its replacement cannot start early. Explicit
+cancellation and authority revocation still force termination. See
+[instance-service retirement](CONTRACTS.md#governed-machine-jobs).
 
 **A metered service operation, and what a job may spend through it.** A proxy operation may
 declare a `meter` ([ADR 0038](decisions/0038-brokered-inference.md)), which is the only thing that

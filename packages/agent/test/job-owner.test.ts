@@ -2418,8 +2418,12 @@ test
               environment: {
                 FIXED_SERVICE_SETTING: "reviewed",
                 WAIT_FOR_FLUSH: "1",
-                ...(mode === "noncooperative"
-                  ? { IGNORE_RETIREMENT: "1", WAIT_FOR_CONTEXT_CLOSE: "1" }
+                ...(mode === "launch-race" || mode === "noncooperative"
+                  ? {
+                      WAIT_FOR_READY_GATE: "1",
+                      REQUIRE_CONTEXT_REPLY: "1",
+                      ...(mode === "noncooperative" ? { IGNORE_RETIREMENT: "1" } : {}),
+                    }
                   : {}),
               },
               inputFiles: { serviceBearer: { generated: "service-bearer" } },
@@ -2556,6 +2560,7 @@ test
         events.some((event) => event.type === "workload_empty" && event.jobId === "ordinary"),
       ).toBe(false);
 
+      const statePath = join(root, "locations", install.pluginId, "service");
       const command = { type: "start" as const, ...admission("retiring") };
       if (mode === "launch-race" || mode === "noncooperative") {
         const nativeStarted = Promise.withResolvers<void>();
@@ -2577,6 +2582,17 @@ test
             );
           }),
         ]);
+        const startsPath = join(statePath, "starts");
+        // This native worker exposes no in-process notification for its durable fsync seam,
+        // so bound the cross-process file poll and report the missing handoff directly.
+        const deadline = Date.now() + 10_000;
+        while (
+          (!existsSync(startsPath) || readFileSync(startsPath, "utf8") !== "1\n") &&
+          Date.now() < deadline
+        )
+          await Bun.sleep(10);
+        if (!existsSync(startsPath) || readFileSync(startsPath, "utf8") !== "1\n")
+          throw new Error("service did not durably record its first start within 10 seconds");
       } else {
         await owner.execute(command);
         await Promise.race([
@@ -2616,6 +2632,8 @@ test
       // Retirement returns while launch is pending; native FD handoff can now complete.
       handoff.resolve();
       await launching;
+      if (mode === "launch-race" || mode === "noncooperative")
+        writeFileSync(join(statePath, "ready-allowed"), "release\n");
       restoreLaunch?.();
       restoreLaunch = undefined;
       await Promise.race([
@@ -2626,7 +2644,6 @@ test
           );
         }),
       ]);
-      const statePath = join(root, "locations", install.pluginId, "service");
       expect(existsSync(join(statePath, "flushed"))).toBe(false);
       expect(
         events.some((event) => event.type === "workload_empty" && event.jobId === "retiring"),
