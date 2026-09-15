@@ -115,6 +115,7 @@ import type {
   PluginBundle,
   PluginInstall,
   PluginInstallRefusal,
+  InstalledPluginStates,
   InstalledPluginsSnapshot,
   PluginLifecycleState,
   PluginPurgeResult,
@@ -173,7 +174,7 @@ import {
   verifyInstalledBundle,
   type InstalledArtifact,
 } from "./plugin-installs.ts";
-import { exportInstalledPlugins } from "./installed-plugins.ts";
+import { exportInstalledPlugins, listInstalledPlugins } from "./installed-plugins.ts";
 import type { RoomManager } from "./room.ts";
 import type {
   MachineRecord,
@@ -554,6 +555,7 @@ export interface HostControl {
     installer: CredentialReference | null,
   ): Promise<ActionRefused | PluginInstallResult>;
   uninstall(id: string, removedBy: string, purge: boolean): Promise<ActionRefused | { ok: true }>;
+  listInstalled(): Promise<InstalledPluginStates>;
   exportInstalled(): Promise<InstalledPluginsSnapshot>;
   setDeveloperMode(on: boolean, changedBy: string): Promise<ActionRefused | { ok: true }>;
   author(
@@ -851,6 +853,9 @@ const ENGINE_BUILTIN_DEFS: readonly ServerPluginDef[] = [
         args: PluginInstallRequest,
       ): Promise<ActionRefused | PluginInstallResult> {
         return ctx.host.install(args, ctx.principal.id, ctx.credential);
+      },
+      async listInstalled(ctx: EngineDoorCtx): Promise<InstalledPluginStates> {
+        return ctx.host.listInstalled();
       },
       async exportInstalled(ctx: EngineDoorCtx): Promise<InstalledPluginsSnapshot> {
         return ctx.host.exportInstalled();
@@ -2350,6 +2355,11 @@ export class PluginHost {
 
   roster(): PluginRoster {
     return this.assembled.roster;
+  }
+
+  /** Serialize installed hashes and configured intent with installation and enablement changes. */
+  async listInstalled(): Promise<InstalledPluginStates> {
+    return this.changeAssembly(async () => listInstalledPlugins(this.store));
   }
 
   /** Serialize with install/uninstall so rows and their exact bytes describe one inventory. */

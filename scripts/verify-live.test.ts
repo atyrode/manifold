@@ -15,6 +15,7 @@ import {
   HealthResponseSchema,
   InstanceServiceDescriptionSchema,
   InstanceServicesDescriptionSchema,
+  InstalledPluginStatesSchema,
   JobDeploymentListArgsSchema,
   JobDescriptionSchema,
   MachinesResponseSchema,
@@ -56,6 +57,9 @@ export function liveFixture(beforeRequest?: () => void) {
     build: "1.0.0",
     protocolVersion: PROTOCOL_VERSION,
     nativeInventoryPresent: true,
+    installedStateDoorPresent: true,
+    installedStateMissing: false,
+    installedStateHash: hash,
     machinePresent: true,
     revision: "deployment-before",
     installationReady: true,
@@ -80,6 +84,7 @@ export function liveFixture(beforeRequest?: () => void) {
     pluginEnabled: true,
     pluginHeld: null as PluginRosterEntry["held"] | null,
     pluginLifecycle: "ok" as NonNullable<PluginRosterEntry["lifecycle"]>,
+    pluginInstallRefusal: undefined as NonNullable<PluginRosterEntry["install"]>["refusal"],
     servicesMissing: false,
     machineDoorPresent: true,
     invalidInventory: false,
@@ -124,6 +129,16 @@ export function liveFixture(beforeRequest?: () => void) {
       ),
       action("engine.jobs.listDeployments", ["*"], JobDeploymentListArgsSchema, z.strictObject({})),
       action("core.access.listGrants", ["*"], z.strictObject({}), z.strictObject({})),
+      ...(state.installedStateDoorPresent
+        ? [
+            action(
+              "engine.plugins.listInstalled",
+              ["*"],
+              z.strictObject({}),
+              InstalledPluginStatesSchema,
+            ),
+          ]
+        : []),
       action(
         "engine.services.listInstances",
         [],
@@ -169,7 +184,7 @@ export function liveFixture(beforeRequest?: () => void) {
       capabilities: [`${pluginId}:read`, `${pluginId}:write`],
       contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
     },
-    enabled: state.pluginEnabled,
+    enabled: state.pluginHeld ? false : state.pluginEnabled,
     source: "plugin",
     lifecycle: state.pluginLifecycle,
     ...(state.pluginHeld ? { held: state.pluginHeld } : {}),
@@ -180,6 +195,7 @@ export function liveFixture(beforeRequest?: () => void) {
       grantedCaps: [],
       installedBy: "owner",
       installedAt: 1,
+      ...(state.pluginInstallRefusal ? { refusal: state.pluginInstallRefusal } : {}),
     },
   });
   const server = Bun.serve({
@@ -223,7 +239,9 @@ export function liveFixture(beforeRequest?: () => void) {
           denial: { rule: "invalid_args", message: "invalid arguments" },
         });
       if (
-        (door === "engine.jobs.listDeployments" || door === "core.access.listGrants") &&
+        (door === "engine.jobs.listDeployments" ||
+          door === "core.access.listGrants" ||
+          door === "engine.plugins.listInstalled") &&
         !state.root
       )
         return Response.json({
@@ -235,6 +253,14 @@ export function liveFixture(beforeRequest?: () => void) {
         case "engine.jobs.listDeployments":
         case "core.access.listGrants":
           result = {};
+          break;
+        case "engine.plugins.listInstalled":
+          result = {
+            plugins:
+              !state.pluginPresent || state.installedStateMissing
+                ? []
+                : [{ pluginId, sha256: state.installedStateHash, enabled: state.pluginEnabled }],
+          };
           break;
         case "example.inventory.list":
           result = { machines: [] };
@@ -339,6 +365,7 @@ test("pre-native snapshots preserve machine and plugin parity across upgrade and
   try {
     fixture.state.protocolVersion = 25;
     fixture.state.nativeInventoryPresent = false;
+    fixture.state.installedStateDoorPresent = false;
     const before = await snapshotLive(fixture.target);
     expect(before.protocolVersion).toBe(25);
     expect(before.machines).toEqual([machineId]);
@@ -349,6 +376,7 @@ test("pre-native snapshots preserve machine and plugin parity across upgrade and
     fixture.state.build = "1.1.0";
     fixture.state.protocolVersion = PROTOCOL_VERSION;
     fixture.state.nativeInventoryPresent = true;
+    fixture.state.installedStateDoorPresent = true;
     expect(await pollLive(fixture.target, before, "1.1.0", shortPoll)).toEqual({
       heldPlugins: [],
       deferredServices: [],
@@ -358,6 +386,7 @@ test("pre-native snapshots preserve machine and plugin parity across upgrade and
     fixture.state.build = "1.0.0";
     fixture.state.protocolVersion = 25;
     fixture.state.nativeInventoryPresent = false;
+    fixture.state.installedStateDoorPresent = false;
     expect(await pollLive(fixture.target, before, "1.0.0", shortPoll)).toEqual({
       heldPlugins: [],
       deferredServices: [],
@@ -375,11 +404,44 @@ test("pre-native snapshots preserve machine and plugin parity across upgrade and
   }
 });
 
+test("a healthy disabled legacy plugin keeps its configured intent across upgrade", async () => {
+  const fixture = liveFixture();
+  try {
+    Object.assign(fixture.state, {
+      protocolVersion: 25,
+      nativeInventoryPresent: false,
+      installedStateDoorPresent: false,
+      pluginEnabled: false,
+      readDoorPresent: false,
+    });
+    const before = await snapshotLive(fixture.target);
+    expect(before.plugins).toEqual([{ pluginId, enabled: false, readDoor: null }]);
+    Object.assign(fixture.state, {
+      protocolVersion: PROTOCOL_VERSION,
+      nativeInventoryPresent: true,
+      installedStateDoorPresent: true,
+      build: "1.1.0",
+    });
+    expect(await pollLive(fixture.target, before, "1.1.0", shortPoll)).toEqual({
+      heldPlugins: [],
+      deferredServices: [],
+      deferredInstallations: [],
+    });
+    fixture.state.pluginEnabled = true;
+    await expect(pollLive(fixture.target, before, "1.1.0", shortPoll)).rejects.toThrow(
+      /plugin example.live: enablement changed; expected false; observed true/,
+    );
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("legacy inspection cannot turn wrong authority or contradictory native inventory into empty state", async () => {
   const fixture = liveFixture();
   try {
     fixture.state.protocolVersion = 25;
     fixture.state.nativeInventoryPresent = false;
+    fixture.state.installedStateDoorPresent = false;
     fixture.state.root = false;
     await expect(snapshotLive(fixture.target)).rejects.toBeInstanceOf(LiveVerificationError);
     fixture.state.root = true;
@@ -600,6 +662,29 @@ test("maintenance defers only the repack hold and ends only after ordinary healt
   }
 });
 
+test("a snapshot taken during a repack hold records configured enablement", async () => {
+  const fixture = liveFixture();
+  try {
+    fixture.state.pluginHeld = { reason: "repack_required", minimum: 2 };
+    fixture.state.readDoorPresent = false;
+    const before = await snapshotLive(fixture.target);
+    expect(before.plugins).toEqual([{ pluginId, enabled: true, readDoor: null }]);
+    expect(
+      await pollLive(fixture.target, before, before.build, { ...shortPoll, bootstrapGate: true }),
+    ).toEqual({
+      heldPlugins: [{ pluginId, minimum: 2 }],
+      deferredServices: [],
+      deferredInstallations: [],
+    });
+    fixture.state.pluginEnabled = false;
+    await expect(
+      pollLive(fixture.target, before, before.build, { ...shortPoll, bootstrapGate: true }),
+    ).rejects.toThrow(/plugin example.live: enablement changed; expected true; observed false/);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("maintenance cannot excuse unrelated failures or changed native identities", async () => {
   const fixture = liveFixture();
   const held = {
@@ -608,6 +693,10 @@ test("maintenance cannot excuse unrelated failures or changed native identities"
     pluginHeld: { reason: "repack_required", minimum: 2 },
     pluginLifecycle: "ok" as const,
     pluginEnabled: true,
+    pluginInstallRefusal: undefined,
+    installedStateDoorPresent: true,
+    installedStateMissing: false,
+    installedStateHash: hash,
     serviceState: "unavailable" as const,
     serviceReason: "plugin_held",
     serviceEnabled: true,
@@ -631,6 +720,10 @@ test("maintenance cannot excuse unrelated failures or changed native identities"
       { pluginHeld: { reason: "dependency_missing", by: "another.plugin" } },
       { pluginLifecycle: "isolate_crashed" },
       { pluginEnabled: false },
+      { installedStateDoorPresent: false },
+      { installedStateMissing: true },
+      { installedStateHash: "b".repeat(64) },
+      { pluginInstallRefusal: "artifact_unreadable" },
       { serviceReason: "credential_revoked_or_expired" },
       { serviceState: "stopping", serviceReason: "instance_service_stopping" },
       { serviceEnabled: false },

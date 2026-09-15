@@ -921,6 +921,10 @@ failed recovery stays visible rather than claiming that the previous revision is
 Rollback restores application code, **not the database or other shared data**, and never
 restarts the native execution owner. Manual compatibility review and the receiver's existing
 ordering and retained-container safety holds still apply.
+A previous binary can refuse a database already migrated to a newer schema. At that boundary,
+code-only rollback is not a recovery path: verify a consistent full-state checkpoint and its
+recovery procedure before the live upgrade. The bootstrap flag neither restores database
+state nor bypasses schema-version admission.
 
 Live snapshots use format 2 and record the source protocol. A pre-native hub, such as
 v0.14.0 on protocol 25, has no governed native inventory: that capability first appeared
@@ -935,6 +939,15 @@ from a native-capable hub cannot be verified against a pre-native target. Captur
 current verifier before switching, then retain that same snapshot rather than replacing
 its baseline after the upgrade. A pre-native snapshot cannot prove preservation of native
 installations that the old hub did not support.
+
+Plugin snapshots record configured enablement, not the effective `enabled` value that becomes
+false under a compatibility hold. The root-only `engine.plugins.listInstalled {}` read returns
+only installed plugin identities, artifact hashes and configured enablement; the verifier
+matches those identities and hashes to the roster before trusting the intent. It does not
+fetch bundle bytes for that check. On an older target without this door, held rows and
+unavailable disabled rows are refused rather than treated as an operator's disablement.
+Only the explicit maintenance exception below permits held effective state with unchanged
+configured intent.
 
 An enabled native installation's revision and enablement are durable intent: a hub restart
 or data-only record rewrite is not a new deployment. Enabled instance services on proved
@@ -974,8 +987,8 @@ nor revoked, no purge is requested, and its nonempty operation descriptions all 
 `plugin_held` for the same repack-held plugin. Missing operation descriptions cannot support
 that exception. These refusals take precedence over resource checks, so they do not prove
 that the underlying resources are healthy. Other holds and reported failures are not
-deferred. Build and snapshot identity, installed plugins, native installation identity,
-revisions and enablement remain strict. The verifier names every held plugin, deferred
+deferred. Build and snapshot identity, installed plugins and their configured enablement,
+native installation identity, revisions and enablement remain strict. The verifier names every held plugin, deferred
 installation and deferred service rather than claiming full health.
 
 The candidate step publishes `maintenance_required=true` while any repack hold remains,

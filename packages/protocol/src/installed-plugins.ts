@@ -6,6 +6,22 @@ import {
   PluginInstallModeSchema,
 } from "./plugin.ts";
 
+/** Configured intent for every installed artifact, independent of runtime assembly holds. */
+export const InstalledPluginStatesSchema = z.strictObject({
+  plugins: z
+    .array(
+      z.strictObject({
+        pluginId: PluginIdSchema,
+        sha256: z.string().regex(/^[a-f0-9]{64}$/),
+        enabled: z.boolean(),
+      }),
+    )
+    .refine((plugins) => new Set(plugins.map(({ pluginId }) => pluginId)).size === plugins.length, {
+      message: "duplicate installed plugin",
+    }),
+});
+export type InstalledPluginStates = z.infer<typeof InstalledPluginStatesSchema>;
+
 /** Only pinned bundle members are portable: never an installer credential or source URL. */
 export const InstalledPluginRowSchema = z
   .strictObject({

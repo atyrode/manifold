@@ -5,6 +5,7 @@ import {
   HealthResponseSchema,
   InstanceServiceDescriptionSchema,
   InstanceServicesDescriptionSchema,
+  InstalledPluginStatesSchema,
   JobDescriptionSchema,
   MachinesResponseSchema,
   PluginsResponseSchema,
@@ -263,6 +264,7 @@ function readDoor(plugin: PluginRosterEntry, protocol: ActionProtocol): ActionSu
 }
 /** Roster facts that must hold for a plugin the verifier cannot probe through a door. */
 function rosterHealthy(plugin: PluginRosterEntry, item: string): void {
+  if (plugin.install?.refusal) fail(item, `installed artifact: ${plugin.install.refusal}`);
   if (plugin.held) fail(item, `held: ${plugin.held.reason}`);
   if (plugin.lifecycle !== undefined && plugin.lifecycle !== "ok")
     fail(item, `lifecycle ${plugin.lifecycle}`);
@@ -303,23 +305,57 @@ async function discovery(reader: Reader, before?: LiveSnapshot) {
     ])
       declared(protocol, name);
   }
-  // Filtered inventories cannot prove their own completeness. Discard the result of
-  // an existing root-only read before trusting either native or pre-native state.
-  const rootDoor = declared(
-    protocol,
-    native ? "engine.jobs.listDeployments" : "core.access.listGrants",
+  // Effective enablement becomes false under a hold. Read configured intent separately,
+  // binding it to this roster's artifacts rather than inferring an operator's choice.
+  const stateDoor = protocol.actions.find(
+    (action) => action.name === "engine.plugins.listInstalled",
   );
+  const rootDoor =
+    stateDoor ??
+    declared(protocol, native ? "engine.jobs.listDeployments" : "core.access.listGrants");
   if (!rootDoor.caps.includes("*")) fail(rootDoor.name, "root-only declaration missing");
-  const rootArgs = native ? { pluginId: plugins[0]!.manifest.id, limit: 1 } : {};
+  const rootArgs = stateDoor || !native ? {} : { pluginId: plugins[0]!.manifest.id, limit: 1 };
   if (!inputAccepts(rootDoor, rootArgs))
     fail(rootDoor.name, "root read input contract unavailable");
-  await reader.action(rootDoor.name, rootArgs, z.unknown(), "credentials/root inventory");
+  const installed = new Map<string, PluginRosterEntry>();
+  for (const plugin of plugins) if (plugin.install) installed.set(plugin.manifest.id, plugin);
+  const configuredEnablement = new Map<string, boolean>();
+  if (stateDoor) {
+    const states = await reader.action(
+      stateDoor.name,
+      {},
+      InstalledPluginStatesSchema,
+      "credentials/root inventory",
+    );
+    for (const state of states.plugins) {
+      const plugin = installed.get(state.pluginId);
+      if (!plugin || plugin.install!.sha256 !== state.sha256)
+        fail(`plugin ${state.pluginId}`, "configured inventory does not match roster artifact");
+      configuredEnablement.set(state.pluginId, state.enabled);
+    }
+    for (const pluginId of installed.keys())
+      if (!configuredEnablement.has(pluginId))
+        fail(`plugin ${pluginId}`, "missing from configured inventory");
+  } else {
+    // The older root-only read proves authority, but not the intent behind an unavailable row.
+    await reader.action(rootDoor.name, rootArgs, z.unknown(), "credentials/root inventory");
+    for (const [pluginId, plugin] of installed) {
+      if (
+        plugin.held ||
+        (!plugin.enabled &&
+          (plugin.install!.refusal ||
+            (plugin.lifecycle !== undefined && plugin.lifecycle !== "ok")))
+      )
+        fail(`plugin ${pluginId}`, "configured enablement unavailable on older hub");
+      configuredEnablement.set(pluginId, plugin.enabled);
+    }
+  }
   const machineDoor = declared(protocol, "core.machines.list");
   if (!readOnly(machineDoor) || !inputAccepts(machineDoor, {}))
     fail(machineDoor.name, "machine listing read contract unavailable");
   const { machines } = await reader.action(machineDoor.name, {}, MachinesResponseSchema);
   unique(machines, (machine) => machine.id, "machines");
-  return { protocol, plugins, machines, native };
+  return { protocol, plugins, machines, native, configuredEnablement };
 }
 async function services(reader: Reader): Promise<InstanceServiceDescription[]> {
   const inventory = await reader.action(
@@ -349,7 +385,7 @@ export async function snapshotLive(
 ): Promise<LiveSnapshot> {
   const reader = new Reader(target, options);
   const build = await reader.build();
-  const { protocol, plugins, machines, native } = await discovery(reader);
+  const { protocol, plugins, machines, native, configuredEnablement } = await discovery(reader);
   const installations: LiveSnapshot["installations"] = [];
   if (native) {
     for (const machine of machines) {
@@ -377,7 +413,7 @@ export async function snapshotLive(
     .filter((plugin) => plugin.install !== undefined)
     .map((plugin) => ({
       pluginId: plugin.manifest.id,
-      enabled: plugin.enabled,
+      enabled: configuredEnablement.get(plugin.manifest.id)!,
       readDoor: readDoor(plugin, protocol)?.name ?? null,
     }));
   if ((await reader.build()) !== build || reader.healthProtocolVersion !== protocol.protocolVersion)
@@ -427,7 +463,10 @@ async function parity(
   if (build !== expectedBuild)
     fail("/healthz build", `expected ${expectedBuild}; observed ${build}`);
   reader.resolved.add("/healthz build");
-  const { protocol, plugins, machines, native } = await discovery(reader, before);
+  const { protocol, plugins, machines, native, configuredEnablement } = await discovery(
+    reader,
+    before,
+  );
   const heldPlugins = new Map<string, number>();
   const deferredServices: string[] = [];
   const deferredInstallations: LiveVerificationResult["deferredInstallations"] = [];
@@ -436,8 +475,9 @@ async function parity(
       const previous = before.plugins.find((row) => row.pluginId === plugin.manifest.id);
       if (
         previous &&
-        previous.enabled === plugin.enabled &&
+        previous.enabled === configuredEnablement.get(plugin.manifest.id) &&
         plugin.install &&
+        plugin.install.refusal === undefined &&
         (plugin.lifecycle === undefined || plugin.lifecycle === "ok") &&
         plugin.held?.reason === "repack_required" &&
         plugin.held.minimum !== undefined
@@ -532,16 +572,19 @@ async function parity(
   for (const plugin of plugins.filter((row) => row.install !== undefined)) {
     const door = readDoor(plugin, protocol);
     const previous = before.plugins.find((row) => row.pluginId === plugin.manifest.id);
-    if (previous && previous.enabled !== plugin.enabled)
+    const configured = configuredEnablement.get(plugin.manifest.id)!;
+    if (previous && previous.enabled !== configured)
       fail(
         `plugin ${plugin.manifest.id}`,
-        `enablement changed; expected ${previous.enabled}; observed ${plugin.enabled}`,
+        `enablement changed; expected ${previous.enabled}; observed ${configured}`,
       );
     if (heldPlugins.has(plugin.manifest.id)) {
       reader.resolved.add(`plugin ${plugin.manifest.id}`);
       continue;
     }
     rosterHealthy(plugin, `plugin ${plugin.manifest.id} roster`);
+    if (plugin.enabled !== configured)
+      fail(`plugin ${plugin.manifest.id}`, "effective enablement differs from configured intent");
     if (door === null) {
       reader.resolved.add(`plugin ${plugin.manifest.id}`);
       continue;
