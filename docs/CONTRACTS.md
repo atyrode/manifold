@@ -1976,6 +1976,12 @@ An unknown scheme or shape parses to `null` — nothing guesses. `GET /api/resol
 `ResolveResponse { uri, ref, exists, title }`, the round trip that turns a reference into
 something an agent can name; `/uri/<encoded>` is the browser deep link onto the same grammar.
 Grants, spotlights, and (from wave 2) event topics all name nodes this way.
+Terminal resolution first looks up the terminal id to discover its home container, then evaluates
+`containers:read` authority at that home. A missing terminal and a terminal whose home the caller
+cannot read are deliberately indistinguishable: both return HTTP 200 with the canonical `uri` and
+`ref`, `exists: false`, and `title: null`. A readable terminal retains the ordinary successful
+resolution with `exists: true` and its name as `title`; every other reference kind keeps its
+existing resolution and authority rules.
 Machine references use the enrolled roster id, never the mutable display name; resolution
 returns its name as `title`, or `{ exists: false, title: null }` for an unknown id. Like
 other root topics, a machine topic matches only itself, not a container subtree. Addresses

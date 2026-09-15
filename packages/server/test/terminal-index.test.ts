@@ -326,6 +326,64 @@ afterEach(() => {
   }
 });
 
+describe("GET /api/resolve terminal boundary", () => {
+  test("a home-scoped reader cannot distinguish a foreign terminal from an absent one", async () => {
+    const fixture = await indexFixture();
+    const visible = openTerminal(fixture);
+    const foreign = openTerminal(fixture);
+    fixture.broker.rename(visible.terminalId, "visible terminal");
+    fixture.broker.rename(foreign.terminalId, "foreign secret");
+    const token = fixture.auth.mintToken(
+      {
+        principal: { name: "home reader", kind: "human" },
+        caps: ["containers:read"],
+        containerId: visible.homeId,
+      },
+      fixture.root,
+    ).token;
+    const missingId = "absent-terminal";
+
+    const resolve = (terminalId: string) =>
+      call(
+        fixture,
+        "GET",
+        `/api/resolve?uri=${encodeURIComponent(`manifold://terminal/${terminalId}`)}`,
+        token,
+      );
+    const visibleResponse = await resolve(visible.terminalId);
+    const missingResponse = await resolve(missingId);
+    const foreignResponse = await resolve(foreign.terminalId);
+
+    expect(visibleResponse).toEqual({
+      status: 200,
+      payload: {
+        uri: `manifold://terminal/${visible.terminalId}`,
+        ref: { kind: "terminal", terminalId: visible.terminalId },
+        exists: true,
+        title: "visible terminal",
+      },
+    });
+    expect(missingResponse).toEqual({
+      status: 200,
+      payload: {
+        uri: `manifold://terminal/${missingId}`,
+        ref: { kind: "terminal", terminalId: missingId },
+        exists: false,
+        title: null,
+      },
+    });
+    expect(foreignResponse).toEqual({
+      status: 200,
+      payload: {
+        uri: `manifold://terminal/${foreign.terminalId}`,
+        ref: { kind: "terminal", terminalId: foreign.terminalId },
+        exists: false,
+        title: null,
+      },
+    });
+  });
+});
+
 describe("core.terminals.listAll", () => {
   test("the index lists every terminal with the composition it lives in", async () => {
     const fixture = await indexFixture();

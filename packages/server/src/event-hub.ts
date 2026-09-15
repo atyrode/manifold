@@ -127,9 +127,9 @@ function candidateKeys(topic: ManifoldRef): readonly string[] {
  * The container whose `containers:read` grant governs a topic, or null when the topic is
  * WORKSPACE-scoped and no container governs it.
  *
- * This is `resolveRef`'s per-kind check restated as a value instead of a throw: a terminal is
- * governed by its home, an element and a tile by the container that gives them identity, a
- * container by itself, and a principal, a plugin or an action by nothing — those are
+ * This is the same per-kind authority map used by `resolveRef`, made available as a value:
+ * a terminal is governed by its home, an element and a tile by the container that gives them
+ * identity, a container by itself, and a principal, a plugin or an action by nothing — those are
  * workspace vocabulary every reader already holds (`http.ts`'s `principal` case says so in
  * prose; here it is the null).
  *
