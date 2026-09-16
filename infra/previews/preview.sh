@@ -51,13 +51,15 @@ unregister() {
 register() { unregister "$1"; printf '%s %s %s\n' "$1" "$2" "$3" >>"$registry"; }
 compose() {
   local number=$1 port=$2 image=$3; shift 3
-  (cd "$PREVIEW_HOME/checkouts/pr-$number" &&
-    COMPOSE_PROJECT_NAME="manifold-pr-$number" COMPOSE_FILE="compose.yaml:$here/compose.preview.yaml" \
-    MANIFOLD_DOMAIN="$number.$PREVIEW_DOMAIN" PREVIEW_PORT="$port" PREVIEW_MACHINE="pr-$number" PREVIEW_IMAGE="$image" \
-    env -u MANIFOLD_OWNER_KEY docker compose --env-file /dev/null "$@")
+  (
+    cd "$here"
+    COMPOSE_PROJECT_NAME="manifold-pr-$number" COMPOSE_FILE="$here/compose.preview.yaml" \
+      MANIFOLD_DOMAIN="$number.$PREVIEW_DOMAIN" PREVIEW_PORT="$port" PREVIEW_MACHINE="pr-$number" PREVIEW_IMAGE="$image" \
+      env -u MANIFOLD_OWNER_KEY docker compose --env-file /dev/null "$@"
+  )
 }
 up() {
-  local number=$1 sha=$2 checkout port volume development_image base_image final_image
+  local number=$1 sha=$2 checkout port volume development_image base_image final_image revision
   pr_name "$number"; sha_arg "$sha"
   development_image=$(environment_image)
   require_environment_builder
@@ -71,9 +73,11 @@ up() {
   fi
   git -C "$checkout" fetch -q --tags origin
   git -C "$checkout" checkout -q --detach "$sha"
-  identity "$checkout"; export MANIFOLD_CHANNEL=development
+  revision=$(git -C "$checkout" rev-parse HEAD)
+  identity "$checkout" "$revision"; export MANIFOLD_CHANNEL=development
   log "building PR $number: $MANIFOLD_BUILD on $development_image"
-  build_environment "$checkout" "$base_image" "$final_image" "manifold-pr-$number" "$development_image" compose "$number" "$port"
+  log "stable preview boundary: using trusted standalone Compose topology"
+  build_environment "$checkout" "$base_image" "$final_image" "manifold-pr-$number" "$development_image"
   if ! docker volume inspect "$volume" >/dev/null 2>&1; then
     log "creating data volume for PR $number"
     docker volume create "$volume" >/dev/null

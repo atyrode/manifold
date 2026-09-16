@@ -1,14 +1,15 @@
+# Complete numbered-preview topology owned by the stable tooling checkout.
 services:
   manifold:
     image: ${PREVIEW_IMAGE:?preview tooling must select an image}
-    build:
-      args:
-        VITE_MANIFOLD_SITE_TITLE: "${PREVIEW_MACHINE} - manifold"
-        VITE_MANIFOLD_ICON_BACKGROUND: "#0f766e"
+    pull_policy: never
+    restart: unless-stopped
     ports:
       - "127.0.0.1:${PREVIEW_PORT}:7777"
     environment:
+      MANIFOLD_PUBLIC_URL: https://${MANIFOLD_DOMAIN}
       MANIFOLD_MACHINE_NAME: ${PREVIEW_MACHINE}
+      MANIFOLD_SPAWN_AGENT: "1"
       MANIFOLD_PLUGIN_DEV_PATHS: "1"
       MANIFOLD_ANNOUNCE_KEY: "0"
       MANIFOLD_IDENTITY_AUTHORITY: https://${PREVIEW_DOMAIN}
@@ -17,5 +18,8 @@ services:
       MANIFOLD_REPLICA_ENDPOINT: ""
       LITESTREAM_ACCESS_KEY_ID: ""
       LITESTREAM_SECRET_ACCESS_KEY: ""
-  caddy:
-    profiles: [bundled-proxy]
+    volumes:
+      - manifold-data:/data
+
+volumes:
+  manifold-data:

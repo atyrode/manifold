@@ -34,17 +34,28 @@ Shared integrated development instead uses the ordinary production-style applica
 image as a server-only hub. Its execution owner is the separately declared native profile;
 there is no shared-preview container-shell fallback. Neither deployment path promotes production.
 
-Numbered `up` uses `environment.sh` composition and an offline probe, requiring the
-selected Buildx builder's `docker` driver. It builds `manifold-pr-pr-N:base`, then
-composes `manifold-pr-pr-N:local` with the environment as its base. The application
-artifact must contain an executable `/app/infra/entrypoint.sh` and a nonempty
-`engines.bun` requirement that the environment's Bun satisfies. Its `/app` is copied
-with UID/GID 1000 ownership; no Bun binary, libraries, home or Nix store are copied
-out of the application image.
+Numbered `up` treats the selected PR revision as source, not deployment authority. Stable tooling
+derives identity with its own `scripts/build-identity.ts`, validates the three emitted values as
+inert metadata, materializes an exact Git archive, and builds it with the stable checkout's root
+`Dockerfile`. It then runs only the complete `compose.preview.yaml` topology from that stable
+checkout. A PR's `compose.yaml`, `Dockerfile`, and `scripts/build-identity.ts` are never executed
+or merged on the host; they cannot add services, privileged settings, bind mounts, or host-side
+code. The deployment log receipts both stable substitutions. PR dependencies and source still run
+inside the credential-free application build and resulting preview container, which is the
+intended preview boundary.
+
+`environment.sh` requires the selected Buildx builder's `docker` driver. It builds
+`manifold-pr-pr-N:base`, then composes `manifold-pr-pr-N:local` with the environment as its base.
+The application artifact must contain an executable `/app/infra/entrypoint.sh` and a nonempty
+`engines.bun` requirement that the environment's Bun satisfies. Its `/app` is copied with UID/GID
+1000 ownership; no Bun binary, libraries, home or Nix store are copied out of the application
+image.
 
 The current application requires Bun >= 1.4.2 for borrowed-descriptor ownership
-([ADR 0032](../../docs/decisions/0032-bun-descriptor-ownership.md)). Updating the application
-Dockerfile does not update the independently pinned disposable development runtime. Before
+([ADR 0032](../../docs/decisions/0032-bun-descriptor-ownership.md)). Updating a PR's application
+Dockerfile does not update either stable build recipe or the independently pinned disposable
+development runtime. Update the trusted Dockerfile and environment pin through the reviewed stable
+tooling checkout instead. Before
 deploying numbered previews, the dotfiles environment owner must publish an environment with corrected
 Bun and its reviewed immutable digest must replace `environment-image.txt`; do not substitute
 an unverified digest or copy Bun from the application layer. Until that dependency is met,
