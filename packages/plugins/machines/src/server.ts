@@ -2,6 +2,7 @@ import type { EmitEvent } from "@manifold/plugin";
 import {
   identityColorFor,
   type MachineDrainStatus,
+  type MachineRefusal,
   type ManifoldRef,
   type TerminalExecution,
 } from "@manifold/protocol";
@@ -19,6 +20,7 @@ interface MachineRow {
   readonly name: string;
   /** The admission latch `core.machines.drain` sets; the roster publishes it beside liveness. */
   readonly draining: boolean;
+  readonly lastRefusal: MachineRefusal | null;
 }
 
 /** The owner's answer to a drain request, or why there is none (the door relays the reason). */
@@ -92,6 +94,7 @@ interface MachineSummary extends MachineDot {
   /** OMITTED when admission is open, for the same reason: a v23 reader's row is unchanged. */
   readonly draining?: boolean;
   readonly terminalExecution?: TerminalExecution;
+  readonly lastRefusal?: MachineRefusal;
 }
 
 /** Either a published result, or a refusal the door turns into a `refused` denial. */
@@ -150,6 +153,7 @@ export const machinesHandlers = {
           ...(terminalExecution === null ? {} : { terminalExecution }),
           ...(withdrawn.has(machine.id) ? { revoked: true } : {}),
           ...(machine.draining ? { draining: true } : {}),
+          ...(machine.lastRefusal === null ? {} : { lastRefusal: machine.lastRefusal }),
         };
       }),
     };

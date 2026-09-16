@@ -1076,6 +1076,8 @@ export {
   type MachineDrainStatus,
   MachineEnrollResponseSchema,
   type MachineEnrollResponse,
+  MachineRefusalSchema,
+  type MachineRefusal,
   MachineSummarySchema,
   type MachineSummary,
   MachinesResponseSchema,

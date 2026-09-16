@@ -72,6 +72,7 @@ import {
   type MintShareRequest,
   type MintTokenRequest,
   type Principal,
+  type MachineRefusal,
   type RuntimeDeps,
   type Share,
   type ShareGrant,
@@ -727,6 +728,11 @@ export class AuthService {
     if (machine === null) throw new ServiceError("unauthorized", "invalid machine token");
     if (machine.revokedAt !== null) throw new ServiceError("forbidden", "revoked");
     return machine;
+  }
+
+  /** Records a refusal without exposing machine-token hashing outside the authority boundary. */
+  recordMachineRefusal(raw: string, code: MachineRefusal["code"]): boolean {
+    return this.store.recordMachineRefusal(sha256Hex(raw), code, this.runtime.now());
   }
 
   /**
@@ -2683,6 +2689,7 @@ export class AuthService {
         // Nobody has dialled in yet: no owner identity to remember, and admission open.
         ownerHostId: null,
         draining: false,
+        lastRefusal: null,
       };
       this.store.createMachine(machine);
       return { machine, machineToken: minted.raw };

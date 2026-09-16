@@ -2214,6 +2214,8 @@ CREATE TABLE principals(id TEXT PRIMARY KEY, kind TEXT, name TEXT, color TEXT,
 CREATE TABLE terminals(id TEXT PRIMARY KEY, machine_id TEXT, container_id TEXT,
   created_by TEXT, status TEXT, exit_code INTEGER, created_at INTEGER,
   agent_principal_id TEXT, name TEXT);
+CREATE TABLE machines(id TEXT PRIMARY KEY, name TEXT, token_id TEXT, last_seen INTEGER,
+  owner_host_id TEXT, draining INTEGER NOT NULL DEFAULT 0);
 INSERT INTO meta VALUES ('schema_version', '26');
 CREATE TABLE machine_job_installs(machine_id TEXT NOT NULL, plugin_id TEXT NOT NULL, revision TEXT NOT NULL, artifact TEXT NOT NULL, manifest TEXT NOT NULL, enabled INTEGER NOT NULL, ready INTEGER NOT NULL DEFAULT 0, purge_requested INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(machine_id,plugin_id));
 CREATE TABLE machine_job_installations(machine_id TEXT NOT NULL, plugin_id TEXT NOT NULL, revision TEXT NOT NULL, artifact TEXT NOT NULL, manifest TEXT NOT NULL, PRIMARY KEY(machine_id,plugin_id,revision));
@@ -2318,6 +2320,8 @@ CREATE TABLE principals(id TEXT PRIMARY KEY, kind TEXT, name TEXT, color TEXT,
 CREATE TABLE terminals(id TEXT PRIMARY KEY, machine_id TEXT, container_id TEXT,
   created_by TEXT, status TEXT, exit_code INTEGER, created_at INTEGER,
   agent_principal_id TEXT, name TEXT);
+CREATE TABLE machines(id TEXT PRIMARY KEY, name TEXT, token_id TEXT, last_seen INTEGER,
+  owner_host_id TEXT, draining INTEGER NOT NULL DEFAULT 0);
 INSERT INTO meta VALUES ('schema_version', '28');
 CREATE TABLE machine_jobs(job_id TEXT PRIMARY KEY, machine_id TEXT NOT NULL, plugin_id TEXT NOT NULL, digest TEXT NOT NULL, request TEXT NOT NULL, state TEXT NOT NULL, permit TEXT, result TEXT, created_at INTEGER NOT NULL, audit_origin TEXT, decision_id TEXT, cancel_reason TEXT, event_seq INTEGER NOT NULL DEFAULT 0, output_seq INTEGER, next_input_seq INTEGER, stdin_closed INTEGER NOT NULL DEFAULT 0, owner_closed INTEGER NOT NULL DEFAULT 0 CHECK(owner_closed IN (0,1)));
 CREATE TABLE native_instance_services(
@@ -2386,6 +2390,8 @@ DROP TABLE principal_access_pauses;
 DELETE FROM meta WHERE key='agent-runs:declarations-after-event-id';
 ALTER TABLE terminals DROP COLUMN cwd;
 ALTER TABLE terminals DROP COLUMN launch_recipe;
+ALTER TABLE machines DROP COLUMN last_refusal_code;
+ALTER TABLE machines DROP COLUMN last_refusal_at;
 UPDATE meta SET value='33' WHERE key='schema_version';
 `);
     const authority = db
@@ -2447,6 +2453,8 @@ CREATE TABLE terminals(
   id TEXT PRIMARY KEY, machine_id TEXT, container_id TEXT, created_by TEXT,
   agent_principal_id TEXT, name TEXT, status TEXT, exit_code INTEGER, created_at INTEGER, run_id TEXT
 );
+CREATE TABLE machines(id TEXT PRIMARY KEY, name TEXT, token_id TEXT, last_seen INTEGER,
+  owner_host_id TEXT, draining INTEGER NOT NULL DEFAULT 0);
 INSERT INTO terminals VALUES ('legacy','machine','home','author',NULL,'kept','exited',NULL,1,NULL);
 CREATE TABLE machine_jobs(job_id TEXT PRIMARY KEY, machine_id TEXT, created_at INTEGER, request TEXT);
 INSERT INTO machine_jobs VALUES
@@ -2490,6 +2498,47 @@ INSERT INTO machine_jobs VALUES
       cwd: "/last/observed",
       launchRecipe,
     });
+  } finally {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("migration 42 persists the last identifiable machine refusal until admission", () => {
+  const dir = mkdtempSync(join(tmpdir(), "manifold-db-machine-refusal-"));
+  const path = join(dir, "manifold.db");
+  const ownerKey = "7".repeat(64);
+  const runtime = new FakeRuntime();
+  let db = openDatabase(path);
+  try {
+    let store = new ServerStore(db);
+    let auth = new AuthService(store, ownerKey, runtime);
+    const owner = auth.authenticate(ownerKey);
+    const enrollment = auth.enrollMachine("spoke", owner);
+
+    db.exec(`
+ALTER TABLE machines DROP COLUMN last_refusal_code;
+ALTER TABLE machines DROP COLUMN last_refusal_at;
+UPDATE meta SET value='41' WHERE key='schema_version';
+`);
+    db.close();
+    db = openDatabase(path);
+    store = new ServerStore(db);
+    auth = new AuthService(store, ownerKey, runtime);
+    expect(store.getMachine(enrollment.machine.id)?.lastRefusal).toBeNull();
+
+    runtime.time = 123;
+    expect(auth.recordMachineRefusal(enrollment.machineToken, 4409)).toBe(true);
+    db.close();
+    db = openDatabase(path);
+    store = new ServerStore(db);
+    expect(store.getMachine(enrollment.machine.id)?.lastRefusal).toEqual({
+      code: 4409,
+      at: 123,
+    });
+
+    expect(store.touchMachine(enrollment.machine.id, "spoke", 456, null)).toBe(true);
+    expect(store.getMachine(enrollment.machine.id)?.lastRefusal).toBeNull();
   } finally {
     db.close();
     rmSync(dir, { recursive: true, force: true });
