@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
 import { runInNewContext } from "node:vm";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 const target = "a".repeat(40);
 const incumbent = "b".repeat(40);
@@ -226,5 +229,125 @@ test("deployment completion requires successful verification with an explicit ma
     expect(complete("success", "skipped", "false").exitCode).toBe(1);
     expect(complete("success", "failure", "false").exitCode).toBe(1);
     expect(complete("failure", "success", "false").exitCode).toBe(1);
+  }
+});
+test("production promotion refuses a multi-writer provider topology", async () => {
+  const source = Bun.YAML.parse(
+    await Bun.file(new URL("../.github/workflows/deploy-hub.yml", import.meta.url)).text(),
+  ) as {
+    jobs: Record<string, { steps: { name?: string; run?: string }[] }>;
+  };
+  const topology = Object.values(source.jobs)
+    .flatMap((job) => job.steps)
+    .find((step) => step.name === "Require the bounded single-writer topology")?.run;
+  if (!topology) throw new Error("Production workflow has no single-writer admission");
+  const root = mkdtempSync(join(tmpdir(), "manifold-production-topology-"));
+  try {
+    const bin = join(root, "bin");
+    mkdirSync(bin);
+    writeFileSync(
+      join(bin, "bunx"),
+      `#!/usr/bin/env bash
+case "$*" in
+  *"status --format json"*) printf '%s\\n' "$FIXTURE_STATUS" ;;
+  *"config get zero-downtime"*) printf '%s\\n' "$FIXTURE_ZERO_DOWNTIME" ;;
+  *) exit 1 ;;
+esac
+`,
+      { mode: 0o700 },
+    );
+    const check = (min: number, max: number, zeroDowntime: boolean) =>
+      Bun.spawnSync(["bash", "-e", "-o", "pipefail", "-c", topology], {
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH}`,
+          FIXTURE_STATUS: JSON.stringify({
+            scalability: { horizontal: { min, max } },
+          }),
+          FIXTURE_ZERO_DOWNTIME: String(zeroDowntime),
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+    expect(check(1, 1, false).exitCode).toBe(0);
+    expect(check(1, 2, false).exitCode).toBe(1);
+    expect(check(1, 1, true).exitCode).toBe(1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("production refuses unreconciled recovery and receipts from another incumbent", async () => {
+  const source = Bun.YAML.parse(
+    await Bun.file(new URL("../.github/workflows/deploy-hub.yml", import.meta.url)).text(),
+  ) as { jobs: Record<string, { steps: { name?: string; run?: string }[] }> };
+  const steps = Object.values(source.jobs).flatMap((job) => job.steps);
+  const hold = steps.find(
+    (step) => step.name === "Refuse promotion from an unreconciled recovery image",
+  )?.run;
+  const snapshot = steps.find((step) => step.name === "Snapshot live state before the switch")?.run;
+  if (!hold || !snapshot) throw new Error("Production workflow is missing recovery admission");
+  const root = mkdtempSync(join(tmpdir(), "manifold-production-admission-"));
+  try {
+    const bin = join(root, "bin");
+    mkdirSync(bin);
+    writeFileSync(
+      join(bin, "bunx"),
+      `#!/usr/bin/env bash
+shift
+[[ "$*" == "env --format json" ]] || exit 1
+printf '%s\\n' "$FIXTURE_ENV"
+`,
+      { mode: 0o700 },
+    );
+    writeFileSync(
+      join(bin, "bun"),
+      `#!/usr/bin/env bash
+[[ $1 == scripts/verify-live.ts && $2 == snapshot ]] || exit 1
+printf '{"build":"1.2.3"}\\n' > "$3"
+`,
+      { mode: 0o700 },
+    );
+    writeFileSync(
+      join(bin, "docker"),
+      `#!/usr/bin/env bash
+printf '%s\\n' 'sha256:${"b".repeat(64)}'
+`,
+      { mode: 0o700 },
+    );
+    const output = join(root, "output");
+    const check = (build: string, vars: { name: string; value: string }[], inherited = false) => {
+      writeFileSync(output, "");
+      return Bun.spawnSync(["bash", "-e", "-o", "pipefail", "-c", `${hold}\n${snapshot}`], {
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH}`,
+          RECOVERY_BUILD: build,
+          FIXTURE_ENV: JSON.stringify({
+            env: inherited ? [] : vars,
+            fromAddons: inherited ? [{ env: vars }] : [],
+            fromDependencies: [],
+          }),
+          RUNNER_TEMP: root,
+          GITHUB_OUTPUT: output,
+          GITHUB_REPOSITORY: "owner/manifold",
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+    };
+    expect(check("1.2.3", []).exitCode).toBe(0);
+    expect(readFileSync(output, "utf8")).toContain("previous_build=1.2.3");
+    expect(check("1.2.2", []).exitCode).toBe(1);
+    expect(readFileSync(output, "utf8")).toBe("");
+    for (const inherited of [false, true]) {
+      expect(
+        check("1.2.3", [{ name: "MANIFOLD_RECOVERY_SHA256", value: "c".repeat(64) }], inherited)
+          .exitCode,
+      ).toBe(1);
+      expect(readFileSync(output, "utf8")).toBe("");
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
