@@ -33,16 +33,33 @@ sha256_arg() { [[ $1 =~ ^[0-9a-f]{64}$ ]] || fail 'expected a sha256'; }
 # shell or a log line could misread. The receiver splits on whitespace before this runs.
 plugin_url() { [[ $1 =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?/[A-Za-z0-9._~%/+-]+\.manifold-plugin\.json$ ]] || fail 'expected an https URL ending in .manifold-plugin.json'; }
 identity() {
-  local output key value
-  output=$(cd "$1" && bun scripts/build-identity.ts --env)
+  local repository=$1 revision=${2:-} output key value
+  local version='' build='' channel='' version_count=0 build_count=0 channel_count=0
+  local -a command=(bun "$here/../../scripts/build-identity.ts" --repository "$repository" --env)
+  [[ -z $revision ]] || command+=(--revision "$revision")
+  output=$("${command[@]}") ||
+    fail 'cannot derive build identity with installed trusted tooling'
   while IFS='=' read -r key value; do
     case "$key" in
-      'export MANIFOLD_VERSION') export MANIFOLD_VERSION="$value" ;;
-      'export MANIFOLD_BUILD') export MANIFOLD_BUILD="$value" ;;
-      'export MANIFOLD_CHANNEL') export MANIFOLD_CHANNEL="$value" ;;
+      'export MANIFOLD_VERSION')
+        ((version_count += 1)); version=$value
+        ;;
+      'export MANIFOLD_BUILD')
+        ((build_count += 1)); build=$value
+        ;;
+      'export MANIFOLD_CHANNEL')
+        ((channel_count += 1)); channel=$value
+        ;;
       *) fail 'invalid build identity output' ;;
     esac
   done <<<"$output"
+  ((version_count == 1 && build_count == 1 && channel_count == 1)) ||
+    fail 'incomplete or duplicate build identity output'
+  [[ $version =~ ^[0-9A-Za-z][0-9A-Za-z.+-]{0,127}$ &&
+     $build =~ ^[0-9A-Za-z][0-9A-Za-z.+-]{0,127}$ &&
+     ($channel == release || $channel == development) ]] ||
+    fail 'malformed inert build identity'
+  export MANIFOLD_VERSION=$version MANIFOLD_BUILD=$build MANIFOLD_CHANNEL=$channel
 }
 wait_health() {
   local url=$1 build=$2 health attempt

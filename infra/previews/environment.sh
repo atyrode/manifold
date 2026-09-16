@@ -21,10 +21,34 @@ require_environment_builder() {
     fail 'development image composition requires the docker Buildx driver'
 }
 build_environment() {
-  local checkout=$1 base_image=$2 final_image=$3 project=$4 development_image=$5 revision probe
-  shift 5
+  local checkout=$1 base_image=$2 final_image=$3 project=$4 development_image=$5
+  local revision probe context
   revision=$(git -C "$checkout" rev-parse HEAD)
-  "$@" "$base_image" build manifold
+  [[ $revision =~ ^[0-9a-f]{40}$ ]] || fail 'preview artifact revision is not an exact commit'
+  context=$(mktemp -d "$PREVIEW_HOME/build-context.XXXXXX") ||
+    fail 'cannot create private preview build context'
+  if ! git -C "$checkout" archive "$revision" | tar -x -C "$context"; then
+    rm -rf -- "$context"
+    fail 'cannot materialize exact preview source archive'
+  fi
+  rm -f -- "$context/Dockerfile"
+  install -m 0600 "$here/../../Dockerfile" "$context/Dockerfile" || {
+    rm -rf -- "$context"
+    fail 'cannot install trusted preview Dockerfile'
+  }
+  log "stable preview boundary: building exact source with the trusted Dockerfile"
+  if ! docker buildx build --load --tag "$base_image" --file "$context/Dockerfile" \
+    --label "io.manifold.deployment.provenance=git-v1" \
+    --label "org.opencontainers.image.revision=$revision" \
+    --build-arg "MANIFOLD_VERSION=$MANIFOLD_VERSION" \
+    --build-arg "MANIFOLD_BUILD=$MANIFOLD_BUILD" \
+    --build-arg "MANIFOLD_CHANNEL=$MANIFOLD_CHANNEL" \
+    --build-arg "VITE_MANIFOLD_SITE_TITLE=${project#manifold-} - manifold" \
+    --build-arg "VITE_MANIFOLD_ICON_BACKGROUND=#0f766e" "$context"; then
+    rm -rf -- "$context"
+    fail 'trusted preview application build failed'
+  fi
+  rm -rf -- "$context"
   docker buildx build --load --tag "$final_image" --file "$here/Dockerfile.environment" \
     --build-arg "MANIFOLD_APP_IMAGE=$base_image" \
     --build-arg "DEVELOPMENT_IMAGE=$development_image" \
@@ -258,7 +282,7 @@ require_retained_server_only() {
 }
 
 replace_environment() {
-  local lifecycle=$1 volume=$2 final_image=$3 project=$4 health_url=$5 topology
+  local lifecycle=$1 volume=$2 final_image=$3 project=$4 health_url=$5 topology running=''
   shift 5
   case "$lifecycle" in
     retained)
@@ -269,13 +293,15 @@ replace_environment() {
       ;;
     disposable)
       log "redeploying $project retires existing PTYs and terminal entries and replaces the disposable development home"
-      if [[ -n $("$@" "$final_image" ps --status running --quiet manifold) ]]; then
+      running=$("$@" "$final_image" ps --status running --quiet manifold)
+      if [[ -n $running ]]; then
         "$@" "$final_image" exec -T manifold bun - retire <"$here/terminal-lifecycle.ts"
+        "$@" "$final_image" stop manifold
       fi
       ;;
     *) fail 'replacement requires an explicit retained or disposable lifecycle' ;;
   esac
-  "$@" "$final_image" stop manifold
+  [[ $lifecycle == disposable ]] || "$@" "$final_image" stop manifold
   if [[ $lifecycle == disposable ]]; then
     docker run --rm --network none --label "com.docker.compose.project=$project" --user 0:0 --entrypoint /bin/bash \
       --mount "type=volume,src=$volume,dst=/data" "$final_image" \

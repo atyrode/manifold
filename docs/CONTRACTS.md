@@ -4548,6 +4548,14 @@ build target and nothing branches on which instance is being looked at.
   boundary: both automatic and manual requests must identify the latest exact-commit full-main
   CI run and its successful `gate`; tests must drive that selection with fake API metadata rather
   than assert workflow source text.
+- **Numbered-preview execution boundary** (#299): the real preview verifier installs a stable
+  tooling tree, deploys a hostile PR commit, and proves the PR's Compose, Dockerfile and
+  build-identity script cannot add services, gain privileged or bind-mount authority, or execute
+  on the host. It inspects the resulting container for the single named `/data` volume, requires
+  receipts for stable recipe/topology selection, and verifies malformed inert identity metadata
+  refuses before replacing the incumbent. Source and dependency code still execute inside the
+  credential-free build and preview container; exact-head and fork/request admission remain
+  separate workflow boundaries.
 - **UI boundaries**: user-visible interactions get tests at the interaction boundary; wire-level
   green does not prove the UI works. Gate green does not prove a surface feels finished:
   UI-touching changes require vision-model inspection of real screenshots from a real browser

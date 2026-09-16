@@ -4,6 +4,7 @@ import {
   appendFileSync,
   chmodSync,
   cpSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -51,6 +52,7 @@ const tooling = join(directory, "installed", "infra", "previews");
 const originRepo = join(directory, "origin.git");
 const fixtureRepo = join(directory, "fixture");
 const shims = join(directory, "host-services");
+const hostileIdentityMarker = join(directory, "hostile-build-identity-ran");
 for (const path of [home, deployment, tooling, shims, join(home, ".docker")])
   mkdirSync(path, { recursive: true, mode: 0o700 });
 const secrets = new Set<string>();
@@ -177,7 +179,7 @@ function composeEnv(image: string): Record<string, string> {
     COMPOSE_PROJECT_NAME: project(),
     COMPOSE_FILE: integrated
       ? `${join(checkout(), "compose.yaml")}:${developmentOverlay}:${join(tooling, "compose.development.yaml")}`
-      : `${join(checkout(), "compose.yaml")}:${join(tooling, "compose.preview.yaml")}`,
+      : join(tooling, "compose.preview.yaml"),
     MANIFOLD_DOMAIN: integrated ? "preview.preview.invalid" : `${number}.preview.invalid`,
     PREVIEW_PORT: String(port),
     PREVIEW_MACHINE: machineName(),
@@ -186,7 +188,7 @@ function composeEnv(image: string): Record<string, string> {
 }
 const compose = (image: string, args: string[], options: CommandOptions = {}) =>
   docker(["compose", "--env-file", "/dev/null", ...args], {
-    cwd: checkout(),
+    cwd: integrated ? checkout() : tooling,
     ...options,
     env: { ...composeEnv(image), ...options.env },
   });
@@ -722,6 +724,7 @@ async function setup(): Promise<void> {
   ]) {
     cpSync(join(repo, "infra/previews", name), join(tooling, name));
   }
+  cpSync(join(repo, "Dockerfile"), resolve(tooling, "../../Dockerfile"));
   const trustedScripts = resolve(tooling, "../..", "scripts");
   mkdirSync(trustedScripts, { recursive: true, mode: 0o700 });
   cpSync(join(repo, "scripts", "build-identity.ts"), join(trustedScripts, "build-identity.ts"));
@@ -743,16 +746,11 @@ async function setup(): Promise<void> {
     join(fixtureRepo, ".git/objects") + "\n",
   );
   revision = await fixtureRevision(crypto.randomUUID());
-  const output = (
-    await command(["bun", "scripts/build-identity.ts", "--env"], { cwd: fixtureRepo })
-  ).out;
-  for (const line of output.trim().split("\n")) {
-    const match = /^export (MANIFOLD_(?:VERSION|BUILD|CHANNEL))=(.*)$/.exec(line);
-    requireThat(match, "build-identity emitted an invalid environment row");
-    baseIdentity[match[1]!] = match[2]!;
-  }
+  const initialIdentity = deriveBuildIdentity(fixtureRepo, revision);
+  baseIdentity["MANIFOLD_VERSION"] = initialIdentity.version;
+  baseIdentity["MANIFOLD_BUILD"] = initialIdentity.build;
   baseIdentity["MANIFOLD_CHANNEL"] = "development";
-  expectedBuild = baseIdentity["MANIFOLD_BUILD"]!;
+  expectedBuild = initialIdentity.build;
   metrics["revision"] = revision;
   metrics["build"] = expectedBuild;
 }
@@ -1931,8 +1929,82 @@ console.log(JSON.stringify(rows.sort((a, b) => Number(a.pid) - Number(b.pid))));
       },
     );
   } else {
-    await step("fresh development volume and unchanged PR artifact", async () => {
-      await up();
+    writeFileSync(
+      join(fixtureRepo, "compose.yaml"),
+      `services:
+  manifold:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    privileged: true
+    volumes:
+      - /:/host:rw
+  hostile:
+    image: alpine
+    privileged: true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+`,
+    );
+    writeFileSync(join(fixtureRepo, "Dockerfile"), "FROM scratch\nRUN false\n");
+    const identityPath = join(fixtureRepo, "scripts", "build-identity.ts");
+    const identitySource = readFileSync(identityPath, "utf8");
+    const hostileIdentityMain = `if (import.meta.main) {\n  await Bun.write(${JSON.stringify(hostileIdentityMarker)}, "executed");\n  process.exit(92);\n}\n`;
+    writeFileSync(identityPath, identitySource.replace("\n", `\n${hostileIdentityMain}`));
+    await command(["git", "add", "compose.yaml", "Dockerfile", "scripts/build-identity.ts"], {
+      cwd: fixtureRepo,
+    });
+    revision = await fixtureRevision(`hostile-${crypto.randomUUID()}`);
+    expectedBuild = deriveBuildIdentity(fixtureRepo, revision).build;
+    baseIdentity["MANIFOLD_BUILD"] = expectedBuild;
+    metrics["hostileRevision"] = revision;
+    await step("stable tooling contains hostile PR runtime inputs", async () => {
+      const deploymentResult = await up();
+      requireThat(
+        `${deploymentResult.out}\n${deploymentResult.err}`.includes(
+          "stable preview boundary: using trusted standalone Compose topology",
+        ) &&
+          `${deploymentResult.out}\n${deploymentResult.err}`.includes(
+            "stable preview boundary: building exact source with the trusted Dockerfile",
+          ),
+        "deployment did not receipt both stable tooling substitutions",
+      );
+      requireThat(
+        !existsSync(hostileIdentityMarker),
+        "the PR-controlled build identity script executed on the host",
+      );
+      const ids = (
+        await docker(["ps", "-aq", "--filter", `label=com.docker.compose.project=${project()}`])
+      ).out
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean);
+      requireThat(ids.length === 1, "hostile PR Compose added a service to the stable topology");
+      const boundary = JSON.parse(
+        (
+          await docker([
+            "inspect",
+            await containerId(),
+            "--format",
+            '{"HostConfig":{{json .HostConfig}},"Mounts":{{json .Mounts}}}',
+          ])
+        ).out,
+      ) as {
+        HostConfig: { Privileged: boolean };
+        Mounts: { Destination: string; Name?: string; RW: boolean; Type: string }[];
+      };
+      requireThat(
+        boundary.HostConfig.Privileged === false,
+        "hostile PR Compose acquired privileged authority",
+      );
+      requireThat(
+        boundary.Mounts.length === 1 &&
+          boundary.Mounts[0]?.Type === "volume" &&
+          boundary.Mounts[0].Name === volume() &&
+          boundary.Mounts[0].Destination === "/data" &&
+          boundary.Mounts[0].RW,
+        "stable topology mounted anything other than the named writable data volume",
+      );
       await ready();
       await acquireIdentity();
       await processOwners(1000);
@@ -2092,6 +2164,26 @@ console.log(JSON.stringify(rows.sort((a, b) => Number(a.pid) - Number(b.pid))));
     });
   } else {
     const goodPin = readFileSync(pinPath, "utf8");
+    const safeRevision = revision;
+    const malformedIdentityRevision = await fixtureChild(
+      safeRevision,
+      `malformed-identity-${crypto.randomUUID()}`,
+    );
+    await command(["git", "tag", "vbad;identity", malformedIdentityRevision], {
+      cwd: originRepo,
+    });
+    await step("malformed inert identity refuses before touching the live preview", () =>
+      preserveLive(
+        "malformed-identity",
+        async () => {
+          revision = malformedIdentityRevision;
+        },
+        async () => {
+          revision = safeRevision;
+        },
+        "preview: malformed inert build identity",
+      ),
+    );
     for (const malformed of [
       "",
       "development:latest\n",
@@ -2193,16 +2285,11 @@ console.log(JSON.stringify(rows.sort((a, b) => Number(a.pid) - Number(b.pid))));
           await docker(["image", "inspect", baseImage(), "--format", "{{.Id}}"])
         ).out.trim();
         revision = await fixtureRevision(crypto.randomUUID());
-        const output = (
-          await command(["bun", "scripts/build-identity.ts", "--env"], { cwd: fixtureRepo })
-        ).out;
-        for (const line of output.trim().split("\n")) {
-          const match = /^export (MANIFOLD_(?:VERSION|BUILD|CHANNEL))=(.*)$/.exec(line);
-          requireThat(match, "invalid second build identity");
-          baseIdentity[match[1]!] = match[2]!;
-        }
+        const secondIdentity = deriveBuildIdentity(fixtureRepo, revision);
+        baseIdentity["MANIFOLD_VERSION"] = secondIdentity.version;
+        baseIdentity["MANIFOLD_BUILD"] = secondIdentity.build;
         baseIdentity["MANIFOLD_CHANNEL"] = "development";
-        expectedBuild = baseIdentity["MANIFOLD_BUILD"]!;
+        expectedBuild = secondIdentity.build;
         await up();
         await ready();
         await sceneSurvives();
