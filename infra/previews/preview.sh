@@ -58,6 +58,36 @@ compose() {
       env -u MANIFOLD_OWNER_KEY docker compose --env-file /dev/null "$@"
   )
 }
+seed_preview_volume() (
+  local volume=$1 archive seed_dir sanitized member
+  local -a selected=()
+  local database_count=0 wal_count=0 shm_count=0
+  archive=$(realpath "$PREVIEW_SEED")
+  [[ -f $archive && ! -L $archive ]] || fail 'PREVIEW_SEED must be a regular archive'
+  seed_dir=$(mktemp -d "$PREVIEW_HOME/seed.XXXXXX")
+  trap 'rm -rf -- "$seed_dir"' EXIT
+  tar tzf "$archive" >"$seed_dir/members"
+  while IFS= read -r member; do
+    case "$member" in
+      data/manifold.db) ((database_count += 1)); selected+=("$member") ;;
+      data/manifold.db-wal) ((wal_count += 1)); selected+=("$member") ;;
+      data/manifold.db-shm) ((shm_count += 1)); selected+=("$member") ;;
+    esac
+  done <"$seed_dir/members"
+  ((database_count == 1 && wal_count <= 1 && shm_count <= 1)) ||
+    fail 'PREVIEW_SEED must contain one canonical data/manifold.db member'
+  tar xzf "$archive" -C "$seed_dir" -- "${selected[@]}"
+  for member in "${selected[@]}"; do
+    [[ -f $seed_dir/$member && ! -L $seed_dir/$member ]] ||
+      fail 'PREVIEW_SEED database members must be regular files'
+  done
+  sanitized="$seed_dir/preview.db"
+  bun --no-env-file "$here/../../scripts/preview-seed.ts" "$seed_dir/data/manifold.db" "$sanitized"
+  docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges \
+    -i -v "$volume:/data" alpine sh -c 'umask 077; cat > /data/manifold.db' <"$sanitized"
+  log 'seeded representative containers, container_folders and scene_docs; preview authority is fresh'
+)
+
 up() {
   local number=$1 sha=$2 checkout port volume development_image base_image final_image revision
   pr_name "$number"; sha_arg "$sha"
@@ -82,7 +112,7 @@ up() {
     log "creating data volume for PR $number"
     docker volume create "$volume" >/dev/null
     if [[ -n ${PREVIEW_SEED:-} ]]; then
-      if ! docker run --rm -v "$volume:/data" -v "$(realpath "$PREVIEW_SEED"):/seed.tgz:ro" alpine tar xzf /seed.tgz -C /data --exclude=preview-identity.key; then
+      if ! seed_preview_volume "$volume"; then
         docker volume rm "$volume" >/dev/null
         fail 'seeding failed; removed incomplete data volume'
       fi

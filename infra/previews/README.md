@@ -277,8 +277,13 @@ The CLI also reads this file; file values override inherited environment values.
 - `PREVIEW_DEV_URL`: dev health URL; default `https://preview.<domain>`.
 - `PREVIEW_DEV_PORT`: the dev stack's loopback port; default `7912`. The `plugin` verb installs
   through it.
-- `PREVIEW_SEED`: optional absolute path to a `/data` backup `.tgz`; new PR volumes only. The
-  production assertion signing key is always excluded so every preview generates its own.
+- `PREVIEW_SEED`: optional absolute path to a full `/data` backup `.tgz`; new PR volumes only.
+  Stable tooling reads only its canonical `data/manifold.db{,-wal,-shm}` members and projects
+  the explicit representative allowlist: `container_folders(id,name,created_at,parent_folder_id,sort_order)`,
+  `containers(id,name,created_at,sort_order,folder_id,discipline)` and
+  `scene_docs(container_id,epoch,rev,ts,hash,doc)`. Every other table starts empty and no
+  adjacent file crosses. The sanitized database is vacuumed before it enters the volume;
+  startup generates fresh owner, preview-signing and machine authority for that preview.
 - `PREVIEW_PORT_RANGE`: default `7920-7999`; live servers use routed port + 1000.
 - `PREVIEW_ROUTER_PORT`: default `7900`; change the public proxy and ask URL to match.
 - `MANIFOLD_DEV_SERVICE_OWNER_MACHINE_ID`: required opaque enrolled native service-owner ID
@@ -376,10 +381,12 @@ options and extra arguments before invoking the installer. The receiver does not
 runner from the URL, manifest or hash.
 
 Integrated and numbered previews normally admit an existing production browser identity through
-the POST handoff in ADR 0027. The ordinary public URL carries no credential. A fresh seeded
-preview still accepts the development owner key as break-glass; `url 123` prints its pre-auth
-`/#key=…` URL **only in the operator's local terminal**, and automated deployment never announces
-it. Live keys stay in `$PREVIEW_HOME/live/<name>/data/owner.key`; journals contain no pre-auth URL.
+the POST handoff in ADR 0027. The ordinary public URL carries no credential. A seeded numbered
+preview receives only the representative database projection above and generates fresh authority:
+the development owner key and reusable development credentials cannot open it. `url 123` prints
+that preview's own pre-auth `/#key=…` URL **only in the operator's local terminal**, and automated
+deployment never announces it. Live keys stay in `$PREVIEW_HOME/live/<name>/data/owner.key`;
+journals contain no pre-auth URL.
 Observe live processes with `journalctl --user -u manifold-live-feature` and restart
 with `systemctl --user restart manifold-live-feature`. Install worktree dependencies
 with `bun install --frozen-lockfile` before `live`; source changes update without redeploy.

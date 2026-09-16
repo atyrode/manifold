@@ -12,18 +12,22 @@ import {
   statfsSync,
   writeFileSync,
 } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createServer, type Server } from "node:net";
 import { isDeepStrictEqual } from "node:util";
+import { Y } from "../packages/scene/src/index.ts";
 import {
   ActionOutcomeSchema,
   ContainerResponseSchema,
+  IndexResponseSchema,
   MachinesResponseSchema,
   TerminalsResponseSchema,
 } from "../packages/protocol/src/index.ts";
 import { SessionClient, base64ToText } from "../packages/sdk/src/index.ts";
 import { deriveBuildIdentity } from "./build-identity.ts";
+import { openDatabase } from "../packages/server/src/db.ts";
 import { Browser } from "./cdp.ts";
 import { reserveLoopbackPort, sleep, until } from "./gate-lib.ts";
 
@@ -53,6 +57,12 @@ const originRepo = join(directory, "origin.git");
 const fixtureRepo = join(directory, "fixture");
 const shims = join(directory, "host-services");
 const hostileIdentityMarker = join(directory, "hostile-build-identity-ran");
+const seededContainerId = `seeded-${crypto.randomUUID()}`;
+const seededFolderId = `seeded-folder-${crypto.randomUUID()}`;
+const seededOwnerKey = randomBytes(32).toString("hex");
+const seededBearer = randomBytes(32).toString("hex");
+const seededSigningKey = "development-preview-signing-sentinel";
+const seededAgentToken = "development-agent-token-sentinel";
 for (const path of [home, deployment, tooling, shims, join(home, ".docker")])
   mkdirSync(path, { recursive: true, mode: 0o700 });
 const secrets = new Set<string>();
@@ -593,7 +603,7 @@ async function fixtureChild(parent: string, marker: string): Promise<string> {
   return sha;
 }
 async function setup(): Promise<void> {
-  for (const binary of ["bun", "docker", "git", "bash", "flock", "curl", "jq"])
+  for (const binary of ["bun", "docker", "git", "bash", "flock", "curl", "jq", "tar"])
     requireThat(Bun.which(binary) !== null, `missing runtime prerequisite: ${binary}`);
   if (!integrated) Browser.detect();
   const hostEnv = Object.fromEntries(
@@ -638,6 +648,54 @@ async function setup(): Promise<void> {
     PREVIEW_ROUTER_PORT: String(reserveLoopbackPort()),
     PREVIEW_DEV_PORT: String(reserveLoopbackPort()),
   };
+  if (!integrated) {
+    const seedRoot = join(directory, "seed-source");
+    const seedData = join(seedRoot, "data");
+    const seedArchive = join(directory, "development-seed.tgz");
+    mkdirSync(seedData, { recursive: true, mode: 0o700 });
+    const seedDatabase = openDatabase(join(seedData, "manifold.db"));
+    const bearerHash = createHash("sha256").update(seededBearer).digest("hex");
+    seedDatabase.exec(`
+      INSERT INTO container_folders(id,name,created_at,parent_folder_id,sort_order)
+        VALUES ('${seededFolderId}','Representative folder',1,NULL,0);
+      INSERT INTO containers(id,name,created_at,sort_order,folder_id,discipline)
+        VALUES ('${seededContainerId}','Representative seed',2,0,'${seededFolderId}','canvas');
+      INSERT INTO principals(id,kind,name,color,created_at,origin)
+        VALUES ('seed-development-human','human','Development human','#000000',3,NULL);
+      INSERT INTO grants(id,principal_kind,principal_id,node,caps,effect,reach,created_by,created_at)
+        VALUES ('seed-development-grant','principal','seed-development-human','manifold://','["*"]','allow','subtree','owner',3);
+      INSERT INTO tokens(id,hash,principal_id,minted_by,caps,container_id,created_at,revoked_at,grant_id,expires_at)
+        VALUES ('seed-development-token','${bearerHash}','seed-development-human','owner','["*"]',NULL,3,NULL,'seed-development-grant',NULL);
+      INSERT INTO dials(id,origin,secret,ref,caps,title,dialed_at,revoked_at)
+        VALUES ('seed-development-dial','https://host.invalid','development-dial-secret','manifold://container/${seededContainerId}','[]','Development dial',3,NULL);
+      INSERT INTO meta(key,value) VALUES ('jobs:signing-key','development-job-signing-secret');
+    `);
+    const representativeDoc = new Y.Doc();
+    const representativeUpdate = Y.encodeStateAsUpdate(representativeDoc);
+    representativeDoc.destroy();
+    seedDatabase
+      .query<void, [string, string, number, number, string, Uint8Array]>(
+        "INSERT INTO scene_docs(container_id,epoch,rev,ts,hash,doc) VALUES (?,?,?,?,?,?)",
+      )
+      .run(
+        seededContainerId,
+        "representative-epoch",
+        1,
+        4,
+        createHash("sha256").update(representativeUpdate).digest("hex"),
+        representativeUpdate,
+      );
+    seedDatabase.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    seedDatabase.close();
+    writeFileSync(join(seedData, "owner.key"), seededOwnerKey, { mode: 0o600 });
+    writeFileSync(join(seedData, "preview-identity.key"), seededSigningKey, { mode: 0o600 });
+    writeFileSync(join(seedData, "agent.token"), seededAgentToken, { mode: 0o600 });
+    writeFileSync(join(seedData, "development-only.secret"), "must-not-cross", { mode: 0o600 });
+    await command(["tar", "czf", seedArchive, "-C", seedRoot, "data"]);
+    env["PREVIEW_SEED"] = seedArchive;
+    for (const secret of [seededOwnerKey, seededBearer, seededSigningKey, seededAgentToken])
+      secrets.add(secret);
+  }
   writeFileSync(join(deployment, "env"), "", { mode: 0o600 });
   await docker(["info", "--format", "{{.OSType}}"]);
   await docker(["compose", "version"]);
@@ -728,6 +786,7 @@ async function setup(): Promise<void> {
   const trustedScripts = resolve(tooling, "../..", "scripts");
   mkdirSync(trustedScripts, { recursive: true, mode: 0o700 });
   cpSync(join(repo, "scripts", "build-identity.ts"), join(trustedScripts, "build-identity.ts"));
+  cpSync(join(repo, "scripts", "preview-seed.ts"), join(trustedScripts, "preview-seed.ts"));
   if (!integrated) {
     const pin = readFileSync(pinPath, "utf8");
     requireThat(
@@ -1958,80 +2017,128 @@ console.log(JSON.stringify(rows.sort((a, b) => Number(a.pid) - Number(b.pid))));
     expectedBuild = deriveBuildIdentity(fixtureRepo, revision).build;
     baseIdentity["MANIFOLD_BUILD"] = expectedBuild;
     metrics["hostileRevision"] = revision;
-    await step("stable tooling contains hostile PR runtime inputs", async () => {
-      const deploymentResult = await up();
-      requireThat(
-        `${deploymentResult.out}\n${deploymentResult.err}`.includes(
-          "stable preview boundary: using trusted standalone Compose topology",
-        ) &&
+    await step(
+      "stable tooling contains hostile PR inputs and sanitizes representative seed",
+      async () => {
+        const deploymentResult = await up();
+        requireThat(
           `${deploymentResult.out}\n${deploymentResult.err}`.includes(
-            "stable preview boundary: building exact source with the trusted Dockerfile",
+            "stable preview boundary: using trusted standalone Compose topology",
+          ) &&
+            `${deploymentResult.out}\n${deploymentResult.err}`.includes(
+              "stable preview boundary: building exact source with the trusted Dockerfile",
+            ),
+          "deployment did not receipt both stable tooling substitutions",
+        );
+        requireThat(
+          `${deploymentResult.out}\n${deploymentResult.err}`.includes(
+            "seeded representative containers, container_folders and scene_docs; preview authority is fresh",
           ),
-        "deployment did not receipt both stable tooling substitutions",
-      );
-      requireThat(
-        !existsSync(hostileIdentityMarker),
-        "the PR-controlled build identity script executed on the host",
-      );
-      const ids = (
-        await docker(["ps", "-aq", "--filter", `label=com.docker.compose.project=${project()}`])
-      ).out
-        .trim()
-        .split(/\s+/)
-        .filter(Boolean);
-      requireThat(ids.length === 1, "hostile PR Compose added a service to the stable topology");
-      const boundary = JSON.parse(
-        (
-          await docker([
-            "inspect",
-            await containerId(),
-            "--format",
-            '{"HostConfig":{{json .HostConfig}},"Mounts":{{json .Mounts}}}',
-          ])
-        ).out,
-      ) as {
-        HostConfig: { Privileged: boolean };
-        Mounts: { Destination: string; Name?: string; RW: boolean; Type: string }[];
-      };
-      requireThat(
-        boundary.HostConfig.Privileged === false,
-        "hostile PR Compose acquired privileged authority",
-      );
-      requireThat(
-        boundary.Mounts.length === 1 &&
-          boundary.Mounts[0]?.Type === "volume" &&
-          boundary.Mounts[0].Name === volume() &&
-          boundary.Mounts[0].Destination === "/data" &&
-          boundary.Mounts[0].RW,
-        "stable topology mounted anything other than the named writable data volume",
-      );
-      await ready();
-      await acquireIdentity();
-      await processOwners(1000);
-      canvasId = ContainerResponseSchema.parse(
-        await act("core.index.createContainer", { name: `fresh-${number}` }),
-      ).container.id;
-      machineId = await onlineMachine();
-      await newTerminalProbe("fresh-developer");
-      await assertDataWrites();
-      const labels = JSON.parse(
-        (await docker(["image", "inspect", finalImage(), "--format", "{{json .Config.Labels}}"]))
-          .out,
-      ) as Record<string, string>;
-      const pin = readFileSync(pinPath, "utf8").trim();
-      requireThat(
-        labels["org.opencontainers.image.revision"] === revision,
-        "derived image revision does not identify the PR checkout",
-      );
-      requireThat(
-        labels["org.opencontainers.image.base.name"] === pin &&
-          labels["org.opencontainers.image.base.digest"] === pin.split("@")[1],
-        "derived OCI base provenance does not identify the independent environment digest",
-      );
-      closeClients();
-      await compose(finalImage(), ["down", "-v"]);
-      active = false;
-    });
+          "deployment did not receipt the representative seed allowlist",
+        );
+        requireThat(
+          !existsSync(hostileIdentityMarker),
+          "the PR-controlled build identity script executed on the host",
+        );
+        const ids = (
+          await docker(["ps", "-aq", "--filter", `label=com.docker.compose.project=${project()}`])
+        ).out
+          .trim()
+          .split(/\s+/)
+          .filter(Boolean);
+        requireThat(ids.length === 1, "hostile PR Compose added a service to the stable topology");
+        const boundary = JSON.parse(
+          (
+            await docker([
+              "inspect",
+              await containerId(),
+              "--format",
+              '{"HostConfig":{{json .HostConfig}},"Mounts":{{json .Mounts}}}',
+            ])
+          ).out,
+        ) as {
+          HostConfig: { Privileged: boolean };
+          Mounts: { Destination: string; Name?: string; RW: boolean; Type: string }[];
+        };
+        requireThat(
+          boundary.HostConfig.Privileged === false,
+          "hostile PR Compose acquired privileged authority",
+        );
+        requireThat(
+          boundary.Mounts.length === 1 &&
+            boundary.Mounts[0]?.Type === "volume" &&
+            boundary.Mounts[0].Name === volume() &&
+            boundary.Mounts[0].Destination === "/data" &&
+            boundary.Mounts[0].RW,
+          "stable topology mounted anything other than the named writable data volume",
+        );
+        await ready();
+        await acquireIdentity();
+        requireThat(ownerKey !== seededOwnerKey, "seeded preview reused the development owner key");
+        for (const credential of [seededOwnerKey, seededBearer]) {
+          const refused = await fetch(`${origin}/api/actions/core.index.read`, {
+            method: "POST",
+            headers: { authorization: `Bearer ${credential}`, "content-type": "application/json" },
+            body: "{}",
+            signal: AbortSignal.timeout(20_000),
+          });
+          requireThat(
+            refused.status === 401,
+            "a reusable development credential opened the preview",
+          );
+        }
+        const seededItems = IndexResponseSchema.parse(await act("core.index.read", {})).items;
+        requireThat(
+          seededItems.some(
+            (item) =>
+              item.kind === "container" &&
+              item.container.id === seededContainerId &&
+              item.container.name === "Representative seed",
+          ),
+          "allowlisted representative container data did not survive seeding",
+        );
+        await session(seededContainerId);
+        const seedFiles = JSON.parse(
+          await execBun(
+            `const text = async p => (await Bun.file(p).text()).trim();
+console.log(JSON.stringify({
+  signingFresh: await text('/data/preview-identity.key') !== ${JSON.stringify(seededSigningKey)},
+  agentFresh: await text('/data/agent.token') !== ${JSON.stringify(seededAgentToken)},
+  arbitraryAbsent: !(await Bun.file('/data/development-only.secret').exists())
+}));`,
+            true,
+          ),
+        ) as { signingFresh: boolean; agentFresh: boolean; arbitraryAbsent: boolean };
+        requireThat(
+          seedFiles.signingFresh && seedFiles.agentFresh && seedFiles.arbitraryAbsent,
+          "seeded preview retained development signing, agent or adjacent file authority",
+        );
+        await processOwners(1000);
+        canvasId = ContainerResponseSchema.parse(
+          await act("core.index.createContainer", { name: `fresh-${number}` }),
+        ).container.id;
+        machineId = await onlineMachine();
+        await newTerminalProbe("fresh-developer");
+        await assertDataWrites();
+        const labels = JSON.parse(
+          (await docker(["image", "inspect", finalImage(), "--format", "{{json .Config.Labels}}"]))
+            .out,
+        ) as Record<string, string>;
+        const pin = readFileSync(pinPath, "utf8").trim();
+        requireThat(
+          labels["org.opencontainers.image.revision"] === revision,
+          "derived image revision does not identify the PR checkout",
+        );
+        requireThat(
+          labels["org.opencontainers.image.base.name"] === pin &&
+            labels["org.opencontainers.image.base.digest"] === pin.split("@")[1],
+          "derived OCI base provenance does not identify the independent environment digest",
+        );
+        closeClients();
+        await compose(finalImage(), ["down", "-v"]);
+        active = false;
+      },
+    );
     await step("real root hub, root agents, scene and SDK terminal before migration", async () => {
       appUid = 0;
       await compose(baseImage(), ["up", "-d", "--no-build", "manifold"]);
