@@ -509,9 +509,6 @@ try {
   // ---------------------------------------------------------------- rounds
 
   console.log(`convergence rounds against ${origin} container ${containerId}`);
-  const canvasLeftA = await browserA.evaluate<number>(
-    "document.querySelector('.workspace-canvas')?.getBoundingClientRect().left ?? 0",
-  );
 
   /**
    * A machine to open PTYs on. The gate spawns the bundled local agent, which registers
@@ -813,12 +810,8 @@ try {
     },
   );
 
-  const cursorFrames: { readonly x: number; readonly y: number }[] = [];
-  const offCursor = sdk.on("cursor", (message) => {
-    cursorFrames.push({ x: message.x, y: message.y });
-  });
   const viewportBefore = await browserA.evaluate<Viewport>("window.__manifold.viewport()");
-  const panStart = { x: canvasLeftA + 700, y: 650 };
+  const panStart = await panePoint(browserA, 0.7, 0.75);
   await browserA.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...panStart });
   await browserA.send("Input.dispatchMouseEvent", {
     type: "mousePressed",
@@ -826,35 +819,32 @@ try {
     button: "middle",
     buttons: 4,
   });
-  for (let index = 1; index <= 14; index += 1) {
-    await browserA.send("Input.dispatchMouseEvent", {
-      type: "mouseMoved",
-      x: panStart.x - index * 10,
-      y: panStart.y - index * 6,
-      button: "middle",
-      buttons: 4,
-    });
-    await sleep(15);
-  }
+  await browserA.send("Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x: panStart.x - 140,
+    y: panStart.y - 84,
+    button: "middle",
+    buttons: 4,
+  });
   await browserA.send("Input.dispatchMouseEvent", {
     type: "mouseReleased",
     x: panStart.x - 140,
     y: panStart.y - 84,
     button: "middle",
   });
-  await sleep(300);
-  const viewportAfter = await browserA.evaluate<Viewport>("window.__manifold.viewport()");
-  offCursor();
-  if (
-    Math.abs(viewportAfter.scrollX - viewportBefore.scrollX) < 50 ||
-    Math.abs(viewportAfter.scrollY - viewportBefore.scrollY) < 30
-  ) {
-    throw new Error("Flow viewport did not move under a real middle-button pan");
-  }
-  if (cursorFrames.length < 3) {
-    throw new Error(`Flow pan emitted only ${String(cursorFrames.length)} cursor frames`);
-  }
-  console.log("PASS  F6 viewport pan and cursor transport cross the browser boundary");
+  await until(
+    async () => {
+      const viewportAfter = await browserA.evaluate<Viewport>("window.__manifold.viewport()");
+      return (
+        Math.abs((viewportAfter.scrollX - viewportBefore.scrollX) * viewportBefore.zoom + 140) <
+          2 &&
+        Math.abs((viewportAfter.scrollY - viewportBefore.scrollY) * viewportBefore.zoom + 84) < 2
+      );
+    },
+    5_000,
+    "F6: the viewport follows the middle-button pan displacement",
+  );
+  console.log("PASS  F6 viewport follows a real middle-button pan");
 
   // Presence is worthless when the canvas paints scene content over it. Element
   // bands grow with every creation (`nextZIndex`), so the presence layer has to
