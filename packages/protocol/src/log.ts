@@ -72,6 +72,7 @@ export const LOG_EVENTS = [
   "machine_drain_timeout",
   "machine_forgotten",
   "machine_hello_timeout",
+  "machine_job_refusal",
   "machine_liveness_timeout",
   "machine_malformed_frame",
   "machine_name_conflict",
