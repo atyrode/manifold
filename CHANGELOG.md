@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.17.0] - 2026-09-16
+
+### Added
+
+- Scene elements now retain the authenticated principal and time of their latest accepted edit, and the debug inspector shows that durable authorship summary while older documents remain explicitly unknown. (#137, #661)
+- Workspace owners can now pause and resume a principal’s access from Sessions without revoking credentials, closing connections, or stopping work; resumed principals continue with the same credential and grants. (#164, #665)
+- Bearer-only callers can now create terminals through `core.terminals.create`, receive a durable terminal address after machine acknowledgement, observe it through existing indexes and events, and attach later without holding a session socket during creation. (#185, #668)
+- Machine inventory reads now retain the latest identifiable rejected agent dial with its close code and hub timestamp. Repeated refusals replace the diagnostic, restarts and credential changes retain it, and a successful machine admission clears it, so operators and plugins can distinguish a currently rejected offline machine without reading the agent journal. (#191, #673)
+- Terminals now expose truthful, monotonic readiness evidence when an application explicitly declares readiness or a shell enables bracketed paste, while uninstrumented programs remain honestly unknown. (#203, #677)
+- Plugins now suggest workspace panels when they are enabled, and each plugin's detail sheet lets you add any of its missing panels without changing the rest of your arranged layout. (#210, #682)
+
+### Changed
+
+- The inspector now explains its technical sections, groups equivalent authority grants, resolves principal names when permitted, explains inert path hops, and distinguishes plugin claims from element authorship. (#139, #663)
+
+### Fixed
+
+- Third-party tile-tree disciplines now retain their declared identity through census, placement, terminal re-homing, removal, and empty-tree retirement instead of falling back to the shipped composition lifecycle. (#134, #658)
+- Terminals opened into tiled compositions now start at the first viewer’s measured size instead of an opener-supplied guess; unseen pending terminals time out without starting a process. (#207, #681)
+- Numbered previews now copy only representative folders, containers, and scene documents from an optional seed while generating fresh preview authority, instead of inheriting development credentials, grants, plugin state, or adjacent secret files. (#300, #688)
+- Linux jobs preserve the intended files and directories when passing descriptors into a sandbox, preventing intermittent named-output failures and broken parent/child output handoffs caused by descriptor-number collisions. (#605, #654)
+- Production promotion now requires an authenticated full-state checkpoint and restores it with the exact previous release when a one-way database migration makes code-only rollback unsafe. (#633, #687)
+- Nix packages build against the current locked dependencies without losing workspace command entrypoints. Cold dependency rebuilds and compiled package smoke checks now cover the supported Linux and macOS targets before integration, so a cached dependency tree cannot hide stale packaging hashes. (#667, #669)
+
 ## [0.16.2] - 2026-09-15
 
 ### Changed
