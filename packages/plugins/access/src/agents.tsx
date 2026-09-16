@@ -394,8 +394,6 @@ function AgentControls({
       }
       const terminal = await host.client.openTerminal({
         elementId: crypto.randomUUID(),
-        cols: 100,
-        rows: 30,
         machineId: launch.data.destination.machineId,
         runtime: launch.data.runtime,
         placement: "tile",

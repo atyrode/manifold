@@ -335,9 +335,21 @@ function openInComposition(fixture: FixtureCore, containerId: string): string {
   fixture.broker.open(channel, {
     type: "terminal_open",
     elementId: `open-${fixture.machine.sent.length}`,
+    placement: "tile",
+  });
+  const pending = Object.values(roomFor(fixture, containerId).tileLayout() ?? {}).find(
+    (tile) =>
+      tile.dir === null &&
+      tile.ref?.kind === "terminal" &&
+      fixture.store.getTerminal(tile.ref.terminalId) === null,
+  );
+  if (pending?.dir !== null || pending.ref?.kind !== "terminal")
+    throw new Error("missing pending terminal tile");
+  fixture.broker.resize(channel, {
+    type: "terminal_resize",
+    terminalId: pending.ref.terminalId,
     cols: 80,
     rows: 24,
-    placement: "tile",
   });
   const terminalId = lastTerminal(fixture);
   fixture.broker.onCreated(fixture.machine.machineId, terminalId);

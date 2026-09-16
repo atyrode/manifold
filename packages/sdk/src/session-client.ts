@@ -1301,9 +1301,10 @@ export class SessionClient {
    * token and the id the caller authors its own element under — a `portal` onto
    * `terminal.containerId`, never a terminal element, because a canvas only ever references the
    * container a terminal lives in. `placement: "tile"` is how a TILED container births
-   * one: that container IS the home, so the server writes the tile leaf itself and the
-   * caller authors nothing. Read the leaf from `layout()` (`tileIdForRef`) once this
-   * resolves; the doc update precedes the confirmation on the same socket.
+   * one: that container IS the home, so the server writes the tile leaf first and waits for
+   * the first measured viewer to choose the PTY geometry. The caller authors nothing and
+   * omits `cols`/`rows`. Read the leaf from `layout()` (`tileIdForRef`) while this promise
+   * waits; resolving means the measured PTY is running.
    *
    * `program` names what the PTY execs instead of the machine's shell, and `env` is merged
    * under the fixed `MANIFOLD_*` keys (issue #192). Both ride the one `terminal_open` frame,
@@ -1315,18 +1316,18 @@ export class SessionClient {
   openTerminal(
     opts: {
       elementId: string;
-      cols: number;
-      rows: number;
-      runtime?: TerminalRuntime;
       machineId?: string;
-      placement?: "tile";
       program?: TerminalProgram;
       env?: TerminalEnv;
       cwd?: string;
       timeoutMs?: number;
     } & (
       { runtime: TerminalRuntime; program?: never; env?: never; cwd?: never } | { runtime?: never }
-    ),
+    ) &
+      (
+        | { placement: "tile"; cols?: never; rows?: never }
+        | { placement?: never; cols: number; rows: number }
+      ),
   ): Promise<TerminalInfo> {
     const { promise, resolve, reject } = Promise.withResolvers<TerminalInfo>();
     const settle = (outcome: () => void): void => {
@@ -1360,8 +1361,8 @@ export class SessionClient {
     this.send({
       type: "terminal_open",
       elementId: opts.elementId,
-      cols: opts.cols,
-      rows: opts.rows,
+      ...(opts.cols === undefined ? {} : { cols: opts.cols }),
+      ...(opts.rows === undefined ? {} : { rows: opts.rows }),
       ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
       ...(opts.machineId !== undefined ? { machineId: opts.machineId } : {}),
       ...(opts.placement !== undefined ? { placement: opts.placement } : {}),

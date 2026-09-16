@@ -82,6 +82,10 @@ const geometry = {
   cols: z.number().int().positive().max(1000),
   rows: z.number().int().positive().max(1000),
 };
+const optionalGeometry = {
+  cols: geometry.cols.optional(),
+  rows: geometry.rows.optional(),
+};
 
 /**
  * Eight doors, three authorities, and two scopes — every one of them chosen to reproduce the
@@ -127,7 +131,7 @@ export const terminalsActions = [
       containerId: z.string().min(1),
       /** The opener's correlation token, echoed on every reply and error. */
       elementId: z.string().min(1),
-      ...geometry,
+      ...optionalGeometry,
       /** The working directory passed unchanged to the terminal owner. */
       cwd: TerminalCwdSchema.optional(),
       /** An explicit machine choice; absent leaves the fleet rule to the broker. */
@@ -160,7 +164,7 @@ export const terminalsActions = [
       containerId: z.string().min(1),
       /** Correlation id and, for canvas placement, the id a caller may author a portal under. */
       elementId: z.string().min(1),
-      ...geometry,
+      ...optionalGeometry,
       cwd: TerminalCwdSchema.optional(),
       machineId: z.string().min(1).optional(),
       placement: z.literal("tile").optional(),

@@ -26,7 +26,7 @@ import { STREAM_CLIENT_BODIES, STREAM_SERVER_BODIES } from "./stream.ts";
  * FRAME GRAMMAR (v36) — one socket per tab, many rooms or one roomless observer. Every
  * frame is either connection-level or channel-level:
  *
- *   connection-level   client → server  {"type":"observe","token":"…","protocolVersion":36}
+ *   connection-level   client → server  {"type":"observe","token":"…","protocolVersion":37}
  *                      client → server  {"type":"pong"}
  *                      client → server  {"type":"subscribe","topics":[…]}
  *                      server → client  {"type":"observed"}
@@ -178,6 +178,10 @@ const terminalGeometry = {
   cols: z.number().int().positive().max(1000),
   rows: z.number().int().positive().max(1000),
 };
+const optionalTerminalGeometry = {
+  cols: terminalGeometry.cols.optional(),
+  rows: terminalGeometry.rows.optional(),
+};
 export const GestureFields = {
   kind: GestureKindSchema,
   phase: z.enum(["active", "end"]),
@@ -255,7 +259,7 @@ const CLIENT_BODIES = {
      * nothing, so there this is a pure ref, echoed back as `terminal_opened.ref`.
      */
     elementId: z.string().min(1),
-    ...terminalGeometry,
+    ...optionalTerminalGeometry,
     cwd: TerminalCwdSchema.optional(),
     machineId: z.string().optional(),
     /**

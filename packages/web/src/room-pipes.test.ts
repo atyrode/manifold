@@ -63,8 +63,6 @@ describe("panel session handle", () => {
 
     const born = await handle.openTerminal({
       elementId: "e1",
-      cols: 80,
-      rows: 24,
       placement: "tile",
     });
     handle.sendTerminalInput("t2", "ls\n");

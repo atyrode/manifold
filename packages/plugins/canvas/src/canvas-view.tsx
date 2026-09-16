@@ -1278,13 +1278,22 @@ export function CanvasView({
       if (target !== null) facet?.rememberMachine(containerId, target.id);
       const elementId = crypto.randomUUID();
       try {
-        const terminal = await client.openTerminal({
-          elementId,
-          cols: 80,
-          rows: 24,
-          ...(target === null ? {} : { machineId: target.id }),
-          ...(runtime === undefined ? {} : { runtime }),
-        });
+        const destination = target === null ? {} : { machineId: target.id };
+        const terminal =
+          runtime === undefined
+            ? await client.openTerminal({
+                elementId,
+                cols: 80,
+                rows: 24,
+                ...destination,
+              })
+            : await client.openTerminal({
+                elementId,
+                cols: 80,
+                rows: 24,
+                ...destination,
+                runtime,
+              });
         // The server created the terminal's home composition with its PTY, so the
         // element this canvas authors is a portal onto that home: on a canvas a
         // terminal IS a solo composition wearing its own chrome.

@@ -136,13 +136,18 @@ interface PendingOpen {
   machineId: string;
   createdBy: string;
   createdAt: number;
-  cols: number;
-  rows: number;
+  cols: number | null;
+  rows: number | null;
   opener: SessionChannel | null;
   resolve: (outcome: TerminalCreateOutcome) => void;
+  auth: AuthContext;
+  message: TerminalOpen;
+  traceId?: number;
   agentPrincipalId: string | null;
   cancelDeadline: (() => void) | null;
-  launchRecipe: TerminalLaunchRecipe;
+  launchRecipe: TerminalLaunchRecipe | null;
+  placementId: string | null;
+  dispatched: boolean;
   runId?: string;
 }
 
@@ -279,6 +284,8 @@ export class TerminalBroker implements TerminalPlacementPort {
     if (pending.agentPrincipalId !== null)
       this.auth.revokeIssuedPrincipal(pending.agentPrincipalId, pending.createdBy);
     this.jobs?.cancelTerminal(pending.terminalId);
+    if (pending.placementId !== null)
+      this.rooms.get(pending.homeId)?.removeTileLeafById(pending.placementId);
   }
 
   constructor(
@@ -856,6 +863,16 @@ export class TerminalBroker implements TerminalPlacementPort {
       );
       return;
     }
+    const hasCols = message.cols !== undefined;
+    const hasRows = message.rows !== undefined;
+    if (hasCols !== hasRows) {
+      refuse("forbidden", "cols and rows must be supplied together");
+      return;
+    }
+    if (placement === "element" && !hasCols) {
+      refuse("forbidden", "element placement requires cols and rows");
+      return;
+    }
     const machine = this.selectMachine(message.machineId);
     if (machine === null) {
       refuse("no_machine", "no unambiguous online machine");
@@ -882,34 +899,122 @@ export class TerminalBroker implements TerminalPlacementPort {
     /*
       The home is decided before the PTY exists because both its credential and
       `MANIFOLD_CONTAINER` must name the composition it lives in from the first byte.
+      A tiled home also receives its leaf now: that is the measurable object whose first
+      real viewer supplies the dimensions required to create the PTY.
     */
     const homeId = placement === "tile" ? containerId : this.runtime.newId();
+    const placementId =
+      placement === "tile"
+        ? (this.rooms.get(homeId)?.placeTerminalTile(terminalId, null, null) ?? null)
+        : null;
+    if (placement === "tile" && placementId === null) {
+      refuse("conflict", "terminal home could not be placed");
+      return;
+    }
+    const pending: PendingOpen = {
+      terminalId,
+      containerId,
+      homeId,
+      ref: message.elementId,
+      placement,
+      machineId: machine.machineId,
+      createdBy: auth.principal.id,
+      createdAt: this.runtime.now(),
+      cols: null,
+      rows: null,
+      opener,
+      resolve,
+      auth,
+      message,
+      ...(traceId === undefined ? {} : { traceId }),
+      agentPrincipalId: null,
+      cancelDeadline: null,
+      launchRecipe: null,
+      placementId,
+      dispatched: false,
+    };
+    this.pendingOpens.set(terminalId, pending);
+    pending.cancelDeadline = this.timers.schedule(() => {
+      pending.cancelDeadline = null;
+      if (this.pendingOpens.get(terminalId) !== pending) return;
+      this.pendingOpens.delete(terminalId);
+      if (pending.dispatched)
+        this.machines.get(pending.machineId)?.send({ type: "kill", terminalId });
+      this.abandonOpen(pending);
+      this.answerOpen(
+        pending.opener,
+        pending.resolve,
+        "no_machine",
+        pending.dispatched ? "terminal creation timed out" : "terminal fit timed out",
+        pending.ref,
+      );
+      this.logger.warn("terminal_create_timeout", {
+        machineId: pending.machineId,
+        terminalId,
+        awaitingFit: !pending.dispatched,
+      });
+      this.rooms.evictIfIdle(pending.containerId);
+    }, CREATE_DEADLINE_MS);
+    if (placement === "element") {
+      this.dispatchOpen(pending, message.cols!, message.rows!);
+    }
+  }
+
+  private rejectPendingOpen(pending: PendingOpen, code: ErrorCode, reason: string): void {
+    if (this.pendingOpens.get(pending.terminalId) !== pending) return;
+    pending.cancelDeadline?.();
+    this.pendingOpens.delete(pending.terminalId);
+    this.abandonOpen(pending);
+    this.answerOpen(pending.opener, pending.resolve, code, reason, pending.ref);
+    this.rooms.evictIfIdle(pending.containerId);
+  }
+
+  /**
+   * Latches a pending terminal's first measured geometry and only then admits and creates
+   * its PTY. JavaScript's serialized message handling makes the `dispatched` flip the
+   * deterministic winner when several viewers race; later measurements are ignored until
+   * the running terminal's normal controller-owned resize lifecycle begins.
+   */
+  private dispatchOpen(pending: PendingOpen, cols: number, rows: number): void {
+    if (pending.dispatched || this.pendingOpens.get(pending.terminalId) !== pending) return;
+    pending.dispatched = true;
+    const machine = this.machines.get(pending.machineId);
+    if (machine === undefined) {
+      this.rejectPendingOpen(pending, "no_machine", "machine connection unavailable");
+      return;
+    }
+    const { message } = pending;
     let runtime: Extract<ServerToAgentMessage, { type: "create" }>["runtime"];
     if (message.runtime) {
       try {
-        if (!this.jobs || !machine.terminalHostId || traceId === undefined)
+        if (!this.jobs || !machine.terminalHostId || pending.traceId === undefined)
           throw new Error("terminal_runtime_unsupported");
         if (message.runtime.launchBinding !== undefined) {
           if ((machine.protocolVersion ?? 0) < 32)
             throw new ServiceError("forbidden", "run_launch_protocol_unsupported");
           this.jobs.assertRunLaunchSupported(machine.machineId);
         }
-        const privateEnv = this.consumeRunLaunch(message.runtime, auth, containerId);
+        const privateEnv = this.consumeRunLaunch(
+          message.runtime,
+          pending.auth,
+          pending.containerId,
+        );
         runtime = this.jobs.admitTerminal(
-          auth,
+          pending.auth,
           message.runtime,
           machine.machineId,
           {
-            terminalId,
+            terminalId: pending.terminalId,
             terminalHostId: machine.terminalHostId,
-            containerId: homeId,
+            containerId: pending.homeId,
             ...(privateEnv ? { runId: privateEnv.MANIFOLD_RUN_ID } : {}),
           },
-          traceId,
+          pending.traceId,
           privateEnv,
         );
       } catch (error) {
-        refuse(
+        this.rejectPendingOpen(
+          pending,
           "forbidden",
           error instanceof ServiceError &&
             (error.message === "run_launch_protocol_unsupported" ||
@@ -922,102 +1027,73 @@ export class TerminalBroker implements TerminalPlacementPort {
     }
     const grant = runtime
       ? null
-      : this.auth.mintSessionAgentToken(terminalId, homeId, auth.principal.id);
-    const pending: PendingOpen = {
-      terminalId,
-      containerId,
-      homeId,
-      ref: message.elementId,
-      placement,
-      machineId: machine.machineId,
-      createdBy: auth.principal.id,
-      createdAt: this.runtime.now(),
-      cols: message.cols,
-      rows: message.rows,
-      opener,
-      resolve,
-      agentPrincipalId: grant?.principal.id ?? null,
-      cancelDeadline: null,
-      ...(runtime?.request.terminal?.runId === undefined
-        ? {}
-        : { runId: runtime.request.terminal.runId }),
-      launchRecipe: {
-        cols: message.cols,
-        rows: message.rows,
-        ...(message.cwd === undefined ? {} : { cwd: message.cwd }),
-        env: message.env ?? {},
-        ...(message.program === undefined ? {} : { program: message.program }),
-        ...(message.runtime === undefined ? {} : { runtime: message.runtime }),
-        ...(placement === "tile" ? {} : { elementId: message.elementId }),
-      },
+      : this.auth.mintSessionAgentToken(
+          pending.terminalId,
+          pending.homeId,
+          pending.auth.principal.id,
+        );
+    pending.cols = cols;
+    pending.rows = rows;
+    pending.agentPrincipalId = grant?.principal.id ?? null;
+    pending.launchRecipe = {
+      cols,
+      rows,
+      ...(message.cwd === undefined ? {} : { cwd: message.cwd }),
+      env: message.env ?? {},
+      ...(message.program === undefined ? {} : { program: message.program }),
+      ...(message.runtime === undefined ? {} : { runtime: message.runtime }),
+      ...(pending.placement === "tile" ? {} : { elementId: message.elementId }),
     };
-    this.pendingOpens.set(terminalId, pending);
-    pending.cancelDeadline = this.timers.schedule(() => {
-      pending.cancelDeadline = null;
-      if (this.pendingOpens.get(terminalId) !== pending) return;
-      this.pendingOpens.delete(terminalId);
-      this.machines.get(machine.machineId)?.send({ type: "kill", terminalId });
-      this.abandonOpen(pending);
-      this.answerOpen(
-        pending.opener,
-        pending.resolve,
-        "no_machine",
-        "terminal creation timed out",
-        pending.ref,
-      );
-      this.logger.warn("terminal_create_timeout", {
-        machineId: machine.machineId,
-        terminalId,
-      });
-      this.rooms.evictIfIdle(pending.containerId);
-    }, CREATE_DEADLINE_MS);
+    if (runtime?.request.terminal?.runId !== undefined)
+      pending.runId = runtime.request.terminal.runId;
     const sent = machine.send({
       type: "create",
-      terminalId,
-      cols: message.cols,
-      rows: message.rows,
+      terminalId: pending.terminalId,
+      cols,
+      rows,
       ...(message.cwd === undefined ? {} : { cwd: message.cwd }),
       env: runtime
         ? {}
         : {
             ...message.env,
             MANIFOLD_URL: this.publicUrl(),
-            MANIFOLD_CONTAINER: homeId,
-            ...(placement === "tile" ? {} : { MANIFOLD_ELEMENT: message.elementId }),
+            MANIFOLD_CONTAINER: pending.homeId,
+            ...(pending.placement === "tile" ? {} : { MANIFOLD_ELEMENT: message.elementId }),
             MANIFOLD_TOKEN: grant!.token,
           },
       ...(message.program === undefined ? {} : { program: message.program }),
       ...(runtime ? { runtime } : {}),
     });
-    if (!sent) {
-      pending.cancelDeadline?.();
-      this.pendingOpens.delete(terminalId);
-      this.abandonOpen(pending);
-      refuse("no_machine", "machine connection unavailable");
-      this.rooms.evictIfIdle(pending.containerId);
-    }
+    if (!sent) this.rejectPendingOpen(pending, "no_machine", "machine connection unavailable");
   }
 
   /**
    * Commits a created PTY, replies to its opener, and publishes durable lifecycle state.
    *
-   * This is where `homed: "eager"` is actually paid for: with the PTY in hand, the terminal's
-   * home leaf is written before its terminal row exists, so there is no instant at which a
-   * live terminal has nowhere to live. A composition opener IS the home and only needs a
-   * leaf; a canvas opener gets a whole solo composition, and its own portal element —
-   * authored client-side under the ref it chose — points at the id this reply hands back.
+   * This is where `homed: "eager"` is actually paid for. A composition opener's leaf was
+   * written before PTY birth so a viewer could measure it; this commit verifies that leaf
+   * still exists. A canvas opener gets a whole solo composition, and its own portal element
+   * — authored client-side under the ref it chose — points at the id this reply hands back.
    */
   onCreated(machineId: string, terminalId: string): void {
     const pending = this.pendingOpens.get(terminalId);
     if (pending === undefined || pending.machineId !== machineId) return;
     this.pendingOpens.delete(terminalId);
     pending.cancelDeadline?.();
+    const cols = pending.cols;
+    const rows = pending.rows;
+    const launchRecipe = pending.launchRecipe;
     const home =
-      pending.placement === "tile"
-        ? (this.rooms.get(pending.homeId)?.placeTerminalTile(terminalId, null, null) ?? null)
-        : (this.placement?.createHome(pending.homeId, terminalId, this.bornLabel(machineId)) ??
-          null);
-    if (home === null) {
+      cols === null || rows === null || launchRecipe === null
+        ? null
+        : pending.placement === "tile"
+          ? pending.placementId !== null &&
+            this.rooms.get(pending.homeId)?.homesTerminal(terminalId)
+            ? pending.placementId
+            : null
+          : (this.placement?.createHome(pending.homeId, terminalId, this.bornLabel(machineId)) ??
+            null);
+    if (home === null || cols === null || rows === null || launchRecipe === null) {
       // Nothing durable exists yet, so the PTY is the only thing to undo.
       this.machines.get(machineId)?.send({ type: "kill", terminalId });
       this.abandonOpen(pending);
@@ -1042,8 +1118,8 @@ export class TerminalBroker implements TerminalPlacementPort {
       createdBy: pending.createdBy,
       agentPrincipalId: pending.agentPrincipalId,
       createdAt: pending.createdAt,
-      ...(pending.launchRecipe.cwd === undefined ? {} : { cwd: pending.launchRecipe.cwd }),
-      launchRecipe: pending.launchRecipe,
+      ...(launchRecipe.cwd === undefined ? {} : { cwd: launchRecipe.cwd }),
+      launchRecipe,
       ...(pending.runId === undefined ? {} : { runId: pending.runId }),
     });
     const info: TerminalInfo = {
@@ -1054,11 +1130,11 @@ export class TerminalBroker implements TerminalPlacementPort {
       status: "running",
       exitCode: null,
       readiness: null,
-      cols: pending.cols,
-      rows: pending.rows,
+      cols,
+      rows,
       controllerId: pending.createdBy,
       createdBy: pending.createdBy,
-      ...(pending.launchRecipe.cwd === undefined ? {} : { cwd: pending.launchRecipe.cwd }),
+      ...(launchRecipe.cwd === undefined ? {} : { cwd: launchRecipe.cwd }),
     };
     this.terminals.set(terminalId, {
       info,
@@ -1342,8 +1418,20 @@ export class TerminalBroker implements TerminalPlacementPort {
     }
   }
 
-  /** Forwards resize from the controller and broadcasts the new shared geometry. */
+  /**
+   * Uses the first measured resize to birth a pending tiled PTY. Once running, resize
+   * returns to the controller-owned shared-grid contract.
+   */
   resize(channel: SessionChannel, message: TerminalResize): void {
+    const pending = this.pendingOpens.get(message.terminalId);
+    if (
+      pending !== undefined &&
+      pending.placement === "tile" &&
+      pending.homeId === channel.containerId
+    ) {
+      if (!pending.dispatched) this.dispatchOpen(pending, message.cols, message.rows);
+      return;
+    }
     const terminal = this.controllerTerminal(channel, message.terminalId);
     if (terminal === null) return;
     const machine = this.machines.get(terminal.info.machineId);
@@ -1863,6 +1951,22 @@ export class TerminalBroker implements TerminalPlacementPort {
    * viewer's terminal listing drop the row at once instead of at its next resync.
    */
   reapTerminal(terminalId: string, reason: "killed" | "exited" = "killed"): void {
+    const pending = this.pendingOpens.get(terminalId);
+    if (pending !== undefined) {
+      pending.cancelDeadline?.();
+      this.pendingOpens.delete(terminalId);
+      if (pending.dispatched)
+        this.machines.get(pending.machineId)?.send({ type: "kill", terminalId });
+      this.abandonOpen(pending);
+      this.answerOpen(
+        pending.opener,
+        pending.resolve,
+        "conflict",
+        "terminal creation cancelled",
+        pending.ref,
+      );
+      return;
+    }
     const terminal = this.terminals.get(terminalId);
     if (terminal === undefined) return;
     this.finishRestart(terminalId, "not_found");

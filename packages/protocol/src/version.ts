@@ -1,5 +1,5 @@
 /** Wire revision; session joins require the current version (close 4409 otherwise). */
-export const PROTOCOL_VERSION = 36;
+export const PROTOCOL_VERSION = 37;
 
 /**
  * Machine-channel acceptance set. Agents are long-lived (they hold PTYs and
@@ -358,9 +358,15 @@ export const PROTOCOL_VERSION = 36;
  * ADDS 36. Retained readiness also appears inside the terminal host's strict inventory, so the
  * terminal-host IPC bumps to version 3; a retained v2 host remains usable but cannot provide
  * readiness evidence until separately upgraded. The instance wire is unchanged and adds 36.
+ *
+ * v36 -> v37: FIRST-VIEWER TERMINAL FIT (issue #207). A tiled `terminal_open` may omit
+ * geometry; the server publishes its tile first and starts the PTY only after the first
+ * measured viewer sends `terminal_resize`. Element placement retains required opener-owned
+ * geometry. Machine, terminal-host, and instance frames are unchanged, so compatible machine
+ * and instance acceptance sets add 37 without restarting retained owners.
  */
 export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  30, 31, 32, 33, 34, 35, 36,
+  30, 31, 32, 33, 34, 35, 36, 37,
 ]);
 
 /**
@@ -405,10 +411,10 @@ export const TERMINAL_RESTART_PROTOCOL_VERSION = 33;
  * never receives a machine ref, so the instance wire is unchanged.
  * v26: image-aware terminal viewers; instance frames remain unchanged.
  * v27: governed jobs expand the closed share resource/capability vocabularies (ADR 0033);
- * instance compatibility resets to protocol 27. v28 through v35 leave that wire unchanged.
+ * instance compatibility resets to protocol 27. v28 through v37 leave that wire unchanged.
  */
 export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  27, 28, 29, 30, 31, 32, 33, 34, 35, 36,
+  27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37,
 ]);
 
 /**

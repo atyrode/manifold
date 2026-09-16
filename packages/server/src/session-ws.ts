@@ -1053,8 +1053,8 @@ export class SessionGateway {
         void this.dispatchPolicy(connection, peer, "core.terminals.open", message.elementId, {
           containerId: peer.containerId,
           elementId: message.elementId,
-          cols: message.cols,
-          rows: message.rows,
+          ...(message.cols === undefined ? {} : { cols: message.cols }),
+          ...(message.rows === undefined ? {} : { rows: message.rows }),
           ...(message.cwd === undefined ? {} : { cwd: message.cwd }),
           ...(message.machineId === undefined ? {} : { machineId: message.machineId }),
           ...(message.placement === undefined ? {} : { placement: message.placement }),

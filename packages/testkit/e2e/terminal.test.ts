@@ -31,6 +31,27 @@ const COUNTER_COMMAND =
   'spin=0; while [ "$spin" -lt 2000 ]; do spin=$((spin + 1)); done; ' +
   "i=$((i + 1)); done\n";
 
+async function fitPendingTerminal(
+  client: SessionClient,
+  cols: number,
+  rows: number,
+): Promise<string> {
+  const findPending = (): string | null => {
+    const tile = Object.values(client.layout() ?? {}).find(
+      (candidate) =>
+        candidate.dir === null &&
+        candidate.ref?.kind === "terminal" &&
+        !client.terminals.has(candidate.ref.terminalId),
+    );
+    return tile?.dir === null && tile.ref?.kind === "terminal" ? tile.ref.terminalId : null;
+  };
+  await waitFor(() => findPending() !== null, 10_000, 20);
+  const terminalId = findPending();
+  if (terminalId === null) throw new Error("pending terminal tile disappeared before fit");
+  client.resizeTerminal(terminalId, cols, rows);
+  return terminalId;
+}
+
 test("terminal readiness follows opened and identifies an application declaration", async () => {
   const servers: TestServer[] = [];
   const agents: TestAgent[] = [];
@@ -62,10 +83,8 @@ test("terminal readiness follows opened and identifies an application declaratio
     });
     const ready = nextMessage(client, "terminal_event", 10_000, (event) => event.kind === "ready");
     const shell = Bun.which("sh") ?? "/bin/sh";
-    const terminal = await client.openTerminal({
+    const opening = client.openTerminal({
       elementId: "ready-open",
-      cols: 80,
-      rows: 24,
       placement: "tile",
       program: {
         argv: [
@@ -75,6 +94,9 @@ test("terminal readiness follows opened and identifies an application declaratio
         ],
       },
     });
+    const pendingId = await fitPendingTerminal(client, 80, 24);
+    const terminal = await opening;
+    expect(terminal.id).toBe(pendingId);
     expect(terminal.readiness).toBeNull();
     expect(await ready).toMatchObject({
       terminalId: terminal.id,
@@ -664,12 +686,13 @@ test("the Machines + on a view births a terminal the server places as a tile, an
     // A view has no canvas to author an element on: the "+" hands placement to the
     // container, and the leaf the server wrote is read back out of the layout tree —
     // the terminal record carries no placement id to trust.
-    const terminal = await client.openTerminal({
+    const opening = client.openTerminal({
       elementId: "correlation-only",
       placement: "tile",
-      cols: 80,
-      rows: 24,
     });
+    const pendingId = await fitPendingTerminal(client, 117, 33);
+    const terminal = await opening;
+    expect(terminal).toMatchObject({ id: pendingId, cols: 117, rows: 33 });
     expect(terminal.status).toBe("running");
     expect(terminal.containerId).toBe(view.id);
     expect(terminal.controllerId).toBe(grant.principal.id);

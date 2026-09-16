@@ -1561,10 +1561,12 @@ which is
 exactly what [One authoritative implementation](#one-authoritative-implementation) forbids, so the cutover took the channel's answer rather than the route's.
 `kill` is `cleanup: true` (removal survives a disable), the rename broadcasts
 `terminal_event { kind:"renamed", name }` into the home, and the kill sweeps the terminal, its home,
-and every portal onto that home. `open` and `create` accept `{ containerId, elementId, cols, rows,
-machineId?, placement?, program?, cwd?, env? }` and carry `terminals:spawn` at
-`scope: "container"`, because a terminal is born inside one container and the per-terminal agent
-token minted for it is container-scoped with that cap. `open` is the session frame's policy gate;
+and every portal onto that home. `open` and `create` accept `{ containerId, elementId, cols?,
+rows?, machineId?, placement?, program?, cwd?, env? }` and carry `terminals:spawn` at
+`scope: "container"`. `cols` and `rows` are a required pair for element placement and omitted
+for tile placement, whose first measured viewer owns the initial geometry. A terminal is born
+inside one container and the per-terminal agent token minted for it is container-scoped with
+that cap. `open` is the session frame's policy gate;
 `create` is the HTTP-reachable birth operation and returns `{ terminal, uri }` only after durable
 commit. A workspace-graded creation door would have quietly ended agents spawning their own
 terminals.
@@ -2999,14 +3001,16 @@ files, durable image storage, download URLs or arbitrary file transfer; that sep
 
 ### Terminals over the session channel
 
-- `terminal_open { elementId, cols, rows, cwd?, machineId?, placement?, program?, runtime?, env? }` →
-  server targets `machineId` when given (error `no_machine` if it is unknown or offline); without
-  it the server falls back to the sole online machine (error `no_machine` when zero or several are
-  online — clients with a picker, like the web menu, pass `machineId` explicitly).
-  Discipline decides who authors the placement, and a mismatch is refused (`conflict`)
-  rather than spawning a PTY no renderer would ever show: on a CANVAS the opener authors the
-  element (`placement` absent ≡ `"element"`), and in a COMPOSITION the container places the
-  leaf itself (`placement: "tile"`).
+- `terminal_open { elementId, cols?, rows?, cwd?, machineId?, placement?, program?, runtime?,
+env? }` → server targets `machineId` when given (error `no_machine` if it is unknown or
+  offline); without it the server falls back to the sole online machine (error `no_machine`
+  when zero or several are online — clients with a picker, like the web menu, pass `machineId`
+  explicitly). Discipline decides who authors the placement, and a mismatch is refused
+  (`conflict`) rather than spawning a PTY no renderer would ever show. On a CANVAS the opener
+  authors the element (`placement` absent ≡ `"element"`) and MUST send both `cols` and `rows`.
+  In a COMPOSITION the container places the leaf itself (`placement: "tile"`) and the opener
+  omits geometry; supplied tile geometry is ignored rather than becoming a hidden fallback.
+  Supplying only one dimension is refused.
 - **Unconfined execution requires a positive owner declaration.** A machine reports
   `terminalExecution: "unconfined" | "governed"` independently of job connectivity.
   A runtime-free shell or program is refused `forbidden` on a governed owner and
@@ -3071,12 +3075,18 @@ files, durable image storage, download URLs or arbitrary file transfer; that sep
 - **A terminal is born with a home** (`homed: "eager"`). The home id is minted BEFORE the
   PTY, because the terminal-scoped agent token and the `MANIFOLD_CONTAINER` a program inside the
   terminal reads must both name the container the terminal LIVES in — and a canvas is never
-  that. A composition opener IS the home; a canvas opener gets a fresh solo composition whose ROW
-  is created when the PTY lands, so a create that never lands leaves nothing behind to clean
-  up. The server mints a **terminal-scoped agent token** (caps
+  that. A composition opener IS the home: the server writes the pending tile leaf first, but
+  mints no token and sends no `create` until a real writable viewer measures that leaf and sends
+  `terminal_resize`. The first such frame wins atomically; racing measurements before
+  acknowledgement are ignored. If no viewer supplies a fit within the ten-second creation
+  deadline, the server removes the leaf, replies `terminal fit timed out`, and starts no process.
+  A canvas opener supplies required geometry and gets a fresh solo composition whose ROW is
+  created when the PTY lands, so a create that never lands leaves nothing behind to clean up.
+  After geometry is owned, the server mints a **terminal-scoped agent token** (caps
   `[containers:read, scenes:write, terminals:spawn, terminals:write]`, scoped to the HOME), asks
-  the terminal host through the agent to create the PTY with env `MANIFOLD_URL`, `MANIFOLD_CONTAINER` (the home),
-  `MANIFOLD_ELEMENT` (canvas openers only), `MANIFOLD_TOKEN` injected, then replies
+  the terminal host through the agent to create the PTY with env `MANIFOLD_URL`,
+  `MANIFOLD_CONTAINER` (the home), `MANIFOLD_ELEMENT` (canvas openers only), and
+  `MANIFOLD_TOKEN` injected, then replies
   `terminal_opened { elementId, terminal, ref? }`. `elementId` is the PLACEMENT: the
   server-authored leaf id for a composition opener (whose `ref` echoes the opener's correlation
   token, sent only to that opener), else the opener's own element id. `terminal.containerId` is
@@ -3087,10 +3097,12 @@ files, durable image storage, download URLs or arbitrary file transfer; that sep
   `client.transact`: the server never authors an element for `terminal_open`. Placement is
   the one place the server DOES write canvas elements, and it does so only through the placement
   executor behind `core.space.place`, under `SERVER_PLACE_ORIGIN`.
-- **Terminal frames travel over the home composition's channel.** Every terminal frame
+- **Terminal frames travel over the home composition's channel.** A pending tiled terminal
+  accepts only the first `terminal_resize` from a writable viewer of its home; that frame owns
+  birth geometry and is not controller resize authority. Once running, every terminal frame
   (`terminal_attach`, `terminal_input`, `terminal_resize`, `terminal_take`, `terminal_kill`)
-  resolves its terminal only when `terminal.containerId === channel.containerId`; anything else is
-  `error { code:"not_found" }`. A canvas showing a terminal through a portal therefore joins
+  resolves its terminal only when `terminal.containerId === channel.containerId`; anything else
+  is `error { code:"not_found" }`. A canvas showing a terminal through a portal therefore joins
   the home's room on its own channel instead of streaming terminal bytes over the canvas's.
 - **Attach state machine (no-gap invariant).** On `terminal_attach { terminalId }`:
   1. server registers the viewer as PENDING and starts queueing that terminal's live
@@ -3102,11 +3114,13 @@ files, durable image storage, download URLs or arbitrary file transfer; that sep
      queued outputs with `seq > S` in order, discards `seq ≤ S`, then marks the viewer LIVE.
      Viewer byte stream ≡ snapshot(S) + outputs(S+1…). e2e MUST assert mid-stream attach
      contiguity (counter test), repeated ≥10×.
-- **Snapshot geometry.** A viewer MUST construct xterm at the advertised terminal
-  `cols`/`rows` and replay the serialized snapshot before fitting to its canvas element.
-  Serialized cursor movement is geometry-dependent; fitting first can corrupt wrapping after
-  a container switch or reload. After replay, the viewer fits once rendering settles and the
-  controller reports the resulting geometry through `terminal_resize`.
+- **Snapshot geometry.** Before a tiled PTY exists, a viewer MAY construct an unpainted local
+  xterm grid solely to measure its host; that placeholder is never process geometry. The winning
+  fit becomes the advertised terminal `cols`/`rows`. After birth, a viewer MUST construct or
+  synchronize xterm to those advertised dimensions and replay the serialized snapshot before
+  fitting to its canvas element. Serialized cursor movement is geometry-dependent; fitting first
+  can corrupt wrapping after a container switch or reload. After replay, the viewer fits once
+  rendering settles and the controller reports the resulting geometry through `terminal_resize`.
 - **Client-side viewer pairing.** The viewer registry above is **channel-scoped** (one
   `Viewer` per room membership, which before v12 was one per socket). A client presenting
   several renderers of one terminal on that channel sends `terminal_attach` on every mount:
