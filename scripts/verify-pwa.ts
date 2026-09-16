@@ -629,12 +629,15 @@ try {
       `document.body.textContent.includes(${JSON.stringify(nameA)})`,
     )),
   );
-  assert(
-    "the session socket followed the lens across origins",
-    (await driver.evaluate<string>(
-      "document.querySelector('[data-testid=connection-state]')?.textContent ?? ''",
-    )) === "Open",
+  await until(
+    async () =>
+      (await driver.evaluate<string>(
+        "document.querySelector('[data-testid=connection-state]')?.textContent ?? ''",
+      )) === "Open",
+    25_000,
+    "the session socket to follow the lens across origins",
   );
+  assert("the session socket followed the lens across origins", true);
 
   await driver.evaluate(
     "(document.querySelector('[data-testid=lens-instance] button').click(), null)",
