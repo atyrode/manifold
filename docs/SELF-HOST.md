@@ -630,6 +630,33 @@ docker compose exec manifold tar cz -C / data > manifold-backup-$(date +%F).tgz
 
 The archive contains the owner key and preview-identity signing key — store it like a secret.
 
+Before an upgrade whose database migration cannot be opened by the previous release, also capture
+an authenticated recovery checkpoint while the current hub still owns the data and administrative
+file mutations such as plugin installation and key rotation are paused. Stream the reviewed helper
+from the release checkout so this also works when the incumbent predates the helper:
+
+```sh
+docker compose exec -T manifold bun - capture before-vX.Y.Z < scripts/full-state-recovery.ts
+```
+
+This mode requires the four replica variables below and a pinned `MANIFOLD_OWNER_KEY`. It makes
+consistent SQLite copies, includes every other regular `/data` file except process handles and
+database sidecars, encrypts and authenticates the result with a purpose-bound key derived from
+the owner key, and writes it once under `manifold-full-state/<id>.mfr` in the same dedicated
+object store. It refuses links, devices, an existing object, changing non-database files, a bad
+database, more than 10,000 files or a complete encrypted object larger than 256 MiB. Stdout is
+the non-secret receipt: checkpoint id, source build, object name, encrypted-object SHA-256 and
+size. Retain it outside the container. Before promotion, run `verify ID SHA256` with the same
+incumbent environment: it downloads and authenticates that exact object, checks its source build
+against `MANIFOLD_BUILD`, extracts into a private temporary directory, checks every SQLite file,
+and removes the temporary plaintext on success or failure. Rehearse the forward migration and
+full recovery-image boot separately; neither the tar command nor helper verification proves the
+provider switch.
+
+The owner key must remain outside the checkpoint's object store and available to recovery. A
+lost or rotated key cannot authenticate an older checkpoint. Treat the encrypted object as
+sensitive despite that protection.
+
 ## Replicate the database (optional)
 
 The image ships [Litestream](https://litestream.io) and runs it only when you ask. Four
@@ -924,21 +951,38 @@ discovery never invents resource identifiers or calls a write. A plugin whose re
 arguments is verified by its roster row instead, and refused when that row is held or carries a
 failed lifecycle. Disabled installed plugins are not silently excluded from this check.
 
-The first unresolved divergence is named in the failing job and step summary. A failed switch
-or verification automatically restores the snapshotted application revision: development uses
-the existing compare-and-swap `dev-rollback <candidate> <previous>` receiver operation;
-production restores its prior release build settings and restarts that exact commit through
-its existing deployment provider. Recovering a failed explicit backward development move uses
-the receiver's forward operation to restore its newer incumbent. The previous build is then
-checked against the same snapshot. The workflow remains failed even when recovery succeeds;
-failed recovery stays visible rather than claiming that the previous revision is serving.
-Rollback restores application code, **not the database or other shared data**, and never
-restarts the native execution owner. Manual compatibility review and the receiver's existing
-ordering and retained-container safety holds still apply.
+The first unresolved divergence is named in the failing job and step summary. A failed development
+switch or verification uses the existing compare-and-swap
+`dev-rollback <candidate> <previous>` receiver operation; a failed explicit backward move uses
+the receiver's forward operation to restore its newer incumbent.
+
+Production promotion additionally requires the exact full-state checkpoint receipt captured from
+the incumbent. On failure it builds the reviewed `infra/recovery.Dockerfile` from the promoted
+release while taking the application itself from the immutable previous release image. Before
+that previous application starts, the recovery entrypoint downloads the named encrypted object,
+checks its receipt SHA-256, authenticates and decrypts it with the pinned owner key, validates
+every path and file digest, restores only into empty `/data`, and runs full SQLite integrity
+checks. Later SQLite writes use a checkpoint-specific Litestream prefix rather than the forward
+deployment's migrated history. That live replica retains the existing object-store integrity trust
+described above; it is not covered by the checkpoint's authentication. Ordinary live verification
+then checks the recovered previous
+build against the unchanged pre-switch snapshot. The workflow remains failed even when recovery
+succeeds; failed recovery stays visible rather than claiming that the previous release is serving.
+
+Recovery settings remain active after a successful rollback so a provider restart repeats the
+authenticated file restore and resumes each database from that recovery prefix. Do not install
+plugins, rotate file-backed keys or otherwise mutate non-SQLite `/data` files while this emergency
+image is active: those files intentionally remain pinned to the checkpoint. Ordinary promotion
+refuses any active recovery setting: the serving recovery replica must first be reconciled through
+separately reviewed maintenance, not silently replaced by the failed candidate's original replica.
+There is no automatic recovery-to-forward handoff. Do not clear those settings to bypass the hold.
+The ordinary entrypoint also refuses nonempty recovery settings rather than silently ignoring
+them. Neither path restarts a native execution owner.
+
 A previous binary can refuse a database already migrated to a newer schema. At that boundary,
-code-only rollback is not a recovery path: verify a consistent full-state checkpoint and its
-recovery procedure before the live upgrade. The bootstrap flag neither restores database
-state nor bypasses schema-version admission.
+code-only rollback is not a recovery path: the authenticated full-state receipt and immutable
+previous release image are mandatory. The bootstrap flag neither restores database state nor
+bypasses schema-version admission.
 
 Live snapshots use format 2 and record the source protocol. A pre-native hub, such as
 v0.14.0 on protocol 25, has no governed native inventory: that capability first appeared
@@ -1014,8 +1058,10 @@ check, five-minute deadline and automatic rollback remain required. Automatic re
 always verifies the previous revision without the maintenance flag; explicit development
 rollback also uses ordinary live verification.
 
-For production, `bun run promote vX.Y.Z --bootstrap-gate` dispatches `deploy-hub.yml` with the
-published `tag` introducing the door and `bootstrap_gate=true`. For development, dispatch `deploy-dev.yml` from `main` with
+For production, `bun run promote vX.Y.Z --bootstrap-gate --recovery-receipt PATH` reads the
+non-secret JSON receipt from the incumbent's full-state capture, then dispatches `deploy-hub.yml`
+with the published `tag`, `bootstrap_gate=true`, and the exact checkpoint id, source build and
+encrypted-object SHA-256. For development, dispatch `deploy-dev.yml` from `main` with
 `operation=deploy`, the full `target_sha`, a non-secret reason, acknowledged
 `compatibility_reviewed`, and `bootstrap_gate=true`. The forward operation uses the existing
 monotone receiver; it does not require `expected_current_sha`. Direction is independent of
@@ -1061,11 +1107,19 @@ merged SHA and pushes only the tag to start `release.yml`. A closed PR, a 30-min
 or a different main tree stops publication without a tag; interrupted-merge recovery is documented
 in the script header. `bun run release --dry-run` remains read-only from any branch.
 
-**Promote.** `bun run promote vX.Y.Z` puts one PUBLISHED release on the operator's production
-instance only after successful full CI for the resolved tag commit. The command refuses an
-unpublished tag, dispatches `.github/workflows/deploy-hub.yml`, and watches it to completion.
-That workflow separately refuses missing or unsuccessful exact-tag full `main` push/manual-dispatch
-evidence before any provider operation. Successful promotion ends with the fleet-pin reminder.
+**Promote.** `bun run promote vX.Y.Z --recovery-receipt PATH` puts one PUBLISHED release on the
+operator's production instance only after successful full CI for the resolved tag commit. The
+receipt is the JSON line emitted by the incumbent's authenticated full-state capture; promotion
+refuses an absent or malformed checkpoint identity, source build or encrypted-object SHA-256.
+The command also refuses an unpublished tag, dispatches `.github/workflows/deploy-hub.yml`, and
+watches it to completion. The workflow requires recovery support in the candidate release,
+matches the receipt's source build to the live snapshot, refuses active recovery settings, and
+requires one instance with zero-downtime deployment disabled. It also refuses missing or
+unsuccessful exact-tag full `main` push/manual-dispatch evidence before any provider operation.
+Checkpoint authentication, freshness, restore rehearsal and continued object/key availability
+are operator-owned preflight evidence; CI has neither the owner key nor object-store credentials
+and does not establish those facts from receipt syntax. Successful promotion ends with the
+fleet-pin reminder.
 Production is the GitHub Environment `production`; its deployment
 history is the ledger of what production ran, and protection rules attach there. Promotion is
 never a side effect of a release or of a different green `main` revision.

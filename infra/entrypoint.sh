@@ -5,6 +5,16 @@
 # writer per replica: never run two instances against one bucket path.
 set -euo pipefail
 cd /app
+for recovery_setting in \
+  MANIFOLD_RECOVERY_CHECKPOINT \
+  MANIFOLD_RECOVERY_SHA256 \
+  MANIFOLD_RECOVERY_EXPECTED_BUILD \
+  MANIFOLD_RECOVERY_BASE_IMAGE; do
+  if [ -n "${!recovery_setting:-}" ]; then
+    echo "$recovery_setting is set, but the ordinary image cannot perform full-state recovery" >&2
+    exit 1
+  fi
+done
 if [ -z "${MANIFOLD_REPLICA_BUCKET:-}" ]; then
   exec bun packages/server/src/main.ts
 fi

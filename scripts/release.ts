@@ -286,4 +286,6 @@ await $`git tag ${tag} ${sha}`;
 await $`git push origin ${`refs/tags/${tag}`}`;
 await watchRelease(tag);
 console.log(`Released ${tag}. Production has not moved.`);
-console.log(`promote with: bun run promote ${tag}`);
+console.log(
+  `capture the incumbent full state, then promote with: bun run promote ${tag} --recovery-receipt PATH`,
+);

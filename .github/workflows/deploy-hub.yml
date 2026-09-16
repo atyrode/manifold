@@ -14,6 +14,18 @@ on:
         description: Published release tag to promote to production
         required: true
         type: string
+      recovery_checkpoint:
+        description: Authenticated full-state checkpoint id captured from the current release
+        required: true
+        type: string
+      recovery_sha256:
+        description: SHA-256 of the encrypted full-state checkpoint object
+        required: true
+        type: string
+      recovery_build:
+        description: Exact incumbent source build recorded in the verified checkpoint receipt
+        required: true
+        type: string
       bootstrap_gate:
         description: Permit one-time bootstrap only when the target export door returns unknown action
         required: false
@@ -40,6 +52,9 @@ jobs:
       sha: ${{ steps.release.outputs.sha }}
     env:
       TAG: ${{ inputs.tag }}
+      RECOVERY_CHECKPOINT: ${{ inputs.recovery_checkpoint }}
+      RECOVERY_SHA256: ${{ inputs.recovery_sha256 }}
+      RECOVERY_BUILD: ${{ inputs.recovery_build }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -60,6 +75,18 @@ jobs:
             echo "::error::Select an explicit vMAJOR.MINOR.PATCH release tag"
             exit 1
           fi
+          if [[ ! "$RECOVERY_CHECKPOINT" =~ ^[a-z0-9][a-z0-9._-]{0,95}$ ]]; then
+            echo "::error::Select the exact pre-switch full-state checkpoint"
+            exit 1
+          fi
+          if [[ ! "$RECOVERY_SHA256" =~ ^[a-f0-9]{64}$ ]]; then
+            echo "::error::The recovery checkpoint requires its exact encrypted-object SHA-256"
+            exit 1
+          fi
+          if [[ ! "$RECOVERY_BUILD" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::The recovery receipt requires its exact incumbent source build"
+            exit 1
+          fi
           if ! draft="$(gh release view "$TAG" --json isDraft --jq .isDraft)"; then
             echo "::error::$TAG has no GitHub Release; publish it with bun run release first"
             exit 1
@@ -69,6 +96,15 @@ jobs:
             exit 1
           fi
           sha="$(git rev-parse --verify "refs/tags/$TAG^{commit}")"
+          for recovery_path in \
+            infra/recovery.Dockerfile \
+            infra/recovery-entrypoint.sh \
+            scripts/full-state-recovery.ts; do
+            if ! git cat-file -e "refs/tags/$TAG:$recovery_path"; then
+              echo "::error::$TAG predates authenticated full-state recovery ($recovery_path is absent)"
+              exit 1
+            fi
+          done
           proof="$(gh run list --workflow ci.yml --branch main --commit "$sha" \
             --limit 100 --json databaseId,event,status,conclusion \
             --jq '[.[] | select(.event == "push" or .event == "workflow_dispatch")] | .[:1] | map(select(.status == "completed" and .conclusion == "success")) | length')"
@@ -116,8 +152,8 @@ jobs:
     timeout-minutes: 30
     outputs:
       switch_started: ${{ steps.switch.outputs.started }}
-      previous_sha: ${{ steps.snapshot.outputs.previous_sha }}
       previous_build: ${{ steps.snapshot.outputs.previous_build }}
+      previous_image: ${{ steps.snapshot.outputs.previous_image }}
     # Production protection remains on the switch, after the read-only candidate gate.
     environment:
       name: production
@@ -136,20 +172,41 @@ jobs:
 
       - name: Link the application
         run: bunx clever-tools@4.10.0 link "${{ vars.CLEVER_HUB_APP_ID }}" --org "${{ vars.CLEVER_ORG_ID }}"
+      - name: Require the bounded single-writer topology
+        run: |
+          fail() { echo "::error::$*" >&2; exit 1; }
+          status="$(bunx clever-tools@4.10.0 status --format json)"
+          jq -e '.scalability.horizontal.min == 1 and .scalability.horizontal.max == 1' \
+            <<< "$status" >/dev/null ||
+            fail 'Production recovery requires exactly one application instance'
+          [ "$(bunx clever-tools@4.10.0 config get zero-downtime)" = false ] ||
+            fail 'Production recovery requires zero-downtime deployment to be disabled'
+      - name: Refuse promotion from an unreconciled recovery image
+        run: |
+          if ! bunx clever-tools@4.10.0 env --format json |
+            jq -e '[.env[], .fromAddons[].env[], .fromDependencies[].env[]] |
+              all(.[]; if (.name | startswith("MANIFOLD_RECOVERY_")) then .value == "" else true end)' >/dev/null; then
+            echo "::error::Active recovery state requires separately reviewed reconciliation before ordinary promotion"
+            exit 1
+          fi
 
       - name: Snapshot live state before the switch
         id: snapshot
         env:
           VERIFY_LIVE_ORIGIN: ${{ vars.MANIFOLD_HUB_ORIGIN }}
           VERIFY_LIVE_TOKEN: ${{ secrets.HUB_INSTALLED_BUNDLES_TOKEN }}
+          RECOVERY_BUILD: ${{ inputs.recovery_build }}
         run: |
           bun scripts/verify-live.ts snapshot "$RUNNER_TEMP/verify-live.json"
-          source infra/previews/deployment-order.sh
           fail() { echo "::error::$*" >&2; exit 1; }
           previous_build="$(jq -er .build "$RUNNER_TEMP/verify-live.json")"
           [[ "$previous_build" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail 'Production rollback requires an exact release build'
-          previous_sha="$(legacy_image_revision "$GITHUB_WORKSPACE" "$previous_build")"
-          printf 'previous_sha=%s\nprevious_build=%s\n' "$previous_sha" "$previous_build" >> "$GITHUB_OUTPUT"
+          [ "$RECOVERY_BUILD" = "$previous_build" ] ||
+            fail 'The checkpoint receipt was not captured from the currently serving release'
+          previous_image="$(docker buildx imagetools inspect "ghcr.io/${GITHUB_REPOSITORY}:v$previous_build" --format '{{.Manifest.Digest}}')"
+          [[ "$previous_image" =~ ^sha256:[a-f0-9]{64}$ ]] || fail 'Production rollback requires an immutable previous release image'
+          printf 'previous_build=%s\nprevious_image=%s\n' \
+            "$previous_build" "$previous_image" >> "$GITHUB_OUTPUT"
 
       - name: Retain the pre-switch snapshot for verification and rollback
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -158,6 +215,14 @@ jobs:
           path: ${{ runner.temp }}/verify-live.json
           retention-days: 1
           if-no-files-found: error
+
+      - name: Select the ordinary image and clear prior recovery settings
+        run: |
+          bunx clever-tools@4.10.0 env set CC_DOCKERFILE Dockerfile
+          bunx clever-tools@4.10.0 env set MANIFOLD_RECOVERY_CHECKPOINT ""
+          bunx clever-tools@4.10.0 env set MANIFOLD_RECOVERY_SHA256 ""
+          bunx clever-tools@4.10.0 env set MANIFOLD_RECOVERY_EXPECTED_BUILD ""
+          bunx clever-tools@4.10.0 env set MANIFOLD_RECOVERY_BASE_IMAGE ""
 
       - name: Stamp the build
         id: switch
@@ -201,20 +266,29 @@ jobs:
           TAG: ${{ inputs.tag }}
           VERIFY_LIVE_BOOTSTRAP_GATE: ${{ needs.installed-bundles.outputs.bootstrap_required == 'true' }}
         run: bun scripts/verify-live.ts verify "$RUNNER_TEMP/verify-live.json" "${TAG#v}"
-      - name: Restore the previous production revision
+      - name: Restore the authenticated full state with the previous release
         if: failure() || needs.clever.result != 'success'
         env:
-          PREVIOUS_SHA: ${{ needs.clever.outputs.previous_sha }}
+          TAG: ${{ inputs.tag }}
           PREVIOUS_BUILD: ${{ needs.clever.outputs.previous_build }}
+          PREVIOUS_IMAGE: ${{ needs.clever.outputs.previous_image }}
+          RECOVERY_CHECKPOINT: ${{ inputs.recovery_checkpoint }}
+          RECOVERY_SHA256: ${{ inputs.recovery_sha256 }}
         run: |
-          printf '### Automatic production rollback\n\nSwitch or live verification failed. Restoring `%s`; this run remains failed.\n\n' "$PREVIOUS_SHA" >> "$GITHUB_STEP_SUMMARY"
+          printf '### Automatic production recovery\n\nSwitch or live verification failed. Restoring the authenticated pre-switch state under release `%s`; this run remains failed.\n\n' "$PREVIOUS_BUILD" >> "$GITHUB_STEP_SUMMARY"
           bunx clever-tools@4.10.0 link "${{ vars.CLEVER_HUB_APP_ID }}" --org "${{ vars.CLEVER_ORG_ID }}"
           bunx clever-tools@4.10.0 env set MANIFOLD_VERSION "$PREVIOUS_BUILD"
           bunx clever-tools@4.10.0 env set MANIFOLD_BUILD "$PREVIOUS_BUILD"
           bunx clever-tools@4.10.0 env set MANIFOLD_CHANNEL release
-          bunx clever-tools@4.10.0 restart --commit "$PREVIOUS_SHA"
+          bunx clever-tools@4.10.0 env set CC_DOCKERFILE infra/recovery.Dockerfile
+          bunx clever-tools@4.10.0 env set MANIFOLD_RECOVERY_CHECKPOINT "$RECOVERY_CHECKPOINT"
+          bunx clever-tools@4.10.0 env set MANIFOLD_RECOVERY_SHA256 "$RECOVERY_SHA256"
+          bunx clever-tools@4.10.0 env set MANIFOLD_RECOVERY_EXPECTED_BUILD "$PREVIOUS_BUILD"
+          bunx clever-tools@4.10.0 env set MANIFOLD_RECOVERY_BASE_IMAGE \
+            "ghcr.io/${GITHUB_REPOSITORY}@$PREVIOUS_IMAGE"
+          bunx clever-tools@4.10.0 deploy --tag "$TAG" --force --same-commit-policy rebuild
           bun scripts/verify-live.ts verify "$RUNNER_TEMP/verify-live.json" "$PREVIOUS_BUILD"
-          printf 'The previous revision `%s` is serving and its live-state parity is verified.\n\n' "$PREVIOUS_SHA" >> "$GITHUB_STEP_SUMMARY"
+          printf 'The exact previous application is serving through the recovery image, and its restored live-state parity is verified. Recovery settings remain active so a provider restart restores the same checkpoint and then the checkpoint-specific SQLite replica history.\n\n' >> "$GITHUB_STEP_SUMMARY"
 
   fleet-pin:
     name: Pin the verified production fleet
