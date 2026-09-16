@@ -237,9 +237,9 @@ test("production promotion refuses a multi-writer provider topology", async () =
   ) as {
     jobs: Record<string, { steps: { name?: string; run?: string }[] }>;
   };
-  const topology = source.jobs.clever?.steps.find(
-    (step) => step.name === "Require the bounded single-writer topology",
-  )?.run;
+  const topology = Object.values(source.jobs)
+    .flatMap((job) => job.steps)
+    .find((step) => step.name === "Require the bounded single-writer topology")?.run;
   if (!topology) throw new Error("Production workflow has no single-writer admission");
   const root = mkdtempSync(join(tmpdir(), "manifold-production-topology-"));
   try {
@@ -281,7 +281,7 @@ test("production refuses unreconciled recovery and receipts from another incumbe
   const source = Bun.YAML.parse(
     await Bun.file(new URL("../.github/workflows/deploy-hub.yml", import.meta.url)).text(),
   ) as { jobs: Record<string, { steps: { name?: string; run?: string }[] }> };
-  const steps = source.jobs.clever!.steps;
+  const steps = Object.values(source.jobs).flatMap((job) => job.steps);
   const hold = steps.find(
     (step) => step.name === "Refuse promotion from an unreconciled recovery image",
   )?.run;
@@ -294,7 +294,8 @@ test("production refuses unreconciled recovery and receipts from another incumbe
     writeFileSync(
       join(bin, "bunx"),
       `#!/usr/bin/env bash
-[[ "$*" == "clever-tools@4.10.0 env --format json" ]] || exit 1
+shift
+[[ "$*" == "env --format json" ]] || exit 1
 printf '%s\\n' "$FIXTURE_ENV"
 `,
       { mode: 0o700 },
