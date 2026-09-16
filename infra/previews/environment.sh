@@ -282,7 +282,7 @@ require_retained_server_only() {
 }
 
 replace_environment() {
-  local lifecycle=$1 volume=$2 final_image=$3 project=$4 health_url=$5 topology running=''
+  local lifecycle=$1 volume=$2 final_image=$3 project=$4 health_url=$5 topology
   shift 5
   case "$lifecycle" in
     retained)
@@ -293,15 +293,13 @@ replace_environment() {
       ;;
     disposable)
       log "redeploying $project retires existing PTYs and terminal entries and replaces the disposable development home"
-      running=$("$@" "$final_image" ps --status running --quiet manifold)
-      if [[ -n $running ]]; then
+      if [[ -n $("$@" "$final_image" ps --status running --quiet manifold) ]]; then
         "$@" "$final_image" exec -T manifold bun - retire <"$here/terminal-lifecycle.ts"
-        "$@" "$final_image" stop manifold
       fi
       ;;
     *) fail 'replacement requires an explicit retained or disposable lifecycle' ;;
   esac
-  [[ $lifecycle == disposable ]] || "$@" "$final_image" stop manifold
+  "$@" "$final_image" stop manifold
   if [[ $lifecycle == disposable ]]; then
     docker run --rm --network none --label "com.docker.compose.project=$project" --user 0:0 --entrypoint /bin/bash \
       --mount "type=volume,src=$volume,dst=/data" "$final_image" \
