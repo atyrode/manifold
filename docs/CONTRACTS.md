@@ -648,6 +648,16 @@ the identity boundary before a local actor exists, not an action-plane mutation;
 credential uses the existing principal, grant and token stores without a parallel authority path.
 Agent and machine credentials never enter this browser flow.
 
+Numbered-preview seeding is a one-way representative-data projection, not restore. Stable tooling
+may read a sensitive full-data archive, but the preview receives only the current schema plus
+`container_folders(id,name,created_at,parent_folder_id,sort_order)`,
+`containers(id,name,created_at,sort_order,folder_id,discipline)` and
+`scene_docs(container_id,epoch,rev,ts,hash,doc)`. Every other table is emptied, no adjacent file is
+copied, and the projected database is vacuumed so deleted authority bytes do not remain in free
+pages. Startup mints fresh owner, preview-signing and machine authority. Real boundary verification
+must prove representative data remains usable while the source owner key and reusable bearer are
+refused and source signing, dial, plugin and arbitrary file state is absent.
+
 ### Authority is a waterfall of grants (ADR 0011, shipped)
 
 **Authority is rows, not fields.** A **grant** is

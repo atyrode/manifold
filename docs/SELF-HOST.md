@@ -1159,10 +1159,12 @@ automatically. The exact CLI commands, run-watching steps and inspection/reporti
 With `MANIFOLD_PREVIEW_DOMAIN=<domain>` on production, integrated and numbered previews use the
 production browser identity handoff (ADR 0027): public URLs carry no secret, production
 credentials never enter preview code, and production capability restrictions are preserved.
-A fresh preview seeded from development still accepts the development owner key as break-glass.
-`PREVIEW_DOMAIN` names the domain; setup, seeding, live mode and the operator-only
-pre-authenticated fallback command are documented in `infra/previews/README.md`. A self-hoster may
-skip this tier entirely.
+Optional numbered-preview seeding accepts a full `/data` backup as sensitive input but projects
+only folders, containers and scene documents into a vacuumed database. It copies no owner key,
+principal, credential, grant, dial, signing key, plugin state or adjacent file; each preview
+generates fresh local authority. `PREVIEW_DOMAIN` names the domain; setup, the exact seed allowlist,
+live mode and the operator-only pre-authenticated fallback command are documented in
+`infra/previews/README.md`. A self-hoster may skip this tier entirely.
 
 **A self-hoster replaces the `deploy-*.yml` files.** They are the operator's deployments,
 gated on repository variables so a fork never runs them (ADR 0022). Yours consume the same
