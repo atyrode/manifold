@@ -23,6 +23,7 @@ const expectedChecks = [
   "runtime-jobs",
   "runtime-browser",
   "preview-environment",
+  "nix",
 ] as const;
 const expectedMandatory = ["build", "types", "style", "smoke", "targeted"] as const;
 const e2eSelectors: Readonly<Record<string, string>> = {
@@ -174,20 +175,34 @@ const workflowJobDisplayNames = (workflow: YamlMap): string[] => {
     const axes = Object.entries(matrix);
     if (axes.length !== 1) throw new Error(`CI workflow job ${id} must use one static matrix axis`);
     const [axis, rawValues] = axes[0] ?? [];
-    if (!axis || !/^[a-z][a-z0-9-]*$/.test(axis))
+    if (!axis || axis === "exclude" || !/^[a-z][a-z0-9-]*$/.test(axis))
       throw new Error(`CI workflow job ${id} has an unsupported matrix axis`);
-    const placeholder = `\${{ matrix.${axis} }}`;
-    if (!name.includes(placeholder))
-      throw new Error(`CI workflow job ${id} name must include its matrix axis`);
-    for (const rawValue of sequence(rawValues, `CI workflow job ${id} matrix ${axis}`)) {
-      if (typeof rawValue !== "string" && typeof rawValue !== "number")
-        throw new Error(`CI workflow job ${id} matrix ${axis} values must be strings or numbers`);
-      const expanded = name.replaceAll(placeholder, String(rawValue));
+    const values = sequence(rawValues, `CI workflow job ${id} matrix ${axis}`);
+    if (values.length === 0) throw new Error(`CI workflow job ${id} matrix must not be empty`);
+    for (const rawValue of values) {
+      const combination =
+        axis === "include"
+          ? map(rawValue, `CI workflow job ${id} matrix include entry`)
+          : { [axis]: rawValue };
+      let expanded: string = name;
+      for (const [key, value] of Object.entries(combination)) {
+        if (
+          !/^[a-z][a-z0-9-]*$/.test(key) ||
+          (typeof value !== "string" && typeof value !== "number") ||
+          String(value).includes("${{")
+        )
+          throw new Error(`CI workflow job ${id} matrix entries must contain static scalar values`);
+        expanded = expanded.replaceAll(`\${{ matrix.${key} }}`, String(value));
+      }
       if (expanded.includes("${{"))
         throw new Error(`CI workflow job ${id} has an unsupported dynamic display name`);
+      if (expanded === name)
+        throw new Error(`CI workflow job ${id} name must include its matrix axis`);
       displayNames.push(expanded);
     }
   }
+  if (new Set(displayNames).size !== displayNames.length)
+    throw new Error("CI workflow job display names must be unique");
   return displayNames;
 };
 
@@ -494,6 +509,36 @@ export const ciCoverageErrors = (
       : undefined;
     if (!Array.isArray(modes) || !same(modes.map(String), ["plain", "integrated"]))
       errors.push("preview job must retain plain and integrated matrix modes");
+
+    const nix = optionalChildMap(jobs, "nix", "nix job");
+    if (nix) {
+      const strategy = childMap(nix, "strategy", "nix strategy");
+      const matrix = childMap(strategy, "matrix", "nix matrix");
+      const targets = sequence(matrix["include"], "nix matrix include").map((value) => {
+        const target = map(value, "nix matrix include entry");
+        return JSON.stringify([target["system"], target["runner"]]);
+      });
+      const expectedTargets = [
+        ["x86_64-linux", "ubuntu-24.04"],
+        ["aarch64-linux", "ubuntu-24.04-arm"],
+        ["x86_64-darwin", "macos-15-intel"],
+        ["aarch64-darwin", "macos-15"],
+      ].map((target) => JSON.stringify(target));
+      if (!same(Object.keys(matrix), ["include"]) || !same(targets, expectedTargets))
+        errors.push("nix job must use all four native system/runner pairs");
+      if (
+        nix["runs-on"] !== "${{ matrix.runner }}" ||
+        childMap(nix, "env", "nix environment")["MANIFOLD_NIX_SYSTEM"] !== "${{ matrix.system }}"
+      )
+        errors.push("nix job must enforce its selected native system on the matching runner");
+      if (
+        strategy["fail-fast"] !== false ||
+        (nix["continue-on-error"] !== undefined && nix["continue-on-error"] !== false)
+      )
+        errors.push("nix job must retain every native result without tolerating failure");
+      if (!same(jobNeeds(nix), ["plan"]))
+        errors.push("nix job must remain independent of the web build");
+    }
 
     const gate = optionalChildMap(jobs, "gate", "gate job");
     if (gate) {

@@ -19,6 +19,7 @@ const registry = [
   "budgets\tbudgets",
   "pwa\tpwa",
   "axioms\taxioms",
+  "nix\tverify:nix-packaging",
 ].join("\n");
 
 const ci = await Bun.file(new URL("../.github/workflows/ci.yml", import.meta.url)).text();
@@ -128,6 +129,39 @@ describe("risk-selected CI topology coverage", () => {
     );
   });
 
+  test("requires every native Nix target and matching hosted architecture", () => {
+    const missingTarget = ci.replace(
+      "          - system: aarch64-darwin\n            runner: macos-15\n",
+      "",
+    );
+    const wrongRunner = ci.replace("runner: macos-15-intel", "runner: macos-15");
+    for (const incomplete of [missingTarget, wrongRunner]) {
+      expect(ciCoverageErrors(registry, incomplete)).toContain(
+        "nix job must use all four native system/runner pairs",
+      );
+    }
+    expect(previewDeploymentCoverageErrors(deployPreview, missingTarget)).toContain(
+      "preview deployment expected job inventory must exactly match CI display names",
+    );
+  });
+
+  test("requires the Nix verifier to enforce the matrix's native system", () => {
+    const ignoredSystem = ci.replace(
+      "MANIFOLD_NIX_SYSTEM: ${{ matrix.system }}",
+      "MANIFOLD_NIX_SYSTEM: x86_64-linux",
+    );
+    expect(ciCoverageErrors(registry, ignoredSystem)).toContain(
+      "nix job must enforce its selected native system on the matching runner",
+    );
+  });
+
+  test("cannot present a tolerated Nix failure as full proof", () => {
+    const toleratedFailure = ci.replace("  nix:\n", "  nix:\n    continue-on-error: true\n");
+    expect(ciCoverageErrors(registry, toleratedFailure)).toContain(
+      "nix job must retain every native result without tolerating failure",
+    );
+  });
+
   test("requires exact gate dependency inventory", () => {
     const missingTrace = ci.replace("      - trace\n", "");
     expect(ciCoverageErrors(registry, missingTrace)).toContain(
@@ -224,6 +258,41 @@ describe("deployment evidence boundaries", () => {
     const renamedCi = ci.replace("    name: runtime-jobs", "    name: runtime jobs");
     expect(previewDeploymentCoverageErrors(deployPreview, renamedCi)).toContain(
       "preview deployment expected job inventory must exactly match CI display names",
+    );
+  });
+
+  test("rejects missing native legs in the trusted preview proof inventory", () => {
+    const missingNative = deployPreview.replace('"nix (aarch64-darwin)",', "");
+    expect(previewDeploymentCoverageErrors(missingNative, ci)).toContain(
+      "preview deployment expected job inventory must exactly match CI display names",
+    );
+  });
+
+  test("rejects duplicate expanded matrix display names", () => {
+    const duplicateNative = ci.replace("system: aarch64-darwin", "system: x86_64-darwin");
+    expect(previewDeploymentCoverageErrors(deployPreview, duplicateNative)).toContain(
+      "CI workflow job display names must be unique",
+    );
+  });
+
+  test("rejects unresolved or dynamic include values instead of guessing proof names", () => {
+    const missingSystem = ci.replace("system: aarch64-darwin", "target: aarch64-darwin");
+    expect(previewDeploymentCoverageErrors(deployPreview, missingSystem)).toContain(
+      "CI workflow job nix has an unsupported dynamic display name",
+    );
+    const dynamicSystem = ci.replace("system: aarch64-darwin", "system: ${{ inputs.system }}");
+    expect(previewDeploymentCoverageErrors(deployPreview, dynamicSystem)).toContain(
+      "CI workflow job nix matrix entries must contain static scalar values",
+    );
+  });
+
+  test("rejects mixed include and axis matrices without a defined expansion", () => {
+    const mixedMatrix = ci.replace(
+      "        include:\n",
+      "        system: [x86_64-linux]\n        include:\n",
+    );
+    expect(previewDeploymentCoverageErrors(deployPreview, mixedMatrix)).toContain(
+      "CI workflow job nix must use one static matrix axis",
     );
   });
 

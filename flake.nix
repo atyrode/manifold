@@ -35,38 +35,47 @@
       # Measured with the pinned Bun's explicit optional-dependency target selectors.
       # Regenerate and independently rebuild these trees when their inputs change.
       depsHashes = {
-        x86_64-linux = "sha256-0paLt9t5ds7yb1qNvL55jI7iqq3jVLVa0CX2HQO2DBs=";
-        aarch64-linux = "sha256-hOVg3G0Urms8rulRfQMhyX4dS23GOmFIAm3PW6V/BAc=";
-        x86_64-darwin = "sha256-gT5aDGDbf2yybZaGUbbETgyibZwCxRH8wW5MvXwlWSM=";
-        aarch64-darwin = "sha256-PL/Ez5Y4VYgmzziKupeE+ySsRuDt1WCt7cXW7S5dl5E=";
+        x86_64-linux = "sha256-cBlYw1XCtt+o5KDZ3OBfRDEElZ/Oboz4H/pAji/ob3I=";
+        aarch64-linux = "sha256-0gDixTyjjct8gyArIL5JskfztrU6HgP1TCLWrxf2z2I=";
+        x86_64-darwin = "sha256-dUXt+9OK7sCiziR/B/J2cIiKdB10pJ4s1DdYTt0DxQ4=";
+        aarch64-darwin = "sha256-27UbVj2E/Lt/b63olVFwDl9cH99YP9Se/rqLrvn3ckc=";
       };
 
-      # Input of the vendored-dependency FOD. Deliberately not `self`: keying it
-      # on the whole workspace re-derives the FOD on every unrelated commit, so
-      # nothing is ever reused from the store and each commit re-runs a cold,
-      # live-network `bun install` — re-rolling the dice on exactly the
-      # nondeterminism issue #51 tracks, and re-downloading ~240 MB to produce a
-      # tree that did not change. bun needs only the dependency-defining files:
-      # it resolves the `workspace:*` members from their package.json manifests
-      # and links them as relative symlinks without reading their sources.
-      # Verified: installing from this subset yields a node_modules tree
-      # byte-identical to installing from the full workspace, so the FOD is now
-      # rebuilt only when the dependencies themselves change.
+      # Keep the dependency input independent of unrelated workspace sources.
+      # Bun reads the manifests to resolve workspaces, but only creates their
+      # .bin links when the declared targets exist. Include those actual files
+      # as well as the lockfile, install configuration and patches; a missing
+      # declared target must fail fileset evaluation rather than silently
+      # producing an incomplete vendored tree.
+      packageManifests = nixpkgs.lib.fileset.unions [
+        ./package.json
+        (nixpkgs.lib.fileset.fileFilter (file: file.name == "package.json") ./packages)
+      ];
+      packageBins = nixpkgs.lib.concatMap (
+        manifestPath:
+        let
+          manifest = builtins.fromJSON (builtins.readFile manifestPath);
+          bin = manifest.bin or { };
+          targets = if builtins.isString bin then [ bin ] else builtins.attrValues bin;
+        in
+        map (target: (builtins.dirOf manifestPath) + "/${target}") targets
+      ) (nixpkgs.lib.fileset.toList packageManifests);
       bunDepsSrc = nixpkgs.lib.fileset.toSource {
         root = ./.;
         fileset = nixpkgs.lib.fileset.unions [
           ./bun.lock
           ./bunfig.toml
-          ./package.json
+          packageManifests
           ./patches
-          (nixpkgs.lib.fileset.fileFilter (file: file.name == "package.json") ./packages)
+          (nixpkgs.lib.fileset.unions packageBins)
         ];
       };
     in
     {
       nixosModules.native = import ./infra/native/module.nix { inherit self; };
       checks = eachSystem (
-        pkgs: nixpkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+        pkgs:
+        nixpkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           native-profile = (import (nixpkgs + "/nixos/lib") { inherit (pkgs) lib; }).runTest (
             import ./infra/native/module-test.nix { inherit self pkgs; }
           );
@@ -98,14 +107,18 @@
               sha256 = "90987a3a16d7db556d886ac3d551e7b6d3edf0a1cf43acaed622e8676be1d12f";
             };
           };
-          bun = pkgs.bun.overrideAttrs (_final: previous: {
-            version = "1.4.2";
-            src = pkgs.fetchurl {
-              url = "https://github.com/oven-sh/bun/releases/download/bun-v1.4.2/${bunSources.${system}.archive}";
-              inherit (bunSources.${system}) sha256;
-            };
-            meta = previous.meta // { platforms = systems; };
-          });
+          bun = pkgs.bun.overrideAttrs (
+            _final: previous: {
+              version = "1.4.2";
+              src = pkgs.fetchurl {
+                url = "https://github.com/oven-sh/bun/releases/download/bun-v1.4.2/${bunSources.${system}.archive}";
+                inherit (bunSources.${system}) sha256;
+              };
+              meta = previous.meta // {
+                platforms = systems;
+              };
+            }
+          );
 
           # Vendored node_modules keyed on bun.lock: the only network-touching
           # derivation. It must produce the installed tree, not bun's download
@@ -235,8 +248,9 @@
           manifold-agent = compiled {
             pname = "manifold-agent";
             entry = "packages/agent/src/main.ts";
-            wrapperArgs = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux
-              ''--prefix LD_LIBRARY_PATH : "${pkgs.lib.makeLibraryPath [ pkgs.glibc ]}"'';
+            wrapperArgs = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''--prefix LD_LIBRARY_PATH : "${
+              pkgs.lib.makeLibraryPath [ pkgs.glibc ]
+            }"'';
           };
 
           manifold-server = compiled {

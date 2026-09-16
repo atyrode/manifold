@@ -256,7 +256,11 @@ into four disjoint shards while no-argument local `bun run gate` retains complet
 behavior. Build consumers may use only a SHA-named artifact from the exact source tree under test.
 Exact-tree artifacts expire after one day; after expiry rerun the whole workflow. Required jobs
 have bounded timeouts, and the final aggregator rejects required failures and unexpected skips.
-Full CI retains concurrent plain-preview and integrated-preview runtime proof.
+Full CI retains concurrent plain-preview and integrated-preview runtime proof, and the native
+Nix package matrix on all four advertised systems. The `nix` registry group builds and explicitly
+rebuilds the fixed-output dependencies before building and smoking both native compiled packages;
+cached availability alone is insufficient. The full local gate therefore requires native Nix,
+unlike the ordinary local baseline. Package proof does not authorize live owner activation.
 
 Fast pull-request feedback targets **1–2 minutes**. Separately, the complete suite operates to
 **under 7 minutes p95** execution wall clock over at least ten recent clean runs with sufficient

@@ -26,10 +26,22 @@ verification on the target kernel. Missing facilities refuse jobs, never launch 
 The Bun ZIP digests are pinned from the official
 [1.4.2 release metadata](https://api.github.com/repos/oven-sh/bun/releases/tags/bun-v1.4.2);
 the older locked nixpkgs Bun is not used. Vendored dependency trees are pinned for all
-four package targets and were reproduced with that Bun's explicit `--os`/`--cpu`
-optional-dependency selectors; the Linux x64 control matches its native installed tree.
-This establishes dependency bytes, not execution of another target's compiled binary.
-Build and exercise each target's actual package before deploying it.
+four package targets. Their input includes dependency manifests and declared workspace
+executable targets, so Bun creates the same relative command links as a full-source install
+without making unrelated source changes invalidate dependency vendoring.
+
+Run `bun scripts/verify-nix-packaging.ts` on the target with Nix and Bun 1.4.2 available;
+it needs no workspace dependency installation. The verifier builds and independently
+rebuilds the fixed-output dependency tree, then builds both compiled packages. From a private
+temporary directory with no inherited operator configuration, it exercises agent maintenance
+help and a loopback-only disposable hub, checking health and the installed web assets.
+CI runs this proof natively on Linux and macOS, each on x64 and arm64. A warm dependency
+store path alone is not proof that the current recipe reproduces its pinned hash.
+
+When dependency inputs change, derive any replacement hashes from fresh installs and retain
+the independent rebuild check. Explicit `--os`/`--cpu` controls can measure another target's
+dependency bytes, but cannot prove its compiled binary executes. Package smoke does not
+enroll or activate a native owner, nor establish the target kernel's containment guarantees.
 
 ### Declare one node
 
