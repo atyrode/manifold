@@ -13,12 +13,15 @@ for (const scenario of [
   "reused",
   "unreadable",
   "unknown",
+  "healthcheck-exec-transition",
+  "healthcheck-exec-transition-reused",
   "zombie",
   "zombie-with-live-threads",
   "zombie-reused",
   "zombie-unreadable",
 ] as const) {
-  const admitted = scenario === "gone" || scenario === "zombie";
+  const admitted =
+    scenario === "gone" || scenario === "zombie" || scenario === "healthcheck-exec-transition";
   test(`retained process snapshot ${admitted ? "admits" : "refuses"} a ${scenario} process`, async () => {
     // Run the real streamed classifier in an isolated process. Fault injection makes
     // the /proc enumeration/read race deterministic without altering any real PID.
@@ -30,6 +33,7 @@ const statFor = (state = "S", threads = "1", started = "12345") =>
     index === 0 ? state : index === 17 ? threads : index === 19 ? started : "0").join(" ");
 const stat = statFor();
 let statReads = 0;
+let cmdlineReads = 0;
 const fail = (code) => { throw Object.assign(new Error("private proc metadata"), { code }); };
 mock.module("node:fs", () => ({
   readdirSync: () => ["1", "99999999"],
@@ -49,11 +53,21 @@ mock.module("node:fs", () => ({
           scenario === "zombie-reused" && statReads > 1 ? "54321" : "12345",
         );
       }
+      if (scenario.startsWith("healthcheck-exec-transition")) {
+        statReads++;
+        return statFor("S", "1", scenario.endsWith("-reused") && statReads > 1 ? "54321" : "12345");
+      }
       return stat;
     }
     if (path === "/proc/99999999/cmdline") {
       if (scenario === "unreadable") return fail("EACCES");
       if (scenario === "unknown") return "unrecognized-owner\\0";
+      if (scenario.startsWith("healthcheck-exec-transition")) {
+        cmdlineReads++;
+        return cmdlineReads === 1
+          ? "/bin/sh\\0-c\\0bun -e \\"const r = await fetch('http://127.0.0.1:7777/healthz'); if (!r.ok) process.exit(1);\\"\\0"
+          : "bun\\0-e\\0const r = await fetch('http://127.0.0.1:7777/healthz'); if (!r.ok) process.exit(1);\\0";
+      }
       return fail("ENOENT");
     }
     return fail("EACCES");
@@ -61,7 +75,10 @@ mock.module("node:fs", () => ({
   readlinkSync: (path) => {
     if (path === "/proc/1/exe") return "/usr/local/bin/bun";
     if (path === "/proc/1/cwd") return "/app";
-    if (path === "/proc/99999999/exe") return "/usr/local/bin/unknown-owner";
+    if (path === "/proc/99999999/exe")
+      return scenario.startsWith("healthcheck-exec-transition")
+        ? "/usr/local/bin/bun"
+        : "/usr/local/bin/unknown-owner";
     return fail("EACCES");
   },
 }));
