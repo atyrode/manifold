@@ -90,16 +90,38 @@ function brokerSetup(terminalExecution: MachineChannel["terminalExecution"] = "u
   return { runtime, clock, store, auth, root, container, rooms, broker, machine, socket, opener };
 }
 
+function pendingTerminalId(setup: ReturnType<typeof brokerSetup>): string {
+  const tile = Object.values(setup.rooms.get(setup.container.id)?.tileLayout() ?? {}).find(
+    (candidate) =>
+      candidate.dir === null &&
+      candidate.ref?.kind === "terminal" &&
+      setup.store.getTerminal(candidate.ref.terminalId) === null,
+  );
+  if (tile?.dir !== null || tile.ref?.kind !== "terminal")
+    throw new Error("missing pending terminal tile");
+  return tile.ref.terminalId;
+}
+
+function fitPending(setup: ReturnType<typeof brokerSetup>, cols = 80, rows = 24): string {
+  const terminalId = pendingTerminalId(setup);
+  setup.broker.resize(setup.opener, {
+    type: "terminal_resize",
+    terminalId,
+    cols,
+    rows,
+  });
+  return terminalId;
+}
+
 /** {@link brokerSetup} plus the opener's first `terminal_open`, with the `create` it produced. */
 function openingFixture() {
   const setup = brokerSetup();
   setup.broker.open(setup.opener, {
     type: "terminal_open",
     elementId: "terminal-1",
-    cols: 80,
-    rows: 24,
     placement: "tile",
   });
+  fitPending(setup);
   const create = setup.machine.sent.find((message) => message.type === "create");
   if (create === undefined || create.type !== "create") throw new Error("missing create request");
   return { ...setup, create };
@@ -923,6 +945,77 @@ describe("TerminalBroker pending-open room residency", () => {
   });
 });
 
+describe("TerminalBroker first-viewer tile fit", () => {
+  test("publishes a measurable tile before creating one PTY at the first viewer geometry", () => {
+    const setup = brokerSetup();
+    setup.broker.open(setup.opener, {
+      type: "terminal_open",
+      elementId: "fit-me",
+      // Legacy/advisory values cannot outrank the first measured viewer.
+      cols: 10,
+      rows: 5,
+      placement: "tile",
+    });
+
+    const terminalId = pendingTerminalId(setup);
+    expect(setup.machine.sent).toEqual([]);
+    const racingViewer = new SessionChannel(
+      setup.runtime.newId(),
+      new FakeSocket(),
+      setup.root,
+      setup.container.id,
+      "race",
+    );
+
+    setup.broker.resize(setup.opener, {
+      type: "terminal_resize",
+      terminalId,
+      cols: 132,
+      rows: 41,
+    });
+    setup.broker.resize(racingViewer, {
+      type: "terminal_resize",
+      terminalId,
+      cols: 70,
+      rows: 20,
+    });
+
+    expect(setup.machine.sent).toEqual([
+      expect.objectContaining({ type: "create", terminalId, cols: 132, rows: 41 }),
+    ]);
+    setup.broker.onCreated(setup.machine.machineId, terminalId);
+    expect(setup.store.getTerminal(terminalId)?.launchRecipe).toMatchObject({
+      cols: 132,
+      rows: 41,
+    });
+    setup.store.close();
+  });
+
+  test("times out without a viewer and removes the unstarted tile", () => {
+    const setup = brokerSetup();
+    setup.broker.open(setup.opener, {
+      type: "terminal_open",
+      elementId: "unseen",
+      placement: "tile",
+    });
+    const terminalId = pendingTerminalId(setup);
+
+    setup.clock.advance(10_000);
+
+    expect(setup.machine.sent).toEqual([]);
+    expect(setup.rooms.get(setup.container.id)?.homesTerminal(terminalId)).toBe(false);
+    expect(setup.socket.messages()).toContainEqual(
+      expect.objectContaining({
+        type: "error",
+        code: "no_machine",
+        ref: "unseen",
+        message: "terminal fit timed out",
+      }),
+    );
+    setup.store.close();
+  });
+});
+
 describe("TerminalBroker execution policy", () => {
   test.each(["governed", null] as const)(
     "runtime-free shells and programs are refused when execution is %s",
@@ -997,6 +1090,7 @@ describe("TerminalBroker drain (issue #278)", () => {
       rows: 24,
       placement: "tile",
     });
+    fitPending(setup);
     const create = setup.machine.sent.find((message) => message.type === "create");
     if (create === undefined || create.type !== "create") throw new Error("missing create");
 
@@ -1040,6 +1134,7 @@ describe("TerminalBroker drain (issue #278)", () => {
       rows: 24,
       placement: "tile",
     });
+    fitPending(setup);
     expect(setup.machine.sent.filter((message) => message.type === "create")).toHaveLength(2);
     setup.store.close();
   });
@@ -1125,6 +1220,7 @@ describe("TerminalBroker restart in place", () => {
       program: { argv: ["/bin/sh", "-l"] },
       env: { PROJECT: "kept" },
     });
+    fitPending(f, 110, 35);
     const create = f.machine.sent.find((message) => message.type === "create");
     if (!create || create.type !== "create") throw new Error("missing create");
     const terminalId = create.terminalId;
@@ -1188,6 +1284,7 @@ describe("TerminalBroker restart in place", () => {
       rows: 24,
       cwd: "./project",
     });
+    fitPending(f);
     const create = f.machine.sent.find((message) => message.type === "create");
     if (!create || create.type !== "create") throw new Error("missing create");
     f.broker.onCreated(f.machine.machineId, create.terminalId);

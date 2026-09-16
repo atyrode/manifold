@@ -69,6 +69,7 @@ interface TerminalsFixture {
   readonly owner: AuthContext;
   readonly container: Container;
   readonly broker: TerminalBroker;
+  readonly rooms: RoomManager;
   readonly machine: FakeMachine;
   readonly host: PluginHost;
   readonly gateway: SessionGateway;
@@ -154,7 +155,7 @@ async function fixture(): Promise<TerminalsFixture> {
     runtime,
     events,
   );
-  return { runtime, clock, store, auth, owner, container, broker, machine, host, gateway };
+  return { runtime, clock, store, auth, owner, container, rooms, broker, machine, host, gateway };
 }
 
 /** A minted token, so authority is exercised through real attenuation. */
@@ -168,6 +169,28 @@ function context(base: TerminalsFixture, caps: readonly Cap[], containerId?: str
     base.owner,
   );
   return base.auth.authenticate(grant.token);
+}
+
+function fitPending(base: TerminalsFixture, cols = 80, rows = 24): string {
+  const tile = Object.values(base.rooms.get(base.container.id)?.tileLayout() ?? {}).find(
+    (candidate) =>
+      candidate.dir === null &&
+      candidate.ref?.kind === "terminal" &&
+      base.store.getTerminal(candidate.ref.terminalId) === null,
+  );
+  if (tile?.dir !== null || tile.ref?.kind !== "terminal")
+    throw new Error("missing pending terminal tile");
+  base.broker.resize(
+    new SessionChannel(
+      base.runtime.newId(),
+      new FakeSocket(),
+      base.owner,
+      base.container.id,
+      "fit",
+    ),
+    { type: "terminal_resize", terminalId: tile.ref.terminalId, cols, rows },
+  );
+  return tile.ref.terminalId;
 }
 
 /**
@@ -185,10 +208,9 @@ function liveTerminal(base: TerminalsFixture, opener: AuthContext = base.owner):
   base.broker.open(channel, {
     type: "terminal_open",
     elementId: `open-${base.machine.sent.length}`,
-    cols: 80,
-    rows: 24,
     placement: "tile",
   });
+  fitPending(base);
   const create = base.machine.sent.findLast((message) => message.type === "create");
   if (create === undefined || create.type !== "create") throw new Error("missing create request");
   base.broker.onCreated(base.machine.machineId, create.terminalId);
@@ -223,6 +245,32 @@ describe("core.terminals doors", () => {
       result: {},
     });
   });
+
+  test("creation policy requires paired geometry only for element placement", async () => {
+    const base = await fixture();
+    const common = { containerId: base.container.id, elementId: "geometry" };
+
+    expect(
+      denial(
+        await base.host.dispatch(base.owner, "core.terminals.open", {
+          ...common,
+          placement: "tile",
+          cols: 80,
+        }),
+      ),
+    ).toEqual({ rule: "refused", message: "cols and rows must be supplied together" });
+    expect(denial(await base.host.dispatch(base.owner, "core.terminals.open", common))).toEqual({
+      rule: "refused",
+      message: "element placement requires cols and rows",
+    });
+    expect(
+      await base.host.dispatch(base.owner, "core.terminals.open", {
+        ...common,
+        placement: "tile",
+      }),
+    ).toEqual({ ok: true, result: {} });
+    base.store.close();
+  });
   test("HTTP creation waits for durable birth and the returned terminal attaches later", async () => {
     const base = await fixture();
     const pending = base.host.dispatch(base.owner, "core.terminals.create", {
@@ -233,6 +281,7 @@ describe("core.terminals doors", () => {
       placement: "tile",
     });
     await Promise.resolve();
+    fitPending(base);
     const create = base.machine.sent.find((message) => message.type === "create");
     if (create === undefined || create.type !== "create") throw new Error("missing create request");
     expect(base.store.getTerminal(create.terminalId)).toBeNull();
@@ -284,6 +333,7 @@ describe("core.terminals doors", () => {
       placement: "tile",
     });
     await Promise.resolve();
+    fitPending(base);
     const create = base.machine.sent.find((message) => message.type === "create");
     if (create === undefined || create.type !== "create") throw new Error("missing create request");
     base.clock.advance(10_000);
@@ -731,6 +781,7 @@ describe("session channel terminal verbs speak the ladder", () => {
     );
     await settled();
 
+    fitPending(base);
     const create = base.machine.sent.find((message) => message.type === "create");
     if (create === undefined || create.type !== "create") throw new Error("missing create request");
     expect(errors(socket)).toEqual([]);
@@ -771,6 +822,7 @@ describe("session channel terminal verbs speak the ladder", () => {
 
     // One value, read once: everything the door judges rides unchanged to the machine.
     expect(errors(socket)).toEqual([]);
+    fitPending(base);
     const create = base.machine.sent.find((message) => message.type === "create");
     if (create === undefined || create.type !== "create") throw new Error("missing create request");
     expect(create.program).toEqual({ argv });
@@ -820,6 +872,7 @@ describe("session channel terminal verbs speak the ladder", () => {
     await settled();
 
     expect(errors(socket)).toEqual([]);
+    fitPending(base);
     const create = base.machine.sent.find((message) => message.type === "create");
     if (create === undefined || create.type !== "create") throw new Error("missing create request");
     expect(create).toMatchObject({ program: { argv }, cwd });

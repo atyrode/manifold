@@ -291,8 +291,6 @@ async function fixture(dependency?: ServerPluginDef) {
     const request = {
       elementId: runtime.newId(),
       machineId,
-      cols: 80,
-      rows: 24,
       placement: "tile" as const,
       runtime: value,
     };
@@ -302,6 +300,20 @@ async function fixture(dependency?: ServerPluginDef) {
         result(await host.dispatch(actor, "core.terminals.open", { ...request, containerId })),
       );
     broker.open(peer, { type: "terminal_open", ...request }, admission.traceId);
+    const tile = Object.values(rooms.get(containerId)?.tileLayout() ?? {}).find(
+      (candidate) =>
+        candidate.dir === null &&
+        candidate.ref?.kind === "terminal" &&
+        store.getTerminal(candidate.ref.terminalId) === null,
+    );
+    if (tile?.dir !== null || tile.ref?.kind !== "terminal")
+      throw new Error("pending terminal tile missing");
+    broker.resize(peer, {
+      type: "terminal_resize",
+      terminalId: tile.ref.terminalId,
+      cols: 80,
+      rows: 24,
+    });
     return socket;
   };
   return {

@@ -630,17 +630,19 @@ Caps and schemas still apply in both cases: a carve-out skips one rung, never th
 Two terminal doors are easy to confuse. **`core.terminals.open` is the session frame's policy
 gate; `core.terminals.create` is the bearer-reachable birth.** The session channel dispatches
 `open` before it honours a `terminal_open` frame. A caller with no session socket instead posts
-the same launch facts to `create`; that action waits for the machine acknowledgement and the
-durable terminal/home commit, then returns `{ terminal, uri }`, where `uri` is the canonical
-`manifold://terminal/<id>` reference. Both paths use the broker's one placement, machine
-selection, acknowledgement and compensation mechanism.
-The SDK's authenticated HTTP transport is sufficient; no `SessionClient` exists during birth:
+the same launch facts to `create`; that action publishes a pending tile and waits for a mounted
+composition viewer to measure it, then waits for the machine acknowledgement and durable
+terminal/home commit. It returns `{ terminal, uri }`, where `uri` is the canonical
+`manifold://terminal/<id>` reference. Both paths use the broker's one placement, first-viewer
+fit, machine selection, acknowledgement and compensation mechanism. An HTTP caller does not
+need its own `SessionClient`, but some writable viewer of that composition must be mounted:
+without one, the broker removes the pending leaf and refuses the call after ten seconds.
 
 ```ts
 const { outcome } = await invokeAction(
   { origin, token, timeoutMs: 15_000 },
   "core.terminals.create",
-  { containerId, elementId: crypto.randomUUID(), cols: 80, rows: 24 },
+  { containerId, elementId: crypto.randomUUID(), placement: "tile" },
 );
 ```
 
@@ -2300,8 +2302,8 @@ interface SessionHandle {
   readonly terminals: ReadonlyMap<string, TerminalInfo>; // the routed room's table, live
   openTerminal(opts: {
     elementId: string; // your correlation token; under `placement: "tile"` the server places
-    cols: number;
-    rows: number;
+    cols?: number; // required with rows when placement is absent; omit both for tile placement
+    rows?: number;
     cwd?: string;
     machineId?: string;
     placement?: "tile";
@@ -2342,8 +2344,6 @@ that opens a terminal and types into it is therefore:
 const born = await host.client.openTerminal({
   elementId: crypto.randomUUID(),
   placement: "tile",
-  cols: 80,
-  rows: 24,
   machineId: machine.id,
 });
 host.client.sendTerminalInput(born.id, "code launch --selection ...\n");
@@ -2387,9 +2387,10 @@ its lease; `takeTerminal` and `killTerminal` remain the separate checked verbs a
 
 `openTerminal` correlates the reply's `terminal_opened.ref` (or its `elementId` when `ref`
 is absent) with the supplied `elementId`, and rejects a matching error or a timeout
-(`timeoutMs`, default 15000). Both `cols` and
-`rows` are required; `program` and `env` are the supported optional executable/environment
-fields, not a `command` option. Source:
+(`timeoutMs`, default 15000). For default element placement, `cols` and `rows` are a required pair. For
+`placement: "tile"`, omit both: the server publishes the leaf and the first mounted viewer's
+measured `resizeTerminal` frame becomes the PTY's initial grid. `program` and `env` are the
+supported optional executable/environment fields, not a `command` option. Source:
 [`session-client.ts`](../packages/sdk/src/session-client.ts), `openTerminal`, and
 [`host.ts`](../packages/plugin/src/host.ts), `SessionHandle`.
 

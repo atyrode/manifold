@@ -276,30 +276,26 @@ export function TerminalView({
   }, [client]);
 
   /**
-   * The xterm instance and its DOM host, whose life is the TERMINAL's — never the
-   * socket's. A portal escalating from spectator to occupant (and dropping back) hands
-   * this component a DIFFERENT `SessionClient` for the same tile; a terminal disposed
-   * and re-opened on that swap is a visible refresh — new DOM node, buffer repainted
-   * from zero, selection and mouse-mode TUIs losing their host mid-gesture. So
-   * creation depends on the terminal alone, and the socket wiring below re-runs against
-   * the SAME terminal.
-   *
-   * `terminalReady` is read off whichever client is painting, and both sides of a role
-   * swap know the terminal before the swap is visible (the switch promotes only after
-   * `connect()` resolves, and init carries the terminal table), so an escalation never
-   * flickers this effect.
+   * The xterm instance and its DOM host, whose life is the TERMINAL TILE's — never the
+   * socket's or the PTY's. A pending tile exists before its PTY so its first real viewer can
+   * measure the host and publish the birth geometry without inventing process dimensions.
+   * The local 80x24 grid below is only an unpainted xterm bootstrap; it never reaches the
+   * broker. A portal escalating from spectator to occupant (and dropping back) hands this
+   * component a DIFFERENT `SessionClient` for the same tile; a terminal disposed and
+   * re-opened on that swap is a visible refresh — new DOM node, buffer repainted from zero,
+   * selection and mouse-mode TUIs losing their host mid-gesture. So creation depends on the
+   * tile alone, and the socket wiring below re-runs against the SAME terminal.
    */
   useEffect(() => {
-    if (!terminalReady || !fontReady) return;
+    if (!fontReady) return;
     const container = containerRef.current;
     if (container === null) return;
 
     const initialTerminal = clientRef.current.terminals.get(terminalId);
-    if (initialTerminal === undefined) return;
     const terminal = new Terminal({
       allowProposedApi: true,
-      cols: initialTerminal.cols,
-      rows: initialTerminal.rows,
+      cols: initialTerminal?.cols ?? 80,
+      rows: initialTerminal?.rows ?? 24,
       convertEol: false,
       cursorBlink: true,
       scrollback: 5000,
@@ -371,9 +367,12 @@ export function TerminalView({
     const sendCurrentGeometry = (): void => {
       resizeFrameRef.current = null;
       // Measure a viewport without changing its interpretation of shared PTY bytes.
-      // Only the controller publishes a desired size; every viewer adopts the
-      // authoritative resize event, including this one.
-      if (readOnlyRef.current || !isControllerRef.current) return;
+      // Before birth, the first writable viewer publishes the PTY's initial grid. Once
+      // running, only the controller publishes a desired size; every viewer adopts the
+      // authoritative resize event.
+      const current = clientRef.current;
+      const awaitingBirth = current.terminals.get(terminalId) === undefined;
+      if (readOnlyRef.current || (!awaitingBirth && !isControllerRef.current)) return;
       const geometry = fitAddon.proposeDimensions();
       if (geometry === undefined) return;
       if (
@@ -384,7 +383,8 @@ export function TerminalView({
         return;
       }
       lastSentGeometry = geometry;
-      clientRef.current.resizeTerminal(terminalId, geometry.cols, geometry.rows);
+      if (awaitingBirth) terminal.resize(geometry.cols, geometry.rows);
+      current.resizeTerminal(terminalId, geometry.cols, geometry.rows);
     };
 
     const scheduleResize = (): void => {
@@ -394,9 +394,10 @@ export function TerminalView({
     scheduleResizeRef.current = scheduleResize;
 
     const scheduleMeasuredResize = (): void => {
-      // A snapshot and subsequent cursor updates must use the same PTY grid.
+      // A pending tile has no snapshot yet: its measured grid is what permits PTY birth.
+      // Afterwards a snapshot and subsequent cursor updates must use the same PTY grid.
       // A smaller spectator viewport scrolls that grid; it must never reflow it.
-      if (!paintedRef.current) return;
+      if (!paintedRef.current && clientRef.current.terminals.has(terminalId)) return;
       scheduleResize();
     };
     let settleFrame: number | null = null;
@@ -447,7 +448,18 @@ export function TerminalView({
       terminalRef.current = null;
       paintedRef.current = false;
     };
-  }, [terminalId, terminalReady, fontReady]);
+  }, [terminalId, fontReady]);
+
+  useEffect(() => {
+    const instance = terminalRef.current;
+    if (
+      instance === null ||
+      terminal === undefined ||
+      (instance.cols === terminal.cols && instance.rows === terminal.rows)
+    )
+      return;
+    instance.resize(terminal.cols, terminal.rows);
+  }, [terminal]);
 
   useEffect(() => {
     const terminal = terminalRef.current;

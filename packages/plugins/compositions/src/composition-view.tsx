@@ -612,8 +612,6 @@ export function CompositionView({
         const terminal = await client.openTerminal({
           elementId: crypto.randomUUID(),
           placement: "tile",
-          cols: 80,
-          rows: 24,
           ...(target === null ? {} : { machineId: target.id }),
           ...(runtime === undefined ? {} : { runtime }),
         });

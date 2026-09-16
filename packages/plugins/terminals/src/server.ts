@@ -78,8 +78,8 @@ interface TerminalsCtx {
       input: {
         readonly type: "terminal_open";
         readonly elementId: string;
-        readonly cols: number;
-        readonly rows: number;
+        readonly cols?: number;
+        readonly rows?: number;
         readonly cwd?: string;
         readonly machineId?: string;
         readonly placement?: "tile";
@@ -110,8 +110,8 @@ type Outcome<T> = { refused: string } | T;
 interface TerminalCreationArgs {
   readonly containerId: string;
   readonly elementId: string;
-  readonly cols: number;
-  readonly rows: number;
+  readonly cols?: number;
+  readonly rows?: number;
   readonly cwd?: string;
   readonly machineId?: string;
   readonly placement?: "element" | "tile";
@@ -127,6 +127,11 @@ function creationRefusal(
 ): { refused: string } | null {
   const outside = ctx.outsideScope(args.containerId);
   if (outside !== null) return outside;
+  const hasCols = args.cols !== undefined;
+  const hasRows = args.rows !== undefined;
+  if (hasCols !== hasRows) return { refused: "cols and rows must be supplied together" };
+  if (args.placement !== "tile" && !hasCols)
+    return { refused: "element placement requires cols and rows" };
   return args.runtime &&
     (args.cwd !== undefined || args.program !== undefined || args.env !== undefined)
     ? { refused: "runtime excludes cwd, program, and environment overrides" }

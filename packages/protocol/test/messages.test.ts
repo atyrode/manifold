@@ -154,6 +154,7 @@ describe("session channel schemas", () => {
       { type: "terminal_take" as const, terminalId: "s1" },
       { type: "terminal_kill" as const, terminalId: "s1" },
       { type: "terminal_open" as const, elementId: "el1", cols: 80, rows: 24 },
+      { type: "terminal_open" as const, elementId: "tile-1", placement: "tile" as const },
     ];
     for (const body of bodies) {
       expect(ClientMessageBodySchema.parse(body)).toEqual(body);

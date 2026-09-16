@@ -171,7 +171,8 @@ export interface SessionHandle {
    * Under the default placement the caller is a canvas, so `elementId` is both the correlation
    * token and the id the caller authors its own element under — a `portal` onto
    * `terminal.containerId`. `placement: "tile"` is how a TILED container births one: the
-   * server writes the tile leaf itself and the caller authors nothing.
+   * server writes the tile leaf first, and its first measured viewer supplies the PTY's
+   * initial geometry. The caller authors nothing and omits `cols`/`rows`.
    *
    * `program` names what the PTY execs instead of the machine's shell, and `env` is merged
    * under the fixed `MANIFOLD_*` keys (issue #192). Both are judged at `core.terminals.open`
@@ -182,14 +183,10 @@ export interface SessionHandle {
   openTerminal(
     opts: {
       readonly elementId: string;
-      readonly cols: number;
-      readonly rows: number;
       readonly cwd?: string;
       readonly machineId?: string;
-      readonly placement?: "tile";
       readonly program?: TerminalProgram;
       readonly env?: TerminalEnv;
-      readonly runtime?: TerminalRuntime;
       readonly timeoutMs?: number;
     } & (
       | {
@@ -199,7 +196,19 @@ export interface SessionHandle {
           readonly cwd?: never;
         }
       | { readonly runtime?: never }
-    ),
+    ) &
+      (
+        | {
+            readonly placement: "tile";
+            readonly cols?: never;
+            readonly rows?: never;
+          }
+        | {
+            readonly placement?: never;
+            readonly cols: number;
+            readonly rows: number;
+          }
+      ),
   ): Promise<TerminalInfo>;
   /**
    * Declares a view on a terminal: the server answers with a fresh `terminal_snapshot` and

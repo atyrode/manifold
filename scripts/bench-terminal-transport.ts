@@ -291,15 +291,32 @@ async function run(): Promise<void> {
     return client;
   }
   const a = await viewer();
-  const terminal = await a.openTerminal({
+  const opening = a.openTerminal({
     elementId: "transport-fixture",
     placement: "tile",
-    cols: 80,
-    rows: 24,
     machineId: enrolled.machineId,
     program: { argv: [process.execPath, fixturePath] },
     timeoutMs: workload.timeoutMs,
   });
+  let pendingTerminalId: string | null = null;
+  await waitFor(
+    () => {
+      const tile = Object.values(a.layout() ?? {}).find(
+        (candidate) =>
+          candidate.dir === null &&
+          candidate.ref?.kind === "terminal" &&
+          !a.terminals.has(candidate.ref.terminalId),
+      );
+      pendingTerminalId =
+        tile?.dir === null && tile.ref?.kind === "terminal" ? tile.ref.terminalId : null;
+      return pendingTerminalId !== null;
+    },
+    workload.timeoutMs,
+    2,
+  );
+  if (pendingTerminalId === null) throw new Error("pending terminal tile disappeared before fit");
+  a.resizeTerminal(pendingTerminalId, 80, 24);
+  const terminal = await opening;
   const ca = new Capture("A", a, terminal.id);
   a.attachTerminal(terminal.id);
   await waitFor(() => ca.snapshots.length > 0, workload.timeoutMs, 2);

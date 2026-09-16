@@ -369,9 +369,21 @@ function bornInComposition(fixture: LifecycleFixture, inside: Witness, ref: stri
   fixture.broker.open(inside.peer, {
     type: "terminal_open",
     elementId: ref,
+    placement: "tile",
+  });
+  const pending = Object.values(room(fixture, inside.peer.containerId).tileLayout() ?? {}).find(
+    (tile) =>
+      tile.dir === null &&
+      tile.ref?.kind === "terminal" &&
+      fixture.store.getTerminal(tile.ref.terminalId) === null,
+  );
+  if (pending?.dir !== null || pending.ref?.kind !== "terminal")
+    throw new Error("missing pending terminal tile");
+  fixture.broker.resize(inside.peer, {
+    type: "terminal_resize",
+    terminalId: pending.ref.terminalId,
     cols: 80,
     rows: 24,
-    placement: "tile",
   });
   const create = lastCreate(fixture.machine);
   fixture.broker.onCreated(fixture.machine.machineId, create.terminalId);
