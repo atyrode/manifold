@@ -90,9 +90,8 @@ seed_preview_volume() (
 
 up() {
   local number=$1 sha=$2 checkout port volume development_image base_image final_image revision
+  local incumbent_revision health
   pr_name "$number"; sha_arg "$sha"
-  development_image=$(environment_image)
-  require_environment_builder
   checkout="$PREVIEW_HOME/checkouts/pr-$number"
   port=$(allocate "$number"); volume="manifold-pr-${number}_manifold-data"
   base_image="manifold-pr-pr-$number:base"; final_image="manifold-pr-pr-$number:local"
@@ -105,6 +104,19 @@ up() {
   git -C "$checkout" checkout -q --detach "$sha"
   revision=$(git -C "$checkout" rev-parse HEAD)
   identity "$checkout" "$revision"; export MANIFOLD_CHANNEL=development
+  development_image=$(environment_image)
+  if incumbent_revision=$(running_environment_revision "manifold-pr-$number" "$development_image") &&
+     [[ $incumbent_revision == "$revision" ]] &&
+     health=$(curl -fsS --max-time 3 "http://127.0.0.1:$port/healthz" 2>/dev/null) &&
+     [[ $(jq -r '.build' <<<"$health") == "$MANIFOLD_BUILD" ]]; then
+    log "PR $number already runs exact healthy revision $revision; verifying without replacement"
+    verify_disposable_environment "$final_image" compose "$number" "$port"
+    register "$number" pr "$port"
+    router
+    log "https://$number.$PREVIEW_DOMAIN runs $MANIFOLD_BUILD without replacement"
+    return
+  fi
+  require_environment_builder
   log "building PR $number: $MANIFOLD_BUILD on $development_image"
   log "stable preview boundary: using trusted standalone Compose topology"
   build_environment "$checkout" "$base_image" "$final_image" "manifold-pr-$number" "$development_image"
@@ -124,9 +136,23 @@ up() {
   log "https://$number.$PREVIEW_DOMAIN runs $MANIFOLD_BUILD on $development_image"
 }
 down() {
-  local number=$1 port image image_id project resource resources volume
+  local number=$1 port image image_id project resource resources volume incumbent
   pr_name "$number"; lookup "$number"; port=${entry_port:-7920}
   project="manifold-pr-$number"; volume="${project}_manifold-data"
+  image="manifold-pr-pr-$number:local"
+  incumbent=$(docker ps --quiet --no-trunc \
+    --filter "label=com.docker.compose.project=$project" \
+    --filter 'label=com.docker.compose.service=manifold')
+  if [[ -n $incumbent ]]; then
+    [[ $incumbent =~ ^[0-9a-f]{64}$ ]] ||
+      fail 'preview removal requires exactly one running manifold container'
+    log "checking $project terminal owner before removal"
+    if [[ -d $PREVIEW_HOME/checkouts/pr-$number ]]; then
+      compose "$number" "$port" "$image" exec -T manifold bun - prepare <"$here/terminal-lifecycle.ts"
+    else
+      docker exec -i "$incumbent" bun - prepare <"$here/terminal-lifecycle.ts"
+    fi
+  fi
   log "removing PR $number"
   if [[ -d $PREVIEW_HOME/checkouts/pr-$number ]]; then
     compose "$number" "$port" "manifold-pr-pr-$number:local" down -v

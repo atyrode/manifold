@@ -22,6 +22,7 @@ import {
   ActionOutcomeSchema,
   ContainerResponseSchema,
   IndexResponseSchema,
+  MachineEnrollResponseSchema,
   MachinesResponseSchema,
   TerminalsResponseSchema,
 } from "../packages/protocol/src/index.ts";
@@ -74,6 +75,7 @@ const processes = new Set<Bun.Subprocess>();
 const metrics: Record<string, unknown> = { integrated, measureStorage, artifacts: evidence };
 const reports: { name: string; elapsedMs: number }[] = [];
 let browser: Browser | null = null;
+let peerBrowser: Browser | null = null;
 let number = "";
 let ownsProject = false;
 let port = 0;
@@ -85,6 +87,8 @@ let ownerKey = "";
 let canvasId = "";
 let machineId = "";
 let originalTerminalId = "";
+let originalTerminalHomeId = "";
+let refusedMachineId = "";
 let sceneId = "";
 let expectedScene: unknown;
 let appUid = 1000;
@@ -391,6 +395,55 @@ async function onlineMachine(): Promise<string> {
 async function terminals() {
   return TerminalsResponseSchema.parse(await act("core.terminals.listAll", {})).terminals;
 }
+async function createRefusedMachine(): Promise<void> {
+  const enrolled = MachineEnrollResponseSchema.parse(
+    await act("core.machines.enroll", { name: `stale-pr-${number}` }),
+  );
+  requireThat(enrolled.machineToken !== undefined, "refusal fixture did not mint a machine token");
+  secrets.add(enrolled.machineToken);
+  refusedMachineId = enrolled.machine.id;
+  const socket = new WebSocket(`${origin.replace(/^http/, "ws")}/ws/machine`);
+  const closed = Promise.withResolvers<CloseEvent>();
+  socket.addEventListener("open", () => {
+    socket.send(
+      JSON.stringify({
+        type: "hello",
+        token: enrolled.machineToken,
+        name: enrolled.machine.name,
+        agentVersion: "refusal-fixture",
+        protocolVersion: 1,
+        terminals: [],
+      }),
+    );
+  });
+  socket.addEventListener("close", (event) => closed.resolve(event), { once: true });
+  const event = await Promise.race([
+    closed.promise,
+    sleep(20_000).then(() => {
+      socket.close();
+      throw new Error("machine refusal fixture timed out");
+    }),
+  ]);
+  requireThat(event.code === 4409, "stale preview node did not receive protocol refusal");
+  await until(
+    async () =>
+      MachinesResponseSchema.parse(await act("core.machines.list", {})).machines.some(
+        (machine) => machine.id === refusedMachineId && machine.lastRefusal?.code === 4409,
+      ),
+    10_000,
+    "machine refusal published to the roster",
+  );
+}
+async function assertDeploymentProbeClean(): Promise<void> {
+  const items = IndexResponseSchema.parse(await act("core.index.read", {})).items;
+  requireThat(
+    !items.some(
+      (item) =>
+        item.kind === "container" && item.container.name.startsWith("preview-deployment-probe-"),
+    ),
+    "deployment verification left its disposable canvas behind",
+  );
+}
 async function terminalProbe(id: string, homeId: string, label: string): Promise<void> {
   const client = await session(homeId);
   let received = "";
@@ -458,11 +511,6 @@ async function sceneSurvives(): Promise<void> {
   );
   canvas.close();
   clients.delete(canvas);
-  const rows = await terminals();
-  requireThat(
-    !rows.some((terminal) => terminal.id === originalTerminalId),
-    "redeployment retained an old terminal that cannot survive container replacement",
-  );
 }
 async function assertDataWrites(): Promise<void> {
   const name = `developer-write-${crypto.randomUUID()}`;
@@ -933,6 +981,19 @@ async function browserProof(): Promise<void> {
   await browser.evaluate(
     "(() => { const b = document.querySelector('[data-testid=machines-section] button[aria-expanded]'); if (b.getAttribute('aria-expanded') !== 'true') b.click(); })()",
   );
+  requireThat(refusedMachineId !== "", "refused preview node fixture is absent");
+  await until(
+    () =>
+      browser!.evaluate<boolean>(
+        "document.body.innerText.includes('Admission refused (4409)') && document.body.innerText.includes('protocol mismatch; update this node to the hub build')",
+      ),
+    20_000,
+    "machine roster renders the actionable admission refusal",
+  );
+  await capture("machine-admission-refusal");
+  await act("core.machines.revoke", { machineId: refusedMachineId });
+  await act("core.machines.forget", { machineId: refusedMachineId });
+  refusedMachineId = "";
   const selector = `[aria-label="New terminal on ${machineName()}"]`;
   await until(
     () =>
@@ -966,6 +1027,47 @@ async function browserProof(): Promise<void> {
     new RegExp(`${shellMarker}:1000:1000:[^:\\s]+:/home/developer`).test(await screen()),
     "browser terminal is not the configured developer zsh",
   );
+  peerBrowser = new Browser();
+  await peerBrowser.launch({ incognito: true });
+  await peerBrowser.goto(`${origin}/#key=${ownerKey}`);
+  await until(
+    () =>
+      peerBrowser!.evaluate<boolean>(
+        "document.querySelector('[data-testid=identity-enter]') !== null",
+      ),
+    20_000,
+    "second browser identity entry",
+  );
+  await peerBrowser.typeInto("input", `second-viewer-${number}`);
+  await peerBrowser.clickTestId("identity-enter");
+  await until(
+    () => peerBrowser!.evaluate<boolean>("localStorage.getItem('manifold.identity') !== null"),
+    20_000,
+    "second browser identity admitted",
+  );
+  secrets.add(
+    await peerBrowser.evaluate<string>(
+      "JSON.parse(localStorage.getItem('manifold.identity')).token",
+    ),
+  );
+  await peerBrowser.goto(`${origin}/p/${opened.homeId}`);
+  await until(
+    () =>
+      peerBrowser!.evaluate<boolean>(
+        `document.querySelector('.xterm-rows')?.innerText.includes(${JSON.stringify(shellMarker)}) === true`,
+      ),
+    20_000,
+    "second browser observes the same terminal output",
+  );
+  const peerFrame = await peerBrowser.send("Page.captureScreenshot", {
+    format: "png",
+    captureBeyondViewport: false,
+  });
+  const peerData = peerFrame.result?.["data"];
+  requireThat(typeof peerData === "string", "second Chromium did not return screenshot data");
+  writeFileSync(join(evidence, "two-browser-terminal.png"), Buffer.from(peerData, "base64"));
+  await peerBrowser.close();
+  peerBrowser = null;
   await shellCommand(
     "mkdir -p /workspace/preview-fixture; cd /workspace/preview-fixture; git init -q; printf '%s%s\\n' READY -GIT",
     "READY-GIT",
@@ -1226,6 +1328,8 @@ async function teardown(): Promise<void> {
   closeClients();
   await browser?.close();
   browser = null;
+  await peerBrowser?.close();
+  peerBrowser = null;
   const failures: string[] = [];
   if (ownsProject) {
     // Exact project labels are a fallback for partially failed up/down, never a global prune.
@@ -2176,39 +2280,110 @@ console.log(JSON.stringify({
       expectedScene = canvas.elements.get(sceneId);
       const terminal = await newTerminalProbe("root-migration");
       originalTerminalId = terminal.id;
+      originalTerminalHomeId = terminal.homeId;
       await processOwners(0);
       identityDigests = await digests();
       closeClients();
     });
-    await step("same-volume root to UID1000 migration and persistent server writes", async () => {
+    await step("retained preview work blocks replacement without disruption", async () => {
+      const before = await inspectContainer();
+      const result = await up({ allowFailure: true, timeoutMs: 18 * 60_000 });
+      requireThat(result.code !== 0, "preview replacement destroyed retained terminal work");
+      requireThat(
+        `${result.out}\n${result.err}`.includes("HOLD: preview node") &&
+          `${result.out}\n${result.err}`.includes(
+            "close or migrate them before changing this preview",
+          ),
+        "occupied preview replacement did not return its actionable hold",
+      );
+      const after = await inspectContainer();
+      requireThat(
+        after.Id === before.Id &&
+          after.State.StartedAt === before.State.StartedAt &&
+          after.State.Status === "running",
+        "occupied preview replacement changed the incumbent container",
+      );
+      await terminalProbe(originalTerminalId, originalTerminalHomeId, "retained-after-refusal");
+      requireThat((await onlineMachine()) === machineId, "replacement hold left admission closed");
+    });
+    await step("explicitly emptied preview replaces and preserves workspace data", async () => {
+      await act("core.terminals.kill", { terminalId: originalTerminalId });
+      await until(
+        async () => !(await terminals()).some((terminal) => terminal.id === originalTerminalId),
+        20_000,
+        "operator-cleared preview terminal",
+      );
       appUid = 1000;
       await up();
       await ready();
       await processOwners(1000);
       await sceneSurvives();
+      await assertDeploymentProbeClean();
+      requireThat((await terminals()).length === 0, "deployment terminal probe was not cleaned up");
       await newTerminalProbe("migrated-developer");
       await assertDataWrites();
+      await createRefusedMachine();
     });
     await step("native browser shell, OMP draft, Code dial and Index reattachment", browserProof);
-    await step("stop/start preserves home; actual recreation resets home, not data", async () => {
+    await step("same-SHA request verifies without replacing retained terminal work", async () => {
       const marker = `home-${crypto.randomUUID()}`;
       await execBun(
         `await Bun.write('/home/developer/.preview-home-marker', ${JSON.stringify(marker)});`,
       );
+      const before = await inspectContainer();
+      const retained = (await terminals()).filter((terminal) => terminal.status === "running");
+      requireThat(retained.length > 0, "same-SHA proof requires retained terminal work");
       closeClients();
-      await compose(finalImage(), ["exec", "-T", "manifold", "bun", "-", "retire"], {
+      const result = await up();
+      requireThat(
+        `${result.out}\n${result.err}`.includes(
+          `already runs exact healthy revision ${revision}; verifying without replacement`,
+        ),
+        "same-SHA request did not take the verified no-replacement path",
+      );
+      const after = await inspectContainer();
+      requireThat(
+        after.Id === before.Id && after.State.StartedAt === before.State.StartedAt,
+        "same-SHA request replaced the incumbent container",
+      );
+      const current = await terminals();
+      requireThat(
+        retained.every((expected) =>
+          current.some((terminal) => terminal.id === expected.id && terminal.status === "running"),
+        ),
+        "same-SHA request removed retained terminal work",
+      );
+      requireThat(
+        current.length === retained.length,
+        "same-SHA verification left a disposable terminal behind",
+      );
+      await assertDeploymentProbeClean();
+      await terminalProbe(retained[0]!.id, retained[0]!.homeId, "same-sha-retained");
+      requireThat(
+        (await execBun(
+          "console.log(await Bun.file('/home/developer/.preview-home-marker').text())",
+        )) === marker,
+        "same-SHA request discarded the disposable home",
+      );
+
+      for (const terminal of current) await act("core.terminals.kill", { terminalId: terminal.id });
+      await until(
+        async () => (await terminals()).length === 0,
+        30_000,
+        "explicitly emptied preview terminal inventory",
+      );
+      await compose(finalImage(), ["exec", "-T", "manifold", "bun", "-", "prepare"], {
         input: readFileSync(join(tooling, "terminal-lifecycle.ts"), "utf8"),
       });
       await compose(finalImage(), ["stop", "manifold"]);
       // Engine 28 wakes stop waiters before checkpointing its container-list replica.
-      // Compose can read stale "running" state and skip start. Inspect acquires the
-      // container lock held through that checkpoint; observe exit before handing off.
+      // Inspect acquires that lock so Compose cannot misread stale running state.
       const stopped = await inspectContainer();
       requireThat(stopped.State.Status === "exited", "the stopped container has completed exit");
       metrics["stoppedContainer"] = stopped.State;
       await compose(finalImage(), ["start", "manifold"]);
       await ready();
-      await compose(finalImage(), ["exec", "-T", "manifold", "bun", "-", "resume"], {
+      await compose(finalImage(), ["exec", "-T", "manifold", "bun", "-", "verify"], {
         input: readFileSync(join(tooling, "terminal-lifecycle.ts"), "utf8"),
       });
       requireThat(
@@ -2219,12 +2394,16 @@ console.log(JSON.stringify({
       );
       await sceneSurvives();
       await processOwners(1000);
-      const before = await containerId();
+
+      const beforeRecreation = await containerId();
       await compose(finalImage(), ["stop", "manifold"]);
       await compose(finalImage(), ["rm", "-f", "manifold"]);
       await up();
       await ready();
-      requireThat((await containerId()) !== before, "recreation reused the original container");
+      requireThat(
+        (await containerId()) !== beforeRecreation,
+        "explicit empty recreation reused the original container",
+      );
       requireThat(
         (await execBun(
           "console.log(await Bun.file('/home/developer/.preview-home-marker').exists())",
@@ -2232,6 +2411,7 @@ console.log(JSON.stringify({
         "new container inherited the disposable home",
       );
       await sceneSurvives();
+      await assertDeploymentProbeClean();
       await newTerminalProbe("recreated-developer");
       await assertDataWrites();
     });
@@ -2336,6 +2516,10 @@ console.log(JSON.stringify({
         },
       ),
     );
+    const buildRequiredRevision = await fixtureChild(
+      safeRevision,
+      `build-required-${crypto.randomUUID()}`,
+    );
     await step(
       "owned incompatible Buildx builder selected only in fixture environment",
       async () => {
@@ -2350,9 +2534,11 @@ console.log(JSON.stringify({
           "incompatible-builder",
           async () => {
             env["BUILDX_BUILDER"] = builder;
+            revision = buildRequiredRevision;
           },
           async () => {
             delete env["BUILDX_BUILDER"];
+            revision = safeRevision;
           },
           "preview: development image composition requires the docker Buildx driver",
         );
@@ -2365,6 +2551,7 @@ console.log(JSON.stringify({
       await preserveLive(
         "protocol-probe",
         async () => {
+          revision = buildRequiredRevision;
           writeFileSync(
             adapterPath,
             adapter +
@@ -2372,22 +2559,41 @@ console.log(JSON.stringify({
           );
         },
         async () => {
+          revision = safeRevision;
           writeFileSync(adapterPath, adapter);
         },
         "fixture-derived-protocol-probe",
       );
     });
-    await step("restored public pin redeploys successfully", async () => {
+    await step("restored tooling deploys an explicitly emptied revision", async () => {
       closeClients();
+      for (const terminal of await terminals())
+        await act("core.terminals.kill", { terminalId: terminal.id });
+      await until(
+        async () => (await terminals()).length === 0,
+        30_000,
+        "restored-tooling replacement inventory empty",
+      );
+      revision = buildRequiredRevision;
+      expectedBuild = deriveBuildIdentity(fixtureRepo, revision).build;
       await up();
       await ready();
       await processOwners(1000);
       await sceneSurvives();
+      await assertDeploymentProbeClean();
       await newTerminalProbe("restored-good-image");
     });
     const firstStorage = await storage("oneBase");
     if (measureStorage) {
       await step("second distinct PR app base and measured incremental storage", async () => {
+        closeClients();
+        for (const terminal of await terminals())
+          await act("core.terminals.kill", { terminalId: terminal.id });
+        await until(
+          async () => (await terminals()).length === 0,
+          30_000,
+          "measured replacement inventory empty",
+        );
         const oldBase = (
           await docker(["image", "inspect", baseImage(), "--format", "{{.Id}}"])
         ).out.trim();
@@ -2416,33 +2622,68 @@ console.log(JSON.stringify({
     }
     metrics["oneBaseIncrementalDaemonLayerBytes"] =
       firstStorage.LayersSize - initialStorage.LayersSize;
-    await step("missing-pin down removes only fixture project, volume and app tags", async () => {
-      closeClients();
-      rmSync(pinPath);
-      await command(["bash", join(tooling, "preview.sh"), "down", number], { timeoutMs: 120_000 });
-      active = false;
-      requireThat(
-        (
-          await docker(["ps", "-aq", "--filter", `label=com.docker.compose.project=${project()}`])
-        ).out.trim() === "",
-        "down retained a fixture container",
-      );
-      requireThat(
-        (await docker(["volume", "inspect", volume()], { allowFailure: true })).code !== 0,
-        "down retained the data volume",
-      );
-      for (const image of [baseImage(), finalImage()])
+    await step(
+      "removal holds retained work, then removes an explicitly empty preview",
+      async () => {
+        closeClients();
+        const retained = (await terminals()).find((terminal) => terminal.status === "running");
+        requireThat(retained !== undefined, "removal hold proof requires retained terminal work");
+        const before = await inspectContainer();
+        const held = await command(["bash", join(tooling, "preview.sh"), "down", number], {
+          timeoutMs: 120_000,
+          allowFailure: true,
+        });
+        requireThat(held.code !== 0, "preview removal destroyed retained terminal work");
         requireThat(
-          (await docker(["image", "inspect", image], { allowFailure: true })).code !== 0,
-          `down retained ${image}`,
+          `${held.out}\n${held.err}`.includes("HOLD: preview node") &&
+            `${held.out}\n${held.err}`.includes(
+              "close or migrate them before changing this preview",
+            ),
+          "occupied preview removal did not return its actionable hold",
         );
-      requireThat(
-        !readFileSync(join(deployment, "registry"), "utf8")
-          .split("\n")
-          .some((row) => row.startsWith(number + " ")),
-        "down retained fixture registry entry",
-      );
-    });
+        const after = await inspectContainer();
+        requireThat(
+          after.Id === before.Id &&
+            after.State.StartedAt === before.State.StartedAt &&
+            after.State.Status === "running",
+          "occupied preview removal changed the incumbent container",
+        );
+        await terminalProbe(retained.id, retained.homeId, "retained-after-removal-refusal");
+        for (const terminal of await terminals())
+          await act("core.terminals.kill", { terminalId: terminal.id });
+        await until(
+          async () => (await terminals()).length === 0,
+          30_000,
+          "preview removal inventory empty",
+        );
+        rmSync(pinPath);
+        await command(["bash", join(tooling, "preview.sh"), "down", number], {
+          timeoutMs: 120_000,
+        });
+        active = false;
+        requireThat(
+          (
+            await docker(["ps", "-aq", "--filter", `label=com.docker.compose.project=${project()}`])
+          ).out.trim() === "",
+          "down retained a fixture container",
+        );
+        requireThat(
+          (await docker(["volume", "inspect", volume()], { allowFailure: true })).code !== 0,
+          "down retained the data volume",
+        );
+        for (const image of [baseImage(), finalImage()])
+          requireThat(
+            (await docker(["image", "inspect", image], { allowFailure: true })).code !== 0,
+            `down retained ${image}`,
+          );
+        requireThat(
+          !readFileSync(join(deployment, "registry"), "utf8")
+            .split("\n")
+            .some((row) => row.startsWith(number + " ")),
+          "down retained fixture registry entry",
+        );
+      },
+    );
   }
 } catch (error) {
   failure = error;

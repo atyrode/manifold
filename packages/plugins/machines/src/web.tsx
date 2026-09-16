@@ -25,6 +25,25 @@ import { MACHINES_FORGET_ACTION, MACHINES_REVOKE_ACTION } from "./index.ts";
 
 /** 14px to match the sidebar's row rhythm; the stroke weight is the vocabulary's own. */
 const ROW_ICON_SIZE = 14;
+function refusalMessage(refusal: NonNullable<MachineSummary["lastRefusal"]>): string {
+  const remedy = (() => {
+    switch (refusal.code) {
+      case 4003:
+        return "owner continuity failed; inspect retained terminals before replacing this node";
+      case 4401:
+        return "authentication failed; re-enroll this node";
+      case 4403:
+        return "credential expired or was revoked; rotate or re-enroll this node";
+      case 4409:
+        return "protocol mismatch; update this node to the hub build";
+      default: {
+        const exhaustive: never = refusal.code;
+        return exhaustive;
+      }
+    }
+  })();
+  return `Admission refused (${String(refusal.code)}): ${remedy}. Last attempt ${new Date(refusal.at).toLocaleString()}.`;
+}
 
 export function MachinesSection({ host }: SectionProps): ReactElement {
   const fetchMachines = useCallback(() => host.client.machines(), [host.client]);
@@ -87,6 +106,9 @@ export function MachinesSection({ host }: SectionProps): ReactElement {
           machines.map((machine) => (
             <div
               className={`sidebar-machine-row${machine.online ? "" : " is-offline"}`}
+              data-has-refusal={
+                !machine.online && machine.lastRefusal !== undefined ? "true" : undefined
+              }
               key={machine.id}
             >
               {/* The pip is STATUS; the icon says what kind of thing this row is. */}
@@ -159,6 +181,11 @@ export function MachinesSection({ host }: SectionProps): ReactElement {
                     <ControlIcon kind="revoke" size={ROW_ICON_SIZE} />
                   )}
                 </button>
+              ) : null}
+              {!machine.online && machine.revoked !== true && machine.lastRefusal !== undefined ? (
+                <span className="machine-refusal" role="status">
+                  {refusalMessage(machine.lastRefusal)}
+                </span>
               ) : null}
             </div>
           ))

@@ -1219,6 +1219,14 @@ principal, credential, grant, dial, signing key, plugin state or adjacent file; 
 generates fresh local authority. `PREVIEW_DOMAIN` names the domain; setup, the exact seed allowlist,
 live mode and the operator-only pre-authenticated fallback command are documented in
 `infra/previews/README.md`. A self-hoster may skip this tier entirely.
+Each numbered preview owns an independently named `pr-N` execution node aligned to its deployed
+revision; integrated development keeps its separate server-only `dev-hub` and independently
+supervised owner. Redeploying the same healthy SHA verifies node admission and disposable terminal
+I/O without replacing it. A different revision or removal drains admission and proceeds only after
+the node acknowledges no retained terminals. Otherwise the operation reports HOLD, reopens
+admission and leaves the existing preview and work intact. Successful replacement requires that
+exact node to reconnect and pass real terminal creation, output and cleanup; the machine roster
+shows the latest admission refusal with a code-specific remedy when it cannot.
 
 **A self-hoster replaces the `deploy-*.yml` files.** They are the operator's deployments,
 gated on repository variables so a fork never runs them (ADR 0022). Yours consume the same
