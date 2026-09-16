@@ -2,6 +2,7 @@
 
 Date: 2026-08-28
 Status: accepted
+Ratified: 2026-09-15 — operator decision in issue #254; addendum below
 
 ## Context
 
@@ -24,3 +25,30 @@ Do not use `y-protocols` awareness. Its client-asserted `clientID` cannot be bou
 ## Revisit when
 
 Yjs cannot preserve the browser/SDK/server convergence contract, its document growth is unacceptable under measured manifold workloads, or a materially simpler pure-JavaScript engine provides equivalent field-level and collaborative-text semantics.
+
+## Ratification addendum — 2026-09-15
+
+The operator ratified retaining Yjs and the `scene` noun after re-checking this decision against
+the plane rule. The evidence is the shipped, bounded document plane rather than a fresh library
+benchmark: one Yjs document per room merges independently authored element fields, nested
+collaborative `Y.Text`, and composition tile layouts; updates are capped at 512 KiB and full
+documents at 12 MiB. These are durable per-element edits whose worst-case merge a person can
+accept, while cursors, live drags, selections, and viewports remain ephemeral channel traffic.
+
+The approximately 3.2 MB Loro 1.15.0 and 3.6 MB Automerge 3.4.1 WASM figures above remain
+historical measurements from the original decision, not current-version benchmark claims. They
+do not need refreshing unless a revisit condition is met. Yjs 13.6.32 still satisfies the actual
+browser/Bun, field-merge, collaborative-text, synchronous-startup, and maintenance requirements
+without adding a WASM toolchain or a second presence model.
+
+The original follow-up's request for fresh current-version size, update-cost, subdocument,
+maintenance, and dev-hub measurements was superseded by this ratification choice; no such
+benchmark was run or is claimed here. The shipped requirement is nested collaborative text, not
+subdocuments. A future proposal that meets a revisit condition owns its own reproducible
+comparison against then-current versions and workloads.
+
+`scene` remains the canonical lexicon noun for a room document: its element map includes
+collaborative text and its layout map includes composition structure, so the word does not mean
+“canvas.” React Flow is likewise not the document engine; under ADR 0007 it is a plugin-local web
+renderer owned by `core.canvas`. The ratified boundary is therefore unchanged: Yjs through
+`@manifold/scene` is floor document machinery, while React Flow stays optional plugin machinery.
