@@ -31,6 +31,76 @@ const COUNTER_COMMAND =
   'spin=0; while [ "$spin" -lt 2000 ]; do spin=$((spin + 1)); done; ' +
   "i=$((i + 1)); done\n";
 
+test("terminal readiness follows opened and identifies an application declaration", async () => {
+  const servers: TestServer[] = [];
+  const agents: TestAgent[] = [];
+  const clients: SessionClient[] = [];
+  const captures: TerminalCapture[] = [];
+  try {
+    const server = await startServer();
+    servers.push(server);
+    const container = await createContainer(server, "ready-terminal", "composition");
+    const enrolled = await enrollMachine(server, "ready-terminal-agent");
+    agents.push(
+      await startAgent({
+        serverUrl: server.url,
+        machineToken: enrolled.machineToken,
+        name: "ready-terminal-agent",
+      }),
+    );
+    const principal = await mintToken(server, {
+      principal: { kind: "human", name: "Ready Observer", color: "#447755" },
+      caps: ["containers:read", "terminals:spawn", "terminals:write"],
+    });
+    const client = await connect(server, { containerId: container.id, token: principal.token });
+    clients.push(client);
+
+    const order: string[] = [];
+    client.on("terminal_opened", () => order.push("opened"));
+    client.on("terminal_event", (event) => {
+      if (event.kind === "ready") order.push("ready");
+    });
+    const ready = nextMessage(client, "terminal_event", 10_000, (event) => event.kind === "ready");
+    const shell = Bun.which("sh") ?? "/bin/sh";
+    const terminal = await client.openTerminal({
+      elementId: "ready-open",
+      cols: 80,
+      rows: 24,
+      placement: "tile",
+      program: {
+        argv: [
+          shell,
+          "-c",
+          "printf '\\033]777;ManifoldReady\\007'; IFS= read -r line; printf 'READ:%s\\n' \"$line\"",
+        ],
+      },
+    });
+    expect(terminal.readiness).toBeNull();
+    expect(await ready).toMatchObject({
+      terminalId: terminal.id,
+      kind: "ready",
+      readiness: "application",
+    });
+    expect(order).toEqual(["opened", "ready"]);
+    expect(client.terminals.get(terminal.id)?.readiness).toBe("application");
+
+    const capture = captureTerminal(client, terminal.id);
+    captures.push(capture);
+    client.attachTerminal(terminal.id);
+    await waitFor(() => capture.snapshotSeq !== null, 10_000, 20);
+    client.sendTerminalInput(terminal.id, "hello\n");
+    await waitForTerminalText(capture, "READ:hello", 10_000);
+    client.killTerminal(terminal.id);
+    await waitFor(() => !client.terminals.has(terminal.id), 10_000, 20);
+  } catch (error) {
+    throw e2eFailure(error, [...servers, ...agents]);
+  } finally {
+    for (const capture of captures) capture.stop();
+    closeClients(clients);
+    await stopProcesses([...servers, ...agents]);
+  }
+}, 60_000);
+
 test("terminal lifecycle enforces attach contiguity, controller authority, resize, and kill", async () => {
   const servers: TestServer[] = [];
   const agents: TestAgent[] = [];

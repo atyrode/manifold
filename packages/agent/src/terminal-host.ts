@@ -462,6 +462,7 @@ export class TerminalHost {
       const terminal = spawned instanceof PtyTerminal ? spawned : await spawned;
       this.rememberLaunch(msg, terminal);
       connection.peer.write({ type: "created", terminalId: msg.terminalId });
+      this.watchReadiness(msg.terminalId, terminal);
       void this.watchExit(msg.terminalId, terminal);
       this.log("info", "created", { terminalId: msg.terminalId, cols: msg.cols, rows: msg.rows });
     } catch (error) {
@@ -709,6 +710,7 @@ export class TerminalHost {
         ...(observed !== undefined ? { cwd: observed } : {}),
         ...(restartedFallback !== undefined ? { fallback: restartedFallback } : {}),
       });
+      this.watchReadiness(msg.terminalId, replacement);
       void this.watchExit(msg.terminalId, replacement);
     } catch (error) {
       if (replacement?.workloadEmpty) replacement.dispose();
@@ -733,6 +735,13 @@ export class TerminalHost {
       this.restarting.delete(msg.terminalId);
       this.cancelledRestarts.delete(msg.terminalId);
     }
+  }
+
+  private watchReadiness(terminalId: string, terminal: PtyTerminal): void {
+    void terminal.readiness.then((readiness) => {
+      if (this.terminals.get(terminalId) !== terminal || this.restarting.has(terminalId)) return;
+      this.transport?.peer.write({ type: "terminal_ready", terminalId, readiness });
+    });
   }
 
   private onOutput(terminalId: string, output: PtyOutput): void {

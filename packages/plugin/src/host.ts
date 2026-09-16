@@ -233,7 +233,7 @@ export interface SessionHandle {
     event: "terminal_output",
     fn: (message: ServerMessageOf<"terminal_output">) => void,
   ): () => void;
-  /** A terminal's lifecycle: `opened`, `exited`, `controller_changed`, `resized`, `parked`, `renamed`. */
+  /** A terminal's lifecycle, including truthful application/bracketed-paste `ready` evidence. */
   on(event: "terminal_event", fn: (message: ServerMessageOf<"terminal_event">) => void): () => void;
   /** A refused frame, with `ref` naming the terminal or the open it answers. */
   on(event: "error", fn: (message: ServerMessageOf<"error">) => void): () => void;

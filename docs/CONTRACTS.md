@@ -3042,6 +3042,32 @@ files, durable image storage, download URLs or arbitrary file transfer; that sep
   `program or working directory not found: <argv0>` ambiguity. That reason travels the machine
   channel as `create_error.message` and is logged on the machine, never on the session channel
   (machine diagnostics stay off the client wire, as for every create failure).
+- **Readiness is application-owned evidence, not a PTY lifecycle guess** (issue #203,
+  protocol v36). `terminal_opened` proves that the process and its home committed; a writable
+  PTY master proves only that the kernel can queue bytes; and neither the first output nor a
+  process blocked in an observable OS state proves that the application is ready to read
+  stdin. The terminal host therefore emits at most one
+  `terminal_event { kind:"ready", readiness }` for each PTY lifetime, from exactly two
+  application-owned observations:
+  - `readiness:"application"` — the application writes the reserved, invisible declaration
+    `OSC 777 ; ManifoldReady ST` (BEL may terminate OSC in place of ST).
+  - `readiness:"bracketed_paste"` — the application enables DEC private mode 2004
+    (`CSI ? 2004 h`). This is explicitly a bash/zsh/readline-style shell heuristic, not a
+    program-agnostic guarantee.
+
+  `TerminalInfo.readiness` is null until one of those observations and carries the first source
+  afterward. Plain `sh`, shells with bracketed paste disabled, and uninstrumented arbitrary
+  programs may never emit readiness; arbitrary output never manufactures it. A restart resets
+  readiness to null. The owner advertises an observed value on reconnect so a hub that missed
+  the live event recovers it. A consumer that controls the program SHOULD launch it directly
+  with `program.argv`; one that must coordinate input SHOULD make that program emit the OSC
+  declaration. It MUST NOT wait forever for or reinterpret a generic `ready` promise that this
+  contract deliberately does not make.
+
+  Observing readiness and recovering it across a transport replacement require terminal-host
+  IPC v3; replacing only the transport in front of a retained v2 host cannot create that
+  evidence.
+
 - **A terminal is born with a home** (`homed: "eager"`). The home id is minted BEFORE the
   PTY, because the terminal-scoped agent token and the `MANIFOLD_CONTAINER` a program inside the
   terminal reads must both name the container the terminal LIVES in — and a canvas is never
@@ -3184,7 +3210,7 @@ files, durable image storage, download URLs or arbitrary file transfer; that sep
 
 Handshake: agent sends `hello { token, name, agentVersion, protocolVersion, terminals,
 terminalHostId?, terminalExecution?, terminalRestart?, jobOwner? }`, where `terminals` advertises retained PTYs
-`{ terminalId, cols, rows, alive, seq, exitCode?, cwd? }` (server-restart adoption).
+`{ terminalId, cols, rows, alive, seq, exitCode?, cwd?, readiness? }` (server-restart adoption).
 `terminalHostId` identifies the terminal host PROCESS, stable across transport replacements
 and fresh on host restart; it is not the machine token or a durable terminal checkpoint. An
 `alive:false` advertisement reports a real `exitCode` when the PTY exited while
@@ -3923,7 +3949,7 @@ seat closes the machine socket with **4010** and holds hub dialing until a seat 
 again. Queue overflow can drop that seat while the host and its PTYs remain alive, so this
 close code is not evidence of owner death.
 
-The local protocol (`packages/protocol/src/terminal-host.ts`, version 2) is NDJSON on a
+The local protocol (`packages/protocol/src/terminal-host.ts`, version 3) is NDJSON on a
 0600 Unix socket in an owned 0700 directory. An existing non-private directory or live
 sibling listener is refused; only a stale socket with no accepting listener is reclaimed.
 Known malformed frames close the connection; unknown types are ignored for build skew.

@@ -811,12 +811,16 @@ export class SessionClient {
             if (msg.rows !== undefined) next.rows = msg.rows;
           }
           if (msg.kind === "renamed") next.name = msg.name ?? null;
+          if (msg.kind === "ready" && msg.readiness !== undefined) {
+            next.readiness = msg.readiness;
+          }
           if (msg.kind === "cwd" || msg.kind === "restarted") {
             if (msg.cwd !== undefined) next.cwd = msg.cwd;
           }
           if (msg.kind === "restarted") {
             next.status = "running";
             next.exitCode = null;
+            next.readiness = null;
             next.controllerId = msg.controllerId ?? null;
           }
           this.terminals.set(msg.terminalId, next);

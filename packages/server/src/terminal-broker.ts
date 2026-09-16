@@ -17,6 +17,7 @@ import {
   type RuntimeDeps,
   type ServerToAgentMessage,
   type TerminalInfo,
+  type TerminalReadiness,
   type TerminalExecution,
 } from "@manifold/protocol";
 import {
@@ -319,6 +320,7 @@ export class TerminalBroker implements TerminalPlacementPort {
         machineId: row.machineId,
         status: row.status,
         exitCode: row.exitCode,
+        readiness: null,
         cols: 80,
         rows: 24,
         controllerId: row.status === "running" ? row.createdBy : null,
@@ -680,6 +682,7 @@ export class TerminalBroker implements TerminalPlacementPort {
         machineId: stored.machineId,
         status: stored.status,
         exitCode: stored.exitCode,
+        readiness: null,
         cols: 80,
         rows: 24,
         controllerId: stored.status === "running" ? stored.createdBy : null,
@@ -707,6 +710,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       ...terminal.info,
       status: "running",
       exitCode: null,
+      readiness: advertised.readiness ?? null,
       cols: advertised.cols,
       rows: advertised.rows,
     };
@@ -720,6 +724,14 @@ export class TerminalBroker implements TerminalPlacementPort {
         kind: "controller_changed",
         controllerId: terminal.info.controllerId,
       });
+      if (advertised.readiness !== undefined) {
+        this.rooms.live(adoptedContainerId)?.broadcast({
+          type: "terminal_event",
+          terminalId: terminal.info.id,
+          kind: "ready",
+          readiness: advertised.readiness,
+        });
+      }
     }
     if (terminal.viewers.size > 0) {
       for (const [channel, viewer] of terminal.viewers) {
@@ -1041,6 +1053,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       machineId,
       status: "running",
       exitCode: null,
+      readiness: null,
       cols: pending.cols,
       rows: pending.rows,
       controllerId: pending.createdBy,
@@ -1600,6 +1613,24 @@ export class TerminalBroker implements TerminalPlacementPort {
     this.announce(terminal.info.containerId, "terminal_cwd", null, { terminalId, cwd });
   }
 
+  onReady(machineId: string, terminalId: string, readiness: TerminalReadiness): void {
+    const terminal = this.terminals.get(terminalId);
+    if (
+      !terminal ||
+      terminal.info.machineId !== machineId ||
+      terminal.info.status !== "running" ||
+      terminal.info.readiness !== null
+    )
+      return;
+    terminal.info = { ...terminal.info, readiness };
+    this.rooms.live(terminal.info.containerId)?.broadcast({
+      type: "terminal_event",
+      terminalId,
+      kind: "ready",
+      readiness,
+    });
+  }
+
   onRestarted(
     machineId: string,
     message: Extract<AgentMessage, { type: "terminal_restarted" }>,
@@ -1625,6 +1656,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       ...terminal.info,
       status: "running",
       exitCode: null,
+      readiness: null,
       controllerId: pending.principalId,
       ...(message.cwd === undefined ? {} : { cwd: message.cwd }),
     };

@@ -116,7 +116,7 @@ describe("terminal cwd and restart compatibility", () => {
       expect(MACHINE_PROTOCOL_COMPAT_VERSIONS.has(version)).toBe(true);
     }
     expect(MACHINE_PROTOCOL_COMPAT_VERSIONS.has(PROTOCOL_VERSION + 1)).toBe(false);
-    expect(TERMINAL_HOST_PROTOCOL_VERSION).toBe(2);
+    expect(TERMINAL_HOST_PROTOCOL_VERSION).toBe(3);
     const status = TerminalHostStatusSchema.parse({
       type: "status",
       terminalHostId: "older-retained-owner",
@@ -130,6 +130,31 @@ describe("terminal cwd and restart compatibility", () => {
     });
     expect(status.terminalRestart).toBeUndefined();
     expect(status.terminals[0]?.cwd).toBeUndefined();
+  });
+
+  test("readiness is additive on the owner wire and explicit on the session wire", () => {
+    const advertised = {
+      terminalId: "t1",
+      cols: 80,
+      rows: 24,
+      alive: true,
+      seq: 1,
+      readiness: "application" as const,
+    };
+    expect(AdvertisedTerminalSchema.parse(advertised)).toEqual(advertised);
+    const observation = {
+      type: "terminal_ready" as const,
+      terminalId: "t1",
+      readiness: "bracketed_paste" as const,
+    };
+    expect(AgentMessageSchema.parse(observation)).toEqual(observation);
+    const event = {
+      type: "terminal_event" as const,
+      terminalId: "t1",
+      kind: "ready" as const,
+      readiness: "application" as const,
+    };
+    expect(ServerMessageBodySchema.parse(event)).toEqual(event);
   });
 
   test("cwd observations and restart results survive both wires without inventing a home", () => {

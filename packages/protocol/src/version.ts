@@ -1,5 +1,5 @@
 /** Wire revision; session joins require the current version (close 4409 otherwise). */
-export const PROTOCOL_VERSION = 35;
+export const PROTOCOL_VERSION = 36;
 
 /**
  * Machine-channel acceptance set. Agents are long-lived (they hold PTYs and
@@ -348,9 +348,19 @@ export const PROTOCOL_VERSION = 35;
  * pooled socket, receive roster changes and hold event subscriptions without inventing a
  * room. Machine and instance frames are byte-identical, so both compatibility sets add 35.
  * The browser session remains strictly current and upgrades with the served SPA.
+ *
+ * v35 -> v36: TRUTHFUL TERMINAL READINESS (issue #203). The terminal owner may report one
+ * monotonic readiness observation: an application's reserved OSC declaration or the
+ * bash/zsh/readline bracketed-paste enable heuristic. Session terminal summaries gain required
+ * nullable `readiness`, and `terminal_event` gains `kind:"ready"` with its evidence source.
+ * Machine `terminal_ready` and advertised `readiness` are strictly additive: older transports
+ * ignore the unknown event and older owners omit reconnect evidence, so machine compatibility
+ * ADDS 36. Retained readiness also appears inside the terminal host's strict inventory, so the
+ * terminal-host IPC bumps to version 3; a retained v2 host remains usable but cannot provide
+ * readiness evidence until separately upgraded. The instance wire is unchanged and adds 36.
  */
 export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  30, 31, 32, 33, 34, 35,
+  30, 31, 32, 33, 34, 35, 36,
 ]);
 
 /**
@@ -398,7 +408,7 @@ export const TERMINAL_RESTART_PROTOCOL_VERSION = 33;
  * instance compatibility resets to protocol 27. v28 through v35 leave that wire unchanged.
  */
 export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  27, 28, 29, 30, 31, 32, 33, 34, 35,
+  27, 28, 29, 30, 31, 32, 33, 34, 35, 36,
 ]);
 
 /**

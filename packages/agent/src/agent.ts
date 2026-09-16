@@ -324,6 +324,7 @@ export class Agent {
       case "snapshot":
       case "exited":
       case "terminal_cwd":
+      case "terminal_ready":
       case "terminal_restarted":
       case "terminal_restart_error":
       case "drain_status":
@@ -615,6 +616,7 @@ export class Agent {
           | "exited"
           | "drain_status"
           | "terminal_cwd"
+          | "terminal_ready"
           | "terminal_restarted"
           | "terminal_restart_error";
       }

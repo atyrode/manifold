@@ -6,6 +6,8 @@ import {
   MAX_SESSION_BASE64_CHARS,
   trackTerminalPrivateMode,
   type AdvertisedTerminal,
+  type TerminalReadiness,
+  type TrackedTerminalPrivateMode,
 } from "@manifold/protocol";
 import { TerminalGraphicsMirror } from "./terminal-graphics.ts";
 import { TerminalParserContinuation } from "./terminal-parser-continuation.ts";
@@ -235,7 +237,9 @@ export class PtyTerminal {
   private readonly mirror: HeadlessTerminal;
   private readonly serializer: SerializeAddon;
   private readonly graphics: TerminalGraphicsMirror;
-  private readonly pasteMode: ReturnType<typeof trackTerminalPrivateMode>;
+  private readonly pasteMode: TrackedTerminalPrivateMode;
+  private readonly bracketedPasteMode: TrackedTerminalPrivateMode;
+  private readonly readinessOsc: { dispose(): void };
   private readonly continuation: TerminalParserContinuation;
   private readonly ring: OutputRing;
   private readonly onOutput: (output: PtyOutput) => void;
@@ -246,6 +250,7 @@ export class PtyTerminal {
   private cwdInterval: Timer | undefined;
   private cwdIdle: Timer | undefined;
   private lastOutputAt = 0;
+  private readinessValue: TerminalReadiness | null = null;
 
   /** Highest output seq emitted so far; assigned AT EMISSION and strictly monotonic. */
   private currentSeq = 0;
@@ -259,6 +264,8 @@ export class PtyTerminal {
 
   /** Resolves once the PTY has exited, with the process exit code (null if signalled). */
   readonly exited: Promise<PtyExit>;
+  /** Resolves once, and only from an application-owned terminal control sequence. */
+  readonly readiness: Promise<TerminalReadiness>;
 
   constructor(opts: PtyTerminalOptions) {
     // Resolve the shell FIRST: a missing shell throws PtyError before any resource is
@@ -288,6 +295,21 @@ export class PtyTerminal {
     this.continuation = new TerminalParserContinuation(this.mirror);
     this.serializer = new SerializeAddon();
     this.mirror.loadAddon(this.serializer);
+    const readiness = Promise.withResolvers<TerminalReadiness>();
+    this.readiness = readiness.promise;
+    const markReady = (observation: TerminalReadiness): void => {
+      if (this.readinessValue !== null) return;
+      this.readinessValue = observation;
+      readiness.resolve(observation);
+    };
+    this.bracketedPasteMode = trackTerminalPrivateMode(this.mirror.parser, 2004, (enabled) => {
+      if (enabled) markReady("bracketed_paste");
+    });
+    this.readinessOsc = this.mirror.parser.registerOscHandler(777, (data) => {
+      if (data !== "ManifoldReady") return false;
+      markReady("application");
+      return true;
+    });
     this.pasteMode = trackTerminalPrivateMode(this.mirror.parser, 5522);
     try {
       this.graphics = new TerminalGraphicsMirror(this.mirror, (data) => {
@@ -295,6 +317,8 @@ export class PtyTerminal {
       });
     } catch (error) {
       this.pasteMode.dispose();
+      this.bracketedPasteMode.dispose();
+      this.readinessOsc.dispose();
       this.mirror.dispose();
       throw error;
     }
@@ -380,6 +404,8 @@ export class PtyTerminal {
       const pty = proc?.terminal;
       if (pty !== undefined && !pty.closed) pty.close();
       this.pasteMode.dispose();
+      this.bracketedPasteMode.dispose();
+      this.readinessOsc.dispose();
       this.graphics.dispose();
       this.mirror.dispose();
       throw spawnFailure(error, command[0] ?? "", this.originalCwd);
@@ -642,6 +668,8 @@ export class PtyTerminal {
     this.stopCwdTracking();
     if (!this.pty.closed) this.pty.close();
     this.pasteMode.dispose();
+    this.bracketedPasteMode.dispose();
+    this.readinessOsc.dispose();
     this.graphics.dispose();
     this.mirror.dispose();
   }
@@ -659,6 +687,11 @@ export class PtyTerminal {
   /** Highest emitted output seq (the watermark advertised on reconnect). */
   get seq(): number {
     return this.currentSeq;
+  }
+
+  /** First truthful application-owned readiness observation, or null while none exists. */
+  get readinessObservation(): TerminalReadiness | null {
+    return this.readinessValue;
   }
 
   /** Retained ring bytes (test/introspection hook). */
@@ -685,6 +718,7 @@ export class PtyTerminal {
       alive: this.aliveFlag,
       seq: this.currentSeq,
       ...(this.cwdValue !== undefined ? { cwd: this.cwdValue } : {}),
+      ...(this.readinessValue !== null ? { readiness: this.readinessValue } : {}),
       ...(!this.aliveFlag ? { exitCode: this.exitCodeValue ?? null } : {}),
     };
   }

@@ -353,6 +353,7 @@ describe("TerminalBroker controller lease", () => {
         rows: 24,
         alive: true,
         seq: 0,
+        readiness: "application",
       },
     ]);
 
@@ -361,6 +362,12 @@ describe("TerminalBroker controller lease", () => {
       terminalId: fixture.create.terminalId,
       kind: "controller_changed",
       controllerId: fixture.root.principal.id,
+    });
+    expect(fixture.socket.messages()).toContainEqual({
+      type: "terminal_event",
+      terminalId: fixture.create.terminalId,
+      kind: "ready",
+      readiness: "application",
     });
     fixture.store.close();
   });
@@ -754,6 +761,7 @@ describe("TerminalBroker live stream and control contracts", () => {
         machineId: fixture.machine.machineId,
         status: "running",
         exitCode: null,
+        readiness: null,
         cols: 80,
         rows: 24,
         controllerId: fixture.root.principal.id,
@@ -763,6 +771,17 @@ describe("TerminalBroker live stream and control contracts", () => {
     expect(
       fixture.socket.messages().find((message) => message.type === "terminal_opened"),
     ).toMatchObject({ elementId: ROOT_TILE_ID, ref: "terminal-1" });
+    secondSocket.clear();
+    fixture.broker.onReady(fixture.machine.machineId, fixture.create.terminalId, "bracketed_paste");
+    fixture.broker.onReady(fixture.machine.machineId, fixture.create.terminalId, "application");
+    expect(secondSocket.messages().filter((message) => message.type === "terminal_event")).toEqual([
+      {
+        type: "terminal_event",
+        terminalId: fixture.create.terminalId,
+        kind: "ready",
+        readiness: "bracketed_paste",
+      },
+    ]);
     fixture.store.close();
   });
 
