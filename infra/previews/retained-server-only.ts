@@ -8,6 +8,38 @@ const healthSource =
   "const r = await fetch('http://127.0.0.1:7777/healthz'); if (!r.ok) process.exit(1);";
 const healthCommand = `bun -e "${healthSource}"`;
 const bun = (name: string | undefined): boolean => name === "bun" || name === "/usr/local/bin/bun";
+
+function bunHealthcheckArgs(args: string[]): boolean {
+  return args.length === 3 && bun(args[0]) && args[1] === "-e" && args[2] === healthSource;
+}
+
+function shellHealthcheckArgs(args: string[]): boolean {
+  return (
+    args.length === 3 && args[0] === "/bin/sh" && args[1] === "-c" && args[2] === healthCommand
+  );
+}
+
+function stockHealthcheck(args: string[], executable: string): boolean {
+  return (
+    (bunHealthcheckArgs(args) && executable === "/usr/local/bin/bun") ||
+    (shellHealthcheckArgs(args) && executable === "/usr/bin/dash")
+  );
+}
+
+function healthcheckExecTransition(args: string[], executable: string): boolean {
+  return shellHealthcheckArgs(args) && executable === "/usr/local/bin/bun";
+}
+
+function confirmedHealthcheck(pid: string, initialStarttime: string | undefined): boolean {
+  const stat = procFields(pid);
+  const args = nullFields(`/proc/${pid}/cmdline`);
+  const executable = readlinkSync(`/proc/${pid}/exe`);
+  return (
+    initialStarttime !== undefined &&
+    stat[19] === initialStarttime &&
+    stockHealthcheck(args, executable)
+  );
+}
 const pluginServer =
   /^\/data\/plugins\/([a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*){1,2})\/([a-f0-9]{64})\/server\.js$/;
 
@@ -123,21 +155,12 @@ try {
         server = true;
         continue;
       }
-      // The stock read-only Docker healthcheck may overlap the snapshot.
+      // The stock read-only Docker healthcheck may overlap the snapshot. Its shell
+      // execs Bun, so cmdline and exe can briefly describe different sides of that
+      // transition. Confirm once, including stable PID identity, before refusing it.
       if (
-        args.length === 3 &&
-        bun(args[0]) &&
-        args[1] === "-e" &&
-        args[2] === healthSource &&
-        executable === "/usr/local/bin/bun"
-      )
-        continue;
-      if (
-        args.length === 3 &&
-        args[0] === "/bin/sh" &&
-        args[1] === "-c" &&
-        args[2] === healthCommand &&
-        executable === "/usr/bin/dash"
+        stockHealthcheck(args, executable) ||
+        (healthcheckExecTransition(args, executable) && confirmedHealthcheck(pid, stat[19]))
       )
         continue;
       // An installed server plugin is supervised by PID1 and restarts with it. Admit only the
