@@ -1,8 +1,10 @@
 import {
   MAX_PANEL_SECTIONS,
+  MAX_TILE_CHILDREN,
   ROOT_TILE_ID,
   sectionArrangementIds,
   validPanelArg,
+  validateTileLayout,
   validSectionArrangement,
   type PanelArg,
   type SectionNode,
@@ -286,6 +288,43 @@ function panelLeaf(layout: TileLayout, panelId: string): Tile | null {
     }
   }
   return null;
+}
+
+/**
+ * Appends panels that are not already seated as flat children of the root split.
+ *
+ * This is the one non-destructive "show these panels" operation shared by Arrange's shelf
+ * and plugin enablement. Existing leaves, ratios and nesting stay untouched; duplicate ids
+ * and panels already present are ignored. The whole batch refuses atomically when any new
+ * leaf cannot be inserted, so one user gesture produces either one complete layout commit
+ * or no commit.
+ */
+export function withSeatedPanels(
+  layout: TileLayout,
+  panelIds: readonly string[],
+): TileLayout | null {
+  let next = layout;
+  const seated = new Set(
+    Object.values(layout)
+      .map((tile) => tile.ref)
+      .filter((ref) => ref?.kind === "panel")
+      .map((ref) => ref.panelId),
+  );
+
+  for (const panelId of panelIds) {
+    if (seated.has(panelId)) continue;
+    const root = next[ROOT_TILE_ID];
+    if (root === undefined) return null;
+    if (root.dir !== null && root.children.length >= MAX_TILE_CHILDREN) return null;
+    const besideTileId = root.dir === null ? ROOT_TILE_ID : root.children.at(-1);
+    if (besideTileId === undefined) return null;
+    const edge = root.dir === "column" ? "bottom" : "right";
+    const inserted = withTileLeaf(next, { kind: "panel", panelId }, besideTileId, edge);
+    if (inserted === null) return null;
+    next = inserted.layout;
+    seated.add(panelId);
+  }
+  return validateTileLayout(next) ? next : null;
 }
 
 /** This principal's stored arrangement for one panel, or undefined for "the manifests decide". */

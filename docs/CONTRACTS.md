@@ -1529,6 +1529,16 @@ leaf and nowhere else, refused past `MAX_PANEL_ARG_BYTES` (4 KiB of JSON) or whe
 data, absent ≡ none, delivered to the panel as `PanelProps.arg`, travelling with the panel when a
 seat moves, and written by the same one door — `host.openPanel` computes the tree and commits it
 through it, so an opening is an ordinary arrangement write.
+
+An enablement never rewrites that stored tree. `core.plugins` instead compares enabled
+manifest-declared seats with the principal's current panel leaves. An absent→enabled live-roster
+transition raises a session-local, dismissible suggestion; the plugin's detail sheet always lists
+its declared workspace panels and whether each is already seated. Only **Add** is a layout gesture:
+it appends the chosen absent panels flat at the root, ignores duplicates and already-seated panels,
+and performs one optimistic `core.space.setLayout` commit for the complete batch. Initial load does
+not nudge for plugins that were already enabled. Dismissal lasts until a later disable/re-enable,
+and arranging or roster delivery alone never mutates the tree.
+
 Divider drags obey the plane rule: local optimistic ratios per
 frame, ONE `core.space.setLayout` on pointerup or pointercancel after movement, never during a
 held pause or per frame. A press without movement writes nothing.

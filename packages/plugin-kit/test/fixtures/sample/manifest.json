@@ -19,6 +19,7 @@
       }
     ],
     "panels": [{ "id": "counter", "title": "Example counter" }],
+    "seats": [{ "panel": "counter", "order": 500, "ratio": 0.25 }],
     "sections": [],
     "elements": [],
     "tools": [],

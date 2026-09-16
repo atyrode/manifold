@@ -5,6 +5,7 @@ import {
   panelSections,
   sameIndexEntries,
   withPanelSections,
+  withSeatedPanels,
   type AuthoringHandle,
 } from "@manifold/plugin";
 import {
@@ -250,6 +251,22 @@ export function WorkspaceHost({
       applyLayout(next, true);
     },
     [applyLayout],
+  );
+
+  /** One explicit add gesture, one optimistic tree update and one authoritative commit. */
+  const seatPanels = useCallback(
+    (panelIds: readonly string[]): void => {
+      const current = layoutRef.current;
+      if (current === null) return;
+      const next = withSeatedPanels(current, panelIds);
+      if (next === null) {
+        notify("The workspace has no room for another panel.", { key: "layout-seat" });
+        return;
+      }
+      if (next === current) return;
+      applyLayout(next, true);
+    },
+    [applyLayout, notify],
   );
 
   /**
@@ -787,6 +804,8 @@ export function WorkspaceHost({
       createContainer,
       createFolder,
       registerSidebarElement,
+      layout,
+      seatPanels,
       sectionArrangement,
       commitSectionArrangement,
       // Module constants: the web build's own frozen identity, never state, never deps.
@@ -799,6 +818,8 @@ export function WorkspaceHost({
       createFolder,
       creating,
       registerSidebarElement,
+      layout,
+      seatPanels,
       sectionArrangement,
       sidebarOpen,
       workspace,

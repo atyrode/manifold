@@ -19,6 +19,7 @@ import {
   type PluginPurgeResult,
   type PluginPurgeTarget,
   type PluginRosterEntry,
+  type TileLayout,
 } from "@manifold/protocol";
 import { useWorkspaceShell } from "@manifold/plugin/hooks";
 import { Cluster, ControlIcon, ScrollRegion, Stack } from "@manifold/ui";
@@ -61,6 +62,14 @@ import {
   pluginStatus,
   type PluginStatus,
 } from "./status.ts";
+import {
+  dismissSeatSuggestions,
+  initialSeatSuggestions,
+  missingWorkspacePanelSeats,
+  reconcileSeatSuggestions,
+  suggestedWorkspacePanelSeats,
+  workspacePanelSeats,
+} from "./seat-discovery.ts";
 import { MachineRuntime } from "./runtime.tsx";
 
 /**
@@ -532,6 +541,8 @@ function PluginDetail({
   pendingIds,
   pendingSetting,
   armed,
+  layout,
+  onSeatPanels,
   pluginTitle,
   onSelect,
   onBack,
@@ -549,6 +560,7 @@ function PluginDetail({
   readonly canInstall: boolean;
   readonly pendingIds: ReadonlySet<string>;
   readonly pendingSetting: string | null;
+  readonly layout: TileLayout | null;
   readonly armed: boolean;
   readonly pluginTitle: (id: string) => string;
   readonly onSelect: (id: string) => void;
@@ -557,6 +569,7 @@ function PluginDetail({
   readonly onArm: (armed: boolean) => void;
   readonly onPurge: () => void;
   readonly onUninstall: () => void;
+  readonly onSeatPanels: (panelIds: readonly string[]) => void;
   readonly onSet: (setting: ComposedSetting, value: boolean | string) => void;
 }): ReactElement {
   const { manifest } = entry;
@@ -577,6 +590,9 @@ function PluginDetail({
   const removable = canInstall && entry.install !== undefined && !entry.enabled;
   const pending = pendingIds.has(manifest.id);
   const toggleReason = toggleRefusal(roster, entry, canManage);
+  const declaredSeats = workspacePanelSeats(entry);
+  const missingSeats = missingWorkspacePanelSeats(entry, layout);
+  const missingSeatIds = new Set(missingSeats.map((seat) => seat.panelId));
 
   return (
     <Stack className="plugin-manager-detail" gap="0.75rem" data-testid="plugin-manager-detail">
@@ -710,6 +726,45 @@ function PluginDetail({
           </p>
         )}
       </SheetCard>
+
+      {declaredSeats.length === 0 ? null : (
+        <SheetCard title="Workspace panels">
+          <p className="plugin-manager-sheet-muted">
+            {entry.enabled
+              ? "Your arrangement stays unchanged until you add a panel."
+              : "Switch this plugin on before adding its panels."}
+          </p>
+          <ul className="plugin-manager-seats" data-testid="plugin-manager-detail-seats">
+            {declaredSeats.map((seat) => (
+              <li key={seat.panelId}>
+                <span>{seat.title}</span>
+                {missingSeatIds.has(seat.panelId) ? (
+                  <button
+                    className="plugin-manager-filter"
+                    type="button"
+                    disabled={!entry.enabled}
+                    onClick={() => onSeatPanels([seat.panelId])}
+                  >
+                    Add
+                  </button>
+                ) : (
+                  <small>In workspace</small>
+                )}
+              </li>
+            ))}
+          </ul>
+          {entry.enabled && missingSeats.length > 1 ? (
+            <button
+              className="plugin-manager-filter"
+              type="button"
+              data-testid="plugin-manager-add-all-seats"
+              onClick={() => onSeatPanels(missingSeats.map((seat) => seat.panelId))}
+            >
+              Add all {String(missingSeats.length)} panels
+            </button>
+          ) : null}
+        </SheetCard>
+      )}
 
       <MachineRuntime key={manifest.id} host={host} entry={entry} />
 
@@ -1206,7 +1261,7 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
   const canManage = caps.includes("*") || caps.includes("plugins:manage");
   /** Installing admits a stranger's code: root only, the door's own rule (`caps: ["*"]`). */
   const canInstall = caps.includes("*");
-  const { sidebarOpen } = useWorkspaceShell();
+  const { sidebarOpen, layout, seatPanels } = useWorkspaceShell();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<PluginSort>("name");
@@ -1245,6 +1300,14 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
   const [jumpId, setJumpId] = useState<string | null>(null);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const dialogRef = useRef<HTMLDialogElement | null>(null);
+  const [seatSuggestionState, setSeatSuggestionState] = useState(() =>
+    initialSeatSuggestions(roster),
+  );
+  const reconciledSeatSuggestions = reconcileSeatSuggestions(seatSuggestionState, roster, layout);
+  if (reconciledSeatSuggestions !== seatSuggestionState) {
+    setSeatSuggestionState(reconciledSeatSuggestions);
+  }
+  const suggestedSeats = suggestedWorkspacePanelSeats(reconciledSeatSuggestions, roster, layout);
 
   useEffect(() => {
     if (jumpId === null) return;
@@ -1760,14 +1823,59 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
         ref={buttonRef}
         className="sidebar-opener"
         type="button"
-        title="Plugins: what this workspace composed, and what is on"
-        aria-label="Show the plugin manager"
+        title={
+          suggestedSeats.length === 0
+            ? "Plugins: what this workspace composed, and what is on"
+            : `Plugins: ${String(suggestedSeats.length)} workspace ${suggestedSeats.length === 1 ? "panel is" : "panels are"} available`
+        }
+        aria-label={
+          suggestedSeats.length === 0
+            ? "Show the plugin manager"
+            : `Show the plugin manager; ${String(suggestedSeats.length)} workspace ${suggestedSeats.length === 1 ? "panel is" : "panels are"} available`
+        }
         data-testid="plugin-manager-open"
         onClick={() => setOpen(true)}
       >
         <ControlIcon kind="assembly" />
         {sidebarOpen ? <span>Plugins</span> : null}
+        {suggestedSeats.length === 0 ? null : (
+          <span
+            className="plugin-manager-seat-badge"
+            aria-label={`${String(suggestedSeats.length)} workspace panels available`}
+          >
+            {String(suggestedSeats.length)}
+          </span>
+        )}
       </button>
+      {sidebarOpen && suggestedSeats.length > 0 ? (
+        <div
+          className="plugin-manager-seat-suggestion"
+          role="status"
+          data-testid="plugin-manager-seat-suggestion"
+        >
+          <p>
+            <strong>
+              {String(suggestedSeats.length)} new {suggestedSeats.length === 1 ? "panel" : "panels"}
+            </strong>
+            <span>Layout unchanged.</span>
+          </p>
+          <div>
+            <button
+              type="button"
+              data-testid="plugin-manager-seat-suggestion-add"
+              onClick={() => seatPanels(suggestedSeats.map((seat) => seat.panelId))}
+            >
+              {suggestedSeats.length === 1 ? "Add" : "Add all"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setSeatSuggestionState((current) => dismissSeatSuggestions(current))}
+            >
+              Not now
+            </button>
+          </div>
+        </div>
+      ) : null}
       {typeof document !== "undefined" && open
         ? createPortal(
             <dialog
@@ -1817,6 +1925,7 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
                         settings={settings}
                         canManage={canManage}
                         canInstall={canInstall}
+                        layout={layout}
                         pendingIds={pendingIds}
                         pendingSetting={pendingSetting}
                         armed={armed}
@@ -1826,6 +1935,7 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
                           setSelectedId(null);
                           setArmed(false);
                         }}
+                        onSeatPanels={seatPanels}
                         onToggle={(target, enabled) => void toggle(target, enabled)}
                         onArm={(next) => {
                           setArmed(next);

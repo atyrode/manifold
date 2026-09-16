@@ -1,4 +1,4 @@
-import type { Container, SectionNode } from "@manifold/protocol";
+import type { Container, SectionNode, TileLayout } from "@manifold/protocol";
 import { createContext, createElement, useContext, type ReactElement, type ReactNode } from "react";
 import type { WorkspaceSidebarState } from "./container-route.ts";
 
@@ -63,6 +63,13 @@ export interface WorkspaceShell {
    * without the node the panel rendered.
    */
   registerSidebarElement(element: HTMLElement | null): void;
+  /** The principal's authoritative workspace tree; null until its initial read settles. */
+  readonly layout: TileLayout | null;
+  /**
+   * Explicitly append absent panels without disturbing the arrangement already on screen.
+   * One call is one optimistic layout commit, including when several panels are added together.
+   */
+  seatPanels(panelIds: readonly string[]): void;
   /**
    * This principal's stored section arrangement, or undefined for "the manifests decide" —
    * which is the default and the overwhelmingly common case. A TREE since issue #104: a

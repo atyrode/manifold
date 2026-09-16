@@ -2829,6 +2829,16 @@ recently changed / permissions), filter chips (On, Off, Needs attention, Install
 search over title, id, description and door names narrow one list; which bands are folded is
 device-local (`manifold:plugin-manager-collapsed`).
 
+The manager is also the normal-product way to discover workspace panels from a plugin enabled
+after a principal arranged their layout. Each detail sheet has a **Workspace panels** card for
+that manifest's `contributes.seats`: panels already in the tree say **In workspace**, while absent
+panels offer **Add** and a multi-panel plugin offers **Add all**. A live absent→enabled transition
+also raises a dismissible sidebar suggestion; existing enabled plugins do not produce an
+initial-load nudge and remain discoverable through their detail sheet. Neither roster delivery nor
+dismissal edits the layout. An Add gesture appends only absent panels, preserves the existing tree,
+and commits the whole selection once through `core.space.setLayout`; disable/re-enable is what
+makes a dismissed enable-time suggestion eligible again.
+
 ### The web registration channels
 
 A plugin's web half registers through six channels, and every one of them refuses a duplicate

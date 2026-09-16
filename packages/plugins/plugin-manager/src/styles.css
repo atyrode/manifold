@@ -39,6 +39,79 @@
   min-width: 0;
 }
 
+.plugin-manager-seat-badge {
+  min-width: 1.1rem;
+  margin-left: auto;
+  padding: 0.05rem 0.28rem;
+  border-radius: 999px;
+  background: #4263eb;
+  color: #e9ecef;
+  font-size: 0.66rem;
+  font-weight: 700;
+  text-align: center;
+}
+
+.plugin-manager-seat-suggestion {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0.2rem 0.25rem 0.35rem;
+  padding: 0.45rem;
+  border: 1px solid #4263eb;
+  border-radius: 0.45rem;
+  background: rgb(66 99 235 / 12%);
+  color: #dee2e6;
+}
+
+.plugin-manager-seat-suggestion p {
+  display: grid;
+  gap: 0.14rem;
+  margin: 0;
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+.plugin-manager-seat-suggestion p span {
+  color: #ced4da;
+}
+
+.plugin-manager-seat-suggestion > div {
+  display: flex;
+  gap: 0.3rem;
+}
+
+.plugin-manager-seat-suggestion button,
+.plugin-manager-seats button {
+  padding: 0.24rem 0.42rem;
+  border: 1px solid #495057;
+  border-radius: 0.3rem;
+  background: #2b3036;
+  color: #dee2e6;
+  cursor: pointer;
+  font: inherit;
+}
+
+.plugin-manager-seat-suggestion button {
+  flex: 1 1 0;
+  min-width: 0;
+  padding-inline: 0.3rem;
+  font-size: 0.68rem;
+  white-space: nowrap;
+}
+
+.plugin-manager-seat-suggestion button:first-child {
+  border-color: #4c6ef5;
+  background: #4263eb;
+  color: #fff;
+}
+
+.plugin-manager-seat-suggestion button:hover,
+.plugin-manager-seat-suggestion button:focus-visible,
+.plugin-manager-seats button:hover:not(:disabled),
+.plugin-manager-seats button:focus-visible {
+  border-color: #748ffc;
+  outline: none;
+}
+
 /*
  * THE LEDGER'S DIALOG — the door at the rail's foot opens a screen. Wider than it was, because
  * it now holds a list AND a sheet side by side; the height is the viewport's, minus a margin,
@@ -803,6 +876,33 @@ a.plugin-manager-chip[data-tone="publisher"]:focus-visible {
   padding: 0;
   gap: 0.3rem;
   list-style: none;
+}
+
+.plugin-manager-seats li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  min-width: 0;
+  color: #dee2e6;
+  font-size: 0.74rem;
+}
+
+.plugin-manager-seats li > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plugin-manager-seats li > small {
+  color: #a5d8a5;
+  white-space: nowrap;
+}
+
+.plugin-manager-seats button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .plugin-manager-sheet-muted {

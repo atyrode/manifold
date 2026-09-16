@@ -1908,7 +1908,7 @@ prefix, never a scope root, and belongs to no stylesheet.
     {
       "family": "plugin-manager",
       "owner": "packages/plugins/plugin-manager/src/styles.css",
-      "why": "the ledger's dialog: its header summary, the search and sort band, the filter chips, three collapsible section bands, one row per assembled plugin with its status and permissions chips and its toggle, a family's chevron and its indented parts, the inline install form and the detail sheet that opens beside the list (issue #239)"
+      "why": "the ledger's dialog and its workspace-panel discovery: the enable-time sidebar suggestion and badge, header summary, search and sort band, filter chips, three collapsible section bands, one row per assembled plugin with status, permissions and toggle, family nesting, install form, and detail sheet including per-plugin seat controls (issues #210 and #239)"
     },
     {
       "family": "draw",
@@ -2155,6 +2155,21 @@ string" is the question a broken gate actually asks.
       "testid": "plugin-manager-open",
       "renderer": "packages/plugins/plugin-manager/src/web.tsx",
       "why": "the rail row is only the OPENER now, so R3 and R9 press it before reading any plugin row (`openPluginManager`). A gate keyed off the row's copy would break the moment the collapsed rail hides the label"
+    },
+    {
+      "testid": "plugin-manager-seat-suggestion",
+      "renderer": "packages/plugins/plugin-manager/src/web.tsx",
+      "why": "R1 observes the real enable-time sidebar cue after a live disable/re-enable, before any layout write; its disappearance after Add proves the suggestion follows missing seats rather than becoming stale chrome"
+    },
+    {
+      "testid": "plugin-manager-seat-suggestion-add",
+      "renderer": "packages/plugins/plugin-manager/src/web.tsx",
+      "why": "R1 presses the enable-time suggestion's explicit Add gesture, then compares the authenticated layout before and after to prove exactly one absent panel was appended while every arranged panel survived"
+    },
+    {
+      "testid": "plugin-manager-detail-seats",
+      "renderer": "packages/plugins/plugin-manager/src/web.tsx",
+      "why": "R1 opens the enabled plugin's own detail sheet after seating its panel and requires the persistent control to report In workspace, proving discovery remains available beyond the transient suggestion and prevents a duplicate Add"
     },
     {
       "testid": "plugin-manager-family-expand",
