@@ -1409,6 +1409,7 @@ describe("terminal attach refcounting", () => {
     machineId: "m1",
     status: "running" as const,
     exitCode: null,
+    readiness: null,
     cols: 80,
     rows: 24,
     controllerId: "me",
@@ -1471,12 +1472,19 @@ describe("terminal attach refcounting", () => {
     socket.receive(INIT_WITH_TERMINAL);
     client.attachTerminal("s1");
     client.attachTerminal("s1");
+    socket.receive({
+      type: "terminal_event",
+      terminalId: "s1",
+      kind: "ready",
+      readiness: "application",
+    });
     socket.receive({ type: "terminal_event", terminalId: "s1", kind: "cwd", cwd: "/work/build" });
     socket.receive({ type: "terminal_event", terminalId: "s1", kind: "exited", exitCode: 7 });
     expect(client.terminals.get("s1")).toMatchObject({
       status: "exited",
       exitCode: 7,
       cwd: "/work/build",
+      readiness: "application",
     });
 
     client.on("terminal_event", (event) => {
@@ -1486,6 +1494,7 @@ describe("terminal attach refcounting", () => {
         exitCode: null,
         cwd: "/work",
         controllerId: "other",
+        readiness: null,
       });
       // One mirror disappears while observing restart; the remaining ref must still
       // reacquire a stream. Restart must not increment the surviving view's refcount.
@@ -1555,6 +1564,7 @@ describe("terminal naming", () => {
     machineId: "m1",
     status: "running" as const,
     exitCode: null,
+    readiness: null,
     cols: 80,
     rows: 24,
     controllerId: "me",

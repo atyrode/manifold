@@ -10,12 +10,19 @@ export interface TerminalModeParser {
   ): { dispose(): void };
 }
 
+export interface TrackedTerminalPrivateMode {
+  readonly enabled: boolean;
+  serialize(): string;
+  reset(): void;
+  dispose(): void;
+}
+
 /** Observe one DEC private mode without consuming another parser's mode handling. */
 export function trackTerminalPrivateMode(
   parser: TerminalModeParser,
   mode: number,
   onChange?: (enabled: boolean) => void,
-) {
+): TrackedTerminalPrivateMode {
   if (!Number.isInteger(mode) || mode < 1 || mode > 65535) {
     throw new RangeError("DEC private mode must be an integer from 1 to 65535");
   }

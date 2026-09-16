@@ -479,6 +479,9 @@ export class MachineGateway {
       case "terminal_cwd":
         this.broker.onCwd(channel.machineId, message.terminalId, message.cwd);
         return;
+      case "terminal_ready":
+        this.broker.onReady(channel.machineId, message.terminalId, message.readiness);
+        return;
       case "terminal_restarted":
         this.broker.onRestarted(channel.machineId, message);
         return;

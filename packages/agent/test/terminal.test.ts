@@ -27,6 +27,7 @@ import { LinuxJobRefusal } from "../src/job-linux.ts";
  */
 
 const BASH = Bun.which("bash") ?? "/bin/sh";
+const SH = Bun.which("sh") ?? "/bin/sh";
 const SHELL_COMMAND = [BASH, "--norc", "-i"] as const;
 
 interface Harness {
@@ -145,6 +146,47 @@ afterEach(async () => {
     terminal.dispose();
   }
   live.length = 0;
+});
+
+test("arbitrary PTY output never invents application readiness", async () => {
+  const h = harnessFor({
+    terminalId: "no-readiness",
+    cols: 80,
+    rows: 24,
+    command: [SH, "-c", "read -r _"],
+  });
+  injectPtyOutput(h.terminal, "prompt-shaped output $ ");
+  await h.terminal.snapshot();
+  expect(h.terminal.readinessObservation).toBeNull();
+  expect(h.terminal.toAdvertised()).not.toHaveProperty("readiness");
+});
+
+test("the reserved OSC declaration reports application readiness exactly once", async () => {
+  const h = harnessFor({
+    terminalId: "application-readiness",
+    cols: 80,
+    rows: 24,
+    command: [SH, "-c", "read -r _"],
+  });
+  injectPtyOutput(h.terminal, "\u001b]777;ManifoldReady\u0007");
+  expect(await h.terminal.readiness).toBe("application");
+  injectPtyOutput(h.terminal, "\u001b[?2004h");
+  const snapshot = await h.terminal.snapshot();
+  expect(Buffer.from(snapshot.data).toString()).not.toContain("ManifoldReady");
+  expect(h.terminal.readinessObservation).toBe("application");
+  expect(h.terminal.toAdvertised()).toMatchObject({ readiness: "application" });
+});
+
+test("DEC bracketed-paste enable reports its named shell heuristic", async () => {
+  const h = harnessFor({
+    terminalId: "bracketed-paste-readiness",
+    cols: 80,
+    rows: 24,
+    command: [SH, "-c", "read -r _"],
+  });
+  injectPtyOutput(h.terminal, "\u001b[?2004h");
+  expect(await h.terminal.readiness).toBe("bracketed_paste");
+  expect(h.terminal.toAdvertised()).toMatchObject({ readiness: "bracketed_paste" });
 });
 
 test("echo round-trip yields strictly monotonic seq from 1", async () => {

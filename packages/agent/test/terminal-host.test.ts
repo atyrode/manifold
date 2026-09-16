@@ -101,6 +101,36 @@ test("only the seat holder mutates; observers read status and are cut on a mutat
   }
 });
 
+test("readiness follows creation and survives transport replacement in inventory", async () => {
+  const host = new TerminalHost({
+    shellCommand: [BASH, "--norc", "-c", "printf '\\033]777;ManifoldReady\\007'; read -r _"],
+  });
+  try {
+    const transport = openPeer(host);
+    transport.session.deliver({ type: "attach" });
+    transport.session.deliver({ type: "create", terminalId: "ready", cols: 80, rows: 24, env: {} });
+    expect(await transport.next("terminal_ready")).toEqual({
+      type: "terminal_ready",
+      terminalId: "ready",
+      readiness: "application",
+    });
+    expect(transport.events.findIndex((event) => event.type === "created")).toBeLessThan(
+      transport.events.findIndex((event) => event.type === "terminal_ready"),
+    );
+
+    transport.session.detach();
+    const successor = openPeer(host);
+    successor.session.deliver({ type: "attach" });
+    expect(await successor.next("attached")).toMatchObject({
+      terminals: [
+        expect.objectContaining({ terminalId: "ready", readiness: "application", alive: true }),
+      ],
+    });
+  } finally {
+    await host.shutdown();
+  }
+});
+
 test("maintenance shutdown is refused by name until drained AND empty, then accepted", async () => {
   let accepted = 0;
   const host = new TerminalHost({

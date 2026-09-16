@@ -2,7 +2,12 @@ import { z } from "zod";
 import { MAX_GESTURE_POINT_VALUES, MAX_SESSION_BASE64_CHARS } from "./elements.ts";
 import { CapSchema } from "./capabilities.ts";
 import { EventKindSchema, EventPayloadSchema, MAX_SUBSCRIBE_TOPICS } from "./events.ts";
-import { MachinePathSchema, TerminalCwdSchema, TerminalProgramSchema } from "./machine.ts";
+import {
+  MachinePathSchema,
+  TerminalCwdSchema,
+  TerminalProgramSchema,
+  TerminalReadinessSchema,
+} from "./machine.ts";
 import { TerminalRuntimeSchema } from "./jobs.ts";
 import {
   CarrySchema,
@@ -18,10 +23,10 @@ import { STREAM_CLIENT_BODIES, STREAM_SERVER_BODIES } from "./stream.ts";
 /**
  * Session channel (`/ws/session`): browsers, SDKs, tools. JSON text frames.
  *
- * FRAME GRAMMAR (v35) — one socket per tab, many rooms or one roomless observer. Every
+ * FRAME GRAMMAR (v36) — one socket per tab, many rooms or one roomless observer. Every
  * frame is either connection-level or channel-level:
  *
- *   connection-level   client → server  {"type":"observe","token":"…","protocolVersion":35}
+ *   connection-level   client → server  {"type":"observe","token":"…","protocolVersion":36}
  *                      client → server  {"type":"pong"}
  *                      client → server  {"type":"subscribe","topics":[…]}
  *                      server → client  {"type":"observed"}
@@ -106,6 +111,11 @@ export const TerminalInfoSchema = z.strictObject({
   exitCode: z.number().int().nullable(),
   /** Launch intent may be relative until the owner reports an observed absolute directory. */
   cwd: TerminalCwdSchema.optional(),
+  /**
+   * The first application-owned readiness observation for this PTY, or null when no truthful
+   * observation exists. It resets to null when the terminal restarts.
+   */
+  readiness: TerminalReadinessSchema.nullable(),
   cols: z.number().int().positive().max(1000),
   rows: z.number().int().positive().max(1000),
   controllerId: z.string().nullable(),
@@ -507,6 +517,7 @@ const SERVER_BODIES = {
       "renamed",
       "cwd",
       "restarted",
+      "ready",
     ]),
     exitCode: z.number().int().nullable().optional(),
     controllerId: z.string().nullable().optional(),
@@ -515,6 +526,7 @@ const SERVER_BODIES = {
     name: z.string().min(1).max(120).optional(),
     cwd: MachinePathSchema.optional(),
     fallback: z.enum(["original", "home", "no_recipe"]).optional(),
+    readiness: TerminalReadinessSchema.optional(),
   }),
   saved: z.strictObject({
     type: z.literal("saved"),

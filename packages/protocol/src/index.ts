@@ -330,7 +330,11 @@ export {
   type TerminalHostEvent,
   type TerminalHostStatus,
 } from "./terminal-host.ts";
-export { trackTerminalPrivateMode, type TerminalModeParser } from "./terminal-private-mode.ts";
+export {
+  trackTerminalPrivateMode,
+  type TerminalModeParser,
+  type TrackedTerminalPrivateMode,
+} from "./terminal-private-mode.ts";
 export { reconnectDelayMs } from "./backoff.ts";
 export {
   CAPS,
@@ -860,6 +864,7 @@ export {
   TerminalCwdSchema,
   TerminalProgramSchema,
   TerminalExecutionSchema,
+  TerminalReadinessSchema,
   type AdvertisedTerminal,
   type AgentMessage,
   type MachineRepositoryFact,
@@ -867,6 +872,7 @@ export {
   type MachineRepositoryReason,
   type ServerToAgentMessage,
   type TerminalProgram,
+  type TerminalReadiness,
   type TerminalExecution,
 } from "./machine.ts";
 export {

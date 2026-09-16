@@ -10,6 +10,7 @@ function terminal(overrides: Partial<TerminalInfo>): TerminalInfo {
     machineId: "m1",
     status: "running",
     exitCode: null,
+    readiness: null,
     cols: 80,
     rows: 24,
     controllerId: "me",

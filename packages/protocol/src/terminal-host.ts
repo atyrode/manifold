@@ -37,7 +37,7 @@ export const TERMINAL_HOST_SOCKET_ENV = "MANIFOLD_TERMINAL_HOST_SOCKET";
  * separately supervised host plus a replaceable transport. Bumped only when a host and a
  * transport of different builds can no longer share a socket.
  */
-export const TERMINAL_HOST_PROTOCOL_VERSION = 2;
+export const TERMINAL_HOST_PROTOCOL_VERSION = 3;
 
 /**
  * One frame's ceiling on the IPC socket. A machine frame never exceeds the session frame
@@ -75,6 +75,7 @@ export const TERMINAL_HOST_MACHINE_EVENT_TYPES = [
   "snapshot",
   "exited",
   "terminal_cwd",
+  "terminal_ready",
   "terminal_restarted",
   "terminal_restart_error",
   "drain_status",

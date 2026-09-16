@@ -68,6 +68,13 @@ export const TerminalCwdSchema = z.string().max(MAX_TERMINAL_CWD_CHARS);
 export const TerminalExecutionSchema = z.enum(["unconfined", "governed"]);
 export type TerminalExecution = z.infer<typeof TerminalExecutionSchema>;
 
+/**
+ * Evidence that the application inside a PTY declared itself ready for input. This is never
+ * inferred from process creation, a writable PTY master, or arbitrary output.
+ */
+export const TerminalReadinessSchema = z.enum(["application", "bracketed_paste"]);
+export type TerminalReadiness = z.infer<typeof TerminalReadinessSchema>;
+
 /** A normalized `host/owner/repo`; bounded well under a path because it is three names. */
 export const MAX_MACHINE_REMOTE_CHARS = 512;
 
@@ -134,6 +141,11 @@ export const AdvertisedTerminalSchema = z.strictObject({
   exitCode: z.number().int().nullable().optional(),
   /** Last observed session-leader directory; absent means the owner cannot observe it. */
   cwd: MachinePathSchema.optional(),
+  /**
+   * Optional reconnect evidence. Older owners omit it; absence means no readiness observation,
+   * not that the application is unready.
+   */
+  readiness: TerminalReadinessSchema.optional(),
 });
 export type AdvertisedTerminal = z.infer<typeof AdvertisedTerminalSchema>;
 
@@ -165,6 +177,11 @@ export const AgentMessageSchema = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("created"), terminalId }),
   z.strictObject({ type: z.literal("create_error"), terminalId, message: z.string() }),
   z.strictObject({ type: z.literal("terminal_cwd"), terminalId, cwd: MachinePathSchema }),
+  z.strictObject({
+    type: z.literal("terminal_ready"),
+    terminalId,
+    readiness: TerminalReadinessSchema,
+  }),
   z.strictObject({
     type: z.literal("terminal_restarted"),
     terminalId,
@@ -308,6 +325,7 @@ export const AGENT_MESSAGE_TYPES = [
   "created",
   "create_error",
   "terminal_cwd",
+  "terminal_ready",
   "terminal_restarted",
   "terminal_restart_error",
   "output",

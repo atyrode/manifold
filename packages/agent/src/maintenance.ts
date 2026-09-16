@@ -9,9 +9,9 @@ import { ZodError } from "zod";
 import { unixTerminalHostDialer, type TerminalHostLink } from "./terminal-host-link.ts";
 
 const OWNER_TIMEOUT_MS = 30_000;
-// IPC 1 and IPC 2 share these maintenance frames. Accepting a retained IPC 1
-// owner's shutdown decision grants no authority to launch unconfined work.
-const MAINTENANCE_PROTOCOL_VERSIONS = new Set([1, TERMINAL_HOST_PROTOCOL_VERSION]);
+// IPC 1–3 share these maintenance frames. Accepting a retained older owner's shutdown
+// decision grants no authority to launch unconfined work or infer readiness evidence.
+const MAINTENANCE_PROTOCOL_VERSIONS = new Set([1, 2, TERMINAL_HOST_PROTOCOL_VERSION]);
 const HELP = `usage:
   manifold-agent --maintenance drain --hub URL --machine-id ID --owner-key-file FILE
   manifold-agent --maintenance reopen --hub URL --machine-id ID --owner-key-file FILE
