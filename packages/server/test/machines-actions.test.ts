@@ -247,12 +247,16 @@ describe("core.machines.list", () => {
   test("reports every row with live connectedness and a derived color", async () => {
     const online = new Set<string>();
     const fix = await fixture(online);
-    const alpha = enrolled(
+    const alphaEnrollment = enrolled(
       await fix.host.dispatch(fix.owner, "core.machines.enroll", { name: "alpha" }),
-    ).machine.id;
-    const beta = enrolled(
+    );
+    const alpha = alphaEnrollment.machine.id;
+    const betaEnrollment = enrolled(
       await fix.host.dispatch(fix.owner, "core.machines.enroll", { name: "beta" }),
-    ).machine.id;
+    );
+    const beta = betaEnrollment.machine.id;
+    if (betaEnrollment.machineToken === undefined) throw new Error("expected a fresh token");
+    fix.auth.recordMachineRefusal(betaEnrollment.machineToken, 4403);
     online.add(alpha);
 
     const outcome = await fix.host.dispatch(fix.owner, "core.machines.list", {});
@@ -261,7 +265,13 @@ describe("core.machines.list", () => {
     const { machines } = MachinesResponseSchema.parse(outcome.result);
     expect(machines).toEqual([
       { id: alpha, name: "alpha", online: true, color: identityColorFor(alpha) },
-      { id: beta, name: "beta", online: false, color: identityColorFor(beta) },
+      {
+        id: beta,
+        name: "beta",
+        online: false,
+        color: identityColorFor(beta),
+        lastRefusal: { code: 4403, at: fix.runtime.now() },
+      },
     ]);
     fix.store.close();
   });

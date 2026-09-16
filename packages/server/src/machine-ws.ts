@@ -303,6 +303,7 @@ export class MachineGateway {
     if (!MACHINE_PROTOCOL_COMPAT_VERSIONS.has(message.protocolVersion)) {
       // Refuse incompatible transports before reconciliation. Their independent owners
       // keep the workloads until a compatible transport reconnects.
+      this.auth.recordMachineRefusal(message.token, 4409);
       this.logger.warn("machine_version_rejected", {
         agentProtocolVersion: message.protocolVersion,
         serverProtocolVersion: PROTOCOL_VERSION,
@@ -318,6 +319,7 @@ export class MachineGateway {
       authenticated = this.auth.authenticateMachine(message.token);
     } catch (error) {
       if (error instanceof ServiceError && error.code === "forbidden") {
+        this.auth.recordMachineRefusal(message.token, 4403);
         this.logger.warn("machine_rejected", {
           code: 4403,
           reason: "revoked",
@@ -325,6 +327,7 @@ export class MachineGateway {
         });
         connection.socket.close(4403, "revoked");
       } else {
+        this.auth.recordMachineRefusal(message.token, 4401);
         this.logger.warn("machine_rejected", {
           code: 4401,
           reason: "unauthorized",
@@ -366,6 +369,7 @@ export class MachineGateway {
       // hello is admitted below.
       connection.cancelHelloTimeout?.();
       connection.cancelHelloTimeout = null;
+      this.auth.recordMachineRefusal(message.token, 4003);
       this.logger.warn("machine_admission_refused", {
         machineId: authenticated.id,
         reason: admission.reason,
@@ -383,6 +387,7 @@ export class MachineGateway {
     ) {
       connection.cancelHelloTimeout?.();
       connection.cancelHelloTimeout = null;
+      this.auth.recordMachineRefusal(message.token, 4003);
       this.logger.warn("machine_supersession_damped", { machineId: authenticated.id });
       connection.socket.close(4003, "supersession damped");
       return;
@@ -390,6 +395,7 @@ export class MachineGateway {
     connection.cancelHelloTimeout?.();
     connection.cancelHelloTimeout = null;
     if (!this.store.touchMachine(authenticated.id, message.name, now, terminalHostId)) {
+      this.auth.recordMachineRefusal(message.token, 4003);
       this.logger.warn("machine_name_conflict", {
         machineId: authenticated.id,
         machineName: message.name,

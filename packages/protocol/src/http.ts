@@ -427,6 +427,12 @@ export function censusSolo(census: ContainerCensus): CensusItem | null {
  * without re-implementing the hash. Optional because a machine row is identity first and
  * presentation second; a consumer that only wants liveness ignores it.
  */
+export const MachineRefusalSchema = z.strictObject({
+  code: z.union([z.literal(4003), z.literal(4401), z.literal(4403), z.literal(4409)]),
+  at: z.number().int().nonnegative(),
+});
+export type MachineRefusal = z.infer<typeof MachineRefusalSchema>;
+
 export const MachineSummarySchema = z.strictObject({
   id: z.string().min(1),
   name: z.string().min(1),
@@ -452,6 +458,15 @@ export const MachineSummarySchema = z.strictObject({
   draining: z.boolean().optional(),
   /** Absence is unknown, not permission to launch an unconfined shell. */
   terminalExecution: TerminalExecutionSchema.optional(),
+  /**
+   * The most recent parsed machine hello the hub could associate with this durable machine
+   * but refused before admission. Repeated refusals replace it; restart, disconnect and
+   * credential rotation retain it. Only a later admitted hello clears it.
+   *
+   * ABSENT means no refusal is retained: the machine may never have dialled, or its most
+   * recent identifiable hello was admitted. `online` distinguishes the latter while live.
+   */
+  lastRefusal: MachineRefusalSchema.optional(),
 });
 export type MachineSummary = z.infer<typeof MachineSummarySchema>;
 export const MachinesResponseSchema = z.strictObject({

@@ -9,7 +9,7 @@ import { JOB_SCHEDULE_SCHEMA_SQL } from "./job-schedules.ts";
 import { migrateToDurableAgents } from "./migrate-agents.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 41;
+export const SCHEMA_VERSION = 42;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
@@ -942,6 +942,35 @@ CREATE TABLE principal_access_pauses(
 );
 INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','41');
 `,
+  42: {
+    backup: false,
+    apply(db) {
+      const table = db
+        .query<{ name: string }, []>(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='machines'",
+        )
+        .get();
+      if (table !== null) {
+        const columns = new Set(
+          db
+            .query<{ name: string }, []>("PRAGMA table_info(machines)")
+            .all()
+            .map((column) => column.name),
+        );
+        if (!columns.has("last_refusal_code"))
+          db.exec(`
+ALTER TABLE machines ADD COLUMN last_refusal_code INTEGER
+  CHECK(last_refusal_code IS NULL OR last_refusal_code IN (4003,4401,4403,4409));
+`);
+        if (!columns.has("last_refusal_at"))
+          db.exec(`
+ALTER TABLE machines ADD COLUMN last_refusal_at INTEGER
+  CHECK(last_refusal_at IS NULL OR last_refusal_at >= 0);
+`);
+      }
+      db.exec("INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','42')");
+    },
+  },
 };
 
 interface TableRow {

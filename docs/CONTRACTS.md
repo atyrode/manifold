@@ -1707,6 +1707,18 @@ A machine summary carries an optional **`revoked`** (absent ≡ live, so a pre-v
 unchanged), derived from the token the row references by one store join
 (`ServerStore.revokedMachineIds`).
 
+A machine summary also carries optional
+**`lastRefusal: { code: 4003 | 4401 | 4403 | 4409, at }`**. It is the latest parsed machine
+hello the hub could associate with that durable machine but refused before admission; `at` is
+the hub's Unix time in milliseconds. Repeated refusals replace both fields. Hub restart,
+ordinary disconnect, credential revocation and credential rotation retain them. A later
+admitted hello clears them atomically with the machine's admitted name, owner and contact
+time. Unknown secrets cannot create or modify a roster row. Absence therefore means “no
+refusal retained,” not “this machine never dialled”: an offline row without it may be
+never-connected or cleanly offline after a successful admission, while an offline row with it
+is durably distinguishable as rejected. This additive optional read-model field preserves the
+old row when absent and does not change the machine-channel protocol version.
+
 `core.machines.forget { machineId }` carries `machines:mint` at workspace scope and
 answers `{}`. Forget is distinct from revoke: it removes only an already-revoked roster row
 and all of that machine's token rows, including old rotated credentials. The ordinary
@@ -3249,18 +3261,23 @@ version gates are retired: every accepted transport understands those frames, wh
 authority comes from explicit declarations and live owner proof.
 
 Negotiation refusals emit structured server logs (`machine_version_rejected`,
-`machine_rejected`, …). Publication of this source or a release authorizes no hub promotion,
-fleet installation or occupied-owner replacement.
+`machine_rejected`, …) and, when the presented secret identifies a current or historical
+machine credential, replace that machine's durable `MachineSummary.lastRefusal`. The roster
+therefore exposes the close code and hub time without journal access; an unknown secret is
+still only a log and close because it names no durable machine. Publication of this source or
+a release authorizes no hub promotion, fleet installation or occupied-owner replacement.
 
 The unknown-NEWER direction is the one with no recovery, and it is the operator-facing failure
 mode. A hub cannot accept a protocol version that did not exist when it was built, so an agent
 whose `protocolVersion` falls outside `MACHINE_PROTOCOL_COMPAT_VERSIONS` is closed 4409 on every
 dial and re-dials with jittered backoff indefinitely rather than exiting: the refusal is permanent,
 and from the spoke's side it is silent. systemd keeps reporting the unit `active (running)`, so
-unit state is NOT evidence the agent is on the canvas — the evidence is the agent journal's
-`protocol_version_rejected` (logged at error, with the close code, on every rejected dial) and the
-server's `machine_version_rejected`, which carries both versions. The guard is not in the handshake,
-it is in upgrade discipline: `bun run release` publishes artifacts without deploying a hub.
+unit state is NOT evidence the agent is on the canvas. The durable hub-side evidence is
+`core.machines.list` carrying `lastRefusal: { code: 4409, at }`; the journal evidence remains
+the agent's `protocol_version_rejected` (logged at error, with the close code, on every
+rejected dial) and the server's `machine_version_rejected`, which carries both versions. The
+guard is not in the handshake, it is in upgrade discipline: `bun run release` publishes
+artifacts without deploying a hub.
 Install newer-protocol agents only after their target hub supports that protocol. Production
 promotion is an explicit, tag-selected operation (`bun run promote vX.Y.Z`, docs/SELF-HOST.md
 §Environments); its health check precedes fleet-pin dispatch.

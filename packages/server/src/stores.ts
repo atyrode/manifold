@@ -64,6 +64,7 @@ import {
   type IndexEntry,
   type PluginInstallMode,
   type PluginSettingValues,
+  type MachineRefusal,
   type Principal,
   type TileLayout,
   type TraceOutcome,
@@ -332,6 +333,8 @@ interface MachineRow {
   last_seen: number;
   owner_host_id: string | null;
   draining: number;
+  last_refusal_code: number | null;
+  last_refusal_at: number | null;
 }
 
 interface PluginInstallDbRow {
@@ -481,6 +484,11 @@ export interface MachineRecord {
   ownerHostId: string | null;
   /** The admission latch `core.machines.drain` sets: while true, no new terminal is admitted. */
   draining: boolean;
+  /**
+   * The latest identifiable hello refused before admission. Null means either no known
+   * refusal or a later hello was admitted; only admission clears this durable diagnostic.
+   */
+  lastRefusal: MachineRefusal | null;
 }
 
 /** Machine identity resulting from a hashed-token lookup. */
@@ -941,11 +949,18 @@ function toMachine(row: MachineRow): MachineRecord {
     lastSeen: row.last_seen,
     ownerHostId: row.owner_host_id,
     draining: row.draining !== 0,
+    lastRefusal:
+      row.last_refusal_code === null || row.last_refusal_at === null
+        ? null
+        : {
+            code: row.last_refusal_code as MachineRefusal["code"],
+            at: row.last_refusal_at,
+          },
   };
 }
 
 const MACHINE_SELECT =
-  "SELECT id, name, token_id, last_seen, owner_host_id, draining FROM machines";
+  "SELECT id, name, token_id, last_seen, owner_host_id, draining, last_refusal_code, last_refusal_at FROM machines";
 
 function toPluginInstall(row: PluginInstallDbRow): PluginInstallRow {
   return {
@@ -3548,6 +3563,7 @@ export class ServerStore {
     const row = this.db
       .query<MachineAuthRow, [string]>(
         `SELECT m.id, m.name, m.token_id, m.last_seen, m.owner_host_id, m.draining,
+                m.last_refusal_code, m.last_refusal_at,
                 t.hash, t.principal_id, t.revoked_at
          FROM machines m JOIN tokens t ON t.id = m.token_id
          WHERE t.hash = ?`,
@@ -3559,6 +3575,22 @@ export class ServerStore {
       tokenPrincipalId: row.principal_id,
       revokedAt: row.revoked_at,
     };
+  }
+
+  /**
+   * Records a parsed hello's refusal only when its presented secret belongs to a durable
+   * machine, including a rotated historical secret. Unknown tokens never create roster state.
+   */
+  recordMachineRefusal(hash: string, code: MachineRefusal["code"], at: number): boolean {
+    return (
+      this.db
+        .query<void, [number, number, string]>(
+          `UPDATE machines
+              SET last_refusal_code = ?, last_refusal_at = ?
+            WHERE id = (SELECT principal_id FROM tokens WHERE hash = ?)`,
+        )
+        .run(code, at, hash).changes > 0
+    );
   }
 
   /**
@@ -3575,7 +3607,8 @@ export class ServerStore {
       this.db
         .query<void, [string, number, string | null, string, string]>(
           `UPDATE machines
-           SET name = ?, last_seen = ?, owner_host_id = ?
+           SET name = ?, last_seen = ?, owner_host_id = ?,
+               last_refusal_code = NULL, last_refusal_at = NULL
            WHERE id = ?
              AND NOT EXISTS (
                SELECT 1 FROM machines AS incumbent

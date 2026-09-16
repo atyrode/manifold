@@ -253,6 +253,7 @@ describe("machine hello reconciliation", () => {
     );
     expect(retry.closed).toBeNull();
     expect(machineMessages(retry).map((message) => message.type)).toEqual(["welcome"]);
+    expect(store.getMachine(enrollment.machine.id)?.lastRefusal).toBeNull();
     gateway.shutdown();
     store.close();
   });
@@ -416,6 +417,22 @@ describe("machine hello reconciliation", () => {
     const socket = new FakeSocket();
     gateway.open("connection", socket);
 
+    const unknown = new FakeSocket();
+    gateway.open("unknown", unknown);
+    gateway.message(
+      "unknown",
+      JSON.stringify({
+        type: "hello",
+        token: "not-an-enrolled-token",
+        name: "unknown",
+        agentVersion: "test-newer",
+        protocolVersion: PROTOCOL_VERSION + 1,
+        terminals: [],
+      }),
+    );
+    expect(unknown.closed?.code).toBe(4409);
+    expect(store.getMachine(enrollment.machine.id)?.lastRefusal).toBeNull();
+
     gateway.message(
       "connection",
       JSON.stringify({
@@ -433,6 +450,10 @@ describe("machine hello reconciliation", () => {
     const rejected = warned.find((w) => w.evt === "machine_version_rejected");
     expect(rejected?.fields?.agentProtocolVersion).toBe(PROTOCOL_VERSION + 1);
     expect(rejected?.fields?.serverProtocolVersion).toBe(PROTOCOL_VERSION);
+    expect(store.getMachine(enrollment.machine.id)?.lastRefusal).toEqual({
+      code: 4409,
+      at: runtime.now(),
+    });
     gateway.shutdown();
     store.close();
   });
@@ -473,6 +494,7 @@ describe("machine hello reconciliation", () => {
     gateway.message("incumbent", hello(incumbent.machineToken, "shared-name"));
     const incumbentBefore = store.getMachine(incumbent.machine.id);
     const claimantBefore = store.getMachine(claimant.machine.id);
+    if (claimantBefore === null) throw new Error("claimant machine missing");
 
     const claimantSocket = new FakeSocket();
     gateway.open("claimant", claimantSocket);
@@ -483,7 +505,10 @@ describe("machine hello reconciliation", () => {
       reason: "machine name already in use",
     });
     expect(machineMessages(claimantSocket)).toEqual([]);
-    expect(store.getMachine(claimant.machine.id)).toEqual(claimantBefore);
+    expect(store.getMachine(claimant.machine.id)).toEqual({
+      ...claimantBefore,
+      lastRefusal: { code: 4003, at: runtime.now() },
+    });
     expect(store.getMachine(incumbent.machine.id)).toEqual(incumbentBefore);
     expect(gateway.isOnline(incumbent.machine.id)).toBe(true);
     expect(incumbentSocket.closed).toBeNull();
