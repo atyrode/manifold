@@ -64,17 +64,21 @@ builds and live worktrees also require the corrected Bun; changing source pins d
 upgrade installed tools or authorize a service restart.
 
 For numbered previews, both builds and an offline activation/application-import probe
-complete before the existing service is stopped. The probe checks application ownership, `omp`/`code`
-availability, the activated user/home, Bun compatibility and the real protocol import.
-Invalid pins, incompatible runtimes and failed probes leave the running preview alone.
-After preflight, deployment announces
-that existing PTYs and their terminal entries are retired and the disposable home
-is replaced. It closes machine admission through `core.machines.drain`, retires
-those PTYs through `core.terminals.kill`, stops the service, changes only its
-`/data` volume's ownership to UID/GID 1000, then starts the application as that
-user and reopens admission. Ordinary canvas and identity data remain in `/data`;
-the home and mutable Nix state survive stop/start but not container recreation.
-A failure after retirement is a deployment failure, not a transactional rollback.
+complete before the existing service is touched. The probe checks application ownership,
+`omp`/`code` availability, the activated user/home, Bun compatibility and the real protocol
+import. Invalid pins, incompatible runtimes and failed probes leave the running preview alone.
+A healthy request for the exact revision already running is a no-op: stable tooling verifies
+the named `pr-N` node plus disposable real terminal creation, command output and cleanup without
+building or replacing the container.
+
+A revision change or removal first closes terminal admission through `core.machines.drain`. Any
+retained terminal produces an actionable HOLD, admission is reopened, and the existing container
+and work remain untouched; automation never kills terminals to make either operation pass. An
+empty acknowledged inventory may proceed to replacement or removal. Replacement success requires
+the named node to reconnect; a failure reports its durable `lastRefusal` code/time. Once online,
+verification reopens admission and exercises the same real terminal I/O probe. Ordinary canvas and
+identity data remain in `/data`; the home and mutable Nix state survive stop/start but not an
+explicitly empty container recreation.
 
 Integrated deployment resolves the existing checkout's `.env` and Compose overlays to a
 private temporary configuration, then appends the stable `compose.development.yaml`.
@@ -160,21 +164,23 @@ cache pruning is performed.
 
 The independent CI job runs `bun scripts/verify-preview-environment.ts` with a
 private local deployment fixture, real Docker/Compose, SDK clients and Chromium.
-It exercises root-to-developer migration, native terminal interaction and
-reattachment, home recreation and non-disruptive preflight refusals. Pass `--integrated`
-to exercise server-only retained replacement through the actual `deploy-dev.sh` with a unique
-`manifold-dev-N` project, private checkout, loopback port and volume. It checks a real
-single-threaded zombie alongside a live server-plugin isolate, persisted canvas/identity,
-unchanged nonstandard data ownership and network selection, no local owner, and non-disruptive
-configuration refusals with the disposable pin/lifecycle helper absent.
-Actual-incumbent volume, machine, network and writable-layer data-root mismatches, plus
-desired base/final-overlay data-root, volume-subpath and network overrides, must leave
-the original container generation, identity, data ownership and canvas state unchanged.
-The same guarantee covers an actual incumbent mounted on a volume subpath.
-It also creates an incumbent local owner with live PTYs, requests server-only replacement,
-and requires refusal to preserve its process generation, identity and working terminals.
-No existing development stack is selected. Only fixed host-service calls to Caddy/systemd
-are shimmed. Run both modes before shipping composition changes:
+Plain mode proves the allowlisted seed and fresh authority boundary, independent `pr-N` node
+identity, occupied-owner replacement refusal without disruption, explicit empty replacement,
+same-SHA no-op with retained terminal I/O, node admission plus disposable terminal cleanup,
+actionable refusal text in the real roster, and two real browsers observing one terminal.
+It also exercises root-to-developer migration, native terminal interaction and reattachment.
+Pass `--integrated` to exercise server-only retained replacement through the actual
+`deploy-dev.sh` with a unique `manifold-dev-N` project, private checkout, loopback port and volume.
+It checks a real single-threaded zombie alongside a live server-plugin isolate, persisted
+canvas/identity, unchanged nonstandard data ownership and network selection, no local owner, and
+non-disruptive configuration refusals with the disposable pin/lifecycle helper absent.
+Actual-incumbent volume, machine, network and writable-layer data-root mismatches, plus desired
+base/final-overlay data-root, volume-subpath and network overrides, must leave the original
+container generation, identity, data ownership and canvas state unchanged. The same guarantee
+covers an actual incumbent mounted on a volume subpath. It also creates an incumbent local owner
+with live PTYs, requests server-only replacement, and requires refusal to preserve its process
+generation, identity and working terminals. No existing development stack is selected. Only fixed
+host-service calls to Caddy/systemd are shimmed. Run both modes before shipping composition changes:
 
 ```sh
 bun scripts/verify-preview-environment.ts

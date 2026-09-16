@@ -281,6 +281,35 @@ require_retained_server_only() {
     fail 'HOLD: retained incumbent process proof is unavailable'
 }
 
+# Return the exact source revision of one running, build-aligned disposable
+# incumbent. Docker copied these labels from the image into immutable container
+# configuration at creation, so a later candidate retag cannot change the evidence.
+running_environment_revision() {
+  local project=$1 expected_environment=$2 incumbent revision
+  incumbent=$(docker ps --quiet --no-trunc \
+    --filter "label=com.docker.compose.project=$project" \
+    --filter 'label=com.docker.compose.service=manifold') ||
+    fail 'cannot identify the disposable preview incumbent'
+  [[ -n $incumbent ]] || return 1
+  [[ $incumbent =~ ^[0-9a-f]{64}$ ]] ||
+    fail 'disposable preview requires exactly one running manifold container'
+  revision=$(docker inspect "$incumbent" 2>/dev/null |
+    jq -er --arg environment "$expected_environment" '
+      .[0].Config.Labels |
+      select(."org.opencontainers.image.base.name" == $environment and
+        ."org.opencontainers.image.base.digest" == ($environment | split("@")[1])) |
+      ."org.opencontainers.image.revision"
+    ') || return 1
+  [[ $revision =~ ^[0-9a-f]{40}$ ]] || return 1
+  printf '%s' "$revision"
+}
+
+verify_disposable_environment() {
+  local final_image=$1
+  shift
+  "$@" "$final_image" exec -T manifold bun - verify <"$here/terminal-lifecycle.ts"
+}
+
 replace_environment() {
   local lifecycle=$1 volume=$2 final_image=$3 project=$4 health_url=$5 topology
   shift 5
@@ -292,14 +321,19 @@ replace_environment() {
       log "replacing only $project hub; retained owners and data are untouched"
       ;;
     disposable)
-      log "redeploying $project retires existing PTYs and terminal entries and replaces the disposable development home"
+      log "replacing $project only after its named preview node is drained and empty"
       if [[ -n $("$@" "$final_image" ps --status running --quiet manifold) ]]; then
-        "$@" "$final_image" exec -T manifold bun - retire <"$here/terminal-lifecycle.ts"
+        "$@" "$final_image" exec -T manifold bun - prepare <"$here/terminal-lifecycle.ts"
       fi
       ;;
     *) fail 'replacement requires an explicit retained or disposable lifecycle' ;;
   esac
-  "$@" "$final_image" stop manifold
+  if ! "$@" "$final_image" stop manifold; then
+    if [[ $lifecycle == disposable ]]; then
+      "$@" "$final_image" exec -T manifold bun - reopen <"$here/terminal-lifecycle.ts" || true
+    fi
+    fail "$project deployment could not stop the incumbent"
+  fi
   if [[ $lifecycle == disposable ]]; then
     docker run --rm --network none --label "com.docker.compose.project=$project" --user 0:0 --entrypoint /bin/bash \
       --mount "type=volume,src=$volume,dst=/data" "$final_image" \
@@ -313,6 +347,6 @@ replace_environment() {
   log "waiting for $project health"
   wait_health "$health_url" "$MANIFOLD_BUILD" || fail "$project deployment failed health check"
   if [[ $lifecycle == disposable ]]; then
-    "$@" "$final_image" exec -T manifold bun - resume <"$here/terminal-lifecycle.ts"
+    verify_disposable_environment "$final_image" "$@"
   fi
 }

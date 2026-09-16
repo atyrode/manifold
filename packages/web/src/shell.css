@@ -1637,7 +1637,7 @@ button.sidebar-terminal.is-summary > small {
   background: rgb(134 142 150 / 8%);
 }
 
-.sidebar-machine-row.is-offline,
+.sidebar-machine-row.is-offline:not([data-has-refusal]),
 .sidebar-terminal-row.is-exited {
   opacity: 0.55;
 }

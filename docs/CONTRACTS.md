@@ -657,6 +657,15 @@ copied, and the projected database is vacuumed so deleted authority bytes do not
 pages. Startup mints fresh owner, preview-signing and machine authority. Real boundary verification
 must prove representative data remains usable while the source owner key and reusable bearer are
 refused and source signing, dial, plugin and arbitrary file state is absent.
+Each numbered preview owns one build-aligned `pr-N` execution node. A healthy request for the exact
+incumbent revision must not build or replace it, but must still prove that named node online and
+exercise disposable terminal creation, command output and cleanup. A revision-changing replacement
+drains admission first and proceeds only after the named owner acknowledges an empty terminal
+inventory; removal obeys the same rule. Retained work is a HOLD: reopen admission and leave the
+incumbent untouched; never kill terminals as deployment cleanup. After replacement, success
+requires the named node online, open admission and the same terminal I/O proof. The integrated
+preview remains a server-only `dev-hub`
+whose independently supervised owner is outside this disposable replacement path.
 
 ### Authority is a waterfall of grants (ADR 0011, shipped)
 
@@ -1740,6 +1749,10 @@ refusal retained,” not “this machine never dialled”: an offline row withou
 never-connected or cleanly offline after a successful admission, while an offline row with it
 is durably distinguishable as rejected. This additive optional read-model field preserves the
 old row when absent and does not change the machine-channel protocol version.
+The machine roster renders this field on an offline, non-revoked row with a code-specific remedy:
+owner-continuity inspection for `4003`, re-enrollment for `4401`, credential rotation or
+re-enrollment for `4403`, and node-to-hub build alignment for `4409`. It is operational evidence,
+not a client-side admission decision.
 
 `core.machines.forget { machineId }` carries `machines:mint` at workspace scope and
 answers `{}`. Forget is distinct from revoke: it removes only an already-revoked roster row

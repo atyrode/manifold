@@ -74,6 +74,13 @@
   font-size: 0.7rem;
 }
 
+.machine-refusal {
+  grid-column: 3 / -1;
+  color: #ffa8a8;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
 /*
   The state word, and the reason it is a class rather than a bare span: with the withdraw
   control beside "new terminal" the row has two trailing buttons, and at the narrowest sidebar
