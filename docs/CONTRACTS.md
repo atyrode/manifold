@@ -2670,6 +2670,14 @@ engaged is a socket role rather than a UI mode anyone has to learn.
 
 ### Scene sync (Yjs CRDT)
 
+Yjs is the floor's document-plane engine because scene edits need commutative field and
+collaborative-text merges across browser, SDK, and server; [ADR 0008](decisions/0008-yjs-scene-engine.md)
+and its 2026-09-15 ratification addendum own that dependency decision. `scene` means the room
+document containing elements (including nested text) and layout, not a canvas renderer. React Flow
+is only `core.canvas`'s plugin-local web renderer under
+[ADR 0007](decisions/0007-react-flow-renderer.md); no floor document or non-canvas discipline
+depends on it.
+
 - Each room holds one canonical `Y.Doc`. Its `elements` map contains bounded
   `SceneElementSchema` records from `@manifold/protocol`, not a closed union of element
   types. A removed element is absent rather than retained as a tombstone. Rendering order
