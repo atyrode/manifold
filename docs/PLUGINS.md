@@ -735,6 +735,39 @@ Declare the slice you use — `{ actions: { call(args: { plugin: string; action:
 than from this file. What the verb is not: an import of another plugin's code, a shared table, or
 any kind of authority gain. A declared dependency is permission to ASK.
 
+### Recovering a multi-effect workflow
+
+`ctx.actions.call` opens another traced door; it does not make the caller and callee one
+transaction. Each successful door has committed even if the next step refuses or throws, and
+returning a refusal from the outer door does not roll the earlier result back.
+
+First ask whether the effects enforce one product invariant. If they do, put that invariant
+behind one product-owned operation with one bounded outcome. Terminal birth is the shipped
+example: `core.terminals.create` and `openTerminal({ placement: "tile" })` ask the broker to
+create and place once. Before publication, the broker compensates a failed acknowledgement or
+placement; after success, `core.terminals.kill` is ordinary cleanup. Do **not** split this into
+“open, then place” and teach killing the terminal as a generic rollback—the separate workflow
+and its temporary unplaced result are obsolete.
+
+When the workflow genuinely crosses independently useful operations, recovery belongs to that
+workflow:
+
+1. Name every committed partial result and retain its stable reference.
+2. Make later failure visible without disguising the earlier success as undone.
+3. Offer cleanup only through a door whose contract says it is safe for that exact partial
+   state. Treat its refusal, timeout, or unreadable result as unconfirmed cleanup.
+4. Keep the partial reference and recovery control visible until cleanup is confirmed.
+5. Never “compensate” by deleting or reversing pre-existing or shared state merely because an
+   operation looks like an inverse.
+
+The Agents section follows this rule when starting a run. `core.access.createRun` commits first,
+so the UI retains the returned run id while launch and terminal opening remain unconfirmed. If
+a later step fails, the run stays visible with a Cancel action that calls
+`core.access.finishAgentRun { outcome: "cancelled" }`. A cleanup refusal or malformed response
+keeps both the id and the failure visible instead of claiming rollback. A server handler that
+chains sibling doors through `ctx.actions.call` owes the same explicit checkpoints and recovery
+contract; the dispatch ceiling, trace and capability checks do not provide one for it.
+
 ### Calling one
 
 ```
