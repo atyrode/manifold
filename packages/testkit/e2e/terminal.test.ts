@@ -335,6 +335,80 @@ test("terminal lifecycle enforces attach contiguity, controller authority, resiz
   }
 }, 90_000);
 
+test("controller lease accepts input from a second connection of the same principal", async () => {
+  const servers: TestServer[] = [];
+  const agents: TestAgent[] = [];
+  const clients: SessionClient[] = [];
+  const captures: TerminalCapture[] = [];
+  try {
+    const server = await startServer();
+    servers.push(server);
+    const canvasContainer = await createContainer(server, "same-principal controller");
+    const enrolled = await enrollMachine(server, "same-principal-controller-agent");
+    agents.push(
+      await startAgent({
+        serverUrl: server.url,
+        machineToken: enrolled.machineToken,
+        name: "same-principal-controller-agent",
+      }),
+    );
+    const owner = await mintToken(server, {
+      principal: { kind: "human", name: "Shared Controller", color: "#465da8" },
+      caps: ["containers:read", "terminals:spawn", "terminals:write"],
+    });
+    const canvas = await connect(server, {
+      containerId: canvasContainer.id,
+      token: owner.token,
+      reconnect: false,
+    });
+    clients.push(canvas);
+    const { terminal, homeClient } = await openTerminalAt(canvas, server, {
+      elementId: "same-principal-terminal",
+      token: owner.token,
+    });
+    clients.push(homeClient);
+
+    const secondGrant = await mintToken(server, {
+      principalId: owner.principal.id,
+      caps: ["containers:read", "terminals:write"],
+    });
+    expect(secondGrant.principal.id).toBe(owner.principal.id);
+    expect(secondGrant.token).not.toBe(owner.token);
+    // Session transport pooling is keyed by bearer token, so this credential establishes a
+    // second WebSocket connection while retaining the terminal controller's principal id.
+    const secondConnection = await connect(server, {
+      containerId: terminal.containerId,
+      token: secondGrant.token,
+      reconnect: false,
+    });
+    clients.push(secondConnection);
+    await waitFor(
+      () => secondConnection.terminals.get(terminal.id)?.controllerId === owner.principal.id,
+      10_000,
+      20,
+    );
+
+    const errors: string[] = [];
+    secondConnection.on("error", (message) => errors.push(message.code));
+    const capture = captureTerminal(secondConnection, terminal.id);
+    captures.push(capture);
+    secondConnection.attachTerminal(terminal.id);
+    await waitFor(() => capture.snapshotSeq !== null, 10_000, 20);
+    secondConnection.sendTerminalInput(terminal.id, "printf 'SAME_PRINCIPAL_OK\\n'\n");
+    await waitForTerminalText(capture, "SAME_PRINCIPAL_OK", 10_000);
+    expect(errors).not.toContain("not_controller");
+
+    homeClient.killTerminal(terminal.id);
+    await waitFor(() => !homeClient.terminals.has(terminal.id), 10_000, 20);
+  } catch (error) {
+    throw e2eFailure(error, [...servers, ...agents]);
+  } finally {
+    for (const capture of captures) capture.stop();
+    closeClients(clients);
+    await stopProcesses([...servers, ...agents]);
+  }
+}, 30_000);
+
 test("nested exit preserves the shell; root failure retains the terminal for every viewer", async () => {
   const servers: TestServer[] = [];
   const agents: TestAgent[] = [];
