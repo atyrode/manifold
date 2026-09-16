@@ -19,6 +19,27 @@ import {
   stopProcesses,
 } from "./helpers.ts";
 
+// These human-authored elements receive content and server attribution in separate updates.
+// Counts and winning fields can agree before the complete replicas have converged.
+async function expectConverged(left: SessionClient, right: SessionClient): Promise<void> {
+  try {
+    await waitFor(
+      () => {
+        const scene = sortedScene(left);
+        return (
+          scene.every(
+            (element) => element.lastEditedAt !== undefined && element.lastEditedBy !== undefined,
+          ) && Bun.deepEquals(scene, sortedScene(right), true)
+        );
+      },
+      10_000,
+      20,
+    );
+  } finally {
+    expect(sortedScene(right)).toEqual(sortedScene(left));
+  }
+}
+
 test("Yjs clients converge through field conflicts, resume, recreate, and restart", async () => {
   const servers: TestServer[] = [];
   const clients: SessionClient[] = [];
@@ -58,7 +79,7 @@ test("Yjs clients converge through field conflicts, resume, recreate, and restar
       for (const element of initial) tx.create(element);
     });
     await waitFor(() => clientB.elements.size === 40, 10_000, 20);
-    expect(sortedScene(clientB)).toEqual(sortedScene(clientA));
+    await expectConverged(clientA, clientB);
 
     // Independent fields are separate Y.Map keys: neither concurrent edit may be lost.
     clientA.transact((tx) => {
@@ -93,7 +114,7 @@ test("Yjs clients converge through field conflicts, resume, recreate, and restar
       10_000,
       20,
     );
-    expect(sortedScene(clientB)).toEqual(sortedScene(clientA));
+    await expectConverged(clientA, clientB);
 
     const lastEpoch = clientB.epoch;
     const lastRev = clientB.rev;
@@ -113,7 +134,7 @@ test("Yjs clients converge through field conflicts, resume, recreate, and restar
     });
     clients.push(resumedB);
     await waitFor(() => resumedB.elements.size === 50, 10_000, 20);
-    expect(sortedScene(resumedB)).toEqual(sortedScene(clientA));
+    await expectConverged(clientA, resumedB);
 
     clientA.transact((tx) => {
       tx.remove("el-0");
@@ -139,6 +160,7 @@ test("Yjs clients converge through field conflicts, resume, recreate, and restar
     });
     await waitFor(() => resumedB.elements.has("el-durable"), 10_000, 20);
     await saved;
+    await expectConverged(clientA, resumedB);
     const expectedScene = sortedScene(clientA);
     const expectedHash = await sceneContentHash(expectedScene);
     const expectedEpoch = clientA.epoch;
