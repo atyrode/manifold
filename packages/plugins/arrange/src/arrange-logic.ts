@@ -1,3 +1,4 @@
+import { withSeatedPanels } from "@manifold/plugin";
 import { releasedTileLayout, tradedSeats, type TileAim } from "@manifold/plugin/hooks";
 import {
   ROOT_TILE_ID,
@@ -11,7 +12,6 @@ import {
 import {
   tileLeafIds,
   tileParentId,
-  withTileLeaf,
   withTileRatios,
   withoutTileLeaf,
   withoutTileStructure,
@@ -234,23 +234,6 @@ export function nudgedPanelLayout(
  * into anything — and Shelf on the one seat the selection names.
  */
 
-/** Appends `ref` as a new, flat child of the root split — Spacer and Shelf's re-seat share it. */
-function appendedToRoot(layout: TileLayout, ref: TileRef): TileLayout | null {
-  const root = layout[ROOT_TILE_ID];
-  if (root === undefined) return null;
-  if (root.dir === null) {
-    // A single-leaf root: the root branch of `withTileLeaf` wraps it into a fresh row split.
-    const inserted = withTileLeaf(layout, ref, ROOT_TILE_ID, "right");
-    return inserted === null ? null : inserted.layout;
-  }
-  const edge: TileEdge = root.dir === "row" ? "right" : "bottom";
-  const lastChild = root.children.at(-1);
-  if (lastChild === undefined) return null;
-  // Root's own axis, so `withTileLeaf` JOINS the row flat rather than nesting (#60).
-  const inserted = withTileLeaf(layout, ref, lastChild, edge);
-  return inserted === null ? null : inserted.layout;
-}
-
 /** Equalize: normalizes the root split's ratios to one even share each. */
 export function rootEqualized(layout: TileLayout | null): PanelArrangeOutcome {
   if (layout === null) return refuse("tree_refused");
@@ -334,5 +317,5 @@ export function escapeMeaning(carrying: boolean, scopedPanelId: string | null): 
 /** Shelf's re-seat: appends a shelved panel back onto the workspace's own arrangement. */
 export function reseated(layout: TileLayout | null, panelId: string): PanelArrangeOutcome {
   if (layout === null) return refuse("tree_refused");
-  return settled(appendedToRoot(layout, { kind: "panel", panelId }));
+  return settled(withSeatedPanels(layout, [panelId]));
 }

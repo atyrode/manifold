@@ -187,6 +187,7 @@ export {
   removedSectionStructure,
   sectionArrangementOf,
   withPanelSections,
+  withSeatedPanels,
   type PanelOpening,
   type SectionCluster,
   type SectionProjection,

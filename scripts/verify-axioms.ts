@@ -2582,6 +2582,24 @@ try {
     authoritative roster and the root must repaint without navigation or reload.
   */
   await browser.goto(`${origin}/`);
+  const storedBeforeInstall = await browser.evaluate<boolean>(
+    `(async () => {
+      const identity = JSON.parse(localStorage.getItem("manifold.identity"));
+      const headers = {
+        authorization: \`Bearer \${identity.token}\`,
+        "content-type": "application/json",
+      };
+      const current = await (await fetch("/api/layout", { headers })).json();
+      const outcome = await (
+        await fetch("/api/actions/core.space.setLayout", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ layout: current.layout }),
+        })
+      ).json();
+      return outcome.ok === true;
+    })()`,
+  );
   const absentBeforeInstall = await browser.evaluate<boolean>(
     `document.querySelector('[data-plugin="${STRANGER_PLUGIN_ID}"]') === null`,
   );
@@ -2629,12 +2647,124 @@ try {
         ),
       10_000,
     ));
+  await closePluginManager();
+  const suggestedAtRoot = await settles(
+    () =>
+      browser!.evaluate<boolean>(
+        `document.querySelector('[data-testid="plugin-manager-seat-suggestion"]') !== null`,
+      ),
+    10_000,
+  );
+  const seatShot = await browser.send("Page.captureScreenshot", { format: "png" });
+  const seatShotPath = join(
+    mkdtempSync(join(tmpdir(), "manifold-axi-seat-suggestion-")),
+    "screenshot.png",
+  );
+  writeFileSync(seatShotPath, Buffer.from(String(seatShot.result?.["data"] ?? ""), "base64"));
+  console.log(`INFO  seat suggestion screenshot: ${seatShotPath}`);
+  const beforeSeatPanels = await browser.evaluate<readonly string[]>(
+    `(async () => {
+      const identity = JSON.parse(localStorage.getItem("manifold.identity"));
+      const response = await fetch("/api/layout", {
+        headers: { authorization: \`Bearer \${identity.token}\` },
+      });
+      const body = await response.json();
+      return Object.values(body.layout)
+        .map((tile) => tile.ref)
+        .filter((ref) => ref?.kind === "panel")
+        .map((ref) => ref.panelId);
+    })()`,
+  );
+  if (suggestedAtRoot) await browser.clickTestId("plugin-manager-seat-suggestion-add");
+  const seatedAtRoot = await settles(
+    () =>
+      browser!.evaluate<boolean>(
+        `(async () => {
+          const identity = JSON.parse(localStorage.getItem("manifold.identity"));
+          const response = await fetch("/api/layout", {
+            headers: { authorization: \`Bearer \${identity.token}\` },
+          });
+          const body = await response.json();
+          return Object.values(body.layout).some(
+            (tile) => tile.ref?.kind === "panel" && tile.ref.panelId === ${JSON.stringify(STRANGER_PANEL)},
+          );
+        })()`,
+      ),
+    10_000,
+  );
+  const afterSeatPanels = await browser.evaluate<readonly string[]>(
+    `(async () => {
+      const identity = JSON.parse(localStorage.getItem("manifold.identity"));
+      const response = await fetch("/api/layout", {
+        headers: { authorization: \`Bearer \${identity.token}\` },
+      });
+      const body = await response.json();
+      return Object.values(body.layout)
+        .map((tile) => tile.ref)
+        .filter((ref) => ref?.kind === "panel")
+        .map((ref) => ref.panelId);
+    })()`,
+  );
+  const suggestionCleared = await browser.evaluate<boolean>(
+    `document.querySelector('[data-testid="plugin-manager-seat-suggestion"]') === null`,
+  );
+  const existingPanelsPreserved = beforeSeatPanels.every((panelId) =>
+    afterSeatPanels.includes(panelId),
+  );
+  const detailReportsSeated =
+    (await openPluginManager()) &&
+    (await settles(
+      () =>
+        browser!.evaluate<boolean>(
+          `(() => {
+            const detail = document.querySelector(
+              '[data-testid="plugin-manager-detail-seats"]',
+            );
+            if (detail?.textContent?.includes("In workspace") === true) return true;
+            const row = document.querySelector(
+              '[data-testid="plugin-manager"] [data-plugin="${STRANGER_PLUGIN_ID}"]',
+            );
+            if (row instanceof HTMLElement) row.click();
+            return false;
+          })()`,
+        ),
+      10_000,
+    ));
   check(
     "R1 workspace root receives live plugin install and disable transitions",
-    absentBeforeInstall && admitted.ok && appearedAtRoot && disabledAtRoot && enabledAtRoot,
-    absentBeforeInstall && admitted.ok && appearedAtRoot && disabledAtRoot && enabledAtRoot
+    storedBeforeInstall &&
+      absentBeforeInstall &&
+      admitted.ok &&
+      appearedAtRoot &&
+      disabledAtRoot &&
+      enabledAtRoot,
+    storedBeforeInstall &&
+      absentBeforeInstall &&
+      admitted.ok &&
+      appearedAtRoot &&
+      disabledAtRoot &&
+      enabledAtRoot
       ? "a second principal installed, disabled, and re-enabled example.counter while `/` repainted every transition without reload"
-      : `absent: ${String(absentBeforeInstall)}, install: ${String(admitted.ok)}, appeared: ${String(appearedAtRoot)}, disabled: ${String(disabledAtRoot)}, enabled: ${String(enabledAtRoot)}`,
+      : `stored: ${String(storedBeforeInstall)}, absent: ${String(absentBeforeInstall)}, install: ${String(admitted.ok)}, appeared: ${String(appearedAtRoot)}, disabled: ${String(disabledAtRoot)}, enabled: ${String(enabledAtRoot)}`,
+  );
+  check(
+    "R1 enabled plugin offers a non-destructive missing-panel seat",
+    suggestedAtRoot &&
+      !beforeSeatPanels.includes(STRANGER_PANEL) &&
+      seatedAtRoot &&
+      suggestionCleared &&
+      existingPanelsPreserved &&
+      afterSeatPanels.length === beforeSeatPanels.length + 1 &&
+      detailReportsSeated,
+    suggestedAtRoot &&
+      !beforeSeatPanels.includes(STRANGER_PANEL) &&
+      seatedAtRoot &&
+      suggestionCleared &&
+      existingPanelsPreserved &&
+      afterSeatPanels.length === beforeSeatPanels.length + 1 &&
+      detailReportsSeated
+      ? "the live enable suggested Example counter without changing the tree; one Add preserved every existing panel, committed exactly one new seat, retired the nudge, and changed the plugin detail to In workspace"
+      : `suggested: ${String(suggestedAtRoot)}, absent before: ${String(!beforeSeatPanels.includes(STRANGER_PANEL))}, seated: ${String(seatedAtRoot)}, cleared: ${String(suggestionCleared)}, preserved: ${String(existingPanelsPreserved)}, before/after: ${String(beforeSeatPanels.length)}/${String(afterSeatPanels.length)}, detail: ${String(detailReportsSeated)}`,
   );
   await closePluginManager();
 
@@ -3149,9 +3279,10 @@ try {
       caps: ["containers:read"],
     });
     const bystander = LayoutResponseSchema.parse(await getJson("/api/layout", other.token)).layout;
+    const currentRoster = PluginsResponseSchema.parse(await getJson("/api/plugins")).plugins;
     const untouched =
       JSON.stringify(bystander["root"]?.ratios) ===
-      JSON.stringify(composeDefaultLayout(composed.roster).layout["root"]?.ratios);
+      JSON.stringify(composeDefaultLayout(currentRoster).layout["root"]?.ratios);
     check(
       "R4 layouts are per principal",
       untouched,

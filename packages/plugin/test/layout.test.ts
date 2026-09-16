@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   MAX_PANEL_ARG_BYTES,
   MAX_PANEL_SECTIONS,
+  MAX_TILE_CHILDREN,
   ROOT_TILE_ID,
   validateTileLayout,
   type SectionNode,
@@ -18,6 +19,7 @@ import {
   removedSectionStructure,
   sectionArrangementOf,
   withPanelSections,
+  withSeatedPanels,
 } from "../src/layout.ts";
 import { releasedTileLayout } from "../src/tile-release.ts";
 
@@ -568,5 +570,55 @@ describe("opening a panel with an argument", () => {
     expect(seat?.arg).toEqual(R1);
     expect(seat?.id).not.toBe("ws-main");
     expect(validateTileLayout(moved ?? {})).toBe(true);
+  });
+});
+
+describe("seating workspace panels", () => {
+  test("appends every absent panel flat without disturbing the arranged tree", () => {
+    const next = withSeatedPanels(shell(), [MAIN, "example.notes.main", "example.notes.search"]);
+    expect(next).not.toBeNull();
+    expect(next?.[ROOT_TILE_ID]?.children).toHaveLength(4);
+    expect(
+      Object.values(next ?? {})
+        .filter((tile) => tile.ref?.kind === "panel")
+        .map((tile) => tile.ref?.kind === "panel" && tile.ref.panelId),
+    ).toEqual([SIDEBAR, MAIN, "example.notes.main", "example.notes.search"]);
+    expect(next?.["ws-sidebar"]).toEqual(shell()["ws-sidebar"]);
+    expect(validateTileLayout(next ?? {})).toBe(true);
+  });
+
+  test("duplicate requests and panels already present are a referential no-op", () => {
+    const current = shell();
+    expect(withSeatedPanels(current, [MAIN, SIDEBAR, MAIN])).toBe(current);
+  });
+
+  test("a batch that exceeds the root fan-out refuses atomically", () => {
+    const children = Array.from(
+      { length: MAX_TILE_CHILDREN },
+      (_, index) => `seat-${String(index)}`,
+    );
+    const full: TileLayout = {
+      [ROOT_TILE_ID]: {
+        id: ROOT_TILE_ID,
+        dir: "row",
+        ratios: children.map(() => 1),
+        children,
+        ref: null,
+      },
+      ...Object.fromEntries(
+        children.map((id) => [
+          id,
+          {
+            id,
+            dir: null,
+            ratios: [],
+            children: [],
+            ref: { kind: "panel" as const, panelId: `example.full.${id}` },
+          },
+        ]),
+      ),
+    };
+    expect(withSeatedPanels(full, ["example.extra.one", "example.extra.two"])).toBeNull();
+    expect(full[ROOT_TILE_ID]?.children).toEqual(children);
   });
 });
