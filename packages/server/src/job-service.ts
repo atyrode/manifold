@@ -1886,28 +1886,41 @@ export class JobService {
     this.changed(job.request);
   }
 
-  describe(
+  /**
+   * The authority a machine-scoped read of one plugin's installation takes, and the walk both
+   * `describe` and `describeDeployment` share.
+   *
+   * Each condition answers for itself, with #714's vocabulary: this walk refused four unrelated
+   * things through one `fail()`, so an operator reading `governed_authority_refused` could not
+   * tell a revoked credential from a plugin handle asking about another plugin, from a missing
+   * capability, from a grant that does not reach this machine. None of the four discloses
+   * anything about the machine — each is decided by the caller's own credential, handle, caps
+   * and grants, so an unauthorized caller gets the same answer whether or not the id names an
+   * enrolled machine, and the existence check stays after the walk so it cannot become an
+   * enumeration oracle (#728).
+   *
+   * `machines:read` is the capability for this shape, and the vocabulary says so: "READ A
+   * MACHINE'S OWN FACTS … Separate from `machines:run` because reading what a folder IS is not
+   * authority to execute anything there." These doors asked for `machines:run`, which is
+   * GOVERNED — excluded from every install grant by construction — so nothing a plugin declares,
+   * is granted or is consented could reach them, while its consents sat enabled at the right
+   * revision and the check never looked (#735). The governed half of that decision lives in
+   * `describe`, which is the one that answers with the machine's own facts.
+   */
+  machineReadAuthority(
     auth: AuthContext,
-    args: { machineId: string; pluginId: string; installationRevision?: string | undefined },
-    callerPluginId = "engine.jobs",
-  ): JobDescription {
+    args: { machineId: string; pluginId: string },
+    callerPluginId: string,
+  ): AuthContext {
     const current = this.auth.restoreCredential(this.auth.credentialReference(auth));
     const node: ManifoldRef = { kind: "machine", machineId: args.machineId };
-    // Each condition answers for itself, with #714's vocabulary: this walk refused four
-    // unrelated things through one `fail()`, so an operator reading `governed_authority_refused`
-    // could not tell a revoked credential from a plugin handle asking about another plugin,
-    // from a missing capability, from a grant that does not reach this machine. None of the
-    // four discloses anything about the machine — each is decided by the caller's own
-    // credential, handle, caps and grants, so an unauthorized caller gets the same answer
-    // whether or not the id names an enrolled machine, and the existence check below stays
-    // after the walk so it cannot become an enumeration oracle (#728).
     if (!current) fail("credential_revoked_or_expired");
     if (callerPluginId !== "engine.jobs" && callerPluginId !== args.pluginId)
       fail("job_owner_mismatch");
-    if (!current.caps.includes("*") && !current.caps.includes("machines:run"))
-      fail("job_capability_absent:machines:run");
-    if (!this.auth.allowsRef(current, "machines:run", node))
-      fail("job_grant_unreachable:machines:run");
+    if (!current.caps.includes("*") && !current.caps.includes("machines:read"))
+      fail("job_capability_absent:machines:read");
+    if (!this.auth.allowsRef(current, "machines:read", node))
+      fail("job_grant_unreachable:machines:read");
     // `machineId` is an id, and a machine's name is not one: `getMachine` is keyed by id, so a
     // name matched nothing and this read used to answer the projection of a machine that does
     // not exist — `connected: false` with a null installation, indistinguishable from the truth
@@ -1917,11 +1930,50 @@ export class JobService {
     // `resolution` already gives a governed node (#714); an enrolled machine keeps answering
     // `connected: false`, because that one is a fact a caller depends on.
     if (!this.store.getMachine(args.machineId)) fail("machine_unknown");
+    return current;
+  }
+  describe(
+    auth: AuthContext,
+    args: { machineId: string; pluginId: string; installationRevision?: string | undefined },
+    callerPluginId = "engine.jobs",
+  ): JobDescription {
+    const current = this.machineReadAuthority(auth, args, callerPluginId);
     const install = this.jobs.installation(
       args.machineId,
       args.pluginId,
       args.installationRevision,
     );
+    // The governed half, for a PLUGIN's own read: `machines:read` is granted by default to any
+    // bundle that declares it, so the capability alone would make this door reachable without
+    // consent and leave the consent rows decorative. A plugin may ask what this machine can run
+    // for it only while the installation it is asking about carries an effective, revision-bound
+    // consent to run something of its own here — the rows `reviewDeployment` already issues, at
+    // the operation nodes it already issues them for. Asked AFTER the existence check, so it
+    // cannot report on a machine the caller could not otherwise learn about.
+    //
+    // The native door (`engine.jobs`) is not narrowed: an operator reads a machine's
+    // installation under their own capability and grant, including the no-installation answer a
+    // deployment request is built from (#715), which cannot depend on a consent that by
+    // definition does not exist yet.
+    if (callerPluginId !== "engine.jobs") {
+      if (!install) fail("job_installation_absent");
+      const consented = (effective: boolean): boolean =>
+        Object.keys(install.machine.operations).some(
+          (operationId) =>
+            this.consentFor(
+              install,
+              { kind: "operation", machineId: args.machineId, operationId },
+              "machines:run",
+              effective,
+            ) !== null,
+        );
+      if (!consented(true))
+        fail(
+          consented(false)
+            ? "job_consent_ineffective:machines:run"
+            : "job_consent_absent:machines:run",
+        );
+    }
     const live = this.channels.get(args.machineId);
     const connected = live?.proved === true;
     // The declaration answers when no installation does: this is exactly the plugin whose

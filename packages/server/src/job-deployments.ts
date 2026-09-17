@@ -1006,8 +1006,11 @@ export class JobDeployments {
     callerPluginId: string,
   ): JobDeploymentDescription {
     const parsed = JobDeploymentDescribeArgsSchema.parse(args);
-    // Reuse the exact current credential, target and caller-plugin check, including on absence.
-    this.service.describe(auth, parsed, callerPluginId);
+    // The same credential, target and caller-plugin walk `describe` takes, including on
+    // absence — but not its governed consent gate: this answers with the plugin's OWN
+    // deployment and installation record, not with the machine's facts, so an install-only
+    // deployment with no operation consents must still be able to read its own progress (#735).
+    this.service.machineReadAuthority(auth, parsed, callerPluginId);
     const current = this.service.jobs.installation(parsed.machineId, parsed.pluginId);
     const installation = current
       ? {

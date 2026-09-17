@@ -1746,8 +1746,13 @@ credentials or parent IDs. `engine.jobs.install`, `.consent` and `.setInvocation
 root administration doors; normal product actions use their supplied `ctx.jobs` handle.
 
 Discover availability with `ctx.jobs.describe({ machineId, pluginId })`, or dispatch
-`engine.jobs.describe` with those arguments. This checks current `machines:run` authority
-at the machine and, for a plugin handle, its own plugin ID; it is not an execution grant.
+`engine.jobs.describe` with those arguments. This checks current `machines:read` authority at
+the machine and, for a plugin handle, its own plugin ID and one more thing: your installation
+on that machine must carry an effective consent for `machines:run` on one of its operation
+nodes — the consent a reviewed deployment issues. So a plugin may ask what a machine can run
+for it while it holds consent to run something of its own there, and not otherwise; a machine
+you are not deployed to refuses `job_installation_absent`. It is not an execution grant, and
+declaring `machines:read` alone is not enough to reach it.
 `connected` is the current proved job-owner channel, not terminal online status.
 `machineId` must be the machine's id: an identifier naming no enrolled machine refuses
 `machine_unknown` rather than answering `connected: false`, which an enrolled machine that is
@@ -1867,8 +1872,11 @@ If all retained approvals are still active or uncertain, new admission refuses
 
 Products instead use `ctx.jobs.describeDeployment({ machineId, pluginId })`, also exposed as
 `engine.jobs.describeDeployment` and the asynchronous `GuestJobs.describeDeployment`.
-It rechecks current machine `machines:run` authority and the handle's own plugin ID, including
-absence; neither an ID nor a cached response grants access. `JobDeploymentDescriptionSchema`
+It rechecks current machine `machines:read` authority and the handle's own plugin ID, including
+absence; neither an ID nor a cached response grants access. It does NOT take `describe`'s
+consent gate: this answers with your own deployment and installation record rather than the
+machine's facts, so an install-only deployment that holds no operation consent can still read
+its own progress. `JobDeploymentDescriptionSchema`
 parses `{ deployment, installation }`. The nullable `deployment` contains only the latest
 target's ID, machine/plugin IDs, revision, state and reason, not operator attribution,
 the complete review or other destinations. Independently, nullable `installation` is

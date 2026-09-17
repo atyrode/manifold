@@ -238,7 +238,7 @@ the enrolled credential there, use the existing-source mode below instead of cop
 changing its custody. Enrollment's name idempotence is provisioning, never service
 placement. Do not rotate an incumbent token to make installation succeed.
 
-Use authenticated `engine.jobs.describe { machineId, pluginId }` with `machines:run`
+Use authenticated `engine.jobs.describe { machineId, pluginId }` with `machines:read`
 authority for the public `admissionPublicKey`; this works independently of job readiness.
 The selected plugin ID is the plugin whose native installation you intend to administer.
 Only that **public** SPKI key and enrolled ID enter the reviewed node configuration:
