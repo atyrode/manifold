@@ -37,6 +37,16 @@ store, and launches an Agent-mode runner per analysis. OMP's `launchRun` instead
 transcript session and terminal admission supplies the Run-mode environment. Neither example
 puts a bearer in a shell command, argv, JSONL, a prompt, a log or a file.
 
+The Agents sidebar displays the runner credential only after first registration, alongside
+the Agent ID. Copy it into the trusted launcher's secret store before choosing **Hide
+credential**, leaving the section, or reloading. The sidebar does not persist the handoff.
+Clipboard refusal leaves a selectable field for manual copy. The credential cannot be
+retrieved or re-issued: repeating registration with the same sponsor/name returns the
+existing Agent without a credential, and renewing a Run does not replace its runner
+credential. If it is lost, the sponsor must explicitly retire the unusable Agent and
+register a replacement under a different name, reviewing its grant again. Retirement
+preserves the old Agent's history; this UI does not perform that recovery automatically.
+
 Agent-mode renewal and cleanup retain the scoped runner credential; Run-mode renewal replaces
 its own private bearer. Neither cleanup retires the Agent or withdraws the runner credential.
 Child credentials and replacements never leave the process. The trusted launcher must isolate
