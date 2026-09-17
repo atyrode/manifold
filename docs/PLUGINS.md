@@ -1750,9 +1750,15 @@ Discover availability with `ctx.jobs.describe({ machineId, pluginId })`, or disp
 the machine and, for a plugin handle, its own plugin ID and one more thing: your installation
 on that machine must carry an effective consent for `machines:run` on one of its operation
 nodes — the consent a reviewed deployment issues. So a plugin may ask what a machine can run
-for it while it holds consent to run something of its own there, and not otherwise; a machine
-you are not deployed to refuses `job_installation_absent`. It is not an execution grant, and
-declaring `machines:read` alone is not enough to reach it.
+for it while it holds consent to run something of its own there, and not otherwise. A machine
+you hold NO installation on is different: a consent is bound to an installation, so there is
+nothing there to consent to, and you are answered the pre-deployment projection — `connected`,
+`platforms`, the resources you may see, a null installation and your own declaration — under
+`machines:read` and a grant reaching that machine alone. That is how a door asks "can I be
+deployed here?", which is a question no consent can gate (#743). Naming an
+`installationRevision` that resolves to nothing is not that case: where an installation exists,
+it still refuses `job_installation_absent`. None of it is an execution grant, and declaring
+`machines:read` alone is not enough to reach a machine your grant does not cover.
 `connected` is the current proved job-owner channel, not terminal online status.
 `machineId` must be the machine's id: an identifier naming no enrolled machine refuses
 `machine_unknown` rather than answering `connected: false`, which an enrolled machine that is

@@ -3419,8 +3419,26 @@ describe("job lifecycle audit and inspection", () => {
       // for a plugin with no installation at all, which is what a deployment request is built
       // from (#715).
       expect(f.service.describe(f.root, args).connected).toBe(true);
+      // A consent is bound to an installation, so a plugin with none on this machine is asking
+      // the one question consent cannot gate — "can I be deployed here?" — and gets the
+      // pre-deployment answer, carrying no installation state at all (#743).
+      const undeployed = f.service.describe(
+        f.root,
+        { ...args, pluginId: "absent.plugin" },
+        "absent.plugin",
+      );
+      expect(undeployed).toMatchObject({
+        connected: true,
+        installation: null,
+        retainedInstallations: [],
+        consents: [],
+      });
+      // But the pre-deployment door is keyed on having no installation at all, not on the
+      // revision the call named: an installed plugin cannot walk past its own consent gate by
+      // naming a revision that resolves to nothing.
+      consent(f, "machines:run");
       expect(() =>
-        f.service.describe(f.root, { ...args, pluginId: "absent.plugin" }, "absent.plugin"),
+        f.service.describe(f.root, { ...args, installationRevision: "r-absent" }, pluginId),
       ).toThrow("job_installation_absent");
     } finally {
       f.store.close();
