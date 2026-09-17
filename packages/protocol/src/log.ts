@@ -205,6 +205,8 @@ export const LOG_EVENTS = [
   // `start_not_admitted` record inside the owner's private journal, on its own host's disk.
   "start_admission_refused",
   "start_preparation_failed",
+  // A runtime service the workload asked for and this owner would not start (issue #708).
+  "service_start_refused",
 ] as const;
 
 /** One name from the operational log vocabulary; the `evt` field of every JSONL record. */

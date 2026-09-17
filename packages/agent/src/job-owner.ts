@@ -1149,15 +1149,36 @@ export class MachineJobOwner {
     signal: AbortSignal,
   ): Promise<JobServiceEndpoint & { signal: AbortSignal; socket: Socket }> {
     signal.throwIfAborted();
+    // Six unrelated facts stopped a service start and answered with one word, on a path where
+    // nothing else is recorded either: the workload sees a 503 and the machine sees nothing.
+    const unavailable = !policy.runtime
+      ? "service_policy_not_runtime"
+      : !parent.context
+        ? "service_parent_has_no_context"
+        : parent.cancelRequested
+          ? "service_parent_cancelled"
+          : parent.result.state !== "started"
+            ? `service_parent_not_started: ${parent.result.state}`
+            : parent.serviceController.signal.aborted
+              ? "service_parent_closed"
+              : !this.runtimeAvailable(policy, this.resources.snapshot(), new Set())
+                ? "service_runtime_unavailable"
+                : null;
     if (
       !policy.runtime ||
       !parent.context ||
       parent.cancelRequested ||
       parent.result.state !== "started" ||
       parent.serviceController.signal.aborted ||
-      !this.runtimeAvailable(policy, this.resources.snapshot(), new Set())
-    )
+      unavailable !== null
+    ) {
+      this.log("warn", "service_start_refused", {
+        jobId: parent.request.jobId,
+        serviceId: policy.serviceId,
+        reason: unavailable ?? "service_unavailable",
+      });
       throw new Error("service_unavailable");
+    }
     let instance = parent.runtimeServices.get(policy.serviceId);
     if (!instance) {
       if (parent.runtimeServices.size >= 16 || parent.context.invocations.size >= 64)
@@ -1196,6 +1217,15 @@ export class MachineJobOwner {
         () => clearTimeout(timer),
         (error: unknown) => {
           clearTimeout(timer);
+          // The rejection that cancels the child is the one nobody could see: a start timeout,
+          // a refused invocation and a lost owner all ended as a cancelled child job with
+          // empty output, which reads as if the service had simply vanished.
+          this.log("warn", "service_start_refused", {
+            jobId: parent.request.jobId,
+            serviceId: policy.serviceId,
+            childJobId: created.childJobId,
+            reason: `service_start_rejected: ${error instanceof Error ? error.message : String(error)}`,
+          });
           const invocation = parent.context?.invocations.get(invocationId);
           if (invocation) invocation.refused = true;
           if (error !== SERVICE_RETIRED && created.childJobId && this.jobs.has(created.childJobId))
@@ -1223,8 +1253,22 @@ export class MachineJobOwner {
     const endpoint = await instance.ready;
     signal.throwIfAborted();
     const child = instance.childJobId && this.jobs.get(instance.childJobId);
-    if (!child || child.result.state !== "started" || endpoint.signal.aborted)
+    // The workload learns only that the service would not serve it, which is right. The
+    // MACHINE learns which fact stopped it, because "the child never reached started" and
+    // "the endpoint was already closed" are different faults that arrived as one word (#708).
+    if (!child || child.result.state !== "started" || endpoint.signal.aborted) {
+      this.log("warn", "service_start_refused", {
+        jobId: parent.request.jobId,
+        serviceId: policy.serviceId,
+        childJobId: instance.childJobId,
+        reason: !child
+          ? "service_child_absent"
+          : child.result.state !== "started"
+            ? `service_child_not_started: ${child.result.state}${child.result.reason ? ` (${child.result.reason})` : ""}`
+            : "service_endpoint_closed",
+      });
       throw new Error("service_unavailable");
+    }
     const lifetime = AbortSignal.any([signal, endpoint.signal, parent.serviceController.signal]);
     const socket = await connectWorkloadLoopback(
       Number(new URL(endpoint.url).port),
