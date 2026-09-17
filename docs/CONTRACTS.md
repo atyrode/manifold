@@ -2247,14 +2247,27 @@ and step-summary receipt; an existing door always runs the normal gate.
 
 **The install grant (ADR 0016 §5, R4 = option B).** `install.grantedCaps` is what the installer
 consented to. It defaults to the manifest's declared `capabilities` minus the high-risk set
-`{ "*", "tokens:mint", "plugins:manage" }`, restricted to caps that exist in `CAPS`; the install
-door's `grant` argument may widen it explicitly, and only root may install at all. Enforcement is
+`{ "*", "tokens:mint", "plugins:manage" }` **and minus `GOVERNED_CAPS`**, restricted to caps that
+exist in `CAPS`; the install door's `grant` argument may widen it explicitly, and only root may
+install at all. Enforcement is
 one extra intersection at rung 4: for a row carrying `install`, every cap the action declares must
 be in `grantedCaps` or the dispatch is `forbidden` with message `"<cap> not granted to plugin"` —
 checked BEFORE the caller's own caps, so the message names the plugin's grant, not the caller.
 Narrowing a grant later is allowed; its consequence is that same `forbidden`, already a named,
 displayable outcome. `install` also carries `sha256`, `source` (the url or path as given),
 `installedBy` and `installedAt`, so an installed row is attributed exactly as a toggle is.
+
+**A declared capability is in one of three states, and `grantedCaps` alone names only one of
+them.** Granted: in the row's grant, exercisable at rung 4. Withheld: high-risk, and absent
+because the installer did not name it. **Governed:** in `GOVERNED_CAPS`, and absent because no
+grant ever carries one — `grantFor` filters them out of the default grant AND out of an explicit
+installer `grant`, since governed authority is discharged per node, bound to an artifact revision,
+by consent. A governed cap's absence from `grantedCaps` denies nothing on its own: rung 4 passes
+it unconditionally (`GOVERNED_CAPS.includes(cap) || withinCeiling(cap, grantedCaps)`) precisely
+because consent is checked separately. Reading the difference between nine declared and three
+granted as six the install dropped is the misreading this distinction exists to prevent; the
+plugin manager's permissions card says which of the three each cap is in, and an installer whose
+`grant` named a governed cap is told that no grant carries it (#733).
 
 **Install refusals** are a closed class list, `PLUGIN_INSTALL_REFUSALS`, answered as
 `{ refused: "<class>: detail" }` from `engine.plugins.install` / `uninstall` (class first, so a

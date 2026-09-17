@@ -2830,6 +2830,13 @@ engine.plugins.uninstall { id, purge? }                                   → {}
   installer names them. The grant is published on the row (`install.grantedCaps`) and enforced at
   rung 4 BEFORE the caller's own caps: a door needing a cap the installer withheld is `forbidden`
   with `<cap> not granted to plugin <id>`, whoever asked.
+  **A governed capability is never in a grant**, named or not: `machines:run`, the `jobs:*`,
+  `locations:*`, `operations:invoke`, `services:invoke` and `network:host` are discharged per
+  node, bound to an artifact revision, by consent — so declaring nine capabilities and reading
+  three in `grantedCaps` does not mean the install dropped six, and naming them in `grant`
+  changes nothing. The permissions card says which of granted, withheld and governed each
+  declared cap is in; a governed cap's absence from the grant denies nothing by itself, because
+  rung 4 passes it and consent decides.
 - **`replace: true`** upgrades an installed id without changing its or its dependents'
   enablement. The engine preflights the replacement and restores the old serving module
   on failed admission. An intentionally disabled row stays disabled. An unchanged
