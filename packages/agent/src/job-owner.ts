@@ -420,7 +420,9 @@ export class MachineJobOwner {
             const parent = this.requireJob(command.parentJobId);
             for (const runtime of parent.runtimeServices.values())
               if (runtime.invocationId === command.invocationId)
-                runtime.reject(new Error("service_unavailable"));
+                // The hub decided this refusal and named it; flattening it here was the
+                // second half of why a workload's 503 explained nothing (#704).
+                runtime.reject(new Error(command.reason));
           }
           this.requireJob(command.parentJobId).context?.reply(
             command.invocationId,
