@@ -1779,9 +1779,12 @@ another's folders; the refusal names neither host nor folder. `path` must be abs
 4096 characters and free of NUL. The result is a `MachineRepositoryFact`
 `{ path, identity, remote, reason, observedAt }` where `reason` is one of `repository`,
 `not_a_repository`, `absent`, `unreadable`, `git_unavailable` or `timed_out` — states of that
-machine, observed by its own agent — or `rule: "refused"` when nobody could be asked at all: the
-machine is offline, its transport predates machine protocol 31, it dropped, or it stayed silent
-past the hub's three-second bound. A refusal is never dressed as a fact. `identity` is the
+machine, observed by its own agent — or `rule: "refused"` when nobody could be asked at all:
+the id is not enrolled here, the machine has no live transport, its transport predates machine
+protocol 31, it dropped, or it stayed silent past the hub's three-second bound. Each of those
+says which, and none of them says a machine is offline — a refusal is never dressed as a fact,
+and the in-realm handle reaches the same mechanism as the door, so a plugin asking about an id
+the hub never enrolled learns that rather than reading an outage. `identity` is the
 resolved git common directory, so a checkout and its linked worktree share one identity;
 `remote` is `origin` normalized to `host/owner/repo`, and null for no origin or a local-path
 origin. The agent's probe is bounded at one second per git invocation, runs with

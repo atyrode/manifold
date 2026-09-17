@@ -1260,11 +1260,17 @@ describe("machine admission and terminal continuity", () => {
       fix.store.close();
     });
 
-    test("a machine with no transport, and one that goes quiet, each say so", async () => {
+    test("an unenrolled id, a machine with no transport, and one that goes quiet each say so", async () => {
       const fix = fixture("t".repeat(64), []);
+      // A plugin reaches this mechanism directly, so an id the hub never enrolled must not
+      // come back as an outage on a machine that may well be connected (#724).
+      expect(await fix.gateway.repository("not-enrolled", WORK)).toEqual({
+        ok: false,
+        reason: "machine is not enrolled here: it cannot be asked",
+      });
       expect(await fix.gateway.repository(fix.machineId, WORK)).toEqual({
         ok: false,
-        reason: "machine is offline: it cannot be asked",
+        reason: "machine has no live transport: it cannot be asked",
       });
 
       fix.hello("silent", { terminalHostId: "host-A" });
