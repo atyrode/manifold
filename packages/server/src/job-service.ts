@@ -3005,17 +3005,29 @@ export class JobService {
         this.resourceRefusal(install, operationId, edges),
       invocations: (auth, install, operationIds) =>
         this.deploymentInvocations(auth, install, operationIds),
-      servicePolicies: (machineId, machine, bindings) => {
+      servicePolicies: (machineId, machine, bindings, operationIds) => {
         const policies = this.effectiveConfiguration(machineId).policies;
-        const required = Object.values(machine.operations).flatMap(
-          (operation) => operation.services ?? [],
+        const declared = Object.entries(machine.operations).flatMap(([operationId, operation]) =>
+          (operation.services ?? []).map((binding) => ({ operationId, binding })),
         );
-        const selected = required.map(
-          (binding) => policies.find((policy) => policy.serviceId === binding.serviceId) ?? null,
+        const selected = declared.map(
+          ({ binding }) =>
+            policies.find((policy) => policy.serviceId === binding.serviceId) ?? null,
         );
+        const requested = new Set(operationIds);
         return {
+          // The digest still covers every declared binding: the installation promotes bindings
+          // for all of its operations, so a policy that moves under an unselected one must
+          // still force a fresh review rather than being applied against stale evidence.
           digest: digest(selected),
-          refusal: required.some((binding, index) => {
+          // The refusal does not. A service another operation binds is that operation's own
+          // precondition — `resourceRefusal` enforces the policy, its revision, the promoted
+          // binding digest and the runtime edge for each SELECTED operation, and
+          // `operationRefusal` enforces them again before any operation runs. Refusing the
+          // target instead made a request that named one service-free operation unapprovable
+          // for a service it never asked for (#722).
+          refusal: declared.some(({ operationId, binding }, index) => {
+            if (!requested.has(operationId)) return false;
             const policy = selected[index];
             return (
               !policy ||

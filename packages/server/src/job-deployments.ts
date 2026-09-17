@@ -93,6 +93,7 @@ interface NativeDeploymentHost {
     machineId: string,
     machine: MachineHalf,
     bindings: JobResourceBindings | null,
+    operationIds: readonly string[],
   ): { digest: string; refusal: string | null };
   /** Which bound service this plugin provides itself and has no installation for yet. */
   selfProvidedServiceRefusal(
@@ -352,6 +353,7 @@ export class JobDeployments {
         target.machineId,
         this.service.declaredMachine(request.pluginId)!,
         target.resourceBindings,
+        request.operationIds,
       ).digest,
       invocations:
         target.installationRevision && target.artifactSha256
@@ -482,7 +484,12 @@ export class JobDeployments {
               request.operationIds,
             );
             reason ??= invocations.refusal;
-            reason ??= this.host.servicePolicies(machineId, machine, resourceBindings).refusal;
+            reason ??= this.host.servicePolicies(
+              machineId,
+              machine,
+              resourceBindings,
+              request.operationIds,
+            ).refusal;
             if (!this.host.artifactAvailable(proposed, platform))
               reason ??= "artifact_bundle_unavailable";
             if (owner)
@@ -653,6 +660,7 @@ export class JobDeployments {
         target.machineId,
         install.machine,
         target.resourceBindings,
+        request.operationIds,
       );
       if (policies.refusal) return policies.refusal;
       if (policies.digest !== approval.evidence[index]!.resources)
