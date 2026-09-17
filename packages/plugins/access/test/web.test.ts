@@ -367,6 +367,72 @@ test("a refused harness launch stays visible with explicit cancellation instead 
   expect(await ui.browser.evaluate<number>("window.accessFixture.terminals.length")).toBe(0);
 }, 60_000);
 
+test("registration discloses the one-time runner credential and hides it irreversibly", async () => {
+  await ui.boot();
+  await ui.click("Register");
+  await ui.browser.evaluate<void>(
+    `(() => { const form = document.querySelector('form[aria-label="Register Agent"]'); form.querySelector('input[name=name]').value = 'Handoff agent'; form.querySelector('input[name=name]').dispatchEvent(new Event('input', { bubbles: true })); form.querySelector('textarea[name=purpose]').value = 'Run the maintenance review loop'; form.querySelector('textarea[name=purpose]').dispatchEvent(new Event('input', { bubbles: true })); form.querySelector('textarea[name=caps]').value = 'containers:read'; form.querySelector('textarea[name=caps]').dispatchEvent(new Event('input', { bubbles: true })); form.querySelector('textarea[name=targets]').value = 'manifold://container/review'; form.querySelector('textarea[name=targets]').dispatchEvent(new Event('input', { bubbles: true })); form.querySelector('input[name=expires]').value = '2030-01-01T00:00'; form.querySelector('input[name=expires]').dispatchEvent(new Event('input', { bubbles: true })); })()`,
+  );
+  await ui.click("Register Agent");
+  await ui.answer("core.access.registerAgent", {
+    agent: { ...agent, agentId: "handed-off", name: "Handoff agent" },
+    credential: { token: "runner-token-once", expiresAt: at + 3_600_000 },
+    created: true,
+  });
+  await ui.text("Runner credential for Handoff agent");
+  expect(
+    await ui.browser.evaluate<string>(
+      'document.querySelector("[data-testid=agent-credential-token]").value',
+    ),
+  ).toBe("runner-token-once");
+  expect(
+    await ui.browser.evaluate<boolean>(
+      'document.querySelector("[data-action=\\"core.access.registerAgent\\"]") === null',
+    ),
+  ).toBe(true);
+  await ui.browser.evaluate<void>(
+    `Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async () => { throw new Error("denied"); } } })`,
+  );
+  await ui.click("Copy");
+  await ui.text("Clipboard access failed.");
+  await ui.screenshot("registration-credential-handoff");
+  await ui.click("Hide credential");
+  expect(
+    await ui.browser.evaluate<boolean>(
+      'document.querySelector("[data-testid=agent-credential]") === null',
+    ),
+  ).toBe(true);
+  expect(
+    await ui.browser.evaluate<boolean>(
+      'document.querySelector("[data-action=\\"core.access.registerAgent\\"]") === null',
+    ),
+  ).toBe(false);
+}, 60_000);
+
+test("a repeat registration without a credential keeps the Agent view credential-free", async () => {
+  await ui.boot();
+  await ui.click("Register");
+  await ui.browser.evaluate<void>(
+    `(() => { const form = document.querySelector('form[aria-label="Register Agent"]'); form.querySelector('input[name=name]').value = 'Repeat agent'; form.querySelector('input[name=name]').dispatchEvent(new Event('input', { bubbles: true })); form.querySelector('textarea[name=purpose]').value = 'Already registered'; form.querySelector('textarea[name=purpose]').dispatchEvent(new Event('input', { bubbles: true })); form.querySelector('textarea[name=caps]').value = 'containers:read'; form.querySelector('textarea[name=caps]').dispatchEvent(new Event('input', { bubbles: true })); form.querySelector('textarea[name=targets]').value = 'manifold://container/review'; form.querySelector('textarea[name=targets]').dispatchEvent(new Event('input', { bubbles: true })); form.querySelector('input[name=expires]').value = '2030-01-01T00:00'; form.querySelector('input[name=expires]').dispatchEvent(new Event('input', { bubbles: true })); })()`,
+  );
+  await ui.click("Register Agent");
+  await ui.answer("core.access.registerAgent", {
+    agent: { ...agent, agentId: "handed-off", name: "Repeat agent" },
+    created: false,
+  });
+  await ui.answer("core.access.listAgents", {
+    agents: [{ ...agent, agentId: "handed-off", name: "Repeat agent" }],
+    truncated: false,
+    canRegister: true,
+  });
+  await ui.text("Repeat agent");
+  expect(
+    await ui.browser.evaluate<boolean>(
+      'document.querySelector("[data-testid=agent-credential]") === null',
+    ),
+  ).toBe(true);
+}, 60_000);
+
 test("workspace authority hints govern profile controls without a joined room", async () => {
   await ui.boot();
   await ui.browser.evaluate<void>("window.accessFixture.leaveRoom()");
