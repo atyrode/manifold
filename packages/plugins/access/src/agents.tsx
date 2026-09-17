@@ -13,7 +13,7 @@ import {
   type ListRunsResult,
   type RegisterAgentRequest,
 } from "@manifold/protocol";
-import { Chip, Disclosure, KeyValueList, KeyValueRow, Stack } from "@manifold/ui";
+import { Chip, Cluster, Disclosure, KeyValueList, KeyValueRow, Stack } from "@manifold/ui";
 import { useEffect, useRef, useState, type ReactElement } from "react";
 import {
   ACCESS_CREATE_RUN_ACTION,
@@ -59,6 +59,11 @@ function AgentIndex({ host }: SectionProps): ReactElement {
   const [pending, setPending] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const [selection, setSelection] = useState<{ agentId?: string; runId?: string } | null>(null);
+  const [credential, setCredential] = useState<{
+    agentName: string;
+    agentId: string;
+    token: string;
+  } | null>(null);
   const [seenRef, setSeenRef] = useState<typeof host.requestedRef>(null);
   const agents = useAccessRead(
     host,
@@ -96,6 +101,15 @@ function AgentIndex({ host }: SectionProps): ReactElement {
         return;
       }
       setSelection({ agentId: parsed.data.agent.agentId });
+      if (parsed.data.credential === undefined) {
+        setCredential(null);
+      } else {
+        setCredential({
+          agentName: parsed.data.agent.name,
+          agentId: parsed.data.agent.agentId,
+          token: parsed.data.credential.token,
+        });
+      }
       setRegistering(false);
       setRevision((current) => current + 1);
     } catch (reason: unknown) {
@@ -128,7 +142,7 @@ function AgentIndex({ host }: SectionProps): ReactElement {
         >
           Refresh
         </Chip>
-        {mayRegister ? (
+        {mayRegister && credential === null ? (
           <Chip
             data-action={ACCESS_REGISTER_AGENT_ACTION}
             aria-expanded={registering}
@@ -142,6 +156,9 @@ function AgentIndex({ host }: SectionProps): ReactElement {
         <span className="credential-failure" role="alert">
           {failure}
         </span>
+      )}
+      {credential === null ? null : (
+        <AgentCredential credential={credential} dismiss={() => setCredential(null)} />
       )}
       {registering && mayRegister ? (
         harnesses.state === "ready" ? (
@@ -244,6 +261,63 @@ function AgentIndex({ host }: SectionProps): ReactElement {
           {runs.message}
         </span>
       ) : null}
+    </Stack>
+  );
+}
+
+/** The one-time credential remains only until the parent dismisses this handoff. */
+function AgentCredential({
+  credential,
+  dismiss,
+}: {
+  readonly credential: {
+    readonly agentName: string;
+    readonly agentId: string;
+    readonly token: string;
+  };
+  readonly dismiss: () => void;
+}): ReactElement {
+  const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
+  const copy = async (): Promise<void> => {
+    try {
+      await navigator.clipboard.writeText(credential.token);
+      setCopied(true);
+      setCopyFailed(false);
+    } catch {
+      setCopied(false);
+      setCopyFailed(true);
+    }
+  };
+  return (
+    <Stack className="credential-agent-credential" gap="0.4rem" data-testid="agent-credential">
+      <strong>Runner credential for {credential.agentName}</strong>
+      <span className="credential-inspection-note">
+        Shown once. Store it in the launcher now; it cannot be displayed again.
+      </span>
+      <KeyValueList>
+        <KeyValueRow label="MANIFOLD_AGENT_ID">{credential.agentId}</KeyValueRow>
+      </KeyValueList>
+      <label className="credential-agent-field">
+        MANIFOLD_RUNNER_TOKEN
+        <input
+          readOnly
+          autoComplete="off"
+          spellCheck={false}
+          value={credential.token}
+          data-testid="agent-credential-token"
+          onFocus={(event) => event.currentTarget.select()}
+        />
+      </label>
+      {copyFailed ? (
+        <span className="credential-failure" role="alert">
+          Clipboard access failed. Select the credential above and copy it manually.
+        </span>
+      ) : null}
+      <Cluster gap="0.4rem">
+        <Chip onClick={() => void copy()}>{copied ? "Copied" : "Copy"}</Chip>
+        <Chip onClick={dismiss}>Hide credential</Chip>
+      </Cluster>
     </Stack>
   );
 }
