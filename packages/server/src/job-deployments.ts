@@ -94,6 +94,13 @@ interface NativeDeploymentHost {
     machine: MachineHalf,
     bindings: JobResourceBindings | null,
   ): { digest: string; refusal: string | null };
+  /** Which bound service this plugin provides itself and has no installation for yet. */
+  selfProvidedServiceRefusal(
+    machineId: string,
+    pluginId: string,
+    machine: MachineHalf,
+    operationIds: readonly string[],
+  ): string | null;
   record(record: TraceRecord): void;
   changed(): void;
 }
@@ -403,18 +410,25 @@ export class JobDeployments {
         // Disconnected review can reuse only immutable already-promoted native pins.
         const known = owner ? owner.resources : current?.resourceBindings;
         if (platform) {
+          const selected = new Set(request.operationIds);
           for (const operationId of Object.keys(machine.operations)) {
             const required = jobResourceRequirements(machine, operationId, platform);
             for (const group of groups)
               for (const name of required[group]) {
-                if (
-                  resources.some((resource) => resource.group === group && resource.name === name)
-                )
-                  continue;
                 const sha256 = known?.[group][name] ?? null;
-                resources.push({ group, name, sha256 });
-                if (sha256) bindings[group][name] = sha256;
-                else reason ??= "resource_evidence_unknown";
+                if (
+                  !resources.some((resource) => resource.group === group && resource.name === name)
+                ) {
+                  resources.push({ group, name, sha256 });
+                  if (sha256) bindings[group][name] = sha256;
+                }
+                // Evidence the request never asked for does not refuse it: a resource nobody
+                // advertises disables the operation that needs it, never the installed worker
+                // (`jobResourceRefusal`). Refusing the target instead is what forced an
+                // operator to deploy in hand-picked phases to get any operation installed at
+                // all (#715), and blocks a scan-only deployment over an unselected operation's
+                // unavailable tool.
+                if (!sha256 && selected.has(operationId)) reason ??= "resource_evidence_unknown";
               }
           }
         }
@@ -453,6 +467,15 @@ export class JobDeployments {
           try {
             const invocations = this.host.invocations(auth, proposed, request.operationIds);
             invocationEdges = invocations.edges;
+            // Asked before the runtime checks below, which would otherwise report a provider
+            // installation that "changed" when it has never existed: the provider is an
+            // operation of the very plugin under review (#715).
+            reason ??= this.host.selfProvidedServiceRefusal(
+              machineId,
+              request.pluginId,
+              machine,
+              request.operationIds,
+            );
             reason ??= invocations.refusal;
             reason ??= this.host.servicePolicies(machineId, machine, resourceBindings).refusal;
             if (!this.host.artifactAvailable(proposed, platform))
