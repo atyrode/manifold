@@ -3299,7 +3299,7 @@ describe("job lifecycle audit and inspection", () => {
       consent(f, "machines:run", false);
       expect(f.service.describe(f.root, args).consents[0]!.enabled).toBe(false);
       const token = f.auth.mintToken(
-        { principal: { name: "inspector", kind: "human" }, caps: ["machines:run"] },
+        { principal: { name: "inspector", kind: "human" }, caps: ["machines:read"] },
         f.root,
       );
       const inspector = f.auth.authenticate(token.token);
@@ -3307,7 +3307,7 @@ describe("job lifecycle audit and inspection", () => {
         {
           principal: { kind: "principal", id: inspector.principal.id },
           node: formatManifoldUri({ kind: "machine", machineId: "other" }),
-          caps: ["machines:run"],
+          caps: ["machines:read"],
           effect: "deny",
           reach: "subtree",
         },
@@ -3315,7 +3315,7 @@ describe("job lifecycle audit and inspection", () => {
       );
       expect(f.service.describe(inspector, args).connected).toBe(true);
       expect(() => f.service.describe(inspector, { ...args, machineId: "other" })).toThrow(
-        "job_grant_unreachable:machines:run",
+        "job_grant_unreachable:machines:read",
       );
       f.auth.revokePrincipal(inspector.principal.id, f.root);
       expect(() => f.service.describe(inspector, args)).toThrow("credential_revoked_or_expired");
@@ -3375,18 +3375,53 @@ describe("job lifecycle audit and inspection", () => {
           f.root,
         ).token,
       );
-      expect(() => f.service.describe(capless, args)).toThrow("job_capability_absent:machines:run");
+      expect(() => f.service.describe(capless, args)).toThrow(
+        "job_capability_absent:machines:read",
+      );
       // The named walk is not an enumeration oracle: every condition is decided by the
       // caller's own credential, handle, caps and grants, so a caller who cannot reach this
       // machine gets the SAME answer for an id that names an enrolled machine and one that
       // names nothing. Only a caller whose grants already reach the node gets far enough to
       // learn that the id is unknown.
       expect(() => f.service.describe(capless, { ...args, machineId: "not-enrolled" })).toThrow(
-        "job_capability_absent:machines:run",
+        "job_capability_absent:machines:read",
       );
       expect(() => f.service.describe(f.root, { ...args, machineId: "not-enrolled" })).toThrow(
         "machine_unknown",
       );
+    } finally {
+      f.store.close();
+    }
+  });
+  test("a plugin's own machine read takes consent, not a capability alone (#735)", () => {
+    const f = fixture();
+    try {
+      const args = { machineId: f.machineId, pluginId };
+      prove(f);
+      // `machines:read` is granted by default to any bundle that declares it, so the capability
+      // alone must not open this door: the installation being described has to carry consent to
+      // run something of this plugin's own here.
+      expect(() => f.service.describe(f.root, args, pluginId)).toThrow(
+        "job_consent_absent:machines:run",
+      );
+      consent(f, "machines:run");
+      expect(f.service.describe(f.root, args, pluginId).connected).toBe(true);
+      consent(f, "machines:run", false);
+      expect(() => f.service.describe(f.root, args, pluginId)).toThrow(
+        "job_consent_ineffective:machines:run",
+      );
+      // A consent for some other capability is not this one.
+      consent(f, "jobs:read");
+      expect(() => f.service.describe(f.root, args, pluginId)).toThrow(
+        "job_consent_ineffective:machines:run",
+      );
+      // The operator's own read through the native door is not narrowed by any of it, including
+      // for a plugin with no installation at all, which is what a deployment request is built
+      // from (#715).
+      expect(f.service.describe(f.root, args).connected).toBe(true);
+      expect(() =>
+        f.service.describe(f.root, { ...args, pluginId: "absent.plugin" }, "absent.plugin"),
+      ).toThrow("job_installation_absent");
     } finally {
       f.store.close();
     }
@@ -5782,7 +5817,7 @@ describe("reviewed native deployment approvals", () => {
       const value = request(f, "admin");
       const { review, deployment } = apply(f, value);
       const token = f.auth.mintToken(
-        { principal: { name: "inspector", kind: "human" }, caps: ["machines:run"] },
+        { principal: { name: "inspector", kind: "human" }, caps: ["machines:read"] },
         f.root,
       );
       const reader = f.auth.authenticate(token.token);

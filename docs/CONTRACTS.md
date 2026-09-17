@@ -3447,10 +3447,25 @@ provider handling and postconditions belong to plugins, never the common floor.
   rather than feeding it. That closed set is the whole vocabulary; nothing else admits a
   binding.
 - **Describe and readiness.** `engine.jobs.describe({ machineId, pluginId, installationRevision? })`
-  (also `ctx.jobs.describe`) is a read-only `machines:run` check at the machine; a plugin may
-  describe only its own installation. Omission selects the current revision; an explicit
-  revision selects its immutable retained declaration/pin, or null if unknown. It grants
-  neither execution nor resource consent.
+  (also `ctx.jobs.describe`) reads one plugin's installation at one machine; a plugin may
+  describe only its own. Omission selects the current revision; an explicit revision selects
+  its immutable retained declaration/pin, or null if unknown. It grants neither execution nor
+  resource consent.
+  **The authority is `machines:read` at the machine, plus — for a plugin handle — that
+  installation's own effective, revision-bound consent for `machines:run` on one of its
+  operation nodes.** `machines:read` is the capability for reading a machine's own facts and is
+  deliberately not `machines:run`, which is authority to execute there; but `machines:read` is
+  granted by default to any bundle that declares it, so the capability alone would make this
+  door reachable without consent and leave the consent rows decorative. The consent is the
+  governed half: a plugin may ask what a machine can run for it only while it holds consent to
+  run something of its own there, which is the authority `reviewDeployment` already issues, at
+  the operation nodes it already issues it for. Nothing new is stored and no machine-node
+  consent exists. An operator reading through the native door is not narrowed by it, including
+  for a plugin with no installation — the answer a deployment request is built from cannot
+  depend on a consent that by definition does not exist yet. A plugin handle asking about a
+  machine it is not deployed to refuses `job_installation_absent`; the earlier pairing demanded
+  `machines:run` in the credential, which no install grant may contain, so no plugin could
+  reach the door whatever it was consented (#735).
   `machineId` is a machine id, never a machine name: an identifier that matches no enrolled
   machine refuses `machine_unknown` instead of projecting a machine that does not exist, so
   `connected: false` is always an enrolled machine's own state. The hub resolves no names;
@@ -3499,14 +3514,14 @@ provider handling and postconditions belong to plugins, never the common floor.
   the ordinary typed action dispatcher; headless agents and the plugin-manager client
   share their schemas and authority path.
 
-  | Action                           | Arguments                                           | Result and authority                                                                            |
-  | -------------------------------- | --------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-  | `engine.jobs.reviewDeployment`   | `{ deploymentId, pluginId, targets, operationIds }` | `JobDeploymentReview`; current root only; observes without installing or granting consent       |
-  | `engine.jobs.applyDeployment`    | `{ request, reviewDigest }`                         | `JobDeployment`; current root only; saves the exact approval and attempts eligible targets      |
-  | `engine.jobs.readDeployment`     | `{ deploymentId }`                                  | `JobDeployment`; current root only; retained review and projected progress                      |
-  | `engine.jobs.listDeployments`    | `{ pluginId, limit? }`                              | `{ deployments }`; current root only; newest first, default 20, maximum 100                     |
-  | `engine.jobs.cancelDeployment`   | `{ deploymentId, expectedRevision }`                | `JobDeployment`; current root only; compare-and-set cancellation of unapplied effects           |
-  | `engine.jobs.describeDeployment` | `{ machineId, pluginId }`                           | `JobDeploymentDescription`; current `machines:run` authority at the machine, not administration |
+  | Action                           | Arguments                                           | Result and authority                                                                             |
+  | -------------------------------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+  | `engine.jobs.reviewDeployment`   | `{ deploymentId, pluginId, targets, operationIds }` | `JobDeploymentReview`; current root only; observes without installing or granting consent        |
+  | `engine.jobs.applyDeployment`    | `{ request, reviewDigest }`                         | `JobDeployment`; current root only; saves the exact approval and attempts eligible targets       |
+  | `engine.jobs.readDeployment`     | `{ deploymentId }`                                  | `JobDeployment`; current root only; retained review and projected progress                       |
+  | `engine.jobs.listDeployments`    | `{ pluginId, limit? }`                              | `{ deployments }`; current root only; newest first, default 20, maximum 100                      |
+  | `engine.jobs.cancelDeployment`   | `{ deploymentId, expectedRevision }`                | `JobDeployment`; current root only; compare-and-set cancellation of unapplied effects            |
+  | `engine.jobs.describeDeployment` | `{ machineId, pluginId }`                           | `JobDeploymentDescription`; current `machines:read` authority at the machine, not administration |
 
   The five administrative actions are native `engine.jobs` context doors, not methods on
   an ordinary product's `ctx.jobs`, even when that product's caller is root. The bounded

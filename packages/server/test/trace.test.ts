@@ -1103,7 +1103,7 @@ describe("the trace ledger records every exercise of authority", () => {
         listDeployments: { pluginId: request.pluginId },
         cancelDeployment: { deploymentId: request.deploymentId, expectedRevision: 1 },
       };
-      const inspector = tokenContext(base, ["machines:run"]);
+      const inspector = tokenContext(base, ["machines:read"]);
       for (const [method, args] of Object.entries(samples)) {
         const door = `engine.jobs.${method}`;
         expect((await base.host.dispatch(inspector, door, args)).ok).toBe(false);
