@@ -3333,6 +3333,34 @@ describe("job lifecycle audit and inspection", () => {
       f.store.close();
     }
   });
+  // The conductor asked by the name its own session rows carried, was told the machine was
+  // offline and scheduled nothing at all (#725). One machine under two identifiers must not
+  // answer two connection states, and the offline answer stays available where it is true.
+  test("the same machine asked by name refuses machine_unknown rather than reporting it offline", () => {
+    const f = fixture();
+    try {
+      const args = { machineId: f.machineId, pluginId };
+      const name = f.store.getMachine(f.machineId)!.name;
+      expect(name).not.toBe(f.machineId);
+      prove(f);
+      expect(f.service.describe(f.root, args)).toMatchObject({
+        connected: true,
+        installation: { ready: true },
+      });
+      expect(() => f.service.describe(f.root, { ...args, machineId: name })).toThrow(
+        "machine_unknown",
+      );
+      // An enrolled machine that is genuinely disconnected is a fact, not an unknown id.
+      f.service.offline(f.channel);
+      expect(f.service.describe(f.root, args)).toMatchObject({
+        connected: false,
+        platforms: [],
+        installation: { ready: false },
+      });
+    } finally {
+      f.store.close();
+    }
+  });
   test("cancelled queue and interrupted committed start remain distinct, without replaying transitions", () => {
     const f = fixture();
     try {

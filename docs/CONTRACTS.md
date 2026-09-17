@@ -3451,6 +3451,10 @@ provider handling and postconditions belong to plugins, never the common floor.
   describe only its own installation. Omission selects the current revision; an explicit
   revision selects its immutable retained declaration/pin, or null if unknown. It grants
   neither execution nor resource consent.
+  `machineId` is a machine id, never a machine name: an identifier that matches no enrolled
+  machine refuses `machine_unknown` instead of projecting a machine that does not exist, so
+  `connected: false` is always an enrolled machine's own state. The hub resolves no names;
+  a caller holding one looks the machine up before it asks.
   `admissionPublicKey` is the current hub's public SPKI verifier key for reviewed owner
   configuration. Obtain it through this authenticated interface, not private hub database
   access; it is not a token, and the private signing key never leaves the hub.
