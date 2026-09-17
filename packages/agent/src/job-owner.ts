@@ -1093,12 +1093,13 @@ export class MachineJobOwner {
             : boundPolicy.runtime?.scope === "instance"
               ? this.instanceService(boundPolicy, signal)
               : this.runtimeService(job, boundPolicy, signal),
-        onRefusal: ({ serviceId: refusedService, revision, operationId, reason }) => {
+        onRefusal: ({ serviceId: refusedService, revision, operationId, reason, detail }) => {
           this.log("warn", "service_call_refused", {
             jobId: job.request.jobId,
             serviceId: refusedService,
             operationId,
             reason,
+            ...detail,
           });
           // The hub authorized this call and then never learned it was not served, so a
           // service it reports `ready` could refuse everything with the contradiction visible
@@ -1278,14 +1279,23 @@ export class MachineJobOwner {
         () => clearTimeout(timer),
         (error: unknown) => {
           clearTimeout(timer);
-          // The rejection that cancels the child is the one nobody could see: a start timeout,
-          // a refused invocation and a lost owner all ended as a cancelled child job with
-          // empty output, which reads as if the service had simply vanished.
+          // The rejection that cancels the child is the one nobody awaits: a start timeout, a
+          // refused invocation and a lost hub seat all ended as a cancelled child job with
+          // empty output, which reads as if the service had simply vanished. Recorded here
+          // because this is the only place it exists — and as a START refusal, since no call is
+          // necessarily in flight when it fires. The interpolated `service_start_rejected: …`
+          // is dropped: a word with a message inside it is not one a reader can match, so the
+          // rejection travels as the refusal's own name.
           this.log("warn", "service_start_refused", {
             jobId: parent.request.jobId,
             serviceId: policy.serviceId,
             childJobId: created.childJobId,
-            reason: `service_start_rejected: ${error instanceof Error ? error.message : String(error)}`,
+            reason:
+              error instanceof ServiceFailure
+                ? error.refusal
+                : error === SERVICE_RETIRED
+                  ? "service_closed"
+                  : "service_remote_refused",
           });
           const invocation = parent.context?.invocations.get(invocationId);
           if (invocation) invocation.refused = true;

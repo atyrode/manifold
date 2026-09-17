@@ -93,6 +93,8 @@ export interface JobServiceProxyOptions {
     revision: string;
     operationId: string;
     reason: ServiceRefusal;
+    /** The owner's own state, for the owner's record. Never written to a response. */
+    detail?: Readonly<Record<string, string>>;
   }) => void;
 }
 class ProxyFailure extends Error {
@@ -841,6 +843,8 @@ export async function createJobServiceProxy(
     let secret: string | undefined;
     let runtimeSocket: Duplex | undefined;
     let runtimeAgent: Agent | undefined;
+    // What the owner said about its own state, for the owner's record only.
+    let reportDetail: Readonly<Record<string, string>> | undefined;
     // The wire a metered route speaks and the job's ledger are present together or not at all:
     // the kind decides which spelling the reader understands, the ledger holds the totals.
     const metering =
@@ -921,7 +925,9 @@ export async function createJobServiceProxy(
           // A cancelled call is not an unserveable service, and a resolver that REFUSED is not
           // one that broke: both were reported as the same unavailability, one layer below the
           // flattening #708 is about. `service_runtime_unreachable` now means only that the
-          // resolver failed without naming a refusal.
+          // resolver failed without naming a refusal. Its `detail` is host-local and joins the
+          // REPORT, never the response.
+          if (error instanceof ServiceFailure) reportDetail = error.detail;
           throw error instanceof ProxyFailure
             ? error
             : error instanceof ServiceFailure
@@ -1095,6 +1101,7 @@ export async function createJobServiceProxy(
           revision: entry.policy.revision,
           operationId,
           reason: refusal.code,
+          ...(reportDetail ? { detail: reportDetail } : {}),
         });
       fail(response, refusal);
     } finally {
