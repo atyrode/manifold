@@ -3475,10 +3475,19 @@ provider handling and postconditions belong to plugins, never the common floor.
   the operation nodes it already issues it for. Nothing new is stored and no machine-node
   consent exists. An operator reading through the native door is not narrowed by it, including
   for a plugin with no installation — the answer a deployment request is built from cannot
-  depend on a consent that by definition does not exist yet. A plugin handle asking about a
-  machine it is not deployed to refuses `job_installation_absent`; the earlier pairing demanded
-  `machines:run` in the credential, which no install grant may contain, so no plugin could
-  reach the door whatever it was consented (#735).
+  depend on a consent that by definition does not exist yet.
+  **A consent is bound to an installation, so where there is no installation there is nothing to
+  consent to.** A plugin handle asking about a machine it holds no installation on is answered
+  the pre-deployment projection — `connected`, `platforms`, the resources it may see, a null
+  installation, no retained revisions, no consent rows, and its own declaration — under
+  `machines:read` and a grant reaching that machine node alone. That is the one question consent
+  cannot gate, because it is asked before anything exists to consent to, and demanding one
+  refused the door that exists to answer it (#743). The gate is keyed on holding no installation
+  on that machine at all, not on the revision a call named: an installed plugin naming a
+  revision that resolves to nothing still refuses `job_installation_absent` rather than walking
+  past its own consent. Where an installation does exist, the consent check above stands
+  unchanged. The pairing before #735 demanded `machines:run` in the credential, which no install
+  grant may contain, so no plugin could reach the door whatever it was consented.
   `machineId` is a machine id, never a machine name: an identifier that matches no enrolled
   machine refuses `machine_unknown` instead of projecting a machine that does not exist, so
   `connected: false` is always an enrolled machine's own state. The hub resolves no names;
