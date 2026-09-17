@@ -503,6 +503,64 @@ try {
       console.log(`FAIL  ${name} — ${error instanceof Error ? error.message : String(error)}`);
       for (const line of lastDiff) console.log(`        ${line}`);
       await dumpForensics(name);
+      await releaseHeldPointers(name);
+    }
+  }
+
+  /**
+   * A failed round must not hand the next one a held mouse button.
+   *
+   * React Flow keeps a node in a live drag while the button is down, so its canvas renders
+   * that node wherever the pointer went and NEVER converges again: one failure then reports
+   * as eight, seven of them naming rounds that were never exercised and an element they never
+   * touched. That is what happened to F4 (#720) — its two gestures run concurrently, and the
+   * one that threw left the other browser mid-drag with `dragging=[<node>]` in every later
+   * round's forensics.
+   *
+   * Releasing here is not softening an assertion: the round has already failed and been
+   * counted. A button nobody pressed on purpose is shared browser state, the same thing F5's
+   * thaw restores, and the release is reported so the poisoned round is the one that says so.
+   */
+  async function releaseHeldPointers(name: string): Promise<void> {
+    for (const [browser, label] of [
+      [browserA, "A"],
+      [browserB, "B"],
+    ] as const) {
+      try {
+        // Where the drag currently IS, so ending it commits the position the canvas already
+        // shows. Releasing at a fixed point would end the drag somewhere else and teleport the
+        // node, which is a second defect rather than the end of the first one.
+        const held = await browser.evaluate<{
+          readonly ids: readonly string[];
+          readonly x: number;
+          readonly y: number;
+        }>(
+          `(() => {
+            const nodes = [...document.querySelectorAll(".react-flow__node.dragging")];
+            const rect = nodes[0]?.getBoundingClientRect();
+            return {
+              ids: nodes.map((node) => node.getAttribute("data-id") ?? "?"),
+              x: rect === undefined ? 0 : rect.left + rect.width / 4,
+              y: rect === undefined ? 0 : rect.top + 8,
+            };
+          })()`,
+        );
+        if (held.ids.length === 0) continue;
+        console.log(
+          `        ${label}: releasing a pointer left down on [${held.ids.join(",")}] after ${name}`,
+        );
+        await browser.send("Input.dispatchMouseEvent", {
+          type: "mouseReleased",
+          x: held.x,
+          y: held.y,
+          button: "left",
+          clickCount: 1,
+        });
+      } catch (error) {
+        console.log(
+          `        ${label}: could not clear a held pointer — ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     }
   }
 
@@ -833,10 +891,17 @@ try {
     "F4 concurrent browser moves converge",
     { adds: 0, changes: [first.id, second.id] },
     async () => {
-      await Promise.all([
+      // Both gestures run to completion before this round decides, and the first rejection is
+      // still the one it fails with. `Promise.all` rejected on the first throw and abandoned
+      // the other browser mid-drag, with its `finally` release racing the NEXT round's
+      // pointer events: one real failure then reported as eight (#720). Waiting is not
+      // leniency — nothing is caught here, and a gesture that throws still throws.
+      const gestures = await Promise.allSettled([
         moveFlowNode(browserA, second.id, -90, 120),
         moveFlowNode(browserB, first.id, 110, -70),
       ]);
+      const rejected = gestures.find((settled) => settled.status === "rejected");
+      if (rejected?.status === "rejected") throw rejected.reason;
     },
   );
   await round(
