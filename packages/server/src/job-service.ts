@@ -1998,6 +1998,41 @@ export class JobService {
     };
   }
 
+  /**
+   * The approved invocation edge that authorizes this child job, or null.
+   *
+   * Null unless the request is an invocation whose edge row exists, is enabled, and names
+   * exactly this callee. A superseded caller tuple does not match, because the tuple pins the
+   * parent's installation revision and artifact, so an edge approved against an older
+   * installation authorizes nothing.
+   */
+  private approvedInvocationEdge(request: JobRequest): JobInvocationEdge | null {
+    const parentJobId = request.parent?.parentJobId;
+    if (parentJobId === undefined) return null;
+    const parent = this.jobs.get(parentJobId);
+    if (!parent) return null;
+    const caller = {
+      machineId: parent.request.machineId,
+      pluginId: parent.request.pluginId,
+      operationId: parent.request.operationId,
+      installationRevision: parent.request.installationRevision,
+      artifactSha256: parent.request.artifactSha256,
+    };
+    const stored = this.store.db
+      .query<{ edge: string; enabled: number }, [string, string]>(
+        "SELECT edge,enabled FROM job_invocation_edges WHERE caller=? AND operation_id=?",
+      )
+      .get(canonicalJobJson(caller), request.operationId);
+    if (!stored?.enabled) return null;
+    const edge = JobInvocationEdgeSchema.parse(JSON.parse(stored.edge));
+    return edge.callee.machineId === request.machineId &&
+      edge.callee.operationId === request.operationId &&
+      edge.callee.installationRevision === request.installationRevision &&
+      edge.callee.artifactSha256 === request.artifactSha256
+      ? edge
+      : null;
+  }
+
   private reauthorizeDeferred(request: JobRequest, retiring = false): string | null {
     const context = this.auth.restoreCredential(request.credential);
     if (!context) return "credential_revoked_or_expired";
@@ -3491,31 +3526,26 @@ export class JobService {
               terminalOrigin.door !== "core.terminals.create")))
     )
       fail("terminal_spawn_origin_missing");
-    const invocation: AuthorityRequirement[] = [];
+    // AN INVOCATION'S AUTHORITY IS ITS APPROVED EDGE, NOT A CAPABILITY ON THE JOB CREDENTIAL.
+    //
+    // A job credential is minted from what its own operation declares it needs, and
+    // `operationRequirements` never emits `operations:invoke`. Demanding that capability here
+    // therefore made an edge the plugin declares, an operator approved and the machine
+    // consented to impossible to traverse for every principal except a `*` holder, which is
+    // why this only ever worked when a root credential happened to launch the parent (#710).
+    //
+    // `GOVERNED_CAPS` already states the intended model: these capabilities "require separate,
+    // version-bound consent; a capability grant alone never suffices." The revision-pinned
+    // edge is that consent. So an approved edge answers the hop and an unapproved one refuses
+    // it outright, which is stricter than asking a credential for a capability it cannot hold.
+    //
+    // Approving an edge is still an ordinary capability decision: `deploymentInvocations`
+    // evaluates `operations:invoke` against the approving principal at review time.
     if (request.parent) {
-      const parent = this.jobs.get(request.parent.parentJobId);
-      if (!parent) fail("invocation_parent_missing");
-      invocation.push(
-        {
-          cap: "operations:invoke",
-          ref: {
-            kind: "operation",
-            machineId: request.machineId,
-            operationId: request.operationId,
-          },
-        },
-        {
-          cap: "operations:invoke",
-          ref: {
-            kind: "operation",
-            machineId: parent.request.machineId,
-            operationId: parent.request.operationId,
-          },
-        },
-      );
+      if (!this.jobs.get(request.parent.parentJobId)) fail("invocation_parent_missing");
+      if (!this.approvedInvocationEdge(request)) fail("invocation_edge_missing");
     }
     return [
-      ...invocation,
       ...(request.terminal
         ? [
             {

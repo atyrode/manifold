@@ -5130,6 +5130,80 @@ describe("reviewed native deployment approvals", () => {
     }
   });
 
+  test("an approved edge admits a child the caller's own credential could never authorize", () => {
+    const { f, value, callerPlugin, selectedOperation, acknowledge } = runtimeDeploymentFixture();
+    try {
+      const review = f.service.reviewDeployment(f.root, value);
+      f.service.applyDeployment(
+        f.root,
+        { request: value, reviewDigest: review.reviewDigest },
+        "edge-runtime",
+      );
+      acknowledge();
+      // Everything a job credential can legitimately carry, and nothing more: the one
+      // governed capability deliberately absent is the one this hop used to demand.
+      const granted: Cap[] = [
+        "containers:read",
+        "containers:write",
+        "machines:run",
+        "jobs:read",
+        "jobs:input",
+        "jobs:cancel",
+        "locations:read",
+        "locations:write",
+        "locations:create",
+        "services:read",
+        "services:invoke",
+        "network:host",
+      ];
+      const token = f.auth.mintToken(
+        { principal: { name: "edge-caller", kind: "human" }, caps: granted },
+        f.root,
+      );
+      const caller = f.auth.authenticate(token.token);
+      f.auth.grant(
+        {
+          principal: { kind: "principal", id: caller.principal.id },
+          node: formatManifoldUri({ kind: "machine", machineId: f.machineId }),
+          caps: granted,
+          effect: "allow",
+          reach: "subtree",
+        },
+        f.root,
+      );
+      const parent = f.service.execute(caller, callerPlugin, "edge-parent", {
+        jobId: "edge-parent",
+        machineId: f.machineId,
+        operationId: selectedOperation,
+        input: { value: "safe" },
+        outputs: [],
+      });
+      expect(parent.state).toBe("start-committed");
+      // The authority for the hop is the approved edge. A job credential is minted from what
+      // its operation declares it needs, which never includes `operations:invoke`, so before
+      // #710 only a `*`-holding principal could invoke a declared, consented edge.
+      expect(parent.request.credential.caps).not.toContain("operations:invoke");
+      expect(parent.request.credential.caps).not.toContain("*");
+      f.service.jobs.state(parent.request.jobId, "started");
+      f.service.event(f.channel, {
+        type: "invocation",
+        parentJobId: parent.request.jobId,
+        invocationId: "edge-child",
+        operationId,
+        input: { value: "serve" },
+        outputs: [],
+      });
+      const child = f.service.jobs.active().find((job) => job.request.parent !== null);
+      expect(child?.state).toBe("start-committed");
+      expect(f.commands.at(-1)).toMatchObject({
+        type: "invocation_reply",
+        invocationId: "edge-child",
+      });
+    } finally {
+      f.store.close();
+    }
+  });
+
   test("subset and install-only reviews never approve unrelated runtime operations", () => {
     const { f, value, callerPlugin, selectedOperation, unselectedOperation, acknowledge } =
       runtimeDeploymentFixture();
