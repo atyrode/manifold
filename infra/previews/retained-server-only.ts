@@ -4,6 +4,32 @@
 // metadata, reduced to one fixed success token. Unknown legacy shapes HOLD.
 import { readFileSync, readdirSync, readlinkSync } from "node:fs";
 
+/**
+ * Every refusal this classifier can reach, and the only strings it ever prints. A refusal used
+ * to be one bare `Error` and an exit code, so a CI recurrence could be repaired only by
+ * re-deriving the branch by elimination (#699). Tokens are literals: no path, argument or
+ * environment value is ever interpolated into one.
+ */
+type Hold =
+  | "server-process-shape"
+  | "server-process-absent"
+  | "server-restarted-during-probe"
+  | "zombie-identity-unconfirmed"
+  | "unclassified-process"
+  | "process-unreadable"
+  | "pid-reused-during-probe"
+  | "proc-field-shape";
+
+class Held extends Error {
+  constructor(readonly predicate: Hold) {
+    super(predicate);
+  }
+}
+
+function hold(predicate: Hold): never {
+  throw new Held(predicate);
+}
+
 const healthSource =
   "const r = await fetch('http://127.0.0.1:7777/healthz'); if (!r.ok) process.exit(1);";
 const healthCommand = `bun -e "${healthSource}"`;
@@ -45,7 +71,7 @@ const pluginServer =
 
 function nullFields(path: string): string[] {
   const fields = readFileSync(path, "utf8").split("\0");
-  if (fields.pop() !== "") throw new Error();
+  if (fields.pop() !== "") hold("proc-field-shape");
   return fields;
 }
 
@@ -58,7 +84,7 @@ function processIdentity(pid: string): string {
   const status = readFileSync(`/proc/${pid}/status`, "utf8");
   const uid = /^Uid:\s+(\d+\s+\d+\s+\d+\s+\d+)$/m.exec(status)?.[1];
   const gid = /^Gid:\s+(\d+\s+\d+\s+\d+\s+\d+)$/m.exec(status)?.[1];
-  if (uid === undefined || gid === undefined) throw new Error();
+  if (uid === undefined || gid === undefined) hold("proc-field-shape");
   return `${uid.trim().replace(/\s+/g, ":")}/${gid.trim().replace(/\s+/g, ":")}`;
 }
 
@@ -66,9 +92,9 @@ function processEnvironment(pid: string): Map<string, string> {
   const environment = new Map<string, string>();
   for (const field of nullFields(`/proc/${pid}/environ`)) {
     const separator = field.indexOf("=");
-    if (separator <= 0) throw new Error();
+    if (separator <= 0) hold("proc-field-shape");
     const key = field.slice(0, separator);
-    if (environment.has(key)) throw new Error();
+    if (environment.has(key)) hold("proc-field-shape");
     environment.set(key, field.slice(separator + 1));
   }
   return environment;
@@ -125,8 +151,9 @@ try {
   let server = false;
   for (const pid of pids) {
     if (Number(pid) === process.pid) continue;
+    let stat: string[] | undefined;
     try {
-      const stat = procFields(pid);
+      stat = procFields(pid);
       if (pid !== "1" && stat[0] === "Z") {
         // A lone zombie owns no live work. A zombie group leader with other threads may.
         // Confirm the same terminal identity; a reaped-and-reused PID still holds.
@@ -138,7 +165,7 @@ try {
           !stat[19] ||
           confirmed[19] !== stat[19]
         )
-          throw new Error();
+          hold("zombie-identity-unconfirmed");
         continue;
       }
       const args = nullFields(`/proc/${pid}/cmdline`);
@@ -151,7 +178,7 @@ try {
           executable !== "/usr/local/bin/bun" ||
           readlinkSync("/proc/1/cwd") !== "/app"
         )
-          throw new Error();
+          hold("server-process-shape");
         server = true;
         continue;
       }
@@ -166,32 +193,43 @@ try {
       // An installed server plugin is supervised by PID1 and restarts with it. Admit only the
       // loader's complete process fingerprint; an owner, workload, wrapper or lookalike still holds.
       if (serverOwnedIsolate(pid, args, executable, serverIdentity, serverEnvironment)) continue;
-      throw new Error();
+      hold("unclassified-process");
     } catch (error) {
       // A healthcheck or isolate can exit between listing /proc and reading its fingerprint.
-      // It no longer owns work that replacement could destroy. Admit only a proven-gone PID:
-      // unreadable live processes and a reused PID remain unknown and therefore HOLD.
-      if (error instanceof Error && Reflect.get(error, "code") === "ENOENT") {
-        try {
-          readFileSync(`/proc/${pid}/stat`, "utf8");
-        } catch (absence) {
-          if (absence instanceof Error && Reflect.get(absence, "code") === "ENOENT") continue;
-        }
+      // Two unrelated facts arrive as the same ENOENT, and `starttime` is what separates them:
+      // a reused PID cannot carry the start time this probe already read, so the same start
+      // time is still the process that was classified — now exiting — while a different one is
+      // a live occupant this probe never examined. Refusing both is what made a permitted
+      // rollback fail on a process that had already finished (#699).
+      if (error instanceof Held) throw error;
+      if (Reflect.get(error as object, "code") !== "ENOENT") hold("process-unreadable");
+      let after: string[];
+      try {
+        after = procFields(pid);
+      } catch (absence) {
+        // Proven gone: no work remains that replacement could destroy.
+        if (Reflect.get(absence as object, "code") === "ENOENT") continue;
+        hold("process-unreadable");
       }
-      throw error;
+      if (!stat?.[19] || after[19] !== stat[19]) hold("pid-reused-during-probe");
+      // The kernel has reaped it to a single-threaded zombie: no address space, no
+      // descriptors, no CPU. A live process whose fingerprint stayed unreadable holds.
+      if (after[0] !== "Z" || after[17] !== "1") hold("process-unreadable");
     }
   }
   // starttime is stable across the probe, unlike CPU counters in /proc/1/stat.
   const starttime = (stat: string): string | undefined =>
     stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
-  if (
-    !server ||
-    !starttime(before) ||
-    starttime(before) !== starttime(readFileSync("/proc/1/stat", "utf8"))
-  )
-    throw new Error();
+  if (!server) hold("server-process-absent");
+  if (!starttime(before) || starttime(before) !== starttime(readFileSync("/proc/1/stat", "utf8")))
+    hold("server-restarted-during-probe");
   console.log("retained-processes-server-only");
-} catch {
-  // Never disclose process arguments or filesystem errors (including paths).
+} catch (error) {
+  // The predicate that refused, and nothing else: process arguments, environment values and
+  // filesystem errors (including paths) never leave the container. Without it a recurrence in
+  // CI could only be diagnosed by elimination, which is what #699 was opened to end.
+  console.log(
+    `retained-processes-hold:${error instanceof Held ? error.predicate : "classifier-fault"}`,
+  );
   process.exit(1);
 }

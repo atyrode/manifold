@@ -223,7 +223,7 @@ retained_topology() {
 # Classify public topology and spawn settings without dumping Config.Env (or
 # /proc/*/environ). Missing/default spawn configuration is owning.
 require_retained_server_only() {
-  local project=$1 volume=$2 topology=$3 incumbent configuration proof topology_template mountpoint
+  local project=$1 volume=$2 topology=$3 incumbent configuration proof topology_template mountpoint predicate
   incumbent=$(docker ps --all --quiet --no-trunc \
     --filter "label=com.docker.compose.project=$project" \
     --filter 'label=com.docker.compose.service=manifold') ||
@@ -273,10 +273,16 @@ require_retained_server_only() {
     fail 'HOLD: cannot classify retained incumbent topology'
   [[ $proof == retained-topology-matched ]] ||
     fail 'HOLD: retained incumbent topology or /data data root does not match the replacement'
-  # Stream public code, not files from /data. A fixed token is the entire evidence
-  # surface; raw process arguments and probe errors never leave the container.
-  proof=$(docker exec -i "$incumbent" bun --no-env-file - <"$here/retained-server-only.ts" 2>/dev/null) ||
-    fail 'HOLD: retained incumbent has owning or unknown processes'
+  # Stream public code, not files from /data. Two fixed tokens are the entire evidence
+  # surface; raw process arguments and probe errors never leave the container. The refusal
+  # carries the predicate that refused, because a recurrence diagnosed by elimination is what
+  # #699 was opened to end; anything outside the token shape is reported as unavailable.
+  proof=$(docker exec -i "$incumbent" bun --no-env-file - <"$here/retained-server-only.ts" 2>/dev/null) || {
+    predicate=${proof#retained-processes-hold:}
+    [[ $proof == retained-processes-hold:* && $predicate =~ ^[a-z][a-z-]{0,46}[a-z]$ ]] ||
+      predicate=unavailable
+    fail "HOLD: retained incumbent has owning or unknown processes: $predicate"
+  }
   [[ $proof == retained-processes-server-only ]] ||
     fail 'HOLD: retained incumbent process proof is unavailable'
 }
