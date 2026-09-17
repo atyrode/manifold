@@ -85,7 +85,9 @@ async function terminalHostMain(): Promise<void> {
     throw new Error("job owner configuration and socket must be configured together");
   const owner =
     jobConfig && jobSocket
-      ? await openConfiguredJobOwner(jobConfig, jobSocket, socketPath)
+      ? await openConfiguredJobOwner(jobConfig, jobSocket, socketPath, (level, evt, fields) =>
+          stdoutSink({ ts: Date.now(), level, evt, ...fields }),
+        )
       : undefined;
   let jobListener: { stop(): void } | undefined;
   const host = new TerminalHost({
