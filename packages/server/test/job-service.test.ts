@@ -437,6 +437,75 @@ test("platform cancellation is rediscovered after empty proof consumes its start
   }
 });
 
+test("an operator's cancellation cycles an enabled instance service rather than fencing it (#715)", async () => {
+  const { f, policy, start, revision } = await instanceFixture();
+  const fact = {
+    jobId: start.request.jobId,
+    requestDigest: start.request.requestDigest,
+    ownerId: start.permit.ownerId,
+    ownerGeneration: start.permit.ownerGeneration,
+  };
+  const description = () =>
+    f.service.describeInstanceService(f.root, { serviceId: policy.serviceId });
+  try {
+    f.service.event(f.channel, { type: "state", ...fact, state: "started" });
+    f.service.event(f.channel, {
+      type: "service_ready",
+      jobId: start.request.jobId,
+      service: start.request.service!,
+    });
+    expect(description().state).toBe("ready");
+    f.commands.length = 0;
+    f.service.cancel(f.root, {
+      kind: "job",
+      machineId: f.machineId,
+      operationId,
+      jobId: start.request.jobId,
+    });
+    expect(f.service.jobs.cancellation(start.request.jobId)).toEqual({
+      mode: "cancel",
+      reason: "requested",
+    });
+    f.service.event(f.channel, {
+      type: "result",
+      result: {
+        ...fact,
+        state: "cancelled",
+        reason: "cancelled",
+        exitCode: null,
+        startedAt: f.runtime.now(),
+        finishedAt: f.runtime.now(),
+        usage: null,
+        limits: start.request.limits,
+        outputs: [],
+      },
+    });
+    f.service.event(f.channel, { type: "workload_empty", ...fact });
+    f.service.tick();
+    const replacement = f.commands.find((command) => command.type === "start");
+    if (!replacement) throw new Error("the cancelled instance service was never replaced");
+    expect(replacement.request.jobId).not.toBe(start.request.jobId);
+    // The revision is untouched: bumping it was the only way to clear the stuck reason.
+    expect(f.service.instanceServices.get(policy.serviceId)?.revision).toBe(revision);
+    f.service.event(f.channel, {
+      type: "state",
+      jobId: replacement.request.jobId,
+      requestDigest: replacement.request.requestDigest,
+      ownerId: replacement.permit.ownerId,
+      ownerGeneration: replacement.permit.ownerGeneration,
+      state: "started",
+    });
+    f.service.event(f.channel, {
+      type: "service_ready",
+      jobId: replacement.request.jobId,
+      service: replacement.request.service!,
+    });
+    expect(description()).toMatchObject({ state: "ready", reason: null });
+  } finally {
+    f.store.close();
+  }
+});
+
 test.each([
   "installation_changed",
   "owner_fenced",
@@ -4635,6 +4704,8 @@ describe("metered inference journal and ceilings", () => {
     }
   });
 
+  // 500 synchronous metered events against an on-disk database: the work is the assertion, so
+  // the budget is explicit rather than the 5s default a shared runner's disk speed decides.
   test("five hundred metered calls retain an exact durable total outside the bounded journal", () => {
     const dir = mkdtempSync(join(tmpdir(), "job-inference-usage-"));
     const path = join(dir, "hub.sqlite");
@@ -4724,7 +4795,7 @@ describe("metered inference journal and ceilings", () => {
       f.store.close();
       rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 
   test("a metered call is ignored on a wrong digest, a stale generation and another machine's channel", () => {
     const f = fixture();
@@ -5082,6 +5153,110 @@ describe("reviewed native deployment approvals", () => {
     };
   }
 
+  /**
+   * A plugin whose own operation provides the service its other operations bind: the shape
+   * that cannot be deployed a first time, because the provider is the installation the
+   * deployment would create (#715).
+   */
+  function selfProvidedFixture() {
+    const f = fixture();
+    const selfPlugin = "sample.selfserve";
+    const serve = `${selfPlugin}.serve`;
+    const use = `${selfPlugin}.use`;
+    const policy: ServicePolicy = {
+      serviceId: `${selfPlugin}.svc`,
+      revision: "svc-r1",
+      maxConcurrent: 1,
+      runtime: {
+        pluginId: selfPlugin,
+        operationId: serve,
+        installationRevision: "self-r1",
+        artifactSha256: hash,
+        resourceBindingDigest: createHash("sha256").update(canonicalJobJson(null)).digest("hex"),
+        input: { value: { literal: "serve" } },
+      },
+      operations: {
+        inspect: {
+          kind: "http-proxy",
+          method: "GET",
+          path: "/inspect",
+          request: { kind: "none" },
+          response: {
+            kind: "stream",
+            disclosure: "full",
+            contentTypes: ["application/json"],
+            headers: [],
+          },
+          timeoutMs: 1000,
+          maxRequestBytes: 1024,
+          maxResponseBytes: 4096,
+        },
+      },
+    };
+    const declaration: MachineHalf = {
+      ...machine,
+      operations: {
+        [serve]: { ...machine.operations[operationId]!, providesService: true },
+        [use]: {
+          ...machine.operations[operationId]!,
+          services: [
+            { serviceId: policy.serviceId, revision: policy.revision, operationIds: ["inspect"] },
+          ],
+        },
+      },
+    };
+    f.service.setManifestResolver((id) =>
+      id === pluginId ? machine : id === selfPlugin ? declaration : null,
+    );
+    f.service.configureServiceConfiguration(f.root, {
+      machineId: f.machineId,
+      expectedRevision: null,
+      policies: [policy],
+    });
+    // The owner advertises the policy, so nothing here is missing host evidence.
+    f.owner.resources = {
+      tools: {},
+      anchors: {},
+      services: {
+        [policy.serviceId]: createHash("sha256").update(canonicalJobJson(policy)).digest("hex"),
+      },
+      serviceDefinitions: {
+        [policy.serviceId]: { revision: policy.revision, operationIds: ["inspect"] },
+      },
+    };
+    prove(f);
+    f.commands.length = 0;
+    return { f, selfPlugin, serve, use, policy };
+  }
+
+  test("a first deployment of a plugin that provides its own service names what refused (#715)", () => {
+    const { f, selfPlugin, serve, use, policy } = selfProvidedFixture();
+    try {
+      expect(f.service.jobs.installation(f.machineId, selfPlugin)).toBeNull();
+      const review = f.service.reviewDeployment(f.root, {
+        deploymentId: "self-first",
+        pluginId: selfPlugin,
+        targets: [{ machineId: f.machineId, platform: "linux-x64" }],
+        operationIds: [serve, use],
+      });
+      expect(review.targets[0]).toMatchObject({
+        approvable: false,
+        reason: `service_provider_uninstalled:${policy.serviceId}`,
+      });
+      // The operations that provide the service, or bind none, review on their own.
+      expect(
+        f.service.reviewDeployment(f.root, {
+          deploymentId: "self-provider-only",
+          pluginId: selfPlugin,
+          targets: [{ machineId: f.machineId, platform: "linux-x64" }],
+          operationIds: [serve],
+        }).approvable,
+      ).toBe(true);
+    } finally {
+      f.store.close();
+    }
+  });
+
   test("first install reviews exact runtime authority and commits it before native dispatch", () => {
     const { f, value, callerPlugin, selectedOperation, locationId, acknowledge } =
       runtimeDeploymentFixture();
@@ -5174,6 +5349,41 @@ describe("reviewed native deployment approvals", () => {
         outputs: [],
         parent: { parentJobId: parent.request.jobId, invocationId: "runtime-child" },
       });
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("describe names a declared plugin's operations before it has an installation (#715)", () => {
+    const { f, callerPlugin, selectedOperation, unselectedOperation } = runtimeDeploymentFixture();
+    const unbound = createHash("sha256").update(canonicalJobJson(null)).digest("hex");
+    try {
+      const description = f.service.describe(f.root, {
+        machineId: f.machineId,
+        pluginId: callerPlugin,
+      });
+      expect(description.installation).toBeNull();
+      expect(description.operations).toEqual({
+        [selectedOperation]: {
+          ready: false,
+          reason: "installation_absent",
+          resourceBindingDigest: unbound,
+        },
+        [unselectedOperation]: {
+          ready: false,
+          reason: "installation_absent",
+          resourceBindingDigest: unbound,
+        },
+      });
+      // A deployment request named from that answer is the one this plugin needs.
+      expect(
+        f.service.reviewDeployment(f.root, {
+          deploymentId: "named-from-describe",
+          pluginId: callerPlugin,
+          targets: [{ machineId: f.machineId, platform: "linux-x64" }],
+          operationIds: Object.keys(description.operations ?? {}),
+        }).approvable,
+      ).toBe(true);
     } finally {
       f.store.close();
     }
@@ -5628,6 +5838,55 @@ describe("reviewed native deployment approvals", () => {
       expect(
         f.service.describe(f.root, { machineId: f.machineId, pluginId }).installation?.revision,
       ).toBe("r1");
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("evidence an unselected operation needs does not refuse the deployment (#715)", () => {
+    const f = fixture();
+    try {
+      const satisfiable = `${pluginId}.scan`;
+      const unsatisfiable = `${pluginId}.archive`;
+      const split = structuredClone(machine);
+      split.requiresResourceBindings = true;
+      split.operations = {
+        [satisfiable]: { ...machine.operations[operationId]!, runtimeTools: ["node"] },
+        [unsatisfiable]: { ...machine.operations[operationId]!, runtimeTools: ["restic"] },
+      };
+      f.service.setManifestResolver((id) => (id === pluginId ? split : null));
+      f.owner.resources = {
+        tools: { node: "d".repeat(64) },
+        services: {},
+        anchors: {},
+        serviceDefinitions: {},
+      };
+      prove(f);
+      const review = f.service.reviewDeployment(f.root, request(f, "scan-only", [satisfiable]));
+      const target = review.targets[0]!;
+      expect(target).toMatchObject({ approvable: true, reason: null });
+      // The unavailable tool is still reviewed and still unpromoted, so the operation that
+      // needs it stays unrunnable rather than becoming an implicit binding.
+      expect(target.resources).toEqual([
+        { group: "tools", name: "node", sha256: "d".repeat(64) },
+        { group: "tools", name: "restic", sha256: null },
+      ]);
+      expect(target.resourceBindings).toEqual({
+        tools: { node: "d".repeat(64) },
+        services: {},
+        anchors: {},
+      });
+      expect(
+        f.service.reviewDeployment(f.root, request(f, "archive-too", [satisfiable, unsatisfiable]))
+          .targets[0],
+      ).toMatchObject({ approvable: false, reason: "resource_evidence_unknown" });
+      // A review with no proved owner reads only already-promoted pins, so an absence there
+      // is "the hub cannot see this machine" and still refuses whatever the request selects.
+      f.service.offline(f.channel);
+      expect(
+        f.service.reviewDeployment(f.root, request(f, "scan-only-offline", [satisfiable]))
+          .targets[0],
+      ).toMatchObject({ approvable: false, reason: "resource_evidence_unknown" });
     } finally {
       f.store.close();
     }

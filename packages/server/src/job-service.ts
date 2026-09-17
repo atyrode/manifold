@@ -605,12 +605,23 @@ export class JobService {
   ): Promise<ServiceReply> {
     return this.invokeService(auth, this.instanceServiceReadArgs(args), callerPluginId, traceId);
   }
+  /**
+   * Why a settled instance-service workload may be replaced under the SAME revision, or null
+   * when its end was final for that revision.
+   *
+   * `requested` is the reason `cancel` records, and a cancellation through that door is how an
+   * operator cycles a service whose record stays enabled: the door that says "stay down" is
+   * disabling the record. Treating it as final left `reason: "cancelled"` pinned to the
+   * revision, which nothing but a revision bump cleared, and every later deployment review of
+   * any plugin binding that service inherited it (#715).
+   */
   private instanceReadmissionReason(job: JobRecord | null): string | null {
     if (!job || active.has(job.state)) return null;
     const cancellation = this.jobs.cancellation(job.request.jobId);
     if (cancellation?.mode === "retire") return null;
     const reason = cancellation?.reason ?? job.result?.reason;
     switch (reason) {
+      case "requested":
       case "plugin_held":
       case "installation_changed":
       case "owner_fenced":
@@ -1896,9 +1907,15 @@ export class JobService {
     );
     const live = this.channels.get(args.machineId);
     const connected = live?.proved === true;
+    // The declaration answers when no installation does: this is exactly the plugin whose
+    // deployment request an operator builds from `describe`, and answering no operations at
+    // all sent them to the bundle's own manifest to name what to deploy (#715).
+    const declared = install?.machine ?? this.declaredMachine(args.pluginId);
     const operations = Object.fromEntries(
-      Object.keys(install?.machine.operations ?? {}).map((operationId) => {
-        const reason = install ? this.operationRefusal(install, operationId) : "unknown_operation";
+      Object.keys(declared?.operations ?? {}).map((operationId) => {
+        const reason = install
+          ? this.operationRefusal(install, operationId)
+          : "installation_absent";
         return [
           operationId,
           {
@@ -3010,6 +3027,31 @@ export class JobService {
             ? "service_definition_changed"
             : null,
         };
+      },
+      selfProvidedServiceRefusal: (machineId, pluginId, machine, operationIds) => {
+        const installed = this.jobs.installation(machineId, pluginId);
+        for (const operationId of operationIds)
+          for (const binding of machine.operations[operationId]?.services ?? []) {
+            const runtime = this.effectiveConfiguration(machineId).policies.find(
+              (policy) => policy.serviceId === binding.serviceId,
+            )?.runtime;
+            if (
+              !runtime ||
+              runtime.pluginId !== pluginId ||
+              machine.operations[runtime.operationId]?.providesService !== true
+            )
+              continue;
+            // The provider is this plugin's own operation, and the policy pins an installation
+            // revision this deployment has not created: no later check can pass, and each one
+            // reports a layer the operator did not touch.
+            if (
+              !installed ||
+              installed.revision !== runtime.installationRevision ||
+              installed.artifact !== runtime.artifactSha256
+            )
+              return `service_provider_uninstalled:${binding.serviceId}`;
+          }
+        return null;
       },
       record: (record) => {
         if (!this.lifecycleRecorder) throw new Error("job_lifecycle_recorder_required");

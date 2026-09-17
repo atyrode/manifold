@@ -1809,14 +1809,40 @@ another review. The server recomputes the digest against current state; browser-
 confirmation alone is not approval.
 
 Known offline destinations can remain pending, using only already-promoted native resource
-pins and proved identity. Missing evidence blocks approval rather than granting authority
-over whatever appears on reconnect. Every pending effect rechecks the original current
+pins and proved identity. Against a PROVED owner, evidence a selected operation needs and the
+hub does not have blocks approval (`resource_evidence_unknown`); evidence only unselected
+operations need does not, because an unpromoted resource disables the operation that needs it
+and never the installed worker, and the review still lists that resource with a null pin so it
+stays visible and unpromoted. Without a proved owner the same absence means the hub cannot see
+the machine at all, so any unknown evidence blocks approval rather than granting authority over
+whatever appears on reconnect.
+Every pending effect rechecks the original current
 authority and reviewed scope before the existing install/consent functions run. A durable
 `pending` → `applying` fence precedes effects; interrupted application without a committed
 receipt becomes `needs_review`, never permission to replay. Approval or `installing` is not
 readiness: `ready` requires the current owner's exact installed acknowledgement and current
 readiness of selected operations. An install-only approval grants no execution consent even
 when ready. Applying does not execute operations.
+
+**Replacing an enabled family, in the order the refusals enforce.** Disable the plugins in
+dependency order, root last (`missing_dependency: <id>` names the dependent that still needs
+a disabled plugin). Install the new bundles (`still_enabled: <id>` names each native
+installation that is still on). Re-enable in reverse order, then review and apply one
+deployment per plugin, dependencies first — a plugin whose selected operation binds another
+plugin's service needs that provider installed and `ready` first, and says so with
+`resource_evidence_unknown` or `service_runtime_unavailable` until it is.
+`describe` answers a declared plugin's operations even before it has an installation
+(each `reason: "installation_absent"`), so the request can be named from the hub rather than
+from the bundle.
+
+A plugin whose OWN operation provides a service its other operations bind cannot be reviewed
+into existence in one step: the provider is the installation the deployment would create, and
+the review refuses `service_provider_uninstalled:<serviceId>`. Deploy the operations that
+provide the service (or bind none) first, and note that the policy's
+`runtime.installationRevision` must name an installation that exists — a revision a
+deployment mints hashes the promoted bindings, which hold the policy digest, so a policy
+cannot pin a revision that a later deployment then mints. Pin the revision yourself with
+`engine.jobs.install` and `engine.jobs.consent` when a self-provided service must be bound.
 
 After apply, recover authoritative progress with `engine.jobs.readDeployment({ deploymentId })`
 or `engine.jobs.listDeployments({ pluginId, limit? })`, not the local draft. List returns
