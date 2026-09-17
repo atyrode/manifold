@@ -223,6 +223,48 @@ describe("permissions", () => {
     );
   });
 
+  test("a governed capability reads as governed, never as one the installer withheld", () => {
+    // The real shape that misled an operator: nine declared, three in the grant, and the six
+    // absent ones every install is designed never to carry (#733).
+    const babel = row("atyrode.babel", {
+      capabilities: [
+        "containers:read",
+        "containers:write",
+        "machines:read",
+        "machines:run",
+        "jobs:read",
+        "jobs:input",
+        "jobs:cancel",
+        "locations:read",
+        "locations:write",
+      ],
+      install: { grantedCaps: ["containers:read", "containers:write", "machines:read"] },
+    });
+    const states = new Map(pluginPermissions(babel).map((p) => [p.cap, p.state]));
+    expect([...states.values()].filter((state) => state === "withheld")).toEqual([]);
+    expect(states.get("machines:read")).toBe("granted");
+    expect(states.get("machines:run")).toBe("governed");
+    expect(states.get("locations:write")).toBe("governed");
+    const summary = permissionSummary(babel);
+    expect(summary).toBe(
+      "Granted 3 of 9 declared: containers:read, containers:write, machines:read; " +
+        "6 governed by per-node consent: machines:run, jobs:read, jobs:input, jobs:cancel, " +
+        "locations:read, locations:write",
+    );
+    expect(summary).not.toContain("withheld");
+    // Governed authority is not exercisable on the grant alone, so the chip still counts three.
+    expect(permissionCount(babel)).toBe(3);
+    // A high-risk cap the installer did not name is still withheld, and says so beside them.
+    const both = row("atyrode.mixed", {
+      capabilities: ["machines:run", "tokens:mint"],
+      install: { grantedCaps: [] },
+    });
+    expect(permissionSummary(both)).toBe(
+      "Granted 0 of 2 declared: nothing; 1 governed by per-node consent: machines:run; " +
+        "withheld tokens:mint",
+    );
+  });
+
   test("every permission carries a meaning in words, never the bare cap", () => {
     const everything = row("acme.all", {
       capabilities: [

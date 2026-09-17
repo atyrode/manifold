@@ -941,6 +941,12 @@ a.plugin-manager-chip[data-tone="publisher"]:focus-visible {
   text-decoration: line-through;
 }
 
+/* Governed is not withheld: nobody refused it, and it is not struck through. It simply cannot
+   ride on a grant — the row holds it per node, by consent, and the card says which. */
+.plugin-manager-permission.is-governed > small {
+  color: #8bb5c9;
+}
+
 .plugin-manager-door {
   display: grid;
   gap: 0.2rem;
