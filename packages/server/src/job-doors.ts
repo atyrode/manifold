@@ -303,11 +303,17 @@ export interface JobContext extends PluginJobContext {
   setInvocationEdge(args: z.infer<typeof schemas.setInvocationEdge>): Record<string, never>;
 }
 
+/**
+ * A refusal answers with the class AND the check that refused. Flattening both into one
+ * constant cost the machine owner one experiment per candidate check to read
+ * `forbidden: job request refused` (#714): the service layer names each branch, and dropping
+ * that name here was the only reason a job refusal explained nothing.
+ */
 async function call(run: () => unknown) {
   try {
     return await run();
   } catch (error) {
-    if (error instanceof ServiceError) return { refused: `${error.code}: job request refused` };
+    if (error instanceof ServiceError) return { refused: `${error.code}: ${error.message}` };
     throw error;
   }
 }

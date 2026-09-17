@@ -1382,7 +1382,7 @@ export class JobService {
         )
       )
         return named("input_not_exported", binding.name);
-      if (!this.dischargesJobCap(context, node, "jobs:read"))
+      if (this.jobCapRefusal(context, node, "jobs:read") !== null)
         return named("input_authority_refused", binding.name);
     }
     return null;
@@ -1687,8 +1687,9 @@ export class JobService {
     callerPluginId = "engine.jobs",
   ): ListJobRunsResult {
     const current = this.auth.restoreCredential(this.auth.credentialReference(auth));
-    if (!current || (!current.caps.includes("*") && !current.caps.includes("jobs:read")))
-      fail("governed_authority_refused");
+    if (!current) fail("credential_revoked_or_expired");
+    if (!current.caps.includes("*") && !current.caps.includes("jobs:read"))
+      fail("job_capability_absent:jobs:read");
     if (callerPluginId !== "engine.jobs" && callerPluginId !== pluginId) fail("job_owner_mismatch");
     const parsed = ListJobRunsArgsSchema.parse(args);
     const filter = {
@@ -2045,16 +2046,19 @@ export class JobService {
         const terminalAuthority =
           (cap === "terminals:spawn" || cap === "terminals:write") && ref.kind === "container";
         const install = ref.kind === "service" ? null : this.resolve(ref);
+        // One deferred start carries several requirements; the cap is what tells an operator
+        // which of them lost its authority, and a schedule reported one word for all of them.
+        if (!context.caps.includes("*") && !context.caps.includes(cap))
+          return `job_capability_absent:${cap}`;
+        if (!this.auth.allowsRef(context, cap, ref)) return `job_grant_unreachable:${cap}`;
         if (
-          (!context.caps.includes("*") && !context.caps.includes(cap)) ||
-          !this.auth.allowsRef(context, cap, ref) ||
-          (!terminalAuthority &&
-            !(
-              this.serviceConsent(ref, cap, policies) ??
-              (install ? this.consentFor(install, ref, cap) : null)
-            ))
+          !terminalAuthority &&
+          !(
+            this.serviceConsent(ref, cap, policies) ??
+            (install ? this.consentFor(install, ref, cap) : null)
+          )
         )
-          return "governed_authority_refused";
+          return `job_consent_refused:${cap}`;
       }
       return null;
     } catch (error) {
@@ -3065,29 +3069,37 @@ export class JobService {
     return occurrence ? JobRequestSchema.parse(JSON.parse(occurrence.request)) : null;
   }
 
-  private resolve(node: ManifoldRef): JobInstallation | null {
-    if (!("machineId" in node) || !this.store.getMachine(node.machineId)) return null;
+  /**
+   * The installation a governed node still resolves to, or the reason it resolves to none.
+   *
+   * `resolve` keeps the boolean shape its predicates need; the reason exists because the five
+   * ways a job node stops resolving are indistinguishable from the outside (#714) — a replaced
+   * artifact, a released output and a mistyped operation id all used to answer the same word.
+   */
+  private resolution(node: ManifoldRef): JobInstallation | string {
+    if (!("machineId" in node)) return "job_node_unsupported";
+    if (!this.store.getMachine(node.machineId)) return "machine_unknown";
     if (node.kind === "job" || node.kind === "output") {
       const request = this.retainedRequest(node.jobId);
-      if (
-        !request ||
-        request.machineId !== node.machineId ||
-        request.operationId !== node.operationId
-      )
-        return null;
+      if (!request) return "job_request_unretained";
+      if (request.machineId !== node.machineId || request.operationId !== node.operationId)
+        return "job_node_mismatch";
       if (
         node.kind === "output" &&
         !this.store.db
           .query("SELECT node FROM machine_job_outputs WHERE node=? AND released=0")
           .get(formatManifoldUri(node))
       )
-        return null;
+        return "job_output_released";
       const install = this.jobs.installation(
         node.machineId,
         request.pluginId,
         request.installationRevision,
       );
-      return install?.artifact === request.artifactSha256 ? install : null;
+      if (!install) return "job_installation_absent";
+      // The job's own revision is retained, so this is a replaced artifact under a reused
+      // revision rather than an installation that merely moved on.
+      return install.artifact === request.artifactSha256 ? install : "job_artifact_replaced";
     }
     return (
       this.jobs
@@ -3098,8 +3110,12 @@ export class JobService {
             : node.kind === "location"
               ? Object.hasOwn(i.machine.locations, node.locationId)
               : false,
-        ) ?? null
+        ) ?? "node_installation_absent"
     );
+  }
+  private resolve(node: ManifoldRef): JobInstallation | null {
+    const resolution = this.resolution(node);
+    return typeof resolution === "string" ? null : resolution;
   }
   ownsNode(pluginId: string, node: ManifoldRef): boolean {
     return this.resolve(node)?.pluginId === pluginId;
@@ -4928,20 +4944,30 @@ export class JobService {
    * capability, the grant that reaches this exact job node, and the consent row of the
    * installation that job ran under. `authorizedJob` adds the pin; a bound input replaces it
    * with the source operation's export declaration.
+   *
+   * Each step answers with its own name. A machine owner reading a job's stderr through
+   * `outputs` was refused by one of five unrelated checks under one sentence, and every
+   * candidate cost a separate experiment (#714). The consent row is asked twice on the
+   * refusal path only, to separate a consent that was never granted for this revision from
+   * one the installation's replacement or disablement stopped making effective — the two
+   * have different remedies (`consent` versus re-enabling the installation).
    */
-  private dischargesJobCap(
+  private jobCapRefusal(
     context: AuthContext | null,
     node: Extract<ManifoldRef, { kind: "job" } | { kind: "output" }>,
     cap: "jobs:read" | "jobs:input" | "jobs:cancel",
-  ): boolean {
-    const install = this.resolve(node);
-    return (
-      context !== null &&
-      install !== null &&
-      (context.caps.includes("*") || context.caps.includes(cap)) &&
-      this.auth.allowsRef(context, cap, node) &&
-      this.consentFor(install, node, cap) !== null
-    );
+  ): string | null {
+    if (context === null) return "credential_revoked_or_expired";
+    const install = this.resolution(node);
+    if (typeof install === "string") return install;
+    if (!context.caps.includes("*") && !context.caps.includes(cap))
+      return `job_capability_absent:${cap}`;
+    if (!this.auth.allowsRef(context, cap, node)) return `job_grant_unreachable:${cap}`;
+    if (this.consentFor(install, node, cap) === null)
+      return this.consentFor(install, node, cap, false) === null
+        ? `job_consent_absent:${cap}`
+        : `job_consent_ineffective:${cap}`;
+    return null;
   }
   private authorizedJob(
     auth: AuthContext,
@@ -4949,10 +4975,13 @@ export class JobService {
     cap: "jobs:read" | "jobs:input" | "jobs:cancel",
     callerPluginId = "engine.jobs",
   ): JobRecord {
-    if (node.kind !== "job" && node.kind !== "output") return fail();
+    if (node.kind !== "job" && node.kind !== "output") return fail("job_node_unsupported");
     const context = this.auth.restoreCredential(this.auth.credentialReference(auth));
-    if (!this.callerOwnsNode(callerPluginId, node) || !this.dischargesJobCap(context, node, cap))
-      return fail();
+    // The plugin pin is asked first: a node another plugin owns must not report why that
+    // plugin's own consent would have refused it.
+    if (!this.callerOwnsNode(callerPluginId, node)) return fail("job_owner_mismatch");
+    const refusal = this.jobCapRefusal(context, node, cap);
+    if (refusal !== null) return fail(refusal);
     const job = this.jobs.get(node.jobId);
     if (!job) return fail("job_not_started");
     return job;

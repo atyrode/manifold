@@ -4258,10 +4258,53 @@ describe("durable job authority", () => {
       expect(f.commands.some((command) => command.type === "output_read")).toBe(false);
       settle(f, job);
       await expect(f.service.outputs(f.root, node, "stdout", 0, 4, "other.plugin")).rejects.toThrow(
-        "governed_authority_refused",
+        "job_owner_mismatch",
       );
       await expect(f.service.outputs(f.root, node, "report", 0, 4)).rejects.toThrow(
         "unknown_job_output",
+      );
+      expect(f.commands.some((command) => command.type === "output_read")).toBe(false);
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("each check that refuses a read of a finished job answers with its own name (#714)", async () => {
+    const f = fixture();
+    try {
+      finished(f);
+      const node = { kind: "job" as const, machineId: f.machineId, operationId, jobId: "job" };
+      // No consent row yet: never granted, which `consent` fixes.
+      await expect(f.service.outputs(f.root, node, "stdout", 0, 4)).rejects.toThrow(
+        "job_consent_absent:jobs:read",
+      );
+      consent(f, "jobs:read", false);
+      // A row that exists and is off: withdrawn, which re-enabling fixes.
+      await expect(f.service.outputs(f.root, node, "stdout", 0, 4)).rejects.toThrow(
+        "job_consent_ineffective:jobs:read",
+      );
+      consent(f, "jobs:read");
+      await expect(
+        f.service.outputs(f.root, { ...node, operationId: `${pluginId}.other` }, "stdout", 0, 4),
+      ).rejects.toThrow("job_node_mismatch");
+      await expect(
+        f.service.outputs(f.root, { ...node, jobId: "absent" }, "stdout", 0, 4),
+      ).rejects.toThrow("job_request_unretained");
+      await expect(
+        f.service.outputs(f.root, { ...node, machineId: "m-absent" }, "stdout", 0, 4),
+      ).rejects.toThrow("machine_unknown");
+      const reader = f.auth.authenticate(
+        f.auth.mintToken(
+          { principal: { name: "reader", kind: "human" }, caps: ["machines:run"] },
+          f.root,
+        ).token,
+      );
+      await expect(f.service.outputs(reader, node, "stdout", 0, 4)).rejects.toThrow(
+        "job_capability_absent:jobs:read",
+      );
+      // The journal walks the same authority as outputs, so it answers the same names.
+      expect(() => f.service.journal(reader, node, 0, 64)).toThrow(
+        "job_capability_absent:jobs:read",
       );
       expect(f.commands.some((command) => command.type === "output_read")).toBe(false);
     } finally {
@@ -4334,7 +4377,7 @@ describe("durable job authority", () => {
       expect(() => f.service.journal(f.root, node, 0, 64)).toThrow("job_unfinished");
       settle(f, job);
       expect(() => f.service.journal(f.root, node, 0, 64, "other.plugin")).toThrow(
-        "governed_authority_refused",
+        "job_owner_mismatch",
       );
       expect(f.service.journal(f.root, node, 0, 64).events.length).toBeGreaterThan(0);
     } finally {
