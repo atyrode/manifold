@@ -5892,6 +5892,77 @@ describe("reviewed native deployment approvals", () => {
     }
   });
 
+  test("a service another operation binds does not refuse the operations named (#722)", () => {
+    const f = fixture();
+    try {
+      const serviceFree = `${pluginId}.scan`;
+      const serviceBound = `${pluginId}.archive`;
+      const policy: ServicePolicy = {
+        serviceId: `${pluginId}.restic`,
+        revision: "svc-r1",
+        maxConcurrent: 1,
+        origin: "https://restic.invalid",
+        allowLoopbackHttp: false,
+        operations: {
+          inspect: {
+            kind: "http-proxy",
+            method: "GET",
+            path: "/inspect",
+            request: { kind: "none" },
+            response: {
+              kind: "stream",
+              disclosure: "full",
+              contentTypes: ["application/json"],
+              headers: [],
+            },
+            timeoutMs: 1000,
+            maxRequestBytes: 1024,
+            maxResponseBytes: 4096,
+          },
+        },
+      };
+      const split = structuredClone(machine);
+      split.operations = {
+        [serviceFree]: { ...machine.operations[operationId]! },
+        [serviceBound]: {
+          ...machine.operations[operationId]!,
+          // Pinned to a revision the machine has moved past, which is what a replaced
+          // family leaves behind: the declaration names svc-r0, the hub holds svc-r1.
+          services: [
+            { serviceId: policy.serviceId, revision: "svc-r0", operationIds: ["inspect"] },
+          ],
+        },
+      };
+      f.service.setManifestResolver((id) => (id === pluginId ? split : null));
+      f.service.configureServiceConfiguration(f.root, {
+        machineId: f.machineId,
+        expectedRevision: null,
+        policies: [policy],
+      });
+      f.owner.resources = {
+        tools: {},
+        anchors: {},
+        services: {
+          [policy.serviceId]: createHash("sha256").update(canonicalJobJson(policy)).digest("hex"),
+        },
+        serviceDefinitions: {
+          [policy.serviceId]: { revision: policy.revision, operationIds: ["inspect"] },
+        },
+      };
+      prove(f);
+      expect(
+        f.service.reviewDeployment(f.root, request(f, "scan-only", [serviceFree])).targets[0],
+      ).toMatchObject({ approvable: true, reason: null });
+      // The operation that does bind the stale definition still cannot be deployed.
+      expect(
+        f.service.reviewDeployment(f.root, request(f, "archive-too", [serviceFree, serviceBound]))
+          .targets[0],
+      ).toMatchObject({ approvable: false, reason: "service_definition_changed" });
+    } finally {
+      f.store.close();
+    }
+  });
+
   test("changed resource pins or declaration permanently fence a pending approval", () => {
     for (const change of ["resources", "declaration"] as const) {
       const { f, bound } = boundFixture();
