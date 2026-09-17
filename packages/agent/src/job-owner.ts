@@ -1884,54 +1884,61 @@ export class MachineJobOwner {
    * failures that land in the same journal record. The reason travels with the refusal so a
    * reader learns which fact is wrong without reading the journal off the host's disk.
    */
-  private verifyAdmission({
-    request,
-    permit,
-  }: Pick<Extract<JobCommand, { type: "start" }>, "request" | "permit">): void {
-    const { requestDigest, ...immutable } = request;
-    const { signature, ...signedPermit } = permit;
-    const refusal =
-      jobDigest(immutable) !== requestDigest
-        ? "start_request_digest_mismatch"
-        : request.machineId !== this.options.machineId
-          ? "start_machine_mismatch"
-          : permit.jobId !== request.jobId
-            ? "start_permit_job_mismatch"
-            : permit.requestDigest !== requestDigest
-              ? "start_permit_digest_mismatch"
-              : permit.ownerId !== this.options.journal.ownerId
-                ? "start_permit_owner_mismatch"
-                : permit.ownerGeneration > this.options.journal.generation
-                  ? "start_permit_generation_ahead"
-                  : !verify(
-                        null,
-                        Buffer.from(canonicalJobJson(signedPermit)),
-                        this.admissionKey,
-                        Buffer.from(signature, "base64"),
-                      )
-                    ? "start_permit_signature_invalid"
-                    : null;
+  private verifyAdmission(
+    admission: Pick<Extract<JobCommand, { type: "start" }>, "request" | "permit">,
+  ): void {
+    const refusal = this.admissionRefusal(admission);
     if (refusal === null) return;
     this.log("warn", "start_admission_refused", {
-      jobId: request.jobId,
-      permitId: permit.permitId,
+      jobId: admission.request.jobId,
+      permitId: admission.permit.permitId,
       reason: refusal,
-      ownerGeneration: permit.ownerGeneration,
+      ownerGeneration: admission.permit.ownerGeneration,
       journalGeneration: this.options.journal.generation,
     });
     throw new JobAdmissionError(refusal);
   }
 
+  /** Which admission fact is wrong, or null when the permit admits. Decides nothing else. */
+  private admissionRefusal({
+    request,
+    permit,
+  }: Pick<Extract<JobCommand, { type: "start" }>, "request" | "permit">): string | null {
+    const { requestDigest, ...immutable } = request;
+    const { signature, ...signedPermit } = permit;
+    return jobDigest(immutable) !== requestDigest
+      ? "start_request_digest_mismatch"
+      : request.machineId !== this.options.machineId
+        ? "start_machine_mismatch"
+        : permit.jobId !== request.jobId
+          ? "start_permit_job_mismatch"
+          : permit.requestDigest !== requestDigest
+            ? "start_permit_digest_mismatch"
+            : permit.ownerId !== this.options.journal.ownerId
+              ? "start_permit_owner_mismatch"
+              : permit.ownerGeneration > this.options.journal.generation
+                ? "start_permit_generation_ahead"
+                : !verify(
+                      null,
+                      Buffer.from(canonicalJobJson(signedPermit)),
+                      this.admissionKey,
+                      Buffer.from(signature, "base64"),
+                    )
+                  ? "start_permit_signature_invalid"
+                  : null;
+  }
+
   /**
-   * `start_not_admitted` remains the wire default, but a caller that knows why says so: an
-   * admission that failed verification names its branch, and a preparation that failed names
-   * the fault it hit. One string for every cause is what made a version skew, a stale key and
-   * a missing runtime indistinguishable (#703).
+   * A permit this owner never admitted, reconciled after the fact. The reason stays
+   * `start_not_admitted` because that is the truthful fact here: the permit is well formed and
+   * this process has no record of the job. Which admission CHECK refused a start is a
+   * different question, answered by `start_admission_refused` on this host and by the
+   * refusal the caller propagates (#703).
    */
   private rejectUnadmitted(
     admission: Pick<Extract<JobCommand, { type: "start" }>, "request" | "permit">,
-    reason = "start_not_admitted",
   ): OwnedJob {
+    const reason = "start_not_admitted";
     const { request, permit } = admission;
     if (this.jobs.has(request.jobId) || this.permits.has(permit.permitId))
       throw new Error("job_identity_changed");
@@ -1994,13 +2001,11 @@ export class MachineJobOwner {
     command: Extract<JobCommand, { type: "start" }>,
     terminalLaunch?: (spec: LinuxJobSpec) => Promise<LinuxJobHandle>,
   ): Promise<void> {
-    try {
-      this.verifyAdmission(command);
-    } catch (error) {
-      if (error instanceof JobAdmissionError && !this.jobs.has(command.request.jobId))
-        this.rejectUnadmitted(command, error.reason);
-      throw error;
-    }
+    // Naming the branch must not change what this path records. An admission failure is
+    // journaled by `reconcileStart` when the hub asks about the job, exactly as before;
+    // recording one here would leave a rejection that a recovering owner then treats as
+    // replay, which is the one thing the supervised-owner recovery tests exist to catch.
+    this.verifyAdmission(command);
     if (this.pendingStarts.has(command.request.jobId))
       await this.pendingStarts.get(command.request.jobId);
     const pending = Promise.withResolvers<void>();
