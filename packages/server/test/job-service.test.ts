@@ -4704,6 +4704,8 @@ describe("metered inference journal and ceilings", () => {
     }
   });
 
+  // 500 synchronous metered events against an on-disk database: the work is the assertion, so
+  // the budget is explicit rather than the 5s default a shared runner's disk speed decides.
   test("five hundred metered calls retain an exact durable total outside the bounded journal", () => {
     const dir = mkdtempSync(join(tmpdir(), "job-inference-usage-"));
     const path = join(dir, "hub.sqlite");
@@ -4793,7 +4795,7 @@ describe("metered inference journal and ceilings", () => {
       f.store.close();
       rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 
   test("a metered call is ignored on a wrong digest, a stale generation and another machine's channel", () => {
     const f = fixture();
