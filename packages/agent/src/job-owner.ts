@@ -1066,12 +1066,27 @@ export class MachineJobOwner {
             signal,
           );
         },
-        resolveRuntime: (boundPolicy, signal) =>
-          boundPolicy.remote
-            ? this.remoteService(job, boundPolicy, signal)
+        resolveRuntime: async (boundPolicy, signal) => {
+          const branch = boundPolicy.remote
+            ? "remote"
             : boundPolicy.runtime?.scope === "instance"
-              ? this.instanceService(boundPolicy, signal)
-              : this.runtimeService(job, boundPolicy, signal),
+              ? "instance"
+              : "runtime";
+          try {
+            return await (branch === "remote"
+              ? this.remoteService(job, boundPolicy, signal)
+              : branch === "instance"
+                ? this.instanceService(boundPolicy, signal)
+                : this.runtimeService(job, boundPolicy, signal));
+          } catch (error) {
+            this.log?.("warn", "service_start_refused", {
+              jobId: job.request.jobId,
+              serviceId: boundPolicy.serviceId,
+              reason: `${branch}: ${error instanceof Error ? error.message : String(error)}`,
+            });
+            throw error;
+          }
+        },
         ...(totals
           ? {
               inference: {
@@ -1147,15 +1162,36 @@ export class MachineJobOwner {
     signal: AbortSignal,
   ): Promise<JobServiceEndpoint & { signal: AbortSignal; socket: Socket }> {
     signal.throwIfAborted();
+    // A runtime service that cannot be started refused for one of six unrelated reasons and
+    // threw one string, which the sandbox saw only as a proxy 503 (#703).
+    const unavailable = !policy.runtime
+      ? "service_policy_not_runtime"
+      : !parent.context
+        ? "service_parent_has_no_context"
+        : parent.cancelRequested
+          ? "service_parent_cancelled"
+          : parent.result.state !== "started"
+            ? `service_parent_not_started: ${parent.result.state}`
+            : parent.serviceController.signal.aborted
+              ? "service_parent_closed"
+              : !this.runtimeAvailable(policy, this.resources.snapshot(), new Set())
+                ? "service_runtime_unavailable"
+                : null;
     if (
       !policy.runtime ||
       !parent.context ||
       parent.cancelRequested ||
       parent.result.state !== "started" ||
       parent.serviceController.signal.aborted ||
-      !this.runtimeAvailable(policy, this.resources.snapshot(), new Set())
-    )
+      unavailable !== null
+    ) {
+      this.log?.("warn", "service_start_refused", {
+        jobId: parent.request.jobId,
+        serviceId: policy.serviceId,
+        reason: unavailable ?? "service_unavailable",
+      });
       throw new Error("service_unavailable");
+    }
     let instance = parent.runtimeServices.get(policy.serviceId);
     if (!instance) {
       if (parent.runtimeServices.size >= 16 || parent.context.invocations.size >= 64)
