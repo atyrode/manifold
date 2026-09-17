@@ -223,7 +223,7 @@ retained_topology() {
 # Classify public topology and spawn settings without dumping Config.Env (or
 # /proc/*/environ). Missing/default spawn configuration is owning.
 require_retained_server_only() {
-  local project=$1 volume=$2 topology=$3 incumbent configuration proof topology_template mountpoint predicate
+  local project=$1 volume=$2 topology=$3 incumbent configuration proof topology_template mountpoint
   incumbent=$(docker ps --all --quiet --no-trunc \
     --filter "label=com.docker.compose.project=$project" \
     --filter 'label=com.docker.compose.service=manifold') ||
@@ -276,15 +276,53 @@ require_retained_server_only() {
   # Stream public code, not files from /data. Two fixed tokens are the entire evidence
   # surface; raw process arguments and probe errors never leave the container. The refusal
   # carries the predicate that refused, because a recurrence diagnosed by elimination is what
-  # #699 was opened to end; anything outside the token shape is reported as unavailable.
-  proof=$(docker exec -i "$incumbent" bun --no-env-file - <"$here/retained-server-only.ts" 2>/dev/null) || {
-    predicate=${proof#retained-processes-hold:}
-    [[ $proof == retained-processes-hold:* && $predicate =~ ^[a-z][a-z-]{0,46}[a-z]$ ]] ||
-      predicate=unavailable
-    fail "HOLD: retained incumbent has owning or unknown processes: $predicate"
-  }
-  [[ $proof == retained-processes-server-only ]] ||
-    fail 'HOLD: retained incumbent process proof is unavailable'
+  # #699 was opened to end — and it carries what that predicate MEANS, because reporting all
+  # of them as "owning or unknown processes" was the same collapse one layer up (#738).
+  local status=0
+  proof=$(docker exec -i "$incumbent" bun --no-env-file - <"$here/retained-server-only.ts" 2>/dev/null) ||
+    status=$?
+  [[ $status -eq 0 && $proof == retained-processes-server-only ]] ||
+    fail "HOLD: $(retained_process_refusal "$status" "$proof")"
+}
+# What to report about a probe that did not answer `retained-processes-server-only`.
+#
+# THE PROBE NOT RUNNING IS NOT A FINDING ABOUT THE PROCESS TABLE. `docker exec` failing — a
+# container mid-restart, a missing interpreter, a daemon hiccup — used to print the same
+# affirmative sentence as a probe that read every process and refused, and the pair was also
+# inverted: a probe that never reached a verdict claimed owning processes, while a probe that
+# ran and answered out of vocabulary was reported as unavailable (#738). Each of those is now
+# its own sentence, and a named predicate gets the sentence its word means.
+#
+# Fail-closed is unchanged: every one of these still HOLDs. It only says which doubt.
+retained_process_refusal() {
+  local status=$1 output=$2 predicate sentence
+  # 125 is docker's own failure, 126 not executable, 127 not found; no output at all with a
+  # non-zero status is the same class — the probe's own first write never happened.
+  if [[ $status -eq 125 || $status -eq 126 || $status -eq 127 || (-z $output && $status -ne 0) ]]; then
+    printf 'retained incumbent process probe could not be run (exit %s)' "$status"
+    return 0
+  fi
+  predicate=${output#retained-processes-hold:}
+  if [[ $output != retained-processes-hold:* || ! $predicate =~ ^[a-z][a-z-]{0,46}[a-z]$ ]]; then
+    if [[ $status -eq 0 ]]; then
+      printf 'retained incumbent process probe answered outside its vocabulary'
+    else
+      printf 'retained incumbent process probe did not reach a verdict'
+    fi
+    return 0
+  fi
+  sentence=$(retained_process_hold_sentence "$predicate")
+  printf 'retained incumbent %s: %s' "$sentence" "$predicate"
+}
+# One predicate's meaning, read from the vocabulary both receivers share.
+retained_process_hold_sentence() {
+  local predicate=$1 line
+  while IFS= read -r line; do
+    [[ $line == "$predicate"$'\t'* ]] || continue
+    printf '%s' "${line#*$'\t'}"
+    return 0
+  done <"$here/retained-process-holds.tsv"
+  printf 'process probe answered a predicate this receiver does not know'
 }
 
 # Return the exact source revision of one running, build-aligned disposable

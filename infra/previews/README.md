@@ -156,6 +156,17 @@ Every refusal names the predicate that refused (`unclassified-process`, `exit-un
 the whole disclosure: no process argument, path, environment value or probe error leaves the
 container. A read failure carries which way it failed — denied a look, told the task was gone,
 or something else — because one word for four facts made a recurrence need its own issue (#738).
+Both receivers of that token — `require_retained_server_only`, which decides whether a retained
+replacement proceeds, and `verify-preview-environment.ts`, which reports the same probe in CI —
+read `retained-process-holds.tsv` to say what the word MEANS, so a refusal is one sentence about
+one fact. Reporting all of them as "has owning or unknown processes" was that collapse one layer
+up: true of `unclassified-process` alone, and an affirmative claim about a process table even
+when the probe never read one (#738). Three answers are not predicates at all and now say so:
+a probe that could not be RUN (`docker exec` itself failing, where the old report claimed owning
+processes about a container it never entered), a probe that ran and answered outside its
+vocabulary, and a probe that exited non-zero without reaching a verdict — the last two were
+reported the wrong way round. Fail-closed is unchanged: every one of them still HOLDs, and a
+predicate with no sentence is reported as unknown to the receiver rather than given one.
 Desired replacement settings never prove the old process tree safe.
 A stopped failed candidate still counts as the incumbent for ordering. Replacement retains the
 existing running-process safety requirement: explicit recovery of that same retained container
