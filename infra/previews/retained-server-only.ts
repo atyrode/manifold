@@ -16,9 +16,19 @@ type Hold =
   | "server-restarted-during-probe"
   | "zombie-identity-unconfirmed"
   | "unclassified-process"
-  | "process-unreadable"
+  | `fingerprint-unreadable-${ReadFault}`
+  | `exit-unconfirmable-${ReadFault}`
+  | "exit-unproven"
   | "pid-reused-during-probe"
   | "proc-field-shape";
+
+/**
+ * Which way a /proc read failed, carried in the token. `process-unreadable` used to answer for
+ * every failure at three different sites, so the one CI recurrence that reached it could not say
+ * whether the probe had been denied a look, told the task was gone, or handed something else
+ * entirely — and those want different repairs (#738).
+ */
+type ReadFault = "denied" | "vanished" | "unmapped";
 
 class Held extends Error {
   constructor(readonly predicate: Hold) {
@@ -28,6 +38,23 @@ class Held extends Error {
 
 function hold(predicate: Hold): never {
   throw new Held(predicate);
+}
+
+/**
+ * A thrown value carrying no errno is not a raced /proc read at all, it is a fault in this
+ * classifier; answering `process-unreadable` for one hid a bug behind a refusal that looked
+ * legitimate. Rethrowing reaches the outer `classifier-fault`, which still fails closed.
+ */
+function errno(error: unknown): string {
+  const code = Reflect.get(error as object, "code");
+  if (typeof code !== "string") throw error;
+  return code;
+}
+
+function readFault(code: string): ReadFault {
+  if (code === "EACCES" || code === "EPERM") return "denied";
+  if (code === "ESRCH") return "vanished";
+  return "unmapped";
 }
 
 const healthSource =
@@ -78,6 +105,50 @@ function nullFields(path: string): string[] {
 function procFields(pid: string): string[] {
   const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
   return stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+}
+
+/**
+ * Whether a thread group finished exiting, which is the only question a fingerprint that read
+ * ENOENT or a zombie group leader actually leaves open. A multi-threaded process releases its
+ * address space before it is reaped, so `cmdline` and `exe` vanish while `/proc/<pid>` and even
+ * the RUNNING state remain: a real `bun -e` healthcheck spends a measured 0.3-2ms per exit in
+ * exactly those states, on every exit it performs. Refusing them outright is what failed a
+ * permitted rollback on unrelated PRs while this classifier reported one word for four facts
+ * (#738), and it is the same mistake #699
+ * fixed for a single-threaded process that exits mid-probe — only spread across threads, so
+ * only time separates a group that is finishing from a sibling thread that will outlive its
+ * leader. Admission is never granted because time passed, only when the terminal
+ * single-threaded zombie or the empty PID is OBSERVED under an unchanged start time.
+ */
+type Exit = "finished" | "unfinished" | "replaced";
+
+// 250x the 2ms this transition was measured to take, because a loaded CI runner starves the
+// very threads being waited on, and the wait is only ever paid on a path that would otherwise
+// refuse. Nothing is admitted for elapsing: the deadline only bounds how long the probe will
+// keep watching before it refuses.
+const exitDeadlineMs = 500;
+const exitStepMs = 5;
+
+function observedExit(pid: string, starttime: string | undefined): Exit {
+  const deadline = Date.now() + exitDeadlineMs;
+  for (;;) {
+    let stat: string[];
+    try {
+      stat = procFields(pid);
+    } catch (error) {
+      // Proven gone: no work remains that replacement could destroy.
+      const code = errno(error);
+      if (code === "ENOENT") return "finished";
+      hold(`exit-unconfirmable-${readFault(code)}`);
+    }
+    // A reaped-and-reused PID cannot carry the start time this probe already read, so a
+    // different one — or an identity this probe never managed to establish — is a live
+    // occupant it never examined, not the exit it was watching.
+    if (starttime === undefined || stat[19] !== starttime) return "replaced";
+    if (stat[0] === "Z" && stat[17] === "1") return "finished";
+    if (Date.now() >= deadline) return "unfinished";
+    Bun.sleepSync(exitStepMs);
+  }
 }
 
 function processIdentity(pid: string): string {
@@ -155,17 +226,12 @@ try {
     try {
       stat = procFields(pid);
       if (pid !== "1" && stat[0] === "Z") {
-        // A lone zombie owns no live work. A zombie group leader with other threads may.
-        // Confirm the same terminal identity; a reaped-and-reused PID still holds.
-        const confirmed = procFields(pid);
-        if (
-          stat[17] !== "1" ||
-          confirmed[0] !== "Z" ||
-          confirmed[17] !== "1" ||
-          !stat[19] ||
-          confirmed[19] !== stat[19]
-        )
-          hold("zombie-identity-unconfirmed");
+        // A lone zombie owns no live work, but it must still be the SAME dead process a moment
+        // later: a reaped-and-reused PID holds. A zombie group leader whose siblings are still
+        // running is not answerable either way yet, so it is watched rather than refused (#738).
+        const exit = observedExit(pid, stat[19]);
+        if (exit === "replaced") hold("zombie-identity-unconfirmed");
+        if (exit === "unfinished") hold("exit-unproven");
         continue;
       }
       const args = nullFields(`/proc/${pid}/cmdline`);
@@ -195,26 +261,21 @@ try {
       if (serverOwnedIsolate(pid, args, executable, serverIdentity, serverEnvironment)) continue;
       hold("unclassified-process");
     } catch (error) {
-      // A healthcheck or isolate can exit between listing /proc and reading its fingerprint.
-      // Two unrelated facts arrive as the same ENOENT, and `starttime` is what separates them:
-      // a reused PID cannot carry the start time this probe already read, so the same start
-      // time is still the process that was classified — now exiting — while a different one is
-      // a live occupant this probe never examined. Refusing both is what made a permitted
-      // rollback fail on a process that had already finished (#699).
+      // A healthcheck or isolate can exit between listing /proc and reading its fingerprint,
+      // and an exiting multi-threaded process drops `cmdline` and `exe` BEFORE it stops being
+      // listed or even stops running, so an ENOENT here says nothing about whether work
+      // remains. Two unrelated facts arrive as the same ENOENT, and `starttime` is what
+      // separates them: a reused PID cannot carry the start time this probe already read, so
+      // the same start time is still the process that was classified — now exiting — while a
+      // different one is a live occupant this probe never examined. Refusing both is what made
+      // a permitted rollback fail on a process that had already finished (#699), and refusing
+      // the unfinished half is what failed three consecutive unrelated PRs (#738).
       if (error instanceof Held) throw error;
-      if (Reflect.get(error as object, "code") !== "ENOENT") hold("process-unreadable");
-      let after: string[];
-      try {
-        after = procFields(pid);
-      } catch (absence) {
-        // Proven gone: no work remains that replacement could destroy.
-        if (Reflect.get(absence as object, "code") === "ENOENT") continue;
-        hold("process-unreadable");
-      }
-      if (!stat?.[19] || after[19] !== stat[19]) hold("pid-reused-during-probe");
-      // The kernel has reaped it to a single-threaded zombie: no address space, no
-      // descriptors, no CPU. A live process whose fingerprint stayed unreadable holds.
-      if (after[0] !== "Z" || after[17] !== "1") hold("process-unreadable");
+      const code = errno(error);
+      if (code !== "ENOENT") hold(`fingerprint-unreadable-${readFault(code)}`);
+      const exit = observedExit(pid, stat?.[19]);
+      if (exit === "replaced") hold("pid-reused-during-probe");
+      if (exit === "unfinished") hold("exit-unproven");
     }
   }
   // starttime is stable across the probe, unlike CPU counters in /proc/1/stat.
