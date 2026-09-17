@@ -1533,16 +1533,26 @@ unlinkSync(${JSON.stringify(zombieFifo)});`);
       );
       const proof = await docker(["exec", "-i", incumbentId, "bun", "--no-env-file", "-"], {
         input: readFileSync(join(tooling, "retained-server-only.ts"), "utf8"),
+        allowFailure: true,
       });
+      // Only the classifier's own token vocabulary reaches this message; anything else is
+      // reported as unavailable, so a refusal names its predicate without disclosing a
+      // process argument, path or probe error (#699).
+      const predicate = /^retained-processes-hold:([a-z][a-z-]{0,46}[a-z])$/m.exec(
+        proof.out.trim(),
+      )?.[1];
       requireThat(
         proof.out.trim() === "retained-processes-server-only",
-        "retained process proof refused the live plugin isolate and observed zombie",
+        `retained process proof refused the live plugin isolate and observed zombie: ${predicate ?? "unavailable"}`,
       );
       requireThat(
         (await execBun(zombieState)) === terminalState,
         "the zombie disappeared or changed identity during the retained process proof",
       );
-      metrics["retainedZombie"] = {
+      // This zombie is synthetic and belongs to THIS step. Cumulative metrics are reported
+      // with every failure, and an unqualified name here read as the refusing predicate of a
+      // later step's HOLD once already.
+      metrics["retainedZombieFixture"] = {
         pid: Number(zombiePid),
         state: "Z",
         ppid: 1,

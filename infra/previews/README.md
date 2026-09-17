@@ -138,9 +138,17 @@ direct-child command, bundle path, process identity, control descriptor and mini
 environment fingerprint. Those isolates are supervised parts of the hub: they stop
 with it, reload from their pinned bundles after replacement and own no native execution.
 An already terminated, single-threaded kernel zombie is non-owning only after two observations
-confirm state `Z`, one thread and the same starttime. A zombie group leader with surviving
-threads, an unreadable identity or a reused PID still holds; an absent executable alone
-is not evidence of death.
+confirm state `Z`, one thread and the same starttime. A process that was live at the first
+observation and has exited by the second is the same fact arriving later: a field that vanishes
+is re-read, and the same starttime with state `Z` and one thread admits it, because the kernel
+has already reclaimed its address space, descriptors and CPU. A zombie group leader with
+surviving threads, an unreadable live identity or a different starttime — a reused PID — still
+holds; an absent executable alone is not evidence of death.
+Every refusal names the predicate that refused (`unclassified-process`, `process-unreadable`,
+`pid-reused-during-probe`, `zombie-identity-unconfirmed`, `server-process-shape`,
+`server-process-absent`, `server-restarted-during-probe`, `proc-field-shape`, or
+`classifier-fault`), and that token is the whole disclosure: no process argument, path,
+environment value or probe error leaves the container.
 Desired replacement settings never prove the old process tree safe.
 A stopped failed candidate still counts as the incumbent for ordering. Replacement retains the
 existing running-process safety requirement: explicit recovery of that same retained container
