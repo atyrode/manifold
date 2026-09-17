@@ -2775,6 +2775,80 @@ describe("PluginHost install doors", () => {
     }
   });
 
+  test("a door may be lent the machine read, bounded by the grant like any delegate (#739)", async () => {
+    const describing = async (ctx: ActionCtx): Promise<{ refusal: string }> => {
+      try {
+        ctx.jobs.describe({ machineId: "not-enrolled", pluginId: SAMPLE_ID });
+        return { refusal: "none" };
+      } catch (error) {
+        return { refusal: error instanceof Error ? error.message : String(error) };
+      }
+    };
+    const fixture = await installFixture((ref) => ({
+      def: {
+        manifest: ref.manifest,
+        actions: [
+          defineAction({
+            name: "lent",
+            title: "Lent",
+            caps: [],
+            delegates: ["machines:read"],
+            input: z.strictObject({}),
+            result: z.strictObject({ refusal: z.string() }),
+          }),
+          defineAction({
+            name: "unlent",
+            title: "Unlent",
+            caps: [],
+            input: z.strictObject({}),
+            result: z.strictObject({ refusal: z.string() }),
+          }),
+        ],
+        handlers: { lent: describing, unlent: describing },
+      },
+      lifecycle: {},
+    }));
+    try {
+      const host = await customHost(fixture, [], { isolates: fixture.isolates });
+      host.setJobs(new JobService(fixture.store, fixture.auth, fixture.runtime));
+      expect(
+        (
+          await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, {
+            ...fixture.drop({ ...SAMPLE_MANIFEST, capabilities: ["*"] }),
+            grant: ["machines:read"],
+          })
+        ).ok,
+      ).toBe(true);
+      // The bridge is `caps + delegates`, so the lent door reaches the machine read and refuses
+      // at a LATER layer — the id names no machine — while the door that was lent nothing
+      // refuses at the capability itself, whoever called. Before the read was delegable, this
+      // door could not be assembled at all and `describe` was unreachable for any plugin.
+      expect(await host.dispatch(fixture.owner, `${SAMPLE_ID}.lent`, {})).toEqual({
+        ok: true,
+        result: { refusal: "machine_unknown" },
+      });
+      expect(await host.dispatch(fixture.owner, `${SAMPLE_ID}.unlent`, {})).toEqual({
+        ok: true,
+        result: { refusal: "job_capability_absent:machines:read" },
+      });
+      // A delegate is still a ceiling, not a grant: the same door on a row whose installer
+      // granted nothing is refused by the plugin's grant before the caller is considered.
+      expect(
+        (
+          await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, {
+            ...fixture.drop({ ...SAMPLE_MANIFEST, id: "vendor.ungranted", capabilities: ["*"] }),
+          })
+        ).ok,
+      ).toBe(true);
+      expect(denial(await host.dispatch(fixture.owner, "vendor.ungranted.lent", {}))).toEqual({
+        rule: "forbidden",
+        message: "machines:read not granted to plugin vendor.ungranted",
+      });
+    } finally {
+      fixture.store.close();
+    }
+  });
+
   test("a door needing a cap the installer withheld is forbidden naming the plugin, before the caller", async () => {
     const fixture = await installFixture();
     const host = await customHost(fixture, [], { isolates: fixture.isolates });

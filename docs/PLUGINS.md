@@ -1900,6 +1900,10 @@ original credential, scope, expiry and grants, attenuated to the action's declar
 each effect still resolves and authorizes its concrete native targets and revision-bound
 consent. A read-only action cannot invoke a service even when its caller is root. Direct
 governed action effects still need their ordinary `caps` and target `requirements`.
+`machines:read` is delegable, which is how a door reaches `ctx.jobs.describe` without making
+every caller hold a machine capability to be told whether the machine it deployed to is ready:
+the bridge a door gets is its own `caps` plus its `delegates`, so a read it never declared is
+refused `job_capability_absent:machines:read` however privileged the caller (#739).
 
 **Use scoped services, not source credentials.** `ctx.services.describe` reports the
 operations the caller may see. `read` and `invoke` accept exact
@@ -2826,6 +2830,13 @@ engine.plugins.uninstall { id, purge? }                                   → {}
   installer names them. The grant is published on the row (`install.grantedCaps`) and enforced at
   rung 4 BEFORE the caller's own caps: a door needing a cap the installer withheld is `forbidden`
   with `<cap> not granted to plugin <id>`, whoever asked.
+  **A governed capability is never in a grant**, named or not: `machines:run`, the `jobs:*`,
+  `locations:*`, `operations:invoke`, `services:invoke` and `network:host` are discharged per
+  node, bound to an artifact revision, by consent — so declaring nine capabilities and reading
+  three in `grantedCaps` does not mean the install dropped six, and naming them in `grant`
+  changes nothing. The permissions card says which of granted, withheld and governed each
+  declared cap is in; a governed cap's absence from the grant denies nothing by itself, because
+  rung 4 passes it and consent decides.
 - **`replace: true`** upgrades an installed id without changing its or its dependents'
   enablement. The engine preflights the replacement and restores the old serving module
   on failed admission. An intentionally disabled row stays disabled. An unchanged

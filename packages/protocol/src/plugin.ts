@@ -796,8 +796,20 @@ export const ActionRunAccessSchema = z.enum([
 ]);
 export type ActionRunAccess = z.infer<typeof ActionRunAccessSchema>;
 
-/** Only native job/resource/service APIs can discharge these at concrete targets. */
+/**
+ * Only native job/resource/service APIs can discharge these at concrete targets.
+ *
+ * That is the whole membership rule, and it is why `machines:read` belongs here beside
+ * `machines:run`: the only ways to exercise it are `engine.machines.repository` and
+ * `engine.jobs.describe`, both native, both at `manifold://machine/<id>`. The set is not the
+ * governed subset — `services:read` and `services:configure` are in it and are not governed —
+ * so a non-governed native read is exactly the shape it already carries. Its absence left a
+ * door able to be lent the authority to make a machine RUN something but not to read what that
+ * machine is, which the vocabulary orders the other way round, and which made `describe`
+ * unreachable for any plugin door after that read moved onto the narrower word (#739).
+ */
 const NATIVE_DELEGATE_CAPS: readonly Cap[] = [
+  "machines:read",
   "machines:run",
   "jobs:read",
   "jobs:input",

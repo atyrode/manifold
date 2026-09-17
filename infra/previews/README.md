@@ -141,14 +141,21 @@ An already terminated, single-threaded kernel zombie is non-owning only after tw
 confirm state `Z`, one thread and the same starttime. A process that was live at the first
 observation and has exited by the second is the same fact arriving later: a field that vanishes
 is re-read, and the same starttime with state `Z` and one thread admits it, because the kernel
-has already reclaimed its address space, descriptors and CPU. A zombie group leader with
-surviving threads, an unreadable live identity or a different starttime — a reused PID — still
-holds; an absent executable alone is not evidence of death.
-Every refusal names the predicate that refused (`unclassified-process`, `process-unreadable`,
-`pid-reused-during-probe`, `zombie-identity-unconfirmed`, `server-process-shape`,
-`server-process-absent`, `server-restarted-during-probe`, `proc-field-shape`, or
-`classifier-fault`), and that token is the whole disclosure: no process argument, path,
-environment value or probe error leaves the container.
+has already reclaimed its address space, descriptors and CPU. A thread group that is still
+exiting is the same fact arriving later still — an exiting multi-threaded process releases its
+address space, so its `cmdline` and `exe` vanish while it is listed and even still running — so
+it is watched to a bounded deadline rather than refused, and only an OBSERVED terminal
+single-threaded zombie or empty PID under an unchanged starttime admits it. A group that never
+gets there, an unreadable live identity or a different starttime — a reused PID — still holds;
+an absent executable alone is neither evidence of death nor of life.
+Every refusal names the predicate that refused (`unclassified-process`, `exit-unproven`,
+`fingerprint-unreadable-denied|-vanished|-unmapped`,
+`exit-unconfirmable-denied|-vanished|-unmapped`, `pid-reused-during-probe`,
+`zombie-identity-unconfirmed`, `server-process-shape`, `server-process-absent`,
+`server-restarted-during-probe`, `proc-field-shape`, or `classifier-fault`), and that token is
+the whole disclosure: no process argument, path, environment value or probe error leaves the
+container. A read failure carries which way it failed — denied a look, told the task was gone,
+or something else — because one word for four facts made a recurrence need its own issue (#738).
 Desired replacement settings never prove the old process tree safe.
 A stopped failed candidate still counts as the incumbent for ordering. Replacement retains the
 existing running-process safety requirement: explicit recovery of that same retained container

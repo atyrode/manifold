@@ -10,22 +10,30 @@ const classifier = pathToFileURL(
 
 // Each scenario is one raced /proc transition and the predicate it must answer with; `null`
 // admits. The predicate is the contract: a refusal that names nothing is what made an
-// integrated-preview recurrence diagnosable only by elimination (#699).
+// integrated-preview recurrence diagnosable only by elimination (#699), and one word shared by
+// three read failures and a live process is what made the next recurrence need its own issue
+// (#738). A process that is exiting is watched to its end rather than refused: an exiting
+// multi-threaded process drops `cmdline`/`exe` while still listed and even still running.
 for (const [scenario, expected] of [
   ["gone", null],
-  ["unreadable-cmdline-live", "process-unreadable"],
+  ["unreadable-cmdline-live", "exit-unproven"],
   ["pid-reused", "pid-reused-during-probe"],
-  ["unreadable", "process-unreadable"],
+  ["unreadable", "fingerprint-unreadable-denied"],
+  ["unreadable-vanished", "fingerprint-unreadable-vanished"],
+  ["unreadable-unmapped", "fingerprint-unreadable-unmapped"],
+  ["unreadable-no-errno", "classifier-fault"],
+  ["unreadable-recheck", "exit-unconfirmable-denied"],
   ["unknown", "unclassified-process"],
   ["healthcheck-exec-transition", null],
   ["healthcheck-exec-transition-reused", "unclassified-process"],
   ["zombie", null],
   ["zombie-reaped", null],
   ["exiting-zombie", null],
-  ["exiting-zombie-live-threads", "process-unreadable"],
-  ["zombie-with-live-threads", "zombie-identity-unconfirmed"],
+  ["exiting-group-finishes", null],
+  ["exiting-zombie-live-threads", "exit-unproven"],
+  ["zombie-with-live-threads", "exit-unproven"],
   ["zombie-reused", "zombie-identity-unconfirmed"],
-  ["zombie-unreadable", "process-unreadable"],
+  ["zombie-unreadable", "exit-unconfirmable-denied"],
 ] as const) {
   test(`retained process snapshot ${expected === null ? "admits" : `answers ${expected} for`} a ${scenario} process`, async () => {
     // Run the real streamed classifier in an isolated process. Fault injection makes
@@ -52,6 +60,16 @@ mock.module("node:fs", () => ({
       statReads++;
       // The listed process is still alive at the first read and has exited by the second.
       if (scenario === "zombie-reaped") return statReads === 1 ? statFor("Z") : fail("ENOENT");
+      if (scenario === "unreadable-recheck") return statReads === 1 ? stat : fail("EACCES");
+      // The measured shape of a real exiting \`bun -e\` healthcheck: its address space is gone
+      // while it is still RUNNING with a sibling thread, then its leader is a zombie with that
+      // thread, then the kernel reaps it to a lone zombie.
+      if (scenario === "exiting-group-finishes")
+        return statReads === 1
+          ? statFor("R", "2")
+          : statReads === 2
+            ? statFor("Z", "2")
+            : statFor("Z", "1");
       if (scenario.startsWith("exiting-zombie"))
         return statReads === 1
           ? stat
@@ -71,6 +89,10 @@ mock.module("node:fs", () => ({
     }
     if (path === "/proc/99999999/cmdline") {
       if (scenario === "unreadable") return fail("EACCES");
+      if (scenario === "unreadable-vanished") return fail("ESRCH");
+      if (scenario === "unreadable-unmapped") return fail("EIO");
+      // A thrown value with no errno is a fault in the classifier, not a raced read.
+      if (scenario === "unreadable-no-errno") throw new Error("private proc metadata");
       if (scenario === "unknown") return "unrecognized-owner\\0";
       if (scenario.startsWith("healthcheck-exec-transition")) {
         cmdlineReads++;
