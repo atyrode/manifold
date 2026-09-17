@@ -1893,13 +1893,21 @@ export class JobService {
   ): JobDescription {
     const current = this.auth.restoreCredential(this.auth.credentialReference(auth));
     const node: ManifoldRef = { kind: "machine", machineId: args.machineId };
-    if (
-      !current ||
-      (callerPluginId !== "engine.jobs" && callerPluginId !== args.pluginId) ||
-      (!current.caps.includes("*") && !current.caps.includes("machines:run")) ||
-      !this.auth.allowsRef(current, "machines:run", node)
-    )
-      fail();
+    // Each condition answers for itself, with #714's vocabulary: this walk refused four
+    // unrelated things through one `fail()`, so an operator reading `governed_authority_refused`
+    // could not tell a revoked credential from a plugin handle asking about another plugin,
+    // from a missing capability, from a grant that does not reach this machine. None of the
+    // four discloses anything about the machine — each is decided by the caller's own
+    // credential, handle, caps and grants, so an unauthorized caller gets the same answer
+    // whether or not the id names an enrolled machine, and the existence check below stays
+    // after the walk so it cannot become an enumeration oracle (#728).
+    if (!current) fail("credential_revoked_or_expired");
+    if (callerPluginId !== "engine.jobs" && callerPluginId !== args.pluginId)
+      fail("job_owner_mismatch");
+    if (!current.caps.includes("*") && !current.caps.includes("machines:run"))
+      fail("job_capability_absent:machines:run");
+    if (!this.auth.allowsRef(current, "machines:run", node))
+      fail("job_grant_unreachable:machines:run");
     // `machineId` is an id, and a machine's name is not one: `getMachine` is keyed by id, so a
     // name matched nothing and this read used to answer the projection of a machine that does
     // not exist — `connected: false` with a null installation, indistinguishable from the truth

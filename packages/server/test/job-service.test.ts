@@ -3314,9 +3314,11 @@ describe("job lifecycle audit and inspection", () => {
         f.root,
       );
       expect(f.service.describe(inspector, args).connected).toBe(true);
-      expect(() => f.service.describe(inspector, { ...args, machineId: "other" })).toThrow();
+      expect(() => f.service.describe(inspector, { ...args, machineId: "other" })).toThrow(
+        "job_grant_unreachable:machines:run",
+      );
       f.auth.revokePrincipal(inspector.principal.id, f.root);
-      expect(() => f.service.describe(inspector, args)).toThrow();
+      expect(() => f.service.describe(inspector, args)).toThrow("credential_revoked_or_expired");
       f.service.offline(f.channel);
       expect(f.service.describe(f.root, args)).toMatchObject({
         connected: false,
@@ -3357,6 +3359,34 @@ describe("job lifecycle audit and inspection", () => {
         platforms: [],
         installation: { ready: false },
       });
+    } finally {
+      f.store.close();
+    }
+  });
+  test("describe names the authority check that refused, and only to a caller it can (#728)", () => {
+    const f = fixture();
+    try {
+      const args = { machineId: f.machineId, pluginId };
+      prove(f);
+      expect(() => f.service.describe(f.root, args, "other.plugin")).toThrow("job_owner_mismatch");
+      const capless = f.auth.authenticate(
+        f.auth.mintToken(
+          { principal: { name: "capless", kind: "human" }, caps: ["jobs:read"] },
+          f.root,
+        ).token,
+      );
+      expect(() => f.service.describe(capless, args)).toThrow("job_capability_absent:machines:run");
+      // The named walk is not an enumeration oracle: every condition is decided by the
+      // caller's own credential, handle, caps and grants, so a caller who cannot reach this
+      // machine gets the SAME answer for an id that names an enrolled machine and one that
+      // names nothing. Only a caller whose grants already reach the node gets far enough to
+      // learn that the id is unknown.
+      expect(() => f.service.describe(capless, { ...args, machineId: "not-enrolled" })).toThrow(
+        "job_capability_absent:machines:run",
+      );
+      expect(() => f.service.describe(f.root, { ...args, machineId: "not-enrolled" })).toThrow(
+        "machine_unknown",
+      );
     } finally {
       f.store.close();
     }
