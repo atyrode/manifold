@@ -1900,6 +1900,15 @@ export class JobService {
       !this.auth.allowsRef(current, "machines:run", node)
     )
       fail();
+    // `machineId` is an id, and a machine's name is not one: `getMachine` is keyed by id, so a
+    // name matched nothing and this read used to answer the projection of a machine that does
+    // not exist — `connected: false` with a null installation, indistinguishable from the truth
+    // about an enrolled machine that is genuinely offline. A conductor selecting a host by the
+    // name its own rows carry therefore judged a live machine unusable and silently scheduled
+    // nothing (#725). An identifier naming no enrolled machine refuses with the reason
+    // `resolution` already gives a governed node (#714); an enrolled machine keeps answering
+    // `connected: false`, because that one is a fact a caller depends on.
+    if (!this.store.getMachine(args.machineId)) fail("machine_unknown");
     const install = this.jobs.installation(
       args.machineId,
       args.pluginId,

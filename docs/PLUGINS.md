@@ -1749,6 +1749,9 @@ Discover availability with `ctx.jobs.describe({ machineId, pluginId })`, or disp
 `engine.jobs.describe` with those arguments. This checks current `machines:run` authority
 at the machine and, for a plugin handle, its own plugin ID; it is not an execution grant.
 `connected` is the current proved job-owner channel, not terminal online status.
+`machineId` must be the machine's id: an identifier naming no enrolled machine refuses
+`machine_unknown` rather than answering `connected: false`, which an enrolled machine that is
+genuinely disconnected still answers.
 `platforms` is that owner's advertised list (empty while disconnected), not a promise
 that every declared artifact/backend is available. `installation` is null or
 `{ revision, artifactSha256, enabled, ready, purgeRequested }`; `ready` additionally requires
