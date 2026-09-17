@@ -4776,7 +4776,11 @@ export class JobService {
             reason: null,
           },
         });
-      } catch {
+      } catch (error) {
+        // `invoke` already decides a named reason for each way it refuses — parent binding,
+        // a stop ceiling, a missing invocation edge, a revoked credential, a refused start.
+        // Discarding them left the machine, the workload and the operator with one opaque
+        // fact, which a workload only ever sees as a 503 (#704).
         channel.send({
           type: "job_command",
           command: {
@@ -4784,7 +4788,10 @@ export class JobService {
             parentJobId: event.parentJobId,
             invocationId: event.invocationId,
             jobId: null,
-            reason: "invocation_refused",
+            reason:
+              error instanceof ServiceError && error.code.length <= 128
+                ? error.code
+                : "invocation_refused",
           },
         });
       }

@@ -1162,11 +1162,17 @@ test("retiring an instance preserves admitted descendants but refuses new descen
       input: { value: "safe" },
       outputs: [],
     });
-    expect(f.commands.at(-1)).toMatchObject({
+    const refused = f.commands.at(-1);
+    expect(refused).toMatchObject({
       type: "invocation_reply",
       invocationId: "late-grandchild",
       jobId: null,
     });
+    // The machine learns which check refused it. Every reason `invoke` decides was previously
+    // replaced by the constant "invocation_refused", which a workload only saw as a 503.
+    expect(refused?.type === "invocation_reply" ? refused.reason : null).not.toBe(
+      "invocation_refused",
+    );
     f.service.cancel(f.root, {
       kind: "job",
       machineId: f.machineId,
