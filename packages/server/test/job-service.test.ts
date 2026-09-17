@@ -5820,7 +5820,7 @@ describe("reviewed native deployment approvals", () => {
       unknown.requiresResourceBindings = true;
       unknown.operations[operationId]!.runtimeTools = ["new-tool"];
       f.service.setManifestResolver(() => unknown);
-      const value = request(f, "unknown-pins", [operationId]);
+      const value = request(f, "unknown-pins");
       const review = f.service.reviewDeployment(f.root, value);
       expect(review.targets[0]).toMatchObject({
         approvable: false,
@@ -5876,6 +5876,13 @@ describe("reviewed native deployment approvals", () => {
       });
       expect(
         f.service.reviewDeployment(f.root, request(f, "archive-too", [satisfiable, unsatisfiable]))
+          .targets[0],
+      ).toMatchObject({ approvable: false, reason: "resource_evidence_unknown" });
+      // A review with no proved owner reads only already-promoted pins, so an absence there
+      // is "the hub cannot see this machine" and still refuses whatever the request selects.
+      f.service.offline(f.channel);
+      expect(
+        f.service.reviewDeployment(f.root, request(f, "scan-only-offline", [satisfiable]))
           .targets[0],
       ).toMatchObject({ approvable: false, reason: "resource_evidence_unknown" });
     } finally {

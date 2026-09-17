@@ -1809,11 +1809,13 @@ another review. The server recomputes the digest against current state; browser-
 confirmation alone is not approval.
 
 Known offline destinations can remain pending, using only already-promoted native resource
-pins and proved identity. Evidence a SELECTED operation needs and the hub does not have
-blocks approval (`resource_evidence_unknown`) rather than granting authority over whatever
-appears on reconnect; evidence only unselected operations need does not, because an
-unpromoted resource disables the operation that needs it and never the installed worker. The
-review still lists that resource with a null pin, so it is visible and stays unpromoted.
+pins and proved identity. Against a PROVED owner, evidence a selected operation needs and the
+hub does not have blocks approval (`resource_evidence_unknown`); evidence only unselected
+operations need does not, because an unpromoted resource disables the operation that needs it
+and never the installed worker, and the review still lists that resource with a null pin so it
+stays visible and unpromoted. Without a proved owner the same absence means the hub cannot see
+the machine at all, so any unknown evidence blocks approval rather than granting authority over
+whatever appears on reconnect.
 Every pending effect rechecks the original current
 authority and reviewed scope before the existing install/consent functions run. A durable
 `pending` → `applying` fence precedes effects; interrupted application without a committed

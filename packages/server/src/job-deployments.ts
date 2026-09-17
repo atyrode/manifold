@@ -422,13 +422,18 @@ export class JobDeployments {
                   resources.push({ group, name, sha256 });
                   if (sha256) bindings[group][name] = sha256;
                 }
-                // Evidence the request never asked for does not refuse it: a resource nobody
-                // advertises disables the operation that needs it, never the installed worker
-                // (`jobResourceRefusal`). Refusing the target instead is what forced an
-                // operator to deploy in hand-picked phases to get any operation installed at
-                // all (#715), and blocks a scan-only deployment over an unselected operation's
-                // unavailable tool.
-                if (!sha256 && selected.has(operationId)) reason ??= "resource_evidence_unknown";
+                // A proved owner's inventory is an observation: a resource it does not
+                // advertise disables the operation that needs it, never the installed worker
+                // (`jobResourceRefusal`), so only a SELECTED operation's missing evidence
+                // refuses the target. Refusing over an operation the request never named is
+                // what forced an operator into hand-picked deployment phases (#715) and blocks
+                // a scan-only deployment over an unselected operation's unavailable tool.
+                //
+                // Without an owner the same absence means the hub cannot see the machine at
+                // all, and an offline review may only reuse pins already promoted: approving
+                // there would grant authority over whatever appears on reconnect.
+                if (!sha256 && (!owner || selected.has(operationId)))
+                  reason ??= "resource_evidence_unknown";
               }
           }
         }
