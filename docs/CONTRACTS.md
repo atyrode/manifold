@@ -3900,9 +3900,18 @@ limit })` reads one declared output of a FINISHED job of the calling plugin, add
   the operation's output name rather than by an owner-minted output ID, in pages of at most
   64 KiB. It answers `{ jobId, outputId, name, sha256, files, total, offset, data, eof }`,
   where `total` is the sealed length. An unfinished job refuses `job_unfinished`, an unsealed
-  name refuses `unknown_job_output`, and another plugin's job refuses like every other job
-  door; the page itself is the same authorized private read as `output`, so a consent revoked
-  between pages refuses the next one. `engine.jobs.journal` / `ctx.jobs.journal({ node,
+  name refuses `unknown_job_output`, and another plugin's job refuses `job_owner_mismatch`;
+  the page itself is the same authorized private read as `output`, so a consent revoked
+  between pages refuses the next one. Every other refusal of either door names the check that
+  refused it — `job_capability_absent:<cap>`, `job_grant_unreachable:<cap>`,
+  `job_consent_absent:<cap>` for a revision that was never consented and
+  `job_consent_ineffective:<cap>` for one whose consent or installation was withdrawn, plus
+  `job_request_unretained`, `job_node_mismatch`, `job_output_released`,
+  `job_installation_absent` and `job_artifact_replaced` for a node that no longer resolves.
+  These outputs are the calling PLUGIN's, not the machine owner's: owning the machine that
+  stored the bytes grants no read, and an operator who needs them reacquires that revision's
+  consent with `describe` and `consent` above rather than reading owner state directly.
+  `engine.jobs.journal` / `ctx.jobs.journal({ node,
 after?, limit? })` reads that finished job's durable LIFECYCLE frames — `{ jobId, events:
 [{ seq, at, event }], firstSeq, nextAfter }`, at most 128 retained per job, oldest dropped
   first and dropped entirely on purge. Byte-channel frames are never journaled, so gaps in

@@ -355,13 +355,13 @@ describe("declarations follow real first-party admission", () => {
 
   test("invalid native operation and full operation input preserve their original refusal", async () => {
     const f = await fixture();
-    for (const args of [
-      { ...f.request, operationId: "test.admission.missing" },
-      { ...f.request, input: { value: 42 } },
-    ]) {
+    for (const [args, reason] of [
+      [{ ...f.request, operationId: "test.admission.missing" }, "unknown_operation"],
+      [{ ...f.request, input: { value: 42 } }, "invalid_input"],
+    ] as const) {
       expect(await f.host.dispatch(f.actor, "engine.jobs.execute", args)).toEqual({
         ok: false,
-        denial: { rule: "refused", message: "forbidden: job request refused" },
+        denial: { rule: "refused", message: `forbidden: ${reason}` },
       });
       expect(f.trace().outcome).toBe("refused");
     }
@@ -377,7 +377,7 @@ describe("declarations follow real first-party admission", () => {
     expect(f.jobs.jobs.get(f.request.jobId)?.state).toBe("refused");
     expect(await f.host.dispatch(f.actor, "engine.jobs.schedule", f.schedule)).toEqual({
       ok: false,
-      denial: { rule: "refused", message: "forbidden: job request refused" },
+      denial: { rule: "refused", message: "forbidden: job_consent_refused:machines:run" },
     });
     expect(f.jobs.schedules(f.owner)).toEqual([]);
   });
