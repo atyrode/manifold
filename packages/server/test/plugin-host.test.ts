@@ -2849,6 +2849,71 @@ describe("PluginHost install doors", () => {
     }
   });
 
+  test("a plugin not deployed anywhere is answered, not refused, about a machine (#743)", async () => {
+    const fixture = await installFixture((ref) => ({
+      def: {
+        manifest: ref.manifest,
+        actions: [
+          defineAction({
+            name: "destination",
+            title: "Destination",
+            caps: [],
+            delegates: ["machines:read"],
+            input: z.strictObject({ machineId: z.string() }),
+            result: z.strictObject({ answer: z.string() }),
+          }),
+        ],
+        handlers: {
+          destination: async (ctx: ActionCtx, args: { machineId: string }) => {
+            try {
+              const described = ctx.jobs.describe({
+                machineId: args.machineId,
+                pluginId: SAMPLE_ID,
+              });
+              return {
+                answer:
+                  described.installation === null
+                    ? "not-deployed"
+                    : `installed:${described.installation.revision}`,
+              };
+            } catch (error) {
+              return { answer: error instanceof Error ? error.message : String(error) };
+            }
+          },
+        },
+      },
+      lifecycle: {},
+    }));
+    try {
+      const host = await customHost(fixture, [], { isolates: fixture.isolates });
+      host.setJobs(new JobService(fixture.store, fixture.auth, fixture.runtime));
+      const machineId = fixture.auth.enrollMachine("native-owner", fixture.owner).machine.id;
+      expect(
+        (
+          await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, {
+            ...fixture.drop({ ...SAMPLE_MANIFEST, capabilities: ["*"] }),
+            grant: ["machines:read"],
+          })
+        ).ok,
+      ).toBe(true);
+      // A consent is bound to an installation. This plugin has none on this machine, so the
+      // question it is asking is the one consent cannot gate — "can I be deployed here?" — and
+      // demanding a consent for it refused the door that exists to answer it (#743).
+      expect(await host.dispatch(fixture.owner, `${SAMPLE_ID}.destination`, { machineId })).toEqual(
+        { ok: true, result: { answer: "not-deployed" } },
+      );
+      // The rest of #736's boundary is untouched: an enrolled machine this grant does not reach
+      // is still refused, by the grant's own name rather than by the consent's.
+      expect(
+        await host.dispatch(fixture.owner, `${SAMPLE_ID}.destination`, {
+          machineId: "not-enrolled",
+        }),
+      ).toEqual({ ok: true, result: { answer: "machine_unknown" } });
+    } finally {
+      fixture.store.close();
+    }
+  });
+
   test("a door needing a cap the installer withheld is forbidden naming the plugin, before the caller", async () => {
     const fixture = await installFixture();
     const host = await customHost(fixture, [], { isolates: fixture.isolates });
