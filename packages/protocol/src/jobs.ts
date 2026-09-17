@@ -6,6 +6,7 @@ import {
   ServiceConfigurationSchema,
   ServiceReadArgsSchema,
   ServiceInvokeArgsSchema,
+  ServiceRefusalSchema,
   ServiceReplySchema,
 } from "./services.ts";
 import { ServiceTunnelFrameSchema } from "./services.ts";
@@ -1126,6 +1127,22 @@ export const JobEventSchema = z.discriminatedUnion("type", [
     revision: component,
     policySha256: hash,
     operationId: component,
+  }),
+  /**
+   * The same call, declined after it was authorized. `service_authorize` records that a call
+   * was permitted; nothing recorded that the owner then would not serve it, so a service the
+   * hub reports `ready` could refuse every call with the contradiction visible nowhere (#708).
+   * `reason` is the owner's precise branch, which is not what the sandboxed caller was told.
+   */
+  z.strictObject({
+    type: z.literal("service_refused"),
+    subject: ServiceAuthoritySubjectSchema,
+    authorizationId: id,
+    serviceId: component,
+    revision: component,
+    policySha256: hash,
+    operationId: component,
+    reason: ServiceRefusalSchema,
   }),
   z.strictObject({
     type: z.literal("service_read_result"),

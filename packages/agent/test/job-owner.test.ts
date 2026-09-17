@@ -1855,6 +1855,22 @@ test.skipIf(!linux || !cgroupRoot)(
         reply: { ok: false, refusal: "service_binding_mismatch" },
       });
       expect(requests).toEqual([]);
+      // A call addressed to another machine and a call this owner is draining past are not the
+      // same fact as a stale binding, and none of the three was distinguishable while every
+      // entry refusal answered `service_unavailable` (#708).
+      await owner.execute({ ...command, machineId: "elsewhere" });
+      expect(events.at(-1)).toMatchObject({
+        type: "service_invoke_result",
+        reply: { ok: false, refusal: "service_machine_mismatch" },
+      });
+      await owner.execute({ type: "drain", draining: true });
+      await owner.execute(command);
+      expect(events.at(-1)).toMatchObject({
+        type: "service_invoke_result",
+        reply: { ok: false, refusal: "service_owner_draining" },
+      });
+      await owner.execute({ type: "drain", draining: false });
+      expect(requests).toEqual([]);
       await owner.execute(command);
       expect(events.at(-1)).toEqual({
         type: "service_invoke_result",

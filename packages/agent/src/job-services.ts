@@ -42,8 +42,20 @@ export interface JobServiceRunner {
   /** Abort active requests; descriptors supplied by the owner remain borrowed. */
   close(): void;
 }
-class ServiceFailure extends Error {
-  constructor(readonly refusal: ServiceRefusal) {
+/**
+ * A refusal that knows which fact refused. Exported because the owner's own service paths raise
+ * it and the proxy must carry it through instead of reporting every resolver rejection as one
+ * unreachable runtime (#708).
+ *
+ * `detail` is for the HOST's record only — a child job's state, a parent's state — and is never
+ * written to a caller's response: the refusal word is already the most a sandboxed caller may
+ * learn about the machine serving it.
+ */
+export class ServiceFailure extends Error {
+  constructor(
+    readonly refusal: ServiceRefusal,
+    readonly detail?: Readonly<Record<string, string>>,
+  ) {
     super(refusal);
   }
 }

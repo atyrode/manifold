@@ -13,7 +13,7 @@ import type {
   ServiceProxyOperationPolicy,
 } from "@manifold/protocol";
 import { createJobServiceProxy, type JobServiceProxy } from "../src/job-service-proxy.ts";
-import { createJobServiceRunner } from "../src/job-services.ts";
+import { createJobServiceRunner, ServiceFailure } from "../src/job-services.ts";
 import { connectWorkloadLoopback } from "../src/job-listener-proof.ts";
 import { createServiceTunnel } from "../src/job-service-tunnel.ts";
 
@@ -1233,5 +1233,66 @@ test("conditional HTTP forwards opaque validators and preserves only safe bodyle
   } finally {
     await proxy.close();
     await server.close();
+  }
+});
+
+test("a refused runtime is reported precisely and answered coarsely (#708)", async () => {
+  const runtime = policy("", { timeoutMs: 200 });
+  delete runtime.origin;
+  delete runtime.credential;
+  delete runtime.allowLoopbackHttp;
+  runtime.runtime = {
+    scope: "job",
+    pluginId: "vendor.gateway",
+    operationId: "vendor.gateway.serve",
+    installationRevision: "r1",
+    artifactSha256: "a".repeat(64),
+    resourceBindingDigest: "b".repeat(64),
+    input: {},
+  };
+  const reported: { operationId: string; reason: string }[] = [];
+  const proxy = (resolveRuntime?: () => Promise<never>) =>
+    createJobServiceProxy({
+      policies: [runtime],
+      bindings: [binding],
+      authorize: async () => true,
+      ...(resolveRuntime ? { resolveRuntime } : {}),
+      onRefusal: ({ operationId, reason }) => reported.push({ operationId, reason }),
+    });
+  // A refusal that names the owner's own topology is not told to the sandboxed caller: a
+  // workload able to read it could enumerate the machine it runs on by making calls.
+  const refusing = await proxy(() =>
+    Promise.reject(new ServiceFailure("service_parent_cancelled")),
+  );
+  try {
+    expect(await send(refusing)).toEqual({ status: 503, body: '{"error":"service_unavailable"}' });
+  } finally {
+    await refusing.close();
+  }
+  // A resolver that BROKE is not one that refused, and neither is an owner with no resolver at
+  // all: three distinct facts that were one `service_unavailable` on both sides of the wire.
+  const broken = await proxy(() => Promise.reject(new Error(`private ${secret}`)));
+  try {
+    expect((await send(broken)).status).toBe(503);
+  } finally {
+    await broken.close();
+  }
+  const unresolvable = await proxy();
+  try {
+    expect((await send(unresolvable)).status).toBe(503);
+  } finally {
+    await unresolvable.close();
+  }
+  expect(reported).toEqual([
+    { operationId: "generate", reason: "service_parent_cancelled" },
+    { operationId: "generate", reason: "service_runtime_unreachable" },
+    { operationId: "generate", reason: "service_runtime_unsupported" },
+  ]);
+  // The caller learns the fate of its own call, and a refusal it can act on keeps its word.
+  const ceiling = await proxy(() => Promise.reject(new ServiceFailure("service_unauthorized")));
+  try {
+    expect(await send(ceiling)).toEqual({ status: 503, body: '{"error":"service_unauthorized"}' });
+  } finally {
+    await ceiling.close();
   }
 });

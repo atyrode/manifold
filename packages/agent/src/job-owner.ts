@@ -24,6 +24,7 @@ import {
   type ServiceCredentialReference,
   type ServicePolicy,
   type ServiceReply,
+  type ServiceRefusal,
   type JobCommand,
   type JobEvent,
   type JobOwner,
@@ -71,6 +72,7 @@ import {
 import { JobResources } from "./job-resources.ts";
 import {
   createJobServiceRunner,
+  ServiceFailure,
   heldServiceCredentialResolver,
   type AuthorizeServiceCall,
   type JobServiceRunner,
@@ -896,14 +898,31 @@ export class MachineJobOwner {
         requestId: command.requestId,
         reply: { type: "service_result", requestId: command.requestId, ok: false, refusal },
       });
-    if (
-      command.machineId !== this.options.machineId ||
-      this.directServiceCalls.has(command.requestId) ||
-      this.directServiceCalls.size >= 64 ||
-      !this.sink ||
-      this.draining
-    ) {
-      refuse("service_unavailable");
+    // Four unrelated facts, one per word: a call addressed to another machine, a request id
+    // already in flight, the ceiling on concurrent direct calls, and an owner with no hub seat
+    // or already draining.
+    const entry: ServiceRefusal | null =
+      command.machineId !== this.options.machineId
+        ? "service_machine_mismatch"
+        : this.directServiceCalls.has(command.requestId)
+          ? "service_invalid_request"
+          : this.directServiceCalls.size >= 64
+            ? "service_busy"
+            : !this.sink
+              ? "service_owner_unavailable"
+              : this.draining
+                ? "service_owner_draining"
+                : null;
+    if (entry) {
+      // The hub is the caller here and the reply carries the word, so this is logged where it
+      // was decided and not also announced as an event the caller already has.
+      this.log("warn", "service_call_refused", {
+        serviceId: command.serviceId,
+        operationId: command.operationId,
+        requestId: command.requestId,
+        reason: entry,
+      });
+      refuse(entry);
       return;
     }
     const policy = this.policy(command.serviceId);
@@ -1074,6 +1093,31 @@ export class MachineJobOwner {
             : boundPolicy.runtime?.scope === "instance"
               ? this.instanceService(boundPolicy, signal)
               : this.runtimeService(job, boundPolicy, signal),
+        onRefusal: ({ serviceId: refusedService, revision, operationId, reason, detail }) => {
+          this.log("warn", "service_call_refused", {
+            jobId: job.request.jobId,
+            serviceId: refusedService,
+            operationId,
+            reason,
+            ...detail,
+          });
+          // The hub authorized this call and then never learned it was not served, so a
+          // service it reports `ready` could refuse everything with the contradiction visible
+          // nowhere an operator looks (#708). The precise branch goes here, not to the caller.
+          this.emit(
+            {
+              type: "service_refused",
+              subject: { kind: "job", jobId: job.request.jobId },
+              authorizationId: randomUUID(),
+              serviceId: refusedService,
+              revision,
+              policySha256: fingerprint,
+              operationId,
+              reason,
+            },
+            job,
+          );
+        },
         ...(totals
           ? {
               inference: {
@@ -1143,52 +1187,67 @@ export class MachineJobOwner {
     );
   }
 
-  private async runtimeService(
-    parent: OwnedJob,
-    policy: ServicePolicy,
-    signal: AbortSignal,
-  ): Promise<JobServiceEndpoint & { signal: AbortSignal; socket: Socket }> {
-    signal.throwIfAborted();
-    // Six unrelated facts stopped a service start and answered with one word, on a path where
-    // nothing else is recorded either: the workload sees a 503 and the machine sees nothing.
-    const unavailable = !policy.runtime
+  /**
+   * Which fact stops this owner serving a runtime service, or null when it will serve.
+   *
+   * Six unrelated faults shared one thrown `service_unavailable` — a policy that is not a
+   * runtime policy, a parent with no context, a cancelled parent, a parent that is not started,
+   * a parent whose service controller is closed, and a host resource the runtime needs and this
+   * machine does not have. The workload saw one 503 and the operator saw nothing, so which of
+   * the six had happened could only be learned by instrumenting the owner (#708). Same shape as
+   * `admissionRefusal` (#703): this decides nothing, it only says what is wrong.
+   */
+  private runtimeServiceRefusal(parent: OwnedJob, policy: ServicePolicy): ServiceRefusal | null {
+    return !policy.runtime
       ? "service_policy_not_runtime"
       : !parent.context
         ? "service_parent_has_no_context"
         : parent.cancelRequested
           ? "service_parent_cancelled"
           : parent.result.state !== "started"
-            ? `service_parent_not_started: ${parent.result.state}`
+            ? "service_parent_not_started"
             : parent.serviceController.signal.aborted
-              ? "service_parent_closed"
+              ? "service_parent_services_closed"
               : !this.runtimeAvailable(policy, this.resources.snapshot(), new Set())
-                ? "service_runtime_unavailable"
+                ? "service_runtime_resources_absent"
                 : null;
-    if (
-      !policy.runtime ||
-      !parent.context ||
-      parent.cancelRequested ||
-      parent.result.state !== "started" ||
-      parent.serviceController.signal.aborted ||
-      unavailable !== null
-    ) {
+  }
+
+  private async runtimeService(
+    parent: OwnedJob,
+    policy: ServicePolicy,
+    signal: AbortSignal,
+  ): Promise<JobServiceEndpoint & { signal: AbortSignal; socket: Socket }> {
+    signal.throwIfAborted();
+    const refusal = this.runtimeServiceRefusal(parent, policy);
+    // `runtime` and `context` are the predicate's own first two branches, repeated here only
+    // because a separate predicate cannot narrow the caller's types.
+    const runtime = policy.runtime;
+    const context = parent.context;
+    if (refusal !== null || !runtime || !context) {
+      // The start refusing is a fact about this HOST, recorded where it was decided and carrying
+      // the state a caller is never told. The call that triggered it reports its own fate
+      // separately, under `service_call_refused`: two facts, two lines, one incident.
       this.log("warn", "service_start_refused", {
         jobId: parent.request.jobId,
         serviceId: policy.serviceId,
-        reason: unavailable ?? "service_unavailable",
+        reason: refusal ?? "service_policy_not_runtime",
+        parentState: parent.result.state,
       });
-      throw new Error("service_unavailable");
+      throw new ServiceFailure(refusal ?? "service_policy_not_runtime", {
+        parentState: parent.result.state,
+      });
     }
     let instance = parent.runtimeServices.get(policy.serviceId);
     if (!instance) {
-      if (parent.runtimeServices.size >= 16 || parent.context.invocations.size >= 64)
-        throw new Error("service_runtime_limit");
+      if (parent.runtimeServices.size >= 16 || context.invocations.size >= 64)
+        throw new ServiceFailure("service_runtime_limit");
       const ready = Promise.withResolvers<JobServiceEndpoint & { signal: AbortSignal }>();
       const invocationId = randomUUID();
       const input: JobRequest["input"] = {};
-      for (const [name, source] of Object.entries(policy.runtime.input)) {
+      for (const [name, source] of Object.entries(runtime.input)) {
         const value = "input" in source ? parent.request.input[source.input] : source.literal;
-        if (value === undefined) throw new Error("service_runtime_input_missing");
+        if (value === undefined) throw new ServiceFailure("service_runtime_input_missing");
         input[name] = value;
       }
       const created: RuntimeService = {
@@ -1202,29 +1261,41 @@ export class MachineJobOwner {
       };
       parent.runtimeServices.set(policy.serviceId, created);
       instance = created;
-      parent.context.invocations.set(invocationId, {
+      context.invocations.set(invocationId, {
         parentJobId: parent.request.jobId,
         invocationId,
         origin: "owner",
         childJobId: null,
-        operationId: policy.runtime.operationId,
+        operationId: runtime.operationId,
         input,
         outputs: [],
         refused: false,
       });
-      const timer = setTimeout(() => ready.reject(new Error("service_start_timeout")), 30_000);
+      const timer = setTimeout(
+        () => ready.reject(new ServiceFailure("service_start_timeout")),
+        30_000,
+      );
       void ready.promise.then(
         () => clearTimeout(timer),
         (error: unknown) => {
           clearTimeout(timer);
-          // The rejection that cancels the child is the one nobody could see: a start timeout,
-          // a refused invocation and a lost owner all ended as a cancelled child job with
-          // empty output, which reads as if the service had simply vanished.
+          // The rejection that cancels the child is the one nobody awaits: a start timeout, a
+          // refused invocation and a lost hub seat all ended as a cancelled child job with
+          // empty output, which reads as if the service had simply vanished. Recorded here
+          // because this is the only place it exists — and as a START refusal, since no call is
+          // necessarily in flight when it fires. The interpolated `service_start_rejected: …`
+          // is dropped: a word with a message inside it is not one a reader can match, so the
+          // rejection travels as the refusal's own name.
           this.log("warn", "service_start_refused", {
             jobId: parent.request.jobId,
             serviceId: policy.serviceId,
             childJobId: created.childJobId,
-            reason: `service_start_rejected: ${error instanceof Error ? error.message : String(error)}`,
+            reason:
+              error instanceof ServiceFailure
+                ? error.refusal
+                : error === SERVICE_RETIRED
+                  ? "service_closed"
+                  : "service_remote_refused",
           });
           const invocation = parent.context?.invocations.get(invocationId);
           if (invocation) invocation.refused = true;
@@ -1238,7 +1309,7 @@ export class MachineJobOwner {
         type: "invocation",
         parentJobId: parent.request.jobId,
         invocationId,
-        operationId: policy.runtime.operationId,
+        operationId: runtime.operationId,
         input,
         outputs: [],
       };
@@ -1248,26 +1319,36 @@ export class MachineJobOwner {
         invocationId,
         digest: jobDigest(event),
       });
-      if (!this.sink?.(event)) ready.reject(new Error("service_owner_unavailable"));
+      if (!this.sink?.(event)) ready.reject(new ServiceFailure("service_owner_unavailable"));
     }
     const endpoint = await instance.ready;
     signal.throwIfAborted();
-    const child = instance.childJobId && this.jobs.get(instance.childJobId);
-    // The workload learns only that the service would not serve it, which is right. The
-    // MACHINE learns which fact stopped it, because "the child never reached started" and
-    // "the endpoint was already closed" are different faults that arrived as one word (#708).
-    if (!child || child.result.state !== "started" || endpoint.signal.aborted) {
+    // The service started once and is being served again: what can have changed since is the
+    // child's own existence and state, and the endpoint's lifetime. Three facts, three words,
+    // and the child's state travels as a FIELD rather than inside the word, so the word stays
+    // one a reader can match and the state stays host-local.
+    const child = instance.childJobId ? this.jobs.get(instance.childJobId) : undefined;
+    const started = child?.result.state === "started";
+    if (!child || !started || endpoint.signal.aborted) {
+      const reason = !child
+        ? "service_runtime_child_absent"
+        : !started
+          ? "service_runtime_child_not_started"
+          : "service_runtime_endpoint_closed";
+      const detail = child
+        ? {
+            childState: child.result.state,
+            ...(child.result.reason ? { childReason: child.result.reason } : {}),
+          }
+        : {};
       this.log("warn", "service_start_refused", {
         jobId: parent.request.jobId,
         serviceId: policy.serviceId,
         childJobId: instance.childJobId,
-        reason: !child
-          ? "service_child_absent"
-          : child.result.state !== "started"
-            ? `service_child_not_started: ${child.result.state}${child.result.reason ? ` (${child.result.reason})` : ""}`
-            : "service_endpoint_closed",
+        reason,
+        ...detail,
       });
-      throw new Error("service_unavailable");
+      throw new ServiceFailure(reason, detail);
     }
     const lifetime = AbortSignal.any([signal, endpoint.signal, parent.serviceController.signal]);
     const socket = await connectWorkloadLoopback(
@@ -1285,13 +1366,12 @@ export class MachineJobOwner {
   }
 
   private openServiceTunnel(channelId: string, signal: AbortSignal): OwnedServiceTunnel {
-    if (
-      !this.sink ||
-      this.draining ||
-      this.serviceTunnels.has(channelId) ||
-      this.serviceTunnels.size >= 64
-    )
-      throw new Error("service_unavailable");
+    // Four unrelated reasons a tunnel cannot be opened: no hub seat to carry its frames, an
+    // owner already draining, a channel id already in use, and the ceiling on open channels.
+    if (!this.sink) throw new ServiceFailure("service_owner_unavailable");
+    if (this.draining) throw new ServiceFailure("service_owner_draining");
+    if (this.serviceTunnels.has(channelId)) throw new ServiceFailure("service_tunnel_duplicate");
+    if (this.serviceTunnels.size >= 64) throw new ServiceFailure("service_tunnel_limit");
     const controller = new AbortController();
     const lifetime = AbortSignal.any([
       signal,
@@ -1321,13 +1401,13 @@ export class MachineJobOwner {
     policy: ServicePolicy,
     signal: AbortSignal,
   ): Promise<JobServiceEndpoint & { signal: AbortSignal; socket: Duplex }> {
-    if (
-      !policy.remote ||
-      job.result.state !== "started" ||
-      job.cancelRequested ||
-      jobDigest(this.policy(policy.serviceId) ?? null) !== jobDigest(policy)
-    )
-      throw new Error("service_unavailable");
+    if (!policy.remote) throw new ServiceFailure("service_policy_not_remote");
+    if (job.cancelRequested) throw new ServiceFailure("service_parent_cancelled");
+    if (job.result.state !== "started") throw new ServiceFailure("service_parent_not_started");
+    // The policy this call was bound to is not the policy now configured: serving it would
+    // reach an origin the caller's authority was never graded against.
+    if (jobDigest(this.policy(policy.serviceId) ?? null) !== jobDigest(policy))
+      throw new ServiceFailure("service_policy_changed");
     const channelId = randomUUID();
     const tunnel = this.openServiceTunnel(
       channelId,
@@ -1350,11 +1430,12 @@ export class MachineJobOwner {
         tunnel.controller.abort();
       const endpoint = await ready.promise;
       delete tunnel.ready;
-      if (!endpoint || tunnel.signal.aborted) throw new Error("service_unavailable");
+      if (!endpoint) throw new ServiceFailure("service_remote_refused");
+      if (tunnel.signal.aborted) throw new ServiceFailure("service_tunnel_closed");
       return { ...endpoint, signal: tunnel.signal, socket: tunnel.wire.stream };
-    } catch {
+    } catch (error) {
       tunnel.controller.abort();
-      throw new Error("service_unavailable");
+      throw error instanceof ServiceFailure ? error : new ServiceFailure("service_remote_refused");
     } finally {
       clearTimeout(timer);
     }
