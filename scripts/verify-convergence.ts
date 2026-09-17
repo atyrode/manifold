@@ -569,39 +569,69 @@ try {
     dy: number,
     liveRemote?: Browser,
   ): Promise<void> => {
-    const start = await browser.evaluate<{
-      readonly pointerX: number;
-      readonly pointerY: number;
-      readonly nodeX: number;
-      readonly nodeY: number;
-      /** What the pointer would actually hit there, and how that ref advertises itself. */
-      readonly handleOwned: boolean;
-      readonly cursor: string;
-    } | null>(
-      /*
-        A canvas terminal is a MONO PORTAL, so its drag handle is the terminal's own
-        titlebar inside the portal frame — the scoped selector is the point: it fails
-        loudly if the arity rule stops resolving and the node falls back to composition
-        chrome. The grab lands at a quarter width, clear of the controls on the right.
+    /*
+      A canvas terminal is a MONO PORTAL, so its drag handle is the terminal's own
+      titlebar inside the portal frame — the scoped selector is the point: it fails
+      loudly if the arity rule stops resolving and the node falls back to composition
+      chrome. The grab lands at a quarter width, clear of the controls on the right.
 
-        `handleOwned`/`cursor` are asserted because `.terminal-titlebar` is
-        `pointer-events: none` by default (it floats over the xterm ref): a bar that
-        renders but does not take the pointer is exactly how canvas terminals silently
-        became undraggable while every synthetic-click assertion stayed green.
-      */
-      `(() => {
+      `handleOwned`/`cursor` are asserted because `.terminal-titlebar` is
+      `pointer-events: none` by default (it floats over the xterm ref): a bar that
+      renders but does not take the pointer is exactly how canvas terminals silently
+      became undraggable while every synthetic-click assertion stayed green.
+
+      The probe ANSWERS a state instead of returning null, and it is polled rather than
+      read once. Authoring the portal converges as scene data long before the browser has
+      mounted the portal, resolved its composition and let xterm size the bar, so a single
+      read made this round fail for being early — reported as a missing titlebar, on a
+      loaded runner, in whichever round happened to grab first (#720). The state and the
+      session's own connection are in the refusal so a round that never reached its
+      interaction says which fact was missing rather than blaming the gesture.
+    */
+    type GrabProbe =
+      | {
+          readonly state: "no-node" | "no-titlebar" | "zero-size";
+          /** What `openContainer` waited on, so a session that never admitted reads as one. */
+          readonly connection: string;
+          readonly debugProbe: boolean;
+        }
+      | {
+          readonly state: "measured";
+          readonly connection: string;
+          readonly debugProbe: boolean;
+          readonly pointerX: number;
+          readonly pointerY: number;
+          readonly nodeX: number;
+          readonly nodeY: number;
+          /** What the pointer would actually hit there, and how that ref advertises itself. */
+          readonly handleOwned: boolean;
+          readonly cursor: string;
+        };
+    const grabHandle = async (): Promise<Extract<GrabProbe, { state: "measured" }>> => {
+      const deadline = Date.now() + 10_000;
+      for (;;) {
+        const observed = await browser.evaluate<GrabProbe>(
+          `(() => {
+          const connection = (document.querySelector('[data-testid=connection-state]')?.textContent ?? "unknown").toLowerCase();
+          const debugProbe = window.__manifold !== undefined;
           const node = document.querySelector(
             ${JSON.stringify(`.react-flow__node[data-id="${elementId}"]`)},
           );
-          const titlebar = node?.querySelector(".portal--mono .terminal-titlebar");
-          if (!(node instanceof HTMLElement) || !(titlebar instanceof HTMLElement)) return null;
+          if (!(node instanceof HTMLElement)) return { state: "no-node", connection, debugProbe };
+          const titlebar = node.querySelector(".portal--mono .terminal-titlebar");
+          if (!(titlebar instanceof HTMLElement))
+            return { state: "no-titlebar", connection, debugProbe };
           const nodeRect = node.getBoundingClientRect();
           const titlebarRect = titlebar.getBoundingClientRect();
-          if (titlebarRect.width <= 0 || titlebarRect.height <= 0) return null;
+          if (titlebarRect.width <= 0 || titlebarRect.height <= 0)
+            return { state: "zero-size", connection, debugProbe };
           const pointerX = titlebarRect.left + titlebarRect.width / 4;
           const pointerY = titlebarRect.top + titlebarRect.height / 2;
           const hit = document.elementFromPoint(pointerX, pointerY);
           return {
+            state: "measured",
+            connection,
+            debugProbe,
             pointerX,
             pointerY,
             nodeX: nodeRect.left,
@@ -610,23 +640,35 @@ try {
             cursor: hit === null ? "none" : getComputedStyle(hit).cursor,
           };
         })()`,
-    );
-    if (start === null) {
-      throw new Error(`terminal ${elementId} renders no mono-portal titlebar to grab`);
-    }
-    if (!start.handleOwned || start.cursor !== "grab") {
-      throw new Error(
-        `terminal ${elementId} titlebar is not a grabbable pointer target (owned=${String(
-          start.handleOwned,
-        )} cursor=${start.cursor})`,
-      );
-    }
-    const remoteBefore =
-      liveRemote === undefined
-        ? null
-        : await liveRemote.evaluate<Snapshot | null>(
-            `window.__manifold.canvas().find((element) => element.id === ${JSON.stringify(elementId)}) ?? null`,
+        );
+        if (observed.state === "measured" && observed.handleOwned && observed.cursor === "grab")
+          return observed;
+        if (Date.now() > deadline)
+          throw new Error(
+            observed.state === "measured"
+              ? `terminal ${elementId} titlebar is not a grabbable pointer target (owned=${String(
+                  observed.handleOwned,
+                )} cursor=${observed.cursor})`
+              : `terminal ${elementId} rendered no mono-portal titlebar to grab within 10000ms (${observed.state}, connection=${observed.connection}, debugProbe=${String(observed.debugProbe)})`,
           );
+        await sleep(150);
+      }
+    };
+    const start = await grabHandle();
+    // The live-remote rounds measure the remote's displacement from this baseline, so the
+    // baseline must exist before the pointer goes down. It arrives over the remote's own
+    // session, which is a separate fact from this browser having rendered the handle: read
+    // once, it turned "the element has not arrived yet" into a mid-gesture failure (#720).
+    let remoteBefore: Snapshot | null = null;
+    if (liveRemote !== undefined) {
+      const remoteSnapshot = `window.__manifold.canvas().find((element) => element.id === ${JSON.stringify(elementId)}) ?? null`;
+      await until(
+        async () => (await liveRemote.evaluate<Snapshot | null>(remoteSnapshot)) !== null,
+        10_000,
+        `remote terminal ${elementId} to render before the grab`,
+      );
+      remoteBefore = await liveRemote.evaluate<Snapshot | null>(remoteSnapshot);
+    }
     const steps = 20;
     await browser.send("Input.dispatchMouseEvent", {
       type: "mouseMoved",
