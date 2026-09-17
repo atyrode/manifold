@@ -118,6 +118,7 @@ export {
   ServiceCallSchema,
   ServiceReplySchema,
   ServiceRefusalSchema,
+  guestServiceRefusal,
   ServiceBindingSchema,
   ServiceResponsePolicySchema,
   ServiceOperationPolicySchema,

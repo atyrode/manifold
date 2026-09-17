@@ -42,7 +42,12 @@ export interface JobServiceRunner {
   /** Abort active requests; descriptors supplied by the owner remain borrowed. */
   close(): void;
 }
-class ServiceFailure extends Error {
+/**
+ * A refusal that knows which fact refused. Exported because the owner's own service paths raise
+ * it and the proxy must carry it through instead of reporting every resolver rejection as one
+ * unreachable runtime (#708).
+ */
+export class ServiceFailure extends Error {
   constructor(readonly refusal: ServiceRefusal) {
     super(refusal);
   }

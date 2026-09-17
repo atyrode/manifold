@@ -4694,6 +4694,37 @@ export class JobService {
           ?.finish(new ServiceError("forbidden", "service_unauthorized"));
       return;
     }
+    if (event.type === "service_refused") {
+      // The owner authorized a call and then would not serve it. Without this the ledger held
+      // the permission and nothing else, so a service this hub reports `ready` could refuse
+      // every call and the contradiction was readable nowhere an operator looks (#708). The
+      // owner's own word is recorded verbatim: it is the owner's fact, not a hub decision, so
+      // no permit is minted and no readiness is flipped — one refused call is not an unready
+      // service.
+      if (event.subject.kind !== "job") return;
+      const job = this.jobs.get(event.subject.jobId);
+      if (!job || !this.inputOwner(job, channel)) return;
+      const current = this.auth.restoreCredential(job.request.credential);
+      if (!current) return;
+      this.serviceTrace(
+        current,
+        job.request.pluginId,
+        job.request.traceId,
+        "invoke",
+        {
+          jobId: job.request.jobId,
+          authorizationId: event.authorizationId,
+          machineId: channel.machineId,
+          serviceId: event.serviceId,
+          revision: event.revision,
+          policySha256: event.policySha256,
+          operationId: event.operationId,
+          ownerRefusal: event.reason,
+        },
+        false,
+      );
+      return;
+    }
     if (event.type === "service_read_result" || event.type === "service_invoke_result") {
       const pending = this.directServiceCalls.get(event.requestId);
       if (

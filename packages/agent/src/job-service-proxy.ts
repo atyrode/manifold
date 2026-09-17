@@ -13,13 +13,16 @@ import { pipeline } from "node:stream/promises";
 import {
   ServiceBindingSchema,
   ServicePolicySchema,
+  guestServiceRefusal,
   type JobEvent,
   type JobRequest,
   type JobResult,
   type ServiceBinding,
   type ServiceInput,
   type ServicePolicy,
+  type ServiceRefusal,
 } from "@manifold/protocol";
+import { ServiceFailure } from "./job-services.ts";
 import type { AuthorizeServiceCall, ResolveServiceCredential } from "./job-services.ts";
 
 type ProxyOperation = Extract<ServicePolicy["operations"][string], { kind: "http-proxy" }>;
@@ -80,11 +83,22 @@ export interface JobServiceProxyOptions {
   /** Present only for a job whose bound operations may be metered; absent leaves every
    * operation unmetered, whatever its policy declares. */
   inference?: JobInferenceMetering;
+  /**
+   * The precise refusal, for the one reader entitled to it. The caller is answered the
+   * projection; this is how the owner logs the branch and tells the hub, so a service the hub
+   * reports `ready` cannot refuse every call with the contradiction visible nowhere (#708).
+   */
+  onRefusal?: (refusal: {
+    serviceId: string;
+    revision: string;
+    operationId: string;
+    reason: ServiceRefusal;
+  }) => void;
 }
 class ProxyFailure extends Error {
   constructor(
     readonly status: number,
-    readonly code: string,
+    readonly code: ServiceRefusal,
     /** Named cause of a refusal the caller must act on: which ceiling, which unpriced model. */
     readonly detail?: Readonly<Record<string, string>>,
   ) {
@@ -182,6 +196,12 @@ class BoundedBody extends Transform {
     done();
   }
 }
+/**
+ * The sandboxed caller's answer, and only ever the projection of the refusal (#708): the precise
+ * branch — which child never started, which host resource is missing, that the owner is draining
+ * — is reported to `onRefusal` for the owner's log and the hub's trace, never written here,
+ * because an isolate that can read it can enumerate the machine it runs on by making calls.
+ */
 function fail(response: ServerResponse, error: unknown): void {
   if (response.destroyed) return;
   if (response.headersSent) {
@@ -196,9 +216,10 @@ function fail(response: ServerResponse, error: unknown): void {
     "cache-control": "no-store",
     connection: "close",
   });
+  const code = guestServiceRefusal(failure.code);
   response.end(
     JSON.stringify({
-      error: failure.detail ? { code: failure.code, ...failure.detail } : failure.code,
+      error: failure.detail && code === failure.code ? { code, ...failure.detail } : code,
     }),
   );
 }
@@ -889,15 +910,23 @@ export async function createJobServiceProxy(
       if (forward) headers["content-length"] = String(forward.length);
       let origin = entry.policy.origin;
       if (entry.policy.runtime || entry.policy.remote) {
-        if (!options.resolveRuntime) throw new ProxyFailure(503, "service_unavailable");
+        if (!options.resolveRuntime) throw new ProxyFailure(503, "service_runtime_unsupported");
         let runtime: Awaited<ReturnType<NonNullable<JobServiceProxyOptions["resolveRuntime"]>>>;
         try {
           runtime = await boundedWait(
             options.resolveRuntime(entry.policy, controller.signal),
             controller.signal,
           );
-        } catch {
-          throw new ProxyFailure(503, "service_unavailable");
+        } catch (error) {
+          // A cancelled call is not an unserveable service, and a resolver that REFUSED is not
+          // one that broke: both were reported as the same unavailability, one layer below the
+          // flattening #708 is about. `service_runtime_unreachable` now means only that the
+          // resolver failed without naming a refusal.
+          throw error instanceof ProxyFailure
+            ? error
+            : error instanceof ServiceFailure
+              ? new ProxyFailure(503, error.refusal)
+              : new ProxyFailure(503, "service_runtime_unreachable");
         }
         runtimeSocket = runtime.socket;
         if (
@@ -914,7 +943,7 @@ export async function createJobServiceProxy(
               runtimeSocket.remoteAddress !== "127.0.0.1" ||
               runtimeSocket.remotePort !== Number(new URL(runtime.url).port)))
         )
-          throw new ProxyFailure(503, "service_unavailable");
+          throw new ProxyFailure(503, "service_runtime_invalid");
         origin = runtime.url;
         secret = runtime.bearer;
         runtimeSignal = runtime.signal;
@@ -940,21 +969,22 @@ export async function createJobServiceProxy(
         await check();
       }
       controller.signal.throwIfAborted();
-      if (!origin) throw new ProxyFailure(503, "service_unavailable");
+      if (!origin) throw new ProxyFailure(503, "service_origin_absent");
       const url = new URL(path + query, origin);
       if (url.origin !== origin || url.pathname !== path)
         throw new ProxyFailure(400, "service_input_invalid");
       const received = Promise.withResolvers<IncomingMessage>();
       if (entry.policy.runtime || entry.policy.remote) {
         const socket = runtimeSocket;
-        if (!socket || socket.destroyed) throw new ProxyFailure(503, "service_unavailable");
+        if (!socket || socket.destroyed)
+          throw new ProxyFailure(503, "service_runtime_disconnected");
         runtimeAgent = new Agent({ keepAlive: false, maxSockets: 1 });
         let claimed = false;
         // Never delegate to Agent's dialer, including when this socket dies during
         // handoff. Each request gets one connection and cannot recreate or reuse it.
         runtimeAgent.createConnection = (_options, callback) => {
           if (claimed || socket.destroyed) {
-            callback?.(new ProxyFailure(503, "service_unavailable"), socket);
+            callback?.(new ProxyFailure(503, "service_runtime_disconnected"), socket);
             return undefined;
           }
           claimed = true;
@@ -1054,12 +1084,19 @@ export async function createJobServiceProxy(
         : pipeline(upstream, bounded, response, { signal: controller.signal }));
       await upload;
     } catch (error) {
-      fail(
-        response,
-        controller.signal.aborted
-          ? new ProxyFailure(503, timedOut ? "service_timeout" : "service_cancelled")
-          : error,
-      );
+      // Abort still wins the caller's answer, as it always has; the report carries whatever
+      // the refusal actually was.
+      const refusal = controller.signal.aborted
+        ? new ProxyFailure(503, timedOut ? "service_timeout" : "service_cancelled")
+        : error;
+      if (refusal instanceof ProxyFailure)
+        options.onRefusal?.({
+          serviceId: entry.policy.serviceId,
+          revision: entry.policy.revision,
+          operationId,
+          reason: refusal.code,
+        });
+      fail(response, refusal);
     } finally {
       controller.abort();
       upstream?.destroy();
