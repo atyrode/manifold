@@ -32,6 +32,7 @@ import {
   type MachineOperation,
   type JobInstallationResources,
   type JobArtifactDelivery,
+  type LogEvent,
 } from "@manifold/protocol";
 import { type HeldDirectory } from "./job-files.ts";
 import { deliveredArtifact } from "@manifold/plugin-kit/artifacts";
@@ -114,6 +115,12 @@ export interface JobOwnerOptions {
   artifactAuthority: ArtifactAuthority;
   /** Bootstrap-held source credentials; only references and allowed origins are advertised. */
   serviceCredentials?: ReadonlyMap<string, { fd: number; origins: readonly string[] }>;
+  /**
+   * Structured diagnostics for refusals this process decides alone (#703). The owner emits
+   * protocol events for everything a hub can act on; a refused admission is decided here and
+   * was previously visible only as a journal record on this host's disk.
+   */
+  log?: (level: "info" | "warn", event: LogEvent, fields: Record<string, unknown>) => void;
 }
 interface Installation {
   command: Extract<JobCommand, { type: "install" }>;
@@ -188,6 +195,14 @@ interface InstanceRuntimeService {
   bearer: string;
   port: number | null;
   startupTimer: ReturnType<typeof setTimeout> | undefined;
+}
+
+/** A named admission refusal, so the branch that refused survives to the caller (#703). */
+export class JobAdmissionError extends Error {
+  constructor(readonly reason: string) {
+    super(reason);
+    this.name = "JobAdmissionError";
+  }
 }
 const ACTIVE: Record<string, true> = { "start-committed": true, started: true };
 // Promise rejection identity preserves the first refusal's mode across retirement races.
@@ -1859,32 +1874,63 @@ export class MachineJobOwner {
   }
 
   /** Signature/identity authentication is independent of admission freshness. Old permits
-   * may reconcile absence after recovery, but can never admit into a new generation. */
+   * may reconcile absence after recovery, but can never admit into a new generation.
+   *
+   * EACH BRANCH ANSWERS FOR ITSELF (#703). These are six unrelated faults — a hub and owner
+   * that disagree about the request's canonical bytes, a permit addressed elsewhere, a
+   * replayed permit, an identity from another owner, a permit from a generation this journal
+   * has not reached, a signature the admission key rejects — and one shared string made every
+   * one of them indistinguishable from the others, and from the unrelated preparation
+   * failures that land in the same journal record. The reason travels with the refusal so a
+   * reader learns which fact is wrong without reading the journal off the host's disk.
+   */
   private verifyAdmission({
     request,
     permit,
   }: Pick<Extract<JobCommand, { type: "start" }>, "request" | "permit">): void {
     const { requestDigest, ...immutable } = request;
     const { signature, ...signedPermit } = permit;
-    if (
-      jobDigest(immutable) !== requestDigest ||
-      request.machineId !== this.options.machineId ||
-      permit.jobId !== request.jobId ||
-      permit.requestDigest !== requestDigest ||
-      permit.ownerId !== this.options.journal.ownerId ||
-      permit.ownerGeneration > this.options.journal.generation ||
-      !verify(
-        null,
-        Buffer.from(canonicalJobJson(signedPermit)),
-        this.admissionKey,
-        Buffer.from(signature, "base64"),
-      )
-    )
-      throw new Error("start_permit_refused");
+    const refusal =
+      jobDigest(immutable) !== requestDigest
+        ? "start_request_digest_mismatch"
+        : request.machineId !== this.options.machineId
+          ? "start_machine_mismatch"
+          : permit.jobId !== request.jobId
+            ? "start_permit_job_mismatch"
+            : permit.requestDigest !== requestDigest
+              ? "start_permit_digest_mismatch"
+              : permit.ownerId !== this.options.journal.ownerId
+                ? "start_permit_owner_mismatch"
+                : permit.ownerGeneration > this.options.journal.generation
+                  ? "start_permit_generation_ahead"
+                  : !verify(
+                        null,
+                        Buffer.from(canonicalJobJson(signedPermit)),
+                        this.admissionKey,
+                        Buffer.from(signature, "base64"),
+                      )
+                    ? "start_permit_signature_invalid"
+                    : null;
+    if (refusal === null) return;
+    this.log("warn", "start_admission_refused", {
+      jobId: request.jobId,
+      permitId: permit.permitId,
+      reason: refusal,
+      ownerGeneration: permit.ownerGeneration,
+      journalGeneration: this.options.journal.generation,
+    });
+    throw new JobAdmissionError(refusal);
   }
 
+  /**
+   * `start_not_admitted` remains the wire default, but a caller that knows why says so: an
+   * admission that failed verification names its branch, and a preparation that failed names
+   * the fault it hit. One string for every cause is what made a version skew, a stale key and
+   * a missing runtime indistinguishable (#703).
+   */
   private rejectUnadmitted(
     admission: Pick<Extract<JobCommand, { type: "start" }>, "request" | "permit">,
+    reason = "start_not_admitted",
   ): OwnedJob {
     const { request, permit } = admission;
     if (this.jobs.has(request.jobId) || this.permits.has(permit.permitId))
@@ -1894,7 +1940,7 @@ export class MachineJobOwner {
       ...job.result,
       ownerGeneration: permit.ownerGeneration,
       state: "refused",
-      reason: "start_not_admitted",
+      reason,
       finishedAt: Date.now(),
     };
     // No proof leaves this process until replay is fenced by an fsynced identity.
@@ -1948,7 +1994,13 @@ export class MachineJobOwner {
     command: Extract<JobCommand, { type: "start" }>,
     terminalLaunch?: (spec: LinuxJobSpec) => Promise<LinuxJobHandle>,
   ): Promise<void> {
-    this.verifyAdmission(command);
+    try {
+      this.verifyAdmission(command);
+    } catch (error) {
+      if (error instanceof JobAdmissionError && !this.jobs.has(command.request.jobId))
+        this.rejectUnadmitted(command, error.reason);
+      throw error;
+    }
     if (this.pendingStarts.has(command.request.jobId))
       await this.pendingStarts.get(command.request.jobId);
     const pending = Promise.withResolvers<void>();
@@ -1956,6 +2008,14 @@ export class MachineJobOwner {
     try {
       await this.prepareStart(command, terminalLaunch);
     } catch (error) {
+      // A preparation fault is not an admission verdict. Its message already reaches the hub
+      // as a `refusal` event, so the journaled reason stays `start_not_admitted`; what was
+      // missing is any record on THIS host of why its own preparation failed (#703).
+      this.log("warn", "start_preparation_failed", {
+        jobId: command.request.jobId,
+        permitId: command.permit.permitId,
+        reason: error instanceof Error ? error.message : String(error),
+      });
       if (!this.jobs.has(command.request.jobId)) this.rejectUnadmitted(command);
       throw error;
     } finally {
@@ -2760,6 +2820,11 @@ export class MachineJobOwner {
       job,
     );
   }
+  /** Structured diagnostics for a refusal this process decides alone; never a credential. */
+  private log(level: "info" | "warn", event: LogEvent, fields: Record<string, unknown>): void {
+    this.options.log?.(level, event, fields);
+  }
+
   private emit(event: JobEvent, job?: OwnedJob): void {
     const parent = job?.request.parent && this.jobs.get(job.request.parent.parentJobId);
     if (

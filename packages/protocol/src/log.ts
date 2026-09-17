@@ -199,6 +199,12 @@ export const LOG_EVENTS = [
   // Server: supervision of the co-located terminal host (the local machine's PTY owner).
   "local_terminal_host_reused",
   "local_terminal_host_spawned",
+
+  // Native job owner (issue #703): the two refusals this process decides alone. Every
+  // admission branch and every preparation fault previously reached a reader only as one
+  // `start_not_admitted` record inside the owner's private journal, on its own host's disk.
+  "start_admission_refused",
+  "start_preparation_failed",
 ] as const;
 
 /** One name from the operational log vocabulary; the `evt` field of every JSONL record. */

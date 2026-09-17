@@ -639,10 +639,12 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
           ...command,
           permit: { ...command.permit, signature: Buffer.alloc(64).toString("base64") },
         });
+        // The branch that refused names itself: a forged signature is not the same fault as a
+        // digest disagreement, a foreign owner id or a generation this journal has not reached.
         expect(events.at(-1)).toEqual({
           type: "refusal",
           jobId: "once",
-          reason: "start_permit_refused",
+          reason: "start_permit_signature_invalid",
         });
         expect(outputs.recovered("once")).toEqual([]);
         await owner.execute(command);

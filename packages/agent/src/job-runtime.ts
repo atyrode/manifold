@@ -1,6 +1,6 @@
 import { basename, dirname } from "node:path";
 import { closeSync, fstatSync, readFileSync } from "node:fs";
-import { JobOwnerConfigSchema, type JobOwnerConfig } from "@manifold/protocol";
+import { JobOwnerConfigSchema, type JobOwnerConfig, type LogEvent } from "@manifold/protocol";
 import { HeldDirectory } from "./job-files.ts";
 import { JobJournal } from "./job-journal.ts";
 import { MachineJobOwner } from "./job-owner.ts";
@@ -14,6 +14,7 @@ export async function openConfiguredJobOwner(
   configPath: string,
   socketPath: string,
   terminalSocketPath: string,
+  log?: (level: "info" | "warn", event: LogEvent, fields: Record<string, unknown>) => void,
 ): Promise<MachineJobOwner> {
   const parent = HeldDirectory.openAbsolute(dirname(configPath), { private: true });
   const configFd = parent.openFile(basename(configPath));
@@ -127,5 +128,6 @@ export async function openConfiguredJobOwner(
     runtimeTools,
     serviceCredentials,
     artifactAuthority: { origins: config.artifactOrigins, maxRedirects: 5, timeoutMs: 60_000 },
+    ...(log ? { log } : {}),
   });
 }
