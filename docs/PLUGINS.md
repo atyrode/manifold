@@ -2297,9 +2297,12 @@ The answer is either `{ ok: true, fact }` or `{ ok: false, reason }`, and the sp
 cosmetic. A `fact` is something a host OBSERVED, and its `reason` is one of `repository`,
 `not_a_repository`, `absent`, `unreadable`, `git_unavailable` or `timed_out` — states of
 that machine, never faults of the asker. `ok: false` is the fleet saying nobody could be
-asked at all: the machine is offline, its agent is older than machine protocol 31, its
-transport dropped, or it went quiet past the hub's bound. Do not collapse the two; a
-repository identity you invented for an unreachable host is worse than no answer.
+asked at all, and it says which: the id is not enrolled here, the machine has no live
+transport, its agent is older than machine protocol 31, its transport dropped, or it went
+quiet past the hub's bound. None of them reports a machine as offline, so a refusal naming an
+unenrolled id means the id — a machine's ID, not its name or a host string a session recorded
+— and not an outage. Do not collapse the two; a repository identity you invented for an
+unreachable host is worse than no answer.
 
 `identity` is the resolved git common directory rather than the path, so a checkout and a
 linked worktree of it answer with the SAME identity — that is what makes "one project, two

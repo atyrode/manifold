@@ -559,16 +559,30 @@ export class MachineGateway {
    * `engine.machines.repository`'s mechanism (issue #529): one bounded question to the agent
    * that is already standing on the host, one answer, no state kept beyond the wait.
    *
-   * The three refusals below are the three ways there is nobody to ask, and each says which:
-   * a machine with no live transport, a transport too old to parse the frame, and a socket
-   * that took the frame and then went quiet. None of them is a FACT — a fact is something a
-   * host observed — so none of them is dressed as one, which is the whole reason `reason`
-   * carries no "offline" word to reach for.
+   * The four refusals below are the four ways there is nobody to ask, and each says which:
+   * an id this hub never enrolled, a machine with no live transport, a transport too old to
+   * parse the frame, and a socket that took the frame and then went quiet. None of them is a
+   * FACT — a fact is something a host observed — so none of them is dressed as one, which is
+   * the whole reason `reason` carries no "offline" word to reach for.
+   *
+   * The unenrolled case is checked HERE and not only at the door: `ctx.machines.repository`
+   * reaches this method directly, so a plugin asking about an id the hub has never heard of
+   * used to be told the machine was offline. A conductor read that as an outage on a machine
+   * that was connected the whole time, and lost a scheduled beat to it (#724).
    */
   repository(machineId: string, path: string): Promise<MachineRepositoryOutcome> {
+    if (this.store.getMachine(machineId) === null) {
+      return Promise.resolve({
+        ok: false,
+        reason: "machine is not enrolled here: it cannot be asked",
+      });
+    }
     const channel = this.activeByMachine.get(machineId);
     if (channel === undefined) {
-      return Promise.resolve({ ok: false, reason: "machine is offline: it cannot be asked" });
+      return Promise.resolve({
+        ok: false,
+        reason: "machine has no live transport: it cannot be asked",
+      });
     }
     if (channel.protocolVersion < MACHINE_REPOSITORY_PROTOCOL_VERSION) {
       return Promise.resolve({
