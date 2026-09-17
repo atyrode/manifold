@@ -331,11 +331,13 @@ export const CAP_MEANINGS: Readonly<Record<Cap, string>> = {
 export const PLUGIN_CAP_MEANING =
   "This plugin's own capability: authority over its doors, granted per node";
 
-/** One capability as the permissions card shows it: the cap, its meaning, and whether it holds. */
+/** One capability as the permissions card shows it: the cap, its meaning, and how it is held. */
 export interface Permission {
   readonly cap: AuthoredCap;
   readonly meaning: string;
-  /** False only on an installed row whose installer withheld this declared cap. */
+  /** `withheld` only on an installed row whose installer withheld this declared cap. */
+  readonly state: PermissionState;
+  /** True only for `granted`: what the row can exercise on its grant alone. */
   readonly granted: boolean;
 }
 
@@ -348,15 +350,32 @@ export interface Permission {
  * shows the declared caps the installer withheld greyed beside it, because "this plugin asked
  * for more than it was given" is the sentence an operator reads a grant for. A grant can
  * never exceed the declaration, so the declared list is the card's whole domain.
+ *
+ * THREE STATES, NOT TWO. A governed capability is never in any grant — `grantFor` filters
+ * `GOVERNED_CAPS` out of the default grant AND out of an explicit installer grant, because
+ * governed authority is discharged per node, bound to an artifact revision, by consent. Shown
+ * as `withheld` it reads as an installer's refusal, which is the sentence an operator acted on
+ * for a day: nine declared, three granted, and the conclusion that the install had dropped six
+ * when in truth six are governed and one door was asking the wrong question (#733, #735).
  */
+export type PermissionState = "granted" | "withheld" | "governed";
+
 export function pluginPermissions(entry: PluginRosterEntry): readonly Permission[] {
   const install = entry.install;
   const granted = install === undefined ? null : new Set<AuthoredCap>(install.grantedCaps);
-  return entry.manifest.capabilities.map((cap) => ({
-    cap,
-    meaning: isEngineCap(cap) ? CAP_MEANINGS[cap] : PLUGIN_CAP_MEANING,
-    granted: !GOVERNED_CAPS.includes(cap) && (granted === null || granted.has(cap)),
-  }));
+  return entry.manifest.capabilities.map((cap) => {
+    const state: PermissionState = GOVERNED_CAPS.includes(cap)
+      ? "governed"
+      : granted === null || granted.has(cap)
+        ? "granted"
+        : "withheld";
+    return {
+      cap,
+      meaning: isEngineCap(cap) ? CAP_MEANINGS[cap] : PLUGIN_CAP_MEANING,
+      state,
+      granted: state === "granted",
+    };
+  });
 }
 
 /** The chip's number: what the row can actually do — its grant, or its declaration. */
@@ -367,20 +386,29 @@ export function permissionCount(entry: PluginRosterEntry): number {
 /**
  * The permissions chip's tooltip. Lists the caps rather than counting them, because the count
  * is on the chip already; for an installed row it leads with the declared-versus-granted
- * fraction, which is the one number an installer's consent reduces to.
+ * fraction, which is the one number an installer's consent reduces to — and it names the
+ * governed ones separately, because an installer withheld nothing there.
  */
 export function permissionSummary(entry: PluginRosterEntry): string {
   const permissions = pluginPermissions(entry);
   if (permissions.length === 0) return "Declares no capabilities";
-  const held = permissions.filter((permission) => permission.granted).map((p) => p.cap);
-  const withheld = permissions.filter((permission) => !permission.granted).map((p) => p.cap);
+  const named = (state: PermissionState): string[] =>
+    permissions.filter((permission) => permission.state === state).map((p) => p.cap);
+  const held = named("granted");
+  const withheld = named("withheld");
+  const governed = named("governed");
   if (entry.install === undefined)
     return `Declares ${permissions.map((permission) => permission.cap).join(", ")}`;
-  const lead = `Granted ${String(held.length)} of ${String(permissions.length)} declared`;
-  if (held.length === 0) return `${lead}: nothing; withheld ${withheld.join(", ")}`;
-  return withheld.length === 0
-    ? `${lead}: ${held.join(", ")}`
-    : `${lead}: ${held.join(", ")}; withheld ${withheld.join(", ")}`;
+  const clauses = [
+    `Granted ${String(held.length)} of ${String(permissions.length)} declared${
+      held.length === 0 ? ": nothing" : `: ${held.join(", ")}`
+    }`,
+    ...(governed.length === 0
+      ? []
+      : [`${String(governed.length)} governed by per-node consent: ${governed.join(", ")}`]),
+    ...(withheld.length === 0 ? [] : [`withheld ${withheld.join(", ")}`]),
+  ];
+  return clauses.join("; ");
 }
 
 /** An installed row's optional release-feed version (#238). */

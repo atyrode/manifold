@@ -11,6 +11,7 @@ import {
   type SectionProps,
 } from "@manifold/plugin";
 import {
+  GOVERNED_CAPS,
   PLUGIN_PURGE_TARGETS,
   PluginPurgeResultSchema,
   type ActionSummary,
@@ -780,12 +781,20 @@ function PluginDetail({
               {permissions.map((permission) => (
                 <li
                   key={permission.cap}
-                  className={`plugin-manager-permission${permission.granted ? "" : " is-withheld"}`}
-                  title={permission.granted ? undefined : "Declared, but withheld by the installer"}
+                  className={`plugin-manager-permission${
+                    permission.state === "granted" ? "" : ` is-${permission.state}`
+                  }`}
+                  title={
+                    permission.state === "withheld"
+                      ? "Declared, but withheld by the installer"
+                      : permission.state === "governed"
+                        ? "Governed: no grant ever carries this one. It is discharged per node, bound to an artifact revision, by consent."
+                        : undefined
+                  }
                 >
                   <code>{permission.cap}</code>
                   <span>{permission.meaning}</span>
-                  {permission.granted ? null : <small>withheld</small>}
+                  {permission.state === "granted" ? null : <small>{permission.state}</small>}
                 </li>
               ))}
             </ul>
@@ -1537,7 +1546,18 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
       if (record.success) {
         const granted =
           record.data.grantedCaps.length === 0 ? "nothing" : record.data.grantedCaps.join(", ");
-        setInstallNotice(`Installed ${record.data.id} ${record.data.version} — granted ${granted}`);
+        // A grant never carries a governed capability — `grantFor` filters them out of an
+        // explicit installer grant as well as the default one — so an installer who named one
+        // is told, rather than left to compare this notice against the manifest and conclude
+        // the install dropped it (#733).
+        const ignored = draft.grant.filter((cap) => GOVERNED_CAPS.includes(cap));
+        setInstallNotice(
+          `Installed ${record.data.id} ${record.data.version} — granted ${granted}${
+            ignored.length === 0
+              ? ""
+              : `. No grant carries ${ignored.join(", ")}: governed authority is consented per node, at an artifact revision, not granted at install`
+          }`,
+        );
         setInstallOpen(false);
       } else {
         setInstallFailure("The bundle was installed, but its install record could not be read");
