@@ -295,15 +295,22 @@ require_retained_server_only() {
 #
 # Fail-closed is unchanged: every one of these still HOLDs. It only says which doubt.
 retained_process_refusal() {
-  local status=$1 output=$2 predicate sentence
+  local status=$1 output=$2 answer predicate sentence count="" denied
   # 125 is docker's own failure, 126 not executable, 127 not found; no output at all with a
   # non-zero status is the same class — the probe's own first write never happened.
   if [[ $status -eq 125 || $status -eq 126 || $status -eq 127 || (-z $output && $status -ne 0) ]]; then
     printf 'retained incumbent process probe could not be run (exit %s)' "$status"
     return 0
   fi
-  predicate=${output#retained-processes-hold:}
-  if [[ $output != retained-processes-hold:* || ! $predicate =~ ^[a-z][a-z-]{0,46}[a-z]$ ]]; then
+  answer=${output#retained-processes-hold:}
+  # The predicate, and optionally how many reads the kernel refused during the scan (#756). A
+  # trailing field this receiver cannot parse is NOT ignored: silently dropping part of an
+  # answer is how a receiver comes to report something the probe did not say.
+  predicate=${answer%% *}
+  if [[ $answer == *" "* ]]; then count=${answer#* }; fi
+  if [[ $output != retained-processes-hold:* ||
+    ! $predicate =~ ^[a-z][a-z-]{0,46}[a-z]$ ||
+    ( -n $count && ! $count =~ ^denied=[1-9][0-9]{0,5}$ ) ]]; then
     if [[ $status -eq 0 ]]; then
       printf 'retained incumbent process probe answered outside its vocabulary'
     else
@@ -313,6 +320,17 @@ retained_process_refusal() {
   fi
   sentence=$(retained_process_hold_sentence "$predicate")
   printf 'retained incumbent %s: %s' "$sentence" "$predicate"
+  # One stranger or a systemic condition: a denied read cannot tell a hardened process from a
+  # container this probe may not read at all, and those want different repairs. The count is all
+  # the gate discloses beyond its predicate — never a pid, name, path or argument.
+  if [[ -n $count ]]; then
+    denied=${count#denied=}
+    if [[ $denied -eq 1 ]]; then
+      printf ' (1 denied read)'
+    else
+      printf ' (%s denied reads)' "$denied"
+    fi
+  fi
 }
 # WHAT EACH PREDICATE MEANS, CARRIED IN THE RECEIVER RATHER THAN READ FROM A FILE.
 #

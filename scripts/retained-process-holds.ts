@@ -41,10 +41,16 @@ export function retainedProcessRefusal(code: number, output: string): string {
   // these is a finding about the process table, which is what reporting them as one was.
   if (code === 125 || code === 126 || code === 127 || (output === "" && code !== 0))
     return `retained incumbent process probe could not be run (exit ${code})`;
-  const predicate = output.startsWith("retained-processes-hold:")
+  const answer = output.startsWith("retained-processes-hold:")
     ? output.slice("retained-processes-hold:".length)
     : "";
-  if (!/^[a-z][a-z-]{0,46}[a-z]$/.test(predicate))
+  // The predicate, and optionally how many reads the kernel refused during the scan (#756). A
+  // trailing field this receiver cannot parse is NOT ignored: silently dropping part of an
+  // answer is how a receiver comes to report something the probe did not say.
+  const fields = answer.split(" ");
+  const [predicate = "", count] = fields;
+  const denied = count === undefined ? 0 : Number(/^denied=([1-9][0-9]{0,5})$/.exec(count)?.[1]);
+  if (fields.length > 2 || !/^[a-z][a-z-]{0,46}[a-z]$/.test(predicate) || Number.isNaN(denied))
     // Un-inverted: a probe that never reached a verdict said "owning processes", and a probe
     // that ran and answered outside its vocabulary was reported as unavailable.
     return code === 0
@@ -52,5 +58,15 @@ export function retainedProcessRefusal(code: number, output: string): string {
       : "retained incumbent process probe did not reach a verdict";
   const sentence =
     SENTENCES[predicate] ?? "process probe answered a predicate this receiver does not know";
-  return `retained incumbent ${sentence}: ${predicate}`;
+  return `retained incumbent ${sentence}: ${predicate}${deniedReadsClause(denied)}`;
+}
+
+/**
+ * One stranger or a systemic condition: a denied read cannot tell a hardened process from a
+ * container this probe may not read at all, and those want different repairs (#756). The count
+ * is all the gate discloses beyond its predicate — never a pid, name, path or argument.
+ */
+function deniedReadsClause(denied: number): string {
+  if (denied === 0) return "";
+  return denied === 1 ? " (1 denied read)" : ` (${String(denied)} denied reads)`;
 }

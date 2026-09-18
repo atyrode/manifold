@@ -152,10 +152,19 @@ Every refusal names the predicate that refused (`unclassified-process`, `exit-un
 `fingerprint-unreadable-denied|-vanished|-unmapped`,
 `exit-unconfirmable-denied|-vanished|-unmapped`, `pid-reused-during-probe`,
 `zombie-identity-unconfirmed`, `server-process-shape`, `server-process-absent`,
-`server-restarted-during-probe`, `proc-field-shape`, or `classifier-fault`), and that token is
-the whole disclosure: no process argument, path, environment value or probe error leaves the
-container. A read failure carries which way it failed — denied a look, told the task was gone,
-or something else — because one word for four facts made a recurrence need its own issue (#738).
+`server-restarted-during-probe`, `proc-field-shape`, or `classifier-fault`), and that token plus
+a count of the reads the kernel refused is the whole disclosure: no process argument, path,
+environment value or probe error leaves the container. A read failure carries which way it
+failed — denied a look, told the task was gone, or something else — because one word for four
+facts made a recurrence need its own issue (#738). The count exists because the word alone could
+not answer the only question that changes the repair: a `denied` read cannot tell one hardened
+process from a container the probe may not read at all, since a same-uid process that clears
+`PR_SET_DUMPABLE` denies `exe` and `environ` exactly as another uid's does. Nothing identifying
+was added with it, deliberately: the probe already holds `cmdline` when it refuses, so what to
+disclose was a decision rather than a capability, and the decision recorded on #756 is a count —
+not a pid, name, path, argument, or per-process breakdown. A receiver that is handed a field it
+cannot parse reports that it did not reach a verdict rather than dropping the part it did not
+understand.
 Both receivers of that token — `require_retained_server_only`, which decides whether a retained
 replacement proceeds, and `verify-preview-environment.ts`, which reports the same probe in CI —
 each carry the same vocabulary saying what the word MEANS, so a refusal is one sentence about one
