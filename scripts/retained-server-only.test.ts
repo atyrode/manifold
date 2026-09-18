@@ -23,6 +23,11 @@ for (const [scenario, expected, denied] of [
   ["unreadable-cmdline-live", "exit-unproven"],
   ["pid-reused", "pid-reused-during-probe"],
   ["unreadable", "fingerprint-unreadable-denied", 1],
+  // A denied fingerprint read on a process the kernel then confirms has EXITED owns no live
+  // work: `stat` answers the exit question without ptrace access, and refusing before asking it
+  // is what made the integrated preview refuse its own harness's exec session (#756).
+  ["unreadable-then-gone", null],
+  ["unreadable-then-reused", "pid-reused-during-probe", 1],
   ["unreadable-twice", "fingerprint-unreadable-denied", 2],
   ["unreadable-then-unknown", "unclassified-process", 1],
   ["unreadable-vanished", "fingerprint-unreadable-vanished"],
@@ -73,6 +78,10 @@ mock.module("node:fs", () => ({
       // The listed process is still alive at the first read and has exited by the second.
       if (scenario === "zombie-reaped") return statReads === 1 ? statFor("Z") : fail("ENOENT");
       if (scenario === "unreadable-recheck") return statReads === 1 ? stat : fail("EACCES");
+      // The denied read happens first; the exit is what the probe asks stat about afterwards.
+      if (scenario === "unreadable-then-gone") return statReads === 1 ? stat : fail("ENOENT");
+      if (scenario === "unreadable-then-reused")
+        return statReads === 1 ? stat : statFor("S", "1", "54321");
       // The measured shape of a real exiting \`bun -e\` healthcheck: its address space is gone
       // while it is still RUNNING with a sibling thread, then its leader is a zombie with that
       // thread, then the kernel reaps it to a lone zombie.
@@ -100,7 +109,13 @@ mock.module("node:fs", () => ({
       return stat;
     }
     if (path === "/proc/99999999/cmdline") {
-      if (scenario === "unreadable" || scenario === "unreadable-twice" || scenario === "unreadable-then-unknown")
+      if (
+        scenario === "unreadable" ||
+        scenario === "unreadable-twice" ||
+        scenario === "unreadable-then-unknown" ||
+        scenario === "unreadable-then-gone" ||
+        scenario === "unreadable-then-reused"
+      )
         return fail("EACCES");
       if (scenario === "unreadable-vanished") return fail("ESRCH");
       if (scenario === "unreadable-unmapped") return fail("EIO");
