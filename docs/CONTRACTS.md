@@ -3488,6 +3488,15 @@ provider handling and postconditions belong to plugins, never the common floor.
   past its own consent. Where an installation does exist, the consent check above stands
   unchanged. The pairing before #735 demanded `machines:run` in the credential, which no install
   grant may contain, so no plugin could reach the door whatever it was consented.
+  **`machines:read` is asked of the CALLER as well as the plugin.** A plugin door's native
+  bridge is the caller's capabilities intersected with the door's `caps` plus its `delegates`
+  and never widens either side, so a door declaring `machines:read` covers its own half only:
+  an owner or root credential passes on `*`, while a narrowly scoped token naming
+  `machines:run` and the job verbs — the authority this read took before #735/#736 moved it
+  onto the narrower word — is refused `job_capability_absent:machines:read`, or
+  `job_grant_unreachable:machines:read` where it holds the capability but no grant reaches that
+  machine node. Such a token must add `machines:read`; it is a breaking change for any
+  capability list written before that move (#749).
   `machineId` is a machine id, never a machine name: an identifier that matches no enrolled
   machine refuses `machine_unknown` instead of projecting a machine that does not exist, so
   `connected: false` is always an enrolled machine's own state. The hub resolves no names;
