@@ -314,15 +314,41 @@ retained_process_refusal() {
   sentence=$(retained_process_hold_sentence "$predicate")
   printf 'retained incumbent %s: %s' "$sentence" "$predicate"
 }
-# One predicate's meaning, read from the vocabulary both receivers share.
+# WHAT EACH PREDICATE MEANS, CARRIED IN THE RECEIVER RATHER THAN READ FROM A FILE.
+#
+# This read `retained-process-holds.tsv`, and that file is not in the installed-tooling list
+# `verify-preview-environment.ts` copies, so at runtime the lookup always missed and every
+# refusal — including the one this exists to explain — reported "a predicate this receiver does
+# not know". A vocabulary whose delivery depends on a second list is a vocabulary that is absent
+# exactly where it is needed. Both receivers now carry their own copy, and a test asserts they
+# answer identically for every predicate, so drift fails a check instead of a deployment.
 retained_process_hold_sentence() {
-  local predicate=$1 line
-  while IFS= read -r line; do
-    [[ $line == "$predicate"$'\t'* ]] || continue
-    printf '%s' "${line#*$'\t'}"
-    return 0
-  done <"$here/retained-process-holds.tsv"
-  printf 'process probe answered a predicate this receiver does not know'
+  case $1 in
+    server-process-shape) printf 'PID 1 is not the supported hub entrypoint' ;;
+    server-process-absent) printf 'no hub process is running at PID 1' ;;
+    server-restarted-during-probe) printf 'the hub restarted while the probe was reading it' ;;
+    unclassified-process) printf 'a process it cannot classify is running' ;;
+    zombie-identity-unconfirmed)
+      printf 'a terminated process did not keep its identity while the probe confirmed it' ;;
+    pid-reused-during-probe) printf 'a PID was reused while the probe was reading it' ;;
+    exit-unproven) printf "a process did not finish exiting within the probe's deadline" ;;
+    fingerprint-unreadable-denied)
+      printf 'the probe was not permitted to read a process fingerprint' ;;
+    fingerprint-unreadable-vanished)
+      printf 'the kernel disowned a task while the probe read its fingerprint' ;;
+    fingerprint-unreadable-unmapped)
+      printf 'a process fingerprint read failed for a reason the probe does not map' ;;
+    exit-unconfirmable-denied)
+      printf 'the probe was not permitted to confirm that a process had exited' ;;
+    exit-unconfirmable-vanished)
+      printf 'the kernel disowned a task while the probe confirmed its exit' ;;
+    exit-unconfirmable-unmapped)
+      printf 'confirming a process exit failed for a reason the probe does not map' ;;
+    proc-field-shape) printf 'a /proc field did not have the shape the probe requires' ;;
+    classifier-fault)
+      printf 'the process classifier faulted, which is a defect in the probe and not a finding about this machine' ;;
+    *) printf 'process probe answered a predicate this receiver does not know' ;;
+  esac
 }
 
 # Return the exact source revision of one running, build-aligned disposable

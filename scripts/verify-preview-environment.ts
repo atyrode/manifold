@@ -1542,7 +1542,7 @@ unlinkSync(${JSON.stringify(zombieFifo)});`);
       // back, at this layer, the collapse #741 removed inside the probe (#738).
       requireThat(
         proof.code === 0 && proof.out.trim() === "retained-processes-server-only",
-        retainedProcessRefusal(proof.code, proof.out.trim(), tooling),
+        retainedProcessRefusal(proof.code, proof.out.trim()),
       );
       requireThat(
         (await execBun(zombieState)) === terminalState,

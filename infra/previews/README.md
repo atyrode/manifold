@@ -158,8 +158,12 @@ container. A read failure carries which way it failed — denied a look, told th
 or something else — because one word for four facts made a recurrence need its own issue (#738).
 Both receivers of that token — `require_retained_server_only`, which decides whether a retained
 replacement proceeds, and `verify-preview-environment.ts`, which reports the same probe in CI —
-read `retained-process-holds.tsv` to say what the word MEANS, so a refusal is one sentence about
-one fact. Reporting all of them as "has owning or unknown processes" was that collapse one layer
+each carry the same vocabulary saying what the word MEANS, so a refusal is one sentence about one
+fact. They carry it rather than read it from a file: a data file has to be added to
+`verify-preview-environment.ts`'s installed-tooling list to exist at runtime, and one that was
+not made every refusal report an unknown predicate in the only environment that matters. A test
+asserts both receivers answer identically for every predicate, so drift fails a check instead of
+a deployment. Reporting all of them as "has owning or unknown processes" was that collapse one layer
 up: true of `unclassified-process` alone, and an affirmative claim about a process table even
 when the probe never read one (#738). Three answers are not predicates at all and now say so:
 a probe that could not be RUN (`docker exec` itself failing, where the old report claimed owning

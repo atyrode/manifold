@@ -1,29 +1,41 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-
 /**
- * What a retained-process probe's answer MEANS, for the two receivers that read it.
+ * WHAT EACH PREDICATE MEANS, for the two receivers that read a retained-process probe's answer.
  *
- * The probe names every refusal it can reach (#699, #719, #741) and both receivers reported all
- * of them with one sentence about owning or unknown processes — true of exactly one predicate,
- * and a claim about a process table the probe may never have read (#738). The vocabulary is a
- * data file so the deploy path and this harness cannot drift into disagreeing about what a word
- * means; the classification below is the same decision in both, and its test asserts the two
- * agree string for string.
+ * This lived in `infra/previews/retained-process-holds.tsv` and was read at runtime — and that
+ * file is not in the installed-tooling list `verify-preview-environment.ts` copies, so every
+ * lookup missed in the only environment that matters and every refusal reported "a predicate
+ * this receiver does not know", including the one the vocabulary exists to explain. A meaning
+ * whose delivery depends on a second list is absent exactly where it is needed, so each receiver
+ * carries its own copy and the test asserts the two answer identically for every predicate.
  */
-export function retainedProcessHoldSentences(tooling: string): ReadonlyMap<string, string> {
-  const rows = new Map<string, string>();
-  for (const line of readFileSync(join(tooling, "retained-process-holds.tsv"), "utf8").split(
-    "\n",
-  )) {
-    if (line.startsWith("#") || !line.includes("\t")) continue;
-    const separator = line.indexOf("\t");
-    rows.set(line.slice(0, separator), line.slice(separator + 1));
-  }
-  return rows;
+const SENTENCES: Readonly<Record<string, string>> = {
+  "server-process-shape": "PID 1 is not the supported hub entrypoint",
+  "server-process-absent": "no hub process is running at PID 1",
+  "server-restarted-during-probe": "the hub restarted while the probe was reading it",
+  "unclassified-process": "a process it cannot classify is running",
+  "zombie-identity-unconfirmed":
+    "a terminated process did not keep its identity while the probe confirmed it",
+  "pid-reused-during-probe": "a PID was reused while the probe was reading it",
+  "exit-unproven": "a process did not finish exiting within the probe's deadline",
+  "fingerprint-unreadable-denied": "the probe was not permitted to read a process fingerprint",
+  "fingerprint-unreadable-vanished":
+    "the kernel disowned a task while the probe read its fingerprint",
+  "fingerprint-unreadable-unmapped":
+    "a process fingerprint read failed for a reason the probe does not map",
+  "exit-unconfirmable-denied": "the probe was not permitted to confirm that a process had exited",
+  "exit-unconfirmable-vanished": "the kernel disowned a task while the probe confirmed its exit",
+  "exit-unconfirmable-unmapped":
+    "confirming a process exit failed for a reason the probe does not map",
+  "proc-field-shape": "a /proc field did not have the shape the probe requires",
+  "classifier-fault":
+    "the process classifier faulted, which is a defect in the probe and not a finding about this machine",
+};
+
+export function retainedProcessHoldSentences(): Readonly<Record<string, string>> {
+  return SENTENCES;
 }
 
-export function retainedProcessRefusal(code: number, output: string, tooling: string): string {
+export function retainedProcessRefusal(code: number, output: string): string {
   // 125 is docker's own failure, 126 not executable, 127 not found; no output at all with a
   // non-zero status is the same class — the probe's own first write never happened. None of
   // these is a finding about the process table, which is what reporting them as one was.
@@ -39,7 +51,6 @@ export function retainedProcessRefusal(code: number, output: string, tooling: st
       ? "retained incumbent process probe answered outside its vocabulary"
       : "retained incumbent process probe did not reach a verdict";
   const sentence =
-    retainedProcessHoldSentences(tooling).get(predicate) ??
-    "process probe answered a predicate this receiver does not know";
+    SENTENCES[predicate] ?? "process probe answered a predicate this receiver does not know";
   return `retained incumbent ${sentence}: ${predicate}`;
 }
