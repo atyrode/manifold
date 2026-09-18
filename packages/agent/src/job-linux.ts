@@ -830,6 +830,48 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
       stdio.push(fd);
       args.push("--perms", "0400", "--ro-bind-data", String(slot), file.target);
     }
+    // A HOST-NETWORK JOB HAD ROUTES AND NO RESOLVER. Nothing binds `/etc`, so
+    // `/etc/resolv.conf` did not exist inside a job at all: a workload could open a TCP
+    // connection to an address and could not turn a name into one. That reads from inside as a
+    // network fault rather than as a missing file — `fetch` reports a timeout, while the
+    // resolver underneath it was refused a connection to the default 127.0.0.1 — so a
+    // workload's every by-name call failed slowly and blamed the network (#751).
+    //
+    // The DNS case beside this one passes its nameserver's PORT to the probe, which proved the
+    // syscall path under seccomp and never the discovery a real resolver performs, which is why
+    // this was invisible. `RES_OPTIONS=single-request` above is a separate, still-needed
+    // mitigation for glibc's dual-stack batching, and it steers only glibc: it was never
+    // configuration a resolver could find.
+    //
+    // Snapshot rather than bind the host's path. `--ro-bind-data` takes anonymous sealed bytes,
+    // so no host pathname is resolved inside the sandbox's mount namespace and a later edit on
+    // the host cannot change what this job already read — the same reason `inputFiles` above
+    // takes its own descriptor. A host with no readable resolver configuration hands over
+    // nothing and the job is exactly as it was; an address-only workload is unaffected either
+    // way. `network: "none"` unshares the netns and gets none of this: there is nothing it
+    // could reach to resolve against.
+    //
+    // The read is bounded and swallows its failure: this is a few lines of
+    // `nameserver`/`search`/`options`, and a path that is not that is not something to mount
+    // into a workload. A symlinked `/etc/resolv.conf` — the systemd-resolved stub, most
+    // commonly — is followed here, on the host, so the job receives bytes rather than a link
+    // into a `/run` path it cannot traverse.
+    if (spec.network === "host") {
+      let resolver: Buffer | null;
+      try {
+        const bytes = readFileSync("/etc/resolv.conf");
+        resolver = bytes.byteLength > 0 && bytes.byteLength <= 65536 ? bytes : null;
+      } catch {
+        resolver = null;
+      }
+      if (resolver !== null) {
+        const fd = privateByteFile(resolver);
+        inputFds.push(fd);
+        const slot = stdio.length;
+        stdio.push(fd);
+        args.push("--perms", "0444", "--ro-bind-data", String(slot), "/etc/resolv.conf");
+      }
+    }
     if (spec.nestedCgroup) {
       bind(groups.workloads.fd, "/sys/fs/cgroup/workloads", true);
       args.push("--setenv", "MANIFOLD_JOB_CGROUP_ROOT", "/sys/fs/cgroup/workloads");
