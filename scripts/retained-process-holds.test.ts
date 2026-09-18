@@ -58,6 +58,37 @@ for (const [code, output, expected] of [
     "retained-processes-hold:fingerprint-unreadable-denied",
     "retained incumbent the probe was not permitted to read a process fingerprint: fingerprint-unreadable-denied",
   ],
+  // How many reads the kernel refused, which is all this gate discloses beyond its predicate: a
+  // denied read cannot tell one hardened process from a container the probe may not read at all,
+  // and those want different repairs (#756).
+  [
+    1,
+    "retained-processes-hold:fingerprint-unreadable-denied denied=1",
+    "retained incumbent the probe was not permitted to read a process fingerprint: fingerprint-unreadable-denied (1 denied read)",
+  ],
+  [
+    1,
+    "retained-processes-hold:unclassified-process denied=4",
+    "retained incumbent a process it cannot classify is running: unclassified-process (4 denied reads)",
+  ],
+  // A count of zero is not something the probe says, and a receiver that accepted it would be
+  // inventing a reading. Same for a field this receiver cannot parse, or one it was not given:
+  // dropping part of an answer silently is how a receiver reports what the probe never said.
+  [
+    1,
+    "retained-processes-hold:fingerprint-unreadable-denied denied=0",
+    "retained incumbent process probe did not reach a verdict",
+  ],
+  [
+    1,
+    "retained-processes-hold:fingerprint-unreadable-denied comm=bun",
+    "retained incumbent process probe did not reach a verdict",
+  ],
+  [
+    1,
+    "retained-processes-hold:fingerprint-unreadable-denied denied=1 pid=67",
+    "retained incumbent process probe did not reach a verdict",
+  ],
   [
     1,
     "retained-processes-hold:a-word-from-a-later-probe",

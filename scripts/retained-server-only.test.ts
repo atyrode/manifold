@@ -14,15 +14,21 @@ const classifier = pathToFileURL(
 // three read failures and a live process is what made the next recurrence need its own issue
 // (#738). A process that is exiting is watched to its end rather than refused: an exiting
 // multi-threaded process drops `cmdline`/`exe` while still listed and even still running.
-for (const [scenario, expected] of [
+// The third column is how many reads the kernel refused during the scan, which the probe now
+// reports alongside its predicate: one denied read and a container of them are the same word
+// otherwise, and they want different repairs (#756). It is a count and nothing else — the last
+// assertion here pins the entire disclosure to predicate plus integer.
+for (const [scenario, expected, denied] of [
   ["gone", null],
   ["unreadable-cmdline-live", "exit-unproven"],
   ["pid-reused", "pid-reused-during-probe"],
-  ["unreadable", "fingerprint-unreadable-denied"],
+  ["unreadable", "fingerprint-unreadable-denied", 1],
+  ["unreadable-twice", "fingerprint-unreadable-denied", 2],
+  ["unreadable-then-unknown", "unclassified-process", 1],
   ["unreadable-vanished", "fingerprint-unreadable-vanished"],
   ["unreadable-unmapped", "fingerprint-unreadable-unmapped"],
   ["unreadable-no-errno", "classifier-fault"],
-  ["unreadable-recheck", "exit-unconfirmable-denied"],
+  ["unreadable-recheck", "exit-unconfirmable-denied", 1],
   ["unknown", "unclassified-process"],
   ["healthcheck-exec-transition", null],
   ["healthcheck-exec-transition-reused", "unclassified-process"],
@@ -33,7 +39,7 @@ for (const [scenario, expected] of [
   ["exiting-zombie-live-threads", "exit-unproven"],
   ["zombie-with-live-threads", "exit-unproven"],
   ["zombie-reused", "zombie-identity-unconfirmed"],
-  ["zombie-unreadable", "exit-unconfirmable-denied"],
+  ["zombie-unreadable", "exit-unconfirmable-denied", 1],
 ] as const) {
   test(`retained process snapshot ${expected === null ? "admits" : `answers ${expected} for`} a ${scenario} process`, async () => {
     // Run the real streamed classifier in an isolated process. Fault injection makes
@@ -49,12 +55,18 @@ let statReads = 0;
 let cmdlineReads = 0;
 const fail = (code) => { throw Object.assign(new Error("private proc metadata"), { code }); };
 mock.module("node:fs", () => ({
-  readdirSync: () => ["1", "99999999"],
+  readdirSync: () =>
+    scenario === "unreadable-twice" || scenario === "unreadable-then-unknown"
+      ? ["1", "99999999", "99999998"]
+      : ["1", "99999999"],
   readFileSync: (path) => {
     if (path === "/proc/1/stat") return stat;
     if (path === "/proc/1/status") return "Uid:\\t0 0 0 0\\nGid:\\t0 0 0 0\\n";
     if (path === "/proc/1/environ") return "";
     if (path === "/proc/1/cmdline") return "bun\\0packages/server/src/main.ts\\0";
+    if (path === "/proc/99999998/stat") return stat;
+    if (path === "/proc/99999998/cmdline")
+      return scenario === "unreadable-then-unknown" ? "unrecognized-owner\\0" : fail("EACCES");
     if (path === "/proc/99999999/stat") {
       if (scenario === "gone") return fail("ENOENT");
       statReads++;
@@ -88,7 +100,8 @@ mock.module("node:fs", () => ({
       return stat;
     }
     if (path === "/proc/99999999/cmdline") {
-      if (scenario === "unreadable") return fail("EACCES");
+      if (scenario === "unreadable" || scenario === "unreadable-twice" || scenario === "unreadable-then-unknown")
+        return fail("EACCES");
       if (scenario === "unreadable-vanished") return fail("ESRCH");
       if (scenario === "unreadable-unmapped") return fail("EIO");
       // A thrown value with no errno is a fault in the classifier, not a raced read.
@@ -107,6 +120,7 @@ mock.module("node:fs", () => ({
   readlinkSync: (path) => {
     if (path === "/proc/1/exe") return "/usr/local/bin/bun";
     if (path === "/proc/1/cwd") return "/app";
+    if (path === "/proc/99999998/exe") return "/usr/local/bin/unknown-owner";
     if (path === "/proc/99999999/exe")
       return scenario.startsWith("healthcheck-exec-transition")
         ? "/usr/local/bin/bun"
@@ -133,7 +147,20 @@ await import(${JSON.stringify(classifier)});
       ]);
       expect(code).toBe(expected === null ? 0 : 1);
       expect(stdout.includes("retained-processes-server-only")).toBe(expected === null);
-      if (expected !== null) expect(stdout).toContain(`retained-processes-hold:${expected}`);
+      if (expected !== null) {
+        expect(stdout).toContain(
+          `retained-processes-hold:${expected}${denied === undefined ? "" : ` denied=${String(denied)}`}`,
+        );
+        // The whole answer, not a substring of it: the disclosure bound this gate was given is a
+        // predicate plus a count, so a pid, name, path or argument appearing here is the
+        // decision on #756 being quietly widened by whoever edits the probe next.
+        const answer = stdout
+          .split("\n")
+          .find((line) => line.startsWith("retained-processes-hold:"));
+        expect(answer).toMatch(
+          /^retained-processes-hold:[a-z][a-z-]{0,46}[a-z]( denied=[1-9][0-9]{0,5})?$/,
+        );
+      }
       // The predicate is the entire disclosure: no argument, path or probe error escapes.
       expect(stdout).not.toContain("private proc metadata");
       expect(stdout).not.toContain("/proc/");

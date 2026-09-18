@@ -51,8 +51,21 @@ function errno(error: unknown): string {
   return code;
 }
 
+/**
+ * HOW MANY READS THE KERNEL REFUSED, the one thing beyond the predicate this probe discloses.
+ * `fingerprint-unreadable-denied` cannot distinguish a single hardened process — a same-uid
+ * process that cleared `PR_SET_DUMPABLE` denies `exe` and `environ` exactly as another uid's
+ * does — from a container this probe may not read at all, and those want different repairs.
+ * The count says which. It is an integer about the scan and never an identity, and a refusal
+ * already implies at least one denied read, so it states no fact the refusal did not (#756).
+ */
+let deniedReads = 0;
+
 function readFault(code: string): ReadFault {
-  if (code === "EACCES" || code === "EPERM") return "denied";
+  if (code === "EACCES" || code === "EPERM") {
+    deniedReads += 1;
+    return "denied";
+  }
   if (code === "ESRCH") return "vanished";
   return "unmapped";
 }
@@ -220,6 +233,20 @@ try {
   const serverEnvironment = processEnvironment("1");
   const pids = readdirSync("/proc").filter((name) => /^[0-9]+$/.test(name));
   let server = false;
+  /*
+    A DENIED READ DEFERS SO THE SCAN CAN FINISH COUNTING; every other predicate still refuses at
+    the first process it finds. Counting is the whole reason to keep going: one denied read and a
+    container of them are the same word today, and the operator answer on #756 is a count rather
+    than an identity. The predicate is still the FIRST refusal observed, so no answer changes
+    except that a later, more specific refusal now wins over an earlier denied read — which is
+    the more useful of the two to report, and the count survives either way.
+  */
+  let firstHold: Held | undefined;
+  const deferred = (error: unknown): boolean => {
+    if (!(error instanceof Held) || !error.predicate.endsWith("-denied")) return false;
+    firstHold ??= error;
+    return true;
+  };
   for (const pid of pids) {
     if (Number(pid) === process.pid) continue;
     let stat: string[] | undefined;
@@ -270,14 +297,22 @@ try {
       // different one is a live occupant this probe never examined. Refusing both is what made
       // a permitted rollback fail on a process that had already finished (#699), and refusing
       // the unfinished half is what failed three consecutive unrelated PRs (#738).
-      if (error instanceof Held) throw error;
+      if (error instanceof Held) {
+        if (deferred(error)) continue;
+        throw error;
+      }
       const code = errno(error);
-      if (code !== "ENOENT") hold(`fingerprint-unreadable-${readFault(code)}`);
-      const exit = observedExit(pid, stat?.[19]);
-      if (exit === "replaced") hold("pid-reused-during-probe");
-      if (exit === "unfinished") hold("exit-unproven");
+      try {
+        if (code !== "ENOENT") hold(`fingerprint-unreadable-${readFault(code)}`);
+        const exit = observedExit(pid, stat?.[19]);
+        if (exit === "replaced") hold("pid-reused-during-probe");
+        if (exit === "unfinished") hold("exit-unproven");
+      } catch (raised) {
+        if (!deferred(raised)) throw raised;
+      }
     }
   }
+  if (firstHold) throw firstHold;
   // starttime is stable across the probe, unlike CPU counters in /proc/1/stat.
   const starttime = (stat: string): string | undefined =>
     stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
@@ -290,7 +325,9 @@ try {
   // filesystem errors (including paths) never leave the container. Without it a recurrence in
   // CI could only be diagnosed by elimination, which is what #699 was opened to end.
   console.log(
-    `retained-processes-hold:${error instanceof Held ? error.predicate : "classifier-fault"}`,
+    `retained-processes-hold:${error instanceof Held ? error.predicate : "classifier-fault"}` +
+      // A count of zero is what every other refusal says by not mentioning one.
+      (deniedReads > 0 ? ` denied=${String(deniedReads)}` : ""),
   );
   process.exit(1);
 }
