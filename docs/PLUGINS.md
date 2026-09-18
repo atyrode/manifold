@@ -1759,6 +1759,12 @@ deployed here?", which is a question no consent can gate (#743). Naming an
 `installationRevision` that resolves to nothing is not that case: where an installation exists,
 it still refuses `job_installation_absent`. None of it is an execution grant, and declaring
 `machines:read` alone is not enough to reach a machine your grant does not cover.
+**Your CALLER needs `machines:read` too.** The bridge your handle gets is that caller's
+capabilities intersected with your `caps` plus your `delegates`, so declaring the read covers
+your half and not theirs: an owner key passes on `*`, and a narrowly scoped token that names
+only `machines:run` and the job verbs is refused `job_capability_absent:machines:read` no
+matter what you declared (#749, and the rule under "Coordinate effects without acquiring
+authority" below).
 `connected` is the current proved job-owner channel, not terminal online status.
 `machineId` must be the machine's id: an identifier naming no enrolled machine refuses
 `machine_unknown` rather than answering `connected: false`, which an enrolled machine that is
@@ -1906,10 +1912,29 @@ original credential, scope, expiry and grants, attenuated to the action's declar
 each effect still resolves and authorizes its concrete native targets and revision-bound
 consent. A read-only action cannot invoke a service even when its caller is root. Direct
 governed action effects still need their ordinary `caps` and target `requirements`.
-`machines:read` is delegable, which is how a door reaches `ctx.jobs.describe` without making
-every caller hold a machine capability to be told whether the machine it deployed to is ready:
-the bridge a door gets is its own `caps` plus its `delegates`, so a read it never declared is
-refused `job_capability_absent:machines:read` however privileged the caller (#739).
+`machines:read` is delegable, which is how a door reaches `ctx.jobs.describe` without asking
+its caller for a machine capability at the DOOR: admission grades `caps`, never `delegates`.
+The native bridge behind the door is a different thing, and this is the rule for every
+delegate, not a fact about this one.
+
+**A NATIVE BRIDGE IS THE CALLER'S CAPABILITIES INTERSECTED WITH THE DOOR'S `caps` PLUS ITS
+`delegates`, AND IT NEVER WIDENS EITHER SIDE.** A read the door never declared is refused
+`job_capability_absent:machines:read` however privileged the caller (#739). The other
+direction is the half that surprises people: a capability the door DOES declare is not
+conferred on a caller who lacks it. Declaring a delegate raises a ceiling; it hands nobody
+authority. An owner or root credential holds `*` and so passes the intersection for every
+engine capability, which is why a door of this shape serves an operator and refuses a narrowly
+scoped token holding the same job verbs (#749).
+
+**A narrow token that reads a machine must add `machines:read`.** Name it beside whatever else
+the token holds: `machines:run` is not a superset of it, despite being the stronger-sounding
+word, and a token that could read a machine through a plugin door before #736 moved that read
+onto the narrower word cannot after. Without it the hub refuses
+`job_capability_absent:machines:read`, or `job_grant_unreachable:machines:read` where the
+capability is held but no grant reaches that machine node. A plugin that flattens native
+failures into one string shows its own word instead — `atyrode.omp` answers
+`omp_operation_unavailable` — so a caller diagnosing either name is looking for this
+paragraph. Owner keys need no change.
 
 **Use scoped services, not source credentials.** `ctx.services.describe` reports the
 operations the caller may see. `read` and `invoke` accept exact
