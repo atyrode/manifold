@@ -26,7 +26,7 @@ for (const [scenario, expected, denied] of [
   // A denied fingerprint read on a process the kernel then confirms has EXITED owns no live
   // work: `stat` answers the exit question without ptrace access, and refusing before asking it
   // is what made the integrated preview refuse its own harness's exec session (#756).
-  ["unreadable-then-gone", null],
+  ["unreadable-then-gone", null, 1],
   ["unreadable-then-reused", "pid-reused-during-probe", 1],
   ["unreadable-twice", "fingerprint-unreadable-denied", 2],
   ["unreadable-then-unknown", "unclassified-process", 1],
@@ -161,7 +161,22 @@ await import(${JSON.stringify(classifier)});
         new Response(child.stderr).text(),
       ]);
       expect(code).toBe(expected === null ? 0 : 1);
-      expect(stdout.includes("retained-processes-server-only")).toBe(expected === null);
+      const success = stdout
+        .split("\n")
+        .find((line) => line.startsWith("retained-processes-server-only"));
+      expect(success !== undefined).toBe(expected === null);
+      if (expected === null) {
+        // A success says how many reads the kernel refused, and nothing more: admitting is what
+        // the probe DOES with a denied read whose process it then proved had exited, and an
+        // admission that recorded nothing made that handling indistinguishable from a run where
+        // the condition never arose (#762). Silent at zero, so the field carries information
+        // whenever it appears, and bounded to the integer (#756).
+        expect(success).toBe(
+          denied === undefined
+            ? "retained-processes-server-only"
+            : `retained-processes-server-only denied=${String(denied)}`,
+        );
+      }
       if (expected !== null) {
         expect(stdout).toContain(
           `retained-processes-hold:${expected}${denied === undefined ? "" : ` denied=${String(denied)}`}`,

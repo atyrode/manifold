@@ -334,7 +334,18 @@ try {
   if (!server) hold("server-process-absent");
   if (!starttime(before) || starttime(before) !== starttime(readFileSync("/proc/1/stat", "utf8")))
     hold("server-restarted-during-probe");
-  console.log("retained-processes-server-only");
+  /*
+    THE COUNT APPEARS ON A SUCCESS TOO, because admitting is what this probe now DOES with a
+    denied read whose process the kernel confirms has exited (#762) — and an admission records
+    nothing, so a run where the condition arose and was handled correctly was indistinguishable
+    from a run where it never happened. A fix whose operation is unobservable can only be argued
+    about from fixtures. Same bounded field as a refusal carries: an integer about the scan, no
+    pid, name, path or argument (#756). Silent at zero, so the line appears only when it carries
+    information; `denied=0` on every green run would train a reader to skip the field.
+  */
+  console.log(
+    `retained-processes-server-only${deniedReads > 0 ? ` denied=${String(deniedReads)}` : ""}`,
+  );
 } catch (error) {
   // The predicate that refused, and nothing else: process arguments, environment values and
   // filesystem errors (including paths) never leave the container. Without it a recurrence in

@@ -1,6 +1,10 @@
 import { expect, test } from "bun:test";
 import { join, resolve } from "node:path";
-import { retainedProcessHoldSentences, retainedProcessRefusal } from "./retained-process-holds.ts";
+import {
+  retainedProcessAdmission,
+  retainedProcessHoldSentences,
+  retainedProcessRefusal,
+} from "./retained-process-holds.ts";
 
 const root = resolve(import.meta.dir, "..");
 const tooling = join(root, "infra/previews");
@@ -98,6 +102,49 @@ for (const [code, output, expected] of [
   test(`both receivers report "${expected.slice(0, 48)}…"`, () => {
     expect(retainedProcessRefusal(code, output)).toBe(expected);
     expect(shellRefusal(code, output)).toBe(expected);
+  });
+}
+
+/** The deploy path's own admission reader, called the way `require_retained_server_only` calls it. */
+function shellAdmission(code: number, output: string): { admitted: boolean; denied: number } {
+  const result = Bun.spawnSync(
+    [
+      "bash",
+      "-c",
+      'here=$1; source "$here/common.sh"; source "$here/environment.sh"; retained_process_admission "$2" "$3"',
+      "test",
+      tooling,
+      String(code),
+      output,
+    ],
+    { stdout: "pipe", stderr: "pipe" },
+  );
+  expect(result.stderr.toString()).toBe("");
+  return {
+    admitted: result.exitCode === 0,
+    denied: result.exitCode === 0 ? Number(result.stdout.toString()) : 0,
+  };
+}
+
+// What a SUCCESSFUL probe said, asked of both receivers independently. A denied read whose
+// process the kernel then proved had exited is admitted (#762), and an admission that recorded
+// nothing made that handling indistinguishable from a run where the condition never arose — so
+// the count appears on a success too, bounded to the integer and silent at zero (#756). Anything
+// that is not exactly one of those two shapes is not an admission, including a success token
+// carrying a field a receiver cannot parse.
+for (const [code, output, expected] of [
+  [0, "retained-processes-server-only", { admitted: true, denied: 0 }],
+  [0, "retained-processes-server-only denied=1", { admitted: true, denied: 1 }],
+  [0, "retained-processes-server-only denied=12", { admitted: true, denied: 12 }],
+  [0, "retained-processes-server-only denied=0", { admitted: false, denied: 0 }],
+  [0, "retained-processes-server-only comm=bun", { admitted: false, denied: 0 }],
+  [0, "retained-processes-server-only denied=1 pid=67", { admitted: false, denied: 0 }],
+  [0, "retained-processes-hold:unclassified-process", { admitted: false, denied: 0 }],
+  [1, "retained-processes-server-only", { admitted: false, denied: 0 }],
+] as const) {
+  test(`both receivers read "${output}" (exit ${code}) as ${expected.admitted ? `admitted with ${expected.denied}` : "not an admission"}`, () => {
+    expect(retainedProcessAdmission(code, output)).toEqual(expected);
+    expect(shellAdmission(code, output)).toEqual(expected);
   });
 }
 

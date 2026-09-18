@@ -35,6 +35,24 @@ export function retainedProcessHoldSentences(): Readonly<Record<string, string>>
   return SENTENCES;
 }
 
+/**
+ * WHAT A SUCCESSFUL PROBE SAID, including how many reads the kernel refused during its scan.
+ * A denied fingerprint read whose process the kernel confirms has exited is ADMITTED (#762), and
+ * an admission that recorded nothing left that handling invisible — a run where the condition
+ * arose and was handled read exactly like a run where it never happened, so the fix's own
+ * operation could only be argued about from fixtures. The field is the same bounded integer a
+ * refusal carries: no pid, name, path or argument (#756). `admitted` is false for anything else
+ * the probe might say, including a success token with a trailing field this cannot parse.
+ */
+export function retainedProcessAdmission(
+  code: number,
+  output: string,
+): { admitted: boolean; denied: number } {
+  const match = /^retained-processes-server-only( denied=([1-9][0-9]{0,5}))?$/.exec(output);
+  if (code !== 0 || match === null) return { admitted: false, denied: 0 };
+  return { admitted: true, denied: match[2] === undefined ? 0 : Number(match[2]) };
+}
+
 export function retainedProcessRefusal(code: number, output: string): string {
   // 125 is docker's own failure, 126 not executable, 127 not found; no output at all with a
   // non-zero status is the same class — the probe's own first write never happened. None of
