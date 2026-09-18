@@ -65,7 +65,7 @@ for (const [code, output, expected] of [
   ],
 ] as const) {
   test(`both receivers report "${expected.slice(0, 48)}…"`, () => {
-    expect(retainedProcessRefusal(code, output, tooling)).toBe(expected);
+    expect(retainedProcessRefusal(code, output)).toBe(expected);
     expect(shellRefusal(code, output)).toBe(expected);
   });
 }
@@ -91,9 +91,9 @@ test("the vocabulary covers every predicate the classifier can answer with", () 
     "proc-field-shape",
     "classifier-fault",
   ];
-  const sentences = retainedProcessHoldSentences(tooling);
-  expect([...sentences.keys()].sort()).toEqual([...predicates].sort());
-  for (const sentence of sentences.values()) expect(sentence.length).toBeGreaterThan(8);
+  const sentences = retainedProcessHoldSentences();
+  expect(Object.keys(sentences).sort()).toEqual([...predicates].sort());
+  for (const sentence of Object.values(sentences)) expect(sentence.length).toBeGreaterThan(8);
   // The shape `environment.sh` validates before it will use a predicate at all.
   for (const predicate of predicates) expect(predicate).toMatch(/^[a-z][a-z-]{0,46}[a-z]$/);
 });
