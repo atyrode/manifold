@@ -18,7 +18,7 @@ import { join, resolve } from "node:path";
 import { createServer, type Server } from "node:net";
 import { isDeepStrictEqual } from "node:util";
 import { Y } from "../packages/scene/src/index.ts";
-import { retainedProcessRefusal } from "./retained-process-holds.ts";
+import { retainedProcessAdmission, retainedProcessRefusal } from "./retained-process-holds.ts";
 import {
   ActionOutcomeSchema,
   ContainerResponseSchema,
@@ -1540,10 +1540,13 @@ unlinkSync(${JSON.stringify(zombieFifo)});`);
       // never ran, a probe that answered out of vocabulary and a probe that read every process
       // and refused as one "refused the live plugin isolate and observed zombie" sentence put
       // back, at this layer, the collapse #741 removed inside the probe (#738).
-      requireThat(
-        proof.code === 0 && proof.out.trim() === "retained-processes-server-only",
-        retainedProcessRefusal(proof.code, proof.out.trim()),
-      );
+      const admission = retainedProcessAdmission(proof.code, proof.out.trim());
+      requireThat(admission.admitted, retainedProcessRefusal(proof.code, proof.out.trim()));
+      // A denied read the kernel then proved had exited is ADMITTED (#762), and an admission
+      // that recorded nothing made that handling invisible in CI: this run and a run where the
+      // condition never arose looked identical. The count is the same bounded integer a refusal
+      // carries, so it is reported here rather than inferred from fixtures.
+      if (admission.denied > 0) metrics["retainedDeniedReadsAdmitted"] = admission.denied;
       requireThat(
         (await execBun(zombieState)) === terminalState,
         "the zombie disappeared or changed identity during the retained process proof",

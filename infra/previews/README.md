@@ -156,6 +156,11 @@ verification harness's own reads run as another uid, and a container's root hold
 `CAP_SYS_PTRACE` by default, so the probe could read that process's `stat` and command line but
 not its fingerprint — and refused a deployment because of a process that had already exited.
 Only an exit the kernel confirms admits; a reused PID and a live unreadable process still hold.
+A probe that admitted after a denied read SAYS SO, carrying the same count a refusal carries and
+staying silent at zero: admitting is what it now does with that case, and an admission that
+recorded nothing left the handling invisible — a run where the condition arose and was handled
+read exactly like a run where it never arose, so whether the environment exercises the path at
+all could only be argued from fixtures.
 Every refusal names the predicate that refused (`unclassified-process`, `exit-unproven`,
 `fingerprint-unreadable-denied|-vanished|-unmapped`,
 `exit-unconfirmable-denied|-vanished|-unmapped`, `pid-reused-during-probe`,

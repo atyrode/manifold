@@ -281,8 +281,27 @@ require_retained_server_only() {
   local status=0
   proof=$(docker exec -i "$incumbent" bun --no-env-file - <"$here/retained-server-only.ts" 2>/dev/null) ||
     status=$?
-  [[ $status -eq 0 && $proof == retained-processes-server-only ]] ||
+  # A COUNTED SUCCESS IS STILL A SUCCESS, AND IT IS SAID OUT LOUD.
+  local denied
+  if denied=$(retained_process_admission "$status" "$proof"); then
+    [[ $denied -eq 0 ]] ||
+      log "retained incumbent admitted with $denied denied read(s): each was a process the kernel confirmed had exited"
+  else
     fail "HOLD: $(retained_process_refusal "$status" "$proof")"
+  fi
+}
+# How many reads the kernel refused during a SUCCESSFUL probe, or non-zero for anything that is
+# not one. The probe admits a denied fingerprint read whose process it then proved had exited
+# (#762), and an admission that recorded nothing made that handling invisible: a run where the
+# condition arose and was handled read exactly like a run where it never happened, so the fix's
+# own operation could only be argued about from fixtures. The field is the same bounded integer a
+# refusal carries — no pid, name, path or argument (#756) — and a success token with a trailing
+# field this cannot parse is not a success, for the same reason a refusal with one is not read.
+retained_process_admission() {
+  local status=$1 output=$2
+  [[ $status -eq 0 ]] || return 1
+  [[ $output =~ ^retained-processes-server-only( denied=([1-9][0-9]{0,5}))?$ ]] || return 1
+  printf '%s' "${BASH_REMATCH[2]:-0}"
 }
 # What to report about a probe that did not answer `retained-processes-server-only`.
 #
