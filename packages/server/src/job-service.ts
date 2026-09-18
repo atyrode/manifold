@@ -1951,11 +1951,24 @@ export class JobService {
     // the operation nodes it already issues them for. Asked AFTER the existence check, so it
     // cannot report on a machine the caller could not otherwise learn about.
     //
+    // A CONSENT IS BOUND TO AN INSTALLATION, SO WHERE THERE IS NO INSTALLATION THERE IS NOTHING
+    // TO CONSENT TO. Demanding one anyway refused the only question a plugin can ask before it
+    // is deployed — "can I be deployed here?" — which is the whole purpose of the pre-deployment
+    // projection below, and it broke the door that asks it (#743). That answer carries no
+    // installation state at all: a null installation, no retained revisions, no consent rows,
+    // and the declaration the deployment request is built from. The boundary #736 defends is
+    // untouched: `machines:read`, a grant reaching this machine node, and a caller that can only
+    // ever ask about its own plugin id.
+    //
+    // The pre-deployment door is keyed on having NO installation on this machine at all, not on
+    // the revision this call happened to name: otherwise naming a revision that resolves to
+    // nothing would walk past the consent gate of the installation that does exist.
+    //
     // The native door (`engine.jobs`) is not narrowed: an operator reads a machine's
     // installation under their own capability and grant, including the no-installation answer a
     // deployment request is built from (#715), which cannot depend on a consent that by
     // definition does not exist yet.
-    if (callerPluginId !== "engine.jobs") {
+    if (callerPluginId !== "engine.jobs" && this.jobs.installation(args.machineId, args.pluginId)) {
       if (!install) fail("job_installation_absent");
       const consented = (effective: boolean): boolean =>
         Object.keys(install.machine.operations).some(
@@ -4692,6 +4705,37 @@ export class JobService {
         this.directServiceCalls
           .get(event.subject.requestId)
           ?.finish(new ServiceError("forbidden", "service_unauthorized"));
+      return;
+    }
+    if (event.type === "service_refused") {
+      // The owner authorized a call and then would not serve it. Without this the ledger held
+      // the permission and nothing else, so a service this hub reports `ready` could refuse
+      // every call and the contradiction was readable nowhere an operator looks (#708). The
+      // owner's own word is recorded verbatim: it is the owner's fact, not a hub decision, so
+      // no permit is minted and no readiness is flipped — one refused call is not an unready
+      // service.
+      if (event.subject.kind !== "job") return;
+      const job = this.jobs.get(event.subject.jobId);
+      if (!job || !this.inputOwner(job, channel)) return;
+      const current = this.auth.restoreCredential(job.request.credential);
+      if (!current) return;
+      this.serviceTrace(
+        current,
+        job.request.pluginId,
+        job.request.traceId,
+        "invoke",
+        {
+          jobId: job.request.jobId,
+          authorizationId: event.authorizationId,
+          machineId: channel.machineId,
+          serviceId: event.serviceId,
+          revision: event.revision,
+          policySha256: event.policySha256,
+          operationId: event.operationId,
+          ownerRefusal: event.reason,
+        },
+        false,
+      );
       return;
     }
     if (event.type === "service_read_result" || event.type === "service_invoke_result") {

@@ -1750,9 +1750,15 @@ Discover availability with `ctx.jobs.describe({ machineId, pluginId })`, or disp
 the machine and, for a plugin handle, its own plugin ID and one more thing: your installation
 on that machine must carry an effective consent for `machines:run` on one of its operation
 nodes — the consent a reviewed deployment issues. So a plugin may ask what a machine can run
-for it while it holds consent to run something of its own there, and not otherwise; a machine
-you are not deployed to refuses `job_installation_absent`. It is not an execution grant, and
-declaring `machines:read` alone is not enough to reach it.
+for it while it holds consent to run something of its own there, and not otherwise. A machine
+you hold NO installation on is different: a consent is bound to an installation, so there is
+nothing there to consent to, and you are answered the pre-deployment projection — `connected`,
+`platforms`, the resources you may see, a null installation and your own declaration — under
+`machines:read` and a grant reaching that machine alone. That is how a door asks "can I be
+deployed here?", which is a question no consent can gate (#743). Naming an
+`installationRevision` that resolves to nothing is not that case: where an installation exists,
+it still refuses `job_installation_absent`. None of it is an execution grant, and declaring
+`machines:read` alone is not enough to reach a machine your grant does not cover.
 `connected` is the current proved job-owner channel, not terminal online status.
 `machineId` must be the machine's id: an identifier naming no enrolled machine refuses
 `machine_unknown` rather than answering `connected: false`, which an enrolled machine that is
@@ -2041,6 +2047,34 @@ terminates that response, counts as one call, and makes every later metered call
 `service_response_invalid`; it cannot become a sequence of zero-cost calls. A refusal is not a call
 and does not count against `calls`. A stream is never cut for crossing a budget, so the overrun
 after the last permitted call is bounded by one response's `maxResponseBytes`.
+
+**A refused call names its fact, and who hears it depends on who is asking.** One
+`503 {"error":"service_unavailable"}` used to answer at nine sites — four in the proxy and five
+entry branches in the owner, plus the tunnel and remote paths beneath them — and nothing was
+recorded on either side, so a workload and the operator watching it saw the same undifferentiated
+fact (#708). Every site now names its own: `service_runtime_unsupported` for a runtime policy on
+an owner with no resolver, `service_runtime_unreachable` for a resolver that failed without
+naming a refusal, `service_runtime_invalid` for a resolved endpoint that failed its loopback and
+ownership proof, `service_runtime_disconnected` for a proved socket that died before dispatch,
+`service_origin_absent` for a policy that names no origin, and, on the owner's side,
+`service_policy_not_runtime`, `service_policy_not_remote`, `service_policy_changed`,
+`service_parent_has_no_context`, `service_parent_cancelled`, `service_parent_not_started`,
+`service_parent_services_closed`, `service_runtime_resources_absent`,
+`service_runtime_child_absent`, `service_runtime_child_not_started`,
+`service_runtime_endpoint_closed`, `service_remote_refused`, `service_tunnel_closed`,
+`service_tunnel_duplicate`, `service_tunnel_limit`, `service_owner_unavailable`,
+`service_owner_draining` and `service_machine_mismatch`.
+
+A SANDBOXED workload is told the fate of its own call and nothing about the machine serving it:
+not authorized, invalid, busy, cancelled, timed out, over a ceiling, unpriced, or the service
+could not be served. A refusal that names the owner's topology — which child job never started,
+which host resource is missing, how many tunnels are open — projects to `service_unavailable` at
+that boundary, because a caller that can read those words can enumerate the machine it runs on by
+making calls. The precise word goes to the owner's own log as `service_call_refused` and to the
+hub as `service_refused`, which lands in the same service trace as the authorization that
+preceded it: an operator reads "authorized, then refused: `service_runtime_child_not_started`"
+rather than inferring it. Refusing to serve a call is not an unready service, so no readiness
+flips — the contradiction is meant to be visible, not smoothed over.
 
 Every metered call appends one lifecycle frame,
 `inference_call { serviceId, operationId, model, inputTokens, outputTokens, cachedInputTokens,

@@ -19,6 +19,16 @@ export const ServiceCallSchema = z.strictObject({
   operationId: name,
   input: ServiceInputSchema,
 });
+/**
+ * Every way a service call can be refused, and the only words any layer reports.
+ *
+ * One `service_unavailable` used to answer at nine sites across the proxy and the owner — no
+ * resolver, a resolver that rejected, an endpoint that failed its loopback proof, a socket that
+ * died, a policy that is not a runtime policy, a parent that is gone, cancelled or not started,
+ * a child that never started, a host resource that is absent, an owner that is draining — and
+ * nothing was recorded on either side, so a workload and the operator watching it both saw one
+ * undifferentiated fact (#708). Each of those is now its own word.
+ */
 export const ServiceRefusalSchema = z.enum([
   "service_invalid_request",
   "service_unavailable",
@@ -36,7 +46,65 @@ export const ServiceRefusalSchema = z.enum([
   "service_response_limit",
   "service_ceiling_exceeded",
   "service_price_unknown",
+  "service_machine_mismatch",
+  "service_owner_unavailable",
+  "service_owner_draining",
+  "service_origin_absent",
+  "service_policy_not_runtime",
+  "service_policy_not_remote",
+  "service_policy_changed",
+  "service_parent_has_no_context",
+  "service_parent_cancelled",
+  "service_parent_not_started",
+  "service_parent_services_closed",
+  "service_runtime_unsupported",
+  "service_runtime_unreachable",
+  "service_runtime_invalid",
+  "service_runtime_disconnected",
+  "service_runtime_resources_absent",
+  "service_runtime_child_absent",
+  "service_runtime_child_not_started",
+  "service_runtime_endpoint_closed",
+  "service_remote_refused",
+  "service_tunnel_closed",
+  "service_tunnel_duplicate",
+  "service_tunnel_limit",
+  "service_runtime_limit",
+  "service_runtime_input_missing",
+  "service_start_timeout",
 ]);
+/**
+ * What a SANDBOXED workload is told, which is not always what was recorded.
+ *
+ * A refusal that names the owner's own topology — which child job never started, which host
+ * resource is absent, that the owner is draining, how many tunnels it holds — would let an
+ * isolate enumerate the machine it runs on by making calls and reading answers. It learns the
+ * fate of ITS call: not authorized, invalid, busy, cancelled, timed out, over a ceiling, or the
+ * service could not be served. The precise fact goes to the owner's log and to the hub's
+ * service trace, where the operator reads it. Same asymmetry as an existence check asked after
+ * the authority walk so it cannot answer questions the caller was not entitled to ask.
+ */
+const GUEST_REFUSALS = new Set<ServiceRefusal>([
+  "service_invalid_request",
+  "service_unavailable",
+  "service_operation_unknown",
+  "service_binding_mismatch",
+  "service_input_invalid",
+  "service_busy",
+  "service_unauthorized",
+  "service_cancelled",
+  "service_timeout",
+  "service_closed",
+  "service_upstream_refused",
+  "service_response_invalid",
+  "service_response_limit",
+  "service_ceiling_exceeded",
+  "service_price_unknown",
+  "service_credential_unavailable",
+]);
+export function guestServiceRefusal(refusal: ServiceRefusal): ServiceRefusal {
+  return GUEST_REFUSALS.has(refusal) ? refusal : "service_unavailable";
+}
 export const ServiceReplySchema = z
   .discriminatedUnion("ok", [
     z.strictObject({

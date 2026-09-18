@@ -24,7 +24,7 @@ import {
 import { AuthService, type AuthContext } from "../src/auth.ts";
 import { openDatabase } from "../src/db.ts";
 import { JobService } from "../src/job-service.ts";
-import { ServerStore } from "../src/stores.ts";
+import { ServerStore, TRACE_ROW_TYPE } from "../src/stores.ts";
 import { FakeClock, FakeRuntime, testPluginHost, testTileTrees } from "./helpers.ts";
 import { serviceContext } from "../src/service-doors.ts";
 import {
@@ -692,6 +692,80 @@ test("job service effects require a live matching installed binding and fresh na
     });
     f.service.event(f.channel, event);
     expect(f.commands.at(-1)).toMatchObject({ type: "service_authorized", allowed: false });
+  } finally {
+    f.store.close();
+  }
+});
+
+test("an owner that authorized a call and then would not serve it says so in the ledger (#708)", () => {
+  const f = fixture();
+  try {
+    const installed = install(f);
+    f.service.consent(f.root, {
+      machineId: f.machineId,
+      pluginId: installed.pluginId,
+      installationRevision: "r1",
+      artifactSha256: installed.artifactSha256,
+      node: formatManifoldUri({
+        kind: "operation",
+        machineId: f.machineId,
+        operationId: installed.operationId,
+      }),
+      cap: "machines:run",
+      enabled: true,
+    });
+    const job = f.service.execute(f.root, installed.pluginId, "trace", {
+      jobId: "live",
+      machineId: f.machineId,
+      operationId: installed.operationId,
+      input: {},
+      outputs: [],
+    });
+    f.service.event(f.channel, {
+      type: "state",
+      jobId: "live",
+      requestDigest: job.request.requestDigest,
+      ownerId: f.owner.ownerId,
+      ownerGeneration: f.owner.generation,
+      state: "started",
+    });
+    const refused = {
+      type: "service_refused" as const,
+      subject: { kind: "job" as const, jobId: "live" },
+      authorizationId: "auth-live",
+      serviceId: policy.serviceId,
+      revision: policy.revision,
+      policySha256: hash(policy),
+      operationId: "inspect",
+      reason: "service_runtime_child_not_started" as const,
+    };
+    f.service.event(f.channel, refused);
+    const rows = f.store.listEvents({ type: TRACE_ROW_TYPE, limit: 4 }).map((row) => ({
+      outcome: row.outcome,
+      payload: JSON.parse(row.payload) as Record<string, unknown>,
+    }));
+    const record = rows.find((row) => row.payload.ownerRefusal !== undefined);
+    // The owner's own word, against the call it names, refused rather than permitted: this is
+    // the only place a service the hub reports ready can be seen refusing every call.
+    expect(record).toMatchObject({
+      outcome: "forbidden",
+      payload: {
+        serviceLifecycle: "invoke",
+        jobId: "live",
+        serviceId: policy.serviceId,
+        operationId: "inspect",
+        ownerRefusal: "service_runtime_child_not_started",
+      },
+    });
+    // A refusal for a job this channel does not own is not recorded against that job at all.
+    f.service.event(f.channel, { ...refused, subject: { kind: "job", jobId: "absent" } });
+    expect(
+      f.store
+        .listEvents({ type: TRACE_ROW_TYPE, limit: 8 })
+        .filter(
+          (row) => (JSON.parse(row.payload) as Record<string, unknown>).ownerRefusal !== undefined,
+        ),
+    ).toHaveLength(1);
   } finally {
     f.store.close();
   }

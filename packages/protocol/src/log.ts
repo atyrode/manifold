@@ -205,6 +205,15 @@ export const LOG_EVENTS = [
   // `start_not_admitted` record inside the owner's private journal, on its own host's disk.
   "start_admission_refused",
   "start_preparation_failed",
+  // A runtime service the workload asked for and this owner would not start (issue #708).
+  "service_start_refused",
+
+  // A service CALL this process declined to serve (issue #746). Distinct from the start above:
+  // a start is refused before any child job exists, while this is one authorized invocation
+  // against a service the hub already reports `ready`. The hub is told through `service_refused`
+  // so an operator reads it beside the authorization; this record is the same fact on the host
+  // that decided it, and carries the precise branch a sandboxed caller is never told.
+  "service_call_refused",
 ] as const;
 
 /** One name from the operational log vocabulary; the `evt` field of every JSONL record. */
