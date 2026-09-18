@@ -2390,7 +2390,15 @@ describe("installed guest data migrations", () => {
       const runner = new IsolateSupervisor({
         logger: silentLogger,
         runtime: f.runtime,
-        migrationDeadlineMs: failure === "timeout" ? 100 : 10_000,
+        // THE DEADLINE MUST NOT RACE THE MIGRATION'S OWN PROLOGUE. `timeout` proves that a
+        // migration which never returns is ended and publishes nothing — any finite deadline
+        // proves it — but this case also depends on the migration REACHING its `row` write,
+        // because that is what commits another plugin's row mid-migration for the assertion
+        // below. Measured on an idle machine, that write lands 107ms (unhardened) and 188ms
+        // (hardened) after dispatch, against a deadline of 100ms: single-digit margin, and on a
+        // loaded CI runner the deadline wins, the commit never happens, and the failure reads as
+        // `Received: null` on a line about another plugin's data (#747's own run, twice).
+        migrationDeadlineMs: failure === "timeout" ? 1500 : 10_000,
       });
       try {
         const host = await customHost(f, [], { isolates: { ...f.isolates, runner } });
@@ -2404,6 +2412,11 @@ describe("installed guest data migrations", () => {
         await storage.set("row", JSON.stringify(original));
         expect((await host.dispatch(f.owner, `${SAMPLE_ID}.seed`, {})).ok).toBe(true);
         const installed = f.store.pluginInstalls();
+        // Whether the migration got far enough to commit another plugin's row. Asserted on its
+        // own below: without it, a deadline that beat the prologue reads as a null on a line
+        // about `test.other`, which is a fact about this fixture masquerading as one about the
+        // host's isolation.
+        let committedDuringMigration = false;
         const begin = f.store.beginPluginMigration.bind(f.store);
         f.store.beginPluginMigration = (id, includeData) => {
           const session = begin(id, includeData);
@@ -2421,6 +2434,7 @@ describe("installed guest data migrations", () => {
                   await f.store
                     .pluginStorage("test.other")
                     .set("live", "committed-during-migration");
+                  committedDuringMigration = true;
                   if (failure === "conflict") await storage.set("racer", "retained");
                 }
               },
@@ -2441,6 +2455,10 @@ describe("installed guest data migrations", () => {
           ok: true,
           result: { ...original, sql: "retained" },
         });
+        expect(
+          committedDuringMigration,
+          "the migration never reached its row write, so nothing committed during it: this case's precondition failed, not the host's isolation",
+        ).toBe(true);
         expect(await f.store.pluginStorage("test.other").get("live")).toBe(
           "committed-during-migration",
         );

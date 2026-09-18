@@ -1593,6 +1593,61 @@ test.skipIf(!realLinux || !syscallProbe)(
   },
 );
 
+/*
+  A host-network job had the machine's routes and no way to use a name: nothing binds `/etc`, so
+  `/etc/resolv.conf` did not exist inside one. The DNS case above could not catch it, because it
+  hands the probe its nameserver's PORT — proving the syscall path under seccomp, never the
+  discovery a real resolver does — which is why every by-name call from a workload failed as a
+  slow network fault instead of a missing file (#751).
+
+  The general form is worth keeping, because it is a way a suite can be confidently wrong: A
+  TEST WHOSE SETUP HANDS THE ANSWER TO THE CODE CANNOT FAIL ON THE CODE NOT FINDING IT. Passing
+  a nameserver's address in asserts the half that worked and is structurally incapable of
+  noticing the half that did not, however green it stays.
+
+  Both halves are asserted here: the configuration arrives for `host`, and a job that unshares
+  the netns still gets nothing, because there is nothing it could reach to resolve against.
+*/
+test.skipIf(!realLinux)(
+  "[real-linux] a host-network job receives resolver configuration and an isolated one does not",
+  async () => {
+    await withLinux(
+      "test -r /etc/resolv.conf || exit 60; test -s /etc/resolv.conf || exit 61; if ( printf forbidden >> /etc/resolv.conf ) 2>/dev/null; then exit 62; fi; printf resolver-present",
+      async (spec) => {
+        let text = "";
+        const handle = await startLinuxJob({
+          ...spec,
+          network: "host",
+          onOutput: (frame) => {
+            text += Buffer.from(frame.bytes).toString();
+          },
+        });
+        try {
+          expect((await handle.result).exitCode).toBe(0);
+          expect(text.trim()).toBe("resolver-present");
+        } finally {
+          handle.release();
+        }
+      },
+    );
+    await withLinux("test ! -e /etc/resolv.conf || exit 63; printf isolated", async (spec) => {
+      let text = "";
+      const handle = await startLinuxJob({
+        ...spec,
+        onOutput: (frame) => {
+          text += Buffer.from(frame.bytes).toString();
+        },
+      });
+      try {
+        expect((await handle.result).exitCode).toBe(0);
+        expect(text.trim()).toBe("isolated");
+      } finally {
+        handle.release();
+      }
+    });
+  },
+);
+
 test.skipIf(!realLinux || !syscallProbe)(
   "[real-linux] seccomp refuses SCM_RIGHTS and io_uring exports while preserving byte socket context",
   async () => {
