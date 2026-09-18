@@ -302,11 +302,26 @@ try {
         throw error;
       }
       const code = errno(error);
+      const fault = code === "ENOENT" ? undefined : readFault(code);
       try {
-        if (code !== "ENOENT") hold(`fingerprint-unreadable-${readFault(code)}`);
+        /*
+          A DENIED FINGERPRINT IS NOT A DENIED EXIT. `cmdline`, `exe` and `environ` need
+          ptrace-level access to a process; `stat` does not, and `stat` is the whole of the exit
+          question. Refusing at the denial answered "a process may be running here" for a process
+          the kernel would have confirmed HAD ALREADY EXITED — the same mistake as refusing an
+          ENOENT, which made a permitted rollback fail on a finished process (#699), arriving
+          through a different errno. Measured cause on the integrated preview: the hub runs as root
+          there and the harness's own `docker exec --user 1000:1000` sessions do not, and a root
+          exec without `CAP_SYS_PTRACE` — Docker grants none by default — may not read another
+          uid's fingerprint while reading its `stat` and `cmdline` freely (#756). Fail-closed is
+          intact: only an exit the kernel confirms is admitted, and an unreadable process that
+          stays alive still refuses with the word for what happened.
+        */
+        if (fault !== undefined && fault !== "denied") hold(`fingerprint-unreadable-${fault}`);
         const exit = observedExit(pid, stat?.[19]);
         if (exit === "replaced") hold("pid-reused-during-probe");
-        if (exit === "unfinished") hold("exit-unproven");
+        if (exit === "unfinished")
+          hold(fault === "denied" ? "fingerprint-unreadable-denied" : "exit-unproven");
       } catch (raised) {
         if (!deferred(raised)) throw raised;
       }

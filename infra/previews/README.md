@@ -148,6 +148,14 @@ it is watched to a bounded deadline rather than refused, and only an OBSERVED te
 single-threaded zombie or empty PID under an unchanged starttime admits it. A group that never
 gets there, an unreadable live identity or a different starttime — a reused PID — still holds;
 an absent executable alone is neither evidence of death nor of life.
+A fingerprint the probe is not PERMITTED to read is the same fact once more. `cmdline`, `exe` and
+`environ` need ptrace-level access to a process; `stat` does not, and `stat` is the whole of the
+exit question, so a denied read is followed by the same bounded watch rather than refused where it
+stands. This is not hypothetical: in the integrated environment the hub runs as root while the
+verification harness's own reads run as another uid, and a container's root holds no
+`CAP_SYS_PTRACE` by default, so the probe could read that process's `stat` and command line but
+not its fingerprint — and refused a deployment because of a process that had already exited.
+Only an exit the kernel confirms admits; a reused PID and a live unreadable process still hold.
 Every refusal names the predicate that refused (`unclassified-process`, `exit-unproven`,
 `fingerprint-unreadable-denied|-vanished|-unmapped`,
 `exit-unconfirmable-denied|-vanished|-unmapped`, `pid-reused-during-probe`,
