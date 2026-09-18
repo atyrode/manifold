@@ -4615,6 +4615,15 @@ build target and nothing branches on which instance is being looked at.
   may spawn real shells. Server/agent take `RuntimeDeps { newId, now }` from
   `@manifold/protocol` (default random/wall-clock); testkit injects seeded/fake implementations
   and uses port 0.
+- **A fixture that supplies the answer cannot test the finding** (#759): where a setup hands the
+  subject the value the subject is meant to derive, the test passes for as long as the defect
+  exists and every assertion in it stays true. One value used for both a machine id and a host
+  name hid an importer recording the wrong one of the two; a DNS case handing the probe its
+  nameserver's port could not fail on resolver discovery; a vocabulary check reading the file both
+  receivers read proved they read the same bytes, not that they say the same thing, while one of
+  them read no file at all where it ran. Obtain the two things that must agree independently, and
+  assert a case's precondition so that losing it reads as a failed setup rather than as a false
+  fact about the subject.
 - **State and policy**: React uses function components and hooks; server/socket state lives
   in stores, not components. Effects synchronize, never derive state. Nontrivial sync policy
   (merge, throttle, version bookkeeping) lives in pure, unit-tested modules, not component
