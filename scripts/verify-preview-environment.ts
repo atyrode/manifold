@@ -18,6 +18,7 @@ import { join, resolve } from "node:path";
 import { createServer, type Server } from "node:net";
 import { isDeepStrictEqual } from "node:util";
 import { Y } from "../packages/scene/src/index.ts";
+import { retainedProcessRefusal } from "./retained-process-holds.ts";
 import {
   ActionOutcomeSchema,
   ContainerResponseSchema,
@@ -1535,15 +1536,13 @@ unlinkSync(${JSON.stringify(zombieFifo)});`);
         input: readFileSync(join(tooling, "retained-server-only.ts"), "utf8"),
         allowFailure: true,
       });
-      // Only the classifier's own token vocabulary reaches this message; anything else is
-      // reported as unavailable, so a refusal names its predicate without disclosing a
-      // process argument, path or probe error (#699).
-      const predicate = /^retained-processes-hold:([a-z][a-z-]{0,46}[a-z])$/m.exec(
-        proof.out.trim(),
-      )?.[1];
+      // The same vocabulary `environment.sh` reads, for the same reason: reporting a probe that
+      // never ran, a probe that answered out of vocabulary and a probe that read every process
+      // and refused as one "refused the live plugin isolate and observed zombie" sentence put
+      // back, at this layer, the collapse #741 removed inside the probe (#738).
       requireThat(
-        proof.out.trim() === "retained-processes-server-only",
-        `retained process proof refused the live plugin isolate and observed zombie: ${predicate ?? "unavailable"}`,
+        proof.code === 0 && proof.out.trim() === "retained-processes-server-only",
+        retainedProcessRefusal(proof.code, proof.out.trim(), tooling),
       );
       requireThat(
         (await execBun(zombieState)) === terminalState,
