@@ -134,6 +134,7 @@ function roomFixture(
   // trail, which is what an unwired production room does until the assembly and the event
   // plane arrive. The tree question is answered by the SHIPPED declarations, because a
   // fixture that spelled it would seed roots the server does not.
+  let joinOrder = 0;
   const room = new Room(
     container.id,
     container.discipline,
@@ -148,6 +149,7 @@ function roomFixture(
       store.addEvent(containerId, runtime.now(), principalId, kind, {});
     },
     testTileTrees(discipline),
+    () => ++joinOrder,
   );
   room.join(peer);
   socket.clear();
@@ -238,6 +240,7 @@ describe("Room Yjs document consistency", () => {
       "c1",
     );
     const socket = peer.socket as FakeSocket;
+    let joinOrder = 0;
     const room = new Room(
       container.id,
       container.discipline,
@@ -252,6 +255,7 @@ describe("Room Yjs document consistency", () => {
         store.addEvent(containerId, runtime.now(), principalId, kind, {});
       },
       testTileTrees(container.discipline),
+      () => ++joinOrder,
     );
     room.join(peer);
 
@@ -473,6 +477,92 @@ describe("Room Yjs document consistency", () => {
       message: "doc update rate limit exceeded",
     });
     fixture.store.close();
+  });
+});
+
+describe("RoomManager shared room recency", () => {
+  test("orders shared rooms by the caller's latest live successful channel join", () => {
+    const runtime = new FakeRuntime();
+    const clock = new FakeClock(runtime);
+    const store = testStore();
+    const containers: Container[] = [
+      { id: "alpha-room", name: "Alpha", createdAt: 0, discipline: "canvas" },
+      { id: "zulu-room", name: "Zulu", createdAt: 0, discipline: "canvas" },
+    ];
+    for (const container of containers) store.createContainer(container);
+    const caller: Principal = {
+      id: "caller",
+      kind: "human",
+      name: "Caller",
+      color: "#2563eb",
+    };
+    const target: Principal = {
+      id: "target",
+      kind: "human",
+      name: "Target",
+      color: "#dc2626",
+    };
+    store.createPrincipal(caller, 0);
+    store.createPrincipal(target, 0);
+    const manager = new RoomManager(store, runtime, clock, silentLogger, testTileTrees);
+    const alpha = manager.get("alpha-room");
+    const zulu = manager.get("zulu-room");
+    if (alpha === null || zulu === null) throw new Error("missing managed rooms");
+    const channel = (
+      principal: Principal,
+      containerId: string,
+      id: string,
+      spectator = false,
+    ): SessionChannel =>
+      new SessionChannel(
+        id,
+        new FakeSocket(),
+        {
+          principal,
+          caps: ["*"],
+          containerScope: null,
+          isRoot: true,
+          tokenId: null,
+          grantId: null,
+        },
+        containerId,
+        id,
+        spectator,
+      );
+
+    const callerAlpha = channel(caller, "alpha-room", "caller-alpha");
+    const callerZulu = channel(caller, "zulu-room", "caller-zulu");
+    alpha.join(callerAlpha);
+    alpha.join(channel(target, "alpha-room", "target-alpha"));
+    zulu.join(callerZulu);
+    zulu.join(channel(target, "zulu-room", "target-zulu"));
+
+    // The newest caller join wins even though lexical and room materialization order say alpha.
+    expect(manager.sharedContainerIds(caller.id, target.id)).toEqual(["zulu-room", "alpha-room"]);
+
+    // Target activity, a duplicate join, a spectator, and a failed closed-channel join are not
+    // new caller memberships and therefore cannot perturb the caller's preference.
+    alpha.join(channel(target, "alpha-room", "target-alpha-sibling"));
+    alpha.join(callerAlpha);
+    alpha.join(channel(caller, "alpha-room", "caller-spectator", true));
+    const failed = channel(caller, "alpha-room", "caller-failed");
+    failed.dispose();
+    expect(alpha.join(failed)).toBeFalse();
+    expect(manager.sharedContainerIds(caller.id, target.id)).toEqual(["zulu-room", "alpha-room"]);
+
+    const callerAlphaSibling = channel(caller, "alpha-room", "caller-alpha-sibling");
+    alpha.join(callerAlphaSibling);
+    expect(manager.sharedContainerIds(caller.id, target.id)).toEqual(["alpha-room", "zulu-room"]);
+
+    // Closing a sibling keeps the principal membership's recency; only the final tab removes it.
+    alpha.leave(callerAlphaSibling);
+    expect(manager.sharedContainerIds(caller.id, target.id)).toEqual(["alpha-room", "zulu-room"]);
+    alpha.leave(callerAlpha);
+    expect(manager.sharedContainerIds(caller.id, target.id)).toEqual(["zulu-room"]);
+    const callerAlphaRejoined = channel(caller, "alpha-room", "caller-alpha-rejoined");
+    alpha.join(callerAlphaRejoined);
+    expect(manager.sharedContainerIds(caller.id, target.id)).toEqual(["alpha-room", "zulu-room"]);
+    store.close();
   });
 });
 

@@ -3092,56 +3092,176 @@ try {
   }
 
   {
-    const uri = formatManifoldUri({
-      kind: "element",
-      containerId: canvasContainerId,
-      elementId: strokeId,
-    });
     /*
-      The door writes the spotlight into the FIRST shared room by container id (sorted), to the
-      target's first connection there (room.ts `sharedContainerIds` / `writeSpotlight`). The
-      viewer's previous page — R2's terminal container — stays a member of that room until the
-      server processes its socket close, and on a loaded runner that lags the new page's join by
-      seconds; when the terminal container's id sorts first, the spotlight lands on a connection
-      that no longer has a page (#172: green locally, RED once on CI, re-run green). So the
-      precondition is OBSERVED rather than assumed: the SDK peer still in the old room sees the
-      viewer gone before the focus is dispatched.
+      Two purpose-built rooms make the routing order observable rather than accidental. The
+      URI-qualified room is deliberately the lexically LATER id and is joined first; the
+      fallback room is the lexically EARLIER id and is joined second. Thus neither the old
+      lexical choice nor an implementation that always ignores the URI can satisfy both asks.
+
+      The browser supplies the target's connection in the qualified room. A second connection
+      for that SAME principal occupies the fallback room, while each caller has one connection
+      in each room. The caller-side SDK clients then observe the server-written spotlight in
+      room attendance: this is independent evidence of delivery, not the action response echo.
     */
-    const leaveWaitStarted = Date.now();
-    const viewerLeft = await settles(
-      () => terminalClient!.attendance.get(viewerPrincipalId) === undefined,
-      10_000,
+    const createdFocusRooms = await Promise.all(
+      ["axiom-focus-a", "axiom-focus-b"].map(async (name) => {
+        const created = ActionOutcomeSchema.parse(
+          await dispatch("core.index.createContainer", { name }),
+        );
+        if (!created.ok) throw new Error(`focus room creation refused: ${created.denial.message}`);
+        return ContainerResponseSchema.parse(created.result).container.id;
+      }),
     );
-    const leaveLagMs = Date.now() - leaveWaitStarted;
-    if (!viewerLeft) {
-      // The evidence, then the named failure (#172): what the peer still sees in the old room.
-      console.log(
-        `INFO  R5 precondition: the terminal room still lists the viewer after ${String(leaveLagMs)}ms: ${JSON.stringify(
-          [...terminalClient!.attendance.values()].map((row) => ({
-            principal: row.principal.id,
-            name: row.principal.name,
-            vantage: row.payload.vantage ?? null,
-          })),
-        )}`,
-      );
-      throw new Error("timed out waiting for viewer left the terminal room");
+    const [recentRoomId, qualifiedRoomId] = [...createdFocusRooms].sort((left, right) =>
+      left.localeCompare(right),
+    );
+    if (recentRoomId === undefined || qualifiedRoomId === undefined) {
+      throw new Error("focus routing rooms were not created");
     }
-    const outcome = ActionOutcomeSchema.parse(
-      await dispatch("core.presence.focus", { targetPrincipalId: viewerPrincipalId, uri }),
-    );
-    const applied = await settles(
-      async () =>
-        (await browser!.evaluate<string | null>("window.__manifold.lastSpotlight()")) === uri,
-      8_000,
-    );
-    check(
-      "R5 spotlight lands",
-      outcome.ok && applied,
-      outcome.ok
-        ? applied
-          ? `the target's viewport centered on the named node (the old room released the viewer ${String(leaveLagMs)}ms after the new page was already painting)`
-          : "the action succeeded but no client applied it"
-        : `focus was denied: ${outcome.ok ? "" : outcome.denial.message}`,
+
+    const routingClients: SessionClient[] = [];
+    const joinFocusRoom = async (containerId: string, token: string): Promise<SessionClient> => {
+      const client = new SessionClient({ url: wsUrl, containerId, token });
+      routingClients.push(client);
+      await client.connect();
+      return client;
+    };
+    const qualifiedUri = formatManifoldUri({
+      kind: "container",
+      containerId: qualifiedRoomId,
+    });
+    const unqualifiedUri = formatManifoldUri({ kind: "terminal", terminalId: terminal.id });
+
+    try {
+      const target = await mint({
+        principalId: viewerPrincipalId,
+        caps: ["containers:read", "containers:write", "scenes:write"],
+      });
+      const qualifiedCaller = await mint({
+        principal: { name: "axiom-focus-qualified", kind: "human" },
+        caps: ["containers:read", "containers:write", "scenes:write"],
+      });
+      const qualifiedCallerOlder = await joinFocusRoom(qualifiedRoomId, qualifiedCaller.token);
+      const qualifiedCallerRecent = await joinFocusRoom(recentRoomId, qualifiedCaller.token);
+      const targetRecent = await joinFocusRoom(recentRoomId, target.token);
+
+      await browser.goto(`${origin}/p/${qualifiedRoomId}`);
+      await until(
+        () => browser!.evaluate<boolean>("window.__manifold !== undefined"),
+        20_000,
+        "qualified focus room probe installed",
+      );
+
+      const qualifiedMembership = await settles(
+        () =>
+          qualifiedCallerOlder.attendance.has(qualifiedCaller.principal.id) &&
+          qualifiedCallerOlder.attendance.has(viewerPrincipalId) &&
+          qualifiedCallerRecent.attendance.has(qualifiedCaller.principal.id) &&
+          qualifiedCallerRecent.attendance.has(viewerPrincipalId) &&
+          targetRecent.attendance.has(qualifiedCaller.principal.id) &&
+          targetRecent.attendance.has(viewerPrincipalId),
+        8_000,
+      );
+      check(
+        "R5 two-room qualified membership",
+        qualifiedMembership,
+        qualifiedMembership
+          ? `caller and target occupy both rooms; older URI room ${qualifiedRoomId} sorts after newer fallback ${recentRoomId}`
+          : "caller and target were not independently observed together in both focus rooms",
+      );
+
+      const qualifiedOutcome = ActionOutcomeSchema.parse(
+        await dispatch(
+          "core.presence.focus",
+          { targetPrincipalId: viewerPrincipalId, uri: qualifiedUri },
+          qualifiedCaller.token,
+        ),
+      );
+      const qualifiedObserved = await settles(() => {
+        const spotlight = qualifiedCallerOlder.attendance.get(viewerPrincipalId)?.payload.spotlight;
+        return spotlight?.uri === qualifiedUri && spotlight.from === qualifiedCaller.principal.id;
+      }, 8_000);
+      const applied = await settles(
+        async () =>
+          (await browser!.evaluate<string | null>("window.__manifold.lastSpotlight()")) ===
+          qualifiedUri,
+        8_000,
+      );
+      check(
+        "R5 URI-qualified spotlight routing",
+        qualifiedOutcome.ok && qualifiedObserved && applied,
+        !qualifiedOutcome.ok
+          ? `focus was denied: ${qualifiedOutcome.denial.message}`
+          : !qualifiedObserved
+            ? "the lexically later URI room did not independently observe the delivered spotlight"
+            : applied
+              ? "the older URI-qualified room beat the caller's newer room and its browser applied the spotlight"
+              : "the qualified room observed delivery but its browser did not apply the spotlight",
+      );
+      const focusShot = await browser.send("Page.captureScreenshot", { format: "png" });
+      const focusShotPath = join(tmpdir(), "manifold-axi-r5-spotlight.png");
+      writeFileSync(focusShotPath, Buffer.from(String(focusShot.result?.["data"] ?? ""), "base64"));
+      console.log(`INFO  R5 spotlight screenshot: ${focusShotPath}`);
+
+      /*
+        A distinct caller gives the fallback ask its own throttle pair. It joins in REVERSE
+        order, so its newest room sorts last: URI-first with a lexical fallback must fail too.
+        The terminal URI carries no container id; only this caller's join order can select it.
+      */
+      const recentCaller = await mint({
+        principal: { name: "axiom-focus-recent", kind: "human" },
+        caps: ["containers:read", "containers:write", "scenes:write"],
+      });
+      const recentCallerOlder = await joinFocusRoom(recentRoomId, recentCaller.token);
+      const recentCallerRecent = await joinFocusRoom(qualifiedRoomId, recentCaller.token);
+      const recentMembership = await settles(
+        () =>
+          recentCallerOlder.attendance.has(recentCaller.principal.id) &&
+          recentCallerOlder.attendance.has(viewerPrincipalId) &&
+          recentCallerRecent.attendance.has(recentCaller.principal.id) &&
+          recentCallerRecent.attendance.has(viewerPrincipalId),
+        8_000,
+      );
+      check(
+        "R5 two-room fallback membership",
+        recentMembership,
+        recentMembership
+          ? "the second caller and target are independently present in both rooms"
+          : "the fallback caller and target were not observed together in both rooms",
+      );
+
+      const recentOutcome = ActionOutcomeSchema.parse(
+        await dispatch(
+          "core.presence.focus",
+          { targetPrincipalId: viewerPrincipalId, uri: unqualifiedUri },
+          recentCaller.token,
+        ),
+      );
+      const recentObserved = await settles(() => {
+        const spotlight = recentCallerRecent.attendance.get(viewerPrincipalId)?.payload.spotlight;
+        return spotlight?.uri === unqualifiedUri && spotlight.from === recentCaller.principal.id;
+      }, 8_000);
+      const leakedToOlder =
+        recentCallerOlder.attendance.get(viewerPrincipalId)?.payload.spotlight?.uri ===
+        unqualifiedUri;
+      check(
+        "R5 unqualified spotlight uses caller recency",
+        recentOutcome.ok && recentObserved && !leakedToOlder,
+        !recentOutcome.ok
+          ? `focus was denied: ${recentOutcome.denial.message}`
+          : recentObserved && !leakedToOlder
+            ? "an unqualified URI reached only the caller's most recently joined eligible room"
+            : "the unqualified spotlight was absent from the recent room or leaked into the older room",
+      );
+    } finally {
+      for (const client of routingClients) client.close();
+    }
+
+    await browser.goto(`${origin}/p/${canvasContainerId}`);
+    await until(
+      () => browser!.evaluate<boolean>("window.__manifold !== undefined"),
+      20_000,
+      "canvas probe restored after focus routing",
     );
 
     const scoped = await mint({
@@ -3152,7 +3272,14 @@ try {
     const refusedScoped = ActionOutcomeSchema.parse(
       await dispatch(
         "core.presence.focus",
-        { targetPrincipalId: viewerPrincipalId, uri },
+        {
+          targetPrincipalId: viewerPrincipalId,
+          uri: formatManifoldUri({
+            kind: "element",
+            containerId: canvasContainerId,
+            elementId: strokeId,
+          }),
+        },
         scoped.token,
       ),
     );

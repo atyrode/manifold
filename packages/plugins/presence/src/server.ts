@@ -58,7 +58,8 @@ export const presenceHandlers = {
     ctx: PresenceCtx,
     args: { targetPrincipalId: string; uri: string },
   ): Promise<Outcome> {
-    if (parseManifoldUri(args.uri) === null) {
+    const ref = parseManifoldUri(args.uri);
+    if (ref === null) {
       return { refused: "uri is not a manifold:// address" };
     }
     const caller = ctx.principal.id;
@@ -67,9 +68,22 @@ export const presenceHandlers = {
     if (shared.length === 0) {
       return { refused: "no room shared with that principal" };
     }
-    const containerId = shared.find((candidate) =>
-      ctx.auth.allows("scenes:write", { kind: "container", containerId: candidate }),
-    );
+    const uriContainerId =
+      ref.kind === "container" || ref.kind === "element" || ref.kind === "tile"
+        ? ref.containerId
+        : null;
+    let containerId: string | undefined;
+    if (
+      uriContainerId !== null &&
+      shared.includes(uriContainerId) &&
+      ctx.auth.allows("scenes:write", { kind: "container", containerId: uriContainerId })
+    ) {
+      containerId = uriContainerId;
+    } else {
+      containerId = shared.find((candidate) =>
+        ctx.auth.allows("scenes:write", { kind: "container", containerId: candidate }),
+      );
+    }
     if (containerId === undefined) {
       return { refused: "scenes:write capability required in a shared room" };
     }

@@ -138,6 +138,64 @@ describe("core.presence.focus", () => {
     ]);
   });
 
+  test("a shared writable URI container overrides the caller's recent-room fallback", async () => {
+    const uri = "manifold://container/uri-room/element/el-1";
+    const host = recorder({
+      caller: "pr-uri-override",
+      // The manager supplies most-recent first; the addressed room is deliberately second.
+      shared: ["recent-room", "uri-room"],
+      writable: ["recent-room", "uri-room"],
+    });
+
+    expect(
+      await presenceHandlers.focus(host.ctx, {
+        targetPrincipalId: "pr-uri-target",
+        uri,
+      }),
+    ).toEqual({});
+    expect(host.attempts).toEqual([
+      {
+        containerId: "uri-room",
+        principalId: "pr-uri-target",
+        spotlight: { uri, from: "pr-uri-override" },
+      },
+    ]);
+  });
+
+  test("a nonshared URI container falls back to the most recent writable shared room", async () => {
+    const uri = "manifold://container/elsewhere/tile/tile-1";
+    const host = recorder({
+      caller: "pr-uri-nonshared",
+      shared: ["recent-room", "older-room"],
+      writable: ["recent-room", "older-room"],
+    });
+
+    expect(
+      await presenceHandlers.focus(host.ctx, {
+        targetPrincipalId: "pr-uri-nonshared-target",
+        uri,
+      }),
+    ).toEqual({});
+    expect(host.attempts[0]?.containerId).toBe("recent-room");
+  });
+
+  test("a read-only URI container falls back to the most recent writable shared room", async () => {
+    const uri = "manifold://container/read-only";
+    const host = recorder({
+      caller: "pr-uri-readonly",
+      shared: ["read-only", "recent-writable", "older-writable"],
+      writable: ["recent-writable", "older-writable"],
+    });
+
+    expect(
+      await presenceHandlers.focus(host.ctx, {
+        targetPrincipalId: "pr-uri-readonly-target",
+        uri,
+      }),
+    ).toEqual({});
+    expect(host.attempts[0]?.containerId).toBe("recent-writable");
+  });
+
   test("`from` is the CALLER, never anything the caller sent", async () => {
     const host = recorder({ caller: "pr-real", shared: ["p1"] });
 
