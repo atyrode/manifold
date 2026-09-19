@@ -318,9 +318,10 @@ Only later trace rows may carry trusted declarations. Legacy caller-supplied fie
 reasoning; missing/corrupt metadata fails closed and reopening does not reset the boundary.
 
 `core.access.listCredentials` retains its administrator-only fields for the Sessions section.
-Root receives the complete live credential inventory; a non-root sees explicit self credentials
-and only manageable live credentials it issued for another principal. It never receives another
-issuer's sessions or a historical principal row made empty by issuer filtering.
+This is a workspace-scoped inventory. Root sees every live credential; a non-root sees explicit
+self credentials and only live own issuance for other ordinary principals, omitting rows emptied
+by that filter. Registered Agent principals retain their full credential inventory for eligible
+administrators because their existing principal cutoff also settles their Run subtrees.
 `core.access.listRuns({agentId?})` supplies the separately bounded newest 100 inspectable Run
 summaries, `observedAt` and a truncation flag. Summaries include Agent/session/model/activity,
 normalized name/purpose, creation/expiry, parent and action/refusal counts without credential
@@ -530,15 +531,15 @@ Reasoning and rejected alternatives: [ADR 0019](decisions/0019-identity-posture.
   (`*`; §Hardened plugins).
 - Token scope: optional `containerId` restricts everything to one container. It is a subtree
   grant at `manifold://container/<id>`, which is what it always meant; the field did not move.
-- **Delegated credential administration is issuer-owned, not principal ownership** (#389).
+- **Delegated ordinary credentials are issuer-owned, not human-principal ownership** (#389).
   `tokens.minted_by` is provenance for one credential; it never creates a durable parent,
-  guardian or recursive administration edge to the principal. Root retains complete live
+  guardian or recursive administration edge to a human principal. Root retains complete live
   inventory, mint and withdrawal as the owner-key break-glass path. Self remains explicit:
-  a principal may inspect and withdraw its own eligible credentials, restricted by its acting
-  credential's container scope. For another principal, a non-root may inspect only live
-  credentials it issued and withdraw its own issuance, restricted by that same current scope.
-  Credentials from another issuer are neither disclosed nor withdrawn, and legacy null-issuer credentials
-  remain administrable only through root or self.
+  a principal may inspect its own live credentials and withdraw its own eligible credentials;
+  withdrawal remains restricted by its acting credential's container scope. For another ordinary
+  principal, a non-root may inspect only live credentials it issued and withdraw its own issuance
+  in that same current scope. Another issuer's credentials are neither disclosed nor withdrawn;
+  ordinary legacy null-issuer credentials remain administrable only through root or self.
 
   Reminting for another existing human principal requires at least one currently live
   (unrevoked and unexpired), in-scope credential issued by the actor. Historical issuance does
@@ -548,6 +549,14 @@ Reasoning and rejected alternatives: [ADR 0019](decisions/0019-identity-posture.
   copied into the credential. Withdrawal retires each targeted token-bound grant atomically
   with only its targeted credential. The `{ principalId }` wire request remains principal-grouped;
   the server, never a browser or SDK filter, selects eligible credential rows.
+
+  Registered Agent principals keep their existing full-credential and Run-subtree cutoff
+  ([ADR 0042](decisions/0042-durable-agents.md)). An eligible administrator sees all live
+  credentials of that registered principal, including credentials issued through parent Runs,
+  because withdrawal settles every affected Run and its descendants atomically. A scoped
+  caller must still contain all of the Agent's Run targets; an idle Agent's unscoped runner
+  credential does not turn that lifecycle into ordinary human-credential scope filtering.
+  This explicit Agent lifecycle is not permanent guardianship over human principals.
 
 - Revocation: durable; server closes live sockets of revoked tokens with code 4403 and
   message `revoked`.
@@ -1855,9 +1864,10 @@ the submitted grant or mutation.
 rung 3) because `POST /api/tokens` authenticated any token and let the mechanism attenuate: a
 container-scoped actor holding `tokens:mint` may mint inside its own container and withdraw
 eligible credentials there. The mechanism performs both containment and issuer checks — a mint
-may not widen its minter's container scope, and administration of another principal reaches only
-live credentials the actor issued inside its current scope. Root remains complete; self remains
-explicit and scope-consistent; null-issuer legacy rows are root/self only.
+may not widen its minter's container scope, and ordinary withdrawal for another principal reaches
+only credentials the actor issued inside its current scope. Root remains complete; self remains
+explicit and scope-consistent; ordinary null-issuer legacy rows are root/self only. Registered
+Agent withdrawal retains its full Run-subtree cutoff and target-containment checks.
 
 Minting for another existing human principal additionally requires a currently live, in-scope
 credential issued by that actor. Historical issuance alone never authorizes remint after the last
@@ -1875,10 +1885,12 @@ declared `principal_access_paused` or `principal_access_resumed` event on
 durable state projection. Sessions exposes Pause access / Resume access for non-self rows with live
 credentials. As with the Commands surface, drawing a door does not claim the viewer may open it:
 the authoritative root-only refusal is rendered if a non-root viewer tries. The separate,
-destructive withdrawal control describes the inventory it can affect: every credential for root,
-the actor's eligible credentials for self, and only actor-issued credentials for another principal.
-It keeps the principal-grouped `{ principalId }` action; the browser does not reproduce the
-server's issuer or scope filter.
+destructive withdrawal control describes the inventory it can affect: every ordinary credential
+for root, the actor's eligible credentials for self, and only actor-issued credentials for another
+ordinary principal. Agent-row confirmation also discloses the registered Agent's full Run and
+descendant cutoff rather than describing only the caller's issuance or treating a credential count
+as a Run count. It keeps the principal-grouped `{ principalId }` action; the browser does not
+reproduce the server's issuer or scope filter.
 
 **Native service credentials are managed by their service, not by Sessions (#594).**
 `listCredentials` projects `kind: "service"` with optional top-level `serviceId` and `machineId`,

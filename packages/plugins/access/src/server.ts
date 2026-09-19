@@ -116,11 +116,10 @@ interface AccessCtx {
     /*
       The credential READ (ADR 0019 §3), on the identity door because a credential is what
       this door hands out: the list and the withdrawal it aims are the same concept read and
-      written, and a `credentials` surface beside `identity` would say otherwise. For human and
-      Agent rows, the mechanism narrows another principal's answer to live credentials issued
-      by this caller, while retaining explicit root and self exceptions. Native services remain
-      inspection-only here. Run-chain readers use listRuns instead; they never inherit this
-      credential-reference inventory.
+      written, and a `credentials` surface beside `identity` would say otherwise. Ordinary rows
+      are limited to live own issuance, with explicit root and self exceptions. Registered Agent
+      inventories match their full credential/Run cutoff. Native services remain inspection-only.
+      Run-chain readers use listRuns instead; they never inherit this credential-reference inventory.
     */
     listCredentials(): IdentityAnswer<readonly PrincipalCredentials[]>;
     /*
@@ -364,10 +363,10 @@ export const accessHandlers = {
    * The question "which browsers hold my key" had no answer at all before this door:
    * `GET /api/introspect` published principals to a root caller and nothing else did, so a
    * human could not look, and neither could an agent (A2). Root still receives the complete
-   * live inventory. For human and Agent rows, a non-root receives explicit self credentials
-   * plus only live credentials it issued for another principal; legacy credentials without
-   * issuer provenance do not become delegated property. Native service rows remain
-   * inspection-only and follow their separate lifecycle.
+   * live inventory. A non-root receives explicit self credentials plus live own issuance for
+   * other ordinary principals; legacy null provenance does not become delegated property.
+   * Registered Agent inventories match their full credential/Run cutoff. Native service rows
+   * remain inspection-only and follow their separate lifecycle.
    *
    * No filtering here, and no widening either: the mechanism answers for the REAL caller and
    * this handler relays. A plugin that re-derived which credentials it may see would be a

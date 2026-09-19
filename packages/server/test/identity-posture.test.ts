@@ -517,13 +517,13 @@ describe("the credential list (ADR 0019 §3)", () => {
       (entry) => entry.principal.id === delegate.principal.id,
     );
     expect(ownRow?.sessions.map((session) => session.id)).toContain(
-      fix.store.getTokenByHash(sha256Hex(minter.token))?.id,
+      fix.store.getTokenByHash(sha256Hex(minter.token))!.id,
     );
     expect(delegateRow?.sessions.map((session) => session.id)).toEqual([
-      fix.store.getTokenByHash(sha256Hex(delegate.token))?.id,
+      fix.store.getTokenByHash(sha256Hex(delegate.token))!.id,
     ]);
     expect(delegateRow?.sessions.map((session) => session.id)).not.toContain(
-      fix.store.getTokenByHash(sha256Hex(foreign.token))?.id,
+      fix.store.getTokenByHash(sha256Hex(foreign.token))!.id,
     );
     expect(listed.principals.map((entry) => entry.principal.id)).not.toContain(
       stranger.principal.id,
@@ -540,8 +540,8 @@ describe("the credential list (ADR 0019 §3)", () => {
         .find((entry) => entry.principal.id === delegate.principal.id)
         ?.sessions.map((session) => session.id),
     ).toEqual([
-      fix.store.getTokenByHash(sha256Hex(delegate.token))?.id,
-      fix.store.getTokenByHash(sha256Hex(foreign.token))?.id,
+      fix.store.getTokenByHash(sha256Hex(delegate.token))!.id,
+      fix.store.getTokenByHash(sha256Hex(foreign.token))!.id,
     ]);
 
     expect(fix.auth.revokePrincipal(delegate.principal.id, minterContext)).toBe(1);

@@ -1186,7 +1186,7 @@ export class SessionClient {
 
   /**
    * Mints an attenuated credential (`core.access.mint`) no broader than this client's current
-   * authority. Minting for another existing principal requires a live credential this actor
+   * authority. Minting for another existing human principal requires a live credential this actor
    * issued within its current scope; historical issuance alone is not principal ownership.
    * Root and explicit self administration remain exceptions owned by the server.
    */
@@ -1198,9 +1198,10 @@ export class SessionClient {
   /**
    * Withdraws the credentials this caller may manage for a principal (`core.access.revoke`)
    * and answers HOW MANY died — zero is a success, not a refusal. Root withdraws the complete
-   * set; self withdrawal remains explicit and scope-consistent; another non-root principal can
-   * withdraw only live credentials it issued within its current scope. The server's revocation
-   * fence closes only sockets holding credentials actually withdrawn.
+   * set; self withdrawal remains explicit and scope-consistent; ordinary withdrawal for another
+   * principal reaches only credentials this actor issued within its current scope. Registered
+   * Agents retain their full credential and Run-subtree cutoff. The server's revocation fence
+   * closes only sockets holding credentials actually withdrawn.
    */
   async revokeToken(principalId: string): Promise<AccessOutcome<RevokeResult>> {
     const request = RevokeRequestSchema.parse({ principalId });
@@ -1225,13 +1226,13 @@ export class SessionClient {
   }
 
   /**
-   * AUTHORIZED LIVE CREDENTIAL INVENTORY (`core.access.listCredentials`, ADR 0019 §3): root
-   * receives the complete live inventory; self remains explicit and scope-consistent; another
-   * non-root principal sees only live credentials this actor issued within its current scope.
-   * Native service rows remain inspection-only and follow their service-owned lifecycle.
+   * AUTHORIZED LIVE CREDENTIAL INVENTORY (`core.access.listCredentials`, ADR 0019 §3), a
+   * workspace-scoped door. Root receives the complete live inventory; self remains explicit;
+   * other ordinary principals expose only this actor's live issuance. Registered Agent inventories
+   * match their full credential/Run cutoff. Native service rows remain inspection-only.
    *
-   * The server is authoritative. Consumers must not reconstruct issuer or scope filtering,
-   * and legacy credentials without issuer provenance do not become another actor's property.
+   * The server is authoritative. Consumers must not reconstruct authorization filtering, and
+   * ordinary legacy credentials without issuer provenance do not become another actor's property.
    */
   async credentials(): Promise<AccessOutcome<CredentialsResponse>> {
     return this.accessDoor("core.access.listCredentials", {}, (result) =>

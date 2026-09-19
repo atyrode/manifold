@@ -109,8 +109,12 @@ test("human and legacy Sessions remain logins while linked Agent principals expo
     denial: { rule: "forbidden", message: "Credential withdrawal is not authorized" },
   });
   await ui.text("Credential withdrawal is not authorized");
-  await ui.click("Withdraw every credential of Review agent");
-  await ui.click("Confirm withdrawing every credential of Review agent");
+  await ui.browser.evaluate<void>(
+    `document.querySelector('[data-principal="${agent.principalId}"] [data-action="core.access.revoke"]').click()`,
+  );
+  await ui.browser.evaluate<void>(
+    `document.querySelector('[data-principal="${agent.principalId}"] [data-action="core.access.revoke"]').click()`,
+  );
   await ui.outcome("core.access.revoke", {
     ok: false,
     denial: { rule: "forbidden", message: "Agent credential withdrawal is not authorized" },

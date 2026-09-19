@@ -2833,6 +2833,12 @@ export class AuthService {
     const now = this.runtime.now();
     const rows: PrincipalCredentials[] = [];
     for (const { principal, createdAt } of this.store.listPrincipalsWithCreation()) {
+      const wholePrincipal =
+        current.isRoot ||
+        principal.id === current.principal.id ||
+        (principal.kind === "agent" &&
+          this.store.hasIssuedToken(principal.id, current.principal.id, null) &&
+          this.store.hasRegisteredAgentPrincipal(principal.id));
       const visible = this.store
         .listTokensByPrincipal(principal.id)
         /*
@@ -2845,12 +2851,9 @@ export class AuthService {
           (token) =>
             token.revokedAt === null &&
             (token.expiresAt ?? Infinity) > now &&
-            (current.isRoot ||
-              principal.id === current.principal.id ||
-              token.mintedBy === current.principal.id),
+            (wholePrincipal || token.mintedBy === current.principal.id),
         );
-      if (!current.isRoot && principal.id !== current.principal.id && visible.length === 0)
-        continue;
+      if (!wholePrincipal && visible.length === 0) continue;
       const sessions = visible.map((token) => ({
         id: token.id,
         createdAt: token.createdAt,
@@ -3008,22 +3011,26 @@ export class AuthService {
     );
   }
 
-  /** Revokes only credentials the actor issued (or its own), without widening container scope. */
+  /** Issuer-owned withdrawal; registered Agent cutoffs retain their atomic Run lifecycle. */
   revokePrincipal(principalId: string, actor: AuthContext): number {
     if (!this.allows(actor, "tokens:mint")) {
       throw new ServiceError("forbidden", "tokens:mint capability required");
     }
+    const agent = this.store
+      .listAgents()
+      .find((candidate) => candidate.principalId === principalId);
     if (
       !actor.isRoot &&
       principalId !== actor.principal.id &&
-      !this.store.hasIssuedToken(principalId, actor.principal.id, actor.containerScope)
+      !this.store.hasIssuedToken(
+        principalId,
+        actor.principal.id,
+        agent === undefined ? actor.containerScope : null,
+      )
     ) {
       throw new ServiceError("forbidden", "cannot revoke another principal");
     }
     this.refuseManagedServicePrincipal(principalId);
-    const agent = this.store
-      .listAgents()
-      .find((candidate) => candidate.principalId === principalId);
     if (agent !== undefined) {
       if (
         this.store

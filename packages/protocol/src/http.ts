@@ -230,10 +230,10 @@ export type Credential = z.infer<typeof CredentialSchema>;
 
 /**
  * One principal and the live credential inventory `core.access.listCredentials` publishes.
- * Root receives the complete live inventory; non-root answers retain explicit self handling and
- * otherwise contain only credentials issued by the actor within its current container scope.
- * Native service rows are inspection-only and keep their separate lifecycle. This remains one
- * row per principal, and consumers MUST NOT recreate server authorization filtering.
+ * This workspace-scoped door gives root the complete live inventory, keeps explicit self handling,
+ * and otherwise limits ordinary principals to the actor's live issuance. Registered Agent
+ * inventories match their full credential/Run cutoff. Native service rows remain inspection-only.
+ * This remains one row per principal; consumers MUST NOT recreate server authorization filtering.
  *
  * `createdAt` rides HERE rather than on {@link PrincipalSchema}, because a principal is an
  * identity the whole product passes around (attendance, presence, the session hello) and

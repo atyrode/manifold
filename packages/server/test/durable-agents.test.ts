@@ -485,4 +485,84 @@ describe("durable Agent admission", () => {
       fix.db.close();
     }
   });
+
+  test("registered Agent credential inventory matches its full run withdrawal boundary", () => {
+    const fix = fixture();
+    try {
+      const sponsorGrant = fix.auth.mintToken(
+        {
+          principal: { name: "credential sponsor", kind: "human" },
+          caps: ["tokens:mint", "containers:read", "agents:delegate"],
+        },
+        fix.owner,
+      );
+      const sponsor = fix.auth.authenticate(sponsorGrant.token);
+      const registered = fix.auth.registerAgent(
+        { ...fix.registration, name: "credential-boundary" },
+        sponsor,
+      );
+      const runner = fix.auth.authenticate(registered.credential!.token);
+      const own = CreateRunCredentialResultSchema.parse(
+        fix.auth.createRun({ agentId: registered.agent.agentId }, runner),
+      );
+      fix.acknowledge(fix.auth.authenticate(own.credential.token));
+      const foreign = fix.auth.createChildRun({ runId: own.run.id }, fix.owner);
+      const foreignToken = fix.auth.claimRunLaunch(foreign.run.id, fix.owner).token!;
+      const unrelated = fix.create();
+      const expected = [
+        runner.tokenId!,
+        fix.auth.authenticate(own.credential.token).tokenId!,
+        fix.auth.authenticate(foreignToken).tokenId!,
+      ].sort();
+
+      const row = fix.auth
+        .listCredentials(sponsor)
+        .find((entry) => entry.principal.id === registered.agent.principalId);
+      expect(row?.sessions.map((session) => session.id).sort()).toEqual(expected);
+      expect(fix.auth.revokePrincipal(registered.agent.principalId, sponsor)).toBe(3);
+      for (const run of [own.run, foreign.run]) {
+        expect(fix.store.getAgentRun(run.id)?.state).toBe("revoked");
+      }
+      for (const token of [registered.credential!.token, own.credential.token, foreignToken]) {
+        expect(() => fix.auth.authenticate(token)).toThrow("revoked");
+      }
+      expect(fix.auth.authenticate(unrelated.credential.token).agentRunId).toBe(unrelated.run.id);
+    } finally {
+      fix.db.close();
+    }
+  });
+
+  test("scoped sponsor withdrawal retains an idle registered Agent's lifecycle", () => {
+    const fix = fixture();
+    try {
+      fix.store.createContainer({
+        id: "container-one",
+        name: "bounded credential work",
+        createdAt: 1_800_000_000_000,
+        discipline: "canvas",
+      });
+      const sponsorGrant = fix.auth.mintToken(
+        {
+          principal: { name: "scoped credential sponsor", kind: "human" },
+          caps: ["tokens:mint", "containers:read", "agents:delegate"],
+          containerId: "container-one",
+        },
+        fix.owner,
+      );
+      const sponsor = fix.auth.authenticate(sponsorGrant.token);
+      const registered = fix.auth.registerAgent(
+        {
+          ...fix.registration,
+          name: "idle-scoped-agent",
+          grant: { ...fix.registration.grant, targets: ["manifold://container/container-one"] },
+        },
+        sponsor,
+      );
+
+      expect(fix.auth.revokePrincipal(registered.agent.principalId, sponsor)).toBe(1);
+      expect(() => fix.auth.authenticate(registered.credential!.token)).toThrow("revoked");
+    } finally {
+      fix.db.close();
+    }
+  });
 });

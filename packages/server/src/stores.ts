@@ -2122,6 +2122,16 @@ export class ServerStore {
     return row === null ? null : toAgent(row);
   }
 
+  hasRegisteredAgentPrincipal(principalId: string): boolean {
+    return (
+      this.db
+        .query<{ found: number }, [string]>(
+          "SELECT 1 AS found FROM agents WHERE principal_id=? LIMIT 1",
+        )
+        .get(principalId) !== null
+    );
+  }
+
   getAgentBySponsorName(sponsorPrincipalId: string, name: string): AgentRecord | null {
     const row = this.db
       .query<AgentRow, [string, string]>(`${AGENT_SELECT} WHERE sponsor_principal_id=? AND name=?`)

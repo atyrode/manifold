@@ -224,16 +224,16 @@ export const ACCESS_REPORT_RUN_ACTIVITY_ACTION = `${accessManifest.id}.reportRun
  * Both token doors are `scope: "container"`, and that is a preservation rather than a
  * widening. The deleted routes authenticated ANY token: a container-scoped human holding
  * `tokens:mint` could mint a further attenuated human credential inside its own container and
- * withdraw credentials it issued there. For another existing principal, remint additionally
+ * withdraw credentials it issued there. For another existing human principal, remint additionally
  * requires a live credential issued by this actor; historical issuance is not principal
  * ownership. Autonomous delegation no longer uses this door: the `createChildRun` action
  * publishes its target-relative `agents:delegate` requirement and the mechanism enforces strict
  * child attenuation under the durable Agent grant.
  * The confinement obligation `scope: "container"` places on the handlers is discharged by the
  * mechanism, on the real caller: a mint may not widen its minter's container scope, and a scoped
- * withdrawal reaches only the actor-issued credentials in that container. Root and explicit
- * self administration retain their broader mechanism-owned exceptions. Re-checking any of this
- * here would be a second implementation of one rule (docs/CONTRACTS.md §One authoritative
+ * ordinary withdrawal reaches only the actor-issued credentials in that container. Root, explicit
+ * self administration and registered Agent Run-subtree cutoffs retain their mechanism-owned
+ * exceptions. Re-checking any of this here would be a second implementation of one rule (docs/CONTRACTS.md §One authoritative
  * implementation), so it is proved by test instead.
  */
 export const accessActions = [
@@ -449,7 +449,7 @@ export const accessActions = [
     */
     cleanup: true,
     name: "revoke",
-    title: "Withdraw manageable credentials for a principal",
+    title: "Withdraw credentials and linked runs for a principal",
     caps: ["tokens:mint"],
     scope: "container",
     input: RevokeRequestSchema,
@@ -465,8 +465,8 @@ export const accessActions = [
   defineAction({
     name: "listCredentials",
     title: "List authorized live credential inventory",
-    // Credential references retain their administrator-only audience; the mechanism filters human
-    // and Agent rows to root, explicit self, or credentials issued by this caller.
+    // Ordinary rows are root, explicit self, or live own issuance. Registered Agent inventories
+    // match their full credential/Run cutoff; the mechanism owns both authorization decisions.
     caps: ["tokens:mint"],
     scope: "workspace",
     input: z.strictObject({}),
