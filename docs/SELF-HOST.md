@@ -630,10 +630,11 @@ docker compose exec manifold tar cz -C / data > manifold-backup-$(date +%F).tgz
 
 The archive contains the owner key and preview-identity signing key — store it like a secret.
 
-Before an upgrade whose database migration cannot be opened by the previous release, also capture
-an authenticated recovery checkpoint while the current hub still owns the data and administrative
-file mutations such as plugin installation and key rotation are paused. Stream the reviewed helper
-from the release checkout so this also works when the incumbent predates the helper:
+Before an upgrade that migrates data on an ephemeral `/data` volume, or whose migrated database
+cannot be opened by the previous release, capture an authenticated recovery checkpoint while the
+current hub still owns the data and administrative file mutations such as plugin installation and
+key rotation are paused. Stream the reviewed helper from the release checkout so this also works
+when the incumbent predates the helper:
 
 ```sh
 docker compose exec -T manifold bun - capture before-vX.Y.Z < scripts/full-state-recovery.ts
@@ -652,6 +653,15 @@ against `MANIFOLD_BUILD`, extracts into a private temporary directory, checks ev
 and removes the temporary plaintext on success or failure. Rehearse the forward migration and
 full recovery-image boot separately; neither the tar command nor helper verification proves the
 provider switch.
+
+Before starting that migration, set an operator-controlled retention period covering the entire
+rollback window for the encrypted `manifold-full-state/<id>.mfr` object, not just its receipt.
+Protect that object with provider versioning or immutable retention and deletion protection,
+administered separately from the hub's ordinary storage credential. Check that lifecycle rules
+cannot expire it during that window; Litestream's database-history retention is not checkpoint
+retention. Keep the receipt outside the disposable volume and retain the exact previous release
+image by immutable digest. Do not proceed without a verified, retained checkpoint and a rehearsed
+recovery path. After the window closes, pruning those artifacts is an explicit operator action.
 
 The owner key must remain outside the checkpoint's object store and available to recovery. A
 lost or rotated key cannot authenticate an older checkpoint. Treat the encrypted object as
@@ -772,9 +782,12 @@ With replication on **and** `MANIFOLD_OWNER_KEY` pinned in `.env`, the container
 database on an ephemeral disk. The replica is `manifold.db` only: it does not contain `owner.key`,
 the preview-identity signing key, the agent token, installed plugin bundle files, per-plugin
 `plugins/<id>/data.db` databases, or adjacent `manifold.db.pre-vN.bak` migration snapshots.
-Preserve those separately as applicable; the [full `/data` archive](#backup) covers the files
-Litestream omits and is itself secret-bearing. A replica-only rebuild therefore cannot recover
-plugin-owned rows.
+Replacing that ephemeral volume loses its local migration snapshots. Restoring the current
+database from Litestream does not restore those snapshots or undo a migration: a database-only
+replica is not a complete migration rollback facility. Follow [Backup](#backup) before the
+migration to retain a full-state checkpoint independently of the disposable volume. That
+checkpoint recovers the pre-upgrade state, not writes made afterward. Preserve omitted files
+separately as applicable; a replica-only rebuild also cannot recover plugin-owned rows.
 
 Replica restore assumes the bucket or prefix is trusted for integrity. Protect the replica
 credential and storage write path as access to the hub's persisted authority, use one writer per

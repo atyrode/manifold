@@ -4594,6 +4594,14 @@ transaction opens (`VACUUM INTO` refuses to overwrite), which is what leaves the
 migration that then throws under the documented name rather than a temporary one; an operator
 who wants an earlier attempt kept renames it out of that name, where the engine cannot reach
 it.
+These are local files, not durable replica artifacts: the shipped Litestream configuration
+replicates only `manifold.db`, never its adjacent `.pre-vN.bak` snapshots. Replacing an ephemeral
+`/data` volume loses that local rollback path, even when database replication is healthy.
+Database-only replica recovery is not migration rollback. Before a data migration on such a
+deployment, the operator must capture and verify the authenticated full-state checkpoint and
+retain its encrypted object, receipt, recovery key and compatible immutable release image through
+the rollback window, as prescribed by [SELF-HOST → Backup](SELF-HOST.md#backup). A checkpoint
+preserves files present at capture time; it cannot contain snapshots or writes created afterward.
 For the protocol-23 element-ref rollout, a schema-18 `manifold.db` produces
 `manifold.db.pre-v19.bak` beside itself before the rewrite. Rollback requires stopping the
 server and restoring that pre-v19 database image together with a compatible pre-cutover
