@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Hub entrypoint. Without MANIFOLD_REPLICA_BUCKET this is exactly `bun packages/server/src/main.ts`.
-# With it, <data>/manifold.db is restored from the replica when the local file is absent and
-# replicated continuously while the server runs (Litestream, infra/litestream.yml). One
-# writer per replica: never run two instances against one bucket path.
+# With replication, scripts/replica-bootstrap.ts admits usable history or an explicit
+# one-attempt first initialization before the server or replicator can start.
+# One writer per replica: never run two instances against one bucket path.
 set -euo pipefail
 cd /app
 for recovery_setting in \
@@ -20,9 +20,7 @@ if [ -z "${MANIFOLD_REPLICA_BUCKET:-}" ]; then
 fi
 : "${MANIFOLD_REPLICA_ENDPOINT:?MANIFOLD_REPLICA_ENDPOINT (https://host) is required with MANIFOLD_REPLICA_BUCKET}"
 : "${LITESTREAM_ACCESS_KEY_ID:?}" "${LITESTREAM_SECRET_ACCESS_KEY:?}"
-db="${MANIFOLD_DATA_DIR:-/data}/manifold.db"
-mkdir -p "$(dirname "$db")"
-# Bounded: an unreachable store otherwise retries forever in silence, and a deploy that
-# never starts must fail as one rather than hang as "unhealthy".
-timeout 300 litestream restore -if-db-not-exists -if-replica-exists -config /app/infra/litestream.yml "$db"
+export MANIFOLD_DATA_DIR="${MANIFOLD_DATA_DIR:-/data}"
+bun scripts/replica-bootstrap.ts prepare
+printf '%s\n' '{"evt":"hub_replica_boot","state":"replication_starting"}'
 exec litestream replicate -config /app/infra/litestream.yml -exec "bun packages/server/src/main.ts"
