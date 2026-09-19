@@ -28,8 +28,9 @@ but supplies no guest network confinement. A script allowlist with `blob:` likew
 trusted code that can fetch and construct a Blob into untrusted code.
 
 Preview callback and finalize documents are a third, separate surface. Their small inline scripts
-complete the nonce-bound handoff under route-specific `default-src 'none'` policies. Replacing
-those responses with a generic shell policy is neither necessary nor safe.
+complete the identity-nonce-bound handoff under route-specific `default-src 'none'` policies
+with `script-src 'unsafe-inline'`; this is not a CSP nonce. Replacing those responses with a
+generic shell policy is neither necessary nor safe.
 
 A Blob is a byte-backed URL, not a new security origin. The current loader solves bearer-header
 loading without giving the Worker the page's existing bearer or live host objects. It does not
@@ -77,9 +78,16 @@ Serve it with JavaScript's bootstrap hash generated from the same bytes as the H
 `X-Frame-Options: SAMEORIGIN`. Only this route becomes embeddable; neither the shell nor callback
 HTML loses frame denial. Static/default proxy policies must not overwrite the factory's response.
 
-The parent fetches the authenticated, admitted bundle through the existing loader. It transfers
-source bytes and the existing init data through a dedicated `MessageChannel`, never through a
-URL, inline guest HTML or a credential-bearing iframe attribute. The bootstrap accepts one channel
+The service worker must pass this factory route through unchanged, never store its response as
+`/index.html`, and never substitute the cached shell when the factory is unavailable offline.
+`Cache-Control: no-store` alone is insufficient: the current navigation handler explicitly writes
+successful documents to CacheStorage. Factory failure must remain a failure, not poison or reuse
+the offline shell.
+
+The parent fetches the authenticated, admitted bundle through the existing loader. Only after
+the policy-readiness check below succeeds does it transfer source bytes and existing init data
+through a dedicated `MessageChannel`, never through a URL, inline guest HTML or a
+credential-bearing iframe attribute. The bootstrap accepts one channel
 from its actual parent; the parent binds the bootstrap handshake to that iframe's `contentWindow`.
 An origin string of `"null"` is not authentication: every opaque origin serializes that way. Close
 the bootstrap handshake before accepting guest frames. Existing schema validation, host-call
@@ -91,6 +99,16 @@ inherits the factory's native CSP. HTTP(S) imports, direct requests and network-
 cannot escape through a guest-supplied loader. `worker-src blob:` also permits nested Blob Workers;
 it is not a no-subworker guarantee. Those descendants inherit the opaque origin and restrictive
 policy, which the experiment exercised.
+
+Before receiving guest bytes or init data, the trusted bootstrap must positively verify native
+policy enforcement with a bounded, disposable classic Blob Worker canary and its Blob descendant.
+Use fixed, non-secret probes to a side-effect-free public endpoint on the serving origin: requests
+and script imports must produce matching **enforced** native CSP violations, not merely generic
+network/CORS/MIME errors. Verify opaque origin and denied origin-storage access as well. Missing
+or report-only policy, absent enforcement observations, timeout and unsupported primitives reject
+readiness. A successful handshake or a separate fetch of the expected response headers cannot
+attest the policy actually inherited by the Worker. This check is a future runtime prerequisite,
+not a replacement for the browser matrix below; it was not integrated into the current runner.
 
 The existing Worker host/registry owns the extra frame and port under the same plugin/container
 lease. Disable, final release, identity/lens change and faults must terminate the Worker family,
@@ -115,9 +133,10 @@ bridge. The implementation must retain those boundaries for navigation, streams 
 well as ordinary action calls.
 
 This is a browser ambient-network restriction, **not information-flow control**. Permitted host
-calls still have their existing authority and results; they may write shared data or cause external
-side effects according to their own contracts. The design does not filter authorized action results,
-confine server processes or terminal jobs, impose a browser memory quota, or protect against a
+calls still have their existing authority and results; actions, `openTerminal` and
+`sendTerminalInput` may write shared data or cause external side effects according to their own
+contracts. The design does not filter authorized action results, confine server processes or
+terminal jobs, impose a browser memory quota, or protect against a
 malicious trusted in-realm mod, browser extension or browser exploit.
 
 ### 4. Treat classic execution as an executable compatibility change
@@ -175,7 +194,10 @@ then prove them in the supported browser/deployment matrix before changing the p
 - Prove origin-storage and cross-context channels cannot reach the shell or another plugin, and
   that a late reply, sibling frame or forged bootstrap message cannot acquire the host channel.
 - Exercise the real renderer and action/stream path with the selected instance both same-origin
-  and foreign; preserve callback/finalize documents and cached/PWA behavior.
+  and foreign; preserve callback/finalize documents and cached/PWA behavior. Prove factory
+  navigation cannot overwrite the offline shell or receive it as a fallback.
+- Strip or weaken factory CSP and verify the readiness canary rejects execution before any guest
+  bytes or init data cross the boundary, including report-only and partial-policy configurations.
 - Exercise disable/re-enable, unmount, crashes, identity/lens switches and unsupported-policy
   failure without a weaker fallback or residual Worker family.
 - Prove old installed artifacts and old cached clients fail closed with the existing compatibility

@@ -3433,9 +3433,9 @@ and `web.ts` (target `browser`) with the kit's guest runtimes, the protocol and 
 writes one JSON document (`PluginBundleSchema`: `format: 1`, `hardenedContract: 2`, the manifest
 with its `entry`, the members as base64, no `builtAgainst`). All packing modes stamp the same
 executable contract. The artifact is self-contained because the runner resolves
-nothing: the hub's process runner is one `Bun.spawn` of the bundle's `server.js`, the page's is one
-`new Worker("/api/plugins/<id>/web.js")`, and neither has the shared-module registry an in-realm
-bundle imports through. That is why the flag is required for a hardened row and why it is the
+nothing: the hub's process runner is one `Bun.spawn` of the bundle's `server.js`; the page fetches
+`/api/plugins/<id>/web.js` with the bearer and starts a module Worker from a Blob of those bytes.
+Neither has the shared-module registry an in-realm bundle imports through. That is why the flag is required for a hardened row and why it is the
 only difference at pack time: `pack` without it builds the in-realm bundle §10 describes, and
 installing THAT with `hardened: true` is refused at the door — `artifact_invalid: isolate exited
 before load (exit code 1)`, the child having died on `Missing shared module: @manifold/plugin`

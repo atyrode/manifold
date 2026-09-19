@@ -575,6 +575,8 @@ Direct Bun responses include `X-Content-Type-Options: nosniff` and
 `Referrer-Policy: strict-origin-when-cross-origin`; preview callback/finalize documents keep
 the stricter `no-referrer` policy. The Caddy examples supply these only when the upstream
 omits them, so proxying does not weaken the callback policy.
+Custom proxies should likewise forward upstream values or add defaults only when absent:
+unconditional addition or replacement can duplicate headers or weaken `no-referrer`.
 
 `infra/Caddyfile.example` and `infra/compose.Caddyfile` add
 `Strict-Transport-Security: max-age=86400` only on HTTPS requests to a non-localhost vhost.

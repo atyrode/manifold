@@ -70,8 +70,9 @@ export function webModulePath(pluginId: string): string {
  * The default factory. A `Worker` cannot carry an `Authorization` header and a token may never
  * ride a URL (docs/CONTRACTS.md §Data and credential boundaries), so the PAGE fetches the module with the bearer and spawns the worker
  * from a Blob of the bytes. The object URL is revoked as soon as the constructor has parsed it —
- * the blob URL entry is captured at parse time, so the worker's own fetch still resolves — and
- * the worker sees `blob:` as its origin, which is why a bundle has to be self-contained.
+ * the blob URL entry is captured at parse time, so the worker's own fetch still resolves.
+ * A blob: script URL cannot resolve a relative module graph, so the bundle must be self-contained.
+ * It does not separate the worker from the creator's security origin or remove ambient networking.
  */
 async function blobModuleWorker(path: string, token: string, name: string): Promise<WorkerLike> {
   const response = await requestResponse(path, {
