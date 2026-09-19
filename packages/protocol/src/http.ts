@@ -215,7 +215,10 @@ export type AuthRefusal = (typeof AUTH_REFUSALS)[number];
 export const CredentialSchema = z.strictObject({
   id: z.string().min(1),
   createdAt: z.number().int().nonnegative(),
-  /** The principal that minted it; absent when the mint had no actor (boot recovery). */
+  /**
+   * Issuer provenance. Absent means legacy or actorless issuance, not shared ownership; only
+   * the server's root/self exceptions may expose or administer such a credential.
+   */
   mintedBy: z.string().min(1).optional(),
   /** The container this credential is confined to; absent for a workspace-grade one. */
   containerId: z.string().min(1).optional(),
@@ -226,8 +229,11 @@ export const CredentialSchema = z.strictObject({
 export type Credential = z.infer<typeof CredentialSchema>;
 
 /**
- * One principal and the credentials it holds — what `core.access.listCredentials`
- * publishes, one row per principal.
+ * One principal and the live credential inventory `core.access.listCredentials` publishes.
+ * This workspace-scoped door gives root the complete live inventory, keeps explicit self handling,
+ * and otherwise limits ordinary principals to the actor's live issuance. Registered Agent
+ * inventories match their full credential/Run cutoff. Native service rows remain inspection-only.
+ * This remains one row per principal; consumers MUST NOT recreate server authorization filtering.
  *
  * `createdAt` rides HERE rather than on {@link PrincipalSchema}, because a principal is an
  * identity the whole product passes around (attendance, presence, the session hello) and
@@ -237,7 +243,7 @@ export type Credential = z.infer<typeof CredentialSchema>;
 export const PrincipalCredentialsSchema = z.strictObject({
   principal: PrincipalSchema,
   createdAt: z.number().int().nonnegative(),
-  /** Live credentials only: neither revoked nor past its expiry. Empty is a real answer. */
+  /** Live credentials selected by the server for this caller; empty is a real answer. */
   sessions: z.array(CredentialSchema),
   /** Present while every credential exercise for this non-owner principal is paused. */
   pausedAt: z.number().int().nonnegative().optional(),
@@ -265,14 +271,15 @@ export const PrincipalAccessPauseResultSchema = z.strictObject({
 export type PrincipalAccessPauseResult = z.infer<typeof PrincipalAccessPauseResultSchema>;
 
 export const RevokeRequestSchema = z.strictObject({
+  /** Principal grouping only; the server selects which credentials this actor may withdraw. */
   principalId: z.string().min(1),
 });
 
 /**
- * What a revocation ANSWERS: how many tokens actually died. Zero is a success — asking
- * twice about a principal whose tokens are already dead is what a nervous administrator
- * does — and it must not read as the same event as three. Published here rather than
- * inside `core.access` so the door's declared result and every client's parse are one
+ * What a withdrawal ANSWERS: how many eligible token rows actually died. Zero is a success —
+ * asking twice after the caller's manageable credentials are already dead is what a nervous
+ * administrator does — and it must not read as the same event as three. Published here rather
+ * than inside `core.access` so the door's declared result and every client's parse are one
  * schema (`core.access.revoke`).
  */
 export const RevokeResultSchema = z.strictObject({

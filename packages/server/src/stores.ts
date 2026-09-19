@@ -2122,6 +2122,16 @@ export class ServerStore {
     return row === null ? null : toAgent(row);
   }
 
+  hasRegisteredAgentPrincipal(principalId: string): boolean {
+    return (
+      this.db
+        .query<{ found: number }, [string]>(
+          "SELECT 1 AS found FROM agents WHERE principal_id=? LIMIT 1",
+        )
+        .get(principalId) !== null
+    );
+  }
+
   getAgentBySponsorName(sponsorPrincipalId: string, name: string): AgentRecord | null {
     const row = this.db
       .query<AgentRow, [string, string]>(`${AGENT_SELECT} WHERE sponsor_principal_id=? AND name=?`)
@@ -2567,29 +2577,53 @@ export class ServerStore {
     return this.revokeTokensWhere("run_id = ?", [runId], at);
   }
 
-  /** Whether this actor originally issued a token while creating the target identity. */
-  principalMintedBy(principalId: string, minterId: string): boolean {
-    const row = this.db
-      .query<ExistsRow, [string, string]>(
-        `SELECT 1 AS found FROM tokens
-         WHERE principal_id = ? AND minted_by = ? LIMIT 1`,
-      )
-      .get(principalId, minterId);
-    return row?.found === 1;
+  /** Checks issuance without loading credential history; liveAt excludes dead credentials. */
+  hasIssuedToken(
+    principalId: string,
+    mintedBy: string,
+    containerId: string | null,
+    liveAt?: number,
+  ): boolean {
+    return (
+      this.db
+        .query<
+          { found: number },
+          [string, string, string | null, string | null, number | null, number | null]
+        >(
+          `SELECT 1 AS found FROM tokens
+           WHERE principal_id = ? AND minted_by = ?
+             AND (? IS NULL OR container_id = ?)
+             AND (? IS NULL OR (revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)))
+           LIMIT 1`,
+        )
+        .get(principalId, mintedBy, containerId, containerId, liveAt ?? null, liveAt ?? null) !==
+      null
+    );
   }
 
+  /**
+   * Revokes one principal's credentials, optionally narrowed to one container and/or issuer.
+   *
+   * Issuer is credential provenance, not principal ownership: combining it with the existing
+   * container predicate lets a delegate withdraw only the credentials it issued inside its
+   * current scope while root and lifecycle callers retain the principal-wide form.
+   */
   revokeTokensByPrincipal(
     principalId: string,
     revokedAt: number,
-    containerId?: string,
+    filter: { readonly containerId?: string; readonly mintedBy?: string } = {},
   ): TokenRevocation {
-    return containerId === undefined
-      ? this.revokeTokensWhere("principal_id = ?", [principalId], revokedAt)
-      : this.revokeTokensWhere(
-          "principal_id = ? AND container_id = ?",
-          [principalId, containerId],
-          revokedAt,
-        );
+    const clauses = ["principal_id = ?"];
+    const params = [principalId];
+    if (filter.containerId !== undefined) {
+      clauses.push("container_id = ?");
+      params.push(filter.containerId);
+    }
+    if (filter.mintedBy !== undefined) {
+      clauses.push("minted_by = ?");
+      params.push(filter.mintedBy);
+    }
+    return this.revokeTokensWhere(clauses.join(" AND "), params, revokedAt);
   }
 
   revokeToken(tokenId: string, revokedAt: number): TokenRevocation {

@@ -50,7 +50,19 @@ function metaLine(row: PrincipalCredentials, now: number): string {
       undefined,
     );
     const count = row.sessions.length;
-    parts.push(count === 1 ? "1 session" : `${String(count)} sessions`);
+    parts.push(
+      row.principal.kind === "service"
+        ? count === 1
+          ? "1 service credential"
+          : `${String(count)} service credentials`
+        : row.principal.kind === "agent"
+          ? count === 1
+            ? "1 credential"
+            : `${String(count)} credentials`
+          : count === 1
+            ? "1 manageable credential"
+            : `${String(count)} manageable credentials`,
+    );
     parts.push(expiryLabel(soonest, now));
   }
   return parts.join(" · ");
@@ -127,6 +139,7 @@ export function SessionsSection({ host }: SectionProps): ReactElement {
 
 function CredentialSessions({ host }: SectionProps): ReactElement {
   const caps = host.client.selfCaps();
+  const isRoot = caps.includes("*");
   const mayRevoke = caps.includes("*") || caps.includes("tokens:mint");
   const [revision, setRevision] = useState(0);
   const read = useAccessRead(
@@ -213,6 +226,15 @@ function CredentialSessions({ host }: SectionProps): ReactElement {
   const renderRow = (row: PrincipalCredentials): ReactElement => {
     const self = row.principal.id === host.principal.id;
     const armed = armedId === row.principal.id;
+    const withdrawalTarget =
+      row.principal.kind === "agent"
+        ? `eligible credentials and all linked runs of ${row.principal.name}`
+        : isRoot
+          ? `every credential of ${row.principal.name}`
+          : self
+            ? "your eligible credentials"
+            : `credentials you issued to ${row.principal.name}`;
+    const withdrawalLabel = `Withdraw ${withdrawalTarget}`;
     const agent =
       row.principal.kind === "agent" && agents.state === "ready"
         ? agents.result.agents.find((entry) => entry.principalId === row.principal.id)
@@ -337,15 +359,13 @@ function CredentialSessions({ host }: SectionProps): ReactElement {
               data-action={ACCESS_REVOKE_ACTION}
               data-testid="credential-revoke"
               data-confirming={armed}
-              aria-label={
-                armed
-                  ? `Confirm withdrawing every credential of ${row.principal.name}`
-                  : `Withdraw every credential of ${row.principal.name}`
-              }
+              aria-label={armed ? `Confirm withdrawing ${withdrawalTarget}` : withdrawalLabel}
               title={
                 armed
-                  ? `Press again to withdraw ${String(row.sessions.length)} credential(s)${self ? " — including this browser's" : ""}`
-                  : `Withdraw every credential of ${row.principal.name}`
+                  ? row.principal.kind === "agent"
+                    ? "Press again to withdraw eligible credentials; registered Agents also end every run and its descendants"
+                    : `Press again to withdraw ${String(row.sessions.length)} manageable credential(s)${self ? " — including this browser's" : ""}`
+                  : withdrawalLabel
               }
               disabled={pendingId !== null || pendingAccessId !== null}
               onBlur={() => {

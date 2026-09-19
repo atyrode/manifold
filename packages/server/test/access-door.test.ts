@@ -1159,6 +1159,52 @@ describe("core.access grant ladder", () => {
     fix.store.close();
   });
 
+  test("grant service administration is issuer-owned beneath the root-only doors", async () => {
+    const fix = await fixture();
+    const actor = context(fix, ["tokens:mint"]);
+    const subject = grant(fix, ["containers:read"]);
+    const own = fix.auth.grant(
+      {
+        principal: { kind: "principal", id: subject.principal.id },
+        node: ROOT,
+        caps: ["containers:read"],
+        effect: "allow",
+        reach: "node",
+      },
+      actor,
+    );
+    const foreign = fix.auth.grant(
+      {
+        principal: { kind: "principal", id: subject.principal.id },
+        node: ROOT,
+        caps: ["containers:read"],
+        effect: "deny",
+        reach: "node",
+      },
+      fix.owner,
+    );
+
+    expect(fix.auth.listGrants({}, actor).map((row) => row.id)).toEqual([own.id]);
+    expect(() => fix.auth.revokeGrant(foreign.id, actor)).toThrow(
+      "cannot revoke another principal's grant",
+    );
+    expect(fix.store.getGrant(foreign.id)).not.toBeNull();
+    expect(fix.auth.revokeGrant(own.id, actor)).toBe(1);
+    expect(fix.store.getGrant(own.id)).toBeNull();
+    expect(
+      denial(
+        await fix.host.dispatch(actor, "core.access.grant", {
+          principal: { kind: "principal", id: subject.principal.id },
+          node: ROOT,
+          caps: ["containers:read"],
+          effect: "allow",
+          reach: "node",
+        }),
+      ).rule,
+    ).toBe("forbidden");
+    fix.store.close();
+  });
+
   test("revoking a grant outlives an access seat being off; writing and listing do not", async () => {
     const fix = await fixture();
     const container = accessContainer(fix);
