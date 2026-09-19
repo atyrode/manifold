@@ -3199,7 +3199,10 @@ try {
               : "the qualified room observed delivery but its browser did not apply the spotlight",
       );
       const focusShot = await browser.send("Page.captureScreenshot", { format: "png" });
-      const focusShotPath = join(tmpdir(), "manifold-axi-r5-spotlight.png");
+      const focusShotPath = join(
+        mkdtempSync(join(tmpdir(), "manifold-axi-r5-spotlight-")),
+        "screenshot.png",
+      );
       writeFileSync(focusShotPath, Buffer.from(String(focusShot.result?.["data"] ?? ""), "base64"));
       console.log(`INFO  R5 spotlight screenshot: ${focusShotPath}`);
 
