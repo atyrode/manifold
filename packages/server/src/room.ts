@@ -188,6 +188,8 @@ export class Room {
   private readonly spectators = new Set<SessionChannel>();
   private readonly presences = new Map<string, PresencePayload>();
   private readonly connectionLocations = new Map<string, LocationPath>();
+  /** Latest successful channel join for each live principal membership in this room. */
+  private readonly joinOrders = new Map<string, number>();
   private readonly updateBuckets = new Map<string, { tokens: number; at: number }>();
   private dirty = false;
   private cancelQuiet: (() => void) | null = null;
@@ -227,6 +229,11 @@ export class Room {
      * would be a second chance to disagree about one fact (docs/CONTRACTS.md §One authoritative implementation).
      */
     holdsTileTree: boolean,
+    /**
+     * Manager-wide monotonic membership order. A sequence, rather than the wall clock, makes
+     * simultaneous joins unambiguous and lets focus routing compare memberships across rooms.
+     */
+    private readonly nextJoinOrder: () => number,
   ) {
     const record = store.latestDoc(containerId, (error, invalid) => {
       logger.error("scene_doc_load_skipped", {
@@ -345,6 +352,7 @@ export class Room {
     }
     const principalId = peer.auth.principal.id;
     let peers = this.connections.get(principalId);
+    const alreadyJoined = peers?.has(peer) ?? false;
     const firstConnection = peers === undefined;
     if (peers === undefined) {
       peers = new Set();
@@ -357,9 +365,11 @@ export class Room {
       if (peers.size === 0) {
         this.connections.delete(principalId);
         this.presences.delete(principalId);
+        this.joinOrders.delete(principalId);
       }
       return false;
     }
+    if (!alreadyJoined) this.joinOrders.set(principalId, this.nextJoinOrder());
     const joined: PresenceState = {
       principal: peer.auth.principal,
       connections: peers.size,
@@ -373,6 +383,11 @@ export class Room {
     // attendance change and not one per socket.
     if (firstConnection) this.announce(this.containerId, principalId, "principal_joined");
     return true;
+  }
+
+  /** Manager-wide order of this principal's latest successful channel join, while still live. */
+  joinOrderFor(principalId: string): number | null {
+    return this.joinOrders.get(principalId) ?? null;
   }
 
   /** Removes a tab and expires principal presence only after its final connection leaves. */
@@ -393,6 +408,7 @@ export class Room {
     if (peers.size === 0) {
       this.connections.delete(principalId);
       this.presences.delete(principalId);
+      this.joinOrders.delete(principalId);
       this.broadcast({ type: "attendance", left: { principalId } });
       this.announce(this.containerId, principalId, "principal_left");
       if (this.connections.size === 0) this.onEmpty(this, "occupants");
@@ -1050,6 +1066,8 @@ export class RoomManager {
     string,
     { readonly rev: number; readonly census: ContainerCensus }
   >();
+  /** Shared across every resident room; incremented only after a channel joins successfully. */
+  private joinSequence = 0;
   private terminalProvider: (containerId: string) => readonly TerminalInfo[] = () => [];
   private pendingOpenProvider: (containerId: string) => boolean = () => false;
   /**
@@ -1212,6 +1230,10 @@ export class RoomManager {
           this.announce(announcedContainerId, principalId, kind);
         },
         this.holdsTileTree(container.discipline),
+        () => {
+          this.joinSequence += 1;
+          return this.joinSequence;
+        },
       );
       this.rooms.set(containerId, room);
     }
@@ -1234,17 +1256,21 @@ export class RoomManager {
   }
 
   /**
-   * Containers where BOTH principals are currently joined. This is the consent gate behind
-   * "look at this": one principal may steer another's viewport only where they are already
-   * together, so the reach of a spotlight is exactly the reach of shared presence, and it
-   * is computed from live membership rather than from anything the caller claims.
+   * Containers where BOTH principals are currently joined, newest successful join by `left`
+   * first. The caller's own room history chooses the fallback focus destination: target joins
+   * must not silently move the caller's preference.
    */
   sharedContainerIds(left: string, right: string): string[] {
     const shared: string[] = [];
     for (const room of this.rooms.values()) {
       if (room.hasPrincipal(left) && room.hasPrincipal(right)) shared.push(room.containerId);
     }
-    return shared.sort((first, second) => first.localeCompare(second));
+    shared.sort((first, second) => {
+      const firstOrder = this.rooms.get(first)?.joinOrderFor(left) ?? Number.NEGATIVE_INFINITY;
+      const secondOrder = this.rooms.get(second)?.joinOrderFor(left) ?? Number.NEGATIVE_INFINITY;
+      return secondOrder - firstOrder;
+    });
+    return shared;
   }
 
   /** Writes server-owned presence into a live room; false when nobody is there to receive it. */

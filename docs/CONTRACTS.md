@@ -2852,6 +2852,13 @@ depends on it.
   and a device-local kill switch (`manifold:ignore-spotlight`) ignores spotlights entirely:
   driving someone else's vantage is consented, rate-limited, and attributable, or it does not
   happen.
+  With several eligible shared rooms, a container-qualified URI (container, element or tile)
+  selects its named room first; otherwise delivery uses the caller's most recently joined
+  eligible room. Eligibility still requires current co-presence and the caller's
+  `scenes:write` grant. Recency is the server's order of successful non-spectator channel
+  joins, not wall-clock time, target activity or container-id order; duplicate joins do not
+  refresh it, and the principal's last departure forgets it. A URI naming an unshared or
+  unwritable room falls back through that same eligible recent-room order.
 - `cursor { x, y }` is its own high-rate message: clients throttle to
   `CURSOR_MIN_INTERVAL_MS` (16ms) and the server re-applies the same cadence per channel,
   retaining only the newest (latest-wins) and dropping under backpressure. `gesture
