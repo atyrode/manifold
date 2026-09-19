@@ -3240,6 +3240,16 @@ capability declaration and refusal ladder apply either way. The roster says whic
 got (`install.hardened`); the plugin manager's Installed band says it in words, **In-realm** or
 **Hardened**.
 
+**What browser hardening does not promise.** Init omits the viewer's bearer, and guest code
+cannot reach the page DOM or live host objects. The current Blob Worker still has native browser
+networking and its creator's origin: data received through init or an authorized host call can
+leave through `fetch` or WebSocket, and same-origin browser storage is not a private compartment.
+Withholding the page's token does not narrow a permitted door or filter its result. Choose the
+data and authority exposed to a row accordingly; **Hardened does not mean network-confined**.
+[ADR 0048](decisions/0048-compartment-scoped-csp.md) records a browser-proved default-deny
+design, not an activated policy or a new artifact format. The current contract is
+[Hardened plugins](CONTRACTS.md#hardened-plugins).
+
 **When to choose it.** An installer hardens a row they do not trust to hold the process: code
 from a source they have not read, on an instance where a server half that loops or corrupts
 memory must not take the hub down (ADR 0025 §6 names that as the in-realm cost). The price is
@@ -3423,9 +3433,9 @@ and `web.ts` (target `browser`) with the kit's guest runtimes, the protocol and 
 writes one JSON document (`PluginBundleSchema`: `format: 1`, `hardenedContract: 2`, the manifest
 with its `entry`, the members as base64, no `builtAgainst`). All packing modes stamp the same
 executable contract. The artifact is self-contained because the runner resolves
-nothing: the hub's process runner is one `Bun.spawn` of the bundle's `server.js`, the page's is one
-`new Worker("/api/plugins/<id>/web.js")`, and neither has the shared-module registry an in-realm
-bundle imports through. That is why the flag is required for a hardened row and why it is the
+nothing: the hub's process runner is one `Bun.spawn` of the bundle's `server.js`; the page fetches
+`/api/plugins/<id>/web.js` with the bearer and starts a module Worker from a Blob of those bytes.
+Neither has the shared-module registry an in-realm bundle imports through. That is why the flag is required for a hardened row and why it is the
 only difference at pack time: `pack` without it builds the in-realm bundle §10 describes, and
 installing THAT with `hardened: true` is refused at the door — `artifact_invalid: isolate exited
 before load (exit code 1)`, the child having died on `Missing shared module: @manifold/plugin`

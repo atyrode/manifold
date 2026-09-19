@@ -326,11 +326,17 @@ export class HttpApp {
    */
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
-    if (!url.pathname.startsWith("/api") && url.pathname !== "/healthz") {
-      return await this.route(request, url);
+    const api = url.pathname.startsWith("/api") || url.pathname === "/healthz";
+    const response =
+      api && request.method === "OPTIONS"
+        ? new Response(null, { status: 204 })
+        : await this.route(request, url);
+    response.headers.set("x-content-type-options", "nosniff");
+    // Callback documents deliberately carry the stricter no-referrer policy.
+    if (!response.headers.has("referrer-policy")) {
+      response.headers.set("referrer-policy", "strict-origin-when-cross-origin");
     }
-    if (request.method === "OPTIONS") return corsResponse(new Response(null, { status: 204 }));
-    return corsResponse(await this.route(request, url));
+    return api ? corsResponse(response) : response;
   }
 
   private async route(request: Request, url: URL): Promise<Response> {
