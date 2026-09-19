@@ -115,10 +115,12 @@ interface AccessCtx {
     ): IdentityAnswer<PrincipalAccessPauseResult>;
     /*
       The credential READ (ADR 0019 §3), on the identity door because a credential is what
-      this door hands out: the list and the revoke it aims are the same concept read and
-      written, and a `credentials` surface beside `identity` would say otherwise. The
-      mechanism narrows the answer to this caller's revocable identities. Run-chain readers
-      use listRuns instead; they never inherit this credential-reference inventory.
+      this door hands out: the list and the withdrawal it aims are the same concept read and
+      written, and a `credentials` surface beside `identity` would say otherwise. For human and
+      Agent rows, the mechanism narrows another principal's answer to live credentials issued
+      by this caller, while retaining explicit root and self exceptions. Native services remain
+      inspection-only here. Run-chain readers use listRuns instead; they never inherit this
+      credential-reference inventory.
     */
     listCredentials(): IdentityAnswer<readonly PrincipalCredentials[]>;
     /*
@@ -175,9 +177,10 @@ export const accessHandlers = {
   async mint(ctx: AccessCtx, args: MintTokenRequest): Promise<Outcome<TokenGrant>> {
     /*
       The whole attenuation ladder — a cap set no broader than the minter's, wildcard only
-      for root, no widening of container scope, no minting for a principal you did not create —
-      runs inside the mechanism, on the REAL caller, because that is where ADR 0011's
-      evaluator replaces it. This handler exists to relay, not to re-decide.
+      for root, no widening of container scope, and a live actor-issued credential before
+      reminting for another existing principal — runs inside the mechanism, on the REAL caller,
+      because that is where ADR 0011's evaluator replaces it. Historical issuance is not
+      principal ownership. This handler exists to relay, not to re-decide.
     */
     const minted = ctx.identity.mintToken(args);
     return minted.ok ? minted.value : { refused: minted.message };
@@ -334,9 +337,9 @@ export const accessHandlers = {
 
   async revoke(ctx: AccessCtx, args: { principalId: string }): Promise<Outcome<RevokeResult>> {
     const revoked = ctx.identity.revokePrincipal(args.principalId);
-    // A count of zero is a SUCCESS: revocation is idempotent, and asking twice about a
-    // principal whose tokens are already dead is precisely what a nervous administrator
-    // does. The refusals above it are about entitlement, never about the outcome being nil.
+    // A count of zero is a SUCCESS: withdrawal is idempotent, and asking twice after the
+    // caller's manageable credentials are already dead is precisely what a nervous
+    // administrator does. The refusals above it are about entitlement, never about a nil result.
     return revoked.ok ? { revoked: revoked.value } : { refused: revoked.message };
   },
   async pause(
@@ -356,16 +359,18 @@ export const accessHandlers = {
   },
 
   /**
-   * WHO HOLDS A CREDENTIAL HERE, and since when (ADR 0019 §3).
+   * THE LIVE CREDENTIAL INVENTORY AUTHORIZED FOR THIS CALLER, and since when (ADR 0019 §3).
    *
    * The question "which browsers hold my key" had no answer at all before this door:
    * `GET /api/introspect` published principals to a root caller and nothing else did, so a
-   * human could not look, and neither could an agent (A2). This is that question made
-   * readable — and readable by whoever may act on it, not only by root, for the reasons the
-   * mechanism records.
+   * human could not look, and neither could an agent (A2). Root still receives the complete
+   * live inventory. For human and Agent rows, a non-root receives explicit self credentials
+   * plus only live credentials it issued for another principal; legacy credentials without
+   * issuer provenance do not become delegated property. Native service rows remain
+   * inspection-only and follow their separate lifecycle.
    *
    * No filtering here, and no widening either: the mechanism answers for the REAL caller and
-   * this handler relays. A plugin that re-derived which principals it may see would be a
+   * this handler relays. A plugin that re-derived which credentials it may see would be a
    * second authority check on one question, and the one that mattered would be the one
    * further from the store.
    */
@@ -441,10 +446,12 @@ export const accessHandlers = {
 
   /*
     THE GRANT HALF (ADR 0011). Relay, like everything above it, and for the reason that matters
-    most here: a handler that re-decided who may write a grant would be a SECOND evaluator, one
-    rung above the only one — which is the failure ADR 0011 exists to prevent ("authority must
-    not be re-derived per feature"). The mechanism owns the ladder: root, the node's shape, the
-    subset rule, and the refusal that no deny row may name the workspace owner.
+    most here: a handler that re-decided who may write or administer a grant would be a SECOND
+    evaluator, one rung above the only one — which is the failure ADR 0011 exists to prevent
+    ("authority must not be re-derived per feature"). Public grant actions remain root-only.
+    At the service seam the mechanism still restricts any non-root list/revoke caller to
+    `createdBy` provenance, while owning the node shape, subset rule, token-bound-grant
+    protection, and refusal that no deny row may name the workspace owner.
   */
   async grant(ctx: AccessCtx, args: CreateGrantRequest): Promise<Outcome<Grant>> {
     const written = ctx.identity.grant(args);

@@ -118,6 +118,64 @@ test("human and legacy Sessions remain logins while linked Agent principals expo
   await ui.text("Agent credential withdrawal is not authorized");
 }, 60_000);
 
+test("delegated Sessions requires confirmation and removes withdrawn credentials after refresh", async () => {
+  await ui.reset("sessions");
+  await ui.answer("core.access.listCredentials", credentials);
+  await ui.answer("core.access.listAgents", {
+    agents: [agent],
+    truncated: false,
+    canRegister: true,
+  });
+  await ui.answer("core.access.listRuns", inventory);
+
+  await ui.browser.evaluate<void>(
+    'window.accessFixture.replaceViewer("delegate", ["tokens:mint"])',
+  );
+  await ui.answer("core.access.listCredentials", {
+    principals: [
+      {
+        ...credentials.principals[1]!,
+        sessions: credentials.principals[1]!.sessions.map((session) => ({
+          ...session,
+          mintedBy: "delegate",
+        })),
+      },
+    ],
+  });
+  await ui.answer("core.access.listAgents", {
+    agents: [],
+    truncated: false,
+    canRegister: false,
+  });
+  await ui.answer("core.access.listRuns", { ...inventory, runs: [] });
+
+  await ui.browser.evaluate<void>(
+    'document.querySelector("[data-principal=human-one] [data-action=\\"core.access.revoke\\"]").click()',
+  );
+  expect(
+    await ui.browser.evaluate<boolean>(
+      'window.accessFixture.requests.some(request => request.action === "core.access.revoke")',
+    ),
+  ).toBe(false);
+
+  await ui.browser.evaluate<void>(
+    'document.querySelector("[data-principal=human-one] [data-action=\\"core.access.revoke\\"]").click()',
+  );
+  await ui.outcome("core.access.revoke", { ok: true, result: { revoked: 1 } });
+  await ui.answer("core.access.listCredentials", { principals: [] });
+  await ui.answer("core.access.listAgents", {
+    agents: [],
+    truncated: false,
+    canRegister: false,
+  });
+  await ui.answer("core.access.listRuns", { ...inventory, runs: [] });
+  expect(
+    await ui.browser.evaluate<boolean>(
+      'document.querySelector("[data-principal=human-one]") === null',
+    ),
+  ).toBe(true);
+}, 60_000);
+
 test("Sessions pause and resume the same principal without destructive confirmation", async () => {
   await ui.reset("sessions");
   await ui.answer("core.access.listCredentials", credentials);

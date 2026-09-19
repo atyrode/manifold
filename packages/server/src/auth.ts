@@ -1452,7 +1452,12 @@ export class AuthService {
       if (
         !minter.isRoot &&
         existing.id !== minter.principal.id &&
-        !this.store.principalMintedBy(existing.id, minter.principal.id)
+        !this.store.hasIssuedToken(
+          existing.id,
+          minter.principal.id,
+          minter.containerScope,
+          this.runtime.now(),
+        )
       ) {
         throw new ServiceError("forbidden", "cannot mint for another principal");
       }
@@ -2813,9 +2818,9 @@ export class AuthService {
   }
 
   /**
-   * Legacy credential-administrator inventory: root sees every identity; an unscoped
-   * minter sees only its revocable principals. Inspection-only viewers use listRuns,
-   * whose bounded summaries contain no credential references or raw principal labels.
+   * Credential-administrator inventory: root sees every identity and live credential; a
+   * non-root minter sees itself plus only live credentials it issued. Inspection-only viewers
+   * use listRuns, whose bounded summaries contain no credential references or raw labels.
    */
   listCredentials(actor: AuthContext): PrincipalCredentials[] {
     // HTTP authentication precedes the awaited body read; restore again at point of use.
@@ -2828,12 +2833,7 @@ export class AuthService {
     const now = this.runtime.now();
     const rows: PrincipalCredentials[] = [];
     for (const { principal, createdAt } of this.store.listPrincipalsWithCreation()) {
-      const mine =
-        current.isRoot ||
-        principal.id === current.principal.id ||
-        this.store.principalMintedBy(principal.id, current.principal.id);
-      if (!mine) continue;
-      const sessions = this.store
+      const visible = this.store
         .listTokensByPrincipal(principal.id)
         /*
           LIVE means "would authenticate right now", which is `authenticate`'s two refusals
@@ -2841,15 +2841,24 @@ export class AuthService {
           rule belongs beside the function that enforces it, so a third answer cannot appear
           in a query somebody writes later.
         */
-        .filter((token) => token.revokedAt === null && (token.expiresAt ?? Infinity) > now)
-        .map((token) => ({
-          id: token.id,
-          createdAt: token.createdAt,
-          caps: [...token.caps],
-          ...(token.mintedBy === null ? {} : { mintedBy: token.mintedBy }),
-          ...(token.containerId === null ? {} : { containerId: token.containerId }),
-          ...(token.expiresAt === null ? {} : { expiresAt: token.expiresAt }),
-        }));
+        .filter(
+          (token) =>
+            token.revokedAt === null &&
+            (token.expiresAt ?? Infinity) > now &&
+            (current.isRoot ||
+              principal.id === current.principal.id ||
+              token.mintedBy === current.principal.id),
+        );
+      if (!current.isRoot && principal.id !== current.principal.id && visible.length === 0)
+        continue;
+      const sessions = visible.map((token) => ({
+        id: token.id,
+        createdAt: token.createdAt,
+        caps: [...token.caps],
+        ...(token.mintedBy === null ? {} : { mintedBy: token.mintedBy }),
+        ...(token.containerId === null ? {} : { containerId: token.containerId }),
+        ...(token.expiresAt === null ? {} : { expiresAt: token.expiresAt }),
+      }));
       const service =
         principal.kind === "service" ? this.store.getNativeServiceIdentity(principal.id) : null;
       const pausedAt = this.pausedPrincipals.get(principal.id);
@@ -2999,7 +3008,7 @@ export class AuthService {
     );
   }
 
-  /** Revokes only identities the actor created (or itself), without widening container scope. */
+  /** Revokes only credentials the actor issued (or its own), without widening container scope. */
   revokePrincipal(principalId: string, actor: AuthContext): number {
     if (!this.allows(actor, "tokens:mint")) {
       throw new ServiceError("forbidden", "tokens:mint capability required");
@@ -3007,7 +3016,7 @@ export class AuthService {
     if (
       !actor.isRoot &&
       principalId !== actor.principal.id &&
-      !this.store.principalMintedBy(principalId, actor.principal.id)
+      !this.store.hasIssuedToken(principalId, actor.principal.id, actor.containerScope)
     ) {
       throw new ServiceError("forbidden", "cannot revoke another principal");
     }
@@ -3029,9 +3038,10 @@ export class AuthService {
     const containerId = actor.containerScope;
     const at = this.runtime.now();
     const count = this.settleRevocation(
-      containerId === null
-        ? this.store.revokeTokensByPrincipal(principalId, at)
-        : this.store.revokeTokensByPrincipal(principalId, at, containerId),
+      this.store.revokeTokensByPrincipal(principalId, at, {
+        ...(containerId === null ? {} : { containerId }),
+        ...(principalId === actor.principal.id ? {} : { mintedBy: actor.principal.id }),
+      }),
     );
     this.store.addEvent(containerId, at, actor.principal.id, "token_revoked", {
       subjectPrincipalId: principalId,
@@ -3346,6 +3356,9 @@ export class AuthService {
     }
     const existing = this.store.getGrant(grantId);
     if (existing === null) return 0;
+    if (!actor.isRoot && existing.createdBy !== actor.principal.id) {
+      throw new ServiceError("forbidden", "cannot revoke another principal's grant");
+    }
     if (existing.tokenBound) {
       throw new ServiceError("forbidden", "a token's own grant is revoked by revoking the token");
     }
@@ -3373,16 +3386,19 @@ export class AuthService {
     if (!this.allows(actor, "tokens:mint")) {
       throw new ServiceError("forbidden", "tokens:mint capability required");
     }
-    return this.store.listGrants(filter).map((row) => ({
-      id: row.id,
-      principal: row.principal,
-      node: row.node,
-      caps: row.caps,
-      effect: row.effect,
-      reach: row.reach,
-      createdBy: row.createdBy,
-      createdAt: row.createdAt,
-    }));
+    return this.store
+      .listGrants(filter)
+      .filter((row) => actor.isRoot || row.createdBy === actor.principal.id)
+      .map((row) => ({
+        id: row.id,
+        principal: row.principal,
+        node: row.node,
+        caps: row.caps,
+        effect: row.effect,
+        reach: row.reach,
+        createdBy: row.createdBy,
+        createdAt: row.createdAt,
+      }));
   }
 
   /**

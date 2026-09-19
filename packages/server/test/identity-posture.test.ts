@@ -12,6 +12,7 @@ import { silentLogger } from "../src/log.ts";
 import type { PluginHost } from "../src/plugin-host.ts";
 import { RoomManager } from "../src/room.ts";
 import type { ServerStore } from "../src/stores.ts";
+import { sha256Hex } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
 import { FakeClock, FakeRuntime, testPluginHost, testStore, testTileTrees } from "./helpers.ts";
 import { createExternalRun } from "./agent-fixtures.ts";
@@ -494,7 +495,7 @@ describe("the credential list (ADR 0019 §3)", () => {
     fix.store.close();
   });
 
-  test("a non-root reader sees itself and what it minted, and nothing else", async () => {
+  test("non-root inventory exposes only live credentials issued by that actor", async () => {
     const fix = await fixture();
     const minter = mint(fix, ["tokens:mint", "containers:read"]);
     const minterContext = fix.auth.authenticate(minter.token);
@@ -502,23 +503,55 @@ describe("the credential list (ADR 0019 §3)", () => {
       { principal: { name: "delegate", kind: "human" }, caps: ["containers:read"] },
       minterContext,
     );
+    const foreign = fix.auth.mintToken(
+      { principalId: delegate.principal.id, caps: ["containers:read"] },
+      fix.owner,
+    );
     const stranger = mint(fix, ["containers:read"]);
 
     const listed = result(
       await fix.host.dispatch(minterContext, "core.access.listCredentials", {}),
     ) as CredentialsResponse;
-    const visible = listed.principals.map((entry) => entry.principal.id);
+    const ownRow = listed.principals.find((entry) => entry.principal.id === minter.principal.id);
+    const delegateRow = listed.principals.find(
+      (entry) => entry.principal.id === delegate.principal.id,
+    );
+    expect(ownRow?.sessions.map((session) => session.id)).toContain(
+      fix.store.getTokenByHash(sha256Hex(minter.token))?.id,
+    );
+    expect(delegateRow?.sessions.map((session) => session.id)).toEqual([
+      fix.store.getTokenByHash(sha256Hex(delegate.token))?.id,
+    ]);
+    expect(delegateRow?.sessions.map((session) => session.id)).not.toContain(
+      fix.store.getTokenByHash(sha256Hex(foreign.token))?.id,
+    );
+    expect(listed.principals.map((entry) => entry.principal.id)).not.toContain(
+      stranger.principal.id,
+    );
+    expect(listed.principals.map((entry) => entry.principal.id)).not.toContain(
+      fix.auth.ownerPrincipal.id,
+    );
 
-    /*
-      The READ is graded to the WRITE it aims: this caller may revoke itself and what it
-      minted (`revokePrincipal`), so that is exactly what it may see. A reader who could see
-      more than it can act on learns who to attack; one who can act on more than it can see
-      revokes by guesswork.
-    */
-    expect(visible).toContain(minter.principal.id);
-    expect(visible).toContain(delegate.principal.id);
-    expect(visible).not.toContain(stranger.principal.id);
-    expect(visible).not.toContain(fix.auth.ownerPrincipal.id);
+    const rootListed = result(
+      await fix.host.dispatch(fix.owner, "core.access.listCredentials", {}),
+    ) as CredentialsResponse;
+    expect(
+      rootListed.principals
+        .find((entry) => entry.principal.id === delegate.principal.id)
+        ?.sessions.map((session) => session.id),
+    ).toEqual([
+      fix.store.getTokenByHash(sha256Hex(delegate.token))?.id,
+      fix.store.getTokenByHash(sha256Hex(foreign.token))?.id,
+    ]);
+
+    expect(fix.auth.revokePrincipal(delegate.principal.id, minterContext)).toBe(1);
+    const afterWithdrawal = result(
+      await fix.host.dispatch(minterContext, "core.access.listCredentials", {}),
+    ) as CredentialsResponse;
+    expect(
+      afterWithdrawal.principals.some((entry) => entry.principal.id === delegate.principal.id),
+    ).toBe(false);
+    expect(fix.auth.authenticate(foreign.token).principal.id).toBe(delegate.principal.id);
     fix.store.close();
   });
 

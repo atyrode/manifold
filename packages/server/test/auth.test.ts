@@ -214,8 +214,8 @@ describe("Token secret persistence", () => {
   });
 });
 
-describe("AuthService principal ownership", () => {
-  test("a scoped minter cannot revoke a principal it did not create, while root can", () => {
+describe("AuthService issuer-owned credential administration", () => {
+  test("a scoped minter cannot revoke a principal for which it issued no credential", () => {
     const fixture = authFixture();
     const delegatedGrant = fixture.auth.mintToken(
       {
@@ -265,7 +265,7 @@ describe("AuthService principal ownership", () => {
     fixture.store.close();
   });
 
-  test("scoped revocation affects only the actor-created principal's scoped tokens", () => {
+  test("scoped issuer withdrawal leaves same-scope and unscoped foreign credentials intact", () => {
     const fixture = authFixture();
     const delegatedGrant = fixture.auth.mintToken(
       {
@@ -283,17 +283,121 @@ describe("AuthService principal ownership", () => {
       },
       delegated,
     );
-    const unscoped = fixture.auth.mintToken(
+    const foreignScoped = fixture.auth.mintToken(
+      {
+        principalId: child.principal.id,
+        caps: ["scenes:write"],
+        containerId: fixture.container.id,
+      },
+      fixture.root,
+    );
+    const foreignUnscoped = fixture.auth.mintToken(
       {
         principalId: child.principal.id,
         caps: ["containers:read"],
       },
       fixture.root,
     );
+    const foreignGrantIds = [foreignScoped, foreignUnscoped].map(
+      ({ token }) => fixture.store.getTokenByHash(sha256Hex(token))?.grantId,
+    );
 
     expect(fixture.auth.revokePrincipal(child.principal.id, delegated)).toBe(1);
     expect(() => fixture.auth.authenticate(child.token)).toThrow(ServiceError);
-    expect(fixture.auth.authenticate(unscoped.token).principal.id).toBe(child.principal.id);
+    for (const foreign of [foreignScoped, foreignUnscoped]) {
+      expect(fixture.auth.authenticate(foreign.token).principal.id).toBe(child.principal.id);
+    }
+    for (const grantId of foreignGrantIds) {
+      expect(typeof grantId).toBe("string");
+      if (typeof grantId !== "string") throw new Error("foreign credential has no grant");
+      expect(fixture.store.getGrant(grantId)).not.toBeNull();
+    }
+    expectForbidden(() =>
+      fixture.auth.mintToken(
+        { principalId: child.principal.id, caps: ["scenes:write"] },
+        delegated,
+      ),
+    );
+    fixture.store.close();
+  });
+  test("unscoped issuer withdrawal is provenance-bound while self withdrawal is not", () => {
+    const fixture = authFixture();
+    const issuerGrant = fixture.auth.mintToken(
+      {
+        principal: { name: "issuer", kind: "human" },
+        caps: ["tokens:mint", "containers:read"],
+      },
+      fixture.root,
+    );
+    const issuer = fixture.auth.authenticate(issuerGrant.token);
+    const child = fixture.auth.mintToken(
+      {
+        principal: { name: "child", kind: "human" },
+        caps: ["containers:read"],
+      },
+      issuer,
+    );
+    const foreign = fixture.auth.mintToken(
+      { principalId: child.principal.id, caps: ["containers:read"] },
+      fixture.root,
+    );
+
+    expect(fixture.auth.revokePrincipal(child.principal.id, issuer)).toBe(1);
+    expect(() => fixture.auth.authenticate(child.token)).toThrow(ServiceError);
+    expect(fixture.auth.authenticate(foreign.token).principal.id).toBe(child.principal.id);
+
+    const otherIssuerCredential = fixture.auth.mintToken(
+      {
+        principalId: issuer.principal.id,
+        caps: ["tokens:mint", "containers:read"],
+      },
+      fixture.root,
+    );
+    expect(fixture.auth.revokePrincipal(issuer.principal.id, issuer)).toBe(2);
+    expect(() => fixture.auth.authenticate(issuerGrant.token)).toThrow(ServiceError);
+    expect(() => fixture.auth.authenticate(otherIssuerCredential.token)).toThrow(ServiceError);
+    fixture.store.close();
+  });
+
+  test("a foreign live credential cannot revive an expired issuer edge", () => {
+    const fixture = authFixture();
+    const issuerGrant = fixture.auth.mintToken(
+      {
+        principal: { name: "issuer", kind: "human" },
+        caps: ["tokens:mint", "scenes:write"],
+      },
+      fixture.root,
+    );
+    const issuer = fixture.auth.authenticate(issuerGrant.token);
+    const child = fixture.auth.mintToken(
+      {
+        principal: { name: "child", kind: "human" },
+        caps: ["scenes:write"],
+      },
+      issuer,
+    );
+
+    fixture.runtime.time = child.expiresAt! + 1;
+    const renewedIssuer = fixture.auth.mintToken(
+      {
+        principalId: issuer.principal.id,
+        caps: ["tokens:mint", "scenes:write"],
+      },
+      fixture.root,
+    );
+    const foreign = fixture.auth.mintToken(
+      { principalId: child.principal.id, caps: ["containers:read"] },
+      fixture.root,
+    );
+    const currentIssuer = fixture.auth.authenticate(renewedIssuer.token);
+
+    expectForbidden(() =>
+      fixture.auth.mintToken(
+        { principalId: child.principal.id, caps: ["scenes:write"] },
+        currentIssuer,
+      ),
+    );
+    expect(fixture.auth.authenticate(foreign.token).principal.id).toBe(child.principal.id);
     fixture.store.close();
   });
 });

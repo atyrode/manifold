@@ -317,12 +317,14 @@ Metadata-only migration 36 atomically records the last pre-cutover event id in
 Only later trace rows may carry trusted declarations. Legacy caller-supplied fields never become
 reasoning; missing/corrupt metadata fails closed and reopening does not reset the boundary.
 
-`core.access.listCredentials` retains its administrator-only fields and
-root/revocable-principal audience for the Sessions section. `core.access.listRuns({agentId?})`
-supplies the separately bounded newest 100 inspectable Run summaries, `observedAt` and a
-truncation flag. Summaries include Agent/session/model/activity, normalized name/purpose,
-creation/expiry, parent and action/refusal counts without credential references. Both
-inventories revalidate credentials at point of use. `runAccess: "inspect"` permits
+`core.access.listCredentials` retains its administrator-only fields for the Sessions section.
+Root receives the complete live credential inventory; a non-root sees explicit self credentials
+and only manageable live credentials it issued for another principal. It never receives another
+issuer's sessions or a historical principal row made empty by issuer filtering.
+`core.access.listRuns({agentId?})` supplies the separately bounded newest 100 inspectable Run
+summaries, `observedAt` and a truncation flag. Summaries include Agent/session/model/activity,
+normalized name/purpose, creation/expiry, parent and action/refusal counts without credential
+references. Both inventories revalidate credentials at point of use. `runAccess: "inspect"` permits
 pending/stale and container-scoped inspection without restoring ordinary effect authority.
 The Agents section is separate from human Sessions and owns `agent`/`run` reference
 navigation. Row opening, lineage navigation and exact trace references use the same
@@ -528,6 +530,25 @@ Reasoning and rejected alternatives: [ADR 0019](decisions/0019-identity-posture.
   (`*`; §Hardened plugins).
 - Token scope: optional `containerId` restricts everything to one container. It is a subtree
   grant at `manifold://container/<id>`, which is what it always meant; the field did not move.
+- **Delegated credential administration is issuer-owned, not principal ownership** (#389).
+  `tokens.minted_by` is provenance for one credential; it never creates a durable parent,
+  guardian or recursive administration edge to the principal. Root retains complete live
+  inventory, mint and withdrawal as the owner-key break-glass path. Self remains explicit:
+  a principal may inspect and withdraw its own eligible credentials, restricted by its acting
+  credential's container scope. For another principal, a non-root may inspect only live
+  credentials it issued and withdraw its own issuance, restricted by that same current scope.
+  Credentials from another issuer are neither disclosed nor withdrawn, and legacy null-issuer credentials
+  remain administrable only through root or self.
+
+  Reminting for another existing human principal requires at least one currently live
+  (unrevoked and unexpired), in-scope credential issued by the actor. Historical issuance does
+  not qualify after the final eligible credential dies, even when another issuer still has a
+  live credential for that principal. The replacement remains attenuated to the actor's current
+  authority; existing principal grants continue through the ordinary waterfall and are not
+  copied into the credential. Withdrawal retires each targeted token-bound grant atomically
+  with only its targeted credential. The `{ principalId }` wire request remains principal-grouped;
+  the server, never a browser or SDK filter, selects eligible credential rows.
+
 - Revocation: durable; server closes live sockets of revoked tokens with code 4403 and
   message `revoked`.
 - **Pause** (ADR 0046): durable principal lifecycle state, evaluated before Run policy and the
@@ -680,6 +701,14 @@ everything under it). A grant never names an action: actions declare capabilitie
 capabilities, and the two meet at the door.
 Service principals match neither `any-human` nor `any-agent`; their named principal grants
 remain the authority issued for the native service's exact requirements.
+
+**Grant administration uses issuer provenance without widening its audience.**
+`grants.created_by`, published as `Grant.createdBy`, is the administration boundary at the
+service seam: a non-root service caller may list or revoke only grants it created, while root
+remains unrestricted. The public `core.access.grant`, `revokeGrant` and `listGrants` actions
+remain root-only; this rule does not decide deny attenuation or create a new grant-writing
+audience. A token-bound grant is never independently revocable: credential withdrawal is its
+sole retirement path and deletes it atomically only with the targeted token.
 
 **Tokens reference grants; they do not carry authority.** `TokenRecord.grant_id` and
 `ShareRecord.grant_id` point at the row the credential was minted from — the referrer holds the
@@ -1821,16 +1850,22 @@ including target-scoped grants. `canManage` comes from the verified sponsor chai
 comparison of principal labels. These control-eligibility hints never replace admission checks on
 the submitted grant or mutation.
 
-`createPrincipal` demands `*` because `requireRoot` did; the other two demand `tokens:mint`
-because the mechanism did. Both of those are `scope: "container"` (§Actions rung 3) because
-`POST /api/tokens` authenticated any token and let the mechanism attenuate: a container-scoped agent
-holding `tokens:mint` may mint inside its own container and revoke what it minted there, and the
-mechanism performs the containment check — a mint may not widen its minter's container scope, and a
-scoped revocation reaches only that container's tokens. Attenuation failures are `refused` denials
-carrying the mechanism's own wording verbatim (`cannot mint capability <cap>`, `cannot widen
-container
-scope`, `principal not found`, `cannot revoke another principal`); a cap the caller does not hold
-is `forbidden` at the door, one rung earlier.
+`createPrincipal` demands `*` because `requireRoot` did; `mint` and `revoke` demand
+`tokens:mint` because the mechanism did. Both token doors are `scope: "container"` (§Actions
+rung 3) because `POST /api/tokens` authenticated any token and let the mechanism attenuate: a
+container-scoped actor holding `tokens:mint` may mint inside its own container and withdraw
+eligible credentials there. The mechanism performs both containment and issuer checks — a mint
+may not widen its minter's container scope, and administration of another principal reaches only
+live credentials the actor issued inside its current scope. Root remains complete; self remains
+explicit and scope-consistent; null-issuer legacy rows are root/self only.
+
+Minting for another existing human principal additionally requires a currently live, in-scope
+credential issued by that actor. Historical issuance alone never authorizes remint after the last
+eligible credential expires or is revoked, including when another issuer still has a live
+credential for the principal. New credentials remain attenuated to the actor's current authority
+and existing principal grants are evaluated normally. Attenuation and eligibility failures are
+`refused` denials carrying the mechanism's wording verbatim; a cap the caller does not hold is
+`forbidden` at the door, one rung earlier.
 `pause` and `resume` are root-only, workspace-scoped and idempotent (ADR 0046). Both refuse an
 unknown principal and the workspace owner. Schema 41 stores one pause row per principal; the
 authority mechanism loads it into memory and checks it before every waterfall evaluation without
@@ -1839,8 +1874,11 @@ declared `principal_access_paused` or `principal_access_resumed` event on
 `manifold://plugin/core.access`; repeats emit nothing. `PrincipalCredentials.pausedAt?` is the
 durable state projection. Sessions exposes Pause access / Resume access for non-self rows with live
 credentials. As with the Commands surface, drawing a door does not claim the viewer may open it:
-the authoritative root-only refusal is rendered if a non-root viewer tries. The revocation control
-remains separate and destructive.
+the authoritative root-only refusal is rendered if a non-root viewer tries. The separate,
+destructive withdrawal control describes the inventory it can affect: every credential for root,
+the actor's eligible credentials for self, and only actor-issued credentials for another principal.
+It keeps the principal-grouped `{ principalId }` action; the browser does not reproduce the
+server's issuer or scope filter.
 
 **Native service credentials are managed by their service, not by Sessions (#594).**
 `listCredentials` projects `kind: "service"` with optional top-level `serviceId` and `machineId`,
