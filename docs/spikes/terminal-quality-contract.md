@@ -16,6 +16,10 @@ The product is a terminal, not a frontend for one CLI agent. Its core contract s
 
 Acquire clipboard/file bytes in the browser, transfer them to the authorized target machine through a generic capability, and let a supported consumer use the result. An application-specific attachment adapter may improve interoperability after that foundation exists; it must remain optional and must not become a special backend or per-application file-transfer protocol. Terminal image display and clipboard image input remain separate decisions.
 
+The separate [shared-file proposal](shared-file-contract.md) specifies #370's durable-file,
+canvas-image and machine-delivery design, including explicit sharing, retention, approved
+destinations and future verification. It is not adopted policy or a shipped transfer service.
+
 ## Ghostty-class experience: what should feel right
 
 The aim is not to reproduce a native terminal's settings menu or check protocol boxes. It is to remove the small interruptions that make sustained terminal work feel second-class. Organize ratification in three layers:
