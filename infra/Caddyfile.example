@@ -12,10 +12,16 @@
 {$MANIFOLD_DOMAIN} {
 	encode zstd gzip
 
-	header {
-		X-Content-Type-Options nosniff
-		Referrer-Policy strict-origin-when-cross-origin
+	header ?X-Content-Type-Options nosniff
+	header ?Referrer-Policy strict-origin-when-cross-origin
+
+	# One-day, host-only HTTPS policy. Do not pin localhost development to TLS.
+	# No includeSubDomains or preload commitment is made by this example.
+	@publicHTTPS {
+		protocol https
+		not host localhost *.localhost 127.0.0.1 ::1
 	}
+	header @publicHTTPS Strict-Transport-Security "max-age=86400"
 
 	reverse_proxy 127.0.0.1:7777
 }

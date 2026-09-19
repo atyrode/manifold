@@ -929,6 +929,33 @@ compose when they disagree, in both directions, rather than dialing a socket tha
 4409 forever ([Protocol and compatibility](#protocol-and-compatibility); `packages/web/src/lens.tsx`). This is what keeps a cached
 bundle honest about protocol skew.
 
+### Browser response policy
+
+The direct Bun HTTP handler supplies `X-Content-Type-Options: nosniff` and defaults
+`Referrer-Policy` to `strict-origin-when-cross-origin` on static files, SPA fallbacks, API
+responses and errors. A route's explicit policy wins: preview callback/finalize documents retain
+`no-referrer`, `no-store` and their own restrictive CSP, including the inline script needed to
+complete the handoff. The proxy examples fill missing baseline headers rather than weakening
+those route-specific responses. This does not widen static-file CORS or add ambient API credentials.
+
+The normal shell retains `Content-Security-Policy: frame-ancestors 'none'` and
+`X-Frame-Options: DENY`. It does **not** enforce a restrictive `script-src` or `connect-src`.
+Trusted in-realm modules import authenticated bytes through Blob URLs and inject their admitted
+styles; a portable lens connects to the selected instance's HTTP and WebSocket origins, which need
+not be the serving origin. A page-wide `connect-src 'self'` would violate that contract, not confine
+only a hardened plugin.
+
+HSTS belongs to the HTTPS terminator, not a forwarded-protocol assertion received by Bun.
+The shipped Caddy examples add a one-day, host-only policy on public HTTPS vhosts, excluding
+localhost development and making no `includeSubDomains` or preload commitment.
+[Self-hosting](SELF-HOST.md#http-response-hardening) owns the deployment and first-visit caveats.
+
+[ADR 0048](decisions/0048-compartment-scoped-csp.md) proposes restrictive script/connect policy
+inside an opaque-origin hardened Worker compartment while leaving the trusted lens operational.
+Its browser experiments are design evidence, **not an installed runtime policy**. The current
+hardened browser boundary remains the one documented below; no deployment gains network
+confinement by setting the baseline headers.
+
 ## Containers, placement, and the index
 
 A container has one of two disciplines — `canvas` or `composition` — and is ONE object either
@@ -2419,6 +2446,22 @@ as `isolate_output`, capped. Log events: `isolate_spawned`, `isolate_exited`, `i
 `SessionHandle`'s methods of those names and are served from the panel's REAL `HostServices`,
 which is how the worker calls the door with the caller's authority without ever holding
 `HostServices.token` (ADR 0016 §3). The worker is terminated on disable.
+
+**Present browser limit (#409).** The init frame does not carry the viewer's bearer, and the
+Worker receives neither the page DOM nor live host objects. This is a message/DOM boundary,
+**not a network or origin-storage sandbox**. The current Blob module Worker retains native
+`fetch`, WebSocket and other browser networking, and shares its creator's origin rather than
+receiving a fresh containment origin. Data supplied through init or permitted RPC results can
+therefore leave through ordinary browser requests; same-origin browser storage is not isolated
+either. Withholding `HostServices.token` does not reduce the authority of an otherwise permitted
+host call or filter the data its door returns. `install.hardened` must not be presented as
+browser-egress confinement.
+
+The [compartment-scoped CSP proposal](decisions/0048-compartment-scoped-csp.md) gives direct
+guest networking an empty destination set and keeps selected-instance access behind the existing
+host RPC. Its opaque-origin bootstrap, classic-bundle compatibility transition and enforcement
+checks are not shipped. Neither a fetch wrapper nor that design is current protection; the
+server-process boundary is a separate contract.
 
 **The component vocabulary (`UiNodeSchema`, ADR 0016 §3, R2).** A hardened web half never touches
 the DOM by any route; it renders by sending a tree of `UI_NODE_TYPES` — `box`, `heading`, `text`,

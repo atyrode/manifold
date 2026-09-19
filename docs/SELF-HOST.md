@@ -569,6 +569,33 @@ cannot distinguish two humans holding the same key.
 
 The reasoning is recorded in `docs/decisions/0019-identity-posture.md`.
 
+### HTTP response hardening
+
+Direct Bun responses include `X-Content-Type-Options: nosniff` and
+`Referrer-Policy: strict-origin-when-cross-origin`; preview callback/finalize documents keep
+the stricter `no-referrer` policy. The Caddy examples supply these only when the upstream
+omits them, so proxying does not weaken the callback policy.
+
+`infra/Caddyfile.example` and `infra/compose.Caddyfile` add
+`Strict-Transport-Security: max-age=86400` only on HTTPS requests to a non-localhost vhost.
+The policy is **one day, this host only**: no `includeSubDomains`, no `preload`. Plain HTTP,
+`localhost`, `*.localhost`, `127.0.0.1` and `::1` do not acquire HSTS from these examples.
+Bun does not emit HSTS or trust `X-Forwarded-Proto` to decide it; a custom TLS proxy owns
+the corresponding policy.
+
+HSTS takes effect after a browser receives it over HTTPS and protects subsequent visits while
+cached. It does not secure an initial cleartext visit; preload would be a separate commitment,
+not an implied part of this configuration. A URL fragment is never sent in the HTTP request,
+so this is transport hardening, not remediation for a passive cleartext-fragment disclosure.
+Changing an example does not change an already-running proxy: inspect the actual HTTPS origin
+after deliberately applying its configuration.
+
+The shell's frame denial is not a restrictive script/connect policy. Trusted in-realm plugins
+and foreign lenses remain supported; hardened Workers still retain ambient networking.
+[Browser response policy](CONTRACTS.md#browser-response-policy) and
+[ADR 0048](decisions/0048-compartment-scoped-csp.md) distinguish shipped headers from the
+unshipped confinement design.
+
 ## Already running a reverse proxy on this box?
 
 Skip the bundled caddy: publish manifold on loopback and keep your existing proxy

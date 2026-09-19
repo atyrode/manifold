@@ -101,10 +101,14 @@ describe("production preview identity", () => {
       body: new URLSearchParams({ assertion: issued.assertion }),
     });
     expect(stage.status).toBe(200);
+    expect(stage.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(stage.headers.get("referrer-policy")).toBe("no-referrer");
     const callbackCookie = stage.headers.get("set-cookie")?.split(";", 1)[0] ?? "";
 
     const missingNonce = await fetch(`${preview.publicUrl}/auth/preview/finalize`);
     expect(missingNonce.status).toBe(403);
+    expect(missingNonce.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(missingNonce.headers.get("referrer-policy")).toBe("no-referrer");
     // An attacker can start the flow, then send its public nonce to a signed-in victim.
     // Only the victim receives the callback cookie; neither browser may finalize alone.
     const initiatorOnly = await fetch(`${preview.publicUrl}/auth/preview/finalize`, {
@@ -122,6 +126,8 @@ describe("production preview identity", () => {
     expect(accept.status).toBe(200);
     expect(accept.headers.get("cache-control")).toBe("no-store");
     expect(accept.headers.get("x-frame-options")).toBe("DENY");
+    expect(accept.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(accept.headers.get("referrer-policy")).toBe("no-referrer");
     const callback = await accept.text();
     expect(callback).not.toContain(productionGrant.token);
     const localToken = /"token":"([^"]+)"/.exec(callback)?.[1];

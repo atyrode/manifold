@@ -3240,6 +3240,16 @@ capability declaration and refusal ladder apply either way. The roster says whic
 got (`install.hardened`); the plugin manager's Installed band says it in words, **In-realm** or
 **Hardened**.
 
+**What browser hardening does not promise.** Init omits the viewer's bearer, and guest code
+cannot reach the page DOM or live host objects. The current Blob Worker still has native browser
+networking and its creator's origin: data received through init or an authorized host call can
+leave through `fetch` or WebSocket, and same-origin browser storage is not a private compartment.
+Withholding the page's token does not narrow a permitted door or filter its result. Choose the
+data and authority exposed to a row accordingly; **Hardened does not mean network-confined**.
+[ADR 0048](decisions/0048-compartment-scoped-csp.md) records a browser-proved default-deny
+design, not an activated policy or a new artifact format. The current contract is
+[Hardened plugins](CONTRACTS.md#hardened-plugins).
+
 **When to choose it.** An installer hardens a row they do not trust to hold the process: code
 from a source they have not read, on an instance where a server half that loops or corrupts
 memory must not take the hub down (ADR 0025 §6 names that as the in-realm cost). The price is
