@@ -40,7 +40,7 @@ server. Preparation has four terminal states:
   consumed a valid first-initialization acknowledgement, so the existing exported database opener
   initialized the staged database before exclusive publication; or
 - **refused** — every other outcome, including zero-byte, foreign, corrupt, or future-schema local
-  data; an invalid acknowledgement; restore failure or timeout; or an empty replica without an
+  data or orphaned journals; an invalid acknowledgement; restore failure or timeout; or an empty replica without an
   acknowledgement.
 
 Refusal is terminal for that container start: neither `litestream replicate` nor the server runs.
@@ -48,13 +48,18 @@ An existing local file is never interpreted as absence and is left in place. Res
 private directory on the same data filesystem, uses a 300-second timeout and Litestream's full
 integrity check, and publishes without replacing a concurrently created destination. Cleanup removes
 only staging owned by that run.
+An absent main file with any `-wal`, `-shm`, or `-journal` sidecar is still local evidence: refuse and
+preserve it, never publish fresh history beside it. Deliberate quarantine moves the database and its
+sidecars together.
 
 ### 2. Acknowledgement grants one empty-replica attempt, not a mode
 
 `bun scripts/replica-bootstrap.ts acknowledge` is the explicit first-initialization command. It
-refuses while a local database exists and otherwise exclusively creates
+refuses while a local database, orphan journal, or acknowledgement exists and otherwise exclusively creates
 `<MANIFOLD_DATA_DIR>/.replica-init-once.json` with mode 0600. The record expires after 15 minutes and
-binds by digest to the configured replica target. The command neither starts a hub nor contacts or
+binds by digest to the Litestream configuration, its referenced environment inputs, and replica
+credentials, covering custom prefixes as well as the shipped configuration without recording their
+values. The command requires the four replica settings, but neither starts a hub nor contacts or
 modifies the replica.
 
 At the beginning of the next preparation attempt, a valid acknowledgement is consumed and its removal
@@ -62,6 +67,11 @@ synchronized before the restore. It is consumed whether that restore succeeds wi
 succeeds empty, fails, or times out. An invalid, expired, or target-mismatched record refuses rather
 than being ignored. Only a zero-exit restore that produces no database may use the consumed intent to
 initialize. A restore failure is never converted into an empty-replica result.
+To withdraw stale or invalid intent, `bun scripts/replica-bootstrap.ts discard` removes only the
+acknowledgement and synchronizes that removal. It needs no replica configuration, contacts no replica,
+and grants no initialization. After inspecting the intended target, an operator may issue a fresh
+acknowledgement. Configuration or credential changes require this new decision rather than reusing
+the old record.
 
 The ordinary Compose runbook invokes `acknowledge` with the service's normal image, data volume, and
 environment, then starts the service within the expiry. Before doing so, the operator inspects the

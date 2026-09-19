@@ -4397,14 +4397,19 @@ The ordinary replicated-container bootstrap is a single gate:
 `bun scripts/replica-bootstrap.ts prepare`. Before an attempt it consumes and synchronizes any
 well-formed, unexpired `.replica-init-once.json` acknowledgement; the mode-0600 file is created
 exclusively by `replica-bootstrap.ts acknowledge`, is valid for 15 minutes, is bound by digest to
-the configured replica target, and can be created only while `manifold.db` is absent.
+the Litestream configuration, its referenced environment inputs and replica credentials, and can be
+created only while `manifold.db` and its journals are absent.
 Acknowledgement does not contact or modify the replica and does not start a hub. Consumption is
 one-shot even when the following restore fails, times out, or restores a database.
+An invalid record remains a refusal until an explicit `replica-bootstrap.ts discard` removes it.
+Discard changes only the acknowledgement, needs no replica settings, contacts no replica and grants
+no initialization. A fresh acknowledgement follows renewed inspection, never an edit of stale intent.
 
 An existing `manifold.db` is usable only after read-only SQLite integrity validation and a positive
 schema version supported by the running image. Zero-byte, foreign, corrupt, and future-schema files
-are preserved and refused, never classified as fresh. With no local database, `prepare` runs the
-real restore in a private same-data-directory staging directory:
+are preserved and refused, never classified as fresh. An absent main file with any `-wal`, `-shm`,
+or `-journal` sidecar also refuses; publication never proceeds beside orphan journals. With no local
+database or journals, `prepare` runs the real restore in a private same-data-directory staging directory:
 
 ```sh
 timeout 300 litestream restore -if-replica-exists -integrity-check full \
@@ -4421,8 +4426,8 @@ authorizes initialization.
 
 This first-initialization acknowledgement is not recovery authority: it cannot bless failed or
 missing history, overwrite local data, or replace replica objects. Operators preserve or
-quarantine invalid local data for inspection and inspect the configured replica rather than
-clearing it. Full-state recovery remains the authenticated recovery-image procedure; ordinary
+quarantine invalid local data and all its SQLite sidecars together for inspection, and inspect the
+configured replica rather than clearing it. Full-state recovery remains the authenticated recovery-image procedure; ordinary
 bootstrap restores only `manifold.db`. Replica bootstrap emits only structured, non-secret
 `evt`/state diagnostics: child stderr, storage endpoints, credentials, and data are not logged.
 

@@ -21,6 +21,7 @@ import { join, resolve } from "node:path";
 
 const ACK_NAME = ".replica-init-once.json";
 const ACK_LIFETIME_MS = 15 * 60 * 1000;
+const LITESTREAM_CONFIG = resolve(import.meta.dir, "../infra/litestream.yml");
 const RECOVERY_SETTINGS = [
   "MANIFOLD_RECOVERY_CHECKPOINT",
   "MANIFOLD_RECOVERY_SHA256",
@@ -58,6 +59,11 @@ function syncDirectory(path: string): void {
   }
 }
 
+function requireNoJournals(db: string): void {
+  for (const suffix of ["-wal", "-shm", "-journal"])
+    if (exists(`${db}${suffix}`)) throw new BootstrapRefusal("local_history_unusable");
+}
+
 function requireHistory(path: string, reason: string): void {
   let database: Database | undefined;
   try {
@@ -85,6 +91,9 @@ function requireHistory(path: string, reason: string): void {
 
 function acknowledge(dataDir: string, db: string, target: string): void {
   if (exists(db)) throw new BootstrapRefusal("local_history_exists");
+  requireNoJournals(db);
+  if (exists(join(dataDir, ACK_NAME)))
+    throw new BootstrapRefusal("initialization_acknowledgement_exists");
   const fd = openSync(
     join(dataDir, ACK_NAME),
     constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
@@ -101,6 +110,17 @@ function acknowledge(dataDir: string, db: string, target: string): void {
   }
   syncDirectory(dataDir);
   state("initialization_acknowledged");
+}
+
+function discardAcknowledgement(dataDir: string): void {
+  const path = join(dataDir, ACK_NAME);
+  if (!exists(path)) {
+    state("initialization_acknowledgement_absent");
+    return;
+  }
+  unlinkSync(path);
+  syncDirectory(dataDir);
+  state("initialization_acknowledgement_discarded");
 }
 
 function consumeAcknowledgement(dataDir: string, target: string): boolean {
@@ -159,14 +179,13 @@ function initialize(db: string): void {
 }
 
 function prepare(dataDir: string, db: string, target: string): void {
-  if (!process.env.LITESTREAM_ACCESS_KEY_ID || !process.env.LITESTREAM_SECRET_ACCESS_KEY)
-    throw new BootstrapRefusal("replica_credentials_missing");
   const mayInitialize = consumeAcknowledgement(dataDir, target);
   if (exists(db)) {
     requireHistory(db, "local_history_unusable");
     state("local_history");
     return;
   }
+  requireNoJournals(db);
 
   const staging = mkdtempSync(join(dataDir, ".replica-restore-"));
   try {
@@ -182,7 +201,7 @@ function prepare(dataDir: string, db: string, target: string): void {
         "-integrity-check",
         "full",
         "-config",
-        resolve(import.meta.dir, "../infra/litestream.yml"),
+        LITESTREAM_CONFIG,
         "-o",
         restored,
         db,
@@ -202,6 +221,7 @@ function prepare(dataDir: string, db: string, target: string): void {
       initialize(restored);
     }
     // Staging is on the same filesystem. A hard link publishes without replacing any history.
+    requireNoJournals(db);
     linkSync(restored, db);
     syncDirectory(dataDir);
     state(hasHistory ? "restored" : "initialized");
@@ -212,20 +232,41 @@ function prepare(dataDir: string, db: string, target: string): void {
 
 function main(): void {
   const [command, ...rest] = process.argv.slice(2);
-  if (rest.length !== 0 || (command !== "acknowledge" && command !== "prepare"))
-    throw new BootstrapRefusal("usage_acknowledge_or_prepare");
+  if (
+    rest.length !== 0 ||
+    (command !== "acknowledge" && command !== "discard" && command !== "prepare")
+  )
+    throw new BootstrapRefusal("usage_acknowledge_discard_or_prepare");
   if (RECOVERY_SETTINGS.some((name) => process.env[name]))
     throw new BootstrapRefusal("full_state_recovery_requires_recovery_image");
+  const dataDir = resolve(process.env.MANIFOLD_DATA_DIR || "/data");
+  if (command === "discard") {
+    discardAcknowledgement(dataDir);
+    return;
+  }
   const bucket = process.env.MANIFOLD_REPLICA_BUCKET;
   const endpoint = process.env.MANIFOLD_REPLICA_ENDPOINT;
   if (!bucket || !endpoint) throw new BootstrapRefusal("replica_configuration_missing");
-  const dataDir = resolve(process.env.MANIFOLD_DATA_DIR || "/data");
+  const accessKey = process.env.LITESTREAM_ACCESS_KEY_ID;
+  const secretKey = process.env.LITESTREAM_SECRET_ACCESS_KEY;
+  if (!accessKey || !secretKey) throw new BootstrapRefusal("replica_credentials_missing");
   mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+  process.env.MANIFOLD_DATA_DIR = dataDir;
   const db = join(dataDir, "manifold.db");
-  // Bind intent to the exact destination without persisting endpoint credentials or bucket names.
-  const target = createHash("sha256")
-    .update(JSON.stringify([endpoint, bucket, "manifold.db"]))
-    .digest("hex");
+  // Bind the exact configuration and its inputs, including custom prefixes and storage identity,
+  // without persisting their values. Any configuration change requires a fresh decision.
+  const configuration = readFileSync(LITESTREAM_CONFIG, "utf8");
+  const fingerprint = createHash("sha256").update(
+    JSON.stringify([endpoint, bucket, accessKey, secretKey, configuration]),
+  );
+  // Record Go os.ExpandEnv inputs, not a second YAML parser or configuration interpreter.
+  for (const match of configuration.matchAll(
+    /\$(?:\{([^}]+)\}|([0-9*#$@!?-])|([A-Za-z_][A-Za-z0-9_]*))/g,
+  )) {
+    const variable = match[1] ?? match[2] ?? match[3];
+    if (variable) fingerprint.update(JSON.stringify([variable, process.env[variable] ?? ""]));
+  }
+  const target = fingerprint.digest("hex");
   if (command === "acknowledge") acknowledge(dataDir, db, target);
   else prepare(dataDir, db, target);
 }

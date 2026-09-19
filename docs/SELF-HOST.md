@@ -695,6 +695,9 @@ Litestream replication or the server may start:
 - An existing `${MANIFOLD_DATA_DIR:-/data}/manifold.db` must pass a read-only SQLite integrity
   check and have a positive schema version supported by this image. A zero-byte, foreign, corrupt,
   or newer-schema file is not a fresh database: startup refuses and leaves it in place.
+- A missing main file with any `manifold.db-wal`, `manifold.db-shm`, or `manifold.db-journal`
+  sidecar is also unusable local evidence. Startup refuses and preserves those files; it never
+  publishes restored or initialized history beside them.
 - With no local database, the gate gives `litestream restore` five minutes to restore the configured
   replica into a private staging directory on the same data filesystem. A usable restored database
   is published without replacing another file. A restore error or timeout always refuses startup.
@@ -716,20 +719,38 @@ docker compose run --rm --no-deps --entrypoint bun manifold \
 docker compose up -d manifold
 ```
 
-`acknowledge` contacts and modifies no replica and starts no hub. It refuses if a local database
-already exists, writes a mode-0600 acknowledgement bound to the configured replica target, and
-expires after 15 minutes. The next preparation attempt consumes it before trying the restore,
+`acknowledge` contacts and modifies no replica and starts no hub. It requires the four settings and
+refuses an existing local database, orphan SQLite journals, or pending acknowledgement. Its mode-0600
+record expires after 15 minutes and binds by digest to the Litestream configuration, its referenced
+environment inputs, and replica credentials, including custom-prefix configurations. The next
+preparation attempt consumes it before trying the restore,
 whether that attempt restores history, finds the replica empty, times out, or fails. Thus an
 acknowledgement cannot survive one failed attempt and silently authorize a later empty boot; issue
 the command again only after inspecting and correcting the same intended replica. There is no
 persistent environment switch for first initialization.
 
-Do not use this command to recover a hub, to work around unavailable or missing history, or to
-replace a replica. An invalid local database remains evidence: stop the service, preserve or
-snapshot the volume, and inspect a copy before any deliberate quarantine or repair. Inspect and
-repair access to the intended replica rather than clearing it. Quarantining local data is a recovery
-operation and does not authorize new replica history. The authenticated full-state checkpoint
-procedure in [Backup](#backup) remains the separate recovery path for the rest of `/data`.
+An expired, malformed, or configuration-mismatched record remains a refusal, even if local history
+is otherwise valid. With the service stopped, explicitly discard the pending record before making
+a fresh initialization decision:
+
+```sh
+docker compose run --rm --no-deps --entrypoint bun manifold \
+  scripts/replica-bootstrap.ts discard
+```
+
+`discard` removes only the acknowledgement, requires no replica configuration or credentials, and
+does not authorize initialization or contact the replica. Inspect the intended target again before
+following the first-initialization steps. Changes to configuration or credentials require a fresh
+acknowledgement; do not edit or retain the old record to bypass the refusal.
+
+Do not use initialization to recover a hub, to work around unavailable or missing history, or to
+replace a replica. Invalid local data remains evidence: stop the service, preserve or snapshot the
+volume, and inspect a consistent copy before any deliberate quarantine or repair. Quarantine
+`manifold.db` and its `-wal`, `-shm`, and `-journal` sidecars together; never move only the main file
+and leave journals at the live pathname. Inspect and repair access to the intended replica rather
+than clearing it. Quarantining local data is a recovery operation and does not authorize new replica
+history. The authenticated full-state checkpoint procedure in [Backup](#backup) remains the separate
+recovery path for the rest of `/data`.
 
 Once preparation succeeds, the entrypoint runs the server under `litestream replicate`, shipping
 every WAL segment as it lands, with a fresh snapshot every hour and 72 hours of retention
