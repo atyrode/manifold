@@ -415,14 +415,10 @@ try {
 
   // 1. The clone must render PRE-EXISTING screen state (the zombie regression).
   let pre: boolean[] = [];
-  await until(
-    async () => {
-      pre = await showing("PRE_CLONE_STATE");
-      return pre.length === 2 && pre.every(Boolean);
-    },
-    10_000,
-    "both views to render pre-existing screen state",
-  );
+  await settles(async () => {
+    pre = await showing("PRE_CLONE_STATE");
+    return pre.length === 2 && pre.every(Boolean);
+  }, 10_000);
   check(
     "clone renders pre-existing screen state",
     pre.length === 2 && pre.every(Boolean),
@@ -456,14 +452,10 @@ try {
     "both terminals re-rendered after reload",
   );
   let reloaded: boolean[] = [];
-  await until(
-    async () => {
-      reloaded = await showing("LIVE_MIRROR_OK");
-      return reloaded.length === 2 && reloaded.every(Boolean);
-    },
-    25_000,
-    "both views to render the live marker after reload",
-  );
+  await settles(async () => {
+    reloaded = await showing("LIVE_MIRROR_OK");
+    return reloaded.length === 2 && reloaded.every(Boolean);
+  }, 25_000);
   check(
     "both views render after reload",
     reloaded.length === 2 && reloaded.every(Boolean),
