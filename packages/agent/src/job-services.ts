@@ -3,11 +3,15 @@ import { Agent, request as httpRequest, type IncomingMessage } from "node:http";
 import { request as httpsRequest } from "node:https";
 import type { Socket } from "node:net";
 import {
+    JsonProjectionError,
   SERVICE_FRAME_BYTES,
   ServiceBindingSchema,
   ServiceCallSchema,
   ServicePolicySchema,
+  compileJsonProjection,
+  projectJson,
   servicePolicyCredentialRefs,
+  type JsonProjection,
   type ServiceBinding,
   type ServiceCall,
   type ServiceInput,
@@ -298,55 +302,6 @@ async function transport(
   }
 }
 
-type Projection = { leaf: boolean; children: Map<string, Projection> };
-function projectionTree(fields: string[][]): Projection {
-  const root: Projection = { leaf: false, children: new Map() };
-  for (const path of fields) {
-    let node = root;
-    for (const part of path) {
-      let child = node.children.get(part);
-      if (!child) {
-        child = { leaf: false, children: new Map() };
-        node.children.set(part, child);
-      }
-      node = child;
-    }
-    node.leaf = true;
-  }
-  return root;
-}
-function project(
-  value: unknown,
-  node: Projection,
-  maxArrayItems: number,
-  budget: { nodes: number },
-): unknown {
-  if (--budget.nodes < 0) throw new ServiceFailure("service_response_limit");
-  if (node.leaf) {
-    if (
-      value === null ||
-      typeof value === "string" ||
-      typeof value === "boolean" ||
-      (typeof value === "number" && Number.isFinite(value))
-    )
-      return value;
-    throw new ServiceFailure("service_response_invalid");
-  }
-  const wildcard = node.children.get("*");
-  if (wildcard) {
-    if (!Array.isArray(value)) throw new ServiceFailure("service_response_invalid");
-    if (value.length > maxArrayItems) throw new ServiceFailure("service_response_limit");
-    return value.map((item) => project(item, wildcard, maxArrayItems, budget));
-  }
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    throw new ServiceFailure("service_response_invalid");
-  const result: Record<string, unknown> = Object.create(null);
-  for (const [key, child] of node.children) {
-    if (Object.hasOwn(value, key))
-      result[key] = project(Reflect.get(value, key), child, maxArrayItems, budget);
-  }
-  return result;
-}
 function inspectJson(value: unknown, credentials: ReadonlyMap<string, string>): void {
   const stack: { value: unknown; depth: number }[] = [{ value, depth: 0 }];
   let nodes = 0;
@@ -387,7 +342,7 @@ export function createJobServiceRunner(options: {
 }): JobServiceRunner {
   const policies = new Map<
     string,
-    { policy: ServicePolicy; active: number; projections: Map<string, Projection> }
+    { policy: ServicePolicy; active: number; projections: Map<string, JsonProjection> }
   >();
   if (options.policies.length > 64) throw new Error("service_policy_invalid");
   for (const raw of options.policies) {
@@ -395,10 +350,10 @@ export function createJobServiceRunner(options: {
     if (!parsed.success || policies.has(parsed.data.serviceId))
       throw new Error("service_policy_invalid");
     const policy = parsed.data;
-    const projections = new Map<string, Projection>();
+    const projections = new Map<string, JsonProjection>();
     for (const [id, operation] of Object.entries(policy.operations)) {
       if (!("kind" in operation) && operation.response.kind === "projected-json")
-        projections.set(id, projectionTree(operation.response.fields));
+        projections.set(id, compileJsonProjection(operation.response.fields));
     }
     policies.set(policy.serviceId, { policy, active: 0, projections });
   }
@@ -577,7 +532,7 @@ export function createJobServiceRunner(options: {
           }
           result =
             operation.response.kind === "projected-json"
-              ? project(
+              ? projectJson(
                   json,
                   entry.projections.get(request.operationId)!,
                   operation.response.maxArrayItems,
@@ -607,7 +562,13 @@ export function createJobServiceRunner(options: {
             closed ? "service_closed" : timedOut ? "service_timeout" : "service_cancelled",
           );
         return refusal(
-          error instanceof ServiceFailure ? error.refusal : "service_upstream_refused",
+          error instanceof JsonProjectionError
+            ? error.code === "limit"
+              ? "service_response_limit"
+              : "service_response_invalid"
+            : error instanceof ServiceFailure
+              ? error.refusal
+              : "service_upstream_refused",
         );
       } finally {
         runtimeSignal?.removeEventListener("abort", abort);

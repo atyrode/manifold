@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+    ACTION_RESULT_PROJECTION_HEADER,
   ACTION_TRACE_ID_HEADER,
   AGENT_JUSTIFICATION_HEADER,
   AUTH_REFUSALS,
@@ -106,6 +107,8 @@ export function buildProtocolJsonSchema(extras?: ProtocolExtras): Record<string,
       traceIdHeader: ACTION_TRACE_ID_HEADER,
       agentJustificationHeader: AGENT_JUSTIFICATION_HEADER,
       agentJustificationEncoding: "v1.percent-encoded-utf8",
+      resultProjectionHeader: ACTION_RESULT_PROJECTION_HEADER,
+      resultProjectionEncoding: "sha256-schema-normalized-declaration",
     },
     session: {
       client: z.toJSONSchema(ClientMessageSchema),
