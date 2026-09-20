@@ -240,32 +240,34 @@ test("malformed, expired, and wrong-target intent cannot authorize initializatio
   expect(existsSync(database(wrongTarget.data))).toBe(false);
 });
 
-test("unusable local history is refused in place rather than overwritten", async () => {
-  const scenarios: Array<readonly [string, (path: string) => void]> = [
-    ["empty", (path) => writeFileSync(path, "")],
-    ["corrupt", (path) => writeFileSync(path, "not a sqlite database")],
-    [
-      "foreign",
-      (path) => {
-        const db = new Database(path, { create: true });
-        db.exec("CREATE TABLE unrelated(value TEXT)");
-        db.close();
-      },
-    ],
-    [
-      "future",
-      (path) => {
-        const db = openDatabase(path);
-        db.query("UPDATE meta SET value = ? WHERE key = 'schema_version'").run(
-          String(SCHEMA_VERSION + 1),
-        );
-        db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
-        db.close();
-      },
-    ],
-  ];
+const unusableLocalHistories: Array<readonly [string, (path: string) => void]> = [
+  ["empty", (path) => writeFileSync(path, "")],
+  ["corrupt", (path) => writeFileSync(path, "not a sqlite database")],
+  [
+    "foreign",
+    (path) => {
+      const db = new Database(path, { create: true });
+      db.exec("CREATE TABLE unrelated(value TEXT)");
+      db.close();
+    },
+  ],
+  [
+    "future",
+    (path) => {
+      const db = openDatabase(path);
+      db.query("UPDATE meta SET value = ? WHERE key = 'schema_version'").run(
+        String(SCHEMA_VERSION + 1),
+      );
+      db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+      db.close();
+    },
+  ],
+];
 
-  for (const [name, arrange] of scenarios) {
+// Each native refusal case keeps its own deadline and fixture teardown.
+test.each(unusableLocalHistories)(
+  "unusable local history (%s) is refused in place rather than overwritten",
+  async (name, arrange) => {
     const h = harness(`local-${name}`);
     writeHistory(h.fixture, "replacement must not publish");
     const path = database(h.data);
@@ -275,8 +277,8 @@ test("unusable local history is refused in place rather than overwritten", async
     const result = await h.run("prepare", { LITESTREAM_TEST_RESULT: "restore" });
     expectRefusal(result);
     expect(readFileSync(path)).toEqual(before);
-  }
-});
+  },
+);
 
 test("orphan WAL cannot replace validated restored authority", async () => {
   const h = harness("orphan-wal");
