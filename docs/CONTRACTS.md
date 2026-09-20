@@ -4054,12 +4054,14 @@ provider handling and postconditions belong to plugins, never the common floor.
   `prompt_tokens_details.cached_tokens` from a JSON response or the final usage frame of a stream
   the owner amended with `stream_options.include_usage`; `pi-native-usage` reads `modelId` beside
   a `context.messages` array on the request — no other spelling of the model is a metered call —
-  and `usage.input`, `usage.output` and `usage.cacheRead` from the terminal frame of pi-ai's own
-  wire, which the owner amends not at all because that wire always sends one. `input` is the fresh
-  input bucket there and `cacheRead` the cached one, so the reported `inputTokens` is their sum
-  with `cachedInputTokens` named inside it, the way every usage total states it; `cacheWrite` is
-  read by nothing, because a policy has no price column for it. Unreadable usage on a 2xx is
-  `service_response_invalid`, counts as a call and latches that job's metered lane closed so
+  and `usage.input`, `usage.output`, `usage.cacheRead` and `usage.cacheWrite` from the terminal
+  frame of pi-ai's own wire, which the owner amends not at all because that wire always sends
+  one. Physical `inputTokens` is `input + cacheRead + cacheWrite`; `cachedInputTokens` remains
+  only the `cacheRead` subset. Without a separate cache-write price column, writes use the
+  existing fresh-input rate. This is a conservative pricing floor, not provider invoice
+  equivalence; physical tokens and their cost still count toward the job's ceilings.
+  Unreadable usage on a 2xx is `service_response_invalid`, counts as a call and latches that job's
+  metered lane closed so
   missing usage cannot evade token or cost ceilings. On `pi-native-usage` two shapes are turns that
   did not complete, and neither is journaled as the 2xx the provider began the stream with: a
   stream that ends with no usage frame carries that refusal's own status, and an `error` terminal
