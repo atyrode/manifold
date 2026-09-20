@@ -1,6 +1,7 @@
+import { isPublicArtifactAddress } from "@manifold/plugin-kit/artifacts";
 import { lookup } from "node:dns/promises";
 import { Agent, request } from "node:http";
-import { BlockList, isIP } from "node:net";
+import { isIP } from "node:net";
 import type { Readable } from "node:stream";
 import { checkServerIdentity, connect } from "node:tls";
 import type { TLSSocket } from "node:tls";
@@ -8,46 +9,6 @@ import { createBrotliDecompress, createGunzip, createInflate } from "node:zlib";
 
 const MAX_REDIRECTS = 5;
 const REDIRECTS = new Set([301, 302, 303, 307, 308]);
-// Reject local/reserved and protocol/transition destinations before opening a socket.
-const NON_PUBLIC = new BlockList();
-for (const [address, prefix] of [
-  ["0.0.0.0", 8],
-  ["10.0.0.0", 8],
-  ["100.64.0.0", 10],
-  ["127.0.0.0", 8],
-  ["169.254.0.0", 16],
-  ["172.16.0.0", 12],
-  ["192.0.0.0", 24],
-  ["192.0.2.0", 24],
-  ["192.88.99.0", 24],
-  ["192.168.0.0", 16],
-  ["198.18.0.0", 15],
-  ["198.51.100.0", 24],
-  ["203.0.113.0", 24],
-  ["224.0.0.0", 4],
-  ["240.0.0.0", 4],
-] as const)
-  NON_PUBLIC.addSubnet(address, prefix, "ipv4");
-for (const [address, prefix] of [
-  ["2001::", 23],
-  ["2001:db8::", 32],
-  ["2002::", 16],
-  ["3fff::", 20],
-] as const)
-  NON_PUBLIC.addSubnet(address, prefix, "ipv6");
-const GLOBAL_IPV6 = new BlockList();
-GLOBAL_IPV6.addSubnet("2000::", 3, "ipv6");
-
-function publicAddress(address: string): boolean {
-  switch (isIP(address)) {
-    case 4:
-      return !NON_PUBLIC.check(address, "ipv4");
-    case 6:
-      return GLOBAL_IPV6.check(address, "ipv6") && !NON_PUBLIC.check(address, "ipv6");
-    default:
-      return false;
-  }
-}
 
 function hostname(url: URL): string {
   return url.hostname.startsWith("[") ? url.hostname.slice(1, -1) : url.hostname;
@@ -73,7 +34,10 @@ async function destination(url: URL, signal: AbortSignal): Promise<string> {
           ]);
     signal.throwIfAborted();
     // Reject mixed answers, not merely whichever answer the runtime happens to prefer.
-    if (addresses.length === 0 || addresses.some(({ address }) => !publicAddress(address))) {
+    if (
+      addresses.length === 0 ||
+      addresses.some(({ address }) => !isPublicArtifactAddress(address))
+    ) {
       throw new Error(
         "artifact destination is not ordinary public unicast; use the local upload drop box for private sources",
       );
@@ -120,7 +84,11 @@ async function connectedResponse(
       candidate.once("error", reject);
       candidate.once("secureConnect", () => {
         const actual = candidate.remoteAddress;
-        if (actual === undefined || !publicAddress(actual) || !sameAddress(actual, address)) {
+        if (
+          actual === undefined ||
+          !isPublicArtifactAddress(actual) ||
+          !sameAddress(actual, address)
+        ) {
           candidate.destroy(
             new Error("artifact connection did not reach its validated destination"),
           );
@@ -140,7 +108,11 @@ async function connectedResponse(
           port: url.port === "" ? 443 : Number(url.port),
           path: `${url.pathname}${url.search}`,
           method: "GET",
-          headers: { Host: url.host, "Accept-Encoding": "gzip, deflate, br" },
+          headers: {
+            Host: url.host,
+            "Accept-Encoding": "gzip, deflate, br",
+            "User-Agent": "manifold",
+          },
           agent,
           signal,
         },
@@ -184,6 +156,7 @@ async function connectedResponse(
                     controller.error(new Error("artifact response contained a non-binary chunk"));
                 },
                 async cancel() {
+                  body.destroy();
                   await iterator.return?.();
                 },
               });

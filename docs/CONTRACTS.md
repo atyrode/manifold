@@ -2313,12 +2313,14 @@ React-over-frames reconciler is #259.
 **Server artifact retrieval (#415).** Both runners use the same source policy. Network sources
 and each of at most five followed redirects must use HTTPS without embedded URL credentials.
 One 30-second deadline covers DNS, TLS, redirects and the complete body. Every resolved answer
-must be an allowed public-unicast address; mixed public/private answers refuse the hop.
+must pass the same public-unicast address policy as machine artifacts; mixed public/private
+answers refuse the hop.
 Private/shared, loopback, link-local, documentation/benchmark, multicast, reserved and blocked
-IPv6 protocol/transition ranges are not destinations. The retriever connects directly to one
-validated numeric address, retains original-host certificate verification and SNI, verifies
-the actual TLS peer before sending HTTP, and preserves the original Host header. No second
-hostname resolution, connection-pool substitution or ambient HTTP(S) proxy is used.
+IPv6 protocol/transition ranges are not destinations. The retriever connects directly to the
+first validated numeric answer, without alternate-address retries. It retains original-host
+certificate verification and SNI, verifies the actual TLS peer before sending HTTP, and preserves
+the original Host header. No second hostname resolution, connection-pool substitution or ambient
+HTTP(S) proxy is used.
 Redirect bodies and refused responses are cancelled; decoded bytes retain the 16 MiB streaming
 ceiling and exact-byte SHA verification still precedes parsing or publishing any artifact.
 
