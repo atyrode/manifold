@@ -515,9 +515,10 @@ Either way, print the bootstrap URL and open it in a browser:
 docker compose exec manifold sh -c 'echo "$MANIFOLD_PUBLIC_URL/#key=$(cat /data/owner.key)"'
 ```
 
-The `#key=` fragment is the owner bootstrap: it never leaves the browser (fragments
-are not sent in requests) and the app moves it to localStorage and scrubs the URL
-immediately.
+The `#key=` fragment carries the owner bootstrap without putting it in the HTTP URL.
+The app captures it only in document memory and immediately scrubs the fragment, then
+sends it in the Authorization header to mint a finite ordinary identity. The key is never
+written to browser storage and its bootstrap references are released after admission.
 
 The boot log line `manifold ready url=…` deliberately omits the key: `docker logs`
 output is a persisted stream, and the owner key must never enter logs (the command
@@ -615,9 +616,10 @@ must report the selected CLI version; it neither needs account credentials nor d
 One secret is root. `<data>/owner.key` (64 hex, mode 600) is compared with a
 constant-time equality in `AuthService.authenticate` (`packages/server/src/auth.ts`);
 whoever presents it gets `caps: ["*"]`, no container scope, and root on every door
-in every container. The fragment keeps it off the wire — it is never sent in a
-request, and the app moves it to localStorage and scrubs the URL — but that narrows
-the network path, not the human one.
+in every container. The fragment keeps it out of the initial HTTP URL, not off the
+wire: bootstrap sends it in the Authorization header over the configured transport.
+The app holds it only in document memory and scrubs the URL. This limits durable
+browser exposure, not the authority of page code during bootstrap or of anyone who copies it.
 
 What the owner key does **not** protect against:
 
@@ -943,9 +945,12 @@ across a rotation.
    The restart is not optional. `loadOwnerKey` (`packages/server/src/config.ts`)
    reads the key once at boot and never re-reads it.
 
-2. Re-bootstrap your browsers. The old key in localStorage stops authenticating at
-   the restart. Print the new URL the way `## Install` does — one of these, matching
-   how you installed the key:
+2. Use the new recovery link for browser bootstrap when needed. Browsers no longer
+   retain owner keys: a link is held only for that document's bootstrap, and existing
+   recovery-key localStorage entries are removed on load. Reload uses the finite ordinary
+   credential, not the key. If bootstrap is interrupted or the ordinary credential is gone,
+   expired or revoked, reopen the recovery link (or use production admission where configured).
+   Print the new URL the way `## Install` does — one of these, matching how you installed the key:
 
    ```sh
    # generated-key deployment

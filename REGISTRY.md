@@ -1968,7 +1968,7 @@ register. Anything else is presence, document, or action state — A2 leaves no 
     {
       "key": "manifold.ownerKey",
       "prefix": true,
-      "why": "owner key captured from the #key= boot fragment; a secret, never sent anywhere but the Authorization header. Prefixed for the same reason as the grant beside it: an owner key authenticates as root at exactly one origin, so a lens looking at another instance stores it under `manifold.ownerKey@<origin>`"
+      "why": "retired recovery-key register, read/remove only for migration (#413). Before rendering, remove the bare key and every `manifold.ownerKey@<origin>` key from this browser origin. Only the active instance's valid legacy key, with no existing ordinary identity, may seed one document's in-memory bootstrap. New #key= links are never persisted; ordinary identity registers are preserved"
     },
     {
       "key": "manifold:instance",
