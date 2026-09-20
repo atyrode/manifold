@@ -259,7 +259,6 @@ try {
     20_000,
     "the shell worker to control the page",
   );
-  assert("the shell worker controls the page", true);
 
   const installability = await driver.send("Page.getInstallabilityErrors", {});
   const installErrors = (installability.result?.["installabilityErrors"] ?? []) as {
@@ -428,11 +427,14 @@ try {
     "the worker's installation release listener",
   );
   await driver.evaluate("window.__pwaReleaseInstall()");
-  await until(async () => await seenTestId(driver, "lens-update"), 20_000, "the update offer");
+  await until(
+    async () => await seenTestId(driver, "lens-update"),
+    20_000,
+    "a deploy to be offered to a live page rather than swapped under it",
+  );
   await driver.send("Page.removeScriptToEvaluateOnNewDocument", {
     identifier: registrationObserver.result?.["identifier"],
   });
-  assert("a deploy is offered to a live page rather than swapped under it", true);
   const bothGenerations = await generations();
   assert(
     "the running generation survives beside the new one until the human accepts",
@@ -443,9 +445,8 @@ try {
   await until(
     async () => await seenTestId(driver, "lens-update"),
     20_000,
-    "the already waiting update offer after reload",
+    "a waiting update to remain offered after reopening the app",
   );
-  assert("a waiting update remains offered after reopening the app", true);
   await driver.evaluate(
     "(document.querySelector('[data-testid=lens-update] button').click(), null)",
   );
@@ -472,9 +473,8 @@ try {
   await until(
     async () => await seenTestId(driver, "lens-update"),
     20_000,
-    "a later live update offer",
+    "an update arriving after registration to be offered",
   );
-  assert("an update arriving after registration is still offered", true);
   await driver.evaluate(
     "(document.querySelector('[data-testid=lens-update] button').click(), null)",
   );
@@ -488,9 +488,8 @@ try {
       );
     },
     20_000,
-    "the accepted live update to replace the old generation",
+    "a later live update to activate after acceptance",
   );
-  assert("a later live update activates only after acceptance", true);
 
   // ───────────────────────────────────────────────────────────── 3. offline shell
   console.log("\n3. offline shell");
@@ -620,9 +619,8 @@ try {
         `document.body.textContent.includes(${JSON.stringify(nameB)})`,
       ),
     25_000,
-    "the foreign instance's own index",
+    "the lens to read the instance it was pointed at",
   );
-  assert("the lens reads the instance it was pointed at", true);
   assert(
     "and nothing from the instance that merely served the bundle",
     !(await driver.evaluate<boolean>(
@@ -637,7 +635,6 @@ try {
     25_000,
     "the session socket to follow the lens across origins",
   );
-  assert("the session socket followed the lens across origins", true);
 
   await driver.evaluate(
     "(document.querySelector('[data-testid=lens-instance] button').click(), null)",

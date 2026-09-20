@@ -543,7 +543,7 @@ test("unplacing a terminal removes every reference to it and leaves the PTY runn
 
     // THIS is the whole difference from the park it replaced: the terminal did not move, did
     // not die, and is still indexed — it is simply unreferenced.
-    const indexed = (await listTerminals(server)).find((terminal) => terminal.id === terminal.id);
+    const indexed = (await listTerminals(server)).find((candidate) => candidate.id === terminal.id);
     expect(indexed).toMatchObject({
       id: terminal.id,
       homeId: terminal.containerId,
