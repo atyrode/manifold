@@ -82,6 +82,7 @@ export class SessionChannel {
   private readonly prefix: string;
   private readonly prefixBytes: number;
   private readonly sender: SessionSender;
+  private writableCallback: (() => void) | null = null;
 
   constructor(
     readonly id: string,
@@ -133,12 +134,29 @@ export class SessionChannel {
 
   drain(): void {
     this.sender.drain();
+    if (!this.sender.writable) return;
+    const callback = this.writableCallback;
+    this.writableCallback = null;
+    callback?.();
+  }
+
+  /** State recovery waits behind accepted reliable frames without adding another byte queue. */
+  get writable(): boolean {
+    return this.sender.writable;
+  }
+
+  /** One room-owned continuation; replacing it never buffers another state snapshot. */
+  deferUntilWritable(callback: (() => void) | null): void {
+    if (this.closed) return;
+    this.writableCallback = callback;
+    if (callback !== null && this.sender.writable) this.drain();
   }
 
   /** Silently retires a membership and discards its queued frames, including init/resync. */
   dispose(code = 1000, reason = "released"): void {
     if (this.closed) return;
     this.closed = true;
+    this.writableCallback = null;
     this.sender.stop();
     this.onClosed(this, code, reason, false);
   }
@@ -163,6 +181,7 @@ export class SessionChannel {
   closeConnection(code: number, reason: string): void {
     const alreadyClosed = this.closed;
     this.closed = true;
+    this.writableCallback = null;
     this.sender.stop();
     this.socket.close(code, reason);
     if (!alreadyClosed) this.onClosed(this, code, reason, true);
@@ -191,6 +210,10 @@ export class SessionSender {
     private readonly closeConnection: (code: number, reason: string) => void,
     private readonly overflow: "close" | "drop" = "close",
   ) {}
+
+  get writable(): boolean {
+    return !this.closed && this.queue.length === 0 && this.socket.bufferedAmount === 0;
+  }
 
   /**
    * Sends a payload already validated by the broadcaster. Init/resync are each one

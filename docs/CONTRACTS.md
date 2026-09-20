@@ -2774,6 +2774,9 @@ transport rather than by the flood queue, and a queued `resync` supersedes any e
 Throttle state (cursor, gesture, resync cadence) is per channel because the cadences it
 enforces are per room, and Bun's drain callback flushes channels in rotation so one chatty
 room cannot monopolize the shared socket buffer.
+Document and presence congestion follows the [recipient recovery policy](#scene-sync-yjs-crdt)
+below instead of accumulating one reliable queued frame per update; the remaining reliable
+traffic still obeys these queue and refusal bounds.
 
 **Channel initialization.** Sending `join` does not initialize a channel. Only its
 `init` or `resync` satisfies the SDK's ten-second initialization deadline. A healthy
@@ -2841,15 +2844,56 @@ depends on it.
   invalid element map is removed in a server-origin repair transaction. Yjs updates cannot
   be selectively rejected after application, so peers may observe the accepted update
   followed by its repair. A room also bounds full document and transport sizes.
-- Every Yjs transaction update increments `rev` and broadcasts
-  `doc_update { update, by }`, including to the sender; a repair is a separate server
-  update. `rev` is a persistence/diagnostic watermark, not a sequencing requirement.
-  `saved { rev, at }` identifies the latest durable room snapshot.
+- Every Yjs transaction update increments `rev`. Healthy recipients immediately receive
+  `doc_update { update, by }`, including the sender; a repair is a separate server update.
+  Congested recipients instead receive the canonical catch-up described below.
+  `rev` is a persistence/diagnostic watermark, not a sequencing requirement.
+  `saved { rev, at }` identifies the latest durable room snapshot, not an acknowledgement
+  that a recipient has already applied that state.
 - `init` and `resync` carry a full Yjs state update. Within one `epoch`, the SDK merges that
   state with its document and re-sends local state when needed. An epoch change is a hard
-  lineage fence: the SDK drops queued old-lineage document updates, replaces its `Y.Doc`,
-  and emits `scene_reset` so held nested types are discarded. `resync_request {}` asks for
-  the current full state; convergence does not depend on detecting contiguous revisions.
+  lineage fence: the SDK drops queued old-lineage document updates and replaces its `Y.Doc`.
+  Both forms emit `scene_reset`, including same-epoch recovery, so consumers retain their
+  existing transient gesture/editor reset semantics. `resync_request {}` asks for the
+  current full state; convergence does not depend on detecting contiguous revisions.
+- **Recipient state recovery** ([#401](https://github.com/atyrode/manifold/issues/401)).
+  A room channel is writable only when its reliable queue is empty and the shared socket
+  has no native buffered bytes. While it cannot deliver immediately, document updates
+  retain the state-vector checkpoint before the first missed update, not a growing list of
+  obsolete deltas. On drain, the room encodes catch-up from its canonical, garbage-collected
+  document, including deletions. Catch-up at most 512 KiB decoded uses ordinary `doc_update`
+  with `by: "server"` for the aggregate; per-element authorship is unchanged. It does not
+  reset the SDK document or interrupt active editing. Presence retains only the latest
+  pending facets described below and never requires a document resync by itself.
+  Coalesced catch-up rounds start at least 100 ms apart; healthy delivery has no added delay.
+  Catch-up exceeding the ordinary update limit falls back to full `resync`, with automatic
+  full recoveries at least one second apart to avoid full-document feedback under load.
+  A full-recovery backoff also holds pending presence effects and suppresses motion until
+  recovery resumes; the one-second fallback interval is not a 100 ms interaction guarantee.
+  The existing full-state transport ceiling and explicit oversized-state refusal still apply.
+  Already queued attendance, terminal, event and stream traffic retains its existing policy;
+  recovery waits for writability, so those streams can delay it. Shared-socket pressure can
+  affect several room channels, but pending state and disposal remain channel-owned.
+  Reliable non-state frames can precede deferred document state: for example, a
+  `terminal_opened` can arrive before catch-up places its element. Consumers reconcile on
+  both terminal and document changes rather than treating channel arrival order as a
+  document-application acknowledgement.
+  Cursor/gesture motion remains droppable and cannot overtake retained recovery effects.
+  Producer limits (120 document updates/s, burst 240), the 256-frame/1 MiB ordinary reliable
+  queue and transport-failure handling are unchanged; unrelated reliable floods can still
+  retire a channel, and a stalled physical connection still owes the liveness protocol.
+  **Revisitable policy:** investigate latency, churn, convergence or interaction regressions
+  using native buffered bytes/send statuses, per-recipient wire volume, recovery timing,
+  full-resync/reset counts and channel/socket continuity. Compare equivalent stimuli and
+  distinguish queue pressure from liveness expiry. Full fallback still resets transient
+  consumer state and can provoke the SDK's existing local-state re-upload; it is not the
+  ordinary delivery cadence. Measurements and causal evidence belong with the issue/PR,
+  not an assumption that larger queues or green producer-limit tests prove recovery.
+  Encoding scans the document's struct store and carries its full deletion set; recipients
+  with distinct checkpoints can require distinct encodes. Shared encoding is not a
+  constant-time or all-recipients-one-encode guarantee. Accumulated deletion metadata can
+  also cross the 512 KiB delta threshold, turning a modest missed change into a much larger
+  full-state frame.
 - **Container discipline.** A container row carries an open, bounded discipline id declared
   through `contributes.disciplines`, not a closed protocol union. The distribution ships
   `canvas` and `composition`; they share the room/doc machinery as lenses on ONE container
@@ -2890,6 +2934,13 @@ depends on it.
 
 - `presence { payload }` where payload is a partial of
   `{ cursor: {x,y} | null, selection: string[], viewport: {x,y,zoom}, focus: {elementId} | null, status: "active"|"idle"|"working"|"waiting"|"needs_attention"|"done", vantage: {…} | undefined, spotlight: {…} | null }`.
+- Under recipient pressure, partial replacement facets coalesce by principal, not by the
+  last active connection: one tab's later selection must not restore its older status over
+  another tab's newer status. Cursor/retraction and whole `vantage` facets retain the latest
+  update per connection in latest-update order; `vantage` is not a nested partial merge.
+  Server-written spotlight remains a live presence event, not merely snapshot metadata.
+  Departures prune connection effects, the final departure prunes principal effects, and
+  channel/room teardown cancels pending delivery.
 - **Vantage is presence** (axiom A2: per-principal view state is observable AND drivable).
   `vantage { tool?, editingElementId?, focusedContainerId?, sidebarCollapsed?, arranging?, arrangeScope?, locationPath? }`
   is written by the
