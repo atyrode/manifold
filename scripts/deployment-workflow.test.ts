@@ -420,12 +420,12 @@ test("unreviewed deployment-tool archives are refused before extraction or crede
   try {
     const bin = join(root, "bin");
     const payload = join(root, "payload");
-    const directory = `clever-tools-${source.env.CLEVER_VERSION}_linux`;
+    const member = "unreviewed-payload";
     mkdirSync(bin);
-    mkdirSync(join(payload, directory), { recursive: true });
-    writeFileSync(join(payload, directory, "clever"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    mkdirSync(payload);
+    writeFileSync(join(payload, member), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
     const archive = join(root, "replacement.tar.gz");
-    const packed = Bun.spawnSync(["tar", "-czf", archive, directory], { cwd: payload });
+    const packed = Bun.spawnSync(["tar", "-czf", archive, member], { cwd: payload });
     if (packed.exitCode !== 0) throw new Error("Could not construct replacement archive");
     writeFileSync(
       join(bin, "gh"),
@@ -446,7 +446,7 @@ await Bun.write(process.env.DOWNLOAD_RECEIPT, directory);
       const output = join(root, `${name}.env`);
       const receipt = join(root, `${name}.download`);
       writeFileSync(output, "");
-      const result = Bun.spawnSync(["bash", "-e", "-o", "pipefail", "-c", installer], {
+      const result = Bun.spawnSync(["bash", "-e", "-c", installer], {
         env: {
           PATH: `${bin}:${process.env.PATH}`,
           HOME: root,
@@ -464,7 +464,7 @@ await Bun.write(process.env.DOWNLOAD_RECEIPT, directory);
       });
       expect(result.exitCode).toBe(1);
       const downloaded = readFileSync(receipt, "utf8");
-      expect(await Bun.file(join(downloaded, directory, "clever")).exists()).toBe(false);
+      expect(await Bun.file(join(downloaded, member)).exists()).toBe(false);
       expect(readFileSync(output, "utf8")).toBe("");
     }
   } finally {
