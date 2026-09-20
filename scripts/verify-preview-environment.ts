@@ -882,9 +882,6 @@ async function capture(name: string): Promise<void> {
 }
 const virtualKeys: Record<string, number> = {
   Enter: 13,
-  Escape: 27,
-  ArrowDown: 40,
-  ArrowRight: 39,
   KeyV: 86,
 };
 async function key(key: string, code: string, modifiers = 0): Promise<void> {
@@ -1186,69 +1183,6 @@ async function browserProof(): Promise<void> {
   await capture("omp-reattached");
   await pasteImage(2);
   await capture("omp-image-paste-reattached");
-  await browser.goto(`${origin}/p/${indexCanvas}`);
-  await until(
-    () => browser!.evaluate<boolean>("document.querySelector('.xterm-rows') === null"),
-    10_000,
-    "empty canvas ready for Code's independent terminal",
-  );
-  // OMP keeps its unsubmitted draft. Code gets a separate terminal through the same UI;
-  // this contract must not depend on another application's quit-confirmation timing.
-  await browser.evaluate(
-    "(() => { const b = document.querySelector('[data-testid=machines-section] button[aria-expanded]'); if (b.getAttribute('aria-expanded') !== 'true') b.click(); })()",
-  );
-  const beforeCode = new Set((await terminals()).map((terminal) => terminal.id));
-  await browser.evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
-  let codeHome = "";
-  await until(
-    async () => {
-      codeHome =
-        (await terminals()).find(
-          (terminal) => !beforeCode.has(terminal.id) && terminal.status === "running",
-        )?.homeId ?? "";
-      return codeHome !== "";
-    },
-    30_000,
-    "Code's separate native terminal",
-  );
-  await browser.goto(`${origin}/p/${codeHome}`);
-  await until(
-    () => browser!.evaluate<boolean>("document.querySelector('.xterm-rows') !== null"),
-    20_000,
-    "Code terminal rendered",
-  );
-  await shellCommand("cd /workspace/preview-fixture; printf '%s%s\\n' CODE -SHELL", "CODE-SHELL");
-  await browser.typeText(
-    "env -u NO_COLOR -u CI CLICOLOR_FORCE=1 COLORTERM=truecolor TERM=xterm-256color code\r",
-  );
-  await until(
-    async () => /\bmodel\s+/.test(await screen()),
-    60_000,
-    "Code's real model dial rendered",
-  );
-  await key("ArrowDown", "ArrowDown");
-  const selectedDial = (text: string): string | undefined =>
-    text
-      .split("\n")
-      .map((row) => row.split("│", 1)[0]!.trim())
-      .find((control) => control.includes("▸") && /\bmodel\s+/.test(control));
-  await until(
-    async () => selectedDial(await screen()) !== undefined,
-    15_000,
-    "Code model dial focused",
-  );
-  const previous = selectedDial(await screen());
-  await capture("code-before");
-  await key("ArrowRight", "ArrowRight");
-  await until(
-    async () => {
-      const value = selectedDial(await screen());
-      return value !== undefined && value !== previous;
-    },
-    15_000,
-    "Code dial changes its displayed value",
-  );
-  await capture("code-after");
   await browser.send("Emulation.setDeviceMetricsOverride", {
     width: 1280,
     height: 900,
@@ -1256,7 +1190,8 @@ async function browserProof(): Promise<void> {
     mobile: false,
   });
   await sleep(1000);
-  await capture("code-compact");
+  await until(draftVisible, 10_000, "OMP draft preserved in compact terminal");
+  await capture("omp-compact");
   requireThat(
     !(await screen()).includes("\ufffd"),
     "terminal rendered a Unicode replacement glyph",
@@ -2336,7 +2271,7 @@ console.log(JSON.stringify({
       await assertDataWrites();
       await createRefusedMachine();
     });
-    await step("native browser shell, OMP draft, Code dial and Index reattachment", browserProof);
+    await step("native browser shell, OMP draft and Index reattachment", browserProof);
     await step("same-SHA request verifies without replacing retained terminal work", async () => {
       const marker = `home-${crypto.randomUUID()}`;
       await execBun(

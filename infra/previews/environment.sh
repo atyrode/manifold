@@ -69,8 +69,8 @@ build_environment() {
       if (stat.uid !== 1000 || stat.gid !== 1000)
         throw new Error(`preview: ${path} must be owned by UID/GID 1000`);
     }
-    for (const tool of ["omp", "code"])
-      if (!Bun.which(tool)) throw new Error(`preview: development environment requires ${tool}`);
+    if (!Bun.which("omp"))
+      throw new Error("preview: development environment requires omp");
     const required = (await Bun.file("/app/package.json").json())?.engines?.bun;
     if (typeof required !== "string" || !required.trim())
       throw new Error("preview: artifact contract requires nonempty /app/package.json engines.bun");

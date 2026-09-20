@@ -28,8 +28,11 @@ is `infra/previews/environment-image.txt` in the stable tooling checkout; it mus
 be an immutable, anonymously pullable OCI digest. Updating it is a reviewed code
 change, not a startup installation or a registry login on the preview host.
 
-The environment provides the configured zsh, OMP, Code and the portable profile's
-other tools. It does not provide provider credentials or a model service.
+The environment provides the configured zsh, OMP and the portable profile's other
+tools. It does not provide provider credentials or a model service. Code is a native
+Manifold plugin, not a required preview executable; install it explicitly through
+the [native plugin workflow](../../docs/PLUGINS.md). Plugin installation and its
+runtime grants belong to that workflow, not preview creation.
 Shared integrated development instead uses the ordinary production-style application
 image as a server-only hub. Its execution owner is the separately declared native profile;
 there is no shared-preview container-shell fallback. Neither deployment path promotes production.
@@ -65,7 +68,7 @@ upgrade installed tools or authorize a service restart.
 
 For numbered previews, both builds and an offline activation/application-import probe
 complete before the existing service is touched. The probe checks application ownership,
-`omp`/`code` availability, the activated user/home, Bun compatibility and the real protocol
+`omp` availability, the activated user/home, Bun compatibility and the real protocol
 import. Invalid pins, incompatible runtimes and failed probes leave the running preview alone.
 A healthy request for the exact revision already running is a no-op: stable tooling verifies
 the named `pr-N` node plus disposable real terminal creation, command output and cleanup without
