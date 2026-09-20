@@ -148,16 +148,19 @@ export { IDENTITY_COLORS };
 export function captureOwnerKeyFromFragment(): void {
   const storageKey = credentialKey(OWNER_KEY_STORAGE);
   const legacyKey = window.localStorage.getItem(storageKey);
-  for (let index = window.localStorage.length - 1; index >= 0; index--) {
+  // Storage key order may change when a key is removed. Collect before mutating.
+  const legacyKeys: string[] = [];
+  for (let index = 0; index < window.localStorage.length; index++) {
     const key = window.localStorage.key(index);
     if (key === OWNER_KEY_STORAGE || key?.startsWith(`${OWNER_KEY_STORAGE}@`)) {
-      window.localStorage.removeItem(key);
+      legacyKeys.push(key);
     }
   }
+  for (const key of legacyKeys) window.localStorage.removeItem(key);
   const ownerKey = OWNER_FRAGMENT_PATTERN.exec(window.location.hash)?.[1];
   const value =
     ownerKey ??
-    (loadIdentity() === null && legacyKey !== null && OWNER_KEY_PATTERN.test(legacyKey)
+    (legacyKey !== null && OWNER_KEY_PATTERN.test(legacyKey) && loadIdentity() === null
       ? legacyKey
       : null);
   bootstrapOwnerKey =

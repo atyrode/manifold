@@ -651,7 +651,6 @@ test("a revoked preview browser identity returns through production admission wi
     expect(admittedRoster.status).toBe(200);
     await browser.evaluate(`localStorage.setItem('identity-test-content', 'keep');
       localStorage.setItem('manifold.identity@https://elsewhere.example', 'keep-foreign');
-      localStorage.setItem('manifold.ownerKey', ${JSON.stringify(preview.ownerKey)});
       localStorage.setItem('manifold.ownerKey@https://elsewhere.example', ${JSON.stringify(preview.ownerKey)})`);
     // Leave the live application before revocation. Otherwise its authenticated requests can
     // observe the revocation and begin a successful handoff while this test is still arranging
@@ -680,7 +679,8 @@ test("a revoked preview browser identity returns through production admission wi
         scenario.expired ? { ...initial, expiresInMs: 0, receivedAt: Date.now() } : initial,
       );
       await browser.evaluate(
-        `localStorage.setItem('manifold.identity', ${JSON.stringify(stored)})`,
+        `localStorage.setItem('manifold.identity', ${JSON.stringify(stored)});
+         localStorage.setItem('manifold.ownerKey', ${JSON.stringify(preview.ownerKey)})`,
       );
       const unavailable = await browser.send("Page.addScriptToEvaluateOnNewDocument", {
         source: `(() => {
@@ -715,7 +715,8 @@ test("a revoked preview browser identity returns through production admission wi
       await browser.goto(`${previewOrigin}/`);
       for (const reload of [false, true]) {
         if (reload) {
-          await browser.evaluate("window.__admissionAttemptSeen = false");
+          await browser.evaluate(`window.__admissionAttemptSeen = false;
+            localStorage.setItem('manifold.ownerKey', ${JSON.stringify(preview.ownerKey)})`);
           await browser.reload();
         }
         try {

@@ -465,8 +465,8 @@ is the workspace layout's root ratio (`core.space.setLayout`), collapse is prese
 (`vantage.sidebarCollapsed`, with a device-local mirror for first paint), and terminal-row
 visibility plus folder expansion stay device-local (`REGISTRY.md` §Device-local register). The
 server SPA-fallbacks every non-`/api`, non-`/ws`, non-`/healthz` GET to `index.html`. The URL
-fragment is reserved for `#key=<owner-key>` bootstrap and is stripped by the client after
-storing it.
+fragment is reserved for `#key=<owner-key>` bootstrap and is stripped by the client
+after capturing it in document memory; recovery keys are never written to browser storage.
 
 Canvas resize affordances differ by element on purpose. A canvas portal is a window: a
 portal's frame border is a grab zone under the select tool (the same 8px edges and 14px
