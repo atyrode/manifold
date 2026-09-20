@@ -2310,6 +2310,23 @@ existing process/Worker runners. In-realm bundles use the shared-module registry
 `import()`. Selecting hardening does not turn a React definition into a worker program; the
 React-over-frames reconciler is #259.
 
+**Server artifact retrieval (#415).** Both runners use the same source policy. Network sources
+and each of at most five followed redirects must use HTTPS without embedded URL credentials.
+One 30-second deadline covers DNS, TLS, redirects and the complete body. Every resolved answer
+must be an allowed public-unicast address; mixed public/private answers refuse the hop.
+Private/shared, loopback, link-local, documentation/benchmark, multicast, reserved and blocked
+IPv6 protocol/transition ranges are not destinations. The retriever connects directly to one
+validated numeric address, retains original-host certificate verification and SNI, verifies
+the actual TLS peer before sending HTTP, and preserves the original Host header. No second
+hostname resolution, connection-pool substitution or ambient HTTP(S) proxy is used.
+Redirect bodies and refused responses are cancelled; decoded bytes retain the 16 MiB streaming
+ceiling and exact-byte SHA verification still precedes parsing or publishing any artifact.
+
+Public/self-hosted HTTPS publishing is supported. Intentionally private sources must use the
+existing `<data>/plugin-uploads/` drop box (or the existing explicit development file policy),
+not a network-policy exemption. This is server-side retrieval admission, not a restriction on
+the kit client's own inspection fetch or a claim that arbitrary plugin code is network-confined.
+
 **Executable bundle compatibility (#602).** Every pack stamps `hardenedContract` independently
 of `format` and the machine/session protocols. `HARDENED_CONTRACT_VERSION` is 2; the hub accepts
 `HARDENED_CONTRACT_COMPAT_VERSIONS = {1, 2}`, with minimum 1. Add an additive-optional contract

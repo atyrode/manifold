@@ -2872,10 +2872,18 @@ engine.plugins.install   { source, sha256, grant?, replace?, hardened? }  → { 
 engine.plugins.uninstall { id, purge? }                                   → {}
 ```
 
-- **`source`** is an `https://` URL (fetched with a 30 s bound, at most
-  `ISOLATE_MAX_ARTIFACT_BYTES`), or an absolute path under `<data>/plugin-uploads/` — the
-  operator's drop box. `MANIFOLD_PLUGIN_DEV_PATHS=1` accepts a path anywhere on the host, for
-  development only.
+- **`source`** is an `https://` URL without embedded credentials, or an absolute path under
+  `<data>/plugin-uploads/` — the operator's drop box. Network retrieval shares one 30 s deadline
+  across DNS, TLS, at most five followed redirects and the body, with at most
+  `ISOLATE_MAX_ARTIFACT_BYTES` decoded bytes. Every hop must remain HTTPS and resolve entirely
+  to ordinary public-unicast destinations: private, loopback, link-local, multicast and
+  blocked special-use ranges, including mapped forms, are refused. The server pins one validated
+  numeric destination, verifies its actual TLS peer before HTTP, and retains original-host
+  certificate verification, SNI and Host; ambient HTTP(S) proxy settings are not used.
+  Public/self-hosted HTTPS publishers remain supported. For an intentionally private publisher,
+  deliver pinned bytes through the existing upload drop box instead of relying on private-network
+  URL access. `MANIFOLD_PLUGIN_DEV_PATHS=1` still accepts a path anywhere on the host for development
+  only. These are server-fetch rules, not restrictions on a kit client's own inspection fetch.
 - **`sha256`** is the hash of the bundle's EXACT bytes, and it is what you are consenting to:
   nothing is written unless the bytes read hash to it (`hash_mismatch`), and every boot re-hashes
   the stored bundle — a bundle that no longer matches is refused by name on its row

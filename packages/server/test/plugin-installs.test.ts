@@ -207,7 +207,7 @@ describe("installArtifact", () => {
     }) as typeof fetch;
 
     const admitted = await installArtifact({
-      source: "https://plugins.example/sample.manifold-plugin.json",
+      source: "https://1.1.1.1/sample.manifold-plugin.json",
       sha256,
       dataDir: drop.dataDir,
       fetchImpl,
@@ -216,7 +216,7 @@ describe("installArtifact", () => {
 
     const missing = await refusal(() =>
       installArtifact({
-        source: "https://plugins.example/missing",
+        source: "https://1.1.1.1/missing",
         sha256,
         dataDir: drop.dataDir,
         fetchImpl,
@@ -228,7 +228,7 @@ describe("installArtifact", () => {
     // Code fetched in the clear is code somebody on the path chose: never fetched at all.
     const clear = await refusal(() =>
       installArtifact({
-        source: "http://plugins.example/sample.manifold-plugin.json",
+        source: "http://1.1.1.1/sample.manifold-plugin.json",
         sha256,
         dataDir: drop.dataDir,
         fetchImpl,
@@ -236,6 +236,84 @@ describe("installArtifact", () => {
     );
     expect(clear.reason).toBe("artifact_unreadable");
     expect(asked).toHaveLength(2);
+  });
+
+  test("redirects cannot reach a downgrade, private address or URL credential", async () => {
+    for (const location of [
+      "http://1.1.1.1/bundle",
+      "https://2130706433/bundle",
+      "https://[::ffff:127.0.0.1]/bundle",
+      "https://user:password@1.1.1.1/bundle",
+    ]) {
+      const drop = box();
+      const bytes = bundleBytes();
+      const contacted: string[] = [];
+      const fetchImpl = ((input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+        const url = input instanceof Request ? input.url : String(input);
+        contacted.push(url);
+        // Model fetch's automatic redirect behavior too: a future accidental `follow`
+        // must expose the forbidden destination, not pass because this fixture is manual.
+        if (init?.redirect !== "manual") {
+          contacted.push(location);
+          return Promise.resolve(new Response(bytes));
+        }
+        return Promise.resolve(
+          contacted.length === 1
+            ? new Response(null, { status: 302, headers: { location } })
+            : new Response(bytes),
+        );
+      }) as typeof fetch;
+      const denied = await refusal(() =>
+        installArtifact({
+          source: "https://1.1.1.1/start",
+          sha256: sha256Hex(bytes),
+          dataDir: drop.dataDir,
+          fetchImpl,
+        }),
+      );
+      expect(denied.reason).toBe("artifact_unreadable");
+      expect(contacted).toEqual(["https://1.1.1.1/start"]);
+      expect(existsSync(join(drop.dataDir, "plugins"))).toBeFalse();
+    }
+  });
+
+  test("relative HTTPS redirects preserve the exact pin and redirect loops are finite", async () => {
+    const drop = box();
+    const bytes = bundleBytes();
+    const contacted: string[] = [];
+    const fetchImpl = ((input: string | URL | Request): Promise<Response> => {
+      const url = input instanceof Request ? input.url : String(input);
+      contacted.push(url);
+      return Promise.resolve(
+        url.endsWith("/bundle")
+          ? new Response(bytes)
+          : new Response(null, { status: 307, headers: { location: "/bundle" } }),
+      );
+    }) as typeof fetch;
+    const admitted = await installArtifact({
+      source: "https://1.1.1.1/start",
+      sha256: sha256Hex(bytes),
+      dataDir: drop.dataDir,
+      fetchImpl,
+    });
+    expect(readFileSync(admitted.bundlePath)).toEqual(bytes);
+    expect(contacted).toEqual(["https://1.1.1.1/start", "https://1.1.1.1/bundle"]);
+    let requests = 0;
+    const loop = ((_: string | URL | Request): Promise<Response> => {
+      requests++;
+      return Promise.resolve(new Response(null, { status: 308, headers: { location: "/loop" } }));
+    }) as typeof fetch;
+    const refused = await refusal(() =>
+      installArtifact({
+        source: "https://1.1.1.1/loop",
+        sha256: sha256Hex(bytes),
+        dataDir: drop.dataDir,
+        fetchImpl: loop,
+      }),
+    );
+    expect(refused.reason).toBe("artifact_unreadable");
+    expect(requests).toBe(6);
+    expect(readFileSync(admitted.bundlePath)).toEqual(bytes);
   });
 
   test("machine bundle admission pins the member and executable before publishing bytes", async () => {
