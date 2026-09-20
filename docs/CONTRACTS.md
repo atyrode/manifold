@@ -518,6 +518,22 @@ Reasoning and rejected alternatives: [ADR 0019](decisions/0019-identity-posture.
   bearer token; a connection carries one credential's channels, because the SDK pools by
   token.
 - **Owner key** = hex-64 secret; acts as a token with cap `*`. Generated on first boot.
+  The browser captures an explicit `#key=` link only in document memory, removes the fragment
+  before rendering, and releases its bootstrap references after storing the finite ordinary
+  credential. It never writes the recovery key to localStorage or sessionStorage (#413).
+  Reload after successful bootstrap uses the ordinary credential; reload before bootstrap
+  requires opening the recovery link again. Removing the local identity does not reveal a
+  cached recovery fallback. Expired/revoked identities keep the existing admission flow:
+  production handoff where configured, otherwise an explicitly reopened recovery link.
+
+  Before rendering, migration removes both `manifold.ownerKey` and every
+  `manifold.ownerKey@<origin>` legacy register at the served browser origin. A valid legacy
+  key for the active instance may seed this document's first bootstrap only when no ordinary
+  identity is present. It never replaces a retained rejected/expired identity implicitly.
+  Existing ordinary identities (including foreign-instance registers) and workspace data
+  remain unchanged. The raw server recovery key remains non-expiring and usable explicitly;
+  this change reduces durable exposure, not the authority of page code while bootstrap runs.
+
 - Caps include `*`, `agents:delegate`, `containers:read`, `containers:write`, `scenes:write`,
   `terminals:spawn`, `terminals:write`, `tokens:mint`, `machines:mint`, `machines:read` and
   `plugins:manage`. Reads of scene and presence come with `containers:read`.

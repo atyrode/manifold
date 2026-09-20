@@ -943,9 +943,12 @@ across a rotation.
    The restart is not optional. `loadOwnerKey` (`packages/server/src/config.ts`)
    reads the key once at boot and never re-reads it.
 
-2. Re-bootstrap your browsers. The old key in localStorage stops authenticating at
-   the restart. Print the new URL the way `## Install` does — one of these, matching
-   how you installed the key:
+2. Use the new recovery link for browser bootstrap when needed. Browsers no longer
+   retain owner keys: a link is held only for that document's bootstrap, and existing
+   recovery-key localStorage entries are removed on load. Reload uses the finite ordinary
+   credential, not the key. If bootstrap is interrupted or the ordinary credential is gone,
+   expired or revoked, reopen the recovery link (or use production admission where configured).
+   Print the new URL the way `## Install` does — one of these, matching how you installed the key:
 
    ```sh
    # generated-key deployment

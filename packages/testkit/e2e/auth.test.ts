@@ -651,7 +651,8 @@ test("a revoked preview browser identity returns through production admission wi
     expect(admittedRoster.status).toBe(200);
     await browser.evaluate(`localStorage.setItem('identity-test-content', 'keep');
       localStorage.setItem('manifold.identity@https://elsewhere.example', 'keep-foreign');
-      localStorage.setItem('manifold.ownerKey', ${JSON.stringify(preview.ownerKey)})`);
+      localStorage.setItem('manifold.ownerKey', ${JSON.stringify(preview.ownerKey)});
+      localStorage.setItem('manifold.ownerKey@https://elsewhere.example', ${JSON.stringify(preview.ownerKey)})`);
     // Leave the live application before revocation. Otherwise its authenticated requests can
     // observe the revocation and begin a successful handoff while this test is still arranging
     // the deliberately failed recovery attempt below.
@@ -669,7 +670,7 @@ test("a revoked preview browser identity returns through production admission wi
     expect(refused.status).toBe(403);
     expect(await refused.json()).toEqual({ error: { code: "forbidden", message: "revoked" } });
     // Recovery must remain native even when its first attempt fails or is interrupted.
-    // Keep the rejected register and cached owner key across a real browser Reload.
+    // Keep the rejected identity across Reload, but retire legacy recovery-key storage.
     for (const scenario of [
       { admission: "failed", expired: false },
       { admission: "interrupted", expired: false },
@@ -783,9 +784,9 @@ test("a revoked preview browser identity returns through production admission wi
         expect(await browser.evaluate<string>("localStorage.getItem('manifold.identity')")).toBe(
           stored,
         );
-        expect(await browser.evaluate<string>("localStorage.getItem('manifold.ownerKey')")).toBe(
-          preview.ownerKey,
-        );
+        expect(
+          await browser.evaluate<boolean>("localStorage.getItem('manifold.ownerKey') === null"),
+        ).toBe(true);
         if (scenario.expired) {
           expect(await browser.evaluate<number>("window.__protectedIdentityRequests")).toBe(0);
         }
@@ -818,11 +819,11 @@ test("a revoked preview browser identity returns through production admission wi
     })()`),
     ).toBe(true);
     expect(
-      await browser.evaluate<string[]>(
+      await browser.evaluate<(string | null)[]>(
         `['identity-test-content', 'manifold.identity@https://elsewhere.example',
-        'manifold.ownerKey'].map(key => localStorage.getItem(key))`,
+        'manifold.ownerKey', 'manifold.ownerKey@https://elsewhere.example'].map(key => localStorage.getItem(key))`,
       ),
-    ).toEqual(["keep", "keep-foreign", preview.ownerKey]);
+    ).toEqual(["keep", "keep-foreign", null, null]);
     expect(
       ContainerResponseSchema.parse(
         await ownerAction(previewOwner, "core.index.readContainer", { containerId: content.id }),
@@ -854,6 +855,11 @@ test("explicit owner links recover rejected standalone identities without cached
           10_000,
           50,
         );
+        expect(
+          await browser.evaluate<boolean>(
+            "location.hash === '' && localStorage.getItem('manifold.ownerKey') === null",
+          ),
+        ).toBe(true);
         await browser.typeInto("#identity-name", `standalone-${refusal}`);
         await browser.clickTestId("identity-enter");
         await waitFor(
@@ -861,6 +867,13 @@ test("explicit owner links recover rejected standalone identities without cached
           10_000,
           50,
         );
+        expect(
+          await browser.evaluate<boolean>(`(() => {
+            const identity = JSON.parse(localStorage.getItem('manifold.identity'));
+            return localStorage.getItem('manifold.ownerKey') === null &&
+              typeof identity.token === 'string' && Number.isFinite(identity.expiresAt);
+          })()`),
+        ).toBe(true);
         if (refusal === "expired") {
           // Exercise a relative admission deadline without changing the server clock.
           await browser.evaluate(`(() => {
@@ -917,6 +930,9 @@ test("explicit owner links recover rejected standalone identities without cached
           50,
         );
         expect(
+          await browser.evaluate<boolean>("localStorage.getItem('manifold.ownerKey') === null"),
+        ).toBe(true);
+        expect(
           await browser.evaluate<number>(`(async () => {
           const identity = JSON.parse(localStorage.getItem("manifold.identity"));
           return (await fetch("/api/plugins", {
@@ -936,6 +952,61 @@ test("explicit owner links recover rejected standalone identities without cached
     dist.cleanup();
   }
 }, 90_000);
+
+test("legacy first-visit recovery migrates once without retaining authority after sign-out", async () => {
+  const dist = resolveWebDist("manifold-legacy-recovery-web-");
+  const server = await startServer({ env: { MANIFOLD_WEB_DIST: dist.distDir } });
+  const browser = new Browser();
+  try {
+    await browser.launch({ incognito: true });
+    await browser.goto(`${server.httpUrl}/healthz`);
+    await browser.evaluate(
+      `localStorage.setItem('manifold.ownerKey', ${JSON.stringify(server.ownerKey)})`,
+    );
+    await browser.goto(`${server.httpUrl}/`);
+    await waitFor(
+      () => browser.evaluate<boolean>("document.querySelector('#identity-name') !== null"),
+      10_000,
+      50,
+    );
+    expect(
+      await browser.evaluate<boolean>("localStorage.getItem('manifold.ownerKey') === null"),
+    ).toBe(true);
+    await browser.typeInto("#identity-name", "legacy-browser");
+    await browser.clickTestId("identity-enter");
+    await waitFor(
+      () => browser.evaluate<boolean>("document.querySelector('.workspace') !== null"),
+      10_000,
+      50,
+    );
+    await browser.reload();
+    await waitFor(
+      () => browser.evaluate<boolean>("document.querySelector('.workspace') !== null"),
+      10_000,
+      50,
+    );
+    // There is no separate sign-out door: retiring the local ordinary credential must
+    // not uncover a cached recovery credential that can silently bootstrap again.
+    await browser.goto(`${server.httpUrl}/healthz`);
+    await browser.evaluate("localStorage.removeItem('manifold.identity')");
+    await browser.goto(`${server.httpUrl}/`);
+    await waitFor(
+      () => browser.evaluate<boolean>("document.querySelector('.gate-screen') !== null"),
+      10_000,
+      50,
+    );
+    expect(
+      await browser.evaluate<boolean>(`document.querySelector('#identity-name') === null &&
+        document.querySelector('.workspace') === null &&
+        localStorage.getItem('manifold.ownerKey') === null`),
+    ).toBe(true);
+  } finally {
+    await browser.close();
+    await server.stop();
+    rmSync(server.dataDir, { recursive: true, force: true });
+    dist.cleanup();
+  }
+}, 60_000);
 
 test("browser identity survives non-auth failures and concurrent register replacement", async () => {
   const dist = resolveWebDist("manifold-identity-race-web-");

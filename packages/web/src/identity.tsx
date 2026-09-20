@@ -16,7 +16,11 @@ const IDENTITY_STORAGE = "manifold.identity";
 const OWNER_KEY_PATTERN = /^[0-9a-f]{64}$/i;
 const OWNER_FRAGMENT_PATTERN = /^#key=([0-9a-f]{64})$/i;
 const PREVIEW_NONCE_STORAGE = "manifold.previewNonce";
-let fragmentOwnerKey: { readonly storageKey: string; readonly value: string } | null = null;
+let bootstrapOwnerKey: {
+  readonly storageKey: string;
+  readonly value: string;
+  readonly explicit: boolean;
+} | null = null;
 
 function previewHandoffRequest(): { audience: string; nonce: string } | null {
   if (window.location.pathname !== "/auth/preview") return null;
@@ -140,28 +144,37 @@ function credentialKey(base: string): string {
  */
 export { IDENTITY_COLORS };
 
-/** Captures the one permitted URL-secret carrier before React renders, then cleans the URL. */
+/** Captures bootstrap authority in memory and retires legacy recovery-key storage before render. */
 export function captureOwnerKeyFromFragment(): void {
-  const match = OWNER_FRAGMENT_PATTERN.exec(window.location.hash);
-  const ownerKey = match?.[1];
-  if (ownerKey === undefined) return;
   const storageKey = credentialKey(OWNER_KEY_STORAGE);
-  fragmentOwnerKey = { storageKey, value: ownerKey };
-  window.localStorage.setItem(storageKey, ownerKey);
-  window.history.replaceState(
-    window.history.state,
-    "",
-    `${window.location.pathname}${window.location.search}`,
-  );
+  const legacyKey = window.localStorage.getItem(storageKey);
+  for (let index = window.localStorage.length - 1; index >= 0; index--) {
+    const key = window.localStorage.key(index);
+    if (key === OWNER_KEY_STORAGE || key?.startsWith(`${OWNER_KEY_STORAGE}@`)) {
+      window.localStorage.removeItem(key);
+    }
+  }
+  const ownerKey = OWNER_FRAGMENT_PATTERN.exec(window.location.hash)?.[1];
+  const value =
+    ownerKey ??
+    (loadIdentity() === null && legacyKey !== null && OWNER_KEY_PATTERN.test(legacyKey)
+      ? legacyKey
+      : null);
+  bootstrapOwnerKey =
+    value === null ? null : { storageKey, value, explicit: ownerKey !== undefined };
+  if (ownerKey !== undefined) {
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `${window.location.pathname}${window.location.search}`,
+    );
+  }
 }
 
 function loadOwnerKey(): string | null {
-  const key = credentialKey(OWNER_KEY_STORAGE);
-  if (fragmentOwnerKey?.storageKey === key) return fragmentOwnerKey.value;
-  const ownerKey = window.localStorage.getItem(key);
-  if (ownerKey !== null && OWNER_KEY_PATTERN.test(ownerKey)) return ownerKey;
-  if (ownerKey !== null) window.localStorage.removeItem(key);
-  return null;
+  return bootstrapOwnerKey?.storageKey === credentialKey(OWNER_KEY_STORAGE)
+    ? bootstrapOwnerKey.value
+    : null;
 }
 
 function loadIdentity(): StoredIdentity | null {
@@ -215,7 +228,7 @@ interface IdentityGateProps {
 /** Keeps every authenticated route behind the fragment bootstrap and first-person dialog. */
 export function IdentityGate({ children }: IdentityGateProps) {
   const [identity, setIdentity] = useState<StoredIdentity | null>(() => loadIdentity());
-  const [ownerKey] = useState<string | null>(() => loadOwnerKey());
+  const [ownerKey, setOwnerKey] = useState<string | null>(() => loadOwnerKey());
   const [readmitting, setReadmitting] = useState(false);
   const [name, setName] = useState("");
   const [color, setColor] = useState<(typeof IDENTITY_COLORS)[number]>(IDENTITY_COLORS[3]);
@@ -223,7 +236,9 @@ export function IdentityGate({ children }: IdentityGateProps) {
   const [error, setError] = useState<string | null>(null);
   const handoff = previewHandoffRequest();
   const identityOrigin = instanceOrigin();
-  const explicitOwnerKey = fragmentOwnerKey?.storageKey === credentialKey(OWNER_KEY_STORAGE);
+  const explicitOwnerKey =
+    bootstrapOwnerKey?.storageKey === credentialKey(OWNER_KEY_STORAGE) &&
+    bootstrapOwnerKey.explicit;
   const invalidateIdentity = useCallback(() => {
     if (identity === null || instanceOrigin() !== identityOrigin) return;
     // Reads are not cross-tab compare-and-delete transactions. Leave the register
@@ -280,7 +295,8 @@ export function IdentityGate({ children }: IdentityGateProps) {
     try {
       const grant = await createPrincipal(ownerKey, { name: trimmedName, color });
       window.localStorage.setItem(credentialKey(IDENTITY_STORAGE), JSON.stringify(grant));
-      fragmentOwnerKey = null;
+      bootstrapOwnerKey = null;
+      setOwnerKey(null);
       setIdentity(grant);
     } catch (reason: unknown) {
       setError(reason instanceof Error ? reason.message : "Could not create your identity");
