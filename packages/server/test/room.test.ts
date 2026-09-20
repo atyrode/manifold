@@ -156,6 +156,396 @@ function roomFixture(
   return { runtime, clock, store, container, socket, peer, room };
 }
 
+describe("Room congested recipients", () => {
+  function joinRecipient(fixture: ReturnType<typeof roomFixture>, socket = new FakeSocket()) {
+    const peer = new SessionChannel(
+      fixture.runtime.newId(),
+      socket,
+      fixture.peer.auth,
+      fixture.container.id,
+      "recipient",
+    );
+    fixture.room.join(peer);
+    socket.clear();
+    return { peer, socket };
+  }
+
+  test("one recovery converges the document and interleaved presence without losing local edits", () => {
+    const fixture = roomFixture();
+    const { room, peer, socket, store } = fixture;
+    const tab = joinRecipient(fixture);
+    const slow = joinRecipient(fixture);
+    const local = createSceneDoc();
+    const healthy = createSceneDoc();
+    try {
+      Y.applyUpdate(local, Y.encodeStateAsUpdate(room.doc));
+      writeElement(local, note("unsent-local"), LOCAL_ORIGIN);
+      socket.clear();
+      slow.socket.bufferedAmount = 1;
+      room.updatePresence(peer, { status: "active", cursor: { x: 1, y: 1 } });
+      room.updatePresence(tab.peer, { status: "done", cursor: { x: 2, y: 2 } });
+      room.applyDocUpdate(peer, encodedElements(note("canonical")));
+      for (let index = 0; index < 400; index += 1) {
+        patchElement(room.doc, "canonical", { x: index }, LOCAL_ORIGIN);
+        room.updatePresence(peer, { selection: [`selection-${index}`] });
+      }
+      room.updatePresence(peer, { cursor: null });
+      expect(slow.peer.isClosed).toBe(false);
+      expect(slow.socket.messages()).toEqual([]);
+
+      // A healthy recipient continues to consume ordinary deltas, with no scene resets.
+      for (const message of socket.messages()) {
+        expect(message.type).not.toBe("resync");
+        if (message.type === "doc_update") Y.applyUpdate(healthy, decodeUpdate(message.update));
+      }
+      expect(readElement(healthy, "canonical")?.x).toBe(399);
+      slow.socket.bufferedAmount = 0;
+      slow.peer.drain();
+      const messages = slow.socket.messages();
+      expect(messages.map((message) => message.type)).toEqual([
+        "doc_update",
+        "presence",
+        "presence",
+        "presence",
+      ]);
+      const delta = messages[0];
+      if (delta?.type !== "doc_update") throw new Error("missing incremental recovery");
+      Y.applyUpdate(local, decodeUpdate(delta.update));
+      expect(readElement(local, "canonical")).toEqual(readElement(room.doc, "canonical"));
+      expect(readElement(local, "unsent-local")?.text).toBe("hello");
+      expect(messages[3]).toMatchObject({
+        payload: { status: "done", selection: ["selection-399"] },
+      });
+      expect(messages.slice(1, 3)).toEqual([
+        {
+          type: "presence",
+          principalId: peer.auth.principal.id,
+          connId: tab.peer.id,
+          payload: { cursor: { x: 2, y: 2 } },
+        },
+        {
+          type: "presence",
+          principalId: peer.auth.principal.id,
+          connId: peer.id,
+          payload: { cursor: null },
+        },
+      ]);
+    } finally {
+      room.closeAll(1000, "test complete");
+      local.destroy();
+      healthy.destroy();
+      store.close();
+    }
+  });
+
+  test("repeated congestion respects recovery cadence and motion cannot overtake retained state", () => {
+    const fixture = roomFixture();
+    const { room, peer, clock, store } = fixture;
+    const slow = joinRecipient(fixture);
+    try {
+      slow.socket.bufferedAmount = 1;
+      room.updatePresence(peer, { selection: ["first"] });
+      slow.socket.bufferedAmount = 0;
+      slow.peer.drain();
+      expect(slow.socket.messages()).toEqual([
+        {
+          type: "presence",
+          principalId: peer.auth.principal.id,
+          connId: peer.id,
+          payload: { selection: ["first"] },
+        },
+      ]);
+      slow.socket.clear();
+
+      slow.socket.bufferedAmount = 1;
+      room.updatePresence(peer, { selection: ["second"], cursor: null });
+      slow.socket.bufferedAmount = 0;
+      slow.peer.drain();
+      const gesture = {
+        type: "gesture",
+        kind: "move",
+        phase: "end",
+        elementId: "moving",
+        x: 9,
+        y: 4,
+      } as const;
+      room.relayCursor(peer, {
+        x: 8,
+        y: 3,
+        type: "cursor",
+      });
+      room.relayGesture(peer, gesture);
+      clock.advance(99);
+      expect(slow.socket.messages()).toEqual([]);
+      clock.advance(1);
+      expect(slow.socket.messages().map((message) => message.type)).toEqual([
+        "presence",
+        "presence",
+      ]);
+      slow.socket.clear();
+      room.relayCursor(peer, {
+        x: 10,
+        y: 5,
+        type: "cursor",
+      });
+      room.relayGesture(peer, gesture);
+      expect(slow.socket.messages()).toEqual([
+        { type: "cursor", principalId: peer.auth.principal.id, connId: peer.id, x: 10, y: 5 },
+        { principalId: peer.auth.principal.id, connId: peer.id, ...gesture },
+      ]);
+
+      slow.socket.clear();
+      slow.socket.bufferedAmount = 1;
+      room.updatePresence(peer, { selection: ["never-after-leave"] });
+      slow.socket.bufferedAmount = 0;
+      slow.peer.drain();
+      room.leave(slow.peer);
+      clock.advance(100);
+      slow.peer.drain();
+      expect(slow.socket.messages()).toEqual([]);
+    } finally {
+      room.closeAll(1000, "test complete");
+      store.close();
+    }
+  });
+
+  test("live retraction and latest spotlight are not starved by continuously dirty snapshots", () => {
+    class RecoverySocket extends FakeSocket {
+      override send(data: string): number {
+        const result = super.send(data);
+        const message: unknown = JSON.parse(data);
+        if (
+          typeof message === "object" &&
+          message !== null &&
+          "type" in message &&
+          message.type === "resync"
+        ) {
+          this.bufferedAmount = 1;
+          return -1;
+        }
+        return result;
+      }
+    }
+    const fixture = roomFixture();
+    const { room, peer, clock, store } = fixture;
+    const slow = joinRecipient(fixture, new RecoverySocket());
+    try {
+      slow.socket.bufferedAmount = 1;
+      room.updatePresence(peer, { cursor: null });
+      room.writeSpotlight(peer.auth.principal.id, { uri: "first-target", from: "requester" });
+      for (let index = 0; index < 40; index += 1) {
+        room.applyDocUpdate(
+          peer,
+          encodedElements(note(`large-${index}`, { text: "x".repeat(20_000) })),
+        );
+      }
+      expect(readElements(room.doc).size).toBe(40);
+      slow.socket.bufferedAmount = 0;
+      slow.peer.drain();
+      expect(slow.socket.messages().map((message) => message.type)).toEqual(["resync"]);
+      room.writeSpotlight(peer.auth.principal.id, { uri: "latest-target", from: "requester" });
+      room.applyDocUpdate(peer, encodedElements(note("during-resync")));
+      clock.advance(100);
+      slow.socket.bufferedAmount = 0;
+      slow.peer.drain();
+      const messages = slow.socket.messages();
+      expect(messages.map((message) => message.type)).toEqual([
+        "resync",
+        "presence",
+        "presence",
+        "doc_update",
+      ]);
+      expect(messages[1]).toMatchObject({ connId: peer.id, payload: { cursor: null } });
+      expect(messages[2]).toMatchObject({
+        payload: { spotlight: { uri: "latest-target", from: "requester" } },
+      });
+      const initial = messages[0];
+      const delta = messages[3];
+      if (initial?.type !== "resync" || delta?.type !== "doc_update") {
+        throw new Error("missing full fallback followed by incremental recovery");
+      }
+      const received = createSceneDoc();
+      try {
+        Y.applyUpdate(received, decodeUpdate(initial.doc));
+        Y.applyUpdate(received, decodeUpdate(delta.update));
+        expect(readElements(received)).toEqual(readElements(room.doc));
+      } finally {
+        received.destroy();
+      }
+    } finally {
+      room.closeAll(1000, "test complete");
+      store.close();
+    }
+  });
+
+  test("oversized catch-up is paced separately without delaying later small deltas", () => {
+    const fixture = roomFixture();
+    const { room, peer, clock, store } = fixture;
+    const slow = joinRecipient(fixture);
+    const received = createSceneDoc();
+    try {
+      for (let batch = 0; batch < 2; batch += 1) {
+        slow.socket.clear();
+        slow.socket.bufferedAmount = 1;
+        for (let index = 0; index < 40; index += 1) {
+          room.applyDocUpdate(
+            peer,
+            encodedElements(note(`large-${batch}-${index}`, { text: "x".repeat(20_000) })),
+          );
+        }
+        expect(readElements(room.doc).size).toBe((batch + 1) * 40);
+        slow.socket.bufferedAmount = 0;
+        slow.peer.drain();
+        if (batch === 1) {
+          clock.advance(999);
+          expect(slow.socket.messages()).toEqual([]);
+          clock.advance(1);
+        }
+        const messages = slow.socket.messages();
+        expect(messages.map((message) => message.type)).toEqual(["resync"]);
+        const snapshot = messages[0];
+        if (snapshot?.type !== "resync") throw new Error("missing full catch-up");
+        Y.applyUpdate(received, decodeUpdate(snapshot.doc));
+      }
+      slow.socket.clear();
+      slow.socket.bufferedAmount = 1;
+      patchElement(room.doc, "large-0-0", { x: 77 }, LOCAL_ORIGIN);
+      slow.socket.bufferedAmount = 0;
+      slow.peer.drain();
+      clock.advance(100);
+      const messages = slow.socket.messages();
+      expect(messages.map((message) => message.type)).toEqual(["doc_update"]);
+      const delta = messages[0];
+      if (delta?.type !== "doc_update") throw new Error("missing small catch-up");
+      Y.applyUpdate(received, decodeUpdate(delta.update));
+      expect(readElement(received, "large-0-0")?.x).toBe(77);
+    } finally {
+      room.closeAll(1000, "test complete");
+      received.destroy();
+      store.close();
+    }
+  });
+
+  test("vantage replacement stays connection-scoped despite interleaved principal facets", () => {
+    const fixture = roomFixture();
+    const { room, peer, clock, container, store } = fixture;
+    const tab = joinRecipient(fixture);
+    const slow = joinRecipient(fixture);
+    const left: LocationPath = [{ kind: "container", containerId: container.id }];
+    const right: LocationPath = [
+      ...left,
+      { kind: "element", containerId: container.id, elementId: "right" },
+    ];
+    try {
+      slow.socket.bufferedAmount = 1;
+      room.updatePresence(peer, { vantage: { tool: "select", locationPath: left } });
+      room.updatePresence(tab.peer, { vantage: { tool: "draw", locationPath: right } });
+      room.updatePresence(peer, { status: "done" });
+      slow.socket.bufferedAmount = 0;
+      slow.peer.drain();
+      expect(slow.socket.messages()).toEqual([
+        {
+          type: "presence",
+          principalId: peer.auth.principal.id,
+          connId: peer.id,
+          payload: { vantage: { tool: "select", locationPath: left } },
+        },
+        {
+          type: "presence",
+          principalId: peer.auth.principal.id,
+          connId: tab.peer.id,
+          payload: { vantage: { tool: "draw", locationPath: right } },
+        },
+        {
+          type: "presence",
+          principalId: peer.auth.principal.id,
+          connId: peer.id,
+          payload: { status: "done" },
+        },
+      ]);
+      slow.socket.clear();
+      slow.socket.bufferedAmount = 1;
+      room.updatePresence(peer, { vantage: { tool: "text" } });
+      slow.socket.bufferedAmount = 0;
+      slow.peer.drain();
+      clock.advance(100);
+      expect(slow.socket.messages()).toEqual([
+        {
+          type: "presence",
+          principalId: peer.auth.principal.id,
+          connId: peer.id,
+          payload: { vantage: { tool: "text" } },
+        },
+      ]);
+    } finally {
+      room.closeAll(1000, "test complete");
+      store.close();
+    }
+  });
+
+  test("deletion-only recovery carries tombstones without resetting a large document", () => {
+    const fixture = roomFixture();
+    const { room, peer, store } = fixture;
+    const received = createSceneDoc();
+    try {
+      for (let index = 0; index < 40; index += 1) {
+        room.applyDocUpdate(
+          peer,
+          encodedElements(note(`large-${index}`, { text: "x".repeat(20_000) })),
+        );
+      }
+      expect(readElements(room.doc).size).toBe(40);
+      const slow = joinRecipient(fixture);
+      Y.applyUpdate(received, Y.encodeStateAsUpdate(room.doc));
+      slow.socket.bufferedAmount = 1;
+      elementsMap(room.doc).delete("large-0");
+      slow.socket.bufferedAmount = 0;
+      slow.peer.drain();
+      const messages = slow.socket.messages();
+      expect(messages.map((message) => message.type)).toEqual(["doc_update"]);
+      const delta = messages[0];
+      if (delta?.type !== "doc_update") throw new Error("missing deletion recovery");
+      Y.applyUpdate(received, decodeUpdate(delta.update));
+      expect(readElements(received).has("large-0")).toBe(false);
+      expect(readElements(received)).toEqual(readElements(room.doc));
+    } finally {
+      room.closeAll(1000, "test complete");
+      received.destroy();
+      store.close();
+    }
+  });
+
+  test("departed sources cannot replay stale cursors and a closed room cannot emit deferred state", () => {
+    const fixture = roomFixture();
+    const { room, peer, clock, store } = fixture;
+    const tab = joinRecipient(fixture);
+    const slow = joinRecipient(fixture);
+    try {
+      slow.socket.bufferedAmount = 1;
+      room.updatePresence(tab.peer, { cursor: { x: 1, y: 2 } });
+      room.leave(tab.peer);
+      slow.socket.bufferedAmount = 0;
+      slow.peer.drain();
+      expect(slow.socket.messages().map((message) => message.type)).toEqual(["attendance"]);
+      const snapshot = slow.socket.messages()[0];
+      if (snapshot?.type !== "attendance") throw new Error("missing departure attendance");
+      expect(snapshot.joined?.connIds).toEqual([peer.id, slow.peer.id]);
+
+      slow.socket.clear();
+      slow.socket.bufferedAmount = 1;
+      room.updatePresence(peer, { selection: ["pending-close"] });
+      room.closeAll(1000, "test complete");
+      slow.socket.bufferedAmount = 0;
+      slow.peer.drain();
+      clock.advance(200);
+      expect(slow.socket.messages().map((message) => message.type)).toEqual(["channel_closed"]);
+    } finally {
+      room.closeAll(1000, "test complete");
+      store.close();
+    }
+  });
+});
+
 describe("Room connection locations", () => {
   test("snapshot replacement and closing one tab preserve the sibling path and legacy focus", () => {
     const { runtime, room, peer, socket, store, container } = roomFixture();

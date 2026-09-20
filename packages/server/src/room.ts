@@ -58,6 +58,7 @@ import {
   SESSION_TRANSPORT_PAYLOAD_BYTES,
   serializeServerMessage,
   type ChannelMessage,
+  type SerializedServerMessage,
   type SessionChannel,
 } from "./session-channel.ts";
 import type { ServerStore } from "./stores.ts";
@@ -128,6 +129,29 @@ export function censusFor(
 export const DOC_BYTES_LIMIT = 12 * 1_048_576;
 const DOC_UPDATES_PER_SECOND = 120;
 const DOC_UPDATE_BURST = 240;
+/** Only congested delivery is paced; healthy recipients retain immediate deltas. */
+const RECIPIENT_STATE_MIN_INTERVAL_MS = 100;
+const RECIPIENT_FULL_RESYNC_MIN_INTERVAL_MS = 1_000;
+
+interface RecipientDelivery {
+  docCheckpoint: Uint8Array | null;
+  flushing: boolean;
+  lastFlushAt: number | null;
+  lastFullResyncAt: number | null;
+  cancel: (() => void) | null;
+  readonly flush: () => void;
+  readonly presences: Map<string, PresencePayload>;
+  /** Connection-scoped facets must not be folded into another tab's presence. */
+  readonly vantages: Map<
+    string,
+    { principalId: string; vantage: NonNullable<PresencePayload["vantage"]> }
+  >;
+  readonly cursors: Map<
+    string,
+    { principalId: string; cursor: Exclude<PresencePayload["cursor"], undefined> }
+  >;
+  readonly spotlights: Set<string>;
+}
 
 // A room is joined by PEERS, and a peer is one channel: routing is already consumed, so
 // the payloads a room applies and relays are channel-agnostic bodies.
@@ -191,6 +215,13 @@ export class Room {
   /** Latest successful channel join for each live principal membership in this room. */
   private readonly joinOrders = new Map<string, number>();
   private readonly updateBuckets = new Map<string, { tokens: number; at: number }>();
+  private readonly recipientDeliveries = new Map<SessionChannel, RecipientDelivery>();
+  private encodedDoc: string | null = null;
+  private beforeUpdateCheckpoint: Uint8Array | null = null;
+  private recoveryDelta: {
+    checkpoint: Uint8Array;
+    frame: SerializedServerMessage | null;
+  } | null = null;
   private dirty = false;
   private cancelQuiet: (() => void) | null = null;
   private cancelMax: (() => void) | null = null;
@@ -257,6 +288,9 @@ export class Room {
     });
     this.doc.on("update", (update, origin) => {
       this.rev += 1;
+      this.encodedDoc = null;
+      this.beforeUpdateCheckpoint = null;
+      this.recoveryDelta = null;
       this.broadcast({
         type: "doc_update",
         update: encodeUpdate(update),
@@ -309,7 +343,7 @@ export class Room {
       protocolVersion: PROTOCOL_VERSION,
       epoch: this.epoch,
       rev: this.rev,
-      doc: encodeUpdate(Y.encodeStateAsUpdate(this.doc)),
+      doc: (this.encodedDoc ??= encodeUpdate(Y.encodeStateAsUpdate(this.doc))),
       self: peer.auth.principal,
       selfCaps: [...peer.auth.caps],
       selfConnId: peer.id,
@@ -392,12 +426,22 @@ export class Room {
 
   /** Removes a tab and expires principal presence only after its final connection leaves. */
   leave(peer: SessionChannel): void {
+    this.forgetRecipient(peer);
+    for (const delivery of this.recipientDeliveries.values()) {
+      delivery.cursors.delete(peer.id);
+      delivery.vantages.delete(peer.id);
+    }
     if (peer.spectator) {
       if (!this.spectators.delete(peer)) return;
       // A watcher hanging up is not a departure: the bubble rule must NOT run here, or a
       // preview closing would pop a container nobody ever occupied — the newborn-expand
       // race. Reporting it at all only lets an unoccupied room stop being resident.
-      if (!this.hasConnections()) this.onEmpty(this, "sockets");
+      if (!this.hasConnections()) {
+        this.encodedDoc = null;
+        this.beforeUpdateCheckpoint = null;
+        this.recoveryDelta = null;
+        this.onEmpty(this, "sockets");
+      }
       return;
     }
     const principalId = peer.auth.principal.id;
@@ -408,9 +452,18 @@ export class Room {
     if (peers.size === 0) {
       this.connections.delete(principalId);
       this.presences.delete(principalId);
+      for (const delivery of this.recipientDeliveries.values()) {
+        delivery.spotlights.delete(principalId);
+        delivery.presences.delete(principalId);
+      }
       this.joinOrders.delete(principalId);
       this.broadcast({ type: "attendance", left: { principalId } });
       this.announce(this.containerId, principalId, "principal_left");
+      if (!this.hasConnections()) {
+        this.encodedDoc = null;
+        this.beforeUpdateCheckpoint = null;
+        this.recoveryDelta = null;
+      }
       if (this.connections.size === 0) this.onEmpty(this, "occupants");
       return;
     }
@@ -623,15 +676,250 @@ export class Room {
 
   /** Broadcasts one schema serialization to all current room members. */
   broadcast(message: ChannelMessage, droppable = false, except?: SessionChannel): void {
-    const frame = serializeServerMessage(message);
+    let frame: SerializedServerMessage | undefined;
     for (const peers of this.connections.values()) {
       for (const peer of peers) {
-        if (peer !== except) peer.sendSerialized(frame, droppable);
+        if (peer !== except) frame = this.deliverBroadcast(peer, message, droppable, frame);
       }
     }
     for (const peer of this.spectators) {
-      if (peer !== except) peer.sendSerialized(frame, droppable);
+      if (peer !== except) frame = this.deliverBroadcast(peer, message, droppable, frame);
     }
+  }
+
+  private deliverBroadcast(
+    peer: SessionChannel,
+    message: ChannelMessage,
+    droppable: boolean,
+    frame: SerializedServerMessage | undefined,
+  ): SerializedServerMessage | undefined {
+    if (peer.isClosed) return frame;
+    const delivery = this.recipientDeliveries.get(peer);
+    const recovering =
+      delivery !== undefined &&
+      (delivery.docCheckpoint !== null ||
+        delivery.presences.size > 0 ||
+        delivery.vantages.size > 0 ||
+        delivery.cursors.size > 0 ||
+        delivery.spotlights.size > 0);
+    if (
+      !droppable &&
+      (message.type === "doc_update" || message.type === "presence") &&
+      (!peer.writable || recovering)
+    ) {
+      this.deferRecipient(peer, message);
+      return frame;
+    }
+    // Motion must not overtake a retained retraction or the recovery's scene reset.
+    if (droppable && recovering) return frame;
+    frame ??= serializeServerMessage(message);
+    peer.sendSerialized(frame, droppable);
+    return frame;
+  }
+
+  private deferRecipient(
+    peer: SessionChannel,
+    message: Extract<ChannelMessage, { type: "doc_update" | "presence" }>,
+  ): void {
+    let delivery = this.recipientDeliveries.get(peer);
+    if (delivery === undefined) {
+      delivery = {
+        docCheckpoint: null,
+        flushing: false,
+        lastFlushAt: null,
+        lastFullResyncAt: null,
+        cancel: null,
+        flush: () => this.flushRecipient(peer),
+        presences: new Map(),
+        vantages: new Map(),
+        cursors: new Map(),
+        spotlights: new Set(),
+      };
+      this.recipientDeliveries.set(peer, delivery);
+    }
+    if (message.type === "doc_update") {
+      // Roll the current vector back over the FIRST missed update. Later catch-up is
+      // encoded from the canonical, garbage-collected doc, not a queue of old deltas.
+      // A deletion-only update has no clocks to roll back; encoding still carries deletions.
+      if (delivery.docCheckpoint === null) {
+        if (this.beforeUpdateCheckpoint === null) {
+          const vector = Y.decodeStateVector(Y.encodeStateVector(this.doc));
+          for (const [clientId, clock] of Y.parseUpdateMeta(decodeUpdate(message.update)).from) {
+            vector.set(clientId, Math.min(vector.get(clientId) ?? 0, clock));
+          }
+          this.beforeUpdateCheckpoint = Y.encodeStateVector(vector);
+        }
+        delivery.docCheckpoint = this.beforeUpdateCheckpoint;
+      }
+    } else {
+      // Presence facets are replacements. Fold globally by principal, not by the
+      // last active tab (A.status, B.status, A.selection must retain B.status).
+      const previous = delivery.presences.get(message.principalId);
+      delivery.presences.set(
+        message.principalId,
+        previous === undefined ? message.payload : { ...previous, ...message.payload },
+      );
+      if (message.payload.vantage !== undefined) {
+        delivery.vantages.delete(message.connId);
+        delivery.vantages.set(message.connId, {
+          principalId: message.principalId,
+          vantage: message.payload.vantage,
+        });
+      }
+      if (message.payload.cursor !== undefined) {
+        delivery.cursors.delete(message.connId);
+        delivery.cursors.set(message.connId, {
+          principalId: message.principalId,
+          cursor: message.payload.cursor,
+        });
+      }
+      if (message.payload.spotlight !== undefined) delivery.spotlights.add(message.principalId);
+    }
+    this.flushRecipient(peer);
+  }
+
+  private recoveryDocFrame(checkpoint: Uint8Array): SerializedServerMessage | null {
+    if (this.recoveryDelta?.checkpoint === checkpoint) return this.recoveryDelta.frame;
+    const update = Y.encodeStateAsUpdate(this.doc, checkpoint);
+    const frame =
+      update.byteLength <= MAX_DOC_UPDATE_BYTES
+        ? serializeServerMessage({ type: "doc_update", update: encodeUpdate(update), by: "server" })
+        : null;
+    this.recoveryDelta = { checkpoint, frame };
+    return frame;
+  }
+
+  private delayRecipient(delivery: RecipientDelivery, delay: number): void {
+    delivery.cancel ??= this.timers.schedule(() => {
+      delivery.cancel = null;
+      delivery.flush();
+    }, delay);
+  }
+
+  private flushRecipient(peer: SessionChannel): void {
+    const delivery = this.recipientDeliveries.get(peer);
+    if (delivery === undefined) return;
+    if (peer.isClosed) {
+      this.forgetRecipient(peer);
+      return;
+    }
+    if (!peer.writable) {
+      peer.deferUntilWritable(delivery.flush);
+      return;
+    }
+    if (delivery.cancel !== null) return;
+    if (!delivery.flushing && (delivery.docCheckpoint !== null || delivery.presences.size > 0)) {
+      const now = this.runtime.now();
+      const remaining =
+        delivery.lastFlushAt === null
+          ? 0
+          : RECIPIENT_STATE_MIN_INTERVAL_MS - Math.max(0, now - delivery.lastFlushAt);
+      if (remaining > 0) {
+        this.delayRecipient(delivery, remaining);
+        return;
+      }
+      const frame =
+        delivery.docCheckpoint === null ? undefined : this.recoveryDocFrame(delivery.docCheckpoint);
+      // Do not turn one large in-flight frame into a 10 Hz full-document feedback loop.
+      if (frame === null && delivery.lastFullResyncAt !== null) {
+        const fullRemaining =
+          RECIPIENT_FULL_RESYNC_MIN_INTERVAL_MS - Math.max(0, now - delivery.lastFullResyncAt);
+        if (fullRemaining > 0) {
+          this.delayRecipient(delivery, fullRemaining);
+          return;
+        }
+      }
+      delivery.docCheckpoint = null;
+      delivery.flushing = true;
+      delivery.lastFlushAt = now;
+      if (frame === null) {
+        delivery.lastFullResyncAt = now;
+        // Full recovery already includes every principal and every connection location.
+        delivery.presences.clear();
+        delivery.vantages.clear();
+        if (!this.sendState("resync", peer)) return;
+      } else if (frame !== undefined && !peer.sendSerialized(frame)) return;
+    }
+    // Small live effects precede the next large state frame, so sustained document
+    // traffic cannot starve a retraction or a spotlight.
+    for (const [connId, effect] of delivery.cursors) {
+      if (!peer.writable) {
+        peer.deferUntilWritable(delivery.flush);
+        return;
+      }
+      delivery.cursors.delete(connId);
+      if (
+        !peer.send({
+          type: "presence",
+          principalId: effect.principalId,
+          connId,
+          payload: { cursor: effect.cursor },
+        })
+      )
+        return;
+    }
+    for (const principalId of delivery.spotlights) {
+      if (!peer.writable) {
+        peer.deferUntilWritable(delivery.flush);
+        return;
+      }
+      delivery.spotlights.delete(principalId);
+      const first = this.connections.get(principalId)?.values().next().value;
+      const spotlight = this.presences.get(principalId)?.spotlight;
+      if (first !== undefined && spotlight !== undefined) {
+        if (
+          !peer.send({
+            type: "presence",
+            principalId,
+            connId: first.id,
+            payload: { spotlight },
+          })
+        )
+          return;
+      }
+    }
+    for (const [connId, effect] of delivery.vantages) {
+      if (!peer.writable) {
+        peer.deferUntilWritable(delivery.flush);
+        return;
+      }
+      delivery.vantages.delete(connId);
+      if (
+        !peer.send({
+          type: "presence",
+          principalId: effect.principalId,
+          connId,
+          payload: { vantage: effect.vantage },
+        })
+      )
+        return;
+    }
+    for (const [principalId, pending] of delivery.presences) {
+      if (!peer.writable) {
+        peer.deferUntilWritable(delivery.flush);
+        return;
+      }
+      delivery.presences.delete(principalId);
+      const first = this.connections.get(principalId)?.values().next().value;
+      if (first === undefined) continue;
+      const payload = { ...pending };
+      delete payload.cursor;
+      delete payload.spotlight;
+      delete payload.vantage;
+      if (
+        Object.keys(payload).length > 0 &&
+        !peer.send({ type: "presence", principalId, connId: first.id, payload })
+      )
+        return;
+    }
+    delivery.flushing = false;
+    if (delivery.docCheckpoint !== null || delivery.presences.size > 0) delivery.flush();
+  }
+
+  private forgetRecipient(peer: SessionChannel): void {
+    this.recipientDeliveries.get(peer)?.cancel?.();
+    this.recipientDeliveries.delete(peer);
+    peer.deferUntilWritable(null);
   }
 
   private scheduleSnapshot(): void {
@@ -706,11 +994,15 @@ export class Room {
     const members: SessionChannel[] = [];
     for (const peers of this.connections.values()) members.push(...peers);
     members.push(...this.spectators);
+    for (const peer of members) this.forgetRecipient(peer);
     this.connections.clear();
     this.spectators.clear();
     this.presences.clear();
     this.connectionLocations.clear();
     this.updateBuckets.clear();
+    this.encodedDoc = null;
+    this.beforeUpdateCheckpoint = null;
+    this.recoveryDelta = null;
     for (const peer of members) peer.close(code, reason);
   }
 
