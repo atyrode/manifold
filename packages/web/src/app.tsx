@@ -7,6 +7,7 @@ import {
   HostServicesGate,
   PluginPlaceholder,
   REQUESTED_REF_PARAM,
+  RosterGate,
   useAssembly,
   useHostServices,
 } from "./plugin-host.tsx";
@@ -141,8 +142,10 @@ export function App({ identity }: AppProps) {
         containerId={route.kind === "browser" ? route.containerId : null}
         requestedRef={route.kind === "browser" ? route.requestedRef : null}
       >
-        {renderRoute(route, identity, navigate)}
-        <WorkspaceOverlays />
+        <RosterGate>
+          {renderRoute(route, identity, navigate)}
+          <WorkspaceOverlays />
+        </RosterGate>
       </HostServicesGate>
     </NoticeProvider>
   );

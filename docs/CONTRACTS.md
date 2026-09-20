@@ -1460,6 +1460,17 @@ three-segment id with no `required` edge on its parent (`orphan_child`, below), 
 plugins only) a stored-data downgrade or a missing major migration — so one dormant plugin's stale
 rows can never stop the server booting; its data is re-judged at the enablement door instead.
 
+Browser startup distinguishes an unresolved roster from an authoritatively empty one. Until the
+first valid snapshot arrives through the existing `GET /api/plugins` read or live SDK connection,
+route and workspace UI show a neutral, non-removable loading surface. A failed read without an
+authoritative snapshot shows a truthful failure and a manual retry of that same read. The live
+host stays mounted outside this gate, so live metadata can complete startup or recover the
+failure without a reload. Once live metadata has arrived, a late initial HTTP success or failure
+cannot overwrite or downgrade it. Workspace layout fetching and fallback composition start only
+after readiness; an empty authoritative roster can then produce genuinely unknown placeholders,
+while named disabled and unavailable placeholders retain their existing behavior. A replacement
+credential owns a fresh boot, and completion from its predecessor cannot release that gate.
+
 **Plugin ids are a tree of depth three, and a nested id is a claim the edge proves** (ADR 0023,
 ratified 2026-09-05). Two segments — `<publisher>.<plugin>` — claim nothing: the first is an
 authority, not a plugin (`core.` and `engine.` being the two reserved ones above). A THIRD segment
