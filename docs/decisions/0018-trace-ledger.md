@@ -2,7 +2,7 @@
 
 Date: 2026-09-01
 Status: accepted
-Ratified: ratification-ready — the mechanism is landed and gated (#93); axiom A6's TEXT awaits the operator's final wording approval, which is the one thing this file does not decide.
+Ratified: A6 wording on 2026-09-07 ([#396](https://github.com/atyrode/manifold/issues/396)), following its constitutional introduction in [#93](https://github.com/atyrode/manifold/issues/93) / [PR #100](https://github.com/atyrode/manifold/pull/100). Dated status clarification (2026-09-20): the wording-review revisit below is discharged; no other revisit condition, recorded reasoning or trace obligation changes.
 
 ## Context
 
