@@ -3163,6 +3163,18 @@ Publication measures the current host without resizing the local terminal. Every
 including the proposer, applies the authoritative resize event, so cursor-positioned output
 does not acquire a different interpretation merely because its viewport is smaller.
 
+**Mouse selection remains pointer-correct under supported axis-aligned canvas zoom.**
+Dragging over rendered terminal text must select that text, with selection paint on the
+dragged row rather than a scale-offset row. This is an observable terminal interaction
+requirement, independent of the coordinate-conversion mechanism. The tracked
+`@xterm/xterm@6.0.0` pointer-scaling patch is the current implementation, not a permanent
+requirement to patch xterm; upstream support or another implementation may replace it only
+while preserving this behavior. The real-browser
+[`verify:terminal-selection`](../scripts/verify-terminal-selection.ts) proof drags known rows
+at 100% and approximately 120% canvas zoom, checks the painted row and selected/copied text,
+and returns to baseline through real zoom input. Its clipboard-preference checks remain the
+separate gesture contract below. Rotated or skewed terminal ancestors are not supported.
+
 `core.terminals` declares two independent **principal-scoped**, default-off boolean settings:
 `copy-on-select` ("Copy selection automatically") and `paste-on-right-click` ("Paste on
 right-click"). They use the existing plugin settings door and appear in the Terminals plugin's
