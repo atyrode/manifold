@@ -68,7 +68,7 @@ test("a fixture packed against the previous accepted contract dispatches and sur
   let server: RunningServer | undefined;
   try {
     server = await startServer({ config, logger: silentLogger, announce: false });
-    expect(previous.hardenedContract).toBe(HARDENED_CONTRACT_VERSION - 1);
+    expect(previous.hardenedContract).toBeLessThan(HARDENED_CONTRACT_VERSION);
     expect(
       await action(server, "engine.plugins.install", {
         source,

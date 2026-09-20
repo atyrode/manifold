@@ -48,7 +48,7 @@ export type ActionRunnerBind = z.infer<typeof ActionRunnerBindSchema>;
 export const ActionRunnerReadResultsSchema = z
   .array(
     z.strictObject({
-      door: z.string().min(1).max(256),
+      door: z.string().min(1).max(256).refine((door) => !door.includes("*")),
       contractDigest: ActionResultProjectionDigestSchema,
       maxResultBytes: z.number().int().positive().max(ACTION_RESULT_PROJECTION_MAX_BYTES).optional(),
     }),
