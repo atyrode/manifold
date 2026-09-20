@@ -10,18 +10,19 @@
  *
  * The release commit lands through a rebase-auto-merged PR; only the matching merged main
  * tree is tagged. GitHub must allow auto-merge and rebase merges; no ruleset bypass is needed.
- * If interrupted after merge, do not bump again: retain the local release commit, fetch
- * origin main, and compare its tree with origin/main^{tree}. Under the same
- * explicit release authorization, and only when those trees match and vX.Y.Z is absent
- * remotely, reset clean local main to origin/main, tag that SHA, push refs/tags/vX.Y.Z and
- * watch release.yml with `gh run watch --exit-status`. Never tag an unmerged release commit.
+ * If interrupted, retain the clean checkout and resume the explicit version with
+ * `bun run release --resume vX.Y.Z` under the same release authorization. Resume reuses
+ * the prepared commit, release branch, checked PR and immutable tag rather than bumping
+ * again. Conflicting state is refused; never manually tag an unmerged release commit.
  */
 import { $ } from "bun";
+import { z } from "zod";
 import {
   CHANGELOG_SECTIONS,
   assembleChangelog,
   derivePullRequest,
   deriveReleaseLevel,
+  parseVersion,
   readFragments,
   renderFragmentBullet,
   renderReleaseSection,
@@ -33,6 +34,9 @@ import {
   releaseRepository,
   requireFullMainCi,
   requireImmutableReleaseSetting,
+  verifyReleaseCandidate,
+  verifyReleaseCommit,
+  verifyReleaseTag,
 } from "./release-provenance.ts";
 import { assertWorkspaceVersions } from "./workspace-versions.ts";
 
@@ -78,17 +82,19 @@ async function pullRequestOf(fragment: ChangeFragment): Promise<number | null> {
  * Required checks decide when the release PR may land. A closed PR or a bounded wait that
  * expires leaves the release untagged and names the PR so the operator can recover it.
  */
-async function waitForReleasePull(url: string): Promise<void> {
+async function waitForReleasePull(repository: string, url: string): Promise<string> {
   console.log(`Waiting for release PR ${url} to merge…`);
   const deadline = Date.now() + 30 * 60_000;
   while (Date.now() < deadline) {
-    const result = await $`gh pr view ${url} --json state,mergedAt,mergeCommit`.quiet().text();
+    const result = await $`gh pr view ${url} --repo ${repository} --json state,mergedAt,mergeCommit`.quiet().text();
     const pull = JSON.parse(result) as {
       readonly state: string;
       readonly mergedAt: string | null;
       readonly mergeCommit: { readonly oid: string } | null;
     };
-    if (pull.state === "MERGED" && pull.mergedAt !== null && pull.mergeCommit !== null) return;
+    if (pull.state === "MERGED" && pull.mergedAt !== null && pull.mergeCommit !== null) {
+      return z.string().regex(/^[0-9a-f]{40}$/).parse(pull.mergeCommit.oid);
+    }
     if (pull.state === "CLOSED") throw new Error(`Release PR closed without merging: ${url}`);
     await Bun.sleep(10_000);
   }
@@ -116,12 +122,268 @@ async function watchRelease(tag: string): Promise<void> {
   throw new Error(`GitHub release workflow did not start for ${tag}`);
 }
 
+const Sha = z.string().regex(/^[0-9a-f]{40}$/);
+const ReleasePull = z.object({
+  number: z.number().int().positive(),
+  title: z.string(),
+  state: z.enum(["open", "closed"]),
+  merged_at: z.string().nullable(),
+  merge_commit_sha: Sha.nullable(),
+  base: z.object({ ref: z.string(), repo: z.object({ full_name: z.string() }) }),
+  head: z.object({
+    ref: z.string(),
+    sha: Sha,
+    repo: z.object({ full_name: z.string() }).nullable(),
+  }),
+});
+
+async function cleanMain(): Promise<string> {
+  if ((await gitText(["branch", "--show-current"])) !== "main") {
+    throw new Error("Releases must run from main");
+  }
+  if ((await gitText(["status", "--porcelain"])) !== "") {
+    throw new Error("Releases require a clean working tree");
+  }
+  return gitText(["rev-parse", "HEAD"]);
+}
+
+async function unchangedCheckout(snapshot: string): Promise<void> {
+  if ((await cleanMain()) !== snapshot) {
+    throw new Error("Local checkout changed while waiting; refusing to replace local work");
+  }
+}
+
+async function ancestor(before: string, after: string): Promise<boolean> {
+  const result = await $`git merge-base --is-ancestor ${before} ${after}`.quiet().nothrow();
+  if (result.exitCode > 1) throw new Error(result.stderr.toString());
+  return result.exitCode === 0;
+}
+
+async function remoteRef(ref: string): Promise<string | null> {
+  const output = await gitText(["ls-remote", "--refs", "origin", ref]);
+  if (output === "") return null;
+  const rows = output.split("\n");
+  if (rows.length !== 1 || rows[0]!.split("\t")[1] !== ref) {
+    throw new Error(`Ambiguous remote reference: ${ref}`);
+  }
+  return Sha.parse(rows[0]!.split("\t")[0]);
+}
+
+async function localTagCommit(tag: string): Promise<string | null> {
+  const refs = await gitText(["for-each-ref", "--format=%(refname)", `refs/tags/${tag}`]);
+  if (!refs.split("\n").includes(`refs/tags/${tag}`)) return null;
+  return gitText(["rev-parse", `refs/tags/${tag}^{commit}`]);
+}
+
+async function releasePull(repository: string, tag: string): Promise<z.infer<typeof ReleasePull> | undefined> {
+  const owner = repository.split("/")[0]!;
+  const query = `repos/${repository}/pulls?state=all&base=main&head=${owner}:release/${tag}&per_page=100`;
+  const result = await $`gh api ${query} --paginate --slurp`.quiet().text();
+  const pulls = z.array(z.array(ReleasePull)).parse(JSON.parse(result)).flat();
+  if (pulls.length > 1) throw new Error(`Ambiguous release PRs for ${tag}`);
+  const pull = pulls[0];
+  if (pull !== undefined) {
+    const sameRepo = (name: string) => name.toLowerCase() === repository.toLowerCase();
+    if (
+      pull.title !== `release: ${tag}` ||
+      pull.base.ref !== "main" ||
+      !sameRepo(pull.base.repo.full_name) ||
+      pull.head.ref !== `release/${tag}` ||
+      pull.head.repo === null ||
+      !sameRepo(pull.head.repo.full_name)
+    ) throw new Error(`Conflicting release PR for ${tag}`);
+    if (pull.state === "closed" && pull.merged_at === null) {
+      throw new Error(`Release PR closed without merging: #${pull.number}`);
+    }
+    if (pull.merged_at !== null && pull.merge_commit_sha === null) {
+      throw new Error(`Release PR has inconsistent merge evidence: #${pull.number}`);
+    }
+  }
+  return pull;
+}
+
+/**
+ * The only publication path, shared by newly generated and recovered releases. Discovery
+ * is read-only until the candidate and local checkout have both been accounted for.
+ */
+async function publishRelease(
+  repository: string,
+  tag: string,
+  snapshot: string,
+  prepared?: string,
+  body?: string,
+): Promise<void> {
+  const tagRef = `refs/tags/${tag}`;
+  const releaseBranch = `release/${tag}`;
+  const releaseRef = `refs/heads/${releaseBranch}`;
+  await $`git fetch --no-tags origin main`;
+  const main = await gitText(["rev-parse", "origin/main"]);
+  const localTag = await localTagCommit(tag);
+  const retained = (await gitText(["show", "-s", "--format=%s", snapshot])) === `release: ${tag}`
+    ? snapshot
+    : undefined;
+  let retainedTree: string | undefined;
+  if (retained !== undefined) {
+    await verifyReleaseCandidate(repository, tag, retained);
+    retainedTree = await gitText(["rev-parse", `${retained}^{tree}`]);
+  }
+  const onMain = await ancestor(snapshot, main);
+  if (!onMain && retained === undefined) {
+    throw new Error("Local main contains unrelated unpublished work");
+  }
+  await unchangedCheckout(snapshot);
+
+  if ((await remoteRef(tagRef)) !== null) {
+    const proof = await verifyReleaseTag(repository, tag);
+    if (localTag !== null && localTag !== proof.sha) {
+      throw new Error(`Local tag ${tag} conflicts with the verified remote release`);
+    }
+    if (retainedTree !== undefined && retainedTree !== await gitText(["rev-parse", `${proof.sha}^{tree}`])) {
+      throw new Error("Retained release commit differs from the published release");
+    }
+    await unchangedCheckout(snapshot);
+    await watchRelease(tag);
+    await unchangedCheckout(snapshot);
+    reportRelease(tag);
+    return;
+  }
+
+  let pull = await releasePull(repository, tag);
+  const branchSha = await remoteRef(releaseRef);
+  if (branchSha !== null) await $`git fetch --no-tags origin ${branchSha}`;
+  if (pull !== undefined) await $`git fetch --no-tags origin ${pull.head.sha}`;
+  if (pull !== undefined && branchSha !== null && branchSha !== pull.head.sha) {
+    throw new Error("Release branch differs from its recorded PR head");
+  }
+  const candidate = prepared ?? pull?.head.sha ?? branchSha ?? retained;
+  if (candidate === undefined) throw new Error(`No prepared release found for ${tag}`);
+  if ((branchSha !== null && candidate !== branchSha) || (pull !== undefined && candidate !== pull.head.sha)) {
+    throw new Error("Conflicting prepared release candidates");
+  }
+  const candidateProof = await verifyReleaseCandidate(repository, tag, candidate);
+  const tree = await gitText(["rev-parse", `${candidate}^{tree}`]);
+  if (retained !== undefined && retained !== candidate) {
+    if (pull?.merged_at === null || pull === undefined || retainedTree !== tree) {
+      throw new Error("Ambiguous retained release candidate");
+    }
+  }
+  if (localTag !== null && (pull === undefined || pull.merged_at === null || localTag !== pull.merge_commit_sha)) {
+    throw new Error(`Local tag ${tag} does not name the recorded merged release`);
+  }
+  await unchangedCheckout(snapshot);
+
+  let sha = pull?.merged_at != null ? pull.merge_commit_sha : null;
+  if (sha === null) {
+    if (branchSha === null) {
+      // An empty lease never overwrites a concurrent publisher's branch.
+      await $`git push ${`--force-with-lease=${releaseRef}:`} origin ${`${candidate}:${releaseRef}`}`;
+    }
+    if (pull === undefined) {
+      // Recheck after publishing: an operator may have opened the PR in the meantime.
+      pull = await releasePull(repository, tag);
+      if (pull !== undefined && pull.head.sha !== candidate) {
+        throw new Error("Release PR changed during publication");
+      }
+      if (pull === undefined) {
+        const description = body ?? `## Problem
+
+Publish the retained ${tag} release without bypassing required checks.
+
+## Change
+
+Reuse the canonical release commit ${candidate}; no release content was regenerated.
+
+## Dependencies
+
+- None
+
+## Evidence
+
+Full main CI is green at ${candidateProof.parent}. Required checks on this PR must pass before rebase auto-merge.
+
+## Acceptance
+
+- Merge the release tree through main, then tag and publish without promoting production.
+
+This bun run release PR is exempt from issue lifecycle checks for the release committer
+(agent-policy.yml); the shared engineering contract and gate still apply.
+`;
+        await $`gh pr create --repo ${repository} --base main --head ${releaseBranch} --title ${`release: ${tag}`} --body ${description}`;
+        pull = await releasePull(repository, tag);
+        if (pull === undefined || pull.head.sha !== candidate) {
+          throw new Error("Created release PR does not match the prepared commit");
+        }
+      }
+    }
+    await unchangedCheckout(snapshot);
+    const url = `https://github.com/${repository}/pull/${pull.number}`;
+    console.log(`Release PR: ${url}`);
+    if (pull.merged_at === null) {
+      await $`gh pr merge ${url} --repo ${repository} --rebase --auto --delete-branch --match-head-commit ${candidate}`;
+    }
+    sha = await waitForReleasePull(repository, url);
+  }
+
+  // Admission selects the PR's recorded merge, never a possibly later main tip.
+  await verifyReleaseCommit(repository, tag, sha);
+  if ((await gitText(["rev-parse", `${sha}^{tree}`])) !== tree) {
+    throw new Error("Merged release differs from the prepared tree; no tag was created");
+  }
+  await unchangedCheckout(snapshot);
+  // Only replace a dedicated, canonically verified prepared commit with the same tree.
+  // Otherwise local main may advance only by fast-forward; later main is never rewound.
+  if (!onMain) {
+    if (retainedTree !== tree) throw new Error("Refusing to replace unrelated local work");
+    await $`git reset --keep ${sha}`;
+  } else if (await ancestor(snapshot, sha)) {
+    await $`git merge --ff-only ${sha}`;
+  }
+  const updated = await cleanMain();
+  const currentTag = await localTagCommit(tag);
+  if (currentTag !== null && currentTag !== sha) throw new Error(`Conflicting local tag ${tag}`);
+  if ((await remoteRef(tagRef)) !== null) {
+    const proof = await verifyReleaseTag(repository, tag);
+    if (proof.sha !== sha) throw new Error(`Conflicting remote tag ${tag}`);
+  } else {
+    await unchangedCheckout(updated);
+    if (currentTag === null) await $`git tag ${tag} ${sha}`;
+    const tagObject = await gitText(["rev-parse", tagRef]);
+    if ((await gitText(["rev-parse", `${tagObject}^{commit}`])) !== sha) {
+      throw new Error(`Local tag ${tag} changed before publication`);
+    }
+    await unchangedCheckout(updated);
+    await $`git push origin ${`${tagObject}:${tagRef}`}`;
+  }
+  await watchRelease(tag);
+  await unchangedCheckout(updated);
+  reportRelease(tag);
+}
+
+function reportRelease(tag: string): void {
+  console.log(`Released ${tag}. Production has not moved.`);
+  console.log(`capture the incumbent full state, then promote with: bun run promote ${tag} --recovery-receipt PATH`);
+}
+
 const args = process.argv.slice(2);
+const resume = args[0] === "--resume";
 const dryRun = args.includes("--dry-run");
 const positional = args.filter((arg) => !arg.startsWith("--"));
-if (positional.length > 1 || args.some((arg) => arg.startsWith("--") && arg !== "--dry-run")) {
-  console.error("Usage: bun run release [--dry-run] [major|minor|patch|x.y.z]");
+if (
+  resume
+    ? args.length !== 2 || !args[1]!.startsWith("v")
+    : positional.length > 1 || args.some((arg) => arg.startsWith("--") && arg !== "--dry-run")
+) {
+  console.error("usage: bun run release [--dry-run] [major|minor|patch|x.y.z] | --resume vMAJOR.MINOR.PATCH");
   process.exit(1);
+}
+if (resume) {
+  const tag = args[1]!;
+  parseVersion(tag.slice(1));
+  const snapshot = await cleanMain();
+  const repository = await releaseRepository();
+  await requireImmutableReleaseSetting(repository);
+  await publishRelease(repository, tag, snapshot);
+  process.exit(0);
 }
 const requested = positional[0];
 
@@ -212,7 +474,7 @@ const tag = `v${version}`;
 const releaseBranch = `release/${tag}`;
 const releaseRef = `refs/heads/${releaseBranch}`;
 if ((await gitText(["ls-remote", "--heads", "origin", releaseRef])) !== "") {
-  throw new Error(`Release branch ${releaseBranch} already exists on origin; recover its PR`);
+  throw new Error(`Release branch ${releaseBranch} already exists on origin; use bun run release --resume ${tag}`);
 }
 
 const date = new Date().toISOString().slice(0, 10);
@@ -232,9 +494,9 @@ await $`bun run changelog:check`;
 await $`git add CHANGELOG.md bun.lock packages/web/package.json`;
 await $`git commit -m ${`release: v${version}`}`;
 const releaseSha = await gitText(["rev-parse", "HEAD"]);
-const releaseTree = await gitText(["rev-parse", `${releaseSha}^{tree}`]);
-// The empty lease requires an absent ref even if another release starts after our check.
-await $`git push ${`--force-with-lease=${releaseRef}:`} origin ${`${releaseSha}:${releaseRef}`}`;
+await publishRelease(repository, tag, releaseSha, releaseSha, releaseBody());
+
+function releaseBody(): string {
 const body = `## Problem
 
 Publish ${tag} from green main without bypassing its required checks.
@@ -261,32 +523,5 @@ Required checks on this PR must pass before rebase auto-merge.
 This bun run release PR is exempt from issue lifecycle checks for the release committer
 (agent-policy.yml); the shared engineering contract and gate still apply.
 `;
-const pullUrl = (
-  await $`gh pr create --base main --head ${releaseBranch} --title ${`release: ${tag}`} --body ${body}`
-    .quiet()
-    .text()
-).trim();
-console.log(`Release PR: ${pullUrl}`);
-await $`gh pr merge ${pullUrl} --rebase --auto --delete-branch`;
-await waitForReleasePull(pullUrl);
-
-await $`git fetch origin main`;
-const sha = await gitText(["rev-parse", "origin/main"]);
-if ((await gitText(["rev-parse", `${sha}^{tree}`])) !== releaseTree) {
-  throw new Error(`Merged main differs from the release tree; no tag was created: ${pullUrl}`);
+  return body;
 }
-if (
-  (await gitText(["branch", "--show-current"])) !== "main" ||
-  (await gitText(["rev-parse", "HEAD"])) !== releaseSha ||
-  (await gitText(["status", "--porcelain"])) !== ""
-) {
-  throw new Error(`Local checkout changed while waiting; no tag was created: ${pullUrl}`);
-}
-await $`git reset --hard ${sha}`;
-await $`git tag ${tag} ${sha}`;
-await $`git push origin ${`refs/tags/${tag}`}`;
-await watchRelease(tag);
-console.log(`Released ${tag}. Production has not moved.`);
-console.log(
-  `capture the incumbent full state, then promote with: bun run promote ${tag} --recovery-receipt PATH`,
-);
