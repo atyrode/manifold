@@ -440,6 +440,9 @@ running the bundle in the hub/page realm. This is a trust exception made by the 
 credential holder, not a manifest preference or an inference from a URL or hash. Both the
 receiver and direct CLI reject unknown options and extra arguments before invoking the installer.
 The general plugin-kit installer retains its separate in-realm default.
+A web-only bundle can install successfully yet be incompatible with its browser Worker.
+Pack self-contained code for hardened delivery, verify with `--hardened`, and exercise its
+actual browser panel; installer success and server/door verification do not prove Worker rendering.
 
 **Publisher and credential boundary.** A `dev <sha>` names a revision in the configured
 repository; `plugin <url> <sha256>` admits executable bytes from any HTTPS publisher accepted by

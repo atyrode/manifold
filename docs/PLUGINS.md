@@ -3438,11 +3438,12 @@ with its `entry`, the members as base64, no `builtAgainst`). All packing modes s
 executable contract. The artifact is self-contained because the runner resolves
 nothing: the hub's process runner is one `Bun.spawn` of the bundle's `server.js`; the page fetches
 `/api/plugins/<id>/web.js` with the bearer and starts a module Worker from a Blob of those bytes.
-Neither has the shared-module registry an in-realm bundle imports through. That is why the flag is required for a hardened row and why it is the
-only difference at pack time: `pack` without it builds the in-realm bundle §10 describes, and
-installing THAT with `hardened: true` is refused at the door — `artifact_invalid: isolate exited
-before load (exit code 1)`, the child having died on `Missing shared module: @manifold/plugin`
-(the hub log's `isolate_output` lines carry the sentence) — and rolled back. The printed
+Neither has the shared-module registry an in-realm bundle imports through. A server half that
+needs that registry exits before loading with `Missing shared module: @manifold/plugin`; the
+install is refused as `artifact_invalid` and rolled back (the hub's `isolate_output` log carries
+the detail). A web-only bundle can instead install successfully and fail later in its browser
+Worker. `verify --hardened` exercises the server/door contract, not Worker rendering: also
+exercise the actual panel in a browser before delivery. Neither failure retries in-realm. The printed
 `sha256` is over the file's exact bytes and is the pin `engine.plugins.install` demands; the
 door itself — where a source may come from, the default grant, the refusal classes, where the
 bundle lives afterwards — is §7 Installing a plugin, and the artifact's shape is
@@ -3569,10 +3570,14 @@ the later pack/verify pair and suppresses artifact upload, so disposable source-
 proofs do not accidentally publish their fixture bundles.
 
 `plugins/MANIFOLD_REV` and that `@<rev>` are bumped together, so the workflow and the kit it runs
-are one commit of this repository. The author repository's `plugins/package.json` wraps the kit:
-`verify` is `bun ../../manifold/packages/plugin-kit/src/verify.ts dist/*.manifold-plugin.json`
-(the shell expands the glob) and `dev` is `bun ../../manifold/packages/plugin-kit/src/dev.ts .`,
-flags passed through after `--`.
+are one commit of this repository. A hardened-targeted author repository's `plugins/package.json`
+packs with `--self-contained` and wraps `verify` as
+`bun ../../manifold/packages/plugin-kit/src/verify.ts dist/*.manifold-plugin.json --hardened`
+(the shell expands the glob). Its `dev` wrapper is
+`bun ../../manifold/packages/plugin-kit/src/dev.ts .`, with `--hardened` passed after `--`.
+An in-realm repository instead keeps the kit's in-realm pack/verify/dev defaults and explicitly
+appends `--in-realm` to its release receiver command. Pack, verification and delivery must target
+the same runner; the reusable workflow does not infer or override the author's scripts.
 
 ### Delivering
 
@@ -3610,10 +3615,12 @@ production is the operator's decision, not a workflow's.
 **What an author repository's `AGENTS.md` must tell its agents**, because an agent there never
 reads this file first: the four commands in `plugins/` (`bun run check`, `bun test`, `bun run pack`,
 `bun run verify`) and that `verify` is the gate that spawns a real engine; that the inner loop is
-`bun run dev -- --hub <url> --deliver docker:<container>` against the integrated preview from the
-preview host, and its URL; that `plugins/MANIFOLD_REV` and the `uses:` ref move together; that a
-release installs itself on the preview and never on production; and what to tell the operator to
-look at — the preview's plugin manager row for the id, and the panel or door the change touched.
+`bun run dev -- --hub <url> --deliver docker:<container> --hardened` for a hardened target against
+the integrated preview from the preview host, and its URL; that pack/verify/delivery target the
+same runner, with explicit `--in-realm` receiver delivery for an in-realm repository; that
+`plugins/MANIFOLD_REV` and the `uses:` ref move together; that a release installs itself on the
+preview and never on production; and what to tell the operator to look at — the preview's plugin
+manager row for the id, and the actual panel or door the change touched.
 
 ### What a hardened plugin does NOT get (ADR 0016 §3)
 
