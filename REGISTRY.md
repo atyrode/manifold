@@ -400,7 +400,7 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     },
     {
       "glob": "packages/web/src/plugin-host.tsx",
-      "why": "the registry, web half: AssemblyProvider, PanelOutlet and its placeholder, HostServices"
+      "why": "the registry, web half: AssemblyProvider, the metadata-readiness RosterGate, PanelOutlet and its placeholder, HostServices"
     },
     {
       "glob": "packages/web/src/shared-registry.ts",

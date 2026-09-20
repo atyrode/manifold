@@ -249,12 +249,16 @@ async function withRosterFixture(run: (browser: Browser) => Promise<void>): Prom
         }),
       };
       const identity = { token: "fixture", principal: { id: "viewer", kind: "human", name: "Viewer", color: "#74c0fc" } };
-      createRoot(document.getElementById("root")).render(
-        createElement(AssemblyProvider, { identity },
+      const root = createRoot(document.getElementById("root"));
+      const renderIdentity = currentIdentity => root.render(
+        createElement(AssemblyProvider, { identity: currentIdentity },
           createElement(LiveAttachment),
           createElement(RosterGate, null,
             // Placeholder branches never call host services, but consume the real context.
             createElement(HostServicesProvider, { value: {} }, createElement(Workspace)))));
+      window.rosterFixture.changeIdentity = token =>
+        flushSync(() => renderIdentity({ ...identity, token }));
+      renderIdentity(identity);
       `,
     );
     const build = await Bun.build({
@@ -303,7 +307,11 @@ async function expectRosterGate(browser: Browser, state: "pending" | "failed"): 
   await until(
     () =>
       browser.evaluate<boolean>(
-        `document.querySelector('[data-roster-state="${state}"][role="${role}"]') !== null`,
+        `(() => {
+          const gate = document.querySelector('[data-roster-state="${state}"]');
+          return gate !== null && (gate.matches('[role="${role}"]') ||
+            gate.querySelector('[role="${role}"]') !== null);
+        })()`,
       ),
     5_000,
     `the ${state} roster gate`,
@@ -329,7 +337,9 @@ async function expectNamedPanels(browser: Browser): Promise<void> {
       'Array.from(document.querySelectorAll(".plugin-placeholder__name"), node => node.textContent)',
     ),
   ).toEqual(["Offline notebook", "Remote notebook"]);
-  expect(await browser.evaluate<boolean>('document.querySelector("[data-roster-state]") === null')).toBe(true);
+  expect(
+    await browser.evaluate<boolean>('document.querySelector("[data-roster-state]") === null'),
+  ).toBe(true);
 }
 
 test("pending roster hides removable placeholders until HTTP authority names the panels", async () => {
@@ -369,19 +379,21 @@ test("an authoritative empty HTTP roster exposes genuinely unknown panels that c
     await until(
       () =>
         browser.evaluate<boolean>(
-          'document.querySelectorAll(\'[data-plugin-state="unknown"]\').length === 2',
+          "document.querySelectorAll('[data-plugin-state=\"unknown\"]').length === 2",
         ),
       5_000,
       "unknown panels after an authoritative empty roster",
     );
-    expect(await browser.evaluate<boolean>('document.querySelector("[data-roster-state]") === null')).toBe(true);
+    expect(
+      await browser.evaluate<boolean>('document.querySelector("[data-roster-state]") === null'),
+    ).toBe(true);
     expect(
       await browser.evaluate<string[]>(
         'Array.from(document.querySelectorAll(".plugin-placeholder__name"), node => node.textContent)',
       ),
     ).toEqual(["acme.off.home", "acme.remote.home"]);
     await browser.evaluate<void>(
-      'document.querySelector(\'[data-panel="acme.off.home"] .plugin-placeholder__remove\').click()',
+      "document.querySelector('[data-panel=\"acme.off.home\"] .plugin-placeholder__remove').click()",
     );
     await until(
       () =>
@@ -414,7 +426,9 @@ for (const completion of ["success", "rejection"] as const) {
   test(`live roster authority survives a late initial HTTP ${completion}`, async () => {
     await withRosterFixture(async (browser) => {
       await expectRosterGate(browser, "pending");
-      await browser.evaluate<void>(`window.rosterFixture.emit(${JSON.stringify(panelRoster)}, true)`);
+      await browser.evaluate<void>(
+        `window.rosterFixture.emit(${JSON.stringify(panelRoster)}, true)`,
+      );
       await expectNamedPanels(browser);
       await browser.evaluate<void>(
         completion === "success"
@@ -428,3 +442,22 @@ for (const completion of ["success", "rejection"] as const) {
     });
   }, 60_000);
 }
+
+test("a replacement credential cannot reuse ready metadata or accept the previous boot response", async () => {
+  await withRosterFixture(async (browser) => {
+    await browser.evaluate<void>(`window.rosterFixture.emit(${JSON.stringify(panelRoster)})`);
+    await expectNamedPanels(browser);
+    // Keep the same React root and public provider: production must own the reset, not setup.
+    await browser.evaluate<void>('window.rosterFixture.changeIdentity("replacement")');
+    await expectRosterGate(browser, "pending");
+    await until(
+      () => browser.evaluate<boolean>("window.rosterFixture.requests() === 2"),
+      5_000,
+      "the replacement credential's own roster request",
+    );
+    await browser.evaluate<void>("window.rosterFixture.respond(0, [])");
+    await expectRosterGate(browser, "pending");
+    await browser.evaluate<void>(`window.rosterFixture.respond(1, ${JSON.stringify(panelRoster)})`);
+    await expectNamedPanels(browser);
+  });
+}, 60_000);
