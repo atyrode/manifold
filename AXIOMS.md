@@ -227,9 +227,11 @@ conversion work list — which floor surface becomes which plugin, and the rulin
   with `kind: "trace"` and through no second door. Refusals are traced; the payload is redacted
   by the log's own field rule and bounded; unregistered names are ruled out of the ledger with
   the reasoning recorded. `verify:trace` is the completeness check and it dispatches every
-  registered door against the real composed server. **The direction is operator-ratified
-  (2026-09-01); A6's WORDING is presented for approval with this change**, which is the one
-  thing the ADR does not decide (§Change control: axiom text changes by ratification only).
+  registered door against the real composed server. **A6's wording was operator-ratified
+  2026-09-07 ([#396](https://github.com/atyrode/manifold/issues/396)), following its constitutional
+  introduction in [#93](https://github.com/atyrode/manifold/issues/93) /
+  [PR #100](https://github.com/atyrode/manifold/pull/100).** This records the existing ratification;
+  A6's wording, obligations and exemptions are unchanged.
 - **Later waves, each gated on its own dated ADR:**
   - **Permission waterfall follow-ups** (ADR 0011 §8, settled 2026-09-01, #83): the doors stay
     root-only and the deny-attenuation rule waits for the identity milestone, because both halves
