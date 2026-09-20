@@ -32,11 +32,15 @@ on:
         default: false
         type: boolean
 
-# The job token reads the repository, releases and exact-revision full CI evidence. The
-# Environment record is Actions' own bookkeeping and needs no `deployments` grant.
+# The job token only reads source, releases, merged PR checks and full CI evidence.
+# Attestations are verified from release bundles; no write, OIDC or admin grant is needed.
+# The Environment record is Actions' own bookkeeping and needs no `deployments` grant.
 permissions:
   actions: read
   contents: read
+  checks: read
+  statuses: read
+  pull-requests: read
 
 concurrency:
   group: deploy-hub
@@ -50,24 +54,33 @@ jobs:
     timeout-minutes: 10
     outputs:
       sha: ${{ steps.release.outputs.sha }}
+      image: ${{ steps.release.outputs.image }}
     env:
       TAG: ${{ inputs.tag }}
       RECOVERY_CHECKPOINT: ${{ inputs.recovery_checkpoint }}
       RECOVERY_SHA256: ${{ inputs.recovery_sha256 }}
       RECOVERY_BUILD: ${{ inputs.recovery_build }}
     steps:
+      - name: Require a dispatch from main
+        env:
+          DISPATCH_REF: ${{ github.ref }}
+        run: |
+          if [ "$DISPATCH_REF" != refs/heads/main ]; then
+            echo "::error::Production promotion must be dispatched from main"
+            exit 1
+          fi
+      # Pin trusted main policy to the dispatch revision, never to the candidate tag.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 0
+          persist-credentials: false
 
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
-        with:
-          bun-version: "1.4.2"
+      - uses: ./.github/actions/bun-workspace
 
-      - name: Validate the published release
+      - name: Verify the immutable release and its provenance
         id: release
-        # A tag alone is not a release: it must be a PUBLISHED (non-draft) GitHub Release, which
-        # is what `bun run release` produces and the only thing production may run.
+        # One policy admits candidate and incumbent, including source/CI and attestations.
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -87,32 +100,19 @@ jobs:
             echo "::error::The recovery receipt requires its exact incumbent source build"
             exit 1
           fi
-          if ! draft="$(gh release view "$TAG" --json isDraft --jq .isDraft)"; then
-            echo "::error::$TAG has no GitHub Release; publish it with bun run release first"
-            exit 1
-          fi
-          if [ "$draft" != false ]; then
-            echo "::error::$TAG is a draft release, not a published one"
-            exit 1
-          fi
-          sha="$(git rev-parse --verify "refs/tags/$TAG^{commit}")"
+          proof="$(bun scripts/release-provenance.ts promotion "$TAG")"
+          sha="$(jq -er .sha <<< "$proof")"
           for recovery_path in \
+            infra/release.Dockerfile \
             infra/recovery.Dockerfile \
             infra/recovery-entrypoint.sh \
             scripts/full-state-recovery.ts; do
-            if ! git cat-file -e "refs/tags/$TAG:$recovery_path"; then
-              echo "::error::$TAG predates authenticated full-state recovery ($recovery_path is absent)"
+            if ! git cat-file -e "$sha:$recovery_path"; then
+              echo "::error::$TAG predates the required release/recovery scaffold ($recovery_path is absent)"
               exit 1
             fi
           done
-          proof="$(gh run list --workflow ci.yml --branch main --commit "$sha" \
-            --limit 100 --json databaseId,event,status,conclusion \
-            --jq '[.[] | select(.event == "push" or .event == "workflow_dispatch")] | .[:1] | map(select(.status == "completed" and .conclusion == "success")) | length')"
-          if [ "$proof" -eq 0 ]; then
-            echo "::error::$TAG ($sha) has no successful latest full main CI proof (missing, pending, or failed); inspect bun run ci:status -- --sha $sha before promoting"
-            exit 1
-          fi
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          jq -r '"sha=\(.sha)\nimage=\(.image)"' <<< "$proof" >> "$GITHUB_OUTPUT"
 
   installed-bundles:
     name: installed-bundles
@@ -122,28 +122,23 @@ jobs:
     outputs:
       bootstrap_required: ${{ steps.installed.outputs.bootstrap_required }}
     env:
-      SHA: ${{ needs.release.outputs.sha }}
-      TAG: ${{ inputs.tag }}
+      IMAGE: ${{ needs.release.outputs.image }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ needs.release.outputs.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/bun-workspace
-      - name: Build the exact release candidate
-        run: |
-          [[ $(git rev-parse HEAD) == "$SHA" ]]
-          docker build --tag "installed-bundles:$SHA" \
-            --build-arg MANIFOLD_VERSION="${TAG#v}" \
-            --build-arg MANIFOLD_BUILD="${TAG#v}" --build-arg MANIFOLD_CHANNEL=release .
+      - name: Pull the attested release candidate
+        run: docker pull "$IMAGE"
       - name: Check production's installed bundles without changing it
         id: installed
         env:
           INSTALLED_BUNDLES_ORIGIN: ${{ vars.MANIFOLD_HUB_ORIGIN }}
           INSTALLED_BUNDLES_TOKEN: ${{ secrets.HUB_INSTALLED_BUNDLES_TOKEN }}
           INSTALLED_BUNDLES_BOOTSTRAP_GATE: ${{ inputs.bootstrap_gate }}
-        run: bun scripts/installed-bundles.ts "installed-bundles:$SHA"
+        run: bun scripts/installed-bundles.ts "$IMAGE"
 
   clever:
     name: manifold.tyrode.dev
@@ -160,6 +155,7 @@ jobs:
       url: https://manifold.tyrode.dev
     env:
       TAG: ${{ inputs.tag }}
+      IMAGE: ${{ needs.release.outputs.image }}
       CLEVER_TOKEN: ${{ secrets.CLEVER_TOKEN }}
       CLEVER_SECRET: ${{ secrets.CLEVER_SECRET }}
     steps:
@@ -196,6 +192,7 @@ jobs:
           VERIFY_LIVE_ORIGIN: ${{ vars.MANIFOLD_HUB_ORIGIN }}
           VERIFY_LIVE_TOKEN: ${{ secrets.HUB_INSTALLED_BUNDLES_TOKEN }}
           RECOVERY_BUILD: ${{ inputs.recovery_build }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           bun scripts/verify-live.ts snapshot "$RUNNER_TEMP/verify-live.json"
           fail() { echo "::error::$*" >&2; exit 1; }
@@ -203,8 +200,8 @@ jobs:
           [[ "$previous_build" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail 'Production rollback requires an exact release build'
           [ "$RECOVERY_BUILD" = "$previous_build" ] ||
             fail 'The checkpoint receipt was not captured from the currently serving release'
-          previous_image="$(docker buildx imagetools inspect "ghcr.io/${GITHUB_REPOSITORY}:v$previous_build" --format '{{.Manifest.Digest}}')"
-          [[ "$previous_image" =~ ^sha256:[a-f0-9]{64}$ ]] || fail 'Production rollback requires an immutable previous release image'
+          proof="$(bun scripts/release-provenance.ts promotion "v$previous_build")"
+          previous_image="$(jq -er .image <<< "$proof")"
           printf 'previous_build=%s\nprevious_image=%s\n' \
             "$previous_build" "$previous_image" >> "$GITHUB_OUTPUT"
 
@@ -218,7 +215,10 @@ jobs:
 
       - name: Select the ordinary image and clear prior recovery settings
         run: |
-          bunx clever-tools@4.10.0 env set CC_DOCKERFILE Dockerfile
+          # Application environment is forwarded as Docker --build-arg by the provider:
+          # https://www.clever.cloud/developers/doc/deploy/applications/docker/#build-time-variables
+          bunx clever-tools@4.10.0 env set MANIFOLD_RELEASE_IMAGE "$IMAGE"
+          bunx clever-tools@4.10.0 env set CC_DOCKERFILE infra/release.Dockerfile
           bunx clever-tools@4.10.0 env set MANIFOLD_RECOVERY_CHECKPOINT ""
           bunx clever-tools@4.10.0 env set MANIFOLD_RECOVERY_SHA256 ""
           bunx clever-tools@4.10.0 env set MANIFOLD_RECOVERY_EXPECTED_BUILD ""
@@ -233,8 +233,9 @@ jobs:
           bunx clever-tools@4.10.0 env set MANIFOLD_BUILD "${TAG#v}"
           bunx clever-tools@4.10.0 env set MANIFOLD_CHANNEL release
 
-      - name: Deploy the tag
-        run: bunx clever-tools@4.10.0 deploy --tag "$TAG" --force
+      - name: Deploy the attested image through the release wrapper
+        # The tag supplies only the reviewed wrapper; no application source is rebuilt.
+        run: bunx clever-tools@4.10.0 deploy --tag "$TAG" --force --same-commit-policy rebuild
 
   verify-live:
     name: verify-live
@@ -284,8 +285,7 @@ jobs:
           bunx clever-tools@4.10.0 env set MANIFOLD_RECOVERY_CHECKPOINT "$RECOVERY_CHECKPOINT"
           bunx clever-tools@4.10.0 env set MANIFOLD_RECOVERY_SHA256 "$RECOVERY_SHA256"
           bunx clever-tools@4.10.0 env set MANIFOLD_RECOVERY_EXPECTED_BUILD "$PREVIOUS_BUILD"
-          bunx clever-tools@4.10.0 env set MANIFOLD_RECOVERY_BASE_IMAGE \
-            "ghcr.io/${GITHUB_REPOSITORY}@$PREVIOUS_IMAGE"
+          bunx clever-tools@4.10.0 env set MANIFOLD_RECOVERY_BASE_IMAGE "$PREVIOUS_IMAGE"
           bunx clever-tools@4.10.0 deploy --tag "$TAG" --force --same-commit-policy rebuild
           bun scripts/verify-live.ts verify "$RUNNER_TEMP/verify-live.json" "$PREVIOUS_BUILD"
           printf 'The exact previous application is serving through the recovery image, and its restored live-state parity is verified. Recovery settings remain active so a provider restart restores the same checkpoint and then the checkpoint-specific SQLite replica history.\n\n' >> "$GITHUB_STEP_SUMMARY"
