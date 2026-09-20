@@ -2,6 +2,7 @@
 
 Date: 2026-08-25
 Status: accepted
+Ratified: the current pointer-correct selection obligation and replaceable patch boundary are documented in [CONTRACTS §Shared chrome and terminal rendering](../CONTRACTS.md#shared-chrome-and-terminal-rendering) (#435, 2026-09-15); the historical patch decision below is retained.
 
 ## Context
 
