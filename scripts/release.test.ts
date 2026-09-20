@@ -34,6 +34,8 @@ interface ServiceState {
   checkedTree: string;
   interrupt?: "create" | "merge" | "watch";
   changeCheckout?: "commit" | "dirty";
+  editDuringWatch?: boolean;
+  replaceHeadAtMerge?: string;
 }
 
 // Only GitHub is simulated. Its merge operation updates a real bare remote, while the
@@ -81,11 +83,11 @@ if (args[0] === "api") {
   } else if (url.pathname.match(/\\/actions\\/runs\\/(101|102)\\/attempts\\/1\\/jobs$/)) {
     emit({ jobs: [{ name: "gate", status: "completed", conclusion: "success" }] });
   } else if (url.pathname === base + "/commits/" + state.merged + "/pulls") emit(state.pulls.map(pull));
-  else if (url.pathname === base + "/pulls/77") emit({ ...pull(state.pulls[0]), commits: 1 });
+  else if (url.pathname === base + "/pulls/77") emit({ ...pull(state.pulls.find(p => p.number === 77)), commits: 1 });
   else if (url.pathname === base + "/git/commits/" + state.head) emit({ tree: { sha: state.checkedTree } });
   else throw new Error("Unexpected fixture command: " + args.join(" "));
 } else if (args[0] === "pr" && args[1] === "create") {
-  if (state.pulls.length) fail("Duplicate release PR");
+  if (state.pulls.some(p => p.state === "open" || p.merged)) fail("Duplicate active release PR");
   state.pulls.push({ number: 77, state: "open", merged: false, head: state.head, title: "release: " + state.tag });
   state.created++; save();
   if (state.interrupt === "create") fail("Interrupted after PR creation");
@@ -93,9 +95,18 @@ if (args[0] === "api") {
 } else if (args[0] === "pr" && args[1] === "merge") {
   if (!state.requiredChecks) fail("Required checks have not passed");
   if (!args.includes("--auto") || !args.includes("--rebase") || args.includes("--admin")) fail("Unsafe merge request");
-  const p = state.pulls[0];
+  const p = state.pulls.find(p => p.number === 77);
   if (!p || p.merged || p.state !== "open") fail("Duplicate or invalid merge request");
-  remote("update-ref", "refs/heads/main", state.merged, state.parent);
+  if (state.replaceHeadAtMerge) {
+    remote("update-ref", "refs/heads/release/" + state.tag, state.replaceHeadAtMerge, p.head);
+    state.head = p.head = state.replaceHeadAtMerge;
+    save();
+  }
+  const match = args.indexOf("--match-head-commit");
+  if (match !== -1 && args[match + 1] !== p.head) fail("Pull request head changed");
+  const base = remote("rev-parse", "main");
+  if (git("show", "-s", "--format=%P", state.merged) !== base) fail("Fixture merge has stale base");
+  remote("update-ref", "refs/heads/main", state.merged, base);
   remote("update-ref", "-d", "refs/heads/release/" + state.tag);
   p.state = "closed"; p.merged = true; state.merges++; save();
   if (state.changeCheckout === "dirty") fs.writeFileSync("operator-work.txt", "keep local edits\\n");
@@ -105,7 +116,7 @@ if (args[0] === "api") {
   }
   if (state.interrupt === "merge") fail("Interrupted after checked merge");
 } else if (args[0] === "pr" && args[1] === "view") {
-  const p = state.pulls[0];
+  const p = state.pulls.find(p => p.number === 77);
   emit({ state: p.merged ? "MERGED" : p.state.toUpperCase(), mergedAt: p.merged ? "2026-01-03T00:00:00Z" : null,
     mergeCommit: p.merged ? { oid: state.merged } : null });
 } else if (args[0] === "pr" && args[1] === "checks") {
@@ -114,6 +125,7 @@ if (args[0] === "api") {
 } else if (args[0] === "run" && args[1] === "list") emit([{ databaseId: 901 }]);
 else if (args[0] === "run" && args[1] === "watch") {
   state.watched++; save();
+  if (state.editDuringWatch) fs.writeFileSync("operator-work.txt", "keep edits during publication\\n");
   if (state.interrupt === "watch") fail("Interrupted after tag publication");
 } else throw new Error("Unexpected fixture command: " + args.join(" "));
 `;
@@ -347,7 +359,6 @@ for (const failure of [
   "required-checks",
   "immutable",
   "tree",
-  "closed",
   "ambiguous",
   "branch",
   "local-tag",
@@ -360,10 +371,6 @@ for (const failure of [
     if (failure === "required-checks") f.state.requiredChecks = false;
     if (failure === "immutable") f.state.immutable = false;
     if (failure === "tree") f.state.checkedTree = f.git("rev-parse", `${f.state.parent}^{tree}`);
-    if (failure === "closed") {
-      f.state.pulls[0]!.merged = false;
-      f.state.pulls[0]!.state = "closed";
-    }
     if (failure === "ambiguous") f.state.pulls.push({ ...f.state.pulls[0]!, number: 78 });
     if (failure === "branch")
       f.git("push", "origin", `${f.state.parent}:refs/heads/release/v1.2.4`);
@@ -502,4 +509,91 @@ process.exit(result.exitCode);
   expect(f.git("rev-parse", "HEAD")).toBe(readFileSync(marker, "utf8"));
   expect(readFileSync(join(f.directory, "application.ts"), "utf8")).toBe(edited);
   expect(f.git("--git-dir", f.remote, "tag", "--list")).toBe("");
+}, 20_000);
+
+test("resume refuses a stale unmerged candidate before main consumes its release", async () => {
+  const f = fixture("pull");
+  f.git("reset", "--hard", f.state.parent);
+  writeFileSync(join(f.directory, "later-work.txt"), "new main work\n");
+  f.git("add", ".");
+  f.git("commit", "-m", "server: newer main work");
+  const later = f.git("rev-parse", "HEAD");
+  f.git("push", "origin", "main");
+  f.git("cherry-pick", f.state.head);
+  f.state.merged = f.git("rev-parse", "HEAD");
+  f.git("push", "origin", `${f.state.merged}:refs/fixture/rebased`);
+  f.git("reset", "--hard", f.state.head);
+  const refs = f.git("--git-dir", f.remote, "show-ref");
+  expect((await f.invoke()).code).not.toBe(0);
+  expect(f.git("--git-dir", f.remote, "rev-parse", "main")).toBe(later);
+  expect(f.git("--git-dir", f.remote, "show-ref")).toBe(refs);
+  expect(f.git("rev-parse", "HEAD")).toBe(f.state.head);
+}, 20_000);
+
+for (const interruption of ["pull", "remote-tag"] as const) {
+  test(`publication succeeds while preserving edits during ${interruption} workflow watch`, async () => {
+    const f = fixture(interruption);
+    f.state.editDuringWatch = true;
+    const result = await f.invoke();
+    expect(result.code, result.err).toBe(0);
+    expect(readFileSync(join(f.directory, "operator-work.txt"), "utf8")).toBe(
+      "keep edits during publication\n",
+    );
+    expect(f.git("--git-dir", f.remote, "rev-parse", "refs/tags/v1.2.4")).toBe(f.state.merged);
+  }, 20_000);
+}
+
+test("resume reconciles the retained checkout when another publisher already tagged it", async () => {
+  const f = fixture("remote-tag");
+  f.git("reset", "--hard", f.state.head);
+  const result = await f.invoke();
+  expect(result.code, result.err).toBe(0);
+  expect(f.git("rev-parse", "HEAD")).toBe(f.state.merged);
+  expect(f.git("rev-parse", "HEAD^{tree}")).toBe(f.state.tree);
+  expect(f.state.created).toBe(0);
+  expect(f.state.merges).toBe(0);
+}, 20_000);
+
+test("generation refuses an existing release PR before consuming fragments or committing", async () => {
+  const f = fixture("pull");
+  f.git("--git-dir", f.remote, "update-ref", "-d", "refs/heads/release/v1.2.4");
+  f.git("reset", "--hard", f.state.parent);
+  const refs = f.git("--git-dir", f.remote, "show-ref");
+  expect((await f.invoke("patch")).code).not.toBe(0);
+  expect(f.git("rev-parse", "HEAD")).toBe(f.state.parent);
+  expect(f.git("status", "--porcelain")).toBe("");
+  expect(f.git("--git-dir", f.remote, "show-ref")).toBe(refs);
+  expect(readFileSync(join(f.directory, "changes/123-records.md"), "utf8")).toContain(
+    "Keep retained records readable.",
+  );
+}, 20_000);
+
+test("resume cannot merge a release PR whose head changes after discovery", async () => {
+  const f = fixture("pull");
+  const replacement = f.git(
+    "commit-tree",
+    f.state.tree,
+    "-p",
+    f.state.parent,
+    "-m",
+    "release: v1.2.4\n\nIndependently refreshed candidate",
+  );
+  f.git("push", "origin", `${replacement}:refs/fixture/replacement`);
+  f.state.replaceHeadAtMerge = replacement;
+  const selected = f.state.head;
+  expect((await f.invoke()).code).not.toBe(0);
+  expect(f.git("--git-dir", f.remote, "rev-parse", "main")).toBe(f.state.parent);
+  expect(f.git("--git-dir", f.remote, "tag", "--list")).toBe("");
+  expect(f.git("rev-parse", "HEAD")).toBe(selected);
+}, 20_000);
+
+test("a closed attempt does not permanently reserve the unpublished release version", async () => {
+  const f = fixture("pull");
+  f.state.pulls[0]!.number = 76;
+  f.state.pulls[0]!.state = "closed";
+  const result = await f.invoke();
+  expect(result.code, result.err).toBe(0);
+  expect(f.git("--git-dir", f.remote, "rev-parse", "refs/tags/v1.2.4")).toBe(f.state.merged);
+  expect(f.state.pulls.filter((pull) => pull.merged).map((pull) => pull.number)).toEqual([77]);
+  expect(f.state.pulls.find((pull) => pull.number === 76)?.merged).toBe(false);
 }, 20_000);

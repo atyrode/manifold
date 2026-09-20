@@ -200,7 +200,12 @@ async function releasePull(
   const owner = repository.split("/")[0]!;
   const query = `repos/${repository}/pulls?state=all&base=main&head=${owner}:release/${tag}&per_page=100`;
   const result = await $`gh api ${query} --paginate --slurp`.quiet().text();
-  const pulls = z.array(z.array(ReleasePull)).parse(JSON.parse(result)).flat();
+  // Closed, unmerged attempts no longer reserve a version or a PR identity.
+  const pulls = z
+    .array(z.array(ReleasePull))
+    .parse(JSON.parse(result))
+    .flat()
+    .filter((pull) => pull.state === "open" || pull.merged_at !== null);
   if (pulls.length > 1) throw new Error(`Ambiguous release PRs for ${tag}`);
   const pull = pulls[0];
   if (pull !== undefined) {
@@ -214,14 +219,30 @@ async function releasePull(
       !sameRepo(pull.head.repo.full_name)
     )
       throw new Error(`Conflicting release PR for ${tag}`);
-    if (pull.state === "closed" && pull.merged_at === null) {
-      throw new Error(`Release PR closed without merging: #${pull.number}`);
-    }
     if (pull.merged_at !== null && pull.merge_commit_sha === null) {
       throw new Error(`Release PR has inconsistent merge evidence: #${pull.number}`);
     }
   }
   return pull;
+}
+
+async function reconcileCheckout(
+  snapshot: string,
+  sha: string,
+  retainedTree: string | undefined,
+  onMain: boolean,
+): Promise<void> {
+  await unchangedCheckout(snapshot);
+  // Reconcile only a verified same-tree candidate. Later main is never rewound.
+  if (!onMain) {
+    if (retainedTree !== (await gitText(["rev-parse", `${sha}^{tree}`]))) {
+      throw new Error("Refusing to replace unrelated local work");
+    }
+    // Identical trees need no checkout. CAS preserves concurrent commits and edits.
+    await $`git update-ref -m ${`release: reconcile ${sha}`} refs/heads/main ${sha} ${snapshot}`;
+  } else if (snapshot !== sha && (await ancestor(snapshot, sha))) {
+    await $`git merge --ff-only ${sha}`;
+  }
 }
 
 /**
@@ -237,18 +258,17 @@ async function publishRelease(
   const tagRef = `refs/tags/${tag}`;
   const releaseBranch = `release/${tag}`;
   const releaseRef = `refs/heads/${releaseBranch}`;
-  await $`git fetch --no-tags origin main`;
+  await $`git fetch origin main --tags`;
   const main = await gitText(["rev-parse", "origin/main"]);
   const localTag = await localTagCommit(tag);
   const retained =
     (await gitText(["show", "-s", "--format=%s", snapshot])) === `release: ${tag}`
       ? snapshot
       : undefined;
-  let retainedTree: string | undefined;
-  if (retained !== undefined) {
-    await verifyReleaseCandidate(repository, tag, retained);
-    retainedTree = await gitText(["rev-parse", `${retained}^{tree}`]);
-  }
+  const retainedProof =
+    retained === undefined ? undefined : await verifyReleaseCandidate(repository, tag, retained);
+  const retainedTree =
+    retained === undefined ? undefined : await gitText(["rev-parse", `${retained}^{tree}`]);
   const onMain = await ancestor(snapshot, main);
   if (!onMain && retained === undefined) {
     throw new Error("Local main contains unrelated unpublished work");
@@ -266,9 +286,8 @@ async function publishRelease(
     ) {
       throw new Error("Retained release commit differs from the published release");
     }
-    await unchangedCheckout(snapshot);
+    await reconcileCheckout(snapshot, proof.sha, retainedTree, onMain);
     await watchRelease(tag);
-    await unchangedCheckout(snapshot);
     reportRelease(tag);
     return;
   }
@@ -288,7 +307,13 @@ async function publishRelease(
   ) {
     throw new Error("Conflicting prepared release candidates");
   }
-  const candidateProof = await verifyReleaseCandidate(repository, tag, candidate);
+  const candidateProof =
+    candidate === retained && retainedProof !== undefined
+      ? retainedProof
+      : await verifyReleaseCandidate(repository, tag, candidate);
+  if (pull?.merged_at == null && candidateProof.parent !== main) {
+    throw new Error("Prepared release is based on stale main; refusing publication");
+  }
   const tree = await gitText(["rev-parse", `${candidate}^{tree}`]);
   if (retained !== undefined && retained !== candidate) {
     if (pull?.merged_at === null || pull === undefined || retainedTree !== tree) {
@@ -338,17 +363,7 @@ async function publishRelease(
   if ((await gitText(["rev-parse", `${sha}^{tree}`])) !== tree) {
     throw new Error("Merged release differs from the prepared tree; no tag was created");
   }
-  await unchangedCheckout(snapshot);
-  // Only replace a dedicated, canonically verified prepared commit with the same tree.
-  // Otherwise local main may advance only by fast-forward; later main is never rewound.
-  if (!onMain) {
-    if (retainedTree !== tree) throw new Error("Refusing to replace unrelated local work");
-    // Identical trees need no checkout. CAS preserves a concurrent commit or edit
-    // between the cleanliness check and this identity-only reconciliation.
-    await $`git update-ref -m ${`release: reconcile ${tag}`} refs/heads/main ${sha} ${snapshot}`;
-  } else if (await ancestor(snapshot, sha)) {
-    await $`git merge --ff-only ${sha}`;
-  }
+  await reconcileCheckout(snapshot, sha, retainedTree, onMain);
   const updated = await cleanMain();
   const currentTag = await localTagCommit(tag);
   if (currentTag !== null && currentTag !== sha) throw new Error(`Conflicting local tag ${tag}`);
@@ -366,7 +381,6 @@ async function publishRelease(
     await $`git push origin ${`${tagObject}:${tagRef}`}`;
   }
   await watchRelease(tag);
-  await unchangedCheckout(updated);
   reportRelease(tag);
 }
 
@@ -483,9 +497,14 @@ const released = resolved.filter((fragment): fragment is ReleasedFragment => fra
 const tag = `v${version}`;
 const releaseBranch = `release/${tag}`;
 const releaseRef = `refs/heads/${releaseBranch}`;
-if ((await gitText(["ls-remote", "--heads", "origin", releaseRef])) !== "") {
+if (
+  (await remoteRef(releaseRef)) !== null ||
+  (await remoteRef(`refs/tags/${tag}`)) !== null ||
+  (await localTagCommit(tag)) !== null ||
+  (await releasePull(repository, tag)) !== undefined
+) {
   throw new Error(
-    `Release branch ${releaseBranch} already exists on origin; use bun run release --resume ${tag}`,
+    `Release resources for ${tag} already exist; use bun run release --resume ${tag}`,
   );
 }
 
