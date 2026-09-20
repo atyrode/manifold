@@ -1319,11 +1319,41 @@ as evidence of metadata consistency.
 The script pushes `release/vX.Y.Z`, opens a `release: vX.Y.Z` PR with its changelog and protocol
 status, and enables rebase auto-merge. The repository must allow auto-merge and rebase merges;
 required `agent-policy` and `gate` checks still apply, with no bypass. Release PRs from the
-release committer (`atyrode`) are exempt only from issue lifecycle checks. After merge, the
-script verifies that `origin/main` has the release tree, updates local main, then tags that
-merged SHA and pushes only the tag to start `release.yml`. A closed PR, a 30-minute merge timeout
-or a different main tree stops publication without a tag; interrupted-merge recovery is documented
-in the script header. `bun run release --dry-run` remains read-only from any branch.
+release committer (`atyrode`) are exempt only from issue lifecycle checks. Before tagging,
+the script verifies the PR's recorded merged SHA against the shared canonical release,
+main-ancestry and current CI policy, then pushes only that tag to start `release.yml`.
+The checked release commit remains the target if main later advances; recovery never rewinds
+later local main commits. A PR closed while waiting, a 30-minute merge timeout or a different
+checked tree stops publication without a tag. `bun run release --dry-run` remains read-only
+from any branch.
+
+**Resume interrupted publication.** Under the same explicit release authorization, retain the
+prepared commit and use `bun run release --resume vX.Y.Z` from a clean `main` checkout. The
+version is mandatory: resume discovers and reuses its retained commit, existing release branch,
+PR or matching tag without regenerating release content or deriving another version. It covers
+interruption after commit creation, branch push, PR creation, checked merge, local tag creation
+or tag push. Newly created recovery PRs retain the selected commit's changelog and protocol
+status, with prior release tags fetched before comparing the protocol baseline.
+An unmerged candidate must be based on the fetched current main; a stale candidate refuses
+before publication instead of landing a release that cannot satisfy canonical provenance.
+For a stale, unpublished candidate, preserve the original checkout and record its SHA.
+Close its unmerged PR and retire its release branch only after confirming they still name
+that candidate; never alter a merged PR or published tag. In a separate fresh clone on current
+main, wait for that exact revision's successful full-main CI and run ordinary `bun run release`
+to regenerate from current fragments. Do not reset away the retained checkout or rebase its
+generated release commit by hand.
+Closed, unmerged attempts do not permanently reserve a version: a subsequent authorized
+invocation may create a new PR, while existing open or merged PRs are reused. Generation checks
+for existing release resources before consuming fragments or creating another commit.
+
+Conflicting versions, branches, PRs, trees or tags refuse rather than overwrite state; unrelated
+local commits and edits must be preserved and resolved before retrying. A matching published tag
+is verified and its workflow watched, never recreated or moved. Its retained same-tree checkout
+is reconciled just as after a new tag; later local main remains untouched. Edits made during the
+final workflow watch are preserved and do not turn a successful publication into failure.
+Resume does not rerun a failed
+workflow or repair partially published assets: retain that run's evidence and follow the
+explicit release-reconciliation boundary below. Do not construct or push recovery tags by hand.
 
 The tag workflow first evaluates trusted `main` admission code with read-only permissions.
 Only an admitted SHA reaches the write-capable build job. The image, fleet binaries and native
@@ -1335,12 +1365,14 @@ A failed run may leave an unpublished draft or an image in the registry. Retain 
 and failure evidence for an explicitly authorized release reconciliation; do not bypass the
 guard, silently overwrite a published release, or claim that a failed publication is complete.
 
-The shared `scripts/release-provenance.ts` policy requires the tag to identify a dedicated,
+The shared `scripts/release-provenance.ts` policy verifies a prepared candidate's canonical
+delta and latest full-source CI before publishing its branch or requesting merge. Before
+tagging and again in the tag workflow, the selected SHA must identify a dedicated,
 single-parent release commit on `main`, with the canonical version/changelog/consumed-fragment
 delta only. The web manifest must match the release writer's exact output; the lock must retain
 every byte outside its canonical workspace-version token, including refusing duplicate-key
 parser differentials. Its parent needs successful latest full `main` CI; the single-commit merged
-`release/vX.Y.Z` PR must have the same tree, successful PR CI and its required checks.
+`release/vX.Y.Z` PR must have the same tree, successful PR CI and its current required checks.
 Promotion additionally requires successful latest full `main` CI for the exact tagged commit,
 not merely its parent or a later unrelated revision. CI evidence includes the successful
 `gate` job in the current run attempt. Artifact admission cryptographically verifies the
