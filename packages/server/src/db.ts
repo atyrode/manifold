@@ -9,7 +9,7 @@ import { JOB_SCHEDULE_SCHEMA_SQL } from "./job-schedules.ts";
 import { migrateToDurableAgents } from "./migrate-agents.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 42;
+export const SCHEMA_VERSION = 43;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
@@ -971,6 +971,14 @@ ALTER TABLE machines ADD COLUMN last_refusal_at INTEGER
       db.exec("INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','42')");
     },
   },
+  /**
+   * Native creation provenance outlives bounded audit history. It is not the harness launch
+   * binding in run_id; existing terminals retain unknown creator-Run provenance.
+   */
+  43: `
+ALTER TABLE terminals ADD COLUMN created_by_run_id TEXT;
+INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','43');
+`,
 };
 
 interface TableRow {

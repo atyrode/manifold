@@ -614,6 +614,8 @@ export interface NewStoredTerminal {
   cwd?: string;
   launchRecipe?: TerminalLaunchRecipe;
   runId?: string;
+  /** Authenticated creation provenance, never a harness launch or restart binding. */
+  createdByRunId?: string;
 }
 
 /**
@@ -3461,15 +3463,21 @@ export class ServerStore {
           WHERE COALESCE(json_extract(j.request,'$.terminal.runId'),j.run_id,
             (SELECT run_id FROM tokens WHERE id=json_extract(j.request,'$.credential.tokenId')),
             (SELECT run_id FROM events WHERE type='trace' AND id=json_extract(j.request,'$.traceId')))=?1
+       ), native_origins AS (
+        SELECT target.value AS uri,MIN(e.id) AS trace_id
+        FROM events e JOIN json_each(e.targets) target
+        WHERE e.type='trace' AND e.run_id=?1 AND e.door='core.terminals.create' AND e.outcome='ok'
+        GROUP BY target.value
        )
        SELECT t.id AS terminalId,t.machine_id AS machineId,t.container_id AS containerId,
         t.created_at AS createdAt,t.status AS state,t.exit_code AS exitCode,
-        (SELECT CAST(e.id AS TEXT) FROM run_jobs j JOIN events e ON e.id=json_extract(j.request,'$.traceId')
+        COALESCE((SELECT CAST(e.id AS TEXT) FROM run_jobs j JOIN events e ON e.id=json_extract(j.request,'$.traceId')
           WHERE e.type='trace' AND (e.run_id=?1 OR (json_extract(j.request,'$.terminal.runId')=?1
             AND e.principal_id=json_extract(j.request,'$.credential.principalId')))
             AND json_extract(j.request,'$.terminal.terminalId')=t.id
-          ORDER BY e.id DESC LIMIT 1) AS traceId
-       FROM terminals t WHERE t.run_id=?1
+          ORDER BY e.id DESC LIMIT 1),CAST(o.trace_id AS TEXT)) AS traceId
+       FROM terminals t LEFT JOIN native_origins o ON o.uri='manifold://terminal/'||t.id
+       WHERE t.run_id=?1 OR (t.run_id IS NULL AND t.created_by_run_id=?1)
          OR EXISTS(SELECT 1 FROM run_jobs j WHERE json_extract(j.request,'$.terminal.terminalId')=t.id)
        ORDER BY t.created_at DESC,t.id DESC LIMIT 101`,
       )
@@ -3670,12 +3678,13 @@ export class ServerStore {
           string | null,
           string | null,
           string | null,
+          string | null,
         ]
       >(
         `INSERT INTO terminals(
            id, machine_id, container_id, created_by, agent_principal_id,
-           status, exit_code, created_at, name, cwd, launch_recipe, run_id
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           status, exit_code, created_at, name, cwd, launch_recipe, run_id, created_by_run_id
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         terminal.id,
@@ -3692,6 +3701,7 @@ export class ServerStore {
           ? null
           : JSON.stringify(TerminalLaunchRecipeSchema.parse(terminal.launchRecipe)),
         terminal.runId ?? null,
+        terminal.createdByRunId ?? null,
       );
   }
 

@@ -2385,6 +2385,7 @@ ALTER TABLE events DROP COLUMN credential_id;
 ALTER TABLE machine_jobs DROP COLUMN run_id;
 ALTER TABLE job_schedule_occurrences DROP COLUMN run_id;
 ALTER TABLE terminals DROP COLUMN run_id;
+ALTER TABLE terminals DROP COLUMN created_by_run_id;
 DROP TABLE agents;
 DROP TABLE principal_access_pauses;
 DELETE FROM meta WHERE key='agent-runs:declarations-after-event-id';
@@ -2519,6 +2520,7 @@ test("migration 42 persists the last identifiable machine refusal until admissio
     db.exec(`
 ALTER TABLE machines DROP COLUMN last_refusal_code;
 ALTER TABLE machines DROP COLUMN last_refusal_at;
+ALTER TABLE terminals DROP COLUMN created_by_run_id;
 UPDATE meta SET value='41' WHERE key='schema_version';
 `);
     db.close();

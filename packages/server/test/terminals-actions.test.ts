@@ -384,6 +384,44 @@ describe("core.terminals doors", () => {
         "NATIVE_INSPECTOR_ENV_557",
       ])
         expect(serialized).not.toContain(privateValue);
+      const finished = await base.host.dispatch(base.owner, "core.access.finishAgentRun", {
+        runId: created.run.id,
+        outcome: "completed",
+      });
+      if (!finished.ok) throw new Error(`unexpected finish refusal: ${finished.denial.rule}`);
+      base.machine.onRestart = (id) =>
+        base.broker.onRestarted(base.machine.machineId, {
+          type: "terminal_restarted",
+          terminalId: id,
+          cwd: "/work",
+        });
+      expect(
+        await base.host.dispatch(base.owner, "core.terminals.restart", {
+          terminalId: create.terminalId,
+        }),
+      ).toEqual({ ok: true, result: {} });
+      const retained = await inspect(created.run.id);
+      expect(retained.run.state).toBe("completed");
+      expect(retained.terminals).toMatchObject([
+        {
+          terminalId: create.terminalId,
+          state: "running",
+          traceId: String(
+            own.traces.find((trace) => trace.action === "core.terminals.create")?.traceId,
+          ),
+        },
+      ]);
+      base.store.addEvent(
+        null,
+        base.runtime.now() + 365 * 24 * 60 * 60 * 1000,
+        null,
+        "retention-probe",
+        {},
+      );
+      expect((await inspect(created.run.id)).terminals).toMatchObject([
+        { terminalId: create.terminalId, state: "running", retention: "retained", traceId: null },
+      ]);
+      expect((await inspect(child.run.id)).terminals).toEqual([]);
     } finally {
       base.store.close();
     }
