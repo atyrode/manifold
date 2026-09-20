@@ -44,7 +44,14 @@ import {
   Stack,
   TITLEBAR_ACTIONS_CLASS,
 } from "@manifold/ui";
-import { loadTerminalFont, TERMINAL_FONT_FAMILY, TERMINAL_FONT_SIZE } from "./terminal-font";
+import {
+  getTerminalFontState,
+  loadTerminalFont,
+  retryTerminalFont,
+  subscribeTerminalFont,
+  TERMINAL_FONT_FAMILY,
+  TERMINAL_FONT_SIZE,
+} from "./terminal-font";
 import { terminalsManifest } from "./index";
 import { installTerminalGestures } from "./terminal-gestures";
 import { installTerminalGraphics, type TerminalGraphics } from "./terminal-graphics";
@@ -117,8 +124,12 @@ export function TerminalView({
     readonly terminalId: string;
   } | null>(null);
   const pendingTakeRef = useRef<{ terminalId: string; elementId: string } | null>(null);
-  const [fontState, setFontState] = useState<"loading" | "ready" | Error>("loading");
-  const fontReady = fontState === "ready";
+  const fontState = useSyncExternalStore(
+    subscribeTerminalFont,
+    getTerminalFontState,
+    getTerminalFontState,
+  );
+  const fontReady = fontState.status === "ready";
   const [, rerender] = useReducer((version: number) => version + 1, 0);
   const [isRestarting, setIsRestarting] = useState(false);
   const [restartArmed, setRestartArmed] = useState(false);
@@ -146,25 +157,12 @@ export function TerminalView({
     }
   };
 
+  useEffect(loadTerminalFont, []);
   useEffect(() => {
-    let cancelled = false;
-    void loadTerminalFont().then(
-      () => {
-        if (!cancelled) setFontState("ready");
-      },
-      (error: unknown) => {
-        if (!cancelled) {
-          const failure =
-            error instanceof Error ? error : new Error("Could not load terminal font.");
-          setFontState(failure);
-          notify(failure.message, { key: `terminal-font:${terminalId}` });
-        }
-      },
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [notify, terminalId]);
+    if (fontState.status === "failed") {
+      notify(fontState.error.message, { key: `terminal-font:${terminalId}` });
+    }
+  }, [fontState, notify, terminalId]);
 
   const terminal = client.terminals.get(terminalId);
   const terminalReady = terminal !== undefined;
@@ -912,9 +910,22 @@ export function TerminalView({
       {fontReady ? null : (
         <div
           className="terminal-font-status"
-          role={fontState instanceof Error ? "alert" : "status"}
+          role={fontState.status === "failed" ? "alert" : "status"}
         >
-          {fontState instanceof Error ? fontState.message : "Loading terminal font…"}
+          <Stack gap="0.6rem" align="center">
+            <span>
+              {fontState.status === "failed" ? fontState.error.message : "Loading terminal font…"}
+            </span>
+            {fontState.status === "failed" ? (
+              <Chip
+                className="terminal-font-retry"
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={retryTerminalFont}
+              >
+                Retry font
+              </Chip>
+            ) : null}
+          </Stack>
         </div>
       )}
       {/*

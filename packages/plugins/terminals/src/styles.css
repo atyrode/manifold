@@ -184,6 +184,10 @@
   pointer-events: none;
 }
 
+.terminal-font-retry {
+  pointer-events: auto;
+}
+
 .terminal-clipboard-request {
   position: absolute;
   grid-area: 2 / 1;
