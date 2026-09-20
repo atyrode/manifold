@@ -46,6 +46,12 @@ concurrency:
   group: deploy-hub
   cancel-in-progress: false
 
+# Reviewed from the official 4.10.0 release asset, not downloaded checksum metadata at runtime.
+# https://github.com/CleverCloud/clever-tools/releases/tag/4.10.0
+env:
+  CLEVER_VERSION: "4.10.0"
+  CLEVER_ARCHIVE_SHA256: 8f2704b2d4609158703341ab2239f9ad21ad041dba167c57a3560ae6ea5fe9b9
+
 jobs:
   release:
     name: Validate release revision
@@ -166,20 +172,38 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/bun-workspace
 
+      - name: Install the verified standalone deployment tool
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [[ "$RUNNER_OS" = Linux && "$RUNNER_ARCH" = X64 ]] || {
+            echo "::error::The pinned deployment tool requires a Linux x64 runner"
+            exit 1
+          }
+          tool_dir="$(mktemp -d "$RUNNER_TEMP/clever-tools.XXXXXX")"
+          archive="clever-tools-${CLEVER_VERSION}_linux.tar.gz"
+          gh release download "$CLEVER_VERSION" --repo CleverCloud/clever-tools \
+            --pattern "$archive" --dir "$tool_dir"
+          printf '%s  %s\n' "$CLEVER_ARCHIVE_SHA256" "$tool_dir/$archive" | sha256sum --check --strict
+          tar -xzf "$tool_dir/$archive" -C "$tool_dir"
+          executable="$tool_dir/clever-tools-${CLEVER_VERSION}_linux/clever"
+          test -x "$executable"
+          printf 'CLEVER=%s\n' "$executable" >> "$GITHUB_ENV"
+
       - name: Link the application
-        run: bunx clever-tools@4.10.0 link "${{ vars.CLEVER_HUB_APP_ID }}" --org "${{ vars.CLEVER_ORG_ID }}"
+        run: '"$CLEVER" link "${{ vars.CLEVER_HUB_APP_ID }}" --org "${{ vars.CLEVER_ORG_ID }}"'
       - name: Require the bounded single-writer topology
         run: |
           fail() { echo "::error::$*" >&2; exit 1; }
-          status="$(bunx clever-tools@4.10.0 status --format json)"
+          status="$("$CLEVER" status --format json)"
           jq -e '.scalability.horizontal.min == 1 and .scalability.horizontal.max == 1' \
             <<< "$status" >/dev/null ||
             fail 'Production recovery requires exactly one application instance'
-          [ "$(bunx clever-tools@4.10.0 config get zero-downtime)" = false ] ||
+          [ "$("$CLEVER" config get zero-downtime)" = false ] ||
             fail 'Production recovery requires zero-downtime deployment to be disabled'
       - name: Refuse promotion from an unreconciled recovery image
         run: |
-          if ! bunx clever-tools@4.10.0 env --format json |
+          if ! "$CLEVER" env --format json |
             jq -e '[.env[], .fromAddons[].env[], .fromDependencies[].env[]] |
               all(.[]; if (.name | startswith("MANIFOLD_RECOVERY_")) then .value == "" else true end)' >/dev/null; then
             echo "::error::Active recovery state requires separately reviewed reconciliation before ordinary promotion"
@@ -219,23 +243,23 @@ jobs:
           echo 'started=true' >> "$GITHUB_OUTPUT"
           # Application environment is forwarded as Docker --build-arg by the provider:
           # https://www.clever.cloud/developers/doc/deploy/applications/docker/#build-time-variables
-          bunx clever-tools@4.10.0 env set MANIFOLD_RELEASE_IMAGE "$IMAGE"
-          bunx clever-tools@4.10.0 env set CC_DOCKERFILE infra/release.Dockerfile
-          bunx clever-tools@4.10.0 env set MANIFOLD_RECOVERY_CHECKPOINT ""
-          bunx clever-tools@4.10.0 env set MANIFOLD_RECOVERY_SHA256 ""
-          bunx clever-tools@4.10.0 env set MANIFOLD_RECOVERY_EXPECTED_BUILD ""
-          bunx clever-tools@4.10.0 env set MANIFOLD_RECOVERY_BASE_IMAGE ""
+          "$CLEVER" env set MANIFOLD_RELEASE_IMAGE "$IMAGE"
+          "$CLEVER" env set CC_DOCKERFILE infra/release.Dockerfile
+          "$CLEVER" env set MANIFOLD_RECOVERY_CHECKPOINT ""
+          "$CLEVER" env set MANIFOLD_RECOVERY_SHA256 ""
+          "$CLEVER" env set MANIFOLD_RECOVERY_EXPECTED_BUILD ""
+          "$CLEVER" env set MANIFOLD_RECOVERY_BASE_IMAGE ""
 
       - name: Stamp the build
         # What /healthz will answer (scripts/build-identity.ts): a release is its tag.
         run: |
-          bunx clever-tools@4.10.0 env set MANIFOLD_VERSION "${TAG#v}"
-          bunx clever-tools@4.10.0 env set MANIFOLD_BUILD "${TAG#v}"
-          bunx clever-tools@4.10.0 env set MANIFOLD_CHANNEL release
+          "$CLEVER" env set MANIFOLD_VERSION "${TAG#v}"
+          "$CLEVER" env set MANIFOLD_BUILD "${TAG#v}"
+          "$CLEVER" env set MANIFOLD_CHANNEL release
 
       - name: Deploy the attested image through the release wrapper
         # The tag supplies only the reviewed wrapper; no application source is rebuilt.
-        run: bunx clever-tools@4.10.0 deploy --tag "$TAG" --force --same-commit-policy rebuild
+        run: '"$CLEVER" deploy --tag "$TAG" --force --same-commit-policy rebuild'
 
   verify-live:
     name: verify-live
@@ -257,6 +281,23 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/bun-workspace
+      - name: Install the verified standalone deployment tool
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [[ "$RUNNER_OS" = Linux && "$RUNNER_ARCH" = X64 ]] || {
+            echo "::error::The pinned deployment tool requires a Linux x64 runner"
+            exit 1
+          }
+          tool_dir="$(mktemp -d "$RUNNER_TEMP/clever-tools.XXXXXX")"
+          archive="clever-tools-${CLEVER_VERSION}_linux.tar.gz"
+          gh release download "$CLEVER_VERSION" --repo CleverCloud/clever-tools \
+            --pattern "$archive" --dir "$tool_dir"
+          printf '%s  %s\n' "$CLEVER_ARCHIVE_SHA256" "$tool_dir/$archive" | sha256sum --check --strict
+          tar -xzf "$tool_dir/$archive" -C "$tool_dir"
+          executable="$tool_dir/clever-tools-${CLEVER_VERSION}_linux/clever"
+          test -x "$executable"
+          printf 'CLEVER=%s\n' "$executable" >> "$GITHUB_ENV"
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: verify-live-production-${{ github.run_id }}
@@ -277,16 +318,16 @@ jobs:
           RECOVERY_SHA256: ${{ inputs.recovery_sha256 }}
         run: |
           printf '### Automatic production recovery\n\nSwitch or live verification failed. Restoring the authenticated pre-switch state under release `%s`; this run remains failed.\n\n' "$PREVIOUS_BUILD" >> "$GITHUB_STEP_SUMMARY"
-          bunx clever-tools@4.10.0 link "${{ vars.CLEVER_HUB_APP_ID }}" --org "${{ vars.CLEVER_ORG_ID }}"
-          bunx clever-tools@4.10.0 env set MANIFOLD_VERSION "$PREVIOUS_BUILD"
-          bunx clever-tools@4.10.0 env set MANIFOLD_BUILD "$PREVIOUS_BUILD"
-          bunx clever-tools@4.10.0 env set MANIFOLD_CHANNEL release
-          bunx clever-tools@4.10.0 env set CC_DOCKERFILE infra/recovery.Dockerfile
-          bunx clever-tools@4.10.0 env set MANIFOLD_RECOVERY_CHECKPOINT "$RECOVERY_CHECKPOINT"
-          bunx clever-tools@4.10.0 env set MANIFOLD_RECOVERY_SHA256 "$RECOVERY_SHA256"
-          bunx clever-tools@4.10.0 env set MANIFOLD_RECOVERY_EXPECTED_BUILD "$PREVIOUS_BUILD"
-          bunx clever-tools@4.10.0 env set MANIFOLD_RECOVERY_BASE_IMAGE "$PREVIOUS_IMAGE"
-          bunx clever-tools@4.10.0 deploy --tag "$TAG" --force --same-commit-policy rebuild
+          "$CLEVER" link "${{ vars.CLEVER_HUB_APP_ID }}" --org "${{ vars.CLEVER_ORG_ID }}"
+          "$CLEVER" env set MANIFOLD_VERSION "$PREVIOUS_BUILD"
+          "$CLEVER" env set MANIFOLD_BUILD "$PREVIOUS_BUILD"
+          "$CLEVER" env set MANIFOLD_CHANNEL release
+          "$CLEVER" env set CC_DOCKERFILE infra/recovery.Dockerfile
+          "$CLEVER" env set MANIFOLD_RECOVERY_CHECKPOINT "$RECOVERY_CHECKPOINT"
+          "$CLEVER" env set MANIFOLD_RECOVERY_SHA256 "$RECOVERY_SHA256"
+          "$CLEVER" env set MANIFOLD_RECOVERY_EXPECTED_BUILD "$PREVIOUS_BUILD"
+          "$CLEVER" env set MANIFOLD_RECOVERY_BASE_IMAGE "$PREVIOUS_IMAGE"
+          "$CLEVER" deploy --tag "$TAG" --force --same-commit-policy rebuild
           bun scripts/verify-live.ts verify "$RUNNER_TEMP/verify-live.json" "$PREVIOUS_BUILD"
           printf 'The exact previous application is serving through the recovery image, and its restored live-state parity is verified. Recovery settings remain active so a provider restart restores the same checkpoint and then the checkpoint-specific SQLite replica history.\n\n' >> "$GITHUB_STEP_SUMMARY"
 
