@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   MAX_ISOLATE_EMITS,
+  type ActionResultProjection,
   type IsolateChildFrame,
   type IsolateDispatchCtx,
   type IsolateHostFrame,
@@ -203,6 +204,33 @@ test("a retained producer works after dispatch while other captured authority ex
 });
 
 describe("load", () => {
+  test("publishes bounded result declarations and refuses invalid or lifecycle declarations", async () => {
+    const policy: ActionResultProjection = {
+      kind: "projected-json",
+      fields: [["text"]],
+      maxArrayItems: 4,
+      maxResultBytes: 256,
+    };
+    const valid = host({
+      manifest,
+      actions: [{ ...echo, resultProjection: policy }],
+      handlers: { echo: async () => ({ text: "public" }) },
+    });
+    load(valid);
+    expect(await valid.next()).toMatchObject({
+      t: "loaded",
+      actions: [{ resultProjection: policy }],
+    });
+    for (const action of [
+      { ...echo, resultProjection: { ...policy, maxResultBytes: 1_048_577 } },
+      { ...echo, runAccess: "policy" as const, resultProjection: policy },
+    ]) {
+      const invalid = host({ manifest, actions: [action], handlers: { echo: async () => ({}) } });
+      load(invalid);
+      expect(await invalid.next()).toMatchObject({ t: "load_failed" });
+    }
+  });
+
   test("answers loaded with fully qualified summaries, JSON schemas and the hook flags", async () => {
     const fake = host({
       manifest,

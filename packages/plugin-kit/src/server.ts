@@ -16,6 +16,8 @@ export type {
   TerminalRuntime,
 } from "@manifold/plugin";
 import {
+  ActionResultProjectionSchema,
+  type ActionResultProjection,
   HARDENED_CONTRACT_VERSION,
   EventKindSchema,
   EventPayloadSchema,
@@ -142,6 +144,7 @@ export interface ServerActionDef<In = unknown, Out = unknown> {
   readonly agentJustification?: ActionSummary["agentJustification"];
   readonly input: z.ZodType<In>;
   readonly result: z.ZodType<Out>;
+  readonly resultProjection?: ActionResultProjection;
 }
 
 /** Identity helper so `In`/`Out` are inferred from the schemas at the definition site. */
@@ -1267,6 +1270,8 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       if (!Object.hasOwn(def.handlers, action.name)) {
         throw new Error(`action "${action.name}" has no handler`);
       }
+      if (action.runAccess !== undefined && action.resultProjection !== undefined)
+        throw new Error(`action "${action.name}" has invalid result projection`);
       return {
         name: `${pluginId}.${action.name}`,
         title: action.title,
@@ -1282,6 +1287,9 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
         ...(action.trace === undefined ? {} : { trace: action.trace }),
         input: z.toJSONSchema(action.input, { io: "input" }),
         result: z.toJSONSchema(action.result, { io: "output" }),
+        ...(action.resultProjection === undefined
+          ? {}
+          : { resultProjection: ActionResultProjectionSchema.parse(action.resultProjection) }),
       };
     });
   };

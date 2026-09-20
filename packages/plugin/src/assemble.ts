@@ -1,6 +1,11 @@
 import {
   ActionDelegatesSchema,
   ActionRequirementsSchema,
+  ActionResultProjectionSchema,
+  actionResultProjectionDigest,
+  compileJsonProjection,
+  type ActionResultProjection,
+  type JsonProjection,
   CORE_NAMESPACE_PREFIX,
   DEFAULT_ELEMENT_PLACEMENT_TRAITS,
   DEFAULT_SECTION_PRESENTATION,
@@ -79,6 +84,12 @@ export interface AssemblyAction {
   /** The declaring manifest, so a dispatcher can read `essential`, caps, and title without a second lookup. */
   readonly plugin: PluginManifest;
   readonly def: AnyActionDef;
+  /** Immutable publication snapshot, compiled once for this assembly's declaration. */
+  readonly resultProjection?: {
+    readonly policy: ActionResultProjection;
+    readonly compiled: JsonProjection;
+    readonly digest: Promise<string>;
+  };
 }
 
 export interface AssemblyPanel {
@@ -771,6 +782,23 @@ function assembleDefinitions(
       if (action.runAccess !== undefined && manifest.id !== "core.access") {
         problems.push(`action "${name}" declares reserved agent-run lifecycle access`);
       }
+      let resultProjection: AssemblyAction["resultProjection"];
+      if (action.resultProjection !== undefined) {
+        const parsed = ActionResultProjectionSchema.safeParse(action.resultProjection);
+        if (!parsed.success || action.runAccess !== undefined) {
+          problems.push(`action "${name}" has invalid result projection`);
+        } else {
+          const policy = parsed.data;
+          for (const path of policy.fields) Object.freeze(path);
+          Object.freeze(policy.fields);
+          Object.freeze(policy);
+          resultProjection = Object.freeze({
+            policy,
+            compiled: compileJsonProjection(policy.fields),
+            digest: actionResultProjectionDigest(policy),
+          });
+        }
+      }
       if (action.requirements !== undefined) {
         const requirements = ActionRequirementsSchema.safeParse(action.requirements);
         if (
@@ -801,8 +829,13 @@ function assembleDefinitions(
         ...(action.trace === undefined ? {} : { trace: action.trace }),
         input: publishSchema(action.input, "input", `action "${name}" input`, problems),
         result: publishSchema(action.result, "output", `action "${name}" result`, problems),
+        ...(resultProjection === undefined ? {} : { resultProjection: resultProjection.policy }),
       });
-      actions.set(name, { plugin: manifest, def: action });
+      actions.set(name, {
+        plugin: manifest,
+        def: action,
+        ...(resultProjection === undefined ? {} : { resultProjection }),
+      });
     }
     summaries.set(manifest.id, published);
 

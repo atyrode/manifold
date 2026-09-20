@@ -9,6 +9,8 @@ import { statSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import {
   ACTION_TRACE_ID_HEADER,
+  ACTION_RESULT_PROJECTION_HEADER,
+  ActionResultProjectionDigestSchema,
   AGENT_JUSTIFICATION_HEADER,
   decodeAgentJustification,
   ActionOutcomeSchema,
@@ -103,7 +105,7 @@ function corsResponse(response: Response): Response {
   response.headers.set("access-control-allow-methods", "GET, POST, DELETE, OPTIONS");
   response.headers.set(
     "access-control-allow-headers",
-    `authorization, content-type, ${AGENT_JUSTIFICATION_HEADER}`,
+    `authorization, content-type, ${AGENT_JUSTIFICATION_HEADER}, ${ACTION_RESULT_PROJECTION_HEADER}`,
   );
   response.headers.set("access-control-expose-headers", ACTION_TRACE_ID_HEADER);
   response.headers.set("access-control-max-age", "600");
@@ -615,6 +617,14 @@ export class HttpApp {
             throw new RequestError("invalid", "agent justification header is invalid");
           }
         }
+        const projectionHeader = request.headers.get(ACTION_RESULT_PROJECTION_HEADER);
+        let resultProjectionDigest: string | undefined;
+        if (projectionHeader !== null) {
+          const parsed = ActionResultProjectionDigestSchema.safeParse(projectionHeader);
+          if (!parsed.success)
+            throw new RequestError("invalid", "result projection header is invalid");
+          resultProjectionDigest = parsed.data;
+        }
         const outcome = await this.plugins.dispatch(
           context,
           name,
@@ -622,6 +632,7 @@ export class HttpApp {
           null,
           {
             ...(agentJustification === undefined ? {} : { agentJustification }),
+            ...(resultProjectionDigest === undefined ? {} : { resultProjectionDigest }),
             onTrace: (id) => {
               traceId = id;
             },
