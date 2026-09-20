@@ -412,10 +412,13 @@ try {
   };
   observer.transact((tx) => tx.create(clone));
   await until(async () => (await termCount()) === 2, 10_000, "SDK update produced a mirror");
-  await sleep(1200);
 
   // 1. The clone must render PRE-EXISTING screen state (the zombie regression).
-  const pre = await showing("PRE_CLONE_STATE");
+  let pre: boolean[] = [];
+  await settles(async () => {
+    pre = await showing("PRE_CLONE_STATE");
+    return pre.length === 2 && pre.every(Boolean);
+  }, 10_000);
   check(
     "clone renders pre-existing screen state",
     pre.length === 2 && pre.every(Boolean),
@@ -448,8 +451,11 @@ try {
     25_000,
     "both terminals re-rendered after reload",
   );
-  await sleep(1500);
-  const reloaded = await showing("LIVE_MIRROR_OK");
+  let reloaded: boolean[] = [];
+  await settles(async () => {
+    reloaded = await showing("LIVE_MIRROR_OK");
+    return reloaded.length === 2 && reloaded.every(Boolean);
+  }, 25_000);
   check(
     "both views render after reload",
     reloaded.length === 2 && reloaded.every(Boolean),
