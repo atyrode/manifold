@@ -1336,6 +1336,12 @@ or tag push. Newly created recovery PRs retain the selected commit's changelog a
 status, with prior release tags fetched before comparing the protocol baseline.
 An unmerged candidate must be based on the fetched current main; a stale candidate refuses
 before publication instead of landing a release that cannot satisfy canonical provenance.
+For a stale, unpublished candidate, preserve the original checkout and record its SHA.
+Close its unmerged PR and retire its release branch only after confirming they still name
+that candidate; never alter a merged PR or published tag. In a separate fresh clone on current
+main, wait for that exact revision's successful full-main CI and run ordinary `bun run release`
+to regenerate from current fragments. Do not reset away the retained checkout or rebase its
+generated release commit by hand.
 Closed, unmerged attempts do not permanently reserve a version: a subsequent authorized
 invocation may create a new PR, while existing open or merged PRs are reused. Generation checks
 for existing release resources before consuming fragments or creating another commit.
