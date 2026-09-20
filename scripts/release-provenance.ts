@@ -47,12 +47,18 @@ const Pull = z.object({
   }),
 });
 const Release = z.object({
+  id: z.number().int().positive(),
   tag_name: z.string(),
   draft: z.boolean(),
   prerelease: z.boolean(),
   immutable: z.boolean().optional(),
   assets: z.array(
-    z.object({ name: z.string(), state: z.string(), size: z.number().int().positive() }),
+    z.object({
+      id: z.number().int().positive(),
+      name: z.string(),
+      state: z.string(),
+      size: z.number().int().positive(),
+    }),
   ),
 });
 const VerifiedSubjects = z.array(
@@ -77,6 +83,7 @@ export interface ReleaseProvenance {
 }
 
 export interface VerifiedRelease extends ReleaseProvenance {
+  readonly releaseId: number;
   readonly image: string;
 }
 
@@ -201,22 +208,31 @@ async function verifyReleaseDelta(sha: string, parent: string, tag: string): Pro
     JSON.parse(await fileAt(parent, "packages/web/package.json")),
     "parent manifest",
   );
-  const after = object(
-    JSON.parse(await fileAt(sha, "packages/web/package.json")),
-    "release manifest",
-  );
   if (typeof before.version !== "string") throw new Error("Parent manifest has no version");
   resolveReleaseVersion(before.version, version);
-  before.version = version;
-  if (!Bun.deepEquals(before, after))
-    throw new Error("Release changes more than the web manifest version");
+  const manifest = `${JSON.stringify({ ...before, version }, null, 2)}\n`;
+  if ((await fileAt(sha, "packages/web/package.json")) !== manifest)
+    throw new Error("Release manifest differs from the canonical version-only write");
 
-  const oldLock = object(Bun.JSONC.parse(await fileAt(parent, "bun.lock")), "parent lock");
-  const newLock = object(Bun.JSONC.parse(await fileAt(sha, "bun.lock")), "release lock");
-  const workspaces = object(oldLock.workspaces, "lock workspaces");
-  object(workspaces["packages/web"], "web lock entry").version = version;
-  if (!Bun.deepEquals(oldLock, newLock))
-    throw new Error("Release changes dependency resolution or unrelated lock metadata");
+  const lock = await fileAt(parent, "bun.lock");
+  const workspaces = object(
+    object(Bun.JSONC.parse(lock), "parent lock").workspaces,
+    "lock workspaces",
+  );
+  const workspace = object(workspaces["packages/web"], "web lock entry");
+  if (workspace.name !== before.name || workspace.version !== before.version)
+    throw new Error("Parent lock does not describe the parent web package");
+  // Bun's pinned lock writer changes only this workspace version. Preserve all other bytes:
+  // parsed equality would allow duplicate keys with different meanings to another consumer.
+  const prefix = `    "packages/web": {\n      "name": ${JSON.stringify(before.name)},\n      "version": `;
+  const original = `${prefix}${JSON.stringify(before.version)}`;
+  if (!lock.includes(original) || lock.indexOf(original) !== lock.lastIndexOf(original))
+    throw new Error("Parent lock has no unique canonical web workspace entry");
+  if (
+    (await fileAt(sha, "bun.lock")) !==
+    lock.replace(original, `${prefix}${JSON.stringify(version)}`)
+  )
+    throw new Error("Release changes bytes outside the lock's web workspace version");
 
   const entries = (await command(["git", "ls-tree", "-z", parent, "changes/"]))
     .split("\0")
@@ -377,6 +393,44 @@ async function verifyAttestedSubject(
     throw new Error(`Attestation does not bind ${name} to its release bytes`);
   }
 }
+async function draftRelease(repository: string, tag: string): Promise<z.infer<typeof Release>> {
+  // The by-tag REST endpoint is published-only. Inspect every page, and refuse duplicate drafts.
+  const pages = z
+    .array(z.array(Release.pick({ id: true, tag_name: true, draft: true })))
+    .parse(
+      JSON.parse(
+        await command([
+          "gh",
+          "api",
+          `repos/${repository}/releases?per_page=100`,
+          "--paginate",
+          "--slurp",
+        ]),
+      ),
+    );
+  const matches = pages.flatMap((page) =>
+    page.filter((release) => release.draft && release.tag_name === tag),
+  );
+  if (matches.length !== 1) throw new Error("Expected a unique draft for the release tag");
+  const release = Release.parse(await api(`repos/${repository}/releases/${matches[0]!.id}`));
+  if (release.id !== matches[0]!.id) throw new Error("GitHub returned another draft release");
+  return release;
+}
+
+async function downloadAsset(repository: string, id: number, path: string): Promise<void> {
+  const child = Bun.spawn(
+    [
+      "gh",
+      "api",
+      `repos/${repository}/releases/assets/${id}`,
+      "--header",
+      "Accept: application/octet-stream",
+    ],
+    { stdout: Bun.file(path), stderr: "pipe" },
+  );
+  const [code, err] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+  if (code !== 0) throw new Error(`Release asset download failed (${code}): ${err.trim()}`);
+}
 
 async function verifyReleaseAssets(
   repository: string,
@@ -384,7 +438,9 @@ async function verifyReleaseAssets(
   draft: boolean,
 ): Promise<VerifiedRelease> {
   const proof = await verifyReleaseTag(repository, tag);
-  const release = Release.parse(await api(`repos/${repository}/releases/tags/${tag}`));
+  const release = draft
+    ? await draftRelease(repository, tag)
+    : Release.parse(await api(`repos/${repository}/releases/tags/${tag}`));
   if (
     release.tag_name !== tag ||
     release.draft !== draft ||
@@ -403,17 +459,12 @@ async function verifyReleaseAssets(
   }
   const directory = await mkdtemp(join(tmpdir(), "manifold-release-proof-"));
   try {
-    await command([
-      "gh",
-      "release",
-      "download",
-      tag,
-      "--repo",
-      repository,
-      "--dir",
-      directory,
-      ...RELEASE_ASSETS.flatMap((name) => ["--pattern", name]),
-    ]);
+    for (const name of RELEASE_ASSETS) {
+      const asset = release.assets.find(
+        (candidate) => candidate.name === name && candidate.state === "uploaded",
+      )!;
+      await downloadAsset(repository, asset.id, join(directory, name));
+    }
     for (const name of [...FLEET_ASSETS, IMAGE_ASSET]) {
       const artifact = join(directory, name);
       const hash = new Bun.CryptoHasher("sha256");
@@ -440,7 +491,7 @@ async function verifyReleaseAssets(
     );
     if ((await remoteTag(repository, tag)) !== proof.sha)
       throw new Error("Release tag moved while checking artifacts");
-    return { ...proof, image };
+    return { ...proof, releaseId: release.id, image };
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

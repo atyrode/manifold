@@ -32,6 +32,7 @@ interface FixtureState {
   draft: boolean;
   nativeVerification: boolean;
   swapBinaries: boolean;
+  duplicateDrafts?: boolean;
   image: string;
 }
 
@@ -40,7 +41,6 @@ interface FixtureState {
 // Native Sigstore verification itself is exercised separately against a public attestation.
 const GITHUB_FIXTURE = `#!/usr/bin/env bun
 const fs = require("node:fs");
-const path = require("node:path");
 const state = JSON.parse(fs.readFileSync(process.env.RELEASE_FIXTURE_STATE, "utf8"));
 const args = process.argv.slice(2);
 const emit = (value) => console.log(JSON.stringify(value));
@@ -62,6 +62,10 @@ const artifactBytes = Object.fromEntries(assets.map((name) =>
 const subjects = assets.slice(0, 3).map((name) => ({
   name, digest: { sha256: new Bun.CryptoHasher("sha256").update(artifactBytes[name]).digest("hex") },
 }));
+const release = {
+  id: 91, tag_name: state.tag, draft: state.draft, prerelease: false, immutable: state.immutable,
+  assets: assets.map((name, index) => ({ id: 501 + index, name, state: "uploaded", size: 32 })),
+};
 if (args[0] === "api") {
   const url = new URL(args[1], "https://api.github.com/");
   const base = "/repos/" + state.repository;
@@ -85,20 +89,23 @@ if (args[0] === "api") {
   } else if (url.pathname === base + "/commits/" + state.sha + "/pulls") emit([pull]);
   else if (url.pathname === base + "/pulls/77") emit({ ...pull, commits: 1 });
   else if (url.pathname === base + "/git/commits/" + state.head) emit({ tree: { sha: state.checkedTree } });
-  else if (url.pathname === base + "/releases/tags/" + state.tag) emit({
-    tag_name: state.tag, draft: state.draft, prerelease: false, immutable: state.immutable,
-    assets: assets.map((name) => ({ name, state: "uploaded", size: 32 })),
-  });
+  else if (url.pathname === base + "/releases/tags/" + state.tag) {
+    if (state.draft) { console.error("Published release not found (HTTP 404)"); process.exit(1); }
+    emit(release);
+  } else if (url.pathname === base + "/releases") {
+    emit([[{ id: 90, tag_name: "v0.1.0", draft: true }], [release],
+      state.duplicateDrafts ? [{ ...release, id: 92 }] : []]);
+  } else if (url.pathname === base + "/releases/91") emit(release);
+  else if (url.pathname.startsWith(base + "/releases/assets/")) {
+    const index = Number(url.pathname.split("/").at(-1)) - 501;
+    if (!Number.isInteger(index) || index < 0 || index >= assets.length) throw new Error("Unknown asset id");
+    const source = state.swapBinaries && index < 2 ? assets[1 - index] : assets[index];
+    process.stdout.write(artifactBytes[source]);
+  }
   else throw new Error("Unexpected fixture command: " + args.join(" "));
 } else if (args[0] === "pr" && args[1] === "checks") {
   if (!state.requiredChecks) { console.error("Required policy check has not passed"); process.exit(1); }
   console.log("Required checks passed");
-} else if (args[0] === "release" && args[1] === "download") {
-  const directory = args[args.indexOf("--dir") + 1];
-  for (const name of assets) {
-    const source = state.swapBinaries && assets.indexOf(name) < 2 ? assets[1 - assets.indexOf(name)] : name;
-    fs.writeFileSync(path.join(directory, name), artifactBytes[source]);
-  }
 } else if (args[0] === "attestation" && args[1] === "verify") {
   if (!state.nativeVerification) { console.error("Attestation verification refused"); process.exit(1); }
   emit(args[2].startsWith("oci://") ? [{
@@ -331,5 +338,25 @@ test("valid signatures cannot substitute a different signed platform binary unde
   state.draft = true;
   const staged = await invoke("draft");
   expect(staged.code).not.toBe(0);
-  expect(staged.err).toContain("Attestation does not bind manifold-agent-linux-x64");
+  expect(staged.err).toContain("manifold-agent-linux-x64");
+}, 10_000);
+
+test("release metadata cannot introduce duplicate JSON keys hidden from semantic comparison", async () => {
+  const { invoke } = fixture((directory) => {
+    const path = join(directory, "packages/web/package.json");
+    const manifest = readFileSync(path, "utf8");
+    writeFileSync(path, manifest.replace("{", '{\n  "name": "@unreviewed/web",'));
+  });
+  const result = await invoke("tag");
+  expect(result.code).not.toBe(0);
+}, 10_000);
+
+test("draft publication refuses ambiguous tag names across release pages", async () => {
+  const { state, invoke } = fixture();
+  state.draft = true;
+  const unique = await invoke("draft");
+  expect(unique.code, unique.err).toBe(0);
+  state.duplicateDrafts = true;
+  const result = await invoke("draft");
+  expect(result.code).not.toBe(0);
 }, 10_000);

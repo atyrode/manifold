@@ -1223,15 +1223,19 @@ in the script header. `bun run release --dry-run` remains read-only from any bra
 
 The tag workflow first evaluates trusted `main` admission code with read-only permissions.
 Only an admitted SHA reaches the write-capable build job. The image, fleet binaries and native
-attestation bundles are assembled before creating a draft; the draft's exact assets are
-verified before publication, and the resulting release must report `immutable: true`.
+attestation bundles are assembled before creating a draft. Admission refuses ambiguous draft
+tags, resolves the unique draft and its assets by numeric id, and verifies those exact bytes
+before publishing that same release record. The resulting release must report `immutable: true`
+and retain the admitted source and release id.
 A failed run may leave an unpublished draft or an image in the registry. Retain its identity
 and failure evidence for an explicitly authorized release reconciliation; do not bypass the
 guard, silently overwrite a published release, or claim that a failed publication is complete.
 
 The shared `scripts/release-provenance.ts` policy requires the tag to identify a dedicated,
 single-parent release commit on `main`, with the canonical version/changelog/consumed-fragment
-delta only. Its parent needs successful latest full `main` CI; the single-commit merged
+delta only. The web manifest must match the release writer's exact output; the lock must retain
+every byte outside its canonical workspace-version token, including refusing duplicate-key
+parser differentials. Its parent needs successful latest full `main` CI; the single-commit merged
 `release/vX.Y.Z` PR must have the same tree, successful PR CI and its required checks.
 Promotion additionally requires successful latest full `main` CI for the exact tagged commit,
 not merely its parent or a later unrelated revision. CI evidence includes the successful

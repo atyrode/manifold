@@ -148,7 +148,10 @@ jobs:
           [ "$(jq -r .sha <<< "$proof")" = "$ADMITTED_SHA" ] || {
             echo "::error::Tag moved after admission; leave the draft unpublished"; exit 1;
           }
-          gh release edit "$GITHUB_REF_NAME" --draft=false
+          release_id="$(jq -er .releaseId <<< "$proof")"
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" -F draft=false --silent
           # GitHub's immutable-release setting is an administrator-owned prerequisite.
           # Missing immutability fails publication evidence; never delete a published release.
-          bun scripts/release-provenance.ts published "$GITHUB_REF_NAME"
+          published="$(bun scripts/release-provenance.ts published "$GITHUB_REF_NAME")"
+          jq -e --arg sha "$ADMITTED_SHA" --argjson id "$release_id" \
+            '.sha == $sha and .releaseId == $id' <<< "$published" >/dev/null
