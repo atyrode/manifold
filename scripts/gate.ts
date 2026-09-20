@@ -123,6 +123,12 @@ const tasks: readonly GateTask[] = [
     command: fixed("bun", "scripts/generate-web-changelog.ts", "--check"),
   },
   {
+    name: "workspace-versions:check",
+    group: "style",
+    phase: "static",
+    command: fixed("bun", "scripts/workspace-versions.ts"),
+  },
+  {
     name: "verify:trace",
     group: "trace",
     phase: "static",
