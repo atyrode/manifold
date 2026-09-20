@@ -21,6 +21,7 @@ import {
 } from "@manifold/protocol";
 import { sha256Hex, type PluginInstallRow } from "./stores.ts";
 import { deliveredArtifact, verifyBundledArtifacts } from "@manifold/plugin-kit/artifacts";
+import { fetchArtifactResponse } from "./artifact-https.ts";
 
 /**
  * THE ARTIFACT'S JOURNEY (ADR 0016 §8 stage 2, #152): from a URL or a path to a verified,
@@ -71,7 +72,7 @@ export interface ArtifactRequest {
   /** The pin, lowercase hex: the sha256 of the artifact's exact bytes. */
   readonly sha256: string;
   readonly dataDir: string;
-  /** Injected for tests; the door fetches with the runtime's `fetch`. */
+  /** Injected for body/redirect tests; destination policy still runs before this seam. */
   readonly fetchImpl?: typeof fetch;
   /**
    * `MANIFOLD_PLUGIN_DEV_PATHS=1`: accept an absolute path anywhere on this host rather than
@@ -127,30 +128,25 @@ export async function readArtifact(request: ArtifactRequest): Promise<Uint8Array
 }
 
 async function fetchArtifact(request: ArtifactRequest): Promise<Uint8Array> {
-  const fetchImpl = request.fetchImpl ?? fetch;
-  let response: Response;
   try {
-    response = await fetchImpl(request.source, {
-      method: "GET",
-      redirect: "follow",
-      signal: AbortSignal.timeout(ARTIFACT_FETCH_TIMEOUT_MS),
-    });
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : "fetch failed";
-    throw new InstallRefusal("artifact_unreadable", detail);
-  }
-  if (!response.ok) {
-    throw new InstallRefusal("artifact_unreadable", `HTTP ${String(response.status)}`);
-  }
-  const declared = response.headers.get("content-length");
-  if (declared !== null && Number(declared) > ISOLATE_MAX_ARTIFACT_BYTES) {
-    throw tooLarge(Number(declared));
-  }
-  const reader = response.body?.getReader();
-  if (reader === undefined) throw new InstallRefusal("artifact_unreadable", "empty response");
-  const chunks: Uint8Array[] = [];
-  let received = 0;
-  try {
+    const response = await fetchArtifactResponse(
+      request.source,
+      AbortSignal.timeout(ARTIFACT_FETCH_TIMEOUT_MS),
+      request.fetchImpl,
+    );
+    if (!response.ok) {
+      await response.body?.cancel();
+      throw new InstallRefusal("artifact_unreadable", `HTTP ${String(response.status)}`);
+    }
+    const declared = response.headers.get("content-length");
+    if (declared !== null && Number(declared) > ISOLATE_MAX_ARTIFACT_BYTES) {
+      await response.body?.cancel();
+      throw tooLarge(Number(declared));
+    }
+    const reader = response.body?.getReader();
+    if (reader === undefined) throw new InstallRefusal("artifact_unreadable", "empty response");
+    const chunks: Uint8Array[] = [];
+    let received = 0;
     while (true) {
       const chunk = await reader.read();
       if (chunk.done) break;
@@ -161,12 +157,12 @@ async function fetchArtifact(request: ArtifactRequest): Promise<Uint8Array> {
       }
       chunks.push(chunk.value);
     }
+    return Buffer.concat(chunks, received);
   } catch (error) {
     if (error instanceof InstallRefusal) throw error;
-    const detail = error instanceof Error ? error.message : "read failed";
+    const detail = error instanceof Error ? error.message : "fetch failed";
     throw new InstallRefusal("artifact_unreadable", detail);
   }
-  return Buffer.concat(chunks, received);
 }
 
 function readArtifactFile(request: ArtifactRequest): Uint8Array {

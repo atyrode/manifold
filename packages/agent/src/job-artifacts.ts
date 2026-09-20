@@ -19,7 +19,11 @@ import {
   type MachineArtifact,
   type JobArtifactDelivery,
 } from "@manifold/protocol";
-import { deliveredArtifact, extractArtifact } from "@manifold/plugin-kit/artifacts";
+import {
+  deliveredArtifact,
+  extractArtifact,
+  isPublicArtifactAddress,
+} from "@manifold/plugin-kit/artifacts";
 import type { HeldDirectory } from "./job-files.ts";
 
 export interface ArtifactAuthority {
@@ -55,35 +59,6 @@ export function artifactCacheKey(spec: MachineArtifact, entrySha256: string): st
   return `${createHash("sha256").update(canonicalJobJson(layout)).digest("hex")}-${entrySha256}`;
 }
 
-/** Conservative globally routable unicast policy; mapped IPv4 and special IPv6 ranges refuse. */
-export function isPublicArtifactAddress(address: string): boolean {
-  if (isIP(address) === 4) {
-    const [a = 0, b = 0, c = 0] = address.split(".").map(Number);
-    return !(
-      a === 0 ||
-      a === 10 ||
-      a === 127 ||
-      a >= 224 ||
-      (a === 100 && b >= 64 && b <= 127) ||
-      (a === 169 && b === 254) ||
-      (a === 172 && b >= 16 && b <= 31) ||
-      (a === 192 && (b === 168 || b === 0 || (b === 88 && c === 99))) ||
-      (a === 198 && (b === 18 || b === 19 || (b === 51 && c === 100))) ||
-      (a === 203 && b === 0 && c === 113)
-    );
-  }
-  if (isIP(address) !== 6) return false;
-  const groups = address.toLowerCase().split(":");
-  const first = parseInt(groups[0] ?? "", 16);
-  const second = parseInt(groups[1] || "0", 16);
-  return (
-    first >= 0x2000 &&
-    first <= 0x3fff &&
-    first !== 0x2002 &&
-    !(first === 0x2001 && (second < 0x200 || second === 0xdb8)) &&
-    !(first === 0x3fff && second < 0x1000)
-  );
-}
 function approvedUrl(value: string, authority: ArtifactAuthority): URL {
   const url = new URL(value);
   if (

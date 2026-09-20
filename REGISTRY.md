@@ -71,6 +71,7 @@ must never be taught one.
         "packages/plugin/src/**",
         "packages/server/src/plugin-host.ts",
         "packages/server/src/plugin-installs.ts",
+        "packages/server/src/artifact-https.ts",
         "packages/server/src/authored.ts",
         "packages/server/src/shared-modules.ts",
         "packages/server/src/isolate/**",
@@ -336,6 +337,10 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     {
       "glob": "packages/server/src/plugin-installs.ts",
       "why": "the install door's hands (ADR 0016 stage 2): an artifact fetched or read, pinned by hash before it is parsed, admitted before it is written, re-verified and re-extracted at every boot — the runner's input, which is why it sits beside the host"
+    },
+    {
+      "glob": "packages/server/src/artifact-https.ts",
+      "why": "the install door's network admission boundary: bounded HTTPS redirects, validated DNS answers and a pinned TLS peer before HTTP; one producer-neutral policy for every artifact publisher, with private delivery remaining in the existing local drop box"
     },
     {
       "glob": "packages/server/src/authored.ts",

@@ -17,14 +17,9 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { MachineArtifact } from "@manifold/protocol";
-import {
-  acquireArtifact,
-  artifactCacheKey,
-  isPublicArtifactAddress,
-  openCachedArtifact,
-} from "../src/job-artifacts.ts";
+import { acquireArtifact, artifactCacheKey, openCachedArtifact } from "../src/job-artifacts.ts";
 import { HeldDirectory } from "../src/job-files.ts";
-import { extractArtifact } from "@manifold/plugin-kit/artifacts";
+import { extractArtifact, isPublicArtifactAddress } from "@manifold/plugin-kit/artifacts";
 
 const executable = Buffer.from("#!/bin/sh\nexit 0\n");
 function specification(archive: Buffer, format: MachineArtifact["format"]): MachineArtifact {
