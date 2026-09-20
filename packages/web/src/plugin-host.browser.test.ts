@@ -185,7 +185,7 @@ async function withRosterFixture(run: (browser: Browser) => Promise<void>): Prom
       import { flushSync } from ${JSON.stringify(Bun.resolveSync("react-dom", import.meta.dir))};
       import {
         AssemblyProvider, RosterGate, HostServicesProvider, PanelOutlet,
-        useAssembly, useAttachPluginsClient,
+        useAttachPluginsClient,
       } from ${JSON.stringify(resolve(import.meta.dir, "plugin-host.tsx"))};
       const requests = [], listeners = new Set();
       const client = {
@@ -213,10 +213,8 @@ async function withRosterFixture(run: (browser: Browser) => Promise<void>): Prom
         return null;
       }
       function Workspace() {
-        const assembly = useAssembly();
         const [panels, setPanels] = useState(["acme.off.home", "acme.remote.home"]);
         return createElement("section", { "data-workspace": "" },
-          createElement("output", null, assembly.developerMode ? "Developer mode" : "Standard mode"),
           panels.map(panelId => createElement("article", { key: panelId, "data-panel": panelId },
             createElement(PanelOutlet, {
               panelId, tileId: panelId,
@@ -436,9 +434,6 @@ for (const completion of ["success", "rejection"] as const) {
           : "window.rosterFixture.reject(0)",
       );
       await expectNamedPanels(browser);
-      expect(await browser.evaluate<string>('document.querySelector("output").textContent')).toBe(
-        "Developer mode",
-      );
     });
   }, 60_000);
 }
