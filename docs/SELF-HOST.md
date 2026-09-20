@@ -577,7 +577,7 @@ asset metadata. Compare the downloaded archive's SHA-256 with the release asset 
 review the release and platform target, and record the reviewed hash in the workflow.
 Do not fetch the expected hash dynamically during deployment: an upstream replacement must
 fail closed until a new identity is reviewed. For the current pin, the credential-free
-consumer proof on Linux x64 is:
+consumer proof on Linux x64 with a conventional glibc loader (as on the workflow's Ubuntu runner) is:
 
 ```sh
 (
@@ -600,6 +600,10 @@ consumer proof on Linux x64 is:
     "$CLEVER" version
 )
 ```
+
+Native NixOS and musl-only hosts need a compatible glibc container for the final version probe.
+Run that probe without network access or mounted account configuration; do not change the pin
+or execute an unverified replacement to work around a host-loader mismatch.
 
 For an update, replace the version and independently reviewed expected hash together in this
 procedure and in the workflow's `CLEVER_VERSION` / `CLEVER_ARCHIVE_SHA256`. Review the archive
