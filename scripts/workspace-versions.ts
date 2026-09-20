@@ -24,9 +24,15 @@ export async function assertWorkspaceVersions(directory = process.cwd()): Promis
       throw new Error(`Workspace manifest leaves the repository: ${JSON.stringify(workspace)}`);
     }
     const manifest: unknown = await Bun.file(manifestPath).json();
-    if (locked.version !== versionMetadata.parse(manifest).version) {
+    const manifestVersion = versionMetadata.parse(manifest).version;
+    if (workspace === "" && manifestVersion !== undefined) {
       throw new Error(
-        `bun.lock workspace ${JSON.stringify(workspace || ".")} has stale version metadata; run bun install and verify the regenerated lock before committing`,
+        "The root package must remain versionless because the supported Bun lock writer omits its version",
+      );
+    }
+    if (locked.version !== manifestVersion) {
+      throw new Error(
+        `bun.lock workspace ${JSON.stringify(workspace || ".")} has stale version metadata (lock ${JSON.stringify(locked.version) ?? "absent"}, manifest ${JSON.stringify(manifestVersion) ?? "absent"}); run bun install and verify the regenerated lock before committing`,
       );
     }
   }

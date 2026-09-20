@@ -1301,6 +1301,9 @@ OIDC issuer and GitHub-hosted runners.
 
 Workspace package versions are required lock metadata: every `bun.lock` workspace must match
 its package manifest, including the absence of a version for versionless packages.
+The root manifest must remain versionless: Bun 1.4.2 omits the root record's version even
+when one is declared, so reinstalling cannot make a versioned root consistent. The assertion
+refuses that unsupported state explicitly rather than suggesting a lock-only repair.
 `bun install --frozen-lockfile` does not enforce that equality. The static CI/gate slice runs
 `bun scripts/workspace-versions.ts`, and release uses the same assertion after regenerating
 the lock, before creating or publishing its commit. If metadata is stale, run ordinary

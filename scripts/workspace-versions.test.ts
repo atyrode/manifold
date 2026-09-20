@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-test("workspace metadata admission covers non-release and versionless packages", () => {
+test("workspace metadata admits supported versions only", () => {
   const root = mkdtempSync(join(tmpdir(), "manifold-workspace-versions-"));
   const workspaces: Record<string, { version?: string }> = {
     "": {},
@@ -43,6 +43,15 @@ test("workspace metadata admission covers non-release and versionless packages",
     workspaces["packages/agent"] = {};
     saveLock();
     expect(check().exitCode).toBe(0);
+
+    // Matching handwritten root metadata is not a version the Bun writer can emit.
+    writeFileSync(
+      join(root, "package.json"),
+      JSON.stringify({ version: "1.0.0", workspaces: ["packages/*"] }),
+    );
+    workspaces[""] = { version: "1.0.0" };
+    saveLock();
+    expect(check().exitCode).toBe(1);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

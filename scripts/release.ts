@@ -251,7 +251,7 @@ ${protocolLine}
 
 ## Evidence
 
-Source ci.yml is green at ${head}; release generation, bun run check and changelog:check passed.
+Source ci.yml is green at ${head}; release generation, workspace-version check, bun run check and changelog:check passed.
 Required checks on this PR must pass before rebase auto-merge.
 
 ## Acceptance
