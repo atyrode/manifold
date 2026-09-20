@@ -22,10 +22,10 @@ import {
   assembleChangelog,
   derivePullRequest,
   deriveReleaseLevel,
+  parseReleasedChangelog,
   parseVersion,
   readFragments,
   renderFragmentBullet,
-  renderReleaseSection,
   resolveReleaseVersion,
   type ChangeFragment,
   type ReleasedFragment,
@@ -60,6 +60,19 @@ function protocolVersionOf(source: string, where: string): number {
   return Number(match[1]);
 }
 
+function protocolStatus(
+  current: number,
+  previous: number | null,
+  lastTag: string | null,
+  currentRef = "HEAD",
+): string {
+  return previous === null
+    ? `Protocol: ${current} at ${currentRef}; no release tag to compare against`
+    : previous === current
+      ? `Protocol: ${current}, unchanged since ${lastTag}`
+      : `Protocol bump pending: ${previous} (${lastTag}) → ${current} (${currentRef}); the hub ships at or ahead of this release (docs/CONTRACTS.md §Protocol and compatibility)`;
+}
+
 /**
  * The pull request that landed a fragment: the `(#N)` suffix of the squash commit that ADDED
  * the file. A migrated fragment may carry `pr:` itself. Null names a fragment a release
@@ -86,14 +99,19 @@ async function waitForReleasePull(repository: string, url: string): Promise<stri
   console.log(`Waiting for release PR ${url} to merge…`);
   const deadline = Date.now() + 30 * 60_000;
   while (Date.now() < deadline) {
-    const result = await $`gh pr view ${url} --repo ${repository} --json state,mergedAt,mergeCommit`.quiet().text();
+    const result = await $`gh pr view ${url} --repo ${repository} --json state,mergedAt,mergeCommit`
+      .quiet()
+      .text();
     const pull = JSON.parse(result) as {
       readonly state: string;
       readonly mergedAt: string | null;
       readonly mergeCommit: { readonly oid: string } | null;
     };
     if (pull.state === "MERGED" && pull.mergedAt !== null && pull.mergeCommit !== null) {
-      return z.string().regex(/^[0-9a-f]{40}$/).parse(pull.mergeCommit.oid);
+      return z
+        .string()
+        .regex(/^[0-9a-f]{40}$/)
+        .parse(pull.mergeCommit.oid);
     }
     if (pull.state === "CLOSED") throw new Error(`Release PR closed without merging: ${url}`);
     await Bun.sleep(10_000);
@@ -175,7 +193,10 @@ async function localTagCommit(tag: string): Promise<string | null> {
   return gitText(["rev-parse", `refs/tags/${tag}^{commit}`]);
 }
 
-async function releasePull(repository: string, tag: string): Promise<z.infer<typeof ReleasePull> | undefined> {
+async function releasePull(
+  repository: string,
+  tag: string,
+): Promise<z.infer<typeof ReleasePull> | undefined> {
   const owner = repository.split("/")[0]!;
   const query = `repos/${repository}/pulls?state=all&base=main&head=${owner}:release/${tag}&per_page=100`;
   const result = await $`gh api ${query} --paginate --slurp`.quiet().text();
@@ -191,7 +212,8 @@ async function releasePull(repository: string, tag: string): Promise<z.infer<typ
       pull.head.ref !== `release/${tag}` ||
       pull.head.repo === null ||
       !sameRepo(pull.head.repo.full_name)
-    ) throw new Error(`Conflicting release PR for ${tag}`);
+    )
+      throw new Error(`Conflicting release PR for ${tag}`);
     if (pull.state === "closed" && pull.merged_at === null) {
       throw new Error(`Release PR closed without merging: #${pull.number}`);
     }
@@ -211,7 +233,6 @@ async function publishRelease(
   tag: string,
   snapshot: string,
   prepared?: string,
-  body?: string,
 ): Promise<void> {
   const tagRef = `refs/tags/${tag}`;
   const releaseBranch = `release/${tag}`;
@@ -219,9 +240,10 @@ async function publishRelease(
   await $`git fetch --no-tags origin main`;
   const main = await gitText(["rev-parse", "origin/main"]);
   const localTag = await localTagCommit(tag);
-  const retained = (await gitText(["show", "-s", "--format=%s", snapshot])) === `release: ${tag}`
-    ? snapshot
-    : undefined;
+  const retained =
+    (await gitText(["show", "-s", "--format=%s", snapshot])) === `release: ${tag}`
+      ? snapshot
+      : undefined;
   let retainedTree: string | undefined;
   if (retained !== undefined) {
     await verifyReleaseCandidate(repository, tag, retained);
@@ -238,7 +260,10 @@ async function publishRelease(
     if (localTag !== null && localTag !== proof.sha) {
       throw new Error(`Local tag ${tag} conflicts with the verified remote release`);
     }
-    if (retainedTree !== undefined && retainedTree !== await gitText(["rev-parse", `${proof.sha}^{tree}`])) {
+    if (
+      retainedTree !== undefined &&
+      retainedTree !== (await gitText(["rev-parse", `${proof.sha}^{tree}`]))
+    ) {
       throw new Error("Retained release commit differs from the published release");
     }
     await unchangedCheckout(snapshot);
@@ -257,7 +282,10 @@ async function publishRelease(
   }
   const candidate = prepared ?? pull?.head.sha ?? branchSha ?? retained;
   if (candidate === undefined) throw new Error(`No prepared release found for ${tag}`);
-  if ((branchSha !== null && candidate !== branchSha) || (pull !== undefined && candidate !== pull.head.sha)) {
+  if (
+    (branchSha !== null && candidate !== branchSha) ||
+    (pull !== undefined && candidate !== pull.head.sha)
+  ) {
     throw new Error("Conflicting prepared release candidates");
   }
   const candidateProof = await verifyReleaseCandidate(repository, tag, candidate);
@@ -267,7 +295,10 @@ async function publishRelease(
       throw new Error("Ambiguous retained release candidate");
     }
   }
-  if (localTag !== null && (pull === undefined || pull.merged_at === null || localTag !== pull.merge_commit_sha)) {
+  if (
+    localTag !== null &&
+    (pull === undefined || pull.merged_at === null || localTag !== pull.merge_commit_sha)
+  ) {
     throw new Error(`Local tag ${tag} does not name the recorded merged release`);
   }
   await unchangedCheckout(snapshot);
@@ -285,29 +316,7 @@ async function publishRelease(
         throw new Error("Release PR changed during publication");
       }
       if (pull === undefined) {
-        const description = body ?? `## Problem
-
-Publish the retained ${tag} release without bypassing required checks.
-
-## Change
-
-Reuse the canonical release commit ${candidate}; no release content was regenerated.
-
-## Dependencies
-
-- None
-
-## Evidence
-
-Full main CI is green at ${candidateProof.parent}. Required checks on this PR must pass before rebase auto-merge.
-
-## Acceptance
-
-- Merge the release tree through main, then tag and publish without promoting production.
-
-This bun run release PR is exempt from issue lifecycle checks for the release committer
-(agent-policy.yml); the shared engineering contract and gate still apply.
-`;
+        const description = await releaseBody(tag, candidate, candidateProof.parent);
         await $`gh pr create --repo ${repository} --base main --head ${releaseBranch} --title ${`release: ${tag}`} --body ${description}`;
         pull = await releasePull(repository, tag);
         if (pull === undefined || pull.head.sha !== candidate) {
@@ -334,7 +343,9 @@ This bun run release PR is exempt from issue lifecycle checks for the release co
   // Otherwise local main may advance only by fast-forward; later main is never rewound.
   if (!onMain) {
     if (retainedTree !== tree) throw new Error("Refusing to replace unrelated local work");
-    await $`git reset --keep ${sha}`;
+    // Identical trees need no checkout. CAS preserves a concurrent commit or edit
+    // between the cleanliness check and this identity-only reconciliation.
+    await $`git update-ref -m ${`release: reconcile ${tag}`} refs/heads/main ${sha} ${snapshot}`;
   } else if (await ancestor(snapshot, sha)) {
     await $`git merge --ff-only ${sha}`;
   }
@@ -361,7 +372,9 @@ This bun run release PR is exempt from issue lifecycle checks for the release co
 
 function reportRelease(tag: string): void {
   console.log(`Released ${tag}. Production has not moved.`);
-  console.log(`capture the incumbent full state, then promote with: bun run promote ${tag} --recovery-receipt PATH`);
+  console.log(
+    `capture the incumbent full state, then promote with: bun run promote ${tag} --recovery-receipt PATH`,
+  );
 }
 
 const args = process.argv.slice(2);
@@ -373,7 +386,9 @@ if (
     ? args.length !== 2 || !args[1]!.startsWith("v")
     : positional.length > 1 || args.some((arg) => arg.startsWith("--") && arg !== "--dry-run")
 ) {
-  console.error("usage: bun run release [--dry-run] [major|minor|patch|x.y.z] | --resume vMAJOR.MINOR.PATCH");
+  console.error(
+    "usage: bun run release [--dry-run] [major|minor|patch|x.y.z] | --resume vMAJOR.MINOR.PATCH",
+  );
   process.exit(1);
 }
 if (resume) {
@@ -387,7 +402,7 @@ if (resume) {
 }
 const requested = positional[0];
 
-// Inputs every run parses, dry or not: a bad fragment is refused before anything else.
+// Normal generation (including dry-run) parses fragments before making changes.
 const fragments = readFragments("changes");
 const packagePath = "packages/web/package.json";
 const packageMetadata = (await Bun.file(packagePath).json()) as PackageMetadata;
@@ -408,12 +423,7 @@ const protocolAtTag =
         await gitText(["show", `${lastTag}:${PROTOCOL_VERSION_FILE}`]),
         `${lastTag}:${PROTOCOL_VERSION_FILE}`,
       );
-const protocolLine =
-  protocolAtTag === null
-    ? `Protocol: ${protocolAtHead} at HEAD; no release tag to compare against`
-    : protocolAtTag === protocolAtHead
-      ? `Protocol: ${protocolAtHead}, unchanged since ${lastTag}`
-      : `Protocol bump pending: ${protocolAtTag} (${lastTag}) → ${protocolAtHead} (HEAD); the hub ships at or ahead of this release (docs/CONTRACTS.md §Protocol and compatibility)`;
+const protocolLine = protocolStatus(protocolAtHead, protocolAtTag, lastTag);
 
 const pullRequests = await Promise.all(fragments.map(pullRequestOf));
 const resolved: readonly ChangeFragment[] = fragments.map((fragment, index) => ({
@@ -474,7 +484,9 @@ const tag = `v${version}`;
 const releaseBranch = `release/${tag}`;
 const releaseRef = `refs/heads/${releaseBranch}`;
 if ((await gitText(["ls-remote", "--heads", "origin", releaseRef])) !== "") {
-  throw new Error(`Release branch ${releaseBranch} already exists on origin; use bun run release --resume ${tag}`);
+  throw new Error(
+    `Release branch ${releaseBranch} already exists on origin; use bun run release --resume ${tag}`,
+  );
 }
 
 const date = new Date().toISOString().slice(0, 10);
@@ -494,18 +506,45 @@ await $`bun run changelog:check`;
 await $`git add CHANGELOG.md bun.lock packages/web/package.json`;
 await $`git commit -m ${`release: v${version}`}`;
 const releaseSha = await gitText(["rev-parse", "HEAD"]);
-await publishRelease(repository, tag, releaseSha, releaseSha, releaseBody());
+await publishRelease(repository, tag, releaseSha, releaseSha);
 
-function releaseBody(): string {
-const body = `## Problem
+async function releaseBody(tag: string, candidate: string, parent: string): Promise<string> {
+  const [markdown, protocol, described] = await Promise.all([
+    gitText(["show", `${candidate}:CHANGELOG.md`]),
+    gitText(["show", `${candidate}:${PROTOCOL_VERSION_FILE}`]),
+    $`git describe --tags --abbrev=0 ${parent}`.quiet().nothrow(),
+  ]);
+  const [release, next] = parseReleasedChangelog(markdown);
+  if (release?.version !== tag.slice(1)) throw new Error("Prepared release notes do not match");
+  // Reuse the committed renderer output, including section headings and linked changes.
+  const start = markdown.indexOf(`\n## [${release.version}] - ${release.date}`) + 1;
+  const end =
+    next === undefined
+      ? markdown.length
+      : markdown.indexOf(`\n## [${next.version}] - ${next.date}`, start);
+  const lastTag = described.exitCode === 0 ? described.text().trim() : null;
+  const previous =
+    lastTag === null
+      ? null
+      : protocolVersionOf(
+          await gitText(["show", `${lastTag}:${PROTOCOL_VERSION_FILE}`]),
+          `${lastTag}:${PROTOCOL_VERSION_FILE}`,
+        );
+  const status = protocolStatus(
+    protocolVersionOf(protocol, `${candidate}:${PROTOCOL_VERSION_FILE}`),
+    previous,
+    lastTag,
+    "release commit",
+  );
+  return `## Problem
 
 Publish ${tag} from green main without bypassing its required checks.
 
 ## Change
 
-${renderReleaseSection(version, date, released)}
+${markdown.slice(start, end).trim()}
 
-${protocolLine}
+${status}
 
 ## Dependencies
 
@@ -513,15 +552,14 @@ ${protocolLine}
 
 ## Evidence
 
-Source ci.yml is green at ${head}; release generation, workspace-version check, bun run check and changelog:check passed.
+Canonical release commit ${candidate} is based on successful full main CI at ${parent}.
 Required checks on this PR must pass before rebase auto-merge.
 
 ## Acceptance
 
-- Merge the release tree through main, then tag and publish it without promoting production.
+- Merge the release tree through main, then tag and publish without promoting production.
 
 This bun run release PR is exempt from issue lifecycle checks for the release committer
 (agent-policy.yml); the shared engineering contract and gate still apply.
 `;
-  return body;
 }

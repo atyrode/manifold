@@ -18,7 +18,13 @@ interface ServiceState {
   merged: string;
   tree: string;
   remote: string;
-  pulls: { number: number; state: "open" | "closed"; merged: boolean; head: string; title: string }[];
+  pulls: {
+    number: number;
+    state: "open" | "closed";
+    merged: boolean;
+    head: string;
+    title: string;
+  }[];
   created: number;
   merges: number;
   watched: number;
@@ -139,7 +145,12 @@ function fixture(interruption: Interruption = "commit") {
     RELEASE_FIXTURE_STATE: stateFile,
   };
   const git = (...args: string[]) => {
-    const result = Bun.spawnSync(["git", ...args], { cwd: directory, env, stdout: "pipe", stderr: "pipe" });
+    const result = Bun.spawnSync(["git", ...args], {
+      cwd: directory,
+      env,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
     if (result.exitCode !== 0) throw new Error(result.stderr.toString());
     return result.stdout.toString().trim();
   };
@@ -147,12 +158,25 @@ function fixture(interruption: Interruption = "commit") {
   git("init", "--initial-branch=main");
   git("remote", "add", "origin", remote);
   mkdirSync(join(directory, "packages/web"), { recursive: true });
+  mkdirSync(join(directory, "packages/protocol/src"), { recursive: true });
+  writeFileSync(
+    join(directory, "packages/protocol/src/version.ts"),
+    "export const PROTOCOL_VERSION = 7;\n",
+  );
   mkdirSync(join(directory, "changes"));
   const manifest = { name: "@manifold/web", version: "1.2.3" };
-  const lock = { lockfileVersion: 1, workspaces: { "packages/web": { ...manifest } }, packages: {} };
+  const lock = {
+    lockfileVersion: 1,
+    workspaces: { "packages/web": { ...manifest } },
+    packages: {},
+  };
   const fragment = "---\nsection: Fixed\nissue: 123\n---\nKeep retained records readable.\n";
-  const changelog = "# Changelog\n\n## [1.2.3] - 2026-01-01\n\n### Fixed\n\n- Retain records. (#120, #121)\n";
-  writeFileSync(join(directory, "packages/web/package.json"), JSON.stringify(manifest, null, 2) + "\n");
+  const changelog =
+    "# Changelog\n\n## [1.2.3] - 2026-01-01\n\n### Fixed\n\n- Retain records. (#120, #121)\n";
+  writeFileSync(
+    join(directory, "packages/web/package.json"),
+    JSON.stringify(manifest, null, 2) + "\n",
+  );
   writeFileSync(join(directory, "bun.lock"), JSON.stringify(lock, null, 2) + "\n");
   writeFileSync(join(directory, "changes/123-records.md"), fragment);
   writeFileSync(join(directory, "CHANGELOG.md"), changelog);
@@ -163,11 +187,17 @@ function fixture(interruption: Interruption = "commit") {
   git("push", "origin", "main");
   manifest.version = "1.2.4";
   lock.workspaces["packages/web"].version = "1.2.4";
-  writeFileSync(join(directory, "packages/web/package.json"), JSON.stringify(manifest, null, 2) + "\n");
+  writeFileSync(
+    join(directory, "packages/web/package.json"),
+    JSON.stringify(manifest, null, 2) + "\n",
+  );
   writeFileSync(join(directory, "bun.lock"), JSON.stringify(lock, null, 2) + "\n");
-  writeFileSync(join(directory, "CHANGELOG.md"), assembleChangelog(changelog, "1.2.4", "2026-01-03", [
-    { ...parseFragment("123-records.md", fragment), pr: 456 },
-  ]));
+  writeFileSync(
+    join(directory, "CHANGELOG.md"),
+    assembleChangelog(changelog, "1.2.4", "2026-01-03", [
+      { ...parseFragment("123-records.md", fragment), pr: 456 },
+    ]),
+  );
   git("rm", "changes/123-records.md");
   git("add", ".");
   git("commit", "-m", "release: v1.2.4");
@@ -179,13 +209,35 @@ function fixture(interruption: Interruption = "commit") {
   git("push", "origin", `${head}:refs/pull/77/head`, `${merged}:refs/fixture/merge`);
   const integrated = ["merged", "local-tag", "remote-tag"].includes(interruption);
   const state: ServiceState = {
-    repository: "owner/manifold", tag: "v1.2.4", parent, head, merged, tree, remote,
-    pulls: interruption === "commit" || interruption === "branch" ? [] : [{
-      number: 77, state: integrated ? "closed" : "open", merged: integrated, head, title: "release: v1.2.4",
-    }],
-    created: 0, merges: 0, watched: 0, sourceCi: true, requiredChecks: true, immutable: true, checkedTree: tree,
+    repository: "owner/manifold",
+    tag: "v1.2.4",
+    parent,
+    head,
+    merged,
+    tree,
+    remote,
+    pulls:
+      interruption === "commit" || interruption === "branch"
+        ? []
+        : [
+            {
+              number: 77,
+              state: integrated ? "closed" : "open",
+              merged: integrated,
+              head,
+              title: "release: v1.2.4",
+            },
+          ],
+    created: 0,
+    merges: 0,
+    watched: 0,
+    sourceCi: true,
+    requiredChecks: true,
+    immutable: true,
+    checkedTree: tree,
   };
-  if (interruption === "branch" || interruption === "pull") git("push", "origin", `${head}:refs/heads/release/v1.2.4`);
+  if (interruption === "branch" || interruption === "pull")
+    git("push", "origin", `${head}:refs/heads/release/v1.2.4`);
   if (integrated) git("--git-dir", remote, "update-ref", "refs/heads/main", merged, parent);
   if (interruption === "local-tag" || interruption === "remote-tag") {
     git("reset", "--hard", merged);
@@ -194,9 +246,19 @@ function fixture(interruption: Interruption = "commit") {
   if (interruption === "remote-tag") git("push", "origin", `refs/tags/${state.tag}`);
   const invoke = async (...args: string[]) => {
     writeFileSync(stateFile, JSON.stringify(state));
-    const child = Bun.spawn([process.execPath, new URL("./release.ts", import.meta.url).pathname,
-      ...(args.length ? args : ["--resume", state.tag])], { cwd: directory, env, stdout: "pipe", stderr: "pipe" });
-    const [code, out, err] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+    const child = Bun.spawn(
+      [
+        process.execPath,
+        new URL("./release.ts", import.meta.url).pathname,
+        ...(args.length ? args : ["--resume", state.tag]),
+      ],
+      { cwd: directory, env, stdout: "pipe", stderr: "pipe" },
+    );
+    const [code, out, err] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
     Object.assign(state, JSON.parse(readFileSync(stateFile, "utf8")) as ServiceState);
     if (err.includes("Unexpected fixture command:")) throw new Error(err);
     return { code, out, err };
@@ -212,7 +274,9 @@ test("resume publishes the retained release commit without regenerating its vers
   expect(f.git("rev-parse", "HEAD")).toBe(f.state.merged);
   expect(f.git("rev-parse", "HEAD^{tree}")).toBe(f.state.tree);
   expect(f.git("--git-dir", f.remote, "rev-parse", "refs/tags/v1.2.4")).toBe(f.state.merged);
-  expect(JSON.parse(readFileSync(join(f.directory, "packages/web/package.json"), "utf8")).version).toBe("1.2.4");
+  expect(
+    JSON.parse(readFileSync(join(f.directory, "packages/web/package.json"), "utf8")).version,
+  ).toBe("1.2.4");
   expect(f.state.pulls.map((p) => p.number)).toEqual([77]);
   expect(f.state.created).toBe(1);
   expect(f.state.merges).toBe(1);
@@ -278,18 +342,36 @@ test("resume discovers an existing remote branch from a clean source-main checko
   expect(f.state.created).toBe(1);
 }, 20_000);
 
-for (const failure of ["source-ci", "required-checks", "immutable", "tree", "closed", "ambiguous", "branch", "local-tag", "remote-tag", "version"] as const) {
+for (const failure of [
+  "source-ci",
+  "required-checks",
+  "immutable",
+  "tree",
+  "closed",
+  "ambiguous",
+  "branch",
+  "local-tag",
+  "remote-tag",
+  "version",
+] as const) {
   test(`resume refuses ${failure} conflicts without replacing existing refs or local state`, async () => {
     const f = fixture("merged");
     if (failure === "source-ci") f.state.sourceCi = false;
     if (failure === "required-checks") f.state.requiredChecks = false;
     if (failure === "immutable") f.state.immutable = false;
     if (failure === "tree") f.state.checkedTree = f.git("rev-parse", `${f.state.parent}^{tree}`);
-    if (failure === "closed") { f.state.pulls[0]!.merged = false; f.state.pulls[0]!.state = "closed"; }
+    if (failure === "closed") {
+      f.state.pulls[0]!.merged = false;
+      f.state.pulls[0]!.state = "closed";
+    }
     if (failure === "ambiguous") f.state.pulls.push({ ...f.state.pulls[0]!, number: 78 });
-    if (failure === "branch") f.git("push", "origin", `${f.state.parent}:refs/heads/release/v1.2.4`);
+    if (failure === "branch")
+      f.git("push", "origin", `${f.state.parent}:refs/heads/release/v1.2.4`);
     if (failure === "local-tag") f.git("tag", f.state.tag, f.state.parent);
-    if (failure === "remote-tag") { f.git("tag", f.state.tag, f.state.parent); f.git("push", "origin", `refs/tags/${f.state.tag}`); }
+    if (failure === "remote-tag") {
+      f.git("tag", f.state.tag, f.state.parent);
+      f.git("push", "origin", `refs/tags/${f.state.tag}`);
+    }
     if (failure === "version") f.state.tag = "v1.2.5";
     const refs = f.git("--git-dir", f.remote, "show-ref");
     const head = f.git("rev-parse", "HEAD");
@@ -309,9 +391,14 @@ for (const change of ["commit", "dirty"] as const) {
     const f = fixture("pull");
     f.state.changeCheckout = change;
     expect((await f.invoke()).code).not.toBe(0);
-    expect(readFileSync(join(f.directory, "operator-work.txt"), "utf8")).toBe(change === "commit" ? "keep local commit\n" : "keep local edits\n");
-    expect(f.git("--git-dir", f.remote, "for-each-ref", "--format=%(refname)", "refs/tags")).toBe("");
-    if (change === "commit") expect(f.git("show", "-s", "--format=%s", "HEAD")).toBe("local operator work");
+    expect(readFileSync(join(f.directory, "operator-work.txt"), "utf8")).toBe(
+      change === "commit" ? "keep local commit\n" : "keep local edits\n",
+    );
+    expect(f.git("--git-dir", f.remote, "for-each-ref", "--format=%(refname)", "refs/tags")).toBe(
+      "",
+    );
+    if (change === "commit")
+      expect(f.git("show", "-s", "--format=%s", "HEAD")).toBe("local operator work");
     else expect(f.git("rev-parse", "HEAD")).toBe(f.state.head);
   }, 20_000);
 }
@@ -367,10 +454,52 @@ test("resume restores a missing release branch for the existing open PR", async 
 test("resume requires an explicit canonical tag and cannot be combined with dry-run", async () => {
   const f = fixture();
   const refs = f.git("--git-dir", f.remote, "show-ref");
-  for (const args of [["--resume"], ["--resume", "1.2.4"], ["--resume", "v01.2.4"], ["--resume", "v1.2.4", "--dry-run"]]) {
+  for (const args of [
+    ["--resume"],
+    ["--resume", "1.2.4"],
+    ["--resume", "v01.2.4"],
+    ["--resume", "v1.2.4", "--dry-run"],
+  ]) {
     expect((await f.invoke(...args)).code).not.toBe(0);
   }
   expect(f.git("rev-parse", "HEAD")).toBe(f.state.head);
   expect(f.git("--git-dir", f.remote, "show-ref")).toBe(refs);
   expect(f.state.pulls).toEqual([]);
+}, 20_000);
+
+test("resume preserves a concurrent commit at the local release-head update", async () => {
+  const f = fixture();
+  const realGit = Bun.which("git");
+  if (realGit === null) throw new Error("Release fixtures require native Git");
+  const marker = join(f.directory, "..", "concurrent-head");
+  const edited = "export const editedAfterVerification = true;\n";
+  // Race the native checkout transition, after its last admission check. The shim
+  // supports both ordinary checkout operations and a compare-and-swap ref update.
+  writeFileSync(
+    join(f.directory, "..", "bin", "git"),
+    `#!/usr/bin/env bun
+const args = process.argv.slice(2);
+const realGit = ${JSON.stringify(realGit)};
+const marker = ${JSON.stringify(marker)};
+const run = (...args) => {
+  const result = Bun.spawnSync([realGit, ...args], { stdout: "pipe", stderr: "pipe" });
+  if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+  return result.stdout.toString().trim();
+};
+if (["reset", "merge", "update-ref"].includes(args[0]) && args.includes(${JSON.stringify(f.state.merged)}) && !(await Bun.file(marker).exists())) {
+  await Bun.write("application.ts", ${JSON.stringify(edited)});
+  run("add", "application.ts");
+  run("commit", "-m", "server: retain concurrent work");
+  await Bun.write(marker, run("rev-parse", "HEAD"));
+}
+const result = Bun.spawnSync([realGit, ...args], { stdin: "inherit", stdout: "inherit", stderr: "inherit" });
+process.exit(result.exitCode);
+`,
+    { mode: 0o700 },
+  );
+  const result = await f.invoke();
+  expect(result.code, result.err).not.toBe(0);
+  expect(f.git("rev-parse", "HEAD")).toBe(readFileSync(marker, "utf8"));
+  expect(readFileSync(join(f.directory, "application.ts"), "utf8")).toBe(edited);
+  expect(f.git("--git-dir", f.remote, "tag", "--list")).toBe("");
 }, 20_000);

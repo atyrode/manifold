@@ -272,15 +272,12 @@ const verify = ${mode === "candidate" ? "verifyReleaseCandidate" : "verifyReleas
 console.log(JSON.stringify(await verify(${JSON.stringify(state.repository)}, ${JSON.stringify(state.tag)}, ${JSON.stringify(sha)})));`,
           ]
         : [module, mode, state.tag];
-    const child = Bun.spawn(
-      [process.execPath, ...args],
-      {
-        cwd: directory,
-        env,
-        stdout: "pipe",
-        stderr: "pipe",
-      },
-    );
+    const child = Bun.spawn([process.execPath, ...args], {
+      cwd: directory,
+      env,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
     const [code, out, err] = await Promise.all([
       child.exited,
       new Response(child.stdout).text(),
@@ -309,8 +306,14 @@ test("candidate admission requires a dedicated single-parent release commit", as
   const unrelated = git("commit-tree", state.checkedTree, "-p", state.parent, "-m", "other work");
   expect((await invoke("candidate", unrelated)).code).not.toBe(0);
   const merge = git(
-    "commit-tree", state.checkedTree, "-p", state.parent, "-p", state.head,
-    "-m", `release: ${state.tag}`,
+    "commit-tree",
+    state.checkedTree,
+    "-p",
+    state.parent,
+    "-p",
+    state.head,
+    "-m",
+    `release: ${state.tag}`,
   );
   expect((await invoke("candidate", merge)).code).not.toBe(0);
 }, 10_000);
@@ -348,9 +351,7 @@ test("publishing a candidate branch does not make it an integrated release", asy
   state.pullState = "merged";
   expect((await invoke("candidate", state.sha)).code).toBe(0);
   expect((await invoke("commit")).code).not.toBe(0);
-  expect(git("ls-remote", "origin", "refs/heads/main")).toBe(
-    `${state.parent}\trefs/heads/main`,
-  );
+  expect(git("ls-remote", "origin", "refs/heads/main")).toBe(`${state.parent}\trefs/heads/main`);
 }, 10_000);
 
 test("untagged admission requires one merged same-repository single-commit release PR", async () => {
