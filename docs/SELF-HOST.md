@@ -1027,9 +1027,11 @@ or production evidence. Fast pull-request `gate` success and artifacts from anot
 cross these boundaries.
 
 Both `deploy-dev.yml` and `deploy-hub.yml` also require the `installed-bundles` job before
-the switch. It builds the candidate image for that exact revision, invokes the
-running target's root-only `engine.plugins.exportInstalled` door, then boots the candidate
-against copies of the returned bundles and safe install rows in temporary data directories.
+the switch. Development builds the candidate image for that exact revision; production pulls
+the provenance-verified immutable release image instead of rebuilding application source.
+The gate invokes the running target's root-only `engine.plugins.exportInstalled` door, then
+boots that candidate against copies of the returned bundles and safe install rows in temporary
+data directories.
 The export travels through private stdin rather than a host bind mount, so differing
 runner/candidate identities require neither shared file ownership nor broader file permissions.
 It checks original enablement and a second disposable all-enabled copy so a disabled module
@@ -1060,9 +1062,13 @@ switch or verification uses the existing compare-and-swap
 the receiver's forward operation to restore its newer incumbent.
 
 Production promotion additionally requires the exact full-state checkpoint receipt captured from
-the incumbent. On failure it builds the reviewed `infra/recovery.Dockerfile` from the promoted
-release while taking the application itself from the immutable previous release image. Before
-that previous application starts, the recovery entrypoint downloads the named encrypted object,
+the incumbent. After matching the receipt's source build to the serving build in the live
+snapshot, the workflow admits that incumbent through the same release-provenance policy as
+the candidate and retains its full `ghcr.io/<repository>@sha256:<digest>` reference. Missing
+incumbent evidence blocks the switch. On failure it builds the reviewed
+`infra/recovery.Dockerfile` from the promoted release while taking the application itself
+from that verified previous release image, never by resolving a mutable image tag. Before
+the previous application starts, the recovery entrypoint downloads the named encrypted object,
 checks its receipt SHA-256, authenticates and decrypts it with the pinned owner key, validates
 every path and file digest, restores only into empty `/data`, and runs full SQLite integrity
 checks. Later SQLite writes use a checkpoint-specific Litestream prefix rather than the forward
@@ -1197,9 +1203,14 @@ an explicit `false`. Replacement automation owns its rollback operation when ver
 exits nonzero, and must use ordinary verification for the restored revision.
 
 **Release.** `bun run release -- <major|minor|patch|x.y.z>` publishes versioned artifacts from an
-exact `main` revision with successful full `main` CI — the GitHub Release, the fleet binaries, the
-`ghcr.io/atyrode/manifold:<tag>` image stamped `version = build = <x.y.z>`,
-`channel = release` — and deploys nothing.
+exact `main` revision with successful full `main` CI — an immutable GitHub Release, the fleet
+binaries, and the image stamped `version = build = <x.y.z>`, `channel = release` — and deploys
+nothing. The image's full `ghcr.io/<repository>@sha256:<digest>` reference is attached as
+`release-image.txt`; the mutable registry tag is a convenience, not promotion authority.
+Native GitHub/Sigstore artifact attestations bind the fleet binaries and image-reference file,
+and a separate image attestation binds the OCI digest, to the exact repository, release tag,
+source SHA and `.github/workflows/release.yml` signer at that SHA, with the GitHub Actions
+OIDC issuer and GitHub-hosted runners.
 
 The script pushes `release/vX.Y.Z`, opens a `release: vX.Y.Z` PR with its changelog and protocol
 status, and enables rebase auto-merge. The repository must allow auto-merge and rebase merges;
@@ -1210,15 +1221,98 @@ merged SHA and pushes only the tag to start `release.yml`. A closed PR, a 30-min
 or a different main tree stops publication without a tag; interrupted-merge recovery is documented
 in the script header. `bun run release --dry-run` remains read-only from any branch.
 
-**Promote.** `bun run promote vX.Y.Z --recovery-receipt PATH` puts one PUBLISHED release on the
-operator's production instance only after successful full CI for the resolved tag commit. The
-receipt is the JSON line emitted by the incumbent's authenticated full-state capture; promotion
-refuses an absent or malformed checkpoint identity, source build or encrypted-object SHA-256.
-The command also refuses an unpublished tag, dispatches `.github/workflows/deploy-hub.yml`, and
-watches it to completion. The workflow requires recovery support in the candidate release,
-matches the receipt's source build to the live snapshot, refuses active recovery settings, and
-requires one instance with zero-downtime deployment disabled. It also refuses missing or
-unsuccessful exact-tag full `main` push/manual-dispatch evidence before any provider operation.
+The tag workflow first evaluates trusted `main` admission code with read-only permissions.
+Only an admitted SHA reaches the write-capable build job. The image, fleet binaries and native
+attestation bundles are assembled before creating a draft. Admission refuses ambiguous draft
+tags, resolves the unique draft and its assets by numeric id, and verifies those exact bytes
+before publishing that same release record. The resulting release must report `immutable: true`
+and retain the admitted source and release id.
+A failed run may leave an unpublished draft or an image in the registry. Retain its identity
+and failure evidence for an explicitly authorized release reconciliation; do not bypass the
+guard, silently overwrite a published release, or claim that a failed publication is complete.
+
+The shared `scripts/release-provenance.ts` policy requires the tag to identify a dedicated,
+single-parent release commit on `main`, with the canonical version/changelog/consumed-fragment
+delta only. The web manifest must match the release writer's exact output; the lock must retain
+every byte outside its canonical workspace-version token, including refusing duplicate-key
+parser differentials. Its parent needs successful latest full `main` CI; the single-commit merged
+`release/vX.Y.Z` PR must have the same tree, successful PR CI and its required checks.
+Promotion additionally requires successful latest full `main` CI for the exact tagged commit,
+not merely its parent or a later unrelated revision. CI evidence includes the successful
+`gate` job in the current run attempt. Artifact admission cryptographically verifies the
+native attestation bundles, including signer identity and source digest; filenames, a release
+title, an image label, or a locally authored provenance JSON are not substitutes.
+
+**Strict future-release cutover.** Both candidate and rollback releases must be published,
+non-prerelease, immutable releases with all required native attestations and source/CI
+evidence. Existing legacy releases are not grandfathered, even for rollback. Enabling
+immutability does not retrofit old releases or manufacture missing attestations. An incumbent
+without that evidence blocks ordinary promotion before the switch, even if its checkpoint is
+valid and the candidate is admitted. Moving such an installation onto the new release path
+requires separately reviewed and authorized migration/recovery planning; neither the bootstrap
+flag nor a manually supplied digest bypasses this hold.
+
+**Protection and actor boundary ([#265](https://github.com/atyrode/manifold/issues/265)).**
+Read-only observation on 2026-09-20 found immutable
+releases enabled; `main` required `gate` and `agent-policy` from the GitHub Actions app with
+strict status checking, no force pushes or deletion, administrator enforcement, and linear
+history through a ruleset. There was no required PR review and no tag ruleset. These are
+observations, not settings changed by this implementation or promises about future settings.
+The release operator preflight reads the immutable-release setting using administrator-read
+access. That REST read is unavailable to ordinary `GITHUB_TOKEN`; publication instead verifies
+the resulting release's `immutable` flag without adding an administration grant.
+
+[GitHub release immutability](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases)
+locks assets and the associated tag at publication, not while the release is a draft.
+Until then an actor with tag/release write authority can race admission or publication.
+Repeated tag/source checks and post-publication verification detect mismatches, but do not
+make the API check and publish operations atomic or prevent a bad release from being published
+and then refused. Operators must control tag and release writers during publication; no tag
+ruleset is assumed here. Immutable assets plus digest selection prevent later tag substitution
+from silently selecting different application bytes, not deletion or loss of registry access.
+Direct release writes can also bypass the workflow; they are not evidence of admission.
+Promotion independently refuses releases that lack the required source, CI and artifact proof.
+
+This policy trusts GitHub's API, Actions/OIDC and attestation trust roots, the admitted build
+workflow, trusted `main` admission code, and the operators controlling repository/provider
+credentials and the production Environment. Attestations identify the producing workflow;
+they do not prove its code harmless or its output reproducible. Source guards are not a
+security boundary against actors who can rewrite trusted workflows, alter protections,
+bypass administration, or directly deploy using provider credentials. Required CI with no
+required review is not an independent human approval guarantee. Keep those authorities
+controlled and configure production Environment restrictions/approval for the intended actors;
+this change neither provisions nor verifies those protections.
+
+**Promote.** `bun run promote vX.Y.Z --recovery-receipt PATH` puts one admitted immutable
+release on the operator's production instance only after successful full CI for the resolved
+tag commit. The receipt is the JSON line emitted by the incumbent's authenticated full-state
+capture; promotion refuses an absent or malformed checkpoint identity, source build or
+encrypted-object SHA-256. The command invokes the shared promotion policy, dispatches
+`.github/workflows/deploy-hub.yml` from `main`, and watches it to completion.
+The workflow refuses non-`main` dispatches and uses trusted tooling pinned to the dispatch's
+`main` SHA, not policy supplied by the candidate tag. It independently invokes the same
+promotion policy, with only source/release/PR/check/status/Actions read permissions and no
+write, OIDC or administration grant. It retains the candidate's verified SHA and immutable
+image reference, requires ordinary-image and recovery scaffolding in that release, matches
+the receipt's source build to the live snapshot, verifies the incumbent through the same
+policy, refuses active recovery settings, and requires one instance with zero-downtime
+deployment disabled.
+
+The read-only installed-bundle candidate gate and the actual production switch consume the
+same verified image reference. `infra/release.Dockerfile` is only `ARG`/`FROM`, with no default
+image or application build; the candidate tag supplies this reviewed wrapper, not a new
+application build. `MANIFOLD_RELEASE_IMAGE` selects its base by digest, and `CC_DOCKERFILE`
+selects the wrapper. The deployment provider
+[forwards application environment as Docker build arguments](https://www.clever.cloud/developers/doc/deploy/applications/docker/#build-time-variables);
+[Docker permits a global ARG in FROM](https://docs.docker.com/reference/dockerfile/#understand-how-arg-and-from-interact).
+Recovery uses the same mechanism with `MANIFOLD_RECOVERY_BASE_IMAGE`, retaining the full
+verified incumbent reference. The ordinary switch and recovery explicitly rebuild the wrapper
+even for the same source commit, so a prior provider build cannot ignore changed image settings.
+Recovery becomes eligible before the first provider image-setting write, so an ambiguous
+configuration failure cannot escape the existing full-state recovery path.
+This is source-level integration based on the provider contract, not evidence that a live
+deployment or recovery rehearsal has occurred.
+
 Checkpoint authentication, freshness, restore rehearsal and continued object/key availability
 are operator-owned preflight evidence; CI has neither the owner key nor object-store credentials
 and does not establish those facts from receipt syntax. Successful promotion ends with the

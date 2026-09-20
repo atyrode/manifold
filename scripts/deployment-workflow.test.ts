@@ -277,7 +277,7 @@ esac
   }
 });
 
-test("production refuses unreconciled recovery and receipts from another incumbent", async () => {
+test("production refuses unreconciled recovery, foreign receipts and unverified incumbents", async () => {
   const source = Bun.YAML.parse(
     await Bun.file(new URL("../.github/workflows/deploy-hub.yml", import.meta.url)).text(),
   ) as { jobs: Record<string, { steps: { name?: string; run?: string }[] }> };
@@ -303,26 +303,30 @@ printf '%s\\n' "$FIXTURE_ENV"
     writeFileSync(
       join(bin, "bun"),
       `#!/usr/bin/env bash
-[[ $1 == scripts/verify-live.ts && $2 == snapshot ]] || exit 1
-printf '{"build":"1.2.3"}\\n' > "$3"
-`,
-      { mode: 0o700 },
-    );
-    writeFileSync(
-      join(bin, "docker"),
-      `#!/usr/bin/env bash
-printf '%s\\n' 'sha256:${"b".repeat(64)}'
+case "$1 $2" in
+  "scripts/verify-live.ts snapshot") printf '{"build":"1.2.3"}\\n' > "$3" ;;
+  "scripts/release-provenance.ts promotion")
+    [[ "$3" == v1.2.3 && "$FIXTURE_PROVENANCE" == true ]] || exit 1
+    printf '{"image":"ghcr.io/owner/manifold@sha256:${"b".repeat(64)}"}\\n' ;;
+  *) exit 1 ;;
+esac
 `,
       { mode: 0o700 },
     );
     const output = join(root, "output");
-    const check = (build: string, vars: { name: string; value: string }[], inherited = false) => {
+    const check = (
+      build: string,
+      vars: { name: string; value: string }[],
+      inherited = false,
+      provenance = true,
+    ) => {
       writeFileSync(output, "");
       return Bun.spawnSync(["bash", "-e", "-o", "pipefail", "-c", `${hold}\n${snapshot}`], {
         env: {
           ...process.env,
           PATH: `${bin}:${process.env.PATH}`,
           RECOVERY_BUILD: build,
+          FIXTURE_PROVENANCE: String(provenance),
           FIXTURE_ENV: JSON.stringify({
             env: inherited ? [] : vars,
             fromAddons: inherited ? [{ env: vars }] : [],
@@ -337,8 +341,9 @@ printf '%s\\n' 'sha256:${"b".repeat(64)}'
       });
     };
     expect(check("1.2.3", []).exitCode).toBe(0);
-    expect(readFileSync(output, "utf8")).toContain("previous_build=1.2.3");
     expect(check("1.2.2", []).exitCode).toBe(1);
+    expect(readFileSync(output, "utf8")).toBe("");
+    expect(check("1.2.3", [], false, false).exitCode).toBe(1);
     expect(readFileSync(output, "utf8")).toBe("");
     for (const inherited of [false, true]) {
       expect(
@@ -347,6 +352,56 @@ printf '%s\\n' 'sha256:${"b".repeat(64)}'
       ).toBe(1);
       expect(readFileSync(output, "utf8")).toBe("");
     }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an ambiguous first image-setting failure enters the full-state recovery path", async () => {
+  const source = Bun.YAML.parse(
+    await Bun.file(new URL("../.github/workflows/deploy-hub.yml", import.meta.url)).text(),
+  ) as { jobs: Record<string, { steps: { name?: string; run?: string }[] }> };
+  const steps = source.jobs.clever?.steps;
+  const start = steps?.findIndex(
+    (step) => step.name === "Select the ordinary image and clear prior recovery settings",
+  );
+  if (steps === undefined || start === undefined || start < 0) {
+    throw new Error("Production workflow has no ordinary-image selection");
+  }
+  const root = mkdtempSync(join(tmpdir(), "manifold-production-switch-"));
+  try {
+    const bin = join(root, "bin");
+    mkdirSync(bin);
+    // A failed write may already have reached the provider; it must not look like no switch.
+    writeFileSync(join(bin, "bunx"), "#!/usr/bin/env bash\nexit 1\n", { mode: 0o700 });
+    const output = join(root, "output");
+    writeFileSync(output, "");
+    const result = Bun.spawnSync(
+      [
+        "bash",
+        "-e",
+        "-o",
+        "pipefail",
+        "-c",
+        steps
+          .slice(start)
+          .map((step) => step.run ?? "")
+          .join("\n"),
+      ],
+      {
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH}`,
+          GITHUB_OUTPUT: output,
+          IMAGE: `ghcr.io/owner/manifold@sha256:${"a".repeat(64)}`,
+          TAG: "v1.2.4",
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    expect(result.exitCode).not.toBe(0);
+    expect(readFileSync(output, "utf8").split("\n")).toContain("started=true");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
