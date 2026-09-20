@@ -3224,9 +3224,9 @@ are the checks that will fail _your_ plugin:
 
 This section is for one kind of row only: one its installer chose to HARDEN. Everything else in
 this file — §1–§8 for what a plugin is, §10 for authoring and installing one on your instance —
-describes the IN-REALM target, the ratified default for every row (ADR 0025). Read this section
-when the code you are writing will be installed with `hardened: true`, or when you are deciding
-whether to ask an installer for that.
+describes the IN-REALM target, the general installer's default (ADR 0025). Automated receiver
+delivery explicitly selects hardened instead (§9 Delivering). Read this section when the code
+you are writing will be installed with `hardened: true`, or when deciding whether to ask for it.
 
 **What the runner is.** `engine.plugins.install { hardened: true }` (§7) runs the row on ADR
 0016's runner instead of in the page and the hub: its server half in its own Bun process,
@@ -3239,6 +3239,9 @@ bundle runs (`{ "server": true, "web": "web.js" }`), and the same hash pin, inst
 capability declaration and refusal ladder apply either way. The roster says which runner a row
 got (`install.hardened`); the plugin manager's Installed band says it in words, **In-realm** or
 **Hardened**.
+
+The server child is a process/API boundary, not an OS filesystem or network confinement
+guarantee. Do not treat runner selection as authorization to admit an untrusted publisher.
 
 **What browser hardening does not promise.** Init omits the viewer's bearer, and guest code
 cannot reach the page DOM or live host objects. The current Blob Worker still has native browser
@@ -3435,11 +3438,12 @@ with its `entry`, the members as base64, no `builtAgainst`). All packing modes s
 executable contract. The artifact is self-contained because the runner resolves
 nothing: the hub's process runner is one `Bun.spawn` of the bundle's `server.js`; the page fetches
 `/api/plugins/<id>/web.js` with the bearer and starts a module Worker from a Blob of those bytes.
-Neither has the shared-module registry an in-realm bundle imports through. That is why the flag is required for a hardened row and why it is the
-only difference at pack time: `pack` without it builds the in-realm bundle §10 describes, and
-installing THAT with `hardened: true` is refused at the door — `artifact_invalid: isolate exited
-before load (exit code 1)`, the child having died on `Missing shared module: @manifold/plugin`
-(the hub log's `isolate_output` lines carry the sentence) — and rolled back. The printed
+Neither has the shared-module registry an in-realm bundle imports through. A server half that
+needs that registry exits before loading with `Missing shared module: @manifold/plugin`; the
+install is refused as `artifact_invalid` and rolled back (the hub's `isolate_output` log carries
+the detail). A web-only bundle can instead install successfully and fail later in its browser
+Worker. `verify --hardened` exercises the server/door contract, not Worker rendering: also
+exercise the actual panel in a browser before delivery. Neither failure retries in-realm. The printed
 `sha256` is over the file's exact bytes and is the pin `engine.plugins.install` demands; the
 door itself — where a source may come from, the default grant, the refusal classes, where the
 bundle lives afterwards — is §7 Installing a plugin, and the artifact's shape is
@@ -3566,10 +3570,14 @@ the later pack/verify pair and suppresses artifact upload, so disposable source-
 proofs do not accidentally publish their fixture bundles.
 
 `plugins/MANIFOLD_REV` and that `@<rev>` are bumped together, so the workflow and the kit it runs
-are one commit of this repository. The author repository's `plugins/package.json` wraps the kit:
-`verify` is `bun ../../manifold/packages/plugin-kit/src/verify.ts dist/*.manifold-plugin.json`
-(the shell expands the glob) and `dev` is `bun ../../manifold/packages/plugin-kit/src/dev.ts .`,
-flags passed through after `--`.
+are one commit of this repository. A hardened-targeted author repository's `plugins/package.json`
+packs with `--self-contained` and wraps `verify` as
+`bun ../../manifold/packages/plugin-kit/src/verify.ts dist/*.manifold-plugin.json --hardened`
+(the shell expands the glob). Its `dev` wrapper is
+`bun ../../manifold/packages/plugin-kit/src/dev.ts .`, with `--hardened` passed after `--`.
+An in-realm repository instead keeps the kit's in-realm pack/verify/dev defaults and explicitly
+appends `--in-realm` to its release receiver command. Pack, verification and delivery must target
+the same runner; the reusable workflow does not infer or override the author's scripts.
 
 ### Delivering
 
@@ -3582,9 +3590,22 @@ over the same forced-command deploy key manifold's own `deploy-dev.yml` uses (`s
 verb runs `install` from the host's stable tooling checkout against the dev stack with
 `--deliver docker:<container>`, reading the owner key out of the container — no secret leaves the
 host. The command carries only an https URL, a hash and an optional exact fourth word
-`--hardened` (`infra/previews/README.md`). The three-word form retains the in-realm default;
-append `--hardened` for a bundle built for this section's hardened runner. Both the receiver and
-direct `preview.sh plugin` command refuse unknown flags and extra arguments before installation.
+`--hardened` or `--in-realm` (`infra/previews/README.md`). The three-word form selects hardened,
+as does explicit `--hardened`; pack for that runner and verify with `--hardened` before delivery.
+Incompatibility never triggers an in-realm retry. Only explicit `--in-realm` grants the
+exception for a trusted in-realm bundle. Both the receiver and direct `preview.sh plugin`
+command refuse unknown flags and extra arguments before installation. This automated default
+does not change the general kit installer's in-realm default.
+
+The receiver's deploy credential delegates every receiver verb, including the in-realm
+exception, not merely plugin delivery. Give it only to workflows trusted for that whole grant;
+protect the author repository's release environment and revoke its receiver/workflow access
+when the delegation ends. A configured-repository `dev <sha>` and an arbitrary accepted HTTPS
+plugin URL have different publisher boundaries: the receiver has no publisher allowlist, and a
+SHA-256 pin proves byte identity, not publisher trust. Keep owner keys on the target host and
+private deploy keys in their owning secret store. A hardened runner is not OS confinement;
+its server process and browser Worker retain the limitations described above. The receiver
+cannot provide plugin-only or hardened-only credentials.
 
 Production (`https://manifold.tyrode.dev`) is the one hub nothing automates: the operator installs
 a release there from its asset URL in the plugin manager, root only, by hand (ADR 0022). A change
@@ -3594,10 +3615,12 @@ production is the operator's decision, not a workflow's.
 **What an author repository's `AGENTS.md` must tell its agents**, because an agent there never
 reads this file first: the four commands in `plugins/` (`bun run check`, `bun test`, `bun run pack`,
 `bun run verify`) and that `verify` is the gate that spawns a real engine; that the inner loop is
-`bun run dev -- --hub <url> --deliver docker:<container>` against the integrated preview from the
-preview host, and its URL; that `plugins/MANIFOLD_REV` and the `uses:` ref move together; that a
-release installs itself on the preview and never on production; and what to tell the operator to
-look at — the preview's plugin manager row for the id, and the panel or door the change touched.
+`bun run dev -- --hub <url> --deliver docker:<container> --hardened` for a hardened target against
+the integrated preview from the preview host, and its URL; that pack/verify/delivery target the
+same runner, with explicit `--in-realm` receiver delivery for an in-realm repository; that
+`plugins/MANIFOLD_REV` and the `uses:` ref move together; that a release installs itself on the
+preview and never on production; and what to tell the operator to look at — the preview's plugin
+manager row for the id, and the actual panel or door the change touched.
 
 ### What a hardened plugin does NOT get (ADR 0016 §3)
 
@@ -4059,8 +4082,9 @@ bun run --cwd packages/plugin-kit verify <id>.manifold-plugin.json
 
 "Promoting" a plugin you wrote on your instance — to another hub of yours, to the integrated
 preview, to a release somebody else installs — is `pack` on the same files and the door on the
-other hub; §9 Verifying and §9 Delivering describe the author repository, the CI workflow and the
-release path, and every word of them holds for an in-realm bundle with `--hardened` left off.
+other hub; §9 Verifying and §9 Delivering describe the author repository, CI workflow and release
+path. For an in-realm bundle, leave `--hardened` off the kit's verify/install commands but pass
+the explicit `--in-realm` trust exception to automated receiver delivery.
 The code does not change when it moves. What may change is the installer's choice: a hub whose
 operator does not trust the bundle to hold their process installs it with `hardened: true`, and
 then §9 is the contract the code has to meet.

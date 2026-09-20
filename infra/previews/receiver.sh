@@ -6,7 +6,7 @@ export PREVIEW_HOME="${PREVIEW_HOME:-$HOME/manifold-previews}"
 # shellcheck source=infra/previews/common.sh
 source "$here/common.sh"
 require_domain
-usage() { fail 'usage: dev SHA | dev-rollback EXPECTED_CURRENT_FULL_SHA TARGET_FULL_SHA | preview up N SHA | preview down N | plugin URL SHA256 [--hardened] (bare SHA also means dev SHA)'; }
+usage() { fail 'usage: dev SHA | dev-rollback EXPECTED_CURRENT_FULL_SHA TARGET_FULL_SHA | preview up N SHA | preview down N | plugin URL SHA256 [--hardened|--in-realm] (bare SHA also means dev SHA)'; }
 if [[ -v SSH_ORIGINAL_COMMAND ]]; then
   [[ $SSH_ORIGINAL_COMMAND != *$'\n'* && $SSH_ORIGINAL_COMMAND != *$'\r'* ]] || usage
   read -r -a args <<<"$SSH_ORIGINAL_COMMAND"
@@ -21,7 +21,7 @@ case "${1:-}:$#" in
   preview:4) [[ $2 == up ]] || usage; pr_name "$3"; sha_arg "$4"; exec "$here/preview.sh" up "$3" "$4" ;;
   preview:3) [[ $2 == down ]] || usage; pr_name "$3"; exec "$here/preview.sh" down "$3" ;;
   plugin:3) plugin_url "$2"; sha256_arg "$3"; exec "$here/preview.sh" plugin "$2" "$3" ;;
-  plugin:4) [[ $4 == --hardened ]] || usage; plugin_url "$2"; sha256_arg "$3"; exec "$here/preview.sh" plugin "$2" "$3" --hardened ;;
+  plugin:4) [[ $4 == --hardened || $4 == --in-realm ]] || usage; plugin_url "$2"; sha256_arg "$3"; exec "$here/preview.sh" plugin "$2" "$3" "$4" ;;
   *:1) sha_arg "$1"; exec "$here/deploy-dev.sh" "$1" ;;
   *) usage ;;
 esac
