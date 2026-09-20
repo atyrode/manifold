@@ -569,6 +569,48 @@ const BindingsRefreshContext = createContext<(() => void) | null>(null);
  */
 const SettingsRefreshContext = createContext<(() => void) | null>(null);
 
+/** Boot knowledge is not contribution availability; only the route gate consumes it. */
+const RosterLoadContext = createContext<{
+  readonly status: RosterState["status"];
+  readonly retry: () => void;
+} | null>(null);
+
+/** Keep the live host mounted above this gate so either transport can establish authority. */
+export function RosterGate({ children }: { readonly children: ReactNode }): ReactElement {
+  const load = useContext(RosterLoadContext);
+  if (load === null) {
+    throw new Error("RosterGate requires an <AssemblyProvider> ancestor");
+  }
+  if (load.status === "ready") return <>{children}</>;
+  const failed = load.status === "failed";
+  return (
+    <main className="gate-screen" data-roster-state={load.status}>
+      <Cover className="gate-cover">
+        <section
+          className="gate-card"
+          role={failed ? "alert" : "status"}
+          aria-labelledby="roster-load-title"
+        >
+          <p className="eyebrow">manifold</p>
+          <h1 id="roster-load-title">
+            {failed ? "Could not load workspace plugins" : "Loading workspace plugins…"}
+          </h1>
+          <p>
+            {failed
+              ? "The plugin roster could not be loaded. Retry to open your workspace."
+              : "Waiting for the plugin roster before opening your workspace."}
+          </p>
+          {failed ? (
+            <button className="primary-button" type="button" onClick={load.retry}>
+              Retry
+            </button>
+          ) : null}
+        </section>
+      </Cover>
+    </main>
+  );
+}
+
 /** Throws rather than degrading: an assembly-less consumer would silently render nothing. */
 export function useAssembly(): BrowserAssembly {
   const assembly = useContext(AssemblyContext);
@@ -623,9 +665,58 @@ interface RosterState {
   readonly revision: number;
   /** Serialized form of `roster` and the switch, so a replayed identical pair is not a "change". */
   readonly digest: string;
+  readonly status: "pending" | "ready" | "failed";
+  /** A live snapshot (or explicit recovery) supersedes the in-flight initial HTTP read. */
+  readonly live: boolean;
+  readonly attempt: number;
 }
 
-const INITIAL_ROSTER: RosterState = { roster: [], developerMode: false, revision: 0, digest: "" };
+const INITIAL_ROSTER: RosterState = {
+  roster: [],
+  developerMode: false,
+  revision: 0,
+  digest: "",
+  status: "pending",
+  live: false,
+  attempt: 0,
+};
+
+type RosterEvent =
+  | {
+      readonly kind: "snapshot";
+      readonly source: "http" | "live";
+      readonly roster: PluginRoster;
+      readonly developerMode: boolean;
+    }
+  | { readonly kind: "failed" }
+  | { readonly kind: "retry" };
+
+/** Authority and metadata advance together, independent of which transport delivered them. */
+function nextRoster(previous: RosterState, event: RosterEvent): RosterState {
+  if (event.kind === "retry") {
+    return previous.status === "failed"
+      ? { ...previous, status: "pending", attempt: previous.attempt + 1 }
+      : previous;
+  }
+  if (event.kind === "failed") {
+    return previous.live ? previous : { ...previous, status: "failed" };
+  }
+  if (event.source === "http" && previous.live) return previous;
+  const { roster, developerMode } = event;
+  const live = event.source === "live";
+  const digest = JSON.stringify([developerMode, roster]);
+  const unchanged = previous.digest === digest;
+  if (unchanged && previous.status === "ready" && previous.live === live) return previous;
+  return {
+    ...previous,
+    roster: unchanged ? previous.roster : roster,
+    developerMode,
+    revision: previous.revision + (unchanged ? 0 : 1),
+    digest,
+    status: "ready",
+    live,
+  };
+}
 
 /**
  * THE BOOT RECOVERY: an assembly with essential seats switched off, and the one-click offer to
@@ -822,6 +913,16 @@ export function mountPluginStylesheet<Node extends StyleNode>(
 }
 
 export function AssemblyProvider({ identity, children }: AssemblyProviderProps): ReactElement {
+  // A new credential owns a new boot, including its requests, live subscriptions and modules.
+  // Keying the owner prevents even one render of the previous identity's ready assembly.
+  return (
+    <AssemblyOwner key={identity.token} identity={identity}>
+      {children}
+    </AssemblyOwner>
+  );
+}
+
+function AssemblyOwner({ identity, children }: AssemblyProviderProps): ReactElement {
   const [state, setState] = useState<RosterState>(INITIAL_ROSTER);
   /*
     The effect's own bookkeeping: what is held and at which hash. It is a ref because the
@@ -895,13 +996,18 @@ export function AssemblyProvider({ identity, children }: AssemblyProviderProps):
   const [valuesEpoch, setValuesEpoch] = useState(0);
 
   const publish = useCallback((roster: PluginRoster, developerMode: boolean): void => {
-    const digest = JSON.stringify([developerMode, roster]);
     setState((previous) =>
-      previous.digest === digest
-        ? previous
-        : { roster, developerMode, revision: previous.revision + 1, digest },
+      nextRoster(previous, { kind: "snapshot", source: "live", roster, developerMode }),
     );
   }, []);
+
+  const retryRoster = useCallback((): void => {
+    setState((previous) => nextRoster(previous, { kind: "retry" }));
+  }, []);
+  const rosterLoad = useMemo(
+    () => ({ status: state.status, retry: retryRoster }),
+    [state.status, retryRoster],
+  );
 
   useEffect(() => {
     const controller = new AbortController();
@@ -912,16 +1018,27 @@ export function AssemblyProvider({ identity, children }: AssemblyProviderProps):
           signal: controller.signal,
         });
         const answer = PluginsResponseSchema.parse(body);
-        publish(answer.plugins, answer.developerMode === true);
-      } catch (reason) {
+        setState((previous) =>
+          controller.signal.aborted
+            ? previous
+            : nextRoster(previous, {
+                kind: "snapshot",
+                source: "http",
+                roster: answer.plugins,
+                developerMode: answer.developerMode === true,
+              }),
+        );
+      } catch {
         if (controller.signal.aborted) return;
-        // No notice layer exists above this provider, and a missing roster is already visible
-        // as named placeholders where panels should be — so the console is the honest report.
-        console.error("evt=plugin_roster_fetch_failed", reason);
+        // Do not log the response/schema payload: it can contain workspace-private metadata.
+        console.error("evt=plugin_roster_fetch_failed");
+        setState((previous) =>
+          controller.signal.aborted ? previous : nextRoster(previous, { kind: "failed" }),
+        );
       }
     })();
     return () => controller.abort();
-  }, [identity.token, publish]);
+  }, [identity.token, state.attempt]);
 
   /*
     THE KEY DELTA, read from the neutral route (`GET /api/bindings`) rather than by dispatching
@@ -973,7 +1090,10 @@ export function AssemblyProvider({ identity, children }: AssemblyProviderProps):
 
   const attachPluginsClient = useCallback(
     (client: SessionClient): (() => void) => {
-      const offRoster = client.onPlugins(publish);
+      let attached = true;
+      const offRoster = client.onPlugins((roster, developerMode) => {
+        if (attached) publish(roster, developerMode);
+      });
       const offSettings = client.subscribe(
         [{ kind: "plugin", pluginId: "engine.plugins" }],
         (event) => {
@@ -984,6 +1104,7 @@ export function AssemblyProvider({ identity, children }: AssemblyProviderProps):
       );
       const offStatus = client.on("status", () => setValuesEpoch((epoch) => epoch + 1));
       return () => {
+        attached = false;
         offRoster();
         offSettings();
         offStatus();
@@ -1021,7 +1142,7 @@ export function AssemblyProvider({ identity, children }: AssemblyProviderProps):
         values,
         state.developerMode,
       ),
-    [state, overrides, values, loadedDefs],
+    [state.roster, state.revision, state.developerMode, overrides, values, loadedDefs],
   );
 
   return (
@@ -1029,9 +1150,11 @@ export function AssemblyProvider({ identity, children }: AssemblyProviderProps):
       <BindingsRefreshContext.Provider value={refreshBindings}>
         <SettingsRefreshContext.Provider value={refreshSettings}>
           <ComposedAssemblyProvider value={assembly}>
-            <EssentialRecovery identity={identity} roster={state.roster} onRestored={publish}>
-              {children}
-            </EssentialRecovery>
+            <RosterLoadContext.Provider value={rosterLoad}>
+              <EssentialRecovery identity={identity} roster={state.roster} onRestored={publish}>
+                {children}
+              </EssentialRecovery>
+            </RosterLoadContext.Provider>
           </ComposedAssemblyProvider>
         </SettingsRefreshContext.Provider>
       </BindingsRefreshContext.Provider>
