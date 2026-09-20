@@ -2,7 +2,7 @@
 
 Date: 2026-09-05
 Status: accepted
-Ratified: implementation decision for #216, #219 and #222; reviewable with the change.
+Ratified: implementation decision for #216, #219 and #222; reviewable with the change. Partial supersession (2026-09-07): [ADR 0030](0030-stationary-tile-hover.md) replaces only the live-pane hover projection policy; the current rule is [CONTRACTS §Presence](../CONTRACTS.md#presence-ephemeral-never-persisted). Shared motion machinery, source-carry relay, placement algebra and terminal lifetime remain current.
 
 ## Problem
 
