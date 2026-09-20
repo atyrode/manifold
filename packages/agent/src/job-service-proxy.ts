@@ -286,9 +286,9 @@ function readUsage(value: unknown): MeteredUsage | undefined {
 /** Pi-ai's own wire, where a turn's numbers live on the canonical assistant message the terminal
  * frame carries - `done`'s `message`, `error`'s `error`, or the whole body of a non-streamed
  * answer - never on a delta's rolling `partial`, which is not the turn's bill. `input` is the
- * fresh input bucket and `cacheRead` the cached one, where OpenAI's `prompt_tokens` is already
- * their sum: the protocol counts one input total with the cached part named inside it, so the two
- * are added back. `cacheWrite` is read by nobody - the policy has no price column for it.
+ * fresh input bucket, `cacheRead` the cached one, and `cacheWrite` additional physical input.
+ * The protocol counts all three as input, with cached reads named as a subset. With no
+ * dedicated cache-write price, writes use the existing fresh-input rate.
  * An `error` terminal is a turn that failed or was aborted - which is how this wire projects every
  * upstream failure, on a stream it has already begun with a 2xx - so its numbers are read like any
  * other turn's and the call is marked failed: what it cost is still spent, but it did not
@@ -311,6 +311,7 @@ function readPiNativeUsage(value: unknown): MeteredUsage | undefined {
   const output = tokenCount(usage.output);
   if (input === undefined || output === undefined) return undefined;
   const cached = tokenCount(usage.cacheRead) ?? 0;
+  const written = tokenCount(usage.cacheWrite) ?? 0;
   // A failed turn is journaled with the status that message states - `errorStatus` is the
   // provider's own, set by every provider's catch block on this wire - and with a bad gateway
   // when it states none or states a success, which is not an outcome a failure may report.
@@ -323,7 +324,7 @@ function readPiNativeUsage(value: unknown): MeteredUsage | undefined {
     // The model is the one the request named: this wire reports no model id of its own, and the
     // operator who chose it must read back what they chose.
     model: undefined,
-    inputTokens: input + cached,
+    inputTokens: input + cached + written,
     outputTokens: output,
     cachedInputTokens: cached,
     ...(failed ? { failedStatus } : {}),

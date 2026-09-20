@@ -641,13 +641,12 @@ test("a pi-native stream is metered from its terminal frame and forwarded byte f
       serviceId: binding.serviceId,
       operationId: "stream",
       model: "m-1",
-      // `input` is the fresh bucket and `cacheRead` the cached one; the protocol counts one
-      // input total with the cached part named inside it. `cacheWrite` is priced by nothing.
-      inputTokens: 1400,
+      // Physical input includes fresh input, cache reads and cache writes.
+      inputTokens: 1650,
       outputTokens: 500,
       cachedInputTokens: 400,
-      // 1000 fresh at $3/M, 400 cached with no cached price at $3/M, 500 output at $15/M.
-      costMicros: 11700,
+      // 1250 fresh/write and 400 cached at $3/M, plus 500 output at $15/M.
+      costMicros: 12450,
       status: 200,
     });
     expect(
@@ -662,10 +661,10 @@ test("a pi-native stream is metered from its terminal frame and forwarded byte f
     ).toBe(true);
     expect(owner.usage).toEqual({
       calls: 1,
-      inputTokens: 1400,
+      inputTokens: 1650,
       outputTokens: 500,
       cachedInputTokens: 400,
-      costMicros: 11700,
+      costMicros: 12450,
     });
   } finally {
     await proxy.close();
@@ -694,13 +693,41 @@ test("a pi-native answer that is one JSON body is metered from the message it ca
     expect(source.bodies).toEqual([asked]);
     expect(owner.calls[0]).toMatchObject({
       model: "m-1",
-      inputTokens: 50,
+      inputTokens: 55,
       outputTokens: 8,
       cachedInputTokens: 10,
-      // 40 fresh and 10 cached at $3/M, 8 output at $15/M; the 5 written to cache price nothing.
-      costMicros: 270,
+      // 45 fresh/write and 10 cached at $3/M, plus 8 output at $15/M.
+      costMicros: 285,
       status: 200,
     });
+  } finally {
+    await proxy.close();
+    await source.close();
+  }
+});
+
+test("pi-native cache writes exhaust the input ceiling before another provider call", async () => {
+  const answer = JSON.stringify({
+    message: { usage: { input: 40, output: 8, cacheRead: 10, cacheWrite: 5 } },
+  });
+  const source = await upstream((_request, response) => {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(answer);
+  });
+  const owner = ledger({ inputTokens: 52 });
+  const proxy = await proxyFor(source.origin, owner.metering);
+  try {
+    const crossing = await send(proxy, { path: "/v1/pi/stream", body: piAsked });
+    expect(crossing).toEqual({ status: 200, body: answer });
+    const refused = await send(proxy, { path: "/v1/pi/stream", body: piAsked });
+    expect(refused.status).toBe(429);
+    expect(JSON.parse(refused.body)).toEqual({
+      error: { code: "service_ceiling_exceeded", ceiling: "inputTokens" },
+    });
+    expect(source.calls).toBe(1);
+    expect(owner.ceilings).toMatchObject([
+      { ceiling: "inputTokens", reached: { calls: 1, inputTokens: 55 } },
+    ]);
   } finally {
     await proxy.close();
     await source.close();
@@ -785,10 +812,10 @@ test("a pi-native turn the provider failed is journaled with that failure's own 
       serviceId: binding.serviceId,
       operationId: "stream",
       model: "m-1",
-      inputTokens: 1400,
+      inputTokens: 1650,
       outputTokens: 500,
       cachedInputTokens: 400,
-      costMicros: 11700,
+      costMicros: 12450,
       status: 502,
     });
     // A failure the provider stated is an answer it gave: the lane is not latched, so the next
@@ -818,10 +845,10 @@ test("a pi-native turn the provider failed is journaled with that failure's own 
     expect(owner.ceilings).toEqual([]);
     expect(owner.usage).toEqual({
       calls: 2,
-      inputTokens: 1400,
+      inputTokens: 1650,
       outputTokens: 500,
       cachedInputTokens: 400,
-      costMicros: 11700,
+      costMicros: 12450,
     });
   } finally {
     await proxy.close();
