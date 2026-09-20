@@ -1209,7 +1209,8 @@ nothing. The image's full `ghcr.io/<repository>@sha256:<digest>` reference is at
 `release-image.txt`; the mutable registry tag is a convenience, not promotion authority.
 Native GitHub/Sigstore artifact attestations bind the fleet binaries and image-reference file,
 and a separate image attestation binds the OCI digest, to the exact repository, release tag,
-source SHA and `.github/workflows/release.yml` signer at that SHA on GitHub-hosted runners.
+source SHA and `.github/workflows/release.yml` signer at that SHA, with the GitHub Actions
+OIDC issuer and GitHub-hosted runners.
 
 The script pushes `release/vX.Y.Z`, opens a `release: vX.Y.Z` PR with its changelog and protocol
 status, and enables rebase auto-merge. The repository must allow auto-merge and rebase merges;
@@ -1219,6 +1220,14 @@ script verifies that `origin/main` has the release tree, updates local main, the
 merged SHA and pushes only the tag to start `release.yml`. A closed PR, a 30-minute merge timeout
 or a different main tree stops publication without a tag; interrupted-merge recovery is documented
 in the script header. `bun run release --dry-run` remains read-only from any branch.
+
+The tag workflow first evaluates trusted `main` admission code with read-only permissions.
+Only an admitted SHA reaches the write-capable build job. The image, fleet binaries and native
+attestation bundles are assembled before creating a draft; the draft's exact assets are
+verified before publication, and the resulting release must report `immutable: true`.
+A failed run may leave an unpublished draft or an image in the registry. Retain its identity
+and failure evidence for an explicitly authorized release reconciliation; do not bypass the
+guard, silently overwrite a published release, or claim that a failed publication is complete.
 
 The shared `scripts/release-provenance.ts` policy requires the tag to identify a dedicated,
 single-parent release commit on `main`, with the canonical version/changelog/consumed-fragment
@@ -1239,7 +1248,8 @@ valid and the candidate is admitted. Moving such an installation onto the new re
 requires separately reviewed and authorized migration/recovery planning; neither the bootstrap
 flag nor a manually supplied digest bypasses this hold.
 
-**Protection and actor boundary.** Read-only observation on 2026-09-20 found immutable
+**Protection and actor boundary ([#265](https://github.com/atyrode/manifold/issues/265)).**
+Read-only observation on 2026-09-20 found immutable
 releases enabled; `main` required `gate` and `agent-policy` from the GitHub Actions app with
 strict status checking, no force pushes or deletion, administrator enforcement, and linear
 history through a ruleset. There was no required PR review and no tag ruleset. These are
@@ -1256,6 +1266,8 @@ make the API check and publish operations atomic or prevent a bad release from b
 and then refused. Operators must control tag and release writers during publication; no tag
 ruleset is assumed here. Immutable assets plus digest selection prevent later tag substitution
 from silently selecting different application bytes, not deletion or loss of registry access.
+Direct release writes can also bypass the workflow; they are not evidence of admission.
+Promotion independently refuses releases that lack the required source, CI and artifact proof.
 
 This policy trusts GitHub's API, Actions/OIDC and attestation trust roots, the admitted build
 workflow, trusted `main` admission code, and the operators controlling repository/provider
@@ -1292,6 +1304,8 @@ selects the wrapper. The deployment provider
 Recovery uses the same mechanism with `MANIFOLD_RECOVERY_BASE_IMAGE`, retaining the full
 verified incumbent reference. The ordinary switch and recovery explicitly rebuild the wrapper
 even for the same source commit, so a prior provider build cannot ignore changed image settings.
+Recovery becomes eligible before the first provider image-setting write, so an ambiguous
+configuration failure cannot escape the existing full-state recovery path.
 This is source-level integration based on the provider contract, not evidence that a live
 deployment or recovery rehearsal has occurred.
 

@@ -214,7 +214,9 @@ jobs:
           if-no-files-found: error
 
       - name: Select the ordinary image and clear prior recovery settings
+        id: switch
         run: |
+          echo 'started=true' >> "$GITHUB_OUTPUT"
           # Application environment is forwarded as Docker --build-arg by the provider:
           # https://www.clever.cloud/developers/doc/deploy/applications/docker/#build-time-variables
           bunx clever-tools@4.10.0 env set MANIFOLD_RELEASE_IMAGE "$IMAGE"
@@ -225,10 +227,8 @@ jobs:
           bunx clever-tools@4.10.0 env set MANIFOLD_RECOVERY_BASE_IMAGE ""
 
       - name: Stamp the build
-        id: switch
         # What /healthz will answer (scripts/build-identity.ts): a release is its tag.
         run: |
-          echo 'started=true' >> "$GITHUB_OUTPUT"
           bunx clever-tools@4.10.0 env set MANIFOLD_VERSION "${TAG#v}"
           bunx clever-tools@4.10.0 env set MANIFOLD_BUILD "${TAG#v}"
           bunx clever-tools@4.10.0 env set MANIFOLD_CHANNEL release

@@ -5,26 +5,68 @@ on:
     tags:
       - "v*"
 
-permissions:
-  contents: write
-  packages: write
-  # Provenance attestations for the published binaries and image (actions/attest-build-provenance).
-  id-token: write
-  attestations: write
+permissions: {}
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  admission:
+    name: Verify release provenance
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+      statuses: read
+      pull-requests: read
+    outputs:
+      sha: ${{ steps.provenance.outputs.sha }}
+    steps:
+      # A tag is evidence, not permission to execute its dependency scripts with write access.
+      - name: Check out the trusted admission policy
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/bun-workspace
+      - name: Verify the release-only merge and its checked predecessor
+        id: provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          EVENT_SHA: ${{ github.sha }}
+        run: |
+          proof="$(bun scripts/release-provenance.ts tag "$TAG")"
+          [ "$(jq -r .sha <<< "$proof")" = "$EVENT_SHA" ] || {
+            echo "::error::Tag no longer resolves to the triggering commit"; exit 1;
+          }
+          jq -r '"sha=\(.sha)"' <<< "$proof" >> "$GITHUB_OUTPUT"
+
   release:
     name: Publish
+    needs: admission
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: read
+      checks: read
+      statuses: read
+      pull-requests: read
+      packages: write
+      id-token: write
+      attestations: write
     steps:
       - name: Check out tagged source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
+          ref: ${{ needs.admission.outputs.sha }}
+          persist-credentials: false
 
       - name: Install Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
@@ -46,18 +88,6 @@ jobs:
       - name: Build release notes
         run: bun scripts/release-notes.ts "${GITHUB_REF_NAME}" > release-notes.md
 
-      - name: Publish GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release create "${GITHUB_REF_NAME}" manifold-agent-linux-x64 manifold-agent-darwin-arm64 --verify-tag --title "manifold ${GITHUB_REF_NAME}" --notes-file release-notes.md
-
-      - name: Attest the fleet binaries
-        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
-        with:
-          subject-path: |
-            manifold-agent-linux-x64
-            manifold-agent-darwin-arm64
-
       - name: Publish the hub image
         # The self-hosting artifact: one image per tag under THIS repository's namespace (a
         # fork publishes its own), never a mutable `latest` (docs/SELF-HOST.md §Install).
@@ -77,10 +107,48 @@ jobs:
           digest="$(docker inspect --format '{{index .RepoDigests 0}}' "$image:${GITHUB_REF_NAME}")"
           echo "name=$image" >> "$GITHUB_OUTPUT"
           echo "digest=${digest#*@}" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$digest" > release-image.txt
 
       - name: Attest the hub image
+        id: image-attestation
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
           subject-name: ${{ steps.image.outputs.name }}
           subject-digest: ${{ steps.image.outputs.digest }}
           push-to-registry: true
+
+      - name: Attest the fleet binaries and immutable image selection
+        id: artifacts-attestation
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: |
+            manifold-agent-linux-x64
+            manifold-agent-darwin-arm64
+            release-image.txt
+
+      - name: Stage every release asset before publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_BUNDLE: ${{ steps.artifacts-attestation.outputs.bundle-path }}
+          IMAGE_BUNDLE: ${{ steps.image-attestation.outputs.bundle-path }}
+        run: |
+          cp "$ARTIFACT_BUNDLE" release-artifacts.intoto.jsonl
+          cp "$IMAGE_BUNDLE" release-image.intoto.jsonl
+          gh release create "$GITHUB_REF_NAME" \
+            manifold-agent-linux-x64 manifold-agent-darwin-arm64 release-image.txt \
+            release-artifacts.intoto.jsonl release-image.intoto.jsonl \
+            --draft --verify-tag --title "manifold $GITHUB_REF_NAME" --notes-file release-notes.md
+
+      - name: Verify the draft's exact assets and publish immutably
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ADMITTED_SHA: ${{ needs.admission.outputs.sha }}
+        run: |
+          proof="$(bun scripts/release-provenance.ts draft "$GITHUB_REF_NAME")"
+          [ "$(jq -r .sha <<< "$proof")" = "$ADMITTED_SHA" ] || {
+            echo "::error::Tag moved after admission; leave the draft unpublished"; exit 1;
+          }
+          gh release edit "$GITHUB_REF_NAME" --draft=false
+          # GitHub's immutable-release setting is an administrator-owned prerequisite.
+          # Missing immutability fails publication evidence; never delete a published release.
+          bun scripts/release-provenance.ts published "$GITHUB_REF_NAME"

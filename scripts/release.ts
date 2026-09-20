@@ -29,6 +29,11 @@ import {
   type ChangeFragment,
   type ReleasedFragment,
 } from "./release-core.ts";
+import {
+  releaseRepository,
+  requireFullMainCi,
+  requireImmutableReleaseSetting,
+} from "./release-provenance.ts";
 
 interface PackageMetadata {
   readonly version: string;
@@ -191,15 +196,9 @@ if ((await gitText(["rev-parse", "HEAD"])) !== (await gitText(["rev-parse", "ori
 // Both main pushes and explicit main verification dispatches execute the full suite.
 // The release PR runs its own required checks before merging the generated release changes.
 const head = await gitText(["rev-parse", "HEAD"]);
-const green =
-  await $`gh run list --workflow ci.yml --branch main --commit ${head} --limit 100 --json databaseId,event,status,conclusion --jq '[.[] | select(.event == "push" or .event == "workflow_dispatch")] | .[:1] | map(select(.status == "completed" and .conclusion == "success"))'`
-    .quiet()
-    .text();
-if ((JSON.parse(green) as readonly unknown[]).length === 0) {
-  throw new Error(
-    `main@${head.slice(0, 7)} has no successful latest full main CI proof (missing, pending, or failed); inspect bun run ci:status -- --sha ${head} before releasing`,
-  );
-}
+const repository = await releaseRepository();
+await requireImmutableReleaseSetting(repository);
+await requireFullMainCi(repository, head);
 
 if (fragments.length === 0) throw new Error("changes/ has no fragments; nothing to release");
 if (withoutPr.length > 0) {

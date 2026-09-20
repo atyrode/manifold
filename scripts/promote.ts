@@ -1,12 +1,13 @@
 #!/usr/bin/env bun
 import { $ } from "bun";
+import { releaseRepository, verifyPromotionRelease } from "./release-provenance.ts";
 
 /*
  * PROMOTION IS ITS OWN VERB (ADR 0022, amended by #244; docs/SELF-HOST.md §Environments).
  * `bun run release` publishes; this dispatches `deploy-hub.yml` with one published tag and
  * watches it to the end, so "production runs vX.Y.Z" is a sentence somebody typed, never a side
- * effect of a push. It refuses anything that is not a published (non-draft) GitHub Release:
- * production runs releases, and a tag alone is not one.
+ * effect of a push. It requires immutable, attested releases and exact full-main CI for
+ * both the candidate and its selected recovery release; a tag or legacy release is not proof.
  */
 
 const args = process.argv.slice(2);
@@ -52,15 +53,14 @@ if (
     "Recovery receipt is missing its exact checkpoint id, source build or encrypted-object SHA-256",
   );
 
-const release = await $`gh release view ${tag} --json isDraft,publishedAt`.quiet().nothrow();
-if (release.exitCode !== 0) {
-  throw new Error(`${tag} has no GitHub Release; publish it with bun run release first`);
+const repository = await releaseRepository();
+await verifyPromotionRelease(repository, tag);
+if (tag !== `v${recovery.sourceBuild}`) {
+  await verifyPromotionRelease(repository, `v${recovery.sourceBuild}`);
 }
-const { isDraft } = JSON.parse(release.text()) as { readonly isDraft: boolean };
-if (isDraft) throw new Error(`${tag} is a draft release, not a published one`);
 
 const since = new Date(Date.now() - 60_000).toISOString();
-await $`gh workflow run deploy-hub.yml -f ${`tag=${tag}`} -f ${`bootstrap_gate=${bootstrapGate}`} -f ${`recovery_checkpoint=${recovery.checkpointId}`} -f ${`recovery_sha256=${recovery.objectSha256}`} -f ${`recovery_build=${recovery.sourceBuild}`}`;
+await $`gh workflow run deploy-hub.yml --ref main -f ${`tag=${tag}`} -f ${`bootstrap_gate=${bootstrapGate}`} -f ${`recovery_checkpoint=${recovery.checkpointId}`} -f ${`recovery_sha256=${recovery.objectSha256}`} -f ${`recovery_build=${recovery.sourceBuild}`}`;
 console.log(`Dispatched deploy-hub.yml for ${tag}; waiting for the run…`);
 
 let run: number | undefined;
