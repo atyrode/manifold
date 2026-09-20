@@ -9,7 +9,13 @@ import {
 } from "./agent-runs.ts";
 import { ReportRunActivityRequestSchema } from "./agents.ts";
 import { GrantNodeSchema } from "./grants.ts";
-import { ACTION_RESULT_PROJECTION_MAX_BYTES, ActionDenialSchema, ActionProjectedResultSchema, ActionResultProjectionDigestSchema, ActionSummarySchema } from "./plugin.ts";
+import {
+  ACTION_RESULT_PROJECTION_MAX_BYTES,
+  ActionDenialSchema,
+  ActionProjectedResultSchema,
+  ActionResultProjectionDigestSchema,
+  ActionSummarySchema,
+} from "./plugin.ts";
 
 export const ACTION_RUNNER_MAX_FRAME_BYTES = 65_536;
 export const ACTION_RUNNER_MAX_FRAMES = 1_024;
@@ -48,9 +54,18 @@ export type ActionRunnerBind = z.infer<typeof ActionRunnerBindSchema>;
 export const ActionRunnerReadResultsSchema = z
   .array(
     z.strictObject({
-      door: z.string().min(1).max(256).refine((door) => !door.includes("*")),
+      door: z
+        .string()
+        .min(1)
+        .max(256)
+        .refine((door) => !door.includes("*")),
       contractDigest: ActionResultProjectionDigestSchema,
-      maxResultBytes: z.number().int().positive().max(ACTION_RESULT_PROJECTION_MAX_BYTES).optional(),
+      maxResultBytes: z
+        .number()
+        .int()
+        .positive()
+        .max(ACTION_RESULT_PROJECTION_MAX_BYTES)
+        .optional(),
     }),
   )
   .max(64)
@@ -136,26 +151,28 @@ export const ActionRunnerResponseSchema = z.discriminatedUnion("type", [
     ...CorrelationSchema.shape,
     policy: AgentPolicyChallengeSchema,
   }),
-  z.strictObject({
-    type: z.literal("result"),
-    ...CorrelationSchema.shape,
-    outcome: z.union([
-      z.strictObject({ ok: z.literal(true) }),
-      z.strictObject({
-        ok: z.literal(false),
-        denial: ActionDenialSchema.pick({ rule: true }),
-      }),
-    ]),
-    projection: RunnerProjectionSchema.optional(),
-    expiresAt: z.number().int().positive().optional(),
-    cleanup: z
-      .strictObject({
-        finishedRuns: z.number().int().positive(),
-        revokedCredentials: z.number().int().nonnegative(),
-        revokedGrants: z.number().int().nonnegative(),
-      })
-      .optional(),
-  }).refine((result) => result.projection === undefined || result.outcome.ok),
+  z
+    .strictObject({
+      type: z.literal("result"),
+      ...CorrelationSchema.shape,
+      outcome: z.union([
+        z.strictObject({ ok: z.literal(true) }),
+        z.strictObject({
+          ok: z.literal(false),
+          denial: ActionDenialSchema.pick({ rule: true }),
+        }),
+      ]),
+      projection: RunnerProjectionSchema.optional(),
+      expiresAt: z.number().int().positive().optional(),
+      cleanup: z
+        .strictObject({
+          finishedRuns: z.number().int().positive(),
+          revokedCredentials: z.number().int().nonnegative(),
+          revokedGrants: z.number().int().nonnegative(),
+        })
+        .optional(),
+    })
+    .refine((result) => result.projection === undefined || result.outcome.ok),
   z.strictObject({
     type: z.literal("error"),
     id: IdSchema.nullable(),

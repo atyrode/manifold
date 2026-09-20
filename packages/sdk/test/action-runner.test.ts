@@ -363,19 +363,31 @@ async function readResultScenario(options: {
         const declaration =
           ++discoveries > 1 && options.refreshDeclaration !== undefined
             ? options.refreshDeclaration
-            : options.declaration === undefined ? readPolicy : options.declaration;
+            : options.declaration === undefined
+              ? readPolicy
+              : options.declaration;
         const summary = (name: string): ActionSummary => ({
-          name, title: name, caps: [], scope: "workspace",
-          input: { type: "object" }, result: { type: "object" },
+          name,
+          title: name,
+          caps: [],
+          scope: "workspace",
+          input: { type: "object" },
+          result: { type: "object" },
         });
         const padding = { padding: "" };
         const payload = {
           protocolVersion: PROTOCOL_VERSION,
           actions: [
-            ...["createRun", "createChildRun", "inspectRun", "reportRunActivity", "getAgentPolicy",
-              "acknowledgeAgentPolicy", "renewAgentRun", "finishAgentRun"].map(
-              (name) => summary(`core.access.${name}`),
-            ),
+            ...[
+              "createRun",
+              "createChildRun",
+              "inspectRun",
+              "reportRunActivity",
+              "getAgentPolicy",
+              "acknowledgeAgentPolicy",
+              "renewAgentRun",
+              "finishAgentRun",
+            ].map((name) => summary(`core.access.${name}`)),
             {
               ...summary(readDoor),
               ...(declaration === null ? {} : { resultProjection: declaration }),
@@ -385,41 +397,55 @@ async function readResultScenario(options: {
           ],
         };
         if (options.discoveryBodyBytes !== undefined)
-          padding.padding = "x".repeat(options.discoveryBodyBytes - Buffer.byteLength(JSON.stringify(payload)));
+          padding.padding = "x".repeat(
+            options.discoveryBodyBytes - Buffer.byteLength(JSON.stringify(payload)),
+          );
         return Response.json(payload);
       }
       const door = decodeURIComponent(path.slice("/api/actions/".length));
       const trace = calls.length + 1;
       calls.push({ door, projection: request.headers.get(ACTION_RESULT_PROJECTION_HEADER), trace });
-      const headers = options.missingTrace && door === readDoor
-        ? {} : { [ACTION_TRACE_ID_HEADER]: String(trace) };
+      const headers =
+        options.missingTrace && door === readDoor
+          ? {}
+          : { [ACTION_TRACE_ID_HEADER]: String(trace) };
       if (door === readDoor) {
         if (options.denied)
           return Response.json(
             { ok: false, denial: { rule: "forbidden", message: "PRIVATE_DENIAL" } },
             { headers },
           );
-        return Response.json({
-          ok: true,
-          result: { raw: "RAW_RESULT_MUST_STAY_PRIVATE", token: runToken },
-          ...(options.projection === null ? {} : {
-            projection: options.projection ?? {
-              ok: true, contractDigest, data: { items: [{ title: "Selected evidence" }] },
-            },
-          }),
-        }, { headers });
+        return Response.json(
+          {
+            ok: true,
+            result: { raw: "RAW_RESULT_MUST_STAY_PRIVATE", token: runToken },
+            ...(options.projection === null
+              ? {}
+              : {
+                  projection: options.projection ?? {
+                    ok: true,
+                    contractDigest,
+                    data: { items: [{ title: "Selected evidence" }] },
+                  },
+                }),
+          },
+          { headers },
+        );
       }
       let result: unknown;
       if (door === "core.access.createRun") {
         result = { run, credential: { token: runToken, expiresAt: run.expiresAt } };
       } else if (door === "core.access.getAgentPolicy") {
         result = {
-          runId: run.id, revision: policyDigest, issuedAt: 1,
+          runId: run.id,
+          revision: policyDigest,
+          issuedAt: 1,
           required: [{ id: "policy", source: "builtin", body: policyBody, digest: policyDigest }],
         };
       } else if (door === "core.access.acknowledgeAgentPolicy") {
         expect(await request.json()).toEqual({
-          revision: policyDigest, acknowledgements: [{ id: "policy", digest: policyDigest }],
+          revision: policyDigest,
+          acknowledgements: [{ id: "policy", digest: policyDigest }],
         });
         run.state = "active";
         result = { run };
@@ -430,19 +456,29 @@ async function readResultScenario(options: {
         result = { run, finishedRuns: 1, revokedCredentials: 1, revokedGrants: 1 };
       } else throw new Error("unexpected synthetic action");
       // Unsolicited sidebands on lifecycle responses must never escape.
-      return Response.json({
-        ok: true, result,
-        projection: { ok: true, contractDigest, data: { items: [{ title: "LIFECYCLE_PRIVATE" }] } },
-      }, { headers });
+      return Response.json(
+        {
+          ok: true,
+          result,
+          projection: {
+            ok: true,
+            contractDigest,
+            data: { items: [{ title: "LIFECYCLE_PRIVATE" }] },
+          },
+        },
+        { headers },
+      );
     },
   });
   const environment: Record<string, string | undefined> = {
     MANIFOLD_ORIGIN: server.url.origin,
     MANIFOLD_RUNNER_TOKEN: credential,
     MANIFOLD_AGENT_ID: "reader",
-    ...(options.readResults === undefined ? {} : {
-      MANIFOLD_READ_RESULTS: JSON.stringify(options.readResults),
-    }),
+    ...(options.readResults === undefined
+      ? {}
+      : {
+          MANIFOLD_READ_RESULTS: JSON.stringify(options.readResults),
+        }),
   };
   const configuration = readActionRunnerEnvironment(environment);
   const line = (value: unknown) => new TextEncoder().encode(`${JSON.stringify(value)}\n`);
@@ -451,13 +487,23 @@ async function readResultScenario(options: {
     const policy = output.find((frame) => frame.type === "policy");
     expect(policy?.type === "policy" ? policy.policy.required[0]?.body : null).toBe(policyBody);
     yield line({
-      type: "ack", id: "ack", runId: run.id,
-      policy: { revision: policyDigest, acknowledgements: [{ id: "policy", digest: policyDigest }] },
+      type: "ack",
+      id: "ack",
+      runId: run.id,
+      policy: {
+        revision: policyDigest,
+        acknowledgements: [{ id: "policy", digest: policyDigest }],
+      },
     });
     if (options.refreshDeclaration !== undefined)
       yield line({ type: "discover", id: "refresh", runId: run.id });
     yield line({
-      type: "invoke", id: "read", runId: run.id, door: readDoor, target: "manifold://", args: {},
+      type: "invoke",
+      id: "read",
+      runId: run.id,
+      door: readDoor,
+      target: "manifold://",
+      args: {},
       ...options.invoke,
     });
     yield line({ type: "finish", id: "finish", runId: run.id, outcome: "completed" });
@@ -479,11 +525,13 @@ async function readResultScenario(options: {
 }
 
 describe("trusted bounded read results", () => {
-  const allow = async (maxResultBytes?: number): Promise<ActionRunnerReadResults> => [{
-    door: readDoor,
-    contractDigest: await actionResultProjectionDigest(readPolicy),
-    ...(maxResultBytes === undefined ? {} : { maxResultBytes }),
-  }];
+  const allow = async (maxResultBytes?: number): Promise<ActionRunnerReadResults> => [
+    {
+      door: readDoor,
+      contractDigest: await actionResultProjectionDigest(readPolicy),
+      ...(maxResultBytes === undefined ? {} : { maxResultBytes }),
+    },
+  ];
 
   test("default-off drops unsolicited results; exact launcher opt-in emits only traced untrusted leaves", async () => {
     for (const enabled of [false, true]) {
@@ -491,21 +539,36 @@ describe("trusted bounded read results", () => {
       expect(scenario.code).toBe(0);
       const call = scenario.calls.find((call) => call.door === readDoor);
       expect(scenario.result).toMatchObject({
-        type: "result", outcome: { ok: true }, traceId: call?.trace, door: readDoor,
+        type: "result",
+        outcome: { ok: true },
+        traceId: call?.trace,
+        door: readDoor,
       });
       if (scenario.result?.type !== "result") throw new Error("missing read outcome");
-      expect(scenario.result.projection).toEqual(enabled ? {
-        ok: true, contractDigest: await actionResultProjectionDigest(readPolicy),
-        data: { items: [{ title: "Selected evidence" }] }, trust: "untrusted",
-      } : undefined);
-      expect(call?.projection).toBe(enabled ? await actionResultProjectionDigest(readPolicy) : null);
-      expect(scenario.calls.filter((call) => call.door !== readDoor).every(
-        (call) => call.projection === null,
-      )).toBe(true);
+      expect(scenario.result.projection).toEqual(
+        enabled
+          ? {
+              ok: true,
+              contractDigest: await actionResultProjectionDigest(readPolicy),
+              data: { items: [{ title: "Selected evidence" }] },
+              trust: "untrusted",
+            }
+          : undefined,
+      );
+      expect(call?.projection).toBe(
+        enabled ? await actionResultProjectionDigest(readPolicy) : null,
+      );
+      expect(
+        scenario.calls
+          .filter((call) => call.door !== readDoor)
+          .every((call) => call.projection === null),
+      ).toBe(true);
       expect(scenario.lines.join("")).not.toMatch(/RAW_RESULT_MUST_STAY_PRIVATE|LIFECYCLE_PRIVATE/);
       expect(scenario.lines.join("")).not.toContain("b".repeat(64));
       expect(scenario.output.at(-1)).toEqual({
-        type: "closed", outcome: "completed", cleanup: "confirmed",
+        type: "closed",
+        outcome: "completed",
+        cleanup: "confirmed",
       });
     }
   });
@@ -517,7 +580,9 @@ describe("trusted bounded read results", () => {
     ]) {
       const scenario = await readResultScenario({ invoke: forged });
       expect(scenario.calls.some((call) => call.door === readDoor)).toBe(false);
-      expect(scenario.output).toContainEqual(expect.objectContaining({ type: "error", code: "invalid_frame" }));
+      expect(scenario.output).toContainEqual(
+        expect.objectContaining({ type: "error", code: "invalid_frame" }),
+      );
       expect(scenario.run.cleanup.finishedAt).toBe(2);
     }
   });
@@ -531,7 +596,9 @@ describe("trusted bounded read results", () => {
     for (const [override, code] of cases) {
       const scenario = await readResultScenario({ ...override, readResults: await allow() });
       expect(scenario.calls.some((call) => call.door === readDoor)).toBe(false);
-      expect(scenario.output).toContainEqual(expect.objectContaining({ type: "error", code, door: readDoor }));
+      expect(scenario.output).toContainEqual(
+        expect.objectContaining({ type: "error", code, door: readDoor }),
+      );
       expect(scenario.run.cleanup.finishedAt).toBe(2);
     }
   });
@@ -540,26 +607,40 @@ describe("trusted bounded read results", () => {
     const neighboring = await readResultScenario({
       readResults: [{ ...(await allow())[0]!, door: `${readDoor}.other` }],
     });
-    expect(neighboring.result?.type === "result" ? neighboring.result.projection : null).toBeUndefined();
+    expect(
+      neighboring.result?.type === "result" ? neighboring.result.projection : null,
+    ).toBeUndefined();
     for (const invoke of [{ door: "core.access.getAgentPolicy" }, {}]) {
       const scenario = await readResultScenario({
         readResults: [
-          ...await allow(),
-          { door: "core.access.getAgentPolicy", contractDigest: await actionResultProjectionDigest(readPolicy) },
+          ...(await allow()),
+          {
+            door: "core.access.getAgentPolicy",
+            contractDigest: await actionResultProjectionDigest(readPolicy),
+          },
         ],
-        ...(Object.keys(invoke).length === 0 ? { declaration: null, runAccess: "policy" as const } : {}),
+        ...(Object.keys(invoke).length === 0
+          ? { declaration: null, runAccess: "policy" as const }
+          : {}),
         invoke,
       });
-      expect(scenario.output).toContainEqual(expect.objectContaining({ type: "error", code: "invalid_state" }));
+      expect(scenario.output).toContainEqual(
+        expect.objectContaining({ type: "error", code: "invalid_state" }),
+      );
       expect(scenario.calls.some((call) => call.door === readDoor)).toBe(false);
       expect(scenario.run.cleanup.finishedAt).toBe(2);
     }
   });
 
   test("missing or mismatched sidebands never fall back to a raw result or retry the effect", async () => {
-    for (const projection of [null, {
-      ok: true, contractDigest: "c".repeat(64), data: { items: [{ title: "WRONG_CONTRACT" }] },
-    }]) {
+    for (const projection of [
+      null,
+      {
+        ok: true,
+        contractDigest: "c".repeat(64),
+        data: { items: [{ title: "WRONG_CONTRACT" }] },
+      },
+    ]) {
       const scenario = await readResultScenario({ readResults: await allow(), projection });
       expect(scenario.result).toMatchObject({
         outcome: { ok: true },
@@ -577,14 +658,26 @@ describe("trusted bounded read results", () => {
     for (let index = 0; index < 17; index++) deep = { child: deep };
     for (const [data, code, limit] of [
       [{ items: [{ title: { nested: "not a leaf" } }] }, "projection_invalid", undefined],
-      [{ items: [{ title: "one" }, { title: "two" }, { title: "three" }] }, "projection_limit", undefined],
+      [
+        { items: [{ title: "one" }, { title: "two" }, { title: "three" }] },
+        "projection_limit",
+        undefined,
+      ],
       [{ items: [{ title: "ok" }], extra: deep }, "projection_limit", undefined],
       [{ items: [{ title: "b".repeat(64) }] }, "projection_invalid", undefined],
       [{ items: [{ title: "Bearer synthetic-value" }] }, "projection_invalid", undefined],
-      [{ items: [{ title: "https://example.invalid/#key=synthetic" }] }, "projection_invalid", undefined],
+      [
+        { items: [{ title: "https://example.invalid/#key=synthetic" }] },
+        "projection_invalid",
+        undefined,
+      ],
       [{ items: [{ title: "ok", access_token: "synthetic" }] }, "projection_invalid", undefined],
       [{ items: [{ title: "x".repeat(1_024) }] }, "projection_limit", undefined],
-      [{ items: [{ title: "界" }] }, "projection_limit", Buffer.byteLength(JSON.stringify({ items: [{ title: "界" }] })) - 1],
+      [
+        { items: [{ title: "界" }] },
+        "projection_limit",
+        Buffer.byteLength(JSON.stringify({ items: [{ title: "界" }] })) - 1,
+      ],
     ] as const) {
       const scenario = await readResultScenario({
         readResults: await allow(limit),
@@ -611,7 +704,11 @@ describe("trusted bounded read results", () => {
     expect(valid.result).toMatchObject({ projection: { ok: true, data } });
     const filtered = await readResultScenario({
       readResults: await allow(),
-      projection: { ok: true, contractDigest, data: { items: [{ title: "leaf", hidden: "UNSELECTED" }] } },
+      projection: {
+        ok: true,
+        contractDigest,
+        data: { items: [{ title: "leaf", hidden: "UNSELECTED" }] },
+      },
     });
     expect(filtered.lines.join("")).not.toContain("UNSELECTED");
     expect(filtered.result).toMatchObject({ projection: { data: { items: [{ title: "leaf" }] } } });
@@ -620,7 +717,8 @@ describe("trusted bounded read results", () => {
       projection: { ok: false, contractDigest, code: "projection_limit" },
     });
     expect(refused.result).toMatchObject({
-      outcome: { ok: true }, projection: { ok: false, code: "projection_limit" },
+      outcome: { ok: true },
+      projection: { ok: false, code: "projection_limit" },
     });
   });
 
@@ -630,7 +728,9 @@ describe("trusted bounded read results", () => {
     expect(denied.result).not.toHaveProperty("projection");
     expect(denied.lines.join("")).not.toContain("PRIVATE_DENIAL");
     const untraced = await readResultScenario({ readResults: await allow(), missingTrace: true });
-    expect(untraced.output).toContainEqual(expect.objectContaining({ type: "error", code: "missing_trace" }));
+    expect(untraced.output).toContainEqual(
+      expect.objectContaining({ type: "error", code: "missing_trace" }),
+    );
     expect(untraced.result).toBeUndefined();
     expect(untraced.lines.join("")).not.toContain("Selected evidence");
     expect(untraced.run.cleanup.finishedAt).toBe(2);
@@ -639,28 +739,40 @@ describe("trusted bounded read results", () => {
   test("invalid launcher output policies are withdrawn even when admission refuses", async () => {
     const entry = (await allow())[0]!;
     for (const value of [
-      [entry, entry], [{ ...entry, contractDigest: "not-a-digest" }],
+      [entry, entry],
+      [{ ...entry, contractDigest: "not-a-digest" }],
       [{ ...entry, door: "*" }],
-      [{ ...entry, maxResultBytes: 0 }], [{ ...entry, maxResultBytes: 1_048_577 }],
+      [{ ...entry, maxResultBytes: 0 }],
+      [{ ...entry, maxResultBytes: 1_048_577 }],
       Array.from({ length: 65 }, (_, index) => ({ ...entry, door: `door-${index}` })),
     ]) {
       const environment: Record<string, string | undefined> = {
-        MANIFOLD_ORIGIN: "https://example.invalid", MANIFOLD_AGENT_ID: "reader",
-        MANIFOLD_RUNNER_TOKEN: credential, MANIFOLD_READ_RESULTS: JSON.stringify(value),
+        MANIFOLD_ORIGIN: "https://example.invalid",
+        MANIFOLD_AGENT_ID: "reader",
+        MANIFOLD_RUNNER_TOKEN: credential,
+        MANIFOLD_READ_RESULTS: JSON.stringify(value),
       };
       expect(() => readActionRunnerEnvironment(environment)).toThrow();
       expect(environment).toEqual({});
-      expect(() => new ActionRunner({
-        origin: "https://example.invalid", token: credential, bind: { agentId: "reader" },
-        readResults: value, emit: () => {},
-      })).toThrow();
+      expect(
+        () =>
+          new ActionRunner({
+            origin: "https://example.invalid",
+            token: credential,
+            bind: { agentId: "reader" },
+            readResults: value,
+            emit: () => {},
+          }),
+      ).toThrow();
     }
   });
 
   test("malformed launcher JSON is rejected before either input pipe can be read", () => {
     const environment: Record<string, string | undefined> = {
-      MANIFOLD_ORIGIN: "https://example.invalid", MANIFOLD_AGENT_ID: "reader",
-      MANIFOLD_RUNNER_TOKEN: credential, MANIFOLD_READ_RESULTS: "[",
+      MANIFOLD_ORIGIN: "https://example.invalid",
+      MANIFOLD_AGENT_ID: "reader",
+      MANIFOLD_RUNNER_TOKEN: credential,
+      MANIFOLD_READ_RESULTS: "[",
       MANIFOLD_ACTIVITY_FD: "3",
     };
     expect(() => readActionRunnerEnvironment(environment)).toThrow();
@@ -672,7 +784,9 @@ describe("trusted bounded read results", () => {
     const limit = 16 * 1_048_576;
     const scenario = await readResultScenario({ discoveryBodyBytes: limit - 1 });
     expect(scenario.lines.every((line) => Buffer.byteLength(line) <= limit)).toBe(true);
-    expect(scenario.output).toContainEqual(expect.objectContaining({ type: "error", code: "limit_exceeded" }));
+    expect(scenario.output).toContainEqual(
+      expect.objectContaining({ type: "error", code: "limit_exceeded" }),
+    );
     expect(scenario.calls).toEqual([]);
   });
 });

@@ -235,7 +235,10 @@ describe("PluginHost bounded result publication", () => {
         description: "",
         capabilities: ["containers:read"],
         contributes: {
-          panels: [], sections: [], elements: [], tools: [],
+          panels: [],
+          sections: [],
+          elements: [],
+          tools: [],
           events: [{ id: "read", title: "Read" }],
         },
       },
@@ -256,8 +259,14 @@ describe("PluginHost bounded result publication", () => {
           ctx.emit({ kind: "plugin", pluginId: ctx.pluginId }, "read", {});
           return produce();
         },
-        private: async () => { effects++; return produce(); },
-        broken: async () => { effects++; return produce(); },
+        private: async () => {
+          effects++;
+          return produce();
+        },
+        broken: async () => {
+          effects++;
+          return produce();
+        },
       },
     };
     return {
@@ -271,16 +280,26 @@ describe("PluginHost bounded result publication", () => {
     const fixture = await hostFixture();
     const result = { items: [{ text: "public", private: "hidden" }], private: "hidden" };
     try {
-      const { host, resultProjectionDigest, effects } = await publicationHost(fixture, () => result);
+      const { host, resultProjectionDigest, effects } = await publicationHost(
+        fixture,
+        () => result,
+      );
       expect(await host.dispatch(fixture.owner, "test.publication.read", {})).toEqual({
-        ok: true, result,
-      });
-      expect(await host.dispatch(fixture.owner, "test.publication.read", {}, null, {
-        resultProjectionDigest,
-      })).toEqual({
         ok: true,
         result,
-        projection: { ok: true, contractDigest: resultProjectionDigest, data: { items: [{ text: "public" }] } },
+      });
+      expect(
+        await host.dispatch(fixture.owner, "test.publication.read", {}, null, {
+          resultProjectionDigest,
+        }),
+      ).toEqual({
+        ok: true,
+        result,
+        projection: {
+          ok: true,
+          contractDigest: resultProjectionDigest,
+          data: { items: [{ text: "public" }] },
+        },
       });
       expect(effects()).toBe(2);
     } finally {
@@ -300,19 +319,35 @@ describe("PluginHost bounded result publication", () => {
         let traceId: number | undefined;
         const outcome = await host.dispatch(fixture.owner, door, {}, null, {
           ...options,
-          onTrace: (id) => { traceId = id; },
+          onTrace: (id) => {
+            traceId = id;
+          },
         });
         expect(outcome).toMatchObject({ ok: false, denial: { rule: "invalid_args" } });
         expect(outcome).not.toHaveProperty("projection");
         expect(fixture.store.listEvents({ type: TRACE_ROW_TYPE, limit: 1 })[0]).toMatchObject({
-          id: traceId, door, outcome: "invalid_args",
+          id: traceId,
+          door,
+          outcome: "invalid_args",
         });
       }
-      expect(denial(await host.dispatch(context(fixture, []), "test.publication.read", {}, null, stale)).rule)
-        .toBe("forbidden");
-      const ordinaryInvalid = await host.dispatch(fixture.owner, "test.publication.read", { extra: true });
-      expect(await host.dispatch(fixture.owner, "test.publication.read", { extra: true }, null, stale))
-        .toEqual(ordinaryInvalid);
+      expect(
+        denial(
+          await host.dispatch(
+            context(fixture, ["machines:read"]),
+            "test.publication.read",
+            {},
+            null,
+            stale,
+          ),
+        ).rule,
+      ).toBe("forbidden");
+      const ordinaryInvalid = await host.dispatch(fixture.owner, "test.publication.read", {
+        extra: true,
+      });
+      expect(
+        await host.dispatch(fixture.owner, "test.publication.read", { extra: true }, null, stale),
+      ).toEqual(ordinaryInvalid);
       expect(effects()).toBe(0);
     } finally {
       fixture.store.close();
@@ -321,43 +356,62 @@ describe("PluginHost bounded result publication", () => {
 
   test.each([
     { result: { items: [{ text: { nested: "not a primitive" } }] }, code: "projection_invalid" },
-    { result: { items: [{ text: "one" }, { text: "two" }, { text: "three" }] }, code: "projection_limit" },
+    {
+      result: { items: [{ text: "one" }, { text: "two" }, { text: "three" }] },
+      code: "projection_limit",
+    },
     // Character count fits; serialized UTF-8 bytes do not.
     { result: { items: [{ text: "é".repeat(24) }] }, code: "projection_limit" },
-  ])("publication failure $code retains successful effects, events and trace", async ({ result, code }) => {
-    const fixture = await hostFixture();
-    try {
-      const { host, resultProjectionDigest, effects } = await publicationHost(fixture, () => result);
-      let traceId: number | undefined;
-      const outcome = await host.dispatch(fixture.owner, "test.publication.read", {}, null, {
-        resultProjectionDigest,
-        onTrace: (id) => { traceId = id; },
-      });
-      expect(outcome).toEqual({
-        ok: true, result,
-        projection: { ok: false, contractDigest: resultProjectionDigest, code },
-      });
-      expect(effects()).toBe(1);
-      expect(fixture.store.listEvents({ type: TRACE_ROW_TYPE, limit: 1 })[0]).toMatchObject({
-        id: traceId, outcome: "ok",
-      });
-      expect(fixture.store.listEvents({ type: "read", limit: 10 })).toHaveLength(1);
-    } finally {
-      fixture.store.close();
-    }
-  });
+  ])(
+    "publication failure $code retains successful effects, events and trace",
+    async ({ result, code }) => {
+      const fixture = await hostFixture();
+      try {
+        const { host, resultProjectionDigest, effects } = await publicationHost(
+          fixture,
+          () => result,
+        );
+        let traceId: number | undefined;
+        const outcome = await host.dispatch(fixture.owner, "test.publication.read", {}, null, {
+          resultProjectionDigest,
+          onTrace: (id) => {
+            traceId = id;
+          },
+        });
+        expect(outcome).toEqual({
+          ok: true,
+          result,
+          projection: { ok: false, contractDigest: resultProjectionDigest, code },
+        });
+        expect(effects()).toBe(1);
+        expect(fixture.store.listEvents({ type: TRACE_ROW_TYPE, limit: 1 })[0]).toMatchObject({
+          id: traceId,
+          outcome: "ok",
+        });
+        expect(fixture.store.listEvents({ type: "read", limit: 10 })).toHaveLength(1);
+      } finally {
+        fixture.store.close();
+      }
+    },
+  );
 
   test("handler refusals and schema failures do not produce a projection", async () => {
     const fixture = await hostFixture();
     try {
-      const { host, resultProjectionDigest } = await publicationHost(fixture, () => ({ refused: "no" }));
-      expect(await host.dispatch(fixture.owner, "test.publication.read", {}, null, {
-        resultProjectionDigest,
-      })).toEqual({ ok: false, denial: { rule: "refused", message: "no" } });
+      const { host, resultProjectionDigest } = await publicationHost(fixture, () => ({
+        refused: "no",
+      }));
+      expect(
+        await host.dispatch(fixture.owner, "test.publication.read", {}, null, {
+          resultProjectionDigest,
+        }),
+      ).toEqual({ ok: false, denial: { rule: "refused", message: "no" } });
       const broken = await publicationHost(fixture, () => ({ count: "not a number" }));
-      await expect(broken.host.dispatch(fixture.owner, "test.publication.broken", {}, null, {
-        resultProjectionDigest,
-      })).rejects.toThrow();
+      await expect(
+        broken.host.dispatch(fixture.owner, "test.publication.broken", {}, null, {
+          resultProjectionDigest,
+        }),
+      ).rejects.toThrow();
       expect(fixture.store.listEvents({ type: TRACE_ROW_TYPE, limit: 1 })[0]).toMatchObject({
         outcome: "failed",
       });
@@ -370,21 +424,41 @@ describe("PluginHost bounded result publication", () => {
     const fixture = await hostFixture();
     let effects = 0;
     try {
-      const host = await customHost(fixture, [{
-        manifest: {
-          id: "core.access", version: "1.0.0", title: "Lifecycle", description: "",
-          capabilities: [],
-          contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+      const host = await customHost(fixture, [
+        {
+          manifest: {
+            id: "core.access",
+            version: "1.0.0",
+            title: "Lifecycle",
+            description: "",
+            capabilities: [],
+            contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+          },
+          actions: [
+            defineAction({
+              name: "inspect",
+              title: "Inspect",
+              caps: [],
+              runAccess: "inspect",
+              input: z.strictObject({}),
+              result: z.unknown(),
+            }),
+          ],
+          handlers: {
+            inspect: async () => {
+              effects++;
+              return {};
+            },
+          },
         },
-        actions: [defineAction({
-          name: "inspect", title: "Inspect", caps: [], runAccess: "inspect",
-          input: z.strictObject({}), result: z.unknown(),
-        })],
-        handlers: { inspect: async () => { effects++; return {}; } },
-      }]);
-      expect(denial(await host.dispatch(fixture.owner, "core.access.inspect", {}, null, {
-        resultProjectionDigest: "0".repeat(64),
-      })).rule).toBe("invalid_args");
+      ]);
+      expect(
+        denial(
+          await host.dispatch(fixture.owner, "core.access.inspect", {}, null, {
+            resultProjectionDigest: "0".repeat(64),
+          }),
+        ).rule,
+      ).toBe("invalid_args");
       expect(effects).toBe(0);
     } finally {
       fixture.store.close();

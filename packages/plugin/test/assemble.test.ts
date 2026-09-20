@@ -83,10 +83,14 @@ describe("assembleRoster", () => {
     const digest = await actionResultProjectionDigest(policy);
     policy.fields[0]![0] = "other";
     expect(before.roster[0]?.actions[0]?.resultProjection?.fields).toEqual([["ok"]]);
-    expect(await before.actions.get("core.terminals.rename")?.resultProjection?.digest).toBe(digest);
+    expect(await before.actions.get("core.terminals.rename")?.resultProjection?.digest).toBe(
+      digest,
+    );
     const after = assembleRoster([def], NONE);
     expect(after.roster[0]?.actions[0]?.resultProjection?.fields).toEqual([["other"]]);
-    expect(await after.actions.get("core.terminals.rename")?.resultProjection?.digest).not.toBe(digest);
+    expect(await after.actions.get("core.terminals.rename")?.resultProjection?.digest).not.toBe(
+      digest,
+    );
   });
 
   test("invalid and lifecycle publication declarations cannot enter the roster", () => {
@@ -103,7 +107,12 @@ describe("assembleRoster", () => {
     ]) {
       expect(() =>
         assembleRoster(
-          [{ manifest: manifest({ id: "core.access", capabilities: ["containers:write"] }), actions: [action] }],
+          [
+            {
+              manifest: manifest({ id: "core.access", capabilities: ["containers:write"] }),
+              actions: [action],
+            },
+          ],
           NONE,
         ),
       ).toThrow(AssemblyError);

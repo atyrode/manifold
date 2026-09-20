@@ -72,7 +72,9 @@ export function readActionRunnerEnvironment(environment: Record<string, string |
       : { runId: values["MANIFOLD_RUN_ID"] },
   );
   if (!parsed.success) throw new ActionRunnerError("invalid_frame");
-  const readResults = ActionRunnerReadResultsSchema.optional().safeParse(json("MANIFOLD_READ_RESULTS"));
+  const readResults = ActionRunnerReadResultsSchema.optional().safeParse(
+    json("MANIFOLD_READ_RESULTS"),
+  );
   if (!readResults.success) throw new ActionRunnerError("invalid_frame");
   const descriptor = values["MANIFOLD_ACTIVITY_FD"];
   if (descriptor !== undefined && (!/^[0-9]{1,6}$/.test(descriptor) || Number(descriptor) < 3))

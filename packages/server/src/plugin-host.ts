@@ -3910,7 +3910,8 @@ export class PluginHost {
       }
       return null;
     };
-    const projection = options.resultProjectionDigest === undefined ? undefined : entry.resultProjection;
+    const projection =
+      options.resultProjectionDigest === undefined ? undefined : entry.resultProjection;
     const projectionDigest = projection === undefined ? undefined : await projection.digest;
     const projectionDenial =
       options.resultProjectionDigest !== undefined &&

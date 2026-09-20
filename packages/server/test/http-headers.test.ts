@@ -53,8 +53,15 @@ test("direct static, SPA, error and API responses share baseline headers without
     });
     expect(preflight.headers.get("access-control-allow-origin")).toBe("*");
     expect(preflight.headers.get("access-control-allow-credentials")).toBeNull();
-    expect(preflight.headers.get("access-control-allow-headers")).toContain(ACTION_RESULT_PROJECTION_HEADER);
-    for (const value of ["", "A".repeat(64), "a".repeat(63), `${"a".repeat(64)},${"b".repeat(64)}`]) {
+    expect(preflight.headers.get("access-control-allow-headers")).toContain(
+      ACTION_RESULT_PROJECTION_HEADER,
+    );
+    for (const value of [
+      "",
+      "A".repeat(64),
+      "a".repeat(63),
+      `${"a".repeat(64)},${"b".repeat(64)}`,
+    ]) {
       const response = await fetch(`${server.publicUrl}/api/actions/core.access.inspectRun`, {
         method: "POST",
         headers: {

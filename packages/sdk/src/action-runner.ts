@@ -85,7 +85,10 @@ export class ActionRunner {
   readonly #ids = new Set<string>();
   readonly #secrets = new Set<string>();
   readonly #readResults: ActionRunnerReadResults;
-  readonly #readContracts = new Map<string, ReadResultContract | "projection_unavailable" | "projection_changed">();
+  readonly #readContracts = new Map<
+    string,
+    ReadResultContract | "projection_unavailable" | "projection_changed"
+  >();
   #protocol: ActionProtocol | null = null;
   #root: OwnedRun | null = null;
   #admissionUncertain = false;
@@ -159,8 +162,7 @@ export class ActionRunner {
       this.#checkString(value);
     } else if (Array.isArray(value)) {
       if (value.length > maxArrayItems) throw new ActionRunnerError("limit_exceeded");
-      for (const item of value)
-        this.#checkInput(item, depth + 1, budget, maxDepth, maxArrayItems);
+      for (const item of value) this.#checkInput(item, depth + 1, budget, maxDepth, maxArrayItems);
     } else if (value !== null && typeof value === "object") {
       for (const [key, child] of Object.entries(value)) {
         if (
@@ -234,7 +236,10 @@ export class ActionRunner {
               digest,
               policy,
               projection: compileJsonProjection(policy.fields),
-              maxResultBytes: Math.min(policy.maxResultBytes, entry.maxResultBytes ?? policy.maxResultBytes),
+              maxResultBytes: Math.min(
+                policy.maxResultBytes,
+                entry.maxResultBytes ?? policy.maxResultBytes,
+              ),
             },
       );
     }
@@ -255,15 +260,10 @@ export class ActionRunner {
     if (this.#protocol === null || !this.#protocol.actions.some((action) => action.name === door)) {
       throw new ActionRunnerError("unknown_action");
     }
-    return invokeAction(
-      this.#options(run),
-      door,
-      args,
-      {
-        ...(justification === undefined ? {} : { agentJustification: justification }),
-        ...(resultProjectionDigest === undefined ? {} : { resultProjectionDigest }),
-      },
-    );
+    return invokeAction(this.#options(run), door, args, {
+      ...(justification === undefined ? {} : { agentJustification: justification }),
+      ...(resultProjectionDigest === undefined ? {} : { resultProjectionDigest }),
+    });
   }
 
   #projection(
@@ -564,7 +564,9 @@ export class ActionRunner {
         const contract = this.#readContracts.get(frame.door);
         const action = this.#protocol?.actions.find((action) => action.name === frame.door);
         if (action === undefined)
-          throw new ActionRunnerError(contract === undefined ? "unknown_action" : "projection_unavailable");
+          throw new ActionRunnerError(
+            contract === undefined ? "unknown_action" : "projection_unavailable",
+          );
         if (
           action.runAccess !== undefined ||
           Object.values(LIFECYCLE).some((door) => door === frame.door)

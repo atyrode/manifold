@@ -845,7 +845,9 @@ export type ActionResultProjection = z.infer<typeof ActionResultProjectionSchema
 export async function actionResultProjectionDigest(
   policy: ActionResultProjection,
 ): Promise<string> {
-  const encoded = new TextEncoder().encode(JSON.stringify(ActionResultProjectionSchema.parse(policy)));
+  const encoded = new TextEncoder().encode(
+    JSON.stringify(ActionResultProjectionSchema.parse(policy)),
+  );
   const digest = await crypto.subtle.digest("SHA-256", encoded);
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
@@ -871,50 +873,52 @@ export type ActionProjectedResult = z.infer<typeof ActionProjectedResultSchema>;
  * validators are generated from the same definitions, so the published schema is the
  * schema the dispatcher enforces, never a hand-written description of it.
  */
-export const ActionSummarySchema = z.strictObject({
-  /** Fully qualified: `${pluginId}.${localName}`. */
-  name: z.string(),
-  title: z.string(),
-  /** What the CALLER must hold: the engine's capabilities, or this plugin's own (ADR 0035). */
-  caps: AuthoredCapSchema.array(),
-  /** Native API ceiling only; never caller permission, a grant, or target admission. */
-  delegates: ActionDelegatesSchema.optional(),
-  /**
-   * A cleanup action stays dispatchable while its plugin is disabled (D12: creation and
-   * administration die on disable, removal survives — nobody is locked out of deleting).
-   * Published so a client can tell which affordances outlive a toggle.
-   */
-  cleanup: z.boolean().optional(),
-  /**
-   * A reserved core identity action's autonomous-run lifecycle exception. `policy`,
-   * `teardown` and `inspect` remain reachable while ordinary authority is suspended;
-   * `delegate` publishes target-relative authority that the identity mechanism re-evaluates
-   * against the requested child envelope. Assembly refuses this metadata outside `core.access`.
-   */
-  runAccess: ActionRunAccessSchema.optional(),
-  /** A declaration required from active autonomous callers, never authority or reasoning. */
-  agentJustification: z.literal("required").optional(),
-  /**
-   * The authority grade this door is written for. Published (defaulted, so an older reader
-   * that never saw the field reads the conservative answer) because "may my container-scoped
-   * token call this?" is a question a client must be able to answer from the vocabulary alone.
-   */
-  scope: ActionScopeSchema.default("workspace"),
-  requirements: ActionRequirementsSchema.optional(),
-  trace: ActionTracePolicySchema.optional(),
-  input: z.record(z.string(), z.unknown()),
-  result: z.record(z.string(), z.unknown()),
-  /** Absent by default; selected primitive leaves may be disclosed by an opted-in launcher. */
-  resultProjection: ActionResultProjectionSchema.optional(),
-}).superRefine((action, ctx) => {
-  if (action.runAccess !== undefined && action.resultProjection !== undefined) {
-    ctx.addIssue({
-      code: "custom",
-      path: ["resultProjection"],
-      message: "lifecycle actions cannot publish result projections",
-    });
-  }
-});
+export const ActionSummarySchema = z
+  .strictObject({
+    /** Fully qualified: `${pluginId}.${localName}`. */
+    name: z.string(),
+    title: z.string(),
+    /** What the CALLER must hold: the engine's capabilities, or this plugin's own (ADR 0035). */
+    caps: AuthoredCapSchema.array(),
+    /** Native API ceiling only; never caller permission, a grant, or target admission. */
+    delegates: ActionDelegatesSchema.optional(),
+    /**
+     * A cleanup action stays dispatchable while its plugin is disabled (D12: creation and
+     * administration die on disable, removal survives — nobody is locked out of deleting).
+     * Published so a client can tell which affordances outlive a toggle.
+     */
+    cleanup: z.boolean().optional(),
+    /**
+     * A reserved core identity action's autonomous-run lifecycle exception. `policy`,
+     * `teardown` and `inspect` remain reachable while ordinary authority is suspended;
+     * `delegate` publishes target-relative authority that the identity mechanism re-evaluates
+     * against the requested child envelope. Assembly refuses this metadata outside `core.access`.
+     */
+    runAccess: ActionRunAccessSchema.optional(),
+    /** A declaration required from active autonomous callers, never authority or reasoning. */
+    agentJustification: z.literal("required").optional(),
+    /**
+     * The authority grade this door is written for. Published (defaulted, so an older reader
+     * that never saw the field reads the conservative answer) because "may my container-scoped
+     * token call this?" is a question a client must be able to answer from the vocabulary alone.
+     */
+    scope: ActionScopeSchema.default("workspace"),
+    requirements: ActionRequirementsSchema.optional(),
+    trace: ActionTracePolicySchema.optional(),
+    input: z.record(z.string(), z.unknown()),
+    result: z.record(z.string(), z.unknown()),
+    /** Absent by default; selected primitive leaves may be disclosed by an opted-in launcher. */
+    resultProjection: ActionResultProjectionSchema.optional(),
+  })
+  .superRefine((action, ctx) => {
+    if (action.runAccess !== undefined && action.resultProjection !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["resultProjection"],
+        message: "lifecycle actions cannot publish result projections",
+      });
+    }
+  });
 export type ActionSummary = z.infer<typeof ActionSummarySchema>;
 
 /**

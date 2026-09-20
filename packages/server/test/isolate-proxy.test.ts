@@ -176,7 +176,10 @@ describe("buildIsolateDef", () => {
     };
     const { def } = buildIsolateDef(
       manifest,
-      { ...report, actions: report.actions.map((action) => ({ ...action, resultProjection: policy })) },
+      {
+        ...report,
+        actions: report.actions.map((action) => ({ ...action, resultProjection: policy })),
+      },
       scripted({ ok: true, result: null, emits: [] }),
     );
     const assembly = assembleRoster([def], new Set());

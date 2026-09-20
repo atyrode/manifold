@@ -29,8 +29,12 @@ The package also declares the `manifold-action-runner` executable. Before starti
     through `core.access.inspectRun`; it does not create another run.
 - Optional `MANIFOLD_ACTIVITY_FD`: a separately inherited harness pipe descriptor, at least 3.
   Do not give that pipe to the model.
+- Optional `MANIFOLD_READ_RESULTS`: JSON array of at most 64 unique exact-door approvals,
+  each `{door,contractDigest,maxResultBytes?}`. The digest pins the reviewed live
+  `resultProjection` declaration; the optional byte limit may only narrow it. No wildcard
+  or model-supplied approval is accepted. Omit this configuration for mechanical-only output.
 
-The runner reads and deletes all inherited binding entries, including secrets, before reading
+The runner reads and deletes all inherited binding and read-result entries, including secrets, before reading
 either pipe. Mixing modes, partial bindings and the old `MANIFOLD_SPONSOR_TOKEN` are refused.
 For example, Babel registers `babel-analyst` once, retains its runner credential in its secret
 store, and launches an Agent-mode runner per analysis. OMP's `launchRun` instead prepares the
@@ -50,7 +54,8 @@ ambient credentials. Each input is one complete UTF-8 JSON object followed by a 
 are strict, at most 64 KiB, with unique `id` values matching `[a-zA-Z0-9_-]{1,64}`. Process only
 one request at a time: one request may produce multiple response frames. There are at most 1024
 requests, five minutes idle, one hour total process lifetime and 30 seconds per HTTP request.
-Responses are bounded to 16 MiB; a blocked output reader also terminates boundedly.
+HTTP responses and each outgoing JSONL frame (including its newline) are bounded to 16 MiB;
+queued output is bounded too. A blocked output reader terminates boundedly.
 
 ## First action
 
@@ -128,6 +133,72 @@ messages, which can contain credentials, arguments, environment, terminal conten
 Lifecycle results additionally carry expiry or confirmed cleanup counts. The result's `target`
 is **caller-declared**, not an assertion about the trace's resolved targets. Inspector/SDK readers
 use the durable trace reference rather than inferring facts from arguments.
+
+### Opting into bounded read results
+
+An ordinary action may declare `resultProjection`:
+
+```json
+{
+  "kind": "projected-json",
+  "fields": [
+    ["items", "*", "text"],
+    ["items", "*", "sourceId"]
+  ],
+  "maxArrayItems": 20,
+  "maxResultBytes": 32768
+}
+```
+
+These are selected **primitive leaves**, not permission to return arbitrary subtrees. A `*`
+traverses array items only. A declaration has at most 64 paths, each at most 16 segments,
+and at most 4096 items per array; traversal is bounded to 65536 nodes. Its byte ceiling is
+at most 1 MiB of serialized UTF-8 data. Missing fields are omitted; a selected object or
+array leaf is refused. Publication selection is not authorization, sensitivity classification
+or redaction, and does not promise that the action is mutation-free. The plugin remains
+responsible for subject-level disclosure checks and redaction before returning its result.
+
+The trusted launcher reviews the declaration and computes
+`await actionResultProjectionDigest(declaration)` from `@manifold/protocol`, then supplies
+that digest with the exact door through `MANIFOLD_READ_RESULTS` (or `ActionRunner`'s
+`readResults` constructor option). This is not an instruction to automatically approve whatever
+discovery returns. The model cannot request a new projection or widen a reviewed one.
+No declaration means `projection_unavailable`; a changed digest means `projection_changed`,
+both before invocation. Refreshing discovery does not update the trusted approval.
+
+For an approved invocation, the SDK sends the expected digest in
+`x-manifold-result-projection`. The host checks it after ordinary authority/input admission
+and before effects; a stale or unsupported request is a traced `invalid_args`. No requested
+digest means no projection calculation. Normal trusted clients still receive the ordinary
+full result, and sibling action calls remain unchanged.
+
+A successful runner `result` may additionally contain:
+
+```json
+{
+  "projection": {
+    "ok": true,
+    "contractDigest": "<the approved 64-character lowercase SHA-256>",
+    "trust": "untrusted",
+    "data": { "items": [{ "text": "archived source text", "sourceId": "example" }] }
+  }
+}
+```
+
+The runner accepts only the host's separate sideband with that digest and a real trace id,
+reprojects the declared fields, and independently checks structural and UTF-8 byte bounds,
+held credential values and credential/key-link carriers. The lexical checks are defense in
+depth, not a classifier for every possible secret. There is no raw-result fallback or truncation.
+Source text remains untrusted data: it cannot become policy, an acknowledgement, an activity
+frame or a credential binding. Lifecycle output never carries a projection.
+
+If an effect succeeds but its publication fails, `outcome` remains `{ok:true}` and `projection`
+instead contains `{ok:false,contractDigest,trust:"untrusted",code:"projection_invalid"}` or
+`"projection_limit"`. The action's success, events and trace remain truthful; rejected bytes are
+not returned in the projection. A narrower launcher byte ceiling may refuse an otherwise valid
+host projection. Do not automatically retry: the action may already have had an effect.
+Action refusals do not carry projections. Missing trace or malformed transport remains an
+ordinary runner error, never a fabricated successful result.
 
 The lower-level `@manifold/sdk` exports `discoverActions` and `invokeAction` for trusted in-process
 consumers. `invokeAction` returns the complete existing `ActionOutcome` together with

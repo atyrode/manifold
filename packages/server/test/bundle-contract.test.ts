@@ -59,47 +59,57 @@ async function roster(server: RunningServer) {
   ).plugins;
 }
 
-test("a fixture packed against the previous accepted contract dispatches and survives a hub restart", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "manifold-contract-previous-"));
-  const config = configuration(dir);
-  const source = join(config.dataDir, PLUGIN_UPLOADS_DIR, "previous.manifold-plugin.json");
-  mkdirSync(join(config.dataDir, PLUGIN_UPLOADS_DIR), { recursive: true });
-  writeFileSync(source, previousBytes);
-  let server: RunningServer | undefined;
-  try {
-    server = await startServer({ config, logger: silentLogger, announce: false });
-    expect(previous.hardenedContract).toBeLessThan(HARDENED_CONTRACT_VERSION);
-    expect(
-      await action(server, "engine.plugins.install", {
-        source,
-        sha256: sha256Hex(previousBytes),
-        hardened: true,
-      }),
-    ).toMatchObject({ ok: true });
-    expect(await action(server, "example.counter.bump", { by: 7 })).toMatchObject({
-      ok: true,
-      result: { count: 7 },
-    });
-    expect(await action(server, "example.counter.bump", { by: -1 })).toMatchObject({
-      ok: false,
-      denial: { rule: "invalid_args" },
-    });
-    await server.stop();
-    server = await startServer({ config, logger: silentLogger, announce: false });
-    expect(await action(server, "example.counter.bump", { by: 2 })).toMatchObject({
-      ok: true,
-      result: { count: 9 },
-    });
-    expect(
-      (await roster(server)).find((row) => row.manifest.id === previous.manifest.id),
-    ).toMatchObject({
-      enabled: true,
-    });
-  } finally {
-    await server?.stop();
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
+// The contract-2 bytes are packed unchanged with Bun 1.4.2 from
+// 743ee75a92b64b75b4a97244ebd58297c1287164's sample and kit, including its strict load parser.
+for (const bytes of [
+  previousBytes,
+  gunzipSync(
+    readFileSync(join(import.meta.dir, "fixtures/contract-2-counter.manifold-plugin.json.gz")),
+  ),
+]) {
+  const legacy = PluginBundleSchema.parse(JSON.parse(bytes.toString()));
+  test(`a genuine contract-${legacy.hardenedContract} fixture dispatches and survives a hub restart`, async () => {
+    const dir = mkdtempSync(join(tmpdir(), "manifold-contract-previous-"));
+    const config = configuration(dir);
+    const source = join(config.dataDir, PLUGIN_UPLOADS_DIR, "previous.manifold-plugin.json");
+    mkdirSync(join(config.dataDir, PLUGIN_UPLOADS_DIR), { recursive: true });
+    writeFileSync(source, bytes);
+    let server: RunningServer | undefined;
+    try {
+      server = await startServer({ config, logger: silentLogger, announce: false });
+      expect(legacy.hardenedContract).toBeLessThan(HARDENED_CONTRACT_VERSION);
+      expect(
+        await action(server, "engine.plugins.install", {
+          source,
+          sha256: sha256Hex(bytes),
+          hardened: true,
+        }),
+      ).toMatchObject({ ok: true });
+      expect(await action(server, "example.counter.bump", { by: 7 })).toMatchObject({
+        ok: true,
+        result: { count: 7 },
+      });
+      expect(await action(server, "example.counter.bump", { by: -1 })).toMatchObject({
+        ok: false,
+        denial: { rule: "invalid_args" },
+      });
+      await server.stop();
+      server = await startServer({ config, logger: silentLogger, announce: false });
+      expect(await action(server, "example.counter.bump", { by: 2 })).toMatchObject({
+        ok: true,
+        result: { count: 9 },
+      });
+      expect(
+        (await roster(server)).find((row) => row.manifest.id === legacy.manifest.id),
+      ).toMatchObject({
+        enabled: true,
+      });
+    } finally {
+      await server?.stop();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
 
 for (const contract of [undefined, 999]) {
   test(`${contract === undefined ? "an unstamped" : "an outside-set"} installed bundle is held without spawning and one repack restores service`, async () => {
