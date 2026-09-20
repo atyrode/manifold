@@ -1299,6 +1299,18 @@ and a separate image attestation binds the OCI digest, to the exact repository, 
 source SHA and `.github/workflows/release.yml` signer at that SHA, with the GitHub Actions
 OIDC issuer and GitHub-hosted runners.
 
+Workspace package versions are required lock metadata: every `bun.lock` workspace must match
+its package manifest, including the absence of a version for versionless packages.
+The root manifest must remain versionless: Bun 1.4.2 omits the root record's version even
+when one is declared, so reinstalling cannot make a versioned root consistent. The assertion
+refuses that unsupported state explicitly rather than suggesting a lock-only repair.
+`bun install --frozen-lockfile` does not enforce that equality. The static CI/gate slice runs
+`bun scripts/workspace-versions.ts`, and release uses the same assertion after regenerating
+the lock, before creating or publishing its commit. If metadata is stale, run ordinary
+`bun install` with the supported Bun runtime and verify the resulting lock; Bun 1.4.2 emits
+workspace-only version updates. Do not hand-edit the lock or treat a successful frozen install
+as evidence of metadata consistency.
+
 The script pushes `release/vX.Y.Z`, opens a `release: vX.Y.Z` PR with its changelog and protocol
 status, and enables rebase auto-merge. The repository must allow auto-merge and rebase merges;
 required `agent-policy` and `gate` checks still apply, with no bypass. Release PRs from the

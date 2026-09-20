@@ -112,7 +112,8 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/bun-workspace
-      - uses: ./.github/actions/gate-slice
+      - name: Verify formatting, lint, changelog and workspace versions
+        uses: ./.github/actions/gate-slice
         with:
           task: style
       - name: Verify CI registry coverage

@@ -34,6 +34,7 @@ import {
   requireFullMainCi,
   requireImmutableReleaseSetting,
 } from "./release-provenance.ts";
+import { assertWorkspaceVersions } from "./workspace-versions.ts";
 
 interface PackageMetadata {
   readonly version: string;
@@ -222,6 +223,7 @@ await Bun.write("CHANGELOG.md", changelog);
 await $`git rm -q -- ${released.map((fragment) => `changes/${fragment.file}`)}`;
 await $`bun scripts/generate-web-changelog.ts`;
 await $`bun install`;
+await assertWorkspaceVersions();
 // The release commit changes only the version, the changelog and the fragments it consumed:
 // these two cover exactly that in seconds.
 await $`bun run check`;
@@ -249,7 +251,7 @@ ${protocolLine}
 
 ## Evidence
 
-Source ci.yml is green at ${head}; release generation, bun run check and changelog:check passed.
+Source ci.yml is green at ${head}; release generation, workspace-version check, bun run check and changelog:check passed.
 Required checks on this PR must pass before rebase auto-merge.
 
 ## Acceptance
