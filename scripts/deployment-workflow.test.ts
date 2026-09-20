@@ -246,7 +246,7 @@ test("production promotion refuses a multi-writer provider topology", async () =
     const bin = join(root, "bin");
     mkdirSync(bin);
     writeFileSync(
-      join(bin, "bunx"),
+      join(bin, "clever"),
       `#!/usr/bin/env bash
 case "$*" in
   *"status --format json"*) printf '%s\\n' "$FIXTURE_STATUS" ;;
@@ -261,6 +261,7 @@ esac
         env: {
           ...process.env,
           PATH: `${bin}:${process.env.PATH}`,
+          CLEVER: join(bin, "clever"),
           FIXTURE_STATUS: JSON.stringify({
             scalability: { horizontal: { min, max } },
           }),
@@ -292,9 +293,8 @@ test("production refuses unreconciled recovery, foreign receipts and unverified 
     const bin = join(root, "bin");
     mkdirSync(bin);
     writeFileSync(
-      join(bin, "bunx"),
+      join(bin, "clever"),
       `#!/usr/bin/env bash
-shift
 [[ "$*" == "env --format json" ]] || exit 1
 printf '%s\\n' "$FIXTURE_ENV"
 `,
@@ -325,6 +325,7 @@ esac
         env: {
           ...process.env,
           PATH: `${bin}:${process.env.PATH}`,
+          CLEVER: join(bin, "clever"),
           RECOVERY_BUILD: build,
           FIXTURE_PROVENANCE: String(provenance),
           FIXTURE_ENV: JSON.stringify({
@@ -373,7 +374,7 @@ test("an ambiguous first image-setting failure enters the full-state recovery pa
     const bin = join(root, "bin");
     mkdirSync(bin);
     // A failed write may already have reached the provider; it must not look like no switch.
-    writeFileSync(join(bin, "bunx"), "#!/usr/bin/env bash\nexit 1\n", { mode: 0o700 });
+    writeFileSync(join(bin, "clever"), "#!/usr/bin/env bash\nexit 1\n", { mode: 0o700 });
     const output = join(root, "output");
     writeFileSync(output, "");
     const result = Bun.spawnSync(
@@ -392,6 +393,7 @@ test("an ambiguous first image-setting failure enters the full-state recovery pa
         env: {
           ...process.env,
           PATH: `${bin}:${process.env.PATH}`,
+          CLEVER: join(bin, "clever"),
           GITHUB_OUTPUT: output,
           IMAGE: `ghcr.io/owner/manifold@sha256:${"a".repeat(64)}`,
           TAG: "v1.2.4",
@@ -402,6 +404,69 @@ test("an ambiguous first image-setting failure enters the full-state recovery pa
     );
     expect(result.exitCode).not.toBe(0);
     expect(readFileSync(output, "utf8").split("\n")).toContain("started=true");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("unreviewed deployment-tool archives are refused before extraction or credential-bearing use", async () => {
+  const source = Bun.YAML.parse(
+    await Bun.file(new URL("../.github/workflows/deploy-hub.yml", import.meta.url)).text(),
+  ) as {
+    env: { CLEVER_VERSION: string; CLEVER_ARCHIVE_SHA256: string };
+    jobs: Record<string, { steps: { name?: string; run?: string }[] }>;
+  };
+  const root = mkdtempSync(join(tmpdir(), "manifold-deployment-tool-integrity-"));
+  try {
+    const bin = join(root, "bin");
+    const payload = join(root, "payload");
+    const member = "unreviewed-payload";
+    mkdirSync(bin);
+    mkdirSync(payload);
+    writeFileSync(join(payload, member), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    const archive = join(root, "replacement.tar.gz");
+    const packed = Bun.spawnSync(["tar", "-czf", archive, member], { cwd: payload });
+    if (packed.exitCode !== 0) throw new Error("Could not construct replacement archive");
+    writeFileSync(
+      join(bin, "gh"),
+      `#!${process.execPath}
+const args = process.argv.slice(2);
+const directory = args[args.indexOf("--dir") + 1];
+const name = args[args.indexOf("--pattern") + 1];
+await Bun.write(directory + "/" + name, Bun.file(process.env.FIXTURE_ARCHIVE));
+await Bun.write(process.env.DOWNLOAD_RECEIPT, directory);
+`,
+      { mode: 0o700 },
+    );
+    for (const name of ["clever", "verify-live"]) {
+      const installer = source.jobs[name]?.steps.find(
+        (step) => step.name === "Install the verified standalone deployment tool",
+      )?.run;
+      if (installer === undefined) throw new Error(`Missing deployment-tool admission in ${name}`);
+      const output = join(root, `${name}.env`);
+      const receipt = join(root, `${name}.download`);
+      writeFileSync(output, "");
+      const result = Bun.spawnSync(["bash", "-e", "-c", installer], {
+        env: {
+          PATH: `${bin}:${process.env.PATH}`,
+          HOME: root,
+          RUNNER_OS: "Linux",
+          RUNNER_ARCH: "X64",
+          RUNNER_TEMP: root,
+          GITHUB_ENV: output,
+          CLEVER_VERSION: source.env.CLEVER_VERSION,
+          CLEVER_ARCHIVE_SHA256: source.env.CLEVER_ARCHIVE_SHA256,
+          FIXTURE_ARCHIVE: archive,
+          DOWNLOAD_RECEIPT: receipt,
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect(result.exitCode).toBe(1);
+      const downloaded = readFileSync(receipt, "utf8");
+      expect(await Bun.file(join(downloaded, member)).exists()).toBe(false);
+      expect(readFileSync(output, "utf8")).toBe("");
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

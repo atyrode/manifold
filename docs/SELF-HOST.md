@@ -523,6 +523,93 @@ The boot log line `manifold ready url=…` deliberately omits the key: `docker l
 output is a persisted stream, and the owner key must never enter logs (the command
 above reads it from the data volume instead; it goes only to your terminal).
 
+### Update pinned deployment inputs
+
+Deployment selects each public container through a reviewed immutable multi-platform index.
+Both `Dockerfile` stages and the tooling/default-base literals in `infra/recovery.Dockerfile` share
+`oven/bun:1.4.2@sha256:9114c058aeae42162ee16dd5084b95fe9473970bb6bcb5b232ab1630f0546895`
+from the official [oven/bun metadata](https://hub.docker.com/v2/repositories/oven/bun/tags/1.4.2).
+Compose uses
+`caddy:2.11.4@sha256:14a9c00d4e833ebc2b65d36515b37bde3b73f0b323a2663aaafc88953d8c4e3f`
+([official metadata](https://hub.docker.com/v2/repositories/library/caddy/tags/2.11.4)),
+and preview seed extraction uses
+`alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6`
+([official metadata](https://hub.docker.com/v2/repositories/library/alpine/tags/3.24.2)).
+The version before `@` is review context; the digest after it selects the bytes.
+The Bun index covers Linux amd64/arm64. The Caddy index also covers Linux arm/v6, arm/v7,
+ppc64le, riscv64, s390x and Windows amd64; Alpine covers Linux amd64, arm64/v8, arm/v6,
+arm/v7, 386, ppc64le, riscv64 and s390x. These upstream index entries do not expand
+Manifold's supported platforms: the application still requires Linux amd64 or arm64.
+Unknown-platform attestation entries are not runnable platforms.
+
+The operator promotion workflow owns its standalone deployment tool: the official
+[`clever-tools` 4.10.0 release](https://github.com/CleverCloud/clever-tools/releases/tag/4.10.0)
+asset `clever-tools-4.10.0_linux.tar.gz`, with independently recorded SHA-256
+`8f2704b2d4609158703341ab2239f9ad21ad041dba167c57a3560ae6ea5fe9b9`.
+Both production and automatic recovery download it with `gh release download` and check the
+**entire archive** against the committed workflow hash before extraction or execution.
+They export the extracted `clever-tools-4.10.0_linux/clever` as an absolute `CLEVER` path,
+then invoke `"$CLEVER"` directly. The archive contains the executable and its bundled
+runtime/dependencies; it needs no npm install, `bunx`, or runner Node resolution.
+The official [binary build targets](https://github.com/CleverCloud/clever-tools/blob/4.10.0/scripts/lib/build-binary.js)
+select Linux x64 with bundled Node 22; both jobs explicitly refuse other runner platforms.
+Manifold's Bun application/build runtime remains 1.4.2. Keep provider tooling and its hash in
+`.github/workflows/deploy-hub.yml`, not root package dependencies or a generic installer.
+
+To update a container, choose the explicit replacement version, inspect its official index,
+and replace the readable tag and digest together:
+
+```sh
+docker buildx imagetools inspect oven/bun:<version>
+docker buildx imagetools inspect caddy:<version>
+docker buildx imagetools inspect alpine:<version>
+```
+
+Confirm that the reported top-level digest is an OCI/Docker multi-platform index and review
+every supported platform before changing the reference. Update both Bun `FROM` lines and the
+matching literals in `infra/recovery.Dockerfile` together. Update Caddy in `compose.yaml` and
+the seed-extraction image in `infra/previews/preview.sh`; do not substitute a per-platform
+manifest digest for the index. The recovery application base remains the selected immutable
+release image supplied by the promotion workflow, not the tooling image.
+
+To review or update the standalone tool, choose an exact release and inspect its official
+asset metadata. Compare the downloaded archive's SHA-256 with the release asset digest,
+review the release and platform target, and record the reviewed hash in the workflow.
+Do not fetch the expected hash dynamically during deployment: an upstream replacement must
+fail closed until a new identity is reviewed. For the current pin, the credential-free
+consumer proof on Linux x64 with a conventional glibc loader (as on the workflow's Ubuntu runner) is:
+
+```sh
+(
+  set -eu
+  version=4.10.0
+  expected_sha256=8f2704b2d4609158703341ab2239f9ad21ad041dba167c57a3560ae6ea5fe9b9
+  archive="clever-tools-${version}_linux.tar.gz"
+  gh api "repos/CleverCloud/clever-tools/releases/tags/$version" \
+    --jq '.assets[] | select(.name | endswith("_linux.tar.gz")) | {name, digest, browser_download_url}'
+  tool_dir="$(mktemp -d)"
+  trap 'rm -rf "$tool_dir"' EXIT
+  gh release download "$version" --repo CleverCloud/clever-tools \
+    --pattern "$archive" --dir "$tool_dir"
+  printf '%s  %s\n' "$expected_sha256" "$tool_dir/$archive" | sha256sum --check --strict
+  tar -tzf "$tool_dir/$archive"
+  tar -xzf "$tool_dir/$archive" -C "$tool_dir"
+  CLEVER="$tool_dir/clever-tools-${version}_linux/clever"
+  test -x "$CLEVER"
+  env -u CLEVER_TOKEN -u CLEVER_SECRET HOME="$tool_dir" XDG_CONFIG_HOME="$tool_dir" \
+    "$CLEVER" version
+)
+```
+
+Native NixOS and musl-only hosts need a compatible glibc container for the final version probe.
+Run that probe without network access or mounted account configuration; do not change the pin
+or execute an unverified replacement to work around a host-loader mismatch.
+
+For an update, replace the version and independently reviewed expected hash together in this
+procedure and in the workflow's `CLEVER_VERSION` / `CLEVER_ARCHIVE_SHA256`. Review the archive
+layout and update both installation steps if its executable path changes. The final invocation
+must report the selected CLI version; it neither needs account credentials nor deploys anything.
+
 ## Security posture
 
 One secret is root. `<data>/owner.key` (64 hex, mode 600) is compared with a

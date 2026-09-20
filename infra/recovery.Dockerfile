@@ -1,8 +1,8 @@
 # A recovery deployment runs the exact selected prior release with only the authenticated
 # pre-start recovery helper added. The application and its Bun runtime come from the immutable
 # release image; the helper is compiled separately with Manifold's pinned tooling runtime.
-ARG MANIFOLD_RECOVERY_BASE_IMAGE=oven/bun:1.4.2
-FROM oven/bun:1.4.2 AS recovery-build
+ARG MANIFOLD_RECOVERY_BASE_IMAGE=oven/bun:1.4.2@sha256:9114c058aeae42162ee16dd5084b95fe9473970bb6bcb5b232ab1630f0546895
+FROM oven/bun:1.4.2@sha256:9114c058aeae42162ee16dd5084b95fe9473970bb6bcb5b232ab1630f0546895 AS recovery-build
 WORKDIR /src
 COPY scripts/full-state-recovery.ts ./full-state-recovery.ts
 RUN bun build --compile --target=bun --outfile=/out/manifold-full-state-recovery ./full-state-recovery.ts

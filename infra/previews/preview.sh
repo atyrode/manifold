@@ -84,7 +84,7 @@ seed_preview_volume() (
   sanitized="$seed_dir/preview.db"
   bun --no-env-file "$here/../../scripts/preview-seed.ts" "$seed_dir/data/manifold.db" "$sanitized"
   docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges \
-    -i -v "$volume:/data" alpine sh -c 'umask 077; cat > /data/manifold.db' <"$sanitized"
+    -i -v "$volume:/data" alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 sh -c 'umask 077; cat > /data/manifold.db' <"$sanitized"
   log 'seeded representative containers, container_folders and scene_docs; preview authority is fresh'
 )
 
