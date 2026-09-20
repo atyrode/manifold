@@ -933,6 +933,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       placementId,
       dispatched: false,
     };
+    if (auth.agentRunId !== undefined) pending.runId = auth.agentRunId;
     this.pendingOpens.set(terminalId, pending);
     pending.cancelDeadline = this.timers.schedule(() => {
       pending.cancelDeadline = null;
