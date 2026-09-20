@@ -296,23 +296,20 @@ async function verifyReleaseDelta(sha: string, parent: string, tag: string): Pro
     throw new Error("Release did not consume exactly its pending fragments and version metadata");
 }
 
-export async function verifyReleaseTag(
-  repository: string,
-  tag: string,
-): Promise<ReleaseProvenance> {
+function validateReleaseSelection(repository: string, tag: string): void {
   Repository.parse(repository);
   if (!tag.startsWith("v")) throw new Error("Select an explicit vMAJOR.MINOR.PATCH release tag");
   parseVersion(tag.slice(1));
-  const repo = z
-    .object({ full_name: z.string(), default_branch: z.literal("main") })
-    .parse(await api(`repos/${repository}`));
-  if (!sameRepository(repo.full_name, repository)) throw new Error("Repository identity mismatch");
-  const sha = await remoteTag(repository, tag);
-  const main = z
-    .object({ name: z.literal("main"), commit: z.object({ sha: Sha }) })
-    .parse(await api(`repos/${repository}/branches/main`)).commit.sha;
-  await command(["git", "fetch", "--no-tags", "origin", sha, main]);
-  await command(["git", "merge-base", "--is-ancestor", sha, main]);
+}
+
+/** Prove a prepared release's local Git delta and source CI before publishing it. */
+export async function verifyReleaseCandidate(
+  repository: string,
+  tag: string,
+  sha: string,
+): Promise<Pick<ReleaseProvenance, "parent" | "sourceCi">> {
+  validateReleaseSelection(repository, tag);
+  Sha.parse(sha);
   const parents = (await gitText(["show", "-s", "--format=%P", sha])).split(" ");
   if (parents.length !== 1 || !Sha.safeParse(parents[0]).success)
     throw new Error("Release must have one main predecessor");
@@ -322,6 +319,27 @@ export async function verifyReleaseTag(
   }
   await verifyReleaseDelta(sha, parent, tag);
   const sourceCi = await requireFullMainCi(repository, parent);
+  return { parent, sourceCi };
+}
+
+/** Prove an integrated release independently of whether its tag has been published. */
+export async function verifyReleaseCommit(
+  repository: string,
+  tag: string,
+  sha: string,
+): Promise<ReleaseProvenance> {
+  validateReleaseSelection(repository, tag);
+  Sha.parse(sha);
+  const repo = z
+    .object({ full_name: z.string(), default_branch: z.literal("main") })
+    .parse(await api(`repos/${repository}`));
+  if (!sameRepository(repo.full_name, repository)) throw new Error("Repository identity mismatch");
+  const main = z
+    .object({ name: z.literal("main"), commit: z.object({ sha: Sha }) })
+    .parse(await api(`repos/${repository}/branches/main`)).commit.sha;
+  await command(["git", "fetch", "--no-tags", "origin", sha, main]);
+  await command(["git", "merge-base", "--is-ancestor", sha, main]);
+  const { parent, sourceCi } = await verifyReleaseCandidate(repository, tag, sha);
   const pulls = z
     .array(Pull)
     .parse(await api(`repos/${repository}/commits/${sha}/pulls?per_page=100`));
@@ -346,9 +364,19 @@ export async function verifyReleaseTag(
     throw new Error("Release differs from its checked PR tree");
   await successfulRun(repository, pull.head.sha, false);
   await command(["gh", "pr", "checks", String(pull.number), "--repo", repository, "--required"]);
+  return { repository, tag, sha, parent, pull: pull.number, sourceCi };
+}
+
+export async function verifyReleaseTag(
+  repository: string,
+  tag: string,
+): Promise<ReleaseProvenance> {
+  validateReleaseSelection(repository, tag);
+  const sha = await remoteTag(repository, tag);
+  const proof = await verifyReleaseCommit(repository, tag, sha);
   if ((await remoteTag(repository, tag)) !== sha)
     throw new Error("Release tag moved during provenance verification");
-  return { repository, tag, sha, parent, pull: pull.number, sourceCi };
+  return proof;
 }
 
 async function verifyAttestedSubject(
