@@ -20,7 +20,7 @@ async function withFontFixture(run: (fixture: FontFixture) => Promise<void>): Pr
   let response: FontResponse | undefined;
   let requests = 0;
   const pending = new Set<(response: Response) => void>();
-  const font = Bun.file(resolve(import.meta.dir, "fonts/manifold-terminal-mono.woff2"));
+  const font = Bun.file(resolve(import.meta.dir, "../src/fonts/manifold-terminal-mono.woff2"));
   const fontResponse = (status: FontResponse): Response =>
     new Response(status === 200 ? font : "temporarily unavailable", {
       status,
@@ -39,7 +39,7 @@ async function withFontFixture(run: (fixture: FontFixture) => Promise<void>): Pr
       `
       import {
         getTerminalFontState, subscribeTerminalFont, loadTerminalFont, retryTerminalFont,
-      } from ${JSON.stringify(resolve(import.meta.dir, "terminal-font.ts"))};
+      } from ${JSON.stringify(resolve(import.meta.dir, "../src/terminal-font.ts"))};
       const consumers = new Map();
       const unhandled = [];
       window.addEventListener("unhandledrejection", event => {
@@ -93,7 +93,7 @@ async function withFontFixture(run: (fixture: FontFixture) => Promise<void>): Pr
           return held.promise;
         }
         if (path === `${prefix}/styles.css`) {
-          return new Response(Bun.file(resolve(import.meta.dir, "styles.css")), {
+          return new Response(Bun.file(resolve(import.meta.dir, "../src/styles.css")), {
             headers: { "Content-Type": "text/css", "Cache-Control": "no-store" },
           });
         }
@@ -144,7 +144,8 @@ async function waitForState(
   timeout = 5_000,
 ): Promise<void> {
   await until(
-    () => browser.evaluate<boolean>(`window.fontFixture.get().status === ${JSON.stringify(status)}`),
+    () =>
+      browser.evaluate<boolean>(`window.fontFixture.get().status === ${JSON.stringify(status)}`),
     timeout,
     `terminal font ${status}`,
   );
@@ -160,9 +161,7 @@ test("native terminal font readiness is shared and warm consumers never regress 
     ).toEqual(["loading", "loading"]);
     await until(() => requests() === 1, 5_000, "one shared native font request");
     expect(
-      await browser.evaluate<boolean>(
-        "window.fontFixture.get() === window.fontFixture.get()",
-      ),
+      await browser.evaluate<boolean>("window.fontFixture.get() === window.fontFixture.get()"),
     ).toBe(true);
     respond(200);
     await waitForState(browser, "ready");
@@ -185,9 +184,9 @@ test("native terminal font readiness is shared and warm consumers never regress 
     expect(await browser.evaluate<string[]>('window.fontFixture.history("warm")')).toEqual([
       "ready",
     ]);
-    expect(
-      await browser.evaluate<boolean>("window.fontFixture.get() === window.savedReady"),
-    ).toBe(true);
+    expect(await browser.evaluate<boolean>("window.fontFixture.get() === window.savedReady")).toBe(
+      true,
+    );
     expect(requests()).toBe(1);
   });
 }, 60_000);

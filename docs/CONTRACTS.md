@@ -3154,9 +3154,12 @@ promise of CJK/emoji coverage. Source/output hashes, subset command and conversi
 in `packages/plugins/terminals/src/fonts/provenance.json`; exact cmap ranges are in
 `coverage.json`, and retained notices are in `LICENSE.txt` and the WOFF2 metadata. Font Logos
 and Weather Icons are excluded for licensing/notice issues; Seti/Custom, Devicons and Font
-Awesome Extension are outside the audited subset. Shared bounded font readiness precedes
-xterm creation, socket attachment and activation; failure is visible locally, not a silent
-fallback. Snapshot-first replay and post-replay measurement remain the terminal byte contract.
+Awesome Extension are outside the audited subset. Shared, on-demand font state distinguishes
+loading, ready and failed; later viewers observe ready synchronously without a loading flash.
+Each attempt has a 15-second timeout. Failure stays visible with a manual **Retry font** control;
+mounting another viewer does not retry automatically. Retry retains the same bundled face and
+metrics, never a fallback font. Readiness precedes xterm creation, socket attachment and
+activation. Snapshot-first replay and post-replay measurement remain the terminal byte contract.
 
 Native titlebar `−`/`+` controls change xterm font size by one integer pixel within **8–32**;
 the current-size button resets to **13px**. `core.terminals` stores this device's per-terminalId

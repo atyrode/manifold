@@ -10,6 +10,7 @@ export type TerminalFontState =
 let state: TerminalFontState = { status: "loading" };
 let attempt = 0;
 const listeners = new Set<() => void>();
+const normalizedFamily = TERMINAL_FONT_FAMILY.slice(1, -1).toLowerCase();
 
 export function getTerminalFontState(): TerminalFontState {
   return state;
@@ -28,10 +29,7 @@ function publish(next: TerminalFontState): void {
 }
 
 function isTerminalFamily(family: string): boolean {
-  return (
-    family.replace(/^(['"])(.*)\1$/, "$2").toLowerCase() ===
-    TERMINAL_FONT_FAMILY.slice(1, -1).toLowerCase()
-  );
+  return family.replace(/^(['"])(.*)\1$/, "$2").toLowerCase() === normalizedFamily;
 }
 
 /** CSS-connected errored faces cannot be reloaded without recreating their rule. */
@@ -82,9 +80,9 @@ function resetFailedFaces(): void {
       }
     }
   };
-  for (const sheet of document.styleSheets) {
-    if (failed.size === 0) break;
-    resetRules(sheet);
+  for (let index = 0; index < document.styleSheets.length && failed.size > 0; index++) {
+    const sheet = document.styleSheets[index];
+    if (sheet !== undefined) resetRules(sheet);
   }
   if (failed.size > 0) {
     throw new Error("Could not reset the bundled terminal font's stylesheet rule.");
@@ -104,7 +102,7 @@ function startAttempt(retry: boolean): void {
   const timeout = window.setTimeout(() => {
     finish({
       status: "failed",
-      error: new Error("Terminal font did not load within 15 seconds. Retry to try again."),
+      error: new Error("Terminal font did not load within 15 seconds."),
     });
   }, 15_000);
 
@@ -121,7 +119,7 @@ function startAttempt(retry: boolean): void {
           if (faces.length === 0 || faces.some((face) => face.status !== "loaded")) {
             finish({
               status: "failed",
-              error: new Error("Bundled terminal font is unavailable. Retry to try again."),
+              error: new Error("Bundled terminal font is unavailable."),
             });
             return;
           }
@@ -130,7 +128,7 @@ function startAttempt(retry: boolean): void {
         (cause: unknown) => {
           finish({
             status: "failed",
-            error: new Error("Could not load the bundled terminal font. Retry to try again.", {
+            error: new Error("Could not load the bundled terminal font.", {
               cause,
             }),
           });
