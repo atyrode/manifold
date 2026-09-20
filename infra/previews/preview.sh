@@ -274,7 +274,8 @@ gc_timer() {
 plugin() {
   local url=$1 sha=$2 container
   plugin_url "$url"; sha256_arg "$sha"
-  shift 2
+  local -a mode=(--hardened)
+  [[ ${3:-} != --in-realm ]] || mode=()
   [[ -d $PREVIEW_DEV_CHECKOUT ]] || fail "no dev checkout at $PREVIEW_DEV_CHECKOUT"
   # The integrated preview's container, as its own compose project names it; the kit reads the
   # owner key out of it over docker exec, so no secret is ever on this side of the socket.
@@ -290,7 +291,7 @@ plugin() {
   (cd "$here/../.." \
     && bun install --frozen-lockfile --silent \
     && bun packages/plugin-kit/src/install.ts "$url" --sha256 "$sha" \
-      --hub "http://127.0.0.1:$PREVIEW_DEV_PORT" --deliver "docker:$container" "$@")
+      --hub "http://127.0.0.1:$PREVIEW_DEV_PORT" --deliver "docker:$container" "${mode[@]}")
 }
 case "${1:-}:$#" in
   up:3) up "$2" "$3" ;;
@@ -303,6 +304,6 @@ case "${1:-}:$#" in
   gc:1) gc ;;
   gc-timer:1) gc_timer ;;
   plugin:3) plugin "$2" "$3" ;;
-  plugin:4) [[ $4 == --hardened ]] || fail 'expected --hardened'; plugin "$2" "$3" --hardened ;;
-  *) fail 'usage: preview.sh up N SHA | down N | ls | url N-or-name | live name worktree | unlive name | router | gc | gc-timer | plugin URL SHA256 [--hardened]' ;;
+  plugin:4) [[ $4 == --hardened || $4 == --in-realm ]] || fail 'expected --hardened or --in-realm'; plugin "$2" "$3" "$4" ;;
+  *) fail 'usage: preview.sh up N SHA | down N | ls | url N-or-name | live name worktree | unlive name | router | gc | gc-timer | plugin URL SHA256 [--hardened|--in-realm]' ;;
 esac

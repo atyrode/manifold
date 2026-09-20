@@ -415,14 +415,15 @@ restrict,command="env PREVIEW_HOME=/path/to/previews /path/to/repo/infra/preview
 
 Run `infra/previews/preview.sh` with: `router`; `up 123 <sha>`; `down 123`; `ls`;
 `url 123`; `live feature /path/to/worktree`; `url feature`; `unlive feature`; `gc`; `gc-timer`;
-`plugin <https-url> <sha256> [--hardened]`.
+`plugin <https-url> <sha256> [--hardened|--in-realm]`.
 `up` reuses the port and data on redeploy, waits for the exact build, then prints its URL.
 `down` destroys the container, volume, checkout and per-PR image (including an image whose
 checkout is already gone). An absent image is a no-op; `unlive` retains live data.
 `gc` removes PRs reported CLOSED or MERGED by `gh pr view`; without `gh` it is a no-op.
 The receiver accepts `dev <sha>`, `dev-rollback <expected-current-full-sha> <target-full-sha>`,
-`preview up 123 <sha>`, `preview down 123`, `plugin <https-url> <sha256> [--hardened]`, or a bare
-`<sha>` (legacy dev deployment). Other commands are refused.
+`preview up 123 <sha>`, `preview down 123`,
+`plugin <https-url> <sha256> [--hardened|--in-realm]`, or a bare `<sha>` (legacy dev deployment).
+Other commands are refused.
 
 `plugin <url> <sha256>` installs a published plugin bundle on the integrated preview: it runs
 `packages/plugin-kit/src/install.ts` from this stable checkout against `http://127.0.0.1:$PREVIEW_DEV_PORT`
@@ -432,11 +433,30 @@ host. An author repository's release workflow calls it once per bundle, parents 
 same forced-command key (`docs/PLUGINS.md` §9 Delivering). The stable checkout needs
 `bun install --frozen-lockfile` once, like a live worktree. Production is never a receiver verb:
 the operator installs there from the release URL in the plugin manager, by hand.
-The three-word `plugin <url> <sha256>` form keeps the installer's in-realm default.
-Append the exact fourth word `--hardened` to explicitly select its existing hardened runner;
-the bundle must already target that runner. Both the receiver and direct CLI reject unknown
-options and extra arguments before invoking the installer. The receiver does not infer the
-runner from the URL, manifest or hash.
+The three-word `plugin <url> <sha256>` form selects the hardened runner. An explicit fourth word
+`--hardened` selects the same mode; the bundle must already target that runner. There is no
+fallback for an incompatible bundle. Only the explicit fourth word `--in-realm` opts into
+running the bundle in the hub/page realm. This is a trust exception made by the receiver
+credential holder, not a manifest preference or an inference from a URL or hash. Both the
+receiver and direct CLI reject unknown options and extra arguments before invoking the installer.
+The general plugin-kit installer retains its separate in-realm default.
+
+**Publisher and credential boundary.** A `dev <sha>` names a revision in the configured
+repository; `plugin <url> <sha256>` admits executable bytes from any HTTPS publisher accepted by
+the URL grammar. The hash pins those bytes, not the publisher's identity or trustworthiness.
+This receiver has no publisher allowlist or per-key verb/mode restriction. Its forced-command
+key grants all listed receiver verbs, including the in-realm exception; distributing that key
+to an author workflow delegates this whole grant, not merely publishing that author's plugin.
+Restrict it to workflows and maintainers trusted for that authority, protect their release
+environment, keep the private key in the owning secret store, and remove its authorized-key
+entry and workflow access when that delegation ends. Do not distribute it where plugin-only
+or hardened-only credentials are required: this receiver does not provide those narrower grants.
+
+Hardened selects the existing Bun-process/browser-Worker message boundary; it is not proof of
+OS filesystem/network confinement or publisher safety. Browser Workers retain native networking
+and same-origin storage access (`docs/PLUGINS.md` §9). Continue to trust admitted publishers and
+review the capabilities/data exposed to them. Neither this mode nor a successful preview install
+authorizes production installation.
 
 Integrated and numbered previews normally admit an existing production browser identity through
 the POST handoff in ADR 0027. The ordinary public URL carries no credential. A seeded numbered

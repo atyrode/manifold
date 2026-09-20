@@ -3224,9 +3224,9 @@ are the checks that will fail _your_ plugin:
 
 This section is for one kind of row only: one its installer chose to HARDEN. Everything else in
 this file — §1–§8 for what a plugin is, §10 for authoring and installing one on your instance —
-describes the IN-REALM target, the ratified default for every row (ADR 0025). Read this section
-when the code you are writing will be installed with `hardened: true`, or when you are deciding
-whether to ask an installer for that.
+describes the IN-REALM target, the general installer's default (ADR 0025). Automated receiver
+delivery explicitly selects hardened instead (§9 Delivering). Read this section when the code
+you are writing will be installed with `hardened: true`, or when deciding whether to ask for it.
 
 **What the runner is.** `engine.plugins.install { hardened: true }` (§7) runs the row on ADR
 0016's runner instead of in the page and the hub: its server half in its own Bun process,
@@ -3239,6 +3239,9 @@ bundle runs (`{ "server": true, "web": "web.js" }`), and the same hash pin, inst
 capability declaration and refusal ladder apply either way. The roster says which runner a row
 got (`install.hardened`); the plugin manager's Installed band says it in words, **In-realm** or
 **Hardened**.
+
+The server child is a process/API boundary, not an OS filesystem or network confinement
+guarantee. Do not treat runner selection as authorization to admit an untrusted publisher.
 
 **What browser hardening does not promise.** Init omits the viewer's bearer, and guest code
 cannot reach the page DOM or live host objects. The current Blob Worker still has native browser
@@ -3582,9 +3585,22 @@ over the same forced-command deploy key manifold's own `deploy-dev.yml` uses (`s
 verb runs `install` from the host's stable tooling checkout against the dev stack with
 `--deliver docker:<container>`, reading the owner key out of the container — no secret leaves the
 host. The command carries only an https URL, a hash and an optional exact fourth word
-`--hardened` (`infra/previews/README.md`). The three-word form retains the in-realm default;
-append `--hardened` for a bundle built for this section's hardened runner. Both the receiver and
-direct `preview.sh plugin` command refuse unknown flags and extra arguments before installation.
+`--hardened` or `--in-realm` (`infra/previews/README.md`). The three-word form selects hardened,
+as does explicit `--hardened`; pack for that runner and verify with `--hardened` before delivery.
+Incompatibility never triggers an in-realm retry. Only explicit `--in-realm` grants the
+exception for a trusted in-realm bundle. Both the receiver and direct `preview.sh plugin`
+command refuse unknown flags and extra arguments before installation. This automated default
+does not change the general kit installer's in-realm default.
+
+The receiver's deploy credential delegates every receiver verb, including the in-realm
+exception, not merely plugin delivery. Give it only to workflows trusted for that whole grant;
+protect the author repository's release environment and revoke its receiver/workflow access
+when the delegation ends. A configured-repository `dev <sha>` and an arbitrary accepted HTTPS
+plugin URL have different publisher boundaries: the receiver has no publisher allowlist, and a
+SHA-256 pin proves byte identity, not publisher trust. Keep owner keys on the target host and
+private deploy keys in their owning secret store. A hardened runner is not OS confinement;
+its server process and browser Worker retain the limitations described above. The receiver
+cannot provide plugin-only or hardened-only credentials.
 
 Production (`https://manifold.tyrode.dev`) is the one hub nothing automates: the operator installs
 a release there from its asset URL in the plugin manager, root only, by hand (ADR 0022). A change
@@ -4059,8 +4075,9 @@ bun run --cwd packages/plugin-kit verify <id>.manifold-plugin.json
 
 "Promoting" a plugin you wrote on your instance — to another hub of yours, to the integrated
 preview, to a release somebody else installs — is `pack` on the same files and the door on the
-other hub; §9 Verifying and §9 Delivering describe the author repository, the CI workflow and the
-release path, and every word of them holds for an in-realm bundle with `--hardened` left off.
+other hub; §9 Verifying and §9 Delivering describe the author repository, CI workflow and release
+path. For an in-realm bundle, leave `--hardened` off the kit's verify/install commands but pass
+the explicit `--in-realm` trust exception to automated receiver delivery.
 The code does not change when it moves. What may change is the installer's choice: a hub whose
 operator does not trust the bundle to hold their process installs it with `hardened: true`, and
 then §9 is the contract the code has to meet.
