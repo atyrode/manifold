@@ -4035,6 +4035,7 @@ export class JobService {
         machineId,
         operationId: runtime.operationId,
         input: runtime.input,
+        inputs: runtime.inputs,
         outputs: [],
         resourceBindingDigest: runtime.resourceBindingDigest,
       },

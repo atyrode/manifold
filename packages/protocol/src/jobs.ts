@@ -566,6 +566,7 @@ export const TerminalRuntimeSchema = JobRequestSchema.pick({
   installationRevision: true,
   artifactSha256: true,
   input: true,
+  inputs: true,
 }).extend({
   resourceBindingDigest: hash,
   /** Host-minted one-use admission reference, never execution or credential authority. */
