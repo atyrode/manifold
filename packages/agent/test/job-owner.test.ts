@@ -2401,8 +2401,12 @@ test.skipIf(!linux || !cgroupRoot)(
         available: true,
       });
       // Removing the pinned callee cannot silently fall back to the retained r1 provider.
-      const { artifact: _artifact, ...installed } = provider;
-      await f.owner.execute({ ...installed, action: "purge" });
+      const installed: Extract<JobCommand, { type: "install" }> = {
+        ...provider,
+        action: "purge",
+      };
+      delete installed.artifact;
+      await f.owner.execute(installed);
       expect(f.owner.installedResources(consumer.pluginId, "nested").operations).toContainEqual({
         operationId: "fixture.consumer.run",
         available: false,
