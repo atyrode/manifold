@@ -157,7 +157,75 @@ describe.skipIf(process.platform !== "linux")("named location descriptor boundar
     }
   });
 
-  test("create cannot reuse an existing file or directory, while write requires one", () => {
+  test("runtime directory writes provision private components and preserve repeated resolutions", () => {
+    const root = mkdtempSync(join(tmpdir(), "job-runtime-write-"));
+    const anchor = HeldDirectory.openAbsolute(root);
+    const declaration = {
+      anchor: "runtime" as const,
+      components: ["plugin", "runs"],
+      revision: "one",
+    };
+    try {
+      const first = resolveJobLocation(anchor, "fixture.outputs", declaration, "write");
+      try {
+        expect(first.directory!.stat().mode & 0o777).toBe(0o700);
+        writeFileSync(`${first.directory!.procPath}/retained`, "first job", { mode: 0o600 });
+      } finally {
+        first.close();
+      }
+      const parent = anchor.openChild("plugin");
+      try {
+        expect(parent.stat().mode & 0o777).toBe(0o700);
+      } finally {
+        parent.close();
+      }
+      const second = resolveJobLocation(anchor, "fixture.outputs", declaration, "write");
+      try {
+        expect(readFileSync(`${second.directory!.procPath}/retained`, "utf8")).toBe("first job");
+      } finally {
+        second.close();
+      }
+      expect(() => resolveJobLocation(anchor, "fixture.outputs", declaration, "create")).toThrow();
+    } finally {
+      anchor.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("runtime reads and exact-file writes do not provision missing directory components", () => {
+    const root = mkdtempSync(join(tmpdir(), "job-runtime-existing-"));
+    const anchor = HeldDirectory.openAbsolute(root);
+    try {
+      expect(() =>
+        resolveJobLocation(
+          anchor,
+          "fixture.read",
+          { anchor: "runtime", components: ["read-parent", "runs"], revision: "one" },
+          "read",
+        ),
+      ).toThrow();
+      expect(existsSync(join(root, "read-parent"))).toBe(false);
+      expect(() =>
+        resolveJobLocation(
+          anchor,
+          "fixture.file",
+          {
+            anchor: "runtime",
+            components: ["file-parent", "output"],
+            revision: "one",
+            kind: "file",
+          },
+          "write",
+        ),
+      ).toThrow();
+      expect(existsSync(join(root, "file-parent"))).toBe(false);
+    } finally {
+      anchor.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("state write requires an existing file or directory and create remains exclusive", () => {
     const root = mkdtempSync(join(tmpdir(), "job-create-"));
     mkdirSync(join(root, "existing-directory"));
     writeFileSync(join(root, "existing-file"), "keep");
