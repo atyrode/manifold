@@ -6,7 +6,7 @@ import { MAX_STREAM_DESCRIPTORS, StreamDescriptorSchema, streamVocabulary } from
 import { MachineHalfSchema } from "./jobs.ts";
 import { HarnessDefinitionSchema } from "./agents.ts";
 import { ManifoldRefSchema } from "./uri.ts";
-import { JsonProjectionSchema } from "./services.ts";
+import { compileJsonProjection, JsonProjectionError, JsonProjectionSchema } from "./services.ts";
 import {
   DEFAULT_ELEMENT_PLACEMENT_TRAITS,
   DisciplineDefSchema,
@@ -837,7 +837,21 @@ export const ActionDelegatesSchema = z
 export const ACTION_RESULT_PROJECTION_MAX_BYTES = 1_048_576;
 export const ActionResultProjectionDigestSchema = z.string().regex(/^[a-f0-9]{64}$/);
 export const ActionResultProjectionSchema = JsonProjectionSchema.extend({
+  /** Exact selected leaves containing domain-redacted text, never additional subtrees. */
+  textFields: JsonProjectionSchema.shape.fields.optional(),
   maxResultBytes: z.number().int().positive().max(ACTION_RESULT_PROJECTION_MAX_BYTES),
+}).superRefine((policy, ctx) => {
+  if (policy.textFields === undefined) return;
+  try {
+    compileJsonProjection(policy.fields, policy.textFields);
+  } catch (error) {
+    if (!(error instanceof JsonProjectionError)) throw error;
+    ctx.addIssue({
+      code: "custom",
+      path: ["textFields"],
+      message: "text fields must name exact selected leaves",
+    });
+  }
 });
 export type ActionResultProjection = z.infer<typeof ActionResultProjectionSchema>;
 

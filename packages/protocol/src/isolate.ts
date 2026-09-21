@@ -750,9 +750,12 @@ export const PLUGIN_BUNDLE_FORMAT = 1;
  *    admit contract-1/2 guests and send each guest its own admitted contract, never the latest.
  * 3 -> 4: Additive metadata-only `jobs.inspectInputs` for reviewed bound sources. Older
  *    guests retain their existing methods; inspection never transfers execution authority.
+ * 4 -> 5: Additive-optional `resultProjection.textFields` marks reviewed string-or-null leaves.
+ *    Older guests omit it and keep their exact declaration digests and result behavior.
+ *    Hosts retain contracts 1/2/3/4 and send only the guest's admitted load stamp.
  */
-export const HARDENED_CONTRACT_VERSION = 4;
-export const HARDENED_CONTRACT_COMPAT_VERSIONS: ReadonlySet<number> = new Set([1, 2, 3, 4]);
+export const HARDENED_CONTRACT_VERSION = 5;
+export const HARDENED_CONTRACT_COMPAT_VERSIONS: ReadonlySet<number> = new Set([1, 2, 3, 4, 5]);
 export const HARDENED_CONTRACT_MINIMUM = Math.min(...HARDENED_CONTRACT_COMPAT_VERSIONS);
 
 /**

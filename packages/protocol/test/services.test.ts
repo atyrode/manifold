@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
 import {
+  compileJsonProjection,
+  JsonProjectionError,
+  projectJson,
+  ServiceResponsePolicySchema,
   ServiceCallSchema,
   ServicePolicySchema,
   ServiceProxyOperationPolicySchema,
@@ -33,6 +37,75 @@ function policy(): ServicePolicy {
     },
   };
 }
+
+test("selected text leaves preserve strings, null and absence without widening nested projection", () => {
+  const fields = [
+    ["items", "*", "detail", "text"],
+    ["items", "*", "score"],
+    ["labels", "*"],
+  ];
+  const projection = compileJsonProjection(fields, [
+    ["items", "*", "detail", "text"],
+    ["labels", "*"],
+  ]);
+  const value = {
+    items: [
+      { detail: { text: "Bearer [redacted]", hidden: "omit" }, score: 1 },
+      { detail: { text: null }, score: false },
+      { detail: {}, score: null },
+    ],
+    labels: ["https://user@example.invalid", null],
+    hidden: "omit",
+  };
+  expect(projectJson(value, projection, 3)).toEqual({
+    items: [
+      { detail: { text: "Bearer [redacted]" }, score: 1 },
+      { detail: { text: null }, score: false },
+      { detail: {}, score: null },
+    ],
+    labels: ["https://user@example.invalid", null],
+  });
+  for (const text of [42, false, {}, [], undefined]) {
+    expect(() => projectJson({ ...value, items: [{ detail: { text } }] }, projection, 3)).toThrow(
+      JsonProjectionError,
+    );
+  }
+  expect(() => projectJson(value, projection, 2)).toThrow(JsonProjectionError);
+  expect(() => projectJson(value, projection, 3, { nodes: 2 })).toThrow(JsonProjectionError);
+  expect(() => projectJson({ ...value, labels: { "*": "not an array" } }, projection, 3)).toThrow(
+    JsonProjectionError,
+  );
+});
+
+test("compilation refuses textual additions, parent paths and paths shadowed by other selections", () => {
+  for (const [fields, textFields] of [
+    [[["item", "text"]], [["other"]]],
+    [[["item", "text"]], [["item"]]],
+    [[["item"]], [["item", "text"]]],
+    [[["item"], ["item", "text"]], [["item"]]],
+    [[["item"], ["item", "text"]], [["item", "text"]]],
+    [
+      [
+        ["items", "*"],
+        ["items", "length"],
+      ],
+      [["items", "length"]],
+    ],
+  ]) {
+    expect(() => compileJsonProjection(fields!, textFields!)).toThrow(JsonProjectionError);
+  }
+});
+
+test("unmarked projections retain primitive types and service policies do not acquire text declarations", () => {
+  const response = { kind: "projected-json", fields: [["value"]], maxArrayItems: 2 };
+  const projection = compileJsonProjection(response.fields);
+  for (const value of [1, false, null, "ordinary text"]) {
+    expect(projectJson({ value }, projection, 2)).toEqual({ value });
+  }
+  expect(
+    ServiceResponsePolicySchema.safeParse({ ...response, textFields: [["value"]] }).success,
+  ).toBe(false);
+});
 
 test("child service wire rejects injected authority, transport controls and multibyte input overflow", () => {
   const request = {

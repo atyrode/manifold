@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
+  HARDENED_CONTRACT_COMPAT_VERSIONS,
+  HARDENED_CONTRACT_VERSION,
   ISOLATE_CRASH_BUDGET,
   ISOLATE_CTX_METHODS,
   ISOLATE_DISPATCH_DEADLINE_MS,
@@ -179,6 +181,60 @@ describe("the served ctx slices and host methods", () => {
 });
 
 describe("the isolate frames", () => {
+  test("supported older guests retain admission and load/result declarations without text metadata", () => {
+    const action = {
+      name: "vendor.thing.read",
+      title: "Read",
+      caps: [],
+      input: {},
+      result: {},
+    };
+    const projection = {
+      kind: "projected-json",
+      fields: [["text"]],
+      maxArrayItems: 4,
+      maxResultBytes: 256,
+    };
+    for (const contract of [1, 2, 3, 4, HARDENED_CONTRACT_VERSION]) {
+      expect(HARDENED_CONTRACT_COMPAT_VERSIONS.has(contract)).toBe(true);
+      expect(
+        IsolateHostFrameSchema.safeParse({
+          t: "load",
+          pluginId: "vendor.thing",
+          manifest: bundle().manifest,
+          dir: "/plugins/thing",
+          ...(contract === 1 ? {} : { hardenedContract: contract }),
+        }).success,
+      ).toBe(true);
+      expect(
+        IsolateChildFrameSchema.safeParse({
+          t: "loaded",
+          actions: [
+            {
+              ...action,
+              ...(contract < 3
+                ? {}
+                : {
+                    resultProjection: {
+                      ...projection,
+                      ...(contract < 5 ? {} : { textFields: [["text"]] }),
+                    },
+                  }),
+            },
+          ],
+          hooks: {
+            onEnable: false,
+            onDisable: false,
+            onAssemblyChanged: false,
+            onJobSettled: false,
+          },
+        }).success,
+      ).toBe(true);
+    }
+    expect(HARDENED_CONTRACT_COMPAT_VERSIONS.has(0)).toBe(false);
+    expect(HARDENED_CONTRACT_COMPAT_VERSIONS.has(HARDENED_CONTRACT_VERSION + 1)).toBe(false);
+  });
+
   test("a reply is exactly one of two shapes, on both boundaries", () => {
     // `ok: true` carries a result and nothing else; `ok: false` carries an error sentence and
     // nothing else. A frame that carries both is a guest that cannot be believed either way.

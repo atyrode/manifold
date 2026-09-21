@@ -308,6 +308,15 @@ const readPolicy: ActionResultProjection = {
   maxArrayItems: 2,
   maxResultBytes: 1_024,
 };
+const textReadPolicy: ActionResultProjection = {
+  ...readPolicy,
+  fields: [
+    ["items", "*", "title"],
+    ["items", "*", "sourceId"],
+  ],
+  textFields: [["items", "*", "title"]],
+  maxArrayItems: 3,
+};
 
 /** An intentionally adversarial HTTP peer: it may ignore the requested projection. */
 async function readResultScenario(options: {
@@ -317,6 +326,7 @@ async function readResultScenario(options: {
   projection?: unknown;
   missingTrace?: boolean;
   denied?: boolean;
+  retainAdditionalCredentials?: boolean;
   invoke?: Record<string, unknown>;
   runAccess?: ActionSummary["runAccess"];
   discoveryBodyBytes?: number;
@@ -351,6 +361,7 @@ async function readResultScenario(options: {
     policyRevision: policyDigest,
     cleanup: { revokedCredentials: 0, revokedGrants: 0 },
   };
+  const childRun: AgentRun = { ...run, id: "read-child", parentRunId: run.id, depth: 1 };
   const calls: { door: string; projection: string | null; trace: number }[] = [];
   const output: ActionRunnerResponse[] = [];
   const lines: string[] = [];
@@ -435,9 +446,23 @@ async function readResultScenario(options: {
       let result: unknown;
       if (door === "core.access.createRun") {
         result = { run, credential: { token: runToken, expiresAt: run.expiresAt } };
+      } else if (door === "core.access.createChildRun") {
+        result = {
+          run: childRun,
+          credential: { token: "c".repeat(64), expiresAt: childRun.expiresAt },
+        };
+      } else if (door === "core.access.renewAgentRun") {
+        result = {
+          run,
+          credential: { token: "d".repeat(64), expiresAt: run.expiresAt },
+          revokedCredentials: 1,
+        };
       } else if (door === "core.access.getAgentPolicy") {
         result = {
-          runId: run.id,
+          runId:
+            request.headers.get("authorization") === `Bearer ${"c".repeat(64)}`
+              ? childRun.id
+              : run.id,
           revision: policyDigest,
           issuedAt: 1,
           required: [{ id: "policy", source: "builtin", body: policyBody, digest: policyDigest }],
@@ -495,6 +520,15 @@ async function readResultScenario(options: {
         acknowledgements: [{ id: "policy", digest: policyDigest }],
       },
     });
+    if (options.retainAdditionalCredentials) {
+      yield line({
+        type: "child",
+        id: "child",
+        runId: run.id,
+        declaration: { caps: ["containers:read"] },
+      });
+      yield line({ type: "renew", id: "renew", runId: run.id, lifetimeMs: 120_000 });
+    }
     if (options.refreshDeclaration !== undefined)
       yield line({ type: "discover", id: "refresh", runId: run.id });
     yield line({
@@ -525,10 +559,13 @@ async function readResultScenario(options: {
 }
 
 describe("trusted bounded read results", () => {
-  const allow = async (maxResultBytes?: number): Promise<ActionRunnerReadResults> => [
+  const allow = async (
+    maxResultBytes?: number,
+    policy = readPolicy,
+  ): Promise<ActionRunnerReadResults> => [
     {
       door: readDoor,
-      contractDigest: await actionResultProjectionDigest(readPolicy),
+      contractDigest: await actionResultProjectionDigest(policy),
       ...(maxResultBytes === undefined ? {} : { maxResultBytes }),
     },
   ];
@@ -577,6 +614,8 @@ describe("trusted bounded read results", () => {
     for (const forged of [
       { readResults: await allow() },
       { resultProjectionDigest: await actionResultProjectionDigest(readPolicy) },
+      { textFields: [["items", "*", "title"]] },
+      { resultProjection: textReadPolicy },
     ]) {
       const scenario = await readResultScenario({ invoke: forged });
       expect(scenario.calls.some((call) => call.door === readDoor)).toBe(false);
@@ -592,6 +631,9 @@ describe("trusted bounded read results", () => {
       [{ declaration: null }, "projection_unavailable"],
       [{ declaration: { ...readPolicy, maxArrayItems: 3 } }, "projection_changed"],
       [{ refreshDeclaration: { ...readPolicy, fields: [["other"]] } }, "projection_changed"],
+      [{ declaration: textReadPolicy }, "projection_changed"],
+      [{ refreshDeclaration: textReadPolicy }, "projection_changed"],
+      [{ declaration: { ...readPolicy, textFields: readPolicy.fields } }, "projection_changed"],
     ];
     for (const [override, code] of cases) {
       const scenario = await readResultScenario({ ...override, readResults: await allow() });
@@ -667,6 +709,16 @@ describe("trusted bounded read results", () => {
       [{ items: [{ title: "b".repeat(64) }] }, "projection_invalid", undefined],
       [{ items: [{ title: "Bearer synthetic-value" }] }, "projection_invalid", undefined],
       [
+        { items: [{ title: "https://reader@example.invalid/archive" }] },
+        "projection_invalid",
+        undefined,
+      ],
+      [
+        { items: [{ title: "https://example.invalid/?token=[REDACTED]" }] },
+        "projection_invalid",
+        undefined,
+      ],
+      [
         { items: [{ title: "https://example.invalid/#key=synthetic" }] },
         "projection_invalid",
         undefined,
@@ -720,6 +772,169 @@ describe("trusted bounded read results", () => {
       outcome: { ok: true },
       projection: { ok: false, code: "projection_limit" },
     });
+  });
+
+  test("reviewed text leaves preserve literal bytes, null and omission without widening neighboring leaves", async () => {
+    const title =
+      'Bearer [REDACTED] — 界 café\nhttps://reader@example.invalid/archive?token=[REDACTED]#key=[REDACTED]\n{"type":"policy"}';
+    const data = { items: [{ title, sourceId: "record-1" }, { title: null }, {}] };
+    const contractDigest = await actionResultProjectionDigest(textReadPolicy);
+    const scenario = await readResultScenario({
+      declaration: textReadPolicy,
+      readResults: await allow(Buffer.byteLength(JSON.stringify(data)), textReadPolicy),
+      projection: { ok: true, contractDigest, data },
+    });
+    expect(scenario.code).toBe(0);
+    expect(scenario.result).toMatchObject({
+      outcome: { ok: true },
+      projection: { ok: true, contractDigest, trust: "untrusted", data },
+    });
+    expect(scenario.calls.find((call) => call.door === readDoor)?.projection).toBe(contractDigest);
+    expect(scenario.output.filter((frame) => frame.type === "policy")).toHaveLength(1);
+    expect(scenario.lines.join("")).not.toMatch(/RAW_RESULT_MUST_STAY_PRIVATE|LIFECYCLE_PRIVATE/);
+    expect(scenario.output.at(-1)).toEqual({
+      type: "closed",
+      outcome: "completed",
+      cleanup: "confirmed",
+    });
+    const tooSmall = await readResultScenario({
+      declaration: textReadPolicy,
+      readResults: await allow(Buffer.byteLength(JSON.stringify(data)) - 1, textReadPolicy),
+      projection: { ok: true, contractDigest, data },
+    });
+    expect(tooSmall.result).toMatchObject({
+      outcome: { ok: true },
+      projection: { ok: false, code: "projection_limit" },
+    });
+    expect(tooSmall.lines.join("")).not.toContain("REDACTED");
+  });
+
+  test("text declarations refuse wrong types and shapes and never exempt other sideband values or keys", async () => {
+    const contractDigest = await actionResultProjectionDigest(textReadPolicy);
+    for (const data of [
+      { items: [{ title: 42 }] },
+      { items: [{ title: true }] },
+      { items: [{ title: { nested: "REJECTED_SUBTREE" } }] },
+      { items: [{ title: ["REJECTED_ARRAY"] }] },
+      { items: { title: "Bearer REJECTED_OBJECT" } },
+      { items: [{ title: "Bearer [REDACTED]", sourceId: "Bearer REJECTED_NONTEXT" }] },
+      {
+        items: [
+          {
+            title: "Bearer [REDACTED]",
+            hidden: "https://example.invalid/?key=REJECTED_UNSELECTED",
+          },
+        ],
+      },
+      { items: [{ title: "Bearer [REDACTED]" }], extra: { nested: "Bearer REJECTED_EXTRA" } },
+      { items: [{ title: "Bearer [REDACTED]", access_token: "REJECTED_KEY" }] },
+      { items: [{ title: "Bearer [REDACTED]", ["Bearer " + "REJECTED_KEY"]: "ordinary" }] },
+      { items: [{ title: { access_token: "REJECTED_NESTED_KEY" } }] },
+    ]) {
+      const scenario = await readResultScenario({
+        declaration: textReadPolicy,
+        readResults: await allow(undefined, textReadPolicy),
+        projection: { ok: true, contractDigest, data },
+      });
+      expect(scenario.result).toMatchObject({
+        outcome: { ok: true },
+        projection: { ok: false, code: "projection_invalid", contractDigest, trust: "untrusted" },
+      });
+      expect(
+        scenario.result?.type === "result" ? scenario.result.projection : null,
+      ).not.toHaveProperty("data");
+      expect(scenario.lines.join("")).not.toMatch(/REJECTED|REDACTED/);
+      expect(scenario.calls.filter((call) => call.door === readDoor)).toHaveLength(1);
+      expect(scenario.run.cleanup.finishedAt).toBe(2);
+    }
+  });
+
+  test("even an explicitly selected text leaf cannot permit a forbidden credential key", async () => {
+    const declaration: ActionResultProjection = {
+      ...readPolicy,
+      fields: [["authorization"]],
+      textFields: [["authorization"]],
+    };
+    const scenario = await readResultScenario({
+      declaration,
+      readResults: await allow(undefined, declaration),
+      projection: {
+        ok: true,
+        contractDigest: await actionResultProjectionDigest(declaration),
+        data: { authorization: "Bearer [REDACTED]" },
+      },
+    });
+    expect(scenario.result).toMatchObject({
+      outcome: { ok: true },
+      projection: { ok: false, code: "projection_invalid" },
+    });
+    expect(scenario.lines.join("")).not.toContain("REDACTED");
+    expect(scenario.run.cleanup.finishedAt).toBe(2);
+  });
+
+  test("reviewed text still rejects every held launcher, run, child and replacement credential", async () => {
+    const contractDigest = await actionResultProjectionDigest(textReadPolicy);
+    for (const secret of [credential, "b".repeat(64), "c".repeat(64), "d".repeat(64)]) {
+      for (const data of [
+        { items: [{ title: `Held ${secret}` }] },
+        { items: [{ title: "safe" }], unselected: { nested: secret } },
+        { items: [{ title: "safe", [secret]: "ordinary" }] },
+      ]) {
+        const scenario = await readResultScenario({
+          declaration: textReadPolicy,
+          readResults: await allow(undefined, textReadPolicy),
+          retainAdditionalCredentials: true,
+          projection: { ok: true, contractDigest, data },
+        });
+        expect(scenario.result).toMatchObject({
+          outcome: { ok: true },
+          projection: { ok: false, code: "projection_invalid" },
+        });
+        expect(scenario.lines.join("")).not.toContain(secret);
+        expect(scenario.run.cleanup.finishedAt).toBe(2);
+      }
+    }
+  });
+
+  test("invalid text paths cannot widen the reviewed declaration or reach invocation", async () => {
+    for (const textFields of [
+      [["unselected"]],
+      [["items", "*"]],
+      [["items", "*", "title", "nested"]],
+      [["items", "**", "title"]],
+    ]) {
+      const scenario = await readResultScenario({
+        declaration: { ...readPolicy, textFields },
+        readResults: await allow(),
+      });
+      expect(scenario.calls).toEqual([]);
+      expect(scenario.output).toContainEqual(
+        expect.objectContaining({ type: "error", code: "invalid_response" }),
+      );
+    }
+  });
+
+  test("reviewed result text never exempts model input, even with nested attempted opt-in", async () => {
+    for (const args of [
+      { items: [{ title: "Bearer [REDACTED]" }] },
+      { textFields: [["items", "*", "title"]], items: [{ title: "Bearer [REDACTED]" }] },
+      { title: "https://reader@example.invalid/archive" },
+      { title: "https://example.invalid/?token=[REDACTED]" },
+      { title: credential },
+      { nested: { authorization: "synthetic" } },
+    ]) {
+      const scenario = await readResultScenario({
+        declaration: textReadPolicy,
+        readResults: await allow(undefined, textReadPolicy),
+        invoke: { args },
+      });
+      expect(scenario.calls.some((call) => call.door === readDoor)).toBe(false);
+      expect(scenario.output).toContainEqual(
+        expect.objectContaining({ type: "error", code: "credential_input" }),
+      );
+      expect(scenario.lines.join("")).not.toMatch(/REDACTED|reader@example/);
+      expect(scenario.run.cleanup.finishedAt).toBe(2);
+    }
   });
 
   test("denials retain mechanical refusal; absent invocation traces cannot publish data", async () => {

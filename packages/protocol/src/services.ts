@@ -176,8 +176,15 @@ export class JsonProjectionError extends Error {
   }
 }
 
-export type JsonProjection = { leaf: boolean; children: Map<string, JsonProjection> };
-export function compileJsonProjection(fields: readonly (readonly string[])[]): JsonProjection {
+export type JsonProjection = {
+  leaf: boolean;
+  text?: true;
+  children: Map<string, JsonProjection>;
+};
+export function compileJsonProjection(
+  fields: readonly (readonly string[])[],
+  textFields?: readonly (readonly string[])[],
+): JsonProjection {
   const root: JsonProjection = { leaf: false, children: new Map() };
   for (const path of fields) {
     let node = root;
@@ -191,6 +198,23 @@ export function compileJsonProjection(fields: readonly (readonly string[])[]): J
     }
     node.leaf = true;
   }
+  if (textFields !== undefined) {
+    if (!JsonProjectionSchema.shape.fields.safeParse(textFields).success)
+      throw new JsonProjectionError("invalid");
+    for (const path of textFields) {
+      let node = root;
+      for (const part of path) {
+        // A parent leaf or array wildcard would make this exact path unreachable.
+        if (node.leaf || (part !== "*" && node.children.has("*")))
+          throw new JsonProjectionError("invalid");
+        const child = node.children.get(part);
+        if (!child) throw new JsonProjectionError("invalid");
+        node = child;
+      }
+      if (!node.leaf || node.children.size !== 0) throw new JsonProjectionError("invalid");
+      node.text = true;
+    }
+  }
   return root;
 }
 export function projectJson(
@@ -201,6 +225,8 @@ export function projectJson(
 ): unknown {
   if (--budget.nodes < 0) throw new JsonProjectionError("limit");
   if (node.leaf) {
+    if (node.text && value !== null && typeof value !== "string")
+      throw new JsonProjectionError("invalid");
     if (
       value === null ||
       typeof value === "string" ||

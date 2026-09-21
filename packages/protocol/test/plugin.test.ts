@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import {
   ACTION_DENIAL_RULES,
   ActionOutcomeSchema,
+  ActionResultProjectionSchema,
+  actionResultProjectionDigest,
   ActionSummarySchema,
   CEILING_DATABASE_MAX_BYTES,
   CONNECTION_BODIES,
@@ -57,6 +59,60 @@ function manifest(overrides: Partial<PluginManifest> = {}): PluginManifest {
     ...overrides,
   };
 }
+
+describe("action result text declarations", () => {
+  const policy = {
+    kind: "projected-json" as const,
+    fields: [["items", "*", "text"]],
+    maxArrayItems: 4,
+    maxResultBytes: 256,
+  };
+
+  test("existing normalized declarations retain their approved digest; text approval changes it", async () => {
+    const oldJson =
+      '{"kind":"projected-json","fields":[["items","*","text"]],"maxArrayItems":4,"maxResultBytes":256}';
+    const oldDigest = new Bun.CryptoHasher("sha256").update(oldJson).digest("hex");
+    expect(JSON.stringify(ActionResultProjectionSchema.parse(policy))).toBe(oldJson);
+    expect(await actionResultProjectionDigest(policy)).toBe(oldDigest);
+    const textual = { ...policy, textFields: policy.fields };
+    expect(await actionResultProjectionDigest(textual)).not.toBe(oldDigest);
+    expect(
+      await actionResultProjectionDigest({
+        maxResultBytes: 256,
+        textFields: [["items", "*", "text"]],
+        maxArrayItems: 4,
+        fields: [["items", "*", "text"]],
+        kind: "projected-json",
+      }),
+    ).toBe(await actionResultProjectionDigest(textual));
+  });
+
+  test("text declarations are bounded exact selected leaves, not a broader disclosure selection", () => {
+    expect(
+      ActionResultProjectionSchema.safeParse({ ...policy, textFields: policy.fields }).success,
+    ).toBe(true);
+    for (const textFields of [
+      [],
+      [["other"]],
+      [["items"]],
+      [["items", "*"]],
+      [["items", "*", "text", "child"]],
+      [["items", "0", "text"]],
+      [["__proto__"]],
+      [Array.from({ length: 17 }, () => "item")],
+      Array.from({ length: 65 }, () => ["items", "*", "text"]),
+    ]) {
+      expect(ActionResultProjectionSchema.safeParse({ ...policy, textFields }).success).toBe(false);
+    }
+    expect(
+      ActionResultProjectionSchema.safeParse({
+        ...policy,
+        fields: [["items"], ...policy.fields],
+        textFields: policy.fields,
+      }).success,
+    ).toBe(false);
+  });
+});
 
 describe("plugin manifest", () => {
   test("stream declarations refuse unbounded or unsupported body schemas before publication", () => {

@@ -257,20 +257,27 @@ cleanup: report failure and rely on server expiry only as the backstop.
 See [the operating contract](../packages/sdk/README.md) before launching.
 
 **Opt-in bounded result publication.** An ordinary action's optional `resultProjection` is a
-`projected-json` primitive-leaf selection with `fields`, `maxArrayItems` and `maxResultBytes`;
-it is not permitted on `runAccess` lifecycle declarations. Limits are 64 paths, 16 segments per
-path, 4096 items per array, 65536 traversal nodes and 1 MiB of serialized UTF-8 projected data.
-The existing service-response projector supplies the same semantics: `*` traverses arrays,
-missing fields are omitted, and selected nonprimitive leaves refuse rather than expose a subtree.
-The plugin owns semantic redaction and subject-level disclosure. Publication metadata grants
-no invocation authority and does not assert that a read action has no effects.
+`projected-json` primitive-leaf selection with `fields`, optional `textFields`, `maxArrayItems`
+and `maxResultBytes`; it is not permitted on `runAccess` lifecycle declarations. Limits are
+64 paths per list, 16 segments per path, 4096 items per array, 65536 traversal nodes and 1 MiB
+of serialized UTF-8 projected data. The existing service-response projector supplies the same
+semantics: `*` traverses arrays, missing fields are omitted, and selected nonprimitive leaves
+refuse rather than expose a subtree. `textFields`, when present, is a nonempty subset of exact
+selected leaf paths under the same grammar and limits as `fields`, never a parent, additional
+path or arbitrary subtree. Marked leaves accept only strings or null; absence is still omitted.
+Unmarked leaves retain their previous primitive semantics. Service-proxy policies are unchanged.
+The plugin owns semantic redaction and subject-level disclosure, including every declared text
+leaf; marking text is not credential classification or permission to return secrets. Publication
+metadata grants no invocation authority and does not assert that a read action has no effects.
 
 The SDK's trusted `readResults` option (environment `MANIFOLD_READ_RESULTS`, withdrawn before
 model input) accepts at most 64 unique exact-door `{door,contractDigest,maxResultBytes?}`
 approvals. The lowercase SHA-256 digest covers JSON of the schema-parsed declaration, with
-normalized property order and preserved path order. The launcher must review it; discovery
-alone cannot authorize output. Missing and changed declarations fail before invocation as
-`projection_unavailable` and `projection_changed`; discovery refresh does not reauthorize them.
+normalized property order and preserved path order. Absent `textFields` stays absent during
+normalization, preserving existing declaration digests exactly; adding or changing the list
+requires a newly reviewed digest. The launcher must review it; discovery alone cannot authorize
+output. Missing and changed declarations fail before invocation as `projection_unavailable`
+and `projection_changed`; discovery refresh does not reauthorize them.
 The model frame union is unchanged. Lifecycle, activity, policy, renewal, child and finish frames
 cannot opt into result data.
 
@@ -281,18 +288,30 @@ with the assembled immutable declaration after ordinary authority/input checks a
 effects, returning the ordinary traced `invalid_args` on mismatch or absence. The same host
 projection runs after successful result parsing and event/trace settlement for in-realm and
 hardened actions. No request means no projection work; ordinary full results and sibling calls
-are unchanged. Hardened contract 3 adds this optional summary field and retains admission of
-contracts 1 and 2, using each admitted guest's own load stamp.
+are unchanged. Shared protocol 40 adds `textFields` to discovery and requires coordinated
+SDK/session consumer updates. Hardened contract 5 adds the optional textual declaration to
+contract 3's result-projection summary; contracts 1, 2, 3 and 4 remain admitted using each guest's
+own load stamp, never the latest stamp. Older guests omit the new field and retain their exact
+declaration digests and output semantics. Machine and instance acceptance sets add 40 without
+dropping compatible peers; terminal-host and native-owner RPC are unchanged. No fleet restart
+or repack of a still-supported guest is required.
 
 Only successful action outcomes may include the separate `projection` envelope:
 `{ok:true,contractDigest,data}` or
 `{ok:false,contractDigest,code:"projection_invalid"|"projection_limit"}`. Output failure after
 successful effects does not relabel the action as refused or roll back its events/trace. The
 runner consumes only a matching sideband correlated with a real trace, independently reprojects
-and bounds it, applies the narrower launcher byte ceiling, and rejects held credential values
-and credential/key-link carriers. These lexical checks are defense in depth, not semantic
-classification. It adds `trust:"untrusted"` to the envelope; source bytes never become policy
-or other control frames. There is no raw-result fallback, truncation or automatic retry.
+and bounds it, and applies the narrower launcher byte ceiling. Its credential guard walks the
+complete sideband, including unselected values: held launcher, child and replacement credential
+values, forbidden credential keys, and lexical bearer/key-link/userinfo patterns in keys always
+refuse publication. Only at an exact approved `textFields` string leaf does it skip the lexical
+bearer/key-link/userinfo value pattern, allowing domain-redacted prose without rewriting its
+bytes. Nested objects advance by exact keys and arrays only by `*`; unselected values have no
+text exemption. The guard is defense in depth, not semantic classification; plugins must redact
+domain secrets before returning results. It adds `trust:"untrusted"` to the envelope; source
+bytes never become policy or other control frames. There is no raw-result fallback, encoding,
+marker escaping, truncation or automatic retry. Ordinary calls remain mechanical-only without
+trusted approval; model input, lifecycle and metadata cannot enable textual publication.
 Each complete outgoing JSONL frame, including its newline, and the output queue are bounded
 to 16 MiB. Action refusal and handler/result-schema failure publish no projection.
 
@@ -2328,7 +2347,7 @@ nothing. A plugin's own JSX wears the root class on its root element; the engine
 
 ```json
 { "format": 1,
-  "hardenedContract": 2,
+  "hardenedContract": 4,
   "manifest": { ...PluginManifest, "entry": { "server": true, "web": "web.js", "styles": true } },
   "files": { "server.js": "<base64>", "web.js": "<base64>", "styles.css": "<base64>" } }
 ```
@@ -2384,8 +2403,8 @@ not a network-policy exemption. This is server-side retrieval admission, not a r
 the kit client's own inspection fetch or a claim that arbitrary plugin code is network-confined.
 
 **Executable bundle compatibility (#602).** Every pack stamps `hardenedContract` independently
-of `format` and the machine/session protocols. `HARDENED_CONTRACT_VERSION` is 4; the hub accepts
-`HARDENED_CONTRACT_COMPAT_VERSIONS = {1, 2, 3, 4}`, with minimum 1. Add an additive-optional contract
+of `format` and the machine/session protocols. `HARDENED_CONTRACT_VERSION` is 5; the hub accepts
+`HARDENED_CONTRACT_COMPAT_VERSIONS = {1, 2, 3, 4, 5}`, with minimum 1. Add an additive-optional contract
 to that set; reset it for a genuine break. An unstamped or outside-set installed artifact is
 held at assembly with `repack_required` and the minimum, never imported or spawned, even if
 the administrator had it disabled. Fresh incompatible installs are refused by name with the
@@ -2395,8 +2414,12 @@ HISTORY: contract 1 identifies the bounded receipt transport (#536) plus the pre
 dispatch boundary (#587). Pre-#587 bytes are not contract 1 and must be repacked. Contract
 1 → 2 adds the optional `load.hardenedContract` identity. The hub omits it for contract-1
 guests, whose strict old parser and ordinary dispatch remain supported; contract-2 guests
-check it against their packed runtime. Subsequent optional fields are gated by the admitted
-contract, never sent speculatively. “Isolate answered out of protocol” denotes an internal
+check it against their packed runtime. Contract 3 adds optional action result projections;
+contract 4 adds metadata-only `jobs.inspectInputs`; contract 5 adds optional exact selected
+`textFields` within result declarations. Older admitted
+guests omit newer metadata and preserve their normalized declarations and digests. Host-to-guest
+optional fields are gated by the admitted contract, never sent speculatively.
+“Isolate answered out of protocol” denotes an internal
 protocol violation, not an SDK-upgrade remedy exposed after version drift.
 
 **Installed deployment export.** Root-only `engine.plugins.exportInstalled {}` returns a
