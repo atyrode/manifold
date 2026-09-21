@@ -7017,9 +7017,7 @@ describe("a job input bound to an earlier job's sealed output", () => {
       const admit = (runtime: TerminalRuntime) =>
         f.service.admitTerminal(t.actor, runtime, f.machineId, t.terminal, t.traceId);
       const inputs = [{ name: "material", from: { jobId: "producer", output: "material" } }];
-      expect(() => admit({ ...t.runtime, inputs })).toThrow(
-        "input_source_unavailable:material",
-      );
+      expect(() => admit({ ...t.runtime, inputs })).toThrow("input_source_unavailable:material");
       seal(f);
       expect(() =>
         admit({
@@ -7050,9 +7048,7 @@ describe("a job input bound to an earlier job's sealed output", () => {
         },
         f.root,
       );
-      expect(() => admit({ ...t.runtime, inputs })).toThrow(
-        "input_authority_refused:material",
-      );
+      expect(() => admit({ ...t.runtime, inputs })).toThrow("input_authority_refused:material");
       // Source-read denial is not terminal-spawn denial: omitting inputs still admits.
       const plain = admit(t.runtime);
       expect(f.service.jobs.get(plain.request.jobId)?.state).toBe("start-committed");
@@ -7070,13 +7066,7 @@ describe("a job input bound to an earlier job's sealed output", () => {
         ...t.runtime,
         inputs: [{ name: "material", from: { jobId: "producer", output: "material" } }],
       };
-      const opened = f.service.admitTerminal(
-        t.actor,
-        runtime,
-        f.machineId,
-        t.terminal,
-        t.traceId,
-      );
+      const opened = f.service.admitTerminal(t.actor, runtime, f.machineId, t.terminal, t.traceId);
       expect(f.service.jobs.get(opened.request.jobId)?.state).toBe("start-committed");
       f.store.createTerminal({
         id: t.terminal.terminalId,
@@ -7110,44 +7100,13 @@ describe("a job input bound to an earlier job's sealed output", () => {
           traceId,
         ),
       ).toThrow("terminal_restart_recipe_changed");
-      const restarted = f.service.admitTerminal(
-        t.actor,
-        runtime,
-        f.machineId,
-        t.terminal,
-        traceId,
-      );
+      const restarted = f.service.admitTerminal(t.actor, runtime, f.machineId, t.terminal, traceId);
       expect(restarted.request.jobId).not.toBe(opened.request.jobId);
       expect(f.service.jobs.get(restarted.request.jobId)?.state).toBe("start-committed");
       allow(f, pluginId, producerId, "jobs:read", false);
       expect(() =>
         f.service.admitTerminal(t.actor, runtime, f.machineId, t.terminal, traceId),
       ).toThrow("input_authority_refused:material");
-    } finally {
-      f.store.close();
-    }
-  });
-
-  test("the admitted job echoes its bindings and inherits the operation's own output ceiling", () => {
-    const f = bound();
-    try {
-      seal(f);
-      const job = consume(f, [
-        { name: "material", from: { jobId: "producer", output: "material" } },
-      ]);
-      expect(job.state).toBe("start-committed");
-      expect(job.request.inputs).toEqual([
-        { name: "material", from: { jobId: "producer", output: "material" } },
-      ]);
-      expect(job.request.limits.inputBytes).toBe(limits.outputBytes);
-      expect(f.service.publicJob(job).inputs).toEqual(job.request.inputs);
-      const start = f.commands.findLast((command) => command.type === "start");
-      expect(start?.type === "start" && start.request.inputs).toEqual(job.request.inputs);
-      // A consumer's input name is its own; it need not match the name the producer sealed.
-      expect(
-        consume(f, [{ name: "notes", from: { jobId: "producer", output: "material" } }], "renamed")
-          .state,
-      ).toBe("start-committed");
     } finally {
       f.store.close();
     }

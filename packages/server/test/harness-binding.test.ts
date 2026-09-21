@@ -58,7 +58,6 @@ const machine: MachineHalf = {
     [operationId]: {
       argv: [{ input: "mode" }],
       input: { mode: { type: "string", required: true, maxLength: 128 } },
-      inputs: ["material"],
       runtimeTools: [],
       locations: [],
       outputs: [],
@@ -76,7 +75,14 @@ function result(outcome: ActionOutcome): unknown {
   return outcome.result;
 }
 
-async function fixture(dependency?: ServerPluginDef) {
+async function fixture(dependency?: ServerPluginDef, inputs?: string[]) {
+  const declaredMachine: MachineHalf =
+    inputs === undefined
+      ? machine
+      : {
+          ...machine,
+          operations: { [operationId]: { ...machine.operations[operationId]!, inputs } },
+        };
   const runtime = new FakeRuntime();
   const clock = new FakeClock(runtime);
   const store = testStore();
@@ -110,7 +116,7 @@ async function fixture(dependency?: ServerPluginDef) {
       ...(dependency
         ? { dependencies: { [dependency.manifest.id]: { type: "required" as const } } }
         : {}),
-      machine,
+      machine: declaredMachine,
       contributes: {
         panels: [],
         sections: [],
@@ -185,7 +191,7 @@ async function fixture(dependency?: ServerPluginDef) {
     pluginId,
     installationRevision: "r1",
     artifactSha256: hash,
-    machine,
+    machine: declaredMachine,
   });
   service.consent(root, {
     machineId,
@@ -400,7 +406,7 @@ test("browser descriptors bind distinct runs without returning or journaling the
 });
 
 test("harness launch bindings reject input removal and unavailable sources never reach native creation", async () => {
-  const f = await fixture();
+  const f = await fixture(undefined, ["material"]);
   try {
     f.descriptor.inputs = [
       { name: "material", from: { jobId: "missing-producer", output: "material" } },
@@ -412,13 +418,15 @@ test("harness launch bindings reject input removal and unavailable sources never
     await f.open({ ...launched.runtime, inputs: [] });
     expect(f.sent.filter((message) => message.type === "create")).toEqual([]);
     // The unmodified descriptor is bound correctly, but its source is unavailable.
-    await f.open(launched.runtime);
+    const unavailable = await f.launch((await f.create()).run.id);
+    await f.open(unavailable.runtime);
     expect(f.sent.filter((message) => message.type === "create")).toEqual([]);
     delete f.descriptor.inputs;
-    const withoutInputs = await f.launch(run.id);
+    const plain = await f.create();
+    const withoutInputs = await f.launch(plain.run.id);
     const created = await f.openCreated(withoutInputs.runtime);
     expect(f.auth.authenticate(created.runtime!.privateEnv!.MANIFOLD_RUN_TOKEN).agentRunId).toBe(
-      run.id,
+      plain.run.id,
     );
   } finally {
     f.close();
@@ -426,7 +434,7 @@ test("harness launch bindings reject input removal and unavailable sources never
 });
 
 test("harness restart refuses a freshly bound unavailable input without replacing the running terminal", async () => {
-  const f = await fixture();
+  const f = await fixture(undefined, ["material"]);
   try {
     const { run } = await f.create();
     const launched = await f.launch(run.id);

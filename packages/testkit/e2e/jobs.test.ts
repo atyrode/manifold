@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { z } from "zod";
 import {
   formatManifoldUri,
@@ -58,6 +58,7 @@ const required = [
   "MANIFOLD_TEST_BWRAP",
   "MANIFOLD_TEST_STATIC_BUSYBOX",
   "MANIFOLD_TEST_CGROUP",
+  "MANIFOLD_TEST_OUTPUT_ROOT",
 ] as const;
 const realBackend =
   process.platform === "linux" && required.every((name) => Boolean(process.env[name]));
@@ -74,7 +75,7 @@ test.skipIf(!realBackend)(
     const root = mkdtempSync(join(tmpdir(), "manifold-jobs-e2e-"));
     const control = join(root, "control");
     const state = join(control, "state");
-    const workspace = join(root, "workspace");
+    const workspace = join(process.env.MANIFOLD_TEST_OUTPUT_ROOT!, basename(root));
     const witness = join(workspace, "witness");
     const runtime = join(root, "runtime");
     for (const path of [control, state, join(state, "artifacts"), workspace, witness, runtime])
@@ -430,8 +431,10 @@ test.skipIf(!realBackend)(
         20_000,
         20,
       );
-      expect(produced.state).toBe("exited");
-      expect(produced.result?.exitCode).toBe(0);
+      expect({ state: produced.state, result: produced.result }).toMatchObject({
+        state: "exited",
+        result: { exitCode: 0 },
+      });
       expect(produced.result?.outputs.find((output) => output.name === "material")?.files).toBe(2);
       expect(produced.result?.outputs.find((output) => output.name === "decoy")?.files).toBe(1);
       writeFileSync(join(witness, "material/top.txt"), "changed after sealing\n");
@@ -476,9 +479,9 @@ test.skipIf(!realBackend)(
         terminalHome.sendTerminalInput(
           terminal.id,
           [
-            "if (printf changed > /inputs/selected/top.txt) 2>/dev/null; then overwrite=writable; else overwrite=readonly; fi",
-            "if (printf added > /inputs/selected/new.txt) 2>/dev/null; then create=writable; else create=readonly; fi",
-            "if /bin/busybox rm /inputs/selected/nested/inner.txt 2>/dev/null; then unlink=writable; else unlink=readonly; fi",
+            "if (printf changed > /inputs/selected/top.txt); then overwrite=writable; else overwrite=readonly; fi",
+            "if (printf added > /inputs/selected/new.txt); then create=writable; else create=readonly; fi",
+            "if /bin/busybox rm -f /inputs/selected/nested/inner.txt; then unlink=writable; else unlink=readonly; fi",
             `printf '${phase}_ACCESS:%s:%s:%s\\n' "$overwrite" "$create" "$unlink"`,
             `printf '${phase}_TOP:%s\\n' "$(/bin/busybox base64 /inputs/selected/top.txt)"`,
             `printf '${phase}_NESTED:%s\\n' "$(/bin/busybox base64 /inputs/selected/nested/inner.txt)"`,
@@ -510,7 +513,9 @@ test.skipIf(!realBackend)(
         20_000,
         (event) => event.terminalId === terminal.id && event.kind === "restarted",
       );
-      const restart = await terminalHome.action("core.terminals.restart", { terminalId: terminal.id });
+      const restart = await terminalHome.action("core.terminals.restart", {
+        terminalId: terminal.id,
+      });
       expect(restart.ok).toBe(true);
       await restarted;
       await inspectMaterial("RESTARTED");
@@ -548,6 +553,11 @@ test.skipIf(!realBackend)(
       // Cancellation releases derived mounts, not the immutable material's source lifetime.
       expect((await status(produced.jobId, PRODUCE)).result).toEqual(produced.result);
     } catch (error) {
+      for (const capture of captures)
+        console.error(
+          "native material PTY:",
+          (capture.snapshotText + capture.outputText).slice(-8192),
+        );
       throw e2eFailure(error, [server, agent]);
     } finally {
       for (const capture of captures) capture.stop();
@@ -574,6 +584,7 @@ test.skipIf(!realBackend)(
             await stopProcesses([server]);
           } finally {
             rmSync(root, { recursive: true, force: true });
+            rmSync(workspace, { recursive: true, force: true });
           }
         }
       }
