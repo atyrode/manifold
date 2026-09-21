@@ -135,7 +135,14 @@ export class JobResources {
     const available: Record<string, string> = {};
     for (const policy of this.policies) {
       if (!sourcesAvailable(policy, [])) continue;
-      if (policy.runtime && !this.options.runtimeAvailable?.(policy, candidate)) continue;
+      // Revisionless job runtimes advertise conditional binding evidence before installation.
+      // Each consuming operation must resolve and prove its own exact installation context.
+      if (
+        policy.runtime &&
+        !(policy.runtime.scope !== "instance" && policy.runtime.installationRevision === undefined) &&
+        !this.options.runtimeAvailable?.(policy, candidate)
+      )
+        continue;
       available[policy.serviceId] = candidate.services[policy.serviceId]!;
     }
     const changed =

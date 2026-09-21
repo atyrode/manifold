@@ -656,11 +656,28 @@ export class MachineJobOwner {
       this.publishInstallation(installation.command);
   }
 
+  private runtimeInstallation(
+    runtime: NonNullable<ServicePolicy["runtime"]>,
+    invoking?: Pick<JobRequest, "pluginId" | "installationRevision" | "artifactSha256">,
+  ): Installation | undefined {
+    if (runtime.installationRevision !== undefined)
+      return this.installs.get(this.installKey(runtime.pluginId, runtime.installationRevision));
+    if (runtime.scope === "instance" || !invoking || invoking.pluginId !== runtime.pluginId)
+      return undefined;
+    const installation = this.installs.get(
+      this.installKey(invoking.pluginId, invoking.installationRevision),
+    );
+    return installation?.command.artifactSha256 === invoking.artifactSha256
+      ? installation
+      : undefined;
+  }
+
   private serviceAvailable(
     policy: ServicePolicy,
     operationIds: readonly string[],
     inventory: JobResourceInventory,
     visiting: Set<string>,
+    invoking?: Pick<JobRequest, "pluginId" | "installationRevision" | "artifactSha256">,
   ): boolean {
     if (
       operationIds.some((id) => !Object.hasOwn(policy.operations, id)) ||
@@ -675,19 +692,18 @@ export class MachineJobOwner {
       )
     )
       return false;
-    return !policy.runtime || this.runtimeAvailable(policy, inventory, visiting);
+    return !policy.runtime || this.runtimeAvailable(policy, inventory, visiting, invoking);
   }
 
   private runtimeAvailable(
     policy: ServicePolicy,
     inventory: JobResourceInventory,
     visiting: Set<string>,
+    invoking?: Pick<JobRequest, "pluginId" | "installationRevision" | "artifactSha256">,
   ): boolean {
     const runtime = policy.runtime;
     if (!runtime || visiting.has(policy.serviceId) || visiting.size >= 8) return false;
-    const installation = this.installs.get(
-      this.installKey(runtime.pluginId, runtime.installationRevision),
-    );
+    const installation = this.runtimeInstallation(runtime, invoking);
     const operation = installation?.command.machine.operations[runtime.operationId];
     if (
       !installation ||
@@ -720,7 +736,7 @@ export class MachineJobOwner {
       const dependency = this.policy(binding.serviceId);
       return (
         dependency !== undefined &&
-        this.serviceAvailable(dependency, binding.operationIds, inventory, next)
+        this.serviceAvailable(dependency, binding.operationIds, inventory, next, installation.command)
       );
     });
   }
@@ -737,11 +753,9 @@ export class MachineJobOwner {
         required[group].push(...next[group]);
       for (const serviceId of next.services) {
         const runtime = this.policy(serviceId)?.runtime;
-        const child =
-          runtime &&
-          this.installs.get(this.installKey(runtime.pluginId, runtime.installationRevision));
-        if (child?.command.machine.operations[runtime!.operationId])
-          collect(child, runtime!.operationId);
+        const child = runtime && this.runtimeInstallation(runtime, current.command);
+        if (runtime && child?.command.machine.operations[runtime.operationId])
+          collect(child, runtime.operationId);
       }
     };
     collect(installation, operationId);
@@ -765,6 +779,7 @@ export class MachineJobOwner {
       !Object.hasOwn(policy.operations, request.operationId)
     )
       return false;
+    let invoking: Pick<JobRequest, "pluginId" | "installationRevision" | "artifactSha256"> | undefined;
     if (subject.kind === "tunnel") {
       const tunnel = this.serviceTunnels.get(subject.channelId);
       const command = tunnel?.command;
@@ -812,6 +827,7 @@ export class MachineJobOwner {
         )
       )
         return false;
+      invoking = job.request;
       this.refreshOperationResources(installation, job.request.operationId);
       if (
         jobResourceRefusal(
@@ -826,9 +842,7 @@ export class MachineJobOwner {
     }
     if (subject.kind !== "job") {
       const runtime = policy.runtime;
-      const installation =
-        runtime &&
-        this.installs.get(this.installKey(runtime.pluginId, runtime.installationRevision));
+      const installation = runtime && this.runtimeInstallation(runtime);
       if (runtime) {
         if (!installation?.command.machine.operations[runtime.operationId]) return false;
         this.refreshOperationResources(installation, runtime.operationId);
@@ -838,7 +852,7 @@ export class MachineJobOwner {
     const inventory = this.resources.snapshot();
     return (
       inventory.services[request.serviceId] === policySha256 &&
-      this.serviceAvailable(policy, [request.operationId], inventory, new Set())
+      this.serviceAvailable(policy, [request.operationId], inventory, new Set(), invoking)
     );
   }
 
@@ -1209,7 +1223,7 @@ export class MachineJobOwner {
             ? "service_parent_not_started"
             : parent.serviceController.signal.aborted
               ? "service_parent_services_closed"
-              : !this.runtimeAvailable(policy, this.resources.snapshot(), new Set())
+              : !this.runtimeAvailable(policy, this.resources.snapshot(), new Set(), parent.request)
                 ? "service_runtime_resources_absent"
                 : null;
   }
@@ -1324,6 +1338,8 @@ export class MachineJobOwner {
     }
     const endpoint = await instance.ready;
     signal.throwIfAborted();
+    const changed = this.runtimeServiceRefusal(parent, policy);
+    if (changed) throw new ServiceFailure(changed);
     // The service started once and is being served again: what can have changed since is the
     // child's own existence and state, and the endpoint's lifetime. Three facts, three words,
     // and the child's state travels as a FIELD rather than inside the word, so the word stays
@@ -1602,6 +1618,7 @@ export class MachineJobOwner {
       !runtime ||
       !parent ||
       parent.runtimeServices.get(runtime.policy.serviceId) !== runtime ||
+      this.runtimeServiceRefusal(parent, runtime.policy) !== null ||
       parent.cancelRequested ||
       parent.serviceController.signal.aborted ||
       job.result.state !== "started" ||
@@ -2258,7 +2275,8 @@ export class MachineJobOwner {
           jobDigest(job.serviceRuntime.policy) ||
         expected.pluginId !== request.pluginId ||
         expected.operationId !== request.operationId ||
-        expected.installationRevision !== request.installationRevision ||
+        this.runtimeInstallation(expected, parent?.request)?.command.installationRevision !==
+          request.installationRevision ||
         expected.artifactSha256 !== request.artifactSha256 ||
         expected.resourceBindingDigest !== jobDigest(request.resourceBindings ?? null)
       )
@@ -3058,6 +3076,28 @@ export class MachineJobOwner {
     }
     return undefined;
   }
+  private operationServicesUnavailable(
+    installation: Installation,
+    operation: MachineOperation,
+    inventory: JobResourceInventory,
+  ): string | undefined {
+    for (const binding of operation.services ?? []) {
+      const policy = this.policy(binding.serviceId);
+      if (
+        !policy ||
+        !this.serviceAvailable(
+          policy,
+          binding.operationIds,
+          inventory,
+          new Set(),
+          installation.command,
+        )
+      )
+        return "services_unavailable";
+    }
+    return undefined;
+  }
+
   private operationUnavailable(
     installation: Installation,
     operation: MachineOperation,
@@ -3069,14 +3109,15 @@ export class MachineJobOwner {
     );
     if (!operationId) return "unknown_operation";
     this.refreshOperationResources(installation, operationId);
+    const inventory = this.resources.snapshot();
     return (
       jobResourceRefusal(
         installation.command.machine,
         operationId,
         this.platform(),
         installation.command.resourceBindings,
-        this.resources.snapshot(),
-      ) ?? undefined
+        inventory,
+      ) ?? this.operationServicesUnavailable(installation, operation, inventory)
     );
   }
   installedResources(pluginId: string, revision: string): JobInstallationResources {
@@ -3122,7 +3163,7 @@ export class MachineJobOwner {
                   installation.command.resourceBindings,
                   inventory!,
                 ) ??
-                undefined;
+                this.operationServicesUnavailable(installation, operation, inventory!);
               return {
                 operationId,
                 available: reason === undefined,
