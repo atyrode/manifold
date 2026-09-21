@@ -791,10 +791,14 @@ function assembleDefinitions(
           const policy = parsed.data;
           for (const path of policy.fields) Object.freeze(path);
           Object.freeze(policy.fields);
+          if (policy.textFields !== undefined) {
+            for (const path of policy.textFields) Object.freeze(path);
+            Object.freeze(policy.textFields);
+          }
           Object.freeze(policy);
           resultProjection = Object.freeze({
             policy,
-            compiled: compileJsonProjection(policy.fields),
+            compiled: compileJsonProjection(policy.fields, policy.textFields),
             digest: actionResultProjectionDigest(policy),
           });
         }

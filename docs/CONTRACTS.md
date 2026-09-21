@@ -257,20 +257,27 @@ cleanup: report failure and rely on server expiry only as the backstop.
 See [the operating contract](../packages/sdk/README.md) before launching.
 
 **Opt-in bounded result publication.** An ordinary action's optional `resultProjection` is a
-`projected-json` primitive-leaf selection with `fields`, `maxArrayItems` and `maxResultBytes`;
-it is not permitted on `runAccess` lifecycle declarations. Limits are 64 paths, 16 segments per
-path, 4096 items per array, 65536 traversal nodes and 1 MiB of serialized UTF-8 projected data.
-The existing service-response projector supplies the same semantics: `*` traverses arrays,
-missing fields are omitted, and selected nonprimitive leaves refuse rather than expose a subtree.
-The plugin owns semantic redaction and subject-level disclosure. Publication metadata grants
-no invocation authority and does not assert that a read action has no effects.
+`projected-json` primitive-leaf selection with `fields`, optional `textFields`, `maxArrayItems`
+and `maxResultBytes`; it is not permitted on `runAccess` lifecycle declarations. Limits are
+64 paths per list, 16 segments per path, 4096 items per array, 65536 traversal nodes and 1 MiB
+of serialized UTF-8 projected data. The existing service-response projector supplies the same
+semantics: `*` traverses arrays, missing fields are omitted, and selected nonprimitive leaves
+refuse rather than expose a subtree. `textFields`, when present, is a nonempty subset of exact
+selected leaf paths under the same grammar and limits as `fields`, never a parent, additional
+path or arbitrary subtree. Marked leaves accept only strings or null; absence is still omitted.
+Unmarked leaves retain their previous primitive semantics. Service-proxy policies are unchanged.
+The plugin owns semantic redaction and subject-level disclosure, including every declared text
+leaf; marking text is not credential classification or permission to return secrets. Publication
+metadata grants no invocation authority and does not assert that a read action has no effects.
 
 The SDK's trusted `readResults` option (environment `MANIFOLD_READ_RESULTS`, withdrawn before
 model input) accepts at most 64 unique exact-door `{door,contractDigest,maxResultBytes?}`
 approvals. The lowercase SHA-256 digest covers JSON of the schema-parsed declaration, with
-normalized property order and preserved path order. The launcher must review it; discovery
-alone cannot authorize output. Missing and changed declarations fail before invocation as
-`projection_unavailable` and `projection_changed`; discovery refresh does not reauthorize them.
+normalized property order and preserved path order. Absent `textFields` stays absent during
+normalization, preserving existing declaration digests exactly; adding or changing the list
+requires a newly reviewed digest. The launcher must review it; discovery alone cannot authorize
+output. Missing and changed declarations fail before invocation as `projection_unavailable`
+and `projection_changed`; discovery refresh does not reauthorize them.
 The model frame union is unchanged. Lifecycle, activity, policy, renewal, child and finish frames
 cannot opt into result data.
 
@@ -289,10 +296,17 @@ Only successful action outcomes may include the separate `projection` envelope:
 `{ok:false,contractDigest,code:"projection_invalid"|"projection_limit"}`. Output failure after
 successful effects does not relabel the action as refused or roll back its events/trace. The
 runner consumes only a matching sideband correlated with a real trace, independently reprojects
-and bounds it, applies the narrower launcher byte ceiling, and rejects held credential values
-and credential/key-link carriers. These lexical checks are defense in depth, not semantic
-classification. It adds `trust:"untrusted"` to the envelope; source bytes never become policy
-or other control frames. There is no raw-result fallback, truncation or automatic retry.
+and bounds it, and applies the narrower launcher byte ceiling. Its credential guard walks the
+complete sideband, including unselected values: held launcher, child and replacement credential
+values, forbidden credential keys, and lexical bearer/key-link/userinfo patterns in keys always
+refuse publication. Only at an exact approved `textFields` string leaf does it skip the lexical
+bearer/key-link/userinfo value pattern, allowing domain-redacted prose without rewriting its
+bytes. Nested objects advance by exact keys and arrays only by `*`; unselected values have no
+text exemption. The guard is defense in depth, not semantic classification; plugins must redact
+domain secrets before returning results. It adds `trust:"untrusted"` to the envelope; source
+bytes never become policy or other control frames. There is no raw-result fallback, encoding,
+marker escaping, truncation or automatic retry. Ordinary calls remain mechanical-only without
+trusted approval; model input, lifecycle and metadata cannot enable textual publication.
 Each complete outgoing JSONL frame, including its newline, and the output queue are bounded
 to 16 MiB. Action refusal and handler/result-schema failure publish no projection.
 

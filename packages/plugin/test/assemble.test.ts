@@ -1,6 +1,8 @@
 import {
   DEFAULT_ELEMENT_PLACEMENT_TRAITS,
   actionResultProjectionDigest,
+  JsonProjectionError,
+  projectJson,
   type ActionResultProjection,
   type Cap,
   type PluginManifest,
@@ -93,6 +95,37 @@ describe("assembleRoster", () => {
     );
   });
 
+  test("published text approval and host projection stay immutable until reassembly", async () => {
+    const policy: ActionResultProjection = {
+      kind: "projected-json",
+      fields: [["title"], ["count"]],
+      textFields: [["title"]],
+      maxArrayItems: 4,
+      maxResultBytes: 256,
+    };
+    const def = { ...terminals, actions: [{ ...RENAME, resultProjection: policy }] };
+    const before = assembleRoster([def], NONE);
+    const publication = before.actions.get("core.terminals.rename")!.resultProjection!;
+    const digest = await publication.digest;
+    policy.textFields![0]![0] = "count";
+    expect(projectJson({ title: "Bearer [redacted]", count: 1 }, publication.compiled, 4)).toEqual({
+      title: "Bearer [redacted]",
+      count: 1,
+    });
+    expect(() => projectJson({ title: 1, count: 1 }, publication.compiled, 4)).toThrow(
+      JsonProjectionError,
+    );
+    expect(
+      await actionResultProjectionDigest(before.roster[0]!.actions[0]!.resultProjection!),
+    ).toBe(digest);
+    const after = assembleRoster([def], NONE);
+    const revised = after.actions.get("core.terminals.rename")!.resultProjection!;
+    expect(await revised.digest).not.toBe(digest);
+    expect(() =>
+      projectJson({ title: "Bearer [redacted]", count: 1 }, revised.compiled, 4),
+    ).toThrow(JsonProjectionError);
+  });
+
   test("invalid and lifecycle publication declarations cannot enter the roster", () => {
     const policy: ActionResultProjection = {
       kind: "projected-json",
@@ -103,6 +136,7 @@ describe("assembleRoster", () => {
     for (const action of [
       { ...RENAME, resultProjection: { ...policy, maxResultBytes: 1_048_577 } },
       { ...RENAME, resultProjection: { ...policy, fields: [["__proto__"]] } },
+      { ...RENAME, resultProjection: { ...policy, textFields: [["other"]] } },
       { ...RENAME, runAccess: "policy" as const, resultProjection: policy },
     ]) {
       expect(() =>

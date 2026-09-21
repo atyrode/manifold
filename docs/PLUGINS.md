@@ -3390,15 +3390,27 @@ handshake; there is no old-runtime validation fallback or second public action d
 
 Both `defineServerAction` here and `defineAction` in-realm accept an optional `resultProjection`
 for bounded agent-visible results. It selects primitive leaves, not arbitrary JSON subtrees:
-for example, `{ kind: "projected-json", fields: [["items", "*", "text"]], maxArrayItems: 20,
-maxResultBytes: 32768 }`. The authoring declaration is published with the action, never duplicated
-in the manifest. Lifecycle (`runAccess`) declarations cannot publish result projections.
-The host, not the guest, projects a successfully parsed result, with identical semantics for
-both execution modes. Normal callers still receive their ordinary result. External agents see
-the projection only with a separate trusted launcher's exact-door, digest-pinned approval;
-declaration alone is not disclosure authority. The plugin must enforce caller/subject disclosure
-and redact sensitive material before returning it. A projection failure preserves the successful
-effect and trace and returns a bounded publication failure, not an invitation to retry.
+for example, `{ kind: "projected-json", fields: [["items", "*", "text"]],
+textFields: [["items", "*", "text"]], maxArrayItems: 20, maxResultBytes: 32768 }`.
+The optional `textFields` list uses the same path grammar and 1–64 path / 1–16 segment bounds
+as `fields`, and may name only exact selected leaves, not parents or extra paths. Each marked
+leaf must be a string or null; missing fields remain omitted. `*` traverses arrays only.
+Nontext leaves keep their existing primitive types. Omitting `textFields` preserves the old
+normalized declaration and its digest exactly. The authoring declaration is published with the
+action, never duplicated in the manifest. Lifecycle (`runAccess`) declarations cannot publish
+result projections. The host, not the guest, projects a successfully parsed result, with identical
+semantics for both execution modes. Normal callers still receive their ordinary result.
+External agents see the projection only with a separate trusted launcher's exact-door,
+digest-pinned approval; adding textual leaves changes that digest and needs new approval.
+Declaration alone is not disclosure authority. The plugin must enforce caller/subject disclosure
+and redact sensitive material before returning it, including all declared text. At approved text
+leaves only, the runner permits lexical bearer/key-link/userinfo markers in the string unchanged.
+It still rejects held launcher/child/replacement credentials, forbidden credential keys and lexical
+credential patterns in keys throughout the complete sideband, including unselected data. Other
+values retain the lexical guard: declaring a parent or supplying model metadata cannot exempt
+them. These guards cannot classify domain secrets; their redaction remains the plugin's duty.
+A projection failure preserves the successful effect and trace and returns a bounded publication
+failure, not an invitation to retry.
 See `packages/sdk/README.md`, “Opting into bounded read results”, for limits, digest computation
 and the untrusted-data envelope.
 
