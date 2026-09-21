@@ -1,26 +1,6 @@
 { self, pkgs }:
 let
   # Generate fixtures through the real packer: hand-built unstamped bundles must stay held.
-  packFixtureSource = pkgs.writeText "pack-native-profile.ts" ''
-    import { mkdtemp, rm } from "node:fs/promises";
-    import { tmpdir } from "node:os";
-    import { join } from "node:path";
-    import { compilePlugin } from "@manifold/plugin-kit/pack";
-    import { PluginBundleSchema } from "@manifold/protocol";
-
-    const fixture = PluginBundleSchema.parse(await Bun.stdin.json());
-    const worker = fixture.files.worker;
-    if (worker === undefined) throw new Error("Native fixture worker is missing");
-    const directory = await mkdtemp(join(tmpdir(), "native-profile-pack-"));
-    try {
-      await Bun.write(join(directory, "manifest.json"), JSON.stringify(fixture.manifest));
-      await Bun.write(join(directory, "worker"), Buffer.from(worker, "base64"));
-      const compiled = await compilePlugin(directory, { shared: false });
-      await Bun.write(Bun.stdout, compiled.bytes);
-    } finally {
-      await rm(directory, { recursive: true });
-    }
-  '';
   packFixture = pkgs.runCommand "manifold-native-profile-packer" {
     nativeBuildInputs = [ self.packages.${pkgs.stdenv.hostPlatform.system}.bun-runtime ];
   } ''
@@ -28,9 +8,8 @@ let
     chmod -R u+w source
     cd source
     cp -R ${self.packages.${pkgs.stdenv.hostPlatform.system}.bun-deps}/. .
-    cp ${packFixtureSource} pack-native-profile.ts
     mkdir -p "$out/bin"
-    bun build --compile pack-native-profile.ts --outfile "$out/bin/pack-native-profile"
+    bun build --compile packages/plugin-kit/src/pack.ts --outfile "$out/bin/manifold-pack"
   '';
   platform = "linux-${if pkgs.stdenv.hostPlatform.isAarch64 then "arm64" else "x64"}";
   closureMessage = pkgs.writeText "native-runtime-message" "native-module:closures\n";
@@ -47,6 +26,7 @@ let
     import subprocess
     import tarfile
     from pathlib import Path
+    from tempfile import TemporaryDirectory
     from urllib.request import Request, urlopen
 
     key = Path("/var/lib/manifold/owner.key").read_text().strip()
@@ -124,19 +104,22 @@ let
                 "locations": [{"locationId": output_location, "access": "write"}],
                 "outputs": ["receipt"], "network": "none", "limits": output_limits, "stdin": False,
             }
-        bundle = json.dumps({
-            "format": 1,
-            "manifest": {
-                "id": plugin_id, "version": "1.0.0", "title": "Native profile acceptance",
-                "description": "Disposable module execution proof", "capabilities": [], "entry": {},
-                "contributes": {"panels": [], "sections": [], "elements": [], "tools": [], "events": []},
-                "machine": declaration,
-            },
-            "files": {"worker": base64.b64encode(executable).decode()},
-        }).encode()
-        bundle = subprocess.run(
-            ["${packFixture}/bin/pack-native-profile"], input=bundle, check=True, stdout=subprocess.PIPE,
-        ).stdout
+        manifest = {
+            "id": plugin_id, "version": "1.0.0", "title": "Native profile acceptance",
+            "description": "Disposable module execution proof", "capabilities": [], "entry": {},
+            "contributes": {"panels": [], "sections": [], "elements": [], "tools": [], "events": []},
+            "machine": declaration,
+        }
+        with TemporaryDirectory(prefix="native-profile-pack-") as directory:
+            source = Path(directory)
+            (source / "manifest.json").write_text(json.dumps(manifest))
+            (source / "worker").write_bytes(executable)
+            packed = source / "bundle.json"
+            subprocess.run(
+                ["${packFixture}/bin/manifold-pack", directory, "--out", str(packed), "--self-contained"],
+                check=True, stdout=subprocess.PIPE,
+            )
+            bundle = packed.read_bytes()
         bundle_path = Path("/var/lib/manifold/native-profile-tools-fixture.json" if tools else "/var/lib/manifold/native-profile-fixture.json")
         with os.fdopen(os.open(bundle_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as output:
             output.write(bundle)

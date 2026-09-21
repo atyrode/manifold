@@ -107,7 +107,7 @@ export function resolveJobLocation(
     for (let index = 0; index < directories.length; index++) {
       const component = directories[index]!;
       exclusions?.assertSource(current.fd, false);
-      if (createDirectories) beforeCreate?.(current.fd);
+      if (access === "create") beforeCreate?.(current.fd);
       const next = current.openChild(component, {
         create: createDirectories,
         exclusive:
