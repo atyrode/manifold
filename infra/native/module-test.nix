@@ -1,5 +1,16 @@
 { self, pkgs }:
 let
+  # Generate fixtures through the real packer: hand-built unstamped bundles must stay held.
+  packFixture = pkgs.runCommand "manifold-native-profile-packer" {
+    nativeBuildInputs = [ self.packages.${pkgs.stdenv.hostPlatform.system}.bun-runtime ];
+  } ''
+    cp -R ${self}/. source
+    chmod -R u+w source
+    cd source
+    cp -R ${self.packages.${pkgs.stdenv.hostPlatform.system}.bun-deps}/. .
+    mkdir -p "$out/bin"
+    bun build --compile packages/plugin-kit/src/pack.ts --outfile "$out/bin/manifold-pack"
+  '';
   platform = "linux-${if pkgs.stdenv.hostPlatform.isAarch64 then "arm64" else "x64"}";
   closureMessage = pkgs.writeText "native-runtime-message" "native-module:closures\n";
   closureReader = pkgs.writeShellScriptBin "closure-reader" ''
@@ -8,10 +19,14 @@ let
   inspect = pkgs.writeText "manifold-native-profile-inspect.py" ''
     import base64
     import hashlib
+    import io
     import json
     import os
     import sys
+    import subprocess
+    import tarfile
     from pathlib import Path
+    from tempfile import TemporaryDirectory
     from urllib.request import Request, urlopen
 
     key = Path("/var/lib/manifold/owner.key").read_text().strip()
@@ -36,15 +51,19 @@ let
     mode = sys.argv[1] if len(sys.argv) > 1 else "inspect"
     tools = mode.endswith("-tools")
     mode = mode.removesuffix("-tools")
+    named_output = mode.endswith("-outputs")
+    mode = mode.removesuffix("-outputs")
     plugin_id = "fixture.native-profile-tools" if tools else "fixture.native-profile"
-    operation_id = plugin_id + (".hold" if mode.endswith("-hold") else ".run")
+    operation_id = plugin_id + (".output" if named_output else ".hold" if mode.endswith("-hold") else ".run")
     mode = mode.removesuffix("-hold")
     job_id = sys.argv[2] if len(sys.argv) > 2 else "module-native-first"
     node = {"kind": "job", "machineId": machine["id"], "operationId": operation_id, "jobId": job_id}
     limits = {"timeoutMs": 120000, "memoryBytes": 134217728, "processes": 32, "outputBytes": 1024}
+    output_location = plugin_id + ".outputs"
+    output_limits = {**limits, "outputBytes": 2 * 1024 * 1024}
 
     if mode == "install":
-        executable = b"#!/bin/busybox sh\nif test -e /var/lib/manifold/owner.key || test -e /etc/manifold-fixture/private/enrollment-token || test -e /run/credentials/manifold-transport.service/enrollment-token; then exit 90; fi\nif test \"$1\" = hold; then /bin/busybox sleep 60; fi\nprintf 'native-module:bounded\\n'\nexit 23\n"
+        executable = b"#!/bin/busybox sh\nif test -e /var/lib/manifold/owner.key || test -e /etc/manifold-fixture/private/enrollment-token || test -e /run/credentials/manifold-transport.service/enrollment-token; then exit 90; fi\nif test \"$1\" = output; then printf 'native-runtime:%s\\n' \"$2\" > \"/home/job/runtime-output/$2/value\" || exit 94; fi\nif test \"$1\" = hold; then /bin/busybox sleep 60; fi\nprintf 'native-module:bounded\\n'\nexit 23\n"
         if tools:
             executable = (
                 b"#!/bin/sh\nset -eu\nset -o pipefail\n"
@@ -73,16 +92,34 @@ let
                 "outputs": [], "network": "none", "limits": limits, "stdin": False,
             } for operation in ([operation_id] if tools else [operation_id, plugin_id + ".hold"])},
         }
-        bundle = json.dumps({
-            "format": 1,
-            "manifest": {
-                "id": plugin_id, "version": "1.0.0", "title": "Native profile acceptance",
-                "description": "Disposable module execution proof", "capabilities": [], "entry": {},
-                "contributes": {"panels": [], "sections": [], "elements": [], "tools": [], "events": []},
-                "machine": declaration,
-            },
-            "files": {"worker": base64.b64encode(executable).decode()},
-        }).encode()
+        if not tools:
+            declaration["locations"][output_location] = {
+                "anchor": "runtime", "components": ["native-profile", "outputs"], "revision": "r1",
+                "guestPath": "/home/job/runtime-output",
+            }
+            declaration["operations"][plugin_id + ".output"] = {
+                "argv": [{"literal": "output"}, {"input": "label"}],
+                "input": {"label": {"type": "string", "required": True, "maxLength": 64}},
+                "runtimeTools": ["busybox"],
+                "locations": [{"locationId": output_location, "access": "write"}],
+                "outputs": ["receipt"], "network": "none", "limits": output_limits, "stdin": False,
+            }
+        manifest = {
+            "id": plugin_id, "version": "1.0.0", "title": "Native profile acceptance",
+            "description": "Disposable module execution proof", "capabilities": [], "entry": {},
+            "contributes": {"panels": [], "sections": [], "elements": [], "tools": [], "events": []},
+            "machine": declaration,
+        }
+        with TemporaryDirectory(prefix="native-profile-pack-") as directory:
+            source = Path(directory)
+            (source / "manifest.json").write_text(json.dumps(manifest))
+            (source / "worker").write_bytes(executable)
+            packed = source / "bundle.json"
+            subprocess.run(
+                ["${packFixture}/bin/manifold-pack", directory, "--out", str(packed), "--self-contained"],
+                check=True, stdout=subprocess.PIPE,
+            )
+            bundle = packed.read_bytes()
         bundle_path = Path("/var/lib/manifold/native-profile-tools-fixture.json" if tools else "/var/lib/manifold/native-profile-fixture.json")
         with os.fdopen(os.open(bundle_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as output:
             output.write(bundle)
@@ -101,10 +138,17 @@ let
                     **installation, "cap": capability, "enabled": True,
                     "node": "manifold://machine/" + machine["id"] + "/operation/" + operation,
                 })
+        if not tools:
+            action("engine.jobs.consent", {
+                **installation, "cap": "locations:write", "enabled": True,
+                "node": "manifold://machine/" + machine["id"] + "/location/" + output_location,
+            })
     elif mode == "execute":
         job = action("engine.jobs.execute", {
             "jobId": job_id, "machineId": machine["id"], "pluginId": plugin_id,
-            "operationId": operation_id, "input": {}, "outputs": [], "limits": limits,
+            "operationId": operation_id, "input": {"label": job_id} if named_output else {},
+            "outputs": [{"name": "receipt", "locationId": output_location, "components": [job_id]}] if named_output else [],
+            "limits": output_limits if named_output else limits,
         })
         assert job["state"] not in ["refused", "interrupted", "cancelled"], job
     elif mode == "started":
@@ -122,6 +166,18 @@ let
         assert output["type"] == "output" and output["eof"], output
         expected = b"265121870c1fc35841a1affca90eb074a5f1ee53\n" if tools else b"native-module:bounded\n"
         assert base64.b64decode(output["data"]) == expected, output
+        if named_output:
+            receipt = next(item for item in job["result"]["outputs"] if item["name"] == "receipt")
+            sealed = action("engine.jobs.output", {
+                "node": {**node, "kind": "output", "outputId": receipt["outputId"]},
+                "offset": 0, "maxBytes": 4096,
+            })
+            assert sealed["type"] == "output" and sealed["eof"], sealed
+            with tarfile.open(fileobj=io.BytesIO(base64.b64decode(sealed["data"])), mode="r:") as archive:
+                assert archive.getnames() == ["value"], archive.getnames()
+                assert archive.extractfile("value").read() == ("native-runtime:" + job_id + "\n").encode()
+            print(json.dumps({"jobId": job_id, "state": job["state"],
+                              "origin": job["authority"]["origin"], "outputSha256": receipt["sha256"]}))
     elif mode == "drained":
         assert machine["draining"], "maintenance refusal must leave admission closed"
     else:
@@ -240,6 +296,13 @@ in
     machine.succeed("${inspectCommand} install")
     machine.succeed("${inspectCommand} execute")
     machine.wait_until_succeeds("${inspectCommand} result", timeout=180)
+    # The module mounts bounded scratch, but must not pre-create plugin components.
+    machine.succeed("test ! -e /var/lib/manifold-output/native-profile")
+    for job_id in ["module-runtime-first", "module-runtime-second"]:
+        machine.succeed("${inspectCommand} execute-outputs " + job_id)
+        receipt = machine.wait_until_succeeds("${inspectCommand} result-outputs " + job_id, timeout=180)
+        print(receipt)
+    assert machine.succeed("stat -c '%a %U' /var/lib/manifold-output/native-profile /var/lib/manifold-output/native-profile/outputs").strip().splitlines() == ["700 manifold", "700 manifold"]
     machine.succeed("systemctl restart manifold-server.service manifold-transport.service")
     machine.wait_for_unit("manifold-server.service", timeout=180)
     machine.wait_for_unit("manifold-transport.service", timeout=180)

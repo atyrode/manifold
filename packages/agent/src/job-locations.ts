@@ -83,7 +83,8 @@ export function resolveManagedJobLocation(
   }
 }
 
-/** Resolves only declared descendants of a held trusted anchor; files never imply parent access. */
+/** Resolves only declared descendants of a held trusted anchor.
+ * Runtime directory writes provision components; files never imply parent access. */
 export function resolveJobLocation(
   anchor: HeldDirectory,
   locationId: string,
@@ -96,6 +97,9 @@ export function resolveJobLocation(
   if (declaration.managed) throw new Error("managed_location_requires_native_store");
   let current = anchor;
   if (declaration.components.length === 0) throw new Error("empty_location_components");
+  const createDirectories =
+    access === "create" ||
+    (access === "write" && declaration.anchor === "runtime" && declaration.kind !== "file");
   let fileFd: number | null = null;
   try {
     const directories =
@@ -105,7 +109,7 @@ export function resolveJobLocation(
       exclusions?.assertSource(current.fd, false);
       if (access === "create") beforeCreate?.(current.fd);
       const next = current.openChild(component, {
-        create: access === "create",
+        create: createDirectories,
         exclusive:
           access === "create" && declaration.kind !== "file" && index === directories.length - 1,
       });

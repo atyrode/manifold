@@ -2169,6 +2169,9 @@ Do not build a product-local job registry, websocket or refresh timer to recover
 
 Location access `"create"` refuses an already-existing final file or directory instead of
 opening it for write; an active ancestor writer also blocks create-only resolution.
+For non-managed locations, `"write"` on a `runtime` directory idempotently provisions
+missing declared components with mode `0700` and reuses existing directories. Reads,
+state-backed writes and exact-file writes do not gain this directory provisioning.
 Named output bindings require an already-provisioned bounded tmpfs backing, not an
 ordinary writable directory. The runtime does not mount it for you. Across distinct
 backing devices, total positive capacity must fit `limits.outputBytes` and total inode

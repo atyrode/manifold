@@ -92,6 +92,47 @@ linuxTest("sealing requires both explicit empty proof and release of every retai
   });
 });
 
+linuxTest("runtime writes reuse descendants of active writers while sealing still waits", () => {
+  fixture(({ store, admitted, create }) => {
+    const lease = create();
+    const release = store.retainWriter(admitted.fd);
+    const declaration = {
+      anchor: "runtime" as const,
+      components: ["result", "work"],
+      revision: "one",
+    };
+    try {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const location = resolveJobLocation(
+          admitted,
+          "fixture.runtime",
+          declaration,
+          "write",
+          undefined,
+          (fd) => store.assertCreateAllowed(fd),
+        );
+        try {
+          const path = `${location.directory!.procPath}/answer`;
+          if (attempt === 0) writeFileSync(path, "retained runtime value");
+          else expect(readFileSync(path, "utf8")).toBe("retained runtime value");
+        } finally {
+          location.close();
+        }
+      }
+      expect(() => store.seal(lease, proof)).toThrow("output_writers_active");
+      release();
+      const output = store.seal(lease, proof);
+      expect(
+        store
+          .read("job-1", output.outputId, 0, 4096)
+          .data.includes(Buffer.from("retained runtime value")),
+      ).toBe(true);
+    } finally {
+      release();
+    }
+  });
+});
+
 linuxTest(
   "global writers retain overlapping leases regardless of job or registration order",
   () => {
