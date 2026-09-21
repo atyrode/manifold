@@ -66,15 +66,15 @@ test("selected text leaves preserve strings, null and absence without widening n
     labels: ["https://user@example.invalid", null],
   });
   for (const text of [42, false, {}, [], undefined]) {
-    expect(() =>
-      projectJson({ ...value, items: [{ detail: { text } }] }, projection, 3),
-    ).toThrow(JsonProjectionError);
+    expect(() => projectJson({ ...value, items: [{ detail: { text } }] }, projection, 3)).toThrow(
+      JsonProjectionError,
+    );
   }
   expect(() => projectJson(value, projection, 2)).toThrow(JsonProjectionError);
   expect(() => projectJson(value, projection, 3, { nodes: 2 })).toThrow(JsonProjectionError);
-  expect(() =>
-    projectJson({ ...value, labels: { "*": "not an array" } }, projection, 3),
-  ).toThrow(JsonProjectionError);
+  expect(() => projectJson({ ...value, labels: { "*": "not an array" } }, projection, 3)).toThrow(
+    JsonProjectionError,
+  );
 });
 
 test("compilation refuses textual additions, parent paths and paths shadowed by other selections", () => {
@@ -84,7 +84,13 @@ test("compilation refuses textual additions, parent paths and paths shadowed by 
     [[["item"]], [["item", "text"]]],
     [[["item"], ["item", "text"]], [["item"]]],
     [[["item"], ["item", "text"]], [["item", "text"]]],
-    [[["items", "*"], ["items", "length"]], [["items", "length"]]],
+    [
+      [
+        ["items", "*"],
+        ["items", "length"],
+      ],
+      [["items", "length"]],
+    ],
   ]) {
     expect(() => compileJsonProjection(fields!, textFields!)).toThrow(JsonProjectionError);
   }

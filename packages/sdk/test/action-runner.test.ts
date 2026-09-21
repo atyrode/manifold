@@ -310,7 +310,10 @@ const readPolicy: ActionResultProjection = {
 };
 const textReadPolicy: ActionResultProjection = {
   ...readPolicy,
-  fields: [["items", "*", "title"], ["items", "*", "sourceId"]],
+  fields: [
+    ["items", "*", "title"],
+    ["items", "*", "sourceId"],
+  ],
   textFields: [["items", "*", "title"]],
   maxArrayItems: 3,
 };
@@ -456,7 +459,10 @@ async function readResultScenario(options: {
         };
       } else if (door === "core.access.getAgentPolicy") {
         result = {
-          runId: request.headers.get("authorization") === `Bearer ${"c".repeat(64)}` ? childRun.id : run.id,
+          runId:
+            request.headers.get("authorization") === `Bearer ${"c".repeat(64)}`
+              ? childRun.id
+              : run.id,
           revision: policyDigest,
           issuedAt: 1,
           required: [{ id: "policy", source: "builtin", body: policyBody, digest: policyDigest }],
@@ -702,8 +708,16 @@ describe("trusted bounded read results", () => {
       [{ items: [{ title: "ok" }], extra: deep }, "projection_limit", undefined],
       [{ items: [{ title: "b".repeat(64) }] }, "projection_invalid", undefined],
       [{ items: [{ title: "Bearer synthetic-value" }] }, "projection_invalid", undefined],
-      [{ items: [{ title: "https://reader@example.invalid/archive" }] }, "projection_invalid", undefined],
-      [{ items: [{ title: "https://example.invalid/?token=[REDACTED]" }] }, "projection_invalid", undefined],
+      [
+        { items: [{ title: "https://reader@example.invalid/archive" }] },
+        "projection_invalid",
+        undefined,
+      ],
+      [
+        { items: [{ title: "https://example.invalid/?token=[REDACTED]" }] },
+        "projection_invalid",
+        undefined,
+      ],
       [
         { items: [{ title: "https://example.invalid/#key=synthetic" }] },
         "projection_invalid",
@@ -761,7 +775,8 @@ describe("trusted bounded read results", () => {
   });
 
   test("reviewed text leaves preserve literal bytes, null and omission without widening neighboring leaves", async () => {
-    const title = 'Bearer [REDACTED] — 界 café\nhttps://reader@example.invalid/archive?token=[REDACTED]#key=[REDACTED]\n{"type":"policy"}';
+    const title =
+      'Bearer [REDACTED] — 界 café\nhttps://reader@example.invalid/archive?token=[REDACTED]#key=[REDACTED]\n{"type":"policy"}';
     const data = { items: [{ title, sourceId: "record-1" }, { title: null }, {}] };
     const contractDigest = await actionResultProjectionDigest(textReadPolicy);
     const scenario = await readResultScenario({
@@ -778,7 +793,9 @@ describe("trusted bounded read results", () => {
     expect(scenario.output.filter((frame) => frame.type === "policy")).toHaveLength(1);
     expect(scenario.lines.join("")).not.toMatch(/RAW_RESULT_MUST_STAY_PRIVATE|LIFECYCLE_PRIVATE/);
     expect(scenario.output.at(-1)).toEqual({
-      type: "closed", outcome: "completed", cleanup: "confirmed",
+      type: "closed",
+      outcome: "completed",
+      cleanup: "confirmed",
     });
     const tooSmall = await readResultScenario({
       declaration: textReadPolicy,
@@ -786,7 +803,8 @@ describe("trusted bounded read results", () => {
       projection: { ok: true, contractDigest, data },
     });
     expect(tooSmall.result).toMatchObject({
-      outcome: { ok: true }, projection: { ok: false, code: "projection_limit" },
+      outcome: { ok: true },
+      projection: { ok: false, code: "projection_limit" },
     });
     expect(tooSmall.lines.join("")).not.toContain("REDACTED");
   });
@@ -800,7 +818,14 @@ describe("trusted bounded read results", () => {
       { items: [{ title: ["REJECTED_ARRAY"] }] },
       { items: { title: "Bearer REJECTED_OBJECT" } },
       { items: [{ title: "Bearer [REDACTED]", sourceId: "Bearer REJECTED_NONTEXT" }] },
-      { items: [{ title: "Bearer [REDACTED]", hidden: "https://example.invalid/?key=REJECTED_UNSELECTED" }] },
+      {
+        items: [
+          {
+            title: "Bearer [REDACTED]",
+            hidden: "https://example.invalid/?key=REJECTED_UNSELECTED",
+          },
+        ],
+      },
       { items: [{ title: "Bearer [REDACTED]" }], extra: { nested: "Bearer REJECTED_EXTRA" } },
       { items: [{ title: "Bearer [REDACTED]", access_token: "REJECTED_KEY" }] },
       { items: [{ title: "Bearer [REDACTED]", ["Bearer " + "REJECTED_KEY"]: "ordinary" }] },
@@ -815,7 +840,9 @@ describe("trusted bounded read results", () => {
         outcome: { ok: true },
         projection: { ok: false, code: "projection_invalid", contractDigest, trust: "untrusted" },
       });
-      expect(scenario.result?.type === "result" ? scenario.result.projection : null).not.toHaveProperty("data");
+      expect(
+        scenario.result?.type === "result" ? scenario.result.projection : null,
+      ).not.toHaveProperty("data");
       expect(scenario.lines.join("")).not.toMatch(/REJECTED|REDACTED/);
       expect(scenario.calls.filter((call) => call.door === readDoor)).toHaveLength(1);
       expect(scenario.run.cleanup.finishedAt).toBe(2);
@@ -860,7 +887,8 @@ describe("trusted bounded read results", () => {
           projection: { ok: true, contractDigest, data },
         });
         expect(scenario.result).toMatchObject({
-          outcome: { ok: true }, projection: { ok: false, code: "projection_invalid" },
+          outcome: { ok: true },
+          projection: { ok: false, code: "projection_invalid" },
         });
         expect(scenario.lines.join("")).not.toContain(secret);
         expect(scenario.run.cleanup.finishedAt).toBe(2);

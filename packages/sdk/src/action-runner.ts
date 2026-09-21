@@ -176,6 +176,7 @@ export class ActionRunner {
           projection?.children.get("*"),
         );
     } else if (value !== null && typeof value === "object") {
+      const fields = projection?.children.has("*") ? undefined : projection?.children;
       for (const [key, child] of Object.entries(value)) {
         if (
           /^(?:token|bearer|password|secret|credentials?|authorization|cookies?|privatekey|ownerkey|apikey|accesstoken|refreshtoken|sponsortoken|runnertoken|runtoken|manifoldrunnertoken|manifoldruntoken)$/i.test(
@@ -185,14 +186,7 @@ export class ActionRunner {
           throw new ActionRunnerError("credential_input");
         }
         this.#checkString(key);
-        this.#checkInput(
-          child,
-          depth + 1,
-          budget,
-          maxDepth,
-          maxArrayItems,
-          projection?.children.get(key),
-        );
+        this.#checkInput(child, depth + 1, budget, maxDepth, maxArrayItems, fields?.get(key));
       }
     }
   }

@@ -102,9 +102,7 @@ describe("action result text declarations", () => {
       [Array.from({ length: 17 }, () => "item")],
       Array.from({ length: 65 }, () => ["items", "*", "text"]),
     ]) {
-      expect(ActionResultProjectionSchema.safeParse({ ...policy, textFields }).success).toBe(
-        false,
-      );
+      expect(ActionResultProjectionSchema.safeParse({ ...policy, textFields }).success).toBe(false);
     }
     expect(
       ActionResultProjectionSchema.safeParse({
