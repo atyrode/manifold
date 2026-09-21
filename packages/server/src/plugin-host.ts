@@ -4330,7 +4330,10 @@ export class PluginHost {
     if (projection === undefined || projectionDigest === undefined) return { ok: true, result };
     let projected: ActionProjectedResult;
     try {
-      const data = projectJson(result, projection.compiled, projection.policy.maxArrayItems);
+      // Guests have already crossed JSON. Normalize only the in-realm opt-in view so
+      // omitted optional values and toJSON leaves publish identically in both modes.
+      const source: unknown = guestInput ? result : JSON.parse(JSON.stringify(result));
+      const data = projectJson(source, projection.compiled, projection.policy.maxArrayItems);
       const bytes = Buffer.byteLength(JSON.stringify(data), "utf8");
       projected =
         bytes > projection.policy.maxResultBytes

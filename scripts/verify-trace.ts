@@ -101,11 +101,11 @@ const serverSources = [...new Bun.Glob("packages/server/src/**/*.ts").scanSync(r
 /**
  * T2 — EVERY TRACED RUNG, BY CONSTRUCTION.
  *
- * The ladder's `run` is walked for every object literal that denies (`ok: false`). There must be
- * exactly two: the one inside the refusal constructor — which appends the row — and the
- * `unknown_action` rung, which ADR 0018 §4 rules out of the ledger by argument. A new rung that
- * returned its own denial literal would be an untraced refusal, and it fails HERE rather than
- * whenever somebody next thinks to dispatch it.
+ * The ladder's `run` is walked for every ActionOutcome refusal literal (`ok: false, denial`).
+ * Each writes the ledger except `unknown_action`, which ADR 0018 §4 rules out by argument.
+ * A new rung returning its own untraced denial fails HERE rather than whenever somebody next
+ * thinks to dispatch it. Nested publication failures are not action refusals: the action
+ * succeeded and settled before its result projection was attempted.
  */
 {
   const file = parsed(LADDER_FILE);
@@ -129,15 +129,17 @@ const serverSources = [...new Bun.Glob("packages/server/src/**/*.ts").scanSync(r
         const ok = node.properties.find(
           (property) => ts.isPropertyAssignment(property) && property.name.getText(file) === "ok",
         );
+        const denial = node.properties.find(
+          (property) =>
+            (ts.isPropertyAssignment(property) || ts.isShorthandPropertyAssignment(property)) &&
+            property.name.getText(file) === "denial",
+        );
         if (
           ok !== undefined &&
           ts.isPropertyAssignment(ok) &&
-          ok.initializer.kind === ts.SyntaxKind.FalseKeyword
+          ok.initializer.kind === ts.SyntaxKind.FalseKeyword &&
+          denial !== undefined
         ) {
-          const denial = node.properties.find(
-            (property) =>
-              ts.isPropertyAssignment(property) && property.name.getText(file) === "denial",
-          );
           let rule: string | null = null;
           if (denial !== undefined && ts.isPropertyAssignment(denial)) {
             const shape = denial.initializer;

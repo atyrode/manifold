@@ -55,7 +55,8 @@ are strict, at most 64 KiB, with unique `id` values matching `[a-zA-Z0-9_-]{1,64
 one request at a time: one request may produce multiple response frames. There are at most 1024
 requests, five minutes idle, one hour total process lifetime and 30 seconds per HTTP request.
 HTTP responses and each outgoing JSONL frame (including its newline) are bounded to 16 MiB;
-queued output is bounded too. A blocked output reader terminates boundedly.
+queued output is bounded too. Consume stdout promptly: more than 16 MiB of pending output
+terminates the run with a limit error and attempts cleanup, even if each individual frame fits.
 
 ## First action
 
@@ -165,12 +166,16 @@ that digest with the exact door through `MANIFOLD_READ_RESULTS` (or `ActionRunne
 discovery returns. The model cannot request a new projection or widen a reviewed one.
 No declaration means `projection_unavailable`; a changed digest means `projection_changed`,
 both before invocation. Refreshing discovery does not update the trusted approval.
+The approval applies to every owned, policy-acknowledged run in this runner process, including
+attenuated children; each invocation still passes that run's own current authority checks.
 
 For an approved invocation, the SDK sends the expected digest in
 `x-manifold-result-projection`. The host checks it after ordinary authority/input admission
 and before effects; a stale or unsupported request is a traced `invalid_args`. No requested
 digest means no projection calculation. Normal trusted clients still receive the ordinary
 full result, and sibling action calls remain unchanged.
+Projection observes JSON wire values in both execution modes: omitted optional values remain
+absent, and a value's JSON representation (such as a date string) is what the leaf selector sees.
 
 A successful runner `result` may additionally contain:
 

@@ -282,6 +282,7 @@ export class ActionRunner {
       return failure("projection_invalid");
     if (!envelope.ok) return failure(envelope.code);
     try {
+      if (envelope.data === undefined) return failure("projection_invalid");
       // Bound and inspect the peer's complete sideband before selecting leaves again.
       this.#checkInput(envelope.data, 0, { nodes: 65_536 }, 16, contract.policy.maxArrayItems);
       if (Buffer.byteLength(JSON.stringify(envelope.data)) > contract.maxResultBytes)

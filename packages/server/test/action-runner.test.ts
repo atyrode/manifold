@@ -195,13 +195,13 @@ for (const hardened of [false, true]) {
       "example.weather",
       {
         kind: "projected-json",
-        fields: [["station"], ["reading", "celsius"], ["calls"]],
+        fields: [["station"], ["reading", "celsius"], ["capturedAt"], ["observer"], ["calls"]],
         maxArrayItems: 1,
         maxResultBytes: 1024,
       },
       hardened,
-      "z.strictObject({ station: z.string(), reading: z.strictObject({ celsius: z.number(), privateNote: z.string() }), calls: z.number() })",
-      '{ station: "North", reading: { celsius: 21, privateNote: "omitted weather note" }, calls }',
+      "z.strictObject({ station: z.string(), reading: z.strictObject({ celsius: z.number(), privateNote: z.string() }), capturedAt: z.unknown(), observer: z.string().optional(), calls: z.number() })",
+      '{ station: "North", reading: { celsius: 21, privateNote: "omitted weather note" }, capturedAt: new Date(0), observer: undefined, calls }',
     );
     const owner = { origin: f.server.publicUrl, token: SPONSOR };
     const stale = await invokeAction(
@@ -311,7 +311,12 @@ for (const hardened of [false, true]) {
         projection: {
           ok: true,
           trust: "untrusted",
-          data: { station: "North", reading: { celsius: 21 }, calls: 1 },
+          data: {
+            station: "North",
+            reading: { celsius: 21 },
+            capturedAt: "1970-01-01T00:00:00.000Z",
+            calls: 1,
+          },
         },
       });
       expect(results.find((frame) => frame.id === "large")).toMatchObject({
