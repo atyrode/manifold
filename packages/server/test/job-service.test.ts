@@ -1237,12 +1237,8 @@ test("retiring an instance preserves admitted descendants but refuses new descen
       type: "invocation_reply",
       invocationId: "late-grandchild",
       jobId: null,
+      reason: "instance_service_configuration_changed",
     });
-    // The machine learns which check refused it. Every reason `invoke` decides was previously
-    // replaced by the constant "invocation_refused", which a workload only saw as a 503.
-    expect(refused?.type === "invocation_reply" ? refused.reason : null).not.toBe(
-      "invocation_refused",
-    );
     f.service.cancel(f.root, {
       kind: "job",
       machineId: f.machineId,
@@ -1253,6 +1249,103 @@ test("retiring an instance preserves admitted descendants but refuses new descen
     expect(
       f.commands.some((command) => command.type === "cancel" && command.jobId === "admitted-child"),
     ).toBe(true);
+  } finally {
+    f.store.close();
+  }
+});
+
+test("native invocation replies distinguish admission checks and reservation ceilings from internal failures", () => {
+  const f = fixture();
+  try {
+    consent(f, "machines:run");
+    prove(f);
+    const parent = f.service.execute(f.root, pluginId, "native-refusals", {
+      jobId: "parent",
+      machineId: f.machineId,
+      operationId,
+      input: { value: "parent" },
+      outputs: [],
+    });
+    expect(parent.state).toBe("start-committed");
+    const invoke = (invocationId: string, parentJobId = parent.request.jobId) => {
+      f.service.event(f.channel, {
+        type: "invocation",
+        parentJobId,
+        invocationId,
+        operationId,
+        input: { value: "child" },
+        outputs: [],
+      });
+      return JobCommandSchema.parse(f.commands.at(-1));
+    };
+    expect(invoke("before-start")).toMatchObject({
+      type: "invocation_reply",
+      jobId: null,
+      reason: "invocation_parent_not_host_bound",
+    });
+    f.service.jobs.state(parent.request.jobId, "started");
+    expect(invoke("without-edge")).toMatchObject({
+      type: "invocation_reply",
+      jobId: null,
+      reason: "invocation_edge_missing",
+    });
+    const target = {
+      machineId: f.machineId,
+      pluginId,
+      operationId,
+      installationRevision: "r1",
+      artifactSha256: hash,
+    };
+    f.service.setInvocationEdge(f.root, {
+      edge: {
+        caller: target,
+        callee: target,
+        resources: [],
+        outputs: [],
+        maxDepth: 1,
+        maxConcurrency: 1,
+        aggregate: limits,
+      },
+      enabled: true,
+    });
+    expect(invoke("admitted")).toMatchObject({
+      type: "invocation_reply",
+      reason: null,
+    });
+    expect(
+      f.service.jobs.active().filter((job) => job.request.parent?.parentJobId === "parent"),
+    ).toMatchObject([{ state: "start-committed" }]);
+    expect(invoke("over-ceiling")).toMatchObject({
+      type: "invocation_reply",
+      jobId: null,
+      reason: "invocation-depth-or-concurrency-limit",
+    });
+    // A corrupt durable edge is an internal failure, not a named domain refusal.
+    f.store.db
+      .query("UPDATE job_invocation_edges SET edge=?")
+      .run("invalid edge at /private/native-edge.json");
+    expect(invoke("corrupt-edge")).toMatchObject({
+      type: "invocation_reply",
+      jobId: null,
+      reason: "invocation_refused",
+    });
+    for (const [index, reason] of ["/private/refusal.json", "x".repeat(129)].entries()) {
+      const jobId = `invalid-reason-${index}`;
+      f.service.execute(f.root, pluginId, "native-refusals", {
+        jobId,
+        machineId: f.machineId,
+        operationId,
+        input: { value: "parent" },
+        outputs: [],
+      });
+      f.service.jobs.state(jobId, "started");
+      f.service.jobs.cancel(jobId, reason, "cancel");
+      expect(invoke(`stopped-${index}`, jobId)).toMatchObject({
+        type: "invocation_reply",
+        jobId: null,
+        reason: "invocation_refused",
+      });
+    }
   } finally {
     f.store.close();
   }
