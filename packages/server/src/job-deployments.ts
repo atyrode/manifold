@@ -83,11 +83,13 @@ interface NativeDeploymentHost {
     install: JobInstallation,
     operationId: string,
     invocationEdges: readonly JobInvocationEdge[],
+    selectedOperationIds: readonly string[],
   ): string | null;
   invocations(
     auth: AuthContext,
     install: JobInstallation,
     operationIds: readonly string[],
+    plannedConsents: readonly { node: string; cap: Cap }[],
   ): { edges: JobDeploymentInvocationEdge[]; digest: string; refusal: string | null };
   servicePolicies(
     machineId: string,
@@ -365,6 +367,7 @@ export class JobDeployments {
                 this.service.declaredMachine(request.pluginId)!,
               ),
               request.operationIds,
+              this.rights(request, target.machineId),
             ).digest
           : digest(null),
       invocationApprovals: digest([
@@ -407,6 +410,9 @@ export class JobDeployments {
                 : !platform || !artifactSha256 || (owner && !owner.platforms.includes(platform))
                   ? "installation_platform_unavailable"
                   : null;
+        reason ??= this.host.selfProvidedServiceRefusal(
+          machineId, request.pluginId, machine, request.operationIds,
+        );
         const resources: JobDeploymentTargetReview["resources"] = [];
         const bindings: JobResourceBindings = { tools: {}, services: {}, anchors: {} };
         // Disconnected review can reuse only immutable already-promoted native pins.
@@ -472,17 +478,10 @@ export class JobDeployments {
         let invocationEdges: JobDeploymentInvocationEdge[] = [];
         if (proposed && platform) {
           try {
-            const invocations = this.host.invocations(auth, proposed, request.operationIds);
-            invocationEdges = invocations.edges;
-            // Asked before the runtime checks below, which would otherwise report a provider
-            // installation that "changed" when it has never existed: the provider is an
-            // operation of the very plugin under review (#715).
-            reason ??= this.host.selfProvidedServiceRefusal(
-              machineId,
-              request.pluginId,
-              machine,
-              request.operationIds,
+            const invocations = this.host.invocations(
+              auth, proposed, request.operationIds, this.rights(request, machineId),
             );
+            invocationEdges = invocations.edges;
             reason ??= invocations.refusal;
             reason ??= this.host.servicePolicies(
               machineId,
@@ -498,6 +497,7 @@ export class JobDeployments {
                   proposed,
                   operationId,
                   invocationEdges.map(({ edge }) => edge),
+                  request.operationIds,
                 );
           } catch (error) {
             if (!(error instanceof ServiceError)) throw error;
@@ -652,7 +652,9 @@ export class JobDeployments {
       )
         return "deployment_scope_changed";
       const install = this.proposed(approval, target);
-      const invocations = this.host.invocations(auth, install, request.operationIds);
+      const invocations = this.host.invocations(
+        auth, install, request.operationIds, this.rights(request, target.machineId),
+      );
       if (invocations.refusal) return invocations.refusal;
       if (invocations.digest !== approval.evidence[index]!.invocations)
         return "invocation_scope_changed";
@@ -679,6 +681,7 @@ export class JobDeployments {
             install,
             operationId,
             applied ? [] : target.invocationEdges.map(({ edge }) => edge),
+            request.operationIds,
           );
           if (refusal) return refusal;
         }

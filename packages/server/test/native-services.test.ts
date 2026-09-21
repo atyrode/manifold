@@ -10,6 +10,7 @@ import {
   JobEventSchema,
   JOB_OWNER_PROTOCOL_VERSION,
   type JobCommand,
+  MACHINE_SELF_PROVIDER_PROTOCOL_VERSION,
   type JobOwner,
   type MachineHalf,
   type ServicePolicy,
@@ -97,6 +98,7 @@ function fixture(servicePolicy = policy, mode: "read" | "invoke" = "read") {
   const commands: JobCommand[] = [];
   const channel = {
     machineId,
+    protocolVersion: undefined as number | undefined,
     send: ({ command }: { type: "job_command"; command: JobCommand }) => {
       commands.push(command);
       return true;
@@ -230,6 +232,82 @@ test("v35 native reads keep working with service authority, not machine executio
     expect(f.store.db.query("SELECT action FROM machine_job_decisions").all().length).toBe(3);
   } finally {
     f.store.close();
+  }
+});
+
+test("contextual policies are projected for either legacy fence without disrupting ordinary reads", async () => {
+  for (const [transport, owner] of [
+    [MACHINE_SELF_PROVIDER_PROTOCOL_VERSION - 1, JOB_OWNER_PROTOCOL_VERSION],
+    [MACHINE_SELF_PROVIDER_PROTOCOL_VERSION, JOB_OWNER_PROTOCOL_VERSION - 1],
+    [undefined, JOB_OWNER_PROTOCOL_VERSION],
+  ] as const) {
+    const f = fixture();
+    try {
+      f.channel.protocolVersion = transport;
+      f.owner.protocolVersion = owner;
+      const contextual: ServicePolicy = {
+        serviceId: "native.contextual",
+        revision: "r1",
+        maxConcurrent: 1,
+        runtime: {
+          pluginId: "native.provider",
+          operationId: "native.provider.serve",
+          artifactSha256: "a".repeat(64),
+          resourceBindingDigest: hash(null),
+          input: {},
+        },
+        operations: {
+          inspect: {
+            kind: "http-proxy",
+            method: "GET",
+            path: "/inspect",
+            request: { kind: "none" },
+            response: {
+              kind: "stream", disclosure: "full", contentTypes: ["application/json"], headers: [],
+            },
+            timeoutMs: 1000,
+            maxRequestBytes: 1024,
+            maxResponseBytes: 4096,
+          },
+        },
+      };
+      const pinned: ServicePolicy = {
+        ...contextual,
+        serviceId: "native.pinned",
+        runtime: { ...contextual.runtime!, installationRevision: "provider-r1" },
+      };
+      const configuration = f.service.configureServiceConfiguration(f.root, {
+        machineId: f.machineId,
+        expectedRevision: f.configuration.revision,
+        policies: [policy, contextual, pinned],
+      });
+      f.commands.length = 0;
+      f.prove();
+      const replay = f.commands.findLast((command) => command.type === "configure_services");
+      expect(replay).toEqual({
+        type: "configure_services",
+        configuration: { revision: hash([policy, pinned]), policies: [policy, pinned] },
+      });
+      expect(f.service.readServiceConfiguration(f.root, { machineId: f.machineId }))
+        .toMatchObject({ connected: true, configuration });
+      expect(f.service.describeServices(f.root, { machineId: f.machineId }).services
+        .find((value) => value.serviceId === contextual.serviceId)?.operations[0])
+        .toMatchObject({ ready: false, reason: "service_runtime_unsupported" });
+      const pending = f.service.readService(f.reader, f.args);
+      const command = f.pendingCommand();
+      f.authorize(command.requestId);
+      f.result(command.requestId);
+      expect(await pending).toMatchObject({ ok: true, result: { remaining: 12 } });
+      f.channel.protocolVersion = MACHINE_SELF_PROVIDER_PROTOCOL_VERSION;
+      f.owner.protocolVersion = JOB_OWNER_PROTOCOL_VERSION;
+      f.commands.length = 0;
+      f.prove();
+      expect(f.commands.findLast((command) => command.type === "configure_services")).toEqual({
+        type: "configure_services", configuration,
+      });
+    } finally {
+      f.store.close();
+    }
   }
 });
 

@@ -15,6 +15,7 @@ import {
   parseManifoldUri,
   JOB_OWNER_PROTOCOL_COMPAT_VERSIONS,
   jobOwnerSupports,
+  MACHINE_SELF_PROVIDER_PROTOCOL_VERSION,
   jobOwnerOperationRefusal,
   jobOwnerMachine,
   jobOwnerRequestRefusal,
@@ -141,6 +142,10 @@ interface LiveJobOwner {
   proved: boolean;
   retirementOnly: boolean;
   retirementProved: boolean;
+}
+interface ProposedServiceContext {
+  installation: JobInstallation;
+  operationIds: readonly string[];
 }
 interface ServiceTunnelDirection {
   next: number;
@@ -852,11 +857,19 @@ export class JobService {
   }
   private synchronizeServices(channel: JobChannel): boolean {
     try {
+      const canonical = this.effectiveConfiguration(channel.machineId);
+      const policies = this.supportsSelfServiceRuntime(channel.machineId)
+        ? canonical.policies
+        : canonical.policies.filter((policy) => !this.contextualRuntime(policy));
+      const configuration =
+        policies.length === canonical.policies.length
+          ? canonical
+          : { revision: digest(policies), policies };
       return channel.send({
         type: "job_command",
         command: {
           type: "configure_services",
-          configuration: this.effectiveConfiguration(channel.machineId),
+          configuration,
         },
       });
     } catch {
@@ -942,6 +955,22 @@ export class JobService {
       ? { node: formatManifoldUri(node), revision: policy.revision, artifactSha256: digest(policy) }
       : null;
   }
+  private contextualRuntime(policy: ServicePolicy): boolean {
+    return policy.runtime !== undefined && policy.runtime.installationRevision === undefined;
+  }
+  private supportsSelfServiceRuntime(machineId: string): boolean {
+    const live = this.channels.get(machineId);
+    return (
+      live !== undefined &&
+      (live.channel.protocolVersion ?? 0) >= MACHINE_SELF_PROVIDER_PROTOCOL_VERSION &&
+      jobOwnerSupports(live.owner.protocolVersion, "selfServiceRuntime")
+    );
+  }
+  private serviceRuntimeSupportRefusal(policy: ServicePolicy, machineId: string): string | null {
+    return this.contextualRuntime(policy) && !this.supportsSelfServiceRuntime(machineId)
+      ? "service_runtime_unsupported"
+      : null;
+  }
   private serviceAvailability(
     policy: ServicePolicy,
     machineId: string,
@@ -949,6 +978,8 @@ export class JobService {
   ): string | null {
     const live = this.channels.get(machineId);
     if (!live?.proved) return "resource_owner_unavailable";
+    const support = this.serviceRuntimeSupportRefusal(policy, machineId);
+    if (support) return support;
     if (live.owner.resources?.services[policy.serviceId] !== digest(policy))
       return "service_unavailable";
     for (const ref of servicePolicyCredentialRefs(policy, operationIds)) {
@@ -1237,12 +1268,22 @@ export class JobService {
     install: JobInstallation,
     operationId: string,
     invocationEdges: readonly JobInvocationEdge[] = [],
+    proposed?: ProposedServiceContext,
   ): string | null {
     const live = this.channels.get(install.machineId);
     const operation = install.machine.operations[operationId];
     if (live && operation) {
       const protocolReason = jobOwnerOperationRefusal(live.owner.protocolVersion, operation);
       if (protocolReason) return protocolReason;
+    }
+    for (const binding of operation?.services ?? []) {
+      const policy = this.effectiveConfiguration(install.machineId).policies.find(
+        (value) => value.serviceId === binding.serviceId,
+      );
+      if (policy) {
+        const support = this.serviceRuntimeSupportRefusal(policy, install.machineId);
+        if (support) return support;
+      }
     }
     const refusal = jobResourceRefusal(
       install.machine,
@@ -1268,6 +1309,7 @@ export class JobService {
         operationId,
         new Set(),
         invocationEdges,
+        proposed,
       );
       if (runtimeReason) return runtimeReason;
     }
@@ -1425,18 +1467,37 @@ export class JobService {
       }),
     };
   }
-  private runtimeInstallation(policy: ServicePolicy, machineId: string): JobInstallation | null {
+  private runtimeInstallation(
+    policy: ServicePolicy,
+    machineId: string,
+    caller?: JobInstallation,
+    proposed?: ProposedServiceContext,
+  ): JobInstallation | null {
     const runtime = policy.runtime;
     if (!runtime) return null;
-    const callee = this.jobs.installation(machineId, runtime.pluginId);
+    const callee =
+      runtime.installationRevision === undefined
+        ? caller?.machineId === machineId && caller.pluginId === runtime.pluginId
+          ? proposed?.installation === caller
+            ? caller
+            : this.jobs.installation(machineId, runtime.pluginId, caller.revision)
+          : null
+        : this.jobs.installation(machineId, runtime.pluginId);
     if (
       !callee ||
       !callee.enabled ||
       callee.purgeRequested ||
       this.store.disabledPlugins().has(runtime.pluginId) ||
-      callee.revision !== runtime.installationRevision ||
+      (runtime.installationRevision !== undefined &&
+        callee.revision !== runtime.installationRevision) ||
       callee.artifact !== runtime.artifactSha256 ||
+      (runtime.installationRevision === undefined && callee.artifact !== caller?.artifact) ||
       !callee.machine.operations[runtime.operationId]?.providesService ||
+      (runtime.installationRevision === undefined &&
+        (callee.machine.operations[runtime.operationId]?.network !== "host" ||
+          !Object.values(callee.machine.operations[runtime.operationId]?.inputFiles ?? {}).some(
+            (file) => file.generated === "service-bearer",
+          ))) ||
       digest(this.operationBindings(callee, runtime.operationId) ?? null) !==
         runtime.resourceBindingDigest
     )
@@ -1450,6 +1511,7 @@ export class JobService {
     callerOperationId?: string,
     visiting: ReadonlySet<string> = new Set(),
     reviewedEdges: readonly JobInvocationEdge[] = [],
+    proposed?: ProposedServiceContext,
   ): string | null {
     if (policy.remote) {
       const remote = policy.remote;
@@ -1472,12 +1534,31 @@ export class JobService {
     }
     const runtime = policy.runtime;
     if (!runtime) return null;
+    const support = this.serviceRuntimeSupportRefusal(policy, machineId);
+    if (support) return support;
     if (visiting.has(policy.serviceId) || visiting.size >= 8) return "service_runtime_unavailable";
     const next = new Set(visiting).add(policy.serviceId);
-    const callee = this.runtimeInstallation(policy, machineId);
+    const callee = this.runtimeInstallation(policy, machineId, caller, proposed);
     if (!callee) return "service_runtime_changed";
     const live = this.channels.get(machineId);
-    if (!live?.proved || !callee.ready) return "service_runtime_unavailable";
+    const prospective = this.contextualRuntime(policy) && proposed?.installation === callee;
+    if (prospective && !proposed?.operationIds.includes(runtime.operationId))
+      return "authority_or_consent_refused";
+    if (!live?.proved || (!prospective && !callee.ready)) return "service_runtime_unavailable";
+    const protocolReason = jobOwnerOperationRefusal(
+      live.owner.protocolVersion,
+      callee.machine.operations[runtime.operationId]!,
+    );
+    if (protocolReason) return protocolReason;
+    for (const binding of callee.machine.operations[runtime.operationId]?.services ?? []) {
+      const dependency = this.effectiveConfiguration(machineId).policies.find(
+        (value) => value.serviceId === binding.serviceId,
+      );
+      if (dependency) {
+        const support = this.serviceRuntimeSupportRefusal(dependency, machineId);
+        if (support) return support;
+      }
+    }
     const resourceReason = jobResourceRefusal(
       callee.machine,
       runtime.operationId,
@@ -1498,17 +1579,21 @@ export class JobService {
         return "service_definition_changed";
       const reason =
         this.serviceAvailability(dependency, machineId, binding.operationIds) ??
-        this.runtimeServiceRefusal(dependency, machineId, callee, runtime.operationId, next);
+        this.runtimeServiceRefusal(
+          dependency, machineId, callee, runtime.operationId, next, reviewedEdges, proposed,
+        );
       if (reason) return reason;
     }
     const report = this.installationResources.get(`${machineId}/${runtime.pluginId}`);
     if (
+      !prospective &&
+      (
       report?.channel !== live.channel ||
       report.revision !== callee.revision ||
       report.artifact !== callee.artifact ||
       !report.resources.operations.some(
         (operation) => operation.operationId === runtime.operationId && operation.available,
-      )
+      ))
     )
       return "service_runtime_unavailable";
     if (runtime.scope === "instance") {
@@ -1532,7 +1617,7 @@ export class JobService {
         edge.callee.machineId !== machineId ||
         edge.callee.pluginId !== runtime.pluginId ||
         edge.callee.operationId !== runtime.operationId ||
-        edge.callee.installationRevision !== runtime.installationRevision ||
+        edge.callee.installationRevision !== callee.revision ||
         edge.callee.artifactSha256 !== runtime.artifactSha256
       )
         return false;
@@ -1567,7 +1652,9 @@ export class JobService {
     const policy = this.effectiveConfiguration(channel.machineId).policies.find(
       (policy) => policy.serviceId === event.serviceId,
     );
-    const install = this.jobs.installation(channel.machineId, job.request.pluginId);
+    const install = this.jobs.installation(
+      channel.machineId, job.request.pluginId, job.request.installationRevision,
+    );
     const binding = install?.machine.operations[job.request.operationId]?.services?.find(
       (binding) =>
         binding.serviceId === event.serviceId &&
@@ -2410,6 +2497,7 @@ export class JobService {
   private invocationCandidates(
     caller: JobInstallation,
     operationIds: readonly string[],
+    proposed?: ProposedServiceContext,
   ): Pick<InspectJobInvocationsResult, "candidates" | "unavailable"> {
     const result: Pick<InspectJobInvocationsResult, "candidates" | "unavailable"> = {
       candidates: [],
@@ -2442,6 +2530,8 @@ export class JobService {
           binding.operationIds.some((id) => !Object.hasOwn(policy.operations, id))
         )
           reason = "service_definition_changed";
+        else if (policy)
+          reason = this.serviceRuntimeSupportRefusal(policy, caller.machineId);
         if (reason) {
           result.unavailable.push({
             caller: callerRef,
@@ -2454,7 +2544,7 @@ export class JobService {
         if (!policy?.runtime) continue;
         let callee: JobInstallation | null;
         try {
-          callee = this.runtimeInstallation(policy, caller.machineId);
+          callee = this.runtimeInstallation(policy, caller.machineId, caller, proposed);
         } catch (error) {
           if (!(error instanceof ServiceError)) throw error;
           result.unavailable.push({
@@ -2523,8 +2613,10 @@ export class JobService {
     auth: AuthContext,
     caller: JobInstallation,
     operationIds: readonly string[],
+    plannedConsents: readonly { node: string; cap: Cap }[],
   ): { edges: JobDeploymentInvocationEdge[]; digest: string; refusal: string | null } {
-    const inspected = this.invocationCandidates(caller, operationIds);
+    const proposed = { installation: caller, operationIds };
+    const inspected = this.invocationCandidates(caller, operationIds, proposed);
     const edges: JobDeploymentInvocationEdge[] = [];
     const evidence: unknown[] = [];
     let refusal = inspected.unavailable[0]?.reason ?? null;
@@ -2532,7 +2624,11 @@ export class JobService {
     for (const candidate of inspected.candidates) {
       const policy = policies.find((policy) => policy.serviceId === candidate.serviceId)!;
       if (policy.runtime?.scope === "instance") continue;
-      const callee = this.jobs.installation(candidate.callee.machineId, candidate.callee.pluginId)!;
+      const callee = this.runtimeInstallation(policy, caller.machineId, caller, proposed)!;
+      const prospective =
+        this.contextualRuntime(policy) &&
+        callee === caller &&
+        operationIds.includes(candidate.callee.operationId);
       const installation = { ...callee, ready: undefined };
       const requirements: AuthorityRequirement[] = [
         {
@@ -2549,7 +2645,18 @@ export class JobService {
         const explained = this.auth.explain(auth, requirement);
         const consent =
           this.serviceConsent(requirement.ref, requirement.cap, policies) ??
-          this.consentFor(callee, requirement.ref, requirement.cap);
+          (prospective &&
+          requirement.ref.kind !== "service" &&
+          plannedConsents.some(
+            (right) =>
+              right.node === formatManifoldUri(requirement.ref) && right.cap === requirement.cap,
+          )
+            ? {
+                node: formatManifoldUri(requirement.ref),
+                revision: callee.revision,
+                artifactSha256: callee.artifact,
+              }
+            : this.consentFor(callee, requirement.ref, requirement.cap));
         if (!explained.allowed || !consent) refusal ??= "authority_or_consent_refused";
         return {
           ...explained,
@@ -2649,6 +2756,8 @@ export class JobService {
         proposedCaller &&
         target.machineId === proposedCaller.machineId &&
         target.pluginId === proposedCaller.pluginId
+        && target.installationRevision === proposedCaller.revision
+        && target.artifactSha256 === proposedCaller.artifact
           ? proposedCaller
           : this.jobs.installation(target.machineId, target.pluginId);
       if (
@@ -2661,7 +2770,14 @@ export class JobService {
       )
         fail("invocation_target_changed");
     }
-    const callee = this.jobs.installation(edge.callee.machineId, edge.callee.pluginId)!;
+    const callee =
+      proposedCaller &&
+      edge.callee.machineId === proposedCaller.machineId &&
+      edge.callee.pluginId === proposedCaller.pluginId &&
+      edge.callee.installationRevision === proposedCaller.revision &&
+      edge.callee.artifactSha256 === proposedCaller.artifact
+        ? proposedCaller
+        : this.jobs.installation(edge.callee.machineId, edge.callee.pluginId)!;
     const operation = callee.machine.operations[edge.callee.operationId]!;
     const resources = operation.locations.map((resource) => ({
       ...resource,
@@ -3111,10 +3227,10 @@ export class JobService {
           install.artifact,
           this.channels.get(install.machineId)?.owner.platforms,
         ) !== null,
-      resourceRefusal: (install, operationId, edges) =>
-        this.resourceRefusal(install, operationId, edges),
-      invocations: (auth, install, operationIds) =>
-        this.deploymentInvocations(auth, install, operationIds),
+      resourceRefusal: (install, operationId, edges, operationIds) =>
+        this.resourceRefusal(install, operationId, edges, { installation: install, operationIds }),
+      invocations: (auth, install, operationIds, plannedConsents) =>
+        this.deploymentInvocations(auth, install, operationIds, plannedConsents),
       servicePolicies: (machineId, machine, bindings, operationIds) => {
         const policies = this.effectiveConfiguration(machineId).policies;
         const declared = Object.entries(machine.operations).flatMap(([operationId, operation]) =>
@@ -3154,11 +3270,16 @@ export class JobService {
         const installed = this.jobs.installation(machineId, pluginId);
         for (const operationId of operationIds)
           for (const binding of machine.operations[operationId]?.services ?? []) {
-            const runtime = this.effectiveConfiguration(machineId).policies.find(
+            const policy = this.effectiveConfiguration(machineId).policies.find(
               (policy) => policy.serviceId === binding.serviceId,
-            )?.runtime;
+            );
+            if (!policy) continue;
+            const support = this.serviceRuntimeSupportRefusal(policy, machineId);
+            if (support) return `${support}:${binding.serviceId}`;
+            const runtime = policy.runtime;
             if (
               !runtime ||
+              runtime.installationRevision === undefined ||
               runtime.pluginId !== pluginId ||
               machine.operations[runtime.operationId]?.providesService !== true
             )

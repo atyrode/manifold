@@ -9,6 +9,7 @@ import {
   formatManifoldUri,
   PluginBundleSchema,
   JOB_OWNER_PROTOCOL_VERSION,
+  MACHINE_SELF_PROVIDER_PROTOCOL_VERSION,
   JobCommandSchema,
   InstanceServiceDescriptionSchema,
   MachineHalfSchema,
@@ -86,6 +87,7 @@ interface Fixture {
   privateKey: KeyObject;
   channel: {
     machineId: string;
+    protocolVersion?: number;
     send(message: { type: "job_command"; command: JobCommand }): boolean;
   };
 }
@@ -5374,8 +5376,9 @@ describe("reviewed native deployment approvals", () => {
    * that cannot be deployed a first time, because the provider is the installation the
    * deployment would create (#715).
    */
-  function selfProvidedFixture() {
+  function selfProvidedFixture(contextual = false) {
     const f = fixture();
+    if (contextual) f.channel.protocolVersion = MACHINE_SELF_PROVIDER_PROTOCOL_VERSION;
     const selfPlugin = "sample.selfserve";
     const serve = `${selfPlugin}.serve`;
     const use = `${selfPlugin}.use`;
@@ -5386,9 +5389,11 @@ describe("reviewed native deployment approvals", () => {
       runtime: {
         pluginId: selfPlugin,
         operationId: serve,
-        installationRevision: "self-r1",
+        ...(contextual ? {} : { installationRevision: "self-r1" }),
         artifactSha256: hash,
-        resourceBindingDigest: createHash("sha256").update(canonicalJobJson(null)).digest("hex"),
+        resourceBindingDigest: createHash("sha256")
+          .update(canonicalJobJson(contextual ? { tools: {}, services: {}, anchors: {} } : null))
+          .digest("hex"),
         input: { value: { literal: "serve" } },
       },
       operations: {
@@ -5412,7 +5417,12 @@ describe("reviewed native deployment approvals", () => {
     const declaration: MachineHalf = {
       ...machine,
       operations: {
-        [serve]: { ...machine.operations[operationId]!, providesService: true },
+        [serve]: {
+          ...machine.operations[operationId]!,
+          providesService: true,
+          network: "host",
+          inputFiles: { bearer: { generated: "service-bearer" } },
+        },
         [use]: {
           ...machine.operations[operationId]!,
           services: [
@@ -5442,7 +5452,7 @@ describe("reviewed native deployment approvals", () => {
     };
     prove(f);
     f.commands.length = 0;
-    return { f, selfPlugin, serve, use, policy };
+    return { f, selfPlugin, serve, use, policy, declaration };
   }
 
   test("a first deployment of a plugin that provides its own service names what refused (#715)", () => {
@@ -5468,6 +5478,231 @@ describe("reviewed native deployment approvals", () => {
           operationIds: [serve],
         }).approvable,
       ).toBe(true);
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("contextual first installation reviews without effects and admits only after native ACK", () => {
+    const { f, selfPlugin, serve, use } = selfProvidedFixture(true);
+    try {
+      const value: JobDeploymentRequest = {
+        deploymentId: "contextual-first",
+        pluginId: selfPlugin,
+        targets: [{ machineId: f.machineId, platform: "linux-x64" }],
+        operationIds: [serve, use],
+      };
+      const review = f.service.reviewDeployment(f.root, value);
+      expect(review.approvable).toBe(true);
+      const target = review.targets[0]!;
+      expect(f.service.jobs.installation(f.machineId, selfPlugin)).toBeNull();
+      expect(f.commands).toEqual([]);
+      expect(
+        f.service.inspectInvocations(f.root, { machineId: f.machineId, pluginId: selfPlugin }).edges,
+      ).toEqual([]);
+      const edge = target.invocationEdges[0]!.edge;
+      expect(edge.caller.installationRevision).toBe(target.installationRevision!);
+      expect(edge.callee).toEqual({
+        machineId: f.machineId,
+        pluginId: selfPlugin,
+        operationId: serve,
+        installationRevision: target.installationRevision!,
+        artifactSha256: hash,
+      });
+      const send = f.channel.send;
+      f.channel.send = (message) => {
+        if (message.command.type === "install" && message.command.pluginId === selfPlugin) {
+          expect(
+            f.service.inspectInvocations(f.root, { machineId: f.machineId, pluginId: selfPlugin }).edges,
+          ).toEqual([{ edge, enabled: true }]);
+          expect(
+            f.service.describe(f.root, { machineId: f.machineId, pluginId: selfPlugin })
+              .consents.filter((consent) => consent.enabled).map(({ node, cap }) => `${node}/${cap}`)
+              .sort(),
+          ).toEqual(target.consents.map(({ node, cap }) => `${node}/${cap}`).sort());
+        }
+        return send(message);
+      };
+      const deployment = f.service.applyDeployment(
+        f.root, { request: value, reviewDigest: review.reviewDigest }, "contextual-first",
+      );
+      expect(deployment.targets[0]!.state).toBe("installing");
+      expect(f.service.jobs.installation(f.machineId, selfPlugin)?.ready).toBe(false);
+      const execution = {
+        jobId: "contextual-parent",
+        machineId: f.machineId,
+        operationId: use,
+        input: { value: "safe" },
+        outputs: [],
+      };
+      expect(() => f.service.execute(f.root, selfPlugin, "before-ack", execution))
+        .toThrow("service_runtime_unavailable");
+      f.service.event(f.channel, {
+        type: "installed",
+        pluginId: selfPlugin,
+        installationRevision: target.installationRevision!,
+        artifactSha256: hash,
+        resources: {
+          artifactAvailable: true,
+          tools: [],
+          operations: [
+            { operationId: serve, available: true },
+            { operationId: use, available: true },
+          ],
+        },
+      });
+      expect(
+        f.service.readDeployment(f.root, { deploymentId: value.deploymentId }).targets[0]!.state,
+      ).toBe("ready");
+      const parent = f.service.execute(f.root, selfPlugin, "after-ack", execution);
+      expect(parent.state).toBe("start-committed");
+      f.service.jobs.state(parent.request.jobId, "started");
+      f.service.event(f.channel, {
+        type: "invocation",
+        parentJobId: parent.request.jobId,
+        invocationId: "contextual-child",
+        operationId: serve,
+        input: { value: "serve" },
+        outputs: [],
+      });
+      const child = f.service.jobs.active().find((job) => job.request.parent !== null);
+      expect(child?.state).toBe("start-committed");
+      expect(child?.request.installationRevision).toBe(parent.request.installationRevision);
+      expect(child?.request.pluginId).toBe(selfPlugin);
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("contextual review cannot grant an unselected provider or borrow another plugin", () => {
+    const { f, selfPlugin, serve, use, declaration } = selfProvidedFixture(true);
+    try {
+      const value: JobDeploymentRequest = {
+        deploymentId: "contextual-selected",
+        pluginId: selfPlugin,
+        targets: [{ machineId: f.machineId, platform: "linux-x64" }],
+        operationIds: [use],
+      };
+      expect(f.service.reviewDeployment(f.root, value).targets[0]).toMatchObject({
+        approvable: false, reason: "authority_or_consent_refused",
+      });
+      const other = "sample.other";
+      const otherOperation = `${other}.use`;
+      f.service.setManifestResolver((id) =>
+        id === selfPlugin ? declaration : id === other
+          ? { ...machine, operations: { [otherOperation]: declaration.operations[use]! } }
+          : machine,
+      );
+      expect(f.service.reviewDeployment(f.root, {
+        ...value, pluginId: other, operationIds: [otherOperation],
+      }).targets[0]).toMatchObject({ approvable: false, reason: "service_runtime_changed" });
+      expect(f.service.jobs.installation(f.machineId, selfPlugin)).toBeNull();
+      expect(f.service.reviewDeployment(f.root, {
+        ...value, operationIds: [serve, use],
+      }).approvable).toBe(true);
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("contextual provider identity and real service declaration remain review preconditions", () => {
+    for (const invalid of ["artifact", "resources", "network", "bearer", "provider"] as const) {
+      const { f, selfPlugin, serve, use, policy, declaration } = selfProvidedFixture(true);
+      try {
+        if (invalid === "artifact") policy.runtime!.artifactSha256 = "c".repeat(64);
+        if (invalid === "resources") policy.runtime!.resourceBindingDigest = "c".repeat(64);
+        if (invalid === "network") declaration.operations[serve]!.network = "none";
+        if (invalid === "bearer" || invalid === "provider")
+          delete declaration.operations[serve]!.inputFiles;
+        if (invalid === "provider") declaration.operations[serve]!.providesService = false;
+        f.service.configureServiceConfiguration(f.root, {
+          machineId: f.machineId,
+          expectedRevision: f.service.readServiceConfiguration(f.root, { machineId: f.machineId })
+            .configuration.revision,
+          policies: [policy],
+        });
+        f.owner.resources!.services[policy.serviceId] =
+          createHash("sha256").update(canonicalJobJson(policy)).digest("hex");
+        prove(f);
+        const review = f.service.reviewDeployment(f.root, {
+          deploymentId: `invalid-${invalid}`,
+          pluginId: selfPlugin,
+          targets: [{ machineId: f.machineId, platform: "linux-x64" }],
+          operationIds: [serve, use],
+        });
+        expect(review.targets[0]).toMatchObject({
+          approvable: false, reason: "service_runtime_changed",
+        });
+        expect(f.service.jobs.installation(f.machineId, selfPlugin)).toBeNull();
+      } finally {
+        f.store.close();
+      }
+    }
+  });
+
+  test("unsupported contextual review precedes missing inventory and leaves provider-only work available", () => {
+    for (const [transport, owner] of [
+      [MACHINE_SELF_PROVIDER_PROTOCOL_VERSION - 1, JOB_OWNER_PROTOCOL_VERSION],
+      [MACHINE_SELF_PROVIDER_PROTOCOL_VERSION, JOB_OWNER_PROTOCOL_VERSION - 1],
+      [undefined, JOB_OWNER_PROTOCOL_VERSION],
+    ] as const) {
+      const { f, selfPlugin, serve, use, policy } = selfProvidedFixture(true);
+      try {
+        f.channel.protocolVersion = transport;
+        f.owner.protocolVersion = owner;
+        delete f.owner.resources!.services[policy.serviceId];
+        delete f.owner.resources!.serviceDefinitions[policy.serviceId];
+        prove(f);
+        const value: JobDeploymentRequest = {
+          deploymentId: "unsupported-context",
+          pluginId: selfPlugin,
+          targets: [{ machineId: f.machineId, platform: "linux-x64" }],
+          operationIds: [serve, use],
+        };
+        expect(f.service.reviewDeployment(f.root, value).targets[0]).toMatchObject({
+          approvable: false, reason: `service_runtime_unsupported:${policy.serviceId}`,
+        });
+        expect(f.service.reviewDeployment(f.root, {
+          ...value, operationIds: [serve],
+        }).approvable).toBe(true);
+        consent(f, "machines:run");
+        expect(execute(f).state).toBe("start-committed");
+      } finally {
+        f.store.close();
+      }
+    }
+  });
+
+  test("contextual bootstrap retains root authority and binds apply to reviewed service identity", () => {
+    const { f, selfPlugin, serve, use, policy } = selfProvidedFixture(true);
+    try {
+      const value: JobDeploymentRequest = {
+        deploymentId: "contextual-authority",
+        pluginId: selfPlugin,
+        targets: [{ machineId: f.machineId, platform: "linux-x64" }],
+        operationIds: [serve, use],
+      };
+      const token = f.auth.mintToken({
+        principal: { name: "non-root deployer", kind: "human" },
+        caps: ["machines:run", "operations:invoke", "network:host", "services:invoke"],
+      }, f.root);
+      expect(() => f.service.reviewDeployment(f.auth.authenticate(token.token), value))
+        .toThrow("deployment_admin_required");
+      const review = f.service.reviewDeployment(f.root, value);
+      const changed = { ...policy, revision: "svc-r2" };
+      f.service.configureServiceConfiguration(f.root, {
+        machineId: f.machineId,
+        expectedRevision: f.service.readServiceConfiguration(f.root, { machineId: f.machineId })
+          .configuration.revision,
+        policies: [changed],
+      });
+      expect(() => f.service.applyDeployment(
+        f.root, { request: value, reviewDigest: review.reviewDigest }, "stale-context",
+      )).toThrow("deployment_review_stale");
+      expect(f.service.jobs.installation(f.machineId, selfPlugin)).toBeNull();
+      expect(f.service.inspectInvocations(f.root, {
+        machineId: f.machineId, pluginId: selfPlugin,
+      }).edges).toEqual([]);
     } finally {
       f.store.close();
     }
