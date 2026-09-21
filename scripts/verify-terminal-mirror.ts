@@ -360,6 +360,16 @@ try {
     20_000,
     "online machine terminal action",
   );
+  // The sidebar action can mount before the canvas can author; an early click is refused,
+  // not replayed when the connection opens.
+  await until(
+    () =>
+      browser!.evaluate<boolean>(
+        "(document.querySelector('[data-testid=connection-state]')?.textContent ?? '').toLowerCase() === 'open'",
+      ),
+    20_000,
+    "canvas connection open before terminal authoring",
+  );
   await browser.evaluate("document.querySelector('[aria-label^=\"New terminal on \"]').click()");
   await until(
     () => browser!.evaluate<boolean>("document.querySelector('.xterm-rows') !== null"),
