@@ -3535,6 +3535,16 @@ describe("job lifecycle audit and inspection", () => {
       expect(() =>
         f.service.describe(f.root, { ...args, installationRevision: "r-absent" }, pluginId),
       ).toThrow("job_installation_absent");
+      f.service.disablePlugin(pluginId);
+      expect(() => f.service.describe(f.root, args, pluginId)).toThrow(
+        "job_consent_ineffective:machines:run",
+      );
+      f.service.purgePlugin(pluginId);
+      expect(() => f.service.describe(f.root, args, pluginId)).toThrow("job_installation_purged");
+      expect(f.service.describe(f.root, args)).toMatchObject({
+        connected: true,
+        installation: { revision: "r1", enabled: false, ready: false, purgeRequested: true },
+      });
     } finally {
       f.store.close();
     }
