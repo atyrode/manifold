@@ -288,8 +288,13 @@ with the assembled immutable declaration after ordinary authority/input checks a
 effects, returning the ordinary traced `invalid_args` on mismatch or absence. The same host
 projection runs after successful result parsing and event/trace settlement for in-realm and
 hardened actions. No request means no projection work; ordinary full results and sibling calls
-are unchanged. Hardened contract 3 adds this optional summary field and retains admission of
-contracts 1 and 2, using each admitted guest's own load stamp.
+are unchanged. Shared protocol 40 adds `textFields` to discovery and requires coordinated
+SDK/session consumer updates. Hardened contract 5 adds the optional textual declaration to
+contract 3's result-projection summary; contracts 1, 2, 3 and 4 remain admitted using each guest's
+own load stamp, never the latest stamp. Older guests omit the new field and retain their exact
+declaration digests and output semantics. Machine and instance acceptance sets add 40 without
+dropping compatible peers; terminal-host and native-owner RPC are unchanged. No fleet restart
+or repack of a still-supported guest is required.
 
 Only successful action outcomes may include the separate `projection` envelope:
 `{ok:true,contractDigest,data}` or
@@ -2342,7 +2347,7 @@ nothing. A plugin's own JSX wears the root class on its root element; the engine
 
 ```json
 { "format": 1,
-  "hardenedContract": 2,
+  "hardenedContract": 4,
   "manifest": { ...PluginManifest, "entry": { "server": true, "web": "web.js", "styles": true } },
   "files": { "server.js": "<base64>", "web.js": "<base64>", "styles.css": "<base64>" } }
 ```
@@ -2398,8 +2403,8 @@ not a network-policy exemption. This is server-side retrieval admission, not a r
 the kit client's own inspection fetch or a claim that arbitrary plugin code is network-confined.
 
 **Executable bundle compatibility (#602).** Every pack stamps `hardenedContract` independently
-of `format` and the machine/session protocols. `HARDENED_CONTRACT_VERSION` is 4; the hub accepts
-`HARDENED_CONTRACT_COMPAT_VERSIONS = {1, 2, 3, 4}`, with minimum 1. Add an additive-optional contract
+of `format` and the machine/session protocols. `HARDENED_CONTRACT_VERSION` is 5; the hub accepts
+`HARDENED_CONTRACT_COMPAT_VERSIONS = {1, 2, 3, 4, 5}`, with minimum 1. Add an additive-optional contract
 to that set; reset it for a genuine break. An unstamped or outside-set installed artifact is
 held at assembly with `repack_required` and the minimum, never imported or spawned, even if
 the administrator had it disabled. Fresh incompatible installs are refused by name with the
@@ -2409,8 +2414,12 @@ HISTORY: contract 1 identifies the bounded receipt transport (#536) plus the pre
 dispatch boundary (#587). Pre-#587 bytes are not contract 1 and must be repacked. Contract
 1 → 2 adds the optional `load.hardenedContract` identity. The hub omits it for contract-1
 guests, whose strict old parser and ordinary dispatch remain supported; contract-2 guests
-check it against their packed runtime. Subsequent optional fields are gated by the admitted
-contract, never sent speculatively. “Isolate answered out of protocol” denotes an internal
+check it against their packed runtime. Contract 3 adds optional action result projections;
+contract 4 adds metadata-only `jobs.inspectInputs`; contract 5 adds optional exact selected
+`textFields` within result declarations. Older admitted
+guests omit newer metadata and preserve their normalized declarations and digests. Host-to-guest
+optional fields are gated by the admitted contract, never sent speculatively.
+“Isolate answered out of protocol” denotes an internal
 protocol violation, not an SDK-upgrade remedy exposed after version drift.
 
 **Installed deployment export.** Root-only `engine.plugins.exportInstalled {}` returns a
