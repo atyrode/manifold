@@ -460,6 +460,33 @@ test.skipIf(!realBackend)(
       const material = produced.result!.outputs.find((output) => output.name === "material")!;
       expect(material.files).toBe(2);
       expect(produced.result?.outputs.find((output) => output.name === "decoy")?.files).toBe(1);
+      const reviewedInput = {
+        name: "selected",
+        from: { jobId: produced.jobId, output: "material" },
+      };
+      expect(
+        await ownerAction(hub, "engine.jobs.inspectInputs", {
+          machineId,
+          pluginId: `${PLUGIN}.consumer`,
+          inputs: [reviewedInput],
+        }),
+      ).toEqual({
+        inputs: [
+          {
+            ...reviewedInput,
+            sha256: material.sha256,
+            bytes: material.bytes,
+            files: material.files,
+          },
+        ],
+      });
+      await expect(
+        ownerAction(hub, "engine.jobs.inspectInputs", {
+          machineId,
+          pluginId: `${PLUGIN}.consumer`,
+          inputs: [{ name: "selected", from: { jobId: produced.jobId, output: "decoy" } }],
+        }),
+      ).rejects.toThrow("input_not_exported:selected");
       writeFileSync(join(witness, "material/top.txt"), "changed after sealing\n");
       const extractions = () => readdirSync(join(runtime, "job-inputs")).sort();
       expect(extractions()).toEqual([]);

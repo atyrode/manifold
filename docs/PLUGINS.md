@@ -2284,6 +2284,16 @@ machine's job), `input_not_exported:material`, `input_authority_refused:material
 the consent between admission and launch refuses the launch. A nested invocation binds no
 input: an edge consents to resources and outputs, never to another job's archive.
 
+Review candidate sources before execution with
+`ctx.jobs.inspectInputs({ machineId, inputs: [{ name: "material", from: { jobId, output: "material" } }] })`.
+The asynchronous hardened guest method has the same arguments and returns
+`{ inputs: [{ name, from, sha256, bytes, files }] }`, with no content or host paths.
+`engine.jobs.inspectInputs` additionally takes the consumer's `pluginId`; ordinary plugin
+handles cannot change that identity. This repeats the source's current read and export checks,
+but neither requires a consuming operation nor grants later execution. Bind the inspected
+digest into the product's review and re-inspect before admission; the native launch still
+rechecks authority independently. The method is available from hardened contract 4.
+
 Governed terminals use the same bindings in `runtime.inputs` on
 `host.client.openTerminal`, `SessionClient.openTerminal`, or a harness's prepared
 `TerminalRuntime`. Omitting `inputs` supplies no material, as before. An ordinary restart

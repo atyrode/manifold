@@ -1,4 +1,6 @@
 import type {
+  InspectJobInputsArgs,
+  InspectJobInputsResult,
   JobDescription,
   JobDeploymentDescription,
   JobEvent,
@@ -71,6 +73,7 @@ export interface PluginJobContext {
   /** Native terminal association, authorized by the run and this harness's installation. */
   runTerminal(runId: string): JobNode;
   listRuns(args: ListJobRunsArgs): ListJobRunsResult;
+  inspectInputs(args: InspectJobInputsArgs): InspectJobInputsResult;
   follow(node: JobNode, receive: (update: JobFollowUpdate) => void): JobFollow;
   input(args: {
     node: JobNode;

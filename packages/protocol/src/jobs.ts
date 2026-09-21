@@ -449,6 +449,24 @@ export const JobInputBindingSchema = z.strictObject({
   from: z.strictObject({ jobId: id, output: boundOutputName }),
 });
 export type JobInputBinding = z.infer<typeof JobInputBindingSchema>;
+/** Review immutable source metadata without reading content or reserving execution authority. */
+export const InspectJobInputsArgsSchema = z.strictObject({
+  machineId: id,
+  inputs: z.array(JobInputBindingSchema).max(16),
+});
+export type InspectJobInputsArgs = z.infer<typeof InspectJobInputsArgsSchema>;
+export const InspectJobInputsResultSchema = z.strictObject({
+  inputs: z
+    .array(
+      JobInputBindingSchema.extend({
+        sha256: hash,
+        bytes: count,
+        files: count,
+      }),
+    )
+    .max(16),
+});
+export type InspectJobInputsResult = z.infer<typeof InspectJobInputsResultSchema>;
 export const JobRequestSchema = z.strictObject({
   jobId: id,
   machineId: id,

@@ -2384,8 +2384,8 @@ not a network-policy exemption. This is server-side retrieval admission, not a r
 the kit client's own inspection fetch or a claim that arbitrary plugin code is network-confined.
 
 **Executable bundle compatibility (#602).** Every pack stamps `hardenedContract` independently
-of `format` and the machine/session protocols. `HARDENED_CONTRACT_VERSION` is 2; the hub accepts
-`HARDENED_CONTRACT_COMPAT_VERSIONS = {1, 2}`, with minimum 1. Add an additive-optional contract
+of `format` and the machine/session protocols. `HARDENED_CONTRACT_VERSION` is 4; the hub accepts
+`HARDENED_CONTRACT_COMPAT_VERSIONS = {1, 2, 3, 4}`, with minimum 1. Add an additive-optional contract
 to that set; reset it for a genuine break. An unstamped or outside-set installed artifact is
 held at assembly with `repack_required` and the minimum, never imported or spawned, even if
 the administrator had it disabled. Fresh incompatible installs are refused by name with the
@@ -3714,6 +3714,16 @@ provider handling and postconditions belong to plugins, never the common floor.
   start asks all four again, so a released output or a revoked consent refuses the launch
   rather than feeding it. That closed set is the whole vocabulary; nothing else admits a
   binding.
+  A consumer can review the same source authority before choosing an execution through
+  `ctx.jobs.inspectInputs({ machineId, inputs })`, the asynchronous hardened guest method,
+  or `engine.jobs.inspectInputs({ pluginId, machineId, inputs })`. The plugin handle remains
+  pinned to its own identity. At most sixteen unique bindings return
+  `{ inputs: [{ name, from: { jobId, output }, sha256, bytes, files }] }`; no archive bytes,
+  host paths, output handles or credential values are exposed. Inspection requires a
+  current credential and repeats the same source, export and read-consent checks as admission.
+  It neither selects an operation nor reserves a permit; execution still validates declared
+  input names and rechecks every source. A successful review is never a grant. This method
+  requires hardened contract 4; older accepted guests retain their existing methods.
   Since session protocol 39, `TerminalRuntime.inputs` carries these same bindings through
   ordinary terminal admission and harness placement, using the existing native job path.
   Omission preserves material-free terminal behavior. An ordinary restart must retain its
