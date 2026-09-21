@@ -52,6 +52,7 @@ const PLUGIN = "fixture.jobs";
 const OPERATION = `${PLUGIN}.run`;
 const PRODUCE = `${PLUGIN}.produce`;
 const TERMINAL = `${PLUGIN}.terminal`;
+const LIMITED_TERMINAL = `${PLUGIN}.limited`;
 const LOCATION = `${PLUGIN}.witness`;
 
 const required = [
@@ -108,7 +109,7 @@ test.skipIf(!realBackend)(
         processes: 32,
         outputBytes: 1024,
       };
-      const materialLimits = { ...limits, outputBytes: 65536, inputBytes: 65536 };
+      const materialLimits = { ...limits, outputBytes: 65536 };
       // The witness is a separately consented writable location, not a runtime test seam.
       // The transport-replacement workload appends on every executable start; the parent owns its gate.
       const executable = Buffer.from(
@@ -184,6 +185,17 @@ test.skipIf(!realBackend)(
             outputs: [],
             network: "none",
             limits: materialLimits,
+            stdin: true,
+          },
+          [LIMITED_TERMINAL]: {
+            argv: [{ literal: "terminal" }],
+            input: {},
+            runtimeTools: ["busybox"],
+            locations: [],
+            inputs: ["selected", "excess"],
+            outputs: [],
+            network: "none",
+            limits: { ...limits, outputBytes: 4096 },
             stdin: true,
           },
         },
@@ -359,32 +371,41 @@ test.skipIf(!realBackend)(
       const result = JobResultSchema.parse(completed.result);
       expect(result.exitCode).toBe(7);
       expect(result.usage!.outputBytes).toBeLessThanOrEqual(limits.outputBytes);
-      const readOutput = async (name: "stdout" | "stderr") => {
-        const output = result.outputs.find((value) => value.name === name);
+      const readOutput = async (
+        name: string,
+        source = result,
+        operationId = OPERATION,
+        maxBytes = 8,
+      ) => {
+        const output = source.outputs.find((value) => value.name === name);
         if (!output) throw new Error(`missing sealed ${name}`);
         const chunks: Buffer[] = [];
         let offset = 0;
         for (let index = 0; index < 128; index++) {
           const event = JobEventSchema.parse(
             await ownerAction(hub, "engine.jobs.output", {
-              node: { ...node("once"), kind: "output", outputId: output.outputId },
+              node: {
+                ...node(source.jobId, operationId),
+                kind: "output",
+                outputId: output.outputId,
+              },
               offset,
-              maxBytes: 8,
+              maxBytes,
             }),
           );
           if (event.type !== "output") throw new Error(`unexpected output response: ${event.type}`);
-          expect(event.jobId).toBe("once");
+          expect(event.jobId).toBe(source.jobId);
           expect(event.outputId).toBe(output.outputId);
           const bytes = Buffer.from(event.data, "base64");
-          expect(bytes.length).toBeLessThanOrEqual(8);
+          expect(bytes.length).toBeLessThanOrEqual(maxBytes);
           chunks.push(bytes);
           offset += bytes.length;
-          expect(offset).toBeLessThanOrEqual(limits.outputBytes);
+          expect(offset).toBeLessThanOrEqual(source.limits.outputBytes);
           if (event.eof) {
             const all = Buffer.concat(chunks);
             expect(all.length).toBe(output.bytes);
             expect(createHash("sha256").update(all).digest("hex")).toBe(output.sha256);
-            return all.toString("utf8");
+            return all;
           }
           if (!bytes.length) throw new Error("output read made no progress");
         }
@@ -392,9 +413,9 @@ test.skipIf(!realBackend)(
       };
       const payload = z
         .strictObject({ kind: z.literal("fixture.result/1"), value: z.number().int() })
-        .parse(JSON.parse(await readOutput("stdout")));
+        .parse(JSON.parse((await readOutput("stdout")).toString("utf8")));
       expect(payload.value).toBe(42);
-      expect(await readOutput("stderr")).toBe("diagnostic");
+      expect((await readOutput("stderr")).toString("utf8")).toBe("diagnostic");
       expect((await execute("once")).result).toEqual(result);
       await agent.restartTransport("SIGKILL");
       expect((await status("once")).result).toEqual(result);
@@ -402,13 +423,14 @@ test.skipIf(!realBackend)(
 
       // Produce two real archives, then consume only the selected sealed output in an ordinary
       // terminal. Neither a forwarded descriptor nor mutable source-location bytes can pass.
-      for (const operationId of [PRODUCE, TERMINAL]) {
+      for (const operationId of [PRODUCE, TERMINAL, LIMITED_TERMINAL]) {
         const operationNode: ManifoldRef = { kind: "operation", machineId, operationId };
         await consent("machines:run", true, operationNode);
         await consent("jobs:read", true, operationNode);
         await consent("jobs:cancel", true, operationNode);
       }
-      await consent("jobs:input", true, { kind: "operation", machineId, operationId: TERMINAL });
+      for (const operationId of [TERMINAL, LIMITED_TERMINAL])
+        await consent("jobs:input", true, { kind: "operation", machineId, operationId });
       await ownerAction(hub, "engine.jobs.execute", {
         jobId: "produce-material",
         machineId,
@@ -435,7 +457,8 @@ test.skipIf(!realBackend)(
         state: "exited",
         result: { exitCode: 0 },
       });
-      expect(produced.result?.outputs.find((output) => output.name === "material")?.files).toBe(2);
+      const material = produced.result!.outputs.find((output) => output.name === "material")!;
+      expect(material.files).toBe(2);
       expect(produced.result?.outputs.find((output) => output.name === "decoy")?.files).toBe(1);
       writeFileSync(join(witness, "material/top.txt"), "changed after sealing\n");
       const extractions = () => readdirSync(join(runtime, "job-inputs")).sort();
@@ -507,6 +530,51 @@ test.skipIf(!realBackend)(
       const firstExtraction = extractions();
       expect(firstExtraction).toHaveLength(1);
 
+      // One archive fits the omitted inputBytes default, but two exceed it. Reuse the
+      // admitted public binding so its read-side metadata must identify usable material.
+      expect(material.bytes).toBeLessThanOrEqual(4096);
+      expect(material.bytes * 2).toBeGreaterThan(4096);
+      const admittedInputs = firstJobs[0]!.inputs;
+      if (admittedInputs === undefined)
+        throw new Error("admitted terminal omitted its input bindings");
+      await expect(
+        sdk.openTerminal({
+          elementId: "refused-material-terminal",
+          machineId,
+          cols: 120,
+          rows: 30,
+          runtime: {
+            ...installation,
+            operationId: LIMITED_TERMINAL,
+            resourceBindingDigest: description.operations![LIMITED_TERMINAL]!.resourceBindingDigest,
+            input: {},
+            inputs: [...admittedInputs, { ...admittedInputs[0]!, name: "excess" }],
+          },
+        }),
+      ).rejects.toThrow("terminal creation failed");
+      const refused = await waitFor(
+        async () => {
+          const runs = ListJobRunsResultSchema.parse(
+            await ownerAction(hub, "engine.jobs.listRuns", {
+              machineId,
+              pluginId: PLUGIN,
+              operationId: LIMITED_TERMINAL,
+              limit: 10,
+            }),
+          ).runs;
+          const job = runs[0]?.job;
+          return job?.result ? job : false;
+        },
+        20_000,
+        20,
+      );
+      expect(refused).toMatchObject({
+        state: "refused",
+        result: { reason: "input_too_large", startedAt: null },
+      });
+      expect(extractions()).toEqual(firstExtraction);
+      await inspectMaterial("AFTER_REFUSAL");
+
       const restarted = nextMessage(
         terminalHome,
         "terminal_event",
@@ -551,7 +619,7 @@ test.skipIf(!realBackend)(
       expect(cancelled.state).toBe("cancelled");
       await waitFor(() => extractions().length === 0, 10_000, 20);
       // Cancellation releases derived mounts, not the immutable material's source lifetime.
-      expect((await status(produced.jobId, PRODUCE)).result).toEqual(produced.result);
+      await readOutput("material", produced.result!, PRODUCE, 64);
     } catch (error) {
       for (const capture of captures)
         console.error(
