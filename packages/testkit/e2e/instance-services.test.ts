@@ -14,11 +14,15 @@ import { join, resolve } from "node:path";
 import {
   GrantSchema,
   InstanceServiceDescriptionSchema,
+  JobDeploymentReviewSchema,
+  JobDeploymentSchema,
   JobDescriptionSchema,
   JobEventSchema,
+  ListJobRunsResultSchema,
   MachineHalfSchema,
   PluginBundleSchema,
   PublicJobSchema,
+  canonicalJobJson,
   formatManifoldUri,
   type Cap,
   type MachineHalf,
@@ -63,7 +67,7 @@ const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest(
 // This proof installs real immutable bundles and uses only public doors and authenticated
 // machine transports. Its two owners have disjoint state and delegated workload trees.
 test.skipIf(!realBackend)(
-  "instance services survive hub and transport replacement and route only current cross-owner authority",
+  "instance services survive hub and transport replacement and route only current cross-owner authority; self-provided jobs bootstrap from one reviewed deployment",
   async () => {
     const root = mkdtempSync(join(tmpdir(), "manifold-instance-e2e-"));
     let server: TestServer | undefined;
@@ -164,21 +168,18 @@ test.skipIf(!realBackend)(
           },
         },
       );
+      const consumerScript = [
+        "set -eu",
+        "config=$(/bin/busybox cat /inputs/proxy)",
+        'url=${config#*\'"url":"\'}',
+        "url=${url%%'\"'*}",
+        'bearer=${config#*\'"bearer":"\'}',
+        "bearer=${bearer%%'\"'*}",
+        '/bin/busybox wget -qO- --header "Authorization: Bearer $bearer" "$url/snapshot"',
+      ].join("\n");
       const consumer = await bundle(
         CONSUMER,
-        Buffer.from(
-          [
-            "#!/bin/busybox sh",
-            "set -eu",
-            "config=$(/bin/busybox cat /inputs/proxy)",
-            'url=${config#*\'"url":"\'}',
-            "url=${url%%'\"'*}",
-            'bearer=${config#*\'"bearer":"\'}',
-            "bearer=${bearer%%'\"'*}",
-            '/bin/busybox wget -qO- --header "Authorization: Bearer $bearer" "$url/snapshot"',
-            "",
-          ].join("\n"),
-        ),
+        Buffer.from(`#!/bin/busybox sh\n${consumerScript}\n`),
         {
           [OPERATION]: {
             argv: [],
@@ -214,6 +215,7 @@ test.skipIf(!realBackend)(
         const { admissionPublicKey } = await describe(machineId, pluginId);
         const config = join(control, "owner.json");
         const socket = join(control, "owner.sock");
+        const busybox = realpathSync(process.env.MANIFOLD_TEST_STATIC_BUSYBOX!);
         writeFileSync(
           config,
           JSON.stringify({
@@ -228,8 +230,13 @@ test.skipIf(!realBackend)(
             runtimeTools: {
               busybox: [
                 {
-                  source: realpathSync(process.env.MANIFOLD_TEST_STATIC_BUSYBOX!),
+                  source: busybox,
                   target: "/bin/busybox",
+                  kind: "file",
+                },
+                {
+                  source: busybox,
+                  target: "/runtime/bin/busybox",
                   kind: "file",
                 },
               ],
@@ -274,6 +281,208 @@ test.skipIf(!realBackend)(
       };
       const source = await provision("source", PROVIDER);
       const sink = await provision("sink", CONSUMER);
+
+      // Review the entire self-provider bundle before either operation has an installation.
+      // The ordinary instance service below remains independent on the same native owner.
+      const selfPlugin = "fixture.self-provider";
+      const selfServe = `${selfPlugin}.serve`;
+      const selfRead = `${selfPlugin}.read`;
+      const selfService = `${selfPlugin}.broker`;
+      const selfLocation = `${selfPlugin}.state`;
+      const self = await bundle(
+        selfPlugin,
+        readFileSync(process.env.MANIFOLD_TEST_INSTANCE_SERVICE!),
+        {
+          [selfServe]: {
+            ...provider.machine.operations[SERVE]!,
+            locations: [{ locationId: selfLocation, access: "write" }],
+          },
+          [selfRead]: {
+            ...consumer.machine.operations[OPERATION]!,
+            executable: { runtimeTool: "busybox" },
+            argv: [{ literal: "sh" }, { literal: "-c" }, { literal: consumerScript }],
+            inputFiles: {
+              proxy: {
+                literal: '{"url":"","bearer":""}',
+                jsonValues: [
+                  { path: ["url"], serviceId: selfService, value: "url" },
+                  { path: ["bearer"], serviceId: selfService, value: "bearer" },
+                ],
+              },
+            },
+            services: [{ serviceId: selfService, revision: "1", operationIds: ["snapshot"] }],
+          },
+        },
+        { [selfLocation]: provider.machine.locations[LOCATION]! },
+      );
+      const selfPolicy: ServicePolicy = {
+        serviceId: selfService,
+        revision: "1",
+        maxConcurrent: 2,
+        runtime: {
+          pluginId: selfPlugin,
+          operationId: selfServe,
+          artifactSha256: self.artifactSha256,
+          // The provider has no external pins; the consumer's tool/service pins are unrelated.
+          resourceBindingDigest: sha256(
+            Buffer.from(canonicalJobJson({ tools: {}, services: {}, anchors: {} })),
+          ),
+          input: {},
+        },
+        operations: {
+          snapshot: {
+            kind: "http-proxy",
+            method: "GET",
+            path: "/snapshot",
+            request: { kind: "none" },
+            response: {
+              kind: "stream",
+              disclosure: "full",
+              contentTypes: ["application/json"],
+              headers: [],
+            },
+            timeoutMs: 5000,
+            maxRequestBytes: 1024,
+            maxResponseBytes: 4096,
+          },
+        },
+      };
+      await ownerAction(hub(), "engine.services.configureConfiguration", {
+        machineId: source.machineId,
+        expectedRevision: null,
+        policies: [selfPolicy],
+      });
+      await waitFor(
+        async () => (await describe(source.machineId, selfPlugin)).resources?.services[selfService],
+        20000,
+        20,
+      );
+      const selfRuns = async () =>
+        ListJobRunsResultSchema.parse(
+          await ownerAction(hub(), "engine.jobs.listRuns", {
+            machineId: source.machineId,
+            pluginId: selfPlugin,
+            operationId: selfServe,
+            limit: 10,
+          }),
+        );
+      const selfRequest = {
+        deploymentId: "self-provider-first",
+        pluginId: selfPlugin,
+        targets: [{ machineId: source.machineId, platform: `linux-${process.arch}` }],
+        operationIds: [selfServe, selfRead],
+      };
+      const incomplete = JobDeploymentReviewSchema.parse(
+        await ownerAction(hub(), "engine.jobs.reviewDeployment", {
+          ...selfRequest,
+          operationIds: [selfRead],
+        }),
+      );
+      expect(incomplete.targets[0]).toMatchObject({
+        approvable: false,
+        reason: "authority_or_consent_refused",
+      });
+      const selfReview = JobDeploymentReviewSchema.parse(
+        await ownerAction(hub(), "engine.jobs.reviewDeployment", selfRequest),
+      );
+      expect(selfReview.approvable).toBe(true);
+      const beforeSelfApply = await describe(source.machineId, selfPlugin);
+      expect(beforeSelfApply.installation).toBeNull();
+      expect(beforeSelfApply.consents).toEqual([]);
+      expect((await selfRuns()).runs).toEqual([]);
+      JobDeploymentSchema.parse(
+        await ownerAction(hub(), "engine.jobs.applyDeployment", {
+          request: selfRequest,
+          reviewDigest: selfReview.reviewDigest,
+        }),
+      );
+      let selfDescription = beforeSelfApply;
+      await waitFor(
+        async () => {
+          selfDescription = await describe(source.machineId, selfPlugin);
+          return (
+            selfDescription.installation?.ready && selfDescription.operations?.[selfRead]?.ready
+          );
+        },
+        20000,
+        20,
+      ).catch((error: unknown) => {
+        throw new Error(
+          `self-provider readiness failed: ${JSON.stringify({
+            installation: selfDescription.installation,
+            operations: selfDescription.operations,
+          })}`,
+          { cause: error },
+        );
+      });
+      for (const [jobId, starts] of [
+        ["self-first", 1],
+        ["self-second", 2],
+      ] as const) {
+        const node = {
+          kind: "job" as const,
+          machineId: source.machineId,
+          operationId: selfRead,
+          jobId,
+        };
+        const launched = PublicJobSchema.parse(
+          await ownerAction(hub(), "engine.jobs.execute", {
+            jobId,
+            machineId: source.machineId,
+            pluginId: selfPlugin,
+            operationId: selfRead,
+            input: {},
+            outputs: [],
+            limits,
+          }),
+        );
+        expect(launched.installationRevision).toBe(selfReview.targets[0]!.installationRevision!);
+        const completed = await waitFor(
+          async () => {
+            const current = PublicJobSchema.parse(
+              await ownerAction(hub(), "engine.jobs.status", { node }),
+            );
+            if (["refused", "interrupted", "cancelled"].includes(current.state))
+              throw new Error(`self-provider consumer failed: ${JSON.stringify(current.result)}`);
+            return current.state === "exited" ? current : false;
+          },
+          20000,
+          20,
+        );
+        expect(completed.result!.exitCode).toBe(0);
+        const stdout = completed.result!.outputs.find((output) => output.name === "stdout");
+        if (!stdout) throw new Error("self-provider consumer omitted its output");
+        const output = JobEventSchema.parse(
+          await ownerAction(hub(), "engine.jobs.output", {
+            node: { ...node, kind: "output", outputId: stdout.outputId },
+            offset: 0,
+            maxBytes: limits.outputBytes,
+          }),
+        );
+        if (output.type !== "output") throw new Error("missing self-provider output");
+        expect(JSON.parse(Buffer.from(output.data, "base64").toString())).toMatchObject({
+          starts,
+          setting: "reviewed",
+        });
+        const children = await waitFor(
+          async () => {
+            const jobs = (await selfRuns()).runs.flatMap((run) => (run.job ? [run.job] : []));
+            return jobs.length === starts &&
+              jobs.every((job) => ["exited", "cancelled", "interrupted"].includes(job.state))
+              ? jobs
+              : false;
+          },
+          20000,
+          20,
+        );
+        const child = children.find(
+          (job) =>
+            job.authority.origin.kind === "invocation" &&
+            job.authority.origin.parentJobId === jobId,
+        );
+        expect(child?.installationRevision).toBe(launched.installationRevision);
+      }
+
       const install = async (machineId: string, plugin: typeof provider) => {
         const description = await describe(machineId, plugin.pluginId);
         if (!description.resources) throw new Error("missing proved native resources");

@@ -3884,13 +3884,38 @@ provider handling and postconditions belong to plugins, never the common floor.
   destination. Its `reviewDigest` also binds the approving credential reference, evaluated
   authority, enrollment/owner identity, current installation and relevant current/proposed
   consent revisions and service policies. Every proposed runtime edge additionally binds the
-  current callee installation, service policy, resource and permission evidence, plus the prior
-  edge revision. Reusing an unchanged declaration, artifact and resource binding preserves the
+  current callee installation (or the exact proposed self-provider below), service policy,
+  resource and permission evidence, plus the prior edge revision. Reusing an unchanged
+  declaration, artifact and resource binding preserves the
   current installation revision; otherwise the proposed revision is deterministically bound to
   this deployment, destination and those exact pins. Apply recomputes the review against current
   state in a transaction: changed request, actor, declaration, destination, installation,
   resource, consent, service or invocation-edge evidence requires another review, not a
   client-edited digest or automatic approval of the replacement.
+
+  A job-scoped service runtime may omit `installationRevision` only to resolve the exact
+  invoking installation of its own `pluginId`; omitted scope still means job scope.
+  Artifact, provider operation and operation-scoped resource digest remain pinned. There
+  is no latest-installation fallback, cross-plugin contextual identity or context-free
+  direct/instance use. The native owner advertises the configured policy hash as conditional
+  binding evidence before installation, while every consuming operation's readiness,
+  admission and service use independently validates its exact installation context.
+
+  Only explicit review/apply planning can resolve a proposed self-provider. Its operation
+  must be selected for the exact planned consents, or already be installed, authorized and
+  natively ready at that same identity. Root authority, service rights, concrete invocation
+  edge pins and all other evidence checks still apply; planning does not fabricate an
+  installed row or native acknowledgement. Actual execution requires current consent,
+  installed/native resource proof and the real invoking installation. Providers retain
+  their parent job's lifetime and never become shared across parents or installations.
+
+  Both the machine transport's contextual-runtime schema and native owner's
+  `selfServiceRuntime` capability are required. The hub projects contextual policies out
+  of configuration sent to unsupported peers, recomputes the transmitted digest and keeps
+  canonical persisted configuration intact. Affected use refuses `service_runtime_unsupported`
+  before generic missing-resource evidence; unrelated pinned policies continue normally.
+  Upgrade/reconnect restores the full configuration. Explicit revision and instance-service
+  policy semantics are unchanged, including instance services' required revision pin.
 
 - **Bounded offline evidence.** A disconnected destination is approvable only with known
   enrolled identity and a previously proved native owner, a selected available declaration

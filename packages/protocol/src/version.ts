@@ -1,5 +1,5 @@
 /** Wire revision; session joins require the current version (close 4409 otherwise). */
-export const PROTOCOL_VERSION = 40;
+export const PROTOCOL_VERSION = 41;
 
 /**
  * Machine-channel acceptance set. Agents are long-lived (they hold PTYs and
@@ -383,9 +383,17 @@ export const PROTOCOL_VERSION = 40;
  * Strict SDK/session consumers update together; hardened contract 5 retains older guests.
  * Machine, terminal-host, native-owner RPC and instance frames are unchanged, so both
  * acceptance sets add 40 without dropping compatible peers or restarting retained owners.
+ *
+ * v40 -> v41: SAME-INSTALLATION SERVICE BOOTSTRAP (issue #715). A job-scoped service
+ * runtime may omit its installation revision only to resolve the invoking installation's
+ * exact artifact, provider operation and resource identity. The hub projects contextual
+ * policies out for older peers and refuses affected uses unless both machine transport
+ * v41 and native owner RPC v37 support them. Existing revision-pinned policies and ordinary
+ * work retain their semantics, so compatible machines remain admitted without a fleet
+ * restart. The instance wire is unchanged and its acceptance set adds 41.
  */
 export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+  30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41,
 ]);
 
 /**
@@ -397,6 +405,9 @@ export const MACHINE_REPOSITORY_PROTOCOL_VERSION = 31;
 
 /** A pre-v33 transport must never receive the restart command it cannot answer. */
 export const TERMINAL_RESTART_PROTOCOL_VERSION = 33;
+
+/** Older machine parsers must never receive a contextual self-provider runtime policy. */
+export const MACHINE_SELF_PROVIDER_PROTOCOL_VERSION = 41;
 
 /**
  * Instance-channel acceptance set, and a SEPARATE set on purpose (ADR 0014).
@@ -430,10 +441,10 @@ export const TERMINAL_RESTART_PROTOCOL_VERSION = 33;
  * never receives a machine ref, so the instance wire is unchanged.
  * v26: image-aware terminal viewers; instance frames remain unchanged.
  * v27: governed jobs expand the closed share resource/capability vocabularies (ADR 0033);
- * instance compatibility resets to protocol 27. v28 through v40 leave that wire unchanged.
+ * instance compatibility resets to protocol 27. v28 through v41 leave that wire unchanged.
  */
 export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+  27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41,
 ]);
 
 /**

@@ -25,6 +25,7 @@ import { tmpdir } from "node:os";
 import { join, dirname, basename } from "node:path";
 import {
   canonicalJobJson,
+  jobResourceBindingsFor,
   JobEventSchema,
   JOB_OWNER_PROTOCOL_VERSION,
   type ServicePolicy,
@@ -1948,7 +1949,7 @@ test.skipIf(!linux || !cgroupRoot)(
   },
 );
 
-async function resourceServiceOwner(scope: "job" | "instance") {
+async function resourceServiceOwner(scope: "job" | "instance", contextual = false) {
   const root = mkdtempSync(join(tmpdir(), "owner-resource-service-"));
   const held: HeldDirectory[] = [];
   mkdirSync(join(root, "private"), { mode: 0o700 });
@@ -2091,6 +2092,17 @@ async function resourceServiceOwner(scope: "job" | "instance") {
     },
   };
   if (scope === "job") delete policy.operations.read;
+  if (contextual) {
+    delete policy.runtime!.installationRevision;
+    delete policy.runtime!.scope;
+    provider.resourceBindings!.services[policy.serviceId] = jobDigest(policy);
+    provider.machine.operations["fixture.provider.consume"] = {
+      ...makeInstall(provider.pluginId).machine.operations["fixture.provider.run"]!,
+      services: [
+        { serviceId: policy.serviceId, revision: policy.revision, operationIds: ["generate"] },
+      ],
+    };
+  }
   const configuration = { revision: jobDigest([policy]), policies: [policy] };
   const consumer = makeInstall("fixture.consumer");
   consumer.resourceBindings!.services[policy.serviceId] = jobDigest(policy);
@@ -2098,7 +2110,7 @@ async function resourceServiceOwner(scope: "job" | "instance") {
     { serviceId: policy.serviceId, revision: policy.revision, operationIds: ["generate"] },
   ];
   try {
-    await owner.execute(provider);
+    if (!contextual) await owner.execute(provider);
     await owner.execute({ type: "configure_services", configuration });
     await owner.execute(consumer);
     expect(owner.identity.resources!.services[policy.serviceId]).toBe(jobDigest(policy));
@@ -2118,6 +2130,65 @@ async function resourceServiceOwner(scope: "job" | "instance") {
     policy,
     provider,
     consumer,
+    async admit(installation: Extract<JobCommand, { type: "install" }>, operationId: string) {
+      const operation = installation.machine.operations[operationId]!;
+      const body: Omit<JobRequest, "requestDigest"> = {
+        jobId: `resource-${events.length}`,
+        machineId: options.machineId,
+        pluginId: installation.pluginId,
+        operationId,
+        installationRevision: installation.installationRevision,
+        artifactSha256: installation.artifactSha256,
+        resourceBindings: jobResourceBindingsFor(
+          installation.machine,
+          operationId,
+          `linux-${process.arch}` as "linux-x64" | "linux-arm64",
+          installation.resourceBindings,
+        ),
+        input: {},
+        outputs: [],
+        limits: operation.limits,
+        credential: {
+          principalId: "root",
+          tokenId: null,
+          grantId: null,
+          containerScope: null,
+          caps: ["machines:run"],
+        },
+        parent: null,
+        traceId: "resource-service",
+      };
+      const request = { ...body, requestDigest: jobDigest(body) };
+      const signed = {
+        permitId: request.jobId,
+        jobId: request.jobId,
+        requestDigest: request.requestDigest,
+        ownerId: owner.identity.ownerId,
+        ownerGeneration: owner.identity.generation,
+        decisionId: "decision",
+        policyRevision: "revision",
+        issuedAt: Date.now(),
+        expiresAt: Date.now() + 30000,
+      };
+      await owner.execute({
+        type: "start",
+        request,
+        permit: {
+          ...signed,
+          signature: sign(null, Buffer.from(canonicalJobJson(signed)), keys.privateKey).toString(
+            "base64",
+          ),
+        },
+      });
+      return {
+        refusal: events.findLast(
+          (event) => event.type === "refusal" && event.jobId === request.jobId,
+        ),
+        result: events.findLast(
+          (event) => event.type === "result" && event.result.jobId === request.jobId,
+        ),
+      };
+    },
     mutateTool() {
       chmodSync(toolPath, 0o600);
       writeFileSync(toolPath, "unpromoted replacement");
@@ -2149,6 +2220,203 @@ async function resourceServiceOwner(scope: "job" | "instance") {
     },
   };
 }
+
+test.skipIf(!linux || !cgroupRoot)(
+  "contextual policy inventory binds before installation without authorizing foreign or direct use",
+  async () => {
+    const f = await resourceServiceOwner("job", true);
+    try {
+      expect(f.owner.identity.resources!.services[f.policy.serviceId]).toBe(jobDigest(f.policy));
+      expect(f.owner.installedResources(f.provider.pluginId, "r1").artifactAvailable).toBe(false);
+      expect(f.owner.installedResources(f.consumer.pluginId, "r1").operations).toContainEqual({
+        operationId: "fixture.consumer.run",
+        available: false,
+        reason: "services_unavailable",
+      });
+      await f.owner.execute(f.provider);
+      expect(f.owner.installedResources(f.provider.pluginId, "r1").operations).toContainEqual({
+        operationId: "fixture.provider.consume",
+        available: true,
+      });
+      expect(f.owner.installedResources(f.consumer.pluginId, "r1").operations).toContainEqual({
+        operationId: "fixture.consumer.run",
+        available: false,
+        reason: "services_unavailable",
+      });
+      expect(await f.admit(f.consumer, "fixture.consumer.run")).toMatchObject({
+        refusal: { type: "refusal", reason: "services_unavailable" },
+        result: { type: "result", result: { state: "refused", startedAt: null } },
+      });
+      f.events.length = 0;
+      await f.owner.execute({
+        type: "service_tunnel_open",
+        channelId: "no-invoking-installation",
+        serviceId: f.policy.serviceId,
+        revision: f.policy.revision,
+        policySha256: jobDigest(f.policy),
+        operationIds: ["generate"],
+      });
+      expect(f.events).toContainEqual({
+        type: "service_tunnel_ready",
+        channelId: "no-invoking-installation",
+        endpoint: null,
+      });
+      expect(f.events.some((event) => event.type === "service_authorize")).toBe(false);
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+test.skipIf(!linux || !cgroupRoot)(
+  "contextual readiness keeps retained installations distinct and rechecks provider resources on admission",
+  async () => {
+    const f = await resourceServiceOwner("job", true);
+    try {
+      await f.owner.execute(f.provider);
+      const unavailable = {
+        operationId: "fixture.provider.consume",
+        available: false,
+        reason: "services_unavailable",
+      };
+      // A complete retained revision must not lend its provider proof to these installations.
+      for (const fault of ["operation", "network", "bearer", "resources", "artifact"] as const) {
+        const retained = structuredClone(f.provider);
+        retained.installationRevision = fault;
+        const operation = retained.machine.operations["fixture.provider.run"]!;
+        if (fault === "operation") {
+          delete operation.providesService;
+          delete operation.inputFiles;
+        }
+        if (fault === "network") operation.network = "none";
+        if (fault === "bearer") delete operation.inputFiles;
+        if (fault === "resources") retained.resourceBindings!.tools.tool = "0".repeat(64);
+        if (fault === "artifact") {
+          const bytes = Buffer.from("#!/bin/sh\n# another installation\nexit 0\n");
+          const hash = createHash("sha256").update(bytes).digest("hex");
+          retained.artifactSha256 = hash;
+          retained.artifact = { bundleFile: "worker", data: bytes.toString("base64") };
+          for (const artifact of Object.values(retained.machine.artifacts))
+            Object.assign(artifact, {
+              sha256: hash,
+              entrySha256: hash,
+              maxBytes: bytes.length,
+              maxExpandedBytes: bytes.length,
+            });
+        }
+        await f.owner.execute(retained);
+        expect(f.owner.installedResources(retained.pluginId, fault).operations).toContainEqual(
+          unavailable,
+        );
+        expect(await f.admit(retained, "fixture.provider.consume")).toMatchObject({
+          refusal: { type: "refusal", reason: "services_unavailable" },
+          result: { type: "result", result: { state: "refused", startedAt: null } },
+        });
+      }
+      expect(f.owner.installedResources(f.provider.pluginId, "r1").operations).toContainEqual({
+        operationId: "fixture.provider.consume",
+        available: true,
+      });
+      f.mutateTool();
+      // Snapshot publication intentionally does not walk managed host tools.
+      expect(f.owner.installedResources(f.provider.pluginId, "r1").operations).toContainEqual({
+        operationId: "fixture.provider.consume",
+        available: true,
+      });
+      expect(await f.admit(f.provider, "fixture.provider.consume")).toMatchObject({
+        refusal: { type: "refusal", reason: "services_unavailable" },
+        result: { type: "result", result: { state: "refused", startedAt: null } },
+      });
+      expect(f.owner.installedResources(f.provider.pluginId, "r1").operations).toContainEqual(
+        unavailable,
+      );
+      expect(f.owner.identity.resources!.services[f.policy.serviceId]).toBe(jobDigest(f.policy));
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+test.skipIf(!linux || !cgroupRoot)(
+  "contextual recovery retains binding evidence but requires its own provider artifact to be reacquired",
+  async () => {
+    const f = await resourceServiceOwner("job", true);
+    try {
+      await f.owner.execute(f.provider);
+      await f.recoverWithoutProviderArtifact();
+      expect(f.owner.identity.resources!.services[f.policy.serviceId]).toBe(jobDigest(f.policy));
+      expect(f.owner.installedResources(f.provider.pluginId, "r1").operations).toContainEqual({
+        operationId: "fixture.provider.consume",
+        available: false,
+        reason: "operation_not_installed",
+      });
+      await f.owner.execute(f.provider);
+      expect(f.owner.installedResources(f.provider.pluginId, "r1").operations).toContainEqual({
+        operationId: "fixture.provider.consume",
+        available: true,
+      });
+      expect(f.owner.installedResources(f.consumer.pluginId, "r1").operations).toContainEqual({
+        operationId: "fixture.consumer.run",
+        available: false,
+        reason: "services_unavailable",
+      });
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+test.skipIf(!linux || !cgroupRoot)(
+  "an explicit provider resolves contextual dependencies against its callee installation, not its foreign caller",
+  async () => {
+    const f = await resourceServiceOwner("job");
+    try {
+      const nested = structuredClone(f.policy);
+      nested.serviceId = "fixture.nested";
+      delete nested.runtime!.installationRevision;
+      nested.runtime!.operationId = "fixture.provider.nested";
+      const provider = structuredClone(f.provider);
+      provider.installationRevision = "nested";
+      provider.machine.operations["fixture.provider.nested"] = structuredClone(
+        provider.machine.operations["fixture.provider.run"]!,
+      );
+      provider.machine.operations["fixture.provider.run"]!.services = [
+        { serviceId: nested.serviceId, revision: nested.revision, operationIds: ["generate"] },
+      ];
+      provider.resourceBindings!.services[nested.serviceId] = jobDigest(nested);
+      const outer = structuredClone(f.policy);
+      outer.runtime!.installationRevision = provider.installationRevision;
+      outer.runtime!.resourceBindingDigest = jobDigest(provider.resourceBindings);
+      const consumer = structuredClone(f.consumer);
+      consumer.installationRevision = "nested";
+      consumer.resourceBindings!.services[outer.serviceId] = jobDigest(outer);
+      await f.owner.execute({
+        type: "configure_services",
+        configuration: { revision: jobDigest([outer, nested]), policies: [outer, nested] },
+      });
+      await f.owner.execute(provider);
+      await f.owner.execute(consumer);
+      expect(f.owner.installedResources(consumer.pluginId, "nested").operations).toContainEqual({
+        operationId: "fixture.consumer.run",
+        available: true,
+      });
+      // Removing the pinned callee cannot silently fall back to the retained r1 provider.
+      const installed: Extract<JobCommand, { type: "install" }> = {
+        ...provider,
+        action: "purge",
+      };
+      delete installed.artifact;
+      await f.owner.execute(installed);
+      expect(f.owner.installedResources(consumer.pluginId, "nested").operations).toContainEqual({
+        operationId: "fixture.consumer.run",
+        available: false,
+        reason: "services_unavailable",
+      });
+    } finally {
+      await f.close();
+    }
+  },
+);
 
 test.skipIf(!linux || !cgroupRoot)(
   "owner upgrade restores an exact older install projection without changing pinned authority",

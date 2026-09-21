@@ -601,3 +601,32 @@ test("body credentials are static bounded owner references, never dynamic input 
     }).success,
   ).toBe(false);
 });
+
+test("job runtime identity may be contextual but instance runtime identity stays revision-pinned", () => {
+  const spec = {
+    ...policy(),
+    origin: undefined,
+    allowLoopbackHttp: undefined,
+    runtime: {
+      pluginId: "inventory",
+      operationId: "serve",
+      artifactSha256: "a".repeat(64),
+      resourceBindingDigest: "b".repeat(64),
+      input: {},
+    },
+    operations: { read: proxyOperation() },
+  };
+  expect(ServicePolicySchema.safeParse(spec).success).toBe(true);
+  expect(
+    ServicePolicySchema.safeParse({
+      ...spec,
+      runtime: { ...spec.runtime, scope: "instance" },
+    }).success,
+  ).toBe(false);
+  expect(
+    ServicePolicySchema.safeParse({
+      ...spec,
+      runtime: { ...spec.runtime, scope: "instance", installationRevision: "r1" },
+    }).success,
+  ).toBe(true);
+});
