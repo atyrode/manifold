@@ -453,8 +453,10 @@ does not prove native readiness. This profile's source is not a claim of runtime
 
 The flake's disposable NixOS acceptance check is configured to boot the declared services
 and execute a hash-pinned worker with its declared static runtime. Its assertions cover
-control-state exclusion, private control-file modes, and exit status/sealed output surviving
-hub/transport restarts and positively drained owner replacement. It uses the packaged
+control-state exclusion, private control-file modes, two consecutive named-output jobs
+under an initially absent runtime directory, and exit status/sealed output surviving
+hub/transport restarts and positively drained owner replacement. Fixtures use the current
+plugin-kit packer; unstamped artifacts remain refused. It uses the packaged
 `manifold-agent --maintenance` entry point for drain, explicit reopen and atomic shutdown,
 including a live retained-job `jobs_retained` HOLD with unchanged owner PID, closed admission
 and a still-running workload. The worker must then finish normally with its expected result;
