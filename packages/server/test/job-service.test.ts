@@ -730,6 +730,7 @@ test("data-only credential migration and author audit projection preserve enable
     f.store.db.exec(`
 ALTER TABLE terminals DROP COLUMN cwd;
 ALTER TABLE terminals DROP COLUMN launch_recipe;
+ALTER TABLE terminals DROP COLUMN created_by_run_id;
 DROP TABLE principal_access_pauses;
 UPDATE meta SET value='37' WHERE key='schema_version';
 `);
@@ -6576,6 +6577,7 @@ DROP TABLE principal_access_pauses;
 DELETE FROM meta WHERE key='agent-runs:declarations-after-event-id';
 ALTER TABLE terminals DROP COLUMN cwd;
 ALTER TABLE terminals DROP COLUMN launch_recipe;
+ALTER TABLE terminals DROP COLUMN created_by_run_id;
 UPDATE meta SET value='33' WHERE key='schema_version';
 `);
       f.store.close();
