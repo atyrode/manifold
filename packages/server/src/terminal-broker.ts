@@ -1122,7 +1122,9 @@ export class TerminalBroker implements TerminalPlacementPort {
       createdAt: pending.createdAt,
       ...(launchRecipe.cwd === undefined ? {} : { cwd: launchRecipe.cwd }),
       launchRecipe,
-      ...(launchRecipe.runtime?.session === undefined ? {} : { session: launchRecipe.runtime.session }),
+      ...(launchRecipe.runtime?.session === undefined
+        ? {}
+        : { session: launchRecipe.runtime.session }),
       ...(pending.runId === undefined ? {} : { runId: pending.runId }),
       ...(pending.auth.agentRunId === undefined ? {} : { createdByRunId: pending.auth.agentRunId }),
     });
@@ -1139,7 +1141,9 @@ export class TerminalBroker implements TerminalPlacementPort {
       controllerId: pending.createdBy,
       createdBy: pending.createdBy,
       ...(launchRecipe.cwd === undefined ? {} : { cwd: launchRecipe.cwd }),
-      ...(launchRecipe.runtime?.session === undefined ? {} : { session: launchRecipe.runtime.session }),
+      ...(launchRecipe.runtime?.session === undefined
+        ? {}
+        : { session: launchRecipe.runtime.session }),
     };
     this.terminals.set(terminalId, {
       info,

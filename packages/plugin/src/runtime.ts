@@ -17,6 +17,7 @@ import type {
   ServiceConfiguration,
   ServiceConfigurationRead,
   ServicePolicy,
+  ServiceProxyOperationPolicy,
   ServiceReadArgs,
   ServiceInvokeArgs,
   ServiceReply,
@@ -119,6 +120,8 @@ export interface ServiceDescription {
       invocable: boolean;
       ready: boolean;
       reason: string | null;
+      meter?: ServiceProxyOperationPolicy["meter"];
+      prices?: ServicePolicy["prices"];
     }[];
   }[];
 }

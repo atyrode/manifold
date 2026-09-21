@@ -192,6 +192,97 @@ function fixture(servicePolicy = policy, mode: "read" | "invoke" = "read") {
   };
 }
 
+test("limited consumers can establish metering readiness without configuration authority", async () => {
+  const priced: ServicePolicy = {
+    ...policy,
+    prices: {
+      models: { "fixture/model": { inputPerMillion: 1_000_000, outputPerMillion: 5_000_000 } },
+    },
+    operations: {
+      ...policy.operations,
+      stream: {
+        kind: "http-proxy",
+        method: "POST",
+        path: "/stream",
+        request: { kind: "json", disclosure: "full" },
+        response: {
+          kind: "stream",
+          disclosure: "full",
+          contentTypes: ["text/event-stream"],
+          headers: [],
+        },
+        timeoutMs: 1000,
+        maxRequestBytes: 4096,
+        maxResponseBytes: 4096,
+        meter: { kind: "pi-native-usage" },
+      },
+    },
+  };
+  const f = fixture(priced);
+  try {
+    const host = await orchestratorHost(f);
+    const describe = async () => {
+      const answer = await host.dispatch(f.reader, "engine.services.describe", {
+        machineId: f.machineId,
+      });
+      if (!answer.ok) throw new Error(`Service description refused: ${JSON.stringify(answer)}`);
+      return (answer.result as ReturnType<JobService["describeServices"]>).services[0]!;
+    };
+    expect(
+      await host.dispatch(f.reader, "engine.services.readConfiguration", {
+        machineId: f.machineId,
+      }),
+    ).toMatchObject({ ok: false });
+    const first = await describe();
+    expect(first.policySha256).toBe(hash(priced));
+    expect(first.operations.find((operation) => operation.operationId === "stream")).toMatchObject({
+      meter: { kind: "pi-native-usage" },
+      prices: priced.prices,
+    });
+    expect(
+      first.operations.find((operation) => operation.operationId === "inspect"),
+    ).not.toHaveProperty("prices");
+    const changed = {
+      ...priced,
+      revision: "r2",
+      prices: {
+        models: { "fixture/model": { inputPerMillion: 2_000_000, outputPerMillion: 6_000_000 } },
+      },
+    };
+    f.service.configureServiceConfiguration(f.root, {
+      machineId: f.machineId,
+      expectedRevision: f.configuration.revision,
+      policies: [changed],
+    });
+    const next = await describe();
+    expect(next.policySha256).toBe(hash(changed));
+    expect(next.operations.find((operation) => operation.operationId === "stream")?.prices).toEqual(
+      changed.prices,
+    );
+    f.auth.grant(
+      {
+        principal: { kind: "principal", id: f.reader.principal.id },
+        node: formatManifoldUri({
+          kind: "service",
+          machineId: f.machineId,
+          serviceId: policy.serviceId,
+          operationId: "stream",
+        }),
+        caps: ["services:read"],
+        effect: "deny",
+        reach: "subtree",
+      },
+      f.root,
+    );
+    const remaining = await describe();
+    expect(remaining.operations.map((operation) => operation.operationId)).toEqual(["inspect"]);
+    expect(remaining.operations[0]).not.toHaveProperty("meter");
+    expect(remaining.operations[0]).not.toHaveProperty("prices");
+  } finally {
+    f.store.close();
+  }
+});
+
 test("v35 native reads keep working with service authority, not machine execution or an installed worker", async () => {
   const f = fixture();
   f.owner.protocolVersion = 35;

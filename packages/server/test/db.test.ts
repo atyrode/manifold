@@ -77,17 +77,39 @@ test("terminal session migration preserves unknown historical identity and rejec
     const root = auth.authenticate("a".repeat(64));
     const machineId = auth.enrollMachine("terminal owner", root).machine.id;
     const containerId = runtime.newId();
-    store.createContainer({ id: containerId, name: "Home", discipline: "composition", createdAt: runtime.now() });
-    const terminal = { id: runtime.newId(), machineId, containerId,
-      createdBy: root.principal.id, agentPrincipalId: null, createdAt: runtime.now() };
+    store.createContainer({
+      id: containerId,
+      name: "Home",
+      discipline: "composition",
+      createdAt: runtime.now(),
+    });
+    const terminal = {
+      id: runtime.newId(),
+      machineId,
+      containerId,
+      createdBy: root.principal.id,
+      agentPrincipalId: null,
+      createdAt: runtime.now(),
+    };
     const session = { harness: "test-harness", machineId, sessionId: "historical-session" };
-    store.createTerminal({ ...terminal, launchRecipe: {
-      cols: 80, rows: 24, env: {}, runtime: {
-        machineId, pluginId: "test.harness", operationId: "test.harness.run",
-        installationRevision: "r1", artifactSha256: "a".repeat(64),
-        resourceBindingDigest: "b".repeat(64), input: {}, session,
+    store.createTerminal({
+      ...terminal,
+      launchRecipe: {
+        cols: 80,
+        rows: 24,
+        env: {},
+        runtime: {
+          machineId,
+          pluginId: "test.harness",
+          operationId: "test.harness.run",
+          installationRevision: "r1",
+          artifactSha256: "a".repeat(64),
+          resourceBindingDigest: "b".repeat(64),
+          input: {},
+          session,
+        },
       },
-    } });
+    });
     store.db.exec("ALTER TABLE terminals DROP COLUMN session");
     store.db.exec("UPDATE meta SET value='43' WHERE key='schema_version'");
     store.close();
@@ -98,8 +120,13 @@ test("terminal session migration preserves unknown historical identity and rejec
     store.createTerminal(ordinary);
     expect(store.getTerminal(ordinary.id)?.session).toBeUndefined();
     const invalidId = runtime.newId();
-    expect(() => store.createTerminal({ ...terminal, id: invalidId,
-      session: { ...session, machineId: "another-machine" } })).toThrow("terminal session machine does not match");
+    expect(() =>
+      store.createTerminal({
+        ...terminal,
+        id: invalidId,
+        session: { ...session, machineId: "another-machine" },
+      }),
+    ).toThrow("terminal session machine does not match");
     expect(store.getTerminal(invalidId)).toBeNull();
     store.close();
     store = new ServerStore(openDatabase(path));
@@ -2430,6 +2457,7 @@ ALTER TABLE machine_jobs DROP COLUMN run_id;
 ALTER TABLE job_schedule_occurrences DROP COLUMN run_id;
 ALTER TABLE terminals DROP COLUMN run_id;
 ALTER TABLE terminals DROP COLUMN created_by_run_id;
+ALTER TABLE terminals DROP COLUMN session;
 DROP TABLE agents;
 DROP TABLE principal_access_pauses;
 DELETE FROM meta WHERE key='agent-runs:declarations-after-event-id';
@@ -2565,6 +2593,7 @@ test("migration 42 persists the last identifiable machine refusal until admissio
 ALTER TABLE machines DROP COLUMN last_refusal_code;
 ALTER TABLE machines DROP COLUMN last_refusal_at;
 ALTER TABLE terminals DROP COLUMN created_by_run_id;
+ALTER TABLE terminals DROP COLUMN session;
 UPDATE meta SET value='41' WHERE key='schema_version';
 `);
     db.close();

@@ -1027,7 +1027,8 @@ function toTerminal(row: TerminalDbRow): StoredTerminal {
     // is deleted, never unbound. A null here means a write went around the broker.
     throw new Error(`terminal ${row.id} has no home composition`);
   }
-  const session = row.session === null ? undefined : SessionRefSchema.parse(JSON.parse(row.session));
+  const session =
+    row.session === null ? undefined : SessionRefSchema.parse(JSON.parse(row.session));
   if (session !== undefined && session.machineId !== row.machine_id)
     throw new Error(`terminal ${row.id} session machine does not match`);
   return {
@@ -3669,7 +3670,8 @@ export class ServerStore {
   }
 
   createTerminal(terminal: NewStoredTerminal): void {
-    const session = terminal.session === undefined ? undefined : SessionRefSchema.parse(terminal.session);
+    const session =
+      terminal.session === undefined ? undefined : SessionRefSchema.parse(terminal.session);
     if (session !== undefined && session.machineId !== terminal.machineId)
       throw new Error("terminal session machine does not match");
     this.db

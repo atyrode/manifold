@@ -3364,8 +3364,9 @@ env? }` → server targets `machineId` when given (error `no_machine` if it is u
   The durable terminal row projects it as optional `session` in `TerminalInfo`,
   `TerminalSummary` (`core.terminals.listAll`) and `ContainerTerminalSummary`
   (`core.terminals.listByContainer`), behind their existing home/read/scope checks. No separate
-  lookup or authority is added. Exit, rename, home movement, owner reconciliation, restart and
-  hub restart preserve the admitted reference; dismissal removes it with the terminal.
+  lookup or authority is added. Retained exits, rename, home movement, owner reconciliation,
+  restart and hub restart preserve the admitted reference. Successful terminal retirement
+  and dismissal remove it with the terminal.
   Ordinary terminals and historical rows omit it. Absence means **unknown correlation**,
   never stopped, non-harness or permission to infer identity from cwd, title, jobs or recipes.
   Consumers join only exact tuples; live state is independent of identity. Reopening a known
@@ -4208,6 +4209,11 @@ provider handling and postconditions belong to plugins, never the common floor.
   when it states none, with whatever usage it states still counted and the job's lane left open,
   because a failure the provider stated is an answer it gave rather than a body nothing can read.
   So no such call reads as a success that happened to cost nothing.
+  Authorized operation descriptions expose the current meter and applicable price schedule
+  beside the same policy revision/hash, without exposing configuration or credential references.
+  Invisible and unmetered operations disclose no such metadata. Public job receipts expose
+  native admission limits before completion; older-hub receipts may omit them, which cannot
+  attest a requested bound.
   Prices are policy content in integer micro-dollars, pinned by the policy's `revision`; ceilings
   are the job's `limits.inference`, and an operation's declared ceiling can be lowered by a request
   but never dropped (`limit_exceeded`). The owner serializes metered calls across every service

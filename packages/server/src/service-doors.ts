@@ -5,6 +5,8 @@ import {
   ServiceReadArgsSchema,
   ServiceInvokeArgsSchema,
   ServiceReplySchema,
+  ServiceProxyOperationPolicySchema,
+  ServicePolicySchema,
 } from "@manifold/protocol";
 import {
   InstanceServiceTargetSchema,
@@ -52,6 +54,8 @@ const description: z.ZodType<ServiceDescription> = z.strictObject({
           invocable: z.boolean(),
           ready: z.boolean(),
           reason: z.string().nullable(),
+          meter: ServiceProxyOperationPolicySchema.shape.meter,
+          prices: ServicePolicySchema.shape.prices,
         }),
       ),
     }),

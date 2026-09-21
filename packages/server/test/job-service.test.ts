@@ -734,6 +734,7 @@ test("data-only credential migration and author audit projection preserve enable
 ALTER TABLE terminals DROP COLUMN cwd;
 ALTER TABLE terminals DROP COLUMN launch_recipe;
 ALTER TABLE terminals DROP COLUMN created_by_run_id;
+ALTER TABLE terminals DROP COLUMN session;
 DROP TABLE principal_access_pauses;
 UPDATE meta SET value='37' WHERE key='schema_version';
 `);
@@ -5088,7 +5089,7 @@ describe("metered inference journal and ceilings", () => {
     try {
       consent(f, "machines:run");
       prove(f);
-      f.service.execute(f.root, pluginId, "trace-1", {
+      const admitted = f.service.execute(f.root, pluginId, "trace-1", {
         jobId: "job",
         machineId: f.machineId,
         operationId,
@@ -5096,7 +5097,7 @@ describe("metered inference journal and ceilings", () => {
         outputs: [],
         limits,
       });
-      expect(f.service.jobs.get("job")?.request.limits.inference).toEqual(ceiling);
+      expect(f.service.publicJob(admitted).limits?.inference).toEqual(ceiling);
       expect(() =>
         f.service.execute(f.root, pluginId, "trace-1", {
           jobId: "over",
@@ -5118,7 +5119,7 @@ describe("metered inference journal and ceilings", () => {
           limits: { ...limits, inference: { calls: 1 } },
         }),
       ).toThrow("limit_exceeded");
-      f.service.execute(f.root, pluginId, "trace-1", {
+      const lowered = f.service.execute(f.root, pluginId, "trace-1", {
         jobId: "lower",
         machineId: f.machineId,
         operationId,
@@ -5126,7 +5127,7 @@ describe("metered inference journal and ceilings", () => {
         outputs: [],
         limits: { ...limits, inference: { calls: 1, costMicros: 10 } },
       });
-      expect(f.service.jobs.get("lower")?.request.limits.inference).toEqual({
+      expect(f.service.publicJob(lowered).limits?.inference).toEqual({
         calls: 1,
         costMicros: 10,
       });
@@ -5140,7 +5141,7 @@ describe("metered inference journal and ceilings", () => {
     try {
       consent(f, "machines:run");
       prove(f);
-      f.service.execute(f.root, pluginId, "trace-1", {
+      const admitted = f.service.execute(f.root, pluginId, "trace-1", {
         jobId: "job",
         machineId: f.machineId,
         operationId,
@@ -5148,7 +5149,7 @@ describe("metered inference journal and ceilings", () => {
         outputs: [],
         limits: { ...limits, inference: { costMicros: 250_000 } },
       });
-      expect(f.service.jobs.get("job")?.request.limits.inference).toEqual({ costMicros: 250_000 });
+      expect(f.service.publicJob(admitted).limits?.inference).toEqual({ costMicros: 250_000 });
     } finally {
       f.store.close();
     }
@@ -6954,6 +6955,7 @@ DELETE FROM meta WHERE key='agent-runs:declarations-after-event-id';
 ALTER TABLE terminals DROP COLUMN cwd;
 ALTER TABLE terminals DROP COLUMN launch_recipe;
 ALTER TABLE terminals DROP COLUMN created_by_run_id;
+ALTER TABLE terminals DROP COLUMN session;
 UPDATE meta SET value='33' WHERE key='schema_version';
 `);
       f.store.close();
