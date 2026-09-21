@@ -12,6 +12,7 @@ import { TerminalCwdSchema, TerminalExecutionSchema } from "./machine.ts";
 
 export const ACTION_TRACE_ID_HEADER = "x-manifold-trace-id";
 export const AGENT_JUSTIFICATION_HEADER = "x-manifold-agent-justification";
+export const ACTION_RESULT_PROJECTION_HEADER = "x-manifold-result-projection";
 
 /** HTTP field values are ASCII; keep Unicode and line breaks exact until semantic validation. */
 export function encodeAgentJustification(value: string): string {

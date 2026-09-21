@@ -9,7 +9,13 @@ import {
 } from "./agent-runs.ts";
 import { ReportRunActivityRequestSchema } from "./agents.ts";
 import { GrantNodeSchema } from "./grants.ts";
-import { ActionDenialSchema, ActionSummarySchema } from "./plugin.ts";
+import {
+  ACTION_RESULT_PROJECTION_MAX_BYTES,
+  ActionDenialSchema,
+  ActionProjectedResultSchema,
+  ActionResultProjectionDigestSchema,
+  ActionSummarySchema,
+} from "./plugin.ts";
 
 export const ACTION_RUNNER_MAX_FRAME_BYTES = 65_536;
 export const ACTION_RUNNER_MAX_FRAMES = 1_024;
@@ -43,6 +49,34 @@ export const ActionRunnerBindSchema = z.union([
   z.strictObject({ runId: RunIdSchema }),
 ]);
 export type ActionRunnerBind = z.infer<typeof ActionRunnerBindSchema>;
+
+/** Trusted launcher configuration only; model frames cannot select an output policy. */
+export const ActionRunnerReadResultsSchema = z
+  .array(
+    z.strictObject({
+      door: z
+        .string()
+        .min(1)
+        .max(256)
+        .refine((door) => !door.includes("*")),
+      contractDigest: ActionResultProjectionDigestSchema,
+      maxResultBytes: z
+        .number()
+        .int()
+        .positive()
+        .max(ACTION_RESULT_PROJECTION_MAX_BYTES)
+        .optional(),
+    }),
+  )
+  .max(64)
+  .refine((entries) => new Set(entries.map((entry) => entry.door)).size === entries.length);
+export type ActionRunnerReadResults = z.infer<typeof ActionRunnerReadResultsSchema>;
+
+/** Returned bytes are source data, never part of the run's policy or instructions. */
+const RunnerProjectionSchema = z.discriminatedUnion("ok", [
+  ActionProjectedResultSchema.options[0].extend({ trust: z.literal("untrusted") }),
+  ActionProjectedResultSchema.options[1].extend({ trust: z.literal("untrusted") }),
+]);
 
 /** Only the trusted inherited activity pipe accepts this frame. */
 export const ActionRunnerActivitySchema = ReportRunActivityRequestSchema.extend({
@@ -117,25 +151,28 @@ export const ActionRunnerResponseSchema = z.discriminatedUnion("type", [
     ...CorrelationSchema.shape,
     policy: AgentPolicyChallengeSchema,
   }),
-  z.strictObject({
-    type: z.literal("result"),
-    ...CorrelationSchema.shape,
-    outcome: z.union([
-      z.strictObject({ ok: z.literal(true) }),
-      z.strictObject({
-        ok: z.literal(false),
-        denial: ActionDenialSchema.pick({ rule: true }),
-      }),
-    ]),
-    expiresAt: z.number().int().positive().optional(),
-    cleanup: z
-      .strictObject({
-        finishedRuns: z.number().int().positive(),
-        revokedCredentials: z.number().int().nonnegative(),
-        revokedGrants: z.number().int().nonnegative(),
-      })
-      .optional(),
-  }),
+  z
+    .strictObject({
+      type: z.literal("result"),
+      ...CorrelationSchema.shape,
+      outcome: z.union([
+        z.strictObject({ ok: z.literal(true) }),
+        z.strictObject({
+          ok: z.literal(false),
+          denial: ActionDenialSchema.pick({ rule: true }),
+        }),
+      ]),
+      projection: RunnerProjectionSchema.optional(),
+      expiresAt: z.number().int().positive().optional(),
+      cleanup: z
+        .strictObject({
+          finishedRuns: z.number().int().positive(),
+          revokedCredentials: z.number().int().nonnegative(),
+          revokedGrants: z.number().int().nonnegative(),
+        })
+        .optional(),
+    })
+    .refine((result) => result.projection === undefined || result.outcome.ok),
   z.strictObject({
     type: z.literal("error"),
     id: IdSchema.nullable(),
@@ -149,6 +186,8 @@ export const ActionRunnerResponseSchema = z.discriminatedUnion("type", [
       "unknown_action",
       "invalid_state",
       "policy_mismatch",
+      "projection_unavailable",
+      "projection_changed",
       "transport_failed",
       "missing_trace",
       "invalid_response",

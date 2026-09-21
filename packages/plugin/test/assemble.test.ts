@@ -1,5 +1,7 @@
 import {
   DEFAULT_ELEMENT_PLACEMENT_TRAITS,
+  actionResultProjectionDigest,
+  type ActionResultProjection,
   type Cap,
   type PluginManifest,
   type StreamDescriptor,
@@ -69,6 +71,54 @@ const shell: PluginDef = {
 };
 
 describe("assembleRoster", () => {
+  test("projection publication snapshots a declaration until the next assembly", async () => {
+    const policy: ActionResultProjection = {
+      kind: "projected-json",
+      fields: [["ok"]],
+      maxArrayItems: 4,
+      maxResultBytes: 256,
+    };
+    const def = { ...terminals, actions: [{ ...RENAME, resultProjection: policy }] };
+    const before = assembleRoster([def], NONE);
+    const digest = await actionResultProjectionDigest(policy);
+    policy.fields[0]![0] = "other";
+    expect(before.roster[0]?.actions[0]?.resultProjection?.fields).toEqual([["ok"]]);
+    expect(await before.actions.get("core.terminals.rename")?.resultProjection?.digest).toBe(
+      digest,
+    );
+    const after = assembleRoster([def], NONE);
+    expect(after.roster[0]?.actions[0]?.resultProjection?.fields).toEqual([["other"]]);
+    expect(await after.actions.get("core.terminals.rename")?.resultProjection?.digest).not.toBe(
+      digest,
+    );
+  });
+
+  test("invalid and lifecycle publication declarations cannot enter the roster", () => {
+    const policy: ActionResultProjection = {
+      kind: "projected-json",
+      fields: [["ok"]],
+      maxArrayItems: 4,
+      maxResultBytes: 256,
+    };
+    for (const action of [
+      { ...RENAME, resultProjection: { ...policy, maxResultBytes: 1_048_577 } },
+      { ...RENAME, resultProjection: { ...policy, fields: [["__proto__"]] } },
+      { ...RENAME, runAccess: "policy" as const, resultProjection: policy },
+    ]) {
+      expect(() =>
+        assembleRoster(
+          [
+            {
+              manifest: manifest({ id: "core.access", capabilities: ["containers:write"] }),
+              actions: [action],
+            },
+          ],
+          NONE,
+        ),
+      ).toThrow(AssemblyError);
+    }
+  });
+
   test("native delegates cannot expand manifest authority or bypass direct target requirements", () => {
     const orchestrator = (
       // A delegate is a NATIVE API ceiling, so it is the engine's closed set even now that a

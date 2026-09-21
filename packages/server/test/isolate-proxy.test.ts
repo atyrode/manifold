@@ -6,6 +6,7 @@ import {
   MAX_SQL_BATCH_STATEMENTS,
   MAX_SQL_PARAMS,
   MAX_SQL_PARAMS_BYTES,
+  assembleRoster,
   type JobSettledCtx,
   type LifecycleCtx,
   type PluginDatabase,
@@ -165,6 +166,26 @@ function ctxWith(
 }
 
 describe("buildIsolateDef", () => {
+  test("host discovery republishes the same projection declared by a loaded guest", () => {
+    const report = loaded(["test.proxy.echo"]);
+    const policy = {
+      kind: "projected-json" as const,
+      fields: [["text"]],
+      maxArrayItems: 4,
+      maxResultBytes: 256,
+    };
+    const { def } = buildIsolateDef(
+      manifest,
+      {
+        ...report,
+        actions: report.actions.map((action) => ({ ...action, resultProjection: policy })),
+      },
+      scripted({ ok: true, result: null, emits: [] }),
+    );
+    const assembly = assembleRoster([def], new Set());
+    expect(assembly.roster[0]?.actions[0]?.resultProjection).toEqual(policy);
+  });
+
   test("names are made local under the plugin's own namespace, or the load fails", () => {
     const transport = scripted({ ok: true, result: null, emits: [] });
     const { def } = buildIsolateDef(manifest, loaded(["test.proxy.echo"]), transport);

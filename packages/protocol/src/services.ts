@@ -155,17 +155,76 @@ const projectionPath = z
   .array(z.union([name, z.literal("*")]))
   .min(1)
   .max(16);
+export const JsonProjectionSchema = z.strictObject({
+  kind: z.literal("projected-json"),
+  /** Paths select primitive leaves, not entire objects. '*' traverses arrays only. */
+  fields: z.array(projectionPath).min(1).max(64),
+  maxArrayItems: z.number().int().positive().max(4096),
+});
 export const ServiceResponsePolicySchema = z.discriminatedUnion("kind", [
-  z.strictObject({
-    kind: z.literal("projected-json"),
-    /** Paths select primitive leaves, not entire objects. '*' traverses arrays only. */
-    fields: z.array(projectionPath).min(1).max(64),
-    maxArrayItems: z.number().int().positive().max(4096),
-  }),
+  JsonProjectionSchema,
   // These modes authorize disclosure of the entire successful body, not just metadata.
   z.strictObject({ kind: z.literal("json"), disclosure: z.literal("full") }),
   z.strictObject({ kind: z.literal("bytes"), disclosure: z.literal("full") }),
 ]);
+
+/** One bounded projection implementation for service and action-result consumers. */
+export class JsonProjectionError extends Error {
+  constructor(readonly code: "invalid" | "limit") {
+    super(`json_projection_${code}`);
+    this.name = "JsonProjectionError";
+  }
+}
+
+export type JsonProjection = { leaf: boolean; children: Map<string, JsonProjection> };
+export function compileJsonProjection(fields: readonly (readonly string[])[]): JsonProjection {
+  const root: JsonProjection = { leaf: false, children: new Map() };
+  for (const path of fields) {
+    let node = root;
+    for (const part of path) {
+      let child = node.children.get(part);
+      if (!child) {
+        child = { leaf: false, children: new Map() };
+        node.children.set(part, child);
+      }
+      node = child;
+    }
+    node.leaf = true;
+  }
+  return root;
+}
+export function projectJson(
+  value: unknown,
+  node: JsonProjection,
+  maxArrayItems: number,
+  budget: { nodes: number } = { nodes: 65536 },
+): unknown {
+  if (--budget.nodes < 0) throw new JsonProjectionError("limit");
+  if (node.leaf) {
+    if (
+      value === null ||
+      typeof value === "string" ||
+      typeof value === "boolean" ||
+      (typeof value === "number" && Number.isFinite(value))
+    )
+      return value;
+    throw new JsonProjectionError("invalid");
+  }
+  const wildcard = node.children.get("*");
+  if (wildcard) {
+    if (!Array.isArray(value)) throw new JsonProjectionError("invalid");
+    if (value.length > maxArrayItems) throw new JsonProjectionError("limit");
+    return value.map((item) => projectJson(item, wildcard, maxArrayItems, budget));
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new JsonProjectionError("invalid");
+  const result: Record<string, unknown> = Object.create(null);
+  for (const [key, child] of node.children) {
+    if (Object.hasOwn(value, key))
+      result[key] = projectJson(Reflect.get(value, key), child, maxArrayItems, budget);
+  }
+  return result;
+}
 const deniedProxyHeaders: Readonly<Record<string, boolean>> = {
   constructor: true,
   prototype: true,

@@ -3346,6 +3346,20 @@ The `result` schema is enforced on the way out too; the roster publishes both sc
 the `loaded` frame. Repack existing self-contained guests with the current kit for this mandatory
 handshake; there is no old-runtime validation fallback or second public action door.
 
+Both `defineServerAction` here and `defineAction` in-realm accept an optional `resultProjection`
+for bounded agent-visible results. It selects primitive leaves, not arbitrary JSON subtrees:
+for example, `{ kind: "projected-json", fields: [["items", "*", "text"]], maxArrayItems: 20,
+maxResultBytes: 32768 }`. The authoring declaration is published with the action, never duplicated
+in the manifest. Lifecycle (`runAccess`) declarations cannot publish result projections.
+The host, not the guest, projects a successfully parsed result, with identical semantics for
+both execution modes. Normal callers still receive their ordinary result. External agents see
+the projection only with a separate trusted launcher's exact-door, digest-pinned approval;
+declaration alone is not disclosure authority. The plugin must enforce caller/subject disclosure
+and redact sensitive material before returning it. A projection failure preserves the successful
+effect and trace and returns a bounded publication failure, not an invitation to retry.
+See `packages/sdk/README.md`, “Opting into bounded read results”, for limits, digest computation
+and the untrusted-data envelope.
+
 A hook (`onEnable`, `onDisable`, `onAssemblyChanged`) gets storage and the clock. It does NOT get
 `emit`: the `hooked` frame has no carrier for emissions, so a hook that emits fails by name instead
 of publishing into the void. `onEnable` and `onDisable` also get `ctx.jobs` and `ctx.actions` — the
@@ -3444,7 +3458,7 @@ bun run --cwd packages/plugin-kit pack <plugin-dir> --out example.counter.manifo
 
 `pack --self-contained` reads `<plugin-dir>/manifest.json`, bundles `server.ts` (target `bun`)
 and `web.ts` (target `browser`) with the kit's guest runtimes, the protocol and zod INLINED, and
-writes one JSON document (`PluginBundleSchema`: `format: 1`, `hardenedContract: 2`, the manifest
+writes one JSON document (`PluginBundleSchema`: `format: 1`, `hardenedContract: 3`, the manifest
 with its `entry`, the members as base64, no `builtAgainst`). All packing modes stamp the same
 executable contract. The artifact is self-contained because the runner resolves
 nothing: the hub's process runner is one `Bun.spawn` of the bundle's `server.js`; the page fetches
@@ -3461,8 +3475,10 @@ bundle lives afterwards — is §7 Installing a plugin, and the artifact's shape
 `docs/CONTRACTS.md` §Hardened plugins.
 
 `hardenedContract` has an acceptance set separate from releases and machine/session protocols.
-The current hub accepts contracts 1 and 2; current packs stamp 2. Contract 1 is the bounded
-receipt plus prepared/admitted dispatch baseline, and contract 2 adds optional load identity.
+The current hub accepts contracts 1, 2 and 3; current packs stamp 3. Contract 1 is the bounded
+receipt plus prepared/admitted dispatch baseline, contract 2 adds optional load identity, and
+contract 3 adds optional action result projections. The host sends the admitted guest's own
+contract stamp, not its latest supported version.
 An older accepted bundle uses the compatible frame path and keeps working. A missing stamp
 does not mean contract 1: older bundles need one genuine repack with a current kit. The plugin
 manager and `GET /api/plugins` show `held: { reason: "repack_required", minimum: 1 }` before

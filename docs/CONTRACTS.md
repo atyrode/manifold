@@ -241,10 +241,10 @@ A trusted harness reports activity through `ActionRunner.reportActivity` or a se
 `core.access.reportRunActivity` door and owned run credential, not terminal-output inference;
 both pipes share the serialized executor and process lifetime.
 
-JSONL results publish only mechanical success or the server's refusal rule, door, caller-declared
-target, run id, trace id and bounded lifecycle facts. They do not publish raw action results,
-free-form refusal messages, arguments, environment/terminal/output bytes, credential values or
-credential hashes. Policy digests are public acknowledgement identifiers, not credential hashes.
+By default JSONL results publish only mechanical success or the server's refusal rule, door,
+caller-declared target, run id, trace id and bounded lifecycle facts. Raw action results,
+free-form refusal messages, arguments, credential values and credential hashes never cross this
+interface. Policy digests are public acknowledgement identifiers, not credential hashes.
 The target is a declaration, not a claim that the caller has reconstructed resolved ledger targets.
 Frames reject credential fields and bearer-shaped input even inside opaque action arguments.
 The runner bounds each pipe's frames to 64 KiB and frame count to 1024, model idle time to
@@ -255,6 +255,46 @@ retains the scoped runner credential even after run expiry, while Run mode uses 
 run bearer. Lost responses, network failure and uncatchable termination cannot guarantee
 cleanup: report failure and rely on server expiry only as the backstop.
 See [the operating contract](../packages/sdk/README.md) before launching.
+
+**Opt-in bounded result publication.** An ordinary action's optional `resultProjection` is a
+`projected-json` primitive-leaf selection with `fields`, `maxArrayItems` and `maxResultBytes`;
+it is not permitted on `runAccess` lifecycle declarations. Limits are 64 paths, 16 segments per
+path, 4096 items per array, 65536 traversal nodes and 1 MiB of serialized UTF-8 projected data.
+The existing service-response projector supplies the same semantics: `*` traverses arrays,
+missing fields are omitted, and selected nonprimitive leaves refuse rather than expose a subtree.
+The plugin owns semantic redaction and subject-level disclosure. Publication metadata grants
+no invocation authority and does not assert that a read action has no effects.
+
+The SDK's trusted `readResults` option (environment `MANIFOLD_READ_RESULTS`, withdrawn before
+model input) accepts at most 64 unique exact-door `{door,contractDigest,maxResultBytes?}`
+approvals. The lowercase SHA-256 digest covers JSON of the schema-parsed declaration, with
+normalized property order and preserved path order. The launcher must review it; discovery
+alone cannot authorize output. Missing and changed declarations fail before invocation as
+`projection_unavailable` and `projection_changed`; discovery refresh does not reauthorize them.
+The model frame union is unchanged. Lifecycle, activity, policy, renewal, child and finish frames
+cannot opt into result data.
+
+`invokeAction` accepts trusted metadata `resultProjectionDigest`, sent as
+`x-manifold-result-projection`. The existing HTTP route validates its 64-hex encoding; CORS
+allows the header without expanding allowed origins. The host compares the requested digest
+with the assembled immutable declaration after ordinary authority/input checks and before
+effects, returning the ordinary traced `invalid_args` on mismatch or absence. The same host
+projection runs after successful result parsing and event/trace settlement for in-realm and
+hardened actions. No request means no projection work; ordinary full results and sibling calls
+are unchanged. Hardened contract 3 adds this optional summary field and retains admission of
+contracts 1 and 2, using each admitted guest's own load stamp.
+
+Only successful action outcomes may include the separate `projection` envelope:
+`{ok:true,contractDigest,data}` or
+`{ok:false,contractDigest,code:"projection_invalid"|"projection_limit"}`. Output failure after
+successful effects does not relabel the action as refused or roll back its events/trace. The
+runner consumes only a matching sideband correlated with a real trace, independently reprojects
+and bounds it, applies the narrower launcher byte ceiling, and rejects held credential values
+and credential/key-link carriers. These lexical checks are defense in depth, not semantic
+classification. It adds `trust:"untrusted"` to the envelope; source bytes never become policy
+or other control frames. There is no raw-result fallback, truncation or automatic retry.
+Each complete outgoing JSONL frame, including its newline, and the output queue are bounded
+to 16 MiB. Action refusal and handler/result-schema failure publish no projection.
 
 ### Agent run inspection and declarations
 

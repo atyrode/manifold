@@ -4,13 +4,21 @@ import {
   ActionRunnerActivitySchema,
   ActionRunnerBindSchema,
   ActionRunnerRequestSchema,
+  ActionRunnerReadResultsSchema,
   ActionRunnerResponseSchema,
   AgentPolicyChallengeSchema,
   CreateRunCredentialResultSchema,
   FinishAgentRunResultSchema,
   InspectRunResultSchema,
+  JsonProjectionError,
   MANIFOLD_ROOT_URI,
   RenewAgentRunResultSchema,
+  actionResultProjectionDigest,
+  compileJsonProjection,
+  projectJson,
+  type ActionResultProjection,
+  type ActionRunnerReadResults,
+  type JsonProjection,
   type ActionProtocol,
   type ActionRunnerBind,
   type ActionRunnerRequest,
@@ -47,6 +55,15 @@ interface OwnedRun {
   finished: boolean;
 }
 
+interface ReadResultContract {
+  digest: string;
+  projection: JsonProjection;
+  policy: ActionResultProjection;
+  maxResultBytes: number;
+}
+
+const MAX_RESPONSE_BYTES = 16 * 1_048_576;
+
 const LIFECYCLE = {
   create: "core.access.createRun",
   child: "core.access.createChildRun",
@@ -67,6 +84,11 @@ export class ActionRunner {
   readonly #runs = new Map<string, OwnedRun>();
   readonly #ids = new Set<string>();
   readonly #secrets = new Set<string>();
+  readonly #readResults: ActionRunnerReadResults;
+  readonly #readContracts = new Map<
+    string,
+    ReadResultContract | "projection_unavailable" | "projection_changed"
+  >();
   #protocol: ActionProtocol | null = null;
   #root: OwnedRun | null = null;
   #admissionUncertain = false;
@@ -80,6 +102,7 @@ export class ActionRunner {
     origin: string;
     token: string;
     bind: ActionRunnerBind;
+    readResults?: ActionRunnerReadResults;
     emit: (frame: ActionRunnerResponse) => void;
   }) {
     let url: URL;
@@ -105,6 +128,9 @@ export class ActionRunner {
     if (!binding.success) throw new ActionRunnerError("invalid_frame");
     this.#checkInput(binding.data);
     this.#binding = binding.data;
+    const readResults = ActionRunnerReadResultsSchema.safeParse(options.readResults ?? []);
+    if (!readResults.success) throw new ActionRunnerError("invalid_frame");
+    this.#readResults = readResults.data;
     this.#emit = options.emit;
   }
 
@@ -115,18 +141,28 @@ export class ActionRunner {
     return this.#closed && this.#cleanupConfirmed && this.#terminalOutcome === "completed";
   }
 
+  #checkString(value: string): void {
+    for (const secret of this.#secrets) {
+      if (value.includes(secret)) throw new ActionRunnerError("credential_input");
+    }
+    if (/(?:bearer\s|[#?&](?:key|token|access_token|api_key)=|https?:\/\/[^/\s]+@)/i.test(value))
+      throw new ActionRunnerError("credential_input");
+  }
+
   /** Reject secret carriers recursively, including inside opaque action arguments. */
-  #checkInput(value: unknown, depth = 0): void {
-    if (depth > 32) throw new ActionRunnerError("limit_exceeded");
+  #checkInput(
+    value: unknown,
+    depth = 0,
+    budget = { nodes: Infinity },
+    maxDepth = 32,
+    maxArrayItems = Infinity,
+  ): void {
+    if (depth > maxDepth || --budget.nodes < 0) throw new ActionRunnerError("limit_exceeded");
     if (typeof value === "string") {
-      for (const secret of this.#secrets) {
-        if (value.includes(secret)) throw new ActionRunnerError("credential_input");
-      }
-      if (/(?:bearer\s|#key=)/i.test(value)) {
-        throw new ActionRunnerError("credential_input");
-      }
+      this.#checkString(value);
     } else if (Array.isArray(value)) {
-      for (const item of value) this.#checkInput(item, depth + 1);
+      if (value.length > maxArrayItems) throw new ActionRunnerError("limit_exceeded");
+      for (const item of value) this.#checkInput(item, depth + 1, budget, maxDepth, maxArrayItems);
     } else if (value !== null && typeof value === "object") {
       for (const [key, child] of Object.entries(value)) {
         if (
@@ -136,7 +172,8 @@ export class ActionRunner {
         ) {
           throw new ActionRunnerError("credential_input");
         }
-        this.#checkInput(child, depth + 1);
+        this.#checkString(key);
+        this.#checkInput(child, depth + 1, budget, maxDepth, maxArrayItems);
       }
     }
   }
@@ -145,6 +182,8 @@ export class ActionRunner {
     const parsed = ActionRunnerResponseSchema.safeParse(frame);
     if (!parsed.success) throw new ActionRunnerError("invalid_response");
     const encoded = JSON.stringify(parsed.data);
+    if (Buffer.byteLength(encoded) + 1 > MAX_RESPONSE_BYTES)
+      throw new ActionRunnerError("limit_exceeded");
     // Do not redact policy bytes: fail closed rather than deliver a different challenge.
     for (const secret of this.#secrets) {
       if (encoded.includes(secret)) throw new ActionRunnerError("invalid_response");
@@ -157,7 +196,7 @@ export class ActionRunner {
       origin: this.#origin,
       token: run?.token ?? this.#launcherToken,
       timeoutMs: 30_000,
-      maxResponseBytes: 16 * 1_048_576,
+      maxResponseBytes: MAX_RESPONSE_BYTES,
     };
   }
 
@@ -176,6 +215,34 @@ export class ActionRunner {
 
   async #discover(id: string | null, run?: OwnedRun): Promise<ActionProtocol> {
     this.#protocol = await discoverActions(this.#options(run));
+    this.#readContracts.clear();
+    for (const entry of this.#readResults) {
+      const action = this.#protocol.actions.find((candidate) => candidate.name === entry.door);
+      const policy = action?.resultProjection;
+      if (
+        policy === undefined ||
+        action?.runAccess !== undefined ||
+        Object.values(LIFECYCLE).some((door) => door === entry.door)
+      ) {
+        this.#readContracts.set(entry.door, "projection_unavailable");
+        continue;
+      }
+      const digest = await actionResultProjectionDigest(policy);
+      this.#readContracts.set(
+        entry.door,
+        digest !== entry.contractDigest
+          ? "projection_changed"
+          : {
+              digest,
+              policy,
+              projection: compileJsonProjection(policy.fields),
+              maxResultBytes: Math.min(
+                policy.maxResultBytes,
+                entry.maxResultBytes ?? policy.maxResultBytes,
+              ),
+            },
+      );
+    }
     this.#send({ type: "discovery", id, runId: run?.run.id ?? null, ...this.#protocol });
     return this.#protocol;
   }
@@ -187,17 +254,51 @@ export class ActionRunner {
     justification?: string,
     target = run?.run.target ?? MANIFOLD_ROOT_URI,
     attemptRunId = run?.run.id ?? null,
+    resultProjectionDigest?: string,
   ): Promise<ActionInvocation> {
     this.#attempt = { door, target, runId: attemptRunId };
     if (this.#protocol === null || !this.#protocol.actions.some((action) => action.name === door)) {
       throw new ActionRunnerError("unknown_action");
     }
-    return invokeAction(
-      this.#options(run),
-      door,
-      args,
-      justification === undefined ? {} : { agentJustification: justification },
-    );
+    return invokeAction(this.#options(run), door, args, {
+      ...(justification === undefined ? {} : { agentJustification: justification }),
+      ...(resultProjectionDigest === undefined ? {} : { resultProjectionDigest }),
+    });
+  }
+
+  #projection(
+    invocation: ActionInvocation,
+    contract: ReadResultContract,
+  ): NonNullable<Extract<ActionRunnerResponse, { type: "result" }>["projection"]> {
+    const failure = (code: "projection_invalid" | "projection_limit") => ({
+      ok: false as const,
+      contractDigest: contract.digest,
+      code,
+      trust: "untrusted" as const,
+    });
+    if (!invocation.outcome.ok || invocation.traceId === null) return failure("projection_invalid");
+    const envelope = invocation.outcome.projection;
+    if (envelope === undefined || envelope.contractDigest !== contract.digest)
+      return failure("projection_invalid");
+    if (!envelope.ok) return failure(envelope.code);
+    try {
+      if (envelope.data === undefined) return failure("projection_invalid");
+      // Bound and inspect the peer's complete sideband before selecting leaves again.
+      this.#checkInput(envelope.data, 0, { nodes: 65_536 }, 16, contract.policy.maxArrayItems);
+      if (Buffer.byteLength(JSON.stringify(envelope.data)) > contract.maxResultBytes)
+        return failure("projection_limit");
+      const data = projectJson(envelope.data, contract.projection, contract.policy.maxArrayItems);
+      if (Buffer.byteLength(JSON.stringify(data)) > contract.maxResultBytes)
+        return failure("projection_limit");
+      return { ok: true, contractDigest: contract.digest, data, trust: "untrusted" };
+    } catch (error) {
+      return failure(
+        (error instanceof JsonProjectionError && error.code === "limit") ||
+          (error instanceof ActionRunnerError && error.code === "limit_exceeded")
+          ? "projection_limit"
+          : "projection_invalid",
+      );
+    }
   }
 
   #result(
@@ -207,6 +308,7 @@ export class ActionRunner {
     target: string,
     invocation: ActionInvocation,
     extra: Pick<Extract<ActionRunnerResponse, { type: "result" }>, "expiresAt" | "cleanup"> = {},
+    contract?: ReadResultContract,
   ): void {
     if (
       invocation.traceId === null &&
@@ -214,8 +316,8 @@ export class ActionRunner {
     ) {
       throw new ActionRunnerError("missing_trace");
     }
-    // The action result and free-form refusal message can contain output or arguments.
-    // Only the mechanical outcome crosses stdio; the shared SDK retains the complete outcome.
+    // The raw result and free-form refusal message never cross stdio. A separately
+    // requested and verified projection remains untrusted data, not a policy frame.
     this.#send({
       type: "result",
       id,
@@ -227,6 +329,9 @@ export class ActionRunner {
         ? { ok: true }
         : { ok: false, denial: { rule: invocation.outcome.denial.rule } },
       ...extra,
+      ...(contract !== undefined && invocation.outcome.ok
+        ? { projection: this.#projection(invocation, contract) }
+        : {}),
     });
   }
 
@@ -456,13 +561,19 @@ export class ActionRunner {
       }
       case "invoke": {
         if (!run.acknowledged) throw new ActionRunnerError("invalid_state");
+        this.#attempt = { door: frame.door, target: frame.target, runId: run.run.id };
+        const contract = this.#readContracts.get(frame.door);
         const action = this.#protocol?.actions.find((action) => action.name === frame.door);
-        if (action === undefined) throw new ActionRunnerError("unknown_action");
+        if (action === undefined)
+          throw new ActionRunnerError(
+            contract === undefined ? "unknown_action" : "projection_unavailable",
+          );
         if (
           action.runAccess !== undefined ||
           Object.values(LIFECYCLE).some((door) => door === frame.door)
         )
           throw new ActionRunnerError("invalid_state");
+        if (typeof contract === "string") throw new ActionRunnerError(contract);
         // The discovered schema is delivered verbatim; the actual door remains its sole validator.
         const invocation = await this.#call(
           run,
@@ -470,8 +581,10 @@ export class ActionRunner {
           frame.args,
           frame.justification,
           frame.target,
+          run.run.id,
+          contract?.digest,
         );
-        this.#result(frame.id, run, frame.door, frame.target, invocation);
+        this.#result(frame.id, run, frame.door, frame.target, invocation, {}, contract);
         if (
           !invocation.outcome.ok &&
           (invocation.outcome.denial.rule === "policy_stale" ||

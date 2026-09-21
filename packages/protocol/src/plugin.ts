@@ -6,6 +6,7 @@ import { MAX_STREAM_DESCRIPTORS, StreamDescriptorSchema, streamVocabulary } from
 import { MachineHalfSchema } from "./jobs.ts";
 import { HarnessDefinitionSchema } from "./agents.ts";
 import { ManifoldRefSchema } from "./uri.ts";
+import { JsonProjectionSchema } from "./services.ts";
 import {
   DEFAULT_ELEMENT_PLACEMENT_TRAITS,
   DisciplineDefSchema,
@@ -832,46 +833,92 @@ export const ActionDelegatesSchema = z
   )
   .refine((caps) => new Set(caps).size === caps.length, "duplicate delegated capability");
 
+/** Result publication is a bounded projection, never an invocation grant. */
+export const ACTION_RESULT_PROJECTION_MAX_BYTES = 1_048_576;
+export const ActionResultProjectionDigestSchema = z.string().regex(/^[a-f0-9]{64}$/);
+export const ActionResultProjectionSchema = JsonProjectionSchema.extend({
+  maxResultBytes: z.number().int().positive().max(ACTION_RESULT_PROJECTION_MAX_BYTES),
+});
+export type ActionResultProjection = z.infer<typeof ActionResultProjectionSchema>;
+
+/** Bind a trusted output selection to the exact schema-normalized fields and limits. */
+export async function actionResultProjectionDigest(
+  policy: ActionResultProjection,
+): Promise<string> {
+  const encoded = new TextEncoder().encode(
+    JSON.stringify(ActionResultProjectionSchema.parse(policy)),
+  );
+  const digest = await crypto.subtle.digest("SHA-256", encoded);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/** A projection refusal does not change the outcome of an action that already succeeded. */
+export const ActionProjectedResultSchema = z.discriminatedUnion("ok", [
+  z.strictObject({
+    ok: z.literal(true),
+    contractDigest: ActionResultProjectionDigestSchema,
+    data: z.unknown(),
+  }),
+  z.strictObject({
+    ok: z.literal(false),
+    contractDigest: ActionResultProjectionDigestSchema,
+    code: z.enum(["projection_invalid", "projection_limit"]),
+  }),
+]);
+export type ActionProjectedResult = z.infer<typeof ActionProjectedResultSchema>;
+
 /**
  * One action, published. `input` and `result` are JSON Schemas rather than zod shapes,
  * because the audience is a stranger's agent reading `GET /api/protocol` — the door's own
  * validators are generated from the same definitions, so the published schema is the
  * schema the dispatcher enforces, never a hand-written description of it.
  */
-export const ActionSummarySchema = z.strictObject({
-  /** Fully qualified: `${pluginId}.${localName}`. */
-  name: z.string(),
-  title: z.string(),
-  /** What the CALLER must hold: the engine's capabilities, or this plugin's own (ADR 0035). */
-  caps: AuthoredCapSchema.array(),
-  /** Native API ceiling only; never caller permission, a grant, or target admission. */
-  delegates: ActionDelegatesSchema.optional(),
-  /**
-   * A cleanup action stays dispatchable while its plugin is disabled (D12: creation and
-   * administration die on disable, removal survives — nobody is locked out of deleting).
-   * Published so a client can tell which affordances outlive a toggle.
-   */
-  cleanup: z.boolean().optional(),
-  /**
-   * A reserved core identity action's autonomous-run lifecycle exception. `policy`,
-   * `teardown` and `inspect` remain reachable while ordinary authority is suspended;
-   * `delegate` publishes target-relative authority that the identity mechanism re-evaluates
-   * against the requested child envelope. Assembly refuses this metadata outside `core.access`.
-   */
-  runAccess: ActionRunAccessSchema.optional(),
-  /** A declaration required from active autonomous callers, never authority or reasoning. */
-  agentJustification: z.literal("required").optional(),
-  /**
-   * The authority grade this door is written for. Published (defaulted, so an older reader
-   * that never saw the field reads the conservative answer) because "may my container-scoped
-   * token call this?" is a question a client must be able to answer from the vocabulary alone.
-   */
-  scope: ActionScopeSchema.default("workspace"),
-  requirements: ActionRequirementsSchema.optional(),
-  trace: ActionTracePolicySchema.optional(),
-  input: z.record(z.string(), z.unknown()),
-  result: z.record(z.string(), z.unknown()),
-});
+export const ActionSummarySchema = z
+  .strictObject({
+    /** Fully qualified: `${pluginId}.${localName}`. */
+    name: z.string(),
+    title: z.string(),
+    /** What the CALLER must hold: the engine's capabilities, or this plugin's own (ADR 0035). */
+    caps: AuthoredCapSchema.array(),
+    /** Native API ceiling only; never caller permission, a grant, or target admission. */
+    delegates: ActionDelegatesSchema.optional(),
+    /**
+     * A cleanup action stays dispatchable while its plugin is disabled (D12: creation and
+     * administration die on disable, removal survives — nobody is locked out of deleting).
+     * Published so a client can tell which affordances outlive a toggle.
+     */
+    cleanup: z.boolean().optional(),
+    /**
+     * A reserved core identity action's autonomous-run lifecycle exception. `policy`,
+     * `teardown` and `inspect` remain reachable while ordinary authority is suspended;
+     * `delegate` publishes target-relative authority that the identity mechanism re-evaluates
+     * against the requested child envelope. Assembly refuses this metadata outside `core.access`.
+     */
+    runAccess: ActionRunAccessSchema.optional(),
+    /** A declaration required from active autonomous callers, never authority or reasoning. */
+    agentJustification: z.literal("required").optional(),
+    /**
+     * The authority grade this door is written for. Published (defaulted, so an older reader
+     * that never saw the field reads the conservative answer) because "may my container-scoped
+     * token call this?" is a question a client must be able to answer from the vocabulary alone.
+     */
+    scope: ActionScopeSchema.default("workspace"),
+    requirements: ActionRequirementsSchema.optional(),
+    trace: ActionTracePolicySchema.optional(),
+    input: z.record(z.string(), z.unknown()),
+    result: z.record(z.string(), z.unknown()),
+    /** Absent by default; selected primitive leaves may be disclosed by an opted-in launcher. */
+    resultProjection: ActionResultProjectionSchema.optional(),
+  })
+  .superRefine((action, ctx) => {
+    if (action.runAccess !== undefined && action.resultProjection !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["resultProjection"],
+        message: "lifecycle actions cannot publish result projections",
+      });
+    }
+  });
 export type ActionSummary = z.infer<typeof ActionSummarySchema>;
 
 /**
@@ -1162,7 +1209,11 @@ export type ActionDenialRule = (typeof ACTION_DENIAL_RULES)[number];
  * authority or state, not a transport failure.
  */
 export const ActionOutcomeSchema = z.union([
-  z.strictObject({ ok: z.literal(true), result: z.unknown() }),
+  z.strictObject({
+    ok: z.literal(true),
+    result: z.unknown(),
+    projection: ActionProjectedResultSchema.optional(),
+  }),
   z.strictObject({ ok: z.literal(false), denial: ActionDenialSchema }),
 ]);
 export type ActionOutcome = z.infer<typeof ActionOutcomeSchema>;

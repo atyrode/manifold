@@ -40,6 +40,9 @@ import type { SqlParam, SqlRow, SqlStatement } from "@manifold/plugin";
 import type { ServerMigration as GuestMigration } from "@manifold/plugin-kit/server";
 import {
   ActionCallArgsSchema,
+  JsonProjectionError,
+  projectJson,
+  type ActionProjectedResult,
   GuestMigrationDeclarationsSchema,
   HARDENED_CONTRACT_COMPAT_VERSIONS,
   HARDENED_CONTRACT_MINIMUM,
@@ -1285,6 +1288,7 @@ interface DispatchOrigin {
 /** What a caller may say about a dispatch beyond the four arguments every dispatch has. */
 interface DispatchOptions {
   agentJustification?: string;
+  resultProjectionDigest?: string;
   onTrace?: (traceId: number) => void;
   /** Never a field a request carries: only `actionCalls` sets it. */
   origin?: DispatchOrigin;
@@ -3906,11 +3910,22 @@ export class PluginHost {
       }
       return null;
     };
+    const projection =
+      options.resultProjectionDigest === undefined ? undefined : entry.resultProjection;
+    const projectionDigest = projection === undefined ? undefined : await projection.digest;
+    const projectionDenial =
+      options.resultProjectionDigest !== undefined &&
+      (entry.def.runAccess !== undefined ||
+        projectionDigest === undefined ||
+        projectionDigest !== options.resultProjectionDigest)
+        ? new ActionAdmissionDenial("invalid_args", "result projection request is unavailable")
+        : null;
     if (!guestInput) {
       const denial = admitInput(parsed.data);
       if (denial !== null) return refuse(denial.rule, denial.message);
       if (!nativeEffectAdmission && declarationDenial !== null)
         return refuse(declarationDenial.rule, declarationDenial.message);
+      if (projectionDenial !== null) return refuse(projectionDenial.rule, projectionDenial.message);
     }
     /*
       THE STAGING BUFFER, one per dispatch. `ctx.emit` appends here and nothing leaves until
@@ -3985,6 +4000,7 @@ export class PluginHost {
               const denial = admitInput(undefined, targets);
               if (denial !== null) throw denial;
               enforceDeclaration();
+              if (projectionDenial !== null) throw projectionDenial;
               guestAdmitted = true;
             },
           }
@@ -4311,7 +4327,31 @@ export class PluginHost {
     for (const event of staged) {
       this.events.emit(pluginId, event.ref, event.kind, auth.principal.id, event.payload);
     }
-    return { ok: true, result };
+    if (projection === undefined || projectionDigest === undefined) return { ok: true, result };
+    let projected: ActionProjectedResult;
+    try {
+      // Guests have already crossed JSON. Normalize only the in-realm opt-in view so
+      // omitted optional values and toJSON leaves publish identically in both modes.
+      const source: unknown = guestInput ? result : JSON.parse(JSON.stringify(result));
+      const data = projectJson(source, projection.compiled, projection.policy.maxArrayItems);
+      const bytes = Buffer.byteLength(JSON.stringify(data), "utf8");
+      projected =
+        bytes > projection.policy.maxResultBytes
+          ? { ok: false, contractDigest: projectionDigest, code: "projection_limit" }
+          : { ok: true, contractDigest: projectionDigest, data };
+    } catch (error) {
+      // The effect and event settlement have succeeded. Publication failure must not
+      // turn that truth into an invocation failure or disclose any rejected bytes.
+      projected = {
+        ok: false,
+        contractDigest: projectionDigest,
+        code:
+          error instanceof JsonProjectionError && error.code === "limit"
+            ? "projection_limit"
+            : "projection_invalid",
+      };
+    }
+    return { ok: true, result, projection: projected };
   }
 
   enabled(id: string): boolean {

@@ -1,4 +1,5 @@
 import {
+  ACTION_RESULT_PROJECTION_HEADER,
   ACTION_TRACE_ID_HEADER,
   AGENT_JUSTIFICATION_HEADER,
   ActionOutcomeSchema,
@@ -52,7 +53,7 @@ function withoutTrailingSlashes(origin: string): string {
 async function request(
   options: ActionHttpOptions,
   path: string,
-  invocation?: { args: unknown; agentJustification?: string },
+  invocation?: { args: unknown; agentJustification?: string; resultProjectionDigest?: string },
 ): Promise<{ payload: unknown; traceId: number | null }> {
   const headers = new Headers({
     authorization: `Bearer ${options.token}`,
@@ -65,6 +66,9 @@ async function request(
         AGENT_JUSTIFICATION_HEADER,
         encodeAgentJustification(invocation.agentJustification),
       );
+    }
+    if (invocation.resultProjectionDigest !== undefined) {
+      headers.set(ACTION_RESULT_PROJECTION_HEADER, invocation.resultProjectionDigest);
     }
   }
   let signal = options.signal;
@@ -141,7 +145,7 @@ export async function invokeAction(
   options: ActionHttpOptions,
   name: string,
   args: unknown,
-  metadata: { agentJustification?: string } = {},
+  metadata: { agentJustification?: string; resultProjectionDigest?: string } = {},
 ): Promise<ActionInvocation> {
   const { payload, traceId } = await request(options, `/api/actions/${encodeURIComponent(name)}`, {
     args,

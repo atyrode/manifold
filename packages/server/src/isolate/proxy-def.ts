@@ -103,6 +103,9 @@ export function localActionDef(pluginId: string, summary: ActionSummary): AnyAct
       : { agentJustification: summary.agentJustification }),
     input: z.unknown().meta({ ...summary.input }),
     result: z.unknown().meta({ ...summary.result }),
+    ...(summary.resultProjection === undefined
+      ? {}
+      : { resultProjection: summary.resultProjection }),
   };
 }
 

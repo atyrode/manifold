@@ -1,5 +1,6 @@
 import type {
   ActionRequirement,
+  ActionResultProjection,
   ActionRunAccess,
   ActionScope,
   AuthoredCap,
@@ -46,6 +47,8 @@ export interface ActionDef<In = unknown, Out = unknown> {
   readonly delegates?: readonly Cap[];
   readonly input: z.ZodType<In>;
   readonly result: z.ZodType<Out>;
+  /** Explicit, bounded publication policy; absent means ordinary results stay private. */
+  readonly resultProjection?: ActionResultProjection;
   /**
    * Marks a CLEANUP action: one that removes things and therefore keeps working while the
    * plugin is disabled (D12 — creation and administration die, cleanup survives). The

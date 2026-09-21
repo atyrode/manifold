@@ -5,7 +5,9 @@ import {
   ACTION_RUNNER_MAX_FRAME_BYTES,
   AGENT_RUN_MAX_LIFETIME_MS,
   ActionRunnerBindSchema,
+  ActionRunnerReadResultsSchema,
   type ActionRunnerBind,
+  type ActionRunnerReadResults,
   type AgentRunTerminalOutcome,
 } from "@manifold/protocol";
 import { ActionRunner, ActionRunnerError } from "./action-runner.ts";
@@ -20,6 +22,7 @@ const LAUNCH_KEYS = [
   "MANIFOLD_ORIGIN",
   "MANIFOLD_ACTIVITY_FD",
   "MANIFOLD_SPONSOR_TOKEN",
+  "MANIFOLD_READ_RESULTS",
 ] as const;
 
 /** Withdraw every launcher carrier even when configuration is invalid; none reaches input. */
@@ -27,6 +30,7 @@ export function readActionRunnerEnvironment(environment: Record<string, string |
   origin: string;
   token: string;
   bind: ActionRunnerBind;
+  readResults?: ActionRunnerReadResults;
   activityFd?: number;
 } {
   const values = Object.fromEntries(LAUNCH_KEYS.map((key) => [key, environment[key]]));
@@ -68,6 +72,10 @@ export function readActionRunnerEnvironment(environment: Record<string, string |
       : { runId: values["MANIFOLD_RUN_ID"] },
   );
   if (!parsed.success) throw new ActionRunnerError("invalid_frame");
+  const readResults = ActionRunnerReadResultsSchema.optional().safeParse(
+    json("MANIFOLD_READ_RESULTS"),
+  );
+  if (!readResults.success) throw new ActionRunnerError("invalid_frame");
   const descriptor = values["MANIFOLD_ACTIVITY_FD"];
   if (descriptor !== undefined && (!/^[0-9]{1,6}$/.test(descriptor) || Number(descriptor) < 3))
     throw new ActionRunnerError("invalid_frame");
@@ -75,6 +83,7 @@ export function readActionRunnerEnvironment(environment: Record<string, string |
     origin: values["MANIFOLD_ORIGIN"] ?? "",
     token: values[agentMode ? "MANIFOLD_RUNNER_TOKEN" : "MANIFOLD_RUN_TOKEN"] ?? "",
     bind: parsed.data,
+    ...(readResults.data === undefined ? {} : { readResults: readResults.data }),
     ...(descriptor === undefined ? {} : { activityFd: Number(descriptor) }),
   };
 }
@@ -135,6 +144,7 @@ export async function runActionStdio(options: {
   origin: string;
   token: string;
   bind: ActionRunnerBind;
+  readResults?: ActionRunnerReadResults;
   input: AsyncIterable<Uint8Array>;
   activityInput?: AsyncIterable<Uint8Array>;
   output: (line: string) => void;
@@ -144,6 +154,7 @@ export async function runActionStdio(options: {
     origin: options.origin,
     token: options.token,
     bind: options.bind,
+    ...(options.readResults === undefined ? {} : { readResults: options.readResults }),
     emit: (frame) => options.output(`${JSON.stringify(frame)}\n`),
   });
   const stopping = new AbortController();
@@ -232,13 +243,18 @@ Admission delivers discovery, a result with runId, and exact policy automaticall
 There is no start or bind model frame. Ack the exact delivered policy before invoke.
 Model frames: discover, policy, ack, invoke, child, renew, finish; each needs a unique
 id and an owned runId. Child declarations narrow the same Agent, never bind a session.
-Read discovered schemas. Results contain only mechanical outcome/refusal, traceId
-and lifecycle facts, not raw results, arguments, credentials or terminal output.
+Read discovered schemas. Results contain mechanical outcome/refusal, traceId and
+lifecycle facts, never raw results, arguments, credentials or terminal output.
+A launcher may set MANIFOLD_READ_RESULTS to a JSON array of exact
+{door,contractDigest,maxResultBytes?} entries (at most 64). Only matching declared
+projections are emitted, marked trust:"untrusted"; model frames cannot enable them.
+Each projection is bounded to 1 MiB or the narrower declaration/launcher limit.
 
 A trusted harness may inherit a separate pipe at MANIFOLD_ACTIVITY_FD (>=3).
 It carries {runId,activity:"working"|"blocked"|"done"|"idle"} JSONL, never model stdin.
 Both pipes are UTF-8 JSONL <=64 KiB/frame and <=1024 frames each. Model idle limit:
-five minutes; total lifetime: one hour; each HTTP request: 30 seconds. Stdout: JSONL.
+five minutes; total lifetime: one hour; each HTTP request: 30 seconds. Stdout: JSONL,
+at most 16 MiB per response including framing. No action is automatically retried.
 EOF abandons; malformed input fails; SIGINT/SIGTERM/SIGHUP cancel. Every exit attempts
 finish; cleanup=failed is unconfirmed, and expiry is only the backstop. Effects use
 action doors, never browser controls. See packages/sdk/README.md.
@@ -272,7 +288,10 @@ if (import.meta.main) {
         ...(activity === undefined ? {} : { activityInput: activity }),
         signal: controller.signal,
         output: (line) => {
-          if (process.stdout.destroyed || process.stdout.writableLength > 16 * 1_048_576)
+          if (
+            process.stdout.destroyed ||
+            process.stdout.writableLength + Buffer.byteLength(line) > 16 * 1_048_576
+          )
             throw new ActionRunnerError("limit_exceeded");
           process.stdout.write(line);
         },

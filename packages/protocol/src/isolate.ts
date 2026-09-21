@@ -745,9 +745,11 @@ export const PLUGIN_BUNDLE_FORMAT = 1;
  *    Earlier, unstamped bundles are not this baseline and require one repack.
  * 1 -> 2: Additive-optional `load.hardenedContract` identifies the admitted bundle contract.
  *    Contract-1 guests still receive the original load frame and retain prepared admission.
+ * 2 -> 3: Additive-optional action result projections in loaded action summaries. Hosts still
+ *    admit contract-1/2 guests and send each guest its own admitted contract, never the latest.
  */
-export const HARDENED_CONTRACT_VERSION = 2;
-export const HARDENED_CONTRACT_COMPAT_VERSIONS: ReadonlySet<number> = new Set([1, 2]);
+export const HARDENED_CONTRACT_VERSION = 3;
+export const HARDENED_CONTRACT_COMPAT_VERSIONS: ReadonlySet<number> = new Set([1, 2, 3]);
 export const HARDENED_CONTRACT_MINIMUM = Math.min(...HARDENED_CONTRACT_COMPAT_VERSIONS);
 
 /**
