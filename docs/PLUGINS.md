@@ -1860,14 +1860,36 @@ plugin's service needs that provider installed and `ready` first, and says so wi
 (each `reason: "installation_absent"`), so the request can be named from the hub rather than
 from the bundle.
 
-A plugin whose OWN operation provides a service its other operations bind cannot be reviewed
-into existence in one step: the provider is the installation the deployment would create, and
-the review refuses `service_provider_uninstalled:<serviceId>`. Deploy the operations that
-provide the service (or bind none) first, and note that the policy's
-`runtime.installationRevision` must name an installation that exists — a revision a
-deployment mints hashes the promoted bindings, which hold the policy digest, so a policy
-cannot pin a revision that a later deployment then mints. Pin the revision yourself with
-`engine.jobs.install` and `engine.jobs.consent` when a self-provided service must be bound.
+**Self-provided job services.** When the provider and consumer belong to the same plugin,
+omit `runtime.installationRevision` from its job-scoped service policy (`scope: "job"` or
+omitted). This binds the provider to the consumer's exact invoking installation, never the
+latest installation. Keep `pluginId`, `operationId`, `artifactSha256` and the provider
+operation's `resourceBindingDigest` pinned. That digest covers only the provider operation's
+resources, not unrelated bindings the consumer needs. The provider must declare
+`providesService`, host networking and a generated service-bearer input.
+
+Select both provider and consumer operations for their first reviewed deployment. The native
+owner can advertise the configured policy hash before installation; that is conditional
+binding evidence, not a running or ready provider. Review resolves the proposed self
+installation and presents concrete caller/callee edge pins and the selected consent changes.
+An unselected provider must already have the exact installed identity, current authority and
+native readiness; review never silently selects or grants it. Applying commits installation,
+edges and selected consents together, but execution still waits for the real native
+acknowledgement. Each parent job owns its provider; another parent or retained installation
+cannot lend its provider identity.
+
+This mode requires both a compatible machine transport and native owner's
+`selfServiceRuntime` capability. An older or unversioned transport or unsupported owner
+refuses affected use with `service_runtime_unsupported`; unrelated explicitly pinned
+services remain available. The hub retains canonical configuration and sends older peers a
+compatible projection, restoring the full configuration on upgrade. Revision omission does
+not support cross-plugin providers, instance services or calls without an invoking job.
+
+Explicit `runtime.installationRevision` policies retain their existing semantics. A first
+deployment whose explicitly pinned self-provider does not exist still refuses
+`service_provider_uninstalled:<serviceId>`: its policy cannot pin the revision that hashing
+that same policy would mint. Use the contextual mode above, or retain the deliberate
+`engine.jobs.install` / `engine.jobs.consent` route with an existing explicit revision.
 
 After apply, recover authoritative progress with `engine.jobs.readDeployment({ deploymentId })`
 or `engine.jobs.listDeployments({ pluginId, limit? })`, not the local draft. List returns
