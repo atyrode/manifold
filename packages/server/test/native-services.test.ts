@@ -24,7 +24,7 @@ import {
 } from "@manifold/protocol";
 import { AuthService, type AuthContext } from "../src/auth.ts";
 import { openDatabase } from "../src/db.ts";
-import { JobService, type JobChannel } from "../src/job-service.ts";
+import { JobService } from "../src/job-service.ts";
 import { ServerStore, TRACE_ROW_TYPE } from "../src/stores.ts";
 import { FakeClock, FakeRuntime, testPluginHost, testTileTrees } from "./helpers.ts";
 import { serviceContext } from "../src/service-doors.ts";
@@ -96,9 +96,13 @@ function fixture(servicePolicy = policy, mode: "read" | "invoke" = "read") {
     },
   };
   const commands: JobCommand[] = [];
-  const channel: JobChannel = {
+  const channel: {
+    machineId: string;
+    protocolVersion?: number;
+    send(message: { type: "job_command"; command: JobCommand }): boolean;
+  } = {
     machineId,
-    send: ({ command }: { type: "job_command"; command: JobCommand }) => {
+    send: ({ command }) => {
       commands.push(command);
       return true;
     },
