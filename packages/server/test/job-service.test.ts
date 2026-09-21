@@ -5669,7 +5669,8 @@ describe("reviewed native deployment approvals", () => {
     ] as const) {
       const { f, selfPlugin, serve, use, policy } = selfProvidedFixture(true);
       try {
-        f.channel.protocolVersion = transport;
+        if (transport === undefined) delete f.channel.protocolVersion;
+        else f.channel.protocolVersion = transport;
         f.owner.protocolVersion = owner;
         delete f.owner.resources!.services[policy.serviceId];
         delete f.owner.resources!.serviceDefinitions[policy.serviceId];

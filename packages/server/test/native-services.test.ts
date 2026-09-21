@@ -24,7 +24,7 @@ import {
 } from "@manifold/protocol";
 import { AuthService, type AuthContext } from "../src/auth.ts";
 import { openDatabase } from "../src/db.ts";
-import { JobService } from "../src/job-service.ts";
+import { JobService, type JobChannel } from "../src/job-service.ts";
 import { ServerStore, TRACE_ROW_TYPE } from "../src/stores.ts";
 import { FakeClock, FakeRuntime, testPluginHost, testTileTrees } from "./helpers.ts";
 import { serviceContext } from "../src/service-doors.ts";
@@ -96,9 +96,8 @@ function fixture(servicePolicy = policy, mode: "read" | "invoke" = "read") {
     },
   };
   const commands: JobCommand[] = [];
-  const channel = {
+  const channel: JobChannel = {
     machineId,
-    protocolVersion: undefined as number | undefined,
     send: ({ command }: { type: "job_command"; command: JobCommand }) => {
       commands.push(command);
       return true;
@@ -243,7 +242,8 @@ test("contextual policies are projected for either legacy fence without disrupti
   ] as const) {
     const f = fixture();
     try {
-      f.channel.protocolVersion = transport;
+      if (transport === undefined) delete f.channel.protocolVersion;
+      else f.channel.protocolVersion = transport;
       f.owner.protocolVersion = owner;
       const contextual: ServicePolicy = {
         serviceId: "native.contextual",
