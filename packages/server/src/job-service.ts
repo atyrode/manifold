@@ -1970,6 +1970,7 @@ export class JobService {
     // definition does not exist yet.
     if (callerPluginId !== "engine.jobs" && this.jobs.installation(args.machineId, args.pluginId)) {
       if (!install) fail("job_installation_absent");
+      if (install.purgeRequested) fail("job_installation_purged");
       const consented = (effective: boolean): boolean =>
         Object.keys(install.machine.operations).some(
           (operationId) =>

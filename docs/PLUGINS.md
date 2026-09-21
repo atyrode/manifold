@@ -1759,6 +1759,11 @@ deployed here?", which is a question no consent can gate (#743). Naming an
 `installationRevision` that resolves to nothing is not that case: where an installation exists,
 it still refuses `job_installation_absent`. None of it is an execution grant, and declaring
 `machines:read` alone is not enough to reach a machine your grant does not cover.
+A purge-requested installation instead refuses the plugin's read with
+`job_installation_purged`; it is not an absent installation or a withdrawn consent.
+A live installation still distinguishes `job_consent_absent:machines:run` from
+`job_consent_ineffective:machines:run`. The operator's native `engine.jobs.describe`
+read remains available under its ordinary authority and reports the retained purged state.
 **Your CALLER needs `machines:read` too.** The bridge your handle gets is that caller's
 capabilities intersected with your `caps` plus your `delegates`, so declaring the read covers
 your half and not theirs: an owner key passes on `*`, and a narrowly scoped token that names

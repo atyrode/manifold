@@ -3750,8 +3750,11 @@ provider handling and postconditions belong to plugins, never the common floor.
   refused the door that exists to answer it (#743). The gate is keyed on holding no installation
   on that machine at all, not on the revision a call named: an installed plugin naming a
   revision that resolves to nothing still refuses `job_installation_absent` rather than walking
-  past its own consent. Where an installation does exist, the consent check above stands
-  unchanged. The pairing before #735 demanded `machines:run` in the credential, which no install
+  past its own consent. A purge-requested installation refuses a plugin handle with
+  `job_installation_purged` before the consent check; it remains retained state, not the
+  no-installation projection. A live installation still distinguishes absent from ineffective
+  `machines:run` consent, and an operator's native read still reports the purged installation.
+  The pairing before #735 demanded `machines:run` in the credential, which no install
   grant may contain, so no plugin could reach the door whatever it was consented.
   **`machines:read` is asked of the CALLER as well as the plugin.** A plugin door's native
   bridge is the caller's capabilities intersected with the door's `caps` plus its `delegates`
