@@ -146,6 +146,7 @@ An ordinary action may declare `resultProjection`:
     ["items", "*", "text"],
     ["items", "*", "sourceId"]
   ],
+  "textFields": [["items", "*", "text"]],
   "maxArrayItems": 20,
   "maxResultBytes": 32768
 }
@@ -155,15 +156,22 @@ These are selected **primitive leaves**, not permission to return arbitrary subt
 traverses array items only. A declaration has at most 64 paths, each at most 16 segments,
 and at most 4096 items per array; traversal is bounded to 65536 nodes. Its byte ceiling is
 at most 1 MiB of serialized UTF-8 data. Missing fields are omitted; a selected object or
-array leaf is refused. Publication selection is not authorization, sensitivity classification
-or redaction, and does not promise that the action is mutation-free. The plugin remains
-responsible for subject-level disclosure checks and redaction before returning its result.
+array leaf is refused. Optional `textFields` uses the same path grammar and count limit and
+must name **exact leaves already selected by `fields`**, not prefixes, additional paths or
+arbitrary subtrees. Those leaves accept only strings or `null`; missing values remain omitted.
+Without `textFields`, existing declarations and their digests are unchanged.
+
+Publication selection is not authorization, sensitivity classification or redaction, and does
+not promise that the action is mutation-free. The owning domain/plugin must perform
+subject-level disclosure checks and redact sensitive material before returning its result.
 
 The trusted launcher reviews the declaration and computes
 `await actionResultProjectionDigest(declaration)` from `@manifold/protocol`, then supplies
 that digest with the exact door through `MANIFOLD_READ_RESULTS` (or `ActionRunner`'s
-`readResults` constructor option). This is not an instruction to automatically approve whatever
-discovery returns. The model cannot request a new projection or widen a reviewed one.
+`readResults` constructor option). Review the **exact declaration, including `textFields`**:
+adding or changing textual leaves changes the digest and requires a new trusted approval.
+This is not an instruction to automatically approve whatever discovery returns. The model
+cannot request a new projection, declare text fields or widen a reviewed one.
 No declaration means `projection_unavailable`; a changed digest means `projection_changed`,
 both before invocation. Refreshing discovery does not update the trusted approval.
 The approval applies to every owned, policy-acknowledged run in this runner process, including
@@ -191,9 +199,18 @@ A successful runner `result` may additionally contain:
 ```
 
 The runner accepts only the host's separate sideband with that digest and a real trace id,
-reprojects the declared fields, and independently checks structural and UTF-8 byte bounds,
-held credential values and credential/key-link carriers. The lexical checks are defense in
-depth, not a classifier for every possible secret. There is no raw-result fallback or truncation.
+reprojects the declared fields, and independently checks structural and UTF-8 byte bounds.
+Its credential walk inspects the **complete sideband**, including unselected data. Every held
+launcher, child and replacement credential value is always rejected, as are forbidden credential
+key names and lexical carriers in keys. Only string values at exact reviewed `textFields` leaves
+skip the lexical bearer/key-link/URL-userinfo pattern checks. This permits literal or redacted
+source text such as `Bearer [REDACTED]`, a username-only URL or a redacted token query without
+rewriting, escaping or encoding its bytes. Neighboring fields and unselected values retain
+their lexical guards; marking a leaf never exempts an object, array or subtree.
+
+These checks are defense in depth, not a classifier for every possible secret. The owning
+domain remains responsible for redaction; declaring text does not make source content safe.
+There is no raw-result fallback or truncation, and model input credential checks are unchanged.
 Source text remains untrusted data: it cannot become policy, an acknowledgement, an activity
 frame or a credential binding. Lifecycle output never carries a projection.
 

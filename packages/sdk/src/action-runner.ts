@@ -141,28 +141,40 @@ export class ActionRunner {
     return this.#closed && this.#cleanupConfirmed && this.#terminalOutcome === "completed";
   }
 
-  #checkString(value: string): void {
+  #checkString(value: string, text = false): void {
     for (const secret of this.#secrets) {
       if (value.includes(secret)) throw new ActionRunnerError("credential_input");
     }
-    if (/(?:bearer\s|[#?&](?:key|token|access_token|api_key)=|https?:\/\/[^/\s]+@)/i.test(value))
+    if (
+      !text &&
+      /(?:bearer\s|[#?&](?:key|token|access_token|api_key)=|https?:\/\/[^/\s]+@)/i.test(value)
+    )
       throw new ActionRunnerError("credential_input");
   }
 
-  /** Reject secret carriers recursively, including inside opaque action arguments. */
+  /** Inspect the complete value; only approved result leaves may skip lexical carrier checks. */
   #checkInput(
     value: unknown,
     depth = 0,
     budget = { nodes: Infinity },
     maxDepth = 32,
     maxArrayItems = Infinity,
+    projection?: JsonProjection,
   ): void {
     if (depth > maxDepth || --budget.nodes < 0) throw new ActionRunnerError("limit_exceeded");
     if (typeof value === "string") {
-      this.#checkString(value);
+      this.#checkString(value, projection?.text === true);
     } else if (Array.isArray(value)) {
       if (value.length > maxArrayItems) throw new ActionRunnerError("limit_exceeded");
-      for (const item of value) this.#checkInput(item, depth + 1, budget, maxDepth, maxArrayItems);
+      for (const item of value)
+        this.#checkInput(
+          item,
+          depth + 1,
+          budget,
+          maxDepth,
+          maxArrayItems,
+          projection?.children.get("*"),
+        );
     } else if (value !== null && typeof value === "object") {
       for (const [key, child] of Object.entries(value)) {
         if (
@@ -173,7 +185,14 @@ export class ActionRunner {
           throw new ActionRunnerError("credential_input");
         }
         this.#checkString(key);
-        this.#checkInput(child, depth + 1, budget, maxDepth, maxArrayItems);
+        this.#checkInput(
+          child,
+          depth + 1,
+          budget,
+          maxDepth,
+          maxArrayItems,
+          projection?.children.get(key),
+        );
       }
     }
   }
@@ -235,7 +254,7 @@ export class ActionRunner {
           : {
               digest,
               policy,
-              projection: compileJsonProjection(policy.fields),
+              projection: compileJsonProjection(policy.fields, policy.textFields),
               maxResultBytes: Math.min(
                 policy.maxResultBytes,
                 entry.maxResultBytes ?? policy.maxResultBytes,
@@ -284,7 +303,14 @@ export class ActionRunner {
     try {
       if (envelope.data === undefined) return failure("projection_invalid");
       // Bound and inspect the peer's complete sideband before selecting leaves again.
-      this.#checkInput(envelope.data, 0, { nodes: 65_536 }, 16, contract.policy.maxArrayItems);
+      this.#checkInput(
+        envelope.data,
+        0,
+        { nodes: 65_536 },
+        16,
+        contract.policy.maxArrayItems,
+        contract.projection,
+      );
       if (Buffer.byteLength(JSON.stringify(envelope.data)) > contract.maxResultBytes)
         return failure("projection_limit");
       const data = projectJson(envelope.data, contract.projection, contract.policy.maxArrayItems);
