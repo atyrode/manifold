@@ -58,6 +58,7 @@ const machine: MachineHalf = {
     [operationId]: {
       argv: [{ input: "mode" }],
       input: { mode: { type: "string", required: true, maxLength: 128 } },
+      inputs: ["material"],
       runtimeTools: [],
       locations: [],
       outputs: [],
@@ -393,6 +394,64 @@ test("browser descriptors bind distinct runs without returning or journaling the
     expect(creates[1]?.runtime?.privateEnv?.MANIFOLD_RUN_ID).toBe(second.run.id);
     expect(creates[1]?.runtime?.privateEnv?.MANIFOLD_RUN_TOKEN).not.toBe(token);
     expect(f.auth.agentRunPolicyState(f.auth.authenticate(token))).toBe("pending_policy");
+  } finally {
+    f.close();
+  }
+});
+
+test("harness launch bindings reject input removal and unavailable sources never reach native creation", async () => {
+  const f = await fixture();
+  try {
+    f.descriptor.inputs = [
+      { name: "material", from: { jobId: "missing-producer", output: "material" } },
+    ];
+    const { run } = await f.create();
+    const launched = await f.launch(run.id);
+    // Removing the unavailable source would make this runtime admissible, but it is
+    // not the descriptor the harness bound. Refusal must precede native creation.
+    await f.open({ ...launched.runtime, inputs: [] });
+    expect(f.sent.filter((message) => message.type === "create")).toEqual([]);
+    // The unmodified descriptor is bound correctly, but its source is unavailable.
+    await f.open(launched.runtime);
+    expect(f.sent.filter((message) => message.type === "create")).toEqual([]);
+    delete f.descriptor.inputs;
+    const withoutInputs = await f.launch(run.id);
+    const created = await f.openCreated(withoutInputs.runtime);
+    expect(f.auth.authenticate(created.runtime!.privateEnv!.MANIFOLD_RUN_TOKEN).agentRunId).toBe(
+      run.id,
+    );
+  } finally {
+    f.close();
+  }
+});
+
+test("harness restart refuses a freshly bound unavailable input without replacing the running terminal", async () => {
+  const f = await fixture();
+  try {
+    const { run } = await f.create();
+    const launched = await f.launch(run.id);
+    const create = await f.openCreated(launched.runtime);
+    const before = f.store.getTerminal(create.terminalId);
+    f.descriptor.inputs = [
+      { name: "material", from: { jobId: "missing-producer", output: "material" } },
+    ];
+    const refused = await f.host.dispatch(f.root, "core.terminals.restart", {
+      terminalId: create.terminalId,
+    });
+    expect(refused.ok).toBe(false);
+    expect(f.sent.filter((message) => message.type === "terminal_restart")).toEqual([]);
+    expect(f.store.getTerminal(create.terminalId)).toEqual(before);
+    // A new harness launch may review a different descriptor; an old recipe does
+    // not authorize a missing source, and a refusal does not strand the terminal.
+    delete f.descriptor.inputs;
+    expect(
+      result(
+        await f.host.dispatch(f.root, "core.terminals.restart", {
+          terminalId: create.terminalId,
+        }),
+      ),
+    ).toEqual({});
+    expect(f.sent.filter((message) => message.type === "terminal_restart")).toHaveLength(1);
   } finally {
     f.close();
   }

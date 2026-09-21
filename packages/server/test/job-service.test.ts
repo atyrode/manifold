@@ -23,6 +23,7 @@ import {
   JobDeploymentSchema,
   JobDeploymentDescriptionSchema,
   type JobDeploymentRequest,
+  type TerminalRuntime,
 } from "@manifold/protocol";
 import {
   canonicalJobJson,
@@ -6852,12 +6853,14 @@ describe("a job input bound to an earlier job's sealed output", () => {
         outputs: ["material", "notes"],
         exports: ["material"],
       },
-      [consumerId]: { ...base, inputs: ["material", "notes"] },
+      [consumerId]: { ...base, inputs: ["material", "notes"], stdin: true },
     },
   };
   const consuming: MachineHalf = {
     ...machine,
-    operations: { [otherConsumerId]: { ...base, inputs: ["material", "notes"] } },
+    operations: {
+      [otherConsumerId]: { ...base, inputs: ["material", "notes"], stdin: true },
+    },
   };
   const allow = (f: Fixture, plugin: string, operation: string, cap: Cap, enabled = true) =>
     f.service.consent(f.root, {
@@ -6875,6 +6878,7 @@ describe("a job input bound to an earlier job's sealed output", () => {
     });
   function bound(): Fixture {
     const f = fixture(":memory:", producing);
+    f.owner.terminalHostId = "native-host";
     f.service.setManifestResolver((id) =>
       id === pluginId ? producing : id === otherPlugin ? consuming : null,
     );
@@ -6962,6 +6966,167 @@ describe("a job input bound to an earlier job's sealed output", () => {
       inputs,
       ...(limitOverride ? { limits: limitOverride } : {}),
     });
+
+  function terminalConsumer(f: Fixture) {
+    const containerId = "input-terminal-home";
+    f.store.createContainer({
+      id: containerId,
+      name: "Input consumer",
+      discipline: "composition",
+      createdAt: f.runtime.now(),
+    });
+    const token = f.auth.mintToken(
+      {
+        principal: { name: "input-consumer", kind: "human" },
+        caps: ["machines:run", "terminals:spawn", "terminals:write", "jobs:read"],
+      },
+      f.root,
+    );
+    const actor = f.auth.authenticate(token.token);
+    const traceId = f.store.appendTrace({
+      actor: actor.principal.id,
+      authority: "terminals:spawn",
+      door: "core.terminals.open",
+      containerId,
+      session: null,
+      ts: f.runtime.now(),
+      outcome: "ok",
+      targets: [],
+      payload: {},
+    });
+    return {
+      actor,
+      traceId,
+      terminal: { terminalId: "input-terminal", terminalHostId: "native-host", containerId },
+      runtime: {
+        machineId: f.machineId,
+        pluginId,
+        operationId: consumerId,
+        installationRevision: "r1",
+        artifactSha256: hash,
+        resourceBindingDigest: createHash("sha256").update("null").digest("hex"),
+        input: {},
+      },
+    };
+  }
+
+  test("terminal admission refuses unavailable, unexported and unreadable bound inputs instead of dropping them", () => {
+    const f = bound();
+    try {
+      const t = terminalConsumer(f);
+      const admit = (runtime: TerminalRuntime) =>
+        f.service.admitTerminal(t.actor, runtime, f.machineId, t.terminal, t.traceId);
+      const inputs = [{ name: "material", from: { jobId: "producer", output: "material" } }];
+      expect(() => admit({ ...t.runtime, inputs })).toThrow(
+        "input_source_unavailable:material",
+      );
+      seal(f);
+      expect(() =>
+        admit({
+          ...t.runtime,
+          inputs: [{ name: "material", from: { jobId: "producer", output: "unsealed" } }],
+        }),
+      ).toThrow("input_source_unavailable:material");
+      expect(() =>
+        admit({
+          ...t.runtime,
+          pluginId: otherPlugin,
+          operationId: otherConsumerId,
+          inputs: [{ name: "notes", from: { jobId: "producer", output: "notes" } }],
+        }),
+      ).toThrow("input_not_exported:notes");
+      f.auth.grant(
+        {
+          principal: { kind: "principal", id: t.actor.principal.id },
+          node: formatManifoldUri({
+            kind: "job",
+            machineId: f.machineId,
+            operationId: producerId,
+            jobId: "producer",
+          }),
+          caps: ["jobs:read"],
+          effect: "deny",
+          reach: "node",
+        },
+        f.root,
+      );
+      expect(() => admit({ ...t.runtime, inputs })).toThrow(
+        "input_authority_refused:material",
+      );
+      // Source-read denial is not terminal-spawn denial: omitting inputs still admits.
+      const plain = admit(t.runtime);
+      expect(f.service.jobs.get(plain.request.jobId)?.state).toBe("start-committed");
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("ordinary terminal restart retains its reviewed source and rechecks current source authority", () => {
+    const f = bound();
+    try {
+      seal(f);
+      const t = terminalConsumer(f);
+      const runtime = {
+        ...t.runtime,
+        inputs: [{ name: "material", from: { jobId: "producer", output: "material" } }],
+      };
+      const opened = f.service.admitTerminal(
+        t.actor,
+        runtime,
+        f.machineId,
+        t.terminal,
+        t.traceId,
+      );
+      expect(f.service.jobs.get(opened.request.jobId)?.state).toBe("start-committed");
+      f.store.createTerminal({
+        id: t.terminal.terminalId,
+        machineId: f.machineId,
+        containerId: t.terminal.containerId,
+        createdBy: t.actor.principal.id,
+        agentPrincipalId: null,
+        createdAt: f.runtime.now(),
+        launchRecipe: { cols: 80, rows: 24, env: {}, runtime },
+      });
+      const traceId = f.store.appendTrace({
+        actor: t.actor.principal.id,
+        authority: "terminals:write",
+        door: "core.terminals.restart",
+        containerId: null,
+        session: null,
+        ts: f.runtime.now(),
+        outcome: null,
+        targets: [],
+        payload: { terminalId: t.terminal.terminalId },
+      });
+      expect(() =>
+        f.service.admitTerminal(
+          t.actor,
+          {
+            ...runtime,
+            inputs: [{ name: "material", from: { jobId: "producer", output: "notes" } }],
+          },
+          f.machineId,
+          t.terminal,
+          traceId,
+        ),
+      ).toThrow("terminal_restart_recipe_changed");
+      const restarted = f.service.admitTerminal(
+        t.actor,
+        runtime,
+        f.machineId,
+        t.terminal,
+        traceId,
+      );
+      expect(restarted.request.jobId).not.toBe(opened.request.jobId);
+      expect(f.service.jobs.get(restarted.request.jobId)?.state).toBe("start-committed");
+      allow(f, pluginId, producerId, "jobs:read", false);
+      expect(() =>
+        f.service.admitTerminal(t.actor, runtime, f.machineId, t.terminal, traceId),
+      ).toThrow("input_authority_refused:material");
+    } finally {
+      f.store.close();
+    }
+  });
 
   test("the admitted job echoes its bindings and inherits the operation's own output ceiling", () => {
     const f = bound();
