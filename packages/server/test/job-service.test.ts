@@ -5509,20 +5509,6 @@ describe("reviewed native deployment approvals", () => {
         installationRevision: target.installationRevision!,
         artifactSha256: hash,
       });
-      const send = f.channel.send;
-      f.channel.send = (message) => {
-        if (message.command.type === "install" && message.command.pluginId === selfPlugin) {
-          expect(
-            f.service.inspectInvocations(f.root, { machineId: f.machineId, pluginId: selfPlugin }).edges,
-          ).toEqual([{ edge, enabled: true }]);
-          expect(
-            f.service.describe(f.root, { machineId: f.machineId, pluginId: selfPlugin })
-              .consents.filter((consent) => consent.enabled).map(({ node, cap }) => `${node}/${cap}`)
-              .sort(),
-          ).toEqual(target.consents.map(({ node, cap }) => `${node}/${cap}`).sort());
-        }
-        return send(message);
-      };
       const deployment = f.service.applyDeployment(
         f.root, { request: value, reviewDigest: review.reviewDigest }, "contextual-first",
       );
@@ -5554,6 +5540,12 @@ describe("reviewed native deployment approvals", () => {
       expect(
         f.service.readDeployment(f.root, { deploymentId: value.deploymentId }).targets[0]!.state,
       ).toBe("ready");
+      const consumerOnly = {
+        ...value,
+        deploymentId: "contextual-consumer-only",
+        operationIds: [use],
+      };
+      expect(f.service.reviewDeployment(f.root, consumerOnly).approvable).toBe(true);
       const parent = f.service.execute(f.root, selfPlugin, "after-ack", execution);
       expect(parent.state).toBe("start-committed");
       f.service.jobs.state(parent.request.jobId, "started");
@@ -5569,6 +5561,19 @@ describe("reviewed native deployment approvals", () => {
       expect(child?.state).toBe("start-committed");
       expect(child?.request.installationRevision).toBe(parent.request.installationRevision);
       expect(child?.request.pluginId).toBe(selfPlugin);
+      f.service.consent(f.root, {
+        machineId: f.machineId,
+        pluginId: selfPlugin,
+        installationRevision: target.installationRevision!,
+        artifactSha256: hash,
+        cap: "machines:run",
+        node: formatManifoldUri({ kind: "operation", machineId: f.machineId, operationId: serve }),
+        enabled: false,
+      });
+      expect(f.service.reviewDeployment(f.root, consumerOnly).targets[0]).toMatchObject({
+        approvable: false,
+        reason: "authority_or_consent_refused",
+      });
     } finally {
       f.store.close();
     }

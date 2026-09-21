@@ -858,13 +858,16 @@ export class JobService {
   private synchronizeServices(channel: JobChannel): boolean {
     try {
       const canonical = this.effectiveConfiguration(channel.machineId);
-      const policies = this.supportsSelfServiceRuntime(channel.machineId)
-        ? canonical.policies
-        : canonical.policies.filter((policy) => !this.contextualRuntime(policy));
-      const configuration =
-        policies.length === canonical.policies.length
-          ? canonical
-          : { revision: digest(policies), policies };
+      let configuration = canonical;
+      if (!this.supportsSelfServiceRuntime(channel.machineId)) {
+        let policies: ServicePolicy[] | undefined;
+        for (let index = 0; index < canonical.policies.length; index++) {
+          const policy = canonical.policies[index]!;
+          if (this.contextualRuntime(policy)) policies ??= canonical.policies.slice(0, index);
+          else policies?.push(policy);
+        }
+        if (policies) configuration = { revision: digest(policies), policies };
+      }
       return channel.send({
         type: "job_command",
         command: {
@@ -1538,12 +1541,17 @@ export class JobService {
     if (support) return support;
     if (visiting.has(policy.serviceId) || visiting.size >= 8) return "service_runtime_unavailable";
     const next = new Set(visiting).add(policy.serviceId);
-    const callee = this.runtimeInstallation(policy, machineId, caller, proposed);
+    let callee = this.runtimeInstallation(policy, machineId, caller, proposed);
     if (!callee) return "service_runtime_changed";
     const live = this.channels.get(machineId);
-    const prospective = this.contextualRuntime(policy) && proposed?.installation === callee;
-    if (prospective && !proposed?.operationIds.includes(runtime.operationId))
-      return "authority_or_consent_refused";
+    let prospective = this.contextualRuntime(policy) && proposed?.installation === callee;
+    if (prospective && !proposed?.operationIds.includes(runtime.operationId)) {
+      // Unselected providers need an actual installation and its existing authority,
+      // not the selected operations' prospective consent or readiness allowance.
+      callee = this.runtimeInstallation(policy, machineId, caller);
+      if (!callee) return "authority_or_consent_refused";
+      prospective = false;
+    }
     if (!live?.proved || (!prospective && !callee.ready)) return "service_runtime_unavailable";
     const protocolReason = jobOwnerOperationRefusal(
       live.owner.protocolVersion,
