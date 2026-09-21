@@ -1,5 +1,5 @@
 /** Wire revision; session joins require the current version (close 4409 otherwise). */
-export const PROTOCOL_VERSION = 38;
+export const PROTOCOL_VERSION = 39;
 
 /**
  * Machine-channel acceptance set. Agents are long-lived (they hold PTYs and
@@ -370,9 +370,15 @@ export const PROTOCOL_VERSION = 38;
  * only under an exact trusted-launcher opt-in. Strict SDK and hardened-plugin consumers update
  * together; absent metadata and ordinary action calls retain their previous result semantics.
  * Machine, terminal-host and instance frames are unchanged, so both acceptance sets add 38.
+ *
+ * v38 -> v39: GOVERNED TERMINAL MATERIAL INPUTS (issue #800). Terminal runtimes may
+ * carry the same sealed-output input bindings as ordinary jobs. Session and action
+ * consumers update together; omission keeps the previous terminal behavior.
+ * Machine, terminal-host and instance frames are unchanged. Native bound inputs
+ * already require owner RPC 36, so compatible transports remain admitted.
  */
 export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  30, 31, 32, 33, 34, 35, 36, 37, 38,
+  30, 31, 32, 33, 34, 35, 36, 37, 38, 39,
 ]);
 
 /**
@@ -417,10 +423,10 @@ export const TERMINAL_RESTART_PROTOCOL_VERSION = 33;
  * never receives a machine ref, so the instance wire is unchanged.
  * v26: image-aware terminal viewers; instance frames remain unchanged.
  * v27: governed jobs expand the closed share resource/capability vocabularies (ADR 0033);
- * instance compatibility resets to protocol 27. v28 through v38 leave that wire unchanged.
+ * instance compatibility resets to protocol 27. v28 through v39 leave that wire unchanged.
  */
 export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38,
+  27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39,
 ]);
 
 /**

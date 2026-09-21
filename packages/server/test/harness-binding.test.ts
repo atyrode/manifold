@@ -75,7 +75,14 @@ function result(outcome: ActionOutcome): unknown {
   return outcome.result;
 }
 
-async function fixture(dependency?: ServerPluginDef) {
+async function fixture(dependency?: ServerPluginDef, inputs?: string[]) {
+  const declaredMachine: MachineHalf =
+    inputs === undefined
+      ? machine
+      : {
+          ...machine,
+          operations: { [operationId]: { ...machine.operations[operationId]!, inputs } },
+        };
   const runtime = new FakeRuntime();
   const clock = new FakeClock(runtime);
   const store = testStore();
@@ -109,7 +116,7 @@ async function fixture(dependency?: ServerPluginDef) {
       ...(dependency
         ? { dependencies: { [dependency.manifest.id]: { type: "required" as const } } }
         : {}),
-      machine,
+      machine: declaredMachine,
       contributes: {
         panels: [],
         sections: [],
@@ -184,7 +191,7 @@ async function fixture(dependency?: ServerPluginDef) {
     pluginId,
     installationRevision: "r1",
     artifactSha256: hash,
-    machine,
+    machine: declaredMachine,
   });
   service.consent(root, {
     machineId,
@@ -393,6 +400,66 @@ test("browser descriptors bind distinct runs without returning or journaling the
     expect(creates[1]?.runtime?.privateEnv?.MANIFOLD_RUN_ID).toBe(second.run.id);
     expect(creates[1]?.runtime?.privateEnv?.MANIFOLD_RUN_TOKEN).not.toBe(token);
     expect(f.auth.agentRunPolicyState(f.auth.authenticate(token))).toBe("pending_policy");
+  } finally {
+    f.close();
+  }
+});
+
+test("harness launch bindings reject input removal and unavailable sources never reach native creation", async () => {
+  const f = await fixture(undefined, ["material"]);
+  try {
+    f.descriptor.inputs = [
+      { name: "material", from: { jobId: "missing-producer", output: "material" } },
+    ];
+    const { run } = await f.create();
+    const launched = await f.launch(run.id);
+    // Removing the unavailable source would make this runtime admissible, but it is
+    // not the descriptor the harness bound. Refusal must precede native creation.
+    await f.open({ ...launched.runtime, inputs: [] });
+    expect(f.sent.filter((message) => message.type === "create")).toEqual([]);
+    // The unmodified descriptor is bound correctly, but its source is unavailable.
+    const unavailable = await f.launch((await f.create()).run.id);
+    await f.open(unavailable.runtime);
+    expect(f.sent.filter((message) => message.type === "create")).toEqual([]);
+    delete f.descriptor.inputs;
+    const plain = await f.create();
+    const withoutInputs = await f.launch(plain.run.id);
+    const created = await f.openCreated(withoutInputs.runtime);
+    expect(f.auth.authenticate(created.runtime!.privateEnv!.MANIFOLD_RUN_TOKEN).agentRunId).toBe(
+      plain.run.id,
+    );
+  } finally {
+    f.close();
+  }
+});
+
+test("harness restart refuses a freshly bound unavailable input without replacing the running terminal", async () => {
+  const f = await fixture(undefined, ["material"]);
+  try {
+    const { run } = await f.create();
+    const launched = await f.launch(run.id);
+    const create = await f.openCreated(launched.runtime);
+    const before = f.store.getTerminal(create.terminalId);
+    f.descriptor.inputs = [
+      { name: "material", from: { jobId: "missing-producer", output: "material" } },
+    ];
+    const refused = await f.host.dispatch(f.root, "core.terminals.restart", {
+      terminalId: create.terminalId,
+    });
+    expect(refused.ok).toBe(false);
+    expect(f.sent.filter((message) => message.type === "terminal_restart")).toEqual([]);
+    expect(f.store.getTerminal(create.terminalId)).toEqual(before);
+    // A new harness launch may review a different descriptor; an old recipe does
+    // not authorize a missing source, and a refusal does not strand the terminal.
+    delete f.descriptor.inputs;
+    expect(
+      result(
+        await f.host.dispatch(f.root, "core.terminals.restart", {
+          terminalId: create.terminalId,
+        }),
+      ),
+    ).toEqual({});
+    expect(f.sent.filter((message) => message.type === "terminal_restart")).toHaveLength(1);
   } finally {
     f.close();
   }

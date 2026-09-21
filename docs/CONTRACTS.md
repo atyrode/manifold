@@ -3714,6 +3714,16 @@ provider handling and postconditions belong to plugins, never the common floor.
   start asks all four again, so a released output or a revoked consent refuses the launch
   rather than feeding it. That closed set is the whole vocabulary; nothing else admits a
   binding.
+  Since session protocol 39, `TerminalRuntime.inputs` carries these same bindings through
+  ordinary terminal admission and harness placement, using the existing native job path.
+  Omission preserves material-free terminal behavior. An ordinary restart must retain its
+  reviewed runtime, including the input references; a harness restart may obtain a fresh
+  reviewed descriptor whose one-use launch binding covers those references. Neither recipe
+  identity nor placement authority grants source read access. Every new native job rechecks
+  the source and its current authority, then applies the same bounded extraction and
+  read-only mounts. Preparation refusal, settlement and cancellation release extracted
+  trees, not the sealed source archives. Bound inputs still require owner RPC 36; the
+  machine, terminal-host and instance wire formats are unchanged.
 - **Describe and readiness.** `engine.jobs.describe({ machineId, pluginId, installationRevision? })`
   (also `ctx.jobs.describe`) reads one plugin's installation at one machine; a plugin may
   describe only its own. Omission selects the current revision; an explicit revision selects

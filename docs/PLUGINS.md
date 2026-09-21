@@ -2271,6 +2271,16 @@ machine's job), `input_not_exported:material`, `input_authority_refused:material
 the consent between admission and launch refuses the launch. A nested invocation binds no
 input: an edge consents to resources and outputs, never to another job's archive.
 
+Governed terminals use the same bindings in `runtime.inputs` on
+`host.client.openTerminal`, `SessionClient.openTerminal`, or a harness's prepared
+`TerminalRuntime`. Omitting `inputs` supplies no material, as before. An ordinary restart
+retains the reviewed runtime and its input references; a harness restart obtains a fresh
+reviewed, one-use launch binding that also covers the inputs. Each launch rechecks source
+availability and `jobs:read` independently of terminal placement authority. The native
+owner extracts the sealed bytes read-only and releases the extracted trees on settlement,
+cancellation or preparation refusal without releasing their source archives. No host path
+or material bytes enter the terminal descriptor.
+
 **Be woken when your own job ends.** A server half declares `lifecycle.onJobSettled(ctx, job)`
 and is handed, once per settled job IT started,
 `{ jobId, machineId, operationId, pluginId, state, exitCode, reason, finishedAt, scheduleId?, revision?, outputs }`
@@ -2422,6 +2432,7 @@ interface SessionHandle {
     machineId?: string;
     placement?: "tile";
     program?: TerminalProgram; // exec this instead of the shell (#192)
+    runtime?: TerminalRuntime; // governed plugin operation, exclusive with program; may bind inputs
     env?: TerminalEnv; // merged under the fixed MANIFOLD_* keys
     timeoutMs?: number;
   }): Promise<TerminalInfo>;
