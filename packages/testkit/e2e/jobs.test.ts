@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdtempSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -17,6 +18,7 @@ import {
   JobEventSchema,
   JobDescriptionSchema,
   JobResultSchema,
+  ListJobRunsResultSchema,
   PublicJobSchema,
   MachineHalfSchema,
   PluginBundleSchema,
@@ -36,11 +38,20 @@ import {
   type TestAgent,
   type TestServer,
 } from "../src/index.ts";
-import { e2eFailure, stopProcesses } from "./helpers.ts";
+import {
+  attachedCapture,
+  e2eFailure,
+  nextMessage,
+  stopProcesses,
+  waitForTerminalText,
+  type TerminalCapture,
+} from "./helpers.ts";
 
 const REPO = resolve(import.meta.dir, "../../..");
 const PLUGIN = "fixture.jobs";
 const OPERATION = `${PLUGIN}.run`;
+const PRODUCE = `${PLUGIN}.produce`;
+const TERMINAL = `${PLUGIN}.terminal`;
 const LOCATION = `${PLUGIN}.witness`;
 
 const required = [
@@ -55,7 +66,7 @@ const realBackend =
 // provisions a private delegated unit and hard-fails missing prerequisites before running this.
 // Run alone within that unit: no service/owner objects, forged messages, journal seeds or network overrides.
 test.skipIf(!realBackend)(
-  "real machine jobs enforce consent, execute once across transport replacement, and fence queued revocation",
+  "[real-linux] real machine jobs enforce consent, execute once across transport replacement, and fence queued revocation; terminal sealed inputs survive restart and cleanup",
   async () => {
     const bubblewrap = realpathSync(process.env.MANIFOLD_TEST_BWRAP!);
     const busybox = realpathSync(process.env.MANIFOLD_TEST_STATIC_BUSYBOX!);
@@ -65,7 +76,8 @@ test.skipIf(!realBackend)(
     const state = join(control, "state");
     const workspace = join(root, "workspace");
     const witness = join(workspace, "witness");
-    for (const path of [control, state, join(state, "artifacts"), workspace, witness])
+    const runtime = join(root, "runtime");
+    for (const path of [control, state, join(state, "artifacts"), workspace, witness, runtime])
       mkdirSync(path, { mode: 0o700 });
     const socket = join(control, "owner.sock");
     const config = join(control, "owner.json");
@@ -76,6 +88,8 @@ test.skipIf(!realBackend)(
     let agent: TestAgent | undefined;
     let owner: Bun.Subprocess<"ignore", "ignore", "ignore"> | undefined;
     let client: SessionClient | undefined;
+    let home: SessionClient | undefined;
+    const captures: TerminalCapture[] = [];
     try {
       server = await startServer({
         dataDir: join(control, "hub"),
@@ -93,11 +107,20 @@ test.skipIf(!realBackend)(
         processes: 32,
         outputBytes: 1024,
       };
+      const materialLimits = { ...limits, outputBytes: 65536, inputBytes: 65536 };
       // The witness is a separately consented writable location, not a runtime test seam.
-      // Every actual executable start appends before doing anything else; the parent owns the gate.
+      // The transport-replacement workload appends on every executable start; the parent owns its gate.
       const executable = Buffer.from(
         [
           "#!/bin/busybox sh",
+          'if test "$1" = terminal; then exec /bin/busybox sh; fi',
+          'if test "$1" = produce-material; then',
+          "  /bin/busybox mkdir -p /home/job/witness/material/nested /home/job/witness/decoy",
+          "  printf 'selected material\\nsecond line\\n' > /home/job/witness/material/top.txt",
+          "  printf 'nested selection\\n' > /home/job/witness/material/nested/inner.txt",
+          "  printf 'not selected\\n' > /home/job/witness/decoy/top.txt",
+          "  exit 0",
+          "fi",
           'printf "%s\\n" "$1" >> /home/job/witness/starts',
           "while test ! -f /home/job/witness/release; do /bin/busybox sleep 0.02; done",
           'printf \'{"kind":"fixture.result/1","value":42}\\n\'',
@@ -139,6 +162,28 @@ test.skipIf(!realBackend)(
             network: "none",
             limits,
             stdin: false,
+          },
+          [PRODUCE]: {
+            argv: [{ literal: "produce-material" }],
+            input: {},
+            runtimeTools: ["busybox"],
+            locations: [{ locationId: LOCATION, access: "write" }],
+            outputs: ["material", "decoy"],
+            exports: ["material"],
+            network: "none",
+            limits: materialLimits,
+            stdin: false,
+          },
+          [TERMINAL]: {
+            argv: [{ literal: "terminal" }],
+            input: {},
+            runtimeTools: ["busybox"],
+            locations: [],
+            inputs: ["selected"],
+            outputs: [],
+            network: "none",
+            limits: materialLimits,
+            stdin: true,
           },
         },
       });
@@ -205,14 +250,16 @@ test.skipIf(!realBackend)(
         if (!outcome.ok) throw new Error(`job action refused: ${outcome.denial.message}`);
         return PublicJobSchema.parse(outcome.result);
       };
-      const node = (jobId: string) => ({
+      const node = (jobId: string, operationId = OPERATION) => ({
         kind: "job" as const,
         machineId,
-        operationId: OPERATION,
+        operationId,
         jobId,
       });
-      const status = async (jobId: string) =>
-        PublicJobSchema.parse(await ownerAction(hub, "engine.jobs.status", { node: node(jobId) }));
+      const status = async (jobId: string, operationId = OPERATION) =>
+        PublicJobSchema.parse(
+          await ownerAction(hub, "engine.jobs.status", { node: node(jobId, operationId) }),
+        );
       await consent("jobs:read", true);
       await consent("locations:write", true, location);
       expect((await execute("denied")).state).toBe("refused");
@@ -239,7 +286,7 @@ test.skipIf(!realBackend)(
           delegatedCgroup,
           bubblewrap,
           protectedDirectories: [control],
-          anchors: { data: workspace },
+          anchors: { data: workspace, runtime },
           runtimeTools: { busybox: [{ source: busybox, target: "/bin/busybox", kind: "file" }] },
           artifactOrigins: ["https://example.invalid"],
         }),
@@ -351,9 +398,160 @@ test.skipIf(!realBackend)(
       await agent.restartTransport("SIGKILL");
       expect((await status("once")).result).toEqual(result);
       expect(starts()).toEqual(["once"]);
+
+      // Produce two real archives, then consume only the selected sealed output in an ordinary
+      // terminal. Neither a forwarded descriptor nor mutable source-location bytes can pass.
+      for (const operationId of [PRODUCE, TERMINAL]) {
+        const operationNode: ManifoldRef = { kind: "operation", machineId, operationId };
+        await consent("machines:run", true, operationNode);
+        await consent("jobs:read", true, operationNode);
+        await consent("jobs:cancel", true, operationNode);
+      }
+      await consent("jobs:input", true, { kind: "operation", machineId, operationId: TERMINAL });
+      await ownerAction(hub, "engine.jobs.execute", {
+        jobId: "produce-material",
+        machineId,
+        pluginId: PLUGIN,
+        operationId: PRODUCE,
+        input: {},
+        outputs: ["material", "decoy"].map((name) => ({
+          name,
+          locationId: LOCATION,
+          components: [name],
+        })),
+        limits: materialLimits,
+      });
+      const produced = await waitFor(
+        async () => {
+          const job = await status("produce-material", PRODUCE);
+          if (job.result) return job;
+          return false;
+        },
+        20_000,
+        20,
+      );
+      expect(produced.state).toBe("exited");
+      expect(produced.result?.exitCode).toBe(0);
+      expect(produced.result?.outputs.find((output) => output.name === "material")?.files).toBe(2);
+      expect(produced.result?.outputs.find((output) => output.name === "decoy")?.files).toBe(1);
+      writeFileSync(join(witness, "material/top.txt"), "changed after sealing\n");
+      const extractions = () => readdirSync(join(runtime, "job-inputs")).sort();
+      expect(extractions()).toEqual([]);
+      const description = JobDescriptionSchema.parse(
+        await ownerAction(hub, "engine.jobs.describe", { machineId, pluginId: PLUGIN }),
+      );
+      const terminal = await sdk.openTerminal({
+        elementId: "sealed-material-terminal",
+        machineId,
+        cols: 120,
+        rows: 30,
+        runtime: {
+          ...installation,
+          operationId: TERMINAL,
+          resourceBindingDigest: description.operations![TERMINAL]!.resourceBindingDigest,
+          input: {},
+          inputs: [{ name: "selected", from: { jobId: produced.jobId, output: "material" } }],
+        },
+      });
+      const terminalHome = await connect(hub, {
+        containerId: terminal.containerId,
+        token: hub.ownerKey,
+        reconnect: false,
+      });
+      home = terminalHome;
+      const terminalJobs = async () =>
+        ListJobRunsResultSchema.parse(
+          await ownerAction(hub, "engine.jobs.listRuns", {
+            machineId,
+            pluginId: PLUGIN,
+            operationId: TERMINAL,
+            limit: 10,
+          }),
+        ).runs.flatMap(({ job }) => (job?.terminal?.terminalId === terminal.id ? [job] : []));
+      const inspectMaterial = async (phase: string) => {
+        const capture = await attachedCapture(terminalHome, terminal.id);
+        captures.push(capture);
+        // The input contains format strings, not the expected response: PTY echo cannot satisfy
+        // these assertions. Exercise overwrite, creation and unlink, then re-read the bytes.
+        terminalHome.sendTerminalInput(
+          terminal.id,
+          [
+            "if (printf changed > /inputs/selected/top.txt) 2>/dev/null; then overwrite=writable; else overwrite=readonly; fi",
+            "if (printf added > /inputs/selected/new.txt) 2>/dev/null; then create=writable; else create=readonly; fi",
+            "if /bin/busybox rm /inputs/selected/nested/inner.txt 2>/dev/null; then unlink=writable; else unlink=readonly; fi",
+            `printf '${phase}_ACCESS:%s:%s:%s\\n' "$overwrite" "$create" "$unlink"`,
+            `printf '${phase}_TOP:%s\\n' "$(/bin/busybox base64 /inputs/selected/top.txt)"`,
+            `printf '${phase}_NESTED:%s\\n' "$(/bin/busybox base64 /inputs/selected/nested/inner.txt)"`,
+            "",
+          ].join("\n"),
+        );
+        await waitForTerminalText(capture, `${phase}_ACCESS:readonly:readonly:readonly`);
+        await waitForTerminalText(
+          capture,
+          `${phase}_TOP:${Buffer.from("selected material\nsecond line\n").toString("base64")}`,
+        );
+        await waitForTerminalText(
+          capture,
+          `${phase}_NESTED:${Buffer.from("nested selection\n").toString("base64")}`,
+        );
+        capture.stop();
+        terminalHome.detachTerminal(terminal.id);
+      };
+      await inspectMaterial("FIRST");
+      const firstJobs = await terminalJobs();
+      expect(firstJobs).toHaveLength(1);
+      expect(firstJobs[0]!.state).toBe("started");
+      const firstExtraction = extractions();
+      expect(firstExtraction).toHaveLength(1);
+
+      const restarted = nextMessage(
+        terminalHome,
+        "terminal_event",
+        20_000,
+        (event) => event.terminalId === terminal.id && event.kind === "restarted",
+      );
+      const restart = await terminalHome.action("core.terminals.restart", { terminalId: terminal.id });
+      expect(restart.ok).toBe(true);
+      await restarted;
+      await inspectMaterial("RESTARTED");
+      const restartedJobs = await waitFor(
+        async () => {
+          const jobs = await terminalJobs();
+          return jobs.length === 2 &&
+            jobs.some((job) => job.jobId === firstJobs[0]!.jobId && job.result !== null) &&
+            jobs.some((job) => job.jobId !== firstJobs[0]!.jobId && job.state === "started")
+            ? jobs
+            : false;
+        },
+        20_000,
+        20,
+      );
+      const replacement = restartedJobs.find((job) => job.jobId !== firstJobs[0]!.jobId)!;
+      expect(replacement.state).toBe("started");
+      expect(restartedJobs.find((job) => job.jobId === firstJobs[0]!.jobId)?.result).not.toBeNull();
+      await waitFor(() => extractions().length === 1, 10_000, 20);
+      expect(extractions()).not.toEqual(firstExtraction);
+      expect(terminalHome.terminals.get(terminal.id)?.containerId).toBe(terminal.containerId);
+
+      terminalHome.killTerminal(terminal.id);
+      await waitFor(() => !terminalHome.terminals.has(terminal.id), 20_000, 20);
+      const cancelled = await waitFor(
+        async () => {
+          const job = await status(replacement.jobId, TERMINAL);
+          return job.result ? job : false;
+        },
+        20_000,
+        20,
+      );
+      expect(cancelled.state).toBe("cancelled");
+      await waitFor(() => extractions().length === 0, 10_000, 20);
+      // Cancellation releases derived mounts, not the immutable material's source lifetime.
+      expect((await status(produced.jobId, PRODUCE)).result).toEqual(produced.result);
     } catch (error) {
       throw e2eFailure(error, [server, agent]);
     } finally {
+      for (const capture of captures) capture.stop();
+      home?.close();
       client?.close();
       try {
         await stopProcesses([agent]);
