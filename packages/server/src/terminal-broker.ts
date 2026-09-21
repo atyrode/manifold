@@ -1121,6 +1121,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       ...(launchRecipe.cwd === undefined ? {} : { cwd: launchRecipe.cwd }),
       launchRecipe,
       ...(pending.runId === undefined ? {} : { runId: pending.runId }),
+      ...(pending.auth.agentRunId === undefined ? {} : { createdByRunId: pending.auth.agentRunId }),
     });
     const info: TerminalInfo = {
       id: terminalId,

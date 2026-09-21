@@ -9,6 +9,7 @@ import type {
   TerminalRuntime,
   TerminalInfo,
   TerminalSummary,
+  ManifoldRef,
 } from "@manifold/protocol";
 
 /** A durable terminal row, as this plugin needs to read it. */
@@ -50,6 +51,7 @@ interface TerminalsCtx {
    * switch on the refusal instead of parsing four variants of it.
    */
   outsideScope(containerId: string | null): { readonly refused: string } | null;
+  target(ref: ManifoldRef): void;
   readonly principal: { readonly id: string };
   readonly auth: { readonly isRoot: boolean };
   /** Host-bound credential lineage for fresh governed admission, never caller arguments. */
@@ -176,12 +178,10 @@ export const terminalsHandlers = {
       { type: "terminal_open", ...args },
       ctx.traceId,
     );
-    return outcome.ok
-      ? {
-          terminal: outcome.terminal,
-          uri: formatManifoldUri({ kind: "terminal", terminalId: outcome.terminal.id }),
-        }
-      : { refused: outcome.reason };
+    if (!outcome.ok) return { refused: outcome.reason };
+    const ref = { kind: "terminal", terminalId: outcome.terminal.id } as const;
+    ctx.target(ref);
+    return { terminal: outcome.terminal, uri: formatManifoldUri(ref) };
   },
 
   /**

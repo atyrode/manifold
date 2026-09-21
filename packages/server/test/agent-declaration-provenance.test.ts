@@ -111,6 +111,7 @@ function restorePreCutoverSchema(f: Fixture): void {
       ALTER TABLE terminals DROP COLUMN run_id;
       ALTER TABLE terminals DROP COLUMN cwd;
       ALTER TABLE terminals DROP COLUMN launch_recipe;
+      ALTER TABLE terminals DROP COLUMN created_by_run_id;
       DROP TABLE agents;
       DROP TABLE principal_access_pauses;
     `);

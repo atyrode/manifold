@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  InspectRunResultSchema,
   PROTOCOL_VERSION,
   ServerToAgentMessageSchema,
   type ActionOutcome,
@@ -26,6 +27,7 @@ import {
   testStore,
   testTileTrees,
 } from "./helpers.ts";
+import { createExternalRun } from "./agent-fixtures.ts";
 
 /**
  * THE TERMINAL DOORS, from both sides.
@@ -312,6 +314,117 @@ describe("core.terminals doors", () => {
     expect(base.machine.sent).toEqual([
       { type: "snapshot_request", terminalId: create.terminalId },
     ]);
+  });
+
+  test("direct native creation retains only its owning run and its confirmed trace target", async () => {
+    const base = await fixture();
+    try {
+      const created = createExternalRun(base, {
+        name: "native creator",
+        purpose: "Verify run-bound native terminal inspection",
+        target: "manifold://",
+        reach: "subtree",
+        caps: ["containers:read", "terminals:spawn", "agents:delegate"],
+        lifetimeMs: 60_000,
+      });
+      const actor = base.auth.authenticate(created.credential.token);
+      const challenge = base.auth.agentPolicyChallenge(actor);
+      base.auth.acknowledgeAgentPolicy(
+        {
+          revision: challenge.revision,
+          acknowledgements: challenge.required.map(({ id, digest }) => ({ id, digest })),
+        },
+        actor,
+      );
+      const child = base.auth.createChildRun({ runId: created.run.id }, actor);
+      const pending = base.host.dispatch(actor, "core.terminals.create", {
+        containerId: base.container.id,
+        elementId: "run-terminal",
+        cols: 80,
+        rows: 24,
+        placement: "tile",
+        program: { argv: ["printf", "NATIVE_INSPECTOR_ARG_557"] },
+        env: { PRIVATE_INPUT: "NATIVE_INSPECTOR_ENV_557" },
+      });
+      await Promise.resolve();
+      fitPending(base);
+      const create = base.machine.sent.find((message) => message.type === "create");
+      if (create === undefined || create.type !== "create")
+        throw new Error("missing create request");
+      base.broker.onCreated(base.machine.machineId, create.terminalId);
+      const uri = `manifold://terminal/${create.terminalId}`;
+      expect(await pending).toMatchObject({
+        ok: true,
+        result: { uri, terminal: { id: create.terminalId, status: "running" } },
+      });
+      const inspect = async (runId: string) => {
+        const outcome = await base.host.dispatch(base.owner, "core.access.inspectRun", { runId });
+        if (!outcome.ok) throw new Error(`unexpected inspection refusal: ${outcome.denial.rule}`);
+        return InspectRunResultSchema.parse(outcome.result);
+      };
+      const own = await inspect(created.run.id);
+      expect(own.terminals).toEqual([
+        expect.objectContaining({
+          terminalId: create.terminalId,
+          machineId: base.machine.machineId,
+          containerId: base.container.id,
+          state: "running",
+        }),
+      ]);
+      expect(own.traces.find((trace) => trace.action === "core.terminals.create")).toMatchObject({
+        authority: "terminals:spawn",
+        outcome: "ok",
+        targets: [uri],
+      });
+      expect((await inspect(child.run.id)).terminals).toEqual([]);
+      const serialized = JSON.stringify(own);
+      for (const privateValue of [
+        created.credential.token,
+        "NATIVE_INSPECTOR_ARG_557",
+        "NATIVE_INSPECTOR_ENV_557",
+      ])
+        expect(serialized).not.toContain(privateValue);
+      const finished = await base.host.dispatch(base.owner, "core.access.finishAgentRun", {
+        runId: created.run.id,
+        outcome: "completed",
+      });
+      if (!finished.ok) throw new Error(`unexpected finish refusal: ${finished.denial.rule}`);
+      base.machine.onRestart = (id) =>
+        base.broker.onRestarted(base.machine.machineId, {
+          type: "terminal_restarted",
+          terminalId: id,
+          cwd: "/work",
+        });
+      expect(
+        await base.host.dispatch(base.owner, "core.terminals.restart", {
+          terminalId: create.terminalId,
+        }),
+      ).toEqual({ ok: true, result: {} });
+      const retained = await inspect(created.run.id);
+      expect(retained.run.state).toBe("completed");
+      expect(retained.terminals).toMatchObject([
+        {
+          terminalId: create.terminalId,
+          state: "running",
+          traceId: String(
+            own.traces.find((trace) => trace.action === "core.terminals.create")?.traceId,
+          ),
+        },
+      ]);
+      base.store.addEvent(
+        null,
+        base.runtime.now() + 365 * 24 * 60 * 60 * 1000,
+        null,
+        "retention-probe",
+        {},
+      );
+      expect((await inspect(created.run.id)).terminals).toMatchObject([
+        { terminalId: create.terminalId, state: "running", retention: "retained", traceId: null },
+      ]);
+      expect((await inspect(child.run.id)).terminals).toEqual([]);
+    } finally {
+      base.store.close();
+    }
   });
 
   test("HTTP creation names placement mistakes and compensates acknowledgement timeout", async () => {
