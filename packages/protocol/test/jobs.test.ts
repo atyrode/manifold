@@ -5,6 +5,7 @@ import {
   MachineOperationSchema,
   JobCommandSchema,
   JobRequestSchema,
+  JobLimitsSchema,
   MachineHalfSchema,
   JobOutputBindingSchema,
   jobLimits,
@@ -437,26 +438,26 @@ test("occurrence-only runs expose honest skipped state and reject private persis
   }
 });
 
+const job: PublicJob = {
+  jobId: occurrence.jobId,
+  machineId: occurrence.machineId,
+  pluginId: occurrence.pluginId,
+  operationId: occurrence.operationId,
+  installationRevision: occurrence.installationRevision,
+  artifactSha256: occurrence.artifactSha256,
+  state: "queued",
+  nextInputSeq: null,
+  inputDigest: "a".repeat(64),
+  resourceBindingDigest: "b".repeat(64),
+  result: null,
+  authority: {
+    origin: { kind: "action", traceId: "trace", door: null },
+    requester: "principal",
+    executor: null,
+    decision: null,
+  },
+};
 test("a run cannot pair job metadata with a different occurrence identity or immutable pin", () => {
-  const job: PublicJob = {
-    jobId: occurrence.jobId,
-    machineId: occurrence.machineId,
-    pluginId: occurrence.pluginId,
-    operationId: occurrence.operationId,
-    installationRevision: occurrence.installationRevision,
-    artifactSha256: occurrence.artifactSha256,
-    state: "queued",
-    nextInputSeq: null,
-    inputDigest: "a".repeat(64),
-    resourceBindingDigest: "b".repeat(64),
-    result: null,
-    authority: {
-      origin: { kind: "action", traceId: "trace", door: null },
-      requester: "principal",
-      executor: null,
-      decision: null,
-    },
-  };
   expect(PublicJobRunSchema.parse({ job, occurrence }).job).toEqual(job);
   for (const field of [
     "jobId",
@@ -476,4 +477,33 @@ test("a run cannot pair job metadata with a different occurrence identity or imm
       }).success,
     ).toBe(false);
   }
+});
+
+test("run discovery preserves indefinite service limits without admitting unbounded ordinary jobs", () => {
+  const service: PublicJob = {
+    ...job,
+    limits: { timeoutMs: 0, memoryBytes: 1048576, processes: 1, outputBytes: 65536 },
+    authority: {
+      ...job.authority,
+      origin: {
+        kind: "service",
+        traceId: "trace",
+        door: null,
+        serviceId: "broker",
+        revision: "r1",
+      },
+    },
+  };
+  const result = ListJobRunsResultSchema.parse({
+    runs: [{ job: service, occurrence: null }],
+    nextCursor: null,
+  });
+  expect(result.runs[0]?.job?.limits?.timeoutMs).toBe(0);
+  expect(JobLimitsSchema.safeParse(service.limits).success).toBe(false);
+  expect(
+    PublicJobRunSchema.safeParse({
+      job: { ...service, limits: { ...service.limits, timeoutMs: -1 } },
+      occurrence: null,
+    }).success,
+  ).toBe(false);
 });

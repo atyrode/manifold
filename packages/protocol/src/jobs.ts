@@ -755,7 +755,7 @@ export const PublicJobSchema = z.strictObject({
   /** The bound inputs the hub admitted, echoed so a reader sees what this job was handed. */
   inputs: JobRequestSchema.shape.inputs,
   /** Native admission limits; optional only for receipts from older hubs. */
-  limits: JobLimitsSchema.optional(),
+  limits: executionLimits.optional(),
   state: JobStateSchema,
   /** Owner-confirmed cursor; null while disconnected, awaiting receipt or reconciliation. */
   nextInputSeq: count.nullable(),
