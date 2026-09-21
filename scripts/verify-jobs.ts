@@ -15,6 +15,8 @@ const fixtureTestPattern = [
   "instance retirement preserves native (?:cooperative|lost-completion|launch-race|noncooperative) ownership until confirmed exit",
   "real machine jobs enforce consent, execute once across transport replacement, and fence queued revocation",
   "instance services survive hub and transport replacement and route only current cross-owner authority",
+  "contextual (?:policy inventory|readiness keeps|recovery retains)",
+  "an explicit provider resolves contextual dependencies against its callee installation, not its foreign caller",
   "owner upgrade restores an exact older install projection without changing pinned authority",
   "outside-set owner RPC never blocks drained empty native maintenance shutdown",
 ].join("|");

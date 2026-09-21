@@ -2183,9 +2183,14 @@ async function resourceServiceOwner(
           ),
         },
       });
-      return events.findLast(
-        (event) => event.type === "result" && event.result.jobId === request.jobId,
-      );
+      return {
+        refusal: events.findLast(
+          (event) => event.type === "refusal" && event.jobId === request.jobId,
+        ),
+        result: events.findLast(
+          (event) => event.type === "result" && event.result.jobId === request.jobId,
+        ),
+      };
     },
     mutateTool() {
       chmodSync(toolPath, 0o600);
@@ -2242,8 +2247,8 @@ test.skipIf(!linux || !cgroupRoot)(
         reason: "services_unavailable",
       });
       expect(await f.admit(f.consumer, "fixture.consumer.run")).toMatchObject({
-        type: "result",
-        result: { state: "refused", reason: "services_unavailable" },
+        refusal: { type: "refusal", reason: "services_unavailable" },
+        result: { type: "result", result: { state: "refused", startedAt: null } },
       });
       f.events.length = 0;
       await f.owner.execute({
@@ -2307,8 +2312,8 @@ test.skipIf(!linux || !cgroupRoot)(
           unavailable,
         );
         expect(await f.admit(retained, "fixture.provider.consume")).toMatchObject({
-          type: "result",
-          result: { state: "refused", reason: "services_unavailable" },
+          refusal: { type: "refusal", reason: "services_unavailable" },
+          result: { type: "result", result: { state: "refused", startedAt: null } },
         });
       }
       expect(f.owner.installedResources(f.provider.pluginId, "r1").operations).toContainEqual({
@@ -2322,8 +2327,8 @@ test.skipIf(!linux || !cgroupRoot)(
         available: true,
       });
       expect(await f.admit(f.provider, "fixture.provider.consume")).toMatchObject({
-        type: "result",
-        result: { state: "refused", reason: "services_unavailable" },
+        refusal: { type: "refusal", reason: "services_unavailable" },
+        result: { type: "result", result: { state: "refused", startedAt: null } },
       });
       expect(f.owner.installedResources(f.provider.pluginId, "r1").operations).toContainEqual(
         unavailable,
