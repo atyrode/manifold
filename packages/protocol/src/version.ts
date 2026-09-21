@@ -392,11 +392,12 @@ export const PROTOCOL_VERSION = 42;
  * work retain their semantics, so compatible machines remain admitted without a fleet
  * restart. The instance wire is unchanged and its acceptance set adds 41.
  *
- * v41 -> v42: TERMINAL SESSION CORRELATION (issue #814). TerminalRuntime and public
- * terminal inventories carry optional machine-bound SessionRef metadata. Strict session
- * and SDK consumers update together. The hub retains the reference without forwarding it
- * to machines or native owners; machine, terminal-host, owner RPC and instance frames are
- * unchanged, so both acceptance sets add 42 without a coordinated fleet restart.
+ * v41 -> v42: TERMINAL SESSION CORRELATION AND BOUND READINESS (#814, #815).
+ * TerminalRuntime and public terminal inventories carry optional machine-bound SessionRef
+ * metadata; public jobs expose admission limits and authorized service descriptions expose
+ * metering facts. Strict session and SDK consumers update together. These are hub projections,
+ * not new machine, terminal-host, owner RPC or instance fields, so both acceptance sets add 42
+ * without a coordinated fleet restart.
  */
 export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
   30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42,
