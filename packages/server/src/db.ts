@@ -9,7 +9,7 @@ import { JOB_SCHEDULE_SCHEMA_SQL } from "./job-schedules.ts";
 import { migrateToDurableAgents } from "./migrate-agents.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 43;
+export const SCHEMA_VERSION = 44;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
@@ -978,6 +978,11 @@ ALTER TABLE machines ADD COLUMN last_refusal_at INTEGER
   43: `
 ALTER TABLE terminals ADD COLUMN created_by_run_id TEXT;
 INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','43');
+`,
+  /** Admitted terminal correlation only; historical rows remain unknown. */
+  44: `
+ALTER TABLE terminals ADD COLUMN session TEXT;
+INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','44');
 `,
 };
 

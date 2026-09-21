@@ -916,6 +916,12 @@ export class JobService {
               invocable: !("kind" in operation) && operation.invocable === true,
               ready: reason === null,
               reason,
+              ...("kind" in operation && operation.meter !== undefined
+                ? {
+                    meter: operation.meter,
+                    ...(policy.prices === undefined ? {} : { prices: policy.prices }),
+                  }
+                : {}),
             },
           ];
         });
@@ -1807,6 +1813,7 @@ export class JobService {
       inputDigest: digest(record.request.input),
       resourceBindingDigest: digest(record.request.resourceBindings ?? null),
       ...(record.request.inputs ? { inputs: record.request.inputs } : {}),
+      limits: record.request.limits,
       state: record.state,
       nextInputSeq:
         this.inputSync.get(jobId) === this.channels.get(machineId)?.channel &&
@@ -4126,6 +4133,8 @@ export class JobService {
     privateEnv?: Extract<JobCommand, { type: "start" }>["privateEnv"],
   ): Extract<JobCommand, { type: "start" }> {
     if (runtime.machineId !== machineId) fail("terminal_runtime_destination_changed");
+    if (runtime.session !== undefined && runtime.session.machineId !== runtime.machineId)
+      fail("terminal_runtime_session_destination_changed");
     const runLaunch =
       terminal.runId !== undefined &&
       runtime.launchBinding !== undefined &&

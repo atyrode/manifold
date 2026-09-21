@@ -7,6 +7,7 @@ import type {
   TerminalEnv,
   TerminalProgram,
   TerminalRuntime,
+  SessionRef,
   TerminalInfo,
   TerminalSummary,
   ManifoldRef,
@@ -23,6 +24,7 @@ interface StoredTerminal {
   readonly exitCode: number | null;
   readonly createdAt: number;
   readonly cwd?: string;
+  readonly session?: SessionRef;
 }
 
 /** The live policy facts a kill is judged by: where it lives, and who is holding it. */
@@ -322,6 +324,7 @@ export const terminalsHandlers = {
       homeId: terminal.containerId,
       unplaced: !referenced.has(terminal.containerId),
       ...(terminal.cwd === undefined ? {} : { cwd: terminal.cwd }),
+      ...(terminal.session === undefined ? {} : { session: terminal.session }),
     }));
     return { terminals };
   },
@@ -350,6 +353,7 @@ export const terminalsHandlers = {
         createdAt: terminal.createdAt,
         status: terminal.status,
         exitCode: terminal.exitCode,
+        ...(terminal.session === undefined ? {} : { session: terminal.session }),
       });
     }
     return { terminals };

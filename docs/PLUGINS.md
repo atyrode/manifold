@@ -2326,6 +2326,17 @@ owner extracts the sealed bytes read-only and releases the extracted trees on se
 cancellation or preparation refusal without releasing their source archives. No host path
 or material bytes enter the terminal descriptor.
 
+From session protocol 42, a prepared `TerminalRuntime` may also carry
+`session: { harness, machineId, sessionId }`, using the public `SessionRef` vocabulary.
+The reference's machine must equal the runtime destination. Successful terminal admission
+persists this correlation and publishes it on live `TerminalInfo`, `client.allTerminals()`
+and `client.terminalsByContainer()` rows under the existing read/scope checks. It grants
+no authority and exposes no job inputs. Join only exact tuples; use the terminal's current
+home and lifecycle state independently, and reopen a known running match via
+`host.navigate("manifold://terminal/<id>")`. An absent reference is unknown, not proof that
+a saved session is stopped or that a terminal belongs to another harness. Never infer it
+from cwd, title or historical recipes. Ordinary terminals need not supply a reference.
+
 **Be woken when your own job ends.** A server half declares `lifecycle.onJobSettled(ctx, job)`
 and is handed, once per settled job IT started,
 `{ jobId, machineId, operationId, pluginId, state, exitCode, reason, finishedAt, scheduleId?, revision?, outputs }`

@@ -1,5 +1,5 @@
 /** Wire revision; session joins require the current version (close 4409 otherwise). */
-export const PROTOCOL_VERSION = 41;
+export const PROTOCOL_VERSION = 42;
 
 /**
  * Machine-channel acceptance set. Agents are long-lived (they hold PTYs and
@@ -391,9 +391,16 @@ export const PROTOCOL_VERSION = 41;
  * v41 and native owner RPC v37 support them. Existing revision-pinned policies and ordinary
  * work retain their semantics, so compatible machines remain admitted without a fleet
  * restart. The instance wire is unchanged and its acceptance set adds 41.
+ *
+ * v41 -> v42: TERMINAL SESSION CORRELATION AND BOUND READINESS (#814, #815).
+ * TerminalRuntime and public terminal inventories carry optional machine-bound SessionRef
+ * metadata; public jobs expose admission limits and authorized service descriptions expose
+ * metering facts. Strict session and SDK consumers update together. These are hub projections,
+ * not new machine, terminal-host, owner RPC or instance fields, so both acceptance sets add 42
+ * without a coordinated fleet restart.
  */
 export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41,
+  30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42,
 ]);
 
 /**
@@ -441,10 +448,10 @@ export const MACHINE_SELF_PROVIDER_PROTOCOL_VERSION = 41;
  * never receives a machine ref, so the instance wire is unchanged.
  * v26: image-aware terminal viewers; instance frames remain unchanged.
  * v27: governed jobs expand the closed share resource/capability vocabularies (ADR 0033);
- * instance compatibility resets to protocol 27. v28 through v41 leave that wire unchanged.
+ * instance compatibility resets to protocol 27. v28 through v42 leave that wire unchanged.
  */
 export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41,
+  27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42,
 ]);
 
 /**

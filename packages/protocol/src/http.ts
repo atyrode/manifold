@@ -7,6 +7,7 @@ import { PrincipalSchema } from "./principal.ts";
 import { ManifoldRefSchema } from "./uri.ts";
 import { InstanceOriginSchema } from "./origin.ts";
 import { TerminalCwdSchema, TerminalExecutionSchema } from "./machine.ts";
+import { SessionRefSchema } from "./session-ref.ts";
 
 /** REST door schemas. Auth: `Authorization: Bearer <token-or-owner-key>`. */
 
@@ -329,6 +330,7 @@ export const ContainerTerminalSummarySchema = z.strictObject({
   id: z.string().min(1),
   containerId: z.string().min(1),
   machineId: z.string().min(1),
+  session: SessionRefSchema.optional(),
   createdAt: z.number().int().nonnegative(),
   status: z.enum(["running", "exited"]),
   exitCode: z.number().int().nullable(),
@@ -348,6 +350,7 @@ export const ContainerTerminalsResponseSchema = z.strictObject({
 export const TerminalSummarySchema = z.strictObject({
   id: z.string().min(1),
   machineId: z.string().min(1),
+  session: SessionRefSchema.optional(),
   name: z.string().min(1).max(120).nullable(),
   createdAt: z.number().int().nonnegative(),
   status: z.enum(["running", "exited"]),

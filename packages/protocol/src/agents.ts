@@ -1,17 +1,10 @@
 import { z } from "zod";
 import { AuthoredCapSchema } from "./plugin.ts";
 import { GrantNodeSchema, GrantReachSchema } from "./grants.ts";
+import { HarnessIdSchema, SessionRefSchema } from "./session-ref.ts";
 
 export const AgentIdSchema = z.string().min(1).max(128);
 export type AgentId = z.infer<typeof AgentIdSchema>;
-export const HarnessIdSchema = z.string().min(1).max(64);
-export type HarnessId = z.infer<typeof HarnessIdSchema>;
-export const SessionRefSchema = z.strictObject({
-  harness: HarnessIdSchema,
-  sessionId: z.string().min(1).max(256),
-  machineId: z.string().min(1).max(128),
-});
-export type SessionRef = z.infer<typeof SessionRefSchema>;
 export const RunModelSchema = z.strictObject({
   provider: z.string().min(1).max(128),
   model: z.string().min(1).max(256),

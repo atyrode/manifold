@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { CapSchema } from "./capabilities.ts";
+import { SessionRefSchema } from "./session-ref.ts";
 import {
   ServiceAuthoritySubjectSchema,
   ServiceBindingSchema,
@@ -589,11 +590,21 @@ export const TerminalRuntimeSchema = JobRequestSchema.pick({
   artifactSha256: true,
   input: true,
   inputs: true,
-}).extend({
-  resourceBindingDigest: hash,
-  /** Host-minted one-use admission reference, never execution or credential authority. */
-  launchBinding: id.optional(),
-});
+})
+  .extend({
+    resourceBindingDigest: hash,
+    /** Host-minted one-use admission reference, never execution or credential authority. */
+    launchBinding: id.optional(),
+    /** Optional admitted correlation; absence means unknown, never a lifecycle claim. */
+    session: SessionRefSchema.optional(),
+  })
+  .refine(
+    (runtime) => runtime.session === undefined || runtime.session.machineId === runtime.machineId,
+    {
+      message: "terminal runtime session machine must match its destination",
+      path: ["session", "machineId"],
+    },
+  );
 export type TerminalRuntime = z.infer<typeof TerminalRuntimeSchema>;
 export const JobPermitSchema = z.strictObject({
   permitId: id,
@@ -743,6 +754,8 @@ export const PublicJobSchema = z.strictObject({
   resourceBindingDigest: hash,
   /** The bound inputs the hub admitted, echoed so a reader sees what this job was handed. */
   inputs: JobRequestSchema.shape.inputs,
+  /** Native admission limits; optional only for receipts from older hubs. */
+  limits: JobLimitsSchema.optional(),
   state: JobStateSchema,
   /** Owner-confirmed cursor; null while disconnected, awaiting receipt or reconciliation. */
   nextInputSeq: count.nullable(),
