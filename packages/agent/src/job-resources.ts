@@ -139,7 +139,9 @@ export class JobResources {
       // Each consuming operation must resolve and prove its own exact installation context.
       if (
         policy.runtime &&
-        !(policy.runtime.scope !== "instance" && policy.runtime.installationRevision === undefined) &&
+        !(
+          policy.runtime.scope !== "instance" && policy.runtime.installationRevision === undefined
+        ) &&
         !this.options.runtimeAvailable?.(policy, candidate)
       )
         continue;

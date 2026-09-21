@@ -1588,20 +1588,25 @@ export class JobService {
       const reason =
         this.serviceAvailability(dependency, machineId, binding.operationIds) ??
         this.runtimeServiceRefusal(
-          dependency, machineId, callee, runtime.operationId, next, reviewedEdges, proposed,
+          dependency,
+          machineId,
+          callee,
+          runtime.operationId,
+          next,
+          reviewedEdges,
+          proposed,
         );
       if (reason) return reason;
     }
     const report = this.installationResources.get(`${machineId}/${runtime.pluginId}`);
     if (
       !prospective &&
-      (
-      report?.channel !== live.channel ||
-      report.revision !== callee.revision ||
-      report.artifact !== callee.artifact ||
-      !report.resources.operations.some(
-        (operation) => operation.operationId === runtime.operationId && operation.available,
-      ))
+      (report?.channel !== live.channel ||
+        report.revision !== callee.revision ||
+        report.artifact !== callee.artifact ||
+        !report.resources.operations.some(
+          (operation) => operation.operationId === runtime.operationId && operation.available,
+        ))
     )
       return "service_runtime_unavailable";
     if (runtime.scope === "instance") {
@@ -1661,7 +1666,9 @@ export class JobService {
       (policy) => policy.serviceId === event.serviceId,
     );
     const install = this.jobs.installation(
-      channel.machineId, job.request.pluginId, job.request.installationRevision,
+      channel.machineId,
+      job.request.pluginId,
+      job.request.installationRevision,
     );
     const binding = install?.machine.operations[job.request.operationId]?.services?.find(
       (binding) =>
@@ -2538,8 +2545,7 @@ export class JobService {
           binding.operationIds.some((id) => !Object.hasOwn(policy.operations, id))
         )
           reason = "service_definition_changed";
-        else if (policy)
-          reason = this.serviceRuntimeSupportRefusal(policy, caller.machineId);
+        else if (policy) reason = this.serviceRuntimeSupportRefusal(policy, caller.machineId);
         if (reason) {
           result.unavailable.push({
             caller: callerRef,
@@ -2763,9 +2769,9 @@ export class JobService {
       const install =
         proposedCaller &&
         target.machineId === proposedCaller.machineId &&
-        target.pluginId === proposedCaller.pluginId
-        && target.installationRevision === proposedCaller.revision
-        && target.artifactSha256 === proposedCaller.artifact
+        target.pluginId === proposedCaller.pluginId &&
+        target.installationRevision === proposedCaller.revision &&
+        target.artifactSha256 === proposedCaller.artifact
           ? proposedCaller
           : this.jobs.installation(target.machineId, target.pluginId);
       if (

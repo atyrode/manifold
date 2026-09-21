@@ -400,7 +400,9 @@ test.skipIf(!realBackend)(
       await waitFor(
         async () => {
           selfDescription = await describe(source.machineId, selfPlugin);
-          return selfDescription.installation?.ready && selfDescription.operations?.[selfRead]?.ready;
+          return (
+            selfDescription.installation?.ready && selfDescription.operations?.[selfRead]?.ready
+          );
         },
         20000,
         20,
@@ -413,7 +415,10 @@ test.skipIf(!realBackend)(
           { cause: error },
         );
       });
-      for (const [jobId, starts] of [["self-first", 1], ["self-second", 2]] as const) {
+      for (const [jobId, starts] of [
+        ["self-first", 1],
+        ["self-second", 2],
+      ] as const) {
         const node = {
           kind: "job" as const,
           machineId: source.machineId,
@@ -461,7 +466,7 @@ test.skipIf(!realBackend)(
         });
         const children = await waitFor(
           async () => {
-            const jobs = (await selfRuns()).runs.flatMap((run) => run.job ? [run.job] : []);
+            const jobs = (await selfRuns()).runs.flatMap((run) => (run.job ? [run.job] : []));
             return jobs.length === starts &&
               jobs.every((job) => ["exited", "cancelled", "interrupted"].includes(job.state))
               ? jobs
@@ -470,8 +475,10 @@ test.skipIf(!realBackend)(
           20000,
           20,
         );
-        const child = children.find((job) =>
-          job.authority.origin.kind === "invocation" && job.authority.origin.parentJobId === jobId,
+        const child = children.find(
+          (job) =>
+            job.authority.origin.kind === "invocation" &&
+            job.authority.origin.parentJobId === jobId,
         );
         expect(child?.installationRevision).toBe(launched.installationRevision);
       }

@@ -30,7 +30,8 @@ export const JOB_OWNER_PROTOCOL_VERSION = 37;
  */
 export const JOB_OWNER_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([34, 35, 36, 37]);
 
-export type JobOwnerCapability = "privateEnv" | "launchBinding" | "boundInputs" | "selfServiceRuntime";
+export type JobOwnerCapability =
+  "privateEnv" | "launchBinding" | "boundInputs" | "selfServiceRuntime";
 const jobOwnerCapabilityVersions: Readonly<Record<JobOwnerCapability, number>> = {
   privateEnv: 35,
   launchBinding: 35,

@@ -411,7 +411,10 @@ export class JobDeployments {
                   ? "installation_platform_unavailable"
                   : null;
         reason ??= this.host.selfProvidedServiceRefusal(
-          machineId, request.pluginId, machine, request.operationIds,
+          machineId,
+          request.pluginId,
+          machine,
+          request.operationIds,
         );
         const resources: JobDeploymentTargetReview["resources"] = [];
         const bindings: JobResourceBindings = { tools: {}, services: {}, anchors: {} };
@@ -479,7 +482,10 @@ export class JobDeployments {
         if (proposed && platform) {
           try {
             const invocations = this.host.invocations(
-              auth, proposed, request.operationIds, this.rights(request, machineId),
+              auth,
+              proposed,
+              request.operationIds,
+              this.rights(request, machineId),
             );
             invocationEdges = invocations.edges;
             reason ??= invocations.refusal;
@@ -653,7 +659,10 @@ export class JobDeployments {
         return "deployment_scope_changed";
       const install = this.proposed(approval, target);
       const invocations = this.host.invocations(
-        auth, install, request.operationIds, this.rights(request, target.machineId),
+        auth,
+        install,
+        request.operationIds,
+        this.rights(request, target.machineId),
       );
       if (invocations.refusal) return invocations.refusal;
       if (invocations.digest !== approval.evidence[index]!.invocations)

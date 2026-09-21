@@ -5498,7 +5498,8 @@ describe("reviewed native deployment approvals", () => {
       expect(f.service.jobs.installation(f.machineId, selfPlugin)).toBeNull();
       expect(f.commands).toEqual([]);
       expect(
-        f.service.inspectInvocations(f.root, { machineId: f.machineId, pluginId: selfPlugin }).edges,
+        f.service.inspectInvocations(f.root, { machineId: f.machineId, pluginId: selfPlugin })
+          .edges,
       ).toEqual([]);
       const edge = target.invocationEdges[0]!.edge;
       expect(edge.caller.installationRevision).toBe(target.installationRevision!);
@@ -5510,7 +5511,9 @@ describe("reviewed native deployment approvals", () => {
         artifactSha256: hash,
       });
       const deployment = f.service.applyDeployment(
-        f.root, { request: value, reviewDigest: review.reviewDigest }, "contextual-first",
+        f.root,
+        { request: value, reviewDigest: review.reviewDigest },
+        "contextual-first",
       );
       expect(deployment.targets[0]!.state).toBe("installing");
       expect(f.service.jobs.installation(f.machineId, selfPlugin)?.ready).toBe(false);
@@ -5521,8 +5524,9 @@ describe("reviewed native deployment approvals", () => {
         input: { value: "safe" },
         outputs: [],
       };
-      expect(() => f.service.execute(f.root, selfPlugin, "before-ack", execution))
-        .toThrow("service_runtime_unavailable");
+      expect(() => f.service.execute(f.root, selfPlugin, "before-ack", execution)).toThrow(
+        "service_runtime_unavailable",
+      );
       f.service.event(f.channel, {
         type: "installed",
         pluginId: selfPlugin,
@@ -5589,22 +5593,32 @@ describe("reviewed native deployment approvals", () => {
         operationIds: [use],
       };
       expect(f.service.reviewDeployment(f.root, value).targets[0]).toMatchObject({
-        approvable: false, reason: "authority_or_consent_refused",
+        approvable: false,
+        reason: "authority_or_consent_refused",
       });
       const other = "sample.other";
       const otherOperation = `${other}.use`;
       f.service.setManifestResolver((id) =>
-        id === selfPlugin ? declaration : id === other
-          ? { ...machine, operations: { [otherOperation]: declaration.operations[use]! } }
-          : machine,
+        id === selfPlugin
+          ? declaration
+          : id === other
+            ? { ...machine, operations: { [otherOperation]: declaration.operations[use]! } }
+            : machine,
       );
-      expect(f.service.reviewDeployment(f.root, {
-        ...value, pluginId: other, operationIds: [otherOperation],
-      }).targets[0]).toMatchObject({ approvable: false, reason: "service_runtime_changed" });
+      expect(
+        f.service.reviewDeployment(f.root, {
+          ...value,
+          pluginId: other,
+          operationIds: [otherOperation],
+        }).targets[0],
+      ).toMatchObject({ approvable: false, reason: "service_runtime_changed" });
       expect(f.service.jobs.installation(f.machineId, selfPlugin)).toBeNull();
-      expect(f.service.reviewDeployment(f.root, {
-        ...value, operationIds: [serve, use],
-      }).approvable).toBe(true);
+      expect(
+        f.service.reviewDeployment(f.root, {
+          ...value,
+          operationIds: [serve, use],
+        }).approvable,
+      ).toBe(true);
     } finally {
       f.store.close();
     }
@@ -5626,8 +5640,9 @@ describe("reviewed native deployment approvals", () => {
             .configuration.revision,
           policies: [policy],
         });
-        f.owner.resources!.services[policy.serviceId] =
-          createHash("sha256").update(canonicalJobJson(policy)).digest("hex");
+        f.owner.resources!.services[policy.serviceId] = createHash("sha256")
+          .update(canonicalJobJson(policy))
+          .digest("hex");
         prove(f);
         const review = f.service.reviewDeployment(f.root, {
           deploymentId: `invalid-${invalid}`,
@@ -5636,7 +5651,8 @@ describe("reviewed native deployment approvals", () => {
           operationIds: [serve, use],
         });
         expect(review.targets[0]).toMatchObject({
-          approvable: false, reason: "service_runtime_changed",
+          approvable: false,
+          reason: "service_runtime_changed",
         });
         expect(f.service.jobs.installation(f.machineId, selfPlugin)).toBeNull();
       } finally {
@@ -5665,11 +5681,15 @@ describe("reviewed native deployment approvals", () => {
           operationIds: [serve, use],
         };
         expect(f.service.reviewDeployment(f.root, value).targets[0]).toMatchObject({
-          approvable: false, reason: `service_runtime_unsupported:${policy.serviceId}`,
+          approvable: false,
+          reason: `service_runtime_unsupported:${policy.serviceId}`,
         });
-        expect(f.service.reviewDeployment(f.root, {
-          ...value, operationIds: [serve],
-        }).approvable).toBe(true);
+        expect(
+          f.service.reviewDeployment(f.root, {
+            ...value,
+            operationIds: [serve],
+          }).approvable,
+        ).toBe(true);
         consent(f, "machines:run");
         expect(execute(f).state).toBe("start-committed");
       } finally {
@@ -5687,12 +5707,16 @@ describe("reviewed native deployment approvals", () => {
         targets: [{ machineId: f.machineId, platform: "linux-x64" }],
         operationIds: [serve, use],
       };
-      const token = f.auth.mintToken({
-        principal: { name: "non-root deployer", kind: "human" },
-        caps: ["machines:run", "operations:invoke", "network:host", "services:invoke"],
-      }, f.root);
-      expect(() => f.service.reviewDeployment(f.auth.authenticate(token.token), value))
-        .toThrow("deployment_admin_required");
+      const token = f.auth.mintToken(
+        {
+          principal: { name: "non-root deployer", kind: "human" },
+          caps: ["machines:run", "operations:invoke", "network:host", "services:invoke"],
+        },
+        f.root,
+      );
+      expect(() => f.service.reviewDeployment(f.auth.authenticate(token.token), value)).toThrow(
+        "deployment_admin_required",
+      );
       const review = f.service.reviewDeployment(f.root, value);
       const changed = { ...policy, revision: "svc-r2" };
       f.service.configureServiceConfiguration(f.root, {
@@ -5701,13 +5725,20 @@ describe("reviewed native deployment approvals", () => {
           .configuration.revision,
         policies: [changed],
       });
-      expect(() => f.service.applyDeployment(
-        f.root, { request: value, reviewDigest: review.reviewDigest }, "stale-context",
-      )).toThrow("deployment_review_stale");
+      expect(() =>
+        f.service.applyDeployment(
+          f.root,
+          { request: value, reviewDigest: review.reviewDigest },
+          "stale-context",
+        ),
+      ).toThrow("deployment_review_stale");
       expect(f.service.jobs.installation(f.machineId, selfPlugin)).toBeNull();
-      expect(f.service.inspectInvocations(f.root, {
-        machineId: f.machineId, pluginId: selfPlugin,
-      }).edges).toEqual([]);
+      expect(
+        f.service.inspectInvocations(f.root, {
+          machineId: f.machineId,
+          pluginId: selfPlugin,
+        }).edges,
+      ).toEqual([]);
     } finally {
       f.store.close();
     }

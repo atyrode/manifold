@@ -1949,10 +1949,7 @@ test.skipIf(!linux || !cgroupRoot)(
   },
 );
 
-async function resourceServiceOwner(
-  scope: "job" | "instance",
-  contextual = false,
-) {
+async function resourceServiceOwner(scope: "job" | "instance", contextual = false) {
   const root = mkdtempSync(join(tmpdir(), "owner-resource-service-"));
   const held: HeldDirectory[] = [];
   mkdirSync(join(root, "private"), { mode: 0o700 });

@@ -263,7 +263,10 @@ test("contextual policies are projected for either legacy fence without disrupti
             path: "/inspect",
             request: { kind: "none" },
             response: {
-              kind: "stream", disclosure: "full", contentTypes: ["application/json"], headers: [],
+              kind: "stream",
+              disclosure: "full",
+              contentTypes: ["application/json"],
+              headers: [],
             },
             timeoutMs: 1000,
             maxRequestBytes: 1024,
@@ -288,11 +291,15 @@ test("contextual policies are projected for either legacy fence without disrupti
         type: "configure_services",
         configuration: { revision: hash([policy, pinned]), policies: [policy, pinned] },
       });
-      expect(f.service.readServiceConfiguration(f.root, { machineId: f.machineId }))
-        .toMatchObject({ connected: true, configuration });
-      expect(f.service.describeServices(f.root, { machineId: f.machineId }).services
-        .find((value) => value.serviceId === contextual.serviceId)?.operations[0])
-        .toMatchObject({ ready: false, reason: "service_runtime_unsupported" });
+      expect(f.service.readServiceConfiguration(f.root, { machineId: f.machineId })).toMatchObject({
+        connected: true,
+        configuration,
+      });
+      expect(
+        f.service
+          .describeServices(f.root, { machineId: f.machineId })
+          .services.find((value) => value.serviceId === contextual.serviceId)?.operations[0],
+      ).toMatchObject({ ready: false, reason: "service_runtime_unsupported" });
       const pending = f.service.readService(f.reader, f.args);
       const command = f.pendingCommand();
       f.authorize(command.requestId);
@@ -303,7 +310,8 @@ test("contextual policies are projected for either legacy fence without disrupti
       f.commands.length = 0;
       f.prove();
       expect(f.commands.findLast((command) => command.type === "configure_services")).toEqual({
-        type: "configure_services", configuration,
+        type: "configure_services",
+        configuration,
       });
     } finally {
       f.store.close();

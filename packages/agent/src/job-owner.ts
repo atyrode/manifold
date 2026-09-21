@@ -736,7 +736,13 @@ export class MachineJobOwner {
       const dependency = this.policy(binding.serviceId);
       return (
         dependency !== undefined &&
-        this.serviceAvailable(dependency, binding.operationIds, inventory, next, installation.command)
+        this.serviceAvailable(
+          dependency,
+          binding.operationIds,
+          inventory,
+          next,
+          installation.command,
+        )
       );
     });
   }
@@ -779,7 +785,8 @@ export class MachineJobOwner {
       !Object.hasOwn(policy.operations, request.operationId)
     )
       return false;
-    let invoking: Pick<JobRequest, "pluginId" | "installationRevision" | "artifactSha256"> | undefined;
+    let invoking:
+      Pick<JobRequest, "pluginId" | "installationRevision" | "artifactSha256"> | undefined;
     if (subject.kind === "tunnel") {
       const tunnel = this.serviceTunnels.get(subject.channelId);
       const command = tunnel?.command;
