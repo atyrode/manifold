@@ -9,6 +9,7 @@ import {
   TerminalReadinessSchema,
 } from "./machine.ts";
 import { TerminalRuntimeSchema } from "./jobs.ts";
+import { SessionRefSchema } from "./session-ref.ts";
 import {
   CarrySchema,
   GestureKindSchema,
@@ -107,6 +108,7 @@ export const TerminalInfoSchema = z.strictObject({
   /** Operator-assigned display name; null means the client renders its default label. */
   name: z.string().min(1).max(120).nullable(),
   machineId: z.string().min(1),
+  session: SessionRefSchema.optional(),
   status: z.enum(["running", "exited"]),
   exitCode: z.number().int().nullable(),
   /** Launch intent may be relative until the owner reports an observed absolute directory. */

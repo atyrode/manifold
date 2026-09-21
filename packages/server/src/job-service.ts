@@ -4126,6 +4126,8 @@ export class JobService {
     privateEnv?: Extract<JobCommand, { type: "start" }>["privateEnv"],
   ): Extract<JobCommand, { type: "start" }> {
     if (runtime.machineId !== machineId) fail("terminal_runtime_destination_changed");
+    if (runtime.session !== undefined && runtime.session.machineId !== runtime.machineId)
+      fail("terminal_runtime_session_destination_changed");
     const runLaunch =
       terminal.runId !== undefined &&
       runtime.launchBinding !== undefined &&

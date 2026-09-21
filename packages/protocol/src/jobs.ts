@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { CapSchema } from "./capabilities.ts";
+import { SessionRefSchema } from "./session-ref.ts";
 import {
   ServiceAuthoritySubjectSchema,
   ServiceBindingSchema,
@@ -593,6 +594,11 @@ export const TerminalRuntimeSchema = JobRequestSchema.pick({
   resourceBindingDigest: hash,
   /** Host-minted one-use admission reference, never execution or credential authority. */
   launchBinding: id.optional(),
+  /** Optional admitted correlation; absence means unknown, never a lifecycle claim. */
+  session: SessionRefSchema.optional(),
+}).refine((runtime) => runtime.session === undefined || runtime.session.machineId === runtime.machineId, {
+  message: "terminal runtime session machine must match its destination",
+  path: ["session", "machineId"],
 });
 export type TerminalRuntime = z.infer<typeof TerminalRuntimeSchema>;
 export const JobPermitSchema = z.strictObject({

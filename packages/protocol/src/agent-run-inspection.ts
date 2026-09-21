@@ -4,7 +4,8 @@ import { AuthoredCapSchema } from "./plugin.ts";
 import { GrantReachSchema } from "./grants.ts";
 import { JobStateSchema } from "./jobs.ts";
 import { TraceOutcomeSchema } from "./trace.ts";
-import { AgentIdSchema, SessionRefSchema, RunModelSchema, RunActivitySchema } from "./agents.ts";
+import { AgentIdSchema, RunModelSchema, RunActivitySchema } from "./agents.ts";
+import { SessionRefSchema } from "./session-ref.ts";
 
 export const AGENT_JUSTIFICATION_MAX_LENGTH = 512;
 const id = z.string().min(1).max(256);

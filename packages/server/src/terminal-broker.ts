@@ -333,6 +333,7 @@ export class TerminalBroker implements TerminalPlacementPort {
         controllerId: row.status === "running" ? row.createdBy : null,
         createdBy: row.createdBy,
         ...(row.cwd === undefined ? {} : { cwd: row.cwd }),
+        ...(row.session === undefined ? {} : { session: row.session }),
       };
       this.terminals.set(row.id, {
         info,
@@ -695,6 +696,7 @@ export class TerminalBroker implements TerminalPlacementPort {
         controllerId: stored.status === "running" ? stored.createdBy : null,
         createdBy: stored.createdBy,
         ...(stored.cwd === undefined ? {} : { cwd: stored.cwd }),
+        ...(stored.session === undefined ? {} : { session: stored.session }),
       };
       terminal = {
         info,
@@ -1120,6 +1122,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       createdAt: pending.createdAt,
       ...(launchRecipe.cwd === undefined ? {} : { cwd: launchRecipe.cwd }),
       launchRecipe,
+      ...(launchRecipe.runtime?.session === undefined ? {} : { session: launchRecipe.runtime.session }),
       ...(pending.runId === undefined ? {} : { runId: pending.runId }),
       ...(pending.auth.agentRunId === undefined ? {} : { createdByRunId: pending.auth.agentRunId }),
     });
@@ -1136,6 +1139,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       controllerId: pending.createdBy,
       createdBy: pending.createdBy,
       ...(launchRecipe.cwd === undefined ? {} : { cwd: launchRecipe.cwd }),
+      ...(launchRecipe.runtime?.session === undefined ? {} : { session: launchRecipe.runtime.session }),
     };
     this.terminals.set(terminalId, {
       info,

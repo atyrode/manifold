@@ -446,8 +446,6 @@ export {
   AGENT_RUN_MAX_RENEWALS,
   AGENT_RUN_MAX_TASK_REFERENCE_LENGTH,
   AgentIdSchema,
-  HarnessIdSchema,
-  SessionRefSchema,
   RunModelSchema,
   RunActivitySchema,
   AgentRunCapSchema,
@@ -479,8 +477,6 @@ export {
   type ResolveHarnessSessionRequest,
   type ResolveHarnessSessionResult,
   type AgentId,
-  type HarnessId,
-  type SessionRef,
   type RunModel,
   type RunActivity,
   type AgentRunCap,
@@ -500,6 +496,12 @@ export {
   type HarnessTarget,
   type AgentAdmissionRefusal,
 } from "./agents.ts";
+export {
+  HarnessIdSchema,
+  SessionRefSchema,
+  type HarnessId,
+  type SessionRef,
+} from "./session-ref.ts";
 export { IDENTITY_COLORS, PrincipalSchema, identityColorFor, type Principal } from "./principal.ts";
 export {
   EVENT_KIND_PATTERN,

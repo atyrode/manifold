@@ -3354,6 +3354,25 @@ env? }` → server targets `machineId` when given (error `no_machine` if it is u
   plugin `runtime` binding; the native owner also rejects a runtime-free `create` before
   idempotent lookup or spawning. Ordinary terminal pickers select only explicitly
   unconfined machines, while runtime authoring uses governed-capable placement.
+- **Harness session correlation is optional identity metadata** (issue #814, session protocol
+  42). `TerminalRuntime.session?: SessionRef` carries the existing exact
+  `{ harness, machineId, sessionId }` vocabulary. When supplied, its `machineId` MUST equal
+  `runtime.machineId`; disagreement is refused before native admission. This field grants no
+  execution, credential, session-read, terminal-control or workspace authority and is not
+  forwarded into native job input.
+  Only successful runtime admission followed by terminal creation commits the reference.
+  The durable terminal row projects it as optional `session` in `TerminalInfo`,
+  `TerminalSummary` (`core.terminals.listAll`) and `ContainerTerminalSummary`
+  (`core.terminals.listByContainer`), behind their existing home/read/scope checks. No separate
+  lookup or authority is added. Exit, rename, home movement, owner reconciliation, restart and
+  hub restart preserve the admitted reference; dismissal removes it with the terminal.
+  Ordinary terminals and historical rows omit it. Absence means **unknown correlation**,
+  never stopped, non-harness or permission to infer identity from cwd, title, jobs or recipes.
+  Consumers join only exact tuples; live state is independent of identity. Reopening a known
+  running match uses its existing `manifold://terminal/<id>` address.
+  Strict session/SDK consumers update together. Machine, terminal-host, native-owner RPC and
+  instance frames are unchanged; the machine and instance acceptance sets add revision 42
+  without retiring compatible peers or requiring a fleet restart.
 - **An unconfined terminal may be born running a program** (issue #192, protocol v22). `program { argv }`
   names what the PTY execs in place of the machine's shell: `argv[0]` with `argv.slice(1)`,
   under the same PTY, the same lifecycle (snapshot, resize, `terminal_exited`, controller lease)
@@ -4503,7 +4522,7 @@ sets `synchronous = FULL` before applying migrations. Writes wait up to five sec
 write locks, including Litestream's short checkpoint locks, before returning `SQLITE_BUSY`; FULL
 synchronization makes the plugin-image journal durable before filesystem activation.
 `packages/server/src/db.ts` remains the authoritative migration source; the handwritten
-inventory below records its schema through version 40 rather than acting as a second runner.
+inventory below records selected durable fields rather than acting as a second runner.
 
 ```
 containers(id TEXT PK, name TEXT, created_at INTEGER, sort_order INTEGER, folder_id TEXT,
@@ -4541,10 +4560,12 @@ machines(id TEXT PK, name TEXT UNIQUE, token_id TEXT, last_seen INTEGER,
                             -- continuity identity and persistent admission latch, not PTY data
 terminals(id TEXT PK, machine_id TEXT, container_id TEXT, created_by TEXT, status TEXT,
          exit_code INTEGER, created_at INTEGER, agent_principal_id TEXT, name TEXT,
-         run_id TEXT, cwd TEXT, launch_recipe TEXT)
+         run_id TEXT, cwd TEXT, launch_recipe TEXT, session TEXT)
                             -- container_id IS the home composition; no element_id, no pool
                             -- order. launch_recipe retains bounded opener program/env/runtime
                             -- intent verbatim; reserved MANIFOLD_* credentials are never stored
+                            -- session is nullable SessionRef JSON from admitted terminal birth;
+                            -- NULL means unknown, including all pre-schema-44 rows
 plugin_kv(plugin_id TEXT, key TEXT, value TEXT, PRIMARY KEY (plugin_id, key))
                             -- WITHOUT ROWID; per-plugin storage, `$`-prefixed keys are
                             -- engine-reserved ($version stamp, $migration:<name> ledger)
@@ -4813,6 +4834,11 @@ never infers run identity from a principal-wide fallback.
 Migration 39 adds nullable `terminals.cwd` and `terminals.launch_recipe`, then backfills only a
 missing terminal `run_id` from the newest governed job whose terminal, container and machine
 identity match and whose request names a nonempty run ID. It is additive SQL and takes no snapshot.
+Migration 44 adds nullable `terminals.session` as SessionRef JSON with no backfill, no
+pre-migration snapshot and no rewrite of existing terminal rows or launch recipes. Historical
+recipes, runs and jobs are not evidence for this new admitted correlation field. Ordinary
+terminals remain valid without it. Runtime admission and durable writes reject a reference
+whose machine differs from the terminal destination.
 Migration 38 reclassifies only `agent` principals identifiable as native service credentials:
 current `native_instance_services.credential` principal references and historical
 `token_minted { subjectPrincipalId, serviceId, machineId }` events. It preserves unrelated

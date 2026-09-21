@@ -1,6 +1,9 @@
 import "../src/shared-modules.ts";
 import { expect, test } from "bun:test";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { z } from "zod";
 import { defineAction } from "@manifold/plugin";
 import {
@@ -13,6 +16,8 @@ import {
   ListHarnessesResultSchema,
   ListHarnessSessionsResultSchema,
   SessionRefSchema,
+  ContainerTerminalsResponseSchema,
+  TerminalsResponseSchema,
   type ActionOutcome,
   type AgentRun,
   type HarnessTarget,
@@ -23,6 +28,8 @@ import {
   type TerminalRuntime,
 } from "@manifold/protocol";
 import { AuthService, type AuthContext } from "../src/auth.ts";
+import { openDatabase } from "../src/db.ts";
+import { ServerStore } from "../src/stores.ts";
 import { JobService } from "../src/job-service.ts";
 import { silentLogger } from "../src/log.ts";
 import type { ActionCtx, ServerPluginDef } from "../src/plugin-host.ts";
@@ -75,7 +82,7 @@ function result(outcome: ActionOutcome): unknown {
   return outcome.result;
 }
 
-async function fixture(dependency?: ServerPluginDef, inputs?: string[]) {
+async function fixture(dependency?: ServerPluginDef, inputs?: string[], databasePath?: string) {
   const declaredMachine: MachineHalf =
     inputs === undefined
       ? machine
@@ -85,7 +92,7 @@ async function fixture(dependency?: ServerPluginDef, inputs?: string[]) {
         };
   const runtime = new FakeRuntime();
   const clock = new FakeClock(runtime);
-  const store = testStore();
+  const store = databasePath === undefined ? testStore() : new ServerStore(openDatabase(databasePath));
   const auth = new AuthService(store, "a".repeat(64), runtime);
   const root = auth.authenticate("a".repeat(64));
   const machineId = auth.enrollMachine("harness owner", root).machine.id;
@@ -362,6 +369,100 @@ async function fixture(dependency?: ServerPluginDef, inputs?: string[]) {
     },
   };
 }
+
+test("admitted session correlation survives lifecycle and disk reopen without widening read authority", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "manifold-terminal-session-"));
+  const path = join(dir, "manifold.db");
+  const f = await fixture(undefined, undefined, path);
+  let closed = false;
+  try {
+    const session = { harness: "test-harness", machineId: f.descriptor.machineId, sessionId: "saved-session" };
+    const socket = await f.open({ ...f.descriptor, session });
+    const create = f.sent.findLast((message) => message.type === "create");
+    if (!create) throw new Error("terminal create missing");
+    expect(f.store.getTerminal(create.terminalId)).toBeNull();
+    f.broker.onCreated(f.descriptor.machineId, create.terminalId);
+    const terminal = f.store.getTerminal(create.terminalId)!;
+    expect(socket.messages()).toContainEqual(expect.objectContaining({
+      type: "terminal_opened", terminal: expect.objectContaining({ session }),
+    }));
+    expect(TerminalsResponseSchema.parse(result(await f.host.dispatch(f.root, "core.terminals.listAll", {}))).terminals)
+      .toContainEqual(expect.objectContaining({ id: terminal.id, session }));
+    const visible = f.auth.mintToken({
+      principal: { kind: "human", name: "Home reader" },
+      caps: ["containers:read"],
+      containerId: terminal.containerId,
+    }, f.root);
+    const reader = f.auth.authenticate(visible.token);
+    expect(ContainerTerminalsResponseSchema.parse(result(
+      await f.host.dispatch(reader, "core.terminals.listByContainer", {}),
+    )).terminals).toContainEqual(expect.objectContaining({ id: terminal.id, session }));
+    expect((await f.host.dispatch(reader, "core.terminals.listAll", {})).ok).toBe(false);
+    expect((await f.host.dispatch(reader, "core.terminals.restart", { terminalId: terminal.id })).ok).toBe(false);
+    const otherHome = f.runtime.newId();
+    f.store.createContainer({ id: otherHome, name: "Other home", createdAt: f.runtime.now(), discipline: "composition" });
+    const foreign = f.auth.mintToken({
+      principal: { kind: "human", name: "Other reader" },
+      caps: ["containers:read"],
+      containerId: otherHome,
+    }, f.root);
+    expect(ContainerTerminalsResponseSchema.parse(result(
+      await f.host.dispatch(f.auth.authenticate(foreign.token), "core.terminals.listByContainer", {}),
+    )).terminals).toEqual([]);
+    expect(result(await f.host.dispatch(f.root, "core.terminals.restart", { terminalId: terminal.id }))).toEqual({});
+    expect(f.broker.listForContainer(terminal.containerId)[0]?.session).toEqual(session);
+    expect(f.broker.adoptTerminal(session.machineId, {
+      terminalId: terminal.id, alive: true, cols: 90, rows: 30, seq: 0,
+    })).toBe(true);
+    f.broker.onExited(session.machineId, terminal.id, 0);
+    f.store.updateTerminalName(terminal.id, "Renamed");
+    f.store.updateTerminalContainer(terminal.id, otherHome);
+    expect(f.store.getTerminal(terminal.id)).toMatchObject({ session, status: "exited" });
+    f.close();
+    closed = true;
+    const reopened = new ServerStore(openDatabase(path));
+    try {
+      const auth = new AuthService(reopened, "a".repeat(64), f.runtime);
+      const rooms = new RoomManager(reopened, f.runtime, f.clock, silentLogger, testTileTrees);
+      const broker = new TerminalBroker(reopened, auth, rooms, f.runtime, f.clock, silentLogger,
+        () => "http://localhost:7777", testTileTrees);
+      expect(reopened.getTerminal(terminal.id)).toMatchObject({ session, containerId: otherHome, name: "Renamed", status: "exited" });
+      expect(broker.listForContainer(otherHome)).toContainEqual(expect.objectContaining({
+        id: terminal.id, session, status: "exited",
+      }));
+      reopened.deleteTerminal(terminal.id);
+      expect(reopened.getTerminal(terminal.id)).toBeNull();
+    } finally {
+      reopened.close();
+    }
+  } finally {
+    if (!closed) f.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("cross-machine session references and refused native admission leave no correlated terminal", async () => {
+  const f = await fixture();
+  try {
+    const session = { harness: "test-harness", machineId: "another-machine", sessionId: "saved-session" };
+    const denied = await f.host.dispatch(f.root, "core.terminals.open", {
+      containerId: f.store.listContainers()[0]!.id,
+      elementId: "bad-session",
+      placement: "tile",
+      runtime: { ...f.descriptor, session },
+    });
+    expect(denied.ok).toBe(false);
+    expect(() => f.service.admitTerminal(f.root, { ...f.descriptor, session }, f.descriptor.machineId,
+      { terminalId: "not-created", terminalHostId: "terminal-host", containerId: "home" }, 1))
+      .toThrow("terminal_runtime_session_destination_changed");
+    await f.open({ ...f.descriptor, installationRevision: "stale",
+      session: { ...session, machineId: f.descriptor.machineId } });
+    expect(f.sent.filter((message) => message.type === "create")).toEqual([]);
+    expect(f.store.listTerminals()).toEqual([]);
+  } finally {
+    f.close();
+  }
+});
 
 test("browser descriptors bind distinct runs without returning or journaling their credential", async () => {
   const f = await fixture();

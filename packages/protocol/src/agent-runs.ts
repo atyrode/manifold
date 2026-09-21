@@ -7,7 +7,6 @@ import {
   AgentCredentialSchema,
   AgentDelegationSchema,
   HarnessTargetSchema,
-  SessionRefSchema,
   RunModelSchema,
   RunActivitySchema,
   AGENT_RUN_MAX_DEPTH,
@@ -21,6 +20,7 @@ import {
 } from "./agents.ts";
 import { TerminalRuntimeSchema } from "./jobs.ts";
 import { PrincipalSchema } from "./principal.ts";
+import { SessionRefSchema } from "./session-ref.ts";
 
 const AgentRunIdSchema = z.string().min(1).max(128);
 const PolicyDigestSchema = z.string().regex(/^[a-f0-9]{64}$/);
