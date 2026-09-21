@@ -4012,6 +4012,14 @@ provider handling and postconditions belong to plugins, never the common floor.
   stdout and stderr share the remainder, not one full budget each; exhausting it terminates
   the job. Final collected output bytes also share the aggregate limit. These boundaries
   do not confine administrators or unconfined same-UID processes able to remount storage.
+  Before creating a named-output lease and again at native preflight, the owner checks
+  available blocks and inodes on the held backing. An exhausted backing refuses
+  `output_storage_exhausted`; an otherwise unclassified owner-side `ENOSPC` during
+  pre-spawn preparation refuses `job_storage_exhausted`. These bounded native reasons survive durable never-admitted
+  closure; later absence reconciliation without an observed refusal still reports
+  `start_not_admitted`. This is a point-in-time availability check, not a reservation or
+  a guarantee against later exhaustion. It does not resize or clear storage, change the
+  whole-capacity budget above, or infer a guest's errno from its exit status or stderr.
 - **Bound input extraction.** Before spawn the owner extracts each admitted binding's sealed
   archive — the same canonical ustar the sealing writer produced, read from its own private
   output store — into a fresh 0700 owner-only directory beneath `job-inputs` under the

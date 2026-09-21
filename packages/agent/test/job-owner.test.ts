@@ -13,6 +13,7 @@ import {
   existsSync,
   closeSync,
   lstatSync,
+  statfsSync,
   mkdtempSync,
   mkdirSync,
   rmSync,
@@ -1480,9 +1481,11 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
 });
 
 const outputRoot = process.env.MANIFOLD_TEST_OUTPUT_ROOT;
-test.skipIf(!realBackend || !outputRoot)(
-  "real owner bounds aggregate sparse output materialization before rolling back earlier archives",
-  async () => {
+test
+  .skipIf(!realBackend || !outputRoot)
+  .each(["aggregate", "full-blocks", "full-inodes", "location-inodes"] as const)(
+  "real owner refuses %s output storage without publishing incomplete archives",
+  async (mode) => {
     const root = mkdtempSync(join(tmpdir(), "machine-owner-aggregate-"));
     // Only the workload's source trees belong on the disposable 64 KiB tmpfs.
     // The private archive store must allow an erroneous second archive to materialize.
@@ -1524,8 +1527,8 @@ test.skipIf(!realBackend || !outputRoot)(
         },
         locations: {
           "fixture.jobs.output": {
-            anchor: "state",
-            components: ["source"],
+            anchor: mode === "location-inodes" ? "runtime" : "state",
+            components: [mode === "location-inodes" ? "fresh" : "source"],
             revision: "one",
           },
         },
@@ -1632,7 +1635,7 @@ test.skipIf(!realBackend || !outputRoot)(
         outputs: store,
         delegatedCgroup,
         bubblewrapFd: bwrapFd,
-        anchors: { state: sourceAnchor },
+        anchors: { [mode === "location-inodes" ? "runtime" : "state"]: sourceAnchor },
         protectedDirectories: [protectedRoot],
         runtimeTools: {
           busybox: [{ fd: busyboxFd, target: "/bin/busybox", writable: false }],
@@ -1648,7 +1651,7 @@ test.skipIf(!realBackend || !outputRoot)(
         if (event.type === "refusal") completed.reject(new Error(event.reason));
         if (
           event.type === "result" &&
-          ["exited", "interrupted", "cancelled"].includes(event.result.state)
+          ["exited", "interrupted", "cancelled", "refused"].includes(event.result.state)
         )
           completed.resolve(event.result);
         return true;
@@ -1690,6 +1693,20 @@ test.skipIf(!realBackend || !outputRoot)(
         issuedAt: now,
         expiresAt: now + 30000,
       };
+      if (mode !== "aggregate") {
+        const filler = join(sourceRoot, "fill");
+        mkdirSync(filler);
+        const fs = statfsSync(sourceRoot);
+        if (fs.type !== 0x01021994 || fs.blocks * fs.bsize !== 65536 || fs.files !== 4096)
+          throw new Error("exhaustion proof requires its disposable bounded tmpfs");
+        if (mode === "full-blocks") {
+          writeFileSync(join(filler, "bytes"), Buffer.alloc(fs.bavail * fs.bsize));
+        } else {
+          for (let index = 0; index < fs.ffree; index++)
+            writeFileSync(join(filler, String(index)), "");
+        }
+        expect(statfsSync(sourceRoot)[mode === "full-blocks" ? "bavail" : "ffree"]).toBe(0);
+      }
       await owner.execute({
         type: "start",
         request,
@@ -1703,6 +1720,19 @@ test.skipIf(!realBackend || !outputRoot)(
         },
       });
       const result = await completed.promise;
+      if (mode !== "aggregate") {
+        expect(result).toMatchObject({
+          state: "refused",
+          exitCode: null,
+          startedAt: null,
+          reason: mode === "location-inodes" ? "job_storage_exhausted" : "output_storage_exhausted",
+          outputs: [],
+        });
+        expect(statfsSync(sourceRoot)[mode === "full-blocks" ? "bavail" : "ffree"]).toBe(0);
+        expect(store.recovered(request.jobId)).toEqual([]);
+        expect(outputDirectory.names()).toEqual([]);
+        return;
+      }
       expect(result.state).toBe("exited");
       expect(result.exitCode).toBe(0);
       expect(result.reason).toBe("output_collection_refused");

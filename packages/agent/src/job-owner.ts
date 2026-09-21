@@ -54,6 +54,7 @@ import type { JobBoundInput, JobBoundInputStore } from "./job-bound-inputs.ts";
 import {
   preflightLinuxJob,
   preflightLinuxJobRuntime,
+  inspectJobOutputStorage,
   recoverLinuxJobs,
   startLinuxJob,
   LinuxJobRefusal,
@@ -2056,16 +2057,14 @@ export class MachineJobOwner {
   }
 
   /**
-   * A permit this owner never admitted, reconciled after the fact. The reason stays
-   * `start_not_admitted` because that is the truthful fact here: the permit is well formed and
-   * this process has no record of the job. Which admission CHECK refused a start is a
-   * different question, answered by `start_admission_refused` on this host and by the
-   * refusal the caller propagates (#703).
+   * Durably close a permit this owner never admitted. An observed native preparation
+   * refusal can retain its bounded reason; later absence reconciliation has no such
+   * observation and reports only `start_not_admitted`. Neither path admits a workload.
    */
   private rejectUnadmitted(
     admission: Pick<Extract<JobCommand, { type: "start" }>, "request" | "permit">,
+    reason: string,
   ): OwnedJob {
-    const reason = "start_not_admitted";
     const { request, permit } = admission;
     if (this.jobs.has(request.jobId) || this.permits.has(permit.permitId))
       throw new Error("job_identity_changed");
@@ -2121,7 +2120,7 @@ export class MachineJobOwner {
       return job;
     }
     if (!command.admission) throw new Error("unknown_job");
-    return this.rejectUnadmitted(command.admission);
+    return this.rejectUnadmitted(command.admission, "start_not_admitted");
   }
 
   private async start(
@@ -2140,15 +2139,20 @@ export class MachineJobOwner {
     try {
       await this.prepareStart(command, terminalLaunch);
     } catch (error) {
-      // A preparation fault is not an admission verdict. Its message already reaches the hub
-      // as a `refusal` event, so the journaled reason stays `start_not_admitted`; what was
-      // missing is any record on THIS host of why its own preparation failed (#703).
+      // Only a typed native refusal supplies a durable preparation diagnosis. Unknown
+      // errors and after-the-fact absence still cannot invent an admission verdict.
       this.log("warn", "start_preparation_failed", {
         jobId: command.request.jobId,
         permitId: command.permit.permitId,
         reason: error instanceof Error ? error.message : String(error),
       });
-      if (!this.jobs.has(command.request.jobId)) this.rejectUnadmitted(command);
+      if (!this.jobs.has(command.request.jobId))
+        this.rejectUnadmitted(
+          command,
+          error instanceof LinuxJobRefusal && /^[a-zA-Z0-9_-]{1,128}$/.test(error.code)
+            ? error.code
+            : "start_not_admitted",
+        );
       throw error;
     } finally {
       delete command.privateEnv;
@@ -2386,6 +2390,7 @@ export class MachineJobOwner {
           parent?.locations.get(binding.locationId) ?? job.locations.get(binding.locationId);
         if (!location?.writable || !location.directory)
           throw new Error("output_location_not_writable_directory");
+        inspectJobOutputStorage(location.directory.fd);
         job.leases.push(
           this.options.outputs.create(
             request.jobId,
@@ -2579,7 +2584,12 @@ export class MachineJobOwner {
         .catch(() => this.interrupt(job));
       if (job.cancelRequested) await job.handle?.cancel();
       else this.closeRetiredContext(job);
-    } catch (error) {
+    } catch (caught) {
+      // This is an owner syscall failure before spawn, never a guess from guest stderr.
+      const error =
+        !spawnAttempted && caught instanceof Error && "code" in caught && caught.code === "ENOSPC"
+          ? new LinuxJobRefusal("job_storage_exhausted", undefined, true)
+          : caught;
       if (!spawnAttempted || (error instanceof LinuxJobRefusal && error.workloadEmpty))
         job.resolveEmpty();
       if (error instanceof LinuxJobRefusal && !error.workloadEmpty)

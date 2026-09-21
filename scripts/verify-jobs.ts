@@ -8,7 +8,7 @@ const fixtureTestPattern = [
   "\\[real-linux\\]",
   "never-admitted (?:expired|status|cancel|retire|recovered-status) starts close durably without accepting forged absence or replay",
   "bundled (?:primary|managed|companion) execution survives missing optional tools and owner recovery without replay",
-  "real owner bounds aggregate sparse output materialization before rolling back earlier archives",
+  "real owner refuses (?:aggregate|full-blocks|full-inodes|location-inodes) output storage without publishing incomplete archives",
   "native direct invocation projects PATCH results and binds cancellation and owner authorization to invoke",
   "reacquired runtime artifacts restore dependent service readiness without new configuration",
   "(?:read|tunnel) service authority refreshes a changed runtime before seeking a hub grant",

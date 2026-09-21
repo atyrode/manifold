@@ -6,6 +6,7 @@ import {
   closeSync,
   constants,
   fstatSync,
+  statfsSync,
   mkdirSync,
   mkdtempSync,
   openSync,
@@ -1368,6 +1369,53 @@ test.skipIf(!realLinux)(
     });
   },
   20_000,
+);
+
+test.skipIf(!realLinux || !outputRoot).each(["blocks", "inodes"] as const)(
+  "[real-linux] exhausted output %s refuse before native execution",
+  async (resource) => {
+    const path = mkdtempSync(join(outputRoot!, "exhausted-"));
+    mkdirSync(join(path, "output"));
+    mkdirSync(join(path, "fill"));
+    const directory = HeldDirectory.openAbsolute(join(path, "output"));
+    try {
+      const fs = statfsSync(path);
+      if (fs.type !== 0x01021994 || fs.blocks * fs.bsize !== 65536 || fs.files !== 4096)
+        throw new Error("exhaustion proof requires its disposable bounded tmpfs");
+      if (resource === "blocks") {
+        writeFileSync(join(path, "fill", "bytes"), Buffer.alloc(fs.bavail * fs.bsize));
+      } else {
+        for (let index = 0; index < fs.ffree; index++)
+          writeFileSync(join(path, "fill", String(index)), "");
+      }
+      expect(statfsSync(path)[resource === "blocks" ? "bavail" : "ffree"]).toBe(0);
+      await withLinux("printf unexpected-execution", async (spec) => {
+        let handle: LinuxJobHandle | undefined;
+        let failure: unknown;
+        try {
+          handle = await startLinuxJob({
+            ...spec,
+            outputs: [{ fd: directory.fd, target: "/outputs/result", writable: true }],
+            limits: { ...spec.limits, outputBytes: 128 * 1024 },
+          });
+        } catch (error) {
+          failure = error;
+        } finally {
+          if (handle) {
+            await handle.cancel();
+            handle.release();
+          }
+        }
+        expect(failure).toMatchObject({
+          code: "output_storage_exhausted",
+          workloadEmpty: true,
+        });
+      });
+    } finally {
+      directory.close();
+      rmSync(path, { recursive: true });
+    }
+  },
 );
 
 test.skipIf(!realLinux || !outputRoot)(
