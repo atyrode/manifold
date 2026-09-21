@@ -570,7 +570,8 @@ export const ServiceRuntimeSchema = z.strictObject({
   scope: z.enum(["job", "instance"]).optional(),
   pluginId: name,
   operationId: name,
-  installationRevision: name,
+  /** Omission binds a job-scoped provider to its invoking installation, never the latest one. */
+  installationRevision: name.optional(),
   artifactSha256: z.string().regex(/^[a-f0-9]{64}$/),
   resourceBindingDigest: z.string().regex(/^[a-f0-9]{64}$/),
   input: z
@@ -656,7 +657,8 @@ export const ServicePolicySchema = z
               operation.body.every((field) => !("credentialRef" in field.value))),
         ) &&
         (policy.runtime?.scope !== "instance" ||
-          Object.values(policy.runtime.input).every((source) => "literal" in source))
+          (policy.runtime.installationRevision !== undefined &&
+            Object.values(policy.runtime.input).every((source) => "literal" in source)))
       );
     if (policy.origin === undefined || policy.allowLoopbackHttp === undefined) return false;
     const url = new URL(policy.origin);

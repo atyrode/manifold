@@ -13,7 +13,7 @@ import { ServiceTunnelFrameSchema } from "./services.ts";
 import { JobResourceBindingsSchema, JobResourceInventorySchema } from "./job-resources.ts";
 
 /** Native owner RPC changes independently of hub, session, and transport releases. */
-export const JOB_OWNER_PROTOCOL_VERSION = 36;
+export const JOB_OWNER_PROTOCOL_VERSION = 37;
 
 /**
  * Native owners outlive hub deploys. An unchanged or strictly additive-optional RPC change
@@ -24,15 +24,18 @@ export const JOB_OWNER_PROTOCOL_VERSION = 36;
  * HISTORY. v34 is the accepted baseline: `pi-native-usage` joins service policy meter kinds
  * (#572). v35 adds the optional private launch carrier, terminal `runId` and host-minted
  * `launchBinding` (#587). v36 adds operation `inputs`/`exports`, request `inputs` and
- * `limits.inputBytes`. All other commands, policies and ordinary admissions remain unchanged.
+ * `limits.inputBytes`. v37 permits job-scoped self-provider runtime identity bound to the
+ * invoking installation. Revision-pinned policies and ordinary admissions remain unchanged;
+ * contextual policies are sent only to owners and machine transports that parse that mode.
  */
-export const JOB_OWNER_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([34, 35, 36]);
+export const JOB_OWNER_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([34, 35, 36, 37]);
 
-export type JobOwnerCapability = "privateEnv" | "launchBinding" | "boundInputs";
+export type JobOwnerCapability = "privateEnv" | "launchBinding" | "boundInputs" | "selfServiceRuntime";
 const jobOwnerCapabilityVersions: Readonly<Record<JobOwnerCapability, number>> = {
   privateEnv: 35,
   launchBinding: 35,
   boundInputs: 36,
+  selfServiceRuntime: 37,
 };
 
 /** Capability support never grants execution authority to an owner outside the accepted set. */
