@@ -8,6 +8,7 @@ import {
   opendirSync,
   readFileSync,
   writeSync,
+  type BigIntStatsFs,
 } from "node:fs";
 import { randomUUID } from "node:crypto";
 import type { Readable } from "node:stream";
@@ -178,6 +179,15 @@ export class LinuxJobRefusal extends Error {
 function refuse(code: string): never {
   throw new LinuxJobRefusal(code);
 }
+/** Inspect the exact held output backing before allocating a lease or launching a workload. */
+export function inspectJobOutputStorage(fd: number): BigIntStatsFs {
+  const fs = statfsSync(`/proc/self/fd/${fd}`, { bigint: true });
+  if (fs.type !== 0x01021994n || fs.blocks <= 0n || fs.bsize <= 0n || fs.files <= 0n)
+    refuse("bounded-output-storage-required");
+  if (fs.bavail <= 0n || fs.ffree <= 0n) refuse("output_storage_exhausted");
+  return fs;
+}
+
 /** Called only before spawn or after positively observing an empty execution cgroup. */
 function observedStartRefusal(error: unknown): LinuxJobRefusal {
   const code = error instanceof LinuxJobRefusal ? error.code : "sandbox-start-failed";
@@ -432,13 +442,10 @@ export function preflightLinuxJob(spec: LinuxJobSpec): number {
   let outputInodes = 0n;
   for (const output of spec.outputs) {
     const stat = fstatSync(output.fd, { bigint: true });
-    const fs = statfsSync(`/proc/self/fd/${output.fd}`, { bigint: true });
-    if (!output.writable || !stat.isDirectory() || fs.type !== 0x01021994n)
-      refuse("bounded-output-storage-required");
+    if (!output.writable || !stat.isDirectory()) refuse("bounded-output-storage-required");
+    const fs = inspectJobOutputStorage(output.fd);
     if (outputDevices.has(stat.dev)) continue;
     outputDevices.add(stat.dev);
-    if (fs.blocks <= 0n || fs.bsize <= 0n || fs.files <= 0n)
-      refuse("bounded-output-storage-required");
     outputCapacity += fs.blocks * fs.bsize;
     outputInodes += fs.files;
     if (outputCapacity > BigInt(spec.limits.outputBytes) || outputInodes > 10000n)

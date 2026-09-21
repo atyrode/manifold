@@ -2186,6 +2186,14 @@ reserved from `outputBytes`; stdout and stderr share only the remainder. Leave r
 both, since exceeding the combined stdio budget terminates execution. Final named output
 and stdio bytes also share the aggregate limit. Administrators and unconfined same-UID
 processes able to remount backing storage are outside this confinement boundary.
+An already-full named-output backing refuses `output_storage_exhausted` before launch.
+Otherwise unclassified owner-side `ENOSPC` while preparing locations or files refuses
+`job_storage_exhausted`; these native diagnoses remain in the durable job result even
+when no workload was admitted. Availability is checked before lease creation and again
+at native preflight, but is not reserved: later or concurrent writes can still exhaust
+it. The owner neither clears accumulated output nor infers a guest's errno from captured
+text. For a process that did run, inspect `exitCode`; a natural `reason: null` is not a
+claim that the application succeeded.
 
 Nested execution requires an explicit edge naming exact caller/callee installations,
 artifacts and revisioned resources, plus depth/concurrency/aggregate ceilings. Its output
