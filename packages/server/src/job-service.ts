@@ -44,6 +44,9 @@ import {
   MAX_JOB_JOURNAL_EVENTS,
   ListJobRunsArgsSchema,
   ListJobRunsResultSchema,
+  InspectJobInputsArgsSchema,
+  type InspectJobInputsArgs,
+  type InspectJobInputsResult,
   PublicScheduleOccurrenceSchema,
   JobInvocationEdgeSchema,
   type JobInvocationEdge,
@@ -1371,32 +1374,56 @@ export class JobService {
     for (const binding of inputs) {
       if (!(operation.inputs ?? []).includes(binding.name))
         return named("unknown_input", binding.name);
-      const source = this.jobs.get(binding.from.jobId);
-      if (
-        !source ||
-        source.request.machineId !== machineId ||
-        active.has(source.state) ||
-        !source.result?.outputs.some((output) => output.name === binding.from.output)
-      )
-        return named("input_source_unavailable", binding.name);
-      const node = {
-        kind: "job" as const,
-        machineId,
-        operationId: source.request.operationId,
-        jobId: source.request.jobId,
-      };
-      const install = this.resolve(node);
-      if (
-        source.request.pluginId !== pluginId &&
-        !install?.machine.operations[source.request.operationId]?.exports?.includes(
-          binding.from.output,
-        )
-      )
-        return named("input_not_exported", binding.name);
-      if (this.jobCapRefusal(context, node, "jobs:read") !== null)
-        return named("input_authority_refused", binding.name);
+      const source = this.inputSource(context, pluginId, machineId, binding);
+      if (typeof source === "string") return named(source, binding.name);
     }
     return null;
+  }
+  /** Inspection and admission share source authority; neither treats a prior review as a grant. */
+  private inputSource(
+    context: AuthContext | null,
+    pluginId: string,
+    machineId: string,
+    binding: JobInputBinding,
+  ): InspectJobInputsResult["inputs"][number] | string {
+    const source = this.jobs.get(binding.from.jobId);
+    const output = source?.result?.outputs.find((value) => value.name === binding.from.output);
+    if (!source || source.request.machineId !== machineId || active.has(source.state) || !output)
+      return "input_source_unavailable";
+    const node = {
+      kind: "job" as const,
+      machineId,
+      operationId: source.request.operationId,
+      jobId: source.request.jobId,
+    };
+    const install = this.resolve(node);
+    if (
+      source.request.pluginId !== pluginId &&
+      !install?.machine.operations[source.request.operationId]?.exports?.includes(
+        binding.from.output,
+      )
+    )
+      return "input_not_exported";
+    if (this.jobCapRefusal(context, node, "jobs:read") !== null) return "input_authority_refused";
+    return { ...binding, sha256: output.sha256, bytes: output.bytes, files: output.files };
+  }
+  inspectInputs(
+    auth: AuthContext,
+    pluginId: string,
+    args: InspectJobInputsArgs,
+  ): InspectJobInputsResult {
+    const query = InspectJobInputsArgsSchema.parse(args);
+    if (new Set(query.inputs.map((binding) => binding.name)).size !== query.inputs.length)
+      fail("duplicate_input");
+    const context = this.auth.restoreCredential(this.auth.credentialReference(auth));
+    if (!context) fail("credential_revoked_or_expired");
+    return {
+      inputs: query.inputs.map((binding) => {
+        const source = this.inputSource(context, pluginId, query.machineId, binding);
+        if (typeof source === "string") return fail(`${source}:${binding.name.slice(0, 64)}`);
+        return source;
+      }),
+    };
   }
   private runtimeInstallation(policy: ServicePolicy, machineId: string): JobInstallation | null {
     const runtime = policy.runtime;

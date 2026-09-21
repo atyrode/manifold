@@ -5,6 +5,10 @@ import {
   ManifoldRefSchema,
   ListJobRunsArgsSchema,
   ListJobRunsResultSchema,
+  InspectJobInputsArgsSchema,
+  InspectJobInputsResultSchema,
+  type InspectJobInputsArgs,
+  type InspectJobInputsResult,
   JobInvocationEdgeSchema,
   JobInvocationTargetSchema,
   InspectJobInvocationsArgsSchema,
@@ -83,6 +87,7 @@ export const jobDoorSchemas = {
   describeDeployment: JobDeploymentDescribeArgsSchema,
   status: z.strictObject({ node: jobNode }),
   listRuns: ListJobRunsArgsSchema.extend({ pluginId: JobRequestSchema.shape.pluginId }),
+  inspectInputs: InspectJobInputsArgsSchema.extend({ pluginId: JobRequestSchema.shape.pluginId }),
   input: z.strictObject({
     node: jobNode,
     requestId: id,
@@ -195,6 +200,14 @@ export function jobContext(
         pluginId,
       );
     },
+    inspectInputs: (args) => {
+      const { pluginId: requested, ...query } = args;
+      return service().inspectInputs(
+        auth,
+        callee(requested),
+        InspectJobInputsArgsSchema.parse(query),
+      );
+    },
     input: async (args: z.infer<typeof schemas.input>) => {
       const a = schemas.input.parse(args);
       await service().input(
@@ -296,6 +309,7 @@ export interface JobContext extends PluginJobContext {
   ): z.infer<typeof JobDeploymentSchema>;
   execute(args: z.infer<typeof execute> & { pluginId?: string }): PublicJob;
   listRuns(args: ListJobRunsArgs & { pluginId?: string }): ListJobRunsResult;
+  inspectInputs(args: InspectJobInputsArgs & { pluginId?: string }): InspectJobInputsResult;
   install(args: z.infer<typeof schemas.install>): { accepted: true };
   consent(args: z.infer<typeof schemas.consent>): Record<string, never>;
   schedule(args: z.infer<typeof schedule> & { pluginId?: string }): Record<string, never>;
@@ -332,6 +346,7 @@ const results: Record<string, z.ZodType<unknown>> = {
   execute: publicJob,
   status: publicJob,
   listRuns: ListJobRunsResultSchema,
+  inspectInputs: InspectJobInputsResultSchema,
   output: JobEventSchema,
   outputs: JobOutputPageSchema,
   journal: JobJournalPageSchema,
@@ -412,6 +427,8 @@ export const jobDoors: ServerPluginDef = {
       call(() => ctx.jobs.output(args)),
     outputs: (ctx: ActionCtx, args: z.infer<typeof schemas.outputs>) =>
       call(() => ctx.jobs.outputs(args)),
+    inspectInputs: (ctx: ActionCtx, args: z.infer<typeof schemas.inspectInputs>) =>
+      call(() => ctx.jobs.inspectInputs(args)),
     journal: (ctx: ActionCtx, args: z.infer<typeof schemas.journal>) =>
       call(() => ctx.jobs.journal(args)),
     install: (ctx: ActionCtx, args: z.infer<typeof schemas.install>) =>

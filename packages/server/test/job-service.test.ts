@@ -6977,6 +6977,93 @@ describe("a job input bound to an earlier job's sealed output", () => {
       ...(limitOverride ? { limits: limitOverride } : {}),
     });
 
+  test("input review exposes only sealed metadata, respecting the consumer plugin export boundary", () => {
+    const f = bound();
+    try {
+      seal(f);
+      const material = { name: "material", from: { jobId: "producer", output: "material" } };
+      const outsider = jobContext(() => f.service, f.root, otherPlugin, "trace-inspect");
+      expect(outsider.inspectInputs({ machineId: f.machineId, inputs: [material] })).toEqual({
+        inputs: [{ ...material, sha256: hash, bytes: 2048, files: 2 }],
+      });
+      const notes = { name: "notes", from: { jobId: "producer", output: "notes" } };
+      expect(() => outsider.inspectInputs({ machineId: f.machineId, inputs: [notes] })).toThrow(
+        "input_not_exported:notes",
+      );
+      const insider = jobContext(() => f.service, f.root, pluginId, "trace-inspect");
+      expect(insider.inspectInputs({ machineId: f.machineId, inputs: [notes] })).toEqual({
+        inputs: [{ ...notes, sha256: "b".repeat(64), bytes: 1024, files: 1 }],
+      });
+      expect(() =>
+        outsider.inspectInputs({
+          machineId: f.machineId,
+          inputs: [notes],
+          pluginId,
+        }),
+      ).toThrow("input_not_exported:notes");
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("input review refuses absent, unfinished, missing-output, remote and duplicate sources", () => {
+    const f = bound();
+    try {
+      const ctx = jobContext(() => f.service, f.root, otherPlugin, "trace-inspect");
+      const material = { name: "material", from: { jobId: "producer", output: "material" } };
+      expect(() => ctx.inspectInputs({ machineId: f.machineId, inputs: [material] })).toThrow(
+        "input_source_unavailable:material",
+      );
+      f.service.execute(f.root, pluginId, "trace-pending", {
+        jobId: "pending",
+        machineId: f.machineId,
+        operationId: producerId,
+        input: {},
+        outputs: [],
+      });
+      expect(() =>
+        ctx.inspectInputs({
+          machineId: f.machineId,
+          inputs: [{ ...material, from: { jobId: "pending", output: "material" } }],
+        }),
+      ).toThrow("input_source_unavailable:material");
+      seal(f);
+      expect(() =>
+        ctx.inspectInputs({
+          machineId: f.machineId,
+          inputs: [{ ...material, from: { jobId: "producer", output: "missing" } }],
+        }),
+      ).toThrow("input_source_unavailable:material");
+      expect(() => ctx.inspectInputs({ machineId: "another-machine", inputs: [material] })).toThrow(
+        "input_source_unavailable:material",
+      );
+      expect(() =>
+        ctx.inspectInputs({ machineId: f.machineId, inputs: [material, material] }),
+      ).toThrow("duplicate_input");
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("reviewed input metadata cannot authorize execution after source read consent is withdrawn", () => {
+    const f = bound();
+    try {
+      seal(f);
+      const inputs = [{ name: "material", from: { jobId: "producer", output: "material" } }];
+      const ctx = jobContext(() => f.service, f.root, otherPlugin, "trace-inspect");
+      expect(ctx.inspectInputs({ machineId: f.machineId, inputs }).inputs[0]?.sha256).toBe(hash);
+      allow(f, pluginId, producerId, "jobs:read", false);
+      expect(() => ctx.inspectInputs({ machineId: f.machineId, inputs })).toThrow(
+        "input_authority_refused:material",
+      );
+      expect(() => consume(f, inputs, "after-review", otherPlugin, otherConsumerId)).toThrow(
+        "input_authority_refused:material",
+      );
+    } finally {
+      f.store.close();
+    }
+  });
+
   function terminalConsumer(f: Fixture) {
     const containerId = "input-terminal-home";
     f.store.createContainer({

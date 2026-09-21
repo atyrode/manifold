@@ -382,6 +382,7 @@ export const ISOLATE_CTX_METHODS = [
   "jobs.status",
   "jobs.runTerminal",
   "jobs.listRuns",
+  "jobs.inspectInputs",
   "jobs.input",
   "jobs.cancel",
   "jobs.output",
@@ -747,9 +748,11 @@ export const PLUGIN_BUNDLE_FORMAT = 1;
  *    Contract-1 guests still receive the original load frame and retain prepared admission.
  * 2 -> 3: Additive-optional action result projections in loaded action summaries. Hosts still
  *    admit contract-1/2 guests and send each guest its own admitted contract, never the latest.
+ * 3 -> 4: Additive metadata-only `jobs.inspectInputs` for reviewed bound sources. Older
+ *    guests retain their existing methods; inspection never transfers execution authority.
  */
-export const HARDENED_CONTRACT_VERSION = 3;
-export const HARDENED_CONTRACT_COMPAT_VERSIONS: ReadonlySet<number> = new Set([1, 2, 3]);
+export const HARDENED_CONTRACT_VERSION = 4;
+export const HARDENED_CONTRACT_COMPAT_VERSIONS: ReadonlySet<number> = new Set([1, 2, 3, 4]);
 export const HARDENED_CONTRACT_MINIMUM = Math.min(...HARDENED_CONTRACT_COMPAT_VERSIONS);
 
 /**

@@ -26,6 +26,7 @@ import {
   LocalNameSchema,
   PlaceRequestSchema,
   ListJobRunsArgsSchema,
+  InspectJobInputsArgsSchema,
   type ActionSummary,
   type IsolateChildFrame,
   type IsolateCtxMethod,
@@ -218,6 +219,7 @@ const JOB_METHODS = [
   "jobs.status",
   "jobs.runTerminal",
   "jobs.listRuns",
+  "jobs.inspectInputs",
   "jobs.input",
   "jobs.cancel",
   "jobs.output",
@@ -249,6 +251,8 @@ function serveJobsCall(
       return jobs.runTerminal(stringArg(args, 0, method));
     case "jobs.listRuns":
       return jobs.listRuns(ListJobRunsArgsSchema.parse(args[0]));
+    case "jobs.inspectInputs":
+      return jobs.inspectInputs(InspectJobInputsArgsSchema.parse(args[0]));
     case "jobs.input":
       return jobs.input(jobDoorSchemas.input.parse(args[0]));
     case "jobs.cancel":
@@ -476,6 +480,7 @@ export async function serveCtxCall(
     case "jobs.status":
     case "jobs.runTerminal":
     case "jobs.listRuns":
+    case "jobs.inspectInputs":
     case "jobs.input":
     case "jobs.cancel":
     case "jobs.output":
@@ -539,6 +544,7 @@ export async function serveCtxCall(
     case "jobs.status":
     case "jobs.runTerminal":
     case "jobs.listRuns":
+    case "jobs.inspectInputs":
     case "jobs.input":
     case "jobs.cancel":
     case "jobs.output":

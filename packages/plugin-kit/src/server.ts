@@ -29,6 +29,10 @@ import {
   MAX_ISOLATE_EMITS,
   ISOLATE_MAX_FRAME_BYTES,
   ManifoldRefSchema,
+  InspectJobInputsArgsSchema,
+  InspectJobInputsResultSchema,
+  type InspectJobInputsArgs,
+  type InspectJobInputsResult,
   ListJobRunsArgsSchema,
   ListJobRunsResultSchema,
   type ListJobRunsArgs,
@@ -291,6 +295,7 @@ export interface GuestJobs {
   status(node: GuestJobNode): Promise<GuestJobStatus>;
   runTerminal(runId: string): Promise<GuestJobNode>;
   listRuns(args: ListJobRunsArgs): Promise<ListJobRunsResult>;
+  inspectInputs(args: InspectJobInputsArgs): Promise<InspectJobInputsResult>;
   input(args: {
     node: GuestJobNode;
     requestId: string;
@@ -1022,6 +1027,10 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
     listRuns: async (args) =>
       ListJobRunsResultSchema.parse(
         await call("jobs.listRuns", [ListJobRunsArgsSchema.parse(args)]),
+      ),
+    inspectInputs: async (args) =>
+      InspectJobInputsResultSchema.parse(
+        await call("jobs.inspectInputs", [InspectJobInputsArgsSchema.parse(args)]),
       ),
     input: async (args) => (await call("jobs.input", [args])) as { accepted: true },
     cancel: async (node) => {
