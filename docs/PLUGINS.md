@@ -2189,6 +2189,11 @@ means exact path, a positive bound means at least one and at most that many comp
 below the prefix. Every declared output must be matched once, with exact location ID.
 The child request retains its exact immutable bindings; the rule is an admission ceiling,
 not a mutable binding or a grant of the whole parent directory.
+Native `invocation_reply` refusals preserve the named domain check, such as
+`invocation_edge_missing` or `invocation-depth-or-concurrency-limit`, rather than just
+`forbidden`. Reasons are bounded identifiers; unexpected exceptions or unsafe/oversized
+messages remain `invocation_refused`. This does not change the sandboxed service HTTP
+projection above or expose owner internals through that response.
 
 Schedules use `engine.jobs.schedule`, `.schedules` and `.disableSchedule`, with revision,
 nominal first occurrence, interval, deadline, expiry and `skip`/`coalesce-one` offline

@@ -108,7 +108,7 @@ import {
   type JobRunPosition,
 } from "./job-store.ts";
 import type { ServerStore, TraceRecord } from "./stores.ts";
-import { JobSchedules, type JobScheduleSpec } from "./job-schedules.ts";
+import { JobInvocationRefusal, JobSchedules, type JobScheduleSpec } from "./job-schedules.ts";
 import { JobDeployments } from "./job-deployments.ts";
 import { InstanceServiceStore, type InstanceServiceRecord } from "./instance-service-store.ts";
 export type { JobRecord } from "./job-store.ts";
@@ -4972,8 +4972,9 @@ export class JobService {
             invocationId: event.invocationId,
             jobId: null,
             reason:
-              error instanceof ServiceError && error.code.length <= 128
-                ? error.code
+              (error instanceof ServiceError || error instanceof JobInvocationRefusal) &&
+              /^[a-zA-Z0-9_.:-]{1,128}$/.test(error.message)
+                ? error.message
                 : "invocation_refused",
           },
         });

@@ -70,6 +70,13 @@ export interface JobInvocationSpec {
   resources: JobInvocationEdge["resources"];
   now: number;
 }
+/** Expected invocation-policy rejection, distinct from invalid or corrupt stored state. */
+export class JobInvocationRefusal extends Error {
+  constructor(reason: string) {
+    super(reason);
+    this.name = "JobInvocationRefusal";
+  }
+}
 interface InvocationRow {
   root_job_id: string;
   depth: number;
@@ -319,25 +326,25 @@ export class JobSchedules {
       child.parent?.parentJobId !== parent.request.jobId ||
       child.jobId === parent.request.jobId
     )
-      throw new Error("invocation-parent-not-host-bound");
+      throw new JobInvocationRefusal("invocation-parent-not-host-bound");
     if (
       !equal(child.credential, parent.request.credential) ||
       spec.now >= (child.credential.expiresAt ?? Number.MAX_SAFE_INTEGER)
     )
-      throw new Error("invocation-credential-ceiling");
+      throw new JobInvocationRefusal("invocation-credential-ceiling");
     if (
       !equal(target(parent.request), edge.caller) ||
       !equal(target(child), edge.callee) ||
       !equal(spec.resources, edge.resources)
     )
-      throw new Error("invocation-edge-mismatch");
+      throw new JobInvocationRefusal("invocation-edge-mismatch");
     const outputRules = edge.outputs.map((rule) => JobOutputRuleSchema.parse(rule));
     if (
       new Set(outputRules.map((rule) => rule.name)).size !== outputRules.length ||
       new Set(child.outputs.map((output) => output.name)).size !== child.outputs.length ||
       child.outputs.length !== outputRules.length
     )
-      throw new Error("invocation-output-mismatch");
+      throw new JobInvocationRefusal("invocation-output-mismatch");
     for (const output of child.outputs) {
       const rule = outputRules.find((rule) => rule.name === output.name);
       if (
@@ -348,7 +355,7 @@ export class JobSchedules {
         output.components.length > rule.components.length + rule.maxSuffixComponents ||
         rule.components.some((component, index) => output.components[index] !== component)
       )
-        throw new Error("invocation-output-mismatch");
+        throw new JobInvocationRefusal("invocation-output-mismatch");
     }
     integer(edge.maxDepth, true);
     integer(edge.maxConcurrency, true);
@@ -364,14 +371,14 @@ export class JobSchedules {
           existing.request !== canonicalJobJson(child) ||
           existing.edge !== canonicalJobJson(edge)
         )
-          throw new Error("invocation-identity-conflict");
+          throw new JobInvocationRefusal("invocation-identity-conflict");
         return "duplicate";
       }
       const ancestor = this.store.db
         .query<InvocationRow, [string]>("SELECT * FROM job_invocation_reservations WHERE job_id=?")
         .get(parent.request.jobId);
       if (parent.request.parent && (!ancestor || !ancestor.active))
-        throw new Error("invocation-parent-reservation-missing");
+        throw new JobInvocationRefusal("invocation-parent-reservation-missing");
       const root = ancestor?.root_job_id ?? parent.request.jobId;
       const depth = (ancestor?.depth ?? 0) + 1;
       const reservations = this.store.db
@@ -389,18 +396,20 @@ export class JobSchedules {
           depth > ceiling.maxDepth ||
           reservations.filter((row) => row.active).length >= ceiling.maxConcurrency
         )
-          throw new Error("invocation-depth-or-concurrency-limit");
+          throw new JobInvocationRefusal("invocation-depth-or-concurrency-limit");
         for (const key of limitKeys) {
           let total = child.limits[key];
           for (const row of reservations) {
             total += (JSON.parse(row.request) as JobRequest).limits[key];
-            if (!Number.isSafeInteger(total)) throw new Error("invocation-aggregate-limit");
+            if (!Number.isSafeInteger(total))
+              throw new JobInvocationRefusal("invocation-aggregate-limit");
           }
-          if (total > ceiling.aggregate[key]) throw new Error("invocation-aggregate-limit");
+          if (total > ceiling.aggregate[key])
+            throw new JobInvocationRefusal("invocation-aggregate-limit");
         }
       }
       const denial = callbacks.reauthorize(parent.request) ?? callbacks.reauthorize(child);
-      if (denial) throw new Error(denial);
+      if (denial) throw new JobInvocationRefusal(denial);
       this.store.db
         .query(
           "INSERT INTO job_invocation_reservations(parent_job_id,invocation_id,job_id,root_job_id,depth,request,edge,active) VALUES(?,?,?,?,?,?,?,1)",
