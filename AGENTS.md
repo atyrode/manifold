@@ -199,10 +199,13 @@ in [`docs/PLUGINS.md`](docs/PLUGINS.md); deployment and release commands are rou
   before using such an instance; failed cleanup must be reported, never called clean.
   Keep secrets and key-bearing links out of shared output; permitted carriers and persistence
   rules belong to [Data and credential boundaries](docs/CONTRACTS.md#data-and-credential-boundaries).
-- Never run `bun run release` or `bun run promote` without explicit task authorization.
-  Release publishes artifacts; promotion changes production; fleet installation is a separate
-  live action and must follow its hub. Publishing or deploying development authorizes neither
-  production promotion nor newer-protocol spoke installation. Released changelog sections are
+- Release publication for each coherent, independently shipped user-visible change is authorized
+  under [TRIAGE.md §Release checkpoint](docs/TRIAGE.md#release-checkpoint), with its exact-CI,
+  compatibility and hold boundaries. Outside that grant, obtain explicit release authorization.
+  Never run `bun run promote` without explicit task authorization. Release publishes artifacts;
+  promotion changes production; fleet installation is a separate live action and must follow its hub.
+  Publishing or deploying development authorizes neither production promotion nor newer-protocol
+  spoke installation. Released changelog sections are
   immutable; release commits, tags and publication go only through `bun run release`, never by hand.
   The script lands its release commit through a checked, rebase-auto-merged PR before tagging main.
 
@@ -277,6 +280,10 @@ in [`docs/PLUGINS.md`](docs/PLUGINS.md); deployment and release commands are rou
   delete your branch; the standing grant's criteria are
   [TRIAGE.md §Merge](docs/TRIAGE.md#merge). Release commits also land through PRs:
   `bun run release` rebase-auto-merges after required checks, then tags the merged `main` commit.
+- A merged user-visible fix or feature is not fully delivered until its semantic release is
+  published under [TRIAGE.md §Release checkpoint](docs/TRIAGE.md#release-checkpoint), or a concrete
+  publication blocker and accountable continuation are recorded. Do not accumulate unrelated fixes
+  behind a development commit-distance suffix or substitute a version-label edit for publication.
 - When configured, successful full `main` CI deploys that exact integrated revision at
   `DEV_DEPLOY_URL`. For behavioral changes, verify that deployed revision there; source, merge,
   full CI, deployment and runtime evidence remain distinct. This is not a requirement to deploy

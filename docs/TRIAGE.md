@@ -298,9 +298,10 @@ requires `needs-operator`, a draft PR and the §Holds decision block. Do not reo
 resolved decision solely because of a label or file path, infer permission from silence, or treat
 green checks as authorization. The operator may hold any PR with `needs-operator`.
 
-This grant remains bounded; it does not touch `bun run release` or `bun run promote`,
-which remain explicitly authorized actions under [`AGENTS.md`](../AGENTS.md) Boundaries. A merge
-starts asynchronous full `main` proof. Do not wait before continuing unrelated safe work; use
+The merge grant itself does not authorize release or production promotion. The separate standing
+publication grant in §Release checkpoint covers eligible delivery; `bun run promote` still requires
+explicit task authorization under [`AGENTS.md`](../AGENTS.md). A merge starts asynchronous full
+`main` proof. Do not wait before continuing unrelated safe work; use
 `bun run ci:status -- --sha <merge-sha>` when its state is needed. Trusted feedback files a `p1`
 run incident with a named triage owner for a failed or timed-out full run. Deployment/release work
 must wait for the exact-revision full result. Development deployment failure tracking remains
@@ -332,6 +333,37 @@ active agent has accepted ownership. The accountable contributor still owns rout
 claim; an open issue must not depend on a vanished session or an unpublished promise to monitor.
 Dispatch reads this receipt before choosing the next action, not another implementation PR.
 Close the original issue only after recording evidence for all remaining acceptance.
+
+### Release checkpoint
+
+Each independently shipped, coherent user-visible fix or feature includes a semantic release;
+merging its source alone is not delivery completion. The integration owner carries publication
+through the existing `bun run release` command after the exact integrated revision passes full-main
+CI and the release's compatibility, provenance and immutable-artifact checks. A set of dependent
+PRs that implements one coherent change shares that checkpoint. Documentation, process, test and
+gate-only changes do not independently require a release. There is no daily batching cap or
+unattended scheduler: do not hold a finished fix for an unrelated feature or an arbitrary commit count.
+
+The [standing publication decision](https://github.com/atyrode/manifold/issues/826#issuecomment-5778091821)
+authorizes this release PR, its checked rebase merge, immutable artifacts and ordinary automatic
+development follow-through within an otherwise authorized delivery. It does not authorize
+production promotion, fleet/native-owner activation, credential changes, provider spending or
+integration of a separately held implementation. A source-only/no-release or no-deployment hold
+still requires its own resolution; publication must not be used to cross it.
+
+Choose the version from the entire integrated unpublished change set, not the issue label or
+number of commits. Compatible fix-only sets increment patch. Under the existing pre-1.0 policy,
+additions or breaking changes increment minor; from 1.0, additions increment minor and breaking
+changes increment major. Review fragment classifications before using the tool's derived level.
+Do not force `patch` over an accumulated incompatible change, fabricate retrospective releases,
+or rewrite published tags/changelogs. Development builds retain their commit-distance identity.
+
+Record the release tag, exact source SHA, publication receipt and any remaining operational
+acceptance on the owning issue. Release, development deployment, runtime acceptance and production
+promotion remain separate facts. A technical/compatibility failure blocks publication, not its
+checks: diagnose it and record the accountable next action. Independent work may proceed while
+full CI or publication runs, but a handoff must name the pending release and its blocker rather
+than call unreleased user-visible work complete.
 
 ## Exit
 
