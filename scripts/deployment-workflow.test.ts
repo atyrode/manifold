@@ -313,12 +313,20 @@ esac
 `,
       { mode: 0o700 },
     );
+    writeFileSync(
+      join(bin, "docker"),
+      `#!/usr/bin/env bash
+[[ "$1 $2 $3" == "manifest inspect ghcr.io/owner/manifold@sha256:${"b".repeat(64)}" && "$FIXTURE_ROLLBACK_IMAGE" == true ]]
+`,
+      { mode: 0o700 },
+    );
     const output = join(root, "output");
     const check = (
       build: string,
       vars: { name: string; value: string }[],
       inherited = false,
       provenance = true,
+      rollbackImage = true,
     ) => {
       writeFileSync(output, "");
       return Bun.spawnSync(["bash", "-e", "-o", "pipefail", "-c", `${hold}\n${snapshot}`], {
@@ -328,6 +336,7 @@ esac
           CLEVER: join(bin, "clever"),
           RECOVERY_BUILD: build,
           FIXTURE_PROVENANCE: String(provenance),
+          FIXTURE_ROLLBACK_IMAGE: String(rollbackImage),
           FIXTURE_ENV: JSON.stringify({
             env: inherited ? [] : vars,
             fromAddons: inherited ? [{ env: vars }] : [],
@@ -346,6 +355,9 @@ esac
     expect(readFileSync(output, "utf8")).toBe("");
     expect(check("1.2.3", [], false, false).exitCode).toBe(1);
     expect(readFileSync(output, "utf8")).toBe("");
+    // A rollback image the registry no longer serves is found before the switch, not after it.
+    expect(check("1.2.3", [], false, true, false).exitCode).toBe(1);
+    expect(readFileSync(output, "utf8")).toBe("");
     for (const inherited of [false, true]) {
       expect(
         check("1.2.3", [{ name: "MANIFOLD_RECOVERY_SHA256", value: "c".repeat(64) }], inherited)
@@ -353,6 +365,58 @@ esac
       ).toBe(1);
       expect(readFileSync(output, "utf8")).toBe("");
     }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the promotion candidate is admitted only through the strict attested policy", async () => {
+  const source = Bun.YAML.parse(
+    await Bun.file(new URL("../.github/workflows/deploy-hub.yml", import.meta.url)).text(),
+  ) as { jobs: Record<string, { steps: { name?: string; run?: string }[] }> };
+  const admission = source.jobs.release?.steps.find(
+    (step) => step.name === "Verify the immutable release and its provenance",
+  )?.run;
+  if (!admission) throw new Error("Production workflow is missing candidate admission");
+  const root = mkdtempSync(join(tmpdir(), "manifold-candidate-admission-"));
+  try {
+    const bin = join(root, "bin");
+    mkdirSync(bin);
+    // Only the strict mode answers; the legacy-tolerant recovery mode fails the step.
+    writeFileSync(
+      join(bin, "bun"),
+      `#!/usr/bin/env bash
+[[ "$1 $2 $3" == "scripts/release-provenance.ts promotion $TAG" ]] || exit 1
+printf '{"sha":"${"c".repeat(40)}","image":"ghcr.io/owner/manifold@sha256:${"d".repeat(64)}"}\\n'
+`,
+      { mode: 0o700 },
+    );
+    writeFileSync(
+      join(bin, "git"),
+      `#!/usr/bin/env bash
+[[ "$1 $2" == "cat-file -e" ]]
+`,
+      { mode: 0o700 },
+    );
+    const output = join(root, "output");
+    writeFileSync(output, "");
+    const result = Bun.spawnSync(["bash", "-e", "-o", "pipefail", "-c", admission], {
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH}`,
+        TAG: "v1.2.4",
+        RECOVERY_CHECKPOINT: "before-v1.2.4",
+        RECOVERY_SHA256: "e".repeat(64),
+        RECOVERY_BUILD: "1.2.3",
+        GITHUB_OUTPUT: output,
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(result.exitCode, result.stderr.toString()).toBe(0);
+    expect(readFileSync(output, "utf8")).toBe(
+      `sha=${"c".repeat(40)}\nimage=ghcr.io/owner/manifold@sha256:${"d".repeat(64)}\n`,
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

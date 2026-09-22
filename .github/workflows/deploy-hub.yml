@@ -226,6 +226,9 @@ jobs:
             fail 'The checkpoint receipt was not captured from the currently serving release'
           proof="$(bun scripts/release-provenance.ts recovery "v$previous_build")"
           previous_image="$(jq -er .image <<< "$proof")"
+          # Recovery builds FROM this digest only after a failed switch; prove it still resolves first.
+          docker manifest inspect "$previous_image" >/dev/null ||
+            fail 'The rollback image is no longer resolvable in its registry'
           printf 'previous_build=%s\nprevious_image=%s\n' \
             "$previous_build" "$previous_image" >> "$GITHUB_OUTPUT"
 
