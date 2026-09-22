@@ -63,6 +63,16 @@ CREATE TABLE machine_jobs(job_id TEXT PRIMARY KEY,machine_id TEXT NOT NULL,plugi
 CREATE TABLE job_schedule_occurrences(job_id TEXT PRIMARY KEY,request TEXT,nominal INTEGER,state TEXT);
 CREATE TABLE terminals(id TEXT PRIMARY KEY,machine_id TEXT,container_id TEXT,created_by TEXT,
   status TEXT,exit_code INTEGER,created_at INTEGER);
+CREATE TABLE machine_job_deployments(
+  deployment_id TEXT PRIMARY KEY,plugin_id TEXT NOT NULL,revision INTEGER NOT NULL,
+  approved_at INTEGER NOT NULL,cancelled INTEGER NOT NULL DEFAULT 0 CHECK(cancelled IN (0,1)),approval TEXT NOT NULL);
+CREATE TABLE machine_job_deployment_targets(
+  deployment_id TEXT NOT NULL REFERENCES machine_job_deployments(deployment_id),
+  machine_id TEXT NOT NULL,plugin_id TEXT NOT NULL,
+  phase TEXT NOT NULL CHECK(phase IN ('pending','applying','applied','needs_review','cancelled')),
+  attempt TEXT,reason TEXT,receipt TEXT,PRIMARY KEY(deployment_id,machine_id));
+CREATE UNIQUE INDEX machine_job_deployment_pending
+  ON machine_job_deployment_targets(machine_id,plugin_id) WHERE phase IN ('pending','applying');
 INSERT INTO principals VALUES ('sponsor','human','Sponsor','#112233',1,NULL),
   ('agent-a','agent','Worker','#112233',2,NULL),('agent-b','agent','Child','#223344',3,NULL),
   ('agent-c','agent','Worker','#334455',4,NULL),('agent-d','agent','Worker-2','#445566',5,NULL);
