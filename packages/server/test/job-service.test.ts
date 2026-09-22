@@ -21,6 +21,7 @@ import {
   JobStartCommandSchema,
   JobRequestSchema,
   type ServicePolicy,
+  type ServicePolicyTemplate,
   type Cap,
   JobDeploymentRequestSchema,
   JobDeploymentSchema,
@@ -8069,6 +8070,580 @@ UPDATE meta SET value='33' WHERE key='schema_version';
           reviewDigest: review.reviewDigest,
         });
       }
+    } finally {
+      f.store.close();
+    }
+  });
+});
+
+describe("reviewed same-plugin instance-service bootstrap", () => {
+  const selfPlugin = "sample.instance";
+  const serve = `${selfPlugin}.serve`;
+  const use = `${selfPlugin}.use`;
+  const serviceId = `${selfPlugin}.svc`;
+  const sha256 = (value: unknown) =>
+    createHash("sha256").update(canonicalJobJson(value)).digest("hex");
+  const template: ServicePolicyTemplate = {
+    serviceId,
+    revision: "svc-r1",
+    maxConcurrent: 1,
+    operations: {
+      inspect: {
+        method: "GET",
+        readable: true,
+        path: "/inspect",
+        input: {},
+        query: {},
+        body: [],
+        timeoutMs: 1000,
+        maxRequestBytes: 1024,
+        maxResponseBytes: 4096,
+        maxResultBytes: 2048,
+        response: { kind: "projected-json", fields: [["state"]], maxArrayItems: 16 },
+      },
+    },
+  };
+  const declaration: MachineHalf = {
+    ...machine,
+    operations: {
+      [serve]: { ...machine.operations[operationId]!, providesService: true },
+      [use]: {
+        ...machine.operations[operationId]!,
+        services: [{ serviceId, revision: template.revision, operationIds: ["inspect"] }],
+      },
+    },
+  };
+  function bootstrap(path = ":memory:") {
+    const f = fixture(path);
+    f.service.setManifestResolver((id) =>
+      id === pluginId ? machine : id === selfPlugin ? declaration : null,
+    );
+    f.owner.resources = { tools: {}, anchors: {}, services: {}, serviceDefinitions: {} };
+    prove(f);
+    f.commands.length = 0;
+    return f;
+  }
+  function proposal(
+    deploymentId: string,
+    machineId: string,
+    policy: ServicePolicyTemplate = template,
+    expectedRevision: string | null = null,
+  ): JobDeploymentRequest {
+    return {
+      deploymentId,
+      pluginId: selfPlugin,
+      targets: [{ machineId, platform: "linux-x64" }],
+      operationIds: [serve, use],
+      instanceServices: [
+        { expectedRevision, policy, operationId: serve, input: { value: "serve" } },
+      ],
+    };
+  }
+  /** Everything the owner does for itself once the hub sends it an installation. */
+  function acknowledge(f: Fixture, installationRevision: string) {
+    f.service.event(f.channel, {
+      type: "installed",
+      pluginId: selfPlugin,
+      installationRevision,
+      artifactSha256: hash,
+      resources: {
+        artifactAvailable: true,
+        tools: [],
+        operations: [
+          { operationId: serve, available: true },
+          { operationId: use, available: true },
+        ],
+      },
+    });
+  }
+  function advertise(f: Fixture, policy: { serviceId: string; revision: string }) {
+    f.owner.resources = {
+      tools: {},
+      anchors: {},
+      services: { [policy.serviceId]: sha256(policy) },
+      serviceDefinitions: {
+        [policy.serviceId]: { revision: policy.revision, operationIds: ["inspect"] },
+      },
+    };
+    f.service.event(f.channel, { type: "resources", resources: f.owner.resources });
+  }
+  function startProvider(f: Fixture) {
+    const start = f.commands.findLast((command) => command.type === "start");
+    if (start?.type !== "start" || !start.request.service) throw new Error("no provider admitted");
+    f.service.event(f.channel, {
+      type: "state",
+      jobId: start.request.jobId,
+      requestDigest: start.request.requestDigest,
+      ownerId: start.permit.ownerId,
+      ownerGeneration: start.permit.ownerGeneration,
+      state: "started",
+    });
+    f.service.event(f.channel, {
+      type: "service_ready",
+      jobId: start.request.jobId,
+      service: start.request.service,
+    });
+    return start;
+  }
+  function settle(f: Fixture, start: Extract<JobCommand, { type: "start" }>) {
+    const fact = {
+      jobId: start.request.jobId,
+      requestDigest: start.request.requestDigest,
+      ownerId: start.permit.ownerId,
+      ownerGeneration: start.permit.ownerGeneration,
+    };
+    f.service.event(f.channel, {
+      type: "result",
+      result: {
+        ...fact,
+        state: "cancelled",
+        reason: "cancelled",
+        exitCode: null,
+        startedAt: f.runtime.now(),
+        finishedAt: f.runtime.now(),
+        usage: null,
+        limits: start.request.limits,
+        outputs: [],
+      },
+    });
+    f.service.event(f.channel, { type: "workload_empty", ...fact });
+  }
+  /** Review, approve and carry one proposal all the way to a started provider. */
+  function apply(f: Fixture, value: JobDeploymentRequest) {
+    const review = f.service.reviewDeployment(f.root, value);
+    if (!review.approvable) throw new Error(`unapprovable: ${review.targets[0]!.reason}`);
+    const entry = review.targets[0]!.instanceServices![0]!;
+    f.service.applyDeployment(
+      f.root,
+      { request: value, reviewDigest: review.reviewDigest },
+      `trace-${value.deploymentId}`,
+    );
+    return { review, entry, target: review.targets[0]! };
+  }
+
+  test("a first bootstrap installs, configures and starts the provider only after the owner's ACK", () => {
+    const f = bootstrap();
+    try {
+      const value = proposal("bootstrap-first", f.machineId);
+      const review = f.service.reviewDeployment(f.root, value);
+      const target = review.targets[0]!;
+      const entry = target.instanceServices![0]!;
+      expect(review.approvable).toBe(true);
+      // The pin names the installation this same request creates, and the promoted binding
+      // carries the resolved policy: neither could hold if the revision hashed the policy.
+      expect(entry.policy.runtime).toMatchObject({
+        scope: "instance",
+        pluginId: selfPlugin,
+        operationId: serve,
+        installationRevision: target.installationRevision!,
+        artifactSha256: hash,
+        input: { value: { literal: "serve" } },
+      });
+      expect(target.resourceBindings!.services[serviceId]).toBe(sha256(entry.policy));
+      expect(entry.previous).toBeNull();
+      expect(f.service.reviewDeployment(f.root, value).targets[0]).toEqual(target);
+      expect(f.service.jobs.installation(f.machineId, selfPlugin)).toBeNull();
+      expect(f.service.instanceServices.get(serviceId)).toBeNull();
+      expect(f.commands).toEqual([]);
+
+      const deployment = f.service.applyDeployment(
+        f.root,
+        { request: value, reviewDigest: review.reviewDigest },
+        "bootstrap-trace",
+      );
+      expect(deployment.targets[0]).toMatchObject({
+        state: "installing",
+        reason: "owner_acknowledgement_pending",
+      });
+      // Installed, but nothing is configured and no provider exists before the native ACK.
+      expect(f.service.jobs.installation(f.machineId, selfPlugin)?.ready).toBe(false);
+      expect(f.service.instanceServices.get(serviceId)).toBeNull();
+      expect(f.commands.some((command) => command.type === "start")).toBe(false);
+      expect(() =>
+        f.service.execute(f.root, selfPlugin, "before-ack", {
+          jobId: "before-ack",
+          machineId: f.machineId,
+          operationId: use,
+          input: { value: "safe" },
+          outputs: [],
+        }),
+      ).toThrow();
+
+      acknowledge(f, target.installationRevision!);
+      const record = f.service.instanceServices.get(serviceId)!;
+      expect(record).toMatchObject({ machineId: f.machineId, pluginId: selfPlugin, enabled: true });
+      expect(sha256(record.policy)).toBe(sha256(entry.policy));
+      expect(
+        f.service.readDeployment(f.root, { deploymentId: value.deploymentId }).targets[0],
+      ).toMatchObject({ state: "installing" });
+      const start = startProvider(f);
+      expect(start.request.operationId).toBe(serve);
+      expect(start.request.installationRevision).toBe(target.installationRevision!);
+      advertise(f, entry.policy);
+      expect(
+        f.service.readDeployment(f.root, { deploymentId: value.deploymentId }).targets[0],
+      ).toMatchObject({ state: "ready", reason: null });
+      const consumer = f.service.execute(f.root, selfPlugin, "after-ack", {
+        jobId: "after-ack",
+        machineId: f.machineId,
+        operationId: use,
+        input: { value: "safe" },
+        outputs: [],
+      });
+      expect(consumer.state).toBe("start-committed");
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("an owned update stops the reviewed provider only, and leaves other work running", () => {
+    const f = bootstrap();
+    try {
+      const first = apply(f, proposal("bootstrap-update-first", f.machineId));
+      acknowledge(f, first.target.installationRevision!);
+      const provider = startProvider(f);
+      advertise(f, first.entry.policy);
+      const previous = f.service.instanceServices.get(serviceId)!;
+
+      consent(f, "machines:run");
+      const unrelated = execute(f, "unrelated-plugin-job");
+      expect(unrelated.state).toBe("start-committed");
+
+      const replacement = { ...template, maxConcurrent: 2 };
+      const value = proposal("bootstrap-update", f.machineId, replacement, previous.revision);
+      const review = f.service.reviewDeployment(f.root, value);
+      const entry = review.targets[0]!.instanceServices![0]!;
+      expect(review.approvable).toBe(true);
+      expect(entry.previous).toEqual({
+        machineId: f.machineId,
+        revision: previous.revision,
+        enabled: true,
+        policySha256: sha256(previous.policy),
+        jobId: provider.request.jobId,
+      });
+      // Changed policy content changes the promoted binding, so the installation is replaced.
+      expect(review.targets[0]!.installationRevision).not.toBe(first.target.installationRevision);
+
+      f.service.applyDeployment(
+        f.root,
+        { request: value, reviewDigest: review.reviewDigest },
+        "update-trace",
+      );
+      expect(
+        f.service.readDeployment(f.root, { deploymentId: value.deploymentId }).targets[0],
+      ).toMatchObject({ state: "installing", reason: "provider_workload_quiescing" });
+      expect(f.service.jobs.cancellation(provider.request.jobId)).toEqual({
+        mode: "retire",
+        reason: "deployment_instance_service_replaced",
+      });
+      // Only the reviewed provider: the other plugin's job is untouched and still running.
+      expect(f.service.jobs.cancellation(unrelated.request.jobId)).toBeNull();
+      expect(f.service.jobs.get(unrelated.request.jobId)?.state).toBe("start-committed");
+      expect(f.service.jobs.installation(f.machineId, selfPlugin)?.revision).toBe(
+        first.target.installationRevision!,
+      );
+
+      settle(f, provider);
+      f.service.tick();
+      expect(f.service.jobs.installation(f.machineId, selfPlugin)?.revision).toBe(
+        review.targets[0]!.installationRevision!,
+      );
+      acknowledge(f, review.targets[0]!.installationRevision!);
+      startProvider(f);
+      advertise(f, entry.policy);
+      expect(
+        f.service.readDeployment(f.root, { deploymentId: value.deploymentId }).targets[0],
+      ).toMatchObject({ state: "ready", reason: null });
+      const current = f.service.instanceServices.get(serviceId)!;
+      expect(current.revision).not.toBe(previous.revision);
+      expect(current.policy.maxConcurrent).toBe(2);
+      expect(f.service.jobs.get(unrelated.request.jobId)?.state).toBe("start-committed");
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("an unrelated job of the same plugin holds the target without stopping anything", () => {
+    const f = bootstrap();
+    try {
+      const first = apply(f, proposal("bootstrap-busy-first", f.machineId));
+      acknowledge(f, first.target.installationRevision!);
+      const provider = startProvider(f);
+      advertise(f, first.entry.policy);
+      const consumer = f.service.execute(f.root, selfPlugin, "busy-consumer", {
+        jobId: "busy-consumer",
+        machineId: f.machineId,
+        operationId: use,
+        input: { value: "safe" },
+        outputs: [],
+      });
+      expect(consumer.state).toBe("start-committed");
+      const previous = f.service.instanceServices.get(serviceId)!;
+      const value = proposal(
+        "bootstrap-busy",
+        f.machineId,
+        { ...template, maxConcurrent: 3 },
+        previous.revision,
+      );
+      const review = f.service.reviewDeployment(f.root, value);
+      // The unrelated consumer job holds the machine: the approval is still offered, but the
+      // target waits instead of interrupting work this review never named.
+      expect(review.targets[0]).toMatchObject({ approvable: true, reason: "active_installation" });
+      f.service.applyDeployment(
+        f.root,
+        { request: value, reviewDigest: review.reviewDigest },
+        "busy-trace",
+      );
+      expect(
+        f.service.readDeployment(f.root, { deploymentId: value.deploymentId }).targets[0],
+      ).toMatchObject({ state: "pending", reason: "active_installation" });
+      expect(f.service.jobs.cancellation(consumer.request.jobId)).toBeNull();
+      expect(f.service.jobs.cancellation(provider.request.jobId)).toBeNull();
+      expect(f.service.jobs.installation(f.machineId, selfPlugin)?.revision).toBe(
+        first.target.installationRevision!,
+      );
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test.each([
+    ["unselected", "instance_service_provider_unselected"],
+    ["not-a-provider", "instance_service_provider_unsupported"],
+    ["undeclared", "instance_service_binding_undeclared"],
+    ["cyclic", "instance_service_provider_cycle"],
+    ["foreign", "unknown_operation"],
+  ] as const)("a malformed %s proposal refuses the review outright", (variant, expected) => {
+    const f = bootstrap();
+    try {
+      const value = proposal("bootstrap-malformed", f.machineId);
+      if (variant === "unselected") value.operationIds = [use];
+      if (variant === "not-a-provider") value.instanceServices![0]!.operationId = use;
+      if (variant === "undeclared")
+        value.instanceServices![0]!.policy = { ...template, revision: "svc-r9" };
+      if (variant === "cyclic")
+        f.service.setManifestResolver((id) =>
+          id === selfPlugin
+            ? {
+                ...declaration,
+                operations: {
+                  ...declaration.operations,
+                  [serve]: {
+                    ...declaration.operations[serve]!,
+                    services: [
+                      { serviceId, revision: template.revision, operationIds: ["inspect"] },
+                    ],
+                  },
+                },
+              }
+            : machine,
+        );
+      if (variant === "foreign") value.instanceServices![0]!.operationId = operationId;
+      expect(() => f.service.reviewDeployment(f.root, value)).toThrow(expected);
+      expect(f.service.jobs.installation(f.machineId, selfPlugin)).toBeNull();
+      expect(f.service.instanceServices.get(serviceId)).toBeNull();
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("more than one target may not carry an instance-service proposal", () => {
+    const f = bootstrap();
+    try {
+      const value = proposal("bootstrap-fanout", f.machineId);
+      value.targets = [
+        ...value.targets,
+        { machineId: f.auth.enrollMachine("second", f.root).machine.id, platform: "linux-x64" },
+      ];
+      expect(() => f.service.reviewDeployment(f.root, value)).toThrow();
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test.each(["stale", "foreign-owner", "input", "unsupported-owner"] as const)(
+    "a %s destination refuses the proposal without effects",
+    async (variant) => {
+      const f = bootstrap();
+      try {
+        const value = proposal("bootstrap-refusal", f.machineId);
+        if (variant === "stale") value.instanceServices![0]!.expectedRevision = "not-configured";
+        if (variant === "input") value.instanceServices![0]!.input = { value: 17 };
+        if (variant === "unsupported-owner") {
+          delete f.owner.resources;
+          prove(f);
+        }
+        if (variant === "foreign-owner") {
+          const other = f.auth.enrollMachine("other-owner", f.root).machine.id;
+          await f.service.configureInstanceService(f.root, {
+            serviceId,
+            expectedRevision: null,
+            machineId: other,
+            policy: {
+              ...template,
+              runtime: {
+                scope: "instance",
+                pluginId: selfPlugin,
+                operationId: serve,
+                installationRevision: "foreign-r1",
+                artifactSha256: hash,
+                resourceBindingDigest: sha256(null),
+                input: { value: { literal: "serve" } },
+              },
+            },
+            enabled: false,
+          });
+          value.instanceServices![0]!.expectedRevision =
+            f.service.instanceServices.get(serviceId)!.revision;
+        }
+        const review = f.service.reviewDeployment(f.root, value);
+        expect(review.approvable).toBe(false);
+        expect(review.targets[0]!.reason).toBe(
+          variant === "stale"
+            ? "instance_service_configuration_changed"
+            : variant === "foreign-owner"
+              ? "instance_service_owner_changed"
+              : variant === "input"
+                ? "invalid_input"
+                : "resource_owner_unavailable",
+        );
+        expect(() =>
+          f.service.applyDeployment(
+            f.root,
+            { request: value, reviewDigest: review.reviewDigest },
+            "refused-trace",
+          ),
+        ).toThrow("deployment_unapprovable");
+        expect(f.service.jobs.installation(f.machineId, selfPlugin)).toBeNull();
+      } finally {
+        f.store.close();
+      }
+    },
+  );
+
+  test("a configuration that moves under an approval refuses it instead of replaying", async () => {
+    const f = bootstrap();
+    try {
+      const value = proposal("bootstrap-concurrent", f.machineId);
+      const review = f.service.reviewDeployment(f.root, value);
+      const entry = review.targets[0]!.instanceServices![0]!;
+      f.service.applyDeployment(
+        f.root,
+        { request: value, reviewDigest: review.reviewDigest },
+        "concurrent-trace",
+      );
+      acknowledge(f, review.targets[0]!.installationRevision!);
+      const configured = f.service.instanceServices.get(serviceId)!;
+      const provider = startProvider(f);
+      advertise(f, entry.policy);
+      expect(
+        f.service.readDeployment(f.root, { deploymentId: value.deploymentId }).targets[0]!.state,
+      ).toBe("ready");
+      f.commands.length = 0;
+      // Someone reconfigures the same service out of band: the approval is spent, not reused.
+      await f.service.configureInstanceService(f.root, {
+        serviceId,
+        expectedRevision: configured.revision,
+        machineId: f.machineId,
+        policy: { ...configured.policy, maxConcurrent: 4 },
+        enabled: true,
+      });
+      expect(
+        f.service.readDeployment(f.root, { deploymentId: value.deploymentId }).targets[0],
+      ).toMatchObject({ state: "needs_review", reason: "service_definition_changed" });
+      expect(f.commands.some((command) => command.type === "start")).toBe(false);
+      // The out-of-band configuration retires its own predecessor; the spent approval does not.
+      expect(f.service.jobs.cancellation(provider.request.jobId)?.reason).not.toBe(
+        "deployment_instance_service_replaced",
+      );
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("an interrupted configuration is uncertain, inspectable and never replayed", () => {
+    const dir = mkdtempSync(join(tmpdir(), "manifold-bootstrap-restart-"));
+    const path = join(dir, "db.sqlite");
+    const f = bootstrap(path);
+    try {
+      const value = proposal("bootstrap-interrupted", f.machineId);
+      const { review } = apply(f, value);
+      acknowledge(f, review.targets[0]!.installationRevision!);
+      const configured = f.service.instanceServices.get(serviceId)!;
+      // The durable write-ahead fence with the configuration outcome unknown.
+      f.store.db
+        .query(
+          "UPDATE machine_job_deployment_targets SET phase='configuring',attempt='lost-process' WHERE deployment_id=?",
+        )
+        .run(value.deploymentId);
+      f.store.close();
+      f.store = new ServerStore(openDatabase(path));
+      f.auth = new AuthService(f.store, key, f.runtime);
+      f.root = f.auth.authenticate(key);
+      f.service = new JobService(f.store, f.auth, f.runtime);
+      f.service.setLifecycleRecorder((record) => f.store.appendTrace(record));
+      f.service.setManifestResolver((id) =>
+        id === pluginId ? machine : id === selfPlugin ? declaration : null,
+      );
+      f.commands.length = 0;
+      prove(f);
+      expect(
+        f.service.readDeployment(f.root, { deploymentId: value.deploymentId }).targets[0],
+      ).toMatchObject({ state: "needs_review", reason: "deployment_application_uncertain" });
+      expect(f.service.instanceServices.get(serviceId)?.revision).toBe(configured.revision);
+      // The owner is resynchronised, but no provider is admitted a second time.
+      expect(f.commands.some((command) => command.type === "start")).toBe(false);
+      expect(() =>
+        f.service.applyDeployment(
+          f.root,
+          { request: value, reviewDigest: review.reviewDigest },
+          "replay-trace",
+        ),
+      ).not.toThrow();
+      expect(
+        f.service.readDeployment(f.root, { deploymentId: value.deploymentId }).targets[0]!.state,
+      ).toBe("needs_review");
+    } finally {
+      f.store.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("cancelling a quiescing approval stops the lifecycle and leaves the record configured", () => {
+    const f = bootstrap();
+    try {
+      const first = apply(f, proposal("bootstrap-cancel-first", f.machineId));
+      acknowledge(f, first.target.installationRevision!);
+      const provider = startProvider(f);
+      advertise(f, first.entry.policy);
+      const previous = f.service.instanceServices.get(serviceId)!;
+      const value = proposal(
+        "bootstrap-cancel",
+        f.machineId,
+        { ...template, maxConcurrent: 5 },
+        previous.revision,
+      );
+      const review = f.service.reviewDeployment(f.root, value);
+      const deployment = f.service.applyDeployment(
+        f.root,
+        { request: value, reviewDigest: review.reviewDigest },
+        "cancel-trace",
+      );
+      expect(deployment.targets[0]!.reason).toBe("provider_workload_quiescing");
+      const cancelled = f.service.cancelDeployment(f.root, {
+        deploymentId: value.deploymentId,
+        expectedRevision: deployment.revision,
+      });
+      expect(cancelled.targets[0]).toMatchObject({
+        state: "cancelled",
+        reason: "approval_cancelled",
+      });
+      settle(f, provider);
+      f.service.tick();
+      expect(f.service.jobs.installation(f.machineId, selfPlugin)?.revision).toBe(
+        first.target.installationRevision!,
+      );
+      expect(f.service.instanceServices.get(serviceId)!.revision).toBe(previous.revision);
     } finally {
       f.store.close();
     }

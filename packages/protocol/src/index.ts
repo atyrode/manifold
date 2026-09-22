@@ -17,6 +17,8 @@ export {
 } from "./action-runner.ts";
 export {
   JobDeploymentRequestSchema,
+  JobDeploymentInstanceServiceRequestSchema,
+  JobDeploymentInstanceServiceSchema,
   JobDeploymentConsentSchema,
   JobDeploymentInvocationEdgeSchema,
   JobDeploymentTargetReviewSchema,
@@ -32,6 +34,8 @@ export {
   JobDeploymentDescribeArgsSchema,
   JobDeploymentDescriptionSchema,
   type JobDeploymentRequest,
+  type JobDeploymentInstanceServiceRequest,
+  type JobDeploymentInstanceService,
   type JobDeploymentConsent,
   type JobDeploymentInvocationEdge,
   type JobDeploymentTargetReview,
@@ -131,6 +135,7 @@ export {
   ServiceOperationPolicySchema,
   ServiceProxyOperationPolicySchema,
   ServicePolicySchema,
+  ServicePolicyTemplateSchema,
   ServiceConfigurationSchema,
   ServiceConfigurationReadSchema,
   ServiceRuntimeCandidateSchema,
@@ -159,6 +164,7 @@ export {
   ServiceRuntimeSchema,
   type ServiceRuntime,
   type ServicePolicy,
+  type ServicePolicyTemplate,
 } from "./services.ts";
 export {
   InstanceServiceTargetSchema,
