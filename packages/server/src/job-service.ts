@@ -89,6 +89,7 @@ import {
   jobResourceBindingsFor,
   jobResourceRefusal,
   type JobResourceBindings,
+  type JobResourceInventory,
 } from "../../protocol/src/job-resources.ts";
 import {
   ServiceConfigurationSchema,
@@ -157,6 +158,15 @@ interface LiveJobOwner {
 interface ProposedServiceContext {
   installation: JobInstallation;
   operationIds: readonly string[];
+  /**
+   * Concrete instance-service policies a reviewed bootstrap proposes for this installation.
+   * They stand in for records that do not exist yet, so a review can answer "would this
+   * operation run once these exist" without configuring anything. Prospective standing covers
+   * exactly the evidence the hub itself will create — the record, the owner's advertisement of
+   * it and the provider job — and never the pins, authority or consent an ordinary admission
+   * checks.
+   */
+  instanceServices?: readonly ServicePolicy[];
 }
 interface ServiceTunnelDirection {
   next: number;
@@ -706,6 +716,19 @@ export class JobService {
     callerPluginId = "engine.services",
     traceId = "native-services",
   ): Promise<InstanceServiceDescription> {
+    return this.applyInstanceServiceConfiguration(auth, args, callerPluginId, traceId);
+  }
+  /**
+   * The configuration door's whole body, without the promise. A reviewed deployment applies a
+   * proposed policy inside its own durable transition, which is synchronous by construction:
+   * the effect and the receipt that says it happened commit together or neither does.
+   */
+  private applyInstanceServiceConfiguration(
+    auth: AuthContext,
+    args: ConfigureInstanceServiceArgs,
+    callerPluginId: string,
+    traceId: string,
+  ): InstanceServiceDescription {
     const previous = this.instanceServices.get(args.serviceId);
     if ((previous?.revision ?? null) !== args.expectedRevision)
       throw new ServiceError("conflict", "instance_service_configuration_changed");
@@ -1177,21 +1200,29 @@ export class JobService {
     policy: ServicePolicy,
     machineId: string,
     operationIds: readonly string[],
+    /**
+     * A reviewed proposal the hub has not configured yet: the owner cannot advertise a policy
+     * it has never been sent, so its inventory entry is the one fact review defers. Everything
+     * else — a proved owner, runtime support and every credential source the policy names —
+     * still has to hold before the proposal is approvable.
+     */
+    prospective = false,
   ): string | null {
     const live = this.channels.get(machineId);
     if (!live?.proved) return "resource_owner_unavailable";
     const support = this.serviceRuntimeSupportRefusal(policy, machineId);
     if (support) return support;
-    if (live.owner.resources?.services[policy.serviceId] !== digest(policy))
+    if (!prospective && live.owner.resources?.services[policy.serviceId] !== digest(policy))
       return "service_unavailable";
     for (const ref of servicePolicyCredentialRefs(policy, operationIds)) {
-      const source = live.owner.resources.credentialReferences?.find(
+      const source = live.owner.resources?.credentialReferences?.find(
         (source) => source.ref === ref,
       );
       if (!source?.available || !policy.origin || !source.origins.includes(policy.origin))
         return "service_credential_unavailable";
     }
-    const definition = live.owner.resources.serviceDefinitions[policy.serviceId];
+    if (prospective) return live.owner.resources ? null : "resource_owner_unavailable";
+    const definition = live.owner.resources!.serviceDefinitions[policy.serviceId];
     if (
       !definition ||
       definition.revision !== policy.revision ||
@@ -1449,11 +1480,63 @@ export class JobService {
       install.resourceBindings,
     );
   }
+  /**
+   * The service policies in force for a machine, with a reviewed bootstrap's proposals standing
+   * in for the records they will create. Outside a review this is exactly the effective
+   * configuration: a proposal reaches nothing but the review and apply that carry it.
+   */
+  private policiesFor(machineId: string, proposed?: ProposedServiceContext): ServicePolicy[] {
+    const configured = this.effectiveConfiguration(machineId).policies;
+    const proposals =
+      proposed?.installation.machineId === machineId ? (proposed.instanceServices ?? []) : [];
+    if (!proposals.length) return configured;
+    const merged = new Map(configured.map((policy) => [policy.serviceId, policy]));
+    for (const policy of proposals) merged.set(policy.serviceId, policy);
+    return [...merged.values()];
+  }
+  /**
+   * The owner inventory a reviewed proposal answers against: the live report, plus exactly the
+   * projection `JobResources.refreshServices` will make once the hub sends it this policy. An
+   * owner that has never been sent a configuration cannot advertise it, so without this a first
+   * bootstrap refuses itself; admission still reads the owner's own report, never this.
+   */
+  private inventoryFor(
+    machineId: string,
+    proposed?: ProposedServiceContext,
+  ): JobResourceInventory | undefined {
+    const live = this.channels.get(machineId);
+    const inventory = live?.proved ? live.owner.resources : undefined;
+    const proposals =
+      proposed?.installation.machineId === machineId ? (proposed.instanceServices ?? []) : [];
+    if (!inventory || !proposals.length) return inventory;
+    const services = { ...inventory.services };
+    const serviceDefinitions = { ...inventory.serviceDefinitions };
+    for (const policy of proposals) {
+      services[policy.serviceId] = digest(policy);
+      serviceDefinitions[policy.serviceId] = {
+        revision: policy.revision,
+        operationIds: Object.keys(policy.operations).sort(),
+      };
+    }
+    return { ...inventory, services, serviceDefinitions };
+  }
+  /** Whether this policy is a proposal the hub has not configured yet. */
+  private prospectivePolicy(
+    policy: ServicePolicy,
+    machineId: string,
+    proposed?: ProposedServiceContext,
+  ): boolean {
+    return (
+      proposed?.installation.machineId === machineId &&
+      (proposed.instanceServices ?? []).some((value) => value.serviceId === policy.serviceId)
+    );
+  }
   private boundServicePolicy(
     install: JobInstallation,
     binding: ServiceBinding,
+    proposed?: ProposedServiceContext,
   ): ServicePolicy | undefined {
-    const policy = this.effectiveConfiguration(install.machineId).policies.find(
+    const policy = this.policiesFor(install.machineId, proposed).find(
       (policy) => policy.serviceId === binding.serviceId,
     );
     if (
@@ -1538,7 +1621,7 @@ export class JobService {
       if (protocolReason) return protocolReason;
     }
     for (const binding of operation?.services ?? []) {
-      const policy = this.effectiveConfiguration(install.machineId).policies.find(
+      const policy = this.policiesFor(install.machineId, proposed).find(
         (value) => value.serviceId === binding.serviceId,
       );
       if (policy) {
@@ -1551,16 +1634,17 @@ export class JobService {
       operationId,
       this.platform(install),
       install.resourceBindings,
-      live?.proved ? live.owner.resources : undefined,
+      this.inventoryFor(install.machineId, proposed),
     );
     if (refusal) return refusal;
     for (const binding of install.machine.operations[operationId]?.services ?? []) {
-      const policy = this.boundServicePolicy(install, binding);
+      const policy = this.boundServicePolicy(install, binding, proposed);
       if (!policy) return "service_definition_changed";
       const availability = this.serviceAvailability(
         policy,
         install.machineId,
         binding.operationIds,
+        this.prospectivePolicy(policy, install.machineId, proposed),
       );
       if (availability) return availability;
       const runtimeReason = this.runtimeServiceRefusal(
@@ -1736,6 +1820,10 @@ export class JobService {
   ): JobInstallation | null {
     const runtime = policy.runtime;
     if (!runtime) return null;
+    const installed =
+      runtime.installationRevision === undefined
+        ? null
+        : this.jobs.installation(machineId, runtime.pluginId);
     const callee =
       runtime.installationRevision === undefined
         ? caller?.machineId === machineId && caller.pluginId === runtime.pluginId
@@ -1743,7 +1831,17 @@ export class JobService {
             ? caller
             : this.jobs.installation(machineId, runtime.pluginId, caller.revision)
           : null
-        : this.jobs.installation(machineId, runtime.pluginId);
+        : // An installation that already carries the pinned revision answers for itself. Only
+          // when it does not does an exact pin fall through to the installation a review is
+          // proposing — the one case a first bootstrap could not otherwise be evaluated at
+          // all, and unambiguous because that revision is a digest of the reviewed request.
+          installed?.revision === runtime.installationRevision
+          ? installed
+          : proposed?.installation.machineId === machineId &&
+              proposed.installation.pluginId === runtime.pluginId &&
+              proposed.installation.revision === runtime.installationRevision
+            ? proposed.installation
+            : installed;
     if (
       !callee ||
       !callee.enabled ||
@@ -1810,6 +1908,21 @@ export class JobService {
       if (!callee) return "authority_or_consent_refused";
       prospective = false;
     }
+    // A proposed instance service has no record, no advertisement and no provider job yet;
+    // its provider operation must still be one this same request installs and selects.
+    const proposedInstance = this.prospectivePolicy(policy, machineId, proposed);
+    if (proposedInstance) {
+      // The provider must be the installation this same request carries — whether that is a
+      // new revision or the promoted one it reuses — and an operation it selects.
+      if (
+        callee.machineId !== proposed!.installation.machineId ||
+        callee.pluginId !== proposed!.installation.pluginId ||
+        callee.revision !== proposed!.installation.revision ||
+        !proposed!.operationIds.includes(runtime.operationId)
+      )
+        return "service_runtime_changed";
+      prospective = !callee.ready;
+    }
     if (!live?.proved || (!prospective && !callee.ready)) return "service_runtime_unavailable";
     const protocolReason = jobOwnerOperationRefusal(
       live.owner.protocolVersion,
@@ -1818,7 +1931,7 @@ export class JobService {
     );
     if (protocolReason) return protocolReason;
     for (const binding of callee.machine.operations[runtime.operationId]?.services ?? []) {
-      const dependency = this.effectiveConfiguration(machineId).policies.find(
+      const dependency = this.policiesFor(machineId, proposed).find(
         (value) => value.serviceId === binding.serviceId,
       );
       if (dependency) {
@@ -1831,11 +1944,11 @@ export class JobService {
       runtime.operationId,
       this.platform(callee),
       callee.resourceBindings,
-      live.owner.resources,
+      this.inventoryFor(machineId, proposed),
     );
     if (resourceReason) return resourceReason;
     for (const binding of callee.machine.operations[runtime.operationId]?.services ?? []) {
-      const dependency = this.effectiveConfiguration(machineId).policies.find(
+      const dependency = this.policiesFor(machineId, proposed).find(
         (policy) => policy.serviceId === binding.serviceId,
       );
       if (
@@ -1845,7 +1958,12 @@ export class JobService {
       )
         return "service_definition_changed";
       const reason =
-        this.serviceAvailability(dependency, machineId, binding.operationIds) ??
+        this.serviceAvailability(
+          dependency,
+          machineId,
+          binding.operationIds,
+          this.prospectivePolicy(dependency, machineId, proposed),
+        ) ??
         this.runtimeServiceRefusal(
           dependency,
           machineId,
@@ -1869,6 +1987,9 @@ export class JobService {
     )
       return "service_runtime_unavailable";
     if (runtime.scope === "instance") {
+      // The record, its credential and its provider job are exactly what apply creates from
+      // this proposal; demanding them here is the cycle #827 exists to break.
+      if (proposedInstance) return null;
       const record = this.instanceServices.get(policy.serviceId);
       if (
         !record ||
@@ -2805,7 +2926,7 @@ export class JobService {
       candidates: [],
       unavailable: [],
     };
-    const policies = this.effectiveConfiguration(caller.machineId).policies;
+    const policies = this.policiesFor(caller.machineId, proposed);
     for (const operationId of operationIds) {
       const operation = caller.machine.operations[operationId];
       if (!operation) fail("unknown_operation");
@@ -2915,13 +3036,14 @@ export class JobService {
     caller: JobInstallation,
     operationIds: readonly string[],
     plannedConsents: readonly { node: string; cap: Cap }[],
+    instanceServices: readonly ServicePolicy[] = [],
   ): { edges: JobDeploymentInvocationEdge[]; digest: string; refusal: string | null } {
-    const proposed = { installation: caller, operationIds };
+    const proposed = { installation: caller, operationIds, instanceServices };
     const inspected = this.invocationCandidates(caller, operationIds, proposed);
     const edges: JobDeploymentInvocationEdge[] = [];
     const evidence: unknown[] = [];
     let refusal = inspected.unavailable[0]?.reason ?? null;
-    const policies = this.effectiveConfiguration(caller.machineId).policies;
+    const policies = this.policiesFor(caller.machineId, proposed);
     for (const candidate of inspected.candidates) {
       const policy = policies.find((policy) => policy.serviceId === candidate.serviceId)!;
       if (policy.runtime?.scope === "instance") continue;
@@ -3529,12 +3651,24 @@ export class JobService {
           install.artifact,
           this.channels.get(install.machineId)?.owner.platforms,
         ) !== null,
-      resourceRefusal: (install, operationId, edges, operationIds) =>
-        this.resourceRefusal(install, operationId, edges, { installation: install, operationIds }),
-      invocations: (auth, install, operationIds, plannedConsents) =>
-        this.deploymentInvocations(auth, install, operationIds, plannedConsents),
-      servicePolicies: (machineId, machine, bindings, operationIds) => {
-        const policies = this.effectiveConfiguration(machineId).policies;
+      resourceRefusal: (install, operationId, edges, operationIds, instanceServices) =>
+        this.resourceRefusal(install, operationId, edges, {
+          installation: install,
+          operationIds,
+          instanceServices,
+        }),
+      invocations: (auth, install, operationIds, plannedConsents, instanceServices) =>
+        this.deploymentInvocations(auth, install, operationIds, plannedConsents, instanceServices),
+      servicePolicies: (machineId, machine, bindings, operationIds, instanceServices) => {
+        // A reviewed proposal answers for the record it will create; the rest of the machine's
+        // configuration answers for itself.
+        const configured = this.effectiveConfiguration(machineId).policies;
+        const policies = [
+          ...configured.filter(
+            (policy) => !instanceServices.some((value) => value.serviceId === policy.serviceId),
+          ),
+          ...instanceServices,
+        ];
         const declared = Object.entries(machine.operations).flatMap(([operationId, operation]) =>
           (operation.services ?? []).map((binding) => ({ operationId, binding })),
         );
@@ -3568,10 +3702,13 @@ export class JobService {
             : null,
         };
       },
-      selfProvidedServiceRefusal: (machineId, pluginId, machine, operationIds) => {
+      selfProvidedServiceRefusal: (machineId, pluginId, machine, operationIds, proposed) => {
         const installed = this.jobs.installation(machineId, pluginId);
         for (const operationId of operationIds)
           for (const binding of machine.operations[operationId]?.services ?? []) {
+            // A reviewed proposal replaces this policy in the same apply, pinned to the
+            // installation that apply creates: #827's own answer to the refusal below.
+            if (proposed.includes(binding.serviceId)) continue;
             const policy = this.effectiveConfiguration(machineId).policies.find(
               (policy) => policy.serviceId === binding.serviceId,
             );
@@ -3597,6 +3734,53 @@ export class JobService {
               return `service_provider_uninstalled:${binding.serviceId}`;
           }
         return null;
+      },
+      instanceService: (serviceId) => {
+        const record = this.instanceServices.get(serviceId);
+        return record
+          ? {
+              machineId: record.machineId,
+              pluginId: record.pluginId,
+              revision: record.revision,
+              enabled: record.enabled,
+              policySha256: digest(this.instancePolicy(record)),
+              jobId: record.jobId,
+            }
+          : null;
+      },
+      instanceServiceWorkload: (serviceId) =>
+        this.jobs.instanceServiceJobs(serviceId).map((job) => job.request.jobId),
+      instanceServiceRefusal: (install, policy, operationId, input) => {
+        const live = this.channels.get(install.machineId);
+        const operation = install.machine.operations[operationId];
+        if (!live?.proved || !operation) return "resource_owner_unavailable";
+        // The owner has to be able to run this provider and to report an inventory at all:
+        // without one it can never advertise the policy the consumer binds.
+        const protocolReason = jobOwnerOperationRefusal(live.owner.protocolVersion, operation);
+        if (protocolReason) return protocolReason;
+        if (!live.owner.resources) return "resource_owner_unavailable";
+        if (
+          this.instanceServices.list().length >= 64 &&
+          !this.instanceServices.get(policy.serviceId)
+        )
+          return "instance_service_capacity";
+        return this.operationInputRefusal(operation, input);
+      },
+      quiesceInstanceService: (serviceId, jobId) => {
+        const job = this.jobs.get(jobId);
+        const record = this.instanceServices.get(serviceId);
+        // Exactly the reviewed workload: the record's own admitted job, still owned by the
+        // revision the operator saw. Nothing else on this machine is this approval's to stop.
+        if (job && job.request.service?.serviceId === serviceId && record?.jobId === jobId)
+          this.cancelRecord(job, "deployment_instance_service_replaced", "retire");
+        return this.jobs.instanceServiceJobs(serviceId).length === 0;
+      },
+      configureInstanceService: (auth, args, traceId) => {
+        this.applyInstanceServiceConfiguration(auth, args, "engine.services", traceId);
+      },
+      installed: (machineId, pluginId, revision) => {
+        const install = this.jobs.installation(machineId, pluginId);
+        return install?.revision === revision && install.ready;
       },
       record: (record) => {
         if (!this.lifecycleRecorder) throw new Error("job_lifecycle_recorder_required");
@@ -3923,6 +4107,14 @@ export class JobService {
       artifactSha256: string;
       resourceBindings?: JobResourceBindings | undefined;
       machine: MachineHalf;
+      /**
+       * Concrete instance-service policies a reviewed bootstrap configures from this same
+       * installation. A binding may name one before the record exists, because the record's
+       * runtime pins this installation: that is the dependency cycle #827 breaks. Nothing is
+       * granted by naming it — until the record is configured, every operation bound to it
+       * refuses through the ordinary effective-configuration walk.
+       */
+      instanceServices?: readonly ServicePolicy[];
     },
   ): void {
     if (
@@ -3953,12 +4145,22 @@ export class JobService {
     if (resourceBindings) {
       const live = this.channels.get(args.machineId);
       if (!live?.proved || !live.owner.resources) fail("resource_owner_unavailable");
+      const proposals = args.instanceServices ?? [];
       for (const group of ["tools", "services", "anchors"] as const)
         for (const [key, value] of Object.entries(resourceBindings[group]))
-          if (live.owner.resources[group][key] !== value) fail("resource_revision_changed");
+          if (
+            live.owner.resources[group][key] !== value &&
+            !(
+              group === "services" &&
+              proposals.some((policy) => policy.serviceId === key && digest(policy) === value)
+            )
+          )
+            fail("resource_revision_changed");
       const policies = this.effectiveConfiguration(args.machineId).policies;
       for (const [serviceId, value] of Object.entries(resourceBindings.services)) {
-        const policy = policies.find((policy) => policy.serviceId === serviceId);
+        const policy =
+          proposals.find((policy) => policy.serviceId === serviceId) ??
+          policies.find((policy) => policy.serviceId === serviceId);
         if (!policy || digest(policy) !== value) fail("resource_revision_changed");
       }
     } else if (
@@ -4223,6 +4425,36 @@ export class JobService {
         : []),
     ];
   }
+  /**
+   * Whether an operation's declared input fields accept this exact literal map. Admission
+   * checks it for a caller's request; a reviewed instance-service proposal checks the same
+   * fields against its stored literals before an operator can approve a policy whose provider
+   * could never start.
+   */
+  private operationInputRefusal(op: MachineOperation, input: JobRequest["input"]): string | null {
+    for (const [key, field] of Object.entries(op.input))
+      if (
+        field.format === "revisioned-id" &&
+        input[key] !== undefined &&
+        (typeof input[key] !== "string" ||
+          !/^[A-Za-z0-9._-]{1,128}@[A-Za-z0-9._-]{1,128}$/.test(input[key] as string))
+      )
+        return "invalid_revisioned_input";
+    for (const [key, field] of Object.entries(op.input)) {
+      const value = input[key];
+      if (value === undefined) {
+        if (field.required) return "invalid_input";
+        continue;
+      }
+      if (
+        typeof value !== field.type ||
+        (typeof value === "string" && value.length > (field.maxLength ?? 4096)) ||
+        (field.enum && !field.enum.includes(value))
+      )
+        return "invalid_input";
+    }
+    return Object.keys(input).some((key) => !Object.hasOwn(op.input, key)) ? "invalid_input" : null;
+  }
   private build(
     auth: AuthContext,
     pluginId: string,
@@ -4254,28 +4486,8 @@ export class JobService {
     this.requireServiceBindings(install, args.operationId, args.expectedServiceBindings);
     const resourceReason = this.resourceRefusal(install, args.operationId);
     if (resourceReason) fail(resourceReason);
-    for (const [key, field] of Object.entries(op.input))
-      if (
-        field.format === "revisioned-id" &&
-        args.input[key] !== undefined &&
-        (typeof args.input[key] !== "string" ||
-          !/^[A-Za-z0-9._-]{1,128}@[A-Za-z0-9._-]{1,128}$/.test(args.input[key] as string))
-      )
-        fail("invalid_revisioned_input");
-    for (const [key, field] of Object.entries(op.input)) {
-      const value = args.input[key];
-      if (value === undefined) {
-        if (field.required) fail("invalid_input");
-        continue;
-      }
-      if (
-        typeof value !== field.type ||
-        (typeof value === "string" && value.length > (field.maxLength ?? 4096)) ||
-        (field.enum && !field.enum.includes(value))
-      )
-        fail("invalid_input");
-    }
-    if (Object.keys(args.input).some((k) => !Object.hasOwn(op.input, k))) fail("invalid_input");
+    const inputFieldReason = this.operationInputRefusal(op, args.input);
+    if (inputFieldReason) fail(inputFieldReason);
     const ceiling = jobLimits(op.limits);
     const limits = effectiveJobLimits(args.limits, ceiling);
     if (agentRun)

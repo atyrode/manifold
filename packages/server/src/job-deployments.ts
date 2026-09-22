@@ -5,7 +5,9 @@ import {
   isOperatorAnchor,
   parseManifoldUri,
   jobResourceRequirements,
+  jobResourceBindingsFor,
   MachineHalfSchema,
+  ServicePolicySchema,
   JobDeploymentRequestSchema,
   JobDeploymentApplyArgsSchema,
   JobDeploymentReadArgsSchema,
@@ -21,8 +23,10 @@ import {
   type JobResourceBindings,
   type JobInvocationEdge,
   type JobDeploymentInvocationEdge,
+  type JobDeploymentInstanceService,
   type JobOwner,
   type MachineHalf,
+  type ServicePolicy,
   type Cap,
 } from "@manifold/protocol";
 import type { z } from "zod";
@@ -42,7 +46,25 @@ const groups = ["tools", "services", "anchors"] as const;
 // Bound retained reviewed payloads. Empty approvals are compact, permanent retired-ID fences.
 // These small identity fences are intentionally unbounded; pruning them would permit replay.
 const MAX_APPROVALS = 256;
-type Phase = "pending" | "applying" | "applied" | "needs_review" | "cancelled";
+/**
+ * A target's durable position in one approval.
+ *
+ * `quiescing` and `configuring` exist only for a reviewed instance-service bootstrap, and they
+ * are separate phases rather than steps inside `applying` because they bracket different kinds
+ * of effect. Quiescing stops exactly the reviewed provider workload and then waits for the
+ * owner to give up its lifetime: repeating it is an observation, never a second stop.
+ * Configuring mints a credential and admits a provider job, so an interrupted attempt is
+ * exactly as uncertain as an interrupted installation and recovers the same way.
+ */
+type Phase =
+  | "pending"
+  | "quiescing"
+  | "applying"
+  | "applied"
+  | "configuring"
+  | "bound"
+  | "needs_review"
+  | "cancelled";
 interface TargetEvidence {
   identity: string;
   installation: string;
@@ -51,6 +73,8 @@ interface TargetEvidence {
   resources: string;
   invocations: string;
   invocationApprovals: string;
+  /** Prior record identity and proposed policy; never the volatile workload it will stop. */
+  instanceServices: string;
 }
 interface TargetReceipt {
   consents: string;
@@ -77,6 +101,15 @@ interface TargetRecord {
   reason: string | null;
   receipt: string | null;
 }
+/** The instance-service record identity a proposal replaces. */
+interface DeploymentInstanceService {
+  machineId: string;
+  pluginId: string;
+  revision: string;
+  enabled: boolean;
+  policySha256: string;
+  jobId: string | null;
+}
 interface NativeDeploymentHost {
   owner(machineId: string): JobOwner | null;
   artifactAvailable(install: JobInstallation, platform: keyof MachineHalf["artifacts"]): boolean;
@@ -85,18 +118,21 @@ interface NativeDeploymentHost {
     operationId: string,
     invocationEdges: readonly JobInvocationEdge[],
     selectedOperationIds: readonly string[],
+    instanceServices: readonly ServicePolicy[],
   ): string | null;
   invocations(
     auth: AuthContext,
     install: JobInstallation,
     operationIds: readonly string[],
     plannedConsents: readonly { node: string; cap: Cap }[],
+    instanceServices: readonly ServicePolicy[],
   ): { edges: JobDeploymentInvocationEdge[]; digest: string; refusal: string | null };
   servicePolicies(
     machineId: string,
     machine: MachineHalf,
     bindings: JobResourceBindings | null,
     operationIds: readonly string[],
+    instanceServices: readonly ServicePolicy[],
   ): { digest: string; refusal: string | null };
   /** Which bound service this plugin provides itself and has no installation for yet. */
   selfProvidedServiceRefusal(
@@ -104,7 +140,33 @@ interface NativeDeploymentHost {
     pluginId: string,
     machine: MachineHalf,
     operationIds: readonly string[],
+    proposedServiceIds: readonly string[],
   ): string | null;
+  instanceService(serviceId: string): DeploymentInstanceService | null;
+  /** Provider jobs that still own a lifetime for this service, settled or not. */
+  instanceServiceWorkload(serviceId: string): string[];
+  /** Machine-state refusal for one proposed provider, evaluated without any effect. */
+  instanceServiceRefusal(
+    install: JobInstallation,
+    policy: ServicePolicy,
+    operationId: string,
+    input: Record<string, string | number | boolean>,
+  ): string | null;
+  /** Stops exactly one reviewed provider workload; true once nothing owns its lifetime. */
+  quiesceInstanceService(serviceId: string, jobId: string): boolean;
+  configureInstanceService(
+    auth: AuthContext,
+    args: {
+      serviceId: string;
+      expectedRevision: string | null;
+      machineId: string;
+      policy: ServicePolicy;
+      enabled: boolean;
+    },
+    traceId: string,
+  ): void;
+  /** Whether the owner has acknowledged this exact installation. */
+  installed(machineId: string, pluginId: string, revision: string): boolean;
   record(record: TraceRecord): void;
   changed(): void;
 }
@@ -155,7 +217,7 @@ export class JobDeployments {
         `SELECT d.deployment_id FROM machine_job_deployments d
        WHERE d.approval<>'' AND NOT EXISTS (
          SELECT 1 FROM machine_job_deployment_targets t WHERE t.deployment_id=d.deployment_id
-         AND (t.phase IN ('pending','applying') OR t.reason='deployment_application_uncertain')
+         AND (t.phase IN ('pending','quiescing','applying','configuring') OR t.reason='deployment_application_uncertain')
        ) ORDER BY d.approved_at,d.rowid`,
       )
       .all();
@@ -277,6 +339,13 @@ export class JobDeployments {
               operationId: serviceOperationId,
             },
           });
+    // Configuring an instance service is its own authority at the destination, rechecked from
+    // the retained credential on every later transition rather than carried by the approval.
+    if (request.instanceServices?.length)
+      requirements.push({
+        cap: "services:configure",
+        ref: { kind: "machine", machineId },
+      });
     const evidence = requirements.map((requirement) =>
       this.service.auth.explain(auth, requirement),
     );
@@ -315,6 +384,141 @@ export class JobDeployments {
           }),
         ),
     );
+  }
+  /**
+   * Declaration-level validation of the proposed instance services, independent of any machine.
+   * These are properties of the request against the plugin's own manifest, so they refuse the
+   * call outright instead of producing an unapprovable target an operator could not fix by
+   * waiting: a provider that is not this plugin's, not selected, not a provider at all, a
+   * service nothing declares a binding for, or a provider that depends on what it provides.
+   */
+  private declaredInstanceServices(
+    request: JobDeploymentRequest,
+    machine: MachineHalf,
+  ): readonly NonNullable<JobDeploymentRequest["instanceServices"]>[number][] {
+    const entries = request.instanceServices ?? [];
+    const proposedIds = entries.map((entry) => entry.policy.serviceId);
+    for (const entry of entries) {
+      const operation = machine.operations[entry.operationId];
+      if (!operation) conflict("unknown_operation");
+      if (!operation.providesService) conflict("instance_service_provider_unsupported");
+      if (!request.operationIds.includes(entry.operationId))
+        conflict("instance_service_provider_unselected");
+      if (
+        !entry.policy.serviceId.startsWith(`${request.pluginId}.`) ||
+        !Object.values(machine.operations).some((declared) =>
+          declared.services?.some(
+            (binding) =>
+              binding.serviceId === entry.policy.serviceId &&
+              binding.revision === entry.policy.revision,
+          ),
+        )
+      )
+        conflict("instance_service_binding_undeclared");
+      if ((operation.services ?? []).some((binding) => proposedIds.includes(binding.serviceId)))
+        conflict("instance_service_provider_cycle");
+    }
+    return entries;
+  }
+  /**
+   * The concrete policies one target proposes, for a candidate installation revision.
+   *
+   * This is where #827's dependency cycle is actually broken. The runtime pin names the
+   * installation the same request creates, so the revision is computed FIRST, from a pre-image
+   * that contains the request's own instance-service entries but never the resolved policy's
+   * digest; the policy then pins that revision, and only then does the promoted binding carry
+   * the policy's digest. The provider operation's own binding digest is safe to take from the
+   * base bindings because a provider that binds a proposed service is refused as a cycle.
+   */
+  private instancePolicies(
+    request: JobDeploymentRequest,
+    machine: MachineHalf,
+    platform: keyof MachineHalf["artifacts"],
+    artifactSha256: string,
+    installationRevision: string,
+    bindings: JobResourceBindings,
+  ): ServicePolicy[] {
+    return (request.instanceServices ?? []).map((entry) => {
+      const parsed = ServicePolicySchema.safeParse({
+        ...entry.policy,
+        runtime: {
+          scope: "instance",
+          pluginId: request.pluginId,
+          operationId: entry.operationId,
+          installationRevision,
+          artifactSha256,
+          resourceBindingDigest: digest(
+            jobResourceBindingsFor(machine, entry.operationId, platform, bindings) ?? null,
+          ),
+          input: Object.fromEntries(
+            Object.entries(entry.input).map(([name, literal]) => [name, { literal }]),
+          ),
+        },
+      });
+      if (!parsed.success) conflict("invalid_instance_service_runtime");
+      return parsed.data;
+    });
+  }
+  /** Prior record identity and the exact workload a proposal's apply may stop. */
+  private instanceServices(
+    request: JobDeploymentRequest,
+    policies: readonly ServicePolicy[],
+  ): JobDeploymentInstanceService[] {
+    return (request.instanceServices ?? []).map((entry, index) => {
+      const record = this.host.instanceService(entry.policy.serviceId);
+      return {
+        expectedRevision: entry.expectedRevision,
+        previous: record
+          ? {
+              machineId: record.machineId,
+              revision: record.revision,
+              enabled: record.enabled,
+              policySha256: record.policySha256,
+              jobId: record.jobId,
+            }
+          : null,
+        policy: policies[index]!,
+      };
+    });
+  }
+  /**
+   * Whether the destination's instance-service records still match what was approved. Before
+   * the configuration transition the record must be exactly the one the operator saw; after it
+   * the record must be exactly the one this approval wrote. Either way the only live provider
+   * workload allowed is the reviewed one — a workload this approval never saw may not be
+   * stopped, and it must not be left running under a replaced installation either.
+   */
+  private instanceRefusal(target: JobDeploymentTargetReview, configured: boolean): string | null {
+    for (const entry of target.instanceServices ?? []) {
+      const record = this.host.instanceService(entry.policy.serviceId);
+      if (configured) {
+        if (
+          !record ||
+          !record.enabled ||
+          record.machineId !== target.machineId ||
+          record.policySha256 !== digest(entry.policy)
+        )
+          return "instance_service_configuration_changed";
+        continue;
+      }
+      if ((record?.revision ?? null) !== entry.expectedRevision)
+        return "instance_service_configuration_changed";
+      if (
+        record &&
+        (record.machineId !== target.machineId ||
+          record.policySha256 !== entry.previous?.policySha256 ||
+          record.enabled !== entry.previous.enabled ||
+          record.jobId !== entry.previous.jobId)
+      )
+        return "instance_service_configuration_changed";
+      if (
+        this.host
+          .instanceServiceWorkload(entry.policy.serviceId)
+          .some((jobId) => jobId !== entry.previous?.jobId)
+      )
+        return "instance_service_workload_changed";
+    }
+    return null;
   }
   private receipt(request: JobDeploymentRequest, target: JobDeploymentTargetReview): TargetReceipt {
     return {
@@ -358,6 +562,7 @@ export class JobDeployments {
         this.service.declaredMachine(request.pluginId)!,
         target.resourceBindings,
         request.operationIds,
+        (target.instanceServices ?? []).map((entry) => entry.policy),
       ).digest,
       invocations:
         target.installationRevision && target.artifactSha256
@@ -370,12 +575,23 @@ export class JobDeployments {
               ),
               request.operationIds,
               this.rights(request, target.machineId),
+              (target.instanceServices ?? []).map((entry) => entry.policy),
             ).digest
           : digest(null),
       invocationApprovals: digest([
         this.invocationEdges(target),
         this.previousInvocationEdges(request, target.invocationEdges.length ? current : null),
       ]),
+      // Prior identity and proposed policy only. The provider workload apply may stop is bound
+      // by the review body's `previous.jobId`, and checked as a subset rather than an equality,
+      // because quiescing it is the effect this approval authorises.
+      instanceServices: digest(
+        (target.instanceServices ?? []).map((entry) => ({
+          expectedRevision: entry.expectedRevision,
+          previous: entry.previous,
+          policySha256: digest(entry.policy),
+        })),
+      ),
     };
   }
   private snapshot(auth: AuthContext, request: JobDeploymentRequest) {
@@ -384,6 +600,8 @@ export class JobDeployments {
     const machine = MachineHalfSchema.parse(declaration);
     // Reject malformed names/operation selection before offering any approval.
     this.rights(request, request.targets[0]!.machineId);
+    const proposals = this.declaredInstanceServices(request, machine);
+    const proposedIds = proposals.map((entry) => entry.policy.serviceId);
     const declarationSha256 = digest(machine);
     const targets = request.targets.map(
       ({ machineId, platform: selected }): JobDeploymentTargetReview => {
@@ -417,6 +635,7 @@ export class JobDeployments {
           request.pluginId,
           machine,
           request.operationIds,
+          proposedIds,
         );
         const resources: JobDeploymentTargetReview["resources"] = [];
         const bindings: JobResourceBindings = { tools: {}, services: {}, anchors: {} };
@@ -428,6 +647,9 @@ export class JobDeployments {
             const required = jobResourceRequirements(machine, operationId, platform);
             for (const group of groups)
               for (const name of required[group]) {
+                // A proposed service has no owner evidence and no record yet; its promoted
+                // binding is the digest of the policy this review resolves below.
+                if (group === "services" && proposedIds.includes(name)) continue;
                 const sha256 = known?.[group][name] ?? null;
                 // An operator anchor is reviewed by the host directory it presents, which only a
                 // live owner advertises: a pin alone never approves an unseen host path.
@@ -456,22 +678,53 @@ export class JobDeployments {
               }
           }
         }
-        resources.sort((a, b) => a.group.localeCompare(b.group) || a.name.localeCompare(b.name));
         const needsBindings =
           machine.requiresResourceBindings ||
           resources.length > 0 ||
           Object.values(machine.operations).some((operation) => operation.services?.length);
-        const resourceBindings = needsBindings ? bindings : null;
-        const same =
+        const base = needsBindings ? bindings : null;
+        // The revision is a digest of the REQUEST — the declaration, artifact, the bindings
+        // that exist independently of this approval, and the instance-service entries as the
+        // caller wrote them. It never contains the resolved policy, whose runtime pins this
+        // revision; that is the self-reference #827 had to break.
+        const pinned = !artifactSha256
+          ? null
+          : `deployment-${digest({ deploymentId: request.deploymentId, machineId, declarationSha256, artifactSha256, resourceBindings: base, ...(proposals.length ? { instanceServices: proposals } : {}) })}`;
+        const complete = (revision: string) => {
+          if (!platform || !artifactSha256 || !base || !proposals.length)
+            return { policies: [] as ServicePolicy[], bindings: base };
+          const policies = this.instancePolicies(
+            request,
+            machine,
+            platform,
+            artifactSha256,
+            revision,
+            base,
+          );
+          const services = { ...base.services };
+          for (const policy of policies) services[policy.serviceId] = digest(policy);
+          return { policies, bindings: { ...base, services } };
+        };
+        // Reusing the installed revision is only sound if the bindings it would carry are the
+        // ones already promoted, proposed policies included.
+        const reuse =
           current &&
           digest(current.machine) === declarationSha256 &&
-          current.artifact === artifactSha256 &&
-          digest(current.resourceBindings ?? null) === digest(resourceBindings);
-        const installationRevision = !artifactSha256
-          ? null
-          : same
-            ? current.revision
-            : `deployment-${digest({ deploymentId: request.deploymentId, machineId, declarationSha256, artifactSha256, resourceBindings })}`;
+          current.artifact === artifactSha256
+            ? complete(current.revision)
+            : null;
+        const same =
+          reuse !== null && digest(current!.resourceBindings ?? null) === digest(reuse.bindings);
+        const resolved = same
+          ? reuse!
+          : pinned
+            ? complete(pinned)
+            : { policies: [], bindings: base };
+        const resourceBindings = resolved.bindings;
+        const installationRevision = !artifactSha256 ? null : same ? current!.revision : pinned;
+        for (const policy of resolved.policies)
+          resources.push({ group: "services", name: policy.serviceId, sha256: digest(policy) });
+        resources.sort((a, b) => a.group.localeCompare(b.group) || a.name.localeCompare(b.name));
         const proposed: JobInstallation | null =
           artifactSha256 && installationRevision
             ? {
@@ -486,6 +739,9 @@ export class JobDeployments {
                 purgeRequested: false,
               }
             : null;
+        const instanceServices = proposals.length
+          ? this.instanceServices(request, resolved.policies)
+          : undefined;
         let invocationEdges: JobDeploymentInvocationEdge[] = [];
         if (proposed && platform) {
           try {
@@ -494,6 +750,7 @@ export class JobDeployments {
               proposed,
               request.operationIds,
               this.rights(request, machineId),
+              resolved.policies,
             );
             invocationEdges = invocations.edges;
             reason ??= invocations.refusal;
@@ -502,6 +759,7 @@ export class JobDeployments {
               machine,
               resourceBindings,
               request.operationIds,
+              resolved.policies,
             ).refusal;
             if (!this.host.artifactAvailable(proposed, platform))
               reason ??= "artifact_bundle_unavailable";
@@ -512,13 +770,39 @@ export class JobDeployments {
                   operationId,
                   invocationEdges.map(({ edge }) => edge),
                   request.operationIds,
+                  resolved.policies,
                 );
+            for (const [index, entry] of (instanceServices ?? []).entries()) {
+              // The record this proposal replaces has to be the one the operator is looking
+              // at, owned here, provided by this plugin, and holding no workload but its own.
+              const record = this.host.instanceService(entry.policy.serviceId);
+              if ((record?.revision ?? null) !== entry.expectedRevision)
+                reason ??= "instance_service_configuration_changed";
+              else if (record && record.machineId !== machineId)
+                reason ??= "instance_service_owner_changed";
+              else if (record && record.pluginId !== request.pluginId)
+                reason ??= "instance_service_plugin_mismatch";
+              else if (
+                this.host
+                  .instanceServiceWorkload(entry.policy.serviceId)
+                  .some((jobId) => jobId !== record?.jobId)
+              )
+                reason ??= "instance_service_lifetime_unconfirmed";
+              reason ??= this.host.instanceServiceRefusal(
+                proposed,
+                entry.policy,
+                proposals[index]!.operationId,
+                proposals[index]!.input,
+              );
+            }
           } catch (error) {
             if (!(error instanceof ServiceError)) throw error;
             reason ??= error.message;
           }
         }
-        const busy = this.busy(machineId, request.pluginId);
+        // Only the reviewed provider workload is this approval's to stop; anything else the
+        // plugin is running on this machine still holds the target.
+        const busy = this.busy(machineId, request.pluginId, instanceServices ?? []);
         return {
           machineId,
           machineName: destination?.name ?? machineId,
@@ -531,6 +815,7 @@ export class JobDeployments {
           resources,
           consents: this.consents(request, machineId, installationRevision, artifactSha256),
           invocationEdges,
+          ...(instanceServices ? { instanceServices } : {}),
           approvable: reason === null,
           reason:
             reason ?? (busy ? "active_installation" : owner === null ? "owner_offline" : null),
@@ -590,7 +875,7 @@ export class JobDeployments {
       for (const target of snapshot.review.targets) {
         const competing = this.service.store.db
           .query<{ deployment_id: string }, [string, string]>(
-            "SELECT deployment_id FROM machine_job_deployment_targets WHERE machine_id=? AND plugin_id=? AND phase IN ('pending','applying') LIMIT 1",
+            "SELECT deployment_id FROM machine_job_deployment_targets WHERE machine_id=? AND plugin_id=? AND phase IN ('pending','quiescing','applying','configuring') LIMIT 1",
           )
           .get(target.machineId, parsed.request.pluginId);
         if (competing) conflict("deployment_target_pending");
@@ -622,22 +907,50 @@ export class JobDeployments {
     this.reconcile();
     return this.read(current, { deploymentId: parsed.request.deploymentId });
   }
-  private busy(machineId: string, pluginId: string): boolean {
+  /**
+   * Whether this plugin still has work on the machine that an installation may not interrupt.
+   * A reviewed instance-service proposal exempts exactly the provider job named in its own
+   * approval, because quiescing that job is the effect the operator approved; every other job
+   * of this plugin — and every job of any other plugin — keeps the target waiting instead.
+   */
+  private busy(
+    machineId: string,
+    pluginId: string,
+    reviewed: readonly JobDeploymentInstanceService[] = [],
+  ): boolean {
+    const exempt = reviewed.flatMap((entry) =>
+      entry.previous?.jobId ? [entry.previous.jobId] : [],
+    );
     return this.service.jobs
       .reconcilable(machineId)
       .some(
         (job) =>
           job.request.pluginId === pluginId &&
+          !exempt.includes(job.request.jobId) &&
           (["queued", "admitted", "start-committed", "started"].includes(job.state) ||
             (job.permit !== null && !job.ownerClosed)),
       );
   }
+  /**
+   * Why this target may not proceed, or may no longer be treated as applied.
+   *
+   * `phase` decides how much of the destination is still expected to look like the review.
+   * Before the configuration transition a proposed instance service is evaluated prospectively,
+   * exactly as review did; after it the proposal is dropped and the destination must satisfy
+   * every ordinary live check — the record, the owner's own advertisement of the policy and the
+   * provider job — so "ready" never means anything less than the native acknowledgement.
+   */
   private refusal(
     approval: Approval,
     target: JobDeploymentTargetReview,
     index: number,
-    applied: boolean,
+    phase: Phase,
   ): string | null {
+    const applied = phase === "applied" || phase === "configuring" || phase === "bound";
+    const configured = phase === "bound";
+    const proposals = configured
+      ? []
+      : (target.instanceServices ?? []).map((entry) => entry.policy);
     const auth = this.service.auth.restoreCredential(approval.credential);
     if (auth === null || !this.service.auth.holdsRoot(auth)) return "credential_revoked_or_expired";
     const request = approval.review.request;
@@ -671,6 +984,7 @@ export class JobDeployments {
         install,
         request.operationIds,
         this.rights(request, target.machineId),
+        proposals,
       );
       if (invocations.refusal) return invocations.refusal;
       if (invocations.digest !== approval.evidence[index]!.invocations)
@@ -680,6 +994,7 @@ export class JobDeployments {
         install.machine,
         target.resourceBindings,
         request.operationIds,
+        proposals,
       );
       if (policies.refusal) return policies.refusal;
       if (policies.digest !== approval.evidence[index]!.resources)
@@ -689,20 +1004,32 @@ export class JobDeployments {
       const owner = this.host.owner(target.machineId);
       if (owner) {
         if (!owner.platforms.includes(target.platform)) return "installation_platform_unavailable";
+        // A reviewed instance service is excluded here on purpose: its promoted digest is
+        // checked against the proposal, and then against the configured record, by
+        // `instanceRefusal`, while the owner's own advertisement of it is checked — with a
+        // reason that distinguishes "not yet" from "changed" — by the resource walk below.
+        const reviewed = (target.instanceServices ?? []).map((entry) => entry.policy.serviceId);
         if (target.resourceBindings)
           for (const group of groups)
             for (const [name, hash] of Object.entries(target.resourceBindings[group]))
-              if (owner.resources?.[group][name] !== hash) return "resource_revision_changed";
+              if (
+                owner.resources?.[group][name] !== hash &&
+                !(group === "services" && reviewed.includes(name))
+              )
+                return "resource_revision_changed";
         for (const operationId of request.operationIds) {
           const refusal = this.host.resourceRefusal(
             install,
             operationId,
             applied ? [] : target.invocationEdges.map(({ edge }) => edge),
             request.operationIds,
+            proposals,
           );
           if (refusal) return refusal;
         }
       }
+      const instance = this.instanceRefusal(target, configured);
+      if (instance) return instance;
     } catch (error) {
       if (!(error instanceof ServiceError)) throw error;
       return error.message;
@@ -784,23 +1111,43 @@ export class JobDeployments {
   }
   /** Called only after native trace recording is installed. Never replay an interrupted effect. */
   recover(): void {
-    for (const row of this.service.store.db
-      .query<StoredApproval, []>(
-        "SELECT DISTINCT d.* FROM machine_job_deployments d JOIN machine_job_deployment_targets t USING(deployment_id) WHERE t.phase='applying'",
-      )
-      .all()) {
-      const approval = JSON.parse(row.approval) as Approval;
-      for (const target of approval.review.targets)
-        this.service.store.transaction(() =>
-          this.transition(
-            approval,
-            target,
-            "applying",
-            "needs_review",
-            "deployment_application_uncertain",
-          ),
-        );
-    }
+    // `quiescing` is deliberately absent: its only effect is stopping the exact reviewed
+    // provider workload, which is durable, idempotent and re-observed on the next pass.
+    for (const phase of ["applying", "configuring"] as const)
+      for (const row of this.service.store.db
+        .query<StoredApproval, [string]>(
+          "SELECT DISTINCT d.* FROM machine_job_deployments d JOIN machine_job_deployment_targets t USING(deployment_id) WHERE t.phase=?",
+        )
+        .all(phase)) {
+        const approval = JSON.parse(row.approval) as Approval;
+        for (const target of approval.review.targets)
+          this.service.store.transaction(() =>
+            this.transition(
+              approval,
+              target,
+              phase,
+              "needs_review",
+              "deployment_application_uncertain",
+            ),
+          );
+      }
+  }
+  /** The reviewed provider workloads that still hold a lifetime this apply has to stop. */
+  private quiesceRequired(
+    approval: Approval,
+    target: JobDeploymentTargetReview,
+  ): { serviceId: string; jobId: string }[] {
+    const proposed = this.proposed(approval, target);
+    const current = this.service.jobs.installation(target.machineId, proposed.pluginId);
+    // An installation that is not being replaced never needs its provider stopped: configuring
+    // the replacement record retires its own predecessor through the ordinary door.
+    if (this.installation(current) === this.installation(proposed)) return [];
+    return (target.instanceServices ?? []).flatMap((entry) =>
+      entry.previous?.jobId &&
+      this.host.instanceServiceWorkload(entry.policy.serviceId).includes(entry.previous.jobId)
+        ? [{ serviceId: entry.policy.serviceId, jobId: entry.previous.jobId }]
+        : [],
+    );
   }
   reconcile(): void {
     if (this.processing) return;
@@ -808,40 +1155,77 @@ export class JobDeployments {
     try {
       const rows = this.service.store.db
         .query<StoredApproval, []>(
-          "SELECT DISTINCT d.* FROM machine_job_deployments d JOIN machine_job_deployment_targets t USING(deployment_id) WHERE d.cancelled=0 AND t.phase='pending' ORDER BY d.rowid",
+          "SELECT DISTINCT d.* FROM machine_job_deployments d JOIN machine_job_deployment_targets t USING(deployment_id) WHERE d.cancelled=0 AND t.phase IN ('pending','quiescing','applied') ORDER BY d.rowid",
         )
         .all();
       for (const row of rows) {
         const approval = JSON.parse(row.approval) as Approval;
         for (const [index, target] of approval.review.targets.entries()) {
+          if (
+            this.targets(row.deployment_id).find((item) => item.machine_id === target.machineId)
+              ?.phase === "applied"
+          ) {
+            this.bindTarget(row, approval, target, index);
+            continue;
+          }
           const attempt = this.service.runtime.newId();
           const claimed = this.service.store.transaction(() => {
+            const phase = this.targets(row.deployment_id).find(
+              (item) => item.machine_id === target.machineId,
+            )?.phase;
             if (
               this.get(row.deployment_id)?.cancelled ||
-              this.targets(row.deployment_id).find((item) => item.machine_id === target.machineId)
-                ?.phase !== "pending"
+              (phase !== "pending" && phase !== "quiescing")
             )
-              return false;
-            const reason = this.refusal(approval, target, index, false);
+              return null;
+            const reason = this.refusal(approval, target, index, phase);
             if (reason) {
-              this.transition(approval, target, "pending", "needs_review", reason);
-              return false;
+              this.transition(approval, target, phase, "needs_review", reason);
+              return null;
             }
             if (
               !this.host.owner(target.machineId) ||
-              this.busy(target.machineId, approval.review.request.pluginId) ||
+              this.busy(
+                target.machineId,
+                approval.review.request.pluginId,
+                target.instanceServices ?? [],
+              ) ||
               this.service.store.getMachine(target.machineId)?.draining
             )
-              return false;
-            if (!this.transition(approval, target, "pending", "applying", null)) return false;
+              return null;
+            // The reviewed provider still owns a lifetime under an installation this apply
+            // replaces. Record the stop as its own durable phase before requesting it, so a
+            // reader sees why the target is waiting and a restart re-observes instead of
+            // re-deciding.
+            const quiesce = this.quiesceRequired(approval, target);
+            if (quiesce.length) {
+              if (
+                phase === "pending" &&
+                !this.transition(
+                  approval,
+                  target,
+                  "pending",
+                  "quiescing",
+                  "provider_workload_quiescing",
+                )
+              )
+                return null;
+              return { quiesce };
+            }
+            if (!this.transition(approval, target, phase, "applying", null)) return null;
             this.service.store.db
               .query(
                 "UPDATE machine_job_deployment_targets SET attempt=? WHERE deployment_id=? AND machine_id=? AND phase='applying'",
               )
               .run(attempt, row.deployment_id, target.machineId);
-            return true;
+            return { quiesce: [] };
           });
           if (!claimed) continue;
+          if (claimed.quiesce.length) {
+            for (const { serviceId, jobId } of claimed.quiesce)
+              this.host.quiesceInstanceService(serviceId, jobId);
+            continue;
+          }
           try {
             this.service.store.transaction(() => {
               const retained = this.targets(row.deployment_id).find(
@@ -853,11 +1237,16 @@ export class JobDeployments {
                 retained.attempt !== attempt
               )
                 return;
-              const reason = this.refusal(approval, target, index, false);
+              const reason = this.refusal(approval, target, index, "applying");
               if (
                 reason ||
                 !this.host.owner(target.machineId) ||
-                this.busy(target.machineId, approval.review.request.pluginId) ||
+                this.busy(
+                  target.machineId,
+                  approval.review.request.pluginId,
+                  target.instanceServices ?? [],
+                ) ||
+                this.quiesceRequired(approval, target).length ||
                 this.service.store.getMachine(target.machineId)?.draining
               )
                 conflict(reason ?? "deployment_application_unavailable");
@@ -872,6 +1261,7 @@ export class JobDeployments {
                   artifactSha256: proposed.artifact,
                   machine: proposed.machine,
                   resourceBindings: proposed.resourceBindings,
+                  instanceServices: (target.instanceServices ?? []).map((entry) => entry.policy),
                 });
               for (const { edge, approved } of target.invocationEdges)
                 if (!approved) this.service.setInvocationEdge(auth, { edge, enabled: true });
@@ -914,6 +1304,91 @@ export class JobDeployments {
       this.processing = false;
     }
   }
+  /**
+   * Configure the reviewed instance services, once the owner has acknowledged the exact
+   * installation their runtime pins. This is a separate durable phase from `applying` because
+   * it can only happen after a native round trip: the installation the policy names has to
+   * exist and be acknowledged before a provider job may be admitted from it.
+   *
+   * The configuration runs through the ordinary door, outside this method's transactions, for
+   * the same reason `install` does: it mints a credential and admits a job, and an effect that
+   * reaches the owner may not be undone by a rollback. A process that dies between the effect
+   * and its transition is recovered as uncertain and asks for a new review; nothing replays.
+   */
+  private bindTarget(
+    row: StoredApproval,
+    approval: Approval,
+    target: JobDeploymentTargetReview,
+    index: number,
+  ): void {
+    const entries = target.instanceServices ?? [];
+    if (!entries.length) return;
+    const attempt = this.service.runtime.newId();
+    const claimed = this.service.store.transaction(() => {
+      const retained = this.targets(row.deployment_id).find(
+        (item) => item.machine_id === target.machineId,
+      );
+      if (this.get(row.deployment_id)?.cancelled || retained?.phase !== "applied") return false;
+      const reason = this.refusal(approval, target, index, "applied");
+      if (reason) {
+        this.transition(approval, target, "applied", "needs_review", reason);
+        return false;
+      }
+      if (
+        !this.host.owner(target.machineId) ||
+        this.service.store.getMachine(target.machineId)?.draining ||
+        !this.host.installed(
+          target.machineId,
+          approval.review.request.pluginId,
+          target.installationRevision!,
+        )
+      )
+        return false;
+      if (!this.transition(approval, target, "applied", "configuring", null)) return false;
+      this.service.store.db
+        .query(
+          "UPDATE machine_job_deployment_targets SET attempt=? WHERE deployment_id=? AND machine_id=? AND phase='configuring'",
+        )
+        .run(attempt, row.deployment_id, target.machineId);
+      return true;
+    });
+    if (!claimed) return;
+    try {
+      const auth = this.service.auth.restoreCredential(approval.credential);
+      if (auth === null || !this.service.auth.holdsRoot(auth))
+        conflict("credential_revoked_or_expired");
+      for (const entry of entries)
+        this.host.configureInstanceService(
+          auth,
+          {
+            serviceId: entry.policy.serviceId,
+            expectedRevision: entry.expectedRevision,
+            machineId: target.machineId,
+            policy: entry.policy,
+            enabled: true,
+          },
+          approval.traceId,
+        );
+      this.service.store.transaction(() => {
+        const retained = this.targets(row.deployment_id).find(
+          (item) => item.machine_id === target.machineId,
+        );
+        if (retained?.phase !== "configuring" || retained.attempt !== attempt) return;
+        this.transition(approval, target, "configuring", "bound", null);
+      });
+    } catch (error) {
+      this.service.store.transaction(() =>
+        this.transition(
+          approval,
+          target,
+          "configuring",
+          "needs_review",
+          error instanceof ServiceError ? error.message : "deployment_application_uncertain",
+        ),
+      );
+      if (!(error instanceof ServiceError)) throw error;
+    }
+  }
   private project(row: StoredApproval): JobDeployment {
     const approval = JSON.parse(row.approval) as Approval;
     const request = approval.review.request;
@@ -925,15 +1400,36 @@ export class JobDeployments {
         reason: string | null,
       ): JobDeploymentTargetStatus => ({ machineId: target.machineId, connected, state, reason });
       const record = records.find((item) => item.machine_id === target.machineId)!;
+      const entries = target.instanceServices ?? [];
+      // A reviewed provider comes up through the ordinary instance-service lifecycle once its
+      // configuration lands: the owner has to receive the policy, advertise it and run the job.
+      // These are the only refusals that read as "not yet" rather than "review this again".
+      const starting = (reason: string): boolean =>
+        entries.length > 0 &&
+        [
+          "instance_service_starting",
+          "services_unavailable",
+          "service_unavailable",
+          "service_runtime_unavailable",
+          "operation_resources_unreported",
+        ].includes(reason);
       if (record.phase === "cancelled") return result("cancelled", record.reason);
       if (record.phase === "needs_review") return result("needs_review", record.reason);
-      if (record.phase === "applying")
+      if (record.phase === "applying" || record.phase === "configuring")
         return result("needs_review", "deployment_application_uncertain");
       const current = this.service.jobs.installation(target.machineId, request.pluginId);
-      if (record.phase === "applied" && current?.revision !== target.installationRevision)
+      if (
+        (record.phase === "applied" || record.phase === "bound") &&
+        current?.revision !== target.installationRevision
+      )
         return result("superseded", "installation_replaced");
-      const refusal = this.refusal(approval, target, index, record.phase === "applied");
-      if (refusal) return result("needs_review", refusal);
+      const refusal = this.refusal(approval, target, index, record.phase);
+      if (refusal)
+        return record.phase === "bound" && starting(refusal)
+          ? result("installing", refusal)
+          : result("needs_review", refusal);
+      if (record.phase === "quiescing")
+        return result("installing", record.reason ?? "provider_workload_quiescing");
       if (record.phase === "pending")
         return result(
           "pending",
@@ -941,7 +1437,7 @@ export class JobDeployments {
             ? "owner_offline"
             : this.service.store.getMachine(target.machineId)?.draining
               ? "machine_draining"
-              : this.busy(target.machineId, request.pluginId)
+              : this.busy(target.machineId, request.pluginId, entries)
                 ? "active_installation"
                 : null,
         );
@@ -962,10 +1458,15 @@ export class JobDeployments {
       });
       if (!description.installation?.ready)
         return result("installing", "owner_acknowledgement_pending");
+      // Installed and acknowledged, with the reviewed configuration still to apply.
+      if (record.phase === "applied" && entries.length)
+        return result("installing", "instance_service_configuring");
       for (const operationId of request.operationIds) {
         const operation = description.operations?.[operationId];
-        if (!operation?.ready)
-          return result("needs_review", operation?.reason ?? "unknown_operation");
+        if (!operation?.ready) {
+          const reason = operation?.reason ?? "unknown_operation";
+          return starting(reason) ? result("installing", reason) : result("needs_review", reason);
+        }
       }
       return result("ready", null);
     });
@@ -1012,10 +1513,11 @@ export class JobDeployments {
         )
         .run(deploymentId, expectedRevision);
       const approval = JSON.parse(row.approval) as Approval;
-      for (const target of approval.review.targets) {
-        this.transition(approval, target, "pending", "cancelled", "approval_cancelled");
-        this.transition(approval, target, "applying", "cancelled", "approval_cancelled");
-      }
+      for (const target of approval.review.targets)
+        // Every phase that has not yet produced a durable installation or configuration
+        // receipt. `applied` and `bound` are receipts and stay exactly where they are.
+        for (const phase of ["pending", "quiescing", "applying", "configuring"] as const)
+          this.transition(approval, target, phase, "cancelled", "approval_cancelled");
       this.service.store.afterCommit(() => this.host.changed());
     });
     return this.read(auth, { deploymentId });

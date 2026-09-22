@@ -4074,14 +4074,14 @@ provider handling and postconditions belong to plugins, never the common floor.
   the ordinary typed action dispatcher; headless agents and the plugin-manager client
   share their schemas and authority path.
 
-  | Action                           | Arguments                                           | Result and authority                                                                             |
-  | -------------------------------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-  | `engine.jobs.reviewDeployment`   | `{ deploymentId, pluginId, targets, operationIds }` | `JobDeploymentReview`; current root only; observes without installing or granting consent        |
-  | `engine.jobs.applyDeployment`    | `{ request, reviewDigest }`                         | `JobDeployment`; current root only; saves the exact approval and attempts eligible targets       |
-  | `engine.jobs.readDeployment`     | `{ deploymentId }`                                  | `JobDeployment`; current root only; retained review and projected progress                       |
-  | `engine.jobs.listDeployments`    | `{ pluginId, limit? }`                              | `{ deployments }`; current root only; newest first, default 20, maximum 100                      |
-  | `engine.jobs.cancelDeployment`   | `{ deploymentId, expectedRevision }`                | `JobDeployment`; current root only; compare-and-set cancellation of unapplied effects            |
-  | `engine.jobs.describeDeployment` | `{ machineId, pluginId }`                           | `JobDeploymentDescription`; current `machines:read` authority at the machine, not administration |
+  | Action                           | Arguments                                                              | Result and authority                                                                             |
+  | -------------------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+  | `engine.jobs.reviewDeployment`   | `{ deploymentId, pluginId, targets, operationIds, instanceServices? }` | `JobDeploymentReview`; current root only; observes without installing or granting consent        |
+  | `engine.jobs.applyDeployment`    | `{ request, reviewDigest }`                                            | `JobDeployment`; current root only; saves the exact approval and attempts eligible targets       |
+  | `engine.jobs.readDeployment`     | `{ deploymentId }`                                                     | `JobDeployment`; current root only; retained review and projected progress                       |
+  | `engine.jobs.listDeployments`    | `{ pluginId, limit? }`                                                 | `{ deployments }`; current root only; newest first, default 20, maximum 100                      |
+  | `engine.jobs.cancelDeployment`   | `{ deploymentId, expectedRevision }`                                   | `JobDeployment`; current root only; compare-and-set cancellation of unapplied effects            |
+  | `engine.jobs.describeDeployment` | `{ machineId, pluginId }`                                              | `JobDeploymentDescription`; current `machines:read` authority at the machine, not administration |
 
   The five administrative actions are native `engine.jobs` context doors, not methods on
   an ordinary product's `ctx.jobs`, even when that product's caller is root. The bounded
@@ -4156,6 +4156,51 @@ provider handling and postconditions belong to plugins, never the common floor.
   before generic missing-resource evidence; unrelated pinned policies continue normally.
   Upgrade/reconnect restores the full configuration. Explicit revision and instance-service
   policy semantics are unchanged, including instance services' required revision pin.
+
+- **Reviewed instance-service bootstrap.** A request may carry at most one optional
+  `instanceServices` entry — `{ expectedRevision, policy, operationId, input }` — and only
+  alongside exactly one destination. `policy` is `ServicePolicyTemplateSchema`: the policy
+  content without `runtime`, `remote`, `origin`, `allowLoopbackHttp` or `credential`, because
+  review resolves those itself. This exists for the one shape ordinary configuration cannot
+  reach: a plugin whose own operation provides the service its other operations bind, whose
+  provider pin names the installation the same request creates. The provider operation must
+  belong to this plugin, be declared `providesService`, be one of the request's own
+  `operationIds`, and bind none of the proposed services; some declared operation must bind
+  the proposed `serviceId` at the proposed policy revision. Violations refuse the review
+  itself (`instance_service_provider_unsupported`, `instance_service_provider_unselected`,
+  `instance_service_binding_undeclared`, `instance_service_provider_cycle`).
+
+  Review resolves the concrete `ServicePolicy`: instance scope, this plugin, the selected
+  provider operation, the proposed installation revision and artifact, that operation's
+  proposed resource-binding digest, and the request's literal `input` as literal runtime
+  values. The dependency cycle is broken by ordering, not by weakening a pin: the proposed
+  installation revision is a digest of the request — declaration, artifact, the bindings that
+  exist independently of this approval, and the instance-service entries as written — never of
+  the resolved policy, which pins that revision; the promoted binding then carries the
+  resolved policy's digest like any other service binding. An unchanged declaration, artifact
+  and binding set still reuses the installed revision, so a proposal whose policy content is
+  unchanged reinstalls nothing. Within this review the proposal stands in for the record it
+  will create — policy lookup, promoted binding, the owner inventory projection and the
+  instance record — while the proved owner, protocol support, credential sources, the
+  provider operation's own resources and the approving authority are evaluated live.
+  `reviewDigest` binds the prior record identity (`{ machineId, revision, enabled,
+policySha256, jobId }` or null), the expected revision, the resolved policy and the
+  destination's `services:configure` authority.
+
+  Apply is a bounded per-destination lifecycle: `pending` → `quiescing` → `applying` →
+  `applied` → `configuring` → `bound`. `quiescing` is entered only when the installation is
+  actually replaced and only stops the exact provider job named by `previous.jobId`; any other
+  unsettled job of this plugin holds the target at `active_installation` and no cancellation is
+  issued, and jobs of other plugins are never considered. `configuring` happens only after the
+  owner's own acknowledgement of the exact installation, and configures through the ordinary
+  instance-service door under the retained root credential, rechecked rather than copied.
+  A replaced record, a provider workload the approval never saw, a changed policy, owner or
+  authority refuses (`instance_service_configuration_changed`, `instance_service_workload_changed`,
+  `instance_service_owner_changed`, `service_definition_changed`) instead of proceeding, and an
+  interrupted `applying` or `configuring` phase recovers as `needs_review` with
+  `deployment_application_uncertain` — never a replayed effect. `ready` still requires the
+  owner to advertise the configured policy and the provider job to be running; until then the
+  target reports `installing` with the reason it is waiting on.
 
 - **Bounded offline evidence.** A disconnected destination is approvable only with known
   enrolled identity and a previously proved native owner, a selected available declaration
@@ -5207,8 +5252,10 @@ assigns fresh per-row revisions, and reclassifies only deployment reviews whose 
 service-invocation scope cannot be proven; 35 is additive agent-run and exact-policy-snapshot
 storage. Migration 36 adds the declaration trust cutoff; 37 is the backed-up durable-agent
 rebuild and correlation cutover; 38 reclassifies proved service principals; 39 adds terminal
-restart state and a bounded run-id backfill; and 40 adds inference aggregates with an explicit
-legacy-incomplete sentinel.
+restart state and a bounded run-id backfill; 40 adds inference aggregates with an explicit
+legacy-incomplete sentinel; and 47 rebuilds the deployment-target table to admit the reviewed
+instance-service bootstrap's `quiescing`, `configuring` and `bound` phases, copying existing
+rows unchanged and widening the in-flight uniqueness index to the new non-terminal phases.
 Migrations 9, 11, 13, 16, 19, 23, 24 and 37 each take a consistent `VACUUM INTO` snapshot BEFORE
 the transaction opens (a VACUUM cannot run inside one, which is also what makes it a true
 pre-migration image), skipped only for an in-memory or not-yet-existing database.
