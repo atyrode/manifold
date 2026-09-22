@@ -86,7 +86,7 @@ jobs:
 
       - name: Verify the immutable release and its provenance
         id: release
-        # The candidate always meets the attested policy; recovery mode resolves the incumbent below.
+        # One policy admits candidate and incumbent, including source/CI and attestations.
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -224,7 +224,7 @@ jobs:
           [[ "$previous_build" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail 'Production rollback requires an exact release build'
           [ "$RECOVERY_BUILD" = "$previous_build" ] ||
             fail 'The checkpoint receipt was not captured from the currently serving release'
-          proof="$(bun scripts/release-provenance.ts recovery "v$previous_build")"
+          proof="$(bun scripts/release-provenance.ts promotion "v$previous_build")"
           previous_image="$(jq -er .image <<< "$proof")"
           # Recovery builds FROM this digest only after a failed switch; prove it still resolves first.
           docker manifest inspect "$previous_image" >/dev/null ||

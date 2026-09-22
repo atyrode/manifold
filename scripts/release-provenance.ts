@@ -534,58 +534,15 @@ export async function verifyPromotionRelease(
   return proof;
 }
 
-/**
- * The one reviewed legacy rollback target (#633). The operator's production began on v0.14.0,
- * published before release attestations existed, so the attested policy above can never admit
- * it and a migration off it would be held forever. This pin names that tag's exact commit and
- * the immutable image whose authenticated full-state recovery was rehearsed. It admits that
- * release only as the rollback base restored after a failed switch, only in this repository,
- * and only while the tag still resolves to the pinned commit and that commit's full-main CI is
- * green. A promotion candidate never passes through here. Remove the pin once no installation
- * that must be migrated still serves v0.14.0.
- */
-const LEGACY_RECOVERY_RELEASES: Readonly<
-  Record<string, { readonly sha: string; readonly image: string }>
-> = {
-  "atyrode/manifold v0.14.0": {
-    sha: "5461d479503a5718dcc0f224dfd6d93b35060c6d",
-    image:
-      "ghcr.io/atyrode/manifold@sha256:cf79e90f8c1651b1df03c0da9475779b1141085492896317bd2a756508ad7357",
-  },
-};
-
-export interface RecoveryRelease {
-  readonly repository: string;
-  readonly tag: string;
-  readonly sha: string;
-  readonly image: string;
-}
-
-/** The release a failed promotion restores: an attested release, or the one reviewed pin. */
-export async function verifyRecoveryRelease(
-  repository: string,
-  tag: string,
-): Promise<RecoveryRelease> {
-  validateReleaseSelection(repository, tag);
-  const legacy = LEGACY_RECOVERY_RELEASES[`${repository.toLowerCase()} ${tag}`];
-  if (legacy === undefined) return verifyPromotionRelease(repository, tag);
-  if ((await remoteTag(repository, tag)) !== legacy.sha)
-    throw new Error(`${tag} no longer resolves to its pinned legacy rollback commit`);
-  await requireFullMainCi(repository, legacy.sha);
-  if ((await remoteTag(repository, tag)) !== legacy.sha)
-    throw new Error("Release tag moved during legacy rollback verification");
-  return { repository, tag, sha: legacy.sha, image: legacy.image };
-}
-
 async function main(): Promise<void> {
   const [mode, tag, ...extra] = process.argv.slice(2);
   if (
     tag === undefined ||
     extra.length !== 0 ||
-    !["tag", "draft", "published", "promotion", "recovery"].includes(mode ?? "")
+    !["tag", "draft", "published", "promotion"].includes(mode ?? "")
   ) {
     throw new Error(
-      "Usage: bun scripts/release-provenance.ts <tag|draft|published|promotion|recovery> vMAJOR.MINOR.PATCH",
+      "Usage: bun scripts/release-provenance.ts <tag|draft|published|promotion> vMAJOR.MINOR.PATCH",
     );
   }
   const repository = await releaseRepository();
@@ -594,9 +551,7 @@ async function main(): Promise<void> {
       ? await verifyReleaseTag(repository, tag)
       : mode === "promotion"
         ? await verifyPromotionRelease(repository, tag)
-        : mode === "recovery"
-          ? await verifyRecoveryRelease(repository, tag)
-          : await verifyReleaseAssets(repository, tag, mode === "draft");
+        : await verifyReleaseAssets(repository, tag, mode === "draft");
   console.log(JSON.stringify(proof));
 }
 

@@ -1157,11 +1157,10 @@ the receiver's forward operation to restore its newer incumbent.
 
 Production promotion additionally requires the exact full-state checkpoint receipt captured from
 the incumbent. After matching the receipt's source build to the serving build in the live
-snapshot, the workflow admits that incumbent through the recovery policy — the candidate's
-attested policy, or the single source-pinned legacy rollback base described under strict
-future-release cutover — retains its full `ghcr.io/<repository>@sha256:<digest>` reference and
-confirms the registry still resolves it. Missing incumbent evidence blocks the switch. On
-failure it builds the reviewed
+snapshot, the workflow admits that incumbent through the same release-provenance policy as
+the candidate, retains its full `ghcr.io/<repository>@sha256:<digest>` reference and confirms
+the registry still resolves it. Missing incumbent evidence blocks the switch. On failure it
+builds the reviewed
 `infra/recovery.Dockerfile` from the promoted release while taking the application itself
 from that verified previous release image, never by resolving a mutable image tag. Before
 the previous application starts, the recovery entrypoint downloads the named encrypted object,
@@ -1385,18 +1384,15 @@ title, an image label, or a locally authored provenance JSON are not substitutes
 
 **Strict future-release cutover.** Both candidate and rollback releases must be published,
 non-prerelease, immutable releases with all required native attestations and source/CI
-evidence. Existing legacy releases are not grandfathered, even for rollback, except the one
-source-pinned rollback base below. Enabling
+evidence. Existing legacy releases are not grandfathered, even for rollback. Enabling
 immutability does not retrofit old releases or manufacture missing attestations. An incumbent
 without that evidence blocks ordinary promotion before the switch, even if its checkpoint is
 valid and the candidate is admitted. Moving such an installation onto the new release path
 requires separately reviewed and authorized migration/recovery planning; neither the bootstrap
-flag nor a manually supplied digest bypasses this hold. The one reviewed plan so far pins
-v0.14.0 ([#633](https://github.com/atyrode/manifold/issues/633)): `scripts/release-provenance.ts`
-names its exact tag commit and immutable image digest, and admits it only as the rollback base
-restored after a failed switch while the tag still resolves to that commit and its full-main CI
-is green. It never admits a candidate, and it is removed once no installation that must be
-migrated still serves v0.14.0.
+flag nor a manually supplied digest bypasses this hold. The operator's production left
+v0.14.0 through such a plan ([#633](https://github.com/atyrode/manifold/issues/633)); its
+one-time source-pinned rollback exception was removed once production served an attested
+release.
 
 **Protection and actor boundary ([#265](https://github.com/atyrode/manifold/issues/265)).**
 Read-only observation on 2026-09-20 found immutable
@@ -1440,7 +1436,7 @@ The workflow refuses non-`main` dispatches and uses trusted tooling pinned to th
 promotion policy, with only source/release/PR/check/status/Actions read permissions and no
 write, OIDC or administration grant. It retains the candidate's verified SHA and immutable
 image reference, requires ordinary-image and recovery scaffolding in that release, matches
-the receipt's source build to the live snapshot, verifies the incumbent through the recovery
+the receipt's source build to the live snapshot, verifies the incumbent through the same
 policy and confirms its image still resolves, refuses active recovery settings, and requires
 one instance with zero-downtime deployment disabled.
 

@@ -305,7 +305,7 @@ printf '%s\\n' "$FIXTURE_ENV"
       `#!/usr/bin/env bash
 case "$1 $2" in
   "scripts/verify-live.ts snapshot") printf '{"build":"1.2.3"}\\n' > "$3" ;;
-  "scripts/release-provenance.ts recovery")
+  "scripts/release-provenance.ts promotion")
     [[ "$3" == v1.2.3 && "$FIXTURE_PROVENANCE" == true ]] || exit 1
     printf '{"image":"ghcr.io/owner/manifold@sha256:${"b".repeat(64)}"}\\n' ;;
   *) exit 1 ;;
@@ -365,58 +365,6 @@ esac
       ).toBe(1);
       expect(readFileSync(output, "utf8")).toBe("");
     }
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test("the promotion candidate is admitted only through the strict attested policy", async () => {
-  const source = Bun.YAML.parse(
-    await Bun.file(new URL("../.github/workflows/deploy-hub.yml", import.meta.url)).text(),
-  ) as { jobs: Record<string, { steps: { name?: string; run?: string }[] }> };
-  const admission = source.jobs.release?.steps.find(
-    (step) => step.name === "Verify the immutable release and its provenance",
-  )?.run;
-  if (!admission) throw new Error("Production workflow is missing candidate admission");
-  const root = mkdtempSync(join(tmpdir(), "manifold-candidate-admission-"));
-  try {
-    const bin = join(root, "bin");
-    mkdirSync(bin);
-    // Only the strict mode answers; the legacy-tolerant recovery mode fails the step.
-    writeFileSync(
-      join(bin, "bun"),
-      `#!/usr/bin/env bash
-[[ "$1 $2 $3" == "scripts/release-provenance.ts promotion $TAG" ]] || exit 1
-printf '{"sha":"${"c".repeat(40)}","image":"ghcr.io/owner/manifold@sha256:${"d".repeat(64)}"}\\n'
-`,
-      { mode: 0o700 },
-    );
-    writeFileSync(
-      join(bin, "git"),
-      `#!/usr/bin/env bash
-[[ "$1 $2" == "cat-file -e" ]]
-`,
-      { mode: 0o700 },
-    );
-    const output = join(root, "output");
-    writeFileSync(output, "");
-    const result = Bun.spawnSync(["bash", "-e", "-o", "pipefail", "-c", admission], {
-      env: {
-        ...process.env,
-        PATH: `${bin}:${process.env.PATH}`,
-        TAG: "v1.2.4",
-        RECOVERY_CHECKPOINT: "before-v1.2.4",
-        RECOVERY_SHA256: "e".repeat(64),
-        RECOVERY_BUILD: "1.2.3",
-        GITHUB_OUTPUT: output,
-      },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    expect(result.exitCode, result.stderr.toString()).toBe(0);
-    expect(readFileSync(output, "utf8")).toBe(
-      `sha=${"c".repeat(40)}\nimage=ghcr.io/owner/manifold@sha256:${"d".repeat(64)}\n`,
-    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
