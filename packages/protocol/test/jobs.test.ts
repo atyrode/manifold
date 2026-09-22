@@ -10,6 +10,10 @@ import {
   MachineHalfSchema,
   JobDescriptionSchema,
   JobOutputBindingSchema,
+  JOB_OWNER_PROTOCOL_VERSION,
+  jobOwnerMachine,
+  jobOwnerOperationRefusal,
+  jobOwnerRequestRefusal,
   jobLimits,
   jobOwnerInstallRestoresProjection,
   jobOwnerMachine,
@@ -79,11 +83,38 @@ test("job service identity is optional but incomplete references and private fie
     { ...reference, policySha256: "not-a-digest" },
     { ...reference, credential: { ref: "private-account" } },
     { ...reference, runtime: { pluginId: "private-provider" } },
+    { ...reference, serviceId: "different-service" },
   ])
     expect(operationSchema.safeParse({
       ...operation,
       serviceBindings: { [reference.serviceId]: invalid },
     }).success).toBe(false);
+});
+
+test("explicit instance pins are never sent to an accepted owner that cannot parse them", () => {
+  const request = {
+    limits: { timeoutMs: 1000, memoryBytes: 1048576, processes: 1, outputBytes: 65536 },
+  };
+  const serviceBindings = {
+    "sample.broker": {
+      machineId: "source",
+      serviceId: "sample.broker",
+      revision: "configuration-revision",
+      policySha256: "b".repeat(64),
+    },
+  };
+  expect(jobOwnerRequestRefusal(37, request)).toBeNull();
+  expect(jobOwnerRequestRefusal(37, { ...request, serviceBindings })).toBe(
+    "service_bindings_protocol_unsupported",
+  );
+  expect(jobOwnerRequestRefusal(JOB_OWNER_PROTOCOL_VERSION, { ...request, serviceBindings })).toBeNull();
+  expect(JobRequestSchema.shape.serviceBindings.parse(serviceBindings)).toEqual(serviceBindings);
+  expect(JobRequestSchema.shape.serviceBindings.safeParse(
+    Object.fromEntries(Array.from({ length: 65 }, (_, i) => {
+      const serviceId = `sample.service-${i}`;
+      return [serviceId, { ...serviceBindings["sample.broker"], serviceId }];
+    })),
+  ).success).toBe(false);
 });
 
 const location = { anchor: "config", components: ["vault"], revision: "r1", kind: "file" };
@@ -380,6 +411,56 @@ const artifact = {
   maxExpandedBytes: 8192,
   maxMembers: 8,
 };
+
+test("output-only lease backing cannot become a file, working directory or ordinary mount", () => {
+  const operation = {
+    argv: [],
+    input: {},
+    runtimeTools: [],
+    locations: [{ locationId: "sample.outputs", access: "write", outputOnly: true }],
+    outputs: ["answer"],
+    network: "none",
+    limits: { timeoutMs: 1000, memoryBytes: 1048576, processes: 1, outputBytes: 65536 },
+    stdin: false,
+  };
+  const declaration = {
+    artifacts: { "linux-x64": artifact },
+    locations: { "sample.outputs": { anchor: "data", components: ["outputs"], revision: "r1" } },
+    operations: { "sample.isolated": operation },
+  };
+  expect(MachineHalfSchema.parse(declaration).operations["sample.isolated"]!.locations).toEqual(
+    operation.locations,
+  );
+  for (const access of ["read", "create"])
+    expect(MachineOperationSchema.safeParse({
+      ...operation, locations: [{ ...operation.locations[0], access }],
+    }).success).toBe(false);
+  expect(MachineOperationSchema.safeParse({
+    ...operation, workingDirectory: { locationId: "sample.outputs" },
+  }).success).toBe(false);
+  expect(MachineOperationSchema.safeParse({
+    ...operation,
+    locations: [...operation.locations, { locationId: "sample.outputs", access: "write" }],
+  }).success).toBe(false);
+  expect(MachineHalfSchema.safeParse({
+    ...declaration,
+    locations: { "sample.outputs": { ...declaration.locations["sample.outputs"], kind: "file" } },
+  }).success).toBe(false);
+  expect(MachineHalfSchema.safeParse({ ...declaration, locations: {} }).success).toBe(false);
+  const ordinary = { ...operation, locations: [{ locationId: "sample.outputs", access: "write" }] };
+  const mixed = MachineHalfSchema.parse({
+    ...declaration,
+    operations: { "sample.isolated": operation, "sample.ordinary": ordinary },
+  });
+  expect(jobOwnerOperationRefusal(37, mixed.operations["sample.isolated"]!)).toBe(
+    "output_only_locations_protocol_unsupported",
+  );
+  expect(jobOwnerMachine(37, mixed)?.operations).toEqual({
+    "sample.ordinary": mixed.operations["sample.ordinary"],
+  });
+  expect(jobOwnerMachine(JOB_OWNER_PROTOCOL_VERSION, mixed)).toEqual(mixed);
+  expect(jobOwnerMachine(37, MachineHalfSchema.parse(declaration))).toBeNull();
+});
 test("artifact executable bundles pin selected members and never admit URL credentials or raw companion files", () => {
   const files = { helper: { entry: ["bin", "helper"], sha256: "c".repeat(64) } };
   expect(MachineArtifactSchema.parse({ ...artifact, files }).files).toEqual(files);
