@@ -1388,7 +1388,12 @@ immutability does not retrofit old releases or manufacture missing attestations.
 without that evidence blocks ordinary promotion before the switch, even if its checkpoint is
 valid and the candidate is admitted. Moving such an installation onto the new release path
 requires separately reviewed and authorized migration/recovery planning; neither the bootstrap
-flag nor a manually supplied digest bypasses this hold.
+flag nor a manually supplied digest bypasses this hold. The one reviewed plan so far pins
+v0.14.0 ([#633](https://github.com/atyrode/manifold/issues/633)): `scripts/release-provenance.ts`
+names its exact tag commit and immutable image digest, and admits it only as the rollback base
+restored after a failed switch while the tag still resolves to that commit and its full-main CI
+is green. It never admits a candidate, and it is removed once no installation that must be
+migrated still serves v0.14.0.
 
 **Protection and actor boundary ([#265](https://github.com/atyrode/manifold/issues/265)).**
 Read-only observation on 2026-09-20 found immutable

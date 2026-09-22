@@ -305,7 +305,7 @@ printf '%s\\n' "$FIXTURE_ENV"
       `#!/usr/bin/env bash
 case "$1 $2" in
   "scripts/verify-live.ts snapshot") printf '{"build":"1.2.3"}\\n' > "$3" ;;
-  "scripts/release-provenance.ts promotion")
+  "scripts/release-provenance.ts recovery")
     [[ "$3" == v1.2.3 && "$FIXTURE_PROVENANCE" == true ]] || exit 1
     printf '{"image":"ghcr.io/owner/manifold@sha256:${"b".repeat(64)}"}\\n' ;;
   *) exit 1 ;;
