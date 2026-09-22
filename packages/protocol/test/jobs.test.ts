@@ -8,6 +8,7 @@ import {
   JobRequestSchema,
   JobLimitsSchema,
   MachineHalfSchema,
+  JobDescriptionSchema,
   JobOutputBindingSchema,
   jobLimits,
   jobOwnerInstallRestoresProjection,
@@ -56,6 +57,33 @@ test("deployment scope requires explicit operations and bounded unique destinati
       operationIds: ["sample.worker.run", "sample.worker.run"],
     }).success,
   ).toBe(false);
+});
+
+test("job service identity is optional but incomplete references and private fields are refused", () => {
+  const operationSchema = JobDescriptionSchema.shape.operations.unwrap().valueType;
+  const operation = { ready: true, reason: null, resourceBindingDigest: "a".repeat(64) };
+  const reference = {
+    machineId: "source",
+    serviceId: "sample.broker",
+    revision: "configuration-revision",
+    policySha256: "b".repeat(64),
+  };
+  expect(operationSchema.parse(operation)).toEqual(operation);
+  expect(operationSchema.parse({
+    ...operation,
+    serviceBindings: { [reference.serviceId]: reference },
+  }).serviceBindings).toEqual({ [reference.serviceId]: reference });
+  for (const invalid of [
+    { ...reference, revision: undefined },
+    { ...reference, machineId: "" },
+    { ...reference, policySha256: "not-a-digest" },
+    { ...reference, credential: { ref: "private-account" } },
+    { ...reference, runtime: { pluginId: "private-provider" } },
+  ])
+    expect(operationSchema.safeParse({
+      ...operation,
+      serviceBindings: { [reference.serviceId]: invalid },
+    }).success).toBe(false);
 });
 
 const location = { anchor: "config", components: ["vault"], revision: "r1", kind: "file" };

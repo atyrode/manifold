@@ -5,6 +5,7 @@ import {
   ServiceAuthoritySubjectSchema,
   ServiceBindingSchema,
   ServiceConfigurationSchema,
+  ServicePolicySchema,
   ServiceReadArgsSchema,
   ServiceInvokeArgsSchema,
   ServiceRefusalSchema,
@@ -764,6 +765,8 @@ export const JobDescriptionSchema = z.strictObject({
         ready: z.boolean(),
         reason: id.nullable(),
         resourceBindingDigest: hash,
+        /** Opt-in current instance identities, not credentials or general policy documents. */
+        serviceBindings: z.record(id, ServicePolicySchema.shape.remote.unwrap()).optional(),
       }),
     )
     .optional(),

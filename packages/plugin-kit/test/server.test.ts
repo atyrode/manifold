@@ -1304,7 +1304,7 @@ test("guest service invocation preserves a native refusal across the correlated 
   });
 });
 
-test("guest job discovery cannot hide a host authority refusal", async () => {
+test.each([undefined, true])("guest job discovery preserves host refusal with identity opt-in=%s", async (includeServiceBindings) => {
   const fake = host({
     manifest,
     actions: [echo],
@@ -1314,6 +1314,7 @@ test("guest job discovery cannot hide a host authority refusal", async () => {
           machineId: "machine",
           pluginId: "worker",
           installationRevision: "r1",
+          ...(includeServiceBindings ? { includeServiceBindings } : {}),
         });
         return { text: "unexpected access" };
       },
@@ -1326,7 +1327,12 @@ test("guest job discovery cannot hide a host authority refusal", async () => {
   if (frame.t !== "call") throw new Error("missing discovery call");
   expect(frame).toMatchObject({
     method: "jobs.describe",
-    args: [{ machineId: "machine", pluginId: "worker", installationRevision: "r1" }],
+    args: [{
+      machineId: "machine",
+      pluginId: "worker",
+      installationRevision: "r1",
+      ...(includeServiceBindings ? { includeServiceBindings } : {}),
+    }],
   });
   fake.send({ t: "reply", id: frame.id, ok: false, error: "governed_authority_refused" });
   expect(await fake.next()).toMatchObject({ t: "dispatched", outcome: { ok: false } });

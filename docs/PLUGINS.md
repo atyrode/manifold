@@ -1860,6 +1860,18 @@ Consent is the ordinary `locations:read` on the location node. An owner older th
 plugin's other operations are unaffected. Older hubs and plugin kits reject the manifest
 outright, so adopt operator anchors only once your kit and every target hub carry them.
 
+When a product needs to verify the owner of a declared native instance service, opt into
+`ctx.jobs.describe({ machineId, pluginId, includeServiceBindings: true })`. Read
+`operations[operationId].serviceBindings[serviceId]` as
+`{ machineId, serviceId, revision, policySha256 }`; `machineId` is the source owner, and
+`revision` is its instance configuration revision, not the declared policy revision.
+Missing entries are unavailable proof, never permission to infer the owner from the executor.
+Persist the reference and the operation's `resourceBindingDigest` and supply the latter with the
+installation/artifact pins to `execute`. For distinct source and executor machines the native
+effective policy binds the entire reference, so changed/replaced sources refuse admission.
+Same-owner identity is an observation only for configuration-revision pinning: an identical-policy
+local A→B→A can retain the same resource digest. See the
+[describe contract](CONTRACTS.md#governed-machine-jobs) for the authority and compatibility boundary.
 **Review installation through the same native authority.** The existing per-machine
 runtime inspector already installs artifacts and reviews revision-bound resource/operation
 consent. [ADR 0036](decisions/0036-reviewed-native-deployment.md) extends that review path

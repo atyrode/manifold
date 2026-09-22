@@ -13,6 +13,7 @@ import {
   MACHINE_AGENT_TOOLS_PROTOCOL_VERSION,
   JobCommandSchema,
   InstanceServiceDescriptionSchema,
+  JobDescriptionSchema,
   MachineHalfSchema,
   MachineOperationSchema,
   JobLimitsSchema,
@@ -278,7 +279,11 @@ test("nonterminal Run binding requires dual capability, is one-use, and closes b
   }
 });
 
-async function instanceFixture(path = ":memory:", protocolVersion = JOB_OWNER_PROTOCOL_VERSION) {
+async function instanceFixture(
+  path = ":memory:",
+  protocolVersion = JOB_OWNER_PROTOCOL_VERSION,
+  operations?: ServicePolicy["operations"],
+) {
   const provider: MachineHalf = {
     ...machine,
     operations: {
@@ -303,7 +308,7 @@ async function instanceFixture(path = ":memory:", protocolVersion = JOB_OWNER_PR
       resourceBindingDigest: createHash("sha256").update(canonicalJobJson(null)).digest("hex"),
       input: { value: { literal: "safe" } },
     },
-    operations: {
+    operations: operations ?? {
       inspect: {
         method: "GET",
         readable: true,
@@ -330,6 +335,312 @@ async function instanceFixture(path = ":memory:", protocolVersion = JOB_OWNER_PR
   if (!start || !configured.configuration) throw new Error("instance runtime was not admitted");
   return { f, policy, provider, start, revision: configured.configuration.revision };
 }
+
+async function instanceBindingFixture(remote: boolean) {
+  const { f, policy, provider, start, revision } = await instanceFixture(
+    ":memory:",
+    JOB_OWNER_PROTOCOL_VERSION,
+    {
+      inspect: {
+        kind: "http-proxy",
+        method: "POST",
+        path: "/inspect",
+        request: { kind: "json", disclosure: "full" },
+        response: {
+          kind: "stream",
+          disclosure: "full",
+          contentTypes: ["text/event-stream"],
+          headers: [],
+        },
+        timeoutMs: 1000,
+        maxRequestBytes: 4096,
+        maxResponseBytes: 4096,
+      },
+    },
+  );
+  f.service.event(f.channel, {
+    type: "installed",
+    pluginId,
+    installationRevision: "r1",
+    artifactSha256: hash,
+    resources: {
+      artifactAvailable: true,
+      tools: [],
+      operations: [{ operationId, available: true }],
+    },
+  });
+  f.service.event(f.channel, {
+    type: "state",
+    jobId: start.request.jobId,
+    requestDigest: start.request.requestDigest,
+    ownerId: f.owner.ownerId,
+    ownerGeneration: f.owner.generation,
+    state: "started",
+  });
+  f.service.event(f.channel, {
+    type: "service_ready",
+    jobId: start.request.jobId,
+    service: start.request.service!,
+  });
+  const digest = (value: unknown) =>
+    createHash("sha256").update(canonicalJobJson(value)).digest("hex");
+  const reference = {
+    machineId: f.machineId,
+    serviceId: policy.serviceId,
+    revision,
+    policySha256: digest(policy),
+  };
+  const effectivePolicy = { ...policy };
+  if (remote) {
+    delete effectivePolicy.runtime;
+    effectivePolicy.remote = reference;
+  }
+  const consumerId = "sample.consumer";
+  const consumerOperation = `${consumerId}.read`;
+  const declaration: MachineHalf = {
+    ...machine,
+    requiresResourceBindings: true,
+    operations: {
+      [consumerOperation]: {
+        ...machine.operations[operationId]!,
+        services: [
+          { serviceId: policy.serviceId, revision: policy.revision, operationIds: ["inspect"] },
+        ],
+      },
+    },
+  };
+  f.service.setManifestResolver((id) =>
+    id === pluginId ? provider : id === consumerId ? declaration : null,
+  );
+  const target = remote
+    ? {
+        ...f,
+        machineId: f.auth.enrollMachine("executor", f.root).machine.id,
+        owner: { ...f.owner, ownerId: "executor-owner" },
+        commands: [] as JobCommand[],
+      }
+    : f;
+  if (remote)
+    target.channel = {
+      machineId: target.machineId,
+      send: ({ command }) => {
+        target.commands.push(command);
+        return true;
+      },
+    };
+  const resources = {
+    tools: {},
+    anchors: {},
+    services: { [policy.serviceId]: digest(effectivePolicy) },
+    serviceDefinitions: {
+      [policy.serviceId]: { revision: policy.revision, operationIds: ["inspect"] },
+    },
+  };
+  target.owner.resources = resources;
+  if (remote) prove(target);
+  else f.service.event(f.channel, { type: "resources", resources });
+  const installation = {
+    machineId: target.machineId,
+    pluginId: consumerId,
+    installationRevision: "consumer-r1",
+    artifactSha256: hash,
+    machine: declaration,
+    resourceBindings: { tools: {}, anchors: {}, services: resources.services },
+  };
+  f.service.install(f.root, installation);
+  f.service.event(target.channel, {
+    type: "installed",
+    pluginId: consumerId,
+    installationRevision: installation.installationRevision,
+    artifactSha256: hash,
+    resources: {
+      artifactAvailable: true,
+      tools: [],
+      operations: [{ operationId: consumerOperation, available: true }],
+    },
+  });
+  f.service.consent(f.root, {
+    ...installation,
+    node: formatManifoldUri({
+      kind: "operation",
+      machineId: target.machineId,
+      operationId: consumerOperation,
+    }),
+    cap: "machines:run",
+    enabled: true,
+  });
+  const args = { machineId: target.machineId, pluginId: consumerId };
+  const describe = () =>
+    f.service.describe(f.root, { ...args, includeServiceBindings: true }, consumerId);
+  return {
+    f, target, policy, provider, reference, effectivePolicy, installation,
+    consumerOperation, args, describe, digest,
+  };
+}
+
+test.each([false, true])("opt-in instance identity describes the actual owner (remote=%s)", async (remote) => {
+  const { f, target, reference, consumerOperation, args, describe, digest, effectivePolicy } =
+    await instanceBindingFixture(remote);
+  try {
+    const ordinary = f.service.describe(f.root, args, args.pluginId);
+    const optedIn = describe();
+    const operation = optedIn.operations![consumerOperation]!;
+    expect(operation.serviceBindings).toEqual({ [reference.serviceId]: reference });
+    expect(operation.resourceBindingDigest).toBe(
+      digest({ tools: {}, anchors: {}, services: { [reference.serviceId]: digest(effectivePolicy) } }),
+    );
+    expect(operation.ready).toBe(true);
+    expect(reference.revision).not.toBe(effectivePolicy.revision);
+    const legacy = JobDescriptionSchema.extend({
+      operations: z.record(
+        z.string(),
+        z.strictObject({ ready: z.boolean(), reason: z.string().nullable(), resourceBindingDigest: z.string() }),
+      ).optional(),
+    });
+    expect(legacy.parse(ordinary)).toEqual(ordinary);
+    expect(f.service.describe(f.root, { ...args, includeServiceBindings: false }, args.pluginId)).toEqual(ordinary);
+    expect(JobDescriptionSchema.parse(optedIn)).toEqual(optedIn);
+    for (const privateField of ["credential", "runtime", "origin", "policy", "configuredBy", "traceId"]) {
+      expect(Object.hasOwn(operation.serviceBindings![reference.serviceId]!, privateField)).toBe(false);
+    }
+    const pinned = f.service.execute(f.root, args.pluginId, "pinned-source", {
+      jobId: "pinned-source",
+      machineId: args.machineId,
+      operationId: consumerOperation,
+      installationRevision: "consumer-r1",
+      artifactSha256: hash,
+      resourceBindingDigest: operation.resourceBindingDigest,
+      input: { value: "safe" },
+      outputs: [],
+    });
+    expect(target.commands.findLast((command) => command.type === "start")).toMatchObject({
+      type: "start",
+      request: { jobId: pinned.request.jobId },
+    });
+    f.service.disablePlugin(args.pluginId);
+    expect(
+      f.service.describe(f.root, { ...args, includeServiceBindings: true })
+        .operations![consumerOperation]!.serviceBindings,
+    ).toEqual({});
+  } finally {
+    f.store.close();
+  }
+});
+
+test.each(["disabled", "policy-replaced", "configuration-aba", "owner-replaced"] as const)(
+  "remote instance identity and native execution reject %s after inspection",
+  async (change) => {
+    const { f, target, policy, provider, reference, args, consumerOperation, describe } =
+      await instanceBindingFixture(true);
+    try {
+      const pinned = describe().operations![consumerOperation]!;
+      let currentRevision = reference.revision;
+      if (change === "configuration-aba") {
+        const disabled = await f.service.configureInstanceService(f.root, {
+          serviceId: policy.serviceId,
+          expectedRevision: currentRevision,
+          policy,
+          enabled: false,
+        });
+        currentRevision = disabled.configuration!.revision;
+      }
+      if (change === "owner-replaced") {
+        // A replacement owner must have the provider installed under its own native authority.
+        f.service.install(f.root, {
+          machineId: args.machineId,
+          pluginId,
+          installationRevision: "r1",
+          artifactSha256: hash,
+          machine: provider,
+        });
+        f.service.event(target.channel, {
+          type: "installed",
+          pluginId,
+          installationRevision: "r1",
+          artifactSha256: hash,
+        });
+        consent(target, "machines:run");
+      }
+      await f.service.configureInstanceService(f.root, {
+        serviceId: policy.serviceId,
+        expectedRevision: currentRevision,
+        policy: change === "policy-replaced" ? { ...policy, revision: "two" } : policy,
+        enabled: change !== "disabled",
+        ...(change === "owner-replaced" ? { machineId: args.machineId } : {}),
+      });
+      expect(describe().operations![consumerOperation]!.serviceBindings).toEqual({});
+      expect(() =>
+        f.service.execute(f.root, args.pluginId, "stale-source", {
+          jobId: "stale-source",
+          machineId: args.machineId,
+          operationId: consumerOperation,
+          installationRevision: "consumer-r1",
+          artifactSha256: hash,
+          resourceBindingDigest: pinned.resourceBindingDigest,
+          input: { value: "safe" },
+          outputs: [],
+        }),
+      ).toThrow("service_definition_changed");
+    } finally {
+      f.store.close();
+    }
+  },
+);
+
+test("reinstalling a current remote service cannot admit the previously described resource digest", async () => {
+  const { f, target, policy, reference, effectivePolicy, installation, consumerOperation, args, describe, digest } =
+    await instanceBindingFixture(true);
+  try {
+    const pinned = describe().operations![consumerOperation]!;
+    const disabled = await f.service.configureInstanceService(f.root, {
+      serviceId: policy.serviceId,
+      expectedRevision: reference.revision,
+      policy,
+      enabled: false,
+    });
+    const replacement = await f.service.configureInstanceService(f.root, {
+      serviceId: policy.serviceId,
+      expectedRevision: disabled.configuration!.revision,
+      policy,
+      enabled: true,
+    });
+    const nextReference = { ...reference, revision: replacement.configuration!.revision };
+    const services = {
+      [policy.serviceId]: digest({ ...effectivePolicy, remote: nextReference }),
+    };
+    f.service.event(target.channel, {
+      type: "resources",
+      resources: { ...target.owner.resources!, services },
+    });
+    f.service.install(f.root, {
+      ...installation,
+      installationRevision: "consumer-r2",
+      resourceBindings: { ...installation.resourceBindings, services },
+    });
+    const current = f.service.describe(f.root, { ...args, includeServiceBindings: true })
+      .operations![consumerOperation]!;
+    expect(current.serviceBindings).toEqual({ [policy.serviceId]: nextReference });
+    expect(current.resourceBindingDigest).not.toBe(pinned.resourceBindingDigest);
+    expect(() =>
+      f.service.execute(f.root, args.pluginId, "replaced-bindings", {
+        jobId: "replaced-bindings",
+        machineId: args.machineId,
+        operationId: consumerOperation,
+        resourceBindingDigest: pinned.resourceBindingDigest,
+        input: { value: "safe" },
+        outputs: [],
+      }),
+    ).toThrow("resource_bindings_changed");
+    const historical = f.service.describe(f.root, {
+      ...args,
+      installationRevision: installation.installationRevision,
+      includeServiceBindings: true,
+    });
+    expect(historical.operations![consumerOperation]!.serviceBindings).toEqual({});
+  } finally {
+    f.store.close();
+  }
+});
 
 test.each(["same build", "rollback"] as const)(
   "platform-cancelled instance service readmission on %s is automatic and traced (#632)",
@@ -3566,10 +3877,10 @@ describe("job lifecycle audit and inspection", () => {
       f.store.close();
     }
   });
-  test("describe names the authority check that refused, and only to a caller it can (#728)", () => {
+  test.each([undefined, true])("describe preserves authority refusal with service identity opt-in=%s (#728)", (includeServiceBindings) => {
     const f = fixture();
     try {
-      const args = { machineId: f.machineId, pluginId };
+      const args = { machineId: f.machineId, pluginId, includeServiceBindings };
       prove(f);
       expect(() => f.service.describe(f.root, args, "other.plugin")).toThrow("job_owner_mismatch");
       const capless = f.auth.authenticate(
@@ -3596,10 +3907,10 @@ describe("job lifecycle audit and inspection", () => {
       f.store.close();
     }
   });
-  test("a plugin's own machine read takes consent, not a capability alone (#735)", () => {
+  test.each([undefined, true])("a plugin's own machine read takes consent with service identity opt-in=%s (#735)", (includeServiceBindings) => {
     const f = fixture();
     try {
-      const args = { machineId: f.machineId, pluginId };
+      const args = { machineId: f.machineId, pluginId, includeServiceBindings };
       prove(f);
       // `machines:read` is granted by default to any bundle that declares it, so the capability
       // alone must not open this door: the installation being described has to carry consent to

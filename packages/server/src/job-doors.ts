@@ -81,7 +81,12 @@ const publicSchedule = schedule
   .extend(JobInvocationTargetSchema.shape);
 export const jobDoorSchemas = {
   execute: execute.extend({ pluginId: id }),
-  describe: z.strictObject({ machineId: id, pluginId: id, installationRevision: id.optional() }),
+  describe: z.strictObject({
+    machineId: id,
+    pluginId: id,
+    installationRevision: id.optional(),
+    includeServiceBindings: z.boolean().optional(),
+  }),
   reviewDeployment: JobDeploymentRequestSchema,
   applyDeployment: JobDeploymentApplyArgsSchema,
   readDeployment: JobDeploymentReadArgsSchema,

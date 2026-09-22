@@ -3955,7 +3955,7 @@ provider handling and postconditions belong to plugins, never the common floor.
   read-only mounts. Preparation refusal, settlement and cancellation release extracted
   trees, not the sealed source archives. Bound inputs still require owner RPC 36; the
   machine, terminal-host and instance wire formats are unchanged.
-- **Describe and readiness.** `engine.jobs.describe({ machineId, pluginId, installationRevision? })`
+- **Describe and readiness.** `engine.jobs.describe({ machineId, pluginId, installationRevision?, includeServiceBindings? })`
   (also `ctx.jobs.describe`) reads one plugin's installation at one machine; a plugin may
   describe only its own. Omission selects the current revision; an explicit revision selects
   its immutable retained declaration/pin, or null if unknown. It grants neither execution nor
@@ -4003,6 +4003,25 @@ provider handling and postconditions belong to plugins, never the common floor.
   `admissionPublicKey` is the current hub's public SPKI verifier key for reviewed owner
   configuration. Obtain it through this authenticated interface, not private hub database
   access; it is not a token, and the private signing key never leaves the hub.
+  `includeServiceBindings: true` opts into each operation's `serviceBindings`, keyed by declared
+  service id. Each value is the native instance reference
+  `{ machineId, serviceId, revision, policySha256 }`: the service owner's machine, instance
+  configuration revision (not the policy's revision), and SHA-256 of the owner's policy.
+  Only enabled instance records matching that operation's installed effective policy digest and
+  declared revision are returned. Disabled/purged installations and unavailable or stale bindings
+  return no identity entries; non-instance services have none. No policy body, credential reference,
+  credential value or runtime configuration is returned by this field. Omitting the opt-in (or
+  passing false) omits the field, preserving ordinary strict-client response compatibility.
+  This is inspection under the same authority and consent gates, not a new grant or attestation.
+  Consumers requiring this proof must refuse absent entries, including answers from older hubs.
+  For a remote instance, the installed effective policy includes this exact native reference.
+  Persist its operation's `resourceBindingDigest` with the installation/artifact pins and supply
+  them to execution: native admission rejects replaced installation bindings or a changed current
+  remote owner, configuration revision or policy, including configuration A→B→A.
+  Same-owner references have the same meaning as observations, but the existing local effective
+  policy digest does not include the instance configuration revision: identical-policy local
+  A→B→A is not fenced by that digest. Consumers requiring that revision fence must use a distinct
+  executor and source owner; do not treat a same-owner observation as an additional execution pin.
   `connected` means the current channel has proved its job owner, not merely that a
   terminal transport is online. `platforms` comes from that proved owner and is empty
   when disconnected; the implemented backend supports `linux-x64` and `linux-arm64`.

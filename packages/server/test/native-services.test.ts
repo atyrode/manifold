@@ -766,6 +766,13 @@ test("resource promotion, projected operation pins and managed availability refu
       f.service.describe(f.root, { machineId: f.machineId, pluginId: installed.pluginId });
     const before = describe();
     expect(before.operations![installed.operationId]?.ready).toBe(true);
+    expect(
+      f.service.describe(f.root, {
+        machineId: f.machineId,
+        pluginId: installed.pluginId,
+        includeServiceBindings: true,
+      }).operations![installed.operationId]!.serviceBindings,
+    ).toEqual({});
     expect(before.operations![installed.independent]?.resourceBindingDigest).toBe(
       hash({ tools: {}, services: {}, anchors: {} }),
     );

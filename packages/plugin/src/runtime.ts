@@ -70,6 +70,7 @@ export interface PluginJobContext {
     machineId: string;
     pluginId: string;
     installationRevision?: string | undefined;
+    includeServiceBindings?: boolean | undefined;
   }): JobDescription;
   describeDeployment(args: { machineId: string; pluginId: string }): JobDeploymentDescription;
   execute(args: JobExecution): PublicJob;
