@@ -1,13 +1,17 @@
 #!/usr/bin/env bun
 import { $ } from "bun";
-import { releaseRepository, verifyPromotionRelease } from "./release-provenance.ts";
+import {
+  releaseRepository,
+  verifyPromotionRelease,
+  verifyRecoveryRelease,
+} from "./release-provenance.ts";
 
 /*
  * PROMOTION IS ITS OWN VERB (ADR 0022, amended by #244; docs/SELF-HOST.md §Environments).
  * `bun run release` publishes; this dispatches `deploy-hub.yml` with one published tag and
  * watches it to the end, so "production runs vX.Y.Z" is a sentence somebody typed, never a side
- * effect of a push. It requires immutable, attested releases and exact full-main CI for
- * both the candidate and its selected recovery release; a tag or legacy release is not proof.
+ * effect of a push. It requires an immutable, attested candidate with exact full-main CI; its
+ * selected recovery release meets the same bar, except the one reviewed legacy rollback pin.
  */
 
 const args = process.argv.slice(2);
@@ -56,7 +60,7 @@ if (
 const repository = await releaseRepository();
 await verifyPromotionRelease(repository, tag);
 if (tag !== `v${recovery.sourceBuild}`) {
-  await verifyPromotionRelease(repository, `v${recovery.sourceBuild}`);
+  await verifyRecoveryRelease(repository, `v${recovery.sourceBuild}`);
 }
 
 const since = new Date(Date.now() - 60_000).toISOString();
