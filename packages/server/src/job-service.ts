@@ -716,19 +716,24 @@ export class JobService {
     callerPluginId = "engine.services",
     traceId = "native-services",
   ): Promise<InstanceServiceDescription> {
-    return this.applyInstanceServiceConfiguration(auth, args, callerPluginId, traceId);
+    this.applyInstanceServiceConfiguration(auth, args, callerPluginId, traceId);
+    return this.instanceDescription(
+      this.instanceServices.get(args.serviceId),
+      args.serviceId,
+      true,
+    );
   }
   /**
-   * The configuration door's whole body, without the promise. A reviewed deployment applies a
-   * proposed policy inside its own durable transition, which is synchronous by construction:
-   * the effect and the receipt that says it happened commit together or neither does.
+   * The configuration door's effect path returns the exact revision it wrote, not a later
+   * observation of the record. Publication can reach the owner before this returns, so a
+   * deployment fences the call and records that revision or exposes an uncertain outcome.
    */
   private applyInstanceServiceConfiguration(
     auth: AuthContext,
     args: ConfigureInstanceServiceArgs,
     callerPluginId: string,
     traceId: string,
-  ): InstanceServiceDescription {
+  ): string {
     const previous = this.instanceServices.get(args.serviceId);
     if ((previous?.revision ?? null) !== args.expectedRevision)
       throw new ServiceError("conflict", "instance_service_configuration_changed");
@@ -791,11 +796,7 @@ export class JobService {
     } else this.instanceStarts.delete(args.serviceId);
     this.reconcileAuthority();
     this.accessChanged();
-    return this.instanceDescription(
-      this.instanceServices.get(args.serviceId),
-      args.serviceId,
-      true,
-    );
+    return result.current.revision;
   }
   private instanceServiceReadArgs(args: InstanceServiceReadArgs): ServiceReadArgs {
     const record = this.instanceServices.get(args.serviceId);
@@ -1667,7 +1668,22 @@ export class JobService {
       const operation = report.resources.operations.find(
         (value) => value.operationId === operationId,
       );
-      if (!operation?.available) return operation?.reason ?? "operation_artifact_unavailable";
+      if (!operation?.available) {
+        // This native report can precede configuration of the reviewed service. Its service
+        // refusal is answered by the exact prospective resource walk above; artifact, tool
+        // and location failures still belong to the owner and may never be deferred.
+        const awaitingProposal =
+          [
+            "services_unavailable",
+            "services_revision_changed",
+            "service_definition_changed",
+          ].includes(operation?.reason ?? "") &&
+          proposed?.installation.machineId === install.machineId &&
+          install.machine.operations[operationId]?.services?.some((binding) =>
+            proposed.instanceServices?.some((policy) => policy.serviceId === binding.serviceId),
+          );
+        if (!awaitingProposal) return operation?.reason ?? "operation_artifact_unavailable";
+      }
     }
     return null;
   }
@@ -3669,9 +3685,14 @@ export class JobService {
           ),
           ...instanceServices,
         ];
-        const declared = Object.entries(machine.operations).flatMap(([operationId, operation]) =>
-          (operation.services ?? []).map((binding) => ({ operationId, binding })),
-        );
+        const declared = Object.keys(machine.operations)
+          .sort()
+          .flatMap((operationId) =>
+            (machine.operations[operationId]!.services ?? []).map((binding) => ({
+              operationId,
+              binding,
+            })),
+          );
         const selected = declared.map(
           ({ binding }) =>
             policies.find((policy) => policy.serviceId === binding.serviceId) ?? null,
@@ -3745,6 +3766,12 @@ export class JobService {
               enabled: record.enabled,
               policySha256: digest(this.instancePolicy(record)),
               jobId: record.jobId,
+              reason:
+                this.serviceAvailability(
+                  this.instancePolicy(record),
+                  record.machineId,
+                  Object.keys(record.policy.operations),
+                ) ?? this.instanceReason(record),
             }
           : null;
       },
@@ -3775,9 +3802,8 @@ export class JobService {
           this.cancelRecord(job, "deployment_instance_service_replaced", "retire");
         return this.jobs.instanceServiceJobs(serviceId).length === 0;
       },
-      configureInstanceService: (auth, args, traceId) => {
-        this.applyInstanceServiceConfiguration(auth, args, "engine.services", traceId);
-      },
+      configureInstanceService: (auth, args, traceId) =>
+        this.applyInstanceServiceConfiguration(auth, args, "engine.services", traceId),
       installed: (machineId, pluginId, revision) => {
         const install = this.jobs.installation(machineId, pluginId);
         return install?.revision === revision && install.ready;

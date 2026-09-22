@@ -7393,6 +7393,18 @@ describe("reviewed native deployment approvals", () => {
             { serviceId: policy.serviceId, revision: "svc-r0", operationIds: ["inspect"] },
           ],
         },
+        // This differently bound sibling sorts before archive after the approved declaration
+        // is persisted. Operation insertion order must not change service evidence.
+        [`${pluginId}.additional`]: {
+          ...machine.operations[operationId]!,
+          services: [
+            {
+              serviceId: `${pluginId}.unconfigured`,
+              revision: "svc-r1",
+              operationIds: ["inspect"],
+            },
+          ],
+        },
       };
       f.service.setManifestResolver((id) => (id === pluginId ? split : null));
       f.service.configureServiceConfiguration(f.root, {
@@ -7419,6 +7431,18 @@ describe("reviewed native deployment approvals", () => {
         f.service.reviewDeployment(f.root, request(f, "archive-too", [serviceFree, serviceBound]))
           .targets[0],
       ).toMatchObject({ approvable: false, reason: "service_definition_changed" });
+      const value = request(f, "persisted-scan", [serviceFree]);
+      const { review, deployment } = apply(f, value);
+      expect(deployment.targets[0]!.state).toBe("installing");
+      f.service.event(f.channel, {
+        type: "installed",
+        pluginId,
+        installationRevision: review.targets[0]!.installationRevision!,
+        artifactSha256: review.targets[0]!.artifactSha256!,
+      });
+      expect(
+        f.service.readDeployment(f.root, { deploymentId: value.deploymentId }).targets[0]!.state,
+      ).toBe("ready");
     } finally {
       f.store.close();
     }
@@ -7510,6 +7534,35 @@ describe("reviewed native deployment approvals", () => {
         revoked,
       );
       expect(execute(f, "must-remain-denied").state).toBe("refused");
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("an ordinary pending approval from schema 46 remains valid on reconnect", () => {
+    const f = fixture();
+    try {
+      prove(f);
+      f.service.offline(f.channel);
+      const value = request(f, "legacy-pending", [operationId]);
+      const { review, deployment } = apply(f, value);
+      expect(deployment.targets[0]!.state).toBe("pending");
+      // Schema 46 approvals have no instance-service evidence member.
+      f.store.db
+        .query(
+          "UPDATE machine_job_deployments SET approval=json_remove(approval,'$.evidence[0].instanceServices') WHERE deployment_id=?",
+        )
+        .run(value.deploymentId);
+      prove(f);
+      f.service.event(f.channel, {
+        type: "installed",
+        pluginId,
+        installationRevision: review.targets[0]!.installationRevision!,
+        artifactSha256: review.targets[0]!.artifactSha256!,
+      });
+      expect(
+        f.service.readDeployment(f.root, { deploymentId: value.deploymentId }).targets[0]!.state,
+      ).toBe("ready");
     } finally {
       f.store.close();
     }
@@ -8221,6 +8274,30 @@ describe("reviewed same-plugin instance-service bootstrap", () => {
     return { review, entry, target: review.targets[0]! };
   }
 
+  test("an offline first bootstrap without a platform returns an unapprovable review", () => {
+    const f = bootstrap();
+    try {
+      f.service.offline(f.channel);
+      const value = proposal("bootstrap-no-platform", f.machineId);
+      value.targets = [{ machineId: f.machineId }];
+      const review = f.service.reviewDeployment(f.root, value);
+      expect(review.targets[0]).toMatchObject({
+        approvable: false,
+        reason: "installation_platform_unavailable",
+      });
+      expect(() =>
+        f.service.applyDeployment(
+          f.root,
+          { request: value, reviewDigest: review.reviewDigest },
+          "trace",
+        ),
+      ).toThrow("deployment_unapprovable");
+      expect(f.service.instanceServices.get(serviceId)).toBeNull();
+    } finally {
+      f.store.close();
+    }
+  });
+
   test("a first bootstrap installs, configures and starts the provider only after the owner's ACK", () => {
     const f = bootstrap();
     try {
@@ -8291,6 +8368,104 @@ describe("reviewed same-plugin instance-service bootstrap", () => {
         outputs: [],
       });
       expect(consumer.state).toBe("start-committed");
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("native acknowledgement may precede availability of the proposed service", () => {
+    const f = bootstrap();
+    try {
+      const value = proposal("bootstrap-native-inventory", f.machineId);
+      const { target, entry } = apply(f, value);
+      f.service.event(f.channel, {
+        type: "installed",
+        pluginId: selfPlugin,
+        installationRevision: target.installationRevision!,
+        artifactSha256: hash,
+        resources: {
+          artifactAvailable: true,
+          tools: [],
+          operations: [
+            { operationId: serve, available: true },
+            { operationId: use, available: false, reason: "services_unavailable" },
+          ],
+        },
+      });
+      expect(f.service.describeInstanceService(f.root, { serviceId }).configuration?.enabled).toBe(
+        true,
+      );
+      advertise(f, entry.policy);
+      acknowledge(f, target.installationRevision!);
+      startProvider(f);
+      expect(
+        f.service.readDeployment(f.root, { deploymentId: value.deploymentId }).targets[0]!.state,
+      ).toBe("ready");
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("a provider-only bootstrap waits for advertisement and a running provider", () => {
+    const f = bootstrap();
+    try {
+      const value = proposal("bootstrap-provider-only", f.machineId);
+      value.operationIds = [serve];
+      const { target, entry } = apply(f, value);
+      acknowledge(f, target.installationRevision!);
+      expect(
+        f.service.readDeployment(f.root, { deploymentId: value.deploymentId }).targets[0]!.state,
+      ).toBe("installing");
+      advertise(f, entry.policy);
+      expect(
+        f.service.readDeployment(f.root, { deploymentId: value.deploymentId }).targets[0]!.state,
+      ).toBe("installing");
+      startProvider(f);
+      expect(
+        f.service.readDeployment(f.root, { deploymentId: value.deploymentId }).targets[0]!.state,
+      ).toBe("ready");
+      f.service.offline(f.channel);
+      expect(
+        f.service.readDeployment(f.root, { deploymentId: value.deploymentId }).targets[0]!.state,
+      ).toBe("installing");
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("a bound bootstrap cannot adopt a later content-equal configuration identity", async () => {
+    const f = bootstrap();
+    try {
+      const value = proposal("bootstrap-identity", f.machineId);
+      const { target, entry } = apply(f, value);
+      acknowledge(f, target.installationRevision!);
+      advertise(f, entry.policy);
+      const provider = startProvider(f);
+      const original = f.service.instanceServices.get(serviceId)!;
+      await f.service.configureInstanceService(f.root, {
+        serviceId,
+        expectedRevision: original.revision,
+        policy: { ...entry.policy, maxConcurrent: 2 },
+        enabled: true,
+      });
+      const changed = f.service.instanceServices.get(serviceId)!;
+      await f.service.configureInstanceService(f.root, {
+        serviceId,
+        expectedRevision: changed.revision,
+        policy: entry.policy,
+        enabled: true,
+      });
+      settle(f, provider);
+      f.service.tick();
+      advertise(f, entry.policy);
+      startProvider(f);
+      expect(f.service.describeInstanceService(f.root, { serviceId }).state).toBe("ready");
+      expect(
+        f.service.readDeployment(f.root, { deploymentId: value.deploymentId }).targets[0],
+      ).toMatchObject({
+        state: "needs_review",
+        reason: "instance_service_configuration_changed",
+      });
     } finally {
       f.store.close();
     }
@@ -8549,8 +8724,8 @@ describe("reviewed same-plugin instance-service bootstrap", () => {
         enabled: true,
       });
       expect(
-        f.service.readDeployment(f.root, { deploymentId: value.deploymentId }).targets[0],
-      ).toMatchObject({ state: "needs_review", reason: "service_definition_changed" });
+        f.service.readDeployment(f.root, { deploymentId: value.deploymentId }).targets[0]!.state,
+      ).toBe("needs_review");
       expect(f.commands.some((command) => command.type === "start")).toBe(false);
       // The out-of-band configuration retires its own predecessor; the spent approval does not.
       expect(f.service.jobs.cancellation(provider.request.jobId)?.reason).not.toBe(
@@ -8638,12 +8813,15 @@ describe("reviewed same-plugin instance-service bootstrap", () => {
         state: "cancelled",
         reason: "approval_cancelled",
       });
+      f.commands.length = 0;
       settle(f, provider);
       f.service.tick();
       expect(f.service.jobs.installation(f.machineId, selfPlugin)?.revision).toBe(
         first.target.installationRevision!,
       );
       expect(f.service.instanceServices.get(serviceId)!.revision).toBe(previous.revision);
+      expect(f.service.describeInstanceService(f.root, { serviceId }).state).toBe("unavailable");
+      expect(f.commands.filter((command) => command.type === "start")).toEqual([]);
     } finally {
       f.store.close();
     }

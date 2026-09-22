@@ -4201,6 +4201,9 @@ policySha256, jobId }` or null), the expected revision, the resolved policy and 
   `deployment_application_uncertain` — never a replayed effect. `ready` still requires the
   owner to advertise the configured policy and the provider job to be running; until then the
   target reports `installing` with the reason it is waiting on.
+  The configuration receipt retains the exact instance-service revision written by this
+  approval: a later content-equal replacement is a different identity, not a restored receipt.
+  Readiness checks the proposed service itself even when no consumer operation was selected.
 
 - **Bounded offline evidence.** A disconnected destination is approvable only with known
   enrolled identity and a previously proved native owner, a selected available declaration
@@ -4238,23 +4241,27 @@ policySha256, jobId }` or null), the expected revision, the resolved policy and 
   authority-changing effects.
 
   Cancellation requires the current deployment `revision`; stale revisions refuse before
-  mutation. It marks the approval cancelled and fences remaining `pending`/`applying`
-  targets, not effects already committed as `applied`. It is not uninstall, purge, job
-  cancellation, consent revocation or distributed rollback. A new review is required to
-  replace cancelled or invalidated work. After effects commit, reconnect or duplicate apply
-  never repairs revoked consent: a changed consent receipt reports `needs_review`, and the
-  old approval cannot grant it again.
+  mutation. It marks the approval cancelled and fences remaining `pending`, `quiescing`,
+  `applying` and `configuring` targets, not effects already committed as `applied` or `bound`.
+  It is not uninstall, purge, consent revocation or distributed rollback. In particular,
+  cancellation after quiescing does not restart the retired provider: the unchanged instance
+  record remains configured but visibly unavailable until a new reviewed configuration
+  starts a replacement. A new review is required to replace cancelled or invalidated work.
+  After effects commit, reconnect or duplicate apply never repairs revoked consent: a changed
+  consent receipt reports `needs_review`, and the old approval cannot grant it again.
 
 - **Progress is native observation.** `JobDeployment` returns approval attribution, a
   lifecycle/CAS `revision`, the immutable review, a cancellation flag and per-target
   `{ machineId, connected, state, reason }`. That revision tracks retained lifecycle
   transitions, not every change in projected connectivity/readiness. `pending` means no
-  effects have committed; `installing` means committed native installation/consent state
-  still lacks live readiness, including while the owner is offline. `ready` requires the
-  current proved owner's matching revision/artifact `installed` acknowledgement, enabled
-  installation/plugin, no purge, unchanged reviewed evidence/consent and current readiness
-  of every selected operation. An install-only deployment may be ready with no execution
-  consent. No deployment action executes an operation, and readiness guarantees no future
+  effects have committed; `installing` means the exact reviewed provider is quiescing or
+  committed native installation/configuration state still lacks live readiness, including
+  while the owner is offline. `ready` requires the current proved owner's matching
+  revision/artifact `installed` acknowledgement, enabled installation/plugin, no purge,
+  unchanged reviewed evidence/consent and current readiness of every selected operation.
+  An install-only deployment may be ready with no execution consent. An explicit instance-service
+  proposal starts only its reviewed provider through the ordinary native service lifecycle;
+  ordinary deployment requests do not execute operations. Readiness guarantees no future
   job admission or product postcondition. Replacement of an applied installation revision
   projects `superseded`; invalidated scope or uncertain application projects `needs_review`;
   cancelled unapplied targets project `cancelled`. The public state schema also admits
