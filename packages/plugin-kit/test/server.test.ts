@@ -1304,39 +1304,50 @@ test("guest service invocation preserves a native refusal across the correlated 
   });
 });
 
-test.each([undefined, true])("guest job discovery preserves host refusal with identity opt-in=%s", async (includeServiceBindings) => {
-  const fake = host({
-    manifest,
-    actions: [echo],
-    handlers: {
-      echo: async (ctx) => {
-        await ctx.jobs.describe({
+test.each([undefined, true])(
+  "guest job discovery preserves host refusal with identity opt-in=%s",
+  async (includeServiceBindings) => {
+    const fake = host({
+      manifest,
+      actions: [echo],
+      handlers: {
+        echo: async (ctx) => {
+          await ctx.jobs.describe({
+            machineId: "machine",
+            pluginId: "worker",
+            installationRevision: "r1",
+            ...(includeServiceBindings ? { includeServiceBindings } : {}),
+          });
+          return { text: "unexpected access" };
+        },
+      },
+    });
+    load(fake);
+    await fake.next();
+    fake.send({
+      t: "dispatch",
+      id: "d1",
+      action: "echo",
+      args: { text: "describe" },
+      ctx: ctxOf(),
+    });
+    const frame = await fake.next();
+    if (frame.t !== "call") throw new Error("missing discovery call");
+    expect(frame).toMatchObject({
+      method: "jobs.describe",
+      args: [
+        {
           machineId: "machine",
           pluginId: "worker",
           installationRevision: "r1",
           ...(includeServiceBindings ? { includeServiceBindings } : {}),
-        });
-        return { text: "unexpected access" };
-      },
-    },
-  });
-  load(fake);
-  await fake.next();
-  fake.send({ t: "dispatch", id: "d1", action: "echo", args: { text: "describe" }, ctx: ctxOf() });
-  const frame = await fake.next();
-  if (frame.t !== "call") throw new Error("missing discovery call");
-  expect(frame).toMatchObject({
-    method: "jobs.describe",
-    args: [{
-      machineId: "machine",
-      pluginId: "worker",
-      installationRevision: "r1",
-      ...(includeServiceBindings ? { includeServiceBindings } : {}),
-    }],
-  });
-  fake.send({ t: "reply", id: frame.id, ok: false, error: "governed_authority_refused" });
-  expect(await fake.next()).toMatchObject({ t: "dispatched", outcome: { ok: false } });
-});
+        },
+      ],
+    });
+    fake.send({ t: "reply", id: frame.id, ok: false, error: "governed_authority_refused" });
+    expect(await fake.next()).toMatchObject({ t: "dispatched", outcome: { ok: false } });
+  },
+);
 
 describe("named storage migrations", () => {
   // Mixed-arity rows: without the row type, `descriptors` widens to a union whose narrowest

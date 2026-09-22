@@ -46,7 +46,13 @@ export const JOB_OWNER_PROTOCOL_VERSION = ISOLATED_JOB_PROTOCOL_VERSION;
  * policies are sent only to owners and machine transports that parse that mode.
  */
 export const JOB_OWNER_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  34, 35, 36, 37, 40, 41, ISOLATED_JOB_PROTOCOL_VERSION,
+  34,
+  35,
+  36,
+  37,
+  40,
+  41,
+  ISOLATED_JOB_PROTOCOL_VERSION,
 ]);
 
 export type JobOwnerCapability =
@@ -419,7 +425,8 @@ export const MachineOperationSchema = z
           !location.outputOnly ||
           (location.access === "write" &&
             !operation.locations.some(
-              (other, otherIndex) => otherIndex !== index && other.locationId === location.locationId,
+              (other, otherIndex) =>
+                otherIndex !== index && other.locationId === location.locationId,
             )),
       ),
     {

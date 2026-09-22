@@ -1601,9 +1601,7 @@ test.skipIf(!realBackend)(
       });
       const waitFor = async (jobId: string, observation: string, ready: () => boolean) => {
         while (!ready()) {
-          const refusal = events.find(
-            (event) => event.type === "refusal" && event.jobId === jobId,
-          );
+          const refusal = events.find((event) => event.type === "refusal" && event.jobId === jobId);
           if (refusal || results.has(jobId))
             throw new Error(
               `${jobId}: missing ${observation}; ${JSON.stringify(refusal ?? results.get(jobId))}; stdout=${stdout.get(jobId) ?? ""}`,
@@ -1655,11 +1653,9 @@ test.skipIf(!realBackend)(
           request,
           permit: {
             ...permit,
-            signature: sign(
-              null,
-              Buffer.from(canonicalJobJson(permit)),
-              keys.privateKey,
-            ).toString("base64"),
+            signature: sign(null, Buffer.from(canonicalJobJson(permit)), keys.privateKey).toString(
+              "base64",
+            ),
           },
         });
       };
@@ -1719,7 +1715,11 @@ test.skipIf(!realBackend)(
       // A later consumer must see the sealed snapshot, not subsequent backing-tree mutation.
       writeFileSync(join(sourceRoot, "source", "solo", "payload"), "changed after sealing\n");
       await start("consumer", "sibling", "solo");
-      expect(await settled("consumer")).toMatchObject({ state: "exited", exitCode: 0, reason: null });
+      expect(await settled("consumer")).toMatchObject({
+        state: "exited",
+        exitCode: 0,
+        reason: null,
+      });
       expect(stdout.get("consumer")!.split("\n").slice(1).join("\n")).toBe("solo\n");
       expect(inputDirectory.names()).toEqual([]);
 
@@ -1728,7 +1728,9 @@ test.skipIf(!realBackend)(
       await observe("first", "ready");
       await observe("second", "ready");
       for (const jobId of ["first", "second"]) {
-        expect(readFileSync(join(sourceRoot, "source", jobId, "payload"), "utf8")).toBe(`${jobId}\n`);
+        expect(readFileSync(join(sourceRoot, "source", jobId, "payload"), "utf8")).toBe(
+          `${jobId}\n`,
+        );
         expect(results.has(jobId)).toBe(false);
       }
       await input("first", 0, "probe");
@@ -1740,7 +1742,9 @@ test.skipIf(!realBackend)(
       // prevent this result from sealing until that unrelated process exited.
       await sealed("first");
       expect(results.has("second")).toBe(false);
-      expect(readFileSync(join(sourceRoot, "source", "second", "payload"), "utf8")).toBe("second\n");
+      expect(readFileSync(join(sourceRoot, "source", "second", "payload"), "utf8")).toBe(
+        "second\n",
+      );
       await input("second", 1, "finish");
       await sealed("second");
       expect(readFileSync(join(sourceRoot, "source", "first", "payload"), "utf8")).toBe("first\n");

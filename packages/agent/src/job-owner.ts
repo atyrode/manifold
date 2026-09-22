@@ -2611,10 +2611,12 @@ export class MachineJobOwner {
       job.context.send(
         WorkerContextSchema.parse({
           type: "context",
-          locations: operation.locations.filter((binding) => !binding.outputOnly).map(({ locationId }) => {
-            const location = job.locations.get(locationId)!;
-            return { locationId, guestPath: location.guestPath, access: location.access };
-          }),
+          locations: operation.locations
+            .filter((binding) => !binding.outputOnly)
+            .map(({ locationId }) => {
+              const location = job.locations.get(locationId)!;
+              return { locationId, guestPath: location.guestPath, access: location.access };
+            }),
         }),
       );
       const runtime: LinuxJobBind[] = [];

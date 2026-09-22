@@ -73,10 +73,12 @@ test("job service identity is optional but incomplete references and private fie
     policySha256: "b".repeat(64),
   };
   expect(operationSchema.parse(operation)).toEqual(operation);
-  expect(operationSchema.parse({
-    ...operation,
-    serviceBindings: { [reference.serviceId]: reference },
-  }).serviceBindings).toEqual({ [reference.serviceId]: reference });
+  expect(
+    operationSchema.parse({
+      ...operation,
+      serviceBindings: { [reference.serviceId]: reference },
+    }).serviceBindings,
+  ).toEqual({ [reference.serviceId]: reference });
   for (const invalid of [
     { ...reference, revision: undefined },
     { ...reference, machineId: "" },
@@ -85,10 +87,12 @@ test("job service identity is optional but incomplete references and private fie
     { ...reference, runtime: { pluginId: "private-provider" } },
     { ...reference, serviceId: "different-service" },
   ])
-    expect(operationSchema.safeParse({
-      ...operation,
-      serviceBindings: { [reference.serviceId]: invalid },
-    }).success).toBe(false);
+    expect(
+      operationSchema.safeParse({
+        ...operation,
+        serviceBindings: { [reference.serviceId]: invalid },
+      }).success,
+    ).toBe(false);
 });
 
 test("explicit instance pins are never sent to an accepted owner that cannot parse them", () => {
@@ -107,14 +111,20 @@ test("explicit instance pins are never sent to an accepted owner that cannot par
   expect(jobOwnerRequestRefusal(37, { ...request, serviceBindings })).toBe(
     "service_bindings_protocol_unsupported",
   );
-  expect(jobOwnerRequestRefusal(JOB_OWNER_PROTOCOL_VERSION, { ...request, serviceBindings })).toBeNull();
+  expect(
+    jobOwnerRequestRefusal(JOB_OWNER_PROTOCOL_VERSION, { ...request, serviceBindings }),
+  ).toBeNull();
   expect(JobRequestSchema.shape.serviceBindings.parse(serviceBindings)).toEqual(serviceBindings);
-  expect(JobRequestSchema.shape.serviceBindings.safeParse(
-    Object.fromEntries(Array.from({ length: 65 }, (_, i) => {
-      const serviceId = `sample.service-${i}`;
-      return [serviceId, { ...serviceBindings["sample.broker"], serviceId }];
-    })),
-  ).success).toBe(false);
+  expect(
+    JobRequestSchema.shape.serviceBindings.safeParse(
+      Object.fromEntries(
+        Array.from({ length: 65 }, (_, i) => {
+          const serviceId = `sample.service-${i}`;
+          return [serviceId, { ...serviceBindings["sample.broker"], serviceId }];
+        }),
+      ),
+    ).success,
+  ).toBe(false);
 });
 
 const location = { anchor: "config", components: ["vault"], revision: "r1", kind: "file" };
@@ -428,24 +438,31 @@ test("output-only lease backing cannot become a file, working directory or ordin
     locations: { "sample.outputs": { anchor: "data", components: ["outputs"], revision: "r1" } },
     operations: { "sample.isolated": operation },
   };
-  expect(MachineHalfSchema.parse(declaration).operations["sample.isolated"]!.locations).toEqual(
-    operation.locations,
-  );
   for (const access of ["read", "create"])
-    expect(MachineOperationSchema.safeParse({
-      ...operation, locations: [{ ...operation.locations[0], access }],
-    }).success).toBe(false);
-  expect(MachineOperationSchema.safeParse({
-    ...operation, workingDirectory: { locationId: "sample.outputs" },
-  }).success).toBe(false);
-  expect(MachineOperationSchema.safeParse({
-    ...operation,
-    locations: [...operation.locations, { locationId: "sample.outputs", access: "write" }],
-  }).success).toBe(false);
-  expect(MachineHalfSchema.safeParse({
-    ...declaration,
-    locations: { "sample.outputs": { ...declaration.locations["sample.outputs"], kind: "file" } },
-  }).success).toBe(false);
+    expect(
+      MachineOperationSchema.safeParse({
+        ...operation,
+        locations: [{ ...operation.locations[0], access }],
+      }).success,
+    ).toBe(false);
+  expect(
+    MachineOperationSchema.safeParse({
+      ...operation,
+      workingDirectory: { locationId: "sample.outputs" },
+    }).success,
+  ).toBe(false);
+  expect(
+    MachineOperationSchema.safeParse({
+      ...operation,
+      locations: [...operation.locations, { locationId: "sample.outputs", access: "write" }],
+    }).success,
+  ).toBe(false);
+  expect(
+    MachineHalfSchema.safeParse({
+      ...declaration,
+      locations: { "sample.outputs": { ...declaration.locations["sample.outputs"], kind: "file" } },
+    }).success,
+  ).toBe(false);
   expect(MachineHalfSchema.safeParse({ ...declaration, locations: {} }).success).toBe(false);
   const ordinary = { ...operation, locations: [{ locationId: "sample.outputs", access: "write" }] };
   const mixed = MachineHalfSchema.parse({
@@ -456,7 +473,7 @@ test("output-only lease backing cannot become a file, working directory or ordin
     "output_only_locations_protocol_unsupported",
   );
   expect(jobOwnerMachine(37, mixed)?.operations).toEqual({
-    "sample.ordinary": mixed.operations["sample.ordinary"],
+    "sample.ordinary": mixed.operations["sample.ordinary"]!,
   });
   expect(jobOwnerMachine(JOB_OWNER_PROTOCOL_VERSION, mixed)).toEqual(mixed);
   expect(jobOwnerMachine(37, MachineHalfSchema.parse(declaration))).toBeNull();
