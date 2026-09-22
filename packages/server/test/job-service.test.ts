@@ -336,7 +336,10 @@ async function instanceFixture(
   return { f, policy, provider, start, revision: configured.configuration.revision };
 }
 
-async function instanceBindingFixture(remote: boolean) {
+async function instanceBindingFixture(
+  remote: boolean,
+  consumerProtocolVersion = JOB_OWNER_PROTOCOL_VERSION,
+) {
   const { f, policy, provider, start, revision } = await instanceFixture(
     ":memory:",
     JOB_OWNER_PROTOCOL_VERSION,
@@ -436,6 +439,7 @@ async function instanceBindingFixture(remote: boolean) {
       [policy.serviceId]: { revision: policy.revision, operationIds: ["inspect"] },
     },
   };
+  target.owner.protocolVersion = consumerProtocolVersion;
   target.owner.resources = resources;
   if (remote) prove(target);
   else f.service.event(f.channel, { type: "resources", resources });
@@ -503,6 +507,16 @@ test.each([false, true])("opt-in instance identity describes the actual owner (r
     for (const privateField of ["credential", "runtime", "origin", "policy", "configuredBy", "traceId"]) {
       expect(Object.hasOwn(operation.serviceBindings![reference.serviceId]!, privateField)).toBe(false);
     }
+    expect(() => f.service.execute(f.root, args.pluginId, "forged-owner", {
+      jobId: "forged-owner",
+      machineId: args.machineId,
+      operationId: consumerOperation,
+      input: { value: "safe" },
+      outputs: [],
+      expectedServiceBindings: {
+        [reference.serviceId]: { ...reference, machineId: "caller-selected-owner" },
+      },
+    })).toThrow("service_bindings_changed");
     const pinned = f.service.execute(f.root, args.pluginId, "pinned-source", {
       jobId: "pinned-source",
       machineId: args.machineId,
@@ -510,6 +524,7 @@ test.each([false, true])("opt-in instance identity describes the actual owner (r
       installationRevision: "consumer-r1",
       artifactSha256: hash,
       resourceBindingDigest: operation.resourceBindingDigest,
+      expectedServiceBindings: operation.serviceBindings,
       input: { value: "safe" },
       outputs: [],
     });
@@ -637,6 +652,153 @@ test("reinstalling a current remote service cannot admit the previously describe
       includeServiceBindings: true,
     });
     expect(historical.operations![consumerOperation]!.serviceBindings).toEqual({});
+  } finally {
+    f.store.close();
+  }
+});
+
+test.each([false, true])("required instance pins fence ABA, effects and schedules (remote=%s)", async (remote) => {
+  const { f, target, policy, reference, installation, args, consumerOperation, describe, digest, effectivePolicy } =
+    await instanceBindingFixture(remote);
+  try {
+    const inspected = describe().operations![consumerOperation]!;
+    const execution = {
+      machineId: args.machineId,
+      operationId: consumerOperation,
+      input: { value: "safe" },
+      outputs: [],
+      resourceBindingDigest: inspected.resourceBindingDigest,
+      expectedServiceBindings: inspected.serviceBindings,
+    };
+    const running = f.service.execute(f.root, args.pluginId, "pinned", { ...execution, jobId: "pinned" });
+    f.service.event(target.channel, {
+      type: "state",
+      jobId: running.request.jobId,
+      requestDigest: running.request.requestDigest,
+      ownerId: target.owner.ownerId,
+      ownerGeneration: target.owner.generation,
+      state: "started",
+    });
+    const authorize = {
+      type: "service_authorize" as const,
+      subject: { kind: "job" as const, jobId: running.request.jobId },
+      authorizationId: "pinned-service-call",
+      serviceId: policy.serviceId,
+      revision: policy.revision,
+      policySha256: digest(effectivePolicy),
+      operationId: "inspect",
+    };
+    f.service.event(target.channel, authorize);
+    expect(target.commands.at(-1)).toMatchObject({ type: "service_authorized", allowed: true });
+    f.service.consent(f.root, {
+      ...installation,
+      node: formatManifoldUri({ kind: "operation", machineId: args.machineId, operationId: consumerOperation }),
+      cap: "jobs:read",
+      enabled: true,
+    });
+    f.service.schedule(f.root, args.pluginId, "pinned-schedule", {
+      ...execution,
+      jobId: "pinned-template",
+      scheduleId: "pinned-cadence",
+      revision: "one",
+      firstNominalAt: f.runtime.now() + 100,
+      intervalMs: 100,
+      deadlineMs: 50,
+      expiresAt: f.runtime.now() + 1000,
+      offlinePolicy: "skip",
+    });
+    expect(f.service.schedules(f.root, args.pluginId).map((schedule) => schedule.scheduleId)).toEqual(["pinned-cadence"]);
+    const disabled = await f.service.configureInstanceService(f.root, {
+      serviceId: policy.serviceId,
+      expectedRevision: reference.revision,
+      policy,
+      enabled: false,
+    });
+    const replacement = await f.service.configureInstanceService(f.root, {
+      serviceId: policy.serviceId,
+      expectedRevision: disabled.configuration!.revision,
+      policy,
+      enabled: true,
+    });
+    expect(replacement.configuration!.revision).not.toBe(reference.revision);
+    // A local identical-policy ABA retains the old resource digest; the explicit ref must fence it.
+    expect(describe().operations![consumerOperation]!.resourceBindingDigest).toBe(inspected.resourceBindingDigest);
+    expect(() =>
+      f.service.execute(f.root, args.pluginId, "stale-reference", { ...execution, jobId: "stale-reference" }),
+    ).toThrow("service_bindings_changed");
+    expect(f.service.jobs.get("stale-reference")).toBeNull();
+    f.service.event(target.channel, { ...authorize, authorizationId: "after-aba" });
+    expect(target.commands.at(-1)).toMatchObject({ type: "service_authorized", allowed: false });
+    f.runtime.time += 100;
+    f.service.tick();
+    expect(f.service.schedules(f.root, args.pluginId)).toEqual([]);
+    expect(target.commands.some((command) =>
+      command.type === "start" && command.request.traceId === "pinned-schedule",
+    )).toBe(false);
+  } finally {
+    f.store.close();
+  }
+});
+
+test("a queued local consumer retains its exact instance revision through deferred admission", async () => {
+  const { f, policy, reference, installation, args, consumerOperation, describe } =
+    await instanceBindingFixture(false);
+  try {
+    const inspected = describe().operations![consumerOperation]!;
+    f.service.install(f.root, { ...installation, installationRevision: "consumer-r2" });
+    f.service.consent(f.root, {
+      ...installation,
+      installationRevision: "consumer-r2",
+      node: formatManifoldUri({ kind: "operation", machineId: args.machineId, operationId: consumerOperation }),
+      cap: "machines:run",
+      enabled: true,
+    });
+    const queued = f.service.execute(f.root, args.pluginId, "queued-pin", {
+      jobId: "queued-pin",
+      machineId: args.machineId,
+      operationId: consumerOperation,
+      input: { value: "safe" },
+      outputs: [],
+      expectedServiceBindings: inspected.serviceBindings,
+    });
+    expect(queued.state).toBe("queued");
+    await f.service.configureInstanceService(f.root, {
+      serviceId: policy.serviceId,
+      expectedRevision: reference.revision,
+      policy,
+      enabled: false,
+    });
+    f.service.tick();
+    const refused = f.service.jobs.get("queued-pin")!;
+    expect(refused.state).toBe("cancelled");
+    expect(f.service.jobs.cancellation("queued-pin")?.reason).toBe("service_bindings_changed");
+    expect(f.commands.some((command) =>
+      command.type === "start" && command.request.jobId === "queued-pin",
+    )).toBe(false);
+  } finally {
+    f.store.close();
+  }
+});
+
+test("an older accepted owner keeps ordinary execution but refuses required instance pins", async () => {
+  const { f, args, consumerOperation, describe } = await instanceBindingFixture(true, 37);
+  try {
+    const inspected = describe().operations![consumerOperation]!;
+    const execution = {
+      machineId: args.machineId,
+      operationId: consumerOperation,
+      input: { value: "safe" },
+      outputs: [],
+    };
+    expect(() => f.service.execute(f.root, args.pluginId, "unsupported-pin", {
+      ...execution,
+      jobId: "unsupported-pin",
+      expectedServiceBindings: inspected.serviceBindings,
+    })).toThrow("service_bindings_protocol_unsupported");
+    expect(f.service.jobs.get("unsupported-pin")).toBeNull();
+    expect(f.service.execute(f.root, args.pluginId, "ordinary", {
+      ...execution, jobId: "ordinary",
+    }).state).toBe("start-committed");
   } finally {
     f.store.close();
   }

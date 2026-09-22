@@ -1501,6 +1501,25 @@ export class JobService {
     }
     return bindings;
   }
+  private requireServiceBindings(
+    install: JobInstallation,
+    operationId: string,
+    expected: JobRequest["serviceBindings"],
+  ): void {
+    if (expected === undefined) return;
+    const current = this.operationServiceBindings(install, operationId);
+    for (const [serviceId, reference] of Object.entries(expected)) {
+      const actual = current[serviceId];
+      if (
+        !actual ||
+        actual.machineId !== reference.machineId ||
+        actual.serviceId !== reference.serviceId ||
+        actual.revision !== reference.revision ||
+        actual.policySha256 !== reference.policySha256
+      )
+        fail("service_bindings_changed");
+    }
+  }
 
   private resourceRefusal(
     install: JobInstallation,
@@ -4099,6 +4118,7 @@ export class JobService {
       digest(this.operationBindings(install, request.operationId) ?? null)
     )
       fail("resource_bindings_changed");
+    this.requireServiceBindings(install, request.operationId, request.serviceBindings);
     // Retained work keeps its pinned resources across transport loss. Live availability
     // gates new admission and service effects, not the continued validity of its grants.
     for (const binding of op.services ?? [])
@@ -4231,6 +4251,7 @@ export class JobService {
       digest(args.resourceBindings) !== digest(resourceBindings ?? null)
     )
       fail("resource_bindings_changed");
+    this.requireServiceBindings(install, args.operationId, args.expectedServiceBindings);
     const resourceReason = this.resourceRefusal(install, args.operationId);
     if (resourceReason) fail(resourceReason);
     for (const [key, field] of Object.entries(op.input))
@@ -4315,6 +4336,9 @@ export class JobService {
       installationRevision: install.revision,
       artifactSha256: install.artifact,
       ...(resourceBindings ? { resourceBindings } : {}),
+      ...(args.expectedServiceBindings !== undefined
+        ? { serviceBindings: args.expectedServiceBindings }
+        : {}),
       parent: null,
       ...(inputs.length ? { inputs } : {}),
       credential: this.auth.credentialReference(auth),

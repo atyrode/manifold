@@ -41,6 +41,7 @@ export type JobExecution = Pick<
   resourceBindings?: JobResourceBindings | undefined;
   /** Host-controlled one-use association to a Run admitted before native execution. */
   agentRun?: NativeAgentRunBinding | undefined;
+  expectedServiceBindings?: JobRequest["serviceBindings"] | undefined;
 };
 export interface JobScheduleTiming {
   scheduleId: string;

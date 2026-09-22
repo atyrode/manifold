@@ -3772,8 +3772,8 @@ separate native owner proof and admitted resource/runtime bindings.
 
 ### Native job owner RPC
 
-Native owner RPC has its own `JOB_OWNER_PROTOCOL_VERSION`, currently 41, and
-`JOB_OWNER_PROTOCOL_COMPAT_VERSIONS = {34, 35, 36, 37, 40, 41}`. It is independent of machine and session
+Native owner RPC has its own `JOB_OWNER_PROTOCOL_VERSION`, currently 42, and
+`JOB_OWNER_PROTOCOL_COMPAT_VERSIONS = {34, 35, 36, 37, 40, 41, 42}`. It is independent of machine and session
 protocols. An additive-optional change **adds** its new version to the acceptance set; a
 breaking change **resets** the set and requires a coordinated drained owner upgrade.
 Compatibility never substitutes for owner proof, current execution consent or resource
@@ -3789,18 +3789,22 @@ to bind to its invoking installation when `runtime.installationRevision` is omit
 The additive 37 → 40 change adds operator anchors: `operator.<name>` locations, read-only by
 construction, and the owner inventory's `anchorDefinitions` (#839, ADR 0049). The additive
 40 → 41 change adds the optional, signed Run binding and its ephemeral tool
-request/cancel/result relay (#769); existing unbound jobs remain unchanged. Versions 38 and 39
-were reserved by drafts and are never accepted; because capability checks compare revisions, a
-later capability takes a version above 41 rather than reusing them.
+request/cancel/result relay (#769); existing unbound jobs remain unchanged. The additive 41 → 42
+change adds signed request `serviceBindings` and operation location `outputOnly`. Versions 38
+and 39 were reserved by drafts and are never accepted; because capability checks compare
+revisions, a later capability takes a version above 42 rather than reusing them.
 These are optional operations, not permission to orphan every already-running job or instance service.
 
 The hub sends only fields the negotiated owner parses. Private launch and `launchBinding`
 require 35; bound inputs require 36; self-provider service runtimes require 37; operator
-anchors require 40; Run-bound tools require 41 and machine protocol 43. An older accepted owner
-keeps serving its compatible jobs and instance services; only the newer operation is refused by
-name (`run_launch_protocol_unsupported`, `bound_inputs_protocol_unsupported`,
-`service_runtime_unsupported`, `operator_anchors_protocol_unsupported` or
-`agent_tools_protocol_unsupported`). Unsupported
+anchors require 40; Run-bound tools require 41 and machine protocol 43; explicit instance
+references (`serviceBindings`) and output-only backing locations (`outputOnlyLocations`)
+require 42. An older accepted owner keeps serving its compatible jobs and instance services;
+only the newer use is refused by name (`run_launch_protocol_unsupported`,
+`bound_inputs_protocol_unsupported`, `service_runtime_unsupported`,
+`operator_anchors_protocol_unsupported`, `agent_tools_protocol_unsupported`,
+`service_bindings_protocol_unsupported` or `output_only_locations_protocol_unsupported`).
+Unsupported
 operation declarations are omitted from that owner's install projection rather than
 weakening them, and signed admissions are never rewritten. Upgrading an owner may restore
 the complete installation only when its retained command exactly matches the deterministic
@@ -4014,14 +4018,21 @@ provider handling and postconditions belong to plugins, never the common floor.
   passing false) omits the field, preserving ordinary strict-client response compatibility.
   This is inspection under the same authority and consent gates, not a new grant or attestation.
   Consumers requiring this proof must refuse absent entries, including answers from older hubs.
-  For a remote instance, the installed effective policy includes this exact native reference.
-  Persist its operation's `resourceBindingDigest` with the installation/artifact pins and supply
-  them to execution: native admission rejects replaced installation bindings or a changed current
-  remote owner, configuration revision or policy, including configuration A→B→A.
-  Same-owner references have the same meaning as observations, but the existing local effective
-  policy digest does not include the instance configuration revision: identical-policy local
-  A→B→A is not fenced by that digest. Consumers requiring that revision fence must use a distinct
-  executor and source owner; do not treat a same-owner observation as an additional execution pin.
+  Persist the reference, the operation's `resourceBindingDigest` and the installation/artifact pins.
+  `execute` and `schedule` accept `expectedServiceBindings`, a bounded map of required instance
+  references keyed by service id. Every supplied entry must match a current declared, bound instance
+  identity or admission refuses `service_bindings_changed` before reservation. It may be a subset;
+  an empty map asserts no source identity. The hub retains the exact references in signed
+  `JobRequest.serviceBindings` and rechecks them at queued admission and service-effect authority,
+  including scheduled occurrences. A stale owner, revision, policy, disabled service or undeclared
+  binding cannot be replaced silently. This fences configuration A→B→A on both same-machine and
+  remote layouts without changing existing policy or `resourceBindingDigest` semantics.
+  Remote effective policies already bind their native reference; local policy digests alone do
+  not bind the instance configuration revision, which is why requiring consumers must submit
+  `expectedServiceBindings` rather than rely only on the resource digest.
+  Explicit pins require the native owner's `serviceBindings` capability. Unsupported accepted
+  owners refuse `service_bindings_protocol_unsupported`, never discard the assertion; ordinary
+  callers omitting the field retain their existing request and admission behavior.
   `connected` means the current channel has proved its job owner, not merely that a
   terminal transport is online. `platforms` comes from that proved owner and is empty
   when disconnected; the implemented backend supports `linux-x64` and `linux-arm64`.

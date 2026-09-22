@@ -61,6 +61,7 @@ export const JobExecuteArgsSchema = JobRequestSchema.pick({
   resourceBindingDigest: PublicJobSchema.shape.resourceBindingDigest.optional(),
   resourceBindings: JobResourceBindingsSchema.optional(),
   agentRun: NativeAgentRunBindingSchema.optional(),
+  expectedServiceBindings: JobRequestSchema.shape.serviceBindings,
 });
 const execute = JobExecuteArgsSchema.omit({ agentRun: true });
 const nativeExecute = JobExecuteArgsSchema;
