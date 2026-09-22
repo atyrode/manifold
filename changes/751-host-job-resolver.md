@@ -1,6 +1,0 @@
----
-section: Fixed
-issue: 751
----
-
-A job that declares host networking can resolve a name again. It received the machine's network namespace and no resolver configuration at all — nothing binds `/etc`, so `/etc/resolv.conf` did not exist inside a job — which meant a workload could open a connection to an address and could not turn a name into one. It did not present as a missing file: `fetch` by hostname reported a timeout while the resolver underneath it was refused a connection to its default `127.0.0.1`, so every by-name call failed slowly and blamed the network, and an OMP gateway spent 8s × 3 attempts failing to read its provider's live model catalog before falling back to the bundled snapshot. A host-network job is now given the machine's resolver configuration as a read-only snapshot taken at launch, so no host pathname is resolved inside the sandbox and a later edit on the host cannot change what a running job already read; a host with nothing readable hands over nothing, and a job that declares no networking still has no resolver, because it has nothing it could reach to resolve against. The seccomp filter and the `RES_OPTIONS` mitigation for glibc's dual-stack batching are unchanged — neither was the cause, which was isolated by denying `sendmsg`, `sendmmsg` and the `io_uring` calls one at a time and watching name resolution stay green.
