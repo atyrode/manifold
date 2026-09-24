@@ -1803,6 +1803,42 @@ configured installation does not make unrelated operations unavailable. An expli
 `workingDirectory` selects one declared location. Managed companions retain their own
 artifact/member hashes; no source executable or host-PATH fallback is permitted.
 
+**Read an operator's host directory.** Besides the six built-in anchors (`home`, `data`,
+`state`, `cache`, `config`, `runtime`), all rooted in the owner's own storage, a location may
+name an **operator anchor**, `anchor: "operator.<name>"`, where `<name>` is 1–63 lowercase
+letters, digits or inner hyphens. Each machine's operator declares which host directory a name
+presents ([SELF-HOST §Operator anchors](SELF-HOST.md#operator-anchors)). Name the anchor by
+what it exposes, not by your plugin, so plugins can share it; a machine that does not declare
+it reports `anchors_unavailable` for the operations that read it and runs the rest.
+Operator anchors are **read-only by construction**: an operation may reference such a
+location only with `access: "read"`, and `managed` is refused. `components: []` names the
+anchor's directory whole; only an operator anchor's directory may be named that way, so
+`kind: "file"` and every built-in anchor still need at least one component:
+
+```json
+"locations": {
+  "acme.sessions": {
+    "anchor": "operator.omp-sessions",
+    "kind": "directory",
+    "components": [],
+    "revision": "1",
+    "guestPath": "/home/job/sessions"
+  }
+}
+```
+
+An operation that reads an operator anchor always requires reviewed resource bindings,
+whether or not the machine half sets `requiresResourceBindings`, so direct installation
+without them refuses `resource_bindings_required`. Deployment review shows the host path the
+anchor presents on each target, and a target whose owner has not advertised that path is not
+approvable (`resource_evidence_unknown`). The pin binds the path: when the operator changes
+what the anchor presents, admission refuses `anchors_revision_changed` until a new review.
+Consent is the ordinary `locations:read` on the location node. An owner older than owner RPC
+40 cannot resolve operator anchors: such an operation is refused
+`operator_anchors_protocol_unsupported` and omitted from that owner's installation, and the
+plugin's other operations are unaffected. Older hubs and plugin kits reject the manifest
+outright, so adopt operator anchors only once your kit and every target hub carry them.
+
 **Review installation through the same native authority.** The existing per-machine
 runtime inspector already installs artifacts and reviews revision-bound resource/operation
 consent. [ADR 0036](decisions/0036-reviewed-native-deployment.md) extends that review path
