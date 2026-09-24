@@ -278,8 +278,10 @@ let
         if inside "$real" "$(realpath -m "$area")"; then refuse "$name" "source $source contains $area"; return; fi
       done
       mkdir -m 0755 "$view" || { refuse "$name" "cannot create $view"; return; }
+      # libmount writes each `u:A:B:N` entry as a uid_map line "A B N", and an idmapped mount
+      # shows an on-disk id A as B: the source owner's ids come first, manifold's second.
       if ! mount --bind -o ro,nosuid,nodev,noexec,nosymfollow \
-          -o "X-mount.idmap=u:$manifold_uid:$owner:1 g:$manifold_gid:$group:1" "$real" "$view"; then
+          -o "X-mount.idmap=u:$owner:$manifold_uid:1 g:$group:$manifold_gid:1" "$real" "$view"; then
         rmdir "$view"
         refuse "$name" "idmapped read-only bind failed"
         return
