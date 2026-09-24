@@ -12,6 +12,7 @@ import {
   JobResultSchema,
   ServiceConfigurationSchema,
   WorkerContextSchema,
+  guestServiceRefusal,
   jobResourceBindingsFor,
   jobResourceRefusal,
   jobResourceRequirements,
@@ -770,15 +771,20 @@ export class MachineJobOwner {
     if (this.resources.refresh(required)) this.publishResources();
   }
 
+  /**
+   * Whether `subject` may still make this call on this owner, judged against the resource
+   * inventory. `refresh` re-walks the runtime-tool trees the subject depends on first; one
+   * authorization walks once, before asking the hub, and its recheck after the answer reads the
+   * inventory that walk — or any later one — left (#841).
+   */
   private serviceSubjectValid(
     subject: ServiceAuthoritySubject,
     request: Parameters<AuthorizeServiceCall>[0],
     policySha256: string,
+    refresh: boolean,
   ): boolean {
     const policy = this.policy(request.serviceId);
     if (
-      !this.sink ||
-      this.draining ||
       !policy ||
       policy.revision !== request.revision ||
       jobDigest(policy) !== policySha256 ||
@@ -787,6 +793,7 @@ export class MachineJobOwner {
       return false;
     let invoking:
       Pick<JobRequest, "pluginId" | "installationRevision" | "artifactSha256"> | undefined;
+    let inventory: JobResourceInventory | undefined;
     if (subject.kind === "tunnel") {
       const tunnel = this.serviceTunnels.get(subject.channelId);
       const command = tunnel?.command;
@@ -835,14 +842,15 @@ export class MachineJobOwner {
       )
         return false;
       invoking = job.request;
-      this.refreshOperationResources(installation, job.request.operationId);
+      if (refresh) this.refreshOperationResources(installation, job.request.operationId);
+      inventory = this.resources.snapshot();
       if (
         jobResourceRefusal(
           installation.command.machine,
           job.request.operationId,
           this.platform(),
           job.request.resourceBindings,
-          this.resources.snapshot(),
+          inventory,
         )
       )
         return false;
@@ -852,39 +860,48 @@ export class MachineJobOwner {
       const installation = runtime && this.runtimeInstallation(runtime);
       if (runtime) {
         if (!installation?.command.machine.operations[runtime.operationId]) return false;
-        this.refreshOperationResources(installation, runtime.operationId);
-      } else if (this.resources.refresh({ tools: [], anchors: [], services: [request.serviceId] }))
+        if (refresh) this.refreshOperationResources(installation, runtime.operationId);
+      } else if (
+        refresh &&
+        this.resources.refresh({ tools: [], anchors: [], services: [request.serviceId] })
+      )
         this.publishResources();
     }
-    const inventory = this.resources.snapshot();
+    inventory ??= this.resources.snapshot();
     return (
       inventory.services[request.serviceId] === policySha256 &&
       this.serviceAvailable(policy, [request.operationId], inventory, new Set(), invoking)
     );
   }
 
+  /**
+   * Resolves `true` when the hub allowed the call and it is still valid here, `false` when the
+   * hub or this owner's own authority checks refused it. An authorization nobody decided is not a
+   * denial (#841): it rejects with the `ServiceFailure` that names why — no seat, draining, too
+   * many pending, or cancelled. There is no owner-side clock: the wait for the hub's answer is
+   * bounded by the caller's signal, which carries the call's own deadline, and by the seat,
+   * whose loss settles every pending authorization.
+   */
   private async authorizeService(
     subject: ServiceAuthoritySubject,
     request: Parameters<AuthorizeServiceCall>[0],
     policySha256: string,
     signal: AbortSignal,
   ): Promise<boolean> {
-    if (
-      signal.aborted ||
-      this.serviceAuthorizations.size >= 256 ||
-      !this.serviceSubjectValid(subject, request, policySha256)
-    )
-      return false;
+    if (signal.aborted) throw new ServiceFailure("service_cancelled");
     const seat = this.sink;
+    if (!seat) throw new ServiceFailure("service_owner_unavailable");
+    if (this.draining) throw new ServiceFailure("service_owner_draining");
+    if (this.serviceAuthorizations.size >= 256) throw new ServiceFailure("service_busy");
+    if (!this.serviceSubjectValid(subject, request, policySha256, true)) return false;
     const authorizationId = randomUUID();
     const pending = Promise.withResolvers<boolean>();
     const abort = () => pending.resolve(false);
     this.serviceAuthorizations.set(authorizationId, { subject, resolve: pending.resolve });
-    const timer = setTimeout(abort, 5000);
     signal.addEventListener("abort", abort, { once: true });
     try {
       if (
-        !seat?.({
+        !seat({
           type: "service_authorize",
           subject,
           authorizationId,
@@ -894,15 +911,15 @@ export class MachineJobOwner {
           operationId: request.operationId,
         })
       )
-        return false;
-      return (
-        (await pending.promise) &&
-        this.sink === seat &&
-        !signal.aborted &&
-        this.serviceSubjectValid(subject, request, policySha256)
-      );
+        throw new ServiceFailure("service_owner_unavailable");
+      const allowed = await pending.promise;
+      // A lost seat and a cancelled call settle the wait with `false` too; neither is the hub's.
+      if (signal.aborted) throw new ServiceFailure("service_cancelled");
+      if (this.sink !== seat) throw new ServiceFailure("service_owner_unavailable");
+      if (!allowed) return false;
+      if (this.draining) throw new ServiceFailure("service_owner_draining");
+      return this.serviceSubjectValid(subject, request, policySha256, false);
     } finally {
-      clearTimeout(timer);
       signal.removeEventListener("abort", abort);
       this.serviceAuthorizations.delete(authorizationId);
     }
@@ -1020,7 +1037,7 @@ export class MachineJobOwner {
         ok: false,
         refusal: "service_binding_mismatch",
       };
-    return this.serviceRunner.call(
+    const reply = await this.serviceRunner.call(
       request,
       binding,
       (call, authoritySignal) =>
@@ -1037,6 +1054,9 @@ export class MachineJobOwner {
         this.configurationController.signal,
       ]),
     );
+    // The worker is sandboxed: it learns its call's fate, never the owner's state (#708), and an
+    // undecided authorization now names that state (#841).
+    return reply.ok ? reply : { ...reply, refusal: guestServiceRefusal(reply.refusal) };
   }
 
   private async closeServices(job: OwnedJob, retiring = false): Promise<void> {

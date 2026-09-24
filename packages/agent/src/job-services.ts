@@ -424,15 +424,18 @@ export function createJobServiceRunner(options: {
           operationId: request.operationId,
           input: Object.freeze(request.input),
         });
+        // Only an answer of `false` is a denial; an authorization nobody decided keeps the word
+        // that says why (#841).
         const check = async () => {
+          let allowed: boolean;
           try {
-            if (
-              (await abortable(authorize(authority, controller.signal), controller.signal)) !== true
-            )
-              throw new Error("denied");
-          } catch {
-            throw new ServiceFailure("service_unauthorized");
+            allowed = await abortable(authorize(authority, controller.signal), controller.signal);
+          } catch (error) {
+            throw error instanceof ServiceFailure
+              ? error
+              : new ServiceFailure("service_unavailable");
           }
+          if (allowed !== true) throw new ServiceFailure("service_unauthorized");
           controller.signal.throwIfAborted();
         };
         await check();

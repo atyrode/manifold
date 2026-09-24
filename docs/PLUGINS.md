@@ -2131,6 +2131,24 @@ preceded it: an operator reads "authorized, then refused: `service_runtime_child
 rather than inferring it. Refusing to serve a call is not an unready service, so no readiness
 flips — the contradiction is meant to be visible, not smoothed over.
 
+**Only a denial is `403 service_unauthorized`.** Every call waits for the hub's decision
+(#841). That wait has no owner clock of its own. It lasts until the hub answers, the owner loses
+its hub seat, or the call is cancelled or reaches its own `timeoutMs`, whichever comes first.
+`403` means that the hub refused the call, or that the owner's own authority check did: a stale
+policy, a cancelled job, or a runtime tool that no longer matches its binding.
+
+Other failures are not denials, so they return a status the caller may retry:
+
+- The owner cannot ask the hub, because it has no seat or is draining: `503 service_unavailable`.
+- Too many authorizations are already pending: `429 service_busy`.
+- The call's deadline passes while the hub is still deciding: `503 service_timeout`.
+
+The owner's `service_call_refused` log records these cases with `stage: "authorization"`.
+
+Each authorization walks the runtime-tool trees it depends on once, before asking the hub. When
+the answer arrives, the owner checks it against the inventory from that walk, or from any later
+one.
+
 Every metered call appends one lifecycle frame,
 `inference_call { serviceId, operationId, model, inputTokens, outputTokens, cachedInputTokens,
 costMicros, elapsedMs, status }`, and every refusal appends

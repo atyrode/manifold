@@ -12,6 +12,7 @@ const fixtureTestPattern = [
   "native direct invocation projects PATCH results and binds cancellation and owner authorization to invoke",
   "reacquired runtime artifacts restore dependent service readiness without new configuration",
   "(?:read|tunnel) service authority refreshes a changed runtime before seeking a hub grant",
+  "(?:read|tunnel) service authority waits for a late hub answer, walks runtime tools once, and only a denial refuses",
   "instance retirement preserves native (?:cooperative|lost-completion|launch-race|noncooperative) ownership until confirmed exit",
   "real machine jobs enforce consent, execute once across transport replacement, and fence queued revocation",
   "instance services survive hub and transport replacement and route only current cross-owner authority",

@@ -864,15 +864,23 @@ export async function createJobServiceProxy(
         operationId,
         input: Object.freeze(input),
       });
+      // Only an answer of `false` is a denial. An authorization that could not be decided — the
+      // owner lost its seat, is draining or has too many pending, the call was cancelled or ran
+      // out of its own deadline — keeps its own word and a retryable status, never 403, and the
+      // owner's record names the stage it stopped at (#841).
       const check = async () => {
+        let allowed: boolean;
         try {
-          if (
-            (await boundedWait(authorize(authority, controller.signal), controller.signal)) !== true
-          )
-            throw new Error("denied");
-        } catch {
-          throw new ProxyFailure(403, "service_unauthorized");
+          allowed = await boundedWait(authorize(authority, controller.signal), controller.signal);
+        } catch (error) {
+          reportDetail = { stage: "authorization" };
+          throw error instanceof ProxyFailure
+            ? error
+            : error instanceof ServiceFailure
+              ? new ProxyFailure(error.refusal === "service_busy" ? 429 : 503, error.refusal)
+              : new ProxyFailure(503, "service_unavailable");
         }
+        if (allowed !== true) throw new ProxyFailure(403, "service_unauthorized");
         controller.signal.throwIfAborted();
       };
       await check();

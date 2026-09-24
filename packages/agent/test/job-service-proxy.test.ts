@@ -1296,3 +1296,69 @@ test("a refused runtime is reported precisely and answered coarsely (#708)", asy
     await ceiling.close();
   }
 });
+
+test("only a denial is 403: an undecided authorization keeps its own retryable word (#841)", async () => {
+  let hits = 0;
+  const server = await upstream((_request, response) => {
+    hits++;
+    response.writeHead(200, { "content-type": "application/json" }).end("{}");
+  });
+  const cases: {
+    authorize: (signal: AbortSignal) => Promise<boolean>;
+    answer: { status: number; body: string };
+    reported: { reason: string; detail?: Record<string, string> };
+  }[] = [
+    {
+      authorize: async () => false,
+      answer: { status: 403, body: '{"error":"service_unauthorized"}' },
+      reported: { reason: "service_unauthorized" },
+    },
+    {
+      // The owner lost its seat: nobody refused this call, so the caller may try again.
+      authorize: () => Promise.reject(new ServiceFailure("service_owner_unavailable")),
+      answer: { status: 503, body: '{"error":"service_unavailable"}' },
+      reported: { reason: "service_owner_unavailable", detail: { stage: "authorization" } },
+    },
+    {
+      authorize: () => Promise.reject(new ServiceFailure("service_busy")),
+      answer: { status: 429, body: '{"error":"service_busy"}' },
+      reported: { reason: "service_busy", detail: { stage: "authorization" } },
+    },
+    {
+      authorize: () => Promise.reject(new Error(`private ${secret}`)),
+      answer: { status: 503, body: '{"error":"service_unavailable"}' },
+      reported: { reason: "service_unavailable", detail: { stage: "authorization" } },
+    },
+    {
+      // The hub has not answered when the call's own deadline passes.
+      authorize: (signal) => {
+        const { promise, resolve } = Promise.withResolvers<boolean>();
+        signal.addEventListener("abort", () => resolve(false));
+        return promise;
+      },
+      answer: { status: 503, body: '{"error":"service_timeout"}' },
+      reported: { reason: "service_timeout", detail: { stage: "authorization" } },
+    },
+  ];
+  try {
+    for (const { authorize, answer, reported } of cases) {
+      const refusals: unknown[] = [];
+      const proxy = await createJobServiceProxy({
+        policies: [policy(server.origin, { timeoutMs: 50 })],
+        bindings: [binding],
+        resolveCredential: async () => secret,
+        authorize: (_call, signal) => authorize(signal),
+        onRefusal: ({ reason, detail }) => refusals.push({ reason, ...(detail ? { detail } : {}) }),
+      });
+      try {
+        expect(await send(proxy)).toEqual(answer);
+        expect(refusals).toEqual([reported]);
+      } finally {
+        await proxy.close();
+      }
+    }
+    expect(hits).toBe(0);
+  } finally {
+    await server.close();
+  }
+});
