@@ -43,8 +43,13 @@ const MAX_PAGE_MESSAGES = 500;
 const MAX_PAGE_MESSAGE_CHARS = 2_000;
 /** One devtools readiness probe; the launch loop retries within its own overall deadline. */
 const DEVTOOLS_PROBE_MS = 2_000;
-/** Opening the endpoint Chromium just advertised is local and must not wait unobserved. */
-const CDP_SOCKET_OPEN_MS = 10_000;
+/**
+ * Opening the advertised endpoint needs Chromium's busy main thread. Hosted runners have been
+ * measured taking ~44s just to advertise it while D-Bus calls stall that thread (#837), so this
+ * bound matches the launch readiness budget rather than tightening it: it exists to end an
+ * infinite wait with diagnostics, not to fail a slow-but-progressing launch.
+ */
+const CDP_SOCKET_OPEN_MS = 60_000;
 
 /** Renders one CDP `Runtime.RemoteObject` as the text a reader wants in a dump. */
 function describeRemoteObject(value: unknown): string {
@@ -163,11 +168,12 @@ export class Browser {
         stderrTail = (stderrTail + decoder.decode(chunk.value)).slice(-4096);
       }
     })();
+    const launched = Date.now();
     const diagnostics = (): string =>
-      `${binary} (devtools port ${String(port)})${stderrTail === "" ? "" : `\nchromium stderr tail:\n${stderrTail}`}`;
+      `${binary} (devtools port ${String(port)}, ${String(Date.now() - launched)}ms after launch)${stderrTail === "" ? "" : `\nchromium stderr tail:\n${stderrTail}`}`;
 
     let endpoint = "";
-    const deadline = Date.now() + 60_000;
+    const deadline = launched + 60_000;
     for (;;) {
       if (proc.exitCode !== null) {
         throw new Error(
