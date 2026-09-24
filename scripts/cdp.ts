@@ -41,6 +41,10 @@ export interface DragPayload {
 /** Bounded so a chatty page cannot grow the driver without limit across a long gate. */
 const MAX_PAGE_MESSAGES = 500;
 const MAX_PAGE_MESSAGE_CHARS = 2_000;
+/** One devtools readiness probe; the launch loop retries within its own overall deadline. */
+const DEVTOOLS_PROBE_MS = 2_000;
+/** Opening the endpoint Chromium just advertised is local and must not wait unobserved. */
+const CDP_SOCKET_OPEN_MS = 10_000;
 
 /** Renders one CDP `Runtime.RemoteObject` as the text a reader wants in a dump. */
 function describeRemoteObject(value: unknown): string {
@@ -171,7 +175,13 @@ export class Browser {
         );
       }
       try {
-        const res = await fetch(`http://127.0.0.1:${String(port)}/json/version`);
+        // Chromium can accept a devtools connection before answering it. Bound each probe so
+        // one stalled response cannot silently outlive the launch deadline below (#835).
+        const res = await fetch(`http://127.0.0.1:${String(port)}/json/version`, {
+          signal: AbortSignal.timeout(
+            Math.max(1, Math.min(DEVTOOLS_PROBE_MS, deadline - Date.now())),
+          ),
+        });
         const body = (await res.json()) as { webSocketDebuggerUrl?: string };
         endpoint = body.webSocketDebuggerUrl ?? "";
         if (endpoint !== "") break;
@@ -188,8 +198,18 @@ export class Browser {
     this.socket = socket;
     const opened = Promise.withResolvers<void>();
     socket.onopen = () => opened.resolve();
-    socket.onerror = () => opened.reject(new Error("cdp socket failed"));
-    await opened.promise;
+    socket.onerror = () => opened.reject(new Error(`cdp socket failed: ${diagnostics()}`));
+    socket.onclose = () =>
+      opened.reject(new Error(`cdp socket closed before opening: ${diagnostics()}`));
+    const openTimer = setTimeout(
+      () => opened.reject(new Error(`timed out opening cdp socket: ${diagnostics()}`)),
+      CDP_SOCKET_OPEN_MS,
+    );
+    try {
+      await opened.promise;
+    } finally {
+      clearTimeout(openTimer);
+    }
     socket.onmessage = (event: MessageEvent) => {
       if (typeof event.data !== "string") return;
       const frame = JSON.parse(event.data) as CdpFrame;
