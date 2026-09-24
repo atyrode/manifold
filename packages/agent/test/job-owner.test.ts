@@ -1,4 +1,4 @@
-import { describe, expect, spyOn, test } from "bun:test";
+import { describe, expect, spyOn, test, vi } from "bun:test";
 import {
   createHash,
   generateKeyPairSync,
@@ -40,6 +40,7 @@ import { HeldDirectory } from "../src/job-files.ts";
 import { JobJournal, jobDigest } from "../src/job-journal.ts";
 import { MachineJobOwner, type JobOwnerOptions } from "../src/job-owner.ts";
 import { JobOutputStore } from "../src/job-outputs.ts";
+import { JobResources } from "../src/job-resources.ts";
 import { artifactCacheKey } from "../src/job-artifacts.ts";
 import { LinuxJobRefusal, startLinuxJob, type LinuxJobResult } from "../src/job-linux.ts";
 import * as nativeRuntime from "../src/job-linux.ts";
@@ -1949,7 +1950,11 @@ test.skipIf(!linux || !cgroupRoot)(
   },
 );
 
-async function resourceServiceOwner(scope: "job" | "instance", contextual = false) {
+async function resourceServiceOwner(
+  scope: "job" | "instance",
+  contextual = false,
+  timeoutMs = 1000,
+) {
   const root = mkdtempSync(join(tmpdir(), "owner-resource-service-"));
   const held: HeldDirectory[] = [];
   mkdirSync(join(root, "private"), { mode: 0o700 });
@@ -1985,16 +1990,21 @@ async function resourceServiceOwner(scope: "job" | "instance", contextual = fals
     });
   let owner = await open();
   const events: JobEvent[] = [];
+  type Authorize = Extract<JobEvent, { type: "service_authorize" }>;
+  let hold: ((event: Authorize) => void) | undefined;
   const attach = () =>
     owner.attach((event) => {
       events.push(event);
-      if (event.type === "service_authorize")
-        void owner.execute({
-          type: "service_authorized",
-          subject: event.subject,
-          authorizationId: event.authorizationId,
-          allowed: true,
-        });
+      if (event.type === "service_authorize") {
+        if (hold) hold(event);
+        else
+          void owner.execute({
+            type: "service_authorized",
+            subject: event.subject,
+            authorizationId: event.authorizationId,
+            allowed: true,
+          });
+      }
       return true;
     });
   let detach = attach();
@@ -2068,7 +2078,7 @@ async function resourceServiceOwner(scope: "job" | "instance", contextual = fals
         input: {},
         query: {},
         body: [],
-        timeoutMs: 1000,
+        timeoutMs,
         maxRequestBytes: 1024,
         maxResponseBytes: 1024,
         maxResultBytes: 1024,
@@ -2085,7 +2095,7 @@ async function resourceServiceOwner(scope: "job" | "instance", contextual = fals
           contentTypes: ["application/json"],
           headers: [],
         },
-        timeoutMs: 1000,
+        timeoutMs,
         maxRequestBytes: 1024,
         maxResponseBytes: 1024,
       },
@@ -2188,6 +2198,23 @@ async function resourceServiceOwner(scope: "job" | "instance", contextual = fals
           (event) => event.type === "result" && event.result.jobId === request.jobId,
         ),
       };
+    },
+    /** The next authorization request reaches the hub and waits there until `answer`. */
+    holdAuthorization(): Promise<Authorize> {
+      const next = Promise.withResolvers<Authorize>();
+      hold = (event) => {
+        hold = undefined;
+        next.resolve(event);
+      };
+      return next.promise;
+    },
+    answer(event: Authorize, allowed: boolean) {
+      return owner.execute({
+        type: "service_authorized",
+        subject: event.subject,
+        authorizationId: event.authorizationId,
+        allowed,
+      });
     },
     mutateTool() {
       chmodSync(toolPath, 0o600);
@@ -2585,64 +2612,110 @@ test.skipIf(!linux || !cgroupRoot)(
   },
 );
 
+/** One call through the hub-initiated read, or the HTTP proxy of a tunnel, to `fixture`'s
+ * instance service: the refusal word, or the HTTP status. */
+async function callInstanceService(
+  fixture: { readonly owner: MachineJobOwner; events: JobEvent[]; policy: ServicePolicy },
+  mode: "read" | "tunnel",
+): Promise<string | number> {
+  if (mode === "read") {
+    const requestId = `read-${fixture.events.length}`;
+    await fixture.owner.execute({
+      type: "service_read",
+      requestId,
+      machineId: "machine",
+      serviceId: fixture.policy.serviceId,
+      revision: fixture.policy.revision,
+      policySha256: jobDigest(fixture.policy),
+      operationId: "read",
+      input: {},
+    });
+    const result = fixture.events.findLast(
+      (event) => event.type === "service_read_result" && event.requestId === requestId,
+    );
+    if (result?.type !== "service_read_result") throw new Error("missing_service_result");
+    return result.reply.ok ? "ok" : result.reply.refusal;
+  }
+  const channelId = `tunnel-${fixture.events.length}`;
+  await fixture.owner.execute({
+    type: "service_tunnel_open",
+    channelId,
+    serviceId: fixture.policy.serviceId,
+    revision: fixture.policy.revision,
+    policySha256: jobDigest(fixture.policy),
+    operationIds: ["generate"],
+  });
+  const ready = fixture.events.findLast(
+    (event) => event.type === "service_tunnel_ready" && event.channelId === channelId,
+  );
+  if (ready?.type !== "service_tunnel_ready" || !ready.endpoint)
+    throw new Error("missing_service_tunnel");
+  const response = await fetch(`${ready.endpoint.url}/generate`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${ready.endpoint.bearer}`,
+      "content-type": "application/json",
+    },
+    body: "{}",
+  });
+  await response.arrayBuffer();
+  return response.status;
+}
+
 test.skipIf(!linux || !cgroupRoot).each(["read", "tunnel"] as const)(
   "%s service authority refreshes a changed runtime before seeking a hub grant",
   async (mode) => {
     const fixture = await resourceServiceOwner("instance");
     try {
-      const call = async () => {
-        if (mode === "read") {
-          const requestId = `read-${fixture.events.length}`;
-          await fixture.owner.execute({
-            type: "service_read",
-            requestId,
-            machineId: "machine",
-            serviceId: fixture.policy.serviceId,
-            revision: fixture.policy.revision,
-            policySha256: jobDigest(fixture.policy),
-            operationId: "read",
-            input: {},
-          });
-          const result = fixture.events.findLast(
-            (event) => event.type === "service_read_result" && event.requestId === requestId,
-          );
-          if (result?.type !== "service_read_result") throw new Error("missing_service_result");
-          return result.reply.ok ? "ok" : result.reply.refusal;
-        }
-        const channelId = `tunnel-${fixture.events.length}`;
-        await fixture.owner.execute({
-          type: "service_tunnel_open",
-          channelId,
-          serviceId: fixture.policy.serviceId,
-          revision: fixture.policy.revision,
-          policySha256: jobDigest(fixture.policy),
-          operationIds: ["generate"],
-        });
-        const ready = fixture.events.findLast(
-          (event) => event.type === "service_tunnel_ready" && event.channelId === channelId,
-        );
-        if (ready?.type !== "service_tunnel_ready" || !ready.endpoint)
-          throw new Error("missing_service_tunnel");
-        const response = await fetch(`${ready.endpoint.url}/generate`, {
-          method: "POST",
-          headers: {
-            authorization: `Bearer ${ready.endpoint.bearer}`,
-            "content-type": "application/json",
-          },
-          body: "{}",
-        });
-        await response.arrayBuffer();
-        return response.status;
-      };
       // Authorization precedes endpoint resolution, so no workload needs to be spawned.
-      await call();
+      await callInstanceService(fixture, mode);
       expect(fixture.events.some((event) => event.type === "service_authorize")).toBe(true);
       fixture.events.length = 0;
       fixture.mutateTool();
-      expect(await call()).toBe(mode === "read" ? "service_unauthorized" : 403);
+      expect(await callInstanceService(fixture, mode)).toBe(
+        mode === "read" ? "service_unauthorized" : 403,
+      );
       expect(fixture.events.some((event) => event.type === "service_authorize")).toBe(false);
       expect(fixture.owner.identity.resources!.services[fixture.policy.serviceId]).toBeUndefined();
     } finally {
+      await fixture.close();
+    }
+  },
+);
+
+test.skipIf(!linux || !cgroupRoot).each(["read", "tunnel"] as const)(
+  "%s service authority waits for a late hub answer, walks runtime tools once, and only a denial refuses",
+  async (mode) => {
+    // The call's own deadline, not an owner-side clock, bounds how long authorization may wait.
+    const fixture = await resourceServiceOwner("instance", false, 60_000);
+    const refresh = spyOn(JobResources.prototype, "refresh");
+    try {
+      // Past authorization the call meets an instance nobody started: a runtime refusal, which
+      // is how this fixture shows the grant was honored without spawning a workload.
+      const served = mode === "read" ? "service_upstream_refused" : 503;
+      expect(await callInstanceService(fixture, mode)).toBe(served);
+      // One authorization walks the runtime-tool tree once; the recheck after the hub's answer
+      // reads the inventory that walk left (#841).
+      refresh.mockClear();
+      expect(await callInstanceService(fixture, mode)).toBe(served);
+      expect(refresh.mock.calls.filter(([required]) => required.tools.length > 0)).toHaveLength(1);
+      // A hub that answers after a stall longer than the owner's former fixed 5 s wait still
+      // decides the call: an undecided authorization is not a denial (#841).
+      vi.useFakeTimers();
+      let held = fixture.holdAuthorization();
+      let pending = callInstanceService(fixture, mode);
+      const late = await held;
+      vi.advanceTimersByTime(10_000);
+      await fixture.answer(late, true);
+      expect(await pending).toBe(served);
+      // The hub's refusal remains the one answer that reads as a denial.
+      held = fixture.holdAuthorization();
+      pending = callInstanceService(fixture, mode);
+      await fixture.answer(await held, false);
+      expect(await pending).toBe(mode === "read" ? "service_unauthorized" : 403);
+    } finally {
+      vi.useRealTimers();
+      refresh.mockRestore();
       await fixture.close();
     }
   },

@@ -624,6 +624,7 @@ test("timeouts include authority waits and callback exception text is never refl
     expect(await runner.call(call, binding, () => pending.promise)).toMatchObject({
       refusal: "service_timeout",
     });
+    // A callback that broke did not deny the call (#841), and its text never reaches the caller.
     expect(
       await runner.call(call, binding, async () => {
         throw new Error("private-callback-material");
@@ -632,7 +633,7 @@ test("timeouts include authority waits and callback exception text is never refl
       type: "service_result",
       requestId: call.requestId,
       ok: false,
-      refusal: "service_unauthorized",
+      refusal: "service_unavailable",
     });
   } finally {
     pending.resolve(false);
