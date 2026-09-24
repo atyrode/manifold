@@ -2,17 +2,20 @@ import type { SectionProps } from "@manifold/plugin";
 import { FALLBACK_POLL_MS, usePolledResource } from "@manifold/plugin/hooks";
 import {
   canonicalJobJson,
+  isOperatorAnchor,
   JobDeploymentDescriptionSchema,
   JobDeploymentListResultSchema,
   JobDeploymentRequestSchema,
   JobDeploymentReviewSchema,
   JobDeploymentSchema,
+  parseManifoldUri,
   type JobDeployment,
   type JobDeploymentDescription,
   type JobDeploymentRequest,
   type JobDeploymentReview,
   type JobDeploymentState,
   type MachineHalf,
+  type MachineLocation,
   type MachineSummary,
 } from "@manifold/protocol";
 import { Cluster, Stack } from "@manifold/ui";
@@ -44,6 +47,28 @@ async function request(host: Host, action: string, args: unknown): Promise<unkno
 
 function failureMessage(reason: unknown): string {
   return reason instanceof Error ? reason.message : "Runtime preparation unavailable";
+}
+
+/** Where a location on an operator anchor reads on the host, and that it is never written. */
+export function OperatorHostPath({
+  location,
+  source,
+}: {
+  readonly location: MachineLocation;
+  readonly source: string | undefined;
+}): ReactElement | null {
+  if (!isOperatorAnchor(location.anchor)) return null;
+  return (
+    <small className="plugin-manager-runtime-host-path" data-host-path={source ?? ""}>
+      {source === undefined ? (
+        "Host path not advertised by this machine's owner · read-only"
+      ) : (
+        <>
+          Host path <code>{[source, ...location.components].join("/")}</code> · read-only
+        </>
+      )}
+    </small>
+  );
 }
 
 function ReviewedPreparation({ review }: { readonly review: JobDeploymentReview }): ReactElement {
@@ -94,36 +119,52 @@ function ReviewedPreparation({ review }: { readonly review: JobDeploymentReview 
               <p>No permission changes — installation approval only.</p>
             ) : (
               <ul aria-label={`Requested rights on ${target.machineName || target.machineId}`}>
-                {target.consents.map((consent) => (
-                  <li
-                    key={`${consent.node}:${consent.cap}`}
-                    data-node={consent.node}
-                    data-cap={consent.cap}
-                    data-approved={consent.approved}
-                    data-revision={consent.revision ?? ""}
-                    className={`plugin-manager-runtime-right${consent.cap === "network:host" || consent.cap === "locations:write" || consent.cap === "locations:create" ? " is-high-risk" : ""}`}
-                  >
-                    <div>
-                      <strong>
-                        {consent.cap === "network:host"
-                          ? "HIGH RISK — host network, including reachable local services"
-                          : consent.cap === "locations:write"
-                            ? "Writable location — may modify existing data"
-                            : consent.cap === "locations:create"
-                              ? "Create access — may create location contents"
-                              : consent.cap}
-                      </strong>
-                      <code>{consent.cap}</code>
-                      <small>{consent.node}</small>
-                      <small>
-                        {consent.approved
-                          ? "Consent enabled at review"
-                          : "Consent not enabled at review — approval requested"}
-                        {" · "}consent revision: <code>{consent.revision ?? "none"}</code>
-                      </small>
-                    </div>
-                  </li>
-                ))}
+                {target.consents.map((consent) => {
+                  const node = parseManifoldUri(consent.node);
+                  const location =
+                    node?.kind === "location" ? review.machine.locations[node.locationId] : undefined;
+                  return (
+                    <li
+                      key={`${consent.node}:${consent.cap}`}
+                      data-node={consent.node}
+                      data-cap={consent.cap}
+                      data-approved={consent.approved}
+                      data-revision={consent.revision ?? ""}
+                      className={`plugin-manager-runtime-right${consent.cap === "network:host" || consent.cap === "locations:write" || consent.cap === "locations:create" ? " is-high-risk" : ""}`}
+                    >
+                      <div>
+                        <strong>
+                          {consent.cap === "network:host"
+                            ? "HIGH RISK — host network, including reachable local services"
+                            : consent.cap === "locations:write"
+                              ? "Writable location — may modify existing data"
+                              : consent.cap === "locations:create"
+                                ? "Create access — may create location contents"
+                                : consent.cap}
+                        </strong>
+                        <code>{consent.cap}</code>
+                        <small>{consent.node}</small>
+                        {location ? (
+                          <OperatorHostPath
+                            location={location}
+                            source={
+                              target.resources.find(
+                                (resource) =>
+                                  resource.group === "anchors" && resource.name === location.anchor,
+                              )?.source
+                            }
+                          />
+                        ) : null}
+                        <small>
+                          {consent.approved
+                            ? "Consent enabled at review"
+                            : "Consent not enabled at review — approval requested"}
+                          {" · "}consent revision: <code>{consent.revision ?? "none"}</code>
+                        </small>
+                      </div>
+                    </li>
+                  );
+                })}
               </ul>
             )}
             {review.request.operationIds.length > 0 &&
@@ -202,6 +243,13 @@ function ReviewedPreparation({ review }: { readonly review: JobDeploymentReview 
                         <code>
                           {resource.sha256 ?? "Unknown — cannot approve a future binding"}
                         </code>
+                        {resource.group === "anchors" && isOperatorAnchor(resource.name) ? (
+                          <small>
+                            {resource.source === undefined
+                              ? "Host path not advertised — cannot approve"
+                              : `Host path ${resource.source} · read-only`}
+                          </small>
+                        ) : null}
                       </li>
                     ))}
                   </ul>

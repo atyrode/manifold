@@ -194,6 +194,13 @@ export {
   type WorkerProgress,
 } from "./worker.ts";
 export {
+  BUILT_IN_ANCHORS,
+  BuiltInAnchorSchema,
+  OperatorAnchorSchema,
+  MachineAnchorSchema,
+  OPERATOR_ANCHOR_LIMIT,
+  isOperatorAnchor,
+  readsOperatorAnchor,
   JobResourceBindingsSchema,
   JobResourceInventorySchema,
   jobResourceRequirements,

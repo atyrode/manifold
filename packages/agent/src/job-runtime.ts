@@ -1,7 +1,7 @@
 import { basename, dirname } from "node:path";
 import { closeSync, fstatSync, readFileSync } from "node:fs";
 import { JobOwnerConfigSchema, type JobOwnerConfig, type LogEvent } from "@manifold/protocol";
-import { HeldDirectory } from "./job-files.ts";
+import { fdMountReadOnly, HeldDirectory } from "./job-files.ts";
 import { JobJournal } from "./job-journal.ts";
 import { MachineJobOwner } from "./job-owner.ts";
 import { JobOutputStore } from "./job-outputs.ts";
@@ -9,6 +9,40 @@ import { JobBoundInputStore } from "./job-bound-inputs.ts";
 import { type LinuxJobBind } from "./job-linux.ts";
 import { DirectoryExclusions } from "./job-locations.ts";
 
+type OperatorAnchorRefusal = { reason: string; code?: string };
+
+/**
+ * Holds one operator anchor, or names why it stays unavailable. Through an idmapped view the
+ * owner owns every file it reads, so only a read-only mount keeps it from writing them.
+ */
+function holdOperatorAnchor(
+  path: string,
+  exclusions: DirectoryExclusions,
+): HeldDirectory | OperatorAnchorRefusal {
+  let held: HeldDirectory;
+  try {
+    held = HeldDirectory.openAbsolute(path);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code ?? (error as Error).message;
+    return code === "ENOENT"
+      ? { reason: "operator_anchor_absent" }
+      : { reason: "operator_anchor_unopenable", code };
+  }
+  let refusal: OperatorAnchorRefusal | null = null;
+  try {
+    if (!fdMountReadOnly(held.fd)) refusal = { reason: "operator_anchor_not_read_only" };
+    else exclusions.assertSource(held.fd, true);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code ?? (error as Error).message;
+    refusal =
+      code === "private_owner_source_overlap"
+        ? { reason: "operator_anchor_overlaps_protected" }
+        : { reason: "operator_anchor_unopenable", code };
+  }
+  if (refusal === null) return held;
+  held.close();
+  return refusal;
+}
 /** Opens reviewed local config through held descriptors. No job RPC can modify this authority. */
 export async function openConfiguredJobOwner(
   configPath: string,
@@ -73,6 +107,18 @@ export async function openConfiguredJobOwner(
     serviceCredentials.set(ref, { fd, origins: credential.origins });
   }
   const exclusions = new DirectoryExclusions(protectedDirectories);
+  // An anchor the owner cannot hold safely disables only the operations that read it. It never
+  // stops the owner and never falls back to another directory.
+  const operatorAnchors: Record<string, { path: string; source: string }> = {};
+  for (const [name, definition] of Object.entries(config.operatorAnchors ?? {})) {
+    const held = holdOperatorAnchor(definition.path, exclusions);
+    if (!(held instanceof HeldDirectory)) {
+      log?.("warn", "operator_anchor_unavailable", { anchor: name, ...held });
+      continue;
+    }
+    anchors[name] = held;
+    operatorAnchors[name] = { path: definition.path, source: definition.source ?? definition.path };
+  }
   const journal = new JobJournal(state.openChild("journal", { create: true }));
   const cache = state.openChild("artifacts", { create: true });
   const outputs = JobOutputStore.open(state.openChild("outputs", { create: true }));
@@ -124,6 +170,7 @@ export async function openConfiguredJobOwner(
     delegatedCgroup,
     bubblewrapFd,
     anchors,
+    ...(Object.keys(operatorAnchors).length ? { operatorAnchors } : {}),
     protectedDirectories,
     runtimeTools,
     serviceCredentials,

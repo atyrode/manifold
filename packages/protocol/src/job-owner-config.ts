@@ -1,4 +1,9 @@
 import { z } from "zod";
+import {
+  BuiltInAnchorSchema,
+  OPERATOR_ANCHOR_LIMIT,
+  OperatorAnchorSchema,
+} from "./job-resources.ts";
 import { ServiceCredentialReferenceSchema } from "./services.ts";
 
 const absolute = z
@@ -15,10 +20,19 @@ export const JobOwnerConfigSchema = z.strictObject({
   delegatedCgroup: absolute,
   bubblewrap: absolute,
   protectedDirectories: z.array(absolute).max(32),
-  anchors: z.partialRecord(
-    z.enum(["home", "data", "state", "cache", "config", "runtime"]),
-    absolute,
-  ),
+  anchors: z.partialRecord(BuiltInAnchorSchema, absolute),
+  /**
+   * Host directories the operator exposes read-only to plugin locations as `operator.<name>`.
+   * The owner opens and holds `path`; `source` is the host directory that `path` presents (a
+   * native view's origin), shown to root and deployment review. Absent means `path` itself.
+   */
+  operatorAnchors: z
+    .record(
+      OperatorAnchorSchema,
+      z.strictObject({ path: absolute, source: absolute.optional(), readOnly: z.literal(true) }),
+    )
+    .refine((values) => Object.keys(values).length <= OPERATOR_ANCHOR_LIMIT)
+    .optional(),
   runtimeTools: z
     .record(
       z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/),

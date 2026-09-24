@@ -9,7 +9,13 @@ import {
   type ServicePolicy,
   type ServiceCredentialReference,
 } from "@manifold/protocol";
-import { CLOSE_ON_EXEC, fdMountId, safeComponent, type HeldDirectory } from "./job-files.ts";
+import {
+  CLOSE_ON_EXEC,
+  fdMountId,
+  fdMountReadOnly,
+  safeComponent,
+  type HeldDirectory,
+} from "./job-files.ts";
 import type { LinuxJobBind } from "./job-linux.ts";
 
 // Linux O_PATH retains symlink identity without following its target or opening a device.
@@ -37,12 +43,17 @@ export class JobResources {
   constructor(
     private readonly options: {
       anchors: Readonly<Record<string, HeldDirectory>>;
+      /** The view path and host source of each held operator anchor, by its full name. */
+      operatorAnchors?: Readonly<Record<string, { path: string; source: string }>>;
       runtimeTools: Readonly<Record<string, readonly LinuxJobBind[]>>;
       services?: readonly ServicePolicy[];
       credentialReferences?: () => ServiceCredentialReference[];
       runtimeAvailable?: (policy: ServicePolicy, inventory: JobResourceInventory) => boolean;
     },
   ) {
+    // Only an owner that holds operator anchors advertises definitions, so every other
+    // inventory stays byte-identical.
+    if (Object.keys(options.operatorAnchors ?? {}).length) this.inventory.anchorDefinitions = {};
     this.configure(options.services ?? []);
     this.refresh({
       tools: Object.keys(options.runtimeTools),
@@ -86,15 +97,27 @@ export class JobResources {
     }
     for (const name of required.anchors) {
       let next: string | undefined;
+      const operator = this.options.operatorAnchors?.[name];
       try {
         const anchor = this.options.anchors[name];
         if (anchor) {
           const stat = fstatSync(anchor.fd, { bigint: true });
-          next = digest({
-            device: String(stat.dev),
-            inode: String(stat.ino),
-            mount: anchor.mountId,
-          });
+          // An operator view is re-created every boot, so its pin binds what it presents and
+          // that it is read-only, never the mount id; a remounted writable view is unavailable.
+          if (!operator)
+            next = digest({
+              device: String(stat.dev),
+              inode: String(stat.ino),
+              mount: anchor.mountId,
+            });
+          else if (fdMountReadOnly(anchor.fd))
+            next = digest({
+              device: String(stat.dev),
+              inode: String(stat.ino),
+              path: operator.path,
+              source: operator.source,
+              readOnly: true,
+            });
         }
       } catch {
         next = undefined;
@@ -102,6 +125,10 @@ export class JobResources {
       if (this.inventory.anchors[name] !== next) changed = true;
       if (next === undefined) delete this.inventory.anchors[name];
       else this.inventory.anchors[name] = next;
+      if (operator && this.inventory.anchorDefinitions) {
+        if (next === undefined) delete this.inventory.anchorDefinitions[name];
+        else this.inventory.anchorDefinitions[name] = { source: operator.source, readOnly: true };
+      }
     }
     return this.refreshServices() || changed;
   }

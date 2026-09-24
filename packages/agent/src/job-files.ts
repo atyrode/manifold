@@ -37,6 +37,15 @@ export function fdMountId(fd: number): number {
   if (!match) throw new Error("mount_identity_unavailable");
   return Number(match[1]);
 }
+/** The held descriptor's own mount is read-only by its per-mount flags, not its superblock's. */
+export function fdMountReadOnly(fd: number): boolean {
+  const mountId = String(fdMountId(fd));
+  for (const line of readFileSync("/proc/self/mountinfo", "utf8").split("\n")) {
+    const fields = line.split(" ");
+    if (fields[0] === mountId) return (fields[5] ?? "").split(",").includes("ro");
+  }
+  throw new Error("mount_identity_unavailable");
+}
 const FILE_SYMBOLS = {
   flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
   socketpair: { args: [FFIType.i32, FFIType.i32, FFIType.i32, FFIType.ptr], returns: FFIType.i32 },
@@ -168,6 +177,18 @@ export class HeldDirectory {
   }
   stat(): Stats {
     return fstatSync(this.fd);
+  }
+  /** A separately owned handle on this same directory: closing either leaves the other open. */
+  reopen(): HeldDirectory {
+    const fd = openSync(`${this.procPath}/.`, DIRECTORY_FLAGS);
+    try {
+      const copy = new HeldDirectory(fd);
+      if (copy.mountId !== this.mountId) throw new Error("mount_escape");
+      return copy;
+    } catch (error) {
+      closeSync(fd);
+      throw error;
+    }
   }
   openChild(
     name: string,

@@ -65,6 +65,8 @@ export const JobDeploymentTargetReviewSchema = z.strictObject({
       group: z.enum(["tools", "services", "anchors"]),
       name: id,
       sha256: hash.nullable(),
+      /** The host directory an operator anchor presents, from the live owner's definition. */
+      source: z.string().max(4096).optional(),
     }),
   ),
   consents: z.array(JobDeploymentConsentSchema),

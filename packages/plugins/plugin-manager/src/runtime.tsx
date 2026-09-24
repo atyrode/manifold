@@ -22,6 +22,7 @@ import { useState, type ReactElement } from "react";
 import { RuntimeInvocations } from "./runtime-invocations.tsx";
 import {
   DestinationPreparation,
+  OperatorHostPath,
   RuntimePreparation,
   useDestinationPreparation,
 } from "./runtime-deployment.tsx";
@@ -774,6 +775,10 @@ function MachineSetup({
             {location.kind ?? "directory"}
           </small>
           {location.guestPath ? <small>Guest mount {location.guestPath}</small> : null}
+          <OperatorHostPath
+            location={location}
+            source={description?.resources?.anchorDefinitions?.[location.anchor]?.source}
+          />
         </div>
       ))}
       {locationRights.length === 0 ? (
