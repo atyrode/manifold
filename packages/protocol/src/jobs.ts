@@ -38,14 +38,12 @@ export const JOB_OWNER_PROTOCOL_VERSION = 40;
  * unchanged; contextual policies are sent only to owners and machine transports that parse
  * that mode.
  */
-export const JOB_OWNER_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([34, 35, 36, 37, 40]);
+export const JOB_OWNER_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
+  34, 35, 36, 37, 40,
+]);
 
 export type JobOwnerCapability =
-  | "privateEnv"
-  | "launchBinding"
-  | "boundInputs"
-  | "selfServiceRuntime"
-  | "operatorAnchors";
+  "privateEnv" | "launchBinding" | "boundInputs" | "selfServiceRuntime" | "operatorAnchors";
 const jobOwnerCapabilityVersions: Readonly<Record<JobOwnerCapability, number>> = {
   privateEnv: 35,
   launchBinding: 35,

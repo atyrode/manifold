@@ -23,7 +23,10 @@ describe.skipIf(process.platform !== "linux")("anchor resource pins", () => {
     const root = mkdtempSync(join(tmpdir(), "job-anchor-pin-"));
     const held = HeldDirectory.openAbsolute(root);
     try {
-      const inventory = new JobResources({ anchors: { runtime: held }, runtimeTools: {} }).snapshot();
+      const inventory = new JobResources({
+        anchors: { runtime: held },
+        runtimeTools: {},
+      }).snapshot();
       expect(inventory.anchors).toEqual({
         runtime: sha256({ ...identity(held), mount: held.mountId }),
       });

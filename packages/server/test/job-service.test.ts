@@ -6534,8 +6534,10 @@ describe("reviewed native deployment approvals", () => {
       expect(install.installationRevision).toBe("anchored");
       expect(Object.keys(install.machine.operations)).toEqual([scan]);
       expect(Object.hasOwn(install.machine.locations, sessions)).toBe(false);
-      const operations = f.service.describe(f.root, { machineId: f.machineId, pluginId })
-        .operations!;
+      const operations = f.service.describe(f.root, {
+        machineId: f.machineId,
+        pluginId,
+      }).operations!;
       expect(operations[archive]).toMatchObject({
         ready: false,
         reason: "operator_anchors_protocol_unsupported",

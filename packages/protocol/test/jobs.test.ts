@@ -108,12 +108,10 @@ test("operator anchors are an open operator-named set that a location may name w
   expect(MachineLocationSchema.parse(sessions).anchor).toBe("operator.omp-sessions");
   expect(MachineLocationSchema.safeParse({ ...sessions, kind: undefined }).success).toBe(true);
   expect(
-    MachineLocationSchema.safeParse({ ...sessions, components: ["2026", "session.jsonl"] })
-      .success,
+    MachineLocationSchema.safeParse({ ...sessions, components: ["2026", "session.jsonl"] }).success,
   ).toBe(true);
   expect(
-    MachineLocationSchema.safeParse({ ...sessions, components: ["a.jsonl"], kind: "file" })
-      .success,
+    MachineLocationSchema.safeParse({ ...sessions, components: ["a.jsonl"], kind: "file" }).success,
   ).toBe(true);
   for (const anchor of [
     "operator.",
@@ -221,9 +219,9 @@ test("an operation may only read an operator anchor", () => {
 test("older owners never receive an operator-anchor declaration and keep every other operation", () => {
   const machine = MachineHalfSchema.parse(anchoredMachine) as MachineHalf;
   for (const protocolVersion of [34, 35, 36, 37]) {
-    expect(
-      jobOwnerOperationRefusal(protocolVersion, machine.operations.archive!, machine),
-    ).toBe("operator_anchors_protocol_unsupported");
+    expect(jobOwnerOperationRefusal(protocolVersion, machine.operations.archive!, machine)).toBe(
+      "operator_anchors_protocol_unsupported",
+    );
     expect(jobOwnerOperationRefusal(protocolVersion, machine.operations.scan!, machine)).toBeNull();
     const projected = jobOwnerMachine(protocolVersion, machine)!;
     expect(Object.keys(projected.operations)).toEqual(["scan"]);

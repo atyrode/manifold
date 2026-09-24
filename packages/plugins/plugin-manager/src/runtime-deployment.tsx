@@ -122,7 +122,9 @@ function ReviewedPreparation({ review }: { readonly review: JobDeploymentReview 
                 {target.consents.map((consent) => {
                   const node = parseManifoldUri(consent.node);
                   const location =
-                    node?.kind === "location" ? review.machine.locations[node.locationId] : undefined;
+                    node?.kind === "location"
+                      ? review.machine.locations[node.locationId]
+                      : undefined;
                   return (
                     <li
                       key={`${consent.node}:${consent.cap}`}
