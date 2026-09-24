@@ -3610,8 +3610,8 @@ separate native owner proof and admitted resource/runtime bindings.
 
 ### Native job owner RPC
 
-Native owner RPC has its own `JOB_OWNER_PROTOCOL_VERSION`, currently 36, and
-`JOB_OWNER_PROTOCOL_COMPAT_VERSIONS = {34, 35, 36}`. It is independent of machine and session
+Native owner RPC has its own `JOB_OWNER_PROTOCOL_VERSION`, currently 37, and
+`JOB_OWNER_PROTOCOL_COMPAT_VERSIONS = {34, 35, 36, 37}`. It is independent of machine and session
 protocols. An additive-optional change **adds** its new version to the acceptance set; a
 breaking change **resets** the set and requires a coordinated drained owner upgrade.
 Compatibility never substitutes for owner proof, current execution consent or resource
@@ -3622,13 +3622,15 @@ inference limits, usage and journal events; 33 added workload-reported progress;
 accepted baseline and added the `pi-native-usage` meter kind (#572). The additive 34 → 35
 change added optional `privateEnv`, terminal `runId` and host-minted `launchBinding` (#587).
 The additive 35 → 36 change added operation `inputs`/`exports`, request `inputs` and
-`limits.inputBytes` (#592). These are optional operations, not permission to orphan every
-already-running job or instance service.
+`limits.inputBytes` (#592). The additive 36 → 37 change permits a job-scoped service runtime
+to bind to its invoking installation when `runtime.installationRevision` is omitted (#715).
+These are optional operations, not permission to orphan every already-running job or instance service.
 
 The hub sends only fields the negotiated owner parses. Private launch and `launchBinding`
-require 35; bound inputs require 36. An older accepted owner keeps serving its compatible
-jobs and instance services; only the newer operation is refused by name
-(`run_launch_protocol_unsupported` or `bound_inputs_protocol_unsupported`). Unsupported
+require 35; bound inputs require 36; self-provider service runtimes require 37. An older accepted
+owner keeps serving its compatible jobs and instance services; only the newer operation is refused
+by name (`run_launch_protocol_unsupported`, `bound_inputs_protocol_unsupported` or
+`service_runtime_unsupported`). Unsupported
 operation declarations are omitted from that owner's install projection rather than
 weakening them, and signed admissions are never rewritten. Upgrading an owner may restore
 the complete installation only when its retained command exactly matches the deterministic

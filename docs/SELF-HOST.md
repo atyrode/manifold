@@ -1307,6 +1307,17 @@ and a separate image attestation binds the OCI digest, to the exact repository, 
 source SHA and `.github/workflows/release.yml` signer at that SHA, with the GitHub Actions
 OIDC issuer and GitHub-hosted runners.
 
+**Release cadence and versions.** Each coherent, independently shipped user-visible fix or
+feature has a release checkpoint; related dependent PRs can form one delivery, while docs,
+process and test-only changes need no release of their own. A compatible fix-only release takes
+the next patch (`0.18.0` → `0.18.1` → `0.18.2`). The existing pre-1.0 policy takes a minor for
+additions or breaking changes; from 1.0, additions take minor and breaking changes take major.
+With no explicit level, the release command derives this from the pending changelog fragments.
+Classify the entire unpublished set, not just the last fix, and never force a patch over breaking
+changes. The development `+<distance>.g<sha>` suffix records provenance, not a published patch.
+[TRIAGE.md §Release checkpoint](TRIAGE.md#release-checkpoint) owns publication authorization,
+exact-CI gates, accountability and the separate production/fleet boundaries.
+
 Workspace package versions are required lock metadata: every `bun.lock` workspace must match
 its package manifest, including the absence of a version for versionless packages.
 The root manifest must remain versionless: Bun 1.4.2 omits the root record's version even
