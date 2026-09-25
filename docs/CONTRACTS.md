@@ -4163,6 +4163,17 @@ provider handling and postconditions belong to plugins, never the common floor.
   Current authority, consent and exact installation/resource/policy pins still apply;
   live readiness remains mandatory for new admission and each service effect.
   Retained identity records prevent expired output/result retention from permitting replay.
+  The journal is hash-chained and segmented, with no lifetime capacity (#848). A full segment
+  is sealed by a checkpoint signed with the owner identity that continues the chain and
+  carries the recovery state: installations, the drain latch, the generation count and, for
+  every reserved or refused job of any generation, its request ID and digest, permit ID,
+  plugin, instance-service flag, latest result and consumed input cursor. Request content is
+  not recovery state. Sealed records move unchanged to the owner's private archive, are never
+  read at startup and never deleted by the owner; recovery reads the newest checkpoint and one
+  live segment. A recovered job has no process: status, cancel, retire and a renewed start
+  answer from that record, input stays refused, and a consumed request ID still reports
+  uncertain delivery. A permit ID, job identity or input sequence is never reusable across a
+  checkpoint or restart, and an unsegmented journal is converted once at startup.
   A verified start rejected before reservation is durably tombstoned before any
   `workload_empty` proof. Status/cancel/retire may carry the original signed admission to
   abandon a start lost in transit; unknown or invalid authority cannot prove absence,

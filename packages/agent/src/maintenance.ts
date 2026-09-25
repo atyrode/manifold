@@ -6,6 +6,8 @@ import {
   type ActionDenialRule,
 } from "@manifold/protocol";
 import { ZodError } from "zod";
+import { HeldDirectory } from "./job-files.ts";
+import { verifyJobJournal, type JobJournalVerification } from "./job-journal.ts";
 import { unixTerminalHostDialer, type TerminalHostLink } from "./terminal-host-link.ts";
 
 const OWNER_TIMEOUT_MS = 30_000;
@@ -16,6 +18,7 @@ const HELP = `usage:
   manifold-agent --maintenance drain --hub URL --machine-id ID --owner-key-file FILE
   manifold-agent --maintenance reopen --hub URL --machine-id ID --owner-key-file FILE
   manifold-agent --maintenance shutdown --socket PATH --terminal-host-id ID [--expected-pid POSITIVE_PID]
+  manifold-agent --maintenance verify-journal --journal ABSOLUTE_DIRECTORY
   manifold-agent --maintenance --help
 
 Only explicitly named references are used. Owner keys are read inside Manifold, never
@@ -28,10 +31,13 @@ confirm it is drained and retains neither terminals nor jobs. Optional --expecte
 requires a positive safe integer matching the owner's status PID on the same connection
 before requesting shutdown. No command retries, attaches a transport, retires terminals,
 cancels jobs, or changes a supervisor.
+Verify-journal rereads a job owner journal and its archive in place, as the owner's own
+user and without the owner's lock; it changes nothing. A segment rotation during the read
+can fail it, so rerun before treating a failure as tampering.
 A failure means hold: a drain latch may already have persisted. Never infer rollback.
 `;
 
-type Command = "drain" | "reopen" | "shutdown";
+type Command = "drain" | "reopen" | "shutdown" | "verify-journal";
 type FailureReason =
   | "invalid_arguments"
   | "credential_unavailable"
@@ -46,7 +52,9 @@ type FailureReason =
   | "not_draining"
   | "terminals_retained"
   | "jobs_retained"
-  | "unexpected_owner_event";
+  | "unexpected_owner_event"
+  | "journal_unavailable"
+  | "journal_invalid";
 
 type Failure = {
   readonly ok: false;
@@ -55,6 +63,8 @@ type Failure = {
   readonly terminalIds?: readonly string[];
   readonly rule?: ActionDenialRule;
   readonly status?: number;
+  /** The fixed identifier a journal verification refused with. */
+  readonly code?: string;
 };
 
 type Outcome =
@@ -67,7 +77,8 @@ type Outcome =
       readonly draining: boolean;
       readonly terminalIds: readonly string[];
     }
-  | { readonly ok: true; readonly command: "shutdown"; readonly terminalHostId: string };
+  | { readonly ok: true; readonly command: "shutdown"; readonly terminalHostId: string }
+  | ({ readonly ok: true; readonly command: "verify-journal" } & JobJournalVerification);
 
 type Options =
   | {
@@ -81,10 +92,13 @@ type Options =
       readonly socket: string;
       readonly terminalHostId: string;
       readonly expectedPid?: number;
-    };
+    }
+  | { readonly command: "verify-journal"; readonly journal: string };
 
 function isCommand(value: string | undefined): value is Command {
-  return value === "drain" || value === "reopen" || value === "shutdown";
+  return (
+    value === "drain" || value === "reopen" || value === "shutdown" || value === "verify-journal"
+  );
 }
 
 function failure(reason: FailureReason): Failure {
@@ -95,9 +109,11 @@ function parseOptions(args: readonly string[]): Options {
   const command = args[0];
   if (!isCommand(command)) throw new Error("invalid_arguments");
   const allowed =
-    command === "shutdown"
-      ? ["--socket", "--terminal-host-id", "--expected-pid"]
-      : ["--hub", "--machine-id", "--owner-key-file"];
+    command === "verify-journal"
+      ? ["--journal"]
+      : command === "shutdown"
+        ? ["--socket", "--terminal-host-id", "--expected-pid"]
+        : ["--hub", "--machine-id", "--owner-key-file"];
   const flags = new Map<string, string>();
   for (let at = 1; at < args.length; at += 2) {
     const flag = args[at];
@@ -120,6 +136,11 @@ function parseOptions(args: readonly string[]): Options {
     if (value === undefined) throw new Error("invalid_arguments");
     return value;
   };
+  if (command === "verify-journal") {
+    const journal = required("--journal");
+    if (!journal.startsWith("/")) throw new Error("invalid_arguments");
+    return { command, journal };
+  }
   if (command === "shutdown") {
     const rawExpectedPid = flags.get("--expected-pid");
     const expectedPid = rawExpectedPid === undefined ? undefined : Number(rawExpectedPid);
@@ -200,6 +221,25 @@ async function setDrain(
     draining: parsed.data.draining,
     terminalIds: parsed.data.terminalIds,
   };
+}
+
+function verifyJournal(options: Extract<Options, { command: "verify-journal" }>): Outcome {
+  let directory: HeldDirectory;
+  try {
+    directory = HeldDirectory.openAbsolute(options.journal, { private: true });
+  } catch {
+    return failure("journal_unavailable");
+  }
+  try {
+    return { ok: true, command: "verify-journal", ...verifyJobJournal(directory) };
+  } catch (error) {
+    // Journal refusals are fixed identifiers; parser and filesystem text stays private.
+    return error instanceof Error && /^[a-z_]{1,64}$/.test(error.message)
+      ? { ...failure("journal_invalid"), code: error.message }
+      : failure("journal_invalid");
+  } finally {
+    directory.close();
+  }
 }
 
 function closeLink(link: TerminalHostLink): void {
@@ -321,7 +361,11 @@ export async function runMaintenanceCLI(args: readonly string[]): Promise<number
   let outcome: Outcome;
   try {
     outcome =
-      options.command === "shutdown" ? await shutdownOwner(options) : await setDrain(options);
+      options.command === "verify-journal"
+        ? verifyJournal(options)
+        : options.command === "shutdown"
+          ? await shutdownOwner(options)
+          : await setDrain(options);
   } catch {
     outcome = failure("request_failed");
   }

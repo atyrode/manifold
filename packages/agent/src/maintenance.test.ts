@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MAX_TERMINAL_HOST_FRAME_BYTES, TERMINAL_HOST_PROTOCOL_VERSION } from "@manifold/protocol";
+import { HeldDirectory } from "./job-files.ts";
+import { JobJournal } from "./job-journal.ts";
 
 // Only disposable fixture credentials and loopback/Unix servers enter these process tests.
 const OWNER_KEY = "a451".repeat(16);
@@ -431,3 +433,47 @@ test("an owner that never acknowledges shutdown times out once without retry or 
   expect(owner.commands).toEqual([{ type: "status_request" }, { type: "shutdown_request" }]);
   expect(owner.connections()).toBe(1);
 }, 40_000);
+
+test.skipIf(process.platform !== "linux")(
+  "verify-journal rereads a journal and its archive in place and holds on a tampered record",
+  async () => {
+    const journalPath = join(directory, "journal");
+    mkdirSync(journalPath, { mode: 0o700 });
+    const journal = new JobJournal(HeldDirectory.openAbsolute(journalPath, { private: true }), {
+      segmentRecords: 4,
+    });
+    for (let index = 0; index < 10; index++)
+      journal.append({ kind: "drain", draining: index % 2 === 0 });
+    journal.close();
+    const verified = await cli(["verify-journal", "--journal", journalPath]);
+    expect(verified.code).toBe(0);
+    expect(verified.stderr).toBe("");
+    expect(JSON.parse(verified.stdout)).toEqual({
+      ok: true,
+      command: "verify-journal",
+      firstSequence: 1,
+      lastSequence: expect.any(Number),
+      records: expect.any(Number),
+      segments: 2,
+      checkpoints: 2,
+      generation: 1,
+    });
+    expect(verified.stdout).not.toContain("PRIVATE KEY");
+    const archived = join(journalPath, "archive", "segment-00000001", "record-00000003");
+    writeFileSync(archived, readFileSync(archived, "utf8").replace("false", "true"));
+    const tampered = await cli(["verify-journal", "--journal", journalPath]);
+    hold(tampered, "verify-journal", "journal_invalid");
+    expect(JSON.parse(tampered.stderr).code).toBe("journal_corrupt");
+    expect(tampered.stderr).not.toContain("PRIVATE KEY");
+    hold(
+      await cli(["verify-journal", "--journal", "journal"]),
+      "verify-journal",
+      "invalid_arguments",
+    );
+    hold(
+      await cli(["verify-journal", "--journal", join(directory, "absent")]),
+      "verify-journal",
+      "journal_unavailable",
+    );
+  },
+);

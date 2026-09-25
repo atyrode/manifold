@@ -63,6 +63,23 @@ export function lockExclusive(fd: number): void {
   libc ??= dlopen("libc.so.6", FILE_SYMBOLS);
   if (libc.symbols.flock(fd, 2 | 4) !== 0) throw new Error("job_owner_already_locked");
 }
+/** renameat2(RENAME_NOREPLACE) between held directories. */
+function renameNoReplace(
+  from: HeldDirectory,
+  fromName: string,
+  to: HeldDirectory,
+  toName: string,
+): void {
+  libc ??= dlopen("libc.so.6", FILE_SYMBOLS);
+  const source = Buffer.from(`${fromName}\0`);
+  const target = Buffer.from(`${toName}\0`);
+  // A link/unlink substitute exposes nlink=2 and can leave that identity after a crash.
+  if (libc.symbols.renameat2(from.fd, ptr(source), to.fd, ptr(target), 1) !== 0) {
+    const address = libc.symbols.__errno_location();
+    const code = address === null ? "UNKNOWN" : getSystemErrorName(-readNative.i32(address));
+    throw Object.assign(new Error("exclusive_file_publication_failed"), { code });
+  }
+}
 
 /** Adopt an already-connected fd using Bun's extension to node:net. */
 export function adoptPrivateSocket(fd: number): Socket {
@@ -276,19 +293,8 @@ export class HeldDirectory {
       constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | CLOSE_ON_EXEC,
     );
     try {
-      if (exclusive) {
-        libc ??= dlopen("libc.so.6", FILE_SYMBOLS);
-        const source = Buffer.from(`${temporary}\0`);
-        const target = Buffer.from(`${destination}\0`);
-        // A link/unlink substitute exposes nlink=2 and can leave that identity after a crash.
-        if (libc.symbols.renameat2(this.fd, ptr(source), this.fd, ptr(target), 1) !== 0) {
-          const address = libc.symbols.__errno_location();
-          const code = address === null ? "UNKNOWN" : getSystemErrorName(-readNative.i32(address));
-          throw Object.assign(new Error("exclusive_file_publication_failed"), { code });
-        }
-      } else {
-        renameSync(`${this.procPath}/${temporary}`, `${this.procPath}/${destination}`);
-      }
+      if (exclusive) renameNoReplace(this, temporary, this, destination);
+      else renameSync(`${this.procPath}/${temporary}`, `${this.procPath}/${destination}`);
       fsyncSync(syncFd);
     } finally {
       closeSync(syncFd);
@@ -319,6 +325,12 @@ export class HeldDirectory {
     } finally {
       closeSync(fd);
     }
+  }
+  /** Moves one entry into another held directory on this mount; never replaces a name there. */
+  moveInto(name: string, destination: HeldDirectory): void {
+    safeComponent(name);
+    if (destination.mountId !== this.mountId) throw new Error("mount_escape");
+    renameNoReplace(this, name, destination, name);
   }
   close(): void {
     if (!this.closed) {

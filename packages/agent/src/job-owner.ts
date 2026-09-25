@@ -8,8 +8,6 @@ import {
   JOB_OWNER_PROTOCOL_VERSION,
   jobOwnerInstallRestoresProjection,
   JobCommandSchema,
-  JobRequestSchema,
-  JobResultSchema,
   ServiceConfigurationSchema,
   WorkerContextSchema,
   guestServiceRefusal,
@@ -45,7 +43,7 @@ import {
   type ArtifactAuthority,
   type PinnedArtifact,
 } from "./job-artifacts.ts";
-import type { JobJournal } from "./job-journal.ts";
+import type { JobJournal, RetainedJob } from "./job-journal.ts";
 import { jobDigest } from "./job-journal.ts";
 import { JobContext } from "./job-context.ts";
 import { JobProgressCoalescer, type ObservedProgress } from "./job-progress.ts";
@@ -224,7 +222,6 @@ export class MachineJobOwner {
   private readonly jobs = new Map<string, OwnedJob>();
   private readonly pendingStarts = new Map<string, Promise<void>>();
   private readonly instanceRuntimeServices = new Map<string, InstanceRuntimeService>();
-  private readonly permits = new Set<string>();
   private readonly challenges = new Set<string>();
   private readonly admissionKey: KeyObject;
   private readonly exclusions: DirectoryExclusions;
@@ -277,84 +274,26 @@ export class MachineJobOwner {
     const owner = new MachineJobOwner(options);
     // Recovery proves no old descendants retain output writers before a new generation admits.
     await recoverLinuxJobs(options.delegatedCgroup);
-    const recoveredInstalls = new Map<string, Extract<JobCommand, { type: "install" }>>();
-    for (const raw of options.journal.records) {
-      if (raw === null || typeof raw !== "object") throw new Error("invalid_job_journal_record");
-      const kind = Reflect.get(raw, "kind");
-      if (kind === "generation" || kind === "invocation") continue;
-      if (kind === "drain") {
-        owner.draining = Reflect.get(raw, "draining") === true;
-        continue;
-      }
-      if (kind === "install") {
-        const command = JobCommandSchema.parse(Reflect.get(raw, "command"));
-        if (command.type !== "install") throw new Error("invalid_install_record");
-        recoveredInstalls.set(
-          owner.installKey(command.pluginId, command.installationRevision),
-          command,
-        );
-        continue;
-      }
-      if (kind === "reservation" || kind === "rejection") {
-        const request = JobRequestSchema.parse(Reflect.get(raw, "request"));
-        const permitId = Reflect.get(raw, "permitId");
-        if (
-          typeof permitId !== "string" ||
-          owner.permits.has(permitId) ||
-          owner.jobs.has(request.jobId)
-        )
-          throw new Error("duplicate_reservation_record");
-        owner.permits.add(permitId);
-        const job = owner.newJob(request);
-        job.result = JobResultSchema.parse(Reflect.get(raw, "result"));
-        owner.jobs.set(request.jobId, job);
-        continue;
-      }
-      if (kind === "input") {
-        const job = owner.requireJob(String(Reflect.get(raw, "jobId")));
-        const seq = Reflect.get(raw, "nextInputSeq");
-        const requestId = Reflect.get(raw, "requestId");
-        if (
-          typeof seq !== "number" ||
-          !Number.isSafeInteger(seq) ||
-          seq !== job.inputSeq + 1 ||
-          typeof requestId !== "string"
-        )
-          throw new Error("invalid_input_journal");
-        job.inputSeq = seq;
-        job.inputRequests.add(requestId);
-        // Recovery never resumes a possibly partially written stream.
-        job.inputEnded = true;
-        continue;
-      }
-      if (kind === "result") {
-        const result = JobResultSchema.parse(Reflect.get(raw, "result"));
-        const job = owner.jobs.get(result.jobId);
-        if (!job || job.request.requestDigest !== result.requestDigest)
-          throw new Error("orphan_job_result");
-        job.result = result;
-        continue;
-      }
-      throw new Error("unknown_job_journal_record");
-    }
-    for (const command of recoveredInstalls.values()) {
+    const journal = options.journal;
+    owner.draining = journal.draining;
+    for (const command of journal.installations()) {
       if (command.action !== "purge") owner.restoreInstallation(command);
     }
-    for (const job of owner.jobs.values()) {
-      if (ACTIVE[job.result.state]) {
-        job.result = {
-          ...job.result,
-          state: "interrupted",
-          reason: "owner_restart_effects_unknown",
-          finishedAt: Date.now(),
-          usage: null,
-          outputs: [],
-        };
-        options.journal.append({ kind: "result", result: job.result });
-      }
-      job.resolveEmpty();
-      job.resolveLaunched();
-      job.resolveFinalized();
+    // Recovered jobs stay in the journal, which retains their identity, permit, result and
+    // input cursor but not their request content (#848). None of them has a process.
+    for (const job of journal.jobs()) {
+      if (ACTIVE[job.result.state])
+        journal.append({
+          kind: "result",
+          result: {
+            ...job.result,
+            state: "interrupted",
+            reason: "owner_restart_effects_unknown",
+            finishedAt: Date.now(),
+            usage: null,
+            outputs: [],
+          },
+        });
     }
     owner.ready = true;
     return owner;
@@ -442,6 +381,9 @@ export class MachineJobOwner {
           return;
         }
         case "invocation_reply":
+          // An earlier generation's parent has neither services nor a context left to answer.
+          if (!this.jobs.has(command.parentJobId) && this.options.journal.job(command.parentJobId))
+            return;
           if (command.reason !== null) {
             const parent = this.requireJob(command.parentJobId);
             for (const runtime of parent.runtimeServices.values())
@@ -468,6 +410,21 @@ export class MachineJobOwner {
           return;
         case "status": {
           const job = await this.reconcileStart(command);
+          if (!("request" in job)) {
+            this.emitRetainedEmpty(job);
+            this.emit({ type: "result", result: job.result });
+            this.emit({
+              type: "input_state",
+              jobId: job.jobId,
+              requestDigest: job.requestDigest,
+              ownerId: job.result.ownerId,
+              ownerGeneration: job.result.ownerGeneration,
+              nextInputSeq: job.inputSeq,
+              // Recovery closed stdin only for a job whose input it had recorded.
+              stdinClosed: job.inputSeq > 0,
+            });
+            return;
+          }
           this.emitEmpty(job);
           this.emit({ type: "result", result: job.result }, job);
           if (job.request.service) {
@@ -480,6 +437,10 @@ export class MachineJobOwner {
         }
         case "cancel": {
           const job = await this.reconcileStart(command);
+          if (!("request" in job)) {
+            this.emitRetainedEmpty(job);
+            return;
+          }
           this.emitEmpty(job);
           await this.cancel(command.jobId);
           return;
@@ -487,6 +448,12 @@ export class MachineJobOwner {
         case "retire": {
           if (parentJobId !== null) throw new Error("context_command_forbidden");
           const job = await this.reconcileStart(command);
+          if (!("request" in job)) {
+            // Only an instance service reaches here, and a settled one has nothing to retire.
+            this.emitRetainedEmpty(job);
+            this.emit({ type: "result", result: job.result });
+            return;
+          }
           this.emitEmpty(job);
           this.emit({ type: "result", result: job.result }, job);
           await this.retire(job);
@@ -1689,6 +1656,26 @@ export class MachineJobOwner {
     command: Extract<JobCommand, { type: "input" }>,
     parentJobId: string | null,
   ): Promise<void> {
+    const retained = this.jobs.has(command.jobId)
+      ? undefined
+      : this.options.journal.job(command.jobId);
+    if (retained) {
+      // A settled earlier-generation job has no stdin. A consumed request id still reports
+      // uncertain delivery, never a slot that could be written again.
+      this.emit({
+        type: "input_result",
+        jobId: command.jobId,
+        requestId: command.requestId,
+        seq: command.seq,
+        accepted: false,
+        reason: retained.inputRequests.has(command.requestId)
+          ? "job_input_delivery_unknown"
+          : "job_input_conflict_or_closed",
+        nextInputSeq: retained.inputSeq,
+        stdinClosed: retained.inputSeq > 0,
+      });
+      return;
+    }
     const job = this.requireJob(command.jobId);
     const reply = (accepted: boolean, reason: string | null) =>
       this.emit(
@@ -1886,6 +1873,10 @@ export class MachineJobOwner {
       const affected = [...this.jobs.values()].filter(
         (job) => job.request.pluginId === command.pluginId,
       );
+      // Earlier generations' jobs are settled and empty, with no leases, but still hold outputs.
+      const retained = [...this.options.journal.jobs()].filter(
+        (job) => job.pluginId === command.pluginId && !this.jobs.has(job.jobId),
+      );
       if (
         command.action === "purge" &&
         affected.some((job) => !job.emptyObserved || job.leases.length > 0)
@@ -1908,11 +1899,15 @@ export class MachineJobOwner {
             installation.enabled = false;
           }
         }
+        for (const job of retained) this.emitRetainedEmpty(job);
         await Promise.all(affected.map((job) => this.cancel(job.request.jobId)));
       } else {
-        for (const job of affected)
-          for (const output of this.options.outputs.recovered(job.request.jobId))
-            this.options.outputs.release(job.request.jobId, output.outputId);
+        for (const jobId of [
+          ...affected.map((job) => job.request.jobId),
+          ...retained.map((job) => job.jobId),
+        ])
+          for (const output of this.options.outputs.recovered(jobId))
+            this.options.outputs.release(jobId, output.outputId);
         existing.artifact?.close();
         for (const tool of existing.tools.values()) tool.close();
         this.installs.delete(key);
@@ -2117,7 +2112,10 @@ export class MachineJobOwner {
     reason: string,
   ): OwnedJob {
     const { request, permit } = admission;
-    if (this.jobs.has(request.jobId) || this.permits.has(permit.permitId))
+    if (
+      this.options.journal.job(request.jobId) ||
+      this.options.journal.permitConsumed(permit.permitId)
+    )
       throw new Error("job_identity_changed");
     const job = this.newJob(request);
     job.result = {
@@ -2135,7 +2133,6 @@ export class MachineJobOwner {
       result: job.result,
     });
     this.jobs.set(request.jobId, job);
-    this.permits.add(permit.permitId);
     job.inputEnded = true;
     job.resolveEmpty();
     job.resolveLaunched();
@@ -2146,7 +2143,7 @@ export class MachineJobOwner {
 
   private async reconcileStart(
     command: Extract<JobCommand, { type: "status" | "cancel" | "retire" }>,
-  ): Promise<OwnedJob> {
+  ): Promise<OwnedJob | RetainedJob> {
     if (command.admission) {
       this.verifyAdmission(command.admission);
       if (command.jobId !== command.admission.request.jobId)
@@ -2156,18 +2153,21 @@ export class MachineJobOwner {
     }
     // Retirement must latch while native launch is in flight, without waiting for it
     // (or its eventual exit) on the command transport.
-    if (command.type !== "retire" || !this.jobs.has(command.jobId))
+    if (command.type !== "retire" || !this.options.journal.job(command.jobId))
       await this.pendingStarts.get(command.jobId);
-    const job = this.jobs.get(command.jobId);
+    const job = this.jobs.get(command.jobId) ?? this.options.journal.job(command.jobId);
     if (job) {
+      const { requestDigest, service } =
+        "request" in job
+          ? { requestDigest: job.request.requestDigest, service: Boolean(job.request.service) }
+          : job;
       if (
         command.admission &&
-        (job.request.requestDigest !== command.admission.request.requestDigest ||
+        (requestDigest !== command.admission.request.requestDigest ||
           job.result.ownerGeneration !== command.admission.permit.ownerGeneration)
       )
         throw new Error("job_identity_changed");
-      if (command.type === "retire" && !job.request.service)
-        throw new Error("instance_service_required");
+      if (command.type === "retire" && !service) throw new Error("instance_service_required");
       return job;
     }
     if (!command.admission) throw new Error("unknown_job");
@@ -2197,7 +2197,7 @@ export class MachineJobOwner {
         permitId: command.permit.permitId,
         reason: error instanceof Error ? error.message : String(error),
       });
-      if (!this.jobs.has(command.request.jobId))
+      if (!this.options.journal.job(command.request.jobId))
         this.rejectUnadmitted(
           command,
           error instanceof LinuxJobRefusal && /^[a-zA-Z0-9_-]{1,128}$/.test(error.code)
@@ -2226,6 +2226,15 @@ export class MachineJobOwner {
       this.emit({ type: "result", result: existing.result }, existing);
       return;
     }
+    // An earlier generation's job answers from its record; a new permit never runs it again.
+    const retained = this.options.journal.job(request.jobId);
+    if (retained) {
+      if (request.terminal) throw new Error("terminal_admission_reused");
+      if (retained.requestDigest !== requestDigest) throw new Error("job_identity_changed");
+      this.emitRetainedEmpty(retained);
+      this.emit({ type: "result", result: retained.result });
+      return;
+    }
     if ([...this.jobs.values()].filter((job) => !job.emptyObserved).length >= 64)
       throw new Error("owner_active_job_limit");
     const now = Date.now();
@@ -2235,7 +2244,7 @@ export class MachineJobOwner {
       permit.expiresAt <= now ||
       permit.issuedAt > now ||
       permit.expiresAt - permit.issuedAt > 30_000 ||
-      this.permits.has(permit.permitId)
+      this.options.journal.permitConsumed(permit.permitId)
     )
       throw new Error("start_permit_refused");
     if (command.privateEnv && !terminalLaunch)
@@ -2512,7 +2521,6 @@ export class MachineJobOwner {
         result: job.result,
       });
       this.jobs.set(request.jobId, job);
-      this.permits.add(permit.permitId);
       if (parent && request.parent) {
         parent.context!.bind(request.parent.invocationId, request.jobId);
         parent.children.add(request.jobId);
@@ -3013,6 +3021,16 @@ export class MachineJobOwner {
       },
       job,
     );
+  }
+  /** An earlier generation proved its workloads empty before this generation admitted any. */
+  private emitRetainedEmpty(job: RetainedJob): void {
+    this.emit({
+      type: "workload_empty",
+      jobId: job.jobId,
+      requestDigest: job.requestDigest,
+      ownerId: job.result.ownerId,
+      ownerGeneration: job.result.ownerGeneration,
+    });
   }
   /** Structured diagnostics for a refusal this process decides alone; never a credential. */
   private log(level: "info" | "warn", event: LogEvent, fields: Record<string, unknown>): void {
