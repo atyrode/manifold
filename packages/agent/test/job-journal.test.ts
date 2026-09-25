@@ -767,6 +767,43 @@ describe.skipIf(!linux)("segmented owner journal", () => {
     }
   });
 
+  test("a failed append or rotation leaves no torn record, and the next one continues the chain", () => {
+    const root = mkdtempSync(join(tmpdir(), "job-journal-failure-"));
+    const sync = HeldDirectory.prototype.sync;
+    const failing = spyOn(HeldDirectory.prototype, "sync");
+    try {
+      const journal = openJournal(root, { segmentRecords: 4 });
+      for (let index = 0; index < 3; index++) journal.append(rejection(journal, `job-${index}`));
+      const full = recordFiles(root).length;
+      // The next append rotates: its checkpoint part becomes durable, then the signed
+      // checkpoint's own write fails after its file exists.
+      let syncs = 0;
+      failing.mockImplementation(function (this: HeldDirectory) {
+        syncs += 1;
+        if (syncs === 2) throw Object.assign(new Error("injected_io_failure"), { code: "EIO" });
+        sync.call(this);
+      });
+      expect(() => journal.append(rejection(journal, "job-3"))).toThrow("injected_io_failure");
+      failing.mockRestore();
+      expect(recordFiles(root)).toHaveLength(full + 1);
+      expect(readRecord(recordFiles(root).at(-1)!).body.kind).toBe("checkpoint_part");
+      journal.append(rejection(journal, "job-3"));
+      journal.close();
+      const reopened = openJournal(root, { segmentRecords: 4 });
+      expect([...reopened.jobs()].map((job) => job.jobId)).toEqual([
+        "job-0",
+        "job-1",
+        "job-2",
+        "job-3",
+      ]);
+      reopened.close();
+      expect(verifyAt(root)).toMatchObject({ firstSequence: 1, checkpoints: 1, generation: 2 });
+    } finally {
+      failing.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("an interrupted rotation completes at the next start", () => {
     const root = mkdtempSync(join(tmpdir(), "job-journal-crash-"));
     try {

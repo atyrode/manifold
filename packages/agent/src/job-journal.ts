@@ -279,23 +279,12 @@ class JournalState {
   }
 }
 
-/** A run of consecutive checkpoint parts, not yet proved by the checkpoint that follows it. */
-class CheckpointCandidate {
-  readonly state = new JournalState();
-  last: number;
-  constructor(
-    readonly first: number,
-    /** The chain head the checkpoint claims to continue. */
-    readonly previous: string,
-  ) {
-    this.last = first - 1;
-  }
-  add(sequence: number, body: unknown): void {
-    const parsed = CheckpointPartSchema.safeParse(body);
-    if (!parsed.success) throw new Error("journal_checkpoint_corrupt");
-    for (const entry of parsed.data.entries) this.state.restore(entry);
-    this.last = sequence;
-  }
+/** One checkpoint part, not yet proved by the signed checkpoint that follows it. */
+interface CheckpointPart {
+  readonly sequence: number;
+  /** The first part's link is the chain head its checkpoint claims to continue. */
+  readonly previous: string;
+  readonly entries: readonly unknown[];
 }
 
 interface ArchiveRange {
@@ -320,7 +309,9 @@ class Replay {
   segmentRecords = 0;
   checkpoints = 0;
   readonly sealed: ArchiveRange[] = [];
-  private candidate: CheckpointCandidate | null = null;
+  /** The current run of consecutive parts. A rotation that failed before its signature leaves
+   * parts a later one follows directly, so only the run's last `parts` belong to a checkpoint. */
+  private parts: CheckpointPart[] = [];
 
   constructor(
     readonly first: number,
@@ -340,16 +331,18 @@ class Replay {
         ? Reflect.get(record.body, "kind")
         : undefined;
     if (kind === "checkpoint_part") {
-      const candidate =
-        this.candidate?.last === record.sequence - 1
-          ? this.candidate
-          : new CheckpointCandidate(record.sequence, record.previous);
-      candidate.add(record.sequence, record.body);
-      this.candidate = candidate;
+      const parsed = CheckpointPartSchema.safeParse(record.body);
+      if (!parsed.success) throw new Error("journal_checkpoint_corrupt");
+      if (this.parts.at(-1)?.sequence !== record.sequence - 1) this.parts = [];
+      this.parts.push({
+        sequence: record.sequence,
+        previous: record.previous,
+        entries: parsed.data.entries,
+      });
     } else if (kind === "checkpoint") {
       this.seal(record);
     } else {
-      this.candidate = null;
+      this.parts = [];
       if (this.folding) {
         if (kind === "generation") {
           const next = Reflect.get(record.body as object, "generation");
@@ -370,20 +363,17 @@ class Replay {
     if (!parsed.success) throw new Error("journal_checkpoint_corrupt");
     const { signature, ...body } = parsed.data;
     const firstPart = record.sequence - body.parts;
-    const candidate = body.parts === 0 ? null : this.candidate;
+    const parts = body.parts === 0 ? [] : this.parts.slice(-body.parts);
     if (
-      (body.parts > 0 &&
-        (candidate === null ||
-          candidate.first !== firstPart ||
-          candidate.last !== record.sequence - 1)) ||
-      body.archive.head !== (candidate?.previous ?? record.previous) ||
+      parts.length !== body.parts ||
+      (parts.length > 0 &&
+        (parts[0]!.sequence !== firstPart || parts.at(-1)!.sequence !== record.sequence - 1)) ||
+      body.archive.head !== (parts[0]?.previous ?? record.previous) ||
       body.archive.last !== firstPart - 1 ||
       body.archive.first > body.archive.last
     )
       throw new Error("journal_checkpoint_corrupt");
-    const restored = candidate?.state ?? new JournalState();
-    restored.draining = body.draining;
-    if (restored.size !== body.entries) throw new Error("journal_checkpoint_corrupt");
+    // The signature covers this record's link, which commits to every part before it.
     if (
       !verify(
         null,
@@ -393,6 +383,10 @@ class Replay {
       )
     )
       throw new Error("journal_checkpoint_signature_invalid");
+    const restored = new JournalState();
+    for (const part of parts) for (const entry of part.entries) restored.restore(entry);
+    restored.draining = body.draining;
+    if (restored.size !== body.entries) throw new Error("journal_checkpoint_corrupt");
     if (
       this.folding &&
       (body.archive.first !== this.segmentFirst ||
@@ -408,7 +402,7 @@ class Replay {
     this.segmentBytes = 0;
     this.segmentRecords = 0;
     this.checkpoints += 1;
-    this.candidate = null;
+    this.parts = [];
   }
 }
 
@@ -718,19 +712,32 @@ export class JobJournal {
 
   private write(bytes: Buffer): void {
     const sequence = this.sequence + 1;
-    const fd = this.directory.createFile(recordName(sequence));
+    const name = recordName(sequence);
+    const fd = this.directory.createFile(name);
     try {
-      let offset = 0;
-      while (offset < bytes.length) {
-        const written = writeSync(fd, bytes, offset, bytes.length - offset);
-        if (!written) throw new Error("journal_short_write");
-        offset += written;
+      try {
+        let offset = 0;
+        while (offset < bytes.length) {
+          const written = writeSync(fd, bytes, offset, bytes.length - offset);
+          if (!written) throw new Error("journal_short_write");
+          offset += written;
+        }
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
       }
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
+      this.directory.sync();
+    } catch (error) {
+      // Never acknowledged: removing it keeps one failed append, a rotation's included, from
+      // holding the next record's name or leaving a torn record for the next start.
+      try {
+        this.directory.unlink(name);
+      } catch (cleanup) {
+        if ((cleanup as NodeJS.ErrnoException).code !== "ENOENT")
+          throw new AggregateError([error, cleanup], "journal_write_cleanup_failed");
+      }
+      throw error;
     }
-    this.directory.sync();
     this.sequence = sequence;
     this.previous = createHash("sha256").update(bytes).digest("hex");
   }
