@@ -970,7 +970,7 @@ function validatedUnitPaths(value: string): readonly string[] {
     if (
       typeof candidate !== "string" ||
       candidate.length > 512 ||
-      !candidate.startsWith("packages/") ||
+      !/^(?:packages|scripts)\//.test(candidate) ||
       candidate.includes("\\") ||
       candidate
         .split("/")

@@ -331,7 +331,13 @@ describe("ci-plan CLI", () => {
     expect(stderr).toContain("is not the analyzed checkout");
   });
 
-  test("precomputed targeted paths execute without recomputing a plan", async () => {
+  test("every targeted path the planner emits executes without recomputing a plan", async () => {
+    // A protocol module that deployment tooling imports reaches that tooling's own tests (#846).
+    const { unitPaths } = plan(
+      [{ status: "M", path: "packages/protocol/src/installed-plugins.ts" }],
+      await buildDependencyGraph(),
+    );
+    expect(unitPaths).toContain("scripts/installed-bundles.test.ts");
     const root = mkdtempSync(join(tmpdir(), "manifold-ci-targeted-"));
     const bin = join(root, "bin");
     const log = join(root, "args.json");
@@ -350,7 +356,7 @@ await Bun.write(Bun.env["TARGET_LOG"], JSON.stringify(Bun.argv.slice(2)));
           executable,
           "--run-targeted",
           "--unit-paths-json",
-          JSON.stringify(["packages/protocol/test"]),
+          JSON.stringify(unitPaths),
         ],
         {
           cwd: join(import.meta.dir, ".."),
@@ -365,7 +371,7 @@ await Bun.write(Bun.env["TARGET_LOG"], JSON.stringify(Bun.argv.slice(2)));
       ]);
       expect(exitCode).toBe(0);
       expect(stderr).toBe("");
-      expect(JSON.parse(readFileSync(log, "utf8"))).toEqual(["test", "packages/protocol/test"]);
+      expect(JSON.parse(readFileSync(log, "utf8"))).toEqual(["test", ...unitPaths]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -375,6 +381,8 @@ await Bun.write(Bun.env["TARGET_LOG"], JSON.stringify(Bun.argv.slice(2)));
     ["[]", "nonempty array"],
     [JSON.stringify(["../outside.test.ts"]), "unsafe targeted test path"],
     [JSON.stringify(["packages/server/src/main.ts"]), "not a package or runnable test"],
+    [JSON.stringify(["scripts/installed-bundles.ts"]), "not a package or runnable test"],
+    [JSON.stringify(["infra/previews/outside.test.ts"]), "unsafe targeted test path"],
     [JSON.stringify(["packages/no-such-package"]), "does not exist"],
   ])("rejects unsafe precomputed targeted input %#", async (json, diagnostic) => {
     const child = Bun.spawn(
