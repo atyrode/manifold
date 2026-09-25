@@ -20,13 +20,14 @@ import { startServer } from "../src/main.ts";
 import { installLayout } from "../src/plugin-installs.ts";
 import { ServerStore, sha256Hex } from "../src/stores.ts";
 import { restoreInstalledSnapshot } from "../../../scripts/installed-bundles-candidate.ts";
+import { fetchInstalledSnapshot } from "../../../scripts/installed-bundles.ts";
 
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function fixture({ enabled = false, unstamped = false } = {}) {
+function fixture({ enabled = false, unstamped = false, web = Buffer.from("export {};") } = {}) {
   const root = mkdtempSync(join(tmpdir(), "installed-export-test-"));
   roots.push(root);
   const dataDir = join(root, "source");
@@ -53,7 +54,7 @@ function fixture({ enabled = false, unstamped = false } = {}) {
         contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
         entry: { web: "web.js" },
       },
-      files: { "web.js": Buffer.from("export {};").toString("base64") },
+      files: { "web.js": web.toString("base64") },
     }) + "\n",
   );
   const sha256 = sha256Hex(bytes);
@@ -143,6 +144,35 @@ test("root export follows the action ladder and returns exact disabled bundle by
     } finally {
       copy.close();
     }
+  } finally {
+    await running.stop();
+  }
+});
+
+test("the deployment preflight exports and restores a bundle whose base64 exceeds 8 MiB (#844)", async () => {
+  // A 7 MiB web half is a bundle of more than 9 MiB, exported as more than 12 MiB of base64:
+  // past the 8 MiB at which a whole-string base64 pattern stops matching in JavaScriptCore.
+  const f = fixture({ web: Buffer.alloc(7 * 1024 * 1024, "// manifold\n") });
+  f.store.close();
+  const running = await startServer({
+    config: loadConfig({
+      MANIFOLD_DATA_DIR: f.dataDir,
+      MANIFOLD_PORT: "0",
+      MANIFOLD_SPAWN_AGENT: "0",
+      MANIFOLD_OWNER_KEY: f.ownerKey,
+    }),
+    logger: silentLogger,
+    announce: false,
+  });
+  try {
+    const snapshot = await fetchInstalledSnapshot(running.publicUrl, f.ownerKey);
+    if (snapshot === null) throw new Error("the export door is missing");
+    const exported = snapshot.plugins[0]!.bytes;
+    expect(exported.length).toBeGreaterThan(12 * 1024 * 1024);
+    expect(Buffer.from(exported, "base64")).toEqual(f.bytes);
+    const restored = join(f.root, "restored");
+    restoreInstalledSnapshot(snapshot, restored);
+    expect(readFileSync(join(restored, snapshot.plugins[0]!.row.bundlePath))).toEqual(f.bytes);
   } finally {
     await running.stop();
   }
