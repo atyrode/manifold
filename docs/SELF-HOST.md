@@ -538,8 +538,11 @@ After acknowledged shutdown, retain journals/workload storage, explicitly retire
 old reviewed `owner-template.json` / `job-owner/config.json` and supervision marker if that
 configuration is actually changing, then activate and `systemctl start manifold-owner`.
 The first start of an owner that segments its journal converts an unsegmented one before it
-admits anything ([sizing and retention](#independent-lifetimes-and-storage)); confirm its
-`journal_segment_sealed` log line and `verify-journal` before reopening.
+admits anything ([sizing and retention](#independent-lifetimes-and-storage)). Before draining,
+run the new build's `verify-journal` on the unconverted journal: it replays every record the
+conversion will, under the new build's schemas, without the lock or any write, and reports
+`"checkpoints":0`. A hold there means keep the old owner running and diagnose first. After the
+start, confirm its `journal_segment_sealed` log line and `verify-journal` before reopening.
 Reopen explicitly only after owner proof/readiness:
 
 ```sh

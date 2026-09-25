@@ -22,8 +22,11 @@ import type { HeldDirectory } from "./job-files.ts";
 import { lockExclusive } from "./job-files.ts";
 
 const MAX_RECORD_BYTES = 1024 * 1024;
-// Every checkpoint entry derives from one record within MAX_RECORD_BYTES, and a part holds at
-// least one entry, so a part can exceed the ordinary cap only by its own envelope.
+// A checkpoint part holds at least one entry, so it exceeds the ordinary cap only by its own
+// envelope if no entry does. An installation entry is one install record's command. A job
+// entry combines its reservation's identity, one result (at most 32 outputs) and its consumed
+// input request IDs, which the owner caps at 4,096 per job of at most 128 characters each
+// (`job-owner.ts`): under 600 KB. Raising either cap must keep that under MAX_RECORD_BYTES.
 const MAX_STORED_RECORD_BYTES = MAX_RECORD_BYTES + 4096;
 const CHECKPOINT_PART_BYTES = 512 * 1024;
 const SEGMENT_BYTES = 64 * 1024 * 1024;
