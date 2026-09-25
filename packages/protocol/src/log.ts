@@ -207,6 +207,9 @@ export const LOG_EVENTS = [
   "start_preparation_failed",
   // A runtime service the workload asked for and this owner would not start (issue #708).
   "service_start_refused",
+  // A full owner journal segment was checkpointed and archived (issue #848), including the
+  // one-time conversion of a pre-segmentation journal at startup.
+  "journal_segment_sealed",
 
   // A service CALL this process declined to serve (issue #746). Distinct from the start above:
   // a start is refused before any child job exists, while this is one authorized invocation

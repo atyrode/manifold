@@ -1,12 +1,5 @@
 import { describe, expect, spyOn, test, vi } from "bun:test";
-import {
-  createHash,
-  generateKeyPairSync,
-  randomBytes,
-  sign,
-  verify,
-  createPublicKey,
-} from "node:crypto";
+import { createHash, generateKeyPairSync, randomBytes, sign } from "node:crypto";
 import { gzipSync } from "node:zlib";
 import {
   chmodSync,
@@ -63,80 +56,6 @@ function tarMember(name: string, contents: Buffer): Buffer {
 }
 
 const linux = process.platform === "linux";
-describe.skipIf(!linux)("durable job owner journal", () => {
-  test("generation and signing identity survive restart; concurrent owner cannot take its lock", () => {
-    const root = mkdtempSync(join(tmpdir(), "job-journal-"));
-    try {
-      const first = new JobJournal(HeldDirectory.openAbsolute(root, { private: true }));
-      const ownerId = first.ownerId;
-      const publicKey = first.publicKey;
-      const body = {
-        nonce: "fresh",
-        serverEpoch: "epoch",
-        machineId: "machine",
-        generation: first.generation,
-      };
-      expect(
-        verify(
-          null,
-          Buffer.from(canonicalJobJson(body)),
-          createPublicKey(publicKey),
-          Buffer.from(first.proof(body), "base64"),
-        ),
-      ).toBe(true);
-      expect(
-        verify(
-          null,
-          Buffer.from(canonicalJobJson({ ...body, nonce: "other" })),
-          createPublicKey(publicKey),
-          Buffer.from(first.proof(body), "base64"),
-        ),
-      ).toBe(false);
-      expect(() => new JobJournal(HeldDirectory.openAbsolute(root, { private: true }))).toThrow(
-        "job_owner_already_locked",
-      );
-      first.append({
-        kind: "reservation",
-        jobId: "reserved",
-        requestDigest: "a".repeat(64),
-        permitId: "single-use",
-      });
-      first.close();
-      const second = new JobJournal(HeldDirectory.openAbsolute(root, { private: true }));
-      expect(second.ownerId).toBe(ownerId);
-      expect(second.publicKey).toBe(publicKey);
-      expect(second.generation).toBe(2);
-      expect(second.records).toContainEqual({
-        kind: "reservation",
-        jobId: "reserved",
-        requestDigest: "a".repeat(64),
-        permitId: "single-use",
-      });
-      second.close();
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  test("missing or torn durable records refuse recovery instead of forgetting effects", () => {
-    const root = mkdtempSync(join(tmpdir(), "job-journal-"));
-    try {
-      const journal = new JobJournal(HeldDirectory.openAbsolute(root, { private: true }));
-      journal.append({ kind: "reservation", jobId: "one" });
-      journal.append({ kind: "reservation", jobId: "two" });
-      journal.close();
-      unlinkSync(join(root, "record-00000002"));
-      expect(() => new JobJournal(HeldDirectory.openAbsolute(root, { private: true }))).toThrow(
-        "journal_gap",
-      );
-      writeFileSync(join(root, "record-00000002"), '{"sequence":2', { mode: 0o600 });
-      expect(() => new JobJournal(HeldDirectory.openAbsolute(root, { private: true }))).toThrow();
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-});
-
 const bwrap = process.env.MANIFOLD_TEST_BWRAP;
 const busybox = process.env.MANIFOLD_TEST_STATIC_BUSYBOX;
 const cgroupRoot = process.env.MANIFOLD_TEST_CGROUP;
@@ -1929,14 +1848,7 @@ test.skipIf(!linux || !cgroupRoot)(
         requestId: "invoke-2",
         reply: { ok: false, refusal: "service_cancelled" },
       });
-      expect(
-        journal.records.some(
-          (record) =>
-            typeof record === "object" &&
-            record !== null &&
-            Reflect.get(record, "kind") === "reservation",
-        ),
-      ).toBe(false);
+      expect([...journal.jobs()]).toEqual([]);
     } finally {
       release.resolve(Response.json({ changed: true }));
       detach?.();

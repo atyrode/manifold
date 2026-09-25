@@ -158,6 +158,41 @@ Size/monitor the persistent filesystem, use explicit governed release/purge, and
 hub and owner control state as secrets. Named-output scratch disappears at reboot; retained
 sealed outputs, job identities and workload data do not. Never treat tmpfs as a durable receipt.
 
+**Owner journal sizing and retention.** The owner's hash-chained journal lives in
+`job-owner/state/journal`, beside its signing `identity`. It is written in segments: when
+the live segment reaches 64 MiB or 50,000 records, the owner appends a checkpoint signed by
+that identity, then moves the sealed records unchanged into
+`journal/archive/segment-<first sequence>/`. The checkpoint continues the chain and carries
+what recovery needs: installations, the admission latch, the generation count and, for every
+job the owner ever reserved or refused, its identity, single-use permit, latest result and
+consumed input cursor. It does not carry request content. Startup reads only the checkpoint
+and at most one segment, and no lifetime total refuses work; only a single record over
+1 MiB is refused. Job tombstones are never evicted, so the checkpoint grows by roughly 1 KiB
+per job, while the archive grows by everything written: a request and its results, up to
+tens of KiB for a job with a large prompt. A node running about 5,000 one-shot agent sessions
+with their gateway jobs in 36 hours wrote about 128 MiB. Size the persistent filesystem for
+that archive growth. The owner never reads or deletes archived segments; they are the history
+its checkpoints summarize, and their retention is the operator's decision.
+
+The first start of an owner with segmented journals converts an existing unsegmented journal
+of any size: it reads it once, record by record, verifies it, checkpoints it and archives it as
+`segment-00000001`, logging `journal_segment_sealed` with the archived range. The conversion
+is one-way. An older owner refuses the converted journal with `journal_gap` rather than start
+without its history, so do not downgrade the owner across it. To check a journal in place,
+run the owner's own binary as its user:
+
+```sh
+sudo -u manifold manifold-agent --maintenance verify-journal \
+  --journal /var/lib/manifold/job-owner/state/journal
+```
+
+It rereads every archived segment and the live records without the owner's lock: the chain,
+each checkpoint's signature, and that each checkpoint equals the state its archived records
+replay to. Success prints one JSON line with the sequence range, segment and checkpoint
+counts; any failure is a hold with a fixed `code`. A rotation during the read can fail it,
+so rerun before treating a failure as tampering. If older segments were moved elsewhere,
+verification starts at the oldest checkpoint that remains.
+
 The `runtime` anchor now also hosts **bound input extractions**, in an owner-private
 `job-inputs` subdirectory the owner creates and protects: a job whose request binds another
 job's sealed output gets that archive written out into a fresh 0700 directory there and
@@ -501,6 +536,9 @@ its mount while retained work exists.
 After acknowledged shutdown, retain journals/workload storage, explicitly retire only the
 old reviewed `owner-template.json` / `job-owner/config.json` and supervision marker if that
 configuration is actually changing, then activate and `systemctl start manifold-owner`.
+The first start of an owner that segments its journal converts an unsegmented one before it
+admits anything ([sizing and retention](#independent-lifetimes-and-storage)); confirm its
+`journal_segment_sealed` log line and `verify-journal` before reopening.
 Reopen explicitly only after owner proof/readiness:
 
 ```sh
