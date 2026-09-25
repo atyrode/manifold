@@ -66,11 +66,24 @@ export interface JobRunCandidate {
   job: JobRecord | null;
   occurrence: JobOccurrence | null;
 }
+/**
+ * The states in which a job still holds or may take a slot. A partial index serves a query only
+ * when the query repeats the index's predicate, so every live read spells it from here.
+ */
+const LIVE_STATES = "('queued','admitted','start-committed','started')";
 export class JobStore {
   constructor(
     readonly store: ServerStore,
     private readonly lifecycle: (job: JobRecord, phase: string) => void,
-  ) {}
+  ) {
+    // Settled jobs stay in `machine_jobs`, so the reads the hub repeats on every tick, owner
+    // event and authority change must reach the few live rows through an index rather than
+    // scan the whole history (#841). A derived index changes no stored fact, so it is created
+    // at open like the journal's recency indexes: a build without it opens the same database.
+    store.db.exec(
+      `CREATE INDEX IF NOT EXISTS machine_jobs_live ON machine_jobs(state) WHERE state IN ${LIVE_STATES}`,
+    );
+  }
   get(jobId: string): JobRecord | null {
     const r = this.store.db
       .query<
@@ -170,12 +183,12 @@ export class JobStore {
       machineId === undefined
         ? this.store.db
             .query<{ job_id: string }, []>(
-              "SELECT job_id FROM machine_jobs WHERE state IN ('queued','admitted','start-committed','started') ORDER BY rowid ASC",
+              `SELECT job_id FROM machine_jobs WHERE state IN ${LIVE_STATES} ORDER BY rowid ASC`,
             )
             .all()
         : this.store.db
             .query<{ job_id: string }, [string]>(
-              "SELECT job_id FROM machine_jobs WHERE machine_id=? AND state IN ('queued','admitted','start-committed','started') ORDER BY rowid ASC",
+              `SELECT job_id FROM machine_jobs WHERE machine_id=? AND state IN ${LIVE_STATES} ORDER BY rowid ASC`,
             )
             .all(machineId);
     return rows.map((r) => this.get(r.job_id)!);
@@ -200,7 +213,7 @@ export class JobStore {
         >(
           `SELECT COUNT(*) AS count FROM machine_jobs
        WHERE machine_id=? AND plugin_id=? AND json_extract(request,'$.operationId')=?
-         AND job_id!=? AND state IN ('queued','admitted','start-committed','started')
+         AND job_id!=? AND state IN ${LIVE_STATES}
          AND (state!='queued' OR (SELECT rowid FROM machine_jobs WHERE job_id=?) IS NULL
            OR rowid < (SELECT rowid FROM machine_jobs WHERE job_id=?))
          AND (? IS NULL OR json_extract(request,'$.terminal.terminalId') IS NOT ?)`,
@@ -222,7 +235,7 @@ export class JobStore {
     const rows = this.store.db
       .query<{ job_id: string }, [string]>(
         `SELECT job_id FROM machine_jobs WHERE json_extract(request,'$.service.serviceId')=?
-       AND (state IN ('queued','admitted','start-committed','started') OR
+       AND (state IN ${LIVE_STATES} OR
          (permit IS NOT NULL AND owner_closed=0))
        LIMIT 65`,
       )
@@ -230,15 +243,26 @@ export class JobStore {
     if (rows.length > 64) throw new Error("instance_service_jobs_capacity");
     return rows.map((row) => this.get(row.job_id)!);
   }
+  /**
+   * Live jobs and settled service jobs whose owner has not yet confirmed their workload empty,
+   * in rowid order. Each half reads its own index: the second repeats the predicate of
+   * `machine_jobs_instance_service` so SQLite can prove that partial index applies. The cost
+   * therefore follows the rows returned, never the retained history (#841).
+   */
   reconcilable(machineId?: string): JobRecord[] {
     const rows = this.store.db
-      .query<{ job_id: string }, [string | null, string | null]>(
-        `SELECT job_id FROM machine_jobs WHERE (? IS NULL OR machine_id=?) AND
-       (state IN ('queued','admitted','start-committed','started') OR
-        (json_extract(request,'$.service.serviceId') IS NOT NULL AND
-         permit IS NOT NULL AND owner_closed=0))`,
+      .query<{ job_id: string }, [string | null]>(
+        `SELECT job_id FROM (
+           SELECT rowid AS position, job_id FROM machine_jobs
+            WHERE state IN ${LIVE_STATES} AND (?1 IS NULL OR machine_id=?1)
+           UNION ALL
+           SELECT rowid, job_id FROM machine_jobs
+            WHERE json_extract(request,'$.service.serviceId') IS NOT NULL AND
+             (state IN ${LIVE_STATES} OR (permit IS NOT NULL AND owner_closed=0)) AND
+             state NOT IN ${LIVE_STATES} AND (?1 IS NULL OR machine_id=?1))
+         ORDER BY position`,
       )
-      .all(machineId ?? null, machineId ?? null);
+      .all(machineId ?? null);
     return rows.map((row) => this.get(row.job_id)!);
   }
   confirmEmpty(jobId: string): boolean {
