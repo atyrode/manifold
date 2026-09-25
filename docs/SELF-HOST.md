@@ -179,7 +179,8 @@ of any size: it reads it once, record by record, verifies it, checkpoints it and
 `segment-00000001`, logging `journal_segment_sealed` with the archived range. The conversion
 is one-way. An older owner refuses the converted journal with `journal_gap` rather than start
 without its history, so do not downgrade the owner across it. To check a journal in place,
-run the owner's own binary as its user:
+run the same `manifold-agent` the owner unit starts (its `ExecStart` script names the store
+path; the package need not be on `PATH`) as the owner's user:
 
 ```sh
 sudo -u manifold manifold-agent --maintenance verify-journal \

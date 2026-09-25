@@ -119,7 +119,7 @@ export async function openConfiguredJobOwner(
     anchors[name] = held;
     operatorAnchors[name] = { path: definition.path, source: definition.source ?? definition.path };
   }
-  const journal = new JobJournal(state.openChild("journal", { create: true }));
+  const journal = new JobJournal(state.openChild("journal", { create: true }), { log });
   const cache = state.openChild("artifacts", { create: true });
   const outputs = JobOutputStore.open(state.openChild("outputs", { create: true }));
   const boundInputs = boundInputRoot ? JobBoundInputStore.open(boundInputRoot) : undefined;

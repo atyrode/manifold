@@ -76,7 +76,7 @@ export interface JobJournalOptions {
   segmentBytes?: number;
   /** Ordinary records one segment holds before it is checkpointed and archived. */
   segmentRecords?: number;
-  log?: JournalLog;
+  log?: JournalLog | undefined;
 }
 
 export interface JobJournalVerification {
@@ -667,7 +667,6 @@ export class JobJournal {
     this.segmentBytes = 0;
     this.segmentRecords = 0;
     this.sealed = [{ first: archive.first, last: archive.last }];
-    this.archiveSealed();
     this.log?.("info", "journal_segment_sealed", {
       first: archive.first,
       last: archive.last,
@@ -676,6 +675,7 @@ export class JobJournal {
       checkpointParts: parts,
       generation: body.generation,
     });
+    this.archiveSealed();
   }
 
   /** Idempotent: moves every still-live record of each sealed range into its archive segment. */
