@@ -242,3 +242,138 @@ describe.skipIf(process.platform !== "linux")("native runtime source opening", (
     },
   );
 });
+
+// Reports what an opened owner advertises and what it logged about each operator anchor.
+const anchorFixture = `
+  import { spyOn } from "bun:test";
+  import * as linux from ${JSON.stringify(new URL("../src/job-linux.ts", import.meta.url).href)};
+  import { openConfiguredJobOwner } from ${JSON.stringify(new URL("../src/job-runtime.ts", import.meta.url).href)};
+  spyOn(linux, "recoverLinuxJobs").mockResolvedValue(undefined);
+  const [root] = process.argv.slice(1);
+  const logs = [];
+  const owner = await openConfiguredJobOwner(
+    root + "/config/owner.json", root + "/socket/owner.sock", root + "/terminal/host.sock",
+    (level, evt, fields) => logs.push({ level, evt, ...fields }),
+  );
+  const { generation, resources } = owner.identity;
+  await owner.shutdown();
+  console.log(JSON.stringify({ generation, resources, logs }));
+`;
+
+type AnchorFixtureResult = {
+  generation: number;
+  resources: { anchors: Record<string, string>; anchorDefinitions?: Record<string, unknown> };
+  logs: { level: string; evt: string; anchor: string; reason: string }[];
+};
+
+function openAnchorFixture(views: boolean): AnchorFixtureResult {
+  const root = mkdtempSync(join(tmpdir(), "job-runtime-anchor-"));
+  const busybox = process.env.MANIFOLD_TEST_STATIC_BUSYBOX!;
+  const mounted: string[] = [];
+  try {
+    for (const name of ["config", "state", "socket", "terminal", "cgroup", "views"])
+      mkdirSync(join(root, name), { mode: 0o700 });
+    mkdirSync(join(root, "sessions"), { mode: 0o700 });
+    writeFileSync(join(root, "sessions", "private.jsonl"), "synthetic", { mode: 0o600 });
+    mkdirSync(join(root, "guarded", "secret"), { recursive: true, mode: 0o700 });
+    mkdirSync(join(root, "writable"));
+    const operatorAnchors: Record<string, { path: string; source?: string; readOnly: true }> = {
+      "operator.writable": { path: join(root, "writable"), readOnly: true },
+      "operator.absent": { path: join(root, "absent"), readOnly: true },
+    };
+    if (views) {
+      // The disposable namespace stands in for the native module's root helper.
+      for (const [name, source] of [
+        ["sessions", join(root, "sessions")],
+        ["guarded", join(root, "guarded")],
+      ] as const) {
+        const view = join(root, "views", name);
+        mkdirSync(view);
+        for (const argv of [
+          ["mount", "--bind", source, view],
+          ["mount", "-o", "remount,bind,ro", view],
+        ]) {
+          const mount = Bun.spawnSync([busybox, ...argv], { stderr: "pipe" });
+          expect(mount.exitCode, mount.stderr.toString()).toBe(0);
+          if (argv[1] === "--bind") mounted.push(view);
+        }
+        operatorAnchors[`operator.${name}`] = { path: view, source, readOnly: true };
+      }
+    }
+    writeFileSync(
+      join(root, "config", "owner.json"),
+      JSON.stringify({
+        machineId: "operator-anchor-fixture",
+        admissionPublicKey: generateKeyPairSync("ed25519")
+          .publicKey.export({ type: "spki", format: "pem" })
+          .toString(),
+        stateDirectory: join(root, "state"),
+        delegatedCgroup: join(root, "cgroup"),
+        bubblewrap: join(root, "bubblewrap"),
+        protectedDirectories: [join(root, "guarded", "secret")],
+        anchors: {},
+        operatorAnchors,
+        runtimeTools: {},
+        artifactOrigins: ["https://artifacts.invalid"],
+      }),
+      { mode: 0o600 },
+    );
+    writeFileSync(join(root, "bubblewrap"), "synthetic-executable", { mode: 0o600 });
+    const child = Bun.spawnSync([process.execPath, "-e", anchorFixture, root], {
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: 10_000,
+    });
+    expect(child.exitCode, child.stderr.toString()).toBe(0);
+    return JSON.parse(child.stdout.toString());
+  } finally {
+    for (const view of mounted) Bun.spawnSync([busybox, "umount", view]);
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+describe.skipIf(process.platform !== "linux")("native operator anchor holding", () => {
+  test("an anchor that is absent or not a read-only mount is unavailable and the owner still opens", () => {
+    const result = openAnchorFixture(false);
+    expect(result.generation).toBe(1);
+    expect(result.resources.anchors).toEqual({});
+    // No anchor was held, so nothing about the host is advertised.
+    expect(Object.hasOwn(result.resources, "anchorDefinitions")).toBe(false);
+    expect(result.logs).toEqual([
+      {
+        level: "warn",
+        evt: "operator_anchor_unavailable",
+        anchor: "operator.writable",
+        reason: "operator_anchor_not_read_only",
+      },
+      {
+        level: "warn",
+        evt: "operator_anchor_unavailable",
+        anchor: "operator.absent",
+        reason: "operator_anchor_absent",
+      },
+    ]);
+  });
+});
+
+// verify-jobs runs this inside its disposable user and mount namespace, where the fixture
+// may create read-only binds; it is never run against the host's own mount table.
+const disposableMounts =
+  process.platform === "linux" &&
+  Boolean(process.env.MANIFOLD_TEST_MOUNT_TREE && process.env.MANIFOLD_TEST_STATIC_BUSYBOX);
+test.skipIf(!disposableMounts)(
+  "[real-linux] the owner holds a read-only view and advertises its host source, but never one over protected storage",
+  () => {
+    const result = openAnchorFixture(true);
+    expect(result.generation).toBe(1);
+    expect(Object.keys(result.resources.anchors)).toEqual(["operator.sessions"]);
+    expect(result.resources.anchorDefinitions).toEqual({
+      "operator.sessions": { source: expect.stringMatching(/\/sessions$/), readOnly: true },
+    });
+    expect(result.logs.map(({ anchor, reason }) => [anchor, reason])).toEqual([
+      ["operator.writable", "operator_anchor_not_read_only"],
+      ["operator.absent", "operator_anchor_absent"],
+      ["operator.guarded", "operator_anchor_overlaps_protected"],
+    ]);
+  },
+);

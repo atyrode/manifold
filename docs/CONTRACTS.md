@@ -3610,8 +3610,8 @@ separate native owner proof and admitted resource/runtime bindings.
 
 ### Native job owner RPC
 
-Native owner RPC has its own `JOB_OWNER_PROTOCOL_VERSION`, currently 37, and
-`JOB_OWNER_PROTOCOL_COMPAT_VERSIONS = {34, 35, 36, 37}`. It is independent of machine and session
+Native owner RPC has its own `JOB_OWNER_PROTOCOL_VERSION`, currently 40, and
+`JOB_OWNER_PROTOCOL_COMPAT_VERSIONS = {34, 35, 36, 37, 40}`. It is independent of machine and session
 protocols. An additive-optional change **adds** its new version to the acceptance set; a
 breaking change **resets** the set and requires a coordinated drained owner upgrade.
 Compatibility never substitutes for owner proof, current execution consent or resource
@@ -3624,13 +3624,17 @@ change added optional `privateEnv`, terminal `runId` and host-minted `launchBind
 The additive 35 → 36 change added operation `inputs`/`exports`, request `inputs` and
 `limits.inputBytes` (#592). The additive 36 → 37 change permits a job-scoped service runtime
 to bind to its invoking installation when `runtime.installationRevision` is omitted (#715).
+The additive 37 → 40 change adds operator anchors: `operator.<name>` locations, read-only by
+construction, and the owner inventory's `anchorDefinitions` (#839, ADR 0049). Versions 38 and
+39 are reserved by open drafts and are not accepted; a later capability takes a version above 40.
 These are optional operations, not permission to orphan every already-running job or instance service.
 
 The hub sends only fields the negotiated owner parses. Private launch and `launchBinding`
-require 35; bound inputs require 36; self-provider service runtimes require 37. An older accepted
-owner keeps serving its compatible jobs and instance services; only the newer operation is refused
-by name (`run_launch_protocol_unsupported`, `bound_inputs_protocol_unsupported` or
-`service_runtime_unsupported`). Unsupported
+require 35; bound inputs require 36; self-provider service runtimes require 37; operator
+anchors require 40. An older accepted owner keeps serving its compatible jobs and instance
+services; only the newer operation is refused by name (`run_launch_protocol_unsupported`,
+`bound_inputs_protocol_unsupported`, `service_runtime_unsupported` or
+`operator_anchors_protocol_unsupported`). Unsupported
 operation declarations are omitted from that owner's install projection rather than
 weakening them, and signed admissions are never rewritten. Upgrading an owner may restore
 the complete installation only when its retained command exactly matches the deterministic
@@ -3915,6 +3919,18 @@ provider handling and postconditions belong to plugins, never the common floor.
   resource, consent, service or invocation-edge evidence requires another review, not a
   client-edited digest or automatic approval of the replacement.
 
+  An `anchors` resource row whose name is an operator anchor also carries `source`, the host
+  directory the live owner's `anchorDefinitions` says it presents; built-in rows and their
+  digests are unchanged. Without an advertised definition, from a disconnected owner, one
+  older than RPC 40 or one that did not hold the anchor, the target is
+  `resource_evidence_unknown` and not approvable, even when a promoted pin exists: a pin
+  alone never approves an unseen host path. The operator-anchor pin digests
+  `{ device, inode, path, source, readOnly }` of the held view, without the mount id, so a
+  changed `source` or `path` makes apply and admission refuse until another review. An
+  operation that reads an operator anchor always requires resource bindings, at direct
+  installation (`resource_bindings_required`) and at admission. Root describe returns
+  `anchorDefinitions`; non-root describes omit it.
+
   A job-scoped service runtime may omit `installationRevision` only to resolve the exact
   invoking installation of its own `pluginId`; omitted scope still means job scope.
   Artifact, provider operation and operation-scoped resource digest remain pinned. There
@@ -4068,6 +4084,13 @@ provider handling and postconditions belong to plugins, never the common floor.
   file/directory boundaries; descendant access rejects symlink, magic-link and mount escape.
   `create` is create-only: an existing target refuses rather than opening or overwriting
   it; active authorized ancestor writers also prevent create-only resolution.
+  Operator anchors (`operator.<name>`, owner RPC 40) are held from reviewed owner
+  configuration only when the held directory is a read-only mount that neither is nor
+  contains protected storage; otherwise startup logs `operator_anchor_unavailable` and only
+  the operations reading that anchor become `anchors_unavailable`. Resolution refuses
+  non-read access with `operator_anchor_read_only`, never creates components, and binds
+  `components: []` through a reopened read-only handle, so closing a job's location never
+  closes the owner's held anchor.
   The seccomp filter denies `sendmsg`, `sendmmsg` and all `io_uring` entry points to prevent
   file-descriptor export beyond tracked writers. Alternate/compatibility ABIs are rejected
   (including x86 `int 0x80` and x32). This is not a general syscall allowlist.

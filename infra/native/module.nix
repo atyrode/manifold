@@ -15,6 +15,28 @@ let
   credentialMode = credentialSource != null;
   tokenFile = if credentialMode then "%d/enrollment-token" else if local then "${data}/agent.token" else cfg.execution.tokenFile;
   containsPath = parent: path: parent == path || lib.hasPrefix "${parent}/" path;
+  # One rule for every static host path a root helper or PID 1 opens: absolute, no empty, `.`
+  # or `..` component, and none of the characters systemd specifiers or options reinterpret.
+  normalizedPath = path:
+    lib.hasPrefix "/" path
+    && lib.all (part: part != "" && part != "." && part != "..") (lib.drop 1 (lib.splitString "/" path))
+    && lib.all (character: !lib.hasInfix character path) [ "%" ":" "\n" "\r" "\\" ];
+  # Operator anchors are presented to the owner only through root-made read-only views here.
+  viewRoot = "/run/manifold-anchors";
+  declaredAnchors = cfg.execution.operatorAnchors;
+  anchorsDeclared = native && declaredAnchors != {};
+  operatorAnchors = lib.mapAttrs' (name: anchor: lib.nameValuePair "operator.${name}" {
+    path = "${viewRoot}/${name}";
+    source = anchor.path;
+    readOnly = true;
+  }) declaredAnchors;
+  # Storage a view may lie beneath but never present or contain: what the owner protects.
+  guardedPaths = cfg.execution.protectedDirectories
+    ++ lib.optional (cfg.execution.tokenFile != null) cfg.execution.tokenFile
+    ++ lib.optional credentialMode credentialSource
+    ++ map (credential: credential.source) (builtins.attrValues cfg.execution.serviceCredentials);
+  # Areas a view may never present at all, nor lie within.
+  reservedAreas = [ data workload output viewRoot "/run/credentials" "/proc" "/sys" "/dev" "/nix/store" ];
   # The owner holds exclusion descriptors. A private source can sit beneath an
   # explicitly protected, traversable ancestor without opening its private parent.
   credentialSourceDirectories = lib.optional
@@ -39,6 +61,9 @@ let
       ++ map (credential: builtins.dirOf credential.source) (builtins.attrValues cfg.execution.serviceCredentials));
     inherit anchors;
     inherit (cfg.execution) runtimeTools artifactOrigins serviceCredentials;
+  } // lib.optionalAttrs (operatorAnchors != {}) {
+    # Absent when none are declared, so such a node's retained configuration is unchanged.
+    inherit operatorAnchors;
   };
   runtimeToolClosures = lib.filterAttrs (_: roots: roots != []) cfg.execution.runtimeToolClosures;
   closurePaths = pkgs.writeText "manifold-runtime-tool-closures.json" (builtins.toJSON
@@ -202,6 +227,85 @@ let
       test -d "$path"
     done
   '';
+  # Root presents each declared operator anchor to the owner as a non-recursive, read-only,
+  # idmapped bind: the source owner's files appear owned by manifold, so private modes stay
+  # readable, while the source's own owner, mode and ACLs are never changed and manifold never
+  # gains traversal of the directories above it. A refused anchor gets no view at all.
+  presentOperatorAnchors = pkgs.writeShellScript "manifold-operator-anchors" ''
+    set -u
+    PATH=${lib.makeBinPath [ pkgs.coreutils pkgs.util-linux ]}
+    root=${viewRoot}
+    manifold_uid="$(id -u manifold)"
+    manifold_gid="$(id -g manifold)"
+    reserved=(${lib.escapeShellArgs reservedAreas})
+    guarded=(${lib.escapeShellArgs guardedPaths})
+    install -d -m 0755 -o root -g root "$root"
+    # Views change only in drained maintenance: without a lazy unmount, a view an owner still
+    # holds is busy and this start fails instead of replacing what the owner reviewed.
+    for view in "$root"/*; do
+      test -e "$view" || continue
+      if mountpoint -q "$view"; then umount "$view" || exit 1; fi
+      rmdir "$view" || exit 1
+    done
+    refused=0
+    refuse() {
+      echo "Manifold operator anchor $1 has no view: $2" >&2
+      refused=1
+    }
+    # inside PARENT PATH: PATH is PARENT or lies beneath it.
+    inside() { test "$2" = "$1" || case "$2" in "$1"/*) true ;; *) false ;; esac; }
+    present() {
+      local name="$1" source="$2" view="$root/$1" path="" part real owner group options option area
+      local -a parts
+      IFS=/ read -r -a parts <<< "''${source#/}"
+      for part in "''${parts[@]}"; do
+        path="$path/$part"
+        # A link anywhere in the path would let whoever owns it redirect the view.
+        if test -L "$path"; then refuse "$name" "symbolic link at $path"; return; fi
+      done
+      if ! test -d "$source"; then refuse "$name" "source $source is absent or not a directory"; return; fi
+      real="$(realpath -e "$source")" || { refuse "$name" "source $source cannot be resolved"; return; }
+      if test "$real" != "$source" || test "$real" = /; then refuse "$name" "source $source is not canonical"; return; fi
+      owner="$(stat -c %u "$real")"
+      group="$(stat -c %g "$real")"
+      if test "$owner" = 0 || test "$owner" = "$manifold_uid"; then
+        refuse "$name" "source $source is owned by root or manifold"; return
+      fi
+      for area in "''${reserved[@]}"; do
+        if inside "$(realpath -m "$area")" "$real"; then refuse "$name" "source $source lies in $area"; return; fi
+      done
+      for area in "''${guarded[@]}"; do
+        if inside "$real" "$(realpath -m "$area")"; then refuse "$name" "source $source contains $area"; return; fi
+      done
+      mkdir -m 0755 "$view" || { refuse "$name" "cannot create $view"; return; }
+      # libmount writes each `u:A:B:N` entry as a uid_map line "A B N", and an idmapped mount
+      # shows an on-disk id A as B: the source owner's ids come first, manifold's second.
+      if ! mount --bind -o ro,nosuid,nodev,noexec,nosymfollow \
+          -o "X-mount.idmap=u:$owner:$manifold_uid:1 g:$group:$manifold_gid:1" "$real" "$view"; then
+        rmdir "$view"
+        refuse "$name" "idmapped read-only bind failed"
+        return
+      fi
+      # Never leave a bare mountpoint, or a view without every promised property, for the owner.
+      options=",$(findmnt -n -o VFS-OPTIONS --mountpoint "$view"),"
+      for option in ro nosuid nodev noexec nosymfollow idmapped; do
+        case "$options" in
+          *",$option,"*) ;;
+          *)
+            umount "$view"
+            rmdir "$view"
+            refuse "$name" "the view lacks $option"
+            return
+            ;;
+        esac
+      done
+      echo "Manifold operator anchor $name presents $real read-only at $view"
+    }
+    ${lib.concatStrings (lib.mapAttrsToList (name: anchor: ''
+      present ${lib.escapeShellArg name} ${lib.escapeShellArg anchor.path}
+    '') declaredAnchors)}
+    exit "$refused"
+  '';
   commonService = {
     User = "manifold";
     Group = "manifold";
@@ -259,7 +363,24 @@ in
         default = {};
         description = "Reviewed credentialRef sources keyed by reference name. Parent directories are excluded from workload mounts; credential bytes never enter the Nix store.";
       };
-      protectedDirectories = mkOption { type = types.listOf types.str; default = []; description = "Existing control/credential directories excluded from all workload mounts in addition to /var/lib/manifold."; };
+      protectedDirectories = mkOption { type = types.listOf types.str; default = []; description = "Existing control/credential directories excluded from all workload mounts in addition to /var/lib/manifold. An operator anchor may present a subtree beneath one, never a directory that is or contains one."; };
+      operatorAnchors = mkOption {
+        type = types.attrsOf (types.submodule {
+          options = {
+            path = mkOption {
+              type = types.strMatching "/.*";
+              description = "Existing host directory this anchor presents to plugin locations as `operator.<name>`: a static normalized absolute path, not owned by root or manifold, with no symbolic link in any component. It is exposed only through a root-made read-only idmapped view at /run/manifold-anchors/<name>; its owner, mode and ACLs are never changed, and manifold gains no traversal of its parents.";
+            };
+            readOnly = mkOption {
+              type = types.bool;
+              default = true;
+              description = "Must be true; writable operator anchors are not supported.";
+            };
+          };
+        });
+        default = {};
+        description = "Read-only host directories, keyed by anchor name (lowercase letters, digits and inner hyphens), that reviewed plugin locations may read as `operator.<name>`. Deployment review shows each host path, and changing one requires a new review. A path may lie beneath a protected directory, never be or contain one, the enrollment token or a service credential source. Changing this set changes retained owner configuration and requires positive drain/shutdown maintenance.";
+      };
       outputBytes = mkOption { type = types.ints.positive; default = 1048576; description = "Dedicated named-output tmpfs capacity. Every job using it reserves the entire capacity from outputBytes, before stdout/stderr."; };
       outputInodes = mkOption { type = types.ints.between 1 10000; default = 4096; };
     };
@@ -279,12 +400,33 @@ in
       { assertion = !native || !credentialMode || cfg.execution.tokenFile == null; message = "Select only one Manifold enrollment token input: tokenFile or tokenCredentialFile."; }
       {
         assertion = !native || !credentialMode || (
-          lib.hasPrefix "/" credentialSource
-          && lib.all (part: part != "" && part != "." && part != "..") (lib.drop 1 (lib.splitString "/" credentialSource))
-          && lib.all (character: !lib.hasInfix character credentialSource) [ "%" ":" "\n" "\r" "\\" ]
+          normalizedPath credentialSource
           && !lib.any (path: containsPath path credentialSource) [ data workload output "/run/credentials" "/proc" "/sys" "/dev" "/nix/store" ]
         );
         message = "tokenCredentialFile must be a static normalized absolute runtime path outside Manifold's service/workload areas, systemd credentials, kernel interfaces and the Nix store.";
+      }
+      { assertion = !native || lib.all (anchor: anchor.readOnly) (builtins.attrValues declaredAnchors); message = "Manifold operator anchors are read-only; every execution.operatorAnchors.<name>.readOnly must be true."; }
+      {
+        assertion = !native || (
+          builtins.length (builtins.attrNames declaredAnchors) <= 32
+          && lib.all (name: builtins.match "[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?" name != null) (builtins.attrNames declaredAnchors)
+        );
+        message = "Declare at most 32 Manifold operator anchors, each named by 1-63 lowercase letters, digits or inner hyphens.";
+      }
+      {
+        assertion = !native || (
+          lib.all (anchor: normalizedPath anchor.path) (builtins.attrValues declaredAnchors)
+          && lib.allUnique (map (anchor: anchor.path) (builtins.attrValues declaredAnchors))
+        );
+        message = "Manifold operator anchor paths must be unique static normalized absolute paths other than /.";
+      }
+      {
+        assertion = !native || lib.all (anchor: !lib.any (area: containsPath area anchor.path) reservedAreas) (builtins.attrValues declaredAnchors);
+        message = "A Manifold operator anchor cannot present Manifold's own storage, the anchor views, systemd credentials, kernel interfaces or the Nix store.";
+      }
+      {
+        assertion = !native || lib.all (anchor: !lib.any (guarded: containsPath anchor.path guarded) guardedPaths) (builtins.attrValues declaredAnchors);
+        message = "A Manifold operator anchor may present a subtree beneath a protected directory, never one that is or contains a protected directory, the enrollment token or a service credential source.";
       }
     ];
 
@@ -309,7 +451,8 @@ in
         "d ${control}/state 0700 manifold manifold -"
         "d ${data}/terminal-host 0700 manifold manifold -"
         "d ${output} 0700 manifold manifold -"
-      ];
+      ]
+      ++ lib.optionals anchorsDeclared [ "d ${viewRoot} 0755 root root -" ];
 
     # These are deliberate Linux prerequisites, not container privileges. The owner
     # opens held descriptors and creates user/mount/PID/network namespaces itself.
@@ -354,8 +497,10 @@ in
     systemd.services.manifold-owner = mkIf native {
       description = "Manifold retained terminal and native job owner";
       wantedBy = [ "multi-user.target" ];
-      after = [ "systemd-tmpfiles-setup.service" "var-lib-manifold\\x2doutput.mount" ] ++ lib.optional local "manifold-server.service";
-      wants = [ "var-lib-manifold\\x2doutput.mount" ];
+      after = [ "systemd-tmpfiles-setup.service" "var-lib-manifold\\x2doutput.mount" ] ++ lib.optional local "manifold-server.service"
+        ++ lib.optional anchorsDeclared "manifold-operator-anchors.service";
+      # A missing view makes only its anchor unavailable, never the owner.
+      wants = [ "var-lib-manifold\\x2doutput.mount" ] ++ lib.optional anchorsDeclared "manifold-operator-anchors.service";
       # No PartOf/BindsTo/Requires on the hub or transport. A hub restart must not
       # signal this cgroup. Nix activation may update its definition, never restart it.
       restartIfChanged = false;
@@ -375,6 +520,25 @@ in
         DelegateSubgroup = "supervisor";
         TimeoutStartSec = 75;
         TimeoutStopSec = 90;
+      };
+    };
+
+    # Root makes the read-only views before the owner opens them. Activation never replaces
+    # them under a running owner: views change only between drained shutdown and owner start.
+    systemd.services.manifold-operator-anchors = mkIf anchorsDeclared {
+      description = "Present Manifold operator anchors as read-only views";
+      wantedBy = [ "multi-user.target" ];
+      before = [ "manifold-owner.service" ];
+      after = [ "local-fs.target" "systemd-tmpfiles-setup.service" "systemd-sysusers.service" ];
+      unitConfig.RequiresMountsFor = map (anchor: anchor.path) (builtins.attrValues declaredAnchors);
+      restartIfChanged = false;
+      stopIfChanged = false;
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        User = "root";
+        Group = "root";
+        ExecStart = "${presentOperatorAnchors}";
       };
     };
 

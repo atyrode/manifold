@@ -332,7 +332,8 @@ test("v35 native reads keep working with service authority, not machine executio
 test("contextual policies are projected for either legacy fence without disrupting ordinary reads", async () => {
   for (const [transport, owner] of [
     [MACHINE_SELF_PROVIDER_PROTOCOL_VERSION - 1, JOB_OWNER_PROTOCOL_VERSION],
-    [MACHINE_SELF_PROVIDER_PROTOCOL_VERSION, JOB_OWNER_PROTOCOL_VERSION - 1],
+    // The last owner RPC before job-scoped self-provider runtime identity (v37).
+    [MACHINE_SELF_PROVIDER_PROTOCOL_VERSION, 36],
     [undefined, JOB_OWNER_PROTOCOL_VERSION],
   ] as const) {
     const f = fixture();

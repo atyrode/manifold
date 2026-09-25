@@ -19,6 +19,7 @@ import {
   jobOwnerOperationRefusal,
   jobOwnerMachine,
   jobOwnerRequestRefusal,
+  readsOperatorAnchor,
   type ManifoldRef,
   type Cap,
   type RuntimeDeps,
@@ -1282,7 +1283,11 @@ export class JobService {
     const live = this.channels.get(install.machineId);
     const operation = install.machine.operations[operationId];
     if (live && operation) {
-      const protocolReason = jobOwnerOperationRefusal(live.owner.protocolVersion, operation);
+      const protocolReason = jobOwnerOperationRefusal(
+        live.owner.protocolVersion,
+        operation,
+        install.machine,
+      );
       if (protocolReason) return protocolReason;
     }
     for (const binding of operation?.services ?? []) {
@@ -1562,6 +1567,7 @@ export class JobService {
     const protocolReason = jobOwnerOperationRefusal(
       live.owner.protocolVersion,
       callee.machine.operations[runtime.operationId]!,
+      callee.machine,
     );
     if (protocolReason) return protocolReason;
     for (const binding of callee.machine.operations[runtime.operationId]?.services ?? []) {
@@ -3662,7 +3668,9 @@ export class JobService {
       }
     } else if (
       machine.requiresResourceBindings ||
-      Object.values(machine.operations).some((op) => op.services?.length)
+      Object.values(machine.operations).some(
+        (op) => op.services?.length || readsOperatorAnchor(machine, op),
+      )
     )
       fail("resource_bindings_required");
     JobCommandSchema.parse({
@@ -4249,7 +4257,9 @@ export class JobService {
       const operation = install.machine.operations[request.operationId];
       protocolReason =
         jobOwnerRequestRefusal(live.owner.protocolVersion, request) ??
-        (operation ? jobOwnerOperationRefusal(live.owner.protocolVersion, operation) : null);
+        (operation
+          ? jobOwnerOperationRefusal(live.owner.protocolVersion, operation, install.machine)
+          : null);
       if (!install.ready && !protocolReason) return null;
       const operationReason = protocolReason ?? this.operationRefusal(install, request.operationId);
       const context = this.auth.restoreCredential(request.credential);

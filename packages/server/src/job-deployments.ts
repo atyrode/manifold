@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
   canonicalJobJson,
   formatManifoldUri,
+  isOperatorAnchor,
   parseManifoldUri,
   jobResourceRequirements,
   MachineHalfSchema,
@@ -427,10 +428,16 @@ export class JobDeployments {
             for (const group of groups)
               for (const name of required[group]) {
                 const sha256 = known?.[group][name] ?? null;
+                // An operator anchor is reviewed by the host directory it presents, which only a
+                // live owner advertises: a pin alone never approves an unseen host path.
+                const operator = group === "anchors" && isOperatorAnchor(name);
+                const source = operator
+                  ? owner?.resources?.anchorDefinitions?.[name]?.source
+                  : undefined;
                 if (
                   !resources.some((resource) => resource.group === group && resource.name === name)
                 ) {
-                  resources.push({ group, name, sha256 });
+                  resources.push({ group, name, sha256, ...(source ? { source } : {}) });
                   if (sha256) bindings[group][name] = sha256;
                 }
                 // A proved owner's inventory is an observation: a resource it does not
@@ -443,7 +450,7 @@ export class JobDeployments {
                 // Without an owner the same absence means the hub cannot see the machine at
                 // all, and an offline review may only reuse pins already promoted: approving
                 // there would grant authority over whatever appears on reconnect.
-                if (!sha256 && (!owner || selected.has(operationId)))
+                if ((!sha256 || (operator && !source)) && (!owner || selected.has(operationId)))
                   reason ??= "resource_evidence_unknown";
               }
           }

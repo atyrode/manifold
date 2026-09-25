@@ -214,6 +214,9 @@ export const LOG_EVENTS = [
   // so an operator reads it beside the authorization; this record is the same fact on the host
   // that decided it, and carries the precise branch a sandboxed caller is never told.
   "service_call_refused",
+  // An operator anchor this owner declined to hold at startup (issue #839): absent, not a
+  // read-only mount, or overlapping protected storage. Only operations that read it refuse.
+  "operator_anchor_unavailable",
 ] as const;
 
 /** One name from the operational log vocabulary; the `evt` field of every JSONL record. */

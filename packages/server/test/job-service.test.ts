@@ -5665,7 +5665,8 @@ describe("reviewed native deployment approvals", () => {
   test("unsupported contextual review precedes missing inventory and leaves provider-only work available", () => {
     for (const [transport, owner] of [
       [MACHINE_SELF_PROVIDER_PROTOCOL_VERSION - 1, JOB_OWNER_PROTOCOL_VERSION],
-      [MACHINE_SELF_PROVIDER_PROTOCOL_VERSION, JOB_OWNER_PROTOCOL_VERSION - 1],
+      // The last owner RPC before job-scoped self-provider runtime identity (v37).
+      [MACHINE_SELF_PROVIDER_PROTOCOL_VERSION, 36],
       [undefined, JOB_OWNER_PROTOCOL_VERSION],
     ] as const) {
       const { f, selfPlugin, serve, use, policy } = selfProvidedFixture(true);
@@ -6376,6 +6377,184 @@ describe("reviewed native deployment approvals", () => {
         f.service.reviewDeployment(f.root, request(f, "scan-only-offline", [satisfiable]))
           .targets[0],
       ).toMatchObject({ approvable: false, reason: "resource_evidence_unknown" });
+    } finally {
+      f.store.close();
+    }
+  });
+
+  function anchoredFixture(protocolVersion = JOB_OWNER_PROTOCOL_VERSION) {
+    const archive = `${pluginId}.archive`;
+    const scan = `${pluginId}.scan`;
+    const sessions = `${pluginId}.sessions`;
+    const scratch = `${pluginId}.scratch`;
+    const anchored = structuredClone(machine);
+    anchored.requiresResourceBindings = true;
+    anchored.locations = {
+      [sessions]: {
+        anchor: "operator.omp-sessions",
+        components: [],
+        revision: "l1",
+        kind: "directory",
+        guestPath: "/home/job/.omp/agent/sessions",
+      },
+      [scratch]: { anchor: "runtime", components: ["scratch"], revision: "l1", kind: "directory" },
+    };
+    anchored.operations = {
+      [archive]: {
+        ...machine.operations[operationId]!,
+        locations: [{ locationId: sessions, access: "read" }],
+      },
+      [scan]: {
+        ...machine.operations[operationId]!,
+        locations: [{ locationId: scratch, access: "read" }],
+      },
+    };
+    const f = fixture();
+    f.service.setManifestResolver((id) => (id === pluginId ? anchored : null));
+    f.owner.protocolVersion = protocolVersion;
+    f.owner.resources = {
+      tools: {},
+      services: {},
+      anchors: { "operator.omp-sessions": "e".repeat(64), runtime: "f".repeat(64) },
+      serviceDefinitions: {},
+      anchorDefinitions: {
+        "operator.omp-sessions": { source: "/home/alice/.omp/agent/sessions", readOnly: true },
+      },
+    };
+    return { f, anchored, archive, scan, sessions };
+  }
+
+  test("an operator anchor's review row names its host path, and never approves blind", () => {
+    const { f, archive, scan } = anchoredFixture();
+    try {
+      prove(f);
+      const value = request(f, "archive", [archive]);
+      const review = f.service.reviewDeployment(f.root, value);
+      expect(review.targets[0]).toMatchObject({ approvable: true, reason: null });
+      // Only the operator anchor's row carries a host path; a built-in row is unchanged.
+      expect(review.targets[0]!.resources).toEqual([
+        {
+          group: "anchors",
+          name: "operator.omp-sessions",
+          sha256: "e".repeat(64),
+          source: "/home/alice/.omp/agent/sessions",
+        },
+        { group: "anchors", name: "runtime", sha256: "f".repeat(64) },
+      ]);
+
+      // The host path is advertised to root and review only, never to a reader.
+      const args = { machineId: f.machineId, pluginId };
+      expect(f.service.describe(f.root, args).resources?.anchorDefinitions).toEqual(
+        f.owner.resources!.anchorDefinitions,
+      );
+      const reader = f.auth.authenticate(
+        f.auth.mintToken(
+          { principal: { name: "inspector", kind: "human" }, caps: ["machines:read"] },
+          f.root,
+        ).token,
+      );
+      const described = f.service.describe(reader, args).resources!;
+      expect(described.anchors).toEqual(f.owner.resources!.anchors);
+      expect(Object.hasOwn(described, "anchorDefinitions")).toBe(false);
+
+      // Changing what the anchor presents is a new pin: the old review cannot be applied, and
+      // the next one shows the new host path.
+      f.service.event(f.channel, {
+        type: "resources",
+        resources: {
+          ...f.owner.resources!,
+          anchors: { "operator.omp-sessions": "a".repeat(64), runtime: "f".repeat(64) },
+          anchorDefinitions: {
+            "operator.omp-sessions": { source: "/home/alice/elsewhere", readOnly: true },
+          },
+        },
+      });
+      expect(() =>
+        f.service.applyDeployment(
+          f.root,
+          { request: value, reviewDigest: review.reviewDigest },
+          "trace",
+        ),
+      ).toThrow("deployment_review_stale");
+      expect(f.service.reviewDeployment(f.root, value).targets[0]!.resources[0]).toEqual({
+        group: "anchors",
+        name: "operator.omp-sessions",
+        sha256: "a".repeat(64),
+        source: "/home/alice/elsewhere",
+      });
+
+      // A pin without an advertised definition names no host path, so it is not approvable.
+      f.service.event(f.channel, {
+        type: "resources",
+        resources: { ...f.owner.resources!, anchorDefinitions: {} },
+      });
+      const blind = f.service.reviewDeployment(f.root, value).targets[0]!;
+      expect(blind).toMatchObject({ approvable: false, reason: "resource_evidence_unknown" });
+      expect(blind.resources[0]).toEqual({
+        group: "anchors",
+        name: "operator.omp-sessions",
+        sha256: "e".repeat(64),
+      });
+      // An operation that reads no operator anchor still deploys beside it.
+      expect(
+        f.service.reviewDeployment(f.root, request(f, "scan", [scan])).targets[0],
+      ).toMatchObject({ approvable: true, reason: null });
+      // Offline, even an already-promoted pin cannot show the host path.
+      f.service.offline(f.channel);
+      expect(
+        f.service.reviewDeployment(f.root, request(f, "archive-offline", [archive])).targets[0],
+      ).toMatchObject({ approvable: false, reason: "resource_evidence_unknown" });
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("an older owner never receives an operator anchor and refuses only the operation that reads one", () => {
+    const { f, anchored, archive, scan, sessions } = anchoredFixture(37);
+    try {
+      // An older owner cannot hold operator anchors, so it advertises only built-in ones.
+      f.owner.resources = {
+        tools: {},
+        services: {},
+        anchors: { runtime: "f".repeat(64) },
+        serviceDefinitions: {},
+      };
+      prove(f);
+      f.commands.length = 0;
+      f.service.install(f.root, {
+        machineId: f.machineId,
+        pluginId,
+        installationRevision: "anchored",
+        artifactSha256: hash,
+        machine: anchored,
+        resourceBindings: { tools: {}, services: {}, anchors: { runtime: "f".repeat(64) } },
+      });
+      const install = f.commands.findLast((command) => command.type === "install");
+      if (install?.type !== "install") throw new Error("projected install missing");
+      expect(install.installationRevision).toBe("anchored");
+      expect(Object.keys(install.machine.operations)).toEqual([scan]);
+      expect(Object.hasOwn(install.machine.locations, sessions)).toBe(false);
+      const operations = f.service.describe(f.root, {
+        machineId: f.machineId,
+        pluginId,
+      }).operations!;
+      expect(operations[archive]).toMatchObject({
+        ready: false,
+        reason: "operator_anchors_protocol_unsupported",
+      });
+      expect(operations[scan]?.reason).not.toBe("operator_anchors_protocol_unsupported");
+      // Direct installation cannot leave an operator-anchor read unpinned either.
+      const unpinned = { ...anchored, requiresResourceBindings: false };
+      f.service.setManifestResolver((id) => (id === pluginId ? unpinned : null));
+      expect(() =>
+        f.service.install(f.root, {
+          machineId: f.machineId,
+          pluginId,
+          installationRevision: "unpinned",
+          artifactSha256: hash,
+          machine: unpinned,
+        }),
+      ).toThrow("resource_bindings_required");
     } finally {
       f.store.close();
     }

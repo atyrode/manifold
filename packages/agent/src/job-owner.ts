@@ -113,6 +113,12 @@ export interface JobOwnerOptions {
   delegatedCgroup: HeldDirectory;
   bubblewrapFd: number;
   anchors: Readonly<Record<string, HeldDirectory>>;
+  /**
+   * The held operator anchors among `anchors`, by full `operator.<name>`: the view path the
+   * owner opened and the host directory it presents. Only these are advertised and pinned
+   * with their host source; each is read-only.
+   */
+  operatorAnchors?: Readonly<Record<string, { path: string; source: string }>>;
   protectedDirectories: readonly HeldDirectory[];
   /** Reviewed local runtime closures, not executable/cwd/env RPC fields. */
   runtimeTools: Readonly<Record<string, readonly LinuxJobBind[]>>;
@@ -260,6 +266,7 @@ export class MachineJobOwner {
     this.exclusions = new DirectoryExclusions(options.protectedDirectories);
     this.resources = new JobResources({
       anchors: options.anchors,
+      ...(options.operatorAnchors ? { operatorAnchors: options.operatorAnchors } : {}),
       runtimeTools: options.runtimeTools,
       credentialReferences: () => this.credentialReferences(),
       runtimeAvailable: (policy, inventory) => this.runtimeAvailable(policy, inventory, new Set()),

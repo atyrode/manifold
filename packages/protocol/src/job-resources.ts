@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { MachineHalf } from "./jobs.ts";
+import type { MachineHalf, MachineOperation } from "./jobs.ts";
 import { ServiceCredentialReferenceSchema } from "./services.ts";
 
 const name = z
@@ -8,6 +8,38 @@ const name = z
   .refine((value) => !["__proto__", "constructor", "prototype", ".", ".."].includes(value));
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
 const revisions = z.record(name, digest).refine((value) => Object.keys(value).length <= 128);
+const absolute = z
+  .string()
+  .startsWith("/")
+  .max(4096)
+  .refine((value) => !value.includes("\0"));
+
+/** The anchors every native owner may hold, each rooted in the owner's own storage. */
+export const BUILT_IN_ANCHORS = ["home", "data", "state", "cache", "config", "runtime"] as const;
+export const BuiltInAnchorSchema = z.enum(BUILT_IN_ANCHORS);
+/**
+ * An anchor the machine's operator declares: a read-only host directory, named by what it
+ * exposes. The `operator.` namespace is open per machine and no built-in name can enter it.
+ */
+export const OperatorAnchorSchema = z
+  .string()
+  .regex(/^operator\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/);
+export const MachineAnchorSchema = z.union([BuiltInAnchorSchema, OperatorAnchorSchema]);
+/** Operator anchors are read-only by construction; a location on one is never written. */
+export function isOperatorAnchor(anchor: string): boolean {
+  return anchor.startsWith("operator.");
+}
+/** An operation that reads an operator anchor is always pinned to the host path it reviewed. */
+export function readsOperatorAnchor(
+  machine: Pick<MachineHalf, "locations">,
+  operation: Pick<MachineOperation, "locations">,
+): boolean {
+  return operation.locations.some(({ locationId }) =>
+    isOperatorAnchor(machine.locations[locationId]?.anchor ?? ""),
+  );
+}
+/** At most this many operator anchors per owner, matching the native module's assertion. */
+export const OPERATOR_ANCHOR_LIMIT = 32;
 
 /** An installation promotes exact native bindings, never the contents of credentials. */
 export const JobResourceBindingsSchema = z.strictObject({
@@ -29,6 +61,15 @@ export const JobResourceInventorySchema = JobResourceBindingsSchema.extend({
     )
     .refine((value) => Object.keys(value).length <= 64),
   credentialReferences: z.array(ServiceCredentialReferenceSchema).max(64).optional(),
+  /**
+   * The host directory each held operator anchor presents. It is present only for operator
+   * anchors, so built-in inventories stay byte-identical, and hub describes show it to root
+   * and to deployment review only.
+   */
+  anchorDefinitions: z
+    .record(OperatorAnchorSchema, z.strictObject({ source: absolute, readOnly: z.literal(true) }))
+    .refine((value) => Object.keys(value).length <= OPERATOR_ANCHOR_LIMIT)
+    .optional(),
 });
 export type JobResourceInventory = z.infer<typeof JobResourceInventorySchema>;
 
@@ -87,7 +128,12 @@ export function jobResourceRefusal(
 ): string | null {
   const operation = machine.operations[operationId];
   if (!operation) return "unknown_operation";
-  if (!machine.requiresResourceBindings && !operation.services?.length) return null;
+  if (
+    !machine.requiresResourceBindings &&
+    !operation.services?.length &&
+    !readsOperatorAnchor(machine, operation)
+  )
+    return null;
   if (!bindings) return "resource_bindings_required";
   if (!inventory) return "resource_owner_unavailable";
   const required = jobResourceRequirements(machine, operationId, platform);

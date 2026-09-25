@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { MachineLocation } from "@manifold/protocol";
 import { HeldDirectory } from "../src/job-files.ts";
 import {
   DirectoryExclusions,
@@ -378,6 +379,110 @@ describe.skipIf(process.platform !== "linux")("named location descriptor boundar
     } finally {
       anchor.close();
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("operator anchors are only read, and a whole anchor is a separate handle", () => {
+    const root = mkdtempSync(join(tmpdir(), "job-operator-anchor-"));
+    mkdirSync(join(root, "sessions", "2026"), { recursive: true });
+    writeFileSync(join(root, "sessions", "2026", "a.jsonl"), "synthetic");
+    symlinkSync("2026", join(root, "sessions", "linked"));
+    mkdirSync(join(root, "sessions", "guarded"), { mode: 0o700 });
+    mkdirSync(join(root, "other"));
+    const anchor = HeldDirectory.openAbsolute(join(root, "sessions"));
+    const unrelated = HeldDirectory.openAbsolute(join(root, "other"));
+    const guarded = HeldDirectory.openAbsolute(join(root, "sessions", "guarded"));
+    const declaration: MachineLocation = {
+      anchor: "operator.omp-sessions",
+      components: [],
+      revision: "one",
+      kind: "directory",
+    };
+    try {
+      const whole = resolveJobLocation(
+        anchor,
+        "fixture.sessions",
+        declaration,
+        "read",
+        new DirectoryExclusions([]),
+      );
+      expect(whole.fd).not.toBe(anchor.fd);
+      expect(whole.writable).toBe(false);
+      expect(whole.directory!.names().sort()).toEqual(["2026", "guarded", "linked"]);
+      whole.close();
+      // The owner's held anchor outlives every job that named it whole.
+      expect(anchor.names().sort()).toEqual(["2026", "guarded", "linked"]);
+      const file = resolveJobLocation(
+        anchor,
+        "fixture.session",
+        { ...declaration, components: ["2026", "a.jsonl"], kind: "file" },
+        "read",
+      );
+      expect(readFileSync(`/proc/self/fd/${file.fd}`, "utf8")).toBe("synthetic");
+      expect(file.writable).toBe(false);
+      file.close();
+
+      for (const access of ["write", "create"] as const)
+        for (const components of [[], ["2026"], ["2026", "created"]])
+          expect(() =>
+            resolveJobLocation(anchor, "fixture.sessions", { ...declaration, components }, access),
+          ).toThrow("operator_anchor_read_only");
+      expect(existsSync(join(root, "sessions", "2026", "created"))).toBe(false);
+      // Links are refused, never followed, below an operator anchor too.
+      for (const location of [
+        { ...declaration, components: ["linked"] },
+        { ...declaration, components: ["linked", "a.jsonl"], kind: "file" as const },
+      ])
+        expect(() => resolveJobLocation(anchor, "fixture.linked", location, "read")).toThrow();
+      // Only an operator anchor's directory may be named whole.
+      for (const location of [
+        { ...declaration, kind: "file" as const },
+        { ...declaration, anchor: "home" as const },
+      ])
+        expect(() => resolveJobLocation(anchor, "fixture.empty", location, "read")).toThrow(
+          "empty_location_components",
+        );
+      // An anchor that is, or contains, protected storage is never bound whole.
+      for (const protectedDirectory of [guarded, anchor])
+        expect(() =>
+          resolveJobLocation(
+            anchor,
+            "fixture.sessions",
+            declaration,
+            "read",
+            new DirectoryExclusions([protectedDirectory]),
+          ),
+        ).toThrow("private_owner_source_overlap");
+      const beside = resolveJobLocation(
+        anchor,
+        "fixture.sessions",
+        declaration,
+        "read",
+        new DirectoryExclusions([unrelated]),
+      );
+      expect(beside.writable).toBe(false);
+      beside.close();
+    } finally {
+      guarded.close();
+      unrelated.close();
+      anchor.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("an operator anchor never crosses into a descendant mount", () => {
+    const anchor = HeldDirectory.openAbsolute("/");
+    try {
+      expect(() =>
+        resolveJobLocation(
+          anchor,
+          "fixture.proc",
+          { anchor: "operator.root", components: ["proc"], revision: "one", kind: "directory" },
+          "read",
+        ),
+      ).toThrow("mount_escape");
+    } finally {
+      anchor.close();
     }
   });
 });

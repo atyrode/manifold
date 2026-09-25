@@ -66,6 +66,7 @@ const child = Bun.spawn(
     "test",
     "packages/agent/src/job-linux.test.ts",
     "packages/agent/test/job-owner.test.ts",
+    "packages/agent/test/job-runtime.test.ts",
     "packages/testkit/e2e/jobs.test.ts",
     "packages/testkit/e2e/instance-services.test.ts",
     "--test-name-pattern",

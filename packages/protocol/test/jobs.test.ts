@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import {
+  canonicalJobJson,
   MachineArtifactSchema,
   MachineLocationSchema,
   MachineOperationSchema,
@@ -9,14 +10,21 @@ import {
   MachineHalfSchema,
   JobOutputBindingSchema,
   jobLimits,
+  jobOwnerInstallRestoresProjection,
+  jobOwnerMachine,
+  jobOwnerOperationRefusal,
   ListJobRunsArgsSchema,
   ListJobRunsResultSchema,
   PublicJobRunSchema,
   PublicScheduleOccurrenceSchema,
+  type JobCommand,
+  type MachineHalf,
   type PublicJob,
   type PublicScheduleOccurrence,
 } from "../src/jobs.ts";
 import { JobDeploymentRequestSchema } from "../src/job-deployments.ts";
+import { JobOwnerConfigSchema } from "../src/job-owner-config.ts";
+import { JobResourceInventorySchema, jobResourceRefusal } from "../src/job-resources.ts";
 
 test("deployment scope requires explicit operations and bounded unique destinations", () => {
   const request = {
@@ -88,6 +96,250 @@ test("named resources admit hidden account directories without admitting travers
       }).success,
     ).toBe(false);
   }
+});
+
+const sessions = {
+  anchor: "operator.omp-sessions",
+  components: [],
+  revision: "r1",
+  kind: "directory",
+};
+test("operator anchors are an open operator-named set that a location may name whole", () => {
+  expect(MachineLocationSchema.parse(sessions).anchor).toBe("operator.omp-sessions");
+  expect(MachineLocationSchema.safeParse({ ...sessions, kind: undefined }).success).toBe(true);
+  expect(
+    MachineLocationSchema.safeParse({ ...sessions, components: ["2026", "session.jsonl"] }).success,
+  ).toBe(true);
+  expect(
+    MachineLocationSchema.safeParse({ ...sessions, components: ["a.jsonl"], kind: "file" }).success,
+  ).toBe(true);
+  for (const anchor of [
+    "operator.",
+    "operator.A",
+    "operator.-a",
+    "operator.a-",
+    "operator.a.b",
+    "operator.a_b",
+    `operator.${"a".repeat(64)}`,
+    "operatorx",
+    "operator",
+    "sessions",
+  ])
+    expect(MachineLocationSchema.safeParse({ ...sessions, anchor }).success).toBe(false);
+  expect(
+    MachineLocationSchema.safeParse({ ...sessions, anchor: `operator.${"a".repeat(63)}` }).success,
+  ).toBe(true);
+  // Only an operator anchor's directory may be named whole, and never as a file.
+  expect(MachineLocationSchema.safeParse({ ...sessions, kind: "file" }).success).toBe(false);
+  for (const anchor of ["home", "state", "runtime"])
+    expect(MachineLocationSchema.safeParse({ ...sessions, anchor }).success).toBe(false);
+  // Native managed storage stays a state directory; an operator anchor cannot provision it.
+  expect(
+    MachineLocationSchema.safeParse({ ...sessions, components: ["store"], managed: true }).success,
+  ).toBe(false);
+});
+
+const readOperation = {
+  argv: [],
+  input: {},
+  runtimeTools: [],
+  outputs: [],
+  network: "none",
+  stdin: false,
+  limits: { timeoutMs: 1000, memoryBytes: 1048576, processes: 1, outputBytes: 65536 },
+} as const;
+const anchoredMachine = {
+  artifacts: {
+    "linux-x64": {
+      url: "https://example.invalid/tool",
+      sha256: "a".repeat(64),
+      entrySha256: "b".repeat(64),
+      format: "tar.gz",
+      entry: ["main"],
+      maxBytes: 4096,
+      maxExpandedBytes: 8192,
+      maxMembers: 8,
+    },
+  },
+  locations: {
+    sessions,
+    scratch: { anchor: "runtime", components: ["scratch"], revision: "r1", kind: "directory" },
+  },
+  operations: {
+    archive: {
+      ...readOperation,
+      locations: [
+        { locationId: "sessions", access: "read" },
+        { locationId: "scratch", access: "write" },
+      ],
+    },
+    scan: { ...readOperation, locations: [{ locationId: "scratch", access: "read" }] },
+  },
+};
+test("an operation may only read an operator anchor", () => {
+  const machine = MachineHalfSchema.parse(anchoredMachine);
+  expect(machine.operations.archive!.locations[0]).toEqual({
+    locationId: "sessions",
+    access: "read",
+  });
+  for (const access of ["write", "create"]) {
+    const result = MachineHalfSchema.safeParse({
+      ...anchoredMachine,
+      operations: {
+        archive: { ...readOperation, locations: [{ locationId: "sessions", access }] },
+      },
+    });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues.map((issue) => issue.message)).toEqual([
+      "Operator anchors are read-only",
+    ]);
+  }
+  // Reading an operator anchor is always pinned, even when the manifest does not ask for it.
+  const inventory = {
+    tools: {},
+    services: {},
+    anchors: { "operator.omp-sessions": "e".repeat(64), runtime: "f".repeat(64) },
+    serviceDefinitions: {},
+  };
+  expect(machine.requiresResourceBindings).toBeUndefined();
+  expect(jobResourceRefusal(machine, "archive", "linux-x64", undefined, inventory)).toBe(
+    "resource_bindings_required",
+  );
+  expect(jobResourceRefusal(machine, "scan", "linux-x64", undefined, inventory)).toBeNull();
+  const bindings = { tools: {}, services: {}, anchors: { ...inventory.anchors } };
+  expect(jobResourceRefusal(machine, "archive", "linux-x64", bindings, inventory)).toBeNull();
+  expect(
+    jobResourceRefusal(machine, "archive", "linux-x64", bindings, {
+      ...inventory,
+      anchors: { ...inventory.anchors, "operator.omp-sessions": "a".repeat(64) },
+    }),
+  ).toBe("anchors_revision_changed");
+});
+
+test("older owners never receive an operator-anchor declaration and keep every other operation", () => {
+  const machine = MachineHalfSchema.parse(anchoredMachine) as MachineHalf;
+  for (const protocolVersion of [34, 35, 36, 37]) {
+    expect(jobOwnerOperationRefusal(protocolVersion, machine.operations.archive!, machine)).toBe(
+      "operator_anchors_protocol_unsupported",
+    );
+    expect(jobOwnerOperationRefusal(protocolVersion, machine.operations.scan!, machine)).toBeNull();
+    const projected = jobOwnerMachine(protocolVersion, machine)!;
+    expect(Object.keys(projected.operations)).toEqual(["scan"]);
+    expect(Object.keys(projected.locations)).toEqual(["scratch"]);
+    // What remains is exactly the declaration's own bytes, so upgrading can restore it.
+    expect(canonicalJobJson(projected.operations.scan)).toBe(
+      canonicalJobJson(machine.operations.scan),
+    );
+    expect(canonicalJobJson(projected.locations.scratch)).toBe(
+      canonicalJobJson(machine.locations.scratch),
+    );
+    expect(canonicalJobJson({ ...projected, operations: {}, locations: {} })).toBe(
+      canonicalJobJson({ ...machine, operations: {}, locations: {} }),
+    );
+  }
+  expect(jobOwnerOperationRefusal(40, machine.operations.archive!, machine)).toBeNull();
+  expect(jobOwnerMachine(40, machine)).toBe(machine);
+  // Versions reserved by other open drafts are not accepted.
+  for (const protocolVersion of [38, 39])
+    expect(jobOwnerOperationRefusal(protocolVersion, machine.operations.scan!, machine)).toBe(
+      "owner_protocol_unsupported",
+    );
+  // A machine that only ever read operator anchors has nothing an older owner can install.
+  const onlyAnchored = { ...machine, operations: { archive: machine.operations.archive! } };
+  expect(jobOwnerMachine(37, onlyAnchored)).toBeNull();
+  // Without operator anchors, older projections keep the declaration's identity.
+  const plain = { ...machine, locations: { scratch: machine.locations.scratch! } };
+  plain.operations = { scan: machine.operations.scan! };
+  expect(jobOwnerMachine(37, plain)).toBe(plain);
+
+  const install = (declaration: MachineHalf): Extract<JobCommand, { type: "install" }> => ({
+    type: "install",
+    pluginId: "fixture.jobs",
+    installationRevision: "one",
+    artifactSha256: "a".repeat(64),
+    machine: declaration,
+    artifact: { bundleFile: "worker", data: "YQ==" },
+  });
+  expect(
+    jobOwnerInstallRestoresProjection(install(jobOwnerMachine(37, machine)!), install(machine)),
+  ).toBe(true);
+  const widened = structuredClone(machine);
+  widened.operations.scan!.locations = [{ locationId: "scratch", access: "write" }];
+  expect(
+    jobOwnerInstallRestoresProjection(install(jobOwnerMachine(37, machine)!), install(widened)),
+  ).toBe(false);
+});
+
+const ownerConfig = {
+  machineId: "machine",
+  admissionPublicKey: "key",
+  stateDirectory: "/var/lib/manifold/job-owner/state",
+  delegatedCgroup: "/sys/fs/cgroup/manifold",
+  bubblewrap: "/run/current-system/sw/bin/bwrap",
+  protectedDirectories: ["/home"],
+  anchors: { home: "/var/lib/manifold-workload/home" },
+  runtimeTools: {},
+  artifactOrigins: ["https://example.invalid"],
+};
+test("owner configuration declares operator anchors read-only, bounded and never built-in", () => {
+  expect(JobOwnerConfigSchema.parse(ownerConfig)).toEqual(ownerConfig);
+  const anchor = {
+    path: "/run/manifold-anchors/omp-sessions",
+    source: "/home/alice/.omp/agent/sessions",
+    readOnly: true as const,
+  };
+  expect(
+    JobOwnerConfigSchema.parse({
+      ...ownerConfig,
+      operatorAnchors: { "operator.omp-sessions": anchor },
+    }).operatorAnchors,
+  ).toEqual({ "operator.omp-sessions": anchor });
+  expect(
+    JobOwnerConfigSchema.safeParse({
+      ...ownerConfig,
+      operatorAnchors: { "operator.plain": { path: "/srv/plain", readOnly: true } },
+    }).success,
+  ).toBe(true);
+  for (const operatorAnchors of [
+    { "operator.omp-sessions": { ...anchor, readOnly: false } },
+    { "operator.omp-sessions": { path: anchor.path, source: anchor.source } },
+    { "operator.omp-sessions": { ...anchor, path: "relative" } },
+    { "operator.omp-sessions": { ...anchor, writable: true } },
+    { home: anchor },
+    { "operator.": anchor },
+    Object.fromEntries(Array.from({ length: 33 }, (_, index) => [`operator.a${index}`, anchor])),
+  ])
+    expect(JobOwnerConfigSchema.safeParse({ ...ownerConfig, operatorAnchors }).success).toBe(false);
+  expect(
+    JobOwnerConfigSchema.safeParse({
+      ...ownerConfig,
+      operatorAnchors: Object.fromEntries(
+        Array.from({ length: 32 }, (_, index) => [`operator.a${index}`, anchor]),
+      ),
+    }).success,
+  ).toBe(true);
+  // Built-in anchors never enter the operator namespace, nor the reverse.
+  expect(
+    JobOwnerConfigSchema.safeParse({
+      ...ownerConfig,
+      anchors: { "operator.omp-sessions": "/srv/sessions" },
+    }).success,
+  ).toBe(false);
+
+  const inventory = { tools: {}, services: {}, anchors: {}, serviceDefinitions: {} };
+  expect(JobResourceInventorySchema.parse(inventory)).toEqual(inventory);
+  expect(
+    JobResourceInventorySchema.safeParse({
+      ...inventory,
+      anchorDefinitions: { "operator.omp-sessions": { source: anchor.source, readOnly: true } },
+    }).success,
+  ).toBe(true);
+  expect(
+    JobResourceInventorySchema.safeParse({
+      ...inventory,
+      anchorDefinitions: { home: { source: anchor.source, readOnly: true } },
+    }).success,
+  ).toBe(false);
 });
 
 const artifact = {

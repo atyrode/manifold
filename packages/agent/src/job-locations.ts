@@ -1,5 +1,5 @@
 import { closeSync, constants, fstatSync } from "node:fs";
-import type { MachineLocation } from "@manifold/protocol";
+import { isOperatorAnchor, type MachineLocation } from "@manifold/protocol";
 import type { HeldDirectory } from "./job-files.ts";
 import { directoryAncestry } from "./job-files.ts";
 
@@ -84,7 +84,8 @@ export function resolveManagedJobLocation(
 }
 
 /** Resolves only declared descendants of a held trusted anchor.
- * Runtime directory writes provision components; files never imply parent access. */
+ * Runtime directory writes provision components; files never imply parent access.
+ * An operator anchor is only read, and may be named whole through its own handle. */
 export function resolveJobLocation(
   anchor: HeldDirectory,
   locationId: string,
@@ -95,8 +96,22 @@ export function resolveJobLocation(
 ): JobLocation {
   const guestPath = guestLocationPath(locationId, declaration);
   if (declaration.managed) throw new Error("managed_location_requires_native_store");
+  const operator = isOperatorAnchor(declaration.anchor);
+  // The declaration schema already refuses this; the owner never relies on that alone.
+  if (operator && access !== "read") throw new Error("operator_anchor_read_only");
+  if (declaration.components.length === 0) {
+    if (!operator || declaration.kind === "file") throw new Error("empty_location_components");
+    // A job's close() must never close the owner's held anchor.
+    const whole = anchor.reopen();
+    try {
+      exclusions?.assertSource(whole.fd, true);
+      return directoryLocation(whole, guestPath, access);
+    } catch (error) {
+      whole.close();
+      throw error;
+    }
+  }
   let current = anchor;
-  if (declaration.components.length === 0) throw new Error("empty_location_components");
   const createDirectories =
     access === "create" ||
     (access === "write" && declaration.anchor === "runtime" && declaration.kind !== "file");

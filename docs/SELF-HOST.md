@@ -112,6 +112,7 @@ names, arrival order, provider labels and other machines are never fallback choi
 | `/var/lib/manifold`                                         | Private 0700 hub/control storage; owner key, machine token, immutable `job-owner/config.json`, durable owner state/journal/artifacts/sealed outputs                 |
 | `/var/lib/manifold-workload/{home,data,state,cache,config}` | Persistent declared workload anchors, separate from protected control storage                                                                                       |
 | `/var/lib/manifold-output`                                  | Dedicated bounded tmpfs, the `runtime` anchor for named-output locations and for `job-inputs`, where bound inputs are extracted; temporary, not durable owner state |
+| `/run/manifold-anchors/<name>`                              | Only with `execution.operatorAnchors`: root-made read-only idmapped views of operator directories, re-created at boot                                               |
 
 The owner has **no** `PartOf`, `BindsTo` or `Requires` relationship to the hub or transport.
 Detaching a child would leave it inside the hub cgroup; the module instead starts the owner
@@ -128,9 +129,11 @@ replacing an incumbent and fsyncs its parent. Concurrent native installation com
 configuration; an interrupted write cannot expose a partial config or supervision marker.
 `/var/lib/manifold` is excluded from workload sources, including recursive ancestor mounts;
 add other existing credential/control directories with `execution.protectedDirectories`.
-Do not make protected control storage an anchor or copy desktop/tool credentials into the
-service account. Native owners refuse runtime-free shells and programs, including when their
-job channel is unavailable; ordinary terminal creation requires an explicitly unconfined owner.
+An [operator anchor](#operator-anchors) may present a subtree beneath a protected directory,
+never a directory that is or contains one. Do not make protected control storage an anchor or
+copy desktop/tool credentials into the service account. Native owners refuse runtime-free
+shells and programs, including when their job channel is unavailable; ordinary terminal
+creation requires an explicitly unconfined owner.
 The hub, owner and transport remain trusted processes under the `manifold` OS account:
 neither these exclusions nor cgroups isolate a compromised daemon from same-UID control state.
 Give this account only the host authority you intend to grant; use separate execution nodes
@@ -226,6 +229,78 @@ Origins must be canonical HTTPS origins; HTTP is allowed only for explicit `127.
 or `[::1]` loopback origins. This declares a credential source, not resource consent or
 permission to invoke a service. Owner configuration and source references are retained;
 change them only through drained owner maintenance, not an in-place config overwrite.
+
+### Operator anchors
+
+An operator anchor lets reviewed plugin locations read one existing host directory outside
+Manifold's storage, such as an agent harness's session tree in an operator's home. Plugins
+name it `operator.<name>` ([PLUGINS.md](PLUGINS.md#governed-jobs-and-continuous-streams)); the
+node's operator decides which directory each name presents:
+
+```nix
+services.manifold.execution = {
+  protectedDirectories = [ "/home" ];
+  operatorAnchors.omp-sessions.path = "/home/alice/.omp/agent/sessions";
+};
+```
+
+Operator anchors are read-only: `readOnly` must stay `true`, and a plugin declaration cannot
+request write or create access to one. Names are 1–63 lowercase letters, digits or inner
+hyphens, with at most 32 per node. Use a quoted absolute path string owned by an ordinary
+user; a source owned by root or `manifold` is refused.
+
+The module never changes the source's owner, mode or ACLs, and never grants `manifold`
+traversal of the directories above it. The root oneshot `manifold-operator-anchors.service`,
+ordered before the owner, presents each source as a **non-recursive bind** at
+`/run/manifold-anchors/<name>`, mounted `ro,nosuid,nodev,noexec,nosymfollow` and **idmapped**
+so that the source owner's uid and gid appear as `manifold`'s. Through the view, 0600 files
+and 0700 directories are readable, including files the operator creates later, with nothing
+re-applied; writes, `chmod`, `touch` and new files fail with `EROFS`. Mounts inside the source
+are not carried, and symbolic links inside it read with `readlink` but are never followed.
+The owner configuration names the view as the anchor's `path` and the declared directory as
+its `source`. The node needs idmapped bind mounts (Linux 5.12 or newer, on a filesystem that
+supports them) and a util-linux `mount` with `X-mount.idmap`.
+
+Refusals happen at the earliest layer that can see them:
+
+- **Evaluation** fails for `readOnly = false`, a bad name, more than 32 anchors, a duplicate
+  or non-normalized path, `/`, a path in Manifold's own storage, the views,
+  `/run/credentials`, `/proc`, `/sys`, `/dev` or `/nix/store`, and a path that is or
+  contains a protected directory, the enrollment token or a `serviceCredentials` source.
+- **At boot** the helper creates no view, and logs why, for a source with a symbolic link in
+  any component, one that is absent, not a directory, owned by root or `manifold`, or fails
+  containment on its real path, and for a bind that fails or lacks a promised mount option.
+  It never leaves a bare mountpoint. The unit then reports failed; other anchors keep their
+  views, and the owner only `Wants` the unit.
+- **At owner startup** each view is held, or logged as `operator_anchor_unavailable` with
+  `operator_anchor_absent`, `operator_anchor_not_read_only`,
+  `operator_anchor_overlaps_protected` or `operator_anchor_unopenable`. An unavailable anchor
+  makes only the operations that read it `anchors_unavailable`; the owner still starts and
+  serves everything else, and never falls back to another directory.
+
+`protectedDirectories` keeps its descriptor-identity meaning. A view's own ancestry is
+`/run/manifold-anchors`, so the owner cannot see which protected directory a source lies
+under: the module and its helper enforce that a view presents a subtree beneath a protected
+directory, never one that is or contains protected or credential storage. When `/home` is
+protected to hide an enrollment token kept in a home, keep it protected. Narrowing it to the
+token's directory would require `manifold` to traverse the operator's home, which exposes
+every world-readable file there.
+
+Root describe and deployment review name each held anchor's host `source`; Native Plugins
+shows `Host path <source>[/<components>] · read-only` for every location on it. The anchor's
+resource pin binds the view's identity, `path`, `source` and read-only flag, but not its
+mount id, because the view is re-created every boot. Changing what an anchor presents
+therefore requires a new review, and an operation that reads an operator anchor always
+requires reviewed resource bindings. Consent stays `locations:read` on the location node.
+
+The declared set is retained owner configuration. A node that declares no anchor produces an
+unchanged owner configuration and has no helper unit. Adding, removing or changing an anchor
+uses the positive-drain/shutdown maintenance below: after the acknowledged shutdown and the
+retirement of the old configuration, run `systemctl restart manifold-operator-anchors`, then
+start the owner. Activation never restarts the helper, and it never unmounts lazily: while an
+owner still holds a view, the restart fails with `EBUSY` instead of replacing what that owner
+reviewed. Operator anchors need native owner RPC 40; the upgrade to an owner package that
+speaks it follows the same maintenance.
 
 ### Explicit remote execution
 
@@ -471,7 +546,16 @@ credential is private and read-only, and in-flight work retains its owner. It al
 a source parent writable through an owner unit's supplementary group and an unsafe
 source-file mode, then proves transport recovery without replacing the owner.
 
-Run both packaged scenarios:
+A third node declares operator anchors over a 0700 home beneath protected `/home`. It checks
+that `manifold` still cannot reach the source, that the view carries every promised mount
+option and an idmap, that a hash-pinned worker reads 0600 and 0700 contents through its
+reviewed binding while every write attempt fails with `EROFS` and links are not followed,
+that source metadata, ACLs and access times are unchanged, and that a private file created
+after boot is read by the next job. Absent and link-reached sources get no view and make
+only their operation unavailable. The check's build also evaluates the module's refusals,
+and the first node proves that declaring no anchor leaves the owner configuration unchanged.
+
+Run all packaged scenarios:
 
 ```sh
 nix build .#checks.x86_64-linux.native-profile

@@ -1966,7 +1966,23 @@ function scanTree(dir: string, out: string[]): void {
         }
         return;
       }
-      if (!ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression)) return;
+      if (!ts.isCallExpression(node)) return;
+      // `log?.("warn", "operator_anchor_unavailable", …)`: the same two-argument spelling held as
+      // an injected function rather than a method, as `openConfiguredJobOwner` receives it.
+      if (ts.isIdentifier(node.expression) && node.expression.text === "log") {
+        const [level, evt] = node.arguments;
+        if (
+          level !== undefined &&
+          ts.isStringLiteralLike(level) &&
+          LEVELS.has(level.text) &&
+          evt !== undefined &&
+          ts.isStringLiteralLike(evt)
+        ) {
+          produced.push({ where: `${path}:${String(lineOf(file, node))}`, evt: evt.text });
+        }
+        return;
+      }
+      if (!ts.isPropertyAccessExpression(node.expression)) return;
       const method = node.expression.name.text;
       const [first, second] = node.arguments;
       /*

@@ -62,7 +62,145 @@ let
     output_location = plugin_id + ".outputs"
     output_limits = {**limits, "outputBytes": 2 * 1024 * 1024}
 
-    if mode == "install":
+    def publish(plugin, declaration, executable, bundle_path):
+        manifest = {
+            "id": plugin, "version": "1.0.0", "title": "Native profile acceptance",
+            "description": "Disposable module execution proof", "capabilities": [], "entry": {},
+            "contributes": {"panels": [], "sections": [], "elements": [], "tools": [], "events": []},
+            "machine": declaration,
+        }
+        with TemporaryDirectory(prefix="native-profile-pack-") as directory:
+            source = Path(directory)
+            (source / "manifest.json").write_text(json.dumps(manifest))
+            (source / "worker").write_bytes(executable)
+            packed = source / "bundle.json"
+            subprocess.run(
+                ["${packFixture}/bin/manifold-pack", directory, "--out", str(packed), "--self-contained"],
+                check=True, stdout=subprocess.PIPE,
+            )
+            bundle = packed.read_bytes()
+        with os.fdopen(os.open(bundle_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as output:
+            output.write(bundle)
+        os.chown(bundle_path, Path("/var/lib/manifold/owner.key").stat().st_uid, -1)
+        action("engine.plugins.install", {
+            "source": str(bundle_path), "sha256": hashlib.sha256(bundle).hexdigest(), "hardened": True,
+        })
+
+    # Operator anchors: one operation reads a root-made read-only view whole, another names an
+    # anchor whose source is absent. The worker proves every write fails and links stay links.
+    anchor_plugin = "fixture.native-anchors"
+    anchor_read = anchor_plugin + ".read"
+    anchor_absent = anchor_plugin + ".absent"
+    anchor_sessions = anchor_plugin + ".sessions"
+    anchor_missing = anchor_plugin + ".missing"
+    anchor_node = {"kind": "job", "machineId": machine["id"], "operationId": anchor_read, "jobId": job_id}
+
+    if mode == "anchors-install":
+        executable = (
+            b"#!/bin/busybox sh\n"
+            b"cd /home/job/sessions || exit 80\n"
+            b"refused() { out=$(\"$@\" 2>&1) && exit 81; case \"$out\" in *\"Read-only file system\"*) ;; *) printf '%s\\n' \"$out\" >&2; exit 82 ;; esac; }\n"
+            b"refused /bin/busybox touch created\n"
+            b"refused /bin/busybox mkdir created-directory\n"
+            b"refused /bin/busybox chmod 0644 private.jsonl\n"
+            b"refused /bin/busybox touch private.jsonl\n"
+            b"refused /bin/busybox sh -c 'printf appended >> private.jsonl'\n"
+            b"test \"$(/bin/busybox readlink link)\" = private.jsonl || exit 83\n"
+            b"if /bin/busybox cat link > /dev/null 2>&1; then exit 84; fi\n"
+            b"/bin/busybox sha256sum \"$1\" | /bin/busybox cut -d ' ' -f 1\n"
+            b"exit 23\n"
+        )
+        artifact_hash = hashlib.sha256(executable).hexdigest()
+        operation = {
+            "argv": [], "input": {}, "runtimeTools": ["busybox"], "outputs": [],
+            "network": "none", "limits": limits, "stdin": False,
+        }
+        declaration = {
+            "artifacts": {"${platform}": {
+                "bundleFile": "worker", "sha256": artifact_hash, "format": "raw",
+                "entry": ["fixture"], "entrySha256": artifact_hash,
+                "maxBytes": len(executable), "maxExpandedBytes": len(executable), "maxMembers": 1,
+            }},
+            "locations": {
+                anchor_sessions: {
+                    "anchor": "operator.fixture", "components": [], "revision": "r1",
+                    "kind": "directory", "guestPath": "/home/job/sessions",
+                },
+                anchor_missing: {
+                    "anchor": "operator.absent", "components": [], "revision": "r1",
+                    "kind": "directory", "guestPath": "/home/job/absent",
+                },
+            },
+            "operations": {
+                anchor_read: {
+                    **operation, "argv": [{"input": "file"}],
+                    "input": {"file": {"type": "string", "required": True, "maxLength": 64}},
+                    "locations": [{"locationId": anchor_sessions, "access": "read"}],
+                },
+                anchor_absent: {**operation, "locations": [{"locationId": anchor_missing, "access": "read"}]},
+            },
+        }
+        publish(anchor_plugin, declaration, executable, Path("/var/lib/manifold/native-anchors-fixture.json"))
+        # Only held views are advertised, with their host source, to root describe.
+        resources = owner["resources"]
+        assert resources["anchorDefinitions"] == {
+            "operator.fixture": {"source": "/home/alice/sessions", "readOnly": True},
+        }, resources
+        assert [name for name in resources["anchors"] if name.startswith("operator.")] == ["operator.fixture"], resources
+        review = action("engine.jobs.reviewDeployment", {
+            "deploymentId": "native-anchors-review", "pluginId": anchor_plugin,
+            "targets": [{"machineId": machine["id"], "platform": "${platform}"}],
+            "operationIds": [anchor_read],
+        })["targets"][0]
+        assert review["approvable"] and review["reason"] is None, review
+        row = next(row for row in review["resources"] if row["name"] == "operator.fixture")
+        assert row == {
+            "group": "anchors", "name": "operator.fixture",
+            "sha256": resources["anchors"]["operator.fixture"], "source": "/home/alice/sessions",
+        }, row
+        installation = {
+            "machineId": machine["id"], "pluginId": anchor_plugin,
+            "installationRevision": "r1", "artifactSha256": artifact_hash,
+        }
+        action("engine.jobs.install", {**installation, "machine": declaration, "resourceBindings": {
+            "tools": {"busybox": resources["tools"]["busybox"]}, "services": {},
+            "anchors": {"operator.fixture": resources["anchors"]["operator.fixture"]},
+        }})
+        for operation_name in declaration["operations"]:
+            for capability in ["jobs:read", "machines:run"]:
+                action("engine.jobs.consent", {
+                    **installation, "cap": capability, "enabled": True,
+                    "node": "manifold://machine/" + machine["id"] + "/operation/" + operation_name,
+                })
+        for location in declaration["locations"]:
+            action("engine.jobs.consent", {
+                **installation, "cap": "locations:read", "enabled": True,
+                "node": "manifold://machine/" + machine["id"] + "/location/" + location,
+            })
+    elif mode == "anchors-ready":
+        operations = action("engine.jobs.describe", {"machineId": machine["id"], "pluginId": anchor_plugin})["operations"]
+        assert operations[anchor_read]["ready"], operations[anchor_read]
+        assert not operations[anchor_absent]["ready"], operations[anchor_absent]
+        assert operations[anchor_absent]["reason"] == "anchors_unavailable", operations[anchor_absent]
+    elif mode == "anchors-execute":
+        job = action("engine.jobs.execute", {
+            "jobId": job_id, "machineId": machine["id"], "pluginId": anchor_plugin,
+            "operationId": anchor_read, "input": {"file": sys.argv[3]}, "outputs": [], "limits": limits,
+        })
+        assert job["state"] not in ["refused", "interrupted", "cancelled"], job
+    elif mode == "anchors-result":
+        job = action("engine.jobs.status", {"node": anchor_node})
+        assert job["state"] == "exited", (job["state"], (job.get("result") or {}).get("reason"))
+        assert job["result"]["exitCode"] == 23, job["result"]["exitCode"]
+        stdout = next(output for output in job["result"]["outputs"] if output["name"] == "stdout")
+        output = action("engine.jobs.output", {
+            "node": {**anchor_node, "kind": "output", "outputId": stdout["outputId"]},
+            "offset": 0, "maxBytes": 1024,
+        })
+        assert output["type"] == "output" and output["eof"], output
+        digest = base64.b64decode(output["data"]).decode().strip()
+        assert digest == hashlib.sha256(sys.argv[3].encode()).hexdigest(), (digest, sys.argv[3])
+    elif mode == "install":
         executable = b"#!/bin/busybox sh\nif test -e /var/lib/manifold/owner.key || test -e /etc/manifold-fixture/private/enrollment-token || test -e /run/credentials/manifold-transport.service/enrollment-token; then exit 90; fi\nif test \"$1\" = output; then printf 'native-runtime:%s\\n' \"$2\" > \"/home/job/runtime-output/$2/value\" || exit 94; fi\nif test \"$1\" = hold; then /bin/busybox sleep 60; fi\nprintf 'native-module:bounded\\n'\nexit 23\n"
         if tools:
             executable = (
@@ -104,29 +242,9 @@ let
                 "locations": [{"locationId": output_location, "access": "write"}],
                 "outputs": ["receipt"], "network": "none", "limits": output_limits, "stdin": False,
             }
-        manifest = {
-            "id": plugin_id, "version": "1.0.0", "title": "Native profile acceptance",
-            "description": "Disposable module execution proof", "capabilities": [], "entry": {},
-            "contributes": {"panels": [], "sections": [], "elements": [], "tools": [], "events": []},
-            "machine": declaration,
-        }
-        with TemporaryDirectory(prefix="native-profile-pack-") as directory:
-            source = Path(directory)
-            (source / "manifest.json").write_text(json.dumps(manifest))
-            (source / "worker").write_bytes(executable)
-            packed = source / "bundle.json"
-            subprocess.run(
-                ["${packFixture}/bin/manifold-pack", directory, "--out", str(packed), "--self-contained"],
-                check=True, stdout=subprocess.PIPE,
-            )
-            bundle = packed.read_bytes()
-        bundle_path = Path("/var/lib/manifold/native-profile-tools-fixture.json" if tools else "/var/lib/manifold/native-profile-fixture.json")
-        with os.fdopen(os.open(bundle_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as output:
-            output.write(bundle)
-        os.chown(bundle_path, Path("/var/lib/manifold/owner.key").stat().st_uid, -1)
-        action("engine.plugins.install", {
-            "source": str(bundle_path), "sha256": hashlib.sha256(bundle).hexdigest(), "hardened": True,
-        })
+        publish(plugin_id, declaration, executable, Path(
+            "/var/lib/manifold/native-profile-tools-fixture.json" if tools else "/var/lib/manifold/native-profile-fixture.json"
+        ))
         installation = {
             "machineId": machine["id"], "pluginId": plugin_id,
             "installationRevision": "r1", "artifactSha256": artifact_hash,
@@ -186,6 +304,56 @@ let
   '';
   inspectCommand = "${pkgs.python3}/bin/python3 ${inspect}";
   maintenanceCommand = "${self.packages.${pkgs.stdenv.hostPlatform.system}.manifold-agent}/bin/manifold-agent --maintenance";
+  # A bad operator anchor declaration must fail evaluation, so it can never be activated. The
+  # test script names this derivation, so building the check evaluates every case below.
+  anchorEvaluations = let
+    inherit (pkgs) lib;
+    evaluate = execution: (import (pkgs.path + "/nixos/lib/eval-config.nix") {
+      inherit (pkgs.stdenv.hostPlatform) system;
+      inherit pkgs;
+      modules = [
+        self.nixosModules.native
+        {
+          boot.loader.grub.enable = false;
+          fileSystems."/" = { device = "/dev/null"; fsType = "ext4"; };
+          system.stateVersion = "26.05";
+          services.manifold = {
+            enable = true;
+            execution = { enable = true; artifactOrigins = [ "https://artifacts.example.test" ]; } // execution;
+          };
+        }
+      ];
+    }).config;
+    # Only failed assertions' messages are evaluated; other modules build theirs lazily.
+    failed = execution: map (assertion: assertion.message)
+      (lib.filter (assertion: !assertion.assertion && lib.hasInfix "operator anchor" assertion.message)
+        (evaluate execution).assertions);
+    refuses = message: execution: lib.assertMsg (failed execution == [ message ])
+      "expected only '${message}' for ${builtins.toJSON execution}, got ${builtins.toJSON (failed execution)}";
+    readOnly = "Manifold operator anchors are read-only; every execution.operatorAnchors.<name>.readOnly must be true.";
+    names = "Declare at most 32 Manifold operator anchors, each named by 1-63 lowercase letters, digits or inner hyphens.";
+    normalized = "Manifold operator anchor paths must be unique static normalized absolute paths other than /.";
+    reserved = "A Manifold operator anchor cannot present Manifold's own storage, the anchor views, systemd credentials, kernel interfaces or the Nix store.";
+    guarded = "A Manifold operator anchor may present a subtree beneath a protected directory, never one that is or contains a protected directory, the enrollment token or a service credential source.";
+    token = "/etc/manifold-fixture/private/enrollment-token";
+    beneathHome = { protectedDirectories = [ "/home" ]; operatorAnchors.fixture.path = "/home/alice/sessions"; };
+  in
+    assert lib.assertMsg (failed beneathHome == [ ]) "a subtree beneath protected /home must evaluate";
+    assert lib.assertMsg (builtins.elem "manifold-operator-anchors.service"
+      (evaluate beneathHome).systemd.services.manifold-owner.wants) "the owner must want its view helper";
+    assert lib.assertMsg (!((evaluate { }).systemd.services ? manifold-operator-anchors))
+      "a node without operator anchors must not gain a view helper";
+    assert refuses readOnly { operatorAnchors.fixture = { path = "/home/alice/sessions"; readOnly = false; }; };
+    assert refuses guarded { tokenCredentialFile = token; operatorAnchors.fixture.path = "/etc/manifold-fixture"; };
+    assert refuses guarded { protectedDirectories = [ "/home" ]; operatorAnchors.fixture.path = "/home"; };
+    assert refuses guarded { protectedDirectories = [ "/home/alice/sessions/private" ]; operatorAnchors.fixture.path = "/home/alice/sessions"; };
+    assert refuses reserved { operatorAnchors.fixture.path = "/var/lib/manifold/job-owner"; };
+    assert refuses reserved { operatorAnchors.fixture.path = "/nix/store"; };
+    assert refuses normalized { operatorAnchors.fixture.path = "/"; };
+    assert refuses normalized { operatorAnchors.fixture.path = "/home/alice/../bob"; };
+    assert refuses normalized { operatorAnchors = { one.path = "/srv/sessions"; two.path = "/srv/sessions"; }; };
+    assert refuses names { operatorAnchors."Sessions".path = "/srv/sessions"; };
+    pkgs.writeText "manifold-operator-anchor-evaluations" "refused as declared\n";
 in
 {
   name = "manifold-native-profile";
@@ -264,6 +432,46 @@ in
         requires = [ "manifold-fixture-credential.service" ];
       };
     };
+    # An operator's 0700 home beneath protected /home: one anchor over a synthetic session
+    # tree, one over an absent source and one through a symbolic link component.
+    anchors = { pkgs, ... }: {
+      imports = [ common ];
+      services.manifold.execution = {
+        protectedDirectories = [ "/home" ];
+        operatorAnchors = {
+          fixture.path = "/home/alice/sessions";
+          absent.path = "/home/alice/absent";
+          linked.path = "/home/alice/linked/sessions";
+        };
+      };
+      users.users.alice = { isNormalUser = true; homeMode = "700"; };
+      environment.systemPackages = [ pkgs.acl ];
+      # The synthetic tree exists before root presents its view at boot.
+      systemd.services.manifold-fixture-sessions = {
+        wantedBy = [ "multi-user.target" ];
+        requiredBy = [ "manifold-operator-anchors.service" ];
+        before = [ "manifold-operator-anchors.service" ];
+        script = ''
+          set -eu
+          cd /home/alice
+          test "$(stat -c '%U %a' .)" = "alice 700"
+          install -d -o alice -g users -m 0700 sessions sessions/private-directory real real/sessions
+          printf public-session > sessions/public.jsonl
+          printf private-session > sessions/private.jsonl
+          printf inner-session > sessions/private-directory/inner.jsonl
+          chown alice:users sessions/public.jsonl sessions/private.jsonl sessions/private-directory/inner.jsonl
+          chmod 0644 sessions/public.jsonl
+          chmod 0600 sessions/private.jsonl sessions/private-directory/inner.jsonl
+          ln -s private.jsonl sessions/link
+          ln -s /home/alice/real linked
+          chown -h alice:users sessions/link linked
+        '';
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+        };
+      };
+    };
   };
   testScript = ''
     import json
@@ -280,9 +488,10 @@ in
         assert result["ok"] == (expected_code == 0) and result["command"] == command, result
         return result
 
+    # Operator anchor evaluation refusals: ${anchorEvaluations}
     start_all()
     # Serial log backlog is not boot readiness; connect to the guest shell itself.
-    for node in (machine, credential):
+    for node in (machine, credential, anchors):
         node.connect()
     machine.wait_for_unit("manifold-server.service", timeout=180)
     machine.wait_for_unit("manifold-owner.service", timeout=180)
@@ -291,6 +500,11 @@ in
     identity = machine.succeed("${inspectCommand}").strip()
     for path in ["owner.key", "agent.token", "job-owner/config.json"]:
         assert machine.succeed(f"stat -c '%a %U' /var/lib/manifold/{path}").strip() == "600 manifold"
+    # A node that declares no operator anchor retains exactly its earlier owner configuration.
+    for path in ["owner-template.json", "job-owner/config.json"]:
+        assert "operatorAnchors" not in json.loads(machine.succeed(f"cat /var/lib/manifold/{path}")), path
+    machine.succeed("test ! -e /run/manifold-anchors")
+    machine.fail("systemctl cat manifold-operator-anchors.service")
     owner = machine.succeed("systemctl show -p MainPID --value manifold-owner.service").strip()
     assert int(owner) > 1
     machine.succeed("${inspectCommand} install")
@@ -435,5 +649,62 @@ in
     assert credential.succeed("systemctl show -p MainPID --value manifold-owner.service").strip() == credential_owner
     credential.succeed(f"cmp -s {source} /var/lib/manifold/agent.token")
     credential.succeed("${inspectCommand} result module-credential-restarted")
+
+    # Operator anchors: root-made read-only idmapped views of a 0700 home beneath protected /home.
+    anchors.wait_for_unit("manifold-owner.service", timeout=180)
+    anchors.wait_for_unit("manifold-transport.service", timeout=180)
+    anchors.wait_until_succeeds("${inspectCommand}", timeout=180)
+    # The service account still cannot reach the source, nor traverse the home above it.
+    denied = anchors.fail("runuser -u manifold -- stat /home/alice/sessions 2>&1")
+    assert "Permission denied" in denied, denied
+    options = anchors.succeed("findmnt -n -o VFS-OPTIONS --mountpoint /run/manifold-anchors/fixture").strip().split(",")
+    for option in ["ro", "nosuid", "nodev", "noexec", "nosymfollow", "idmapped"]:
+        assert option in options, options
+    # Through the view the operator's private files read as manifold's, and stay unwritable.
+    anchors.succeed("runuser -u manifold -- test -r /run/manifold-anchors/fixture/private.jsonl")
+    anchors.succeed("runuser -u manifold -- test -r /run/manifold-anchors/fixture/private-directory/inner.jsonl")
+    anchors.succeed("runuser -u manifold -- test ! -w /run/manifold-anchors/fixture/private.jsonl")
+    # An absent source, and one reached through a link, get no view; the owner only omits them.
+    anchors.succeed("test ! -e /run/manifold-anchors/absent && test ! -e /run/manifold-anchors/linked")
+    helper = anchors.succeed("journalctl -b -u manifold-operator-anchors.service --no-pager")
+    assert "Manifold operator anchor linked has no view: symbolic link at /home/alice/linked" in helper, helper
+    assert "Manifold operator anchor absent has no view: source /home/alice/absent is absent or not a directory" in helper, helper
+    assert "Manifold operator anchor fixture presents /home/alice/sessions read-only at /run/manifold-anchors/fixture" in helper, helper
+    anchors.succeed("systemctl is-failed --quiet manifold-operator-anchors.service")
+    owner_log = anchors.succeed("journalctl -b -u manifold-owner.service --no-pager")
+    for name in ["operator.absent", "operator.linked"]:
+        assert any(
+            '"evt":"operator_anchor_unavailable"' in line and name in line and "operator_anchor_absent" in line
+            for line in owner_log.splitlines()
+        ), owner_log
+    template = json.loads(anchors.succeed("cat /var/lib/manifold/owner-template.json"))
+    assert template["operatorAnchors"] == {
+        "operator." + name: {"path": "/run/manifold-anchors/" + name, "source": source, "readOnly": True}
+        for name, source in [
+            ("fixture", "/home/alice/sessions"),
+            ("absent", "/home/alice/absent"),
+            ("linked", "/home/alice/linked/sessions"),
+        ]
+    }, template
+    # Metadata, ACLs and access times of every source path, read without reading any content.
+    snapshot = "find /home/alice/sessions -exec stat -c '%n %a %u %g %s %i %X %Y %Z' {} + | sort && getfacl -R -p /home/alice/sessions"
+    anchors.succeed(snapshot)
+    before = anchors.succeed(snapshot)
+    anchors.succeed("${inspectCommand} anchors-install")
+    anchors.succeed("${inspectCommand} anchors-ready")
+    for job_id, path, content in [
+        ("anchors-private", "private.jsonl", "private-session"),
+        ("anchors-public", "public.jsonl", "public-session"),
+        ("anchors-inner", "private-directory/inner.jsonl", "inner-session"),
+    ]:
+        anchors.succeed(f"${inspectCommand} anchors-execute {job_id} {path}")
+        anchors.wait_until_succeeds(f"${inspectCommand} anchors-result {job_id} {content}", timeout=180)
+    # Reading and every refused write left the source exactly as it was.
+    assert anchors.succeed(snapshot) == before
+    # A private file created after boot is read by the next job with nothing re-applied.
+    anchors.succeed("runuser -u alice -- sh -c 'umask 077 && printf later-session > /home/alice/sessions/later.jsonl'")
+    assert anchors.succeed("stat -c '%a %U' /home/alice/sessions/later.jsonl").strip() == "600 alice"
+    anchors.succeed("${inspectCommand} anchors-execute anchors-later later.jsonl")
+    anchors.wait_until_succeeds("${inspectCommand} anchors-result anchors-later later-session", timeout=180)
   '';
 }

@@ -11,10 +11,16 @@ import {
   ServiceReplySchema,
 } from "./services.ts";
 import { ServiceTunnelFrameSchema } from "./services.ts";
-import { JobResourceBindingsSchema, JobResourceInventorySchema } from "./job-resources.ts";
+import {
+  isOperatorAnchor,
+  JobResourceBindingsSchema,
+  JobResourceInventorySchema,
+  MachineAnchorSchema,
+  readsOperatorAnchor,
+} from "./job-resources.ts";
 
 /** Native owner RPC changes independently of hub, session, and transport releases. */
-export const JOB_OWNER_PROTOCOL_VERSION = 37;
+export const JOB_OWNER_PROTOCOL_VERSION = 40;
 
 /**
  * Native owners outlive hub deploys. An unchanged or strictly additive-optional RPC change
@@ -26,18 +32,24 @@ export const JOB_OWNER_PROTOCOL_VERSION = 37;
  * (#572). v35 adds the optional private launch carrier, terminal `runId` and host-minted
  * `launchBinding` (#587). v36 adds operation `inputs`/`exports`, request `inputs` and
  * `limits.inputBytes`. v37 permits job-scoped self-provider runtime identity bound to the
- * invoking installation. Revision-pinned policies and ordinary admissions remain unchanged;
- * contextual policies are sent only to owners and machine transports that parse that mode.
+ * invoking installation. v40 adds operator anchors: `operator.<name>` locations, read-only by
+ * construction, and the inventory's `anchorDefinitions`. v38 and v39 are reserved by open
+ * drafts and are not accepted. Revision-pinned policies and ordinary admissions remain
+ * unchanged; contextual policies are sent only to owners and machine transports that parse
+ * that mode.
  */
-export const JOB_OWNER_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([34, 35, 36, 37]);
+export const JOB_OWNER_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
+  34, 35, 36, 37, 40,
+]);
 
 export type JobOwnerCapability =
-  "privateEnv" | "launchBinding" | "boundInputs" | "selfServiceRuntime";
+  "privateEnv" | "launchBinding" | "boundInputs" | "selfServiceRuntime" | "operatorAnchors";
 const jobOwnerCapabilityVersions: Readonly<Record<JobOwnerCapability, number>> = {
   privateEnv: 35,
   launchBinding: 35,
   boundInputs: 36,
   selfServiceRuntime: 37,
+  operatorAnchors: 40,
 };
 
 /** Capability support never grants execution authority to an owner outside the accepted set. */
@@ -165,8 +177,9 @@ export const MachineArtifactSchema = z
   );
 export const MachineLocationSchema = z
   .strictObject({
-    anchor: z.enum(["home", "data", "state", "cache", "config", "runtime"]),
-    components: z.array(locationComponent).min(1).max(16),
+    anchor: MachineAnchorSchema,
+    /** Empty names an operator anchor's directory whole; built-in anchors need a component. */
+    components: z.array(locationComponent).max(16),
     revision: id,
     kind: z.enum(["file", "directory"]).optional(),
     /** Native retained storage is namespaced by plugin beneath the private owner store. */
@@ -184,6 +197,14 @@ export const MachineLocationSchema = z
       !location.managed || (location.anchor === "state" && location.kind === "directory"),
     {
       message: "Managed storage requires a state directory",
+    },
+  )
+  .refine(
+    (location) =>
+      location.components.length > 0 ||
+      (isOperatorAnchor(location.anchor) && location.kind !== "file"),
+    {
+      message: "Only an operator anchor's directory may be named whole",
     },
   );
 export const MachineInputFieldSchema = z.strictObject({
@@ -384,6 +405,19 @@ export const MachineHalfSchema = z
       message:
         "Managed storage is provisioned by native ownership; operations request read or write",
     },
+  )
+  .refine(
+    (machine) =>
+      Object.values(machine.operations).every((operation) =>
+        operation.locations.every(
+          (location) =>
+            !isOperatorAnchor(machine.locations[location.locationId]?.anchor ?? "") ||
+            location.access === "read",
+        ),
+      ),
+    {
+      message: "Operator anchors are read-only",
+    },
   );
 export type MachineHalf = z.infer<typeof MachineHalfSchema>;
 export type MachineArtifact = z.infer<typeof MachineArtifactSchema>;
@@ -394,6 +428,7 @@ export type MachineLocation = z.infer<typeof MachineLocationSchema>;
 export function jobOwnerOperationRefusal(
   protocolVersion: number,
   operation: MachineOperation,
+  machine: MachineHalf,
 ): string | null {
   if (!JOB_OWNER_PROTOCOL_COMPAT_VERSIONS.has(protocolVersion)) return "owner_protocol_unsupported";
   if (
@@ -403,21 +438,36 @@ export function jobOwnerOperationRefusal(
       operation.limits.inputBytes !== undefined)
   )
     return "bound_inputs_protocol_unsupported";
+  if (
+    !jobOwnerSupports(protocolVersion, "operatorAnchors") &&
+    readsOperatorAnchor(machine, operation)
+  )
+    return "operator_anchors_protocol_unsupported";
   return null;
 }
 
 /** Preserve complete supported declarations; an omitted operation never gains weaker semantics. */
 export function jobOwnerMachine(protocolVersion: number, machine: MachineHalf): MachineHalf | null {
   if (!JOB_OWNER_PROTOCOL_COMPAT_VERSIONS.has(protocolVersion)) return null;
-  if (jobOwnerSupports(protocolVersion, "boundInputs")) return machine;
+  if (jobOwnerSupports(protocolVersion, "operatorAnchors")) return machine;
   let operations: MachineHalf["operations"] | undefined;
   for (const [id, operation] of Object.entries(machine.operations)) {
-    if (jobOwnerOperationRefusal(protocolVersion, operation) === null) continue;
+    if (jobOwnerOperationRefusal(protocolVersion, operation, machine) === null) continue;
     operations ??= { ...machine.operations };
     delete operations[id];
   }
-  if (!operations) return machine;
-  return Object.keys(operations).length ? { ...machine, operations } : null;
+  // An older strict parser refuses the anchor name itself, and no retained operation reads it.
+  let locations: MachineHalf["locations"] | undefined;
+  for (const [id, location] of Object.entries(machine.locations)) {
+    if (!isOperatorAnchor(location.anchor)) continue;
+    locations ??= { ...machine.locations };
+    delete locations[id];
+  }
+  if (!operations && !locations) return machine;
+  operations ??= machine.operations;
+  return Object.keys(operations).length
+    ? { ...machine, operations, locations: locations ?? machine.locations }
+    : null;
 }
 /** All declared layouts, including managed tools; callers still select the owner platform. */
 export function machineArtifacts(machine: MachineHalf | undefined): MachineArtifact[] {
