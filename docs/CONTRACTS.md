@@ -4680,6 +4680,10 @@ job_invocation_edges(caller TEXT NOT NULL, operation_id TEXT NOT NULL, edge TEXT
                             -- machine_job_deployments_plugin(plugin_id),
                             -- machine_job_deployment_pending (partial unique machine/plugin
                             -- pending-or-applying), job_invocation_root(root_job_id);
+                            -- open-time partial indexes: machine_jobs_live(state) over
+                            -- live states, job_schedule_occurrences_pending(schedule_id,
+                            -- revision) over pending rows, so per-tick and per-owner-event
+                            -- reads never scan retained history;
                             -- grant/token write triggers maintain machine_job_revisions
 shares(id TEXT PK, hash TEXT UNIQUE, container_id TEXT, caps TEXT, origin TEXT,
        minted_by TEXT, created_at INTEGER, revoked_at INTEGER, grant_id TEXT)

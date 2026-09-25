@@ -879,6 +879,103 @@ test("job service effects require a live matching installed binding and fresh na
   }
 });
 
+test("one job's post, owner events, authorization, tick and cancel cost the same over 1k and 20k retained jobs (#841)", () => {
+  /*
+    The hub repeats this work for every job it runs, on its only thread, while the settled jobs
+    it retains only grow. The median cycle is timed over two histories twenty times apart: a
+    cycle that scans retained rows grows with them, one that reads live rows through an index
+    does not. The bound is loose enough for a noisy runner and far below a scan's growth.
+  */
+  const medianCycle = (retained: number): number => {
+    const f = fixture();
+    try {
+      const installed = install(f);
+      const machineId = f.machineId;
+      const operationId = installed.operationId;
+      for (const cap of ["machines:run", "jobs:cancel"] as const)
+        f.service.consent(f.root, {
+          machineId,
+          pluginId: installed.pluginId,
+          installationRevision: "r1",
+          artifactSha256: installed.artifactSha256,
+          node: formatManifoldUri({ kind: "operation", machineId, operationId }),
+          cap,
+          enabled: true,
+        });
+      const post = (jobId: string) =>
+        f.service.execute(f.root, installed.pluginId, "trace", {
+          jobId,
+          machineId,
+          operationId,
+          input: {},
+          outputs: [],
+        });
+      post("template");
+      f.store.db
+        .query(
+          `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
+           INSERT INTO machine_jobs(job_id,machine_id,plugin_id,digest,request,state,permit,created_at,owner_closed)
+           SELECT 'retained-' || i, machine_id, plugin_id, digest,
+             json_set(request, '$.jobId', 'retained-' || i, '$.input.padding', ?2),
+             CASE i % 10 WHEN 0 THEN 'interrupted' ELSE 'exited' END, permit, i, i % 10 != 0
+           FROM n, machine_jobs WHERE job_id = 'template'`,
+        )
+        .run(retained, "x".repeat(2048));
+      let cycles = 0;
+      const cycle = () => {
+        const jobId = `cycle-${cycles++}`;
+        const job = post(jobId);
+        f.service.event(f.channel, {
+          type: "state",
+          jobId,
+          requestDigest: job.request.requestDigest,
+          ownerId: f.owner.ownerId,
+          ownerGeneration: f.owner.generation,
+          state: "started",
+        });
+        f.service.event(f.channel, { type: "resources", resources: f.owner.resources! });
+        f.service.event(f.channel, {
+          type: "installed",
+          pluginId: installed.pluginId,
+          installationRevision: "r1",
+          artifactSha256: installed.artifactSha256,
+          resources: {
+            artifactAvailable: true,
+            tools: [],
+            operations: [{ operationId, available: true }],
+          },
+        });
+        f.service.event(f.channel, {
+          type: "service_authorize",
+          subject: { kind: "job", jobId },
+          authorizationId: `authorize-${jobId}`,
+          serviceId: policy.serviceId,
+          revision: policy.revision,
+          policySha256: hash(policy),
+          operationId: "inspect",
+        });
+        expect(f.commands.at(-1)).toMatchObject({ type: "service_authorized", allowed: true });
+        f.service.tick();
+        f.service.cancel(f.root, { kind: "job", machineId, operationId, jobId });
+        expect(f.commands.at(-1)).toMatchObject({ type: "cancel", jobId });
+      };
+      cycle();
+      const samples: number[] = [];
+      for (let sample = 0; sample < 7; sample++) {
+        const started = performance.now();
+        cycle();
+        samples.push(performance.now() - started);
+      }
+      return samples.sort((a, b) => a - b)[3]!;
+    } finally {
+      f.store.close();
+    }
+  };
+  const small = medianCycle(1_000);
+  const large = medianCycle(20_000);
+  expect(large).toBeLessThan(small * 3 + 15);
+}, 60_000);
+
 test("an owner that authorized a call and then would not serve it says so in the ledger (#708)", () => {
   const f = fixture();
   try {

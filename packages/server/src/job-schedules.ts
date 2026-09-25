@@ -107,7 +107,13 @@ function integer(value: number, positive = false): void {
 
 /** All durable reservations and admission callbacks share the ServerStore transaction. */
 export class JobSchedules {
-  constructor(private readonly store: ServerStore) {}
+  constructor(private readonly store: ServerStore) {
+    // Every tick reads each enabled schedule's pending occurrences. Without this index that
+    // read walks the schedule's whole occurrence history under its primary key (#841).
+    store.db.exec(
+      "CREATE INDEX IF NOT EXISTS job_schedule_occurrences_pending ON job_schedule_occurrences(schedule_id, revision) WHERE state='pending'",
+    );
+  }
 
   private changeNotifier: ((request: JobRequest) => void) | null = null;
 
