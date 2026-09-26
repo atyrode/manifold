@@ -370,6 +370,11 @@ export interface GuestServices {
 export interface GuestCtx {
   readonly traceId: IsolateDispatchCtx["traceId"];
   readonly pluginId: string;
+  /**
+   * Verified immediate plugin caller, or null for a direct non-plugin entry; not a grant. Reading
+   * it throws {@link IsolateSliceUnavailable} when the host did not carry it, never `null`.
+   */
+  readonly callerPlugin: Exclude<IsolateDispatchCtx["callerPlugin"], undefined>;
   readonly principal: Principal;
   /** Authenticated Run provenance supplied by the host, never an action argument. */
   readonly agentRun: Readonly<NonNullable<IsolateDispatchCtx["agentRun"]>> | null;
@@ -1109,6 +1114,12 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
     const ctx: GuestCtx = {
       traceId: carried.traceId,
       pluginId: def.manifest.id,
+      get callerPlugin() {
+        // Absent means the host did not carry contract-8 attribution. Reading it must never
+        // collapse into `null` ("no plugin called"), and a handler that never reads it keeps working.
+        if (carried.callerPlugin === undefined) throw new IsolateSliceUnavailable("callerPlugin");
+        return carried.callerPlugin;
+      },
       principal: carried.principal,
       agentRun: carried.agentRun === undefined ? null : Object.freeze(carried.agentRun),
       auth: {

@@ -1153,6 +1153,76 @@ test("harness dependency calls retain the owning plugin and the incoming call ch
   }
 });
 
+test("a harness is host-entered even when a plugin opened the access door", async () => {
+  const asker = "test.harness-asker";
+  const seen: { at: string; callerPlugin: string | null }[] = [];
+  let onward = true;
+  const dependency: ServerPluginDef = {
+    manifest: {
+      id: asker,
+      version: "1.0.0",
+      title: "Harness asker",
+      description: "Opens the access door as a plugin",
+      capabilities: [],
+      dependencies: { "core.access": { type: "required" } },
+      contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+    },
+    actions: [
+      defineAction({
+        name: "ask",
+        title: "Ask for sessions",
+        caps: [],
+        input: z.strictObject({ machineId: z.string() }),
+        result: z.unknown(),
+      }),
+      defineAction({
+        name: "record",
+        title: "Record caller",
+        caps: [],
+        input: z.strictObject({}),
+        result: z.strictObject({}),
+      }),
+    ],
+    handlers: {
+      ask: async (ctx: ActionCtx, target: { machineId: string }) =>
+        ctx.actions.call({
+          plugin: "core.access",
+          action: "listHarnessSessions",
+          input: { harness: "test-harness", target },
+        }),
+      record: async (ctx: ActionCtx) => {
+        seen.push({ at: "record", callerPlugin: ctx.callerPlugin });
+        return {};
+      },
+    },
+  };
+  const f = await fixture(dependency);
+  try {
+    f.definition.harness!.sessions = async (ctx) => {
+      seen.push({ at: "harness", callerPlugin: ctx.callerPlugin });
+      if (onward) await ctx.actions.call({ plugin: asker, action: "record", input: {} });
+      return [];
+    };
+    const target = { machineId: f.descriptor.machineId };
+    expect(
+      await f.host.dispatch(f.root, "core.access.listHarnessSessions", {
+        harness: "test-harness",
+        target,
+      }),
+    ).toMatchObject({ ok: true });
+    // The asker is already on this trace, so the harness makes no onward call here.
+    onward = false;
+    expect(await f.host.dispatch(f.root, `${asker}.ask`, target)).toMatchObject({ ok: true });
+    expect(seen).toEqual([
+      { at: "harness", callerPlugin: null },
+      { at: "record", callerPlugin: pluginId },
+      { at: "harness", callerPlugin: null },
+    ]);
+  } finally {
+    f.close();
+  }
+});
+
 test.each(["draining", "disabled", "withdrawn"] as const)(
   "a %s launch cannot admit a late run restart",
   async (change) => {

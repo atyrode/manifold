@@ -156,6 +156,7 @@ export const LOG_EVENTS = [
   "liveness_timeout",
   "socket_backpressure",
   "protocol_version_rejected",
+  "terminal_inventory_refused",
 
   // Agent: inbound frame classification.
   "malformed_frame",

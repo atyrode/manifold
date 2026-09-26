@@ -111,6 +111,99 @@ for (const bytes of [
   });
 }
 
+test("contract-8 hardened doors see the immediate caller across a three-plugin chain", async () => {
+  const dir = mkdtempSync(join(import.meta.dir, "caller-contract-"));
+  const config = configuration(dir);
+  const uploads = join(config.dataDir, PLUGIN_UPLOADS_DIR);
+  mkdirSync(uploads, { recursive: true });
+  let server: RunningServer | undefined;
+  try {
+    const ids = ["test.first", "test.middle", "test.last"];
+    const artifacts: { file: string; sha256: string }[] = [];
+    for (const [index, id] of ids.entries()) {
+      const next = ids[index + 1];
+      const sourceDir = join(dir, id);
+      mkdirSync(sourceDir);
+      writeFileSync(
+        join(sourceDir, "manifest.json"),
+        JSON.stringify({
+          id,
+          version: "1.0.0",
+          title: id,
+          description: "Immediate caller probe",
+          capabilities: [],
+          ...(next === undefined ? {} : { dependencies: { [next]: { type: "required" } } }),
+          contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+          entry: { server: true },
+        }),
+      );
+      writeFileSync(
+        join(sourceDir, "server.ts"),
+        `import { defineServerAction, defineServerPlugin } from "@manifold/plugin-kit/server";
+import { PluginManifestSchema } from "@manifold/protocol";
+import { z } from "zod";
+import manifestJson from "./manifest.json";
+const manifest = PluginManifestSchema.parse(manifestJson);
+const identify = defineServerAction({
+  name: "identify", title: "Identify", caps: [],
+  input: z.looseObject({}),
+  result: z.strictObject({ callerPlugin: z.string().nullable(), child: z.unknown().optional() }),
+});
+defineServerPlugin({
+  manifest, actions: [identify],
+  handlers: {
+    async identify(ctx) {
+      const next = Object.keys(manifest.dependencies ?? {})[0];
+      return {
+        callerPlugin: ctx.callerPlugin,
+        ...(next === undefined ? {} : {
+          child: await ctx.actions.call({
+            plugin: next, action: "identify", input: { callerPlugin: "test.forged" },
+          }),
+        }),
+      };
+    },
+  },
+});`,
+      );
+      artifacts.push(
+        await packPlugin(sourceDir, join(uploads, `${id}.manifold-plugin.json`), { shared: false }),
+      );
+    }
+    server = await startServer({ config, logger: silentLogger, announce: false });
+    // A dependency is available before its dependant is admitted into the assembly.
+    for (const artifact of artifacts.toReversed()) {
+      expect(
+        await action(server, "engine.plugins.install", {
+          source: artifact.file,
+          sha256: artifact.sha256,
+          hardened: true,
+        }),
+      ).toMatchObject({ ok: true });
+    }
+    expect(await action(server, "test.first.identify", { callerPlugin: "test.forged" })).toEqual({
+      ok: true,
+      result: {
+        callerPlugin: null,
+        child: {
+          callerPlugin: "test.first",
+          child: { callerPlugin: "test.middle" },
+        },
+      },
+    });
+    expect(await action(server, "test.last.identify", { callerPlugin: "test.forged" })).toEqual({
+      ok: true,
+      result: { callerPlugin: null },
+    });
+  } finally {
+    try {
+      await server?.stop();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+});
+
 for (const contract of [undefined, 999]) {
   test(`${contract === undefined ? "an unstamped" : "an outside-set"} installed bundle is held without spawning and one repack restores service`, async () => {
     const dir = mkdtempSync(join(tmpdir(), "manifold-contract-held-"));

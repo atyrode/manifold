@@ -17,6 +17,11 @@ export const PROTOCOL_VERSION = 43;
  * RESETS the set to only the new version and requires a coordinated fleet
  * restart (server + spokes together).
  *
+ * A resource-admission bound is not a wire revision (#403, decision 2026-09-26). The hub
+ * refuses a hello advertising more than 1,024 terminals or a duplicate terminal id at EVERY
+ * accepted version, before authentication or reconciliation; every compliant frame is
+ * byte-identical and keeps its meaning, so neither the version nor either set changes.
+ *
  * HISTORY. Written in the CURRENT lexicon, because a changelog that speaks a
  * retired vocabulary is a second door onto the concepts it describes: what v9
  * called `SessionInfo.padId` is the field this tree calls

@@ -121,6 +121,7 @@ import type {
   MintShareRequest,
   MintTokenRequest,
   PluginBundle,
+  PluginId,
   PluginInstall,
   PluginInstallRefusal,
   InstalledPluginStates,
@@ -648,6 +649,11 @@ export interface ActionCtx {
   /** The write-ahead ledger row's id, as returned by `core.events.list`. */
   readonly traceId: number;
   readonly pluginId: string;
+  /**
+   * The verified immediate plugin opening this door, or null for a human, HTTP, session or
+   * host entry. Host-owned lineage, never parsed from args; attribution is not a grant.
+   */
+  readonly callerPlugin: PluginId | null;
   readonly principal: Principal;
   /** Trusted authenticated Run identity; never populated from action arguments. */
   readonly agentRun: Readonly<{ runId: string; agentId: string }> | null;
@@ -1494,6 +1500,8 @@ export class PluginHost {
         {
           ...shared,
           pluginId,
+          // The host invokes a harness; the door's own caller did not call this plugin.
+          callerPlugin: null,
           actions: this.actionCalls(pluginId, current, session, base.traceId, [...stack, pluginId]),
           credential: this.authService.credentialReference(nativeAuth),
           jobs: jobContext(service, nativeAuth, pluginId, base.traceId),
@@ -4237,6 +4245,9 @@ export class PluginHost {
     const ctx: ActionCtx = {
       traceId,
       pluginId,
+      get callerPlugin() {
+        return options.origin?.plugin ?? null;
+      },
       agentRun:
         auth.agentRunId === undefined
           ? null

@@ -1162,6 +1162,16 @@ survives a hub-process or transport restart, not destruction of the container/cg
 contains it. A persisted volume does not preserve PTYs. The commands below replace the
 container; they are not an unattended terminal-preserving upgrade procedure.
 
+**Machine hello inventory bound.** A hub accepts at most 1,024 distinct terminals
+(live plus exited-but-unacknowledged) in one machine hello, from every compatible
+transport version; this needs no transport or terminal-host upgrade. A machine
+over the bound, or reporting a duplicate terminal id, stays offline: the hub closes
+4002 `terminal inventory exceeds 1024 entries` or `duplicate terminal id in hello
+inventory`, and a current transport logs `terminal_inventory_refused` and sends no
+hello at all. Nothing is killed or adopted by that refusal. Keep its
+terminal host running; do not restart it or trim its report to fit. Recovery is an
+operator decision about that host's terminals.
+
 Before replacing a container that serves terminals, dispatch
 `core.machines.drain { machineId, draining: true }` (workspace `machines:mint` authority).
 The hub persists closed admission before asking the terminal host to close its own admission.
