@@ -270,3 +270,41 @@ test("a quiescing hub refuses new work with a retryable 503 and commits what it 
     await successor.stop();
   }
 });
+
+test("work still running at the quiesce deadline is cut off unacknowledged and never committed", async () => {
+  const dataDir = directory();
+  const lines: LogLine[] = [];
+  const server = await hub(dataDir, lines);
+  const encoder = new TextEncoder();
+  const never = Promise.withResolvers<void>();
+  // Admitted, but its body never completes: the handler cannot finish before the deadline.
+  const stalled = createContainer(
+    server,
+    "",
+    new ReadableStream<Uint8Array>({
+      async start(controller) {
+        controller.enqueue(encoder.encode('{"name":'));
+        await never.promise;
+      },
+    }),
+  ).then(
+    (response) => response.status,
+    () => "cut" as const,
+  );
+  // Real sockets: give the loopback round trip a moment before the stop closes admission.
+  await Bun.sleep(50);
+  await server.stop();
+  never.resolve();
+  expect(await stalled).not.toBe(200);
+  expect(lines.find((line) => line.evt === "writer_sealed")?.fields).toMatchObject({
+    epoch: 1,
+    settled: false,
+  });
+  expect(writerRecord(dataDir)).toBe("1:sealed");
+  const successor = await hub(dataDir, []);
+  try {
+    expect(await containerNames(successor)).toEqual([]);
+  } finally {
+    await successor.stop();
+  }
+});
