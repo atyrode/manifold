@@ -2541,6 +2541,16 @@ CREATE TABLE machines(id TEXT PRIMARY KEY, name TEXT, token_id TEXT, last_seen I
 CREATE TABLE agent_runs(id TEXT PRIMARY KEY);
 INSERT INTO terminals VALUES ('legacy','machine','home','author',NULL,'kept','exited',NULL,1,NULL);
 CREATE TABLE machine_jobs(job_id TEXT PRIMARY KEY, machine_id TEXT, created_at INTEGER, request TEXT);
+CREATE TABLE machine_job_deployments(
+  deployment_id TEXT PRIMARY KEY,plugin_id TEXT NOT NULL,revision INTEGER NOT NULL,
+  approved_at INTEGER NOT NULL,cancelled INTEGER NOT NULL DEFAULT 0 CHECK(cancelled IN (0,1)),approval TEXT NOT NULL);
+CREATE TABLE machine_job_deployment_targets(
+  deployment_id TEXT NOT NULL REFERENCES machine_job_deployments(deployment_id),
+  machine_id TEXT NOT NULL,plugin_id TEXT NOT NULL,
+  phase TEXT NOT NULL CHECK(phase IN ('pending','applying','applied','needs_review','cancelled')),
+  attempt TEXT,reason TEXT,receipt TEXT,PRIMARY KEY(deployment_id,machine_id));
+CREATE UNIQUE INDEX machine_job_deployment_pending
+  ON machine_job_deployment_targets(machine_id,plugin_id) WHERE phase IN ('pending','applying');
 INSERT INTO machine_jobs VALUES
   ('harness-job','machine',1,'{"terminal":{"terminalId":"legacy","containerId":"home","runId":"retained-run"}}'),
   ('foreign-job','other-machine',2,'{"terminal":{"terminalId":"legacy","containerId":"home","runId":"foreign-run"}}'),

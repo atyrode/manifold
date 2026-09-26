@@ -9,7 +9,7 @@ import { JOB_SCHEDULE_SCHEMA_SQL } from "./job-schedules.ts";
 import { migrateToDurableAgents } from "./migrate-agents.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 46;
+export const SCHEMA_VERSION = 47;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
@@ -1001,6 +1001,37 @@ INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','45');
   46: `
 ALTER TABLE terminals ADD COLUMN exit_reason TEXT;
 INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','46');
+`,
+  /**
+   * A reviewed instance-service bootstrap adds two in-flight target phases (#827): `quiescing`
+   * stops exactly the reviewed provider workload before its installation is replaced, and
+   * `configuring` brackets the configuration effect the way `applying` brackets installation.
+   * `bound` is the configuration's terminal receipt, the counterpart of `applied`.
+   *
+   * The CHECK constraint is the reason this is a table rebuild rather than an ALTER: SQLite
+   * has no way to widen one in place. Existing rows carry existing phases and are copied
+   * unchanged; the partial uniqueness that keeps two approvals from racing one machine widens
+   * to the new in-flight phases, and terminal `applied`/`bound` stay outside it so a later
+   * approval can still supersede a finished one.
+   */
+  47: `
+CREATE TABLE machine_job_deployment_targets_next(
+ deployment_id TEXT NOT NULL REFERENCES machine_job_deployments(deployment_id),
+ machine_id TEXT NOT NULL, plugin_id TEXT NOT NULL,
+ phase TEXT NOT NULL CHECK(phase IN
+  ('pending','quiescing','applying','applied','configuring','bound','needs_review','cancelled')),
+ attempt TEXT, reason TEXT, receipt TEXT,
+ PRIMARY KEY(deployment_id,machine_id)
+);
+INSERT INTO machine_job_deployment_targets_next
+ SELECT deployment_id,machine_id,plugin_id,phase,attempt,reason,receipt
+ FROM machine_job_deployment_targets;
+DROP TABLE machine_job_deployment_targets;
+ALTER TABLE machine_job_deployment_targets_next RENAME TO machine_job_deployment_targets;
+CREATE UNIQUE INDEX machine_job_deployment_pending
+ ON machine_job_deployment_targets(machine_id,plugin_id)
+ WHERE phase IN ('pending','quiescing','applying','configuring');
+INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','47');
 `,
 };
 
