@@ -2,6 +2,7 @@ import { accessSync, constants, statSync } from "node:fs";
 import { homedir } from "node:os";
 import {
   TERMINAL_HOST_COMMAND_TYPES,
+  MAX_MACHINE_HELLO_TERMINALS,
   TERMINAL_HOST_PROTOCOL_VERSION,
   TerminalHostCommandSchema,
   defaultRuntime,
@@ -16,6 +17,7 @@ import {
 import type { AgentLogRecord, AgentLogSink } from "./log.ts";
 import { PtyTerminal, type PtyOutput } from "./terminal.ts";
 import type { MachineJobOwner } from "./job-owner.ts";
+import type { OomKillWatch } from "./oom-kills.ts";
 import { startLinuxJob, LinuxJobRefusal } from "./job-linux.ts";
 import { jobDigest } from "./job-journal.ts";
 
@@ -89,6 +91,8 @@ export interface TerminalHostOptions {
   readonly onMaintenanceShutdown?: () => void;
   /** The independently supervised native job owner in this host process. */
   readonly jobOwner?: MachineJobOwner;
+  /** This host's cgroup OOM-kill observations; absent, a destructive stop is `owner_stopped`. */
+  readonly oomKills?: OomKillWatch;
 }
 
 export class TerminalHost {
@@ -97,6 +101,8 @@ export class TerminalHost {
 
   private readonly terminals = new Map<string, PtyTerminal>();
   private readonly recipes = new Map<string, LaunchRecipe>();
+  /** Async governed launches reserve inventory capacity before the first await. */
+  private readonly pendingCreates = new Set<string>();
   private readonly restarting = new Set<string>();
   private readonly failedRestarts = new WeakSet<PtyTerminal>();
   private readonly cancelledRestarts = new Set<string>();
@@ -111,6 +117,7 @@ export class TerminalHost {
   private readonly build: string;
   private readonly onMaintenanceShutdown: () => void;
   private readonly jobOwner: MachineJobOwner | undefined;
+  private readonly oomKills: OomKillWatch | undefined;
 
   constructor(opts: TerminalHostOptions = {}) {
     this.runtime = opts.runtime ?? defaultRuntime;
@@ -121,6 +128,7 @@ export class TerminalHost {
     this.build = opts.build ?? "unknown";
     this.onMaintenanceShutdown = opts.onMaintenanceShutdown ?? (() => {});
     this.jobOwner = opts.jobOwner;
+    this.oomKills = opts.oomKills;
     this.jobOwner?.bindTerminalHost(this.terminalHostId);
   }
 
@@ -167,10 +175,13 @@ export class TerminalHost {
 
   /**
    * DESTRUCTIVE: kills every PTY (grace, then SIGKILL) and drops every connection. This is the
-   * host's SIGTERM path and the only way a live terminal is ended without a hub `kill`.
+   * host's SIGTERM path and the only way a live terminal is ended without a hub `kill`. The
+   * seated transport is told why first, so the exits it forwards name the owner's stop.
    */
   async shutdown(): Promise<void> {
     this.stopping = true;
+    const reason = this.oomKills?.killedRecently() ? "owner_oom_stopped" : "owner_stopped";
+    this.transport?.peer.write({ type: "destructive_stop", reason });
     const terminals = [...this.terminals.values()];
     const kills = terminals.map(async (terminal) => {
       try {
@@ -198,7 +209,7 @@ export class TerminalHost {
     this.terminals.clear();
     this.recipes.clear();
     for (const connection of [...this.connections]) this.cut(connection);
-    this.log("info", "shutdown", { terminals: terminals.length });
+    this.log("info", "shutdown", { terminals: terminals.length, reason });
   }
 
   private log(
@@ -439,6 +450,14 @@ export class TerminalHost {
       });
       return;
     }
+    if (this.pendingCreates.has(msg.terminalId)) {
+      connection.peer.write({
+        type: "create_error",
+        terminalId: msg.terminalId,
+        message: "terminal creation pending",
+      });
+      return;
+    }
     if (this.terminals.has(msg.terminalId)) {
       if (msg.runtime) {
         connection.peer.write({
@@ -457,6 +476,13 @@ export class TerminalHost {
       this.log("warn", "create_error", { terminalId: msg.terminalId, message });
       return;
     }
+    if (this.terminals.size + this.pendingCreates.size >= MAX_MACHINE_HELLO_TERMINALS) {
+      const message = "terminal inventory at capacity";
+      connection.peer.write({ type: "create_error", terminalId: msg.terminalId, message });
+      this.log("warn", "create_error", { terminalId: msg.terminalId, message });
+      return;
+    }
+    this.pendingCreates.add(msg.terminalId);
     try {
       const spawned = this.spawnTerminal(msg);
       const terminal = spawned instanceof PtyTerminal ? spawned : await spawned;
@@ -473,6 +499,8 @@ export class TerminalHost {
           : String(error);
       connection.peer.write({ type: "create_error", terminalId: msg.terminalId, message });
       this.log("error", "create_error", { terminalId: msg.terminalId, message });
+    } finally {
+      this.pendingCreates.delete(msg.terminalId);
     }
   }
 

@@ -1409,6 +1409,7 @@ describe("terminal attach refcounting", () => {
     machineId: "m1",
     status: "running" as const,
     exitCode: null,
+    exitReason: null,
     readiness: null,
     cols: 80,
     rows: 24,
@@ -1479,10 +1480,17 @@ describe("terminal attach refcounting", () => {
       readiness: "application",
     });
     socket.receive({ type: "terminal_event", terminalId: "s1", kind: "cwd", cwd: "/work/build" });
-    socket.receive({ type: "terminal_event", terminalId: "s1", kind: "exited", exitCode: 7 });
+    socket.receive({
+      type: "terminal_event",
+      terminalId: "s1",
+      kind: "exited",
+      exitCode: 1,
+      exitReason: "owner_oom_stopped",
+    });
     expect(client.terminals.get("s1")).toMatchObject({
       status: "exited",
-      exitCode: 7,
+      exitCode: 1,
+      exitReason: "owner_oom_stopped",
       cwd: "/work/build",
       readiness: "application",
     });
@@ -1492,6 +1500,7 @@ describe("terminal attach refcounting", () => {
       expect(client.terminals.get("s1")).toMatchObject({
         status: "running",
         exitCode: null,
+        exitReason: null,
         cwd: "/work",
         controllerId: "other",
         readiness: null,
@@ -1564,6 +1573,7 @@ describe("terminal naming", () => {
     machineId: "m1",
     status: "running" as const,
     exitCode: null,
+    exitReason: null,
     readiness: null,
     cols: 80,
     rows: 24,

@@ -409,6 +409,7 @@ describe("ServerStore terminal homes", () => {
       name: null,
       status: "running",
       exitCode: null,
+      exitReason: null,
       createdAt: 10,
     });
     store.close();

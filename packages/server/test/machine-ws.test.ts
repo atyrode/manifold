@@ -295,9 +295,11 @@ describe("machine hello reconciliation", () => {
     expect(socket.closed).toBeNull();
     expect(gateway.isOnline(enrollment.machine.id)).toBe(true);
     expect(machineMessages(socket)).toMatchObject([{ type: "welcome" }]);
+    // Missing inventory from the owner of record is not owner loss: no owner reason.
     expect(store.getTerminal("missing-terminal")).toMatchObject({
       status: "exited",
       exitCode: null,
+      exitReason: null,
     });
     expect(broker.listForContainer(container.id)[0]?.status).toBe("exited");
     expect(() => auth.authenticate(sessionGrant.token)).toThrow();
@@ -871,6 +873,107 @@ describe("machine admission and terminal continuity", () => {
     };
   }
 
+  test("owner refusal diagnostics survive absent job authority without exposing free text", () => {
+    const fix = fixture("d".repeat(64), []);
+    fix.gateway.setJobs(new JobService(fix.store, fix.auth, fix.runtime));
+    fix.hello("refusal-source");
+    try {
+      for (const event of [
+        { type: "refusal", jobId: "job-123", reason: "resource_bindings_mismatch" },
+        { type: "refusal", jobId: "private /path", reason: "Bearer private-value" },
+      ]) {
+        fix.gateway.message("refusal-source", JSON.stringify({ type: "job_event", event }));
+      }
+      expect(fix.logger.warnings.filter((row) => row.evt === "machine_job_refusal")).toEqual([
+        {
+          evt: "machine_job_refusal",
+          fields: {
+            machineId: fix.machineId,
+            jobId: "job-123",
+            reason: "resource_bindings_mismatch",
+          },
+        },
+        {
+          evt: "machine_job_refusal",
+          fields: { machineId: fix.machineId, jobId: "[redacted]", reason: "[redacted]" },
+        },
+      ]);
+    } finally {
+      fix.gateway.shutdown();
+      fix.store.close();
+    }
+  });
+
+  test("any compatible transport may advertise 1,024 terminals; 1,025 or a duplicate id is refused before effects", () => {
+    const fix = fixture("f".repeat(64), ["durable"], "retained-host");
+    let authentications = 0;
+    let lookups = 0;
+    let runningReads = 0;
+    const authenticate = fix.auth.authenticateMachine.bind(fix.auth);
+    const getTerminal = fix.store.getTerminal.bind(fix.store);
+    const listRunning = fix.store.listRunningTerminalsForMachine.bind(fix.store);
+    fix.auth.authenticateMachine = (...args) => {
+      authentications++;
+      return authenticate(...args);
+    };
+    fix.store.getTerminal = (...args) => {
+      lookups++;
+      return getTerminal(...args);
+    };
+    fix.store.listRunningTerminalsForMachine = (...args) => {
+      runningReads++;
+      return listRunning(...args);
+    };
+    const ids = ["durable", ...Array.from({ length: 1023 }, (_, i) => `unknown-${i}`)];
+    try {
+      // The oldest accepted transport: the bound narrows admission, not the compatibility set.
+      const accepted = fix.hello("accepted", {
+        protocolVersion: 30,
+        terminalHostId: "retained-host",
+        alive: ids,
+      });
+      expect(accepted.closed).toBeNull();
+      expect(machineMessages(accepted)[0]?.type).toBe("welcome");
+      expect(machineMessages(accepted).filter((frame) => frame.type === "kill")).toHaveLength(1023);
+      expect(authentications).toBe(1);
+      expect(lookups).toBe(1024);
+      expect(fix.status("durable")).toBe("running");
+
+      for (const protocolVersion of [30, PROTOCOL_VERSION]) {
+        for (const [name, alive, reason] of [
+          ["excess", [...ids, "unknown-1023"], "terminal inventory exceeds 1024 entries"],
+          ["duplicate", ["durable", "durable"], "duplicate terminal id in hello inventory"],
+          [
+            "duplicate-4096",
+            Array(4096).fill("unknown"),
+            "terminal inventory exceeds 1024 entries",
+          ],
+        ] as const) {
+          authentications = 0;
+          runningReads = 0;
+          lookups = 0;
+          const socket = fix.hello(`${name}-${protocolVersion}`, {
+            protocolVersion,
+            terminalHostId: "retained-host",
+            alive,
+          });
+          expect(socket.closed).toEqual({ code: 4002, reason });
+          expect(machineMessages(socket)).toEqual([]);
+          expect({ authentications, runningReads, lookups }).toEqual({
+            authentications: 0,
+            runningReads: 0,
+            lookups: 0,
+          });
+          expect(fix.gateway.isOnline(fix.machineId)).toBe(true);
+        }
+      }
+      expect(fix.status("durable")).toBe("running");
+      expect(machineMessages(accepted).filter((frame) => frame.type === "kill")).toHaveLength(1023);
+    } finally {
+      fix.gateway.shutdown();
+      fix.store.close();
+    }
+  });
   test("pre-cutover transports cannot advertise ownership or adopt durable terminals", () => {
     const fix = fixture("9".repeat(64), ["t1"]);
     const jobs = new JobService(fix.store, fix.auth, fix.runtime);
@@ -1202,6 +1305,7 @@ describe("machine admission and terminal continuity", () => {
       containerId: row.containerId,
       status: "exited",
       exitCode: null,
+      exitReason: "owner_lost",
     });
     expect(fix.status("t2")).toBe("exited");
     expect(() => fix.auth.authenticate(fix.terminalTokens.get("t1")!)).toThrow();
@@ -1209,6 +1313,41 @@ describe("machine admission and terminal continuity", () => {
     expect(fix.store.getMachine(fix.machineId)?.ownerHostId).toBe("host-B");
     fix.gateway.shutdown();
     fix.store.close();
+  });
+
+  test("an owner's stop reason is retained with its exit, even a clean one", () => {
+    const fix = fixture("7".repeat(64), ["t1", "t2", "t3"], "host-A");
+    try {
+      const owner = fix.hello("owner", { terminalHostId: "host-A", alive: ["t1", "t2", "t3"] });
+      const exit = (frame: Record<string, unknown>) =>
+        fix.gateway.message("owner", JSON.stringify({ type: "exited", ...frame }));
+      // An older agent's reasonless clean exit keeps canonical removal.
+      exit({ terminalId: "t1", exitCode: 0 });
+      // The host's destructive stop: codes are whatever the ended shells returned.
+      exit({ terminalId: "t2", exitCode: 0, exitReason: "owner_stopped" });
+      exit({ terminalId: "t3", exitCode: 1, exitReason: "owner_oom_stopped" });
+      expect(owner.closed).toBeNull();
+      expect(fix.status("t1")).toBe("gone");
+      expect(fix.store.getTerminal("t2")).toMatchObject({
+        status: "exited",
+        exitCode: 0,
+        exitReason: "owner_stopped",
+      });
+      expect(fix.store.getTerminal("t3")).toMatchObject({
+        status: "exited",
+        exitCode: 1,
+        exitReason: "owner_oom_stopped",
+      });
+
+      // The replacement owner reconciles nothing already exited: the owner's account stands.
+      owner.close(4010, "terminal host connection lost");
+      fix.gateway.close("owner");
+      expect(fix.hello("replacement", { terminalHostId: "host-B" }).closed).toBeNull();
+      expect(fix.store.getTerminal("t3")?.exitReason).toBe("owner_oom_stopped");
+    } finally {
+      fix.gateway.shutdown();
+      fix.store.close();
+    }
   });
 
   test("an explicit 4010 IPC seat disconnect re-adopts the same owner's live terminals", () => {

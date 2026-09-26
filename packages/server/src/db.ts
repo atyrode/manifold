@@ -9,7 +9,7 @@ import { JOB_SCHEDULE_SCHEMA_SQL } from "./job-schedules.ts";
 import { migrateToDurableAgents } from "./migrate-agents.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 45;
+export const SCHEMA_VERSION = 46;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
@@ -993,6 +993,14 @@ ALTER TABLE agent_runs ADD COLUMN native_credential_json TEXT;
 ALTER TABLE agent_runs ADD COLUMN native_call_ids_json TEXT NOT NULL DEFAULT '[]';
 CREATE UNIQUE INDEX agent_runs_native_job ON agent_runs(native_job_id) WHERE native_job_id IS NOT NULL;
 INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','45');
+`,
+  /**
+   * Why an owner ended a retained terminal (#853). Nullable: existing rows keep the meaning
+   * they had, an exit with no owner reason, and restart clears it with the exit code.
+   */
+  46: `
+ALTER TABLE terminals ADD COLUMN exit_reason TEXT;
+INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','46');
 `,
 };
 

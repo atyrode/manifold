@@ -18,6 +18,7 @@ function terminal(id: string, containerId: string): TerminalInfo {
     machineId: "m1",
     status: "running",
     exitCode: null,
+    exitReason: null,
     readiness: null,
     cols: 80,
     rows: 24,

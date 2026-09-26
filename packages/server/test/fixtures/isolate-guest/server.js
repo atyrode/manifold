@@ -82,6 +82,16 @@ const handlers = {
     ];
     return { ok: true, result: { text: args.text, count }, emits };
   },
+  identify(_id, _args, ctx) {
+    return {
+      ok: true,
+      result: {
+        present: Object.hasOwn(ctx, "callerPlugin"),
+        callerPlugin: ctx.callerPlugin ?? null,
+      },
+      emits: [],
+    };
+  },
   boom() {
     process.exit(1);
   },
@@ -166,7 +176,7 @@ onFrame(async (frame) => {
       const admission = new Promise((resolve) => admissions.set(frame.id, resolve));
       send({ t: "prepared", id: frame.id, targets: [] });
       if (!(await admission)) return;
-      const outcome = await handlers[frame.action](frame.id, frame.args);
+      const outcome = await handlers[frame.action](frame.id, frame.args, frame.ctx);
       if (outcome !== null) send({ t: "dispatched", id: frame.id, outcome });
       return;
     }

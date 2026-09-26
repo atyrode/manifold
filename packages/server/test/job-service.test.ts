@@ -832,6 +832,7 @@ test("data-only credential migration and author audit projection preserve enable
 ALTER TABLE terminals DROP COLUMN cwd;
 ALTER TABLE terminals DROP COLUMN launch_recipe;
 ALTER TABLE terminals DROP COLUMN created_by_run_id;
+ALTER TABLE terminals DROP COLUMN exit_reason;
 ALTER TABLE terminals DROP COLUMN session;
 DROP TABLE principal_access_pauses;
 DROP INDEX agent_runs_native_job;
@@ -7348,6 +7349,7 @@ DELETE FROM meta WHERE key='agent-runs:declarations-after-event-id';
 ALTER TABLE terminals DROP COLUMN cwd;
 ALTER TABLE terminals DROP COLUMN launch_recipe;
 ALTER TABLE terminals DROP COLUMN created_by_run_id;
+ALTER TABLE terminals DROP COLUMN exit_reason;
 ALTER TABLE terminals DROP COLUMN session;
 UPDATE meta SET value='33' WHERE key='schema_version';
 `);

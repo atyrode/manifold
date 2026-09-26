@@ -26,13 +26,18 @@ import type { JobService } from "./job-service.ts";
 type ClassifiedFrame =
   | { kind: "message"; message: AgentMessage }
   | { kind: "unknown_type"; frameType: string }
-  | { kind: "malformed"; detail: string };
+  | { kind: "malformed"; detail: string; closeReason?: string };
 
 const KNOWN_AGENT_TYPES: Readonly<Record<string, true>> = Object.fromEntries(
   AGENT_MESSAGE_TYPES.map((type): [string, true] => [type, true]),
 );
 
 const SUPERSEDE_DAMP_MS = 5_000;
+
+// Refusal fields are machine claims, not permission to log free-form exception text.
+function refusalIdentifier(value: string): string {
+  return /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value) ? value : "[redacted]";
+}
 
 /**
  * How long the hub waits for one repository answer (issue #529). The agent bounds its own
@@ -130,7 +135,20 @@ function classifyAgentFrame(data: unknown): ClassifiedFrame {
     return { kind: "unknown_type", frameType };
   }
   const parsed = AgentMessageSchema.safeParse(raw);
-  if (!parsed.success) return { kind: "malformed", detail: `invalid ${frameType} frame` };
+  if (!parsed.success) {
+    // An array-level `terminals` issue is the hello inventory bound or a duplicate id: name it
+    // in the close so the spoke's log says which, rather than an opaque malformed frame.
+    const inventory = parsed.error.issues.find(
+      (issue) =>
+        issue.path.length === 1 &&
+        issue.path[0] === "terminals" &&
+        (issue.code === "too_big" || issue.code === "custom"),
+    );
+    if (inventory !== undefined) {
+      return { kind: "malformed", detail: inventory.message, closeReason: inventory.message };
+    }
+    return { kind: "malformed", detail: `invalid ${frameType} frame` };
+  }
   return { kind: "message", message: parsed.data };
 }
 
@@ -279,7 +297,7 @@ export class MachineGateway {
         return;
       case "malformed":
         this.logger.warn("machine_malformed_frame", { detail: classified.detail });
-        connection.socket.close(4002, "malformed agent frame");
+        connection.socket.close(4002, classified.closeReason ?? "malformed agent frame");
         return;
       case "message":
         if (connection.channel === null) {
@@ -458,6 +476,13 @@ export class MachineGateway {
   private dispatch(channel: LiveMachineChannel, message: AgentMessage): void {
     switch (message.type) {
       case "job_event":
+        if (message.event.type === "refusal") {
+          this.logger.warn("machine_job_refusal", {
+            machineId: channel.machineId,
+            jobId: refusalIdentifier(message.event.jobId),
+            reason: refusalIdentifier(message.event.reason),
+          });
+        }
         try {
           this.jobs?.event(channel, message.event);
         } catch {
@@ -480,7 +505,12 @@ export class MachineGateway {
         this.broker.onSnapshot(channel.machineId, message);
         return;
       case "exited":
-        this.broker.onExited(channel.machineId, message.terminalId, message.exitCode);
+        this.broker.onExited(
+          channel.machineId,
+          message.terminalId,
+          message.exitCode,
+          message.exitReason ?? null,
+        );
         return;
       case "terminal_cwd":
         this.broker.onCwd(channel.machineId, message.terminalId, message.cwd);

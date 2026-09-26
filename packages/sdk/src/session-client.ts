@@ -804,6 +804,7 @@ export class SessionClient {
           if (msg.kind === "exited") {
             next.status = "exited";
             next.exitCode = msg.exitCode ?? null;
+            next.exitReason = msg.exitReason ?? null;
           }
           if (msg.kind === "controller_changed") next.controllerId = msg.controllerId ?? null;
           if (msg.kind === "resized") {
@@ -820,6 +821,7 @@ export class SessionClient {
           if (msg.kind === "restarted") {
             next.status = "running";
             next.exitCode = null;
+            next.exitReason = null;
             next.readiness = null;
             next.controllerId = msg.controllerId ?? null;
           }

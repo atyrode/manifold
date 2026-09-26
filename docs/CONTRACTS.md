@@ -1682,6 +1682,14 @@ credential no longer restores. The caller's `delegates` ceiling is deliberately 
 ceiling governs native effects a plugin performs with its own consented authority, and a sibling
 call performs none.
 
+The callee's read-only `ActionCtx.callerPlugin` is the verified **immediate** calling plugin id,
+or explicit `null` for a direct human, HTTP, session or host entry. A → B → C names A at B and
+B at C; the trace retains the full chain. The host derives it from dispatch origin, never
+from request arguments, and it grants no capability, principal substitution or delegation.
+A harness method is host-entered and sees `null`. Hardened contract 8 carries the same field in
+the dispatch context, gated so contracts 1–7 still receive their original frames. A contract-8
+guest dispatched without it raises `IsolateSliceUnavailable` on read, never `null`.
+
 The only checks this verb adds sit before the dispatch, and they are walked in this order:
 `dispatch_cycle` (the callee is already on this trace's plugin stack, the caller included, so a
 plugin cannot re-enter its own door), `dispatch_depth` (`MAX_ACTION_CALL_DEPTH` = 8 plugin frames
@@ -2509,12 +2517,13 @@ not a network-policy exemption. This is server-side retrieval admission, not a r
 the kit client's own inspection fetch or a claim that arbitrary plugin code is network-confined.
 
 **Executable bundle compatibility (#602).** Every pack stamps `hardenedContract` independently
-of `format` and the machine/session protocols. `HARDENED_CONTRACT_VERSION` is 5; the hub accepts
-`HARDENED_CONTRACT_COMPAT_VERSIONS = {1, 2, 3, 4, 5}`, with minimum 1. Add an additive-optional contract
-to that set; reset it for a genuine break. An unstamped or outside-set installed artifact is
-held at assembly with `repack_required` and the minimum, never imported or spawned, even if
-the administrator had it disabled. Fresh incompatible installs are refused by name with the
-same repacking guidance; the admission path never replaces a working bundle with them.
+of `format` and the machine/session protocols. `HARDENED_CONTRACT_VERSION` is 8; the hub accepts
+`HARDENED_CONTRACT_COMPAT_VERSIONS = {1, 2, 3, 4, 5, 6, 7, 8}`, with minimum 1. Add an
+additive-optional contract to that set; reset it for a genuine break. An unstamped or outside-set
+installed artifact is held at assembly with `repack_required` and the minimum, never imported
+or spawned, even if the administrator had it disabled. Fresh incompatible installs are refused
+by name with the same repacking guidance; the admission path never replaces a working bundle
+with them.
 
 HISTORY: contract 1 identifies the bounded receipt transport (#536) plus the prepared/admitted
 dispatch boundary (#587). Pre-#587 bytes are not contract 1 and must be repacked. Contract
@@ -2522,7 +2531,8 @@ dispatch boundary (#587). Pre-#587 bytes are not contract 1 and must be repacked
 guests, whose strict old parser and ordinary dispatch remain supported; contract-2 guests
 check it against their packed runtime. Contract 3 adds optional action result projections;
 contract 4 adds metadata-only `jobs.inspectInputs`; contract 5 adds optional exact selected
-`textFields` within result declarations. Older admitted
+`textFields` within result declarations. Contract 6 adds authenticated Run provenance, 7
+adds harness calls, and 8 adds host-owned `callerPlugin` to the dispatch context. Older admitted
 guests omit newer metadata and preserve their normalized declarations and digests. Host-to-guest
 optional fields are gated by the admitted contract, never sent speculatively.
 “Isolate answered out of protocol” denotes an internal
@@ -2588,19 +2598,19 @@ before either process assembles a string or calls `JSON.parse`. Every host envel
 unpredictable FIFO receipt; its frame count and bytes remain charged until the child returns that
 receipt, so merely writing more calls cannot hide an unread reply backlog:
 
-| Direction  | `t`           | Carries                                                                                                                                                                    |
-| ---------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| host→child | `load`        | `pluginId`, `manifest`, `dir`, `hardenedContract?` (contract 2+) — the first frame; the child already runs from `dir`                                                      |
-| host→child | `dispatch`    | `id`, `action` (LOCAL name), `args`, `ctx: { traceId, principal, caps, isRoot, containerScope, now }` — the caller's authority captured per id                             |
-| host→child | `hook`        | `id`, `hook: "onEnable" \| "onDisable" \| "onAssemblyChanged"`, `delta?: { enabled, disabled }`                                                                            |
-| host→child | `reply`       | `id`, `ok: true, result` or `ok: false, error` — the answer to a child's `call`                                                                                            |
-| host→child | `shutdown`    | orderly exit; also what idle eviction sends                                                                                                                                |
-| child→host | `loaded`      | `actions: ActionSummary[]` (input/result as JSON Schema from the child's own zod), `hooks: { onEnable, onDisable, onAssemblyChanged, onJobSettled }` booleans              |
-| child→host | `load_failed` | `error`                                                                                                                                                                    |
-| child→host | `dispatched`  | `id`, `outcome: { ok: true, result, emits: { ref, kind, payload }[] } \| { ok: false, rule: "invalid_args" \| "refused", message }` — the only two rungs a child may grade |
-| child→host | `hooked`      | `id`, `ok`, `error?`                                                                                                                                                       |
-| child→host | `received`    | unpredictable receipt from one consumed host envelope; receipts are FIFO and cannot be guessed from outgoing calls                                                         |
-| child→host | `call`        | `id`, `method: IsolateCtxMethod`, `args: unknown[]`                                                                                                                        |
+| Direction  | `t`           | Carries                                                                                                                                                                                                 |
+| ---------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| host→child | `load`        | `pluginId`, `manifest`, `dir`, `hardenedContract?` (contract 2+) — the first frame; the child already runs from `dir`                                                                                   |
+| host→child | `dispatch`    | `id`, `action` (LOCAL name), `args`, `ctx: { traceId, principal, caps, isRoot, containerScope, agentRun? (6+), callerPlugin? (8+), now }` — host-owned caller attribution and authority captured per id |
+| host→child | `hook`        | `id`, `hook: "onEnable" \| "onDisable" \| "onAssemblyChanged"`, `delta?: { enabled, disabled }`                                                                                                         |
+| host→child | `reply`       | `id`, `ok: true, result` or `ok: false, error` — the answer to a child's `call`                                                                                                                         |
+| host→child | `shutdown`    | orderly exit; also what idle eviction sends                                                                                                                                                             |
+| child→host | `loaded`      | `actions: ActionSummary[]` (input/result as JSON Schema from the child's own zod), `hooks: { onEnable, onDisable, onAssemblyChanged, onJobSettled }` booleans                                           |
+| child→host | `load_failed` | `error`                                                                                                                                                                                                 |
+| child→host | `dispatched`  | `id`, `outcome: { ok: true, result, emits: { ref, kind, payload }[] } \| { ok: false, rule: "invalid_args" \| "refused", message }` — the only two rungs a child may grade                              |
+| child→host | `hooked`      | `id`, `ok`, `error?`                                                                                                                                                                                    |
+| child→host | `received`    | unpredictable receipt from one consumed host envelope; receipts are FIFO and cannot be guessed from outgoing calls                                                                                      |
+| child→host | `call`        | `id`, `method: IsolateCtxMethod`, `args: unknown[]`                                                                                                                                                     |
 
 The bounded receipt socket (#536) and prepared/admitted dispatch (#587) together define the
 minimum supported hardened contract. Older Bun-IPC or pre-admission bundles are held before
@@ -3656,11 +3666,13 @@ env? }` → server targets `machineId` when given (error `no_machine` if it is u
   harness, revoked authority or expired Run refuses restart rather than substituting a shell.
   Migration 39 recovers pre-feature terminal Run bindings from matching retained job records.
 - **Owner loss retains placement.** An admitted hello from a different `terminalHostId`
-  marks the predecessor's terminals `exited` with unknown exit code and releases their
-  controllers; their rows, leaves and portals remain. Neither a transport disconnect nor
+  marks the predecessor's terminals `exited` with unknown exit code and
+  `exitReason:"owner_lost"`, and releases their controllers; their rows, leaves and portals
+  remain. Neither a transport disconnect nor
   IPC seat loss (**4010**) proves owner loss: terminals remain running but unreachable,
   with credentials intact. A reconnect to the same owner re-adopts its live inventory
-  rather than killing it. A replacement owner on the same machine may restart the retained
+  rather than killing it, and a PTY missing from that owner's own inventory is an exit with
+  no owner reason. A replacement owner on the same machine may restart the retained
   identity. Dismiss remains canonical removal; retaining the tile never claims that the
   old workload survived.
 - **Unplaced terminals.** `TerminalInfo.containerId` is the composition the terminal lives in —
@@ -3669,7 +3681,7 @@ env? }` → server targets `machineId` when given (error `no_machine` if it is u
   home, and it is DERIVED from the containment graph on every read rather than stored — so
   releasing and re-placing a terminal leaves no state behind to go stale.
   `core.terminals.listAll` lists EVERY terminal as
-  `{ id, machineId, name, createdAt, status, exitCode, cwd?, homeId, unplaced }`. The pool's
+  `{ id, machineId, name, createdAt, status, exitCode, exitReason?, cwd?, homeId, unplaced }`. The pool's
   durable `sort_order` is retired with it: an unplaced terminal's position is its home
   composition's position in the one index.
 - Terminals carry a durable nullable `name`, renamed through the action
@@ -3678,12 +3690,21 @@ env? }` → server targets `machineId` when given (error `no_machine` if it is u
   the home as `terminal_event { kind:"renamed", name }`, where every titlebar and index row picks
   it up without a refetch. Labels everywhere are `name ?? machine name`.
 - `output { terminalId, seq, data }` streams to all LIVE viewers; `terminal_event
-{ kind:"exited", exitCode }` retains a PTY's nonzero or unknown natural exit. Such a terminal
+{ kind:"exited", exitCode, exitReason? }` retains a PTY's nonzero or unknown natural exit. Such a terminal
   stays listed (status `exited`, real code) with its leaf and portals intact until dismissed.
   A successful natural exit (`exitCode === 0`) and an explicit kill instead share canonical
   removal: no `exited` frame or retained row, and leaves and retired-home references vanish
   through their persisted documents. The existing `terminal_killed` collection event
   announces canonical removal, including successful natural exits.
+- **Owner exit reasons** (#853). `TerminalInfo.exitReason` is null for a running terminal and
+  an ordinary exit; otherwise it says the machine's terminal owner ended the terminal:
+  `owner_stopped` (the host's destructive stop), `owner_oom_stopped` (that stop immediately
+  followed a kernel OOM kill in the host's own cgroup) or `owner_lost` (a replacement owner was
+  admitted). The exited event, `terminal_exited` collection event and terminal listings carry
+  the same word only when present. An owner-ended exit is retained even with code 0, because
+  it is not the program's natural completion. The reason is persisted with the exit, survives
+  hub restarts and clears on restart. The exited tile adds one sentence for it beside Restart;
+  an ordinary exit reads as before.
 - `terminal_event { kind:"parked" }` keeps its pre-cutover kind name and now means exactly "this
   terminal left THIS room": it fires in the OLD home when a merge or an extraction re-homes
   the terminal, paired with `terminal_opened` carrying the new leaf in the new home, and
@@ -3706,16 +3727,36 @@ and fresh on host restart; it is not the machine token or a durable terminal che
 disconnected; absence is equivalent to `null`. Such exited terminals are retained through
 the next `hello`, then forgotten when `welcome` acknowledges it (or when `kill` arrives).
 Server replies `welcome { machineId, serverEpoch }` or closes: 4401 unauthorized,
-4403 revoked, 4409 version, or 4003 admission refused (`machine name already in use`,
+4403 revoked, 4409 version, 4002 malformed frame (including a refused hello inventory), or
+4003 admission refused (`machine name already in use`,
 incumbent continuity mismatch, or `supersession damped`). A name conflict is decided by the
 same atomic write that would admit the hello; it sends no welcome, changes neither machine row,
 and leaves an incumbent connection untouched. Version acceptance uses
 `MACHINE_PROTOCOL_COMPAT_VERSIONS`, currently
-`{30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43}`; session/browser joins remain strictly
-current at protocol 43. An unchanged machine
+`{30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44}`; session/browser joins remain strictly
+current at protocol 44. An unchanged machine
 wire may add a version to the set. A strictly additive-optional change may also add it only
 when old frames still parse and absent fields preserve the old semantics. Other changes
-reset the set and require a coordinated hub/transport upgrade.
+reset the set and require a coordinated hub/transport upgrade. An admission bound applied
+identically at every accepted version, leaving compliant frames byte-identical, changes
+neither the version nor the set.
+
+**Hello inventory bound (#403).** One hello advertises at most **1,024 distinct terminal
+ids**: retained PTYs plus unacknowledged exits. A 1,025th entry or any duplicate id refuses
+the whole hello with 4002 `terminal inventory exceeds 1024 entries` or
+`duplicate terminal id in hello inventory`, at frame validation: before version negotiation,
+authentication, any durable refusal record, terminal lookup, admission or reconciliation. No
+welcome, lookup or kill follows, a live incumbent is untouched, and a refused inventory is
+never truncated or read as evidence that a terminal is missing. The 1 MiB frame ceiling
+still applies independently. This is an admission bound, not a wire revision: it applies to
+every transport in `MACHINE_PROTOCOL_COMPAT_VERSIONS`, and compliant transports need no
+upgrade. The transport refuses an over-bound or duplicate host report locally
+(`terminal_inventory_refused`, error) instead of sending it, and does so again on every
+re-dial; an older transport in front of such a host is refused by the hub on every dial.
+Either way the host keeps every record and the machine stays offline until an operator
+resolves it; there is no partial-hello recovery. The terminal host refuses a new terminal
+(`create_error` `terminal inventory at capacity`) once its records, including pending
+launches, reach the bound, so a current host never exceeds it.
 
 **Protocol 30: explicit terminal execution.** New-terminal admission no longer interprets
 missing native job connectivity as shell authority. The owner reports `terminalExecution`,
@@ -3781,7 +3822,7 @@ machine transport. An owner outside the acceptance set that does not qualify for
 receives no native authority, while machine presence, retained terminal continuity and the
 named drain/maintenance path remain available for the coordinated upgrade.
 
-The independent federation set is `{27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43}`; these machine/native changes leave its
+The independent federation set is `{27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44}`; these machine/native changes leave its
 frames and resource vocabularies unchanged. The earlier per-program and per-job transport
 version gates are retired: every accepted transport understands those frames, while
 authority comes from explicit declarations and live owner proof.
@@ -3822,10 +3863,16 @@ unrunnable `argv[0]` or missing launch path is a bounded machine-local `create_e
 `ENOENT` names both possible causes, never a shell standing in for the program.
 Agent→server: `created { terminalId }` | `create_error { terminalId, message }`,
 `output { terminalId, seq, data }` (seq: monotonic per terminal, assigned at emission),
-`snapshot { terminalId, seq, data }`, `exited { terminalId, exitCode }`, `pong`,
+`snapshot { terminalId, seq, data }`, `exited { terminalId, exitCode, exitReason? }`, `pong`,
 `drain_status { requestId, terminalHostId, draining, terminalIds }`,
 `repository_fact { requestId, fact }` — exactly one per `repository_query`, correlated by id;
 an answer whose id nobody holds is dropped and logged, never believed.
+
+Protocol 44 adds `exited.exitReason`, `owner_stopped` or `owner_oom_stopped`, for exits the
+terminal host caused on its destructive stop path; an owner never sends `owner_lost`. Older
+agents omit it and absence still means an ordinary exit, so their transports stay admitted. A
+hub that predates the field would refuse it on a strict `exited`, but it already refuses a v44
+transport at `hello` (4409): upgrade the hub before transports.
 
 Protocol 33 additionally carries `terminal_cwd { terminalId, cwd }`,
 `terminal_restart { terminalId, cwd?, create?, noRecipe? }`,
@@ -4608,6 +4655,18 @@ terminalIds }`.
 There is no force option. A refused stop is a hold, never permission to escalate to a signal.
 
 Host SIGTERM is DESTRUCTIVE: it terminates shells, escalating after the grace period.
+Before ending them it sends the seated transport `destructive_stop { reason }`, and the
+transport adds that reason to every `exited` it forwards afterwards. The host keeps its own IPC
+`exited` unchanged and IPC stays version 3: an older transport ignores the new event type and
+forwards reasonless exits, while a newer transport in front of an older host receives none.
+On Linux the host reads its cgroup v2 cgroup from `/proc/self/cgroup` and samples that
+cgroup's `memory.events` `oom_kill` every 5 seconds. The reason is `owner_oom_stopped` when the
+counter rose since the last sample or was first seen rising within 30 seconds before the stop,
+which is the shape of a supervisor stopping the unit after a kernel OOM kill (systemd's
+default `OOMPolicy=stop`); otherwise, and wherever the counter is unreadable, it is
+`owner_stopped`. The host observes only its own cgroup and its descendants. Exits that never
+reach the hub, because the transport was detached or the host was killed outright, become
+`owner_lost` when a replacement owner is admitted.
 Host restart, cgroup/container teardown and machine reboot do not preserve PTYs.
 The hub now preserves their terminal tiles as restartable unknown exits, not their processes;
 Restart creates a new PTY and does not recover shell history or the old workload.
@@ -4655,7 +4714,7 @@ IS the cross-instance reference. `tickets` answers with the subset of the advert
 still live, and the guest drops the rest. Or the host closes: 4401 unauthorized / origin
 mismatch, 4403 revoked, 4409 version, 4002 malformed or first-frame-not-hello or duplicate
 hello, 4008 liveness timeout, 4001 superseded. Version acceptance is
-`INSTANCE_PROTOCOL_COMPAT_VERSIONS` `{27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43}` — its own wire, its own set, the
+`INSTANCE_PROTOCOL_COMPAT_VERSIONS` `{27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44}` — its own wire, its own set, the
 same [Protocol and compatibility](#protocol-and-compatibility) discipline the machine channel follows.
 Governed jobs and streams expand the closed capability and reference vocabularies, so protocol 27
 independently resets instance acceptance; older instances cannot decode that governed wire.
@@ -5026,6 +5085,8 @@ Migration 45 adds nullable Run tool selections, the declared launch target, the 
 binding and its nonsecret credential lineage, plus bounded call-identity tombstones. Existing
 Runs gain no selected tools or native binding. The native job binding has a unique partial index;
 this additive migration does not backfill authority or rewrite existing Run grants.
+Migration 46 adds nullable `terminals.exit_reason` with no backfill: existing rows keep the
+meaning they had, an exit with no owner reason. It is additive SQL and takes no snapshot.
 Migration 38 reclassifies only `agent` principals identifiable as native service credentials:
 current `native_instance_services.credential` principal references and historical
 `token_minted { subjectPrincipalId, serviceId, machineId }` events. It preserves unrelated

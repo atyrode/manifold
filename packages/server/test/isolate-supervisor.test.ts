@@ -95,6 +95,7 @@ function actionCtx(
   const slice: Pick<
     ActionCtx,
     | "traceId"
+    | "callerPlugin"
     | "principal"
     | "auth"
     | "containerScope"
@@ -106,6 +107,7 @@ function actionCtx(
     | "admitPrepared"
   > = {
     traceId: 1,
+    callerPlugin: null,
     admitPrepared: () => {},
     principal,
     auth: {
@@ -535,6 +537,7 @@ describe("IsolateSupervisor", () => {
       "fencedEmit",
       "garble",
       "hang",
+      "identify",
       "oversize",
       "refuse",
       "slice",
@@ -548,6 +551,35 @@ describe("IsolateSupervisor", () => {
     expect(supervisor.state(PLUGIN_ID)).toBe("running");
     expect(states.map((row) => row.state)).toEqual(["starting", "running"]);
     expect(logger.count("isolate_spawned")).toBe(1);
+  });
+
+  test("only contract 8 receives the host-owned immediate caller on real child dispatches", async () => {
+    for (const contract of [7, 8]) {
+      const { supervisor, runtime, storage } = fixture();
+      const { def } = await supervisor.load({
+        pluginId: PLUGIN_ID,
+        manifest,
+        dir: GUEST_DIR,
+        hardenedContract: contract,
+      });
+      const { ctx } = actionCtx(storage, runtime);
+      expect(await invoke(def, "identify", ctx, { callerPlugin: "test.forged" })).toEqual({
+        present: contract === 8,
+        callerPlugin: null,
+      });
+      if (contract === 8) {
+        expect(
+          await invoke(
+            def,
+            "identify",
+            { ...ctx, callerPlugin: "test.middle" },
+            {
+              callerPlugin: "test.forged",
+            },
+          ),
+        ).toEqual({ present: true, callerPlugin: "test.middle" });
+      }
+    }
   });
 
   test("a dispatch round-trips through the child, which reaches storage by call, and its emits are re-staged", async () => {

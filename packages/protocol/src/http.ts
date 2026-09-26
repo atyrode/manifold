@@ -6,7 +6,7 @@ import { BindingOverridesSchema, PluginRosterSchema, PluginSettingValuesSchema }
 import { PrincipalSchema } from "./principal.ts";
 import { ManifoldRefSchema } from "./uri.ts";
 import { InstanceOriginSchema } from "./origin.ts";
-import { TerminalCwdSchema, TerminalExecutionSchema } from "./machine.ts";
+import { TerminalCwdSchema, TerminalExecutionSchema, TerminalExitReasonSchema } from "./machine.ts";
 import { SessionRefSchema } from "./session-ref.ts";
 
 /** REST door schemas. Auth: `Authorization: Bearer <token-or-owner-key>`. */
@@ -334,6 +334,8 @@ export const ContainerTerminalSummarySchema = z.strictObject({
   createdAt: z.number().int().nonnegative(),
   status: z.enum(["running", "exited"]),
   exitCode: z.number().int().nullable(),
+  /** Present only when the terminal's owner ended it (issue #853); absent for an ordinary exit. */
+  exitReason: TerminalExitReasonSchema.optional(),
 });
 export type ContainerTerminalSummary = z.infer<typeof ContainerTerminalSummarySchema>;
 export const ContainerTerminalsResponseSchema = z.strictObject({
@@ -355,6 +357,8 @@ export const TerminalSummarySchema = z.strictObject({
   createdAt: z.number().int().nonnegative(),
   status: z.enum(["running", "exited"]),
   exitCode: z.number().int().nullable(),
+  /** Present only when the terminal's owner ended it (issue #853); absent for an ordinary exit. */
+  exitReason: TerminalExitReasonSchema.optional(),
   /** Launch intent may be relative until the owner reports an observed absolute directory. */
   cwd: TerminalCwdSchema.optional(),
   /** The composition this terminal lives in: solo from birth, shared once merged. */

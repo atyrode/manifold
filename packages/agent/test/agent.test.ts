@@ -14,6 +14,7 @@ import {
   TERMINAL_HOST_LOST_CLOSE_CODE,
 } from "../src/agent.ts";
 import { TerminalHost } from "../src/terminal-host.ts";
+import { OomKillWatch } from "../src/oom-kills.ts";
 import type { TerminalHostDialer } from "../src/terminal-host-link.ts";
 import { PtyTerminal } from "../src/terminal.ts";
 import { unixJobOwnerDialer, type JobOwnerDialer } from "../src/job-owner-link.ts";
@@ -739,6 +740,59 @@ test("server close code and reason ref in logs; 4409 gets the version-rejected m
   }
 }, 20000);
 
+test("an oversized retained-owner inventory is refused locally without emitting a hello", async () => {
+  const host = new TerminalHost();
+  const status = host.status.bind(host);
+  host.status = () => ({
+    ...status(),
+    terminals: Array.from({ length: 1025 }, (_, i) => ({
+      terminalId: `retained-${i}`,
+      cols: 80,
+      rows: 24,
+      alive: true,
+      seq: 0,
+    })),
+  });
+  const socket = new ScriptedSocket();
+  const refused = Promise.withResolvers<void>();
+  const records: Array<{ evt: string; [key: string]: unknown }> = [];
+  const agent = new Agent({
+    serverUrl: "http://fake.invalid",
+    machineToken: "machine-token",
+    machineName: "retained",
+    backoff: { baseMs: 5_000, capMs: 5_000 },
+    dialTerminalHost: inMemoryDialer(host),
+    sink: (record) => {
+      records.push(record);
+      if (record.evt === "terminal_inventory_refused") refused.resolve();
+    },
+    createSocket: () => {
+      queueMicrotask(() => socket.open());
+      return socket.asWebSocket();
+    },
+  });
+  const connectAttempt = agent.connect();
+  try {
+    await refused.promise;
+    expect(socket.sent).toEqual([]);
+    expect(socket.closedByAgent).toEqual({
+      code: 4002,
+      reason: "terminal inventory exceeds 1024 entries",
+    });
+    expect(records.find((record) => record.evt === "terminal_inventory_refused")).toMatchObject({
+      level: "error",
+      reason: "over_limit",
+      terminals: 1025,
+      maximum: 1024,
+    });
+    expect(host.terminalCount).toBe(0);
+  } finally {
+    await agent.shutdown();
+    await host.shutdown();
+    void connectAttempt;
+  }
+});
+
 test("disconnected exit is advertised with its code and forgotten on welcome", async () => {
   const sockets: ScriptedSocket[] = [];
   const created = Promise.withResolvers<void>();
@@ -813,6 +867,60 @@ test("disconnected exit is advertised with its code and forgotten on welcome", a
     second.receive({ type: "welcome", machineId: "m-1", serverEpoch: "e-2" });
     await Promise.resolve(); // the acknowledgement crosses the in-memory seam in one microtask
     expect(host.terminalCount).toBe(0);
+  } finally {
+    await agent.shutdown();
+    await host.shutdown();
+  }
+}, 20000);
+
+test("exits the host's destructive stop causes reach the hub naming that stop", async () => {
+  const sockets: ScriptedSocket[] = [];
+  const created = Promise.withResolvers<void>();
+  const exited = Promise.withResolvers<AgentMessage>();
+  const records: Array<{ evt: string; [key: string]: unknown }> = [];
+  let kills = 0;
+  const host = new TerminalHost({
+    shellCommand: [BASH, "--norc", "-i"],
+    oomKills: new OomKillWatch(
+      () => kills,
+      () => Date.now(),
+    ),
+  });
+  const agent = new Agent({
+    serverUrl: "http://fake.invalid",
+    machineToken: "machine-token",
+    machineName: "owner-stop-machine",
+    backoff: { baseMs: 5_000, capMs: 5_000 },
+    dialTerminalHost: inMemoryDialer(host),
+    sink: (record) => records.push(record),
+    createSocket: scriptedHub(sockets, (_socket, msg) => {
+      if (msg.type === "created") created.resolve();
+      if (msg.type === "exited") exited.resolve(msg);
+    }),
+  });
+
+  try {
+    await agent.connect();
+    sockets[0]?.receive({
+      type: "create",
+      terminalId: "ended-by-owner",
+      cols: 80,
+      rows: 24,
+      env: {},
+    });
+    await created.promise;
+    // The kernel killed something in the host's cgroup, and its supervisor stops the host.
+    kills += 1;
+    await host.shutdown();
+    expect(await exited.promise).toMatchObject({
+      type: "exited",
+      terminalId: "ended-by-owner",
+      exitReason: "owner_oom_stopped",
+    });
+    await Promise.resolve(); // the host's close crosses the in-memory seam in one microtask
+    expect(records).toContainEqual(
+      expect.objectContaining({ evt: "terminal_host_lost", stopReason: "owner_oom_stopped" }),
+    );
   } finally {
     await agent.shutdown();
     await host.shutdown();

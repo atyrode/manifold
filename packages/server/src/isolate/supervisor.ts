@@ -280,6 +280,9 @@ export class IsolateSupervisor implements IsolateRunner {
     return {
       traceId: ctx.traceId,
       principal: ctx.principal,
+      ...((this.isolates.get(pluginId)?.ref.hardenedContract ?? 0) >= 8
+        ? { callerPlugin: ctx.callerPlugin }
+        : {}),
       caps: [...ctx.auth.caps],
       isRoot: ctx.auth.isRoot,
       containerScope: ctx.containerScope,

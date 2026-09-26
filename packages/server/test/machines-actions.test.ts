@@ -383,7 +383,7 @@ describe("core.machines.forget", () => {
     expect(denial(await forget()).message).toBe("terminals_retained");
     expect(fix.store.getTerminal("retained-terminal")?.status).toBe("running");
     expect(fix.store.getMachine(machine.id)).not.toBeNull();
-    fix.store.markTerminalExited("retained-terminal", 0);
+    fix.store.markTerminalExited("retained-terminal", 0, null);
     expect(denial(await forget()).message).toBe("terminals_retained");
     fix.store.deleteTerminal("retained-terminal");
     expect((await forget()).ok).toBe(true);
