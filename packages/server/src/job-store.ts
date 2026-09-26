@@ -3,7 +3,7 @@ import {
   JobResourceBindingsSchema,
   type JobResourceBindings,
 } from "@manifold/protocol";
-import type { AuthorityEvidence } from "./auth.ts";
+import { ContainerGrantsSchema, type AuthorityEvidence, type ContainerGrant } from "./auth.ts";
 import {
   canonicalJobJson,
   JobLifecycleEventSchema,
@@ -43,6 +43,11 @@ export interface JobRecord {
   nextInputSeq: number | null;
   stdinClosed: boolean;
   ownerClosed: boolean;
+  /**
+   * The container authority the posting lineage carried (ADR 0051), restored with the
+   * request's credential at settle. Absent on every row that carries none.
+   */
+  containerGrants?: readonly ContainerGrant[];
 }
 export interface JobInstallation {
   machineId: string;
@@ -97,10 +102,11 @@ export class JobStore {
           next_input_seq: number | null;
           stdin_closed: number;
           owner_closed: number;
+          container_grants: string | null;
         },
         [string]
       >(
-        "SELECT request,state,permit,result,audit_origin,decision_id,next_input_seq,stdin_closed,owner_closed FROM machine_jobs WHERE job_id=?",
+        "SELECT request,state,permit,result,audit_origin,decision_id,next_input_seq,stdin_closed,owner_closed,container_grants FROM machine_jobs WHERE job_id=?",
       )
       .get(jobId);
     return r
@@ -114,6 +120,9 @@ export class JobStore {
           nextInputSeq: r.next_input_seq,
           stdinClosed: r.stdin_closed === 1,
           ownerClosed: r.owner_closed === 1,
+          ...(r.container_grants === null
+            ? {}
+            : { containerGrants: ContainerGrantsSchema.parse(JSON.parse(r.container_grants)) }),
         }
       : null;
   }
@@ -160,12 +169,16 @@ export class JobStore {
       throw new Error("job_digest_conflict");
     return previous;
   }
-  reserve(request: JobRequest, now: number): JobRecord {
+  reserve(
+    request: JobRequest,
+    now: number,
+    containerGrants?: readonly ContainerGrant[],
+  ): JobRecord {
     const previous = this.reservation(request);
     if (previous !== null) return previous;
     this.store.db
       .query(
-        "INSERT INTO machine_jobs(job_id,machine_id,plugin_id,digest,request,state,created_at,audit_origin) VALUES (?,?,?,?,?,'queued',?,?)",
+        "INSERT INTO machine_jobs(job_id,machine_id,plugin_id,digest,request,state,created_at,audit_origin,container_grants) VALUES (?,?,?,?,?,'queued',?,?,?)",
       )
       .run(
         request.jobId,
@@ -175,6 +188,7 @@ export class JobStore {
         canonicalJobJson(request),
         now,
         JSON.stringify(this.origin(request)),
+        containerGrants === undefined ? null : canonicalJobJson(containerGrants),
       );
     return this.get(request.jobId)!;
   }

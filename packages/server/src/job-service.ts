@@ -2165,7 +2165,7 @@ export class JobService {
           : {}),
         outputs: result.outputs,
       },
-      auth: this.auth.restoreCredential(job.request.credential),
+      auth: this.auth.restoreCredential(job.request.credential, job.containerGrants),
       traceId: job.request.traceId,
     };
   }
@@ -2514,7 +2514,7 @@ export class JobService {
     auth: AuthContext,
     pluginId: string,
     traceId: string,
-    args: JobExecution & Omit<JobScheduleSpec, "request">,
+    args: JobExecution & Omit<JobScheduleSpec, "request" | "containerGrants">,
     callerPluginId = pluginId,
     beforeEffect?: () => void,
   ): JobScheduleSpec {
@@ -2547,6 +2547,8 @@ export class JobService {
       expiresAt,
       offlinePolicy,
       request,
+      // Every occurrence keeps the registering lineage's container authority (ADR 0051).
+      ...(auth.containerGrants === undefined ? {} : { containerGrants: [...auth.containerGrants] }),
     };
     this.store.transaction(() => {
       const prior = this.store.db
@@ -2646,8 +2648,8 @@ export class JobService {
     this.jobSchedules.tick(this.runtime.now(), {
       reauthorize: (request) => this.reauthorizeDeferred(request),
       isOnline: (machineId) => this.channels.get(machineId)?.proved === true,
-      enqueue: (request) => {
-        this.jobs.reserve(request, this.runtime.now());
+      enqueue: (request, containerGrants) => {
+        this.jobs.reserve(request, this.runtime.now(), containerGrants);
       },
     });
     for (const job of this.jobs.active()) if (job.state === "queued") this.start(job);
@@ -3736,7 +3738,7 @@ export class JobService {
     beforeEffect?: () => void,
   ): GovernedAdmissionDecision & { decisionId: string; policyRevision: string } {
     return this.store.transaction(() => {
-      const context = this.auth.restoreCredential(request.credential);
+      const context = this.auth.restoreCredential(request.credential, request.containerGrants);
       let allowed = context !== null && request.evidence.length > 0 && refusal === null;
       const consents: { node: string; revision: string; artifactSha256: string }[] = [];
       const evidence: AuthorityEvidence[] = [];
@@ -3751,8 +3753,15 @@ export class JobService {
             servicePolicies.set(ref.machineId, policies);
           }
         }
-        const terminalAuthority =
-          (cap === "terminals:spawn" || cap === "terminals:write") && ref.kind === "container";
+        // Nothing is installed at a container, so there is no revision to consent to: a
+        // terminal the presser spawns or writes there, and the container authority a governed
+        // door hands the work it starts (ADR 0051), discharge against the caller alone.
+        const containerAuthority =
+          (cap === "terminals:spawn" ||
+            cap === "terminals:write" ||
+            cap === "containers:read" ||
+            cap === "containers:write") &&
+          ref.kind === "container";
         const install = ref.kind === "service" ? null : this.resolve(ref);
         const fresh = context
           ? this.auth.explain(context, prior.requirement)
@@ -3762,10 +3771,12 @@ export class JobService {
           (install ? this.consentFor(install, ref, cap) : null);
         const discharged =
           context !== null &&
-          (terminalAuthority || install !== null || (ref.kind === "service" && consent !== null)) &&
-          (context.caps.includes("*") || context.caps.includes(cap)) &&
+          (containerAuthority ||
+            install !== null ||
+            (ref.kind === "service" && consent !== null)) &&
+          this.auth.ceilingAdmits(context, cap, ref) &&
           fresh.allowed &&
-          (terminalAuthority || consent !== null);
+          (containerAuthority || consent !== null);
         if (!discharged) allowed = false;
         const observedConsent =
           consent ?? (install ? this.consentFor(install, ref, cap, false) : null);
@@ -3812,18 +3823,22 @@ export class JobService {
         ),
       );
       const decisionId = randomUUID();
-      this.store.db
-        .query("INSERT INTO machine_job_decisions VALUES (?,?,?,?,?,?,?,?)")
-        .run(
-          decisionId,
-          this.runtime.now(),
-          request.pluginId,
-          request.action,
-          canonicalJobJson({ ...request.credential, credentialRevision }),
-          policyRevision,
-          canonicalJobJson(verdict),
-          canonicalJobJson(consents),
-        );
+      this.store.db.query("INSERT INTO machine_job_decisions VALUES (?,?,?,?,?,?,?,?)").run(
+        decisionId,
+        this.runtime.now(),
+        request.pluginId,
+        request.action,
+        canonicalJobJson({
+          ...request.credential,
+          credentialRevision,
+          ...(request.containerGrants === undefined
+            ? {}
+            : { containerGrants: request.containerGrants }),
+        }),
+        policyRevision,
+        canonicalJobJson(verdict),
+        canonicalJobJson(consents),
+      );
       return allowed
         ? { allowed: true, decisionId, policyRevision, consentRevisions: consents }
         : { allowed: false, decisionId, policyRevision };
@@ -4287,7 +4302,12 @@ export class JobService {
   ): JobRecord {
     if ("terminal" in args) fail("native_terminal_admission_required");
     if ("service" in args) fail("native_service_admission_required");
-    const context = this.auth.restoreCredential(this.auth.credentialReference(auth));
+    // The lineage's carried container authority rides beside the request, never inside it:
+    // the request is signed for an owner that parses its credential strictly (ADR 0051).
+    const context = this.auth.restoreCredential(
+      this.auth.credentialReference(auth),
+      auth.containerGrants,
+    );
     if (!context) fail("credential_revoked_or_expired");
     const binding =
       args.agentRun === undefined ? null : NativeAgentRunBindingSchema.parse(args.agentRun);
@@ -4341,7 +4361,7 @@ export class JobService {
         this.concurrencyRefusal(request),
         beforeEffect,
       );
-      const reserved = this.jobs.reserve(request, this.runtime.now());
+      const reserved = this.jobs.reserve(request, this.runtime.now(), context.containerGrants);
       this.jobs.decision(request.jobId, decision.decisionId);
       const allowed = decision.allowed;
       if (!allowed) {
