@@ -1,11 +1,13 @@
 /**
- * The repository gate, parallelized for one memory-bounded developer machine and selectable
- * by CI from one command registry. With no arguments the phase ordering is deliberately
- * conservative; `--only` lets an isolated CI runner execute one registry slice.
+ * The repository gate, parallelized within fixed caps under memory-aware admission
+ * (`gate-admission.ts`) and selectable by CI from one command registry. With no arguments the
+ * phase ordering is deliberately conservative; `--only` lets an isolated CI runner execute one
+ * registry slice.
  */
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
+import { hostAdmission, runAdmitted, taskMemoryBudget } from "./gate-admission.ts";
 
 const repoRoot = join(import.meta.dir, "..");
 
@@ -329,26 +331,6 @@ async function run(
   return result;
 }
 
-/** Six-wide locally: compilers, eslint, and Bun tests all have material memory footprints. */
-async function runLimited(
-  limit: number,
-  jobs: readonly (() => Promise<TaskResult>)[],
-): Promise<TaskResult[]> {
-  const results: TaskResult[] = [];
-  let next = 0;
-  const workers = Array.from({ length: Math.min(limit, jobs.length) }, async () => {
-    while (next < jobs.length) {
-      const index = next;
-      next += 1;
-      const job = jobs[index];
-      if (job === undefined) break;
-      results[index] = await job();
-    }
-  });
-  await Promise.all(workers);
-  return results;
-}
-
 async function runWithRetry(task: GateTask, dist: string | null): Promise<TaskResult> {
   const first = await run(task, dist);
   if (first.ok || task.retry !== true) return first;
@@ -375,6 +357,15 @@ const configuredDist = process.env["MANIFOLD_GATE_DIST"] ?? "";
 if (configuredDist !== "" && !isAbsolute(configuredDist)) {
   usage("MANIFOLD_GATE_DIST must be an absolute path");
 }
+const taskMemory = taskMemoryBudget(process.env["MANIFOLD_GATE_TASK_MEMORY_MIB"]);
+if (taskMemory === null) {
+  usage(
+    "MANIFOLD_GATE_TASK_MEMORY_MIB must be a whole number of MiB; 0 turns memory admission off",
+  );
+}
+// Six static and two browser tasks at most: compilers, eslint and Bun tests each hold material
+// memory, and admission starts fewer while the host's available memory is short.
+const admission = hostAdmission(taskMemory);
 let createdDistParent: string | null = null;
 const dist = (): string => {
   if (configuredDist !== "") return configuredDist;
@@ -409,11 +400,13 @@ async function selected(selector: string): Promise<number> {
     }
     const regular = matching.filter((task) => task.phase !== "post-static");
     results.push(
-      ...(await runLimited(
+      ...(await runAdmitted(
         6,
-        regular.map(
-          (task) => () => runWithRetry(task, task.usesDist === true ? selectedDist : null),
-        ),
+        regular.map((task) => ({
+          name: task.name,
+          run: () => runWithRetry(task, task.usesDist === true ? selectedDist : null),
+        })),
+        admission,
       )),
     );
     for (const task of matching.filter((candidate) => candidate.phase === "post-static")) {
@@ -435,11 +428,15 @@ async function localGate(): Promise<number> {
 
   const sharedDist = dist();
   const building = run(build, sharedDist);
-  const staticChecks = runLimited(
+  const staticChecks = runAdmitted(
     6,
     tasks
       .filter((task) => task.phase === "static")
-      .map((task) => () => run(task, task.usesDist === true ? sharedDist : null)),
+      .map((task) => ({
+        name: task.name,
+        run: () => run(task, task.usesDist === true ? sharedDist : null),
+      })),
+    admission,
   );
 
   const built = await building;
@@ -455,9 +452,12 @@ async function localGate(): Promise<number> {
     const convergenceTask = tasks.find((task) => task.phase === "convergence");
     if (convergenceTask === undefined) throw new Error("gate registry lacks convergence");
     convergence = [await runWithRetry(convergenceTask, sharedDist)];
-    browsers = await runLimited(
+    browsers = await runAdmitted(
       2,
-      tasks.filter((task) => task.phase === "browser").map((task) => () => run(task, sharedDist)),
+      tasks
+        .filter((task) => task.phase === "browser")
+        .map((task) => ({ name: task.name, run: () => run(task, sharedDist) })),
+      admission,
     );
   }
   return report([built, ...statics, ...postStatics, ...convergence, ...browsers]);

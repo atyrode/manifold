@@ -1,6 +1,7 @@
 import {
   AGENT_TOOL_MAX_CALLS,
   DIAL_LIVENESS_TIMEOUT_MS,
+  MAX_MACHINE_HELLO_TERMINALS,
   PROTOCOL_VERSION,
   SERVER_TO_AGENT_MESSAGE_TYPES,
   ServerToAgentMessageSchema,
@@ -536,6 +537,30 @@ export class Agent {
     if (socket.readyState !== WebSocket.OPEN) return;
     const seat = this.seat;
     if (seat === null) return;
+    // A retained host may predate the inventory bound. Never slice its report: absence on the
+    // wire is evidence the hub uses to retire PTYs. Refuse locally (and again on every re-dial)
+    // so the host keeps every record for an operator decision (docs/CONTRACTS.md §/ws/machine).
+    if (status.terminals.length > MAX_MACHINE_HELLO_TERMINALS) {
+      this.log("error", "terminal_inventory_refused", {
+        reason: "over_limit",
+        terminals: status.terminals.length,
+        maximum: MAX_MACHINE_HELLO_TERMINALS,
+      });
+      socket.close(4002, `terminal inventory exceeds ${MAX_MACHINE_HELLO_TERMINALS} entries`);
+      return;
+    }
+    const ids = new Set<string>();
+    for (const terminal of status.terminals) {
+      if (ids.has(terminal.terminalId)) {
+        this.log("error", "terminal_inventory_refused", {
+          reason: "duplicate_id",
+          terminals: status.terminals.length,
+        });
+        socket.close(4002, "duplicate terminal id in hello inventory");
+        return;
+      }
+      ids.add(terminal.terminalId);
+    }
     seat.terminalRestart = status.terminalRestart === true;
     this.advertisedDeadTerminalIds = [];
     for (const terminal of status.terminals) {

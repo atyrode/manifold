@@ -85,6 +85,41 @@ function relayDef(
   };
 }
 
+/** A three-hop chain whose answers expose what each handler actually read from its context. */
+function identityRelay(id: string, next: string | null): ServerPluginDef {
+  return {
+    manifest: {
+      id,
+      version: "1.0.0",
+      title: id,
+      description: "Caller identity probe",
+      capabilities: [],
+      ...(next === null ? {} : { dependencies: { [next]: { type: "required" as const } } }),
+      contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+    },
+    actions: [
+      defineAction({
+        name: "identify",
+        title: "Identify caller",
+        caps: [],
+        input: z.looseObject({}),
+        result: z.strictObject({
+          callerPlugin: z.string().nullable(),
+          child: z.unknown().optional(),
+        }),
+      }),
+    ],
+    handlers: {
+      identify: async (ctx: ActionCtx) => ({
+        callerPlugin: ctx.callerPlugin,
+        ...(next === null
+          ? {}
+          : { child: await ctx.actions.call({ plugin: next, action: "identify", input: {} }) }),
+      }),
+    },
+  };
+}
+
 /**
  * The pair the acceptance cases use: a caller that relays, probes and stages, and a callee
  * whose `echo` demands a capability of its own. `test.opt` is declared `optional` so it can be
@@ -322,6 +357,34 @@ function rowFor(base: Fixture, door: string): StoredEvent {
 }
 
 describe("a declared dependency's door", () => {
+  test("the host supplies the immediate caller at each hop, not a forged argument", async () => {
+    const base = await fixture([
+      identityRelay("test.first", "test.middle"),
+      identityRelay("test.middle", "test.last"),
+      identityRelay("test.last", null),
+    ]);
+    expect(
+      await base.host.dispatch(base.owner, "test.first.identify", {
+        callerPlugin: "test.forged",
+      }),
+    ).toEqual({
+      ok: true,
+      result: {
+        callerPlugin: null,
+        child: {
+          callerPlugin: "test.first",
+          child: { callerPlugin: "test.middle" },
+        },
+      },
+    });
+    expect(
+      await base.host.dispatch(base.owner, "test.last.identify", {
+        callerPlugin: "test.forged",
+      }),
+    ).toEqual({ ok: true, result: { callerPlugin: null } });
+    base.store.close();
+  });
+
   test("opens under the CALLER'S principal, with the calling plugin as the origin", async () => {
     const base = await fixture();
 

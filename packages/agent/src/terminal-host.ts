@@ -2,6 +2,7 @@ import { accessSync, constants, statSync } from "node:fs";
 import { homedir } from "node:os";
 import {
   TERMINAL_HOST_COMMAND_TYPES,
+  MAX_MACHINE_HELLO_TERMINALS,
   TERMINAL_HOST_PROTOCOL_VERSION,
   TerminalHostCommandSchema,
   defaultRuntime,
@@ -100,6 +101,8 @@ export class TerminalHost {
 
   private readonly terminals = new Map<string, PtyTerminal>();
   private readonly recipes = new Map<string, LaunchRecipe>();
+  /** Async governed launches reserve inventory capacity before the first await. */
+  private readonly pendingCreates = new Set<string>();
   private readonly restarting = new Set<string>();
   private readonly failedRestarts = new WeakSet<PtyTerminal>();
   private readonly cancelledRestarts = new Set<string>();
@@ -447,6 +450,14 @@ export class TerminalHost {
       });
       return;
     }
+    if (this.pendingCreates.has(msg.terminalId)) {
+      connection.peer.write({
+        type: "create_error",
+        terminalId: msg.terminalId,
+        message: "terminal creation pending",
+      });
+      return;
+    }
     if (this.terminals.has(msg.terminalId)) {
       if (msg.runtime) {
         connection.peer.write({
@@ -465,6 +476,13 @@ export class TerminalHost {
       this.log("warn", "create_error", { terminalId: msg.terminalId, message });
       return;
     }
+    if (this.terminals.size + this.pendingCreates.size >= MAX_MACHINE_HELLO_TERMINALS) {
+      const message = "terminal inventory at capacity";
+      connection.peer.write({ type: "create_error", terminalId: msg.terminalId, message });
+      this.log("warn", "create_error", { terminalId: msg.terminalId, message });
+      return;
+    }
+    this.pendingCreates.add(msg.terminalId);
     try {
       const spawned = this.spawnTerminal(msg);
       const terminal = spawned instanceof PtyTerminal ? spawned : await spawned;
@@ -481,6 +499,8 @@ export class TerminalHost {
           : String(error);
       connection.peer.write({ type: "create_error", terminalId: msg.terminalId, message });
       this.log("error", "create_error", { terminalId: msg.terminalId, message });
+    } finally {
+      this.pendingCreates.delete(msg.terminalId);
     }
   }
 
