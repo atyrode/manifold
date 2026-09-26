@@ -19,6 +19,7 @@ import {
   type TerminalInfo,
   type TerminalReadiness,
   type TerminalExecution,
+  type TerminalExitReason,
 } from "@manifold/protocol";
 import {
   ServiceError,
@@ -327,6 +328,7 @@ export class TerminalBroker implements TerminalPlacementPort {
         machineId: row.machineId,
         status: row.status,
         exitCode: row.exitCode,
+        exitReason: row.exitReason,
         readiness: null,
         cols: 80,
         rows: 24,
@@ -690,6 +692,7 @@ export class TerminalBroker implements TerminalPlacementPort {
         machineId: stored.machineId,
         status: stored.status,
         exitCode: stored.exitCode,
+        exitReason: stored.exitReason,
         readiness: null,
         cols: 80,
         rows: 24,
@@ -719,6 +722,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       ...terminal.info,
       status: "running",
       exitCode: null,
+      exitReason: null,
       readiness: advertised.readiness ?? null,
       cols: advertised.cols,
       rows: advertised.rows,
@@ -780,10 +784,14 @@ export class TerminalBroker implements TerminalPlacementPort {
     }
   }
 
-  /** A newly admitted replacement owner proves the old seat's processes are unavailable. */
+  /**
+   * A newly admitted replacement owner proves the old seat's processes are unavailable. Its
+   * predecessor's terminals are retained as exited with `owner_lost`: the hub, not any owner,
+   * is the only party that can know why they ended.
+   */
   onOwnerLost(machineId: string): void {
     for (const stored of this.store.listRunningTerminalsForMachine(machineId))
-      this.retainExited(machineId, stored.id, null);
+      this.retainExited(machineId, stored.id, null, "owner_lost");
   }
 
   private selectMachine(requested: string | undefined): MachineChannel | null {
@@ -1135,6 +1143,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       machineId,
       status: "running",
       exitCode: null,
+      exitReason: null,
       readiness: null,
       cols,
       rows,
@@ -1753,6 +1762,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       ...terminal.info,
       status: "running",
       exitCode: null,
+      exitReason: null,
       readiness: null,
       controllerId: pending.principalId,
       ...(message.cwd === undefined ? {} : { cwd: message.cwd }),
@@ -1813,11 +1823,17 @@ export class TerminalBroker implements TerminalPlacementPort {
   }
 
   /**
-   * Error and unknown exits retain their placement; clean exits keep canonical removal.
-   * Nested processes produce no such frame while the root remains alive.
+   * Error and unknown exits retain their placement; clean exits keep canonical removal. An
+   * exit the owner caused is never a clean completion, whatever its code: it is retained with
+   * its reason. Nested processes produce no such frame while the root remains alive.
    */
-  onExited(machineId: string, terminalId: string, exitCode: number | null): void {
-    if (exitCode === 0) {
+  onExited(
+    machineId: string,
+    terminalId: string,
+    exitCode: number | null,
+    exitReason: TerminalExitReason | null = null,
+  ): void {
+    if (exitCode === 0 && exitReason === null) {
       const terminal = this.terminals.get(terminalId);
       if (!terminal || terminal.info.machineId !== machineId || terminal.info.status === "exited")
         return;
@@ -1830,22 +1846,33 @@ export class TerminalBroker implements TerminalPlacementPort {
       });
       return;
     }
-    this.retainExited(machineId, terminalId, exitCode);
+    this.retainExited(machineId, terminalId, exitCode, exitReason);
   }
 
   /** An admitted owner's inventory lost a PTY without observing its exit. Retain evidence. */
   private onMissing(machineId: string, terminalId: string): void {
-    this.retainExited(machineId, terminalId, null);
+    this.retainExited(machineId, terminalId, null, null);
   }
 
-  private retainExited(machineId: string, terminalId: string, exitCode: number | null): void {
+  private retainExited(
+    machineId: string,
+    terminalId: string,
+    exitCode: number | null,
+    exitReason: TerminalExitReason | null,
+  ): void {
     const terminal = this.terminals.get(terminalId);
     if (terminal === undefined || terminal.info.machineId !== machineId) return;
     if (terminal.info.status === "exited") return;
     for (const viewer of terminal.viewers.values()) viewer.cancelSnapshotDeadline?.();
     terminal.viewers.clear();
-    terminal.info = { ...terminal.info, status: "exited", exitCode, controllerId: null };
-    this.store.markTerminalExited(terminalId, exitCode);
+    terminal.info = {
+      ...terminal.info,
+      status: "exited",
+      exitCode,
+      exitReason,
+      controllerId: null,
+    };
+    this.store.markTerminalExited(terminalId, exitCode, exitReason);
     // The exit is announced in the terminal's HOME, the room every viewer of it is joined
     // to. Missing-owner evidence stays visible until somebody deliberately dismisses it.
     const containerId = terminal.info.containerId;
@@ -1854,6 +1881,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       terminalId,
       kind: "exited",
       exitCode,
+      ...(exitReason === null ? {} : { exitReason }),
     });
     const stored = this.store.getTerminal(terminalId);
     if (stored !== null && stored.agentPrincipalId !== null) {
@@ -1863,6 +1891,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       terminalId,
       machineId,
       exitCode,
+      ...(exitReason === null ? {} : { exitReason }),
     });
     this.rooms.evictIfIdle(containerId);
   }

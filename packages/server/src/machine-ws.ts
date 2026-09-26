@@ -480,7 +480,12 @@ export class MachineGateway {
         this.broker.onSnapshot(channel.machineId, message);
         return;
       case "exited":
-        this.broker.onExited(channel.machineId, message.terminalId, message.exitCode);
+        this.broker.onExited(
+          channel.machineId,
+          message.terminalId,
+          message.exitCode,
+          message.exitReason ?? null,
+        );
         return;
       case "terminal_cwd":
         this.broker.onCwd(channel.machineId, message.terminalId, message.cwd);
