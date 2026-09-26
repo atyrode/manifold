@@ -600,7 +600,7 @@ export class JobService {
   }
   private canInspectInstance(current: AuthContext, record: InstanceServiceRecord): boolean {
     return (
-      current.isRoot ||
+      this.auth.holdsRoot(current) ||
       Object.keys(record.policy.operations).some((operationId) =>
         (["services:read", "services:invoke"] as const).some(
           (cap) =>
@@ -621,21 +621,21 @@ export class JobService {
   ): InstanceServiceDescription {
     const current = this.auth.restoreCredential(this.auth.credentialReference(auth));
     const record = this.instanceServices.get(args.serviceId);
-    if (!current || (!current.isRoot && (!record || !this.canInspectInstance(current, record))))
+    const root = current !== null && this.auth.holdsRoot(current);
+    if (!current || (!root && (!record || !this.canInspectInstance(current, record))))
       fail("service_unauthorized");
-    return this.instanceDescription(record, args.serviceId, current.isRoot);
+    return this.instanceDescription(record, args.serviceId, root);
   }
   listInstanceServices(auth: AuthContext): InstanceServicesDescription {
     const current = this.auth.restoreCredential(this.auth.credentialReference(auth));
     if (!current) fail("service_unauthorized");
+    const root = this.auth.holdsRoot(current);
     return {
-      defaultOwner: current.isRoot
-        ? this.instanceOwner(this.instanceServices.defaultOwnerId())
-        : null,
+      defaultOwner: root ? this.instanceOwner(this.instanceServices.defaultOwnerId()) : null,
       services: this.instanceServices
         .list()
         .filter((record) => this.canInspectInstance(current, record))
-        .map((record) => this.instanceDescription(record, record.serviceId, current.isRoot)),
+        .map((record) => this.instanceDescription(record, record.serviceId, root)),
     };
   }
   readInstanceServiceConfiguration(
@@ -643,7 +643,7 @@ export class JobService {
     args: { serviceId: string },
   ): InstanceServiceConfigurationRead {
     const current = this.auth.restoreCredential(this.auth.credentialReference(auth));
-    if (!current?.isRoot) fail("instance_service_configuration_forbidden");
+    if (!current || !this.auth.holdsRoot(current)) fail("instance_service_configuration_forbidden");
     const record = this.instanceServices.get(args.serviceId);
     if (record) this.configurationAuthority(current, record.machineId);
     return {
@@ -953,7 +953,8 @@ export class JobService {
   private configurationAuthority(auth: AuthContext, machineId: string): AuthContext {
     const current = this.auth.restoreCredential(this.auth.credentialReference(auth));
     if (
-      !current?.isRoot ||
+      !current ||
+      !this.auth.holdsRoot(current) ||
       !this.store.getMachine(machineId) ||
       (!current.caps.includes("*") && !current.caps.includes("services:configure")) ||
       !this.auth.allowsRef(current, "services:configure", { kind: "machine", machineId })
@@ -2365,8 +2366,8 @@ export class JobService {
         "SELECT node,cap,enabled,revision,installation_revision,artifact FROM machine_job_consents WHERE machine_id=? AND plugin_id=? AND installation_revision=? ORDER BY node,cap",
       )
       .all(args.machineId, args.pluginId, install?.revision ?? null);
-    const visibleServices =
-      connected && !current.isRoot ? this.describeServices(current, args).services : [];
+    const root = this.auth.holdsRoot(current);
+    const visibleServices = connected && !root ? this.describeServices(current, args).services : [];
     return {
       machineId: args.machineId,
       pluginId: args.pluginId,
@@ -2375,7 +2376,7 @@ export class JobService {
       platforms: connected ? [...live.owner.platforms] : [],
       ...(connected && live.owner.resources
         ? {
-            resources: current.isRoot
+            resources: root
               ? live.owner.resources
               : {
                   tools: live.owner.resources.tools,
@@ -2563,7 +2564,7 @@ export class JobService {
         prior &&
         (JSON.parse(prior.spec) as JobScheduleSpec).request.credential.principalId !==
           auth.principal.id &&
-        !auth.isRoot
+        !this.auth.holdsRoot(auth)
       )
         fail("schedule_owner_mismatch");
       const refusal = this.reauthorizeDeferred(request);
@@ -2590,7 +2591,8 @@ export class JobService {
               machineId: spec.request.machineId,
               operationId: spec.request.operationId,
             }))) &&
-        (context.isRoot || spec.request.credential.principalId === context.principal.id) &&
+        (this.auth.holdsRoot(context) ||
+          spec.request.credential.principalId === context.principal.id) &&
         this.canReadGoverned(context, {
           kind: "operation",
           machineId: spec.request.machineId,
@@ -2610,7 +2612,11 @@ export class JobService {
     const spec = this.jobSchedules
       .listSchedules()
       .find((row) => row.scheduleId === scheduleId && row.revision === revision);
-    if (!spec || (!context.isRoot && spec.request.credential.principalId !== context.principal.id))
+    if (
+      !spec ||
+      (!this.auth.holdsRoot(context) &&
+        spec.request.credential.principalId !== context.principal.id)
+    )
       fail("schedule_not_found");
     const node: ManifoldRef = {
       kind: "operation",
@@ -2698,7 +2704,8 @@ export class JobService {
     auth: AuthContext,
     args: { machineId: string; pluginId: string },
   ): InspectJobInvocationsResult {
-    if (!this.auth.restoreCredential(this.auth.credentialReference(auth))?.isRoot) fail();
+    const current = this.auth.restoreCredential(this.auth.credentialReference(auth));
+    if (!current || !this.auth.holdsRoot(current)) fail();
     const result: InspectJobInvocationsResult = {
       ...args,
       candidates: [],
@@ -2938,7 +2945,8 @@ export class JobService {
   }
 
   setInvocationEdge(auth: AuthContext, args: { edge: JobInvocationEdge; enabled: boolean }): void {
-    if (!this.auth.restoreCredential(this.auth.credentialReference(auth))?.isRoot) fail();
+    const current = this.auth.restoreCredential(this.auth.credentialReference(auth));
+    if (!current || !this.auth.holdsRoot(current)) fail();
     const edge = JobInvocationEdgeSchema.parse(args.edge);
     const { enabled } = args;
     this.store.transaction(() => {
@@ -3850,7 +3858,11 @@ export class JobService {
       machine: MachineHalf;
     },
   ): void {
-    if (!auth.isRoot || !this.auth.restoreCredential(this.auth.credentialReference(auth))) fail();
+    if (
+      !this.auth.holdsRoot(auth) ||
+      !this.auth.restoreCredential(this.auth.credentialReference(auth))
+    )
+      fail();
     const machine = MachineHalfSchema.parse(args.machine);
     if (
       !this.store.getMachine(args.machineId) ||
@@ -3970,7 +3982,11 @@ export class JobService {
       enabled: boolean;
     },
   ): void {
-    if (!auth.isRoot || !this.auth.restoreCredential(this.auth.credentialReference(auth))) fail();
+    if (
+      !this.auth.holdsRoot(auth) ||
+      !this.auth.restoreCredential(this.auth.credentialReference(auth))
+    )
+      fail();
     const node = parseManifoldUri(args.node);
     if (!node) fail();
     const install =

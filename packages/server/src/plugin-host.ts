@@ -218,6 +218,7 @@ export interface ActionAuth {
   readonly principal: Principal;
   readonly caps: readonly Cap[];
   readonly containerScope: string | null;
+  /** Root-class authority, asked of `AuthService.holdsRoot` on every read (#411). */
   readonly isRoot: boolean;
   /** One evaluator question: the engine's capabilities, or this plugin's own (ADR 0035). */
   allows(cap: AskableCap, ref?: ManifoldRef): boolean;
@@ -984,8 +985,8 @@ const TRACE_PREFIX_MAX_CHARS = 256;
  * the cap list becomes its detail; today `allows` answers a boolean, so the cap name is the
  * most precise honest answer available (ADR 0018 §6).
  */
-function traceAuthority(auth: AuthContext, caps: readonly AuthoredCap[]): string {
-  if (auth.isRoot) return TRACE_AUTHORITY_ROOT;
+function traceAuthority(root: boolean, caps: readonly AuthoredCap[]): string {
+  if (root) return TRACE_AUTHORITY_ROOT;
   if (caps.length === 0) return TRACE_AUTHORITY_OPEN;
   return caps.join("+");
 }
@@ -3928,7 +3929,7 @@ export class PluginHost {
     const attribution: TraceAttribution = {
       ts: this.runtime.now(),
       actor: auth.principal.id,
-      authority: traceAuthority(auth, entry.def.caps),
+      authority: traceAuthority(this.authService.holdsRoot(auth), entry.def.caps),
       door: fullName,
       containerId: opaque ? auth.containerScope : traceContainer(auth, rawArgs),
       payload,
@@ -4066,7 +4067,8 @@ export class PluginHost {
             "forbidden",
             "governed actions require resource targets and explicit consent",
           );
-        const held = cap === "*" ? auth.isRoot : this.authService.allows(auth, cap);
+        const held =
+          cap === "*" ? this.authService.holdsRoot(auth) : this.authService.allows(auth, cap);
         if (!held) return refuse("forbidden", `${cap} capability required`);
       }
     }
@@ -4116,7 +4118,7 @@ export class PluginHost {
         if (
           entry.def.requirements === undefined &&
           entry.def.caps.some((cap) =>
-            cap === "*" ? !auth.isRoot : !this.authService.allows(auth, cap),
+            cap === "*" ? !this.authService.holdsRoot(auth) : !this.authService.allows(auth, cap),
           )
         )
           return new ActionAdmissionDenial("forbidden", "caller authority unavailable");
@@ -4231,6 +4233,7 @@ export class PluginHost {
     const database = lease.database;
     let guestAdmitted = false;
     const actionStack = [...(options.origin?.stack ?? []), pluginId];
+    const authService = this.authService;
     const ctx: ActionCtx = {
       traceId,
       pluginId,
@@ -4340,7 +4343,10 @@ export class PluginHost {
         principal: auth.principal,
         caps: auth.caps,
         containerScope: auth.containerScope,
-        isRoot: auth.isRoot,
+        // Asked when read, never frozen at dispatch: a deny landing mid-handler withdraws it.
+        get isRoot(): boolean {
+          return authService.holdsRoot(auth);
+        },
         allows: (cap, ref) =>
           ref === undefined
             ? this.authService.allows(auth, cap)

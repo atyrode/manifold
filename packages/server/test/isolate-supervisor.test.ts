@@ -4,7 +4,8 @@ import { existsSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import type { LifecycleCtx, PluginStorage } from "@manifold/plugin";
-import type { EventKind, EventPayload, ManifoldRef, PluginManifest } from "@manifold/protocol";
+import type { Cap, EventKind, EventPayload, ManifoldRef, PluginManifest } from "@manifold/protocol";
+import { AuthService } from "../src/auth.ts";
 import { IsolateDenial, IsolateLoadError, type IsolateState } from "../src/isolate/contract.ts";
 import { IsolateSupervisor, type IsolateSupervisorDeps } from "../src/isolate/supervisor.ts";
 import type { Logger, LogLevel } from "../src/log.ts";
@@ -530,6 +531,8 @@ describe("IsolateSupervisor", () => {
       "backpressure",
       "boom",
       "echo",
+      "fenced",
+      "fencedEmit",
       "garble",
       "hang",
       "oversize",
@@ -603,6 +606,69 @@ describe("IsolateSupervisor", () => {
     expect((denial as IsolateDenial).rule).toBe("invalid_args");
     expect((denial as IsolateDenial).message).toBe("text must be a string");
     expect(await invoke(def, "refuse", ctx, {})).toEqual({ refused: "not today" });
+  });
+
+  test("a deny landing mid-handler fences a root dispatch's later effects, not earlier ones", async () => {
+    const { supervisor, runtime, storage } = fixture();
+    const { def } = await supervisor.load({ pluginId: PLUGIN_ID, manifest, dir: GUEST_DIR });
+    const ownerKey = "a".repeat(64);
+    const auth = new AuthService(testStore(), ownerKey, runtime);
+    const owner = auth.authenticate(ownerKey);
+    /*
+      The host ctx's `isRoot` is the live evaluator, exactly as `plugin-host` builds it, and the
+      guest's `auth.allows` call is where the test lands a real deny on the caller: between the
+      dispatch frame (which carried the class as data) and the handler's next ctx call.
+    */
+    const caller = (caps: Cap[]) => {
+      const context = auth.authenticate(
+        auth.mintToken({ principal: { name: "caller", kind: "human" }, caps }, owner).token,
+      );
+      const { ctx, emitted } = actionCtx(storage, runtime);
+      const live: ActionCtx = {
+        ...ctx,
+        auth: {
+          ...ctx.auth,
+          get isRoot(): boolean {
+            return auth.holdsRoot(context);
+          },
+          allows: () => {
+            auth.grant(
+              {
+                principal: { kind: "principal", id: context.principal.id },
+                node: "manifold://container/elsewhere",
+                caps: ["containers:write"],
+                effect: "deny",
+                reach: "subtree",
+              },
+              owner,
+            );
+            return true;
+          },
+        },
+      };
+      return { ctx: live, emitted };
+    };
+    const withdrawn = { refused: "root_authority_withdrawn" };
+
+    const root = caller(["*"]);
+    expect(await invoke(def, "fenced", root.ctx, { text: "root" })).toEqual(withdrawn);
+    // The effect committed under valid authority stays committed; the one after the deny never ran.
+    expect(await storage.get("root:first")).toBe("committed");
+    expect(await storage.get("root:second")).toBeNull();
+
+    const emitter = caller(["*"]);
+    expect(await invoke(def, "fencedEmit", emitter.ctx, { text: "emit" })).toEqual(withdrawn);
+    expect(emitter.emitted).toEqual([]);
+
+    // A caller that never held root had nothing to withdraw: the same deny leaves it served.
+    const ordinary = caller(["scenes:write"]);
+    expect(await invoke(def, "fenced", ordinary.ctx, { text: "ordinary" })).toEqual({
+      second: true,
+    });
+    expect(await storage.get("ordinary:second")).toBe("committed");
+    const quiet = caller(["scenes:write"]);
+    expect(await invoke(def, "fencedEmit", quiet.ctx, { text: "quiet" })).toEqual({});
+    expect(quiet.emitted).toHaveLength(1);
   });
 
   test("a lifecycle hook is served from its LifecycleCtx and answers the child's verdict", async () => {

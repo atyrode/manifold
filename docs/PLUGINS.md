@@ -3476,7 +3476,12 @@ subject. A handler is written against `GuestCtx`, which is the engine's `ActionC
 served across a process boundary (`docs/CONTRACTS.md` §Hardened plugins, `ISOLATE_CTX_METHODS`):
 
 - **Data the dispatch carries** — `ctx.principal`, `ctx.auth.{caps, isRoot, containerScope}`,
-  `ctx.traceId`, `ctx.containerScope`, `ctx.now()`, `ctx.pluginId`.
+  `ctx.traceId`, `ctx.containerScope`, `ctx.now()`, `ctx.pluginId`. `ctx.auth.isRoot` is the
+  caller's root-class authority as it stood when the dispatch was sent, and it is not re-read.
+  If an administered deny withdraws that authority mid-handler, the host fences the rest of a
+  dispatch that was sent `true`: every further host call and any returned emission is refused
+  with `root_authority_withdrawn` (`docs/CONTRACTS.md` §Hardened plugins). Effects already
+  committed stay committed. Treat that refusal as final, not as something to retry.
 - **Questions the host answers, as promises** — `ctx.auth.allows(cap, containerId?)`,
   `ctx.outsideScope(containerId)`, `ctx.newId()`, `ctx.storage.{get, set, delete, keys}`,
   `ctx.machines.{isOnline, getTerminalExecution, repository}`, `ctx.placement.place(request)`,

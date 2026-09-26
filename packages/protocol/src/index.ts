@@ -837,6 +837,7 @@ export {
   MANIFOLD_ROOT_URI,
   MANIFOLD_URI_SCHEME,
   ManifoldRefSchema,
+  canContain,
   containmentPath,
   formatManifoldUri,
   parseManifoldUri,
