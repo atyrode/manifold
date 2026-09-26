@@ -846,6 +846,9 @@ the public domain — it feeds `MANIFOLD_PUBLIC_URL`.
 Everything durable is in the `manifold-data` named volume, mounted at `/data`:
 
 - `manifold.db` — SQLite store (scenes, principals, hashed tokens, session lifecycle).
+- `manifold.writer` — the writer lock, held for its whole life by the one hub process allowed to
+  write this directory ([Hub handover](#hub-handover)). It carries no data and is left out of
+  full-state checkpoints.
 - `owner.key` (mode 600) — the root bootstrap secret, generated on first boot unless
   `MANIFOLD_OWNER_KEY` pins it.
 - `preview-identity.key` (mode 600) — the Ed25519 private key that signs short-lived preview
@@ -1015,7 +1018,15 @@ every WAL segment as it lands, with a fresh snapshot every hour and 72 hours of 
 
 One writer per replica. Never run two instances against one bucket path — the second
 one restores over the first one's history — which also means "zero-downtime" deploys
-that overlap old and new instances are off the table for a replicated hub.
+that overlap old and new instances are off the table for a replicated hub. The writer lock
+([Hub handover](#hub-handover)) cannot prevent that: it fences processes that share one data
+directory, and instances on separate disks each hold their own. What the replica does carry is the
+writer epoch. The entrypoint's `litestream replicate -exec` forwards the container's SIGTERM to the
+server, waits for it to seal and exit, then ships that final commit, so the next container's
+restore contains the sealed epoch and its `writer_claimed` reports `predecessor: "sealed"`. A
+restore that reports `unsealed` ended before the previous writer's last commits — typically a
+crash or kill inside Litestream's one-second sync interval — and those commits went with the old
+disk. Nothing is merged or repaired automatically; check recent writes before relying on them.
 
 Take a consistent copy at any time (this is the same command that would rebuild the
 store on a new host):
@@ -1209,6 +1220,35 @@ docker compose pull && docker compose up -d
 
 SQLite schema migrations run automatically on boot (`packages/server/src/db.ts`
 MIGRATIONS); the volume carries the data across image rebuilds.
+
+### Hub handover
+
+One hub process writes a data directory at a time, and a replacement takes over by handover
+rather than overlap. On start the server takes `<data>/manifold.writer` before it opens
+`manifold.db`. While another process holds it, the new one logs `writer_waiting` and waits up to
+30 seconds, then fails to start. Once it holds the lock and has migrated, it claims the next writer
+epoch and logs `writer_claimed` with a `predecessor`:
+
+- `sealed` — the previous writer handed over cleanly.
+- `unsealed` (logged at `warn`) — the previous writer stopped without handing over: it crashed,
+  was killed, or a replica was restored from before its last commits.
+- `none` — a new database, or one written only by builds older than the handover.
+
+On SIGTERM or SIGINT the server quiesces before it exits. It logs `writer_quiescing`, answers every
+new request and WebSocket upgrade except `/healthz` with `503` and `Retry-After: 1`, and closes
+browser, machine and instance sockets with `1001`, which every client already redials. Requests and
+action dispatches it had already admitted get up to three seconds to finish; then it flushes
+scenes, seals its epoch as its final commit, logs `writer_sealed` and releases the lock. Give the
+stop at least that long plus plugin shutdown (Compose's default ten seconds is enough): a process
+killed before it seals leaves its successor an `unsealed` predecessor.
+
+A replacement may therefore be started beside the running hub on the same data directory and port:
+it loads, waits on the lock, and binds as soon as the old process has sealed, so its own start-up
+time is not part of the gap. The gap is bounded, not zero: requests in it are refused or cannot
+connect, and clients reconnect under their existing back-off. The container commands above still
+stop the old container before starting the new one. Builds older than the handover neither take
+the lock nor record an epoch; start one only after the current process has exited, and read the
+next `predecessor` as describing the last handover-aware writer, not the older build.
 
 ## The hub is also a machine
 
