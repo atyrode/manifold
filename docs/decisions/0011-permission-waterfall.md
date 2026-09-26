@@ -597,13 +597,20 @@ principal) and the matching confirmation in §8.
 - Any effective administered deny within a minted wildcard credential's reach withdraws its
   root-class authority — declared-`*` doors and root-only service verbs — until the deny is
   removed, including minted bearers on the owner principal. _Effective_ means the row decides an
-  engine capability for that credential somewhere: it is asked at its node, and beneath it for a
-  `subtree` row. A deny outranked everywhere it applies, or naming only plugin capabilities that
-  `*` never reached, withdraws nothing.
+  engine capability for that credential somewhere: it is asked at its node, and, for a `subtree`
+  row, beneath it wherever the containment algebra admits descendants (never beneath an element
+  or tile). A deny outranked everywhere it applies, or naming only plugin capabilities that `*`
+  never reached, withdraws nothing.
 - The answer is `AuthService.holdsRoot(context)`, evaluated per request and memoized under the
   grant epoch like every other verdict. `AuthContext` no longer carries a root flag, so an
   already-open socket is re-evaluated at its next request rather than keeping the class it
   authenticated with.
+- A withdrawn minted wildcard delegates nothing. That includes a concrete capability it carries
+  literally beside `*`, because a freshly minted principal is not named by the minter's deny.
+- A hardened guest still receives the class as a per-dispatch boolean (no live guest query
+  through contract 7). The host fences a dispatch it sent `true`: once the live answer is `false`,
+  further calls and returned emissions are refused with `root_authority_withdrawn`, and effects
+  already committed stay committed.
 - The evaluator drops deny rows only for the raw owner key (no token, no row, the owner
   principal). A token minted onto the owner principal is narrowed by class denies like any other
   bearer. The owner key remains ADR 0019 §1's non-deniable break-glass path and can always remove

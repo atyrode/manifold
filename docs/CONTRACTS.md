@@ -955,8 +955,10 @@ of the request; there is no root flag frozen into an `AuthContext`. The raw owne
 holds it. Any other credential holds it only through a minted token whose caps include `*`,
 while that token is live, its evaluated set at the root still carries every engine capability
 (an expired or paused credential does not), and no administered `deny` row naming its principal
-or class decides an engine capability for it at any node — a `subtree` deny is asked at its node
-and beneath it. The consequence is deliberate: a deny at one container withdraws workspace
+or class decides an engine capability for it at any node. A `subtree` deny is asked at its node,
+and also beneath it wherever the containment algebra admits descendants (`canContain`: the root,
+a container, a machine, an operation-less service, an operation, a job); a leaf such as an element
+or tile is asked at the leaf alone. The consequence is deliberate: a deny at one container withdraws workspace
 administration from every minted wildcard it reaches, including minted bearers on the owner
 principal, until the row is removed, so grant administration and other root-only doors cannot
 step around or retire the deny that narrowed their caller. An open socket is re-evaluated at its
@@ -1076,7 +1078,10 @@ self-scoped.
 Delegation is attenuation-only: a minted token's caps MUST be a subset of the minter's
 caps (root's `*` covers everything); minting `*` itself requires root-class authority. Violations
 are `forbidden`. This kills privilege escalation through `tokens:mint` chains. A minted wildcard
-whose root class a deny has withdrawn mints nothing: its literal caps name no concrete capability.
+credential whose root class a deny has withdrawn mints no token and no share at all
+(`wildcard authority withdrawn by an administered deny`), not even a concrete capability it
+carries literally beside `*`, because the fresh principal would not be named by the minter's
+deny. Non-wildcard delegation keeps the literal-subset rule.
 
 `*` in the auth column means the wildcard capability itself (root/owner) — scoped tokens
 can never satisfy it. The server computes an `AuthContext { principal, caps, containerScope,
@@ -2619,6 +2624,20 @@ JSON Schema the child reported), which is why the supervisor's `ServerPluginDef`
 "unavailable" }` for the ladder to trace through the ordinary `refuse` path. Emissions a handler
 stages in the child ride back in `dispatched.emits` and are re-staged through the host's own
 `ctx.emit`, so the ledger settles before any subscriber hears.
+
+**A guest's `ctx.auth.isRoot` is a per-dispatch snapshot, fenced by the host (#411).** The `dispatch` and
+`harness` frames carry the caller's root-class authority as the boolean `AuthService.holdsRoot`
+answered when the frame was built. A guest reads that value for the rest of the handler; it is
+not re-read, and no contract through 7 offers a live guest root query. The host keeps the value
+it sent with each request. If it sent `true` and the live answer is now `false` (an administered
+deny landed mid-handler), it serves nothing more of that request. Every further correlated ctx
+call except the resource releases `jobs.ack`, `jobs.unfollow` and `streams.close` is refused with
+`root_authority_withdrawn`. An answer that still carries emissions becomes
+`{ ok: false, rule: "refused", message: "root_authority_withdrawn" }`, and those emissions are
+never staged. Effects already committed under the authority the dispatch held stay committed,
+and an answer without emissions is not rewritten after the fact. A handler that surfaces a fenced
+call's refusal returns it as its own. A snapshot of `false` is never fenced: it can only fail
+closed. `auth.allows` stays a live host question.
 
 **Deadlines, the crash budget, eviction (ADR 0016 §6).** A lifecycle hook is bounded at the
 engine's `LIFECYCLE_TIMEOUT_MS` (2 s); a dispatch at `ISOLATE_DISPATCH_DEADLINE_MS` (10 s), past
