@@ -8525,6 +8525,12 @@ describe("reviewed same-plugin instance-service bootstrap", () => {
       );
       acknowledge(f, review.targets[0]!.installationRevision!);
       startProvider(f);
+      // Between configuration and the owner advertising the reviewed policy, the owner still
+      // reports the previous one. That is "not yet": the configured record already holds the
+      // reviewed policy, so the target waits rather than asking for the review again.
+      expect(
+        f.service.readDeployment(f.root, { deploymentId: value.deploymentId }).targets[0],
+      ).toMatchObject({ state: "installing" });
       advertise(f, entry.policy);
       expect(
         f.service.readDeployment(f.root, { deploymentId: value.deploymentId }).targets[0],

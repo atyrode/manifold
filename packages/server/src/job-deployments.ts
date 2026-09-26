@@ -490,6 +490,32 @@ export class JobDeployments {
    * workload allowed is the reviewed one — a workload this approval never saw may not be
    * stopped, and it must not be left running under a replaced installation either.
    */
+  /**
+   * WHETHER AN OPERATION WAITS ONLY ON THE OWNER ADVERTISING A POLICY THIS DEPLOYMENT CONFIGURED.
+   * An update reconfigures a service the owner already advertises, so for a moment after the
+   * configuration lands the owner still reports the previous policy and every operation bound
+   * to it reads `services_revision_changed`. `instanceRefusal` already holds the configured
+   * record to the reviewed policy, so that lag is "not yet" — never "review this again" — as
+   * long as every service the operation finds changed is one this deployment reviewed.
+   */
+  private awaitingAdvertisement(
+    target: JobDeploymentTargetReview,
+    install: JobInstallation,
+    operationId: string,
+  ): boolean {
+    const reviewed = new Set(
+      (target.instanceServices ?? []).map((entry) => entry.policy.serviceId),
+    );
+    if (reviewed.size === 0 || !target.platform) return false;
+    const advertised = this.host.owner(target.machineId)?.resources?.services ?? {};
+    const bound = install.resourceBindings?.services ?? {};
+    const changed = jobResourceRequirements(
+      install.machine,
+      operationId,
+      target.platform,
+    ).services.filter((name) => advertised[name] !== bound[name]);
+    return changed.length > 0 && changed.every((name) => reviewed.has(name));
+  }
   private instanceRefusal(target: JobDeploymentTargetReview, configured: boolean): string | null {
     for (const entry of target.instanceServices ?? []) {
       const record = this.host.instanceService(entry.policy.serviceId);
@@ -1032,6 +1058,14 @@ export class JobDeployments {
             request.operationIds,
             proposals,
           );
+          // Once configured, a reviewed service the owner still advertises at its previous
+          // policy is the provider coming up, answered by the configured record below.
+          if (
+            refusal === "services_revision_changed" &&
+            configured &&
+            this.awaitingAdvertisement(target, install, operationId)
+          )
+            return this.instanceRefusal(target, configured) ?? "instance_service_starting";
           if (refusal) return refusal;
         }
       }
@@ -1495,7 +1529,14 @@ export class JobDeployments {
         const operation = description.operations?.[operationId];
         if (!operation?.ready) {
           const reason = operation?.reason ?? "unknown_operation";
-          return starting(reason) ? result("installing", reason) : result("needs_review", reason);
+          const advertising =
+            reason === "services_revision_changed" &&
+            record.phase === "bound" &&
+            current !== null &&
+            this.awaitingAdvertisement(target, current, operationId);
+          return starting(reason) || advertising
+            ? result("installing", reason)
+            : result("needs_review", reason);
         }
       }
       return result("ready", null);
