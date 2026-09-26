@@ -3,10 +3,16 @@ import { dlopen, FFIType, ptr } from "bun:ffi";
 import { closeSync, openSync } from "node:fs";
 import { connect, type Socket } from "node:net";
 import {
+  AGENT_TOOL_CHUNK_CHARS,
+  AGENT_TOOL_MAX_REPLY_BYTES,
+  AGENT_RUN_MAX_POLICY_BUNDLES,
+  AGENT_RUN_MAX_POLICY_BODY_BYTES,
+  WorkerAgentRunCallSchema,
   SERVICE_FRAME_BYTES,
   WORKER_MAX_PENDING,
   ServiceCallSchema,
   ServiceReadySchema,
+  type AgentToolReply,
 } from "@manifold/protocol";
 import { openWorkerContext, type WorkerContextOptions } from "../src/worker.ts";
 
@@ -67,6 +73,185 @@ const context = {
 } as const;
 
 describe.skipIf(process.platform !== "linux")("native worker context socket", () => {
+  test("agent requests reject caller-selected Run identity before any native admission", async () => {
+    const c = channel();
+    try {
+      c.send(context);
+      await c.worker.ready;
+      const selected = { type: "describe" as const, runId: "another-run", actorId: "operator" };
+      expect(await c.worker.callAgent(selected)).toEqual({
+        type: "refused",
+        code: "malformed_request",
+        traceId: null,
+      });
+      const serviceCall = c.worker.callService(service);
+      const request = ServiceCallSchema.parse(await c.next());
+      c.send({
+        type: "service_result",
+        requestId: request.requestId,
+        ok: true,
+        result: "unchanged",
+      });
+      expect(await serviceCall).toBe("unchanged");
+    } finally {
+      c.close();
+    }
+  });
+
+  test("agent cancellation before readiness never forwards, and in-flight disconnect stays unknown", async () => {
+    const c = channel();
+    try {
+      const signal = new AbortController();
+      const queued = c.worker.callAgent({ type: "describe" }, { signal: signal.signal });
+      signal.abort();
+      expect(await queued).toEqual({ type: "refused", code: "cancelled", traceId: null });
+      c.send(context);
+      await c.worker.ready;
+      const inflight = c.worker.callAgent({ type: "invoke", door: "fixture.write", args: {} });
+      const request = WorkerAgentRunCallSchema.parse(await c.next());
+      expect(request.payload).toEqual({ type: "invoke", door: "fixture.write", args: {} });
+      c.owner.destroy();
+      expect(await inflight).toEqual({ type: "unknown", reason: "disconnected", traceId: null });
+      expect(await c.worker.callAgent({ type: "describe" })).toEqual({
+        type: "refused",
+        code: "authority_unavailable",
+        traceId: null,
+      });
+    } finally {
+      c.close();
+    }
+  });
+
+  test("cancelled agent replies are sequenced and discarded only until their final chunk", async () => {
+    const c = channel();
+    try {
+      c.send(context);
+      await c.worker.ready;
+      const signal = new AbortController();
+      const call = c.worker.callAgent({ type: "describe" }, { signal: signal.signal });
+      const request = WorkerAgentRunCallSchema.parse(await c.next());
+      signal.abort();
+      expect(await call).toEqual({ type: "unknown", reason: "cancelled", traceId: null });
+      expect(await c.next()).toEqual({ type: "agent_run_cancel", requestId: request.requestId });
+      const data = JSON.stringify({ type: "refused", code: "cancelled", traceId: null });
+      c.send({
+        type: "agent_run_result",
+        requestId: request.requestId,
+        seq: 0,
+        end: false,
+        data: data.slice(0, 8),
+      });
+      c.send({
+        type: "agent_run_result",
+        requestId: request.requestId,
+        seq: 1,
+        end: true,
+        data: data.slice(8),
+      });
+      const serviceCall = c.worker.callService(service);
+      const next = ServiceCallSchema.parse(await c.next());
+      c.send({ type: "service_result", requestId: next.requestId, ok: true, result: "alive" });
+      expect(await serviceCall).toBe("alive");
+      const remaining = c.worker.callAgent({ type: "describe" });
+      await c.next();
+      c.send({ type: "agent_run_result", requestId: request.requestId, seq: 2, end: true, data });
+      expect(await remaining).toEqual({ type: "unknown", reason: "protocol_error", traceId: null });
+      expect(c.worker.signal.aborted).toBe(true);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("agent replies reject wrong request identity, result door and chunk sequence", async () => {
+    for (const mismatch of ["request", "door", "sequence"] as const) {
+      const c = channel();
+      try {
+        c.send(context);
+        await c.worker.ready;
+        const call = c.worker.callAgent({ type: "invoke", door: "fixture.write", args: {} });
+        const request = WorkerAgentRunCallSchema.parse(await c.next());
+        c.send({
+          type: "agent_run_result",
+          requestId: mismatch === "request" ? "other-job-request" : request.requestId,
+          seq: mismatch === "sequence" ? 1 : 0,
+          end: true,
+          data: JSON.stringify({
+            type: "result",
+            door: mismatch === "door" ? "fixture.other" : "fixture.write",
+            traceId: 7,
+            outcome: { ok: true },
+          }),
+        });
+        expect(await call).toEqual({ type: "unknown", reason: "protocol_error", traceId: null });
+        expect(c.worker.signal.aborted).toBe(true);
+      } finally {
+        c.close();
+      }
+    }
+  });
+
+  test("agent policy bodies reassemble beyond the service frame without dropping exact bytes", async () => {
+    const c = channel();
+    try {
+      c.send(context);
+      await c.worker.ready;
+      const call = c.worker.callAgent({ type: "policy" });
+      const request = WorkerAgentRunCallSchema.parse(await c.next());
+      const reply: AgentToolReply = {
+        type: "policy",
+        policy: {
+          runId: "trusted-run",
+          revision: "a".repeat(64),
+          issuedAt: 1,
+          required: Array.from({ length: AGENT_RUN_MAX_POLICY_BUNDLES }, (_, index) => ({
+            id: `policy-${index}`,
+            source: "operator",
+            digest: "b".repeat(64),
+            body: "x".repeat(AGENT_RUN_MAX_POLICY_BODY_BYTES),
+          })),
+        },
+      };
+      const data = JSON.stringify(reply);
+      expect(Buffer.byteLength(data)).toBeGreaterThan(SERVICE_FRAME_BYTES);
+      expect(Buffer.byteLength(data)).toBeLessThanOrEqual(AGENT_TOOL_MAX_REPLY_BYTES);
+      for (let offset = 0, seq = 0; offset < data.length; offset += AGENT_TOOL_CHUNK_CHARS, seq++) {
+        c.send({
+          type: "agent_run_result",
+          requestId: request.requestId,
+          seq,
+          end: offset + AGENT_TOOL_CHUNK_CHARS >= data.length,
+          data: data.slice(offset, offset + AGENT_TOOL_CHUNK_CHARS),
+        });
+      }
+      expect(await call).toEqual(reply);
+      expect(c.worker.signal.aborted).toBe(false);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("agent chunk byte ceiling ends an oversized response with uncertainty, not success", async () => {
+    const c = channel();
+    try {
+      c.send(context);
+      await c.worker.ready;
+      const call = c.worker.callAgent({ type: "policy" });
+      const request = WorkerAgentRunCallSchema.parse(await c.next());
+      // Multibyte data crosses the byte ceiling well before the sequenced chunk count.
+      const data = "界".repeat(AGENT_TOOL_CHUNK_CHARS);
+      for (
+        let seq = 0;
+        seq < Math.ceil(AGENT_TOOL_MAX_REPLY_BYTES / Buffer.byteLength(data)) + 1;
+        seq++
+      )
+        c.send({ type: "agent_run_result", requestId: request.requestId, seq, end: false, data });
+      expect(await call).toEqual({ type: "unknown", reason: "protocol_error", traceId: null });
+      expect(c.worker.signal.aborted).toBe(true);
+    } finally {
+      c.close();
+    }
+  });
+
   test("adopts a socket FD, accepts fragmented context and correlates out-of-order projected service results", async () => {
     const c = channel();
     try {

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { AuthoredCapSchema } from "./plugin.ts";
+import { ActionResultApprovalsSchema, AuthoredCapSchema } from "./plugin.ts";
 import { GrantNodeSchema, GrantReachSchema } from "./grants.ts";
 import { HarnessIdSchema, SessionRefSchema } from "./session-ref.ts";
 
@@ -47,6 +47,7 @@ export const AgentDelegationSchema = z.strictObject({
 export type AgentDelegation = z.infer<typeof AgentDelegationSchema>;
 export const AgentGrantSchema = z.strictObject({
   caps: AgentRunCapsSchema,
+  tools: z.lazy(() => ActionResultApprovalsSchema).optional(),
   targets: z
     .array(z.lazy(() => GrantNodeSchema))
     .min(1)

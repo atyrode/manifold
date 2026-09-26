@@ -40,6 +40,11 @@ import type { SqlParam, SqlRow, SqlStatement } from "@manifold/plugin";
 import type { ServerMigration as GuestMigration } from "@manifold/plugin-kit/server";
 import {
   ActionCallArgsSchema,
+  AgentToolReplySchema,
+  agentToolName,
+  type AgentToolRequest,
+  type AgentToolReply,
+  type AgentToolRefusalCode,
   JsonProjectionError,
   projectJson,
   type ActionProjectedResult,
@@ -141,6 +146,7 @@ import { ServiceError } from "./auth.ts";
 import type {
   AuthContext,
   AuthService,
+  NativeRunAuthority,
   AuthorityRequirement,
   CredentialReference,
   GovernedAdmissionDecision,
@@ -245,10 +251,10 @@ export interface IdentityDoor {
   createPrincipal(input: BootstrapPrincipalRequest): IdentityResult<TokenGrant>;
   /** Mints authority no broader than the caller's own, within the caller's container scope. */
   mintToken(input: MintTokenRequest): IdentityResult<TokenGrant>;
-  registerAgent(input: RegisterAgentRequest): IdentityResult<RegisterAgentResult>;
+  registerAgent(input: RegisterAgentRequest): Promise<IdentityResult<RegisterAgentResult>>;
   getAgent(input: AgentRequest): IdentityResult<GetAgentResult>;
   listAgents(): IdentityResult<ListAgentsResult>;
-  updateAgent(input: UpdateAgentRequest): IdentityResult<GetAgentResult>;
+  updateAgent(input: UpdateAgentRequest): Promise<IdentityResult<GetAgentResult>>;
   disableAgent(input: AgentRequest): IdentityResult<GetAgentResult>;
   enableAgent(input: AgentRequest): IdentityResult<GetAgentResult>;
   retireAgent(input: AgentRequest): IdentityResult<GetAgentResult>;
@@ -642,6 +648,8 @@ export interface ActionCtx {
   readonly traceId: number;
   readonly pluginId: string;
   readonly principal: Principal;
+  /** Trusted authenticated Run identity; never populated from action arguments. */
+  readonly agentRun: Readonly<{ runId: string; agentId: string }> | null;
   readonly auth: ActionAuth;
   /** Host-bound lineage and durable admission evidence; never caller supplied. */
   readonly credential: CredentialReference;
@@ -1290,6 +1298,9 @@ interface DispatchOptions {
   agentJustification?: string;
   resultProjectionDigest?: string;
   onTrace?: (traceId: number) => void;
+  /** Host-only late admission fence, including after isolated argument preparation. */
+  admissionFence?: () => AuthContext | null;
+  onAdmitted?: () => void;
   /** Never a field a request carries: only `actionCalls` sets it. */
   origin?: DispatchOrigin;
 }
@@ -1432,11 +1443,14 @@ export class PluginHost {
     return { ...def, harness: def.harness };
   }
 
-  private validateAgentProfile(harness: string, profile: unknown): void {
+  private async validateAgentProfile(harness: string, profile: unknown): Promise<void> {
     // External is explicit bring-your-own inventory, not an executable installed adapter.
     if (harness === "external") return;
-    if (!this.harnessDefinition(harness).harness.profileSchema.safeParse(profile).success)
+    const definition = this.harnessDefinition(harness);
+    if (!(await definition.harness.profileSchema.safeParseAsync(profile)).success)
       throw new ServiceError("forbidden", "harness profile invalid");
+    if (this.harnessDefinition(harness).harness !== definition.harness)
+      throw new ServiceError("forbidden", "harness changed during profile validation");
   }
 
   /** Borrow the dispatch's identity and trace, but bind native resources to the owning plugin. */
@@ -1515,7 +1529,7 @@ export class PluginHost {
       throw new ServiceError("conflict", "run launch already in progress");
     this.launchingRuns.add(input.runId);
     try {
-      const claim = this.authService.claimRunLaunch(input.runId, actor);
+      let claim = this.authService.claimRunLaunch(input.runId, actor);
       const target = HarnessTargetSchema.safeParse(input.target ?? claim.target);
       if (!target.success) throw new ServiceError("forbidden", "harness launch target required");
       const declaredTarget = parseManifoldUri(claim.run.target);
@@ -1531,7 +1545,16 @@ export class PluginHost {
         throw new ServiceError("forbidden", "harness launch target changed");
       if (!this.jobs) throw new ServiceError("forbidden", "run_launch_owner_unavailable");
       this.jobs.assertRunLaunchSupported(target.data.machineId);
-      this.validateAgentProfile(claim.agent.harness, claim.agent.context.profile);
+      const validatedHarness = this.harnessDefinition(claim.agent.harness).harness;
+      await this.validateAgentProfile(claim.agent.harness, claim.agent.context.profile);
+      const current = this.authService.claimRunLaunch(input.runId, actor);
+      if (
+        current.agent.harness !== claim.agent.harness ||
+        canonicalJobJson(current.agent.context) !== canonicalJobJson(claim.agent.context) ||
+        this.harnessDefinition(current.agent.harness).harness !== validatedHarness
+      )
+        throw new ServiceError("forbidden", "harness context changed during profile validation");
+      claim = current;
       return await this.withHarness(
         base,
         actor,
@@ -1579,6 +1602,16 @@ export class PluginHost {
   /** Trusted runtime composition; registered doors refuse until the durable service is ready. */
   setJobs(jobs: JobService): void {
     jobs.setLifecycleRecorder((record) => this.store.appendTrace(record));
+    jobs.setAgentTools({
+      harnessPlugin: (agent) => {
+        // One-shot jobs consume their separately reviewed native inputs, not the
+        // Agent's interactive profile. Parse profiles at registration, update and
+        // harness launch; synchronous native fences resolve the live owner only.
+        return this.harnessDefinition(agent.harness).manifest.id;
+      },
+      call: (restore, request, signal, admitted) =>
+        this.agentToolCall(restore, request, signal, admitted),
+    });
     jobs.setManifestResolver((pluginId) => {
       if (!this.assembled.enabled(pluginId)) return null;
       return (
@@ -1597,6 +1630,179 @@ export class PluginHost {
         .map((entry) => entry.manifest.id),
     );
     this.streams.reconcile();
+  }
+
+  private async selectedAgentTool(authority: NativeRunAuthority, door: string) {
+    const approval = authority.run.tools?.find((entry) => entry.door === door);
+    const refuse = (reason: AgentToolRefusalCode) => ({ ok: false as const, reason });
+    if (!approval) return refuse("tool_ungranted");
+    const grantRefusal = this.authService.agentToolGrantRefusal(authority.run.id, door);
+    if (grantRefusal !== null) return refuse(grantRefusal);
+    const entry = this.assembled.actions.get(door);
+    const row = entry && this.assembled.roster.find((row) => row.manifest.id === entry.plugin.id);
+    const summary = row?.actions.find((action) => action.name === door);
+    if (
+      !entry ||
+      !summary ||
+      row?.source !== "plugin" ||
+      entry.def.runAccess !== undefined ||
+      !this.assembled.enabled(entry.plugin.id) ||
+      this.replacing === entry.plugin.id ||
+      !this.handlers.get(entry.plugin.id)?.[entry.def.name] ||
+      !entry.resultProjection
+    )
+      return refuse("tool_unavailable");
+    if (
+      this.guestInputPlugins.has(entry.plugin.id) &&
+      (this.installed.get(entry.plugin.id)?.bundle?.hardenedContract ?? 0) < 6
+    )
+      return refuse("unsupported_feature");
+    if ((await entry.resultProjection.digest) !== approval.contractDigest)
+      return refuse("publication_changed");
+    let name: string;
+    try {
+      name = agentToolName(door);
+    } catch {
+      return refuse("unsupported_feature");
+    }
+    if (
+      summary.title.length > 1024 ||
+      Buffer.byteLength(JSON.stringify(summary.input), "utf8") > 16_384
+    )
+      return refuse("unsupported_feature");
+    return {
+      ok: true as const,
+      approval,
+      entry,
+      description: {
+        door,
+        name,
+        title: summary.title,
+        parameters: summary.input,
+        contractDigest: approval.contractDigest,
+      },
+    };
+  }
+
+  private async agentToolCall(
+    restore: () => NativeRunAuthority,
+    request: AgentToolRequest,
+    signal: AbortSignal,
+    admitted: () => void,
+  ): Promise<AgentToolReply> {
+    const authority = restore();
+    if (request.type === "describe") {
+      const tools: Extract<AgentToolReply, { type: "description" }>["tools"] = [];
+      const unavailable: Extract<AgentToolReply, { type: "description" }>["unavailable"] = [];
+      const names = new Set<string>();
+      for (const approval of authority.run.tools ?? []) {
+        const selected = await this.selectedAgentTool(restore(), approval.door);
+        if (!selected.ok) unavailable.push({ door: approval.door, reason: selected.reason });
+        else if (names.has(selected.description.name))
+          unavailable.push({ door: approval.door, reason: "unsupported_feature" });
+        else {
+          names.add(selected.description.name);
+          tools.push(selected.description);
+        }
+      }
+      restore();
+      return AgentToolReplySchema.parse({
+        type: "description",
+        runId: authority.run.id,
+        agentId: authority.run.agentId,
+        target: authority.run.target,
+        tools,
+        unavailable,
+      });
+    }
+    if (request.type === "policy")
+      return { type: "policy", policy: this.authService.agentPolicyChallenge(restore().auth) };
+    const selected =
+      request.type === "invoke" ? await this.selectedAgentTool(authority, request.door) : null;
+    if (selected && !selected.ok) return { type: "refused", code: selected.reason, traceId: null };
+    const approval = selected?.ok ? selected.approval : undefined;
+    const entry = selected?.ok ? selected.entry : undefined;
+    const door = request.type === "ack" ? "core.access.acknowledgeAgentPolicy" : request.door;
+    let traceId: number | null = null;
+    let began = false;
+    const fence = (): AuthContext | null => {
+      if (signal.aborted) return null;
+      try {
+        const current = restore();
+        if (approval) {
+          if (
+            this.authService.agentToolGrantRefusal(current.run.id, door) !== null ||
+            this.assembled.actions.get(door) !== entry
+          )
+            return null;
+        }
+        return current.auth;
+      } catch {
+        return null;
+      }
+    };
+    const actor = fence();
+    if (actor === null)
+      return {
+        type: "refused",
+        code: signal.aborted ? "cancelled" : "authority_unavailable",
+        traceId,
+      };
+    try {
+      const outcome = await this.dispatch(
+        actor,
+        door,
+        request.type === "ack" ? request.policy : request.args,
+        null,
+        {
+          ...(request.type === "invoke" && request.justification !== undefined
+            ? { agentJustification: request.justification }
+            : {}),
+          ...(approval ? { resultProjectionDigest: approval.contractDigest } : {}),
+          admissionFence: fence,
+          onAdmitted: () => {
+            admitted();
+            began = true;
+          },
+          onTrace: (id) => {
+            traceId = id;
+          },
+        },
+      );
+      if (traceId === null) return { type: "unknown", reason: "missing_trace", traceId };
+      let projection = outcome.ok ? outcome.projection : undefined;
+      if (
+        projection?.ok &&
+        approval?.maxResultBytes !== undefined &&
+        Buffer.byteLength(JSON.stringify(projection.data), "utf8") > approval.maxResultBytes
+      )
+        projection = {
+          ok: false,
+          contractDigest: approval.contractDigest,
+          code: "projection_limit",
+        };
+      if (projection && approval && fence() === null)
+        projection = {
+          ok: false,
+          contractDigest: approval.contractDigest,
+          code: "projection_invalid",
+        };
+      return AgentToolReplySchema.parse({
+        type: "result",
+        door,
+        traceId,
+        outcome: outcome.ok ? { ok: true } : { ok: false, denial: { rule: outcome.denial.rule } },
+        ...(projection ? { projection: { ...projection, trust: "untrusted" } } : {}),
+      });
+    } catch {
+      return began
+        ? { type: "unknown", reason: "interrupted", traceId }
+        : {
+            type: "refused",
+            code: signal.aborted ? "cancelled" : "authority_unavailable",
+            traceId,
+          };
+    }
   }
 
   canReadGoverned(auth: AuthContext, node: ManifoldRef): boolean {
@@ -3876,6 +4082,45 @@ export class PluginHost {
       args: unknown,
       preparedTargets?: readonly unknown[],
     ): ActionAdmissionDenial | null => {
+      if (options.admissionFence) {
+        const current = options.admissionFence();
+        if (current === null)
+          return new ActionAdmissionDenial("forbidden", "admission unavailable");
+        auth = current;
+        const state = this.authService.agentRunPolicyState(auth);
+        if (state !== "active" && runAccess !== "policy")
+          return new ActionAdmissionDenial(
+            state === "pending_policy"
+              ? "policy_required"
+              : state === "policy_stale"
+                ? "policy_stale"
+                : "forbidden",
+            "agent authority unavailable",
+          );
+        if (
+          this.assembled.actions.get(fullName) !== entry ||
+          !this.assembled.enabled(pluginId) ||
+          this.replacing === pluginId
+        )
+          return new ActionAdmissionDenial("unavailable", "action unavailable");
+        if (auth.containerScope !== null && scope !== "container" && runAccess === undefined)
+          return new ActionAdmissionDenial("forbidden", "scope unavailable");
+        const installed = this.installed.get(pluginId);
+        if (
+          installed &&
+          nativeCaps.some(
+            (cap) => !GOVERNED_CAPS.includes(cap) && !withinCeiling(cap, installed.row.grantedCaps),
+          )
+        )
+          return new ActionAdmissionDenial("forbidden", "plugin authority unavailable");
+        if (
+          entry.def.requirements === undefined &&
+          entry.def.caps.some((cap) =>
+            cap === "*" ? !auth.isRoot : !this.authService.allows(auth, cap),
+          )
+        )
+          return new ActionAdmissionDenial("forbidden", "caller authority unavailable");
+      }
       const declaredRequirements = entry.def.requirements ?? [];
       if (preparedTargets !== undefined && preparedTargets.length !== declaredRequirements.length)
         return new ActionAdmissionDenial("invalid_args", "invalid authority targets");
@@ -3989,6 +4234,13 @@ export class PluginHost {
     const ctx: ActionCtx = {
       traceId,
       pluginId,
+      agentRun:
+        auth.agentRunId === undefined
+          ? null
+          : (() => {
+              const run = this.store.getAgentRun(auth.agentRunId);
+              return run === null ? null : Object.freeze({ runId: run.id, agentId: run.agentId });
+            })(),
       credential: this.authService.credentialReference(auth),
       get admission() {
         return admission;
@@ -4002,6 +4254,7 @@ export class PluginHost {
               enforceDeclaration();
               if (projectionDenial !== null) throw projectionDenial;
               guestAdmitted = true;
+              options.onAdmitted?.();
             },
           }
         : {}),
@@ -4182,10 +4435,11 @@ export class PluginHost {
         createPrincipal: (input) =>
           identityCall(() => this.authService.bootstrapPrincipal(input, auth)),
         mintToken: (input) => identityCall(() => this.authService.mintToken(input, auth)),
-        registerAgent: (input) => identityCall(() => this.authService.registerAgent(input, auth)),
+        registerAgent: (input) =>
+          identityCallAsync(() => this.authService.registerAgent(input, auth)),
         getAgent: (input) => identityCall(() => this.authService.getAgent(input, auth)),
         listAgents: () => identityCall(() => this.authService.listAgents(auth)),
-        updateAgent: (input) => identityCall(() => this.authService.updateAgent(input, auth)),
+        updateAgent: (input) => identityCallAsync(() => this.authService.updateAgent(input, auth)),
         disableAgent: (input) => identityCall(() => this.authService.disableAgent(input, auth)),
         enableAgent: (input) => identityCall(() => this.authService.enableAgent(input, auth)),
         retireAgent: (input) => identityCall(() => this.authService.retireAgent(input, auth)),
@@ -4260,6 +4514,13 @@ export class PluginHost {
         const handler = this.handlers.get(pluginId)?.[entry.def.name];
         if (handler === undefined) throw new Error(`action "${fullName}" has no server handler`);
         const invoke = handler as (ctx: ActionCtx, args: unknown) => Promise<unknown>;
+        if (!guestInput) {
+          if (options.admissionFence) {
+            const denial = admitInput(parsed.data);
+            if (denial !== null) throw denial;
+          }
+          options.onAdmitted?.();
+        }
         const answer = await invoke(ctx, parsed.data);
         if (guestInput && !guestAdmitted)
           throw new IsolateDenial("unavailable", "isolate returned before admission");

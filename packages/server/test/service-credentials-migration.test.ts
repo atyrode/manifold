@@ -31,6 +31,7 @@ CREATE TABLE machine_job_revisions(kind TEXT NOT NULL,identity TEXT NOT NULL,rev
   digest TEXT NOT NULL,PRIMARY KEY(kind,identity));
 CREATE TABLE terminals(id TEXT PRIMARY KEY,machine_id TEXT,container_id TEXT,run_id TEXT);
 CREATE TABLE machine_jobs(job_id TEXT PRIMARY KEY,machine_id TEXT,created_at INTEGER,request TEXT);
+CREATE TABLE agent_runs(id TEXT PRIMARY KEY);
 CREATE TRIGGER job_token_update AFTER UPDATE ON tokens BEGIN
   INSERT INTO machine_job_revisions VALUES ('credential',NEW.id,1,'')
     ON CONFLICT(kind,identity) DO UPDATE SET revision=revision+1,digest='';

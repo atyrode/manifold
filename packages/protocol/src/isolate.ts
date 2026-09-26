@@ -14,6 +14,10 @@ import { PrincipalSchema } from "./principal.ts";
 import { ManifoldRefSchema } from "./uri.ts";
 import { StreamServerMessageSchema } from "./stream.ts";
 import { JobFollowUpdateSchema, SettledJobSchema, machineArtifacts } from "./jobs.ts";
+import { AgentSchema, HarnessDefinitionSchema, HarnessTargetSchema } from "./agents.ts";
+import { AgentRunSchema, SendRunInputRequestSchema } from "./agent-runs.ts";
+import { SessionRefSchema } from "./session-ref.ts";
+import { TerminalRuntimeSchema } from "./jobs.ts";
 
 /**
  * THE ISOLATION VOCABULARY (ADR 0016): everything that crosses the boundary between the engine
@@ -482,9 +486,50 @@ export const IsolateDispatchCtxSchema = z.strictObject({
   caps: CapSchema.array(),
   isRoot: z.boolean(),
   containerScope: z.string().min(1).nullable(),
+  /** Sent only to contract 6+, derived from authenticated Run authority. */
+  agentRun: z
+    .strictObject({
+      runId: z.string().min(1).max(128),
+      agentId: z.string().min(1).max(128),
+    })
+    .nullable()
+    .optional(),
   now: z.number().int().min(0),
 });
 export type IsolateDispatchCtx = z.infer<typeof IsolateDispatchCtxSchema>;
+
+/** The public harness verbs, with no credential material on the wire. */
+export const IsolateHarnessRequestSchema = z.discriminatedUnion("method", [
+  z.strictObject({ method: z.literal("validateProfile"), profile: z.unknown() }),
+  z.strictObject({
+    method: z.literal("launch"),
+    run: AgentRunSchema,
+    agent: AgentSchema,
+    target: HarnessTargetSchema,
+  }),
+  z.strictObject({ method: z.literal("sessions"), target: HarnessTargetSchema }),
+  z.strictObject({ method: z.literal("resolveSession"), ref: SessionRefSchema }),
+  z.strictObject({
+    method: z.literal("send"),
+    run: AgentRunSchema,
+    input: SendRunInputRequestSchema.shape.input,
+  }),
+]);
+export type IsolateHarnessRequest = z.infer<typeof IsolateHarnessRequestSchema>;
+
+/** Checked on both ends before accepting a harness result or staging its emissions. */
+export const IsolateHarnessResultSchemas = {
+  validateProfile: z.null(),
+  launch: z.strictObject({
+    runtime: TerminalRuntimeSchema,
+    session: SessionRefSchema,
+    reviewDigest: z.string().regex(/^[a-f0-9]{64}$/),
+  }),
+  // One extra entry preserves the host's 100-item inventory truncation signal.
+  sessions: z.array(SessionRefSchema).max(101),
+  resolveSession: SessionRefSchema.nullable(),
+  send: z.null(),
+} as const;
 
 /**
  * An answer to a `call`, in either direction on either boundary — one shape, because a
@@ -523,6 +568,16 @@ export const IsolateHostFrameSchema = z.discriminatedUnion("t", [
     args: z.unknown(),
     ctx: IsolateDispatchCtxSchema,
   }),
+  z
+    .strictObject({
+      t: z.literal("harness"),
+      id: frameId,
+      request: IsolateHarnessRequestSchema,
+      ctx: IsolateDispatchCtxSchema.optional(),
+    })
+    .refine(({ request, ctx }) => (request.method === "validateProfile") === (ctx === undefined), {
+      message: "only profile validation omits caller context",
+    }),
   /** Resumes this same dispatch after the guest parsed and the host admitted its input. */
   z.strictObject({
     t: z.literal("admitted"),
@@ -572,6 +627,27 @@ export const MAX_ISOLATE_ACTIONS = 128;
 /** Emissions one dispatch may stage; in-realm handlers have no bound because they are trusted. */
 export const MAX_ISOLATE_EMITS = 256;
 
+const IsolateDispatchOutcomeSchema = z.discriminatedUnion("ok", [
+  z.strictObject({
+    ok: z.literal(true),
+    result: z.unknown(),
+    emits: z
+      .array(
+        z.strictObject({
+          ref: ManifoldRefSchema,
+          kind: EventKindSchema,
+          payload: EventPayloadSchema,
+        }),
+      )
+      .max(MAX_ISOLATE_EMITS),
+  }),
+  z.strictObject({
+    ok: z.literal(false),
+    rule: z.enum(ISOLATE_GUEST_DENIAL_RULES),
+    message: errorText,
+  }),
+]);
+
 /**
  * CHILD → HOST. `received` proves the child consumed one unpredictable host envelope.
  * `loaded` answers `load` with the actions the child serves — `input` and `result` as JSON
@@ -593,6 +669,7 @@ export const IsolateChildFrameSchema = z.discriminatedUnion("t", [
       onJobSettled: z.boolean(),
     }),
     migrations: IsolateMigrationsSchema.optional(),
+    harness: HarnessDefinitionSchema.optional(),
   }),
   z.strictObject({ t: z.literal("load_failed"), error: errorText }),
   /** Only declared authority targets cross; transformed handler arguments stay in the guest. */
@@ -604,26 +681,12 @@ export const IsolateChildFrameSchema = z.discriminatedUnion("t", [
   z.strictObject({
     t: z.literal("dispatched"),
     id: frameId,
-    outcome: z.discriminatedUnion("ok", [
-      z.strictObject({
-        ok: z.literal(true),
-        result: z.unknown(),
-        emits: z
-          .array(
-            z.strictObject({
-              ref: ManifoldRefSchema,
-              kind: EventKindSchema,
-              payload: EventPayloadSchema,
-            }),
-          )
-          .max(MAX_ISOLATE_EMITS),
-      }),
-      z.strictObject({
-        ok: z.literal(false),
-        rule: z.enum(ISOLATE_GUEST_DENIAL_RULES),
-        message: errorText,
-      }),
-    ]),
+    outcome: IsolateDispatchOutcomeSchema,
+  }),
+  z.strictObject({
+    t: z.literal("harnessed"),
+    id: frameId,
+    outcome: IsolateDispatchOutcomeSchema,
   }),
   z.strictObject({
     t: z.literal("hooked"),
@@ -753,9 +816,13 @@ export const PLUGIN_BUNDLE_FORMAT = 1;
  * 4 -> 5: Additive-optional `resultProjection.textFields` marks reviewed string-or-null leaves.
  *    Older guests omit it and keep their exact declaration digests and result behavior.
  *    Hosts retain contracts 1/2/3/4 and send only the guest's admitted load stamp.
+ * 5 -> 6: Additive authenticated agent-run context and run-access declarations.
+ * 6 -> 7: Additive harness metadata and correlated harness calls; profile validation has no ctx.
  */
-export const HARDENED_CONTRACT_VERSION = 5;
-export const HARDENED_CONTRACT_COMPAT_VERSIONS: ReadonlySet<number> = new Set([1, 2, 3, 4, 5]);
+export const HARDENED_CONTRACT_VERSION = 7;
+export const HARDENED_CONTRACT_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
+  1, 2, 3, 4, 5, 6, 7,
+]);
 export const HARDENED_CONTRACT_MINIMUM = Math.min(...HARDENED_CONTRACT_COMPAT_VERSIONS);
 
 /**

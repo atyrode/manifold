@@ -8,6 +8,20 @@
   storage through its hook id and answers ok.
  */
 import { connect } from "node:net";
+import { access, writeFile } from "node:fs/promises";
+import { setTimeout } from "node:timers/promises";
+
+async function barrier(dir) {
+  await writeFile(`${dir}/entered`, "");
+  for (;;) {
+    try {
+      await access(`${dir}/release`);
+      return;
+    } catch {
+      await setTimeout(5);
+    }
+  }
+}
 
 const protocol = connect({ fd: 3 });
 
@@ -111,6 +125,9 @@ onFrame(async (frame) => {
           onAssemblyChanged: false,
           onJobSettled: false,
         },
+        ...(frame.hardenedContract >= 7 && frame.manifest.contributes.harness !== undefined
+          ? { harness: frame.manifest.contributes.harness }
+          : {}),
       });
       return;
     case "dispatch": {
@@ -133,6 +150,100 @@ onFrame(async (frame) => {
       if (!(await admission)) return;
       const outcome = await handlers[frame.action](frame.id, frame.args);
       if (outcome !== null) send({ t: "dispatched", id: frame.id, outcome });
+      return;
+    }
+    case "harness": {
+      const request = frame.request;
+      const mode =
+        request.method === "validateProfile" ? request.profile : request.target?.machineId;
+      if (typeof mode === "string" && mode.startsWith("barrier:"))
+        await barrier(mode.slice("barrier:".length));
+      if (mode !== null && typeof mode === "object") {
+        if (mode.barrier !== undefined) await barrier(mode.barrier);
+        if (mode.disconnect) process.exit(1);
+        for (const id of mode.rawIds ?? []) {
+          for (const [method, args] of [
+            ["storage.set", ["profile-leak", "bad"]],
+            ["actions.call", [{ plugin: "test.guest", action: "echo", input: {} }]],
+            ["streams.publish", ["p1", "bad"]],
+            ["jobs.unfollow", ["j1"]],
+          ]) {
+            try {
+              await call(id, method, args);
+            } catch {
+              // A hostile validator catches denials and still claims success.
+            }
+          }
+        }
+      }
+      if (typeof mode === "string" && mode.startsWith("queue-and-answer:")) {
+        void call(frame.id, "storage.set", ["queued", "value"]).catch(() => {});
+        await barrier(mode.slice("queue-and-answer:".length));
+        send({ t: "harnessed", id: frame.id, outcome: { ok: true, result: [], emits: [] } });
+        return;
+      }
+      if (mode === "producer") {
+        await call(frame.id, "streams.open", [
+          "test.guest.stream",
+          { kind: "plugin", pluginId: "test.guest" },
+        ]);
+        send({ t: "harnessed", id: frame.id, outcome: { ok: true, result: [], emits: [] } });
+        return;
+      }
+      if (mode === "hang") return;
+      if (mode === "boom") process.exit(1);
+      if (mode === "wrong-kind") {
+        send({ t: "hooked", id: frame.id, ok: true });
+        return;
+      }
+      if (mode === "wrong-id") {
+        send({
+          t: "harnessed",
+          id: "not-the-request",
+          outcome: { ok: true, result: null, emits: [] },
+        });
+        return;
+      }
+      if (mode === "side-effect") {
+        try {
+          await call(frame.id, "storage.set", ["profile-leak", "bad"]);
+        } catch {
+          // Model a guest swallowing the refusal and claiming validation succeeded.
+        }
+      }
+      if (mode === "emit") {
+        send({
+          t: "harnessed",
+          id: frame.id,
+          outcome: {
+            ok: true,
+            result: null,
+            emits: [
+              { ref: { kind: "plugin", pluginId: "test.guest" }, kind: "echoed", payload: {} },
+            ],
+          },
+        });
+        return;
+      }
+      if (mode === "invalid-result") {
+        send({ t: "harnessed", id: frame.id, outcome: { ok: true, result: "invalid", emits: [] } });
+        return;
+      }
+      let result = null;
+      const emits = [];
+      if (request.method === "sessions") {
+        const permitted = await call(frame.id, "auth.allows", ["scenes:write"]);
+        await call(frame.id, "storage.set", ["harness-caller", frame.ctx.principal.id]);
+        result = permitted
+          ? [{ harness: "test", machineId: request.target.machineId, sessionId: "s1" }]
+          : [];
+        emits.push({
+          ref: { kind: "plugin", pluginId: "test.guest" },
+          kind: "echoed",
+          payload: { caller: frame.ctx.principal.id },
+        });
+      } else if (request.method === "resolveSession") result = request.ref;
+      send({ t: "harnessed", id: frame.id, outcome: { ok: true, result, emits } });
       return;
     }
     case "admitted":

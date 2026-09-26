@@ -2047,6 +2047,20 @@ error rather than a run; neither path ever fails a job over a valid stage, and a
 that does not fit the outbound budget is dropped rather than queued.
 The native framed channel handles correlation, bounds, backpressure and
 disconnect cancellation. Do not reimplement that ABI or open a product-owned control socket.
+
+An explicitly Run-bound plain worker may additionally call
+`callAgent({type:"describe"})`, `callAgent({type:"policy"})`,
+`callAgent({type:"ack",policy})` and `callAgent({type:"invoke",door,args},{signal})`.
+Use only the Run the trusted launch bound to this native job: there is no bearer, actor selector
+or product-owned HTTP proxy in this API. Deliver the complete policy to the model and require
+its explicit acknowledgement; receiving or displaying policy is not acknowledgement. The
+operator approves exact, digest-pinned actions in `AgentGrant.tools`, and each Run separately
+selects its tools. No selection means no implicit tool registry or permission upgrade.
+Check `refused` and `unknown` separately from a traced action `result`; cancellation after
+dispatch can leave a committed effect with an unknown acknowledgement, so never automatically
+replay it. See [Native Run-bound tools](CONTRACTS.md#native-run-bound-tools) for lifecycle,
+publication, capability gates and consumer compatibility obligations.
+
 Readiness does not authenticate a port forever. Before sending a scoped HTTP request,
 the native owner opens a credential-free connection and proves that its established peer
 socket belongs to the admitted runtime workload. The proxy uses that exact connection,
@@ -3501,12 +3515,34 @@ failure, not an invitation to retry.
 See `packages/sdk/README.md`, “Opting into bounded read results”, for limits, digest computation
 and the untrusted-data envelope.
 
+The same publication can be selected by a native AgentRun through its operator-approved tool
+grant. `ctx.agentRun` supplies frozen authenticated Run/Agent provenance, or `null` for a
+non-Run caller; do not accept a model-provided author or Run id as a replacement. A hardened
+publisher of selected tools requires contract 6 or later; ordinary older guests are not
+forced to repack. The action still owns domain validation, disclosure and durable/idempotent
+writes. Tool availability is not a dependency declaration: optional judgment tools must not
+become a prerequisite for an ordinary review session.
+
 A hook (`onEnable`, `onDisable`, `onAssemblyChanged`) gets storage and the clock. It does NOT get
 `emit`: the `hooked` frame has no carrier for emissions, so a hook that emits fails by name instead
 of publishing into the void. `onEnable` and `onDisable` also get `ctx.jobs` and `ctx.actions` — the
 installer's job authority and the sibling verb — whenever the host could restore that credential;
 both are `undefined` otherwise, so branch on them. `onJobSettled` always has both, bound to its own
 job's credential instead.
+
+A declared `ServerHarness` is available in a hardened server from contract 7. Export its complete
+`profileSchema`, `launch`, `sessions`, `resolveSession` and `send` implementation. The loaded
+metadata must match `manifest.contributes.harness`; publish the profile shape with
+`z.toJSONSchema(profileSchema, { io: "input" })`. Metadata is not a replacement validator: the
+guest runs the original schema with `safeParseAsync`, including refinements. Profile validation
+has no caller context and cannot use captured storage, action, job or emission authority. The
+remaining methods receive the host's already-authorized harness context over the same bounded,
+correlated transport. Session enumeration preserves the public 100-item limit and `truncated`
+signal. Older ordinary guests remain usable but do not acquire harness support implicitly.
+Validation requires a drained guest: active requests, queued host calls, stream producers or
+job observers make it unavailable rather than granting a borrowed context. While it runs,
+new authority-bearing requests refuse immediately. A raw host call during validation terminates
+the violating child; ordinary requests retain their existing concurrency outside that phase.
 
 ### The web half: `web.ts`
 
@@ -3599,7 +3635,7 @@ bun run --cwd packages/plugin-kit pack <plugin-dir> --out example.counter.manifo
 
 `pack --self-contained` reads `<plugin-dir>/manifest.json`, bundles `server.ts` (target `bun`)
 and `web.ts` (target `browser`) with the kit's guest runtimes, the protocol and zod INLINED, and
-writes one JSON document (`PluginBundleSchema`: `format: 1`, `hardenedContract: 4`, the manifest
+writes one JSON document (`PluginBundleSchema`: `format: 1`, `hardenedContract: 7`, the manifest
 with its `entry`, the members as base64, no `builtAgainst`). All packing modes stamp the same
 executable contract. The artifact is self-contained because the runner resolves
 nothing: the hub's process runner is one `Bun.spawn` of the bundle's `server.js`; the page fetches
@@ -3616,11 +3652,12 @@ bundle lives afterwards — is §7 Installing a plugin, and the artifact's shape
 `docs/CONTRACTS.md` §Hardened plugins.
 
 `hardenedContract` has an acceptance set separate from releases and machine/session protocols.
-The current hub accepts contracts 1, 2, 3, 4 and 5; current packs stamp 5. Contract 1 is the bounded
+The current hub accepts contracts 1–7; current packs stamp 7. Contract 1 is the bounded
 receipt plus prepared/admitted dispatch baseline, contract 2 adds optional load identity,
 contract 3 adds optional action result projections, contract 4 adds metadata-only `jobs.inspectInputs`,
-and contract 5 adds optional exact selected `textFields`. Older guests omit that metadata and retain
-their existing declarations and digests.
+contract 5 adds optional exact selected `textFields`, and contract 6 adds authenticated Run context.
+Contract 7 adds declared harness metadata and calls, with context-free original profile validation.
+Older guests retain their existing declarations and digests, without acquiring the newer capabilities.
 The host sends the admitted guest's own contract stamp, not its latest supported version.
 An older accepted bundle uses the compatible frame path and keeps working. A missing stamp
 does not mean contract 1: older bundles need one genuine repack with a current kit. The plugin

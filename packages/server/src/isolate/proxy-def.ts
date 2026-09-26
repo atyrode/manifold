@@ -1,5 +1,6 @@
 import type {
   AnyActionDef,
+  ServerHarness,
   AssemblyDelta,
   JobSettledCtx,
   LifecycleCtx,
@@ -27,6 +28,10 @@ import {
   PlaceRequestSchema,
   ListJobRunsArgsSchema,
   InspectJobInputsArgsSchema,
+  IsolateHarnessRequestSchema,
+  IsolateHarnessResultSchemas,
+  HarnessDefinitionSchema,
+  type IsolateHarnessRequest,
   type ActionSummary,
   type IsolateChildFrame,
   type IsolateCtxMethod,
@@ -35,6 +40,7 @@ import {
   type SettledJob,
 } from "@manifold/protocol";
 import { z } from "zod";
+import { isDeepStrictEqual } from "node:util";
 import type { ActionCtx, ActionHandler } from "../plugin-host.ts";
 import { IsolateDenial, IsolateLoadError, type IsolateLoadResult } from "./contract.ts";
 import { JobExecuteArgsSchema, JobScheduleArgsSchema, jobDoorSchemas } from "../job-doors.ts";
@@ -59,6 +65,7 @@ export type IsolateDispatchOutcome = Extract<IsolateChildFrame, { t: "dispatched
  */
 export interface IsolateTransport {
   dispatch(action: string, args: unknown, ctx: ActionCtx): Promise<IsolateDispatchOutcome>;
+  harness(request: IsolateHarnessRequest, ctx?: ActionCtx): Promise<IsolateDispatchOutcome>;
   hook(hook: IsolateHook, ctx: LifecycleCtx, delta?: AssemblyDelta): Promise<void>;
   /** `onJobSettled` alone: its own ctx (the job slice rides it) and its own argument. */
   settled(ctx: JobSettledCtx, job: SettledJob): Promise<void>;
@@ -163,6 +170,51 @@ export function buildIsolateDef(
       ? { onJobSettled: (ctx, job) => transport.settled(ctx, job) }
       : {}),
   };
+  let harness: ServerHarness<ActionCtx> | undefined;
+  if (loaded.harness !== undefined) {
+    const metadata = HarnessDefinitionSchema.parse(loaded.harness);
+    if (!isDeepStrictEqual(metadata, manifest.contributes?.harness))
+      throw new IsolateLoadError("loaded harness does not match its manifest declaration");
+    const invoke = async <M extends IsolateHarnessRequest["method"]>(
+      request: IsolateHarnessRequest & { method: M },
+      ctx?: ActionCtx,
+    ): Promise<z.infer<(typeof IsolateHarnessResultSchemas)[M]>> => {
+      const parsed = IsolateHarnessRequestSchema.parse(request);
+      if ((parsed.method === "validateProfile") !== (ctx === undefined))
+        throw new IsolateDenial("unavailable", "invalid harness caller context");
+      const outcome = await transport.harness(parsed, ctx);
+      if (!outcome.ok) {
+        if (outcome.rule === "invalid_args")
+          throw new IsolateDenial("invalid_args", outcome.message);
+        throw new Error(outcome.message);
+      }
+      const result = IsolateHarnessResultSchemas[request.method].safeParse(outcome.result);
+      if (!result.success || (ctx === undefined && outcome.emits.length !== 0))
+        throw new IsolateDenial("unavailable", "harness answered out of protocol");
+      if (ctx !== undefined)
+        for (const event of outcome.emits) ctx.emit(event.ref, event.kind, event.payload);
+      return result.data as z.infer<(typeof IsolateHarnessResultSchemas)[M]>;
+    };
+    harness = {
+      profileSchema: z
+        .unknown()
+        .superRefine(async (profile, refinement) => {
+          try {
+            await invoke({ method: "validateProfile", profile });
+          } catch (error) {
+            if (!(error instanceof IsolateDenial) || error.rule !== "invalid_args") throw error;
+            refinement.addIssue({ code: "custom", message: error.message });
+          }
+        })
+        .meta({ ...metadata.profileSchema }),
+      launch: (ctx, run, agent, target) => invoke({ method: "launch", run, agent, target }, ctx),
+      sessions: (ctx, target) => invoke({ method: "sessions", target }, ctx),
+      resolveSession: (ctx, ref) => invoke({ method: "resolveSession", ref }, ctx),
+      send: async (ctx, run, input) => {
+        await invoke({ method: "send", run, input }, ctx);
+      },
+    };
+  }
   return {
     def: {
       manifest,
@@ -170,6 +222,7 @@ export function buildIsolateDef(
       actions,
       handlers,
       lifecycle,
+      ...(harness === undefined ? {} : { harness }),
       migrations: migrations.map((migration) => ({
         ...migration,
         migrate: (storage, database) => transport.migrate(migration, storage, database),

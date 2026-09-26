@@ -20,7 +20,7 @@ import {
 } from "./job-resources.ts";
 
 /** Native owner RPC changes independently of hub, session, and transport releases. */
-export const JOB_OWNER_PROTOCOL_VERSION = 40;
+export const JOB_OWNER_PROTOCOL_VERSION = 41;
 
 /**
  * Native owners outlive hub deploys. An unchanged or strictly additive-optional RPC change
@@ -33,23 +33,31 @@ export const JOB_OWNER_PROTOCOL_VERSION = 40;
  * `launchBinding` (#587). v36 adds operation `inputs`/`exports`, request `inputs` and
  * `limits.inputBytes`. v37 permits job-scoped self-provider runtime identity bound to the
  * invoking installation. v40 adds operator anchors: `operator.<name>` locations, read-only by
- * construction, and the inventory's `anchorDefinitions`. v38 and v39 are reserved by open
- * drafts and are not accepted. Revision-pinned policies and ordinary admissions remain
- * unchanged; contextual policies are sent only to owners and machine transports that parse
- * that mode.
+ * construction, and the inventory's `anchorDefinitions`. v41 adds the optional signed native
+ * Run identity/expiry and ephemeral tool relay; only explicitly bound jobs use it, and both
+ * machine v43 and owner v41 are required. v38 and v39 were reserved by drafts and are never
+ * accepted: capability checks compare revisions, so a later change must not reuse them.
+ * Revision-pinned policies and ordinary admissions remain unchanged; contextual policies are
+ * sent only to owners and machine transports that parse that mode.
  */
 export const JOB_OWNER_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  34, 35, 36, 37, 40,
+  34, 35, 36, 37, 40, 41,
 ]);
 
 export type JobOwnerCapability =
-  "privateEnv" | "launchBinding" | "boundInputs" | "selfServiceRuntime" | "operatorAnchors";
+  | "privateEnv"
+  | "launchBinding"
+  | "boundInputs"
+  | "selfServiceRuntime"
+  | "operatorAnchors"
+  | "agentTools";
 const jobOwnerCapabilityVersions: Readonly<Record<JobOwnerCapability, number>> = {
   privateEnv: 35,
   launchBinding: 35,
   boundInputs: 36,
   selfServiceRuntime: 37,
   operatorAnchors: 40,
+  agentTools: 41,
 };
 
 /** Capability support never grants execution authority to an owner outside the accepted set. */
@@ -59,6 +67,33 @@ export function jobOwnerSupports(protocolVersion: number, capability: JobOwnerCa
     protocolVersion >= jobOwnerCapabilityVersions[capability]
   );
 }
+
+export const AGENT_TOOL_MAX_REQUEST_BYTES = 65_536;
+export const AGENT_TOOL_MAX_REPLY_BYTES = 4 * 1024 * 1024;
+export const AGENT_TOOL_CHUNK_CHARS = 16_384;
+export const AGENT_TOOL_MAX_CALLS = 1_024;
+/** Transport stays independent of the application schemas and their plugin imports. */
+export const AgentToolPayloadSchema = z.unknown().refine((value) => {
+  try {
+    const json = JSON.stringify(value);
+    return (
+      json !== undefined &&
+      new TextEncoder().encode(json).byteLength <= AGENT_TOOL_MAX_REQUEST_BYTES
+    );
+  } catch {
+    return false;
+  }
+});
+const agentToolReplyPayload = z.unknown().refine((value) => {
+  try {
+    const json = JSON.stringify(value);
+    return (
+      json !== undefined && new TextEncoder().encode(json).byteLength <= AGENT_TOOL_MAX_REPLY_BYTES
+    );
+  } catch {
+    return false;
+  }
+});
 
 const id = z.string().min(1).max(128);
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
@@ -544,6 +579,10 @@ export const JobRequestSchema = z.strictObject({
   credential: JobCredentialSchema,
   traceId: id,
   requestDigest: hash,
+  /** Host-bound nonterminal Run correlation, never a worker-selected authority. */
+  agentRunId: id.optional(),
+  /** Absolute original Run deadline; paired with agentRunId and never implicitly renewed. */
+  agentRunExpiresAt: z.number().int().positive().optional(),
   /** Native terminal admission only; never accepted by ordinary job execute input. */
   terminal: z
     .strictObject({ terminalId: id, terminalHostId: id, containerId: id, runId: id.optional() })
@@ -558,9 +597,14 @@ export type JobRequest = z.infer<typeof JobRequestSchema>;
 /** Check before signing or replaying admission; never strip fields from a signed request. */
 export function jobOwnerRequestRefusal(
   protocolVersion: number,
-  request: Pick<JobRequest, "inputs" | "limits" | "terminal">,
+  request: Pick<JobRequest, "inputs" | "limits" | "terminal" | "agentRunId" | "agentRunExpiresAt">,
 ): string | null {
   if (!JOB_OWNER_PROTOCOL_COMPAT_VERSIONS.has(protocolVersion)) return "owner_protocol_unsupported";
+  if (
+    (request.agentRunId !== undefined || request.agentRunExpiresAt !== undefined) &&
+    !jobOwnerSupports(protocolVersion, "agentTools")
+  )
+    return "agent_tools_protocol_unsupported";
   if (request.terminal?.runId !== undefined && !jobOwnerSupports(protocolVersion, "privateEnv"))
     return "run_launch_protocol_unsupported";
   if (
@@ -813,6 +857,7 @@ export const PublicJobSchema = z.strictObject({
   authority: JobAuthoritySchema,
   terminal: JobRequestSchema.shape.terminal,
   service: JobRequestSchema.shape.service,
+  agentRunId: JobRequestSchema.shape.agentRunId,
 });
 export type PublicJob = z.infer<typeof PublicJobSchema>;
 
@@ -1038,6 +1083,12 @@ export const JobCommandSchema = z.discriminatedUnion("type", [
       .nullable(),
   }),
   z.strictObject({ type: z.literal("service_tunnel_frame"), frame: ServiceTunnelFrameSchema }),
+  z.strictObject({
+    type: z.literal("agent_run_result"),
+    jobId: id,
+    requestId: id,
+    payload: agentToolReplyPayload,
+  }),
 ]);
 export type JobCommand = z.infer<typeof JobCommandSchema>;
 
@@ -1304,6 +1355,13 @@ export const JobEventSchema = z.discriminatedUnion("type", [
   JobProgressEventSchema,
   JobInferenceCallEventSchema,
   JobInferenceCeilingEventSchema,
+  z.strictObject({
+    type: z.literal("agent_run_request"),
+    jobId: id,
+    requestId: id,
+    payload: AgentToolPayloadSchema,
+  }),
+  z.strictObject({ type: z.literal("agent_run_cancel"), jobId: id, requestId: id }),
 ]);
 export type JobEvent = z.infer<typeof JobEventSchema>;
 export const JobFollowEventSchema = z.union([

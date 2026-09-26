@@ -13,6 +13,7 @@ import {
   type RuntimeDeps,
   type ServerToAgentMessage,
   type TerminalExecution,
+  AGENT_TOOL_MAX_REPLY_BYTES,
 } from "@manifold/protocol";
 import { ServiceError, type AuthService } from "./auth.ts";
 import type { Logger } from "./log.ts";
@@ -84,13 +85,18 @@ export class LiveMachineChannel implements MachineChannel {
   send(message: ServerToAgentMessage): boolean {
     const payload = JSON.stringify(ServerToAgentMessageSchema.parse(message));
     const install = message.type === "job_command" && message.command.type === "install";
+    const agentResult =
+      message.type === "job_command" && message.command.type === "agent_run_result";
     if (this.socket.bufferedAmount === 0) this.outboundQueueLimit = MAX_SESSION_FRAME_BYTES;
-    if (install) this.outboundQueueLimit = 2 * MAX_JOB_INSTALL_FRAME_BYTES;
-    const frameLimit = install ? MAX_JOB_INSTALL_FRAME_BYTES : MAX_SESSION_FRAME_BYTES;
-    if (
-      Buffer.byteLength(payload) > frameLimit ||
-      this.socket.bufferedAmount + Buffer.byteLength(payload) > this.outboundQueueLimit
-    ) {
+    const frameLimit = install
+      ? MAX_JOB_INSTALL_FRAME_BYTES
+      : agentResult
+        ? AGENT_TOOL_MAX_REPLY_BYTES + 1024
+        : MAX_SESSION_FRAME_BYTES;
+    if (install || agentResult)
+      this.outboundQueueLimit = Math.max(this.outboundQueueLimit, 2 * frameLimit);
+    const bytes = Buffer.byteLength(payload);
+    if (bytes > frameLimit || this.socket.bufferedAmount + bytes > this.outboundQueueLimit) {
       this.socket.close(1013, "machine outbound queue overflow");
       return false;
     }

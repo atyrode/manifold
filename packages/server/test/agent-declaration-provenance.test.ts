@@ -32,8 +32,8 @@ function fixture(path: string, runtime = new FakeRuntime()): Fixture {
   return { store, auth, runtime, owner: auth.authenticate(OWNER_KEY) };
 }
 
-function createRun(f: Fixture) {
-  const created = createExternalRun(f, {
+async function createRun(f: Fixture) {
+  const created = await createExternalRun(f, {
     name: "provenance reader",
     purpose: "Inspect the approved workspace",
     target: "manifold://",
@@ -155,7 +155,7 @@ describe("agent declaration provenance cutover", () => {
     const path = join(dir, "manifold.db");
     let f = fixture(path);
     try {
-      const run = createRun(f);
+      const run = await createRun(f);
       const forged = seedTrace(f, run.actor, "Forged approval from legacy arguments", "90");
       // The retained maximum must protect the boundary even if the sequence was lowered.
       f.store.db.exec("UPDATE sqlite_sequence SET seq=2 WHERE name='events'");
@@ -220,12 +220,12 @@ describe("agent declaration provenance cutover", () => {
     }
   });
 
-  test("pruned sequence high-water and trace pagination remain decimal-exact above 2^53", () => {
+  test("pruned sequence high-water and trace pagination remain decimal-exact above 2^53", async () => {
     const dir = mkdtempSync(join(tmpdir(), "manifold-declaration-precision-"));
     const path = join(dir, "manifold.db");
     let f = fixture(path);
     try {
-      const run = createRun(f);
+      const run = await createRun(f);
       const old = seedTrace(f, run.actor, "Untrusted retained claim", "9007199254740993");
       const pruned = seedTrace(f, run.actor, "Untrusted pruned claim", "9007199254740995");
       f.store.db.query("DELETE FROM events WHERE id=?").run(pruned);
@@ -267,12 +267,12 @@ describe("agent declaration provenance cutover", () => {
     }
   });
 
-  test("an exhausted SQLite sequence cannot overflow into trusting its last historical row", () => {
+  test("an exhausted SQLite sequence cannot overflow into trusting its last historical row", async () => {
     const dir = mkdtempSync(join(tmpdir(), "manifold-declaration-int64-"));
     const path = join(dir, "manifold.db");
     const f = fixture(path);
     try {
-      const run = createRun(f);
+      const run = await createRun(f);
       const last = seedTrace(
         f,
         run.actor,
@@ -313,12 +313,12 @@ describe("agent declaration provenance cutover", () => {
 
   test.each([null, "", "garbage", "-1", "01", "1.5", "1e0", "0\n", "9223372036854775808"])(
     "missing or corrupt cutover %j stays fail-closed on read and reopen",
-    (corrupt) => {
+    async (corrupt) => {
       const dir = mkdtempSync(join(tmpdir(), "manifold-declaration-corrupt-"));
       const path = join(dir, "manifold.db");
       let f = fixture(path);
       try {
-        const run = createRun(f);
+        const run = await createRun(f);
         const traceId = seedTrace(f, run.actor, "Current declared claim");
         expect(inspect(f, run.created.run.id, { traceId }).traces[0]?.agentDeclaration).toBe(
           "Current declared claim",

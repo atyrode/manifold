@@ -519,7 +519,7 @@ describe("the trace ledger records every exercise of authority", () => {
     const argRow = newestTrace(base);
     expect(argRow.outcome).toBe("invalid_args");
     expect(JSON.parse(argRow.payload)).toEqual({ nonsense: true });
-    const run = createExternalRun(base, {
+    const run = await createExternalRun(base, {
       name: "trace-policy-rungs",
       purpose: "Exercise both policy refusal rungs in the trace ledger.",
       target: "manifold://",

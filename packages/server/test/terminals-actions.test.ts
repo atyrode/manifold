@@ -319,7 +319,7 @@ describe("core.terminals doors", () => {
   test("direct native creation retains only its owning run and its confirmed trace target", async () => {
     const base = await fixture();
     try {
-      const created = createExternalRun(base, {
+      const created = await createExternalRun(base, {
         name: "native creator",
         purpose: "Verify run-bound native terminal inspection",
         target: "manifold://",

@@ -162,7 +162,7 @@ describe("session expiry (ADR 0019 §2)", () => {
 
   test("an agent run publishes the exact last-valid and first-expired boundary", async () => {
     const fix = await fixture();
-    const created = createExternalRun(fix, {
+    const created = await createExternalRun(fix, {
       name: "bounded automation",
       purpose: "Exercise the credential expiry boundary.",
       target: "manifold://",

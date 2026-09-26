@@ -82,7 +82,12 @@ function result(outcome: ActionOutcome): unknown {
   return outcome.result;
 }
 
-async function fixture(dependency?: ServerPluginDef, inputs?: string[], databasePath?: string) {
+async function fixture(
+  dependency?: ServerPluginDef,
+  inputs?: string[],
+  databasePath?: string,
+  profileSchema: z.ZodType = z.strictObject({ label: z.string().min(1) }),
+) {
   const declaredMachine: MachineHalf =
     inputs === undefined
       ? machine
@@ -142,7 +147,7 @@ async function fixture(dependency?: ServerPluginDef, inputs?: string[], database
     actions: [],
     handlers: {},
     harness: {
-      profileSchema: z.strictObject({ label: z.string().min(1) }),
+      profileSchema,
       async launch(ctx, run, _agent, target) {
         launches.push({ run, target });
         if (ctx.pluginId !== pluginId) throw new Error("harness context identity mismatch");
@@ -277,7 +282,7 @@ async function fixture(dependency?: ServerPluginDef, inputs?: string[], database
     delegation: { maxDepth: 0, maxDescendants: 0 },
     expiresAt: runtime.now() + 600000,
   };
-  const registered = auth.registerAgent(
+  const registered = await auth.registerAgent(
     {
       name: "Harness agent",
       purpose: "Inspect the launch boundary",
@@ -914,7 +919,7 @@ test("live harness inventory owns profile validation and loses execution on disa
       result(await f.host.dispatch(f.root, "core.access.listHarnesses", {})),
     );
     expect(inventory.harnesses.map((harness) => harness.id)).toContain("test-harness");
-    expect(() =>
+    await expect(
       f.auth.registerAgent(
         {
           name: "Invalid",
@@ -925,7 +930,7 @@ test("live harness inventory owns profile validation and loses execution on disa
         },
         f.root,
       ),
-    ).toThrow("harness profile invalid");
+    ).rejects.toThrow("harness profile invalid");
     const created = await f.create();
     result(
       await f.host.dispatch(f.root, "engine.plugins.setEnabled", { id: pluginId, enabled: false }),
@@ -941,6 +946,52 @@ test("live harness inventory owns profile validation and loses execution on disa
     f.close();
   }
 });
+
+test.each(["profile_changed", "run_revoked"] as const)(
+  "awaited profile validation fences a %s launch before invoking the harness",
+  async (change) => {
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let validatingLaunch = false;
+    const f = await fixture(
+      undefined,
+      undefined,
+      undefined,
+      z.strictObject({ label: z.string().min(1) }).refine(async () => {
+        if (validatingLaunch) {
+          entered.resolve();
+          await release.promise;
+        }
+        return true;
+      }),
+    );
+    let pending: Promise<ActionOutcome> | undefined;
+    try {
+      const created = await f.create();
+      validatingLaunch = true;
+      pending = f.host.dispatch(f.root, "core.access.launchRun", { runId: created.run.id });
+      await entered.promise;
+      validatingLaunch = false;
+      if (change === "profile_changed")
+        await f.auth.updateAgent(
+          {
+            agentId: created.run.agentId,
+            context: { profile: { label: "changed while launch validation waited" } },
+          },
+          f.root,
+        );
+      else f.auth.disableAgent({ agentId: created.run.agentId }, f.root);
+      release.resolve();
+      expect((await pending).ok).toBe(false);
+      expect(f.launches).toEqual([]);
+      expect(f.store.getAgentRun(created.run.id)?.session).toBeNull();
+    } finally {
+      release.resolve();
+      await pending;
+      f.close();
+    }
+  },
+);
 
 test("harness session inventory bounds retained transcripts and reports truncation at the limit", async () => {
   const f = await fixture();

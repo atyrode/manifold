@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { z } from "zod";
 import { AuthService, type AuthContext } from "../src/auth.ts";
 import { ServerStore } from "../src/stores.ts";
 import { openDatabase } from "../src/db.ts";
@@ -8,7 +9,7 @@ import {
   type RegisterAgentRequest,
 } from "@manifold/protocol";
 
-function fixture(overrides: Partial<RegisterAgentRequest["grant"]> = {}) {
+async function fixture(overrides: Partial<RegisterAgentRequest["grant"]> = {}) {
   let next = 0;
   let now = 1_800_000_000_000;
   const runtime = { newId: () => `durable-${++next}`, now: () => now };
@@ -32,7 +33,7 @@ function fixture(overrides: Partial<RegisterAgentRequest["grant"]> = {}) {
       ...overrides,
     },
   };
-  const registered = auth.registerAgent(registration, owner);
+  const registered = await auth.registerAgent(registration, owner);
   const runner = auth.authenticate(registered.credential!.token);
   const create = (input: Partial<CreateRunRequest> = {}) =>
     CreateRunCredentialResultSchema.parse(
@@ -65,10 +66,344 @@ function fixture(overrides: Partial<RegisterAgentRequest["grant"]> = {}) {
 }
 
 describe("durable Agent admission", () => {
-  test("idempotent registration and two runs share identity but isolate credentials, sessions, inspection and cleanup", () => {
-    const fix = fixture();
+  test("blocked asynchronous profile validation cannot publish invalid Agents or updates", async () => {
+    const fix = await fixture();
+    const gate = Promise.withResolvers<void>();
     try {
-      const repeated = fix.auth.registerAgent(fix.registration, fix.owner);
+      const profileSchema = z.object({ allowed: z.boolean() }).refine(async ({ allowed }) => {
+        await gate.promise;
+        return allowed;
+      });
+      fix.auth.setAgentProfileValidator(async (_harness, profile) => {
+        await profileSchema.parseAsync(profile);
+      });
+      const agents = fix.store.listAgents();
+      const principals = fix.store.listPrincipalsWithCreation();
+      const grants = fix.store.listGrants();
+      const registration = fix.auth.registerAgent(
+        {
+          ...fix.registration,
+          name: "invalid asynchronous profile",
+          context: { profile: { allowed: false } },
+        },
+        fix.owner,
+      );
+      const update = fix.auth.updateAgent(
+        {
+          agentId: fix.registered.agent.agentId,
+          purpose: "Must not replace the original purpose",
+          grant: { ...fix.registration.grant, caps: ["agents:delegate"] },
+          context: { profile: { allowed: false } },
+        },
+        fix.owner,
+      );
+      expect(fix.store.listAgents()).toEqual(agents);
+      expect(fix.store.listPrincipalsWithCreation()).toEqual(principals);
+      expect(fix.store.listGrants()).toEqual(grants);
+      const rejected = Promise.allSettled([registration, update]);
+      gate.resolve();
+      expect(await rejected).toEqual([
+        { status: "rejected", reason: expect.any(z.ZodError) },
+        { status: "rejected", reason: expect.any(z.ZodError) },
+      ]);
+      expect(fix.store.listAgents()).toEqual(agents);
+      expect(fix.store.listPrincipalsWithCreation()).toEqual(principals);
+      expect(fix.store.listGrants()).toEqual(grants);
+      expect(fix.auth.authenticate(fix.registered.credential!.token).agentRunnerId).toBe(
+        fix.registered.agent.agentId,
+      );
+    } finally {
+      gate.resolve();
+      fix.db.close();
+    }
+  });
+
+  for (const withdrawal of ["caller", "sponsor", "delegation"] as const) {
+    test(`profile validation rechecks withdrawn ${withdrawal} authority before mutation`, async () => {
+      const fix = await fixture();
+      const gate = Promise.withResolvers<void>();
+      try {
+        const credential = fix.auth.mintToken(
+          {
+            principal: { name: "async sponsor", kind: "human" },
+            caps: ["containers:read", "agents:delegate"],
+          },
+          fix.owner,
+        );
+        const sponsor = fix.auth.authenticate(credential.token);
+        const registered = await fix.auth.registerAgent(
+          { ...fix.registration, name: "sponsored asynchronous profile" },
+          sponsor,
+        );
+        fix.auth.setAgentProfileValidator(() => gate.promise);
+        const registration = fix.auth.registerAgent(
+          { ...fix.registration, name: "registration awaiting authority" },
+          sponsor,
+        );
+        const update = fix.auth.updateAgent(
+          {
+            agentId: registered.agent.agentId,
+            purpose: "Must not survive authority withdrawal",
+            context: { profile: { changed: true } },
+          },
+          withdrawal === "sponsor" ? fix.owner : sponsor,
+        );
+        if (withdrawal === "delegation") {
+          fix.auth.grant(
+            {
+              principal: { kind: "principal", id: sponsor.principal.id },
+              node: "manifold://",
+              effect: "deny",
+              reach: "subtree",
+              caps: ["agents:delegate"],
+            },
+            fix.owner,
+          );
+        } else {
+          fix.auth.revokePrincipal(sponsor.principal.id, fix.owner);
+        }
+        const agents = fix.store.listAgents();
+        const principals = fix.store.listPrincipalsWithCreation();
+        const grants = fix.store.listGrants();
+        const rejected = Promise.allSettled([registration, update]);
+        gate.resolve();
+        expect(await rejected).toEqual([
+          { status: "rejected", reason: expect.objectContaining({ code: "forbidden" }) },
+          { status: "rejected", reason: expect.objectContaining({ code: "forbidden" }) },
+        ]);
+        expect(fix.store.listAgents()).toEqual(agents);
+        expect(fix.store.listPrincipalsWithCreation()).toEqual(principals);
+        expect(fix.store.listGrants()).toEqual(grants);
+      } finally {
+        gate.resolve();
+        fix.db.close();
+      }
+    });
+  }
+
+  test("concurrent registrations mint one runner credential and preserve retirement", async () => {
+    const fix = await fixture();
+    const firstGate = Promise.withResolvers<void>();
+    const secondGate = Promise.withResolvers<void>();
+    try {
+      let validations = 0;
+      fix.auth.setAgentProfileValidator(() =>
+        ++validations === 1 ? firstGate.promise : secondGate.promise,
+      );
+      const request = { ...fix.registration, name: "concurrent registration" };
+      const first = fix.auth.registerAgent(request, fix.owner);
+      const second = fix.auth.registerAgent(request, fix.owner);
+      secondGate.resolve();
+      const winner = await second;
+      expect(winner.created).toBe(true);
+      expect(fix.auth.authenticate(winner.credential!.token).agentRunnerId).toBe(
+        winner.agent.agentId,
+      );
+      fix.auth.retireAgent({ agentId: winner.agent.agentId }, fix.owner);
+      firstGate.resolve();
+      const duplicate = await first;
+      expect(duplicate.created).toBe(false);
+      expect(duplicate.credential).toBeUndefined();
+      expect(duplicate.agent.agentId).toBe(winner.agent.agentId);
+      expect(duplicate.agent.state).toBe("retired");
+      expect(fix.store.listTokensByPrincipal(winner.agent.principalId)).toHaveLength(1);
+      expect(fix.store.listAgents().filter((agent) => agent.name === request.name)).toHaveLength(1);
+    } finally {
+      firstGate.resolve();
+      secondGate.resolve();
+      fix.db.close();
+    }
+  });
+
+  test("validated context patches preserve concurrent grant, purpose and status changes", async () => {
+    const fix = await fixture();
+    const gate = Promise.withResolvers<void>();
+    try {
+      fix.auth.setAgentProfileValidator(() => gate.promise);
+      const agentId = fix.registered.agent.agentId;
+      const context = { profile: { validated: true } };
+      const pending = fix.auth.updateAgent({ agentId, context }, fix.owner);
+      const grant = { ...fix.registration.grant, caps: ["agents:delegate" as const] };
+      await fix.auth.updateAgent({ agentId, purpose: "Newer purpose", grant }, fix.owner);
+      fix.auth.disableAgent({ agentId }, fix.owner);
+      gate.resolve();
+      const updated = await pending;
+      expect(updated.agent.context).toEqual(context);
+      expect(updated.agent.purpose).toBe("Newer purpose");
+      expect(updated.agent.grant).toEqual(grant);
+      expect(() => fix.create()).toThrow("agent_disabled");
+      expect(updated.agent.state).toBe("disabled");
+    } finally {
+      gate.resolve();
+      fix.db.close();
+    }
+  });
+
+  test("retirement while profile validation waits cannot be overwritten", async () => {
+    const fix = await fixture();
+    const gate = Promise.withResolvers<void>();
+    try {
+      fix.auth.setAgentProfileValidator(() => gate.promise);
+      const agentId = fix.registered.agent.agentId;
+      const pending = fix.auth.updateAgent(
+        { agentId, context: { profile: { changed: true } }, purpose: "Reopen" },
+        fix.owner,
+      );
+      fix.auth.retireAgent({ agentId }, fix.owner);
+      const retired = fix.store.getAgent(agentId);
+      gate.resolve();
+      await expect(pending).rejects.toMatchObject({ code: "forbidden" });
+      expect(fix.store.getAgent(agentId)).toEqual(retired);
+    } finally {
+      gate.resolve();
+      fix.db.close();
+    }
+  });
+
+  test("tool selections are immutable, parent-narrowed snapshots and current grant removal closes calls", async () => {
+    const first = {
+      door: "sample.tools.read",
+      contractDigest: "a".repeat(64),
+      maxResultBytes: 100,
+    };
+    const second = { door: "sample.tools.write", contractDigest: "b".repeat(64) };
+    const fix = await fixture({ tools: [first, second] });
+    try {
+      const bare = fix.create();
+      const parent = fix.create({ tools: [first.door] });
+      const actor = fix.auth.authenticate(parent.credential.token);
+      fix.acknowledge(actor);
+      expect(bare.run.tools).toBeUndefined();
+      const before = fix.store.listAgentRunTree(parent.run.id).map((run) => run.id);
+      expect(() =>
+        fix.auth.createChildRun(
+          {
+            runId: parent.run.id,
+            tools: [second.door],
+          },
+          actor,
+        ),
+      ).toThrow("tool_exceeds_grant");
+      expect(fix.store.listAgentRunTree(parent.run.id).map((run) => run.id)).toEqual(before);
+      const child = fix.auth.createChildRun({ runId: parent.run.id, tools: [first.door] }, actor);
+      expect(() =>
+        fix.auth.prepareNativeRun(child.run.id, { machineId: "machine" }, actor),
+      ).toThrow("agent_unavailable");
+      expect(fix.store.getAgentRun(child.run.id)?.session).toBeNull();
+      expect(child.run.tools).toEqual([first]);
+      expect(fix.auth.agentToolGrantRefusal(child.run.id, first.door)).toBeNull();
+      await fix.auth.updateAgent(
+        {
+          agentId: parent.run.agentId,
+          grant: {
+            ...fix.registration.grant,
+            tools: [first, second, { door: "sample.tools.new", contractDigest: "c".repeat(64) }],
+          },
+        },
+        fix.owner,
+      );
+      expect(fix.store.getAgentRun(parent.run.id)?.tools).toEqual([first]);
+      expect(fix.auth.agentToolGrantRefusal(parent.run.id, second.door)).toBe("tool_ungranted");
+      await fix.auth.updateAgent(
+        {
+          agentId: parent.run.agentId,
+          grant: { ...fix.registration.grant, tools: [{ ...first, maxResultBytes: 50 }] },
+        },
+        fix.owner,
+      );
+      expect(fix.auth.agentToolGrantRefusal(child.run.id, first.door)).toBe("publication_changed");
+      await fix.auth.updateAgent(
+        {
+          agentId: parent.run.agentId,
+          grant: { ...fix.registration.grant, tools: [] },
+        },
+        fix.owner,
+      );
+      expect(fix.auth.agentToolGrantRefusal(parent.run.id, first.door)).toBe("tool_ungranted");
+    } finally {
+      fix.db.close();
+    }
+  });
+
+  test("workspace-scoped Runs bind to native jobs without acquiring sponsor capabilities", async () => {
+    const fix = await fixture();
+    try {
+      const created = fix.create();
+      const actor = fix.auth.authenticate(created.credential.token);
+      fix.acknowledge(actor);
+      fix.auth.bindNativeRun(
+        created.run.id,
+        "workspace-job",
+        { harness: "external", machineId: "machine", sessionId: "workspace-session" },
+        { machineId: "machine" },
+        fix.owner,
+      );
+      const bound = fix.auth.nativeRunAuthority(created.run.id, "workspace-job").auth;
+      expect(fix.auth.allows(bound, "containers:read")).toBe(true);
+      expect(fix.auth.allows(bound, "tokens:mint")).toBe(false);
+      expect(() => fix.auth.nativeRunAuthority(created.run.id, "another-job")).toThrow(
+        "agent_run_unavailable",
+      );
+    } finally {
+      fix.db.close();
+    }
+  });
+
+  test("active self can bind once while restoring its exact credential rather than a sibling Run", async () => {
+    const fix = await fixture();
+    try {
+      const first = fix.create({ target: { machineId: "machine", containerId: "inside" } });
+      const sibling = fix.create({ target: { machineId: "machine", containerId: "inside" } });
+      const firstActor = fix.auth.authenticate(first.credential.token);
+      fix.acknowledge(firstActor);
+      const session = { harness: "external", machineId: "machine", sessionId: "host-session" };
+      expect(() =>
+        fix.auth.bindNativeRun(
+          first.run.id,
+          "job",
+          session,
+          { machineId: "machine", containerId: "elsewhere" },
+          firstActor,
+        ),
+      ).toThrow("run_launch_unavailable");
+      expect(fix.store.getAgentRun(first.run.id)?.session).toBeNull();
+      fix.auth.bindNativeRun(
+        first.run.id,
+        "job",
+        session,
+        { machineId: "machine", containerId: "inside" },
+        firstActor,
+      );
+      expect(fix.auth.nativeRunAuthority(first.run.id, "job").auth.agentRunId).toBe(first.run.id);
+      expect(() => fix.auth.nativeRunAuthority(first.run.id, "other-job")).toThrow(
+        "agent_run_unavailable",
+      );
+      expect(() =>
+        fix.auth.bindNativeRun(
+          first.run.id,
+          "new-job",
+          session,
+          { machineId: "machine", containerId: "inside" },
+          firstActor,
+        ),
+      ).toThrow("run_launch_unavailable");
+      expect(() => fix.auth.claimRunLaunch(first.run.id, fix.owner)).toThrow(
+        "run_launch_unavailable",
+      );
+      fix.auth.finishAgentRun({ runId: first.run.id, outcome: "cancelled" }, fix.owner);
+      expect(() => fix.auth.nativeRunAuthority(first.run.id, "job")).toThrow(
+        "agent_run_unavailable",
+      );
+      expect(fix.auth.authenticate(sibling.credential.token).agentRunId).toBe(sibling.run.id);
+    } finally {
+      fix.db.close();
+    }
+  });
+
+  test("idempotent registration and two runs share identity but isolate credentials, sessions, inspection and cleanup", async () => {
+    const fix = await fixture();
+    try {
+      const repeated = await fix.auth.registerAgent(fix.registration, fix.owner);
       expect(repeated.agent.agentId).toBe(fix.registered.agent.agentId);
       expect(repeated.created).toBe(false);
       expect(repeated.credential).toBeUndefined();
@@ -140,8 +475,8 @@ describe("durable Agent admission", () => {
     }
   });
 
-  test("capability, target, reach, lifetime, delegation, expiry and state refusals create no run or credential", () => {
-    const fix = fixture({
+  test("capability, target, reach, lifetime, delegation, expiry and state refusals create no run or credential", async () => {
+    const fix = await fixture({
       targets: ["manifold://container/allowed"],
       reach: "node",
       delegation: { maxDepth: 0, maxDescendants: 0 },
@@ -180,8 +515,8 @@ describe("durable Agent admission", () => {
     }
   });
 
-  test("disable settles every active run with one principal fence; retire preserves active credentials and is permanent", () => {
-    const fix = fixture();
+  test("disable settles every active run with one principal fence; retire preserves active credentials and is permanent", async () => {
+    const fix = await fixture();
     try {
       const first = fix.create();
       const second = fix.create();
@@ -216,8 +551,8 @@ describe("durable Agent admission", () => {
     }
   });
 
-  test("Run and agent credentials cannot turn exhausted child budgets into new standing Agents", () => {
-    const fix = fixture({ delegation: { maxDepth: 0, maxDescendants: 0 } });
+  test("Run and agent credentials cannot turn exhausted child budgets into new standing Agents", async () => {
+    const fix = await fixture({ delegation: { maxDepth: 0, maxDescendants: 0 } });
     try {
       const parent = fix.create();
       const actor = fix.auth.authenticate(parent.credential.token);
@@ -245,7 +580,7 @@ describe("durable Agent admission", () => {
       };
       expect(fix.auth.allows(actor, "agents:delegate")).toBe(true);
       for (const caller of [actor, fix.runner, fix.auth.authenticate(legacy.token)]) {
-        expect(() => fix.auth.registerAgent(request, caller)).toThrow(
+        await expect(fix.auth.registerAgent(request, caller)).rejects.toThrow(
           "agent_registration_requires_human",
         );
         expect(fix.auth.listAgents(caller).canRegister).toBe(false);
@@ -258,8 +593,8 @@ describe("durable Agent admission", () => {
     }
   });
 
-  test("browser sponsors cannot renew or displace a harness credential", () => {
-    const fix = fixture();
+  test("browser sponsors cannot renew or displace a harness credential", async () => {
+    const fix = await fixture();
     try {
       const sponsorToken = fix.auth.mintToken(
         {
@@ -269,7 +604,7 @@ describe("durable Agent admission", () => {
         fix.owner,
       );
       const sponsor = fix.auth.authenticate(sponsorToken.token);
-      const agent = fix.auth.registerAgent(
+      const agent = await fix.auth.registerAgent(
         { ...fix.registration, name: "browser managed" },
         sponsor,
       );
@@ -301,8 +636,8 @@ describe("durable Agent admission", () => {
     }
   });
 
-  test("renewal replaces only one run credential, while child budgets and activity are run-relative", () => {
-    const fix = fixture();
+  test("renewal replaces only one run credential, while child budgets and activity are run-relative", async () => {
+    const fix = await fixture();
     try {
       const parent = fix.create({ lifetimeMs: 120_000 });
       const sibling = fix.create({ lifetimeMs: 120_000 });
@@ -337,8 +672,8 @@ describe("durable Agent admission", () => {
     }
   });
 
-  test("an explicit cross-Agent child remains nested under its parent without granting sibling visibility", () => {
-    const fix = fixture();
+  test("an explicit cross-Agent child remains nested under its parent without granting sibling visibility", async () => {
+    const fix = await fixture();
     try {
       const sponsorGrant = fix.auth.mintToken(
         {
@@ -347,7 +682,7 @@ describe("durable Agent admission", () => {
         },
         fix.owner,
       );
-      const other = fix.auth.registerAgent(
+      const other = await fix.auth.registerAgent(
         { ...fix.registration, name: "reviewer" },
         fix.auth.authenticate(sponsorGrant.token),
       );
@@ -411,8 +746,8 @@ describe("durable Agent admission", () => {
     }
   });
 
-  test("sponsor updates change reusable context and immediately narrow live Run authority", () => {
-    const fix = fixture();
+  test("sponsor updates change reusable context and immediately narrow live Run authority", async () => {
+    const fix = await fixture();
     try {
       const run = fix.create();
       const actor = fix.auth.authenticate(run.credential.token);
@@ -424,13 +759,13 @@ describe("durable Agent admission", () => {
         ).token,
       );
       for (const caller of [outsider, fix.runner, actor]) {
-        expect(() =>
+        await expect(
           fix.auth.updateAgent({ agentId: run.run.agentId, purpose: "Not authorized" }, caller),
-        ).toThrow("agent_unavailable");
+        ).rejects.toThrow("agent_unavailable");
       }
       expect(fix.auth.allows(actor, "containers:read")).toBe(true);
       const context = { instructions: "Only delegate the next bounded task", profile: {} };
-      fix.auth.updateAgent(
+      await fix.auth.updateAgent(
         {
           agentId: run.run.agentId,
           purpose: "Narrowed work",
@@ -446,16 +781,16 @@ describe("durable Agent admission", () => {
       expect(() => fix.create({ caps: ["containers:read"] })).toThrow("cap_exceeds_grant");
       expect(fix.create().run.caps).toEqual(["agents:delegate"]);
       fix.auth.retireAgent({ agentId: run.run.agentId }, fix.owner);
-      expect(() =>
+      await expect(
         fix.auth.updateAgent({ agentId: run.run.agentId, purpose: "Reopen" }, fix.owner),
-      ).toThrow("agent_retired");
+      ).rejects.toThrow("agent_retired");
     } finally {
       fix.db.close();
     }
   });
 
-  test("browser admission never exposes a run credential or accepts a model-authored managed session", () => {
-    const fix = fixture();
+  test("browser admission never exposes a run credential or accepts a model-authored managed session", async () => {
+    const fix = await fixture();
     try {
       const created = fix.auth.createRun({ agentId: fix.registered.agent.agentId }, fix.owner);
       expect(created.credential).toBeUndefined();
@@ -486,8 +821,8 @@ describe("durable Agent admission", () => {
     }
   });
 
-  test("registered Agent credential inventory matches its full run withdrawal boundary", () => {
-    const fix = fixture();
+  test("registered Agent credential inventory matches its full run withdrawal boundary", async () => {
+    const fix = await fixture();
     try {
       const sponsorGrant = fix.auth.mintToken(
         {
@@ -497,7 +832,7 @@ describe("durable Agent admission", () => {
         fix.owner,
       );
       const sponsor = fix.auth.authenticate(sponsorGrant.token);
-      const registered = fix.auth.registerAgent(
+      const registered = await fix.auth.registerAgent(
         { ...fix.registration, name: "credential-boundary" },
         sponsor,
       );
@@ -532,8 +867,8 @@ describe("durable Agent admission", () => {
     }
   });
 
-  test("scoped sponsor withdrawal retains an idle registered Agent's lifecycle", () => {
-    const fix = fixture();
+  test("scoped sponsor withdrawal retains an idle registered Agent's lifecycle", async () => {
+    const fix = await fixture();
     try {
       fix.store.createContainer({
         id: "container-one",
@@ -550,7 +885,7 @@ describe("durable Agent admission", () => {
         fix.owner,
       );
       const sponsor = fix.auth.authenticate(sponsorGrant.token);
-      const registered = fix.auth.registerAgent(
+      const registered = await fix.auth.registerAgent(
         {
           ...fix.registration,
           name: "idle-scoped-agent",

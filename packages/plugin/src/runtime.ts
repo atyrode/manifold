@@ -1,5 +1,6 @@
 import type {
   InspectJobInputsArgs,
+  NativeAgentRunBinding,
   InspectJobInputsResult,
   JobDescription,
   JobDeploymentDescription,
@@ -38,6 +39,8 @@ export type JobExecution = Pick<
   artifactSha256?: string | undefined;
   resourceBindingDigest?: string | undefined;
   resourceBindings?: JobResourceBindings | undefined;
+  /** Host-controlled one-use association to a Run admitted before native execution. */
+  agentRun?: NativeAgentRunBinding | undefined;
 };
 export interface JobScheduleTiming {
   scheduleId: string;
@@ -102,7 +105,7 @@ export interface PluginJobContext {
     after?: number | undefined;
     limit?: number | undefined;
   }): JobJournalPage;
-  schedule(args: JobExecution & JobScheduleTiming): Record<string, never>;
+  schedule(args: Omit<JobExecution, "agentRun"> & JobScheduleTiming): Record<string, never>;
   schedules(): PublicJobSchedule[];
   disableSchedule(args: { scheduleId: string; revision: string }): Record<string, never>;
 }

@@ -13,6 +13,10 @@ import {
 } from "@manifold/plugin";
 import {
   AgentPolicyBundleSchema,
+  ActionResultApprovalsSchema,
+  HarnessTargetSchema,
+  type ActionResultApproval,
+  type HarnessTarget,
   AgentRunCapSchema,
   AgentRunAuthorizationPathSchema,
   AgentRunStateSchema,
@@ -239,6 +243,10 @@ interface AgentRunRow {
   target: string;
   reach: string;
   caps: string;
+  tools_json: string | null;
+  launch_target_json: string | null;
+  native_job_id: string | null;
+  native_credential_json: string | null;
   created_at: number;
   expires_at: number;
   renewals: number;
@@ -280,6 +288,9 @@ export interface AgentRunRecord {
   readonly target: string;
   readonly reach: GrantReach;
   readonly caps: readonly AgentRunCap[];
+  readonly tools?: readonly ActionResultApproval[];
+  readonly launchTarget?: HarnessTarget;
+  readonly nativeJob?: { readonly jobId: string; readonly credential: CredentialReference };
   readonly createdAt: number;
   readonly expiresAt: number;
   readonly renewals: number;
@@ -746,6 +757,7 @@ const AGENT_RUN_SELECT = `SELECT id,principal_id,agent_id,
   root_run_id,parent_run_id,authorized_by_principal_id,
   authorization_path,authorizer_token_id,authorizer_grant_id,authorizer_caps,
   authorizer_container_scope,authorizer_expires_at,purpose,task_ref,target,reach,caps,
+  tools_json,launch_target_json,native_job_id,native_credential_json,
   created_at,expires_at,renewals,max_depth,max_descendants,depth,
   cleanup_owner_principal_id,state,policy_revision,acknowledged_policy_revision,
   cleanup_revoked_credentials,cleanup_revoked_grants,finished_at,cleanup_failure FROM agent_runs`;
@@ -809,6 +821,20 @@ function toAgentRun(row: AgentRunRow): AgentRunRecord {
     target: GrantNodeSchema.parse(row.target),
     reach: GrantReachSchema.parse(row.reach),
     caps: AgentRunCapSchema.array().parse(JSON.parse(row.caps)),
+    ...(row.tools_json === null
+      ? {}
+      : { tools: ActionResultApprovalsSchema.parse(JSON.parse(row.tools_json)) }),
+    ...(row.launch_target_json === null
+      ? {}
+      : { launchTarget: HarnessTargetSchema.parse(JSON.parse(row.launch_target_json)) }),
+    ...(row.native_job_id === null
+      ? {}
+      : {
+          nativeJob: {
+            jobId: row.native_job_id,
+            credential: JobCredentialSchema.parse(JSON.parse(row.native_credential_json!)),
+          },
+        }),
     createdAt: row.created_at,
     expiresAt: row.expires_at,
     renewals: row.renewals,
@@ -2242,6 +2268,51 @@ export class ServerStore {
       .run(ref?.harness ?? null, ref?.sessionId ?? null, ref?.machineId ?? null, runId);
   }
 
+  /** Called in the native reservation transaction; a consumed binding is never replaced. */
+  bindAgentRunJob(
+    runId: string,
+    jobId: string,
+    session: SessionRef,
+    credential: CredentialReference,
+  ): void {
+    const bound = this.db
+      .query<{ id: string }, [string, string, string, string, string, string]>(
+        `UPDATE agent_runs SET native_job_id=?,native_credential_json=?,session_harness=?,session_id=?,session_machine_id=?
+       WHERE id=? AND native_job_id IS NULL AND session_id IS NULL RETURNING id`,
+      )
+      .get(
+        jobId,
+        JSON.stringify(credential),
+        session.harness,
+        session.sessionId,
+        session.machineId,
+        runId,
+      );
+    if (bound === null) throw new Error("agent run already bound");
+  }
+
+  /** Retain correlation only, never arguments, policy bodies, or projected results. */
+  admitAgentRunCall(runId: string, jobId: string, requestId: string, limit: number): boolean {
+    return this.transaction(() => {
+      const row = this.db
+        .query<{ native_call_ids_json: string }, [string, string]>(
+          "SELECT native_call_ids_json FROM agent_runs WHERE id=? AND native_job_id=?",
+        )
+        .get(runId, jobId);
+      if (row === null) return false;
+      const ids = z
+        .array(z.string().min(1).max(128))
+        .max(limit)
+        .parse(JSON.parse(row.native_call_ids_json));
+      if (ids.length >= limit || ids.includes(requestId)) return false;
+      ids.push(requestId);
+      this.db
+        .query("UPDATE agent_runs SET native_call_ids_json=? WHERE id=?")
+        .run(JSON.stringify(ids), runId);
+      return true;
+    });
+  }
+
   updateAgentRunActivity(runId: string, activity: RunActivity): void {
     this.db
       .query<void, [string, string]>("UPDATE agent_runs SET activity=? WHERE id=?")
@@ -2258,8 +2329,8 @@ export class ServerStore {
            created_at,expires_at,renewals,max_depth,max_descendants,depth,
            cleanup_owner_principal_id,state,policy_revision,acknowledged_policy_revision,
            cleanup_revoked_credentials,cleanup_revoked_grants,finished_at,cleanup_failure,
-           agent_id,session_harness,session_id,session_machine_id,model,activity
-         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+           agent_id,session_harness,session_id,session_machine_id,model,activity,tools_json,launch_target_json
+         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         record.id,
@@ -2298,6 +2369,8 @@ export class ServerStore {
         record.session?.machineId ?? null,
         record.model === undefined ? null : JSON.stringify(record.model),
         record.activity,
+        record.tools === undefined ? null : JSON.stringify(record.tools),
+        record.launchTarget === undefined ? null : JSON.stringify(record.launchTarget),
       );
     this.issueAgentPolicySnapshot(snapshot);
   }
@@ -3408,7 +3481,7 @@ export class ServerStore {
         // Otherwise legacy attribution, then the exact credential, owns the projection.
         `WITH candidates AS (
         SELECT job_id,machine_id,plugin_id,request,state,created_at,result,owner_closed
-          FROM machine_jobs j WHERE COALESCE(json_extract(j.request,'$.terminal.runId'),j.run_id,
+          FROM machine_jobs j WHERE COALESCE(json_extract(j.request,'$.agentRunId'),json_extract(j.request,'$.terminal.runId'),j.run_id,
             (SELECT run_id FROM tokens WHERE id=json_extract(j.request,'$.credential.tokenId')),
             (SELECT run_id FROM events WHERE type='trace' AND id=json_extract(j.request,'$.traceId')))=?1
         UNION ALL
@@ -3468,7 +3541,7 @@ export class ServerStore {
       >(
         `WITH run_jobs AS (
         SELECT request FROM machine_jobs j
-          WHERE COALESCE(json_extract(j.request,'$.terminal.runId'),j.run_id,
+          WHERE COALESCE(json_extract(j.request,'$.agentRunId'),json_extract(j.request,'$.terminal.runId'),j.run_id,
             (SELECT run_id FROM tokens WHERE id=json_extract(j.request,'$.credential.tokenId')),
             (SELECT run_id FROM events WHERE type='trace' AND id=json_extract(j.request,'$.traceId')))=?1
        ), native_origins AS (

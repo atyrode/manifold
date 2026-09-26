@@ -836,6 +836,37 @@ export const ActionDelegatesSchema = z
 /** Result publication is a bounded projection, never an invocation grant. */
 export const ACTION_RESULT_PROJECTION_MAX_BYTES = 1_048_576;
 export const ActionResultProjectionDigestSchema = z.string().regex(/^[a-f0-9]{64}$/);
+
+/** Exact publication approval owned by a trusted operator or launcher, never model input. */
+export const ActionResultApprovalSchema = z.strictObject({
+  door: z
+    .string()
+    .min(1)
+    .max(256)
+    .refine((door) => !door.includes("*")),
+  contractDigest: ActionResultProjectionDigestSchema,
+  maxResultBytes: z.number().int().positive().max(ACTION_RESULT_PROJECTION_MAX_BYTES).optional(),
+});
+export type ActionResultApproval = z.infer<typeof ActionResultApprovalSchema>;
+export const ActionResultApprovalsSchema = z
+  .array(ActionResultApprovalSchema)
+  .max(64)
+  .refine((entries) => new Set(entries.map((entry) => entry.door)).size === entries.length);
+export type ActionResultApprovals = z.infer<typeof ActionResultApprovalsSchema>;
+
+/** Reversible because plugin and local names cannot contain underscores. */
+export function agentToolName(door: string): string {
+  const split = door.lastIndexOf(".");
+  if (
+    split < 0 ||
+    !PluginIdSchema.safeParse(door.slice(0, split)).success ||
+    !LocalNameSchema.safeParse(door.slice(split + 1)).success
+  )
+    throw new Error("unsupported agent tool name");
+  const name = `manifold_${door.replaceAll(".", "_")}`;
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(name)) throw new Error("unsupported agent tool name");
+  return name;
+}
 export const ActionResultProjectionSchema = JsonProjectionSchema.extend({
   /** Exact selected leaves containing domain-redacted text, never additional subtrees. */
   textFields: JsonProjectionSchema.shape.fields.optional(),

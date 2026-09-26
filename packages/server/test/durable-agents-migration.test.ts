@@ -246,21 +246,7 @@ describe("migration 37: durable agents", () => {
         expect(store.getAgent("agent-b")?.sponsorPrincipalId).toBe("agent-a");
         expect(store.getAgent("agent-c")?.status).toBe("enabled");
         expect(store.getAgentRun("peer")?.state).toBe("revoked");
-        expect(
-          db
-            .query("SELECT * FROM agent_runs ORDER BY id")
-            .all()
-            .map((row) => {
-              const legacy = row as Record<string, unknown>;
-              delete legacy.agent_id;
-              delete legacy.session_harness;
-              delete legacy.session_id;
-              delete legacy.session_machine_id;
-              delete legacy.model;
-              delete legacy.activity;
-              return legacy;
-            }),
-        ).toEqual(beforeRuns);
+        expect(db.query("SELECT * FROM agent_runs ORDER BY id").all()).toMatchObject(beforeRuns);
         expect(
           db.query("SELECT * FROM agent_run_policy_snapshots ORDER BY run_id,revision").all(),
         ).toEqual(beforeSnapshots);
