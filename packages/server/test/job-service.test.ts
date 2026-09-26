@@ -758,7 +758,7 @@ test.each([false, true])(
           machineId: args.machineId,
           operationId: consumerOperation,
         }),
-        cap: "jobs:read",
+        cap: "operations:invoke",
         enabled: true,
       });
       f.service.schedule(f.root, args.pluginId, "pinned-schedule", {
@@ -847,10 +847,20 @@ test("a queued local consumer retains its exact instance revision through deferr
       policy,
       enabled: false,
     });
+    f.service.event(f.channel, {
+      type: "installed",
+      pluginId: args.pluginId,
+      installationRevision: "consumer-r2",
+      artifactSha256: hash,
+      resources: {
+        artifactAvailable: true,
+        tools: [],
+        operations: [{ operationId: consumerOperation, available: true }],
+      },
+    });
     f.service.tick();
     const refused = f.service.jobs.get("queued-pin")!;
-    expect(refused.state).toBe("cancelled");
-    expect(f.service.jobs.cancellation("queued-pin")?.reason).toBe("service_bindings_changed");
+    expect(refused.state).toBe("refused");
     expect(
       f.commands.some(
         (command) => command.type === "start" && command.request.jobId === "queued-pin",

@@ -554,11 +554,12 @@ export function jobOwnerMachine(protocolVersion: number, machine: MachineHalf): 
   }
   // An older strict parser refuses the anchor name itself, and no retained operation reads it.
   let locations: MachineHalf["locations"] | undefined;
-  for (const [id, location] of Object.entries(machine.locations)) {
-    if (!isOperatorAnchor(location.anchor)) continue;
-    locations ??= { ...machine.locations };
-    delete locations[id];
-  }
+  if (!jobOwnerSupports(protocolVersion, "operatorAnchors"))
+    for (const [id, location] of Object.entries(machine.locations)) {
+      if (!isOperatorAnchor(location.anchor)) continue;
+      locations ??= { ...machine.locations };
+      delete locations[id];
+    }
   if (!operations && !locations) return machine;
   operations ??= machine.operations;
   return Object.keys(operations).length

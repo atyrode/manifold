@@ -16,8 +16,6 @@ import {
   jobOwnerRequestRefusal,
   jobLimits,
   jobOwnerInstallRestoresProjection,
-  jobOwnerMachine,
-  jobOwnerOperationRefusal,
   ListJobRunsArgsSchema,
   ListJobRunsResultSchema,
   PublicJobRunSchema,
@@ -108,9 +106,10 @@ test("explicit instance pins are never sent to an accepted owner that cannot par
     },
   };
   expect(jobOwnerRequestRefusal(37, request)).toBeNull();
-  expect(jobOwnerRequestRefusal(37, { ...request, serviceBindings })).toBe(
-    "service_bindings_protocol_unsupported",
-  );
+  for (const older of [37, 40, 41])
+    expect(jobOwnerRequestRefusal(older, { ...request, serviceBindings })).toBe(
+      "service_bindings_protocol_unsupported",
+    );
   expect(
     jobOwnerRequestRefusal(JOB_OWNER_PROTOCOL_VERSION, { ...request, serviceBindings }),
   ).toBeNull();
@@ -469,12 +468,15 @@ test("output-only lease backing cannot become a file, working directory or ordin
     ...declaration,
     operations: { "sample.isolated": operation, "sample.ordinary": ordinary },
   });
-  expect(jobOwnerOperationRefusal(37, mixed.operations["sample.isolated"]!)).toBe(
-    "output_only_locations_protocol_unsupported",
-  );
-  expect(jobOwnerMachine(37, mixed)?.operations).toEqual({
-    "sample.ordinary": mixed.operations["sample.ordinary"]!,
-  });
+  // The operator-anchor (v40) and agent-tool (v41) owners predate output-only leases alike.
+  for (const older of [37, 40, 41]) {
+    expect(jobOwnerOperationRefusal(older, mixed.operations["sample.isolated"]!, mixed)).toBe(
+      "output_only_locations_protocol_unsupported",
+    );
+    expect(jobOwnerMachine(older, mixed)?.operations).toEqual({
+      "sample.ordinary": mixed.operations["sample.ordinary"]!,
+    });
+  }
   expect(jobOwnerMachine(JOB_OWNER_PROTOCOL_VERSION, mixed)).toEqual(mixed);
   expect(jobOwnerMachine(37, MachineHalfSchema.parse(declaration))).toBeNull();
 });
