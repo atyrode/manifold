@@ -52,6 +52,7 @@ const principal = { id: "p1", kind: "human", name: "Ada", color: "#e03131" } as 
 
 const ctxOf = (overrides: Partial<IsolateDispatchCtx> = {}): IsolateDispatchCtx => ({
   traceId: 1,
+  callerPlugin: null,
   principal,
   caps: ["containers:read"],
   isRoot: false,
@@ -789,6 +790,69 @@ describe("load", () => {
 });
 
 describe("dispatch", () => {
+  test("reads only the carried immediate caller, never the request body", async () => {
+    const identify = defineServerAction({
+      name: "identify",
+      title: "Identify caller",
+      caps: [],
+      input: z.looseObject({}),
+      result: z.strictObject({ callerPlugin: z.string().nullable() }),
+    });
+    const fake = host({
+      manifest,
+      actions: [identify],
+      handlers: {
+        identify: async (ctx: GuestCtx) => ({ callerPlugin: ctx.callerPlugin }),
+      },
+    });
+    fake.send({
+      t: "load",
+      pluginId: manifest.id,
+      manifest,
+      dir: "/nowhere",
+      hardenedContract: HARDENED_CONTRACT_VERSION,
+    });
+    await fake.next();
+    fake.send({
+      t: "dispatch",
+      id: "direct",
+      action: "identify",
+      args: { callerPlugin: "test.forged" },
+      ctx: ctxOf(),
+    });
+    expect(await fake.next()).toMatchObject({
+      t: "dispatched",
+      id: "direct",
+      outcome: { ok: true, result: { callerPlugin: null } },
+    });
+    fake.send({
+      t: "dispatch",
+      id: "sibling",
+      action: "identify",
+      args: { callerPlugin: "test.forged" },
+      ctx: ctxOf({ callerPlugin: "test.middle" }),
+    });
+    expect(await fake.next()).toMatchObject({
+      t: "dispatched",
+      id: "sibling",
+      outcome: { ok: true, result: { callerPlugin: "test.middle" } },
+    });
+    const missing = ctxOf();
+    delete missing.callerPlugin;
+    fake.send({
+      t: "dispatch",
+      id: "missing",
+      action: "identify",
+      args: { callerPlugin: "test.forged" },
+      ctx: missing,
+    });
+    expect(await fake.next()).toMatchObject({
+      t: "dispatched",
+      id: "missing",
+      outcome: { ok: false, rule: "refused", message: expect.stringContaining("callerPlugin") },
+    });
+  });
+
   test("serves the ctx over calls correlated to the dispatch, stages emits, answers ok", async () => {
     const fake = host({
       manifest,
