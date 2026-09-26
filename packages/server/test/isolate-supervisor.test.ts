@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { resolve } from "node:path";
+import { existsSync } from "node:fs";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import type { LifecycleCtx, PluginStorage } from "@manifold/plugin";
 import type { EventKind, EventPayload, ManifoldRef, PluginManifest } from "@manifold/protocol";
 import { IsolateDenial, IsolateLoadError, type IsolateState } from "../src/isolate/contract.ts";
@@ -157,11 +160,363 @@ function fixture(overrides: Partial<IsolateSupervisorDeps> = {}): Fixture {
   return { supervisor, logger, runtime, storage: testStore().pluginStorage(PLUGIN_ID), states };
 }
 
+const barriers: string[] = [];
+
+async function guestBarrier() {
+  const dir = await mkdtemp(resolve(tmpdir(), "isolate-profile-"));
+  barriers.push(dir);
+  return {
+    dir,
+    entered: () => until(() => existsSync(resolve(dir, "entered"))),
+    release: () => writeFile(resolve(dir, "release"), ""),
+  };
+}
+
+async function harnessFixture(overrides: Partial<IsolateSupervisorDeps> = {}) {
+  const subject = fixture(overrides);
+  const ref = {
+    pluginId: PLUGIN_ID,
+    manifest: {
+      ...manifest,
+      contributes: {
+        ...manifest.contributes,
+        harness: { id: "test", title: "Test", profileSchema: {}, sessionRef: "typed" as const },
+      },
+    },
+    dir: GUEST_DIR,
+    hardenedContract: 7,
+  };
+  const loaded = await subject.supervisor.load(ref);
+  if (loaded.def.harness === undefined) throw new Error("missing harness");
+  const { ctx, emitted } = actionCtx(subject.storage, subject.runtime);
+  let actions = 0;
+  const guardedCtx = {
+    ...ctx,
+    actions: {
+      call: async () => {
+        actions += 1;
+        return null;
+      },
+    },
+  } as ActionCtx;
+  return {
+    ...subject,
+    ...loaded,
+    ref,
+    harness: loaded.def.harness,
+    ctx: guardedCtx,
+    emitted,
+    actionEffects: () => actions,
+  };
+}
+
+async function unavailable(promise: Promise<unknown>): Promise<void> {
+  let settled = false;
+  const outcome = promise
+    .then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error }),
+    )
+    .finally(() => {
+      settled = true;
+    });
+  // The refusal must not wait for the held guest's release or the dispatch deadline.
+  await until(() => settled);
+  expect(await outcome).toEqual({ error: expect.any(IsolateDenial) });
+  const result = await outcome;
+  if ("error" in result) expect((result.error as IsolateDenial).rule).toBe("unavailable");
+}
+
 afterEach(async () => {
   await Promise.all(open.splice(0).map((supervisor) => supervisor.close()));
+  await Promise.all(barriers.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
 describe("IsolateSupervisor", () => {
+  test("harness requests use the caller's host slices and stage emissions only after a valid answer", async () => {
+    const { supervisor, runtime, storage } = fixture();
+    const declared: PluginManifest = {
+      ...manifest,
+      contributes: {
+        ...manifest.contributes,
+        harness: {
+          id: "test",
+          title: "Test",
+          profileSchema: {},
+          sessionRef: "typed",
+        },
+      },
+    };
+    const { def } = await supervisor.load({
+      pluginId: PLUGIN_ID,
+      manifest: declared,
+      dir: GUEST_DIR,
+      hardenedContract: 7,
+    });
+    if (def.harness === undefined) throw new Error("missing harness");
+    const { ctx, emitted } = actionCtx(storage, runtime);
+    expect(await def.harness.sessions(ctx, { machineId: "m1" })).toEqual([
+      { harness: "test", machineId: "m1", sessionId: "s1" },
+    ]);
+    expect(await storage.get("harness-caller")).toBe(principal.id);
+    expect(emitted).toEqual([
+      {
+        ref: { kind: "plugin", pluginId: PLUGIN_ID },
+        kind: "echoed",
+        payload: { caller: principal.id },
+      },
+    ]);
+    const deniedCtx = { ...ctx, auth: { ...ctx.auth, allows: () => false } };
+    expect(await def.harness.sessions(deniedCtx, { machineId: "m1" })).toEqual([]);
+    const ref = { harness: "test", machineId: "m1", sessionId: "s1" };
+    expect(await def.harness.resolveSession(ctx, ref)).toEqual(ref);
+    expect((await def.harness.profileSchema.safeParseAsync("valid")).success).toBe(true);
+  });
+
+  test.each(["side-effect", "emit", "wrong-kind", "wrong-id", "invalid-result", "hang", "boom"])(
+    "profile validation fails closed for %s without modifying storage",
+    async (profile) => {
+      const { supervisor, storage } = fixture({ dispatchDeadlineMs: 500 });
+      const declared: PluginManifest = {
+        ...manifest,
+        contributes: {
+          ...manifest.contributes,
+          harness: {
+            id: "test",
+            title: "Test",
+            profileSchema: {},
+            sessionRef: "typed",
+          },
+        },
+      };
+      const { def } = await supervisor.load({
+        pluginId: PLUGIN_ID,
+        manifest: declared,
+        dir: GUEST_DIR,
+        hardenedContract: 7,
+      });
+      if (def.harness === undefined) throw new Error("missing harness");
+      await expect(def.harness.profileSchema.safeParseAsync(profile)).rejects.toBeInstanceOf(
+        IsolateDenial,
+      );
+      expect(await storage.get("profile-leak")).toBeNull();
+    },
+  );
+
+  test("a held caller refuses validation before forged live, stale or future IDs can reach sinks", async () => {
+    const f = await harnessFixture();
+    const gate = await guestBarrier();
+    const held = f.harness.sessions(f.ctx, { machineId: `barrier:${gate.dir}` });
+    await gate.entered();
+    try {
+      await unavailable(
+        f.harness.profileSchema.safeParseAsync({
+          rawIds: ["r1", "r0", "r3"],
+        }),
+      );
+      expect(await f.storage.get("profile-leak")).toBeNull();
+      expect(f.actionEffects()).toBe(0);
+      // Refusing a profile does not serialize ordinary dispatches, harness methods or hooks.
+      const [echo, sessions] = await Promise.all([
+        invoke(f.def, "echo", f.ctx, { text: "concurrent" }),
+        f.harness.sessions(f.ctx, { machineId: "other" }),
+        f.lifecycle.onEnable?.({
+          pluginId: PLUGIN_ID,
+          storage: f.storage,
+          now: () => f.runtime.now(),
+          emit: () => {},
+        }),
+      ]);
+      expect(echo).toEqual({ text: "concurrent", count: 1 });
+      expect(sessions).toEqual([{ harness: "test", machineId: "other", sessionId: "s1" }]);
+    } finally {
+      await gate.release();
+      await held;
+    }
+    expect((await f.harness.profileSchema.safeParseAsync("valid")).success).toBe(true);
+  });
+
+  test("held pure validation refuses every request and cannot borrow an unsent caller's ID", async () => {
+    const f = await harnessFixture();
+    await invoke(f.def, "slice", f.ctx, {});
+    const gate = await guestBarrier();
+    const validation = f.harness.profileSchema
+      .safeParseAsync({
+        barrier: gate.dir,
+        rawIds: ["r1", "r3", "r2"],
+      })
+      .catch((error: unknown) => error);
+    await gate.entered();
+    try {
+      await unavailable(f.harness.sessions(f.ctx, { machineId: "unsent" }));
+      await unavailable(invoke(f.def, "echo", f.ctx, { text: "unsent" }));
+      await unavailable(
+        Promise.resolve(
+          f.lifecycle.onEnable!({
+            pluginId: PLUGIN_ID,
+            storage: f.storage,
+            now: () => f.runtime.now(),
+            emit: () => {},
+          }),
+        ),
+      );
+      await unavailable(f.harness.profileSchema.safeParseAsync("valid"));
+      expect(await f.storage.get("harness-caller")).toBeNull();
+      expect(await f.storage.get("count")).toBeNull();
+      expect(f.emitted).toEqual([]);
+    } finally {
+      await gate.release();
+    }
+    expect(await validation).toBeInstanceOf(IsolateDenial);
+    expect(await f.storage.get("profile-leak")).toBeNull();
+    expect(f.actionEffects()).toBe(0);
+    expect((await f.harness.profileSchema.safeParseAsync("valid")).success).toBe(true);
+    expect(await invoke(f.def, "echo", f.ctx, { text: "after" })).toEqual({
+      text: "after",
+      count: 1,
+    });
+  });
+
+  test.each(["r1", "r2", "r3", "unknown"])(
+    "exclusive validation fails closed for raw host calls prefixed %s",
+    async (id) => {
+      const f = await harnessFixture();
+      await invoke(f.def, "slice", f.ctx, {});
+      await unavailable(f.harness.profileSchema.safeParseAsync({ rawIds: [id] }));
+      expect(await f.storage.get("profile-leak")).toBeNull();
+      expect(f.actionEffects()).toBe(0);
+      expect((await f.harness.profileSchema.safeParseAsync("valid")).success).toBe(true);
+    },
+  );
+
+  test("validation waits for neither retained producers nor serving calls: it refuses until drained", async () => {
+    const f = await harnessFixture();
+    let closed = false;
+    let onClose = () => {};
+    const published: unknown[] = [];
+    const close = () => {
+      closed = true;
+      onClose();
+    };
+    const ctx = {
+      ...f.ctx,
+      streams: {
+        open: () => ({
+          epoch: "epoch",
+          get closed() {
+            return closed;
+          },
+          publish: (body: unknown) => {
+            published.push(body);
+          },
+          close,
+          onClose: (listener: () => void) => {
+            onClose = listener;
+            return () => {};
+          },
+        }),
+      },
+    } as ActionCtx;
+    await f.harness.sessions(ctx, { machineId: "producer" });
+    await unavailable(f.harness.profileSchema.safeParseAsync({ rawIds: ["producer"] }));
+    expect(published).toEqual([]);
+    expect(closed).toBe(false);
+    close();
+    expect((await f.harness.profileSchema.safeParseAsync("valid")).success).toBe(true);
+
+    const release = Promise.withResolvers<void>();
+    const gate = await guestBarrier();
+    let serving = false;
+    let finished = false;
+    const blocked = {
+      ...f.ctx,
+      storage: {
+        ...f.storage,
+        set: async (key: string, value: string) => {
+          serving = true;
+          await release.promise;
+          await f.storage.set(key, value);
+          finished = true;
+        },
+      },
+    } as ActionCtx;
+    const answered = f.harness
+      .sessions(blocked, { machineId: `queue-and-answer:${gate.dir}` })
+      .catch((error: unknown) => error);
+    try {
+      await until(() => serving);
+      // Ensure the call is serving before the hostile child prematurely answers.
+      await gate.release();
+      expect(await answered).toBeInstanceOf(IsolateDenial);
+      await unavailable(f.harness.profileSchema.safeParseAsync("valid"));
+      expect(await f.storage.get("queued")).toBeNull();
+    } finally {
+      await gate.release();
+      release.resolve();
+    }
+    await until(() => finished);
+    expect(await f.storage.get("queued")).toBe("value");
+    expect((await f.harness.profileSchema.safeParseAsync("valid")).success).toBe(true);
+  });
+
+  test.each(["deadline", "disconnect", "replacement"])(
+    "validation exclusivity clears after %s",
+    async (ending) => {
+      const f = await harnessFixture({ dispatchDeadlineMs: 2_000 });
+      const gate = await guestBarrier();
+      const validation = f.harness.profileSchema
+        .safeParseAsync({
+          barrier: gate.dir,
+          disconnect: ending === "disconnect",
+        })
+        .catch((error: unknown) => error);
+      await gate.entered();
+      let harness = f.harness;
+      let def = f.def;
+      if (ending === "replacement") {
+        const replacement = await f.supervisor.load(f.ref);
+        def = replacement.def;
+        harness = replacement.def.harness!;
+      } else if (ending === "disconnect") await gate.release();
+      expect(await validation).toBeInstanceOf(IsolateDenial);
+      if (ending !== "replacement") await until(() => f.supervisor.state(PLUGIN_ID) === "stopped");
+      expect((await harness.profileSchema.safeParseAsync("valid")).success).toBe(true);
+      expect(await invoke(def, "echo", f.ctx, { text: "recovered" })).toEqual({
+        text: "recovered",
+        count: 1,
+      });
+      expect(await f.storage.get("profile-leak")).toBeNull();
+      expect(f.actionEffects()).toBe(0);
+    },
+  );
+
+  test("an older guest declaring a harness retains ordinary actions without gaining harness support", async () => {
+    const { supervisor, runtime, storage } = fixture();
+    const declared: PluginManifest = {
+      ...manifest,
+      contributes: {
+        ...manifest.contributes,
+        harness: {
+          id: "test",
+          title: "Test",
+          profileSchema: {},
+          sessionRef: "typed",
+        },
+      },
+    };
+    const { def } = await supervisor.load({
+      pluginId: PLUGIN_ID,
+      manifest: declared,
+      dir: GUEST_DIR,
+      hardenedContract: 6,
+    });
+    expect(def.harness).toBeUndefined();
+    const { ctx } = actionCtx(storage, runtime);
+    expect(await invoke(def, "echo", ctx, { text: "legacy" })).toEqual({
+      text: "legacy",
+      count: 1,
+    });
+  });
   test("load turns the child's report into a def with local names and only the declared hooks", async () => {
     const { supervisor, logger, states } = fixture();
     const { def, lifecycle } = await supervisor.load({

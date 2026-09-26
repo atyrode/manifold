@@ -28,7 +28,7 @@ interface ExternalRunFixture {
 }
 
 /** Register a durable external Agent, then admit its run with the matching runner credential. */
-export function createExternalRun(
+export async function createExternalRun(
   fixture: ExternalRunFixture,
   input: ExternalRunFixtureInput,
   sponsor: AuthContext = fixture.owner,
@@ -38,7 +38,7 @@ export function createExternalRun(
     maxDepth: maxDepth ?? AGENT_RUN_MAX_DEPTH,
     maxDescendants: maxDescendants ?? AGENT_RUN_MAX_DESCENDANTS,
   };
-  const registered = fixture.auth.registerAgent(
+  const registered = await fixture.auth.registerAgent(
     {
       name,
       purpose,

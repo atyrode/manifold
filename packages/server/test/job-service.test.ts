@@ -10,6 +10,7 @@ import {
   PluginBundleSchema,
   JOB_OWNER_PROTOCOL_VERSION,
   MACHINE_SELF_PROVIDER_PROTOCOL_VERSION,
+  MACHINE_AGENT_TOOLS_PROTOCOL_VERSION,
   JobCommandSchema,
   InstanceServiceDescriptionSchema,
   MachineHalfSchema,
@@ -179,6 +180,103 @@ function execute(f: Fixture, jobId = "job", value = "safe") {
     outputs: [],
   });
 }
+
+test("nonterminal Run binding requires dual capability, is one-use, and closes before output settlement", async () => {
+  const f = fixture();
+  try {
+    f.service.setAgentTools({
+      harnessPlugin: () => pluginId,
+      call: async () => {
+        throw new Error("no action was admitted");
+      },
+    });
+    consent(f, "machines:run");
+    consent(f, "jobs:cancel");
+    prove(f);
+    const registered = await f.auth.registerAgent(
+      {
+        name: "bound native",
+        purpose: "Read the assigned machine",
+        harness: "external",
+        context: { profile: {} },
+        grant: {
+          caps: ["containers:read"],
+          targets: ["manifold://"],
+          reach: "subtree",
+          maxRunLifetimeMs: 60_000,
+          delegation: { maxDepth: 0, maxDescendants: 0 },
+          expiresAt: f.runtime.now() + 120_000,
+        },
+      },
+      f.root,
+    );
+    const created = f.auth.createRun(
+      {
+        agentId: registered.agent.agentId,
+        target: { machineId: f.machineId },
+      },
+      f.root,
+    );
+    const args = {
+      jobId: "run-job",
+      machineId: f.machineId,
+      operationId,
+      input: { value: "safe" },
+      outputs: [],
+      agentRun: {
+        runId: created.run.id,
+        sessionId: "host-session",
+        target: { machineId: f.machineId },
+      },
+    };
+    expect(() => f.service.execute(f.root, pluginId, "trace-1", args)).toThrow(
+      "agent_tools_protocol_unsupported",
+    );
+    expect(f.store.getAgentRun(created.run.id)?.session).toBeNull();
+    expect(f.service.jobs.get(args.jobId)).toBeNull();
+    f.channel.protocolVersion = MACHINE_AGENT_TOOLS_PROTOCOL_VERSION;
+    f.owner.protocolVersion = 37;
+    prove(f);
+    expect(() => f.service.execute(f.root, pluginId, "trace-1", args)).toThrow(
+      "agent_tools_protocol_unsupported",
+    );
+    expect(f.store.getAgentRun(created.run.id)?.session).toBeNull();
+    f.owner.protocolVersion = JOB_OWNER_PROTOCOL_VERSION;
+    prove(f);
+    const job = f.service.execute(f.root, pluginId, "trace-1", args);
+    expect(job.request.agentRunId).toBe(created.run.id);
+    expect(job.request.agentRunExpiresAt).toBe(created.run.expiresAt);
+    expect(f.service.publicJob(job).agentRunId).toBe(created.run.id);
+    expect(() =>
+      f.service.execute(f.root, pluginId, "trace-1", { ...args, jobId: "replay" }),
+    ).toThrow("run_launch_unavailable");
+    expect(f.service.jobs.get("replay")).toBeNull();
+    f.service.event(f.channel, {
+      type: "agent_run_request",
+      jobId: job.request.jobId,
+      requestId: "too-early",
+      payload: { type: "describe" },
+    });
+    expect(f.commands.at(-1)).toMatchObject({
+      type: "agent_run_result",
+      requestId: "too-early",
+      payload: { type: "refused", code: "authority_unavailable" },
+    });
+    f.service.cancel(f.root, {
+      kind: "job",
+      machineId: f.machineId,
+      operationId,
+      jobId: args.jobId,
+    });
+    expect(f.store.getAgentRun(created.run.id)?.state).toBe("cancelled");
+    expect(f.service.jobs.get(args.jobId)?.result).toBeNull();
+    expect(() => f.auth.nativeRunAuthority(created.run.id, args.jobId)).toThrow(
+      "agent_run_unavailable",
+    );
+  } finally {
+    f.store.close();
+  }
+});
 
 async function instanceFixture(path = ":memory:", protocolVersion = JOB_OWNER_PROTOCOL_VERSION) {
   const provider: MachineHalf = {
@@ -736,6 +834,12 @@ ALTER TABLE terminals DROP COLUMN launch_recipe;
 ALTER TABLE terminals DROP COLUMN created_by_run_id;
 ALTER TABLE terminals DROP COLUMN session;
 DROP TABLE principal_access_pauses;
+DROP INDEX agent_runs_native_job;
+ALTER TABLE agent_runs DROP COLUMN tools_json;
+ALTER TABLE agent_runs DROP COLUMN launch_target_json;
+ALTER TABLE agent_runs DROP COLUMN native_job_id;
+ALTER TABLE agent_runs DROP COLUMN native_credential_json;
+ALTER TABLE agent_runs DROP COLUMN native_call_ids_json;
 UPDATE meta SET value='37' WHERE key='schema_version';
 `);
     f.service.offline(f.channel);

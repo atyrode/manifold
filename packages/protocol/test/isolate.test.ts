@@ -181,6 +181,42 @@ describe("the served ctx slices and host methods", () => {
 });
 
 describe("the isolate frames", () => {
+  test("harness methods carry authority only for execution and reject extra credential fields", () => {
+    const ctx = {
+      traceId: 1,
+      principal: { id: "p1", kind: "human", name: "Pat", color: "#123456" },
+      caps: [],
+      isRoot: false,
+      containerScope: null,
+      now: 1,
+    };
+    const profile = { t: "harness", id: "h1", request: { method: "validateProfile", profile: {} } };
+    const sessions = {
+      t: "harness",
+      id: "h2",
+      request: { method: "sessions", target: { machineId: "m1" } },
+      ctx,
+    };
+    expect(IsolateHostFrameSchema.safeParse(profile).success).toBe(true);
+    expect(IsolateHostFrameSchema.safeParse({ ...profile, ctx }).success).toBe(false);
+    expect(IsolateHostFrameSchema.safeParse(sessions).success).toBe(true);
+    expect(IsolateHostFrameSchema.safeParse({ ...sessions, ctx: undefined }).success).toBe(false);
+    expect(
+      IsolateHostFrameSchema.safeParse({
+        ...sessions,
+        request: { ...sessions.request, token: "secret" },
+      }).success,
+    ).toBe(false);
+    expect(
+      IsolateHostFrameSchema.safeParse({
+        ...sessions,
+        request: {
+          method: "resolveSession",
+          ref: { harness: "test", machineId: "m1", sessionId: "s1" },
+        },
+      }).success,
+    ).toBe(true);
+  });
   test("supported older guests retain admission and load/result declarations without text metadata", () => {
     const action = {
       name: "vendor.thing.read",
@@ -195,7 +231,7 @@ describe("the isolate frames", () => {
       maxArrayItems: 4,
       maxResultBytes: 256,
     };
-    for (const contract of [1, 2, 3, 4, HARDENED_CONTRACT_VERSION]) {
+    for (const contract of [1, 2, 3, 4, 5, 6, HARDENED_CONTRACT_VERSION]) {
       expect(HARDENED_CONTRACT_COMPAT_VERSIONS.has(contract)).toBe(true);
       expect(
         IsolateHostFrameSchema.safeParse({

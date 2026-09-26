@@ -1,5 +1,10 @@
 import { z } from "zod";
-import { JobProgressEventSchema, MachineOperationSchema } from "./jobs.ts";
+import {
+  AGENT_TOOL_CHUNK_CHARS,
+  AgentToolPayloadSchema,
+  JobProgressEventSchema,
+  MachineOperationSchema,
+} from "./jobs.ts";
 import { SERVICE_FRAME_BYTES, ServiceCallSchema } from "./services.ts";
 
 export const WORKER_CONTEXT_FD_ENV = "MANIFOLD_JOB_CONTEXT_FD";
@@ -81,3 +86,24 @@ export type ServiceReady = z.infer<typeof ServiceReadySchema>;
 export type ServiceReadyResult = z.infer<typeof ServiceReadyResultSchema>;
 export type ServiceReadyRefusal = z.infer<typeof ServiceReadyRefusalSchema>;
 export type WorkerProgress = z.infer<typeof WorkerProgressSchema>;
+
+/** Identity belongs to the owning JobContext, not this untrusted worker frame. */
+export const WorkerAgentRunCallSchema = z.strictObject({
+  type: z.literal("agent_run"),
+  requestId: ServiceCallSchema.shape.requestId,
+  payload: AgentToolPayloadSchema,
+});
+export const WorkerAgentRunCancelSchema = z.strictObject({
+  type: z.literal("agent_run_cancel"),
+  requestId: ServiceCallSchema.shape.requestId,
+});
+export const WorkerAgentRunResultSchema = z.strictObject({
+  type: z.literal("agent_run_result"),
+  requestId: ServiceCallSchema.shape.requestId,
+  seq: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  end: z.boolean(),
+  data: z.string().max(AGENT_TOOL_CHUNK_CHARS),
+});
+export type WorkerAgentRunCall = z.infer<typeof WorkerAgentRunCallSchema>;
+export type WorkerAgentRunCancel = z.infer<typeof WorkerAgentRunCancelSchema>;
+export type WorkerAgentRunResult = z.infer<typeof WorkerAgentRunResultSchema>;

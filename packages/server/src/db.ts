@@ -9,7 +9,7 @@ import { JOB_SCHEDULE_SCHEMA_SQL } from "./job-schedules.ts";
 import { migrateToDurableAgents } from "./migrate-agents.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 44;
+export const SCHEMA_VERSION = 45;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
@@ -983,6 +983,16 @@ INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','43');
   44: `
 ALTER TABLE terminals ADD COLUMN session TEXT;
 INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','44');
+`,
+  /** Exact tool selections and one-use owner bindings never upgrade existing Runs. */
+  45: `
+ALTER TABLE agent_runs ADD COLUMN tools_json TEXT;
+ALTER TABLE agent_runs ADD COLUMN launch_target_json TEXT;
+ALTER TABLE agent_runs ADD COLUMN native_job_id TEXT;
+ALTER TABLE agent_runs ADD COLUMN native_credential_json TEXT;
+ALTER TABLE agent_runs ADD COLUMN native_call_ids_json TEXT NOT NULL DEFAULT '[]';
+CREATE UNIQUE INDEX agent_runs_native_job ON agent_runs(native_job_id) WHERE native_job_id IS NOT NULL;
+INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','45');
 `,
 };
 

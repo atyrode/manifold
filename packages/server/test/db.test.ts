@@ -110,6 +110,14 @@ test("terminal session migration preserves unknown historical identity and rejec
         },
       },
     });
+    store.db.exec(`
+DROP INDEX agent_runs_native_job;
+ALTER TABLE agent_runs DROP COLUMN tools_json;
+ALTER TABLE agent_runs DROP COLUMN launch_target_json;
+ALTER TABLE agent_runs DROP COLUMN native_job_id;
+ALTER TABLE agent_runs DROP COLUMN native_credential_json;
+ALTER TABLE agent_runs DROP COLUMN native_call_ids_json;
+`);
     store.db.exec("ALTER TABLE terminals DROP COLUMN session");
     store.db.exec("UPDATE meta SET value='43' WHERE key='schema_version'");
     store.close();
@@ -2528,6 +2536,7 @@ CREATE TABLE terminals(
 );
 CREATE TABLE machines(id TEXT PRIMARY KEY, name TEXT, token_id TEXT, last_seen INTEGER,
   owner_host_id TEXT, draining INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE agent_runs(id TEXT PRIMARY KEY);
 INSERT INTO terminals VALUES ('legacy','machine','home','author',NULL,'kept','exited',NULL,1,NULL);
 CREATE TABLE machine_jobs(job_id TEXT PRIMARY KEY, machine_id TEXT, created_at INTEGER, request TEXT);
 INSERT INTO machine_jobs VALUES
@@ -2594,6 +2603,12 @@ ALTER TABLE machines DROP COLUMN last_refusal_code;
 ALTER TABLE machines DROP COLUMN last_refusal_at;
 ALTER TABLE terminals DROP COLUMN created_by_run_id;
 ALTER TABLE terminals DROP COLUMN session;
+DROP INDEX agent_runs_native_job;
+ALTER TABLE agent_runs DROP COLUMN tools_json;
+ALTER TABLE agent_runs DROP COLUMN launch_target_json;
+ALTER TABLE agent_runs DROP COLUMN native_job_id;
+ALTER TABLE agent_runs DROP COLUMN native_credential_json;
+ALTER TABLE agent_runs DROP COLUMN native_call_ids_json;
 UPDATE meta SET value='41' WHERE key='schema_version';
 `);
     db.close();

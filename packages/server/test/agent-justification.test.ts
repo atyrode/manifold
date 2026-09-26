@@ -77,7 +77,7 @@ const childArgs = {
 };
 
 async function newRun(fix: Fixture, options: Partial<ExternalRunFixtureInput> = {}) {
-  const created = createExternalRun(fix, {
+  const created = await createExternalRun(fix, {
     name: "reader",
     purpose: "Read a bounded part of the sponsored task.",
     target: "manifold://",
@@ -322,7 +322,7 @@ describe("bound agent declarations", () => {
   test("human and legacy agent credentials never acquire claims from supplied options", async () => {
     const fix = await fixture();
     const options = { agentJustification: "token=fixture-only-value" };
-    const registeredRun = createExternalRun(fix, {
+    const registeredRun = await createExternalRun(fix, {
       name: "human-created run",
       purpose: "Keep human claims separate from run declarations.",
       target: "manifold://",

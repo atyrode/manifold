@@ -516,7 +516,7 @@ describe("core.access ladder", () => {
   test("pausing an active Run principal does not settle its work", async () => {
     const fix = await fixture();
     const containerId = accessContainer(fix);
-    const created = createExternalRun(fix, {
+    const created = await createExternalRun(fix, {
       name: "paused runner",
       purpose: "Prove suspension leaves active work intact",
       target: formatManifoldUri({ kind: "container", containerId }),

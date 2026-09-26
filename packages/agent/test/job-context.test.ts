@@ -2,9 +2,209 @@ import { describe, expect, test } from "bun:test";
 import { adoptPrivateSocket } from "../src/job-files.ts";
 import { dlopen, FFIType } from "bun:ffi";
 import { JobContext } from "../src/job-context.ts";
-import type { JobEvent } from "@manifold/protocol";
+import {
+  AGENT_TOOL_CHUNK_CHARS,
+  WorkerAgentRunResultSchema,
+  type JobEvent,
+  type WorkerAgentRunResult,
+} from "@manifold/protocol";
+import { FrameReader } from "../src/ipc-framing.ts";
+
+function agentChannel(
+  callbacks: Pick<
+    ConstructorParameters<typeof JobContext>[1],
+    "agentRun" | "serviceReady" | "progress"
+  > = {},
+) {
+  const native = dlopen("libc.so.6", { dup: { args: [FFIType.i32], returns: FFIType.i32 } });
+  const failed = Promise.withResolvers<string>();
+  const context = new JobContext("signed-job", {
+    invoke() {
+      throw new Error("unexpected invocation");
+    },
+    async command() {
+      throw new Error("unexpected command");
+    },
+    failure: failed.resolve,
+    ...callbacks,
+  });
+  const child = adoptPrivateSocket(native.symbols.dup(context.childFd));
+  context.releaseChildFd();
+  const reader = new FrameReader(128 * 1024);
+  const frames: unknown[] = [];
+  const waiters: ((frame: unknown) => void)[] = [];
+  child.on("data", (bytes: Buffer) => {
+    for (const line of reader.push(bytes)) {
+      const frame: unknown = JSON.parse(line);
+      const waiter = waiters.shift();
+      if (waiter) waiter(frame);
+      else frames.push(frame);
+    }
+  });
+  child.on("error", () => {});
+  return {
+    context,
+    child,
+    failed: failed.promise,
+    send(frame: unknown) {
+      child.write(`${JSON.stringify(frame)}\n`);
+    },
+    next(): Promise<unknown> {
+      if (frames.length) return Promise.resolve(frames.shift());
+      const frame = Promise.withResolvers<unknown>();
+      waiters.push(frame.resolve);
+      return frame.promise;
+    },
+    close() {
+      context.close();
+      child.destroy();
+      native.close();
+    },
+  };
+}
 
 describe.skipIf(process.platform !== "linux")("parent-bound private invocation channel", () => {
+  test("queued cancellation bypasses a blocked serial service request and never reaches the hub", async () => {
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const cancelled = Promise.withResolvers<void>();
+    let forwarded = false;
+    const c = agentChannel({
+      serviceReady: async () => {
+        entered.resolve();
+        await release.promise;
+      },
+      agentRun: async () => {
+        forwarded = true;
+        throw new Error("cancelled call forwarded");
+      },
+      progress: () => cancelled.resolve(),
+    });
+    try {
+      c.send({ type: "service_ready", requestId: "hold", port: 4321 });
+      await entered.promise;
+      c.send({ type: "agent_run", requestId: "queued", payload: { type: "describe" } });
+      c.send({ type: "agent_run_cancel", requestId: "queued" });
+      c.send({ type: "progress", stage: "cancelled" });
+      await cancelled.promise;
+      release.resolve();
+      expect(await c.next()).toMatchObject({ type: "service_ready_result", ok: true });
+      const reply = WorkerAgentRunResultSchema.parse(await c.next());
+      expect(JSON.parse(reply.data)).toEqual({ type: "refused", code: "cancelled", traceId: null });
+      expect(forwarded).toBe(false);
+    } finally {
+      release.resolve();
+      c.close();
+    }
+  });
+
+  test("in-flight cancellation aborts the relay immediately without claiming rollback", async () => {
+    const entered = Promise.withResolvers<AbortSignal>();
+    const c = agentChannel({
+      agentRun: async (_id, _payload, signal) => {
+        entered.resolve(signal);
+        return Promise.withResolvers<unknown>().promise;
+      },
+    });
+    try {
+      c.send({
+        type: "agent_run",
+        requestId: "running",
+        payload: { type: "invoke", door: "fixture.write", args: {} },
+      });
+      const signal = await entered.promise;
+      c.send({ type: "agent_run_cancel", requestId: "running" });
+      const reply = WorkerAgentRunResultSchema.parse(await c.next());
+      expect(signal.aborted).toBe(true);
+      expect(JSON.parse(reply.data)).toEqual({
+        type: "unknown",
+        reason: "cancelled",
+        traceId: null,
+      });
+    } finally {
+      c.close();
+    }
+  });
+
+  test("closed tool admission refuses subsequent requests while preserving service readiness", async () => {
+    let forwarded = false;
+    const c = agentChannel({
+      agentRun: async () => {
+        forwarded = true;
+        return null;
+      },
+      serviceReady: async () => {},
+    });
+    try {
+      c.context.abortAgentRuns();
+      c.send({ type: "agent_run", requestId: "stale", payload: { type: "describe" } });
+      const reply = WorkerAgentRunResultSchema.parse(await c.next());
+      expect(JSON.parse(reply.data)).toEqual({ type: "refused", code: "cancelled", traceId: null });
+      expect(forwarded).toBe(false);
+      c.send({ type: "service_ready", requestId: "ready", port: 4321 });
+      expect(await c.next()).toMatchObject({ type: "service_ready_result", ok: true });
+    } finally {
+      c.close();
+    }
+  });
+
+  test("an unbound context cannot borrow a Run or accept a worker-supplied job identity", async () => {
+    const c = agentChannel();
+    try {
+      c.send({ type: "agent_run", requestId: "unbound", payload: { type: "describe" } });
+      const reply = WorkerAgentRunResultSchema.parse(await c.next());
+      expect(JSON.parse(reply.data)).toEqual({
+        type: "refused",
+        code: "binding_unavailable",
+        traceId: null,
+      });
+      c.send({
+        type: "agent_run",
+        requestId: "borrowed",
+        jobId: "other-job",
+        payload: { type: "describe" },
+      });
+      expect(await c.failed).toBe("context_protocol_error");
+    } finally {
+      c.close();
+    }
+  });
+
+  test("large opaque replies flush sequenced chunks under real socket backpressure", async () => {
+    const entered = Promise.withResolvers<void>();
+    const data = JSON.stringify({ body: "界".repeat(500_000) });
+    const c = agentChannel({
+      agentRun: async () => {
+        entered.resolve();
+        return JSON.parse(data);
+      },
+    });
+    try {
+      c.child.pause();
+      c.send({ type: "agent_run", requestId: "large", payload: { type: "policy" } });
+      await entered.promise;
+      // Let the socket fill while the consumer is paused; the owner must wait, not enqueue 1.5 MiB.
+      const turn = Promise.withResolvers<void>();
+      setImmediate(turn.resolve);
+      await turn.promise;
+      c.child.resume();
+      const chunks: string[] = [];
+      let chunk: WorkerAgentRunResult;
+      do {
+        chunk = WorkerAgentRunResultSchema.parse(await c.next());
+        expect(chunk.requestId).toBe("large");
+        expect(chunk.seq).toBe(chunks.length);
+        expect(chunk.data.length).toBeLessThanOrEqual(AGENT_TOOL_CHUNK_CHARS);
+        chunks.push(chunk.data);
+      } while (!chunk.end);
+      expect(chunks.join("")).toBe(data);
+      c.send({ type: "agent_run", requestId: "next", payload: { type: "describe" } });
+      expect(WorkerAgentRunResultSchema.parse(await c.next()).requestId).toBe("next");
+    } finally {
+      c.close();
+    }
+  });
+
   test("peer exit with unread context is closure rather than an I/O failure", async () => {
     const closed = Promise.withResolvers<string>();
     const context = new JobContext("exiting-parent", {

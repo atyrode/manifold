@@ -133,9 +133,12 @@ async function fixture(settingsPlugins: readonly ServerPluginDef[] = []) {
     );
     return { actor, created };
   };
-  const newRun = (sponsor: AuthContext = owner, overrides: Partial<ExternalRunFixtureInput> = {}) =>
+  const newRun = async (
+    sponsor: AuthContext = owner,
+    overrides: Partial<ExternalRunFixtureInput> = {},
+  ) =>
     admitted(
-      createExternalRun(
+      await createExternalRun(
         { auth, runtime, owner },
         {
           name: `admission ${runtime.newId()}`,
@@ -169,7 +172,7 @@ async function fixture(settingsPlugins: readonly ServerPluginDef[] = []) {
       ),
     );
   };
-  const { actor, created } = newRun();
+  const { actor, created } = await newRun();
   const request = {
     jobId: "admission-job",
     machineId,
@@ -224,7 +227,7 @@ async function fixture(settingsPlugins: readonly ServerPluginDef[] = []) {
 describe("declarations follow real first-party admission", () => {
   test("create target scope and delegated capability refusers precede a missing claim", async () => {
     const f = await fixture();
-    const scoped = f.newRun(f.owner, { target: "manifold://container/inside" });
+    const scoped = await f.newRun(f.owner, { target: "manifold://container/inside" });
     expect(
       await f.host.dispatch(scoped.actor, "core.access.createChildRun", {
         ...child,
@@ -251,7 +254,7 @@ describe("declarations follow real first-party admission", () => {
 
   test("renewal rejects an unrelated run before missing or invalid declarations", async () => {
     const f = await fixture();
-    const unrelated = f.newRun();
+    const unrelated = await f.newRun();
     for (const options of [undefined, { agentJustification: " " }]) {
       expect(
         await f.host.dispatch(
@@ -592,6 +595,9 @@ async function transformingGuest() {
         pending.delete(id);
       });
     },
+    harness: async () => {
+      throw new Error("no guest harness");
+    },
     hook: async () => {
       throw new Error("no guest lifecycle hook");
     },
@@ -648,7 +654,7 @@ describe("guest parsing before declarations", () => {
   test("authority checks use the real transformed reference and outrank invalid claims", async () => {
     const guest = await transformingGuest();
     const f = await fixture([guest.def]);
-    const scoped = f.newRun(f.owner, { target: "manifold://container/inside" });
+    const scoped = await f.newRun(f.owner, { target: "manifold://container/inside" });
     expect(
       await f.host.dispatch(
         scoped.actor,

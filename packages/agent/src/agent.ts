@@ -1,4 +1,5 @@
 import {
+  AGENT_TOOL_MAX_CALLS,
   DIAL_LIVENESS_TIMEOUT_MS,
   PROTOCOL_VERSION,
   SERVER_TO_AGENT_MESSAGE_TYPES,
@@ -138,6 +139,15 @@ export class Agent {
   private jobOwnerDialing = false;
   private jobOwnerTimer: Timer | null = null;
   private readonly jobOutputGaps = new Set<string>();
+  private readonly agentCalls = new Map<
+    string,
+    {
+      jobId: string;
+      requestId: string;
+      socket: WebSocket;
+      owner: JobOwnerLink;
+    }
+  >();
 
   private seat: Seat | null = null;
   /** The link whose `attach` is outstanding; becomes the seat on `attached`. */
@@ -380,6 +390,7 @@ export class Agent {
           closed = true;
           if (acquired && this.jobOwnerLink === acquired) {
             this.jobOwnerLink = null;
+            this.agentCalls.clear();
             this.socket?.close(4011, "job owner unavailable");
           }
           if (!this.stopped && this.jobOwnerTimer === null)
@@ -411,6 +422,58 @@ export class Agent {
 
   private onJobEvent(event: JobEvent): void {
     const socket = this.socket;
+    if (event.type === "agent_run_request") {
+      const owner = this.jobOwnerLink;
+      if (!owner) return; // The abandoned owner seat cancels its own pending calls.
+      const key = JSON.stringify([event.jobId, event.requestId]);
+      if (
+        socket === null ||
+        this.helloSent !== socket ||
+        !this.serverEpochValue ||
+        socket.readyState !== WebSocket.OPEN ||
+        this.agentCalls.size >= AGENT_TOOL_MAX_CALLS
+      ) {
+        owner.send({
+          type: "agent_run_result",
+          jobId: event.jobId,
+          requestId: event.requestId,
+          payload: {
+            type: "refused",
+            code:
+              this.agentCalls.size >= AGENT_TOOL_MAX_CALLS ? "saturated" : "authority_unavailable",
+            traceId: null,
+          },
+        });
+        return;
+      }
+      if (this.agentCalls.has(key)) {
+        socket.close(4002, "agent request correlation failed");
+        return;
+      }
+      this.agentCalls.set(key, { jobId: event.jobId, requestId: event.requestId, socket, owner });
+      if (socket.bufferedAmount > MAX_SOCKET_BUFFERED_AMOUNT_BYTES) {
+        socket.close(4009, "outbound buffer exceeded");
+        this.onDisconnect(socket);
+        return;
+      }
+      try {
+        this.send(socket, { type: "job_event", event });
+      } catch {
+        this.onDisconnect(socket);
+      }
+      return;
+    }
+    if (event.type === "agent_run_cancel") {
+      const pending = this.agentCalls.get(JSON.stringify([event.jobId, event.requestId]));
+      if (pending && pending.socket === socket && pending.owner === this.jobOwnerLink) {
+        try {
+          this.send(pending.socket, { type: "job_event", event });
+        } catch {
+          this.onDisconnect(pending.socket);
+        }
+      }
+      return;
+    }
     if (socket === null || this.helloSent !== socket || socket.readyState !== WebSocket.OPEN) {
       if (event.type === "output") this.jobOutputGaps.add(event.jobId);
       return;
@@ -529,6 +592,17 @@ export class Agent {
         return;
       }
       case "job_command":
+        if (msg.command.type === "agent_run_result") {
+          const key = JSON.stringify([msg.command.jobId, msg.command.requestId]);
+          const pending = this.agentCalls.get(key);
+          if (!pending || pending.socket !== socket || pending.owner !== this.jobOwnerLink) {
+            socket.close(4002, "agent result correlation failed");
+            return;
+          }
+          this.agentCalls.delete(key);
+          pending.owner.send(msg.command);
+          return;
+        }
         if (this.jobOwnerLink) this.jobOwnerLink.send(msg.command);
         else
           this.send(socket, {
@@ -673,6 +747,16 @@ export class Agent {
   private onDisconnect(socket: WebSocket, code?: number, reason?: string): void {
     if (this.socket !== socket) return; // stale/superseded socket
     this.socket = null;
+    for (const [key, pending] of this.agentCalls) {
+      if (pending.socket !== socket) continue;
+      this.agentCalls.delete(key);
+      pending.owner.send({
+        type: "agent_run_result",
+        jobId: pending.jobId,
+        requestId: pending.requestId,
+        payload: { type: "unknown", reason: "disconnected", traceId: null },
+      });
+    }
     if (this.helloPending === socket) this.helloPending = null;
     if (this.helloSent === socket) this.helloSent = null;
     this.machineId = null;

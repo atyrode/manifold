@@ -10,10 +10,9 @@ import {
 import { ReportRunActivityRequestSchema } from "./agents.ts";
 import { GrantNodeSchema } from "./grants.ts";
 import {
-  ACTION_RESULT_PROJECTION_MAX_BYTES,
+  ActionResultApprovalsSchema,
   ActionDenialSchema,
   ActionProjectedResultSchema,
-  ActionResultProjectionDigestSchema,
   ActionSummarySchema,
 } from "./plugin.ts";
 
@@ -51,25 +50,7 @@ export const ActionRunnerBindSchema = z.union([
 export type ActionRunnerBind = z.infer<typeof ActionRunnerBindSchema>;
 
 /** Trusted launcher configuration only; model frames cannot select an output policy. */
-export const ActionRunnerReadResultsSchema = z
-  .array(
-    z.strictObject({
-      door: z
-        .string()
-        .min(1)
-        .max(256)
-        .refine((door) => !door.includes("*")),
-      contractDigest: ActionResultProjectionDigestSchema,
-      maxResultBytes: z
-        .number()
-        .int()
-        .positive()
-        .max(ACTION_RESULT_PROJECTION_MAX_BYTES)
-        .optional(),
-    }),
-  )
-  .max(64)
-  .refine((entries) => new Set(entries.map((entry) => entry.door)).size === entries.length);
+export const ActionRunnerReadResultsSchema = ActionResultApprovalsSchema;
 export type ActionRunnerReadResults = z.infer<typeof ActionRunnerReadResultsSchema>;
 
 /** Returned bytes are source data, never part of the run's policy or instructions. */

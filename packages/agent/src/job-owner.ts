@@ -5,6 +5,7 @@ import type { Duplex } from "node:stream";
 import { connectWorkloadLoopback } from "./job-listener-proof.ts";
 import {
   canonicalJobJson,
+  AGENT_TOOL_MAX_CALLS,
   JOB_OWNER_PROTOCOL_VERSION,
   jobOwnerInstallRestoresProjection,
   JobCommandSchema,
@@ -176,6 +177,14 @@ interface OwnedJob {
   serviceProxies: Map<string, JobServiceProxy>;
   runtimeServices: Map<string, RuntimeService>;
   serviceRuntime: RuntimeService | undefined;
+  agentCalls: Map<
+    string,
+    {
+      seat: AbortSignal;
+      cancelled: boolean;
+      resolve: ((payload: unknown) => void) | null;
+    }
+  >;
   progress: JobProgressCoalescer;
   /** Totals across the job's metered calls, or null when it bound no metered operation.
    * They belong to the job, not to a proxy, and settle with its result. */
@@ -317,6 +326,7 @@ export class MachineJobOwner {
     this.options.journal.append({ kind: "drain", draining });
     this.draining = draining;
     if (draining) for (const tunnel of this.serviceTunnels.values()) tunnel.controller.abort();
+    if (draining) for (const job of this.jobs.values()) job.context?.abortAgentRuns();
   }
   get identity(): JobOwner {
     const journal = this.options.journal;
@@ -378,6 +388,22 @@ export class MachineJobOwner {
           this.publishResources();
           for (const installation of this.installs.values())
             this.publishInstallation(installation.command);
+          return;
+        }
+        case "agent_run_result": {
+          if (parentJobId !== null) throw new Error("context_command_forbidden");
+          const job = this.requireJob(command.jobId);
+          const pending = job.agentCalls.get(command.requestId);
+          if (!pending || pending.seat !== this.seatController.signal)
+            throw new Error("agent_result_mismatch");
+          if (pending.cancelled) {
+            pending.cancelled = false;
+            return;
+          }
+          if (!pending.resolve) throw new Error("agent_result_duplicate");
+          const resolve = pending.resolve;
+          pending.resolve = null;
+          resolve(command.payload);
           return;
         }
         case "invocation_reply":
@@ -1031,6 +1057,75 @@ export class MachineJobOwner {
     // The worker is sandboxed: it learns its call's fate, never the owner's state (#708), and an
     // undecided authorization now names that state (#841).
     return reply.ok ? reply : { ...reply, refusal: guestServiceRefusal(reply.refusal) };
+  }
+
+  private async jobAgentRun(
+    job: OwnedJob,
+    requestId: string,
+    payload: unknown,
+    signal: AbortSignal,
+  ): Promise<unknown> {
+    // This identity is the signed reservation's, never a parent, guest or request selector.
+    if (
+      !job.request.agentRunId ||
+      !job.request.agentRunExpiresAt ||
+      job.request.terminal ||
+      job.request.parent
+    )
+      return { type: "refused", code: "binding_unavailable", traceId: null };
+    if (
+      signal.aborted ||
+      job.cancelRequested ||
+      job.emptyObserved ||
+      job.serviceController.signal.aborted ||
+      !ACTIVE[job.result.state] ||
+      job.request.agentRunExpiresAt <= Date.now()
+    )
+      return { type: "refused", code: "cancelled", traceId: null };
+    const sink = this.sink;
+    if (!sink || this.draining || this.seatController.signal.aborted)
+      return { type: "refused", code: "authority_unavailable", traceId: null };
+    if (job.agentCalls.has(requestId) || job.agentCalls.size >= AGENT_TOOL_MAX_CALLS)
+      return { type: "refused", code: "limit_exceeded", traceId: null };
+    const reply = Promise.withResolvers<unknown>();
+    const pending = {
+      seat: this.seatController.signal,
+      cancelled: false,
+      resolve: reply.resolve as ((payload: unknown) => void) | null,
+    };
+    job.agentCalls.set(requestId, pending);
+    const lifetime = AbortSignal.any([signal, pending.seat, job.serviceController.signal]);
+    const abort = () => {
+      if (pending.cancelled || !pending.resolve) return;
+      pending.cancelled = true;
+      pending.resolve = null;
+      try {
+        if (this.sink === sink && !pending.seat.aborted)
+          sink({ type: "agent_run_cancel", jobId: job.request.jobId, requestId });
+      } catch {
+        // Losing the cancellation transport cannot establish whether the effect committed.
+      }
+      reply.resolve({ type: "unknown", reason: "interrupted", traceId: null });
+    };
+    lifetime.addEventListener("abort", abort, { once: true });
+    const expires = setTimeout(
+      abort,
+      Math.min(2_147_483_647, Math.max(1, job.request.agentRunExpiresAt - Date.now())),
+    );
+    try {
+      // A failed enqueue cannot establish that the hub did not receive the action.
+      try {
+        if (!sink({ type: "agent_run_request", jobId: job.request.jobId, requestId, payload }))
+          abort();
+      } catch {
+        abort();
+      }
+      return await reply.promise;
+    } finally {
+      clearTimeout(expires);
+      lifetime.removeEventListener("abort", abort);
+      pending.resolve = null;
+    }
   }
 
   private async closeServices(job: OwnedJob, retiring = false): Promise<void> {
@@ -2153,7 +2248,11 @@ export class MachineJobOwner {
     }
     // Retirement must latch while native launch is in flight, without waiting for it
     // (or its eventual exit) on the command transport.
-    if (command.type !== "retire" || !this.options.journal.job(command.jobId))
+    if (
+      (command.type !== "retire" &&
+        !(command.type === "cancel" && this.jobs.get(command.jobId)?.request.agentRunId)) ||
+      !this.options.journal.job(command.jobId)
+    )
       await this.pendingStarts.get(command.jobId);
     const job = this.jobs.get(command.jobId) ?? this.options.journal.job(command.jobId);
     if (job) {
@@ -2218,6 +2317,13 @@ export class MachineJobOwner {
   ): Promise<void> {
     const { request, permit } = command;
     const { requestDigest } = request;
+    if (
+      (request.agentRunId !== undefined) !== (request.agentRunExpiresAt !== undefined) ||
+      (request.agentRunId && (request.parent || request.terminal || request.service))
+    )
+      throw new Error("agent_run_binding_invalid");
+    if (request.agentRunExpiresAt !== undefined && request.agentRunExpiresAt <= Date.now())
+      throw new Error("agent_run_expired");
     const existing = this.jobs.get(request.jobId);
     if (existing) {
       if (request.terminal) throw new Error("terminal_admission_reused");
@@ -2235,6 +2341,11 @@ export class MachineJobOwner {
       this.emit({ type: "result", result: retained.result });
       return;
     }
+    if (
+      request.agentRunId &&
+      [...this.jobs.values()].some((job) => job.request.agentRunId === request.agentRunId)
+    )
+      throw new Error("agent_run_binding_reused");
     if ([...this.jobs.values()].filter((job) => !job.emptyObserved).length >= 64)
       throw new Error("owner_active_job_limit");
     const now = Date.now();
@@ -2473,6 +2584,7 @@ export class MachineJobOwner {
         },
         command: (next) => this.execute(next, request.jobId),
         service: (call, signal) => this.jobServiceCall(job, call, signal),
+        agentRun: (requestId, payload, signal) => this.jobAgentRun(job, requestId, payload, signal),
         serviceReady: (port) => this.announceServiceReady(job, port),
         progress: (frame) => job.progress.report(frame),
         activity: () => {
@@ -2578,6 +2690,9 @@ export class MachineJobOwner {
         })),
         delegatedCgroup: parent?.handle?.childDelegation ?? this.options.delegatedCgroup,
         limits: request.limits,
+        ...(request.agentRunExpiresAt !== undefined
+          ? { deadlineAt: request.agentRunExpiresAt }
+          : {}),
         ...(job.retirement
           ? { persistentService: true as const, retirementSignal: job.retirement.signal }
           : {}),
@@ -2960,6 +3075,7 @@ export class MachineJobOwner {
       resolveEmpty: () => {
         if (job.emptyObserved) return;
         job.emptyObserved = true;
+        job.context?.abortAgentRuns();
         empty.resolve();
         this.emitEmpty(job);
       },
@@ -2978,6 +3094,7 @@ export class MachineJobOwner {
       serviceProxies: new Map(),
       runtimeServices: new Map(),
       serviceRuntime: undefined,
+      agentCalls: new Map(),
       progress: new JobProgressCoalescer((progress) => this.emitProgress(job, progress)),
       inferenceUsage: null,
       inferenceValid: true,

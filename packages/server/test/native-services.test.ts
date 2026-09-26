@@ -1232,6 +1232,9 @@ async function orchestratorHost(f: {
       } satisfies IsolateHostFrame);
       return pending.promise;
     },
+    harness: async () => {
+      throw new Error("no harness declared by this service fixture");
+    },
     hook: async () => {
       throw new Error("no lifecycle hook declared");
     },

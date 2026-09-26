@@ -84,6 +84,7 @@ function scripted(outcome: IsolateDispatchOutcome): IsolateTransport & {
   return {
     dispatches,
     hooks,
+    harness: async () => outcome,
     dispatch: async (action, args) => {
       dispatches.push({ action, args });
       return outcome;
@@ -166,6 +167,74 @@ function ctxWith(
 }
 
 describe("buildIsolateDef", () => {
+  test("only declared matching harness metadata exposes a harness", () => {
+    const metadata = {
+      id: "test",
+      title: "Test",
+      profileSchema: { type: "string" },
+      sessionRef: "typed" as const,
+    };
+    const declared = { ...manifest, contributes: { ...manifest.contributes, harness: metadata } };
+    const transport = scripted({ ok: true, result: null, emits: [] });
+    expect(buildIsolateDef(declared, loaded([]), transport).def.harness).toBeUndefined();
+    expect(() =>
+      buildIsolateDef(manifest, { ...loaded([]), harness: metadata }, transport),
+    ).toThrow(IsolateLoadError);
+    expect(() =>
+      buildIsolateDef(
+        declared,
+        {
+          ...loaded([]),
+          harness: { ...metadata, profileSchema: { type: "number" } },
+        },
+        transport,
+      ),
+    ).toThrow(IsolateLoadError);
+  });
+
+  test("profile validation awaits the guest and does not replace async refinements with JSON Schema", async () => {
+    const metadata = {
+      id: "test",
+      title: "Test",
+      profileSchema: { type: "string" },
+      sessionRef: "typed" as const,
+    };
+    const declared = { ...manifest, contributes: { ...manifest.contributes, harness: metadata } };
+    const transport = scripted({ ok: true, result: null, emits: [] });
+    const decision = Promise.withResolvers<IsolateDispatchOutcome>();
+    transport.harness = () => decision.promise;
+    const harness = buildIsolateDef(declared, { ...loaded([]), harness: metadata }, transport).def
+      .harness;
+    if (harness === undefined) throw new Error("missing harness");
+    expect(z.toJSONSchema(harness.profileSchema, { io: "input" })).toMatchObject(
+      metadata.profileSchema,
+    );
+    const parsed = harness.profileSchema.safeParseAsync("schema-valid-but-refinement-denied");
+    decision.resolve({ ok: false, rule: "invalid_args", message: "guest refinement denied" });
+    expect((await parsed).success).toBe(false);
+    transport.harness = async () => ({
+      ok: true,
+      result: null,
+      emits: [{ ref: { kind: "plugin", pluginId: manifest.id }, kind: "changed", payload: {} }],
+    });
+    await expect(harness.profileSchema.safeParseAsync("valid")).rejects.toThrow(IsolateDenial);
+  });
+
+  test("harness responses are validated before any emissions are staged", async () => {
+    const metadata = { id: "test", title: "Test", profileSchema: {}, sessionRef: "typed" as const };
+    const declared = { ...manifest, contributes: { ...manifest.contributes, harness: metadata } };
+    const transport = scripted({
+      ok: true,
+      result: "not sessions",
+      emits: [{ ref: { kind: "plugin", pluginId: manifest.id }, kind: "changed", payload: {} }],
+    });
+    const harness = buildIsolateDef(declared, { ...loaded([]), harness: metadata }, transport).def
+      .harness;
+    if (harness === undefined) throw new Error("missing harness");
+    const { ctx, emitted } = ctxWith(testStore().pluginStorage(manifest.id), new FakeRuntime());
+    await expect(harness.sessions(ctx, { machineId: "m1" })).rejects.toThrow(IsolateDenial);
+    expect(emitted).toEqual([]);
+  });
   test("host discovery republishes the same projection declared by a loaded guest", () => {
     const report = loaded(["test.proxy.echo"]);
     const policy = {

@@ -275,6 +275,100 @@ describe("PluginHost bounded result publication", () => {
       resultProjectionDigest: await actionResultProjectionDigest(policy),
     };
   }
+  test("late isolated admission cannot mutate after the owning call is cancelled", async () => {
+    const fixture = await hostFixture();
+    try {
+      const registered = await fixture.auth.registerAgent(
+        {
+          name: "native admission",
+          purpose: "Read bounded data",
+          harness: "external",
+          context: { profile: {} },
+          grant: {
+            caps: ["containers:read"],
+            targets: ["manifold://"],
+            reach: "subtree",
+            maxRunLifetimeMs: 60_000,
+            delegation: { maxDepth: 0, maxDescendants: 0 },
+            expiresAt: fixture.runtime.now() + 120_000,
+          },
+        },
+        fixture.owner,
+      );
+      const created = fixture.auth.createRun(
+        { agentId: registered.agent.agentId },
+        fixture.auth.authenticate(registered.credential!.token),
+      );
+      const actor = fixture.auth.authenticate(created.credential!.token);
+      const challenge = fixture.auth.agentPolicyChallenge(actor);
+      fixture.auth.acknowledgeAgentPolicy(
+        {
+          revision: challenge.revision,
+          acknowledgements: challenge.required.map(({ id, digest }) => ({ id, digest })),
+        },
+        actor,
+      );
+      const prepared = Promise.withResolvers<ActionCtx["agentRun"]>();
+      const release = Promise.withResolvers<void>();
+      const controller = new AbortController();
+      let effects = 0;
+      const host = await customHost(fixture, [
+        {
+          manifest: {
+            id: "test.prepared",
+            version: "1.0.0",
+            title: "Prepared",
+            description: "",
+            capabilities: ["containers:read"],
+            contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+          },
+          inputValidation: "guest",
+          actions: [
+            defineAction({
+              name: "read",
+              title: "Read",
+              caps: ["containers:read"],
+              input: z.unknown(),
+              result: z.strictObject({ committed: z.boolean() }),
+            }),
+          ],
+          handlers: {
+            read: async (ctx) => {
+              prepared.resolve(ctx.agentRun);
+              await release.promise;
+              ctx.admitPrepared!([]);
+              effects++;
+              return { committed: true };
+            },
+          },
+        },
+      ]);
+      const invocation = host.dispatch(
+        actor,
+        "test.prepared.read",
+        { agentRun: { runId: "model-chosen", agentId: "model-chosen" } },
+        null,
+        {
+          admissionFence: () =>
+            controller.signal.aborted
+              ? null
+              : fixture.auth.restoreCredential(fixture.auth.credentialReference(actor)),
+        },
+      );
+      const identity = await prepared.promise;
+      controller.abort();
+      release.resolve();
+      expect(await invocation).toMatchObject({ ok: false, denial: { rule: "forbidden" } });
+      expect(effects).toBe(0);
+      expect(identity).toEqual({ runId: created.run.id, agentId: created.run.agentId });
+      expect(fixture.store.listEvents({ type: TRACE_ROW_TYPE, limit: 1 })[0]).toMatchObject({
+        door: "test.prepared.read",
+        outcome: "forbidden",
+      });
+    } finally {
+      fixture.store.close();
+    }
+  });
 
   test("publication is default-off and only selected leaves are returned separately", async () => {
     const fixture = await hostFixture();

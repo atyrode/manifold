@@ -55,9 +55,9 @@ async function fixture() {
     );
     return { created, actor: context };
   };
-  const run = (actor: AuthContext, name: string) =>
+  const run = async (actor: AuthContext, name: string) =>
     admitted(
-      createExternalRun(
+      await createExternalRun(
         { auth, runtime, owner },
         {
           name,
@@ -98,11 +98,11 @@ describe("agent run inspection", () => {
     try {
       const sponsor = f.sponsor();
       const otherSponsor = f.sponsor();
-      const parent = f.run(sponsor, "password=short-secret");
+      const parent = await f.run(sponsor, "password=short-secret");
       const child = f.child(parent);
       const sibling = f.child(parent);
       const grandchild = f.child(child);
-      const other = f.run(otherSponsor, "other");
+      const other = await f.run(otherSponsor, "other");
       f.store.db
         .query("UPDATE agent_runs SET purpose=? WHERE id=?")
         .run("Basic dXNlcjpwYXNzd29yZA==", parent.created.run.id);
@@ -190,7 +190,7 @@ describe("agent run inspection", () => {
     const f = await fixture();
     try {
       const sponsor = f.sponsor();
-      const run = f.run(sponsor, "sponsored");
+      const run = await f.run(sponsor, "sponsored");
       const rootToken = f.auth.mintToken(
         {
           principal: { name: "revocable root", kind: "human" },
@@ -228,7 +228,7 @@ describe("agent run inspection", () => {
         ok: false,
         denial: { rule: "refused" },
       });
-      const expiring = f.run(f.owner, "expires during request");
+      const expiring = await f.run(f.owner, "expires during request");
       expect(f.auth.listRuns({}, expiring.actor).runs.map((entry) => entry.id)).toEqual([
         expiring.created.run.id,
       ]);
@@ -245,11 +245,11 @@ describe("agent run inspection", () => {
   test("run discovery bounds authorized summaries rather than truncating to unrelated roots", async () => {
     const f = await fixture();
     try {
-      const own = f.run(f.sponsor(), "old authorized run");
+      const own = await f.run(f.sponsor(), "old authorized run");
       const expected: string[] = [own.created.run.id];
       for (let index = 0; index < 100; index++) {
         f.runtime.time++;
-        expected.push(f.run(f.owner, `new root ${String(index)}`).created.run.id);
+        expected.push((await f.run(f.owner, `new root ${String(index)}`)).created.run.id);
       }
       const bounded = AgentRunInventorySchema.parse(
         result(await f.host.dispatch(f.owner, "core.access.listRuns", {})),
@@ -269,7 +269,7 @@ describe("agent run inspection", () => {
   test("projects only retained facts and trusted declarations, with exact trace pagination and native links", async () => {
     const f = await fixture();
     try {
-      const run = f.run(f.owner, "run");
+      const run = await f.run(f.owner, "run");
       const foreign = f.child(run);
       const first = f.store.appendTrace({
         ts: f.runtime.now(),
@@ -503,7 +503,7 @@ describe("agent run inspection", () => {
   test("pending policy, cleanup failures, revocation, expiry and unregistered legacy principals remain distinct", async () => {
     const f = await fixture();
     try {
-      const created = createExternalRun(f, {
+      const created = await createExternalRun(f, {
         name: "pending",
         purpose: "Wait for policy",
         target: "manifold://",
@@ -530,7 +530,7 @@ describe("agent run inspection", () => {
       );
       expect(failed.run.cleanup.status).toBe("failed");
       expect(JSON.stringify(failed)).not.toContain("SENSITIVE_CLEANUP_DETAIL");
-      const expired = f.run(f.owner, "expires");
+      const expired = await f.run(f.owner, "expires");
       f.runtime.time += 60_001;
       const expiredProjection = AgentRunInspectionSchema.parse(
         result(
@@ -541,7 +541,7 @@ describe("agent run inspection", () => {
       );
       expect(expiredProjection.run.state).toBe("expired");
       expect(expiredProjection.credentials[0]?.state).toBe("expired");
-      const live = f.run(f.owner, "revoked");
+      const live = await f.run(f.owner, "revoked");
       f.auth.finishAgentRun({ runId: live.created.run.id, outcome: "completed" }, f.owner);
       const closed = AgentRunInspectionSchema.parse(
         result(

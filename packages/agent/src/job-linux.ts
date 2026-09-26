@@ -114,6 +114,8 @@ export interface LinuxJobSpec {
   /** Dedicated, empty cgroup-v2 delegation with memory and pids enabled. */
   delegatedCgroup: HeldDirectory;
   limits: LinuxJobLimits;
+  /** Host-bound absolute Run lease; preparation and sandbox setup never renew it. */
+  deadlineAt?: number;
   /** Only native instance-service admission may remove the elapsed-time deadline. */
   persistentService?: true;
   /** Owner's cooperative instance-service stop intent, available even during launch. */
@@ -343,6 +345,11 @@ export function preflightLinuxJob(spec: LinuxJobSpec): number {
     spec.limits.timeoutMs > 2_147_483_647
   )
     refuse("invalid-limits");
+  if (spec.deadlineAt !== undefined) {
+    if (!Number.isSafeInteger(spec.deadlineAt) || spec.deadlineAt <= 0 || spec.persistentService)
+      refuse("invalid-deadline");
+    if (spec.deadlineAt <= Date.now()) refuse("job-deadline-expired");
+  }
   if (!MachineOperationSchema.shape.environment.safeParse(spec.environment).success)
     refuse("invalid-fixed-environment");
   if (!JobStartCommandSchema.shape.privateEnv.safeParse(spec.privateEnv).success)
@@ -997,6 +1004,8 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
     // EOF also releases bubblewrap's gate: never close it on a failed launch until killed.
     if (reason !== "exited" || fatal) refuse("sandbox-setup-failed");
     spec.terminal?.setProcessId?.(pid, fstatSync(spec.bubblewrapFd));
+    if (spec.deadlineAt !== undefined && spec.deadlineAt <= Date.now())
+      refuse("job-deadline-expired");
     gate.end(Buffer.from([1]));
   } catch (error) {
     settled = true;
@@ -1029,7 +1038,12 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
   const startedAt = Date.now();
   const timer = spec.persistentService
     ? undefined
-    : setTimeout(() => terminate("timeout"), spec.limits.timeoutMs);
+    : setTimeout(
+        () => terminate("timeout"),
+        spec.deadlineAt === undefined
+          ? spec.limits.timeoutMs
+          : Math.max(1, Math.min(spec.limits.timeoutMs, spec.deadlineAt - startedAt)),
+      );
   const result = (async (): Promise<LinuxJobResult> => {
     try {
       const exit = await Promise.race([exited, terminalFailure.promise]);

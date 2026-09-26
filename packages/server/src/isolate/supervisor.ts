@@ -16,6 +16,10 @@ import {
   ISOLATE_MIGRATION_DEADLINE_MS,
   MAX_MIGRATION_STORAGE_OPERATIONS,
   ManifoldRefSchema,
+  IsolateHarnessRequestSchema,
+  IsolateHarnessResultSchemas,
+  type IsolateHarnessRequest,
+  type IsolateDispatchCtx,
   type IsolateChildFrame,
   type IsolateHook,
   type IsolateHostFrame,
@@ -41,6 +45,7 @@ import {
   type IsolateTransport,
   type ServedCtx,
 } from "./proxy-def.ts";
+import { isDeepStrictEqual } from "node:util";
 
 /**
  * THE SUPERVISOR (ADR 0016 §1, §6): one child process per installed plugin, spawned lazily
@@ -64,11 +69,14 @@ import {
 const SHUTDOWN_GRACE_MS = 2_000;
 
 type LoadedFrame = Extract<IsolateChildFrame, { t: "loaded" }>;
-type AnsweredFrame = Extract<IsolateChildFrame, { t: "dispatched" | "hooked" | "migrated" }>;
+type AnsweredFrame = Extract<
+  IsolateChildFrame,
+  { t: "dispatched" | "harnessed" | "hooked" | "migrated" }
+>;
 
 /** One round trip awaiting its answer, with the ctx that serves the child's calls meanwhile. */
 interface Pending {
-  readonly served: ServedCtx;
+  readonly served: ServedCtx | null;
   readonly request: IsolateHostFrame;
   serving: number;
   admitted: boolean;
@@ -103,6 +111,8 @@ class Isolate {
   queuedCalls = 0;
   queuedCallBytes = 0;
   migration: { readonly id: string; readonly calls: Set<string> } | null = null;
+  /** A context-free validation owns the drained guest until its request settles. */
+  validation: { readonly id: string; violated: boolean } | null = null;
   readonly producers = new Map<string, StreamProducer>();
   readonly jobObservers = new Map<string, JobObserver>();
   nextProducer = 0;
@@ -175,6 +185,7 @@ export class IsolateSupervisor implements IsolateRunner {
     const pluginId = ref.pluginId;
     const transport: IsolateTransport = {
       dispatch: (action, args, ctx) => this.dispatch(pluginId, action, args, ctx),
+      harness: (request, ctx) => this.harness(isolate, request, ctx),
       hook: (hook, ctx, delta) => this.hook(pluginId, hook, ctx, delta),
       settled: (ctx, job) => this.settled(pluginId, ctx, job),
       migrate: (migration, storage, database) =>
@@ -232,14 +243,7 @@ export class IsolateSupervisor implements IsolateRunner {
         id,
         action,
         args,
-        ctx: {
-          traceId: ctx.traceId,
-          principal: ctx.principal,
-          caps: [...ctx.auth.caps],
-          isRoot: ctx.auth.isRoot,
-          containerScope: ctx.containerScope,
-          now: ctx.now(),
-        },
+        ctx: this.dispatchCtx(pluginId, ctx),
       }),
       { kind: "dispatch", ctx },
     );
@@ -251,6 +255,55 @@ export class IsolateSupervisor implements IsolateRunner {
       });
       throw new IsolateDenial("unavailable", "isolate answered out of protocol");
     }
+    return frame.outcome;
+  }
+
+  private dispatchCtx(pluginId: string, ctx: ActionCtx): IsolateDispatchCtx {
+    return {
+      traceId: ctx.traceId,
+      principal: ctx.principal,
+      caps: [...ctx.auth.caps],
+      isRoot: ctx.auth.isRoot,
+      containerScope: ctx.containerScope,
+      ...((this.isolates.get(pluginId)?.ref.hardenedContract ?? 0) >= 6
+        ? { agentRun: ctx.agentRun }
+        : {}),
+      now: ctx.now(),
+    };
+  }
+
+  private async harness(
+    isolate: Isolate,
+    request: IsolateHarnessRequest,
+    ctx?: ActionCtx,
+  ): Promise<IsolateDispatchOutcome> {
+    const { pluginId } = isolate.ref;
+    if (
+      this.isolates.get(pluginId) !== isolate ||
+      (isolate.ref.hardenedContract ?? 1) < 7 ||
+      isolate.loaded?.harness === undefined
+    )
+      throw new IsolateDenial("unavailable", "harness unavailable");
+    const parsed = IsolateHarnessRequestSchema.parse(request);
+    if ((parsed.method === "validateProfile") !== (ctx === undefined))
+      throw new IsolateDenial("unavailable", "invalid harness caller context");
+    const frame = await this.request(
+      pluginId,
+      (id) => ({
+        t: "harness",
+        id,
+        request: parsed,
+        ...(ctx === undefined ? {} : { ctx: this.dispatchCtx(pluginId, ctx) }),
+      }),
+      ctx === undefined ? null : { kind: "dispatch", ctx },
+    );
+    if (
+      frame.t !== "harnessed" ||
+      (frame.outcome.ok &&
+        (!IsolateHarnessResultSchemas[parsed.method].safeParse(frame.outcome.result).success ||
+          (ctx === undefined && frame.outcome.emits.length !== 0)))
+    )
+      throw new IsolateDenial("unavailable", "harness answered out of protocol");
     return frame.outcome;
   }
 
@@ -338,7 +391,7 @@ export class IsolateSupervisor implements IsolateRunner {
   private async request(
     pluginId: string,
     build: (id: string) => IsolateHostFrame,
-    served: ServedCtx,
+    served: ServedCtx | null,
   ): Promise<AnsweredFrame> {
     const isolate = this.isolates.get(pluginId);
     if (isolate === undefined) throw new IsolateDenial("unavailable", "isolate is not loaded");
@@ -355,33 +408,46 @@ export class IsolateSupervisor implements IsolateRunner {
     if (child === null || this.isolates.get(pluginId) !== isolate) {
       throw new IsolateDenial("unavailable", "isolate unloaded");
     }
-    if (isolate.migration !== null || (served.kind === "migration" && isolate.pending.size !== 0))
-      throw new IsolateDenial("unavailable", "migration requires exclusive guest access");
+    if (isolate.validation !== null)
+      throw new IsolateDenial("unavailable", "profile validation requires exclusive guest access");
+    if (
+      isolate.migration !== null ||
+      ((served === null || served.kind === "migration") &&
+        (isolate.pending.size !== 0 ||
+          isolate.queuedCalls !== 0 ||
+          isolate.producers.size !== 0 ||
+          isolate.jobObservers.size !== 0))
+    )
+      throw new IsolateDenial("unavailable", "exclusive request requires a drained guest");
     isolate.nextRequest += 1;
     const id = `r${String(isolate.nextRequest)}`;
     this.clearIdle(isolate);
     const deadline = setTimeout(
       () => this.expire(isolate, id),
-      served.kind === "migration" ? this.migrationDeadlineMs : this.dispatchDeadlineMs,
+      served?.kind === "migration" ? this.migrationDeadlineMs : this.dispatchDeadlineMs,
     );
     try {
       const { promise, resolve, reject } = Promise.withResolvers<AnsweredFrame>();
       const request = build(id);
-      if (served.kind === "migration") isolate.migration = { id, calls: new Set() };
+      if (served?.kind === "migration") isolate.migration = { id, calls: new Set() };
+      if (served === null) isolate.validation = { id, violated: false };
+      // Sending and registration are synchronous; no child frame can interleave them.
+      // A failed send must not expose an unsent request's authority even for one microtask.
+      if (!child.send(request)) throw new IsolateDenial("unavailable", "isolate exited");
       isolate.pending.set(id, {
         served,
         request,
         serving: 0,
-        admitted: false,
+        admitted: request.t === "harness" && served !== null,
         answer: resolve,
         fail: reject,
       });
-      if (!child.send(request)) reject(new IsolateDenial("unavailable", "isolate exited"));
       return await promise;
     } finally {
       clearTimeout(deadline);
       isolate.pending.delete(id);
       if (isolate.migration?.id === id) isolate.migration = null;
+      if (isolate.validation?.id === id) isolate.validation = null;
       this.armIdle(isolate);
     }
   }
@@ -447,6 +513,16 @@ export class IsolateSupervisor implements IsolateRunner {
           reject(new IsolateLoadError("isolate exited before load"));
         }
       });
+      if ((isolate.ref.hardenedContract ?? 1) < 7 && loaded.harness !== undefined)
+        throw new IsolateLoadError("harness requires hardened contract 7");
+      if (
+        (isolate.ref.hardenedContract ?? 1) >= 7 &&
+        manifest.contributes?.harness !== undefined &&
+        loaded.harness === undefined
+      )
+        throw new IsolateLoadError("declared harness was not loaded");
+      if (isolate.loaded !== null && !isDeepStrictEqual(isolate.loaded.harness, loaded.harness))
+        throw new IsolateLoadError("respawn changed harness metadata");
       if (isolate.loaded === null) isolate.loaded = loaded;
     } catch (error) {
       if (isolate.child === child) {
@@ -539,13 +615,17 @@ export class IsolateSupervisor implements IsolateRunner {
       reason: "deadline",
       deadlineMs: this.dispatchDeadlineMs,
     });
-    pending.fail(new IsolateDenial("unavailable", "isolate deadline expired"));
+    // Validation cannot release its fence while the timed-out guest can still send frames.
+    // The killed child's drained exit fails the request and clears the phase together.
+    if (isolate.validation?.id === id) isolate.validation.violated = true;
+    else pending.fail(new IsolateDenial("unavailable", "isolate deadline expired"));
     // A stuck isolate is a crash: the kill is unasked-for on purpose, so the exit counts.
     isolate.child?.kill();
   }
 
   private failAll(isolate: Isolate, error: IsolateDenial): void {
     for (const pending of isolate.pending.values()) pending.fail(error);
+    isolate.validation = null;
     for (const producer of isolate.producers.values()) producer.close();
     isolate.producers.clear();
     for (const observer of isolate.jobObservers.values()) observer.follow?.close();
@@ -556,6 +636,9 @@ export class IsolateSupervisor implements IsolateRunner {
 
   private onFrame(isolate: Isolate, child: IsolateChild, frame: IsolateChildFrame): void {
     if (isolate.child !== child) return;
+    // A violating child stays fenced until exit fails its validation. In particular, a
+    // buffered answer cannot release the phase between SIGKILL and the drained exit event.
+    if (isolate.validation?.violated) return;
     switch (frame.t) {
       case "received":
         if (!child.received(frame.receipt)) {
@@ -585,7 +668,7 @@ export class IsolateSupervisor implements IsolateRunner {
         if (
           pending === undefined ||
           pending.request.t !== "dispatch" ||
-          pending.served.kind !== "dispatch" ||
+          pending.served?.kind !== "dispatch" ||
           pending.admitted ||
           pending.serving !== 0
         ) {
@@ -608,6 +691,7 @@ export class IsolateSupervisor implements IsolateRunner {
         return;
       }
       case "dispatched":
+      case "harnessed":
       case "migrated":
       case "hooked": {
         const pending = isolate.pending.get(frame.id);
@@ -625,12 +709,22 @@ export class IsolateSupervisor implements IsolateRunner {
             ? "dispatched"
             : pending.request.t === "hook"
               ? "hooked"
-              : "migrated";
+              : pending.request.t === "harness"
+                ? "harnessed"
+                : "migrated";
         if (
           frame.t !== expected ||
           (frame.t === "dispatched" &&
             !pending.admitted &&
             (frame.outcome.ok || frame.outcome.rule !== "invalid_args")) ||
+          (pending.request.t === "harness" &&
+            (pending.serving !== 0 ||
+              (frame.t === "harnessed" &&
+                frame.outcome.ok &&
+                (!IsolateHarnessResultSchemas[pending.request.request.method].safeParse(
+                  frame.outcome.result,
+                ).success ||
+                  (pending.served === null && frame.outcome.emits.length !== 0))))) ||
           (pending.request.t === "migrate" &&
             (frame.t !== "migrated" ||
               frame.name !== pending.request.migration.name ||
@@ -644,6 +738,19 @@ export class IsolateSupervisor implements IsolateRunner {
         return;
       }
       case "call": {
+        if (isolate.validation !== null) {
+          isolate.validation.violated = true;
+          this.logger.warn("isolate_call_failed", {
+            plugin: isolate.ref.pluginId,
+            id: isolate.validation.id,
+            reason: "profile validation cannot call host slices",
+          });
+          // Check the phase before correlating an untrusted call ID or entering the queue:
+          // stale/future IDs and retained producer/observer IDs are not alternate authority.
+          // Exit owns failure so no new request is admitted while this child is dying.
+          child.kill();
+          return;
+        }
         const bytes = Buffer.byteLength(JSON.stringify(frame));
         if (
           isolate.queuedCalls >= 256 ||
@@ -694,6 +801,7 @@ export class IsolateSupervisor implements IsolateRunner {
     id: string | null,
   ): void {
     if (isolate.child !== child) return;
+    if (isolate.validation?.violated) return;
     this.logger.warn("isolate_call_failed", {
       plugin: isolate.ref.pluginId,
       id,
@@ -732,15 +840,15 @@ export class IsolateSupervisor implements IsolateRunner {
     const migration = isolate.migration;
     try {
       if (
-        pending?.served.kind === "dispatch" &&
+        pending?.served?.kind === "dispatch" &&
         (!pending.admitted ||
-          pending.request.t !== "dispatch" ||
+          (pending.request.t !== "dispatch" && pending.request.t !== "harness") ||
           isolate.pending.get(pending.request.id) !== pending)
       )
         throw new Error("dispatch has not been admitted");
       if (migration !== null) {
         if (
-          pending?.served.kind !== "migration" ||
+          pending?.served?.kind !== "migration" ||
           !(frame.method.startsWith("storage.") || frame.method.startsWith("database.")) ||
           migration.calls.has(frame.id) ||
           migration.calls.size >= MAX_MIGRATION_STORAGE_OPERATIONS
@@ -778,7 +886,7 @@ export class IsolateSupervisor implements IsolateRunner {
           if (producer === undefined) throw new Error("no such stream producer");
           producer.publish(frame.args[1]);
         } else producer?.close();
-      } else if (pending === undefined) {
+      } else if (pending === undefined || pending.served === null) {
         throw new Error("no such request");
       } else if (frame.method === "streams.open") {
         if (pending.served.kind !== "dispatch") throw new Error("slice_unavailable: streams.open");

@@ -725,7 +725,7 @@ describe("SessionGateway liveness", () => {
     const fixture = await gatewayFixture();
     try {
       const owner = fixture.auth.authenticate(fixture.ownerKey);
-      const registered = fixture.auth.registerAgent(
+      const registered = await fixture.auth.registerAgent(
         {
           name: "socket analyst",
           purpose: "Inspect one container",
@@ -813,7 +813,7 @@ describe("SessionGateway liveness", () => {
         fixture.container.id,
         renewed.credential.token,
       );
-      const childAgent = fixture.auth.registerAgent(
+      const childAgent = await fixture.auth.registerAgent(
         {
           name: "socket reviewer",
           purpose: "Review the delegated container",

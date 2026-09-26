@@ -314,6 +314,17 @@ test("sealed home inputs refuse unsafe components and every host-backed ancestor
   }
 });
 
+test("an expired absolute workload deadline refuses before touching cgroup authority", async () => {
+  const f = fixture();
+  try {
+    await expect(startLinuxJob({ ...f.spec, deadlineAt: Date.now() - 1 })).rejects.toThrow(
+      "job-deadline-expired",
+    );
+  } finally {
+    f.close();
+  }
+});
+
 test("ordinary directories cannot stand in for enforced cgroups", async () => {
   const f = fixture();
   try {
@@ -487,6 +498,28 @@ async function withLinux(
     rmSync(staging, { recursive: true });
   }
 }
+
+test.skipIf(!realLinux)(
+  "[real-linux] absolute Run deadline bounds a workload whose operation timeout is longer",
+  async () => {
+    await withLinux("/bin/busybox sleep 5; printf completed", async (spec) => {
+      let output = "";
+      const handle = await startLinuxJob({
+        ...spec,
+        deadlineAt: Date.now() + 3000,
+        limits: { ...spec.limits, timeoutMs: 10000 },
+        onOutput: (frame) => {
+          output += Buffer.from(frame.bytes).toString();
+        },
+      });
+      const result = await handle.result;
+      expect(result.reason).toBe("timeout");
+      expect(result.empty).toBe(true);
+      expect(output).not.toContain("completed");
+    });
+  },
+  15000,
+);
 
 test.skipIf(!realLinux)(
   "[real-linux] real sandbox has no ambient home, runtime fd or enrollment environment and roundtrips private input",

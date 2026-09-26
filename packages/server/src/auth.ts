@@ -26,6 +26,7 @@ import {
   type ReportRunActivityRequest,
   type SessionRef,
   type HarnessTarget,
+  type ActionResultApproval,
   AcknowledgeAgentPolicyRequestSchema,
   AgentRunSchema,
   AgentRunInspectionSchema,
@@ -219,6 +220,12 @@ export interface AuthContext {
   agentRunId?: string | undefined;
   /** A runner credential admits runs for exactly this Agent and cannot invoke ordinary doors. */
   agentRunnerId?: string | undefined;
+}
+
+export interface NativeRunAuthority {
+  readonly auth: AuthContext;
+  readonly run: AgentRun;
+  readonly agent: Agent;
 }
 
 function contextContainsNode(context: AuthContext, node: string): boolean {
@@ -518,7 +525,7 @@ export class AuthService {
     at: number,
     actorId: string,
   ) => void = () => {};
-  private agentProfileValidator: (harness: string, profile: unknown) => void = (
+  private agentProfileValidator: (harness: string, profile: unknown) => void | Promise<void> = (
     harness,
     profile,
   ) => {
@@ -535,7 +542,9 @@ export class AuthService {
     { token: string; target?: HarnessTarget }
   >();
 
-  setAgentProfileValidator(validator: (harness: string, profile: unknown) => void): void {
+  setAgentProfileValidator(
+    validator: (harness: string, profile: unknown) => void | Promise<void>,
+  ): void {
     this.agentProfileValidator = validator;
   }
 
@@ -1649,15 +1658,27 @@ export class AuthService {
     });
   }
 
-  registerAgent(input: RegisterAgentRequest, actor: AuthContext): RegisterAgentResult {
+  async registerAgent(
+    input: RegisterAgentRequest,
+    actor: AuthContext,
+  ): Promise<RegisterAgentResult> {
     const parsed = RegisterAgentRequestSchema.parse(input);
-    const current = this.requireCurrentActor(actor);
+    let current = this.requireCurrentActor(actor);
     if (!this.mayRegisterAgent(current))
       throw new ServiceError("forbidden", "agent_registration_requires_human");
     const existing = this.store.getAgentBySponsorName(current.principal.id, parsed.name);
     if (existing !== null) return { agent: this.presentAgent(existing, current), created: false };
     this.validateStandingGrant(parsed.grant, current);
-    this.agentProfileValidator(parsed.harness, parsed.context.profile);
+    await this.agentProfileValidator(parsed.harness, parsed.context.profile);
+    current = this.requireCurrentActor(actor);
+    if (!this.mayRegisterAgent(current))
+      throw new ServiceError("forbidden", "agent_registration_requires_human");
+    // Validation may cross an isolate boundary. Authority and the unique registration
+    // must be read again before minting the one-time runner credential.
+    this.validateStandingGrant(parsed.grant, current);
+    const concurrent = this.store.getAgentBySponsorName(current.principal.id, parsed.name);
+    if (concurrent !== null)
+      return { agent: this.presentAgent(concurrent, current), created: false };
     const createdAt = this.runtime.now();
     const agentId = this.runtime.newId();
     const principalId = this.runtime.newId();
@@ -1783,6 +1804,8 @@ export class AuthService {
           run.expiresAt > this.runtime.now() &&
           this.mayInspectAgentRun(actor, run),
       ).length;
+    const grant = { ...record.grant };
+    if (grant.tools?.length === 0) delete grant.tools;
     return AgentSchema.parse({
       agentId: record.agentId,
       principalId: record.principalId,
@@ -1790,7 +1813,7 @@ export class AuthService {
       name: normalizeAgentDeclaration(record.name) ?? "[redacted]",
       purpose: normalizeAgentDeclaration(record.purpose) ?? "[redacted]",
       harness: record.harness,
-      grant: record.grant,
+      grant,
       context: record.context,
       ...(record.policyRevisionAcknowledged === undefined
         ? {}
@@ -1833,16 +1856,29 @@ export class AuthService {
     };
   }
 
-  updateAgent(input: UpdateAgentRequest, actor: AuthContext): GetAgentResult {
+  async updateAgent(input: UpdateAgentRequest, actor: AuthContext): Promise<GetAgentResult> {
     const parsed = UpdateAgentRequestSchema.parse(input);
-    const current = this.requireCurrentActor(actor);
-    const agent = this.store.getAgent(parsed.agentId);
+    let current = this.requireCurrentActor(actor);
+    let agent = this.store.getAgent(parsed.agentId);
     if (agent === null || !this.mayManageAgent(current, agent))
       throw new ServiceError("forbidden", "agent_unavailable");
     if (agent.status === "retired") throw new ServiceError("forbidden", "agent_retired");
     if (parsed.grant !== undefined) this.validateStandingGrant(parsed.grant, current);
-    if (parsed.context !== undefined)
-      this.agentProfileValidator(agent.harness, parsed.context.profile);
+    if (parsed.context !== undefined) {
+      await this.agentProfileValidator(agent.harness, parsed.context.profile);
+      current = this.requireCurrentActor(actor);
+      agent = this.store.getAgent(parsed.agentId);
+      if (agent === null || !this.mayManageAgent(current, agent))
+        throw new ServiceError("forbidden", "agent_unavailable");
+      if (agent.status === "retired") throw new ServiceError("forbidden", "agent_retired");
+      if (parsed.grant !== undefined) this.validateStandingGrant(parsed.grant, current);
+      const sponsor =
+        parsed.grant !== undefined && current.principal.id === agent.sponsorPrincipalId
+          ? current
+          : this.restoreAgentSponsor(agent);
+      if (sponsor === null) throw new ServiceError("forbidden", "sponsor_authority_unavailable");
+      this.validateStandingGrant(parsed.grant ?? agent.grant, sponsor);
+    }
     const next: AgentRecord = {
       ...agent,
       ...(parsed.purpose === undefined ? {} : { purpose: parsed.purpose }),
@@ -1980,6 +2016,25 @@ export class AuthService {
         ? formatManifoldUri({ kind: "machine", machineId: parsed.target.machineId })
         : (parsed.target ?? parent?.target ?? agent.grant.targets[0]!);
     const caps = parsed.caps ?? parent?.caps ?? agent.grant.caps;
+    const tools: ActionResultApproval[] = (parsed.tools ?? []).map((door) => {
+      const approval = agent.grant.tools?.find((entry) => entry.door === door);
+      const inherited = parent?.tools?.find((entry) => entry.door === door);
+      if (
+        approval === undefined ||
+        (parent !== null &&
+          (inherited === undefined || inherited.contractDigest !== approval.contractDigest))
+      )
+        throw new ServiceError("forbidden", "tool_exceeds_grant");
+      const maxResultBytes = Math.min(
+        approval.maxResultBytes ?? Number.POSITIVE_INFINITY,
+        inherited?.maxResultBytes ?? Number.POSITIVE_INFINITY,
+      );
+      return {
+        door,
+        contractDigest: approval.contractDigest,
+        ...(Number.isFinite(maxResultBytes) ? { maxResultBytes } : {}),
+      };
+    });
     const reach = parsed.reach ?? parent?.reach ?? agent.grant.reach;
     const delegation = parsed.delegation ?? {
       maxDepth: parent?.maxDepth ?? agent.grant.delegation.maxDepth,
@@ -2083,6 +2138,8 @@ export class AuthService {
       target,
       reach,
       caps: [...caps],
+      ...(tools.length === 0 ? {} : { tools }),
+      ...(typeof parsed.target === "object" ? { launchTarget: parsed.target } : {}),
       createdAt: now,
       expiresAt,
       renewals: 0,
@@ -2182,6 +2239,127 @@ export class AuthService {
         });
   }
 
+  /** Host admission only. This consumes neither a credential nor the one-use association. */
+  prepareNativeRun(
+    runId: string,
+    target: HarnessTarget,
+    actor: AuthContext,
+  ): {
+    run: AgentRun;
+    agent: Agent;
+    credential: CredentialReference;
+  } {
+    const authorized = this.authorizeRunInput(runId, actor);
+    const record = this.store.getAgentRun(runId)!;
+    const credential = this.restoreRunCredential(runId);
+    const ref = parseManifoldUri(record.target);
+    const sponsorCaps = this.agentRunSponsorCaps(record, record.target);
+    if (
+      record.nativeJob !== undefined ||
+      record.session !== null ||
+      this.store.getTerminalForRun(runId) !== null ||
+      authorized.agent.state === "retired" ||
+      credential === null ||
+      record.caps.some((cap) => !sponsorCaps.has(cap)) ||
+      (record.target !== MANIFOLD_ROOT_URI && ref === null) ||
+      (ref !== null && "machineId" in ref && ref.machineId !== target.machineId) ||
+      (ref?.kind === "container" && ref.containerId !== target.containerId) ||
+      (record.launchTarget !== undefined &&
+        (record.launchTarget.machineId !== target.machineId ||
+          record.launchTarget.containerId !== target.containerId))
+    )
+      throw new ServiceError("forbidden", "run_launch_unavailable");
+    return { ...authorized, credential: this.credentialReference(credential) };
+  }
+
+  bindNativeRun(
+    runId: string,
+    jobId: string,
+    session: SessionRef,
+    target: HarnessTarget,
+    actor: AuthContext,
+  ): void {
+    const prepared = this.prepareNativeRun(runId, target, actor);
+    if (session.harness !== prepared.agent.harness || session.machineId !== target.machineId)
+      throw new ServiceError("forbidden", "session_harness_mismatch");
+    this.store.bindAgentRunJob(runId, jobId, session, prepared.credential);
+    this.store.afterCommit(() => {
+      this.pendingRunLaunches.delete(runId);
+      this.agentChanged(prepared.agent.agentId, runId);
+    });
+  }
+
+  /** Restore the exact bound non-secret lineage on every owner request, never principal authority. */
+  nativeRunAuthority(runId: string, jobId: string): NativeRunAuthority {
+    const record = this.store.getAgentRun(runId);
+    const actor =
+      record?.nativeJob?.jobId === jobId
+        ? this.restoreCredential(record.nativeJob.credential)
+        : null;
+    if (record === null || actor === null || actor.agentRunId !== runId)
+      throw new ServiceError("forbidden", "agent_run_unavailable");
+    this.requireOwnAgentRun(actor);
+    const agent = this.store.getAgent(record.agentId);
+    const sponsorCaps = this.agentRunSponsorCaps(record, record.target);
+    if (
+      agent === null ||
+      agent.status === "disabled" ||
+      this.pausedPrincipals.has(actor.principal.id) ||
+      record.caps.some((cap) => !sponsorCaps.has(cap))
+    )
+      throw new ServiceError("forbidden", "agent_run_unavailable");
+    return {
+      auth: actor,
+      run: this.presentAgentRun(record),
+      agent: this.presentAgent(agent, actor),
+    };
+  }
+
+  /** Every selected ancestor ceiling remains live; changing a grant never upgrades a snapshot. */
+  agentToolGrantRefusal(
+    runId: string,
+    door: string,
+  ): "tool_ungranted" | "publication_changed" | null {
+    const run = this.store.getAgentRun(runId);
+    const selected = run?.tools?.find((entry) => entry.door === door);
+    if (!run || !selected) return "tool_ungranted";
+    const ancestry = this.inspectionAncestors(run);
+    if (!ancestry.complete) return "tool_ungranted";
+    for (const ancestor of ancestry.chain) {
+      const inherited = ancestor.tools?.find((entry) => entry.door === door);
+      const current = this.store
+        .getAgent(ancestor.agentId)
+        ?.grant.tools?.find((entry) => entry.door === door);
+      if (!inherited || !current) return "tool_ungranted";
+      if (
+        inherited.contractDigest !== selected.contractDigest ||
+        current.contractDigest !== selected.contractDigest ||
+        (selected.maxResultBytes ?? Number.POSITIVE_INFINITY) >
+          Math.min(
+            inherited.maxResultBytes ?? Number.POSITIVE_INFINITY,
+            current.maxResultBytes ?? Number.POSITIVE_INFINITY,
+          )
+      )
+        return "publication_changed";
+    }
+    return null;
+  }
+
+  /** Process settlement withdraws authority; it is not an assertion of consumer-effect durability. */
+  settleNativeRun(
+    runId: string,
+    jobId: string,
+    outcome: "completed" | "failed" | "cancelled" | "abandoned",
+  ): void {
+    const run = this.store.getAgentRun(runId);
+    if (run?.nativeJob?.jobId !== jobId || TERMINAL_AGENT_RUN_STATES.has(run.state)) return;
+    this.settleAgentRunSubtree(
+      run,
+      run.expiresAt <= this.runtime.now() ? "expired" : outcome,
+      null,
+    );
+  }
+
   runHarnessActor(runId: string, actor: AuthContext): AuthContext {
     this.authorizeRunInput(runId, actor);
     if (actor.agentRunnerId === undefined) return actor;
@@ -2196,6 +2374,8 @@ export class AuthService {
   ): { run: AgentRun; agent: Agent; token?: string; target?: HarnessTarget; terminalId?: string } {
     const authorized = this.authorizeRunInput(runId, actor);
     const record = this.store.getAgentRun(runId)!;
+    if (record.nativeJob !== undefined)
+      throw new ServiceError("forbidden", "run_launch_unavailable");
     const sponsorCaps = this.agentRunSponsorCaps(record, record.target);
     if (
       authorized.agent.state === "retired" ||
@@ -2492,6 +2672,7 @@ export class AuthService {
       target: record.target,
       reach: record.reach,
       caps: [...record.caps],
+      ...(record.tools?.length ? { tools: record.tools } : {}),
       createdAt: record.createdAt,
       expiresAt: record.expiresAt,
       renewals: record.renewals,
