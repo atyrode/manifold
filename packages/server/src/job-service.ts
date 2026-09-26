@@ -3783,7 +3783,11 @@ export class JobService {
         if (!live?.proved || !operation) return "resource_owner_unavailable";
         // The owner has to be able to run this provider and to report an inventory at all:
         // without one it can never advertise the policy the consumer binds.
-        const protocolReason = jobOwnerOperationRefusal(live.owner.protocolVersion, operation);
+        const protocolReason = jobOwnerOperationRefusal(
+          live.owner.protocolVersion,
+          operation,
+          install.machine,
+        );
         if (protocolReason) return protocolReason;
         if (!live.owner.resources) return "resource_owner_unavailable";
         if (
