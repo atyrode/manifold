@@ -5361,21 +5361,32 @@ export class JobService {
       if (
         !install ||
         install.revision !== event.installationRevision ||
-        install.artifact !== event.artifactSha256 ||
+        install.artifact !== event.artifactSha256
+      )
+        return;
+      const key = `${channel.machineId}/${event.pluginId}`;
+      if (
         !install.enabled ||
         this.heldPlugins.has(event.pluginId) ||
         install.purgeRequested ||
         this.store.disabledPlugins().has(event.pluginId)
-      )
+      ) {
+        // The owner's report on a revoked installation cannot say what re-enabling it would
+        // find, and neither can the one retained from before the revocation: the owner's later
+        // republications are ignored here, so a provider that became ready meanwhile would
+        // never reach it. Reviewing the same revision again proceeds unreported, as it would
+        // after a reconnect, and the owner's acknowledgement of the re-enable reports afresh.
+        this.installationResources.delete(key);
         return;
+      }
       if (event.resources)
-        this.installationResources.set(`${channel.machineId}/${event.pluginId}`, {
+        this.installationResources.set(key, {
           channel,
           revision: event.installationRevision,
           artifact: event.artifactSha256,
           resources: event.resources,
         });
-      else this.installationResources.delete(`${channel.machineId}/${event.pluginId}`);
+      else this.installationResources.delete(key);
       this.store.db
         .query("UPDATE machine_job_installs SET ready=1 WHERE machine_id=? AND plugin_id=?")
         .run(channel.machineId, event.pluginId);
