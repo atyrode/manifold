@@ -4578,6 +4578,11 @@ Released legacy combined-owner agents still lose their PTYs on replacement: they
 transfer live terminals to this host. Their migration must remain held while work is live;
 this source contract neither claims deployment nor authorizes production changes.
 
+Proposed design only, not implemented: [ADR 0050](decisions/0050-coordinated-installer-updates.md)
+describes a future installer-owned plan/apply/status/recovery operation for coordinated hub and
+spoke updates. It grants no new software-replacement authority and changes none of the maintenance
+or compatibility rules above.
+
 ## WS /ws/instance — instance channel (JSON text frames; ADR 0014)
 
 The CONTROL link between two instances, and only the control link. A guest dials OUT to a
