@@ -38,7 +38,7 @@ test("an inline workspace canvas paints a placed terminal live without claiming 
         name: "workspace-leaf-agent",
       }),
     );
-    const board = await createContainer(server, "Board", "canvas");
+    const container = await createContainer(server, "Board", "canvas");
 
     await browser.launch({ incognito: true });
     await browser.goto(`${server.httpUrl}/#key=${server.ownerKey}`);
@@ -77,12 +77,12 @@ test("an inline workspace canvas paints a placed terminal live without claiming 
         dir: null,
         ratios: [],
         children: [],
-        ref: { kind: "container", containerId: board.id },
+        ref: { kind: "container", containerId: container.id },
       },
     };
     await act("core.space.setLayout", { layout });
     const created = (await act("core.terminals.create", {
-      containerId: board.id,
+      containerId: container.id,
       elementId: crypto.randomUUID(),
       cols: 80,
       rows: 24,
@@ -90,11 +90,11 @@ test("an inline workspace canvas paints a placed terminal live without claiming 
     const terminal = TerminalInfoSchema.parse(created.terminal);
     await act("core.space.place", {
       ref: { kind: "terminal", terminalId: terminal.id },
-      destination: { kind: "canvas", containerId: board.id, x: 40, y: 40 },
+      destination: { kind: "canvas", containerId: container.id, x: 40, y: 40 },
     });
 
     await browser.goto(`${server.httpUrl}/`);
-    const inline = JSON.stringify(`[data-workspace-container="${board.id}"]`);
+    const inline = JSON.stringify(`[data-workspace-container="${container.id}"]`);
     // Live: the portal dials its composition and paints the shell, rather than the card a
     // canvas nested one container deep draws.
     await waitFor(
