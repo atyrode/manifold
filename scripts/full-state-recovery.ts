@@ -34,6 +34,7 @@ const TRANSIENT_PATHS = new Set([
   "agent.lock",
   "agent.pid",
   "manifold.writer",
+  "manifold.replica-writer",
   "terminal-host.pid",
   "terminal-host/host.sock",
 ]);

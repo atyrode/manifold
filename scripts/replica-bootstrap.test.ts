@@ -58,6 +58,7 @@ function harness(name: string): Harness {
   const script = join(root, "scripts/replica-bootstrap.ts");
   const config = join(root, "infra/litestream.yml");
   copyFileSync(join(import.meta.dir, "replica-bootstrap.ts"), script);
+  copyFileSync(join(import.meta.dir, "replica-guard.ts"), join(root, "scripts/replica-guard.ts"));
   copyFileSync(join(import.meta.dir, "../infra/litestream.yml"), config);
   symlinkSync(join(import.meta.dir, "../packages"), join(root, "packages"), "dir");
   symlinkSync(join(import.meta.dir, "../node_modules"), join(root, "node_modules"), "dir");
@@ -129,10 +130,25 @@ function database(data: string): string {
   return join(data, "manifold.db");
 }
 
-function writeHistory(path: string, marker: string): void {
+function writeHistory(
+  path: string,
+  marker: string,
+  state: "active" | "sealed" | null = "sealed",
+): void {
   const db = openDatabase(path);
   db.exec("CREATE TABLE bootstrap_proof(value TEXT NOT NULL)");
   db.query("INSERT INTO bootstrap_proof(value) VALUES (?)").run(marker);
+  if (state !== null) {
+    db.query("INSERT INTO meta(key, value) VALUES ('replica-writer', ?)").run(
+      JSON.stringify({
+        version: 1,
+        epoch: 1,
+        id: "11111111-1111-4111-8111-111111111111",
+        state,
+        databases: [],
+      }),
+    );
+  }
   db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
   db.close();
 }
@@ -218,6 +234,27 @@ test("restored history wins over initialization even when intent exists", async 
   expect(restored.code).toBe(0);
   expect(existsSync(acknowledgement(h.data))).toBe(false);
   expect(readMarker(database(h.data))).toBe("recognizable restored history");
+});
+
+test("a restored active writer is refused before its incomplete tail becomes local authority", async () => {
+  const h = harness("unsealed");
+  writeHistory(h.fixture, "incomplete replica", "active");
+  const before = readFileSync(h.fixture);
+  const result = await h.run("prepare", { LITESTREAM_TEST_RESULT: "restore" });
+  expectRefusal(result);
+  expect(existsSync(database(h.data))).toBe(false);
+  expect(readFileSync(h.fixture)).toEqual(before);
+});
+
+test("initialization intent cannot admit legacy replica history with no freshness evidence", async () => {
+  const h = harness("legacy-replica");
+  writeHistory(h.fixture, "legacy replica", null);
+  expect((await h.run("acknowledge")).code).toBe(0);
+  const result = await h.run("prepare", { LITESTREAM_TEST_RESULT: "restore" });
+  expectRefusal(result);
+  expect(existsSync(database(h.data))).toBe(false);
+  expect(existsSync(acknowledgement(h.data))).toBe(false);
+  expect(readMarker(h.fixture)).toBe("legacy replica");
 });
 
 test("malformed, expired, and wrong-target intent cannot authorize initialization", async () => {
@@ -367,7 +404,7 @@ test("configuration, custom-prefix inputs, and storage identity stay bound", asy
   expect(existsSync(database(changedIdentity.data))).toBe(false);
 });
 
-test("a valid local restart preserves history without consulting an unavailable replica", async () => {
+test("preparation preserves valid local history without consulting the replica", async () => {
   const h = harness("valid-local");
   writeHistory(database(h.data), "retained local authority");
   const before = readFileSync(database(h.data));

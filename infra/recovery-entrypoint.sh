@@ -22,6 +22,7 @@ fi
 
 control="$(mktemp -d /tmp/manifold-recovery.XXXXXX)"
 chmod 700 "$control"
+trap 'rm -rf -- "$control"' EXIT
 config="$control/litestream.yml"
 databases="$control/databases"
 export MANIFOLD_RECOVERY_LITESTREAM_CONFIG="$config"
@@ -31,16 +32,35 @@ export MANIFOLD_RECOVERY_DATABASES_FILE="$databases"
   "$MANIFOLD_RECOVERY_CHECKPOINT" "$MANIFOLD_RECOVERY_SHA256"
 
 index=0
+any_replica=0
+main_replica=0
 while IFS= read -r database; do
   [ -n "$database" ] || continue
-  latest="/tmp/manifold-recovery-latest-$index.db"
-  rm -f "$latest" "$latest-wal" "$latest-shm" "$latest-journal"
+  latest="$control/latest-$index.db"
   timeout 300 litestream restore -if-replica-exists -integrity-check full \
     -config "$config" -o "$latest" "$database"
   if [ -f "$latest" ]; then
+    any_replica=1
+    if [ "$database" = "${MANIFOLD_DATA_DIR:-/data}/manifold.db" ]; then
+      main_replica=1
+    fi
     mv "$latest" "$database"
   fi
   index=$((index + 1))
 done < "$databases"
 
-exec litestream replicate -config "$config" -exec "bun packages/server/src/main.ts"
+# A main seal commits the complete SQLite set. Never validate it against checkpoint-era
+# auxiliary files before their replicas have been restored.
+if [ "$any_replica" -eq 1 ]; then
+  if [ "$main_replica" -ne 1 ]; then
+    echo '{"evt":"hub_replica_boot","state":"refused","reason":"replica_freshness_unestablished"}' >&2
+    exit 1
+  fi
+  /usr/local/bin/manifold-replica-guard validate-restored "${MANIFOLD_DATA_DIR:-/data}/manifold.db"
+fi
+
+exec < "$config"
+rm -rf -- "$control"
+trap - EXIT
+unset MANIFOLD_RECOVERY_LITESTREAM_CONFIG MANIFOLD_RECOVERY_DATABASES_FILE
+exec /usr/local/bin/manifold-replica-guard --config-stdin
