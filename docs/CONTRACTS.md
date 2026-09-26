@@ -936,17 +936,37 @@ With it, a node-scoped grant genuinely widens or narrows a LIVE credential — o
 ordinary dispatch, with no re-authentication, because authority is a per-request question and
 never cached into a session.
 
-**The owner key is synthesized, never stored.** An owner-principal context with no token
-(`tokenId`/`grantId` `null`) is evaluated against a synthesized root grant
-(`manifold://`, `["*"]`, allow, subtree), so no `revokeGrant` can lock the owner out of their
-own workspace. **The owner is undeniable by evaluation, not by a write-time veto:** the
-evaluator drops `deny` rows for the owner principal, including class denials. Class denials
-remain valid for other subjects. `AuthService.grant` refuses only a principal-specific
-`deny` naming the owner (`cannot deny the workspace owner`), rather than refusing every row
-that could match the owner. A token acting as the owner still references only its own
-token-bound grant row under the ceiling rule above; denying it is not attenuation — mint
-it narrower or revoke it. This is ADR 0011 §5's landed split, implemented by
-`AuthService.applicableRows` and `AuthService.grant` in `packages/server/src/auth.ts`.
+**The owner key is synthesized, never stored.** The raw owner-key context (no token, no grant
+row, the owner principal) is evaluated against a synthesized root grant (`manifold://`, `["*"]`,
+allow, subtree), so no `revokeGrant` can lock the owner out of their own workspace. **The raw
+owner key is undeniable by evaluation, not by a write-time veto:** the evaluator drops `deny`
+rows for that credential alone, including class denials. It is the non-deniable break-glass
+path; a token minted onto the owner principal is not. Such a token references only its own
+token-bound grant row under the ceiling rule above, and administered denies — class denials
+included — narrow it exactly as they narrow any other bearer (#411). `AuthService.grant`
+refuses only a principal-specific `deny` naming the owner (`cannot deny the workspace owner`),
+rather than refusing every row that could match the owner principal. This is ADR 0011 §5's
+split as amended on 2026-09-22, implemented by `AuthService.applicableRows` and
+`AuthService.grant` in `packages/server/src/auth.ts`.
+
+**Root-class authority is asked live, and any effective deny withdraws it (#411).** A declared
+`*` door, and every root-only service verb, asks `AuthService.holdsRoot(context)` at the moment
+of the request; there is no root flag frozen into an `AuthContext`. The raw owner key always
+holds it. Any other credential holds it only through a minted token whose caps include `*`,
+while that token is live, its evaluated set at the root still carries every engine capability
+(an expired or paused credential does not), and no administered `deny` row naming its principal
+or class decides an engine capability for it at any node. A `subtree` deny is asked at its node,
+and also beneath it wherever the containment algebra admits descendants (`canContain`: the root,
+a container, a machine, an operation-less service, an operation, a job); a leaf such as an element
+or tile is asked at the leaf alone. The consequence is deliberate: a deny at one container withdraws workspace
+administration from every minted wildcard it reaches, including minted bearers on the owner
+principal, until the row is removed, so grant administration and other root-only doors cannot
+step around or retire the deny that narrowed their caller. An open socket is re-evaluated at its
+next request with no re-authentication, exactly like any grant change. A deny that loses every
+contest it enters (a class deny under the principal's own allow at the same node), or that names
+only plugin capabilities `*` never reached, withdraws nothing. Ordinary capabilities are not
+widened or otherwise changed: concrete questions remain the waterfall's alone, and the raw owner
+key is the recovery path that can always remove the deny.
 
 **Nothing above the seam moved.** `AuthContext.allows(cap, containerId)` keeps its signature and
 all 27 call sites; it maps `containerId` to `manifold://container/<id>` and asks the evaluator.
@@ -1056,13 +1076,19 @@ are open to scoped tokens by construction: the roster is global vocabulary, and 
 self-scoped.
 
 Delegation is attenuation-only: a minted token's caps MUST be a subset of the minter's
-caps (root's `*` covers everything); minting `*` itself requires `isRoot`. Violations are
-`forbidden`. This kills privilege escalation through `tokens:mint` chains.
+caps (root's `*` covers everything); minting `*` itself requires root-class authority. Violations
+are `forbidden`. This kills privilege escalation through `tokens:mint` chains. A minted wildcard
+credential whose root class a deny has withdrawn mints no token and no share at all
+(`wildcard authority withdrawn by an administered deny`), not even a concrete capability it
+carries literally beside `*`, because the fresh principal would not be named by the minter's
+deny. Non-wildcard delegation keeps the literal-subset rule.
 
 `*` in the auth column means the wildcard capability itself (root/owner) — scoped tokens
 can never satisfy it. The server computes an `AuthContext { principal, caps, containerScope,
-isRoot }` ONCE at the auth boundary (`isRoot` ⇔ caps contain `*`); root-only routes check
-`isRoot`, scoped routes use `hasCap()` — never a wildcard sentinel comparison inline.
+tokenId, grantId }` ONCE at the auth boundary; root-only routes ask
+`AuthService.holdsRoot(context)` per request (above), scoped routes use `hasCap()` or the
+evaluator — never a wildcard sentinel comparison inline, and never a root flag cached at
+authentication.
 Machine enrollment requires `machines:mint`; ordinary `scenes:write`/`terminals:write`
 tokens must be rejected (covered by e2e: owner succeeds, `machines:mint` token succeeds,
 delegated scene/terminal token is denied).
@@ -2598,6 +2624,20 @@ JSON Schema the child reported), which is why the supervisor's `ServerPluginDef`
 "unavailable" }` for the ladder to trace through the ordinary `refuse` path. Emissions a handler
 stages in the child ride back in `dispatched.emits` and are re-staged through the host's own
 `ctx.emit`, so the ledger settles before any subscriber hears.
+
+**A guest's `ctx.auth.isRoot` is a per-dispatch snapshot, fenced by the host (#411).** The `dispatch` and
+`harness` frames carry the caller's root-class authority as the boolean `AuthService.holdsRoot`
+answered when the frame was built. A guest reads that value for the rest of the handler; it is
+not re-read, and no contract through 7 offers a live guest root query. The host keeps the value
+it sent with each request. If it sent `true` and the live answer is now `false` (an administered
+deny landed mid-handler), it serves nothing more of that request. Every further correlated ctx
+call except the resource releases `jobs.ack`, `jobs.unfollow` and `streams.close` is refused with
+`root_authority_withdrawn`. An answer that still carries emissions becomes
+`{ ok: false, rule: "refused", message: "root_authority_withdrawn" }`, and those emissions are
+never staged. Effects already committed under the authority the dispatch held stay committed,
+and an answer without emissions is not rewritten after the fact. A handler that surfaces a fenced
+call's refusal returns it as its own. A snapshot of `false` is never fenced: it can only fail
+closed. `auth.allows` stays a live host question.
 
 **Deadlines, the crash budget, eviction (ADR 0016 §6).** A lifecycle hook is bounded at the
 engine's `LIFECYCLE_TIMEOUT_MS` (2 s); a dispatch at `ISOLATE_DISPATCH_DEADLINE_MS` (10 s), past
@@ -4577,6 +4617,11 @@ SSH-session count, a hub-only inventory check, or a health check as an idle prox
 Released legacy combined-owner agents still lose their PTYs on replacement: they cannot
 transfer live terminals to this host. Their migration must remain held while work is live;
 this source contract neither claims deployment nor authorizes production changes.
+
+Proposed design only, not implemented: [ADR 0050](decisions/0050-coordinated-installer-updates.md)
+describes a future installer-owned plan/apply/status/recovery operation for coordinated hub and
+spoke updates. It grants no new software-replacement authority and changes none of the maintenance
+or compatibility rules above.
 
 ## WS /ws/instance — instance channel (JSON text frames; ADR 0014)
 

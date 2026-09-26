@@ -121,7 +121,6 @@ function roomFixture(
     principal,
     caps: ["*"],
     containerScope: null,
-    isRoot: true,
     tokenId: null,
     grantId: null,
   };
@@ -625,7 +624,7 @@ describe("Room Yjs document consistency", () => {
     const peer = new SessionChannel(
       runtime.newId(),
       new FakeSocket(),
-      { principal, caps: ["*"], containerScope: null, isRoot: true, tokenId: null, grantId: null },
+      { principal, caps: ["*"], containerScope: null, tokenId: null, grantId: null },
       container.id,
       "c1",
     );
@@ -911,7 +910,6 @@ describe("RoomManager shared room recency", () => {
           principal,
           caps: ["*"],
           containerScope: null,
-          isRoot: true,
           tokenId: null,
           grantId: null,
         },
@@ -1017,7 +1015,7 @@ describe("Room document persistence", () => {
     const peer = new SessionChannel(
       runtime.newId(),
       new FakeSocket(),
-      { principal, caps: ["*"], containerScope: null, isRoot: true, tokenId: null, grantId: null },
+      { principal, caps: ["*"], containerScope: null, tokenId: null, grantId: null },
       container.id,
       "c1",
     );
@@ -1055,7 +1053,7 @@ describe("Room document persistence", () => {
     const peer = new SessionChannel(
       runtime.newId(),
       socket,
-      { principal, caps: ["*"], containerScope: null, isRoot: true, tokenId: null, grantId: null },
+      { principal, caps: ["*"], containerScope: null, tokenId: null, grantId: null },
       container.id,
       "c1",
     );

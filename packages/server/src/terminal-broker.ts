@@ -1598,7 +1598,7 @@ export class TerminalBroker implements TerminalPlacementPort {
             !this.auth.allows(auth, "terminals:write", stored.containerId) ||
             (terminal.info.status === "running" &&
               terminal.info.controllerId !== principalId &&
-              !auth.isRoot)
+              !this.auth.holdsRoot(auth))
           )
             throw new Error("terminal_runtime_admission_refused");
           if (this.machines.get(machine.machineId) !== machine)

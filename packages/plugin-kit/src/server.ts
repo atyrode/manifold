@@ -171,6 +171,11 @@ export interface GuestAuth {
   readonly principal: Principal;
   readonly caps: readonly Cap[];
   readonly containerScope: string | null;
+  /**
+   * Root-class authority when the host sent this dispatch; a snapshot, never re-read. If a deny
+   * withdraws it mid-handler, the host refuses this dispatch's further calls and emissions with
+   * `root_authority_withdrawn`.
+   */
   readonly isRoot: boolean;
   /**
    * One authority question, asked of the host's waterfall. `cap` may be one of this plugin's

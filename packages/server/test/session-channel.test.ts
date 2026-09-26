@@ -31,7 +31,6 @@ function peerFor(socket: RawSocket): SessionChannel {
     principal,
     caps: ["*"],
     containerScope: null,
-    isRoot: true,
     tokenId: null,
     grantId: null,
   };
@@ -197,7 +196,6 @@ describe("SessionChannel channel scope", () => {
       principal,
       caps: ["*"],
       containerScope: null,
-      isRoot: true,
       tokenId: null,
       grantId: null,
     };

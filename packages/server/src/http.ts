@@ -139,8 +139,8 @@ export async function parseJsonBody(request: Request): Promise<unknown> {
   }
 }
 
-function requireRoot(context: AuthContext): void {
-  if (!context.isRoot) throw new RequestError("forbidden", "root capability required");
+function requireRoot(auth: AuthService, context: AuthContext): void {
+  if (!auth.holdsRoot(context)) throw new RequestError("forbidden", "root capability required");
 }
 
 /** Decodes one path segment, mapping a missing or malformed escape to a 400. */
@@ -530,7 +530,9 @@ export class HttpApp {
         (cap): cap is Exclude<Cap, "*"> => cap !== "*" && effectiveCaps.has(cap),
       );
       const caps =
-        context.isRoot && concreteCaps.length === CAPS.length - 1 ? (["*"] as const) : concreteCaps;
+        this.auth.holdsRoot(context) && concreteCaps.length === CAPS.length - 1
+          ? (["*"] as const)
+          : concreteCaps;
       if (caps.length === 0) {
         throw new RequestError("forbidden", "credential has no workspace authority");
       }
@@ -796,7 +798,7 @@ export class HttpApp {
 
     if (request.method === "GET" && pathname === "/api/introspect") {
       const context = this.authenticate(request);
-      requireRoot(context);
+      requireRoot(this.auth, context);
       return jsonResponse({
         rooms: this.rooms.introspect(),
         terminals: this.broker.introspect(),
