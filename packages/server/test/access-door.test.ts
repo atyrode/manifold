@@ -1405,6 +1405,78 @@ describe("core.access grant ladder", () => {
     expect(denial(await rootDoor(fix, live))).toEqual(ROOT_REFUSAL);
     fix.store.close();
   });
+
+  test("a node-reach exception at a leaf leaves nothing beneath for the class deny to decide", async () => {
+    const fix = await fixture();
+    const container = accessContainer(fix);
+    const live = fix.auth.authenticate(wildcard(fix));
+    const element = `${containerNodeUri(container)}/element/${fix.runtime.newId()}`;
+
+    await write(fix, {
+      principal: { kind: "any-human" },
+      node: element,
+      caps: ["containers:write"],
+      effect: "deny",
+      reach: "subtree",
+    });
+    await write(fix, {
+      principal: { kind: "principal", id: live.principal.id },
+      node: element,
+      caps: ["containers:write"],
+      effect: "allow",
+      reach: "node",
+    });
+
+    // An element has no descendants in the address algebra, so the principal's allow wins every
+    // contest the class deny can enter: nothing is attenuated and root stays.
+    expect(fix.auth.effectiveCaps(live, element).has("containers:write")).toBe(true);
+    expect(result(await rootDoor(fix, live))).toBeDefined();
+    fix.store.close();
+  });
+
+  test("a withdrawn wildcard delegates nothing, not even concrete caps it also carries", async () => {
+    const fix = await fixture();
+    const container = accessContainer(fix);
+    const mixed = fix.auth.authenticate(
+      fix.auth.mintToken(
+        { principal: { name: "mixed", kind: "human" }, caps: ["*", "containers:write"] },
+        fix.owner,
+      ).token,
+    );
+    const ordinary = context(fix, ["tokens:mint", "containers:write"]);
+    await write(fix, {
+      principal: { kind: "principal", id: mixed.principal.id },
+      node: containerNodeUri(container),
+      caps: ["containers:write"],
+      effect: "deny",
+      reach: "subtree",
+    });
+    const mint = async (actor: AuthContext) =>
+      await fix.host.dispatch(actor, "core.access.mint", {
+        principal: { name: "delegate", kind: "human" },
+        caps: ["containers:write"],
+        containerId: container,
+      });
+    const share = async (actor: AuthContext) =>
+      await fix.host.dispatch(actor, "core.access.mintShare", {
+        node: { kind: "container", containerId: container },
+        caps: ["containers:write"],
+        origin: "http://guest.localhost:7778",
+      });
+    const withdrawn = {
+      rule: "refused",
+      message: "wildcard authority withdrawn by an administered deny",
+    };
+
+    // The fresh principal is not named by the minter's deny, so a literal `containers:write`
+    // riding beside `*` would hand the denied container straight back out.
+    expect(denial(await mint(mixed))).toEqual(withdrawn);
+    expect(denial(await share(mixed))).toEqual(withdrawn);
+    // A non-wildcard minter, which never held root, keeps its literal-subset delegation.
+    expect(result(await mint(ordinary))).toMatchObject({ caps: ["containers:write"] });
+    expect(result(await share(ordinary))).toMatchObject({ share: { caps: ["containers:write"] } });
+    fix.store.close();
+  });
 });
 
 /**

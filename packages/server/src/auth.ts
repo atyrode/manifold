@@ -44,6 +44,7 @@ import {
   MANIFOLD_ROOT_URI,
   MintShareRequestSchema,
   MintTokenRequestSchema,
+  canContain,
   containmentPath,
   formatManifoldUri,
   hasCap,
@@ -114,8 +115,9 @@ const CONCRETE_CAPS: readonly Exclude<Cap, "*">[] = CAPS.filter(
 );
 
 /**
- * A path step beneath any node that no grant row can name (rows store canonical `manifold://`
- * nodes), so a walk ending here sees exactly the `subtree` rows above it.
+ * A path step beneath a node that no grant row can name (rows store canonical `manifold://`
+ * nodes), so a walk ending here sees exactly the `subtree` rows above it: any child the node may
+ * hold that has no rows of its own. Only ever appended beneath a node `canContain` admits.
  */
 const BENEATH_ANY_NODE = "\u0000beneath";
 
@@ -820,10 +822,12 @@ export class AuthService {
    * Whether no administered deny decides an engine capability for this `*` credential anywhere.
    *
    * A deny can only decide inside its own reach, so each is asked where it stands: at its node,
-   * and for a `subtree` row beneath it as well, where a `node`-reach row that outranks it at the
-   * node itself no longer applies. A row that loses every contest it enters — a class deny under
-   * the principal's own allow at the same node, say — decides nothing and withdraws nothing, and
-   * a row naming only a plugin's capability sits outside anything `*` ever reached.
+   * and for a `subtree` row beneath it as well — where a `node`-reach row that outranks it at the
+   * node itself no longer applies — but only where the containment algebra admits a beneath. An
+   * element or tile has nothing under it, so a leaf's deny is asked at the leaf alone. A row that
+   * loses every contest it can enter — a class deny under the principal's own allow at the same
+   * node, say — decides nothing and withdraws nothing, and a row naming only a plugin's
+   * capability sits outside anything `*` ever reached.
    */
   private wildcardUnattenuated(context: AuthContext): boolean {
     const token = context.tokenId === null ? null : this.store.getToken(context.tokenId);
@@ -839,7 +843,12 @@ export class AuthService {
         const held = effectiveCapsFrom(rows, at, context.principal);
         return denied.some((cap) => !held.has(cap));
       };
-      if (decides(path) || (deny.reach === "subtree" && decides([...path, BENEATH_ANY_NODE])))
+      if (
+        decides(path) ||
+        (deny.reach === "subtree" &&
+          canContain(deny.node) === true &&
+          decides([...path, BENEATH_ANY_NODE]))
+      )
         return false;
     }
     return true;
@@ -852,6 +861,21 @@ export class AuthService {
       context.grantId === null &&
       context.principal.id === this.ownerPrincipal.id
     );
+  }
+
+  /**
+   * The root answer a DELEGATION reads (#411). A minted `*` credential whose root class a deny
+   * has withdrawn delegates nothing at all — not even a concrete capability it also carries
+   * literally (`["*", "containers:write"]`), because the fresh principal it would mint for is not
+   * named by the deny that narrowed the minter, so the authority would come back out from under
+   * the deny. Ordinary non-wildcard delegation keeps its literal-subset rule unchanged.
+   */
+  private delegatingRoot(minter: AuthContext): boolean {
+    const root = this.holdsRoot(minter);
+    const token = root || minter.tokenId === null ? null : this.store.getToken(minter.tokenId);
+    if (token?.caps.includes("*") === true)
+      throw new ServiceError("forbidden", "wildcard authority withdrawn by an administered deny");
+    return root;
   }
 
   agentRunPolicyState(
@@ -1503,7 +1527,7 @@ export class AuthService {
     if (!this.allows(minter, "tokens:mint")) {
       throw new ServiceError("forbidden", "tokens:mint capability required");
     }
-    const root = this.holdsRoot(minter);
+    const root = this.delegatingRoot(minter);
     for (const cap of parsed.caps) {
       if (cap === "*" && !root) {
         throw new ServiceError("forbidden", "only root may mint wildcard authority");
@@ -3360,7 +3384,7 @@ export class AuthService {
     if (!this.allows(minter, "tokens:mint")) {
       throw new ServiceError("forbidden", "tokens:mint capability required");
     }
-    const root = this.holdsRoot(minter);
+    const root = this.delegatingRoot(minter);
     for (const cap of parsed.caps) {
       if (cap === "*") {
         throw new ServiceError("forbidden", "wildcard authority cannot be container-scoped");
