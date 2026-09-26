@@ -30,10 +30,14 @@ import {
 /*
   THE SINGLE-WRITER HANDOFF (#318), end to end on one disposable data directory and one port:
   a successor is started beside the serving hub, waits on the writer lock without opening the
-  database, and becomes the writer only once the predecessor has quiesced and sealed. It runs
-  forward (old build -> new build) and back (rollback to the old build), while probes keep
-  hitting `/healthz`, a durable action and a browser session, and a real machine keeps a PTY
-  producing output. The invariants are asserted; the windows are measured and printed.
+  database, and becomes the writer only once the predecessor has quiesced and sealed. Two
+  handoffs run back to back (first -> second -> third) while probes keep hitting `/healthz`, a
+  durable action and a browser session, and a real machine keeps a PTY producing output. The
+  invariants are asserted; the windows are measured and printed.
+
+  Every process here runs THIS checkout; the build labels only tell the probes which process
+  answered. This is a same-build replacement, not cross-build compatibility: rolling back to an
+  older, unfenced executable is proved separately against a pinned pre-change build (#871).
 */
 
 const origin = performance.now();
@@ -69,7 +73,7 @@ function ticks(text: string): number[] {
   return [...text.matchAll(/TICK_(\d+)\b/g)].map((match) => Number(match[1]));
 }
 
-test("a fenced handoff keeps one writer, acknowledged writes, sessions and the PTY across a switch and a rollback", async () => {
+test("a fenced handoff keeps one writer, acknowledged writes, sessions and the PTY across two replacements", async () => {
   const servers: TestServer[] = [];
   const agents: TestAgent[] = [];
   const clients: SessionClient[] = [];
@@ -97,7 +101,7 @@ test("a fenced handoff keeps one writer, acknowledged writes, sessions and the P
   };
 
   try {
-    const first = await startServer({ env: identity("old"), onStdout: observe("old") });
+    const first = await startServer({ env: identity("first"), onStdout: observe("first") });
     servers.push(first);
     const target = { httpUrl: first.httpUrl, ownerKey: first.ownerKey };
 
@@ -195,10 +199,10 @@ test("a fenced handoff keeps one writer, acknowledged writes, sessions and the P
 
     const receipts: Record<string, unknown>[] = [];
     let incumbent = first;
-    let incumbentHub = "old";
+    let incumbentHub = "first";
     for (const [direction, successorHub] of [
-      ["forward", "new"],
-      ["rollback", "old-again"],
+      ["first-to-second", "second"],
+      ["second-to-third", "third"],
     ] as const) {
       const waiting = Promise.withResolvers<void>();
       const starting = startServer({
@@ -237,7 +241,8 @@ test("a fenced handoff keeps one writer, acknowledged writes, sessions and the P
       // Both stamps come from the same host clock, so causality orders them regardless of pipes.
       expect(Number(claimed.fields["ts"])).toBeGreaterThanOrEqual(Number(sealed.fields["ts"]));
       expect(claimed.fields["epoch"]).toBe(Number(sealed.fields["epoch"]) + 1);
-      expect(claimed.fields["predecessor"]).toBe("sealed");
+      expect(claimed.fields["previousEpoch"]).toBe(sealed.fields["epoch"]);
+      expect(claimed.fields["previousState"]).toBe("sealed");
       expect(sealed.fields["settled"]).toBe(true);
 
       await waitFor(() => health.at(-1)?.build === `0.0.0+handoff.${successorHub}`, 10_000, 10);
