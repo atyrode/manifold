@@ -509,6 +509,120 @@ test("an operator's cancellation cycles an enabled instance service rather than 
   }
 });
 
+test("a plugin disable readmits the same instance revision once its native installation is ready again", async () => {
+  const { f, policy, provider, start, revision } = await instanceFixture();
+  const fact = (command: Extract<JobCommand, { type: "start" }>) => ({
+    jobId: command.request.jobId,
+    requestDigest: command.request.requestDigest,
+    ownerId: command.permit.ownerId,
+    ownerGeneration: command.permit.ownerGeneration,
+  });
+  const ready = (command: Extract<JobCommand, { type: "start" }>) => {
+    f.service.event(f.channel, { type: "state", ...fact(command), state: "started" });
+    f.service.event(f.channel, {
+      type: "service_ready",
+      jobId: command.request.jobId,
+      service: command.request.service!,
+    });
+  };
+  // `PluginHost.setEnabledNow`: the durable flag, then native revocation on a disable only.
+  const setEnabled = (enabled: boolean) => {
+    f.store.setPluginEnabled(pluginId, enabled, "admin", f.runtime.now());
+    if (!enabled) f.service.disablePlugin(pluginId);
+  };
+  const description = () =>
+    f.service.describeInstanceService(f.root, { serviceId: policy.serviceId });
+  const starts = () => f.commands.filter((command) => command.type === "start");
+  try {
+    ready(start);
+    expect(description().state).toBe("ready");
+    f.commands.length = 0;
+    setEnabled(false);
+    expect(f.service.jobs.cancellation(start.request.jobId)).toEqual({
+      mode: "cancel",
+      reason: "plugin_disabled",
+    });
+    expect(f.commands).toContainEqual(
+      expect.objectContaining({
+        type: "cancel",
+        jobId: start.request.jobId,
+        reason: "plugin_disabled",
+      }),
+    );
+    f.service.event(f.channel, {
+      type: "result",
+      result: {
+        ...fact(start),
+        state: "cancelled",
+        reason: "cancelled",
+        exitCode: null,
+        startedAt: f.runtime.now(),
+        finishedAt: f.runtime.now(),
+        usage: null,
+        limits: start.request.limits,
+        outputs: [],
+      },
+    });
+    f.service.event(f.channel, { type: "workload_empty", ...fact(start) });
+    f.service.tick();
+    expect(starts()).toEqual([]);
+    expect(description()).toMatchObject({
+      state: "unavailable",
+      reason: "installation_disabled",
+      configuration: { revision, enabled: true },
+    });
+
+    // Re-enabling the plugin is not a native review: the revoked installation stays off.
+    setEnabled(true);
+    f.service.tick();
+    expect(starts()).toEqual([]);
+    expect(description()).toMatchObject({ state: "unavailable", reason: "installation_disabled" });
+
+    // Re-approving the same installation restores intent; admission waits for the owner's ack.
+    f.service.install(f.root, {
+      machineId: f.machineId,
+      pluginId,
+      installationRevision: "r1",
+      artifactSha256: hash,
+      machine: provider,
+    });
+    f.service.tick();
+    expect(starts()).toEqual([]);
+    f.service.event(f.channel, {
+      type: "installed",
+      pluginId,
+      installationRevision: "r1",
+      artifactSha256: hash,
+    });
+    f.service.tick();
+    const [replacement, ...extra] = starts();
+    expect(extra).toEqual([]);
+    if (!replacement)
+      throw new Error("the re-enabled plugin's instance service was never readmitted");
+    expect(replacement.request.jobId).not.toBe(start.request.jobId);
+    expect(replacement.request.service).toEqual(start.request.service);
+    expect(
+      f.store.db
+        .query<{ previousJobId: string; cancelReason: string }, []>(
+          `SELECT json_extract(payload,'$.previousJobId') AS previousJobId,
+           json_extract(payload,'$.cancelReason') AS cancelReason FROM events
+           WHERE json_extract(payload,'$.jobLifecycle')='readmitted'`,
+        )
+        .all(),
+    ).toEqual([{ previousJobId: start.request.jobId, cancelReason: "plugin_disabled" }]);
+    ready(replacement);
+    expect(description()).toMatchObject({
+      state: "ready",
+      reason: null,
+      configuration: { revision, enabled: true },
+    });
+    f.service.tick();
+    expect(starts()).toEqual([replacement]);
+  } finally {
+    f.store.close();
+  }
+});
+
 test.each([
   "installation_changed",
   "owner_fenced",

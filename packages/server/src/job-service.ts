@@ -332,6 +332,14 @@ export class JobService {
   private instanceReason(record: InstanceServiceRecord): string | null {
     if (!record.enabled) return "instance_service_disabled";
     if (this.heldPlugins.has(record.pluginId)) return "plugin_held";
+    const install = this.jobs.installation(record.machineId, record.pluginId);
+    if (
+      install &&
+      (!install.enabled ||
+        install.purgeRequested ||
+        this.store.disabledPlugins().has(install.pluginId))
+    )
+      return "installation_disabled";
     if (this.store.getMachine(record.machineId)?.draining) return "machine_draining";
     const live = this.channels.get(record.machineId);
     if (!live?.proved) return "resource_owner_unavailable";
@@ -623,6 +631,11 @@ export class JobService {
    * disabling the record. Treating it as final left `reason: "cancelled"` pinned to the
    * revision, which nothing but a revision bump cleared, and every later deployment review of
    * any plugin binding that service inherited it (#715).
+   *
+   * `plugin_disabled` is the platform's cancellation when the provider plugin is disabled. The
+   * same disable revokes its native installation, and re-enabling the plugin is not a native
+   * review, so the replacement waits for that installation to be re-approved and acknowledged
+   * ready again; until then the service reports `installation_disabled`, never `cancelled`.
    */
   private instanceReadmissionReason(job: JobRecord | null): string | null {
     if (!job || active.has(job.state)) return null;
@@ -633,6 +646,7 @@ export class JobService {
       case "requested":
       case "plugin_held":
       case "installation_changed":
+      case "plugin_disabled":
       case "owner_fenced":
       case "owner_restart_effects_unknown":
         return reason;
@@ -646,10 +660,14 @@ export class JobService {
       this.instanceStarts.delete(serviceId);
       return;
     }
+    const install = this.jobs.installation(record.machineId, record.pluginId);
     if (
       this.heldPlugins.has(record.pluginId) ||
       !this.channels.get(record.machineId)?.proved ||
-      !this.jobs.installation(record.machineId, record.pluginId)?.ready
+      !install?.ready ||
+      !install.enabled ||
+      install.purgeRequested ||
+      this.store.disabledPlugins().has(install.pluginId)
     )
       return;
     const owned = this.jobs.instanceServiceJobs(serviceId);
