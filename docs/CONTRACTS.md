@@ -3706,7 +3706,8 @@ and fresh on host restart; it is not the machine token or a durable terminal che
 disconnected; absence is equivalent to `null`. Such exited terminals are retained through
 the next `hello`, then forgotten when `welcome` acknowledges it (or when `kill` arrives).
 Server replies `welcome { machineId, serverEpoch }` or closes: 4401 unauthorized,
-4403 revoked, 4409 version, or 4003 admission refused (`machine name already in use`,
+4403 revoked, 4409 version, 4002 malformed frame (including a refused hello inventory), or
+4003 admission refused (`machine name already in use`,
 incumbent continuity mismatch, or `supersession damped`). A name conflict is decided by the
 same atomic write that would admit the hello; it sends no welcome, changes neither machine row,
 and leaves an incumbent connection untouched. Version acceptance uses
@@ -3715,7 +3716,26 @@ and leaves an incumbent connection untouched. Version acceptance uses
 current at protocol 43. An unchanged machine
 wire may add a version to the set. A strictly additive-optional change may also add it only
 when old frames still parse and absent fields preserve the old semantics. Other changes
-reset the set and require a coordinated hub/transport upgrade.
+reset the set and require a coordinated hub/transport upgrade. An admission bound applied
+identically at every accepted version, leaving compliant frames byte-identical, changes
+neither the version nor the set.
+
+**Hello inventory bound (#403).** One hello advertises at most **1,024 distinct terminal
+ids**: retained PTYs plus unacknowledged exits. A 1,025th entry or any duplicate id refuses
+the whole hello with 4002 `terminal inventory exceeds 1024 entries` or
+`duplicate terminal id in hello inventory`, at frame validation: before version negotiation,
+authentication, any durable refusal record, terminal lookup, admission or reconciliation. No
+welcome, lookup or kill follows, a live incumbent is untouched, and a refused inventory is
+never truncated or read as evidence that a terminal is missing. The 1 MiB frame ceiling
+still applies independently. This is an admission bound, not a wire revision: it applies to
+every transport in `MACHINE_PROTOCOL_COMPAT_VERSIONS`, and compliant transports need no
+upgrade. The transport refuses an over-bound or duplicate host report locally
+(`terminal_inventory_refused`, error) instead of sending it, and does so again on every
+re-dial; an older transport in front of such a host is refused by the hub on every dial.
+Either way the host keeps every record and the machine stays offline until an operator
+resolves it; there is no partial-hello recovery. The terminal host refuses a new terminal
+(`create_error` `terminal inventory at capacity`) once its records, including pending
+launches, reach the bound, so a current host never exceeds it.
 
 **Protocol 30: explicit terminal execution.** New-terminal admission no longer interprets
 missing native job connectivity as shell authority. The owner reports `terminalExecution`,
