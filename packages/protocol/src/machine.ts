@@ -24,6 +24,13 @@ export const MAX_TERMINAL_ARGV_ITEMS = 64;
 export const MAX_TERMINAL_ARG_CHARS = 4096;
 
 /**
+ * The most terminals one hello may advertise: retained PTYs plus unacknowledged exits, each id
+ * once (#403). An admission bound at every accepted machine version, not a wire revision. A
+ * hello over it is refused whole, never truncated or read as evidence that a PTY is missing.
+ */
+export const MAX_MACHINE_HELLO_TERMINALS = 1024;
+
+/**
  * The PROGRAM a PTY execs in place of the machine's shell: `argv[0]` with `argv.slice(1)`,
  * under the same PTY, the same lifecycle (snapshot, resize, exit) and the same injected
  * environment. A non-empty `argv[0]` is a property of the TYPE, not a runtime check. The one
@@ -149,6 +156,22 @@ export const AdvertisedTerminalSchema = z.strictObject({
 });
 export type AdvertisedTerminal = z.infer<typeof AdvertisedTerminalSchema>;
 
+const HelloTerminalsSchema = z
+  .array(AdvertisedTerminalSchema)
+  .max(MAX_MACHINE_HELLO_TERMINALS, {
+    error: `terminal inventory exceeds ${MAX_MACHINE_HELLO_TERMINALS} entries`,
+  })
+  .superRefine((terminals, ctx) => {
+    const ids = new Set<string>();
+    for (const terminal of terminals) {
+      if (ids.has(terminal.terminalId)) {
+        ctx.addIssue({ code: "custom", message: "duplicate terminal id in hello inventory" });
+        return;
+      }
+      ids.add(terminal.terminalId);
+    }
+  });
+
 export const AgentMessageSchema = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("hello"),
@@ -157,7 +180,7 @@ export const AgentMessageSchema = z.discriminatedUnion("type", [
     agentVersion: z.string(),
     protocolVersion: z.number().int().positive(),
     /** PTYs that survived a server restart; the new server re-adopts them. */
-    terminals: z.array(AdvertisedTerminalSchema),
+    terminals: HelloTerminalsSchema,
     /**
      * OPTIONAL and v24+: the identity of the PROCESS that owns this agent's PTYs (issue
      * #278). A terminal host mints one per process and keeps it for its whole life, so two
