@@ -951,6 +951,23 @@ const GRANT_SELECT = `SELECT g.id, g.principal_kind, g.principal_id, g.node, g.c
           EXISTS(SELECT 1 FROM tokens t WHERE t.grant_id = g.id) AS bound
    FROM grants g`;
 
+/**
+ * A grant row whose WHO could name this principal: by id, by its class, or by its origin. A
+ * principal with no `origin` belongs to this instance, and `principal_id = NULL` matches nothing
+ * in SQL, so instance rows sit out a local principal's walk without a branch.
+ */
+const GRANT_NAMES_PRINCIPAL = `( (g.principal_kind = 'principal' AND g.principal_id = ?)
+     OR g.principal_kind = ?
+     OR (g.principal_kind = 'instance' AND g.principal_id = ?) )`;
+
+function grantPrincipalParams(principal: Principal): [string, string | null, string | null] {
+  return [
+    principal.id,
+    principal.kind === "human" ? "any-human" : principal.kind === "agent" ? "any-agent" : null,
+    principal.origin ?? null,
+  ];
+}
+
 function toDial(row: DialRow): DialRecord {
   return {
     id: row.id,
@@ -2853,27 +2870,29 @@ export class ServerStore {
    * principal, by id or by class. Called on every authority question, so the narrowing happens
    * in SQL rather than in the walk — a workspace where every token has a root grant would
    * otherwise hand the evaluator the whole table on every request.
-   *
-   * A principal with no `origin` belongs to this instance, and `principal_id = NULL` matches
-   * nothing in SQL, so instance rows sit out a local principal's walk without a branch here.
    */
   grantsFor(principal: Principal, path: readonly string[]): GrantRecord[] {
     if (path.length === 0) return [];
     const placeholders = path.map(() => "?").join(", ");
     return this.db
       .query<GrantRow, (string | null)[]>(
-        `${GRANT_SELECT}
-         WHERE g.node IN (${placeholders})
-           AND ( (g.principal_kind = 'principal' AND g.principal_id = ?)
-              OR g.principal_kind = ?
-              OR (g.principal_kind = 'instance' AND g.principal_id = ?) )`,
+        `${GRANT_SELECT} WHERE g.node IN (${placeholders}) AND ${GRANT_NAMES_PRINCIPAL}`,
       )
-      .all(
-        ...path,
-        principal.id,
-        principal.kind === "human" ? "any-human" : principal.kind === "agent" ? "any-agent" : null,
-        principal.origin ?? null,
+      .all(...path, ...grantPrincipalParams(principal))
+      .map(toGrant);
+  }
+
+  /**
+   * Every `deny` row that could answer for this principal, by id or by class, at ANY node: the
+   * rows that can withdraw a minted wildcard's root class (`AuthService.holdsRoot`). Asked once
+   * per credential per grant epoch, never per authority question.
+   */
+  denyGrantsFor(principal: Principal): GrantRecord[] {
+    return this.db
+      .query<GrantRow, (string | null)[]>(
+        `${GRANT_SELECT} WHERE g.effect = 'deny' AND ${GRANT_NAMES_PRINCIPAL}`,
       )
+      .all(...grantPrincipalParams(principal))
       .map(toGrant);
   }
 

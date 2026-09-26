@@ -21,6 +21,7 @@ import {
   type IsolateHarnessRequest,
   type IsolateDispatchCtx,
   type IsolateChildFrame,
+  type IsolateCtxMethod,
   type IsolateHook,
   type IsolateHostFrame,
   type RuntimeDeps,
@@ -67,6 +68,23 @@ import { isDeepStrictEqual } from "node:util";
 
 /** How long a child gets between `shutdown` and `SIGKILL`. */
 const SHUTDOWN_GRACE_MS = 2_000;
+
+/**
+ * THE ROOT FENCE'S REFUSAL (#411). A dispatch or harness frame carries the caller's root class
+ * as data, evaluated when the frame was built, and the guest reads that boolean for the rest of
+ * the handler. When the frame said root and the host's live answer no longer does — an
+ * administered deny landed mid-handler — the host serves nothing more of that request: every
+ * further effectful ctx call, and every emission the answer carries, is refused by this name.
+ * Effects already committed stay committed, and a stale `false` only ever fails closed.
+ */
+const ROOT_AUTHORITY_WITHDRAWN = "root_authority_withdrawn";
+
+/** Correlated calls that release a request's resources rather than exercise authority. */
+const ROOT_FENCE_EXEMPT: Partial<Record<IsolateCtxMethod, true>> = {
+  "jobs.ack": true,
+  "jobs.unfollow": true,
+  "streams.close": true,
+};
 
 type LoadedFrame = Extract<IsolateChildFrame, { t: "loaded" }>;
 type AnsweredFrame = Extract<
@@ -732,7 +750,18 @@ export class IsolateSupervisor implements IsolateRunner {
         ) {
           pending.fail(new IsolateDenial("unavailable", "isolate answered out of protocol"));
         } else {
-          pending.answer(frame);
+          pending.answer(
+            frame.t !== "migrated" &&
+              frame.t !== "hooked" &&
+              frame.outcome.ok &&
+              frame.outcome.emits.length !== 0 &&
+              this.rootWithdrawn(pending)
+              ? {
+                  ...frame,
+                  outcome: { ok: false, rule: "refused", message: ROOT_AUTHORITY_WITHDRAWN },
+                }
+              : frame,
+          );
         }
         isolate.pending.delete(frame.id);
         return;
@@ -846,6 +875,12 @@ export class IsolateSupervisor implements IsolateRunner {
           isolate.pending.get(pending.request.id) !== pending)
       )
         throw new Error("dispatch has not been admitted");
+      if (
+        pending !== undefined &&
+        ROOT_FENCE_EXEMPT[frame.method] !== true &&
+        this.rootWithdrawn(pending)
+      )
+        throw new Error(ROOT_AUTHORITY_WITHDRAWN);
       if (migration !== null) {
         if (
           pending?.served?.kind !== "migration" ||
@@ -957,6 +992,16 @@ export class IsolateSupervisor implements IsolateRunner {
       reply = { t: "reply", id: frame.id, ok: false, error: message.slice(0, 2048) };
     }
     if (isolate.child === child) child.send(reply);
+  }
+
+  /** Whether this request was sent a root caller who has since lost the class (#411). */
+  private rootWithdrawn(pending: Pending): boolean {
+    return (
+      pending.served?.kind === "dispatch" &&
+      (pending.request.t === "dispatch" || pending.request.t === "harness") &&
+      pending.request.ctx?.isRoot === true &&
+      !pending.served.ctx.auth.isRoot
+    );
   }
 
   // ---------------------------------------------------------------- idle eviction

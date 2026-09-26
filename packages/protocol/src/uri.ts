@@ -307,3 +307,40 @@ export function containmentPath(node: string): readonly string[] | null {
   }
   return [MANIFOLD_ROOT_URI, self];
 }
+
+/**
+ * Whether anything can sit BENEATH `node` — whether some other form's {@link containmentPath}
+ * passes through it. The root, a container (its elements and tiles), a machine (its operations,
+ * locations and services), a service without an operation (its operations), an operation (its
+ * jobs) and a job (its outputs) can; every other form is a leaf. Null for anything this workspace
+ * cannot address. The switch is exhaustive so a new form has to declare which it is.
+ */
+export function canContain(node: string): boolean | null {
+  if (node === MANIFOLD_ROOT_URI) return true;
+  const ref = parseManifoldUri(node);
+  if (ref === null) return null;
+  switch (ref.kind) {
+    case "container":
+    case "machine":
+    case "operation":
+    case "job":
+      return true;
+    case "service":
+      return ref.operationId === undefined;
+    case "element":
+    case "tile":
+    case "output":
+    case "location":
+    case "terminal":
+    case "principal":
+    case "plugin":
+    case "action":
+    case "agent":
+    case "run":
+      return false;
+    default: {
+      const exhaustive: never = ref;
+      return exhaustive;
+    }
+  }
+}
