@@ -783,6 +783,7 @@ describe("TerminalBroker live stream and control contracts", () => {
         machineId: fixture.machine.machineId,
         status: "running",
         exitCode: null,
+        exitReason: null,
         readiness: null,
         cols: 80,
         rows: 24,
@@ -1242,6 +1243,10 @@ describe("TerminalBroker restart in place", () => {
       testTileTrees,
     );
     broker.setMachineOnline(replacement);
+    // Only the hub knows why the predecessor's terminal ended, and a restarted hub still says so.
+    expect(broker.listForContainer(before!.containerId)).toMatchObject([
+      { id: terminalId, status: "exited", exitCode: null, exitReason: "owner_lost" },
+    ]);
     const result = broker.restartById(terminalId, f.root.principal.id);
     const command = replacement.sent.find((message) => message.type === "terminal_restart");
     if (!command || command.type !== "terminal_restart" || !command.create)
@@ -1269,7 +1274,11 @@ describe("TerminalBroker restart in place", () => {
       createdBy: before!.createdBy,
       cwd: "/last/observed",
       status: "running",
+      exitReason: null,
     });
+    expect(broker.listForContainer(before!.containerId)).toMatchObject([
+      { id: terminalId, status: "running", exitReason: null },
+    ]);
     expect(f.rooms.get(before!.containerId)?.homesTerminal(terminalId)).toBe(true);
     f.store.close();
   });
@@ -1424,7 +1433,7 @@ describe("TerminalBroker restart in place", () => {
       createdAt: 0,
       cwd: "/legacy/work",
     });
-    f.store.markTerminalExited(terminalId, null);
+    f.store.markTerminalExited(terminalId, null, null);
     const broker = new TerminalBroker(
       f.store,
       f.auth,

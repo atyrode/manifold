@@ -49,6 +49,7 @@ import {
   PrincipalSchema,
   TerminalCwdSchema,
   TerminalEnvSchema,
+  TerminalExitReasonSchema,
   TerminalProgramSchema,
   TerminalRuntimeSchema,
   TileLayoutSchema,
@@ -71,6 +72,7 @@ import {
   type MachineRefusal,
   type Principal,
   type TileLayout,
+  type TerminalExitReason,
   type TraceOutcome,
 } from "@manifold/protocol";
 import { Y } from "@manifold/scene";
@@ -378,6 +380,7 @@ interface TerminalDbRow {
   name: string | null;
   status: string;
   exit_code: number | null;
+  exit_reason: string | null;
   created_at: number;
   cwd: string | null;
   launch_recipe: string | null;
@@ -609,6 +612,8 @@ export interface StoredTerminal {
   name: string | null;
   status: "running" | "exited";
   exitCode: number | null;
+  /** Why the owner ended it, or null for a running terminal and an ordinary exit. */
+  exitReason: TerminalExitReason | null;
   createdAt: number;
   cwd?: string;
   session?: SessionRef;
@@ -1083,6 +1088,7 @@ function toTerminal(row: TerminalDbRow): StoredTerminal {
     name: row.name,
     status: row.status,
     exitCode: row.exit_code,
+    exitReason: row.exit_reason === null ? null : TerminalExitReasonSchema.parse(row.exit_reason),
     createdAt: row.created_at,
     ...(row.cwd === null ? {} : { cwd: row.cwd }),
     ...(session === undefined ? {} : { session }),
@@ -3815,7 +3821,7 @@ export class ServerStore {
     const row = this.db
       .query<TerminalDbRow, [string]>(
         `SELECT id, machine_id, container_id, created_by, agent_principal_id,
-                status, exit_code, created_at, name, cwd, launch_recipe, run_id, session
+                status, exit_code, exit_reason, created_at, name, cwd, launch_recipe, run_id, session
          FROM terminals WHERE id = ?`,
       )
       .get(id);
@@ -3826,7 +3832,7 @@ export class ServerStore {
     const row = this.db
       .query<TerminalDbRow, [string]>(
         `SELECT id, machine_id, container_id, created_by, agent_principal_id,
-                status, exit_code, created_at, name, cwd, launch_recipe, run_id, session
+                status, exit_code, exit_reason, created_at, name, cwd, launch_recipe, run_id, session
          FROM terminals WHERE run_id = ? ORDER BY created_at, id LIMIT 1`,
       )
       .get(runId);
@@ -3837,7 +3843,7 @@ export class ServerStore {
     return this.db
       .query<TerminalDbRow, []>(
         `SELECT id, machine_id, container_id, created_by, agent_principal_id,
-                status, exit_code, created_at, name, cwd, launch_recipe, run_id, session
+                status, exit_code, exit_reason, created_at, name, cwd, launch_recipe, run_id, session
          FROM terminals ORDER BY created_at, id`,
       )
       .all()
@@ -3848,7 +3854,7 @@ export class ServerStore {
     return this.db
       .query<TerminalDbRow, [string]>(
         `SELECT id, machine_id, container_id, created_by, agent_principal_id,
-                status, exit_code, created_at, name, cwd, launch_recipe, run_id, session
+                status, exit_code, exit_reason, created_at, name, cwd, launch_recipe, run_id, session
          FROM terminals WHERE machine_id = ? AND status = 'running' ORDER BY created_at, id`,
       )
       .all(machineId)
@@ -3859,20 +3865,24 @@ export class ServerStore {
     return this.db.query<void, [string]>("DELETE FROM terminals WHERE id = ?").run(id).changes > 0;
   }
 
-  markTerminalExited(id: string, exitCode: number | null): boolean {
+  markTerminalExited(
+    id: string,
+    exitCode: number | null,
+    exitReason: TerminalExitReason | null,
+  ): boolean {
     return (
       this.db
-        .query<void, [number | null, string]>(
-          "UPDATE terminals SET status = 'exited', exit_code = ? WHERE id = ?",
+        .query<void, [number | null, TerminalExitReason | null, string]>(
+          "UPDATE terminals SET status = 'exited', exit_code = ?, exit_reason = ? WHERE id = ?",
         )
-        .run(exitCode, id).changes > 0
+        .run(exitCode, exitReason, id).changes > 0
     );
   }
 
   markTerminalRunning(id: string, agentPrincipalId: string | null): void {
     this.db
       .query(
-        "UPDATE terminals SET status = 'running', exit_code = NULL, agent_principal_id = ? WHERE id = ?",
+        "UPDATE terminals SET status = 'running', exit_code = NULL, exit_reason = NULL, agent_principal_id = ? WHERE id = ?",
       )
       .run(agentPrincipalId, id);
   }
@@ -3903,7 +3913,7 @@ export class ServerStore {
     return this.db
       .query<TerminalDbRow, [string]>(
         `SELECT id, machine_id, container_id, created_by, agent_principal_id,
-                status, exit_code, created_at, name, cwd, launch_recipe, run_id, session
+                status, exit_code, exit_reason, created_at, name, cwd, launch_recipe, run_id, session
          FROM terminals WHERE container_id = ? ORDER BY created_at, id`,
       )
       .all(containerId)

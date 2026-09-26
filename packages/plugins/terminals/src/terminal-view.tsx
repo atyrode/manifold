@@ -60,6 +60,7 @@ import {
   type TerminalClipboard,
   type TerminalClipboardCopy,
 } from "./terminal-clipboard";
+import { TerminalExitStatus } from "./terminal-exit";
 import {
   MAX_TERMINAL_FONT_SIZE,
   MIN_TERMINAL_FONT_SIZE,
@@ -973,13 +974,10 @@ export function TerminalView({
             {offlineMachine !== null ? (
               <span>machine offline — {offlineMachine.name}</span>
             ) : (
-              // A null code is a shell that never reported one; "unknown" told the
-              // operator nothing the missing number did not already say.
-              <span>
-                {typeof terminal?.exitCode === "number"
-                  ? `exited (${String(terminal.exitCode)})`
-                  : "exited"}
-              </span>
+              <TerminalExitStatus
+                exitCode={terminal?.exitCode ?? null}
+                exitReason={terminal?.exitReason ?? null}
+              />
             )}
             {terminal?.status === "exited" && offlineMachine === null && canRestart ? (
               <button

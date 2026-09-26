@@ -215,6 +215,20 @@
   pointer-events: none;
 }
 
+/* The owner's reason reads as a sentence under the bold status, never as a second status. */
+.terminal-exit-reason {
+  max-width: 34ch;
+  margin: 0;
+  padding: 0 0.75rem;
+  color: #adb5bd;
+  font-size: 0.8rem;
+  font-weight: 500;
+  line-height: 1.35;
+  text-align: center;
+  /* Wrapped lines stay even: the longest reason must not leave one orphaned word. */
+  text-wrap: balance;
+}
+
 /* Clickable even while the embed is idle (same mechanism as .node-titlebar__ctl). */
 .terminal-restart {
   display: inline-flex;

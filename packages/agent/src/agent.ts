@@ -13,6 +13,7 @@ import {
   type RuntimeDeps,
   type ServerToAgentMessage,
   type TerminalHostEvent,
+  type TerminalOwnerStopReason,
   type TerminalHostStatus,
 } from "@manifold/protocol";
 import type { AgentLogRecord, AgentLogSink } from "./log.ts";
@@ -122,6 +123,8 @@ interface Seat {
   readonly link: TerminalHostLink;
   readonly terminalHostId: string;
   terminalRestart: boolean;
+  /** Set by the host's `destructive_stop`; every exit forwarded after it carries the reason. */
+  stopReason: TerminalOwnerStopReason | null;
 }
 
 export class Agent {
@@ -303,7 +306,12 @@ export class Agent {
       case "attached": {
         if (this.pendingSeatLink !== link) return;
         this.pendingSeatLink = null;
-        this.seat = { link, terminalHostId: event.terminalHostId, terminalRestart: false };
+        this.seat = {
+          link,
+          terminalHostId: event.terminalHostId,
+          terminalRestart: false,
+          stopReason: null,
+        };
         this.seatAttempts = 0;
         this.log("info", "terminal_host_attached", {
           terminalHostId: event.terminalHostId,
@@ -328,6 +336,10 @@ export class Agent {
       case "error":
         // Answers to a maintenance client, or a refusal that the close will report.
         this.log("warn", "ignored_unknown_frame", { frameType: event.type });
+        return;
+      case "destructive_stop":
+        // Only the seat holder is told; the exits it announces follow on the same link.
+        if (this.seat?.link === link) this.seat.stopReason = event.reason;
         return;
       case "created":
       case "create_error":
@@ -355,8 +367,12 @@ export class Agent {
       return;
     }
     if (this.seat?.link !== link) return;
+    const stopReason = this.seat.stopReason;
     this.seat = null;
-    this.log("warn", "terminal_host_lost", { detail });
+    this.log("warn", "terminal_host_lost", {
+      detail,
+      ...(stopReason === null ? {} : { stopReason }),
+    });
     // Without the seat this process can vouch for nothing: close the hub socket now (the
     // server keeps the machine's terminals as they were) and hold reconnects until re-seated.
     const socket = this.socket;
@@ -738,7 +754,11 @@ export class Agent {
         return;
       }
     }
-    this.send(socket, event);
+    const stopReason = this.seat?.stopReason ?? null;
+    this.send(
+      socket,
+      event.type === "exited" && stopReason !== null ? { ...event, exitReason: stopReason } : event,
+    );
     if (event.type === "exited") {
       // Delivered: acknowledge so the host drops the record (its `kill` on a dead terminal).
       this.seat?.link.send({ type: "kill", terminalId: event.terminalId });

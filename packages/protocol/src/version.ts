@@ -1,5 +1,5 @@
 /** Wire revision; session joins require the current version (close 4409 otherwise). */
-export const PROTOCOL_VERSION = 43;
+export const PROTOCOL_VERSION = 44;
 
 /**
  * Machine-channel acceptance set. Agents are long-lived (they hold PTYs and
@@ -410,9 +410,22 @@ export const PROTOCOL_VERSION = 43;
  * require machine v43 and owner RPC v41 before admission. Ordinary jobs remain unchanged;
  * hardened contract 6 adds trusted Run provenance while retaining older ordinary guests.
  * The machine and unchanged instance acceptance sets add 43.
+ *
+ * v43 -> v44: TERMINAL OWNER EXIT REASONS (issue #853). The machine `exited` frame gains
+ * OPTIONAL `exitReason` (`owner_stopped` | `owner_oom_stopped`): the terminal host ended the
+ * PTY on its destructive stop path, and says whether its own cgroup recorded a kernel OOM
+ * kill just before. Older agents omit it and absence keeps the old meaning, an ordinary exit,
+ * so machine acceptance ADDS 44 and keeps 30–43. An older hub parses `exited` strictly, but
+ * it refuses a v44 transport at hello (4409) before one could be sent: upgrade the hub
+ * before transports.
+ * Session terminal summaries gain required nullable `exitReason`, which adds the hub-only
+ * `owner_lost`, and the exited terminal event carries it; strict session consumers update
+ * together. Terminal-host IPC stays 3: the host announces its stop with a new
+ * `destructive_stop` event, which an older transport ignores as an unknown type, and never
+ * adds the key to its own `exited`. The instance wire is unchanged and adds 44.
  */
 export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43,
+  30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44,
 ]);
 
 /**
@@ -463,10 +476,10 @@ export const MACHINE_AGENT_TOOLS_PROTOCOL_VERSION = 43;
  * never receives a machine ref, so the instance wire is unchanged.
  * v26: image-aware terminal viewers; instance frames remain unchanged.
  * v27: governed jobs expand the closed share resource/capability vocabularies (ADR 0033);
- * instance compatibility resets to protocol 27. v28 through v43 leave that wire unchanged.
+ * instance compatibility resets to protocol 27. v28 through v44 leave that wire unchanged.
  */
 export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43,
+  27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44,
 ]);
 
 /**

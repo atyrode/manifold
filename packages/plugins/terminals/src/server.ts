@@ -8,6 +8,7 @@ import type {
   TerminalProgram,
   TerminalRuntime,
   SessionRef,
+  TerminalExitReason,
   TerminalInfo,
   TerminalSummary,
   ManifoldRef,
@@ -22,6 +23,7 @@ interface StoredTerminal {
   readonly name: string | null;
   readonly status: "running" | "exited";
   readonly exitCode: number | null;
+  readonly exitReason: TerminalExitReason | null;
   readonly createdAt: number;
   readonly cwd?: string;
   readonly session?: SessionRef;
@@ -321,6 +323,7 @@ export const terminalsHandlers = {
       createdAt: terminal.createdAt,
       status: terminal.status,
       exitCode: terminal.exitCode,
+      ...(terminal.exitReason === null ? {} : { exitReason: terminal.exitReason }),
       homeId: terminal.containerId,
       unplaced: !referenced.has(terminal.containerId),
       ...(terminal.cwd === undefined ? {} : { cwd: terminal.cwd }),
@@ -353,6 +356,7 @@ export const terminalsHandlers = {
         createdAt: terminal.createdAt,
         status: terminal.status,
         exitCode: terminal.exitCode,
+        ...(terminal.exitReason === null ? {} : { exitReason: terminal.exitReason }),
         ...(terminal.session === undefined ? {} : { session: terminal.session }),
       });
     }

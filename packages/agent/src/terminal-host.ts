@@ -17,6 +17,7 @@ import {
 import type { AgentLogRecord, AgentLogSink } from "./log.ts";
 import { PtyTerminal, type PtyOutput } from "./terminal.ts";
 import type { MachineJobOwner } from "./job-owner.ts";
+import type { OomKillWatch } from "./oom-kills.ts";
 import { startLinuxJob, LinuxJobRefusal } from "./job-linux.ts";
 import { jobDigest } from "./job-journal.ts";
 
@@ -90,6 +91,8 @@ export interface TerminalHostOptions {
   readonly onMaintenanceShutdown?: () => void;
   /** The independently supervised native job owner in this host process. */
   readonly jobOwner?: MachineJobOwner;
+  /** This host's cgroup OOM-kill observations; absent, a destructive stop is `owner_stopped`. */
+  readonly oomKills?: OomKillWatch;
 }
 
 export class TerminalHost {
@@ -114,6 +117,7 @@ export class TerminalHost {
   private readonly build: string;
   private readonly onMaintenanceShutdown: () => void;
   private readonly jobOwner: MachineJobOwner | undefined;
+  private readonly oomKills: OomKillWatch | undefined;
 
   constructor(opts: TerminalHostOptions = {}) {
     this.runtime = opts.runtime ?? defaultRuntime;
@@ -124,6 +128,7 @@ export class TerminalHost {
     this.build = opts.build ?? "unknown";
     this.onMaintenanceShutdown = opts.onMaintenanceShutdown ?? (() => {});
     this.jobOwner = opts.jobOwner;
+    this.oomKills = opts.oomKills;
     this.jobOwner?.bindTerminalHost(this.terminalHostId);
   }
 
@@ -170,10 +175,13 @@ export class TerminalHost {
 
   /**
    * DESTRUCTIVE: kills every PTY (grace, then SIGKILL) and drops every connection. This is the
-   * host's SIGTERM path and the only way a live terminal is ended without a hub `kill`.
+   * host's SIGTERM path and the only way a live terminal is ended without a hub `kill`. The
+   * seated transport is told why first, so the exits it forwards name the owner's stop.
    */
   async shutdown(): Promise<void> {
     this.stopping = true;
+    const reason = this.oomKills?.killedRecently() ? "owner_oom_stopped" : "owner_stopped";
+    this.transport?.peer.write({ type: "destructive_stop", reason });
     const terminals = [...this.terminals.values()];
     const kills = terminals.map(async (terminal) => {
       try {
@@ -201,7 +209,7 @@ export class TerminalHost {
     this.terminals.clear();
     this.recipes.clear();
     for (const connection of [...this.connections]) this.cut(connection);
-    this.log("info", "shutdown", { terminals: terminals.length });
+    this.log("info", "shutdown", { terminals: terminals.length, reason });
   }
 
   private log(

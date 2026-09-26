@@ -82,6 +82,25 @@ export type TerminalExecution = z.infer<typeof TerminalExecutionSchema>;
 export const TerminalReadinessSchema = z.enum(["application", "bracketed_paste"]);
 export type TerminalReadiness = z.infer<typeof TerminalReadinessSchema>;
 
+/**
+ * Why a terminal's OWNER ended it (issue #853), as the owner itself reports it on `exited`.
+ * `owner_stopped` names the host's destructive stop path (a signal, or its supervisor stopping
+ * it); `owner_oom_stopped` is that same stop when the host's own cgroup recorded a kernel OOM
+ * kill immediately before it. An ordinary exit of the terminal's own program carries neither.
+ */
+export const TERMINAL_OWNER_STOP_REASONS = ["owner_stopped", "owner_oom_stopped"] as const;
+export const TerminalOwnerStopReasonSchema = z.enum(TERMINAL_OWNER_STOP_REASONS);
+export type TerminalOwnerStopReason = z.infer<typeof TerminalOwnerStopReasonSchema>;
+
+/**
+ * Every owner reason an exited terminal can carry: the owner's own stop reasons, plus
+ * `owner_lost`, which only the hub can know — a replacement owner was admitted, so the
+ * predecessor's terminals are retained as exited. No reason means an ordinary exit.
+ */
+export const TERMINAL_EXIT_REASONS = [...TERMINAL_OWNER_STOP_REASONS, "owner_lost"] as const;
+export const TerminalExitReasonSchema = z.enum(TERMINAL_EXIT_REASONS);
+export type TerminalExitReason = z.infer<typeof TerminalExitReasonSchema>;
+
 /** A normalized `host/owner/repo`; bounded well under a path because it is three names. */
 export const MAX_MACHINE_REMOTE_CHARS = 512;
 
@@ -232,6 +251,12 @@ export const AgentMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("exited"),
     terminalId,
     exitCode: z.number().int().nullable(),
+    /**
+     * OPTIONAL and v44+: the owner ended this terminal (issue #853). Older agents never send
+     * it, and absence keeps the pre-v44 meaning exactly: an ordinary exit. A terminal host
+     * never puts it on its own IPC `exited`; the transport adds it from `destructive_stop`.
+     */
+    exitReason: TerminalOwnerStopReasonSchema.optional(),
   }),
   z.strictObject({ type: z.literal("pong") }),
   /**

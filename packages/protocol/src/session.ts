@@ -5,6 +5,7 @@ import { EventKindSchema, EventPayloadSchema, MAX_SUBSCRIBE_TOPICS } from "./eve
 import {
   MachinePathSchema,
   TerminalCwdSchema,
+  TerminalExitReasonSchema,
   TerminalProgramSchema,
   TerminalReadinessSchema,
 } from "./machine.ts";
@@ -111,6 +112,11 @@ export const TerminalInfoSchema = z.strictObject({
   session: SessionRefSchema.optional(),
   status: z.enum(["running", "exited"]),
   exitCode: z.number().int().nullable(),
+  /**
+   * Why the terminal's owner ended it, or null for a running terminal and an ordinary exit of
+   * its own program (issue #853). It resets to null when the terminal restarts.
+   */
+  exitReason: TerminalExitReasonSchema.nullable(),
   /** Launch intent may be relative until the owner reports an observed absolute directory. */
   cwd: TerminalCwdSchema.optional(),
   /**
@@ -526,6 +532,8 @@ const SERVER_BODIES = {
       "ready",
     ]),
     exitCode: z.number().int().nullable().optional(),
+    /** On `exited` only, and only when the terminal's owner ended it; absent otherwise. */
+    exitReason: TerminalExitReasonSchema.optional(),
     controllerId: z.string().nullable().optional(),
     cols: z.number().int().positive().optional(),
     rows: z.number().int().positive().optional(),

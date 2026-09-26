@@ -295,9 +295,11 @@ describe("machine hello reconciliation", () => {
     expect(socket.closed).toBeNull();
     expect(gateway.isOnline(enrollment.machine.id)).toBe(true);
     expect(machineMessages(socket)).toMatchObject([{ type: "welcome" }]);
+    // Missing inventory from the owner of record is not owner loss: no owner reason.
     expect(store.getTerminal("missing-terminal")).toMatchObject({
       status: "exited",
       exitCode: null,
+      exitReason: null,
     });
     expect(broker.listForContainer(container.id)[0]?.status).toBe("exited");
     expect(() => auth.authenticate(sessionGrant.token)).toThrow();
@@ -1303,6 +1305,7 @@ describe("machine admission and terminal continuity", () => {
       containerId: row.containerId,
       status: "exited",
       exitCode: null,
+      exitReason: "owner_lost",
     });
     expect(fix.status("t2")).toBe("exited");
     expect(() => fix.auth.authenticate(fix.terminalTokens.get("t1")!)).toThrow();
@@ -1310,6 +1313,41 @@ describe("machine admission and terminal continuity", () => {
     expect(fix.store.getMachine(fix.machineId)?.ownerHostId).toBe("host-B");
     fix.gateway.shutdown();
     fix.store.close();
+  });
+
+  test("an owner's stop reason is retained with its exit, even a clean one", () => {
+    const fix = fixture("7".repeat(64), ["t1", "t2", "t3"], "host-A");
+    try {
+      const owner = fix.hello("owner", { terminalHostId: "host-A", alive: ["t1", "t2", "t3"] });
+      const exit = (frame: Record<string, unknown>) =>
+        fix.gateway.message("owner", JSON.stringify({ type: "exited", ...frame }));
+      // An older agent's reasonless clean exit keeps canonical removal.
+      exit({ terminalId: "t1", exitCode: 0 });
+      // The host's destructive stop: codes are whatever the ended shells returned.
+      exit({ terminalId: "t2", exitCode: 0, exitReason: "owner_stopped" });
+      exit({ terminalId: "t3", exitCode: 1, exitReason: "owner_oom_stopped" });
+      expect(owner.closed).toBeNull();
+      expect(fix.status("t1")).toBe("gone");
+      expect(fix.store.getTerminal("t2")).toMatchObject({
+        status: "exited",
+        exitCode: 0,
+        exitReason: "owner_stopped",
+      });
+      expect(fix.store.getTerminal("t3")).toMatchObject({
+        status: "exited",
+        exitCode: 1,
+        exitReason: "owner_oom_stopped",
+      });
+
+      // The replacement owner reconciles nothing already exited: the owner's account stands.
+      owner.close(4010, "terminal host connection lost");
+      fix.gateway.close("owner");
+      expect(fix.hello("replacement", { terminalHostId: "host-B" }).closed).toBeNull();
+      expect(fix.store.getTerminal("t3")?.exitReason).toBe("owner_oom_stopped");
+    } finally {
+      fix.gateway.shutdown();
+      fix.store.close();
+    }
   });
 
   test("an explicit 4010 IPC seat disconnect re-adopts the same owner's live terminals", () => {

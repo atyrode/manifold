@@ -12,7 +12,9 @@ import {
   ServerToAgentMessageSchema,
   TERMINAL_HOST_PROTOCOL_VERSION,
   TERMINAL_RESTART_PROTOCOL_VERSION,
+  TerminalHostEventSchema,
   TerminalHostStatusSchema,
+  TerminalInfoSchema,
   type TerminalProgram,
 } from "@manifold/protocol";
 
@@ -200,5 +202,64 @@ describe("terminal cwd and restart compatibility", () => {
         create: { ...replacement.create, program: { argv: [] } },
       }).success,
     ).toBe(false);
+  });
+});
+
+describe("terminal owner exit reasons", () => {
+  const exited = { type: "exited" as const, terminalId: "t1", exitCode: 1 };
+
+  test("an owner reports only its own stop; an older agent's reasonless exit still parses", () => {
+    expect(AgentMessageSchema.parse(exited)).toEqual(exited);
+    for (const exitReason of ["owner_stopped", "owner_oom_stopped"] as const) {
+      expect(AgentMessageSchema.parse({ ...exited, exitReason })).toEqual({
+        ...exited,
+        exitReason,
+      });
+    }
+    // Only the hub can know an owner was replaced; no owner may claim it, or invent a word.
+    for (const exitReason of ["owner_lost", "oom", null]) {
+      expect(AgentMessageSchema.safeParse({ ...exited, exitReason }).success).toBe(false);
+    }
+    // Pre-v44 transports stay admitted: they omit the reason, which keeps its old meaning.
+    for (const version of [30, 42, 43, PROTOCOL_VERSION])
+      expect(MACHINE_PROTOCOL_COMPAT_VERSIONS.has(version)).toBe(true);
+  });
+
+  test("the host announces its stop as a new IPC event type without an IPC version bump", () => {
+    const announced = { type: "destructive_stop" as const, reason: "owner_oom_stopped" as const };
+    expect(TerminalHostEventSchema.parse(announced)).toEqual(announced);
+    expect(TerminalHostEventSchema.safeParse({ ...announced, reason: "owner_lost" }).success).toBe(
+      false,
+    );
+    expect(TERMINAL_HOST_PROTOCOL_VERSION).toBe(3);
+  });
+
+  test("the session wire carries every owner reason, and null for an ordinary exit", () => {
+    const event = {
+      type: "terminal_event" as const,
+      terminalId: "t1",
+      kind: "exited" as const,
+      exitCode: null,
+      exitReason: "owner_lost" as const,
+    };
+    expect(ServerMessageBodySchema.parse(event)).toEqual(event);
+    const terminal = {
+      id: "t1",
+      containerId: "home",
+      name: null,
+      machineId: "m1",
+      status: "exited" as const,
+      exitCode: 7,
+      exitReason: null,
+      readiness: null,
+      cols: 80,
+      rows: 24,
+      controllerId: null,
+      createdBy: "p1",
+    };
+    expect(TerminalInfoSchema.parse(terminal)).toEqual(terminal);
+    const withoutReason: Record<string, unknown> = { ...terminal };
+    delete withoutReason["exitReason"];
+    expect(TerminalInfoSchema.safeParse(withoutReason).success).toBe(false);
   });
 });
