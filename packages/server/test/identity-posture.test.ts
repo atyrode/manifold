@@ -176,12 +176,13 @@ describe("session expiry (ADR 0019 §2)", () => {
 
     expect(created.credential.expiresAt).toBe(expiresAt);
     fix.runtime.time = expiresAt - 1;
-    expect(fix.auth.authenticate(created.credential.token)).toMatchObject({
+    const lastValid = fix.auth.authenticate(created.credential.token);
+    expect(lastValid).toMatchObject({
       principal: { id: created.run.principal.id, kind: "agent" },
       expiresAt,
       agentRunId: created.run.id,
-      isRoot: false,
     });
+    expect(fix.auth.holdsRoot(lastValid)).toBe(false);
     fix.runtime.time += 1;
     expect(refusal(() => fix.auth.authenticate(created.credential.token))).toEqual({
       code: "forbidden",
@@ -202,7 +203,7 @@ describe("session expiry (ADR 0019 §2)", () => {
       ok: false,
       denial: { rule: "invalid_args" },
     });
-    expect(fix.auth.authenticate(OWNER_KEY).isRoot).toBe(true);
+    expect(fix.auth.holdsRoot(fix.auth.authenticate(OWNER_KEY))).toBe(true);
     fix.store.close();
   });
 
@@ -293,7 +294,7 @@ describe("session expiry (ADR 0019 §2)", () => {
     fix.runtime.time += INTERACTIVE_TOKEN_TTL_MS * 100;
 
     const context = fix.auth.authenticate(OWNER_KEY);
-    expect(context.isRoot).toBe(true);
+    expect(fix.auth.holdsRoot(context)).toBe(true);
     expect(context.tokenId).toBeNull();
     fix.store.close();
   });

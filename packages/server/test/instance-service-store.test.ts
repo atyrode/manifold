@@ -196,7 +196,7 @@ describe("InstanceServiceStore", () => {
     try {
       const credential = f.configure().current.credential!;
       const context = f.auth.restoreCredential(credential)!;
-      expect(context.isRoot).toBe(false);
+      expect(f.auth.holdsRoot(context)).toBe(false);
       expect(context.tokenId).not.toBeNull();
       expect(context.grantId).not.toBeNull();
       for (const { cap, ref } of f.requirements())

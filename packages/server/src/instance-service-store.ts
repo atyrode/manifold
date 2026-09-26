@@ -126,7 +126,8 @@ export class InstanceServiceStore {
       if (
         machineId === null ||
         !this.store.getMachine(machineId) ||
-        !currentActor?.isRoot ||
+        currentActor === null ||
+        !this.auth.holdsRoot(currentActor) ||
         (!currentActor.caps.includes("*") && !currentActor.caps.includes("services:configure")) ||
         !this.auth.allowsRef(currentActor, "services:configure", { kind: "machine", machineId }) ||
         (previous !== null &&

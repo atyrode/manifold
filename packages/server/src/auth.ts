@@ -114,6 +114,12 @@ const CONCRETE_CAPS: readonly Exclude<Cap, "*">[] = CAPS.filter(
 );
 
 /**
+ * A path step beneath any node that no grant row can name (rows store canonical `manifold://`
+ * nodes), so a walk ending here sees exactly the `subtree` rows above it.
+ */
+const BENEATH_ANY_NODE = "\u0000beneath";
+
+/**
  * HOW LONG AN INTERACTIVELY MINTED CREDENTIAL LIVES — fourteen days (ADR 0019 §2).
  *
  * The number is a judgement and therefore has to be argued rather than picked. Two failure
@@ -206,12 +212,15 @@ function runContainerScope(target: string): string | null {
  * reads (ADR 0011). A null `grantId` belongs to the owner key alone: it authenticates outside
  * the token system entirely, so it has no row to reference and the evaluator synthesizes its
  * root grant instead of storing one anybody could delete.
+ *
+ * ROOT-CLASS AUTHORITY IS DELIBERATELY NOT A FIELD (#411). Whether a credential may open a
+ * declared-`*` door depends on the administered denies in force when it asks, so it is the live
+ * question {@link AuthService.holdsRoot}, never a flag frozen at authentication.
  */
 export interface AuthContext {
   principal: Principal;
   caps: readonly Cap[];
   containerScope: string | null;
-  isRoot: boolean;
   tokenId: string | null;
   grantId: string | null;
   /** Absolute credential expiry; absent for owner, machine, and terminal-lifecycle paths. */
@@ -493,10 +502,14 @@ function effectiveCapsFrom(
   return granted;
 }
 
-/** One credential's memoized verdicts, valid while the grant table has not moved under it. */
+/**
+ * One credential's memoized verdicts, valid while the grant table has not moved under it.
+ * `root` is {@link AuthService.holdsRoot}'s deny scan, filled on first ask.
+ */
 interface ContextAuthority {
   readonly epoch: number;
   readonly byNode: Map<string, ReadonlySet<AskableCap>>;
+  root?: boolean;
 }
 
 /** Owns owner bootstrap, bearer hashing, attenuation, enrollment, and revocation fanout. */
@@ -658,7 +671,6 @@ export class AuthService {
         principal: this.ownerPrincipal,
         caps: ["*"],
         containerScope: null,
-        isRoot: true,
         tokenId: null,
         grantId: null,
       };
@@ -692,7 +704,6 @@ export class AuthService {
       principal,
       caps: token.caps,
       containerScope: token.containerId,
-      isRoot: token.caps.includes("*"),
       tokenId: token.id,
       grantId: token.grantId,
       ...(token.expiresAt === null ? {} : { expiresAt: token.expiresAt }),
@@ -769,6 +780,78 @@ export class AuthService {
         ? MANIFOLD_ROOT_URI
         : formatManifoldUri({ kind: "container", containerId: scope });
     return this.effectiveCaps(context, node).has(cap);
+  }
+
+  /**
+   * ROOT-CLASS AUTHORITY, asked live: the question every declared-`*` door and every root-only
+   * service verb asks (#411, decided 2026-09-22).
+   *
+   * The raw owner key is the one unconditional answer. It is the break-glass credential
+   * (ADR 0019 §1), it authenticates outside the token system, and no row reaches it. Any other
+   * credential holds root only through a MINTED `*` token whose engine-wide reach is unattenuated
+   * at the moment it asks: the token is live and was minted with `*`, no administered deny that
+   * reaches its principal or class decides an engine capability for it anywhere in the
+   * workspace, and the evaluated set at the root still holds every engine capability (so an
+   * expired or paused credential is refused here too). The TOKEN is read rather than the
+   * context's `caps`, exactly as authentication always classified it: the engine's native bridge
+   * narrows a context's `caps` to a plugin's ceiling without changing what the credential is.
+   *
+   * The deny clause is the ruling, and its consequence is chosen rather than incidental: one
+   * container's deny withdraws WORKSPACE administration from the bearer, for an already-open
+   * socket as much as for a fresh authentication, until the row is removed. Otherwise a
+   * root-only door — grant administration included — would step around, or simply retire, the
+   * deny that narrowed its caller. A minted bearer on the OWNER principal is held to the same
+   * rule; only the raw key is exempt. Ordinary capabilities are untouched: this withdraws the
+   * class, and every concrete question is still the waterfall's alone.
+   *
+   * The token and deny scan is memoized per context under the grant epoch, which every grant
+   * write, revocation and pause bumps; expiry is time, so it is asked on every call.
+   */
+  holdsRoot(context: AuthContext): boolean {
+    if (context.tokenId === null) return this.isOwnerKey(context);
+    const cached = this.authorityFor(context);
+    cached.root ??= this.wildcardUnattenuated(context);
+    if (!cached.root) return false;
+    const anchor = this.effectiveCaps(context, MANIFOLD_ROOT_URI);
+    return CONCRETE_CAPS.every((cap) => anchor.has(cap));
+  }
+
+  /**
+   * Whether no administered deny decides an engine capability for this `*` credential anywhere.
+   *
+   * A deny can only decide inside its own reach, so each is asked where it stands: at its node,
+   * and for a `subtree` row beneath it as well, where a `node`-reach row that outranks it at the
+   * node itself no longer applies. A row that loses every contest it enters — a class deny under
+   * the principal's own allow at the same node, say — decides nothing and withdraws nothing, and
+   * a row naming only a plugin's capability sits outside anything `*` ever reached.
+   */
+  private wildcardUnattenuated(context: AuthContext): boolean {
+    const token = context.tokenId === null ? null : this.store.getToken(context.tokenId);
+    if (token === null || token.revokedAt !== null || !token.caps.includes("*")) return false;
+    for (const deny of this.store.denyGrantsFor(context.principal)) {
+      const denied = deny.caps.includes("*")
+        ? CONCRETE_CAPS
+        : deny.caps.filter((cap): cap is Exclude<Cap, "*"> => cap !== "*" && isEngineCap(cap));
+      const path = containmentPath(deny.node);
+      if (denied.length === 0 || path === null) continue;
+      const rows = this.applicableRows(context, path);
+      const decides = (at: readonly string[]): boolean => {
+        const held = effectiveCapsFrom(rows, at, context.principal);
+        return denied.some((cap) => !held.has(cap));
+      };
+      if (decides(path) || (deny.reach === "subtree" && decides([...path, BENEATH_ANY_NODE])))
+        return false;
+    }
+    return true;
+  }
+
+  /** The raw recovery key: no token, no row, on the owner principal. */
+  private isOwnerKey(context: AuthContext): boolean {
+    return (
+      context.tokenId === null &&
+      context.grantId === null &&
+      context.principal.id === this.ownerPrincipal.id
+    );
   }
 
   agentRunPolicyState(
@@ -940,7 +1023,6 @@ export class AuthService {
     const principal = this.store.getPrincipal(reference.principalId);
     if (!principal) return null;
     if (reference.expiresAt !== undefined && reference.expiresAt <= this.runtime.now()) return null;
-    let isRoot = reference.tokenId === null;
     if (reference.tokenId !== null) {
       const token = this.store.getToken(reference.tokenId);
       if (
@@ -953,7 +1035,6 @@ export class AuthService {
         reference.caps.some((c) => !token.caps.includes(c) && !token.caps.includes("*"))
       )
         return null;
-      isRoot = token.caps.includes("*");
     } else if (reference.principalId !== this.ownerPrincipal.id) return null;
     return {
       principal,
@@ -961,7 +1042,6 @@ export class AuthService {
       containerScope: reference.containerScope,
       tokenId: reference.tokenId,
       grantId: reference.grantId,
-      isRoot,
       ...(reference.expiresAt === undefined ? {} : { expiresAt: reference.expiresAt }),
       ...(reference.tokenId === null || principal.kind !== "agent"
         ? {}
@@ -990,7 +1070,8 @@ export class AuthService {
     return this.store.transaction(() => {
       const current = this.restoreCredential(this.credentialReference(actor));
       if (
-        !current?.isRoot ||
+        current === null ||
+        !this.holdsRoot(current) ||
         (!current.caps.includes("*") && !current.caps.includes("services:configure")) ||
         !this.allowsRef(current, "services:configure", { kind: "machine", machineId }) ||
         requirements.length === 0 ||
@@ -1176,40 +1257,36 @@ export class AuthService {
    * that principal presents. That is what makes an administered allow widen a live credential
    * and an administered deny bite one, with no re-authentication.
    *
-   * THE OWNER IS UNDENIABLE, and it is enforced here rather than at the write.
+   * THE OWNER KEY IS UNDENIABLE, and it is enforced here rather than at the write.
    *
-   * `grant` refuses a deny row that NAMES the owner, because an explicit futile write should be
-   * refused loudly. But a refusal at the write cannot be the guarantee, because a CLASS row
-   * walks around it: the owner is a human, so `any-human deny` would deny the owner at depth
-   * without ever naming it — and refusing every human class deny to prevent that would delete
-   * "any human in this room may read but not write", which is one of the four sentences ADR 0011
-   * exists to make sayable. So class denials are admitted for everybody and dropped for this one
-   * subject, which puts the guarantee where it cannot be walked around.
+   * `grant` refuses a deny row that NAMES the owner principal. But a refusal at the write cannot
+   * be the guarantee, because a CLASS row walks around it: the owner is a human, so
+   * `any-human deny` reaches the owner principal at depth without ever naming it — and refusing
+   * every human class deny to prevent that would delete "any human in this room may read but not
+   * write", which is one of the four sentences ADR 0011 exists to make sayable. So class denials
+   * are admitted for everybody and dropped for the raw owner key alone, which puts the break-glass
+   * guarantee where it cannot be walked around.
    *
-   * That is the same ruling as the synthesized grant below, applied to the other half of the
-   * relation: owner authority is a property of the EVALUATOR, not a row that has to win a
-   * precedence fight. The owner key authenticates outside the token system so that no
-   * administration can lock out its own administrator, and this is that promise made total.
+   * The exemption is the KEY's, not the principal's (#411). A token minted onto the owner
+   * principal is an ordinary finite bearer: administered denies bite it like any other, and
+   * `holdsRoot` withdraws its root class under them. Only the credential that authenticates
+   * outside the token system stays out of reach of administration, so that no administration can
+   * lock out its own administrator.
    *
    * The owner key holds no token, so it references no row and the store has none for it. Its
    * root grant is SYNTHESIZED here rather than stored, and that too is a safety property: a
-   * stored row is a row `revokeGrant` could delete.
+   * stored row is a row `revokeGrant` could delete. It is gated on the whole owner-key shape —
+   * no token, no row, the owner principal — rather than on the missing token id alone, so a
+   * future construction site that forgot a token id cannot inherit the workspace root.
    */
   private applicableRows(context: AuthContext, path: readonly string[]): readonly Grant[] {
-    const owner = context.principal.id === this.ownerPrincipal.id;
+    const ownerKey = this.isOwnerKey(context);
     const stored = this.store.grantsFor(context.principal, path);
     const mine = stored.filter(
       (row: GrantRecord) =>
-        (!row.tokenBound || row.id === context.grantId) && !(owner && row.effect === "deny"),
+        (!row.tokenBound || row.id === context.grantId) && !(ownerKey && row.effect === "deny"),
     );
-    /*
-      BOTH conditions, and the second one is defence rather than logic. `authenticate` is the
-      only producer of an `AuthContext` and it leaves `tokenId` null in the owner-key branch
-      alone, so today the two are equivalent — which is exactly why the weaker test is the wrong
-      one to write. A future construction site that forgot a token id would inherit the workspace
-      root from a check that only asked about the token.
-    */
-    if (context.tokenId !== null || !owner) return mine;
+    if (!ownerKey) return mine;
     return [
       {
         id: `owner-${this.ownerPrincipal.id}`,
@@ -1352,7 +1429,7 @@ export class AuthService {
    * same row because `mintToken` also mints and is not a bootstrap.
    */
   bootstrapPrincipal(input: BootstrapPrincipalRequest, actor: AuthContext): TokenGrant {
-    if (!actor.isRoot) throw new ServiceError("forbidden", "root capability required");
+    if (!this.holdsRoot(actor)) throw new ServiceError("forbidden", "root capability required");
     const parsed = BootstrapPrincipalRequestSchema.parse(input);
     const principal = this.createPrincipal(parsed);
     const minted = this.persistToken(
@@ -1426,11 +1503,12 @@ export class AuthService {
     if (!this.allows(minter, "tokens:mint")) {
       throw new ServiceError("forbidden", "tokens:mint capability required");
     }
+    const root = this.holdsRoot(minter);
     for (const cap of parsed.caps) {
-      if (cap === "*" && !minter.isRoot) {
+      if (cap === "*" && !root) {
         throw new ServiceError("forbidden", "only root may mint wildcard authority");
       }
-      if (!minter.isRoot && !minter.caps.includes(cap)) {
+      if (!root && !minter.caps.includes(cap)) {
         throw new ServiceError("forbidden", `cannot mint capability ${cap}`);
       }
     }
@@ -1459,7 +1537,7 @@ export class AuthService {
       this.refuseManagedServicePrincipal(existing.id);
       principal = existing;
       if (
-        !minter.isRoot &&
+        !this.holdsRoot(minter) &&
         existing.id !== minter.principal.id &&
         !this.store.hasIssuedToken(
           existing.id,
@@ -1519,7 +1597,7 @@ export class AuthService {
   }
 
   private mayInspectAgentRun(actor: AuthContext, run: AgentRunRecord): boolean {
-    if (actor.isRoot) return true;
+    if (this.holdsRoot(actor)) return true;
     if (actor.agentRunnerId !== undefined) return actor.agentRunnerId === run.agentId;
     if (actor.agentRunId !== undefined) {
       const own = this.store.getAgentRun(actor.agentRunId);
@@ -1546,7 +1624,7 @@ export class AuthService {
     if (input.agentId !== undefined) this.getAgent({ agentId: input.agentId }, current);
     for (const run of this.store.agentRunInspectionCandidates(
       current.principal.id,
-      current.isRoot,
+      this.holdsRoot(current),
     )) {
       if (!this.mayInspectAgentRun(current, run)) continue;
       if (
@@ -1690,7 +1768,7 @@ export class AuthService {
       status: "enabled",
       createdAt,
       updatedAt: createdAt,
-      authorizationPath: current.isRoot && current.tokenId === null ? "owner_key" : "principal",
+      authorizationPath: this.isOwnerKey(current) ? "owner_key" : "principal",
       authorizationCredential: this.agentAuthorizationCredential(current),
     };
     const minted = this.store.transaction(() => {
@@ -1773,7 +1851,7 @@ export class AuthService {
   }
 
   private mayManageAgent(actor: AuthContext, agent: AgentRecord): boolean {
-    if (actor.isRoot) return true;
+    if (this.holdsRoot(actor)) return true;
     if (actor.agentRunId !== undefined || actor.agentRunnerId !== undefined) return false;
     const seen = new Set<string>();
     let sponsor = agent.sponsorPrincipalId;
@@ -1889,10 +1967,9 @@ export class AuthService {
             ...(current.principal.id === agent.sponsorPrincipalId
               ? {
                   authorizationCredential: this.agentAuthorizationCredential(current),
-                  authorizationPath:
-                    current.isRoot && current.tokenId === null
-                      ? ("owner_key" as const)
-                      : ("principal" as const),
+                  authorizationPath: this.isOwnerKey(current)
+                    ? ("owner_key" as const)
+                    : ("principal" as const),
                 }
               : {}),
           }),
@@ -1984,13 +2061,13 @@ export class AuthService {
       parent === null ||
       (current.agentRunId !== parent.id &&
         current.agentRunnerId !== parent.agentId &&
-        !current.isRoot)
+        !this.holdsRoot(current))
     )
       throw new ServiceError("forbidden", "agent_unavailable");
     const agentId = parsed.agentId ?? parent.agentId;
     if (
       agentId !== parent.agentId &&
-      !current.isRoot &&
+      !this.holdsRoot(current) &&
       !this.effectiveCaps(current, formatManifoldUri({ kind: "agent", agentId })).has("agents:run")
     )
       throw new ServiceError("forbidden", "agent_unavailable");
@@ -2625,7 +2702,7 @@ export class AuthService {
     if (
       run === null ||
       agent === null ||
-      (!current.isRoot &&
+      (!this.holdsRoot(current) &&
         current.agentRunId !== run.id &&
         current.agentRunId !== run.parentRunId &&
         current.agentRunnerId !== run.agentId &&
@@ -2644,7 +2721,7 @@ export class AuthService {
   }
 
   reloadAgentPolicy(actor: AuthContext): ReloadAgentPolicyResult {
-    if (!actor.isRoot) throw new ServiceError("forbidden", "root capability required");
+    if (!this.holdsRoot(actor)) throw new ServiceError("forbidden", "root capability required");
     const next = loadAgentPolicy(this.agentPolicyFile);
     return {
       revision: next.revision,
@@ -3015,7 +3092,7 @@ export class AuthService {
     const rows: PrincipalCredentials[] = [];
     for (const { principal, createdAt } of this.store.listPrincipalsWithCreation()) {
       const wholePrincipal =
-        current.isRoot ||
+        this.holdsRoot(current) ||
         principal.id === current.principal.id ||
         (principal.kind === "agent" &&
           this.store.hasIssuedToken(principal.id, current.principal.id, null) &&
@@ -3061,7 +3138,7 @@ export class AuthService {
     if (
       current === null ||
       current.containerScope !== null ||
-      !current.isRoot ||
+      !this.holdsRoot(current) ||
       (current.principal.id !== this.ownerPrincipal.id &&
         this.pausedPrincipals.has(current.principal.id))
     ) {
@@ -3201,7 +3278,7 @@ export class AuthService {
       .listAgents()
       .find((candidate) => candidate.principalId === principalId);
     if (
-      !actor.isRoot &&
+      !this.holdsRoot(actor) &&
       principalId !== actor.principal.id &&
       !this.store.hasIssuedToken(
         principalId,
@@ -3221,7 +3298,7 @@ export class AuthService {
         throw new ServiceError("forbidden", "cannot widen container scope");
       return this.revokeIssuedPrincipal(principalId, actor.principal.id);
     }
-    if (actor.isRoot) return this.revokeIssuedPrincipal(principalId, actor.principal.id);
+    if (this.holdsRoot(actor)) return this.revokeIssuedPrincipal(principalId, actor.principal.id);
 
     const containerId = actor.containerScope;
     const at = this.runtime.now();
@@ -3283,11 +3360,12 @@ export class AuthService {
     if (!this.allows(minter, "tokens:mint")) {
       throw new ServiceError("forbidden", "tokens:mint capability required");
     }
+    const root = this.holdsRoot(minter);
     for (const cap of parsed.caps) {
       if (cap === "*") {
         throw new ServiceError("forbidden", "wildcard authority cannot be container-scoped");
       }
-      if (!minter.isRoot && !minter.caps.includes(cap)) {
+      if (!root && !minter.caps.includes(cap)) {
         throw new ServiceError("forbidden", `cannot mint capability ${cap}`);
       }
     }
@@ -3424,7 +3502,7 @@ export class AuthService {
     }
     const share = this.store.getShare(shareId);
     if (share === null) throw new ServiceError("not_found", "share not found");
-    if (!actor.isRoot && share.mintedBy !== actor.principal.id) {
+    if (!this.holdsRoot(actor) && share.mintedBy !== actor.principal.id) {
       throw new ServiceError("forbidden", "cannot revoke another principal's share");
     }
     const at = this.runtime.now();
@@ -3454,7 +3532,7 @@ export class AuthService {
   listShares(actor: AuthContext): Share[] {
     return this.store
       .listShares()
-      .filter((share) => actor.isRoot || share.mintedBy === actor.principal.id)
+      .filter((share) => this.holdsRoot(actor) || share.mintedBy === actor.principal.id)
       .map(toShare);
   }
 
@@ -3468,25 +3546,20 @@ export class AuthService {
   /**
    * Writes one grant row.
    *
-   * ONE refusal beyond the capability check, and it exists because ADR 0011 states no
-   * attenuation rule for a DENY row. A deny beats a shallower allow by the deeper-wins rule, so
-   * an unrestricted deny is a way to take authority away from somebody who outranks you —
-   * escalation by denial. The door answers most of that by admitting root callers only; what
-   * this answers is the residue the door cannot, which is a bootstrapped `*` token naming the
-   * OWNER in a deny row. The owner key authenticates outside the token system precisely so that
-   * no administration can lock it out of its own workspace, and there would be no credential
-   * left able to write the row that undid it.
+   * ONE refusal beyond the capability check: a deny row that NAMES the owner principal. ADR 0011
+   * states no attenuation rule for a DENY row — a deny beats a shallower allow by the deeper-wins
+   * rule, so an unrestricted deny is a way to take authority away from somebody who outranks you,
+   * escalation by denial — and the door answers most of that by admitting root callers only. The
+   * raw owner key is beyond every row by evaluation (`applicableRows`), so this refusal is not
+   * what keeps the break-glass path open; it remains the explicit write-time boundary on naming
+   * the owner in a deny, which the evaluator does not decide.
    *
    * The refusal is deliberately as NARROW as that: it names the owner principal specifically and
    * nothing else. A CLASS deny — `any-human`, `any-agent` — is admitted, because "any human in
    * this room may read but not write" is one of the four sentences ADR 0011 exists to make
    * sayable, and refusing it to protect the owner would delete the feature to fix the footgun.
-   * The owner survives a class deny by the precedence relation itself: a principal-specific
-   * allow outranks a class row at the same node (specificity above effect, rule 2 above rule 3),
-   * so the recovery is a row the owner can always write. Always, and that word is checkable —
-   * `grant` asks for `tokens:mint` at the owner's own anchor, which is the workspace root, where
-   * the owner's synthesized `*` allow carries the maximum depth-and-specificity a row can have
-   * and the only thing that could outrank it is the deny this method refuses.
+   * A class deny bites the owner principal's MINTED bearers like any other human's and withdraws
+   * their root class (`holdsRoot`); the owner key alone slides off it, and can always retire it.
    *
    * The node is stored CANONICALLY rather than as the caller spelled it, because the evaluator
    * compares a stored node against a path it formatted itself, and a row under an equivalent
@@ -3544,7 +3617,7 @@ export class AuthService {
     }
     const existing = this.store.getGrant(grantId);
     if (existing === null) return 0;
-    if (!actor.isRoot && existing.createdBy !== actor.principal.id) {
+    if (!this.holdsRoot(actor) && existing.createdBy !== actor.principal.id) {
       throw new ServiceError("forbidden", "cannot revoke another principal's grant");
     }
     if (existing.tokenBound) {
@@ -3576,7 +3649,7 @@ export class AuthService {
     }
     return this.store
       .listGrants(filter)
-      .filter((row) => actor.isRoot || row.createdBy === actor.principal.id)
+      .filter((row) => this.holdsRoot(actor) || row.createdBy === actor.principal.id)
       .map((row) => ({
         id: row.id,
         principal: row.principal,
