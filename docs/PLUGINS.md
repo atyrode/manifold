@@ -726,6 +726,15 @@ bound to you. In `onEnable`, `onDisable` and `onAssemblyChanged` the slice is `c
 the same terms as `ctx.jobs?` — the installer's credential, absent when it no longer restores —
 and `onJobSettled` always carries it, bound to the settled job's own credential.
 
+Inside an action handler, `ctx.callerPlugin` identifies the **immediate** plugin that opened
+this door through `ctx.actions.call`, or is `null` when the door was opened directly by a
+person, HTTP/session client or host. For example, A → B → C gives B `A` and C `B`; the trace
+keeps the full chain. This is host-owned read-only attribution, not an action argument, grant,
+principal or delegation. A callee can use it for its own attribution policy without trusting a
+plugin id supplied in `input`; it must still check the principal and applicable capabilities.
+In-realm handlers and hardened guests packed with contract 8 receive the same field; older
+accepted hardened guests keep their existing context without it.
+
 A refusal is a REJECTION whose message is the class then the plugins it names, caller first — the
 same `"<class>: <offenders>"` shape every plugin refusal uses. Catch it if you have something
 better to answer, or let it escape and your own dispatch refuses with that sentence. A callee that

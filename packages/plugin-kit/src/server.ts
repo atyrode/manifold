@@ -370,6 +370,8 @@ export interface GuestServices {
 export interface GuestCtx {
   readonly traceId: IsolateDispatchCtx["traceId"];
   readonly pluginId: string;
+  /** Verified immediate plugin caller, or null for a direct non-plugin entry; not a grant. */
+  readonly callerPlugin: Exclude<IsolateDispatchCtx["callerPlugin"], undefined>;
   readonly principal: Principal;
   /** Authenticated Run provenance supplied by the host, never an action argument. */
   readonly agentRun: Readonly<NonNullable<IsolateDispatchCtx["agentRun"]>> | null;
@@ -1103,12 +1105,18 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
   });
 
   const dispatchCtx = (call: Call, carried: IsolateDispatchCtx, staged: Emission[]): GuestCtx => {
+    if (carried.callerPlugin === undefined)
+      throw new Error("hardened dispatch missing callerPlugin");
+    const callerPlugin = carried.callerPlugin;
     // Spread, not assigned: a plugin that declared no database has NO member here, so reading
     // it is `undefined` rather than a handle that would fail one round trip later.
     const database = databaseFor(call);
     const ctx: GuestCtx = {
       traceId: carried.traceId,
       pluginId: def.manifest.id,
+      get callerPlugin() {
+        return callerPlugin;
+      },
       principal: carried.principal,
       agentRun: carried.agentRun === undefined ? null : Object.freeze(carried.agentRun),
       auth: {
@@ -1435,10 +1443,10 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
     if (!(await admission.promise)) return;
     const requests = callsFor(frame.id);
     const staged: Emission[] = [];
-    const ctx = dispatchCtx(requests.call, frame.ctx, staged);
     const invoke = handler as (ctx: GuestCtx, args: unknown) => Promise<unknown>;
     let produced: unknown;
     try {
+      const ctx = dispatchCtx(requests.call, frame.ctx, staged);
       produced = await invoke(ctx, parsed.data);
     } catch (error) {
       requests.close();
@@ -1515,8 +1523,8 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
     }
     const requests = callsFor(frame.id);
     const staged: Emission[] = [];
-    const ctx = dispatchCtx(requests.call, frame.ctx, staged);
     try {
+      const ctx = dispatchCtx(requests.call, frame.ctx, staged);
       let produced: unknown;
       switch (request.method) {
         case "launch":
