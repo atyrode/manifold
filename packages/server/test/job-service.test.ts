@@ -5948,6 +5948,116 @@ describe("reviewed native deployment approvals", () => {
     }
   });
 
+  test("a report retained from before a revocation cannot refuse re-enabling the same revision (#840)", () => {
+    const {
+      f,
+      value,
+      provider,
+      callerPlugin,
+      selectedOperation,
+      unselectedOperation,
+      acknowledge,
+    } = runtimeDeploymentFixture();
+    try {
+      const first = f.service.reviewDeployment(f.root, value);
+      f.service.applyDeployment(
+        f.root,
+        { request: value, reviewDigest: first.reviewDigest },
+        "first-runtime",
+      );
+      acknowledge();
+      const pins = first.targets[0]!;
+      const reportConsumer = (reason: string) =>
+        f.service.event(f.channel, {
+          type: "installed",
+          pluginId: callerPlugin,
+          installationRevision: pins.installationRevision!,
+          artifactSha256: hash,
+          resources: {
+            artifactAvailable: true,
+            tools: [],
+            operations: [selectedOperation, unselectedOperation].map((operationId) => ({
+              operationId,
+              available: false,
+              reason,
+            })),
+          },
+        });
+      const review = (deploymentId: string) =>
+        f.service.reviewDeployment(f.root, { ...value, deploymentId }).targets[0]!;
+      // An enabled installation's current report stays authoritative even where the hub's own
+      // policy and runtime checks pass: only the owner observes what it refused.
+      reportConsumer("services_unavailable");
+      expect(review("owner-refused")).toMatchObject({
+        approvable: false,
+        reason: "services_unavailable",
+      });
+      const disable = (id: string) => {
+        f.store.setPluginEnabled(id, false, "test", f.runtime.now());
+        f.service.disablePlugin(id);
+      };
+      const advertised = f.owner.resources!;
+      // The family is disabled provider first. The owner withdraws the service and republishes
+      // the consumer, still enabled here, as unavailable; it then acknowledges the consumer's
+      // own revocation.
+      disable(pluginId);
+      f.service.event(f.channel, { type: "resources", resources: { ...advertised, services: {} } });
+      reportConsumer("services_unavailable");
+      disable(callerPlugin);
+      reportConsumer("operation_not_installed");
+      // Re-enabling the plugins is not a native review, and a missing provider still refuses.
+      f.store.setPluginEnabled(pluginId, true, "test", f.runtime.now());
+      f.store.setPluginEnabled(callerPlugin, true, "test", f.runtime.now());
+      expect(review("provider-disabled")).toMatchObject({
+        approvable: false,
+        reason: "resource_evidence_unknown",
+      });
+      // The provider is redeployed and ready. The owner republishes every installation, and
+      // what it says of the revoked consumer is not an observation the hub can act on.
+      f.service.install(f.root, {
+        machineId: f.machineId,
+        pluginId,
+        installationRevision: "r1",
+        artifactSha256: hash,
+        machine: provider,
+      });
+      f.service.event(f.channel, { type: "resources", resources: advertised });
+      f.service.event(f.channel, {
+        type: "installed",
+        pluginId,
+        installationRevision: "r1",
+        artifactSha256: hash,
+        resources: {
+          artifactAvailable: true,
+          tools: [],
+          operations: [{ operationId, available: true }],
+        },
+      });
+      reportConsumer("operation_not_installed");
+      const ready = f.service.reviewDeployment(f.root, {
+        ...value,
+        deploymentId: "provider-ready",
+      });
+      expect(ready.targets[0]).toMatchObject({
+        approvable: true,
+        reason: null,
+        installationRevision: pins.installationRevision,
+        resourceBindings: pins.resourceBindings,
+      });
+      f.service.applyDeployment(
+        f.root,
+        { request: ready.request, reviewDigest: ready.reviewDigest },
+        "re-enable",
+      );
+      acknowledge();
+      expect(
+        f.service.readDeployment(f.root, { deploymentId: "provider-ready" }).targets[0]!.state,
+      ).toBe("ready");
+    } finally {
+      f.store.close();
+    }
+  });
+
   test("describe names a declared plugin's operations before it has an installation (#715)", () => {
     const { f, callerPlugin, selectedOperation, unselectedOperation } = runtimeDeploymentFixture();
     const unbound = createHash("sha256").update(canonicalJobJson(null)).digest("hex");
