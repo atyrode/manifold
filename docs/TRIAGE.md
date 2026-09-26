@@ -156,9 +156,11 @@ label or schema is required, and an older claim in a different shape is still a 
 
 `bun scripts/dispatch.ts --next` lists the ready queue in pick order: `p0` → `p3`, then oldest
 first. Before listing new work it refuses while any open non-draft pull request needs review,
-correction, operator routing or merge. It skips an issue that already has an open pull request
-referencing it, or a `Claim:` from someone else that is newer than 24 hours with no later
-`Release:`. Take at most **two** concurrent claims per contributor session.
+correction, operator routing or merge. A pull request in the §Runbooks › ship integration lane —
+squash auto-merge armed and a newest `## Verdict: pass` dated after its head commit — counts as
+drained. It skips an issue that already has an open pull request referencing it, or a `Claim:`
+from someone else that is newer than 24 hours with no later `Release:`. Take at most **two**
+concurrent claims per contributor session.
 
 `main` is the only integrated implementation, and one initiative has one open pull request. A
 dependency on an open pull request is an explicit stack: write `Depends-on: #N` under
@@ -274,14 +276,17 @@ convenience only, never security or merge enforcement.
 
 ## Merge
 
-An agent squash-merges with branch deletion, without an additional waiting period, when **all** of
-these hold:
+An agent lands a pull request by arming squash auto-merge (`gh pr merge <n> --auto --squash`),
+without an additional waiting period, when **all** of these hold. The repository deletes the merged
+branch, and §Runbooks › ship orders armed pull requests through its integration lane.
 
 1. The pull request claims an open issue carrying `agent-ready` and exactly one priority label.
    Its approved implementation scope is complete. `Closes #N` or `Refs #N` follows §Pull requests;
    a `Refs` PR has a complete post-merge handoff, not missing implementation disguised as follow-up.
 2. The required PR `gate` is green on the current head and integration base:
-   `gh pr checks <n> --required` exits 0.
+   `gh pr checks <n> --required` exits 0. Branch protection still refuses a head that is behind
+   `main` at merge; a head that is green but only behind may be armed, and the lane brings it
+   current.
 3. The newest `## Verdict:` comment is `pass` and is dated after the head commit was pushed.
 4. The change is within the current operator request or an applicable recorded standing/bounded
    grant, recorded and linked through the §Holds decision receipt. No unresolved `needs-operator` hold, design
@@ -450,20 +455,46 @@ A pass hands the same head directly to **ship**; it never starts another dispatc
 
 ### ship
 
-For each open non-draft pull request, evaluate every §Merge criterion —
-`gh pr view <n> --json body,labels,files,headRefOid,closingIssuesReferences,comments,isDraft`,
+For each open non-draft pull request outside the integration lane, evaluate every §Merge
+criterion — `gh pr view <n> --json body,labels,files,headRefOid,closingIssuesReferences,comments,isDraft`,
 its claimed issues (including `Refs`, which `closingIssuesReferences` omits), the applicable grant
-and `gh pr checks <n> --required`. Then merge with `gh pr merge <n> --squash --delete-branch` or
-record the failed criterion and next action. Repair technical/evidence gaps; only a concrete
-unresolved operator decision gets `needs-operator`, draft and a decision block. File paths alone
-are not that decision. After each merge, update the owning issue's §Post-merge follow-through with
-the merge SHA and let full `main` CI continue asynchronously; do not block
-independent safe work on it. Trusted feedback assigns any failed full run to its repair owner.
-Deployment or release operators must query that exact SHA and wait for its successful full proof.
-Then list dependent open PRs. Rebase and reverify branches you own; for another owner, comment the
-merged revision and required base update. Close an empty or superseded draft only after preserving
-unique work and recording its destination. Do not return to dispatch until this reconciliation is
-complete.
+and `gh pr checks <n> --required`. Then arm `gh pr merge <n> --auto --squash`, which enters the
+lane, or record the failed criterion and next action. Repair technical/evidence gaps; only a
+concrete unresolved operator decision gets `needs-operator`, draft and a decision block. File paths
+alone are not that decision.
+
+Branch protection requires checks on a head that is current with `main`, so each merge leaves every
+other armed pull request behind. The integration lane spends one catch-up per merge instead of
+racing them all. Its members are the open non-draft pull requests with squash auto-merge armed
+whose newest `## Verdict: pass` is dated after their head commit, the membership
+`bun scripts/dispatch.ts --next` treats as drained. The head-of-line is the member armed earliest
+(`autoMergeRequest.enabledAt` in `gh pr list --json number,isDraft,autoMergeRequest`).
+
+1. Only the head-of-line is updated from `main` (`gh pr update-branch <n>`) and rerun: by its
+   owner, with a comment requesting it on another owner's branch. Younger members neither update
+   nor rerun until it merges or leaves the lane. GitHub may still merge a younger member that is
+   already current; that costs the head-of-line one more catch-up, not its place.
+2. After a conflict-free update, the reviewer posts a refreshed verdict for the new head citing
+   patch identity with the reviewed change; auto-merge stays armed and merges once required
+   checks pass. A conflicted update is a correction.
+3. A head-of-line failure is diagnosed in the same pass, never left to block the lane. A failure
+   of the change or of its integration with `main`, a correction, or an update its owner has not
+   made by the next pass takes it out: disarm with `gh pr merge <n> --disable-auto`, comment the
+   failure and next action, and return it to draft when it needs correction. An evidenced
+   unrelated failure gets one recorded rerun; a repeat takes it out the same way. It re-enters at
+   the back by re-arming once it again meets §Merge.
+
+The release command's rebase-auto-merged pull request is not a lane member and blocks dispatch
+until it lands.
+
+Lane merges land asynchronously, so each ship pass first reconciles pull requests merged since the
+last one. For each merge, update the owning issue's §Post-merge follow-through with the merge SHA
+and let full `main` CI continue asynchronously; do not block independent safe work on it. Trusted
+feedback assigns any failed full run to its repair owner. Deployment or release operators must
+query that exact SHA and wait for its successful full proof. Then list dependent open PRs. Rebase
+and reverify branches you own; for another owner, comment the merged revision and required base
+update. Close an empty or superseded draft only after preserving unique work and recording its
+destination. Do not return to dispatch until this reconciliation is complete.
 
 ## Flow
 

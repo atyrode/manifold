@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { drainingPulls } from "./dispatch.ts";
+import { drainingPulls, type DrainPull } from "./dispatch.ts";
 import { evaluatePullPolicy, type PullPolicyIssue, type PullPolicyPull } from "./pull-policy.ts";
 
 const pull = (overrides: Partial<PullPolicyPull> = {}): PullPolicyPull => ({
@@ -111,13 +111,58 @@ describe("pull request lifecycle policy", () => {
 });
 
 describe("dispatch integration drain", () => {
+  const headCommittedAt = "2026-09-26T17:00:00Z";
+  const verdict = (outcome: string, createdAt: string) => ({
+    body: `## Verdict: ${outcome}\n\nReviewed head abc1234 against #7.`,
+    createdAt,
+  });
+  const current = verdict("pass", "2026-09-26T17:05:00Z");
+  const drain = (number: number, overrides: Partial<DrainPull> = {}): DrainPull => ({
+    number,
+    title: "change",
+    url: `https://example.test/${String(number)}`,
+    isDraft: false,
+    autoMerge: null,
+    headCommittedAt,
+    comments: [],
+    ...overrides,
+  });
+  const blocking = (pulls: readonly DrainPull[]) =>
+    drainingPulls(pulls).map((pullRequest) => pullRequest.number);
+
   test("blocks only for non-draft pull requests in number order", () => {
+    expect(blocking([drain(12), drain(9, { isDraft: true }), drain(10)])).toEqual([10, 12]);
+  });
+
+  test("treats a current pass verdict with squash auto-merge armed as in the integration lane", () => {
     expect(
-      drainingPulls([
-        { number: 12, title: "ready", url: "https://example.test/12", isDraft: false },
-        { number: 9, title: "held", url: "https://example.test/9", isDraft: true },
-        { number: 10, title: "correcting", url: "https://example.test/10", isDraft: false },
-      ]).map((pullRequest) => pullRequest.number),
-    ).toEqual([10, 12]);
+      blocking([
+        drain(12, { autoMerge: "SQUASH", comments: [current] }),
+        drain(13, {
+          autoMerge: "SQUASH",
+          comments: [verdict("fail", "2026-09-26T17:02:00Z"), current],
+        }),
+      ]),
+    ).toEqual([]);
+  });
+
+  test("keeps every other non-draft pull request blocking", () => {
+    expect(
+      blocking([
+        drain(1, { comments: [current] }),
+        drain(2, { autoMerge: "REBASE", comments: [current] }),
+        drain(3, { autoMerge: "SQUASH", comments: [verdict("pass", "2026-09-26T16:55:00Z")] }),
+        drain(4, { autoMerge: "SQUASH", comments: [verdict("pass", headCommittedAt)] }),
+        drain(5, {
+          autoMerge: "SQUASH",
+          comments: [current, verdict("fail", "2026-09-26T17:10:00Z")],
+        }),
+        drain(6, { autoMerge: "SQUASH", comments: [current], headCommittedAt: null }),
+        drain(7, {
+          autoMerge: "SQUASH",
+          comments: [{ body: "Looks good.", createdAt: "2026-09-26T17:05:00Z" }],
+        }),
+      ]),
+    ).toEqual([1, 2, 3, 4, 5, 6, 7]);
   });
 });
