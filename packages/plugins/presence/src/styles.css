@@ -180,16 +180,25 @@
   "Look at this", received. It sits above the canvas rather than inside it: a spotlight is an
   interruption somebody else caused, so naming the sender and offering the way out (and the
   way to refuse every future one) is the whole ref.
+
+  TOP-centre, because a ref keeps its own chrome along its bottom edge (the canvas tool strip)
+  and a chip in the same spot had its controls painted over by the host's (#772). Both insets
+  and auto margins rather than `left: 50%` + translate, which caps the chip at half the ref's
+  width: in a narrow split pane it may now span the ref minus a 1rem gutter, and it wraps the
+  controls under the source line instead of squeezing the label into a column.
 */
 .spotlight-chip {
   position: absolute;
-  bottom: 1rem;
-  left: 50%;
+  top: 1rem;
+  inset-inline: 1rem;
   z-index: 6;
   display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
   align-items: center;
-  gap: 0.5rem;
-  transform: translateX(-50%);
+  gap: 0.35rem 0.5rem;
+  width: fit-content;
+  margin-inline: auto;
   border: 1px solid #343a40;
   border-radius: 0.5rem;
   background: #14161a;
@@ -200,6 +209,8 @@
 .spotlight-chip__label {
   color: #dee2e6;
   font-size: 0.72rem;
+  /* The asker falls back to a bare principal id, which has no break opportunity. */
+  overflow-wrap: anywhere;
 }
 
 .spotlight-chip__control {
