@@ -93,7 +93,7 @@ describe("sponsor-bound agent runs", () => {
       discipline: "canvas",
     });
 
-    const created = createExternalRun(fix, {
+    const created = await createExternalRun(fix, {
       name: "planner",
       purpose: "Inspect the bounded workspace and delegate one read-only child.",
       taskRef: "issue:559",
@@ -168,7 +168,7 @@ describe("sponsor-bound agent runs", () => {
       createdAt: fix.runtime.now(),
       discipline: "canvas",
     });
-    const created = createExternalRun(fix, {
+    const created = await createExternalRun(fix, {
       name: "parent",
       purpose: "Delegate without escaping a descendant-specific denial.",
       target: "manifold://",
@@ -226,7 +226,7 @@ describe("sponsor-bound agent runs", () => {
         discipline: "canvas",
       });
     }
-    const parentCreated = createExternalRun(fix, {
+    const parentCreated = await createExternalRun(fix, {
       name: "revoked-parent",
       purpose: "Prove generic revocation settles the complete run subtree.",
       target: "manifold://",
@@ -262,7 +262,7 @@ describe("sponsor-bound agent runs", () => {
     expect(fix.store.getAgentRun(childCreated.run.id)?.state).toBe("revoked");
     expect(() => fix.auth.authenticate(childCreated.credential.token)).toThrow("revoked");
 
-    const outsideCreated = createExternalRun(fix, {
+    const outsideCreated = await createExternalRun(fix, {
       name: "outside",
       purpose: "Remain outside a narrow cleanup credential.",
       target: formatManifoldUri({ kind: "container", containerId: secondContainerId }),
@@ -291,7 +291,7 @@ describe("sponsor-bound agent runs", () => {
 
   test("expiry withdraws a hot run subtree before teardown can claim success", async () => {
     const fix = await fixture();
-    const parentCreated = createExternalRun(fix, {
+    const parentCreated = await createExternalRun(fix, {
       name: "expiring-parent",
       purpose: "Prove expiry is a backstop rather than successful teardown.",
       target: "manifold://",
@@ -335,7 +335,7 @@ describe("sponsor-bound agent runs", () => {
 
   test("renewal replaces the credential without extending the run silently", async () => {
     const fix = await fixture();
-    const created = createExternalRun(fix, {
+    const created = await createExternalRun(fix, {
       name: "renewed",
       purpose: "Exercise explicit harness renewal.",
       target: "manifold://",
@@ -369,7 +369,7 @@ describe("sponsor-bound agent runs", () => {
 
   test("each ancestor enforces its own descendant budget", async () => {
     const fix = await fixture();
-    const rootCreated = createExternalRun(fix, {
+    const rootCreated = await createExternalRun(fix, {
       name: "bounded-root",
       purpose: "Delegate through a branch with a lower local budget.",
       target: "manifold://",
@@ -442,7 +442,7 @@ describe("sponsor-bound agent runs", () => {
     writeFileSync(policyFile, "Operator policy revision one.\n");
     const fix = await fixture(policyFile);
     try {
-      const created = createExternalRun(fix, {
+      const created = await createExternalRun(fix, {
         name: "policy-reader",
         purpose: "Exercise live policy replacement.",
         target: "manifold://",

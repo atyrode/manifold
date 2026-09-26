@@ -2,7 +2,12 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AgentMessageSchema, type AgentMessage } from "@manifold/protocol";
+import {
+  AgentMessageSchema,
+  JOB_OWNER_PROTOCOL_VERSION,
+  type AgentMessage,
+  type JobCommand,
+} from "@manifold/protocol";
 import {
   Agent,
   MAX_SOCKET_BUFFERED_AMOUNT_BYTES,
@@ -11,7 +16,7 @@ import {
 import { TerminalHost } from "../src/terminal-host.ts";
 import type { TerminalHostDialer } from "../src/terminal-host-link.ts";
 import { PtyTerminal } from "../src/terminal.ts";
-import { unixJobOwnerDialer } from "../src/job-owner-link.ts";
+import { unixJobOwnerDialer, type JobOwnerDialer } from "../src/job-owner-link.ts";
 
 /**
  * The transport half of a machine, driven against a REAL {@link TerminalHost} through an
@@ -392,6 +397,115 @@ function scriptedHub(
     return socket.asWebSocket();
   };
 }
+
+test("agent tools keep exact job correlation, report disconnect uncertainty and never replay on reconnect", async () => {
+  const sockets: ScriptedSocket[] = [];
+  const reconnected = Promise.withResolvers<void>();
+  const host = new TerminalHost({ shellCommand: [BASH, "--norc", "-i"] });
+  let ownerHandlers: Parameters<JobOwnerDialer>[0] | undefined;
+  const replies: JobCommand[] = [];
+  const agent = new Agent({
+    serverUrl: "http://fake.invalid",
+    machineToken: "token",
+    machineName: "test",
+    dialTerminalHost: inMemoryDialer(host),
+    dialJobOwner: async (handlers) => {
+      ownerHandlers = handlers;
+      return {
+        identity: {
+          protocolVersion: JOB_OWNER_PROTOCOL_VERSION,
+          ownerId: "native-owner",
+          publicKey: "public-key",
+          generation: 1,
+          platforms: ["linux-x64"],
+          inventoryDigest: "a".repeat(64),
+        },
+        send: (command) => replies.push(command),
+        close: () => handlers.onClose(),
+      };
+    },
+    backoff: { baseMs: 5, capMs: 5 },
+    createSocket: scriptedHub(sockets, (_socket, message) => {
+      if (message.type === "hello" && sockets.length > 1) reconnected.resolve();
+    }),
+  });
+  try {
+    await agent.connect();
+    const first = sockets.at(-1)!;
+    for (const jobId of ["signed-a", "signed-b"])
+      ownerHandlers!.onEvent({
+        type: "agent_run_request",
+        jobId,
+        requestId: "same-worker-id",
+        payload: { type: "describe" },
+      });
+    first.receive({
+      type: "job_command",
+      command: {
+        type: "agent_run_result",
+        jobId: "signed-b",
+        requestId: "same-worker-id",
+        payload: { type: "refused", code: "tool_unavailable", traceId: null },
+      },
+    });
+    expect(replies).toEqual([
+      {
+        type: "agent_run_result",
+        jobId: "signed-b",
+        requestId: "same-worker-id",
+        payload: { type: "refused", code: "tool_unavailable", traceId: null },
+      },
+    ]);
+    first.serverClose(1006, "lost after dispatch");
+    expect(replies.at(-1)).toEqual({
+      type: "agent_run_result",
+      jobId: "signed-a",
+      requestId: "same-worker-id",
+      payload: { type: "unknown", reason: "disconnected", traceId: null },
+    });
+    ownerHandlers!.onEvent({
+      type: "agent_run_request",
+      jobId: "signed-a",
+      requestId: "offline",
+      payload: { type: "policy" },
+    });
+    expect(replies.at(-1)).toEqual({
+      type: "agent_run_result",
+      jobId: "signed-a",
+      requestId: "offline",
+      payload: { type: "refused", code: "authority_unavailable", traceId: null },
+    });
+    await reconnected.promise;
+    const second = sockets.at(-1)!;
+    expect(second.sent.filter((message) => message.type === "job_event")).toEqual([]);
+    ownerHandlers!.onEvent({
+      type: "agent_run_request",
+      jobId: "signed-a",
+      requestId: "fresh",
+      payload: { type: "describe" },
+    });
+    // Another job's reply must never be delivered to the pending native call.
+    second.receive({
+      type: "job_command",
+      command: {
+        type: "agent_run_result",
+        jobId: "signed-b",
+        requestId: "fresh",
+        payload: { type: "refused", code: "tool_unavailable", traceId: null },
+      },
+    });
+    expect(second.closedByAgent?.code).toBe(4002);
+    expect(replies.at(-1)).toEqual({
+      type: "agent_run_result",
+      jobId: "signed-a",
+      requestId: "fresh",
+      payload: { type: "unknown", reason: "disconnected", traceId: null },
+    });
+  } finally {
+    await agent.shutdown();
+    await host.shutdown();
+  }
+});
 
 test("unavailable job owner refuses jobs without blocking terminal transport", async () => {
   const sockets: ScriptedSocket[] = [];

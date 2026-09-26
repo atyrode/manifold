@@ -11,6 +11,7 @@ import {
   type JobOwner,
   type Container,
   type ServerToAgentMessage,
+  AgentToolReplySchema,
 } from "@manifold/protocol";
 import { AuthService } from "../src/auth.ts";
 import { JobService } from "../src/job-service.ts";
@@ -157,6 +158,70 @@ describe("machine channel send status", () => {
     ordinary.bufferedAmount = MAX_SESSION_FRAME_BYTES;
     expect(terminalChannel.send({ type: "kill", terminalId: "terminal" })).toBe(false);
     expect(ordinary.closed?.code).toBe(1013);
+  });
+
+  test("complete policy replies have bounded queues and restore ordinary limits after draining", () => {
+    const body = "\u0000".repeat(60_000);
+    const digest = new Bun.CryptoHasher("sha256").update(body).digest("hex");
+    const reply = AgentToolReplySchema.parse({
+      type: "policy",
+      policy: {
+        runId: "run",
+        revision: digest,
+        issuedAt: 0,
+        required: Array.from({ length: 8 }, (_, index) => ({
+          id: `policy-${String(index)}`,
+          source: index === 0 ? "builtin" : "operator",
+          digest,
+          body,
+        })),
+      },
+    });
+    const message: ServerToAgentMessage = {
+      type: "job_command",
+      command: { type: "agent_run_result", jobId: "job", requestId: "policy", payload: reply },
+    };
+    const socket = new StatusSocket(-1);
+    const channel = new LiveMachineChannel(
+      "machine",
+      "principal",
+      socket,
+      null,
+      null,
+      PROTOCOL_VERSION,
+    );
+    expect(channel.send(message)).toBe(true);
+    const received = ServerToAgentMessageSchema.parse(JSON.parse(socket.sent[0]!));
+    if (received.type !== "job_command" || received.command.type !== "agent_run_result")
+      throw new Error("expected the policy reply");
+    const policy = AgentToolReplySchema.parse(received.command.payload);
+    if (policy.type !== "policy") throw new Error("expected complete policy");
+    for (const bundle of policy.policy.required)
+      expect(new Bun.CryptoHasher("sha256").update(bundle.body).digest("hex")).toBe(digest);
+    const bytes = Buffer.byteLength(socket.sent[0]!);
+    socket.bufferedAmount = bytes;
+    expect(channel.send(message)).toBe(true);
+    socket.bufferedAmount += bytes;
+    expect(channel.send(message)).toBe(false);
+    expect(socket.closed?.code).toBe(1013);
+
+    const draining = new StatusSocket(-1);
+    const resumed = new LiveMachineChannel(
+      "machine",
+      "principal",
+      draining,
+      null,
+      null,
+      PROTOCOL_VERSION,
+    );
+    expect(resumed.send(message)).toBe(true);
+    draining.bufferedAmount = bytes;
+    expect(resumed.send({ type: "kill", terminalId: "terminal" })).toBe(true);
+    draining.bufferedAmount = 0;
+    expect(resumed.send({ type: "kill", terminalId: "terminal" })).toBe(true);
+    draining.bufferedAmount = MAX_SESSION_FRAME_BYTES;
+    expect(resumed.send({ type: "kill", terminalId: "terminal" })).toBe(false);
+    expect(draining.closed?.code).toBe(1013);
   });
 });
 

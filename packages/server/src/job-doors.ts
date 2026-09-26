@@ -2,6 +2,7 @@ import { defineAction } from "@manifold/plugin";
 import type { PluginJobContext } from "@manifold/plugin";
 import {
   CapSchema,
+  NativeAgentRunBindingSchema,
   ManifoldRefSchema,
   ListJobRunsArgsSchema,
   ListJobRunsResultSchema,
@@ -59,8 +60,10 @@ export const JobExecuteArgsSchema = JobRequestSchema.pick({
   artifactSha256: JobRequestSchema.shape.artifactSha256.optional(),
   resourceBindingDigest: PublicJobSchema.shape.resourceBindingDigest.optional(),
   resourceBindings: JobResourceBindingsSchema.optional(),
+  agentRun: NativeAgentRunBindingSchema.optional(),
 });
-const execute = JobExecuteArgsSchema;
+const execute = JobExecuteArgsSchema.omit({ agentRun: true });
+const nativeExecute = JobExecuteArgsSchema;
 /** The schedule request WITHOUT a callee: what a plugin handle — in realm or isolated — sends. */
 export const JobScheduleArgsSchema = execute.extend({
   scheduleId: id,
@@ -182,7 +185,7 @@ export function jobContext(
           auth,
           callee(requested),
           String(traceId),
-          execute.parse(request),
+          (pluginId === "engine.jobs" ? execute : nativeExecute).parse(request),
           beforeEffect,
         ),
       );
@@ -307,7 +310,7 @@ export interface JobContext extends PluginJobContext {
   cancelDeployment(
     args: z.infer<typeof schemas.cancelDeployment>,
   ): z.infer<typeof JobDeploymentSchema>;
-  execute(args: z.infer<typeof execute> & { pluginId?: string }): PublicJob;
+  execute(args: z.infer<typeof nativeExecute> & { pluginId?: string }): PublicJob;
   listRuns(args: ListJobRunsArgs & { pluginId?: string }): ListJobRunsResult;
   inspectInputs(args: InspectJobInputsArgs & { pluginId?: string }): InspectJobInputsResult;
   install(args: z.infer<typeof schemas.install>): { accepted: true };

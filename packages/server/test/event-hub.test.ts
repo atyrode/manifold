@@ -240,7 +240,7 @@ describe("governed event disclosure", () => {
       const collection: ManifoldRef = { kind: "plugin", pluginId: "core.access" };
       subscribe(fixture, "agent-sponsor", [collection]);
       subscribe(fixture, "agent-stranger", [collection]);
-      const registered = fixture.auth.registerAgent(
+      const registered = await fixture.auth.registerAgent(
         {
           name: "private profile",
           purpose: "Inspect",

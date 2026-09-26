@@ -23,6 +23,7 @@ export function AgentRegistration({
         const text = (name: string): string => String(data.get(name) ?? "").trim();
         try {
           const profile: unknown = JSON.parse(text("profile") || "{}");
+          const tools: unknown = JSON.parse(text("tools") || "[]");
           const instructions = text("instructions");
           const request = RegisterAgentRequestSchema.safeParse({
             name: text("name"),
@@ -42,6 +43,7 @@ export function AgentRegistration({
                 maxDescendants: Number(text("descendants")),
               },
               expiresAt: new Date(text("expires")).getTime(),
+              ...(Array.isArray(tools) && tools.length === 0 ? {} : { tools }),
             },
             context: { ...(instructions === "" ? {} : { instructions }), profile },
           });
@@ -56,7 +58,7 @@ export function AgentRegistration({
           setFailure(null);
           void register(request.data);
         } catch {
-          setFailure("The harness profile must be valid JSON.");
+          setFailure("The harness profile and callable tool grants must be valid JSON.");
         }
       }}
     >
@@ -83,6 +85,14 @@ export function AgentRegistration({
           Capabilities
           <textarea name="caps" required rows={2} placeholder="containers:read terminals:open" />
         </label>
+        <label>
+          Callable tool grants (JSON)
+          <textarea name="tools" rows={3} defaultValue="[]" spellCheck={false} />
+        </label>
+        <span className="credential-inspection-note">
+          Each entry needs an exact door and contractDigest. An empty list grants no callable tools;
+          each Run must select its tools explicitly. Capabilities and targets still apply.
+        </span>
         <label>
           Granted targets
           <textarea name="targets" required rows={2} placeholder="manifold://container/…" />

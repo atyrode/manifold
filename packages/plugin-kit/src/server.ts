@@ -25,6 +25,9 @@ import {
   IsolateHostFrameSchema,
   IsolateHostEnvelopeSchema,
   GuestMigrationDeclarationsSchema,
+  HarnessDefinitionSchema,
+  IsolateHarnessResultSchemas,
+  type HarnessDefinition,
   MAX_ISOLATE_ACTIONS,
   MAX_ISOLATE_EMITS,
   ISOLATE_MAX_FRAME_BYTES,
@@ -89,6 +92,8 @@ import {
   type JobEvent,
 } from "../../protocol/src/jobs.ts";
 import { connect, type Socket } from "node:net";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 
 import {
@@ -317,7 +322,9 @@ export interface GuestJobs {
   }): Promise<JobOutputPage>;
   journal(args: { node: GuestJobNode; after?: number; limit?: number }): Promise<JobJournalPage>;
   /** Registers or replaces one cadence of this plugin's own; `revision` is its optimistic pin. */
-  schedule(args: GuestJobRequest & JobScheduleTiming): Promise<Record<string, never>>;
+  schedule(
+    args: Omit<GuestJobRequest, "agentRun"> & JobScheduleTiming,
+  ): Promise<Record<string, never>>;
   schedules(): Promise<PublicJobSchedule[]>;
   disableSchedule(args: { scheduleId: string; revision: string }): Promise<Record<string, never>>;
   follow(node: GuestJobNode, receive: (update: JobFollowUpdate) => void): Promise<GuestJobFollow>;
@@ -359,6 +366,8 @@ export interface GuestCtx {
   readonly traceId: IsolateDispatchCtx["traceId"];
   readonly pluginId: string;
   readonly principal: Principal;
+  /** Authenticated Run provenance supplied by the host, never an action argument. */
+  readonly agentRun: Readonly<NonNullable<IsolateDispatchCtx["agentRun"]>> | null;
   readonly auth: GuestAuth;
   readonly containerScope: string | null;
   outsideScope(containerId: string | null): Promise<{ readonly refused: string } | null>;
@@ -829,6 +838,23 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
     (def.migrations ?? []).map((migration) => [migration.name, migration]),
   );
   let loaded = false;
+  let harnessMetadata: HarnessDefinition | undefined;
+  interface ProfileValidation {
+    readonly id: string;
+    violated: boolean;
+  }
+  let activeProfileValidation: ProfileValidation | undefined;
+  // The host admits validation only with drained, exclusive access. Keep a lexical guard
+  // here too: an AsyncResource created earlier need not inherit the validation's ALS store.
+  // ALS additionally fences callbacks inherited from a validation after that phase ends.
+  const profileValidation = new AsyncLocalStorage<ProfileValidation>();
+  const requireAuthority = (): void => {
+    const inheritedValidation = profileValidation.getStore();
+    if (activeProfileValidation === undefined && inheritedValidation === undefined) return;
+    if (activeProfileValidation !== undefined) activeProfileValidation.violated = true;
+    if (inheritedValidation !== undefined) inheritedValidation.violated = true;
+    throw new IsolateSliceUnavailable("profile validation has no host context");
+  };
   let databaseDeclared = false;
   const producerClosures = new Map<string, () => void>();
   type JobNotification = Extract<IsolateHostFrame, { t: "job_update" }>;
@@ -852,6 +878,11 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
     let open = true;
     return {
       call: (method, args) => {
+        try {
+          requireAuthority();
+        } catch (error) {
+          return Promise.reject(error);
+        }
         if (!open) {
           return Promise.reject(
             new Error(`${method} called after request "${requestId}" already answered`),
@@ -1074,6 +1105,7 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       traceId: carried.traceId,
       pluginId: def.manifest.id,
       principal: carried.principal,
+      agentRun: carried.agentRun === undefined ? null : Object.freeze(carried.agentRun),
       auth: {
         principal: carried.principal,
         caps: carried.caps,
@@ -1207,6 +1239,7 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
         },
       },
       emit: (ref, kind, payload) => {
+        requireAuthority();
         if (staged.length >= MAX_ISOLATE_EMITS) {
           throw new Error(`a dispatch may stage at most ${String(MAX_ISOLATE_EMITS)} emissions`);
         }
@@ -1252,6 +1285,7 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       storage: storageFor(call),
       ...(database === undefined ? {} : { database }),
       emit: () => {
+        requireAuthority();
         throw new IsolateSliceUnavailable("emit");
       },
       ...(jobs ? { jobs: jobsFor(call), actions: actionsFor(call) } : {}),
@@ -1324,6 +1358,24 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
         if (typeof migration.migrate !== "function")
           throw new Error(`migration "${migration.name}" has no callback`);
       }
+      if (def.harness !== undefined) {
+        if (
+          typeof def.harness.profileSchema?.safeParseAsync !== "function" ||
+          typeof def.harness.launch !== "function" ||
+          typeof def.harness.sessions !== "function" ||
+          typeof def.harness.resolveSession !== "function" ||
+          typeof def.harness.send !== "function"
+        )
+          throw new Error("incomplete harness implementation");
+        harnessMetadata = HarnessDefinitionSchema.parse({
+          ...def.manifest.contributes?.harness,
+          profileSchema: z.toJSONSchema(def.harness.profileSchema, { io: "input" }),
+        });
+        if (!isDeepStrictEqual(harnessMetadata, frame.manifest.contributes?.harness))
+          throw new Error("harness does not match its manifest declaration");
+      } else if (frame.manifest.contributes?.harness !== undefined) {
+        throw new Error("declared harness has no implementation");
+      }
     } catch (error) {
       post({ t: "load_failed", error: errorText(error) });
       return;
@@ -1341,6 +1393,7 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
         onJobSettled: def.lifecycle?.onJobSettled !== undefined,
       },
       migrations: (def.migrations ?? []).map(({ name, to }) => ({ name, to })),
+      ...(harnessMetadata === undefined ? {} : { harness: harnessMetadata }),
     });
   };
 
@@ -1410,6 +1463,84 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       id: frame.id,
       outcome: { ok: true, result: result.data, emits: staged },
     });
+  };
+
+  const onHarness = async (frame: Extract<IsolateHostFrame, { t: "harness" }>): Promise<void> => {
+    const refuse = (rule: "invalid_args" | "refused", message: string): void => {
+      post({
+        t: "harnessed",
+        id: frame.id,
+        outcome: { ok: false, rule, message: message.slice(0, 2048) },
+      });
+    };
+    const harness = def.harness;
+    if (!loaded || harnessMetadata === undefined || harness === undefined) {
+      refuse("refused", "harness unavailable");
+      return;
+    }
+    const request = frame.request;
+    if (request.method === "validateProfile") {
+      if (activeProfileValidation !== undefined) {
+        refuse("refused", "profile validation is already active");
+        return;
+      }
+      const validation: ProfileValidation = { id: frame.id, violated: false };
+      activeProfileValidation = validation;
+      try {
+        const parsed = await profileValidation.run(validation, () =>
+          harness.profileSchema.safeParseAsync(request.profile),
+        );
+        if (validation.violated)
+          throw new IsolateSliceUnavailable("profile validation has no host context");
+        if (!parsed.success) {
+          refuse("invalid_args", issueText(parsed.error));
+          return;
+        }
+        post({ t: "harnessed", id: frame.id, outcome: { ok: true, result: null, emits: [] } });
+      } catch (error) {
+        refuse("refused", errorText(error));
+      } finally {
+        if (activeProfileValidation === validation) activeProfileValidation = undefined;
+      }
+      return;
+    }
+    if (frame.ctx === undefined) {
+      refuse("refused", "harness caller context is missing");
+      return;
+    }
+    const requests = callsFor(frame.id);
+    const staged: Emission[] = [];
+    const ctx = dispatchCtx(requests.call, frame.ctx, staged);
+    try {
+      let produced: unknown;
+      switch (request.method) {
+        case "launch":
+          produced = await harness.launch(ctx, request.run, request.agent, request.target);
+          break;
+        case "sessions":
+          produced = (await harness.sessions(ctx, request.target)).slice(0, 101);
+          break;
+        case "resolveSession":
+          produced = await harness.resolveSession(ctx, request.ref);
+          break;
+        case "send":
+          await harness.send(ctx, request.run, request.input);
+          produced = null;
+          break;
+      }
+      const result = IsolateHarnessResultSchemas[request.method].safeParse(produced);
+      if (!result.success)
+        throw new Error(`harness result outside its schema: ${issueText(result.error)}`);
+      post({
+        t: "harnessed",
+        id: frame.id,
+        outcome: { ok: true, result: result.data, emits: staged },
+      });
+    } catch (error) {
+      refuse("refused", errorText(error));
+    } finally {
+      requests.close();
+    }
   };
 
   const onHook = async (frame: Extract<IsolateHostFrame, { t: "hook" }>): Promise<void> => {
@@ -1508,6 +1639,9 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       case "dispatch":
         void onDispatch(host);
         return;
+      case "harness":
+        void onHarness(host);
+        return;
       case "admitted":
         admissions.get(host.id)?.(host.allowed);
         admissions.delete(host.id);
@@ -1543,6 +1677,7 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
         admissions.clear();
         for (const waiting of pending.values()) waiting.reject(new Error("isolate shutting down"));
         pending.clear();
+        activeProfileValidation = undefined;
         transport.exit(0);
         return;
       default: {

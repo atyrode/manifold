@@ -1,5 +1,14 @@
 import type { JobExecution, JobFollow } from "@manifold/plugin";
 import {
+  AGENT_TOOL_MAX_CALLS,
+  AgentToolRequestSchema,
+  AgentToolReplySchema,
+  NativeAgentRunBindingSchema,
+  MACHINE_AGENT_TOOLS_PROTOCOL_VERSION,
+  type AgentToolRequest,
+  type AgentToolReply,
+} from "@manifold/protocol";
+import {
   createHash,
   createCipheriv,
   createDecipheriv,
@@ -99,6 +108,7 @@ import {
   ServiceError,
   type AuthContext,
   type AuthService,
+  type NativeRunAuthority,
   type CredentialReference,
   type AuthorityRequirement,
   type AuthorityEvidence,
@@ -219,6 +229,187 @@ function effectiveJobLimits(
 }
 
 export class JobService {
+  private agentTools: {
+    harnessPlugin(agent: NativeRunAuthority["agent"]): string;
+    call(
+      restore: () => NativeRunAuthority,
+      request: AgentToolRequest,
+      signal: AbortSignal,
+      admitted: () => void,
+    ): Promise<AgentToolReply>;
+  } | null = null;
+  private readonly agentCalls = new Map<
+    string,
+    {
+      jobId: string;
+      channel: JobChannel;
+      controller: AbortController;
+      admitted: boolean;
+      finish(reply: AgentToolReply): void;
+    }
+  >();
+
+  setAgentTools(bridge: NonNullable<JobService["agentTools"]>): void {
+    this.agentTools = bridge;
+  }
+
+  private assertAgentToolsSupported(machineId: string): void {
+    const live = this.channels.get(machineId);
+    if (
+      !live?.proved ||
+      live.retirementOnly ||
+      (live.channel.protocolVersion ?? 0) < MACHINE_AGENT_TOOLS_PROTOCOL_VERSION ||
+      !jobOwnerSupports(live.owner.protocolVersion, "agentTools")
+    )
+      fail("agent_tools_protocol_unsupported");
+  }
+
+  private agentCallAuthority(jobId: string, channel: JobChannel): NativeRunAuthority {
+    const job = this.jobs.get(jobId);
+    if (
+      !job ||
+      job.state !== "started" ||
+      job.ownerClosed ||
+      !job.request.agentRunId ||
+      job.request.parent !== null ||
+      job.request.terminal !== undefined ||
+      !this.inputOwner(job, channel) ||
+      this.jobs.cancellation(jobId) !== null
+    )
+      fail("agent_run_unavailable");
+    this.assertAgentToolsSupported(job.request.machineId);
+    if (this.reauthorizeDeferred(job.request) !== null) fail("agent_run_unavailable");
+    const authority = this.auth.nativeRunAuthority(job.request.agentRunId, jobId);
+    if (this.agentTools?.harnessPlugin(authority.agent) !== job.request.pluginId)
+      fail("agent_run_unavailable");
+    return authority;
+  }
+
+  /** Consumed before generic job journaling/fanout. Only the authenticated owner sees replies. */
+  private agentRunRequest(
+    channel: JobChannel,
+    event: Extract<JobEvent, { type: "agent_run_request" }>,
+  ): void {
+    const key = JSON.stringify([event.jobId, event.requestId]);
+    const reply = (payload: AgentToolReply): void => {
+      if (this.channels.get(channel.machineId)?.channel !== channel) return;
+      const parsed = AgentToolReplySchema.safeParse(payload);
+      try {
+        channel.send({
+          type: "job_command",
+          command: {
+            type: "agent_run_result",
+            jobId: event.jobId,
+            requestId: event.requestId,
+            payload: parsed.success
+              ? parsed.data
+              : { type: "unknown", reason: "protocol_error", traceId: null },
+          },
+        });
+      } catch {
+        // A lost acknowledgement never causes replay; the owner's disconnect/timeout is unknown.
+      }
+    };
+    const job = this.jobs.get(event.jobId);
+    if (!job || !this.inputOwner(job, channel)) return;
+    if (job.request.agentRunId === undefined) {
+      reply({ type: "refused", code: "binding_unavailable", traceId: null });
+      return;
+    }
+    try {
+      this.agentCallAuthority(event.jobId, channel);
+    } catch {
+      reply({ type: "refused", code: "authority_unavailable", traceId: null });
+      return;
+    }
+    if (this.agentCalls.has(key)) return;
+    let pendingForJob = 0;
+    for (const pending of this.agentCalls.values())
+      if (pending.jobId === event.jobId) pendingForJob++;
+    if (this.agentCalls.size >= 256 || pendingForJob >= 32) {
+      reply({ type: "refused", code: "saturated", traceId: null });
+      return;
+    }
+    const parsed = AgentToolRequestSchema.safeParse(event.payload);
+    if (!parsed.success) {
+      reply({ type: "refused", code: "malformed_request", traceId: null });
+      return;
+    }
+    if (
+      !this.store.admitAgentRunCall(
+        job.request.agentRunId,
+        event.jobId,
+        event.requestId,
+        AGENT_TOOL_MAX_CALLS,
+      )
+    ) {
+      reply({ type: "refused", code: "limit_exceeded", traceId: null });
+      return;
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      controller.abort();
+      pending.finish(
+        pending.admitted
+          ? { type: "unknown", reason: "interrupted", traceId: null }
+          : { type: "refused", code: "cancelled", traceId: null },
+      );
+    }, 30_000);
+    const pending = {
+      jobId: event.jobId,
+      channel,
+      controller,
+      admitted: false,
+      finish: (payload: AgentToolReply): void => {
+        if (this.agentCalls.get(key) !== pending) return;
+        this.agentCalls.delete(key);
+        clearTimeout(timer);
+        reply(payload);
+      },
+    };
+    this.agentCalls.set(key, pending);
+    const restore = () => {
+      if (controller.signal.aborted || this.agentCalls.get(key) !== pending)
+        fail("agent_run_unavailable");
+      return this.agentCallAuthority(event.jobId, channel);
+    };
+    void this.agentTools!.call(restore, parsed.data, controller.signal, () => {
+      restore();
+      pending.admitted = true;
+    }).then(
+      (value) => pending.finish(value),
+      () =>
+        pending.finish(
+          pending.admitted
+            ? { type: "unknown", reason: "interrupted", traceId: null }
+            : { type: "refused", code: "authority_unavailable", traceId: null },
+        ),
+    );
+  }
+
+  private closeAgentCalls(
+    jobId: string,
+    reason: "cancelled" | "disconnected" | "interrupted",
+  ): void {
+    for (const pending of this.agentCalls.values()) {
+      if (pending.jobId !== jobId) continue;
+      pending.controller.abort();
+      pending.finish(
+        pending.admitted
+          ? { type: "unknown", reason, traceId: null }
+          : { type: "refused", code: "cancelled", traceId: null },
+      );
+    }
+  }
+
+  private settleAgentJob(
+    job: JobRecord,
+    outcome: "completed" | "failed" | "cancelled" | "abandoned",
+  ): void {
+    if (!job.request.agentRunId) return;
+    this.closeAgentCalls(job.request.jobId, outcome === "cancelled" ? "cancelled" : "interrupted");
+    this.auth.settleNativeRun(job.request.agentRunId, job.request.jobId, outcome);
+  }
   readonly jobSchedules: JobSchedules;
   private readonly runCursorKey = randomBytes(32);
   private changeNotifier: JobChanges | null = null;
@@ -1830,6 +2021,7 @@ export class JobService {
       result: record.result,
       authority: this.jobs.authority(record),
       ...(record.request.terminal ? { terminal: record.request.terminal } : {}),
+      ...(record.request.agentRunId ? { agentRunId: record.request.agentRunId } : {}),
     };
   }
 
@@ -2280,6 +2472,14 @@ export class JobService {
     const context = this.auth.restoreCredential(request.credential);
     if (!context) return "credential_revoked_or_expired";
     try {
+      if (request.agentRunId) {
+        if (
+          request.agentRunExpiresAt === undefined ||
+          request.agentRunExpiresAt <= this.runtime.now()
+        )
+          return "agent_run_unavailable";
+        this.auth.nativeRunAuthority(request.agentRunId, request.jobId);
+      }
       const requirements = this.requirements(request, retiring);
       const policies = requirements.some((requirement) => requirement.ref.kind === "service")
         ? this.effectiveConfiguration(request.machineId).policies
@@ -3373,6 +3573,22 @@ export class JobService {
       }
       this.deployments.reconcile();
     });
+    // Reconcile the durable one-use association, never resubmit an interrupted action.
+    for (const run of this.store.listOpenAgentRuns(this.runtime.now())) {
+      if (!run.nativeJob) continue;
+      const job = this.jobs.get(run.nativeJob.jobId);
+      if (job === null || (job.ownerClosed && job.result === null))
+        this.auth.settleNativeRun(run.id, run.nativeJob.jobId, "abandoned");
+      else if (!active.has(job.state))
+        this.settleAgentJob(
+          job,
+          job.result?.state === "exited" && job.result.exitCode === 0
+            ? "completed"
+            : job.state === "cancelled"
+              ? "cancelled"
+              : "failed",
+        );
+    }
   }
   private retainedRequest(jobId: string): JobRequest | null {
     const job = this.jobs.get(jobId);
@@ -3930,6 +4146,7 @@ export class JobService {
     args: JobExecution,
     outputParent?: JobRequest,
     terminal?: JobRequest["terminal"],
+    agentRun?: { runId: string; expiresAt: number },
   ): JobRequest {
     const install = this.jobs.installation(args.machineId, pluginId);
     const op = install?.machine.operations[args.operationId];
@@ -3976,6 +4193,8 @@ export class JobService {
     if (Object.keys(args.input).some((k) => !Object.hasOwn(op.input, k))) fail("invalid_input");
     const ceiling = jobLimits(op.limits);
     const limits = effectiveJobLimits(args.limits, ceiling);
+    if (agentRun)
+      limits.timeoutMs = Math.min(limits.timeoutMs, agentRun.expiresAt - this.runtime.now());
     if (limits.timeoutMs <= 0) fail("invalid_limits");
     for (const key of executionLimitKeys) if (limits[key] > ceiling[key]) fail("limit_exceeded");
     for (const key of inferenceLimitKeys) {
@@ -4036,6 +4255,7 @@ export class JobService {
       ...(inputs.length ? { inputs } : {}),
       credential: this.auth.credentialReference(auth),
       ...(terminal ? { terminal } : {}),
+      ...(agentRun ? { agentRunId: agentRun.runId, agentRunExpiresAt: agentRun.expiresAt } : {}),
     };
     const live = this.channels.get(args.machineId);
     const protocolReason = live && jobOwnerRequestRefusal(live.owner.protocolVersion, unsigned);
@@ -4053,7 +4273,27 @@ export class JobService {
     if ("service" in args) fail("native_service_admission_required");
     const context = this.auth.restoreCredential(this.auth.credentialReference(auth));
     if (!context) fail("credential_revoked_or_expired");
-    const request = this.build(context, pluginId, traceId, args);
+    const binding =
+      args.agentRun === undefined ? null : NativeAgentRunBindingSchema.parse(args.agentRun);
+    let run: { runId: string; expiresAt: number } | undefined;
+    if (binding !== null) {
+      if (
+        pluginId.startsWith("engine.") ||
+        binding.target.machineId !== args.machineId ||
+        this.jobs.get(args.jobId) !== null
+      )
+        fail("run_launch_unavailable");
+      this.assertAgentToolsSupported(args.machineId);
+      const prepared = this.auth.prepareNativeRun(binding.runId, binding.target, context);
+      if (this.agentTools?.harnessPlugin(prepared.agent) !== pluginId)
+        fail("run_launch_unavailable");
+      const install = this.jobs.installation(args.machineId, pluginId);
+      if (!install?.ready) fail("run_launch_unavailable");
+      const reason = this.operationRefusal(install, args.operationId);
+      if (reason) fail(reason);
+      run = { runId: binding.runId, expiresAt: prepared.run.expiresAt };
+    }
+    const request = this.build(context, pluginId, traceId, args, undefined, undefined, run);
     const job = this.store.transaction(() => {
       const previous = this.jobs.reservation(request);
       if (previous !== null && previous.state !== "queued") {
@@ -4091,6 +4331,23 @@ export class JobService {
       if (!allowed) {
         if (reserved.state !== "queued") fail();
         this.jobs.state(request.jobId, "refused");
+      }
+      if (allowed && binding !== null) {
+        this.assertAgentToolsSupported(args.machineId);
+        const prepared = this.auth.prepareNativeRun(binding.runId, binding.target, context);
+        if (this.agentTools?.harnessPlugin(prepared.agent) !== pluginId)
+          fail("run_launch_unavailable");
+        this.auth.bindNativeRun(
+          binding.runId,
+          request.jobId,
+          {
+            harness: prepared.agent.harness,
+            sessionId: binding.sessionId,
+            machineId: args.machineId,
+          },
+          binding.target,
+          context,
+        );
       }
       return this.jobs.get(request.jobId)!;
     });
@@ -4263,13 +4520,29 @@ export class JobService {
       if (!install.ready && !protocolReason) return null;
       const operationReason = protocolReason ?? this.operationRefusal(install, request.operationId);
       const context = this.auth.restoreCredential(request.credential);
+      let runRefusal: string | null = null;
+      if (request.agentRunId) {
+        try {
+          this.assertAgentToolsSupported(request.machineId);
+          const authority = this.auth.nativeRunAuthority(request.agentRunId, request.jobId);
+          if (
+            this.agentTools?.harnessPlugin(authority.agent) !== request.pluginId ||
+            request.agentRunExpiresAt === undefined ||
+            request.agentRunExpiresAt <= this.runtime.now()
+          )
+            runRefusal = "agent_run_unavailable";
+        } catch {
+          runRefusal = "agent_run_unavailable";
+        }
+      }
       // A deferred start asks the input questions again: a source output released, or the source
       // installation's `jobs:read` consent revoked, between admission and launch must refuse
       // rather than spawn a half-fed job. Withdrawing an export in a NEW revision does not reach
       // a source job pinned to the old one; revoking that revision's consent is what does.
       let refusal = !context
         ? "credential_revoked_or_expired"
-        : (operationReason ??
+        : (runRefusal ??
+          operationReason ??
           this.jobSchedules.startRefusal(request.jobId, this.runtime.now()) ??
           this.jobs.cancellation(request.jobId)?.reason ??
           this.invocationRefusal(request) ??
@@ -4329,6 +4602,7 @@ export class JobService {
       return permit;
     });
     if (!permit && this.jobs.get(request.jobId)?.state === "refused") {
+      this.settleAgentJob(this.jobs.get(request.jobId)!, "failed");
       this.jobSchedules.finishInvocation(request.jobId);
       this.publishJobEvent(request.jobId, {
         type: "refusal",
@@ -4593,6 +4867,8 @@ export class JobService {
       this.closeServiceTunnel(tunnel);
   }
   private disconnectInputs(channel: JobChannel): void {
+    for (const pending of this.agentCalls.values())
+      if (pending.channel === channel) this.closeAgentCalls(pending.jobId, "disconnected");
     for (const tunnel of this.serviceTunnels.values())
       if (tunnel.consumer === channel || tunnel.producer === channel)
         this.closeServiceTunnel(tunnel);
@@ -4764,6 +5040,22 @@ export class JobService {
           (event.type !== "result" || active.has(event.result.state)))
       )
         return;
+    }
+    if (event.type === "agent_run_request") {
+      this.agentRunRequest(channel, event);
+      return;
+    }
+    if (event.type === "agent_run_cancel") {
+      const pending = this.agentCalls.get(JSON.stringify([event.jobId, event.requestId]));
+      if (pending?.channel === channel) {
+        pending.controller.abort();
+        pending.finish(
+          pending.admitted
+            ? { type: "unknown", reason: "cancelled", traceId: null }
+            : { type: "refused", code: "cancelled", traceId: null },
+        );
+      }
+      return;
     }
     if (event.type === "service_tunnel_open") {
       this.openServiceTunnel(channel, event);
@@ -5193,6 +5485,7 @@ export class JobService {
       return;
     }
     if (event.type === "workload_empty") {
+      this.closeAgentCalls(job.request.jobId, "interrupted");
       const closed = this.store.transaction(() => {
         if (!this.jobs.confirmEmpty(job.request.jobId)) return false;
         const record = job.request.service
@@ -5238,6 +5531,7 @@ export class JobService {
       return;
     }
     if (active.has(event.result.state)) return;
+    this.closeAgentCalls(job.request.jobId, "interrupted");
     this.store.transaction(() => {
       this.jobs.result(event.result);
       for (const output of event.result.outputs) {
@@ -5261,6 +5555,14 @@ export class JobService {
           .run(node, job.request.jobId, job.request.pluginId, canonicalJobJson(output));
       }
     });
+    this.settleAgentJob(
+      job,
+      event.result.state === "exited" && event.result.exitCode === 0
+        ? "completed"
+        : event.result.state === "cancelled"
+          ? "cancelled"
+          : "failed",
+    );
     // Result and owner-empty can arrive in either order, with a tick between them.
     const serviceId = job.request.service?.serviceId;
     if (serviceId && this.instanceServices.get(serviceId)?.enabled)
@@ -5284,6 +5586,7 @@ export class JobService {
       limits: job.request.limits,
       outputs: [],
     });
+    this.settleAgentJob(job, "abandoned");
     this.jobSchedules.finishInvocation(job.request.jobId);
     this.publishJobEvent(job.request.jobId, {
       type: "result",
@@ -5500,6 +5803,7 @@ export class JobService {
   ): void {
     if (!active.has(job.state) && (!job.request.service || !job.permit || job.ownerClosed)) return;
     this.jobs.cancel(job.request.jobId, reason, mode);
+    this.settleAgentJob(job, "cancelled");
     const cancellation = this.jobs.cancellation(job.request.jobId)!;
     if (job.state === "queued") {
       this.jobs.state(job.request.jobId, "cancelled");

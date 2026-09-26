@@ -2,6 +2,15 @@ import { randomUUID } from "node:crypto";
 import { fstatSync } from "node:fs";
 import { connect, type Socket } from "node:net";
 import {
+  AGENT_TOOL_CHUNK_CHARS,
+  AGENT_TOOL_MAX_CALLS,
+  AGENT_TOOL_MAX_REPLY_BYTES,
+  AgentToolRequestSchema,
+  AgentToolReplySchema,
+  WorkerAgentRunCallSchema,
+  WorkerAgentRunResultSchema,
+  type AgentToolRequest,
+  type AgentToolReply,
   WORKER_CONTEXT_FD_ENV,
   WORKER_FRAME_BYTES,
   WORKER_MAX_PENDING,
@@ -24,7 +33,12 @@ export type {
   WorkerErrorCode,
   WorkerInputOptions,
 } from "./worker-input.ts";
-export type { WorkerLocation, WorkerProgress } from "@manifold/protocol";
+export type {
+  AgentToolRequest,
+  AgentToolReply,
+  WorkerLocation,
+  WorkerProgress,
+} from "@manifold/protocol";
 
 export interface WorkerContextOptions {
   /** Defaults to MANIFOLD_JOB_CONTEXT_FD. Ownership transfers on successful adoption. */
@@ -49,6 +63,8 @@ export interface WorkerContext {
   readonly signal: AbortSignal;
   /** Returns only the owner's authorized projection, never an upstream transport response. */
   callService(request: Pick<ServiceCall, "serviceId" | "operationId" | "input">): Promise<unknown>;
+  /** Uses only this native job's host-bound Run. Never selects identity or retries an effect. */
+  callAgent(request: AgentToolRequest, options?: { signal?: AbortSignal }): Promise<AgentToolReply>;
   /** Resolves only after the owner accepts this child's runtime-service readiness. One attempt. */
   announceServiceReady(port: number): Promise<void>;
   /**
@@ -69,11 +85,18 @@ export interface WorkerContext {
 }
 
 interface PendingRequest {
-  kind: "service" | "service_ready";
+  kind: "service" | "service_ready" | "agent_run";
   frame: Buffer;
   sent: boolean;
   resolve(value: unknown): void;
   reject(error: WorkerError): void;
+  agent?: {
+    request: AgentToolRequest;
+    seq: number;
+    bytes: number;
+    parts: string[];
+    cleanup(): void;
+  };
 }
 
 /** Opens the native ABI, not a caller-selected network endpoint. No React dependency. */
@@ -110,6 +133,9 @@ class NativeWorkerContext implements WorkerContext {
   #announced = false;
   #progressBytes = 0;
   #failure: WorkerError | undefined;
+  #agentCalls = 0;
+  #agentReplyBytes = 0;
+  readonly #cancelledAgentReplies = new Map<string, { seq: number; bytes: number }>();
 
   constructor(
     private readonly socket: Socket,
@@ -142,6 +168,90 @@ class NativeWorkerContext implements WorkerContext {
       throw new WorkerError("service_input_invalid");
     }
     return this.#request(call.requestId, "service", call);
+  }
+
+  async callAgent(
+    request: AgentToolRequest,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<AgentToolReply> {
+    if (options.signal?.aborted || this.#failure)
+      return {
+        type: "refused",
+        code: this.#failure ? "authority_unavailable" : "cancelled",
+        traceId: null,
+      };
+    if (this.#pending.size >= WORKER_MAX_PENDING)
+      return { type: "refused", code: "saturated", traceId: null };
+    if (this.#agentCalls >= AGENT_TOOL_MAX_CALLS)
+      return { type: "refused", code: "limit_exceeded", traceId: null };
+    const parsed = AgentToolRequestSchema.safeParse(request);
+    if (!parsed.success) return { type: "refused", code: "malformed_request", traceId: null };
+    const requestId = randomUUID();
+    const call = WorkerAgentRunCallSchema.safeParse({
+      type: "agent_run",
+      requestId,
+      payload: parsed.data,
+    });
+    if (!call.success) return { type: "refused", code: "malformed_request", traceId: null };
+    const frame = Buffer.from(`${JSON.stringify(call.data)}\n`);
+    if (this.#pendingBytes + frame.length > WORKER_QUEUE_BYTES)
+      return { type: "refused", code: "saturated", traceId: null };
+    const reply = Promise.withResolvers<AgentToolReply>();
+    const abort = () => {
+      const pending = this.#pending.get(requestId);
+      if (!pending) return;
+      this.#pending.delete(requestId);
+      this.#pendingBytes -= pending.frame.length;
+      this.#agentReplyBytes -= pending.agent!.bytes;
+      pending.agent!.parts = [];
+      pending.agent!.cleanup();
+      if (pending.sent) {
+        this.#cancelledAgentReplies.set(requestId, {
+          seq: pending.agent!.seq,
+          bytes: pending.agent!.bytes,
+        });
+        // Cancellation has no reply of its own; the interrupted call retains correlation.
+        const cancel = Buffer.from(`${JSON.stringify({ type: "agent_run_cancel", requestId })}\n`);
+        if (this.#queuedBytes + cancel.length > WORKER_QUEUE_BYTES) this.#finish("worker_busy");
+        else {
+          this.#queuedBytes += cancel.length;
+          try {
+            this.socket.write(cancel, (error) => {
+              this.#queuedBytes -= cancel.length;
+              if (error) this.#finish("worker_disconnected");
+            });
+          } catch {
+            this.#queuedBytes -= cancel.length;
+            this.#finish("worker_disconnected");
+          }
+        }
+        reply.resolve({ type: "unknown", reason: "cancelled", traceId: null });
+      } else {
+        pending.frame.fill(0);
+        reply.resolve({ type: "refused", code: "cancelled", traceId: null });
+      }
+    };
+    const pending: PendingRequest = {
+      kind: "agent_run",
+      frame,
+      sent: false,
+      resolve: (value) => reply.resolve(value as AgentToolReply),
+      reject: reply.reject,
+      agent: {
+        request: parsed.data,
+        seq: 0,
+        bytes: 0,
+        parts: [],
+        cleanup: () => options.signal?.removeEventListener("abort", abort),
+      },
+    };
+    this.#agentCalls++;
+    this.#pending.set(requestId, pending);
+    this.#pendingBytes += frame.length;
+    options.signal?.addEventListener("abort", abort, { once: true });
+    if (options.signal?.aborted) abort();
+    else if (this.#receivedContext) this.#send(pending);
+    return reply.promise;
   }
 
   async announceServiceReady(port: number): Promise<void> {
@@ -238,6 +348,60 @@ class NativeWorkerContext implements WorkerContext {
       for (const pending of this.#pending.values()) this.#send(pending);
       return;
     }
+    if (
+      typeof raw === "object" &&
+      raw !== null &&
+      Reflect.get(raw, "type") === "agent_run_result"
+    ) {
+      const chunk = WorkerAgentRunResultSchema.parse(raw);
+      const pending = this.#pending.get(chunk.requestId);
+      const cancelled = this.#cancelledAgentReplies.get(chunk.requestId);
+      const state = pending?.agent ?? cancelled;
+      if (
+        !state ||
+        (pending && (!pending.sent || pending.kind !== "agent_run")) ||
+        chunk.seq !== state.seq
+      )
+        throw new WorkerError("worker_protocol_error");
+      if (
+        chunk.data.length === 0 ||
+        chunk.seq >= Math.ceil(AGENT_TOOL_MAX_REPLY_BYTES / (AGENT_TOOL_CHUNK_CHARS - 1))
+      )
+        throw new WorkerError("worker_frame_limit");
+      const bytes = Buffer.byteLength(chunk.data);
+      state.bytes += bytes;
+      state.seq++;
+      if (state.bytes > AGENT_TOOL_MAX_REPLY_BYTES) throw new WorkerError("worker_frame_limit");
+      if (cancelled) {
+        if (chunk.end) this.#cancelledAgentReplies.delete(chunk.requestId);
+        return;
+      }
+      this.#agentReplyBytes += bytes;
+      if (this.#agentReplyBytes > AGENT_TOOL_MAX_REPLY_BYTES)
+        throw new WorkerError("worker_frame_limit");
+      const agent = pending!.agent!;
+      agent.parts.push(chunk.data);
+      if (!chunk.end) return;
+      const reply = AgentToolReplySchema.parse(JSON.parse(agent.parts.join("")));
+      if (
+        reply.type !== "refused" &&
+        reply.type !== "unknown" &&
+        (agent.request.type === "describe"
+          ? reply.type !== "description"
+          : agent.request.type === "policy"
+            ? reply.type !== "policy"
+            : reply.type !== "result" ||
+              (agent.request.type === "invoke" && reply.door !== agent.request.door) ||
+              (agent.request.type === "ack" && reply.door !== "core.access.acknowledgeAgentPolicy"))
+      )
+        throw new WorkerError("worker_protocol_error");
+      this.#pending.delete(chunk.requestId);
+      this.#pendingBytes -= pending!.frame.length;
+      this.#agentReplyBytes -= agent.bytes;
+      agent.cleanup();
+      pending!.resolve(reply);
+      return;
+    }
     const readiness =
       typeof raw === "object" &&
       raw !== null &&
@@ -280,10 +444,32 @@ class NativeWorkerContext implements WorkerContext {
     this.#ready.reject(error);
     for (const pending of this.#pending.values()) {
       if (!pending.sent) pending.frame.fill(0);
-      pending.reject(error);
+      if (pending.agent) {
+        pending.agent.cleanup();
+        pending.resolve(
+          pending.sent
+            ? {
+                type: "unknown",
+                reason:
+                  code === "worker_protocol_error" || code === "worker_frame_limit"
+                    ? "protocol_error"
+                    : code === "worker_cancelled"
+                      ? "cancelled"
+                      : "disconnected",
+                traceId: null,
+              }
+            : {
+                type: "refused",
+                code: code === "worker_cancelled" ? "cancelled" : "authority_unavailable",
+                traceId: null,
+              },
+        );
+      } else pending.reject(error);
     }
     this.#pending.clear();
     this.#pendingBytes = 0;
+    this.#cancelledAgentReplies.clear();
+    this.#agentReplyBytes = 0;
     this.socket.destroy();
     this.#controller.abort(error);
   }

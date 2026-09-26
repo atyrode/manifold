@@ -18,12 +18,28 @@ import {
   AGENT_RUN_MAX_POLICY_BUNDLES,
   AGENT_RUN_MAX_POLICY_BODY_BYTES,
 } from "./agents.ts";
-import { TerminalRuntimeSchema } from "./jobs.ts";
+import {
+  AGENT_TOOL_MAX_REPLY_BYTES,
+  AGENT_TOOL_MAX_REQUEST_BYTES,
+  TerminalRuntimeSchema,
+} from "./jobs.ts";
+import {
+  ActionDenialSchema,
+  ActionProjectedResultSchema,
+  ActionResultApprovalSchema,
+  ActionResultProjectionDigestSchema,
+} from "./plugin.ts";
 import { PrincipalSchema } from "./principal.ts";
 import { SessionRefSchema } from "./session-ref.ts";
 
 const AgentRunIdSchema = z.string().min(1).max(128);
 const PolicyDigestSchema = z.string().regex(/^[a-f0-9]{64}$/);
+const ToolSelectionSchema = z
+  .array(z.string().min(1).max(256))
+  .max(32)
+  .refine(
+    (doors) => new Set(doors).size === doors.length && doors.every((door) => !door.includes("*")),
+  );
 
 export const AGENT_RUN_STATES = [
   "pending_policy",
@@ -86,6 +102,7 @@ export const AgentRunSchema = z
     target: GrantNodeSchema,
     reach: GrantReachSchema,
     caps: AgentRunCapsSchema,
+    tools: z.array(ActionResultApprovalSchema).max(32).optional(),
     createdAt: z.number().int().nonnegative(),
     expiresAt: z.number().int().positive(),
     renewals: z.number().int().min(0).max(AGENT_RUN_MAX_RENEWALS),
@@ -116,6 +133,7 @@ export const CreateRunRequestSchema = z.strictObject({
   agentId: AgentIdSchema,
   session: SessionRefSchema.optional(),
   caps: AgentRunCapsSchema.optional(),
+  tools: ToolSelectionSchema.optional(),
   target: z.union([GrantNodeSchema, HarnessTargetSchema]).optional(),
   reach: GrantReachSchema.optional(),
   lifetimeMs: z.number().int().min(60_000).max(AGENT_RUN_MAX_LIFETIME_MS).optional(),
@@ -137,6 +155,13 @@ export const CreateRunResultSchema = z.strictObject({
 export type CreateRunResult = z.infer<typeof CreateRunResultSchema>;
 export const CreateRunCredentialResultSchema = CreateRunResultSchema.required({ credential: true });
 export type CreateRunCredentialResult = z.infer<typeof CreateRunCredentialResultSchema>;
+/** Supplied by a trusted harness server to its native execution context, never by the workload. */
+export const NativeAgentRunBindingSchema = z.strictObject({
+  runId: AgentRunIdSchema,
+  sessionId: SessionRefSchema.shape.sessionId,
+  target: HarnessTargetSchema,
+});
+export type NativeAgentRunBinding = z.infer<typeof NativeAgentRunBindingSchema>;
 export const LaunchRunRequestSchema = z.strictObject({
   runId: AgentRunIdSchema,
   target: HarnessTargetSchema.optional(),
@@ -251,3 +276,116 @@ export const ReloadAgentPolicyResultSchema = z.strictObject({
   suspendedRuns: z.number().int().nonnegative(),
 });
 export type ReloadAgentPolicyResult = z.infer<typeof ReloadAgentPolicyResultSchema>;
+
+/** Canonical application messages contain no identity or target selector. */
+export const AgentToolRequestSchema = z
+  .discriminatedUnion("type", [
+    z.strictObject({ type: z.literal("describe") }),
+    z.strictObject({ type: z.literal("policy") }),
+    z.strictObject({ type: z.literal("ack"), policy: AcknowledgeAgentPolicyRequestSchema }),
+    z.strictObject({
+      type: z.literal("invoke"),
+      door: z.string().min(1).max(256),
+      args: z.unknown(),
+      justification: z.string().max(512).optional(),
+    }),
+  ])
+  .refine((value) => {
+    try {
+      return (
+        new TextEncoder().encode(JSON.stringify(value)).byteLength <= AGENT_TOOL_MAX_REQUEST_BYTES
+      );
+    } catch {
+      return false;
+    }
+  });
+export type AgentToolRequest = z.infer<typeof AgentToolRequestSchema>;
+
+export const AgentToolRefusalCodeSchema = z.enum([
+  "binding_unavailable",
+  "authority_unavailable",
+  "tool_ungranted",
+  "tool_unavailable",
+  "publication_changed",
+  "malformed_request",
+  "cancelled",
+  "saturated",
+  "limit_exceeded",
+  "unsupported_feature",
+]);
+export type AgentToolRefusalCode = z.infer<typeof AgentToolRefusalCodeSchema>;
+const ToolProjectionSchema = z.discriminatedUnion("ok", [
+  ActionProjectedResultSchema.options[0].extend({ trust: z.literal("untrusted") }),
+  ActionProjectedResultSchema.options[1].extend({ trust: z.literal("untrusted") }),
+]);
+export const AgentToolReplySchema = z
+  .discriminatedUnion("type", [
+    z.strictObject({
+      type: z.literal("description"),
+      runId: AgentRunIdSchema,
+      agentId: AgentIdSchema,
+      target: GrantNodeSchema,
+      tools: z
+        .array(
+          z.strictObject({
+            door: z.string().min(1).max(256),
+            name: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/),
+            title: z.string().max(1024),
+            parameters: z
+              .record(z.string(), z.unknown())
+              .refine(
+                (value) => new TextEncoder().encode(JSON.stringify(value)).byteLength <= 16_384,
+              ),
+            contractDigest: ActionResultProjectionDigestSchema,
+          }),
+        )
+        .max(32),
+      unavailable: z
+        .array(
+          z.strictObject({
+            door: z.string().min(1).max(256),
+            reason: AgentToolRefusalCodeSchema,
+          }),
+        )
+        .max(32),
+    }),
+    z.strictObject({ type: z.literal("policy"), policy: AgentPolicyChallengeSchema }),
+    z
+      .strictObject({
+        type: z.literal("result"),
+        door: z.string().min(1).max(256),
+        traceId: z.number().int().positive(),
+        outcome: z.union([
+          z.strictObject({ ok: z.literal(true) }),
+          z.strictObject({ ok: z.literal(false), denial: ActionDenialSchema.pick({ rule: true }) }),
+        ]),
+        projection: ToolProjectionSchema.optional(),
+      })
+      .refine((value) => value.projection === undefined || value.outcome.ok),
+    z.strictObject({
+      type: z.literal("refused"),
+      code: AgentToolRefusalCodeSchema,
+      traceId: z.number().int().positive().nullable(),
+    }),
+    z.strictObject({
+      type: z.literal("unknown"),
+      reason: z.enum([
+        "cancelled",
+        "disconnected",
+        "interrupted",
+        "protocol_error",
+        "missing_trace",
+      ]),
+      traceId: z.number().int().positive().nullable(),
+    }),
+  ])
+  .refine((value) => {
+    try {
+      return (
+        new TextEncoder().encode(JSON.stringify(value)).byteLength <= AGENT_TOOL_MAX_REPLY_BYTES
+      );
+    } catch {
+      return false;
+    }
+  });
+export type AgentToolReply = z.infer<typeof AgentToolReplySchema>;

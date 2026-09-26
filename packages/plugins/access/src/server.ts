@@ -77,10 +77,10 @@ interface AccessCtx {
   readonly identity: {
     createPrincipal(input: BootstrapPrincipalRequest): IdentityAnswer<TokenGrant>;
     mintToken(input: MintTokenRequest): IdentityAnswer<TokenGrant>;
-    registerAgent(input: RegisterAgentRequest): IdentityAnswer<RegisterAgentResult>;
+    registerAgent(input: RegisterAgentRequest): Promise<IdentityAnswer<RegisterAgentResult>>;
     listAgents(): IdentityAnswer<ListAgentsResult>;
     getAgent(input: AgentRequest): IdentityAnswer<GetAgentResult>;
-    updateAgent(input: UpdateAgentRequest): IdentityAnswer<GetAgentResult>;
+    updateAgent(input: UpdateAgentRequest): Promise<IdentityAnswer<GetAgentResult>>;
     disableAgent(input: AgentRequest): IdentityAnswer<GetAgentResult>;
     enableAgent(input: AgentRequest): IdentityAnswer<GetAgentResult>;
     retireAgent(input: AgentRequest): IdentityAnswer<GetAgentResult>;
@@ -189,7 +189,7 @@ export const accessHandlers = {
     ctx: AccessCtx,
     args: RegisterAgentRequest,
   ): Promise<Outcome<RegisterAgentResult>> {
-    const registered = ctx.identity.registerAgent(args);
+    const registered = await ctx.identity.registerAgent(args);
     return registered.ok ? registered.value : { refused: registered.message };
   },
 
@@ -207,7 +207,7 @@ export const accessHandlers = {
   },
 
   async updateAgent(ctx: AccessCtx, args: UpdateAgentRequest): Promise<Outcome<GetAgentResult>> {
-    const updated = ctx.identity.updateAgent(args);
+    const updated = await ctx.identity.updateAgent(args);
     return updated.ok ? updated.value : { refused: updated.message };
   },
 

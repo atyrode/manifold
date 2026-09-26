@@ -145,6 +145,17 @@ without rewriting retained history. Agent context/profile and inspection request
 traces. `createPrincipal` and `mint` remain human-only; machine, native-service,
 federated-ticket and terminal-lifecycle identities keep their named internal lifecycles.
 
+Registration and context updates await the selected harness's original profile validator, including
+asynchronous refinements, before publishing any identity change. Caller and standing sponsor/grant
+authority are rechecked after that wait; concurrent registration cannot mint a second runner
+credential, and a waiting context update cannot overwrite retirement or unrelated newer fields.
+Executable harness launch validates its current profile again and refuses if its authority,
+context or harness changed during validation.
+For a hardened harness, validation requires a drained guest and has exclusive access until it
+settles. Active requests, queued callbacks or retained stream/job observers refuse that admission;
+new authority-bearing requests refuse while validation is active. No request-ID forgery or
+alternate asynchronous context supplies authority to the validator.
+
 `core.access.createRun` accepts a registered `agentId` with optional target URI or
 `{machineId,containerId?}`, capability/reach/lifetime/delegation narrowing, typed session and
 model selection. It reuses the Agent principal and creates a separately credential-bound Run.
@@ -314,6 +325,75 @@ marker escaping, truncation or automatic retry. Ordinary calls remain mechanical
 trusted approval; model input, lifecycle and metadata cannot enable textual publication.
 Each complete outgoing JSONL frame, including its newline, and the output queue are bounded
 to 16 MiB. Action refusal and handler/result-schema failure publish no projection.
+
+#### Native Run-bound tools
+
+Registered plugin actions, not `contributes.tools` toolbar buttons, are callable publications.
+An action opts into bounded results through its existing `resultProjection`; there is no second
+handler or dispatch registry. The operator's durable `AgentGrant.tools` contains at most 64 exact
+`{door,contractDigest,maxResultBytes?}` approvals. A Run explicitly selects at most 32 door names
+from that grant; children can only narrow their parent's selection. The selection is immutable.
+Grant removal, publication changes, contributor ceilings, caller scope and policy remain live
+checks, not permissions captured forever at discovery. Empty selections stay absent from ordinary
+Agent/Run DTOs, preserving default-off behavior and old strict readers.
+
+Only the matching harness plugin's `ctx.jobs.execute` may supply
+`agentRun:{runId,sessionId,target}` for a nonterminal job. The host authorizes the sponsor, matching
+runner or exact self, verifies the live matching harness, machine and declared target, and consumes one
+Run-to-job association. Public `engine.jobs.execute`, schedules, children and unrelated plugins
+cannot supply or inherit it. Ordinary startup doors still require their ordinary authority:
+a sponsor may bind a pending Run, or an already policy-acknowledged exact self may bind itself.
+This does not create a runner/parent exception for ordinary Code/OMP startup actions or a general
+cold-start path through the terminal-descriptor-only `launchRun` contract.
+The one-shot consumes its separately reviewed native session input, not the Agent's interactive
+profile. That profile is validated at registration, context update and interactive harness launch;
+it is neither a native tool grant nor an alternative source of one-shot permissions.
+
+The signed native request carries only `agentRunId` and its absolute `agentRunExpiresAt`, never
+a general Run bearer. The owner checks the deadline before admission and immediately before the
+sandbox gate opens; setup time cannot extend the lease. The workload uses the existing private
+`MANIFOLD_JOB_CONTEXT_FD` through `WorkerContext.callAgent(request,{signal?})`. Requests are
+`describe`, `policy`, `ack` or `invoke`; none accepts a Run, actor or target selector, renewal,
+delegation or finish command. Policy bodies are delivered intact, and only an explicit exact
+revision/bundle acknowledgement opens ordinary action authority. The adapter must not acknowledge
+policy merely because it received it.
+
+Discovery publishes the registered input JSON Schema and `manifold_`-prefixed name with door dots
+replaced by underscores. Names longer than 64 characters and schemas over 16 KiB are unsupported.
+The model adapter must reject collisions with its real native registry. Missing or unavailable
+optional tools are reported without installing a substitute or making ordinary review depend on
+them. A session without an explicitly selected Run must not install this adapter implicitly.
+
+Calls restore the exact bound credential lineage and current native owner/channel on every
+request, then enter the authoritative action dispatcher and projector. The host rechecks admission
+after asynchronous guest preparation. `ActionCtx.agentRun` is frozen host-supplied
+`{runId,agentId}` or `null`, never model argument data. A successful action returns its trace and
+bounded, `trust:"untrusted"` projection, not its full result. Publication failure does not undo
+effects. `result` distinguishes traced success and action denial; `refused` means the channel
+declined the call; `unknown` preserves cancellation/disconnect/acknowledgement uncertainty.
+Cancellation after sending is not proof of rollback. There is no automatic replay or
+exactly-once promise; consumer-owned idempotency and durable assessment/proposal validation remain
+at the contributed action. Run cancellation, expiry, owner/channel replacement and workload
+settlement fence later admission.
+
+The relay is ephemeral: tool requests/results do not enter the job journal, child watchers or
+reconnect replay. Requests are at most 64 KiB, complete replies at most 4 MiB and each job admits
+at most 1024 call identities. The owner chunks replies in 16,384-character pieces over the existing
+bounded worker socket with sequence/correlation checks and socket backpressure. This preserves
+complete policy bodies without widening ordinary service frames or their queues.
+
+Compatibility is explicit: shared/machine protocol 43 plus native owner RPC 41 (`agentTools`)
+are required before consuming a native binding; unsupported combinations refuse
+`agent_tools_protocol_unsupported`. Hardened contract 6 adds trusted Run provenance; selected
+tool actions in older guests refuse `unsupported_feature`. Contract 7 adds the already-declared
+`ServerHarness` interface, including original guest profile validation without a host context.
+The host retains ordinary contracts 1–6, but a hardened harness must be repacked for contract 7.
+Upgrade the hub and matching SDK/session consumers first, then the transport/native owner under
+its existing drained-upgrade rules, then repack selected tool publishers and harnesses and enable
+reviewed consumer integration. Code/OMP must implement the explicit
+adapter at mutually pinned revisions; this host capability does not upgrade an existing session
+or establish compatibility with an unqualified consumer release. Publication authorizes no
+deployment, owner replacement or fleet activation.
 
 ### Agent run inspection and declarations
 
@@ -3591,7 +3671,8 @@ incumbent continuity mismatch, or `supersession damped`). A name conflict is dec
 same atomic write that would admit the hello; it sends no welcome, changes neither machine row,
 and leaves an incumbent connection untouched. Version acceptance uses
 `MACHINE_PROTOCOL_COMPAT_VERSIONS`, currently
-`{30, 31, 32, 33}`; session/browser joins remain strictly current at protocol 33. An unchanged machine
+`{30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43}`; session/browser joins remain strictly
+current at protocol 43. An unchanged machine
 wire may add a version to the set. A strictly additive-optional change may also add it only
 when old frames still parse and absent fields preserve the old semantics. Other changes
 reset the set and require a coordinated hub/transport upgrade.
@@ -3610,8 +3691,8 @@ separate native owner proof and admitted resource/runtime bindings.
 
 ### Native job owner RPC
 
-Native owner RPC has its own `JOB_OWNER_PROTOCOL_VERSION`, currently 40, and
-`JOB_OWNER_PROTOCOL_COMPAT_VERSIONS = {34, 35, 36, 37, 40}`. It is independent of machine and session
+Native owner RPC has its own `JOB_OWNER_PROTOCOL_VERSION`, currently 41, and
+`JOB_OWNER_PROTOCOL_COMPAT_VERSIONS = {34, 35, 36, 37, 40, 41}`. It is independent of machine and session
 protocols. An additive-optional change **adds** its new version to the acceptance set; a
 breaking change **resets** the set and requires a coordinated drained owner upgrade.
 Compatibility never substitutes for owner proof, current execution consent or resource
@@ -3625,16 +3706,20 @@ The additive 35 → 36 change added operation `inputs`/`exports`, request `input
 `limits.inputBytes` (#592). The additive 36 → 37 change permits a job-scoped service runtime
 to bind to its invoking installation when `runtime.installationRevision` is omitted (#715).
 The additive 37 → 40 change adds operator anchors: `operator.<name>` locations, read-only by
-construction, and the owner inventory's `anchorDefinitions` (#839, ADR 0049). Versions 38 and
-39 are reserved by open drafts and are not accepted; a later capability takes a version above 40.
+construction, and the owner inventory's `anchorDefinitions` (#839, ADR 0049). The additive
+40 → 41 change adds the optional, signed Run binding and its ephemeral tool
+request/cancel/result relay (#769); existing unbound jobs remain unchanged. Versions 38 and 39
+were reserved by drafts and are never accepted; because capability checks compare revisions, a
+later capability takes a version above 41 rather than reusing them.
 These are optional operations, not permission to orphan every already-running job or instance service.
 
 The hub sends only fields the negotiated owner parses. Private launch and `launchBinding`
 require 35; bound inputs require 36; self-provider service runtimes require 37; operator
-anchors require 40. An older accepted owner keeps serving its compatible jobs and instance
-services; only the newer operation is refused by name (`run_launch_protocol_unsupported`,
-`bound_inputs_protocol_unsupported`, `service_runtime_unsupported` or
-`operator_anchors_protocol_unsupported`). Unsupported
+anchors require 40; Run-bound tools require 41 and machine protocol 43. An older accepted owner
+keeps serving its compatible jobs and instance services; only the newer operation is refused by
+name (`run_launch_protocol_unsupported`, `bound_inputs_protocol_unsupported`,
+`service_runtime_unsupported`, `operator_anchors_protocol_unsupported` or
+`agent_tools_protocol_unsupported`). Unsupported
 operation declarations are omitted from that owner's install projection rather than
 weakening them, and signed admissions are never rewritten. Upgrading an owner may restore
 the complete installation only when its retained command exactly matches the deterministic
@@ -3656,7 +3741,7 @@ machine transport. An owner outside the acceptance set that does not qualify for
 receives no native authority, while machine presence, retained terminal continuity and the
 named drain/maintenance path remain available for the coordinated upgrade.
 
-The independent federation set is `{27, 28, 29, 30, 31, 32, 33}`; these machine/native changes leave its
+The independent federation set is `{27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43}`; these machine/native changes leave its
 frames and resource vocabularies unchanged. The earlier per-program and per-job transport
 version gates are retired: every accepted transport understands those frames, while
 authority comes from explicit declarations and live owner proof.
@@ -4518,7 +4603,7 @@ IS the cross-instance reference. `tickets` answers with the subset of the advert
 still live, and the guest drops the rest. Or the host closes: 4401 unauthorized / origin
 mismatch, 4403 revoked, 4409 version, 4002 malformed or first-frame-not-hello or duplicate
 hello, 4008 liveness timeout, 4001 superseded. Version acceptance is
-`INSTANCE_PROTOCOL_COMPAT_VERSIONS` `{27, 28, 29, 30}` — its own wire, its own set, the
+`INSTANCE_PROTOCOL_COMPAT_VERSIONS` `{27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43}` — its own wire, its own set, the
 same [Protocol and compatibility](#protocol-and-compatibility) discipline the machine channel follows.
 Governed jobs and streams expand the closed capability and reference vocabularies, so protocol 27
 independently resets instance acceptance; older instances cannot decode that governed wire.
@@ -4885,6 +4970,10 @@ pre-migration snapshot and no rewrite of existing terminal rows or launch recipe
 recipes, runs and jobs are not evidence for this new admitted correlation field. Ordinary
 terminals remain valid without it. Runtime admission and durable writes reject a reference
 whose machine differs from the terminal destination.
+Migration 45 adds nullable Run tool selections, the declared launch target, the one-use native job
+binding and its nonsecret credential lineage, plus bounded call-identity tombstones. Existing
+Runs gain no selected tools or native binding. The native job binding has a unique partial index;
+this additive migration does not backfill authority or rewrite existing Run grants.
 Migration 38 reclassifies only `agent` principals identifiable as native service credentials:
 current `native_instance_services.credential` principal references and historical
 `token_minted { subjectPrincipalId, serviceId, machineId }` events. It preserves unrelated

@@ -3,6 +3,11 @@ import { closeSync } from "node:fs";
 import type { Socket } from "node:net";
 import { privateSocketPair } from "./job-files.ts";
 import {
+  AGENT_TOOL_CHUNK_CHARS,
+  AGENT_TOOL_MAX_CALLS,
+  AGENT_TOOL_MAX_REPLY_BYTES,
+  WorkerAgentRunCallSchema,
+  WorkerAgentRunCancelSchema,
   JobCommandSchema,
   JobRequestSchema,
   ServiceCallSchema,
@@ -44,6 +49,11 @@ export class JobContext {
   private readonly serviceRequests = new Set<string>();
   private serviceReadyRequested = false;
   private activityReported = false;
+  private readonly agentRequests = new Map<
+    string,
+    { controller: AbortController; done: boolean }
+  >();
+  private agentClosed = false;
 
   private pendingBytes = 0;
   constructor(
@@ -54,6 +64,7 @@ export class JobContext {
       service?(request: ServiceCall, signal: AbortSignal): Promise<ServiceReply>;
       serviceReady?(port: number): Promise<void>;
       progress?(frame: WorkerProgress): void;
+      agentRun?(requestId: string, payload: unknown, signal: AbortSignal): Promise<unknown>;
       activity?: () => void;
       failure(reason: string): void;
     },
@@ -75,6 +86,28 @@ export class JobContext {
           if (raw !== null && typeof raw === "object" && Reflect.get(raw, "type") === "progress") {
             this.callbacks.progress?.(WorkerProgressSchema.parse(raw));
             continue;
+          }
+          if (raw !== null && typeof raw === "object") {
+            const type = Reflect.get(raw, "type");
+            if (type === "agent_run_cancel") {
+              const cancel = WorkerAgentRunCancelSchema.parse(raw);
+              const pending = this.agentRequests.get(cancel.requestId);
+              if (!pending) throw new Error("agent_request_unknown");
+              if (!pending.done) pending.controller.abort();
+              continue;
+            }
+            if (type === "agent_run") {
+              const request = WorkerAgentRunCallSchema.parse(raw);
+              if (
+                this.agentRequests.has(request.requestId) ||
+                this.agentRequests.size >= AGENT_TOOL_MAX_CALLS
+              )
+                throw new Error("agent_request_replayed_or_exhausted");
+              this.agentRequests.set(request.requestId, {
+                controller: new AbortController(),
+                done: false,
+              });
+            }
           }
           const size = Buffer.byteLength(line);
           this.pendingBytes += size;
@@ -106,6 +139,35 @@ export class JobContext {
   private async receive(raw: unknown): Promise<void> {
     if (this.closed) return;
     if (raw === null || typeof raw !== "object") throw new Error("invalid_context_message");
+    if (Reflect.get(raw, "type") === "agent_run") {
+      const request = WorkerAgentRunCallSchema.parse(raw);
+      const pending = this.agentRequests.get(request.requestId)!;
+      const signal = pending.controller.signal;
+      let reply: unknown;
+      if (signal.aborted || this.agentClosed)
+        reply = { type: "refused", code: "cancelled", traceId: null };
+      else if (!this.callbacks.agentRun)
+        reply = { type: "refused", code: "binding_unavailable", traceId: null };
+      else {
+        const cancelled = Promise.withResolvers<unknown>();
+        const abort = () =>
+          cancelled.resolve({ type: "unknown", reason: "cancelled", traceId: null });
+        signal.addEventListener("abort", abort, { once: true });
+        try {
+          reply = await Promise.race([
+            this.callbacks.agentRun(request.requestId, request.payload, signal),
+            cancelled.promise,
+          ]);
+        } catch {
+          reply = { type: "unknown", reason: "interrupted", traceId: null };
+        } finally {
+          signal.removeEventListener("abort", abort);
+        }
+      }
+      pending.done = true;
+      await this.sendAgentReply(request.requestId, reply);
+      return;
+    }
     if (Reflect.get(raw, "type") === "service_ready") {
       const request = ServiceReadySchema.parse(raw);
       let refusal: ServiceReadyRefusal | null = null;
@@ -255,6 +317,54 @@ export class JobContext {
     }
     this.socket.write(bytes);
   }
+  private async sendAgentReply(requestId: string, reply: unknown): Promise<void> {
+    const serialized = JSON.stringify(reply);
+    if (
+      typeof serialized !== "string" ||
+      Buffer.byteLength(serialized) > AGENT_TOOL_MAX_REPLY_BYTES
+    )
+      throw new Error("agent_reply_limit");
+    let seq = 0;
+    for (let offset = 0; offset < serialized.length && !this.closed;) {
+      let end = Math.min(offset + AGENT_TOOL_CHUNK_CHARS, serialized.length);
+      // Keep UTF-16 pairs together so byte accounting agrees with the serialized reply.
+      const last = serialized.charCodeAt(end - 1);
+      if (end < serialized.length && last >= 0xd800 && last <= 0xdbff) end--;
+      const bytes = Buffer.from(
+        `${JSON.stringify({
+          type: "agent_run_result",
+          requestId,
+          seq: seq++,
+          end: end === serialized.length,
+          data: serialized.slice(offset, end),
+        })}\n`,
+      );
+      if (
+        bytes.length > 128 * 1024 ||
+        this.socket.writableLength + bytes.length > MAX_CONTEXT_BYTES
+      )
+        throw new Error("context_output_limit");
+      // A write callback means this chunk has actually flushed, not merely joined a JS queue.
+      const flushed = Promise.withResolvers<void>();
+      const closed = () => flushed.reject(new Error("context_closed"));
+      this.socket.once("close", closed);
+      try {
+        this.socket.write(bytes, (error) => {
+          if (error) flushed.reject(error);
+          else flushed.resolve();
+        });
+        await flushed.promise;
+      } finally {
+        this.socket.off("close", closed);
+      }
+      offset = end;
+    }
+  }
+  abortAgentRuns(): void {
+    this.agentClosed = true;
+    for (const pending of this.agentRequests.values())
+      if (!pending.done) pending.controller.abort();
+  }
   releaseChildFd(): void {
     if (this.childOpen) {
       this.childOpen = false;
@@ -263,6 +373,7 @@ export class JobContext {
   }
   abortServices(): void {
     this.serviceController.abort();
+    this.abortAgentRuns();
   }
   closeAfterWrites(): void {
     if (this.closed) return;
