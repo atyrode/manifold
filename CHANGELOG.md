@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.20.0] - 2026-09-26
+
+### Added
+
+- Plugin action handlers can read the verified immediate caller plugin from `ctx.callerPlugin`, or `null` for direct calls. Hardened plugins packed with contract 8 receive the same identity; older bundles remain compatible. (#770, #865)
+- An exited terminal tile now says when the machine's terminal owner ended it rather than the terminal's own program: it adds one sentence beside Restart when the owner stopped, when that stop followed an out-of-memory kill in the owner's own cgroup on Linux, or when a replacement owner took over and could not carry the old terminals. Terminal listings and exit events carry the same `exitReason`, it survives hub restarts, and an ordinary shell exit reads exactly as before. A terminal the owner ended is kept even when its shell happened to exit with code 0. This is machine protocol 44: upgrade the hub before transports; older transports stay admitted and report exits without a reason, and a running terminal owner reports reasons only after it is next started from this release. (#853, #868)
+
+### Changed
+
+- A machine hello may now advertise at most 1,024 distinct terminals. The hub refuses an over-limit or duplicate-id inventory whole, from any compatible transport version, before authenticating it or touching a terminal, so it can no longer multiply lookups or kill traffic; nothing is truncated, killed or adopted. Compliant machines need no upgrade. Current transports refuse such an inventory locally instead of sending it, and current terminal hosts refuse new terminals at the limit. (#403, #866)
+
+### Fixed
+
+- Machine job refusals now report bounded diagnostic identifiers in the server log, including refusals received before job authority is available. Request contents and free-form exception text are excluded; gateway regression coverage verifies diagnostic retention and redaction. (#696, #697)
+
 ## [0.19.0] - 2026-09-26
 
 ### Breaking Changes
