@@ -1220,6 +1220,11 @@ still kills its shells; restarting a service group is not a transport-only updat
 Three verbs, three separate decisions, one identity that tells you which one produced what you
 are looking at.
 
+Proposed design only, not implemented: [ADR 0050](decisions/0050-coordinated-installer-updates.md)
+describes a future installer-owned plan/apply/status/recovery operation for supported hub and
+spoke updates. The release, provider, source-pin and local activation procedures below remain
+separate authoritative mechanisms until their own implementation and verification.
+
 **Build.** Every build — the server, the web bundle, a container — carries the same three-word
 identity, derived once by `scripts/build-identity.ts` from `git describe --tags --match 'v*'`:
 
