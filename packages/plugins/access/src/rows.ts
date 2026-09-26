@@ -1,4 +1,4 @@
-import type { PrincipalCredentials } from "@manifold/protocol";
+import type { Agent, PrincipalCredentials } from "@manifold/protocol";
 
 /**
  * The Sessions section's one policy decision, as a pure function (#145).
@@ -31,4 +31,17 @@ export function partitionCredentials(
     (row.sessions.length > 0 ? live : inactive).push(row);
   }
   return { live, inactive };
+}
+
+/** Keep the server's order within each half of the Agents rail. */
+export function partitionAgents(rows: readonly Agent[]): {
+  readonly live: readonly Agent[];
+  readonly retired: readonly Agent[];
+} {
+  const live: Agent[] = [];
+  const retired: Agent[] = [];
+  for (const row of rows) {
+    (row.state === "retired" ? retired : live).push(row);
+  }
+  return { live, retired };
 }

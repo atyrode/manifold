@@ -31,6 +31,7 @@ import {
 } from "./index.ts";
 import { AgentRegistration } from "./agent-form.tsx";
 import { useAccessRead } from "./reads.ts";
+import { partitionAgents } from "./rows.ts";
 import { InspectionFold, NativeReference, RunInspector, inspectionTime } from "./runs.tsx";
 
 type RunSummary = ListRunsResult["runs"][number];
@@ -65,6 +66,7 @@ function AgentIndex({ host }: SectionProps): ReactElement {
     token: string;
   } | null>(null);
   const [seenRef, setSeenRef] = useState<typeof host.requestedRef>(null);
+  const [retiredOpen, setRetiredOpen] = useState(false);
   const agents = useAccessRead(
     host,
     ACCESS_LIST_AGENTS_ACTION,
@@ -126,6 +128,55 @@ function AgentIndex({ host }: SectionProps): ReactElement {
         latestRuns.set(run.agentId, run);
     }
   }
+  const parts = partitionAgents(agents.state === "ready" ? agents.result.agents : []);
+  const selectedRetired = parts.retired.some((agent) => agent.agentId === selection?.agentId);
+  const renderAgent = (agent: Agent): ReactElement => {
+    const last = latestRuns.get(agent.agentId);
+    const lastLabel =
+      runs.state !== "ready"
+        ? "unavailable"
+        : last === undefined
+          ? runs.result.truncated
+            ? "outside this page"
+            : "none"
+          : `${last.state} · ${inspectionTime(last.createdAt)}`;
+    const selected = selection?.agentId === agent.agentId;
+    return (
+      <Disclosure
+        key={agent.agentId}
+        className="credential-agent"
+        data-agent-id={agent.agentId}
+        open={selected}
+        onOpenChange={(open) => setSelection(open ? { agentId: agent.agentId } : null)}
+        headerClassName="credential-agent-heading"
+        header={
+          <span className="credential-agent-summary">
+            <span className="credential-agent-title">
+              <strong>{agent.name}</strong>
+              <Chip className="credential-agent-state" data-state={agent.state}>
+                {agent.state}
+              </Chip>
+            </span>
+            <span className="credential-inspection-note">
+              {agent.sponsorPrincipalId} · {agent.harness}
+            </span>
+            <span className="credential-inspection-note">
+              {agent.activeRuns} active runs · last {lastLabel}
+            </span>
+          </span>
+        }
+      >
+        {selected ? (
+          <AgentDetail
+            host={host}
+            agentId={agent.agentId}
+            revision={revision}
+            changed={() => setRevision((current) => current + 1)}
+          />
+        ) : null}
+      </Disclosure>
+    );
+  };
   return (
     <Stack
       className="sidebar-section-content credential-agents"
@@ -193,54 +244,30 @@ function AgentIndex({ host }: SectionProps): ReactElement {
         <>
           {agents.result.agents.length === 0 ? (
             <span className="sidebar-section-empty">No Agents to show</span>
+          ) : parts.live.length === 0 ? (
+            <span className="sidebar-section-empty">No live Agents</span>
           ) : null}
-          {agents.result.agents.map((agent) => {
-            const last = latestRuns.get(agent.agentId);
-            const lastLabel =
-              runs.state !== "ready"
-                ? "unavailable"
-                : last === undefined
-                  ? runs.result.truncated
-                    ? "outside this page"
-                    : "none"
-                  : `${last.state} · ${inspectionTime(last.createdAt)}`;
-            const selected = selection?.agentId === agent.agentId;
-            return (
-              <Disclosure
-                key={agent.agentId}
-                className="credential-agent"
-                data-agent-id={agent.agentId}
-                open={selected}
-                onOpenChange={(open) => setSelection(open ? { agentId: agent.agentId } : null)}
-                headerClassName="credential-agent-heading"
-                header={
-                  <span className="credential-agent-summary">
-                    <span className="credential-agent-title">
-                      <strong>{agent.name}</strong>
-                      <Chip className="credential-agent-state" data-state={agent.state}>
-                        {agent.state}
-                      </Chip>
-                    </span>
-                    <span className="credential-inspection-note">
-                      {agent.sponsorPrincipalId} · {agent.harness}
-                    </span>
-                    <span className="credential-inspection-note">
-                      {agent.activeRuns} active runs · last {lastLabel}
-                    </span>
-                  </span>
-                }
-              >
-                {selected ? (
-                  <AgentDetail
-                    host={host}
-                    agentId={agent.agentId}
-                    revision={revision}
-                    changed={() => setRevision((current) => current + 1)}
-                  />
-                ) : null}
-              </Disclosure>
-            );
-          })}
+          {parts.live.map(renderAgent)}
+          {parts.retired.length === 0 ? null : (
+            <Disclosure
+              className="credential-inactive"
+              open={retiredOpen || selectedRetired}
+              onOpenChange={(open) => {
+                setRetiredOpen(open);
+                if (!open && selectedRetired) setSelection(null);
+              }}
+              data-testid="agents-retired"
+              header={
+                <span className="credential-inactive-header">
+                  {parts.retired.length === 1
+                    ? "1 retired Agent"
+                    : `${String(parts.retired.length)} retired Agents`}
+                </span>
+              }
+            >
+              <Stack gap="0.2rem">{parts.retired.map(renderAgent)}</Stack>
+            </Disclosure>
+          )}
           {agents.result.truncated ? (
             <span className="sidebar-section-empty">Showing the newest 100 visible Agents.</span>
           ) : null}

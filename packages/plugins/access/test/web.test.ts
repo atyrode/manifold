@@ -31,7 +31,19 @@ test("Agent state controls distinguish reusable, disabled and permanently retire
   await ui.text("idle");
   await ui.text("running");
   await ui.text("disabled");
-  await ui.text("retired");
+  expect(
+    await ui.browser.evaluate<string[]>(
+      `Array.from(document.querySelectorAll('[data-testid=agents-rail] > .credential-agent')).map((row) => row.dataset.agentId)`,
+    ),
+  ).toEqual(["profile-one", "working", "disabled"]);
+  expect(
+    await ui.browser.evaluate<boolean>(
+      `document.querySelector('[data-testid=agents-retired]')?.dataset.state === "closed" &&
+       document.querySelector('[data-agent-id=retired]')?.checkVisibility() === false`,
+    ),
+  ).toBe(true);
+  await ui.text("1 retired Agent");
+  await ui.screenshot("agents-mixed-fold-closed");
   await ui.text("2 active runs");
   await ui.detail(states[2]);
   await ui.text("Enable");
@@ -40,8 +52,16 @@ test("Agent state controls distinguish reusable, disabled and permanently retire
       `document.querySelector('[data-action="core.access.createRun"]').disabled`,
     ),
   ).toBe(true);
+  await ui.click("1 retired Agent");
+  expect(
+    await ui.browser.evaluate<boolean>(
+      `document.querySelector('[data-testid=agents-retired]')?.dataset.state === "open" &&
+       document.querySelector('[data-agent-id=retired]')?.checkVisibility() === true`,
+    ),
+  ).toBe(true);
   await ui.detail(states[3]);
   await ui.text("Retired permanently");
+  await ui.screenshot("agents-mixed-retired-detail");
   expect(
     await ui.browser.evaluate<boolean>(
       `document.querySelector('[data-action="core.access.createRun"]') === null`,
@@ -68,6 +88,28 @@ test("Agent state controls distinguish reusable, disabled and permanently retire
   });
   await ui.text("Sponsor authority was withdrawn");
   await ui.text("Disable");
+}, 60_000);
+
+test("a retired-only workspace keeps its Agents inside the closed fold and exposes their details", async () => {
+  const retired = [
+    { ...agent, agentId: "retired-one", name: "Retired one", state: "retired" as const },
+    { ...agent, agentId: "retired-two", name: "Retired two", state: "retired" as const },
+  ];
+  await ui.boot(retired);
+  await ui.text("2 retired Agents");
+  expect(
+    await ui.browser.evaluate<boolean>(
+      `document.querySelector('[data-testid=agents-retired]')?.dataset.state === "closed" &&
+       document.querySelectorAll('[data-testid=agents-rail] > .credential-agent').length === 0 &&
+       !document.body.innerText.includes('No Agents to show') &&
+       document.querySelector('[data-agent-id=retired-one]')?.checkVisibility() === false`,
+    ),
+  ).toBe(true);
+  await ui.screenshot("agents-retired-only-fold-closed");
+  await ui.click("2 retired Agents");
+  await ui.detail(retired[0]);
+  await ui.text("Retired permanently");
+  await ui.screenshot("agents-retired-only-detail");
 }, 60_000);
 
 test("human and legacy Sessions remain logins while linked Agent principals expose native cross-links", async () => {
