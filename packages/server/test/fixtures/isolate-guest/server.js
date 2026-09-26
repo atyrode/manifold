@@ -4,8 +4,9 @@
   another package's reading of it. One plugin, `test.guest`, with the doors the supervisor
   tests need: `echo` (an atomic storage increment through `call`, then the args back with one
   emission), `boom` (dies mid-dispatch), `hang` (never answers), `garble` (answers with a
-  frame that is not a frame), `refuse` (a handler's own domain refusal). `onEnable` reads
-  storage through its hook id and answers ok.
+  frame that is not a frame), `refuse` (a handler's own domain refusal), and `fenced` /
+  `fencedEmit` (an effect, an authority question the test answers by changing authority, then
+  another effect or an emission). `onEnable` reads storage through its hook id and answers ok.
  */
 import { connect } from "node:net";
 import { access, writeFile } from "node:fs/promises";
@@ -110,6 +111,23 @@ const handlers = {
     } catch (error) {
       return { ok: false, rule: "refused", message: error };
     }
+  },
+  async fenced(id, args) {
+    await call(id, "storage.set", [`${args.text}:first`, "committed"]);
+    await call(id, "auth.allows", ["scenes:write"]);
+    try {
+      await call(id, "storage.set", [`${args.text}:second`, "committed"]);
+    } catch (error) {
+      return { ok: false, rule: "refused", message: error };
+    }
+    return { ok: true, result: { second: true }, emits: [] };
+  },
+  async fencedEmit(id) {
+    await call(id, "auth.allows", ["scenes:write"]);
+    const emits = [
+      { ref: { kind: "plugin", pluginId: "test.guest" }, kind: "echoed", payload: { count: 0 } },
+    ];
+    return { ok: true, result: {}, emits };
   },
 };
 
