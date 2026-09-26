@@ -732,8 +732,10 @@ person, HTTP/session client or host. For example, A → B → C gives B `A` and 
 keeps the full chain. This is host-owned read-only attribution, not an action argument, grant,
 principal or delegation. A callee can use it for its own attribution policy without trusting a
 plugin id supplied in `input`; it must still check the principal and applicable capabilities.
-In-realm handlers and hardened guests packed with contract 8 receive the same field; older
-accepted hardened guests keep their existing context without it.
+A harness method is entered by the host, so it sees `null`. In-realm handlers and hardened guests
+packed with contract 8 receive the same field; older accepted hardened guests keep their existing
+context without it. If a host did not carry the field, reading it throws
+`IsolateSliceUnavailable` rather than reporting `null`; handlers that never read it are unaffected.
 
 A refusal is a REJECTION whose message is the class then the plugins it names, caller first — the
 same `"<class>: <offenders>"` shape every plugin refusal uses. Catch it if you have something

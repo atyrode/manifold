@@ -1686,8 +1686,9 @@ The callee's read-only `ActionCtx.callerPlugin` is the verified **immediate** ca
 or explicit `null` for a direct human, HTTP, session or host entry. A → B → C names A at B and
 B at C; the trace retains the full chain. The host derives it from dispatch origin, never
 from request arguments, and it grants no capability, principal substitution or delegation.
-Hardened contract 8 carries the same field in the dispatch context, gated so contracts 1–7
-still receive their original frames.
+A harness method is host-entered and sees `null`. Hardened contract 8 carries the same field in
+the dispatch context, gated so contracts 1–7 still receive their original frames. A contract-8
+guest dispatched without it raises `IsolateSliceUnavailable` on read, never `null`.
 
 The only checks this verb adds sit before the dispatch, and they are walked in this order:
 `dispatch_cycle` (the callee is already on this trace's plugin stack, the caller included, so a

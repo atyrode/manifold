@@ -1500,6 +1500,8 @@ export class PluginHost {
         {
           ...shared,
           pluginId,
+          // The host invokes a harness; the door's own caller did not call this plugin.
+          callerPlugin: null,
           actions: this.actionCalls(pluginId, current, session, base.traceId, [...stack, pluginId]),
           credential: this.authService.credentialReference(nativeAuth),
           jobs: jobContext(service, nativeAuth, pluginId, base.traceId),

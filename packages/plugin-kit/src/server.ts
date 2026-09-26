@@ -370,7 +370,10 @@ export interface GuestServices {
 export interface GuestCtx {
   readonly traceId: IsolateDispatchCtx["traceId"];
   readonly pluginId: string;
-  /** Verified immediate plugin caller, or null for a direct non-plugin entry; not a grant. */
+  /**
+   * Verified immediate plugin caller, or null for a direct non-plugin entry; not a grant. Reading
+   * it throws {@link IsolateSliceUnavailable} when the host did not carry it, never `null`.
+   */
   readonly callerPlugin: Exclude<IsolateDispatchCtx["callerPlugin"], undefined>;
   readonly principal: Principal;
   /** Authenticated Run provenance supplied by the host, never an action argument. */
@@ -1105,9 +1108,6 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
   });
 
   const dispatchCtx = (call: Call, carried: IsolateDispatchCtx, staged: Emission[]): GuestCtx => {
-    if (carried.callerPlugin === undefined)
-      throw new Error("hardened dispatch missing callerPlugin");
-    const callerPlugin = carried.callerPlugin;
     // Spread, not assigned: a plugin that declared no database has NO member here, so reading
     // it is `undefined` rather than a handle that would fail one round trip later.
     const database = databaseFor(call);
@@ -1115,7 +1115,10 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       traceId: carried.traceId,
       pluginId: def.manifest.id,
       get callerPlugin() {
-        return callerPlugin;
+        // Absent means the host did not carry contract-8 attribution. Reading it must never
+        // collapse into `null` ("no plugin called"), and a handler that never reads it keeps working.
+        if (carried.callerPlugin === undefined) throw new IsolateSliceUnavailable("callerPlugin");
+        return carried.callerPlugin;
       },
       principal: carried.principal,
       agentRun: carried.agentRun === undefined ? null : Object.freeze(carried.agentRun),
@@ -1443,10 +1446,10 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
     if (!(await admission.promise)) return;
     const requests = callsFor(frame.id);
     const staged: Emission[] = [];
+    const ctx = dispatchCtx(requests.call, frame.ctx, staged);
     const invoke = handler as (ctx: GuestCtx, args: unknown) => Promise<unknown>;
     let produced: unknown;
     try {
-      const ctx = dispatchCtx(requests.call, frame.ctx, staged);
       produced = await invoke(ctx, parsed.data);
     } catch (error) {
       requests.close();
@@ -1523,8 +1526,8 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
     }
     const requests = callsFor(frame.id);
     const staged: Emission[] = [];
+    const ctx = dispatchCtx(requests.call, frame.ctx, staged);
     try {
-      const ctx = dispatchCtx(requests.call, frame.ctx, staged);
       let produced: unknown;
       switch (request.method) {
         case "launch":
