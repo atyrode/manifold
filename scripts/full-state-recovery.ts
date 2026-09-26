@@ -33,6 +33,7 @@ const EXACT_BUILD = /^\d+\.\d+\.\d+$/;
 const TRANSIENT_PATHS = new Set([
   "agent.lock",
   "agent.pid",
+  "manifold.writer",
   "terminal-host.pid",
   "terminal-host/host.sock",
 ]);
