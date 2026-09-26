@@ -128,15 +128,14 @@ export class Browser {
   async launch(options: { readonly incognito?: boolean } = {}): Promise<void> {
     const binary = Browser.detect();
     const port = reserveLoopbackPort();
-    // GitHub's ubuntu-24.04 hosted runners can export a malformed
-    // DBUS_SESSION_BUS_ADDRESS; chromium retries the bus for tens of seconds
-    // before its devtools endpoint accepts connections (issues #44 and #609). Strip the
-    // bus addresses — headless verification needs no DBus.
-    const env: Record<string, string> = {};
-    for (const [name, value] of Object.entries(process.env)) {
-      if (name === "DBUS_SESSION_BUS_ADDRESS" || name === "DBUS_SYSTEM_BUS_ADDRESS") continue;
-      if (value !== undefined) env[name] = value;
-    }
+    // Headless verification needs no desktop bus. Merely deleting inherited addresses
+    // still lets libdbus reach the default system bus or auto-launch a session bus.
+    // A valid address naming a non-socket fails immediately without either fallback.
+    const env = {
+      ...process.env,
+      DBUS_SESSION_BUS_ADDRESS: "unix:path=/dev/null",
+      DBUS_SYSTEM_BUS_ADDRESS: "unix:path=/dev/null",
+    };
     const profile = `/tmp/manifold-verify-${String(port)}-${String(Date.now())}`;
     this.transientProfile = options.incognito ? profile : null;
     const proc = Bun.spawn(

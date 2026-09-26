@@ -4,55 +4,62 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-test("headless Chromium does not inherit runner DBus addresses", async () => {
-  const fixture = mkdtempSync(join(tmpdir(), "manifold-cdp-environment-"));
-  try {
-    const chromium = join(fixture, "chromium");
-    writeFileSync(
-      chromium,
-      `#!/bin/sh
-if [ "\${DBUS_SESSION_BUS_ADDRESS+x}" = x ]; then exit 91; fi
-if [ "\${DBUS_SYSTEM_BUS_ADDRESS+x}" = x ]; then exit 92; fi
-if [ "\${MANIFOLD_CDP_TEST_SENTINEL:-}" != preserved ]; then exit 93; fi
-exit 23
-`,
-      { mode: 0o755 },
-    );
-    const cdp = pathToFileURL(join(import.meta.dir, "cdp.ts")).href;
-    const child = Bun.spawn(
-      [
-        process.execPath,
-        "-e",
-        `import { Browser } from ${JSON.stringify(cdp)};
-const browser = new Browser();
-try { await browser.launch({ incognito: true }); }
-catch (error) { console.log(String(error)); }
-finally { await browser.close(); }`,
-      ],
-      {
-        env: {
-          ...process.env,
-          MANIFOLD_CHROMIUM: chromium,
-          MANIFOLD_CDP_TEST_SENTINEL: "preserved",
-          DBUS_SESSION_BUS_ADDRESS: "malformed:runner-session",
-          DBUS_SYSTEM_BUS_ADDRESS: "malformed:runner-system",
-        },
-        stdout: "pipe",
-        stderr: "pipe",
+test("headless Chromium never contacts an inherited runner bus", async () => {
+  let connections = 0;
+  const bus = Bun.listen({
+    hostname: "127.0.0.1",
+    port: 0,
+    socket: {
+      open(socket) {
+        connections += 1;
+        socket.end();
       },
-    );
-    const [exitCode, stdout, stderr] = await Promise.all([
-      child.exited,
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-    ]);
-    expect(exitCode).toBe(0);
-    expect(stderr).toBe("");
-    expect(stdout).toContain("chromium exited with code 23");
-  } finally {
-    rmSync(fixture, { recursive: true, force: true });
-  }
+      data() {},
+    },
+  });
+  const cdp = pathToFileURL(join(import.meta.dir, "cdp.ts")).href;
+  const child = Bun.spawn(
+    [
+      process.execPath,
+      "-e",
+      `import { Browser } from ${JSON.stringify(cdp)};
+const browser = new Browser();
+let closing;
+const close = () => (closing ??= browser.close());
+process.once("SIGTERM", () => {
+  void close().finally(() => process.exit(124));
 });
+try {
+  await browser.launch({ incognito: true });
+  await browser.goto("data:text/html,<button data-testid='probe' onclick='this.textContent=42'>start</button>");
+  await browser.clickTestId("probe");
+  if (await browser.evaluate("document.querySelector('button').textContent") !== "42") {
+    throw new Error("browser did not deliver the click");
+  }
+} finally { await close(); }`,
+    ],
+    {
+      env: {
+        ...process.env,
+        DBUS_SESSION_BUS_ADDRESS: `tcp:host=127.0.0.1,port=${String(bus.port)}`,
+        DBUS_SYSTEM_BUS_ADDRESS: `tcp:host=127.0.0.1,port=${String(bus.port)}`,
+      },
+      stdout: "ignore",
+      stderr: "pipe",
+      timeout: 60_000,
+      killSignal: "SIGTERM",
+    },
+  );
+  try {
+    const [exitCode, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+    expect({ exitCode, stderr }).toEqual({ exitCode: 0, stderr: "" });
+    expect(connections).toBe(0);
+  } finally {
+    if (child.exitCode === null) child.kill("SIGTERM");
+    await child.exited;
+    bus.stop(true);
+  }
+}, 70_000);
 
 test("a devtools probe that is accepted but never answered cannot outlive launch", async () => {
   const fixture = mkdtempSync(join(tmpdir(), "manifold-cdp-stalled-probe-"));
