@@ -4118,7 +4118,7 @@ export class PluginHost {
         if (
           entry.def.requirements === undefined &&
           entry.def.caps.some((cap) =>
-            cap === "*" ? !auth.isRoot : !this.authService.allows(auth, cap),
+            cap === "*" ? !this.authService.holdsRoot(auth) : !this.authService.allows(auth, cap),
           )
         )
           return new ActionAdmissionDenial("forbidden", "caller authority unavailable");
