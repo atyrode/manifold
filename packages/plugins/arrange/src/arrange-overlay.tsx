@@ -907,10 +907,14 @@ export function ArrangeOverlay({ host }: WorkspaceOverlayProps): ReactElement {
               const ref = tile.ref;
               const panelId = ref?.kind === "panel" ? ref.panelId : null;
               const panel = panelId === null ? undefined : host.assembly.panels.get(panelId);
+              // A container shown inline (issue #201) is a seat like a panel; its grip names
+              // the kind, since the tree carries only the container's id.
               const title =
                 panelId !== null
                   ? (panel?.title ?? panelId)
-                  : (STRUCTURE_TITLES[tile.dir ?? (ref === null ? "vacant" : "spacer")] ?? "");
+                  : ref?.kind === "container"
+                    ? "Container"
+                    : (STRUCTURE_TITLES[tile.dir ?? (ref === null ? "vacant" : "spacer")] ?? "");
               const depth = depths?.get(tile.id) ?? 1;
               const style: CSSProperties = {
                 left: rect.left,
@@ -959,7 +963,13 @@ export function ArrangeOverlay({ host }: WorkspaceOverlayProps): ReactElement {
                       data-action="core.space.setLayout"
                       data-panel-id={panelId ?? undefined}
                       data-tile-id={tile.id}
-                      aria-label={structure ? `Pick up the ${title}` : `Move the ${title} panel`}
+                      aria-label={
+                        structure
+                          ? `Pick up the ${title}`
+                          : panelId === null
+                            ? `Move the ${title}`
+                            : `Move the ${title} panel`
+                      }
                       onPointerDown={beginGrip}
                       onClick={(event) => event.detail === 0 && toggleSelected(tile.id)}
                       onKeyDown={keys}
