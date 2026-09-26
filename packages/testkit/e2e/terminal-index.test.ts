@@ -7,7 +7,7 @@ import {
   type HttpError,
   type TerminalSummary,
 } from "@manifold/protocol";
-import { base64ToText, type SessionClient } from "@manifold/sdk";
+import type { SessionClient } from "@manifold/sdk";
 import {
   callAction,
   connect,
