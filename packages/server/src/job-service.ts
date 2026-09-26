@@ -1465,6 +1465,61 @@ export class JobService {
       return undefined;
     return policy;
   }
+  private operationServiceBindings(
+    install: JobInstallation,
+    operationId: string,
+  ): NonNullable<NonNullable<JobDescription["operations"]>[string]["serviceBindings"]> {
+    const bindings: NonNullable<
+      NonNullable<JobDescription["operations"]>[string]["serviceBindings"]
+    > = {};
+    if (
+      !install.enabled ||
+      install.purgeRequested ||
+      this.store.disabledPlugins().has(install.pluginId)
+    )
+      return bindings;
+    for (const binding of install.machine.operations[operationId]?.services ?? []) {
+      const policy = this.boundServicePolicy(install, binding);
+      const record = this.instanceServices.get(binding.serviceId);
+      if (!policy || !record?.enabled) continue;
+      const reference = {
+        machineId: record.machineId,
+        serviceId: record.serviceId,
+        revision: record.revision,
+        policySha256: digest(this.instancePolicy(record)),
+      };
+      if (
+        policy.remote
+          ? policy.remote.machineId !== reference.machineId ||
+            policy.remote.serviceId !== reference.serviceId ||
+            policy.remote.revision !== reference.revision ||
+            policy.remote.policySha256 !== reference.policySha256
+          : record.machineId !== install.machineId || digest(policy) !== reference.policySha256
+      )
+        continue;
+      bindings[binding.serviceId] = reference;
+    }
+    return bindings;
+  }
+  private requireServiceBindings(
+    install: JobInstallation,
+    operationId: string,
+    expected: JobRequest["serviceBindings"],
+  ): void {
+    if (expected === undefined) return;
+    const current = this.operationServiceBindings(install, operationId);
+    for (const [serviceId, reference] of Object.entries(expected)) {
+      const actual = current[serviceId];
+      if (
+        !actual ||
+        actual.machineId !== reference.machineId ||
+        actual.serviceId !== reference.serviceId ||
+        actual.revision !== reference.revision ||
+        actual.policySha256 !== reference.policySha256
+      )
+        fail("service_bindings_changed");
+    }
+  }
 
   private resourceRefusal(
     install: JobInstallation,
@@ -2269,7 +2324,12 @@ export class JobService {
   }
   describe(
     auth: AuthContext,
-    args: { machineId: string; pluginId: string; installationRevision?: string | undefined },
+    args: {
+      machineId: string;
+      pluginId: string;
+      installationRevision?: string | undefined;
+      includeServiceBindings?: boolean | undefined;
+    },
     callerPluginId = "engine.jobs",
   ): JobDescription {
     const current = this.machineReadAuthority(auth, args, callerPluginId);
@@ -2342,6 +2402,13 @@ export class JobService {
             resourceBindingDigest: digest(
               install ? (this.operationBindings(install, operationId) ?? null) : null,
             ),
+            ...(args.includeServiceBindings
+              ? {
+                  serviceBindings: install
+                    ? this.operationServiceBindings(install, operationId)
+                    : {},
+                }
+              : {}),
           },
         ];
       }),
@@ -4051,6 +4118,7 @@ export class JobService {
       digest(this.operationBindings(install, request.operationId) ?? null)
     )
       fail("resource_bindings_changed");
+    this.requireServiceBindings(install, request.operationId, request.serviceBindings);
     // Retained work keeps its pinned resources across transport loss. Live availability
     // gates new admission and service effects, not the continued validity of its grants.
     for (const binding of op.services ?? [])
@@ -4183,6 +4251,7 @@ export class JobService {
       digest(args.resourceBindings) !== digest(resourceBindings ?? null)
     )
       fail("resource_bindings_changed");
+    this.requireServiceBindings(install, args.operationId, args.expectedServiceBindings);
     const resourceReason = this.resourceRefusal(install, args.operationId);
     if (resourceReason) fail(resourceReason);
     for (const [key, field] of Object.entries(op.input))
@@ -4267,6 +4336,9 @@ export class JobService {
       installationRevision: install.revision,
       artifactSha256: install.artifact,
       ...(resourceBindings ? { resourceBindings } : {}),
+      ...(args.expectedServiceBindings !== undefined
+        ? { serviceBindings: args.expectedServiceBindings }
+        : {}),
       parent: null,
       ...(inputs.length ? { inputs } : {}),
       credential: this.auth.credentialReference(auth),

@@ -34,6 +34,7 @@ import { JobJournal, jobDigest } from "../src/job-journal.ts";
 import { MachineJobOwner, type JobOwnerOptions } from "../src/job-owner.ts";
 import { JobOutputStore } from "../src/job-outputs.ts";
 import { JobResources } from "../src/job-resources.ts";
+import { JobBoundInputStore } from "../src/job-bound-inputs.ts";
 import { artifactCacheKey } from "../src/job-artifacts.ts";
 import { LinuxJobRefusal, startLinuxJob, type LinuxJobResult } from "../src/job-linux.ts";
 import * as nativeRuntime from "../src/job-linux.ts";
@@ -1402,6 +1403,380 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
 });
 
 const outputRoot = process.env.MANIFOLD_TEST_OUTPUT_ROOT;
+// Included by verify-jobs.ts's [real-linux] selector. verify-runtime.sh jobs supplies the
+// held tools, delegated cgroup and bounded tmpfs; CI uses verify-runtime.sh --system jobs.
+test.skipIf(!realBackend)(
+  "[real-linux] output-only locations isolate live producers and seal without backing-root writers",
+  async () => {
+    if (!outputRoot)
+      throw new Error(
+        "output-only proof requires bounded MANIFOLD_TEST_OUTPUT_ROOT from bash scripts/verify-runtime.sh jobs",
+      );
+    const root = mkdtempSync(join(tmpdir(), "machine-owner-output-only-"));
+    const sourceRoot = mkdtempSync(join(outputRoot, "owner-output-only-"));
+    const locationId = "fixture.jobs.output";
+    const keys = generateKeyPairSync("ed25519");
+    const bytes = Buffer.from(
+      [
+        "#!/bin/busybox sh",
+        "set -eu",
+        "IFS= read -r context <&3",
+        'printf "context:%s\\n" "$context"',
+        // Neither the declared guest path nor the default location path may expose the root.
+        "test ! -e /home/job/backing",
+        `test ! -e /locations/${locationId}`,
+        'if test "$1" = consume; then',
+        "  /bin/busybox cat /inputs/selected/payload",
+        "  if (printf corrupt > /inputs/selected/payload) 2>/dev/null; then exit 31; fi",
+        "  exit 0",
+        "fi",
+        'printf "%s\\n" "$2" > /outputs/material/payload',
+        'test "$(/bin/busybox cat /outputs/material/payload)" = "$2"',
+        "printf 'ready\\n'",
+        "IFS= read -r command",
+        'test "$command" = probe',
+        // The parent sends probe only after BOTH real producers have written their payloads.
+        // Try reads and writes, not just directory listings or declarative mount inspection.
+        'for path in "/home/job/backing/$3/payload" ' +
+          `"/locations/${locationId}/$3/payload" ` +
+          '"/outputs/$3/payload" "/outputs/material/../$3/payload" ' +
+          '"/outputs/material/../../home/job/backing/$3/payload"; do',
+        '  if /bin/busybox cat "$path" >/dev/null 2>&1; then exit 32; fi',
+        '  if (printf corrupt > "$path") 2>/dev/null; then exit 33; fi',
+        "done",
+        "printf 'isolated\\n'",
+        "IFS= read -r command",
+        'test "$command" = finish',
+        'test "$(/bin/busybox cat /outputs/material/payload)" = "$2"',
+        "",
+      ].join("\n"),
+    );
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    const limits = {
+      timeoutMs: 30_000,
+      memoryBytes: 128 * 1024 * 1024,
+      processes: 32,
+      outputBytes: 128 * 1024,
+    };
+    const install: Extract<JobCommand, { type: "install" }> = {
+      type: "install",
+      pluginId: "fixture.jobs",
+      installationRevision: "output-only",
+      artifactSha256: sha256,
+      machine: {
+        artifacts: {
+          [`linux-${process.arch}`]: {
+            url: "https://example.invalid/fixture",
+            sha256,
+            format: "raw",
+            entry: ["fixture"],
+            entrySha256: sha256,
+            maxBytes: bytes.length,
+            maxExpandedBytes: bytes.length,
+            maxMembers: 1,
+          },
+        },
+        locations: {
+          [locationId]: {
+            anchor: "state",
+            components: ["source"],
+            revision: "one",
+            guestPath: "/home/job/backing",
+          },
+        },
+        operations: {
+          "fixture.jobs.run": {
+            argv: [{ input: "mode" }, { input: "label" }, { input: "peer" }],
+            input: {
+              mode: { type: "string", required: true, maxLength: 32 },
+              label: { type: "string", required: true, maxLength: 32 },
+              peer: { type: "string", required: true, maxLength: 32 },
+            },
+            runtimeTools: ["busybox"],
+            locations: [{ locationId, access: "write", outputOnly: true }],
+            inputs: ["selected"],
+            outputs: ["material"],
+            network: "none",
+            limits,
+            stdin: true,
+          },
+        },
+      },
+    };
+    const held: HeldDirectory[] = [];
+    let owner: MachineJobOwner | undefined;
+    let outputs: JobOutputStore | undefined;
+    let bwrapFd = -1;
+    let busyboxFd = -1;
+    let detach: (() => void) | undefined;
+    try {
+      for (const name of ["journal", "cache", "outputs", "inputs", "locations"])
+        mkdirSync(join(root, name), { mode: 0o700 });
+      mkdirSync(join(sourceRoot, "source"), { mode: 0o700 });
+      mkdirSync(join(sourceRoot, "source", "sibling"), { mode: 0o700 });
+      const sentinel = join(sourceRoot, "source", "sibling", "payload");
+      writeFileSync(sentinel, "private sibling sentinel\n");
+      writeFileSync(
+        join(root, "cache", artifactCacheKey(Object.values(install.machine.artifacts)[0]!, sha256)),
+        bytes,
+        { mode: 0o500 },
+      );
+      const seed = new JobJournal(
+        HeldDirectory.openAbsolute(join(root, "journal"), { private: true }),
+      );
+      seed.append({ kind: "install", command: install });
+      seed.close();
+      const executableParent = HeldDirectory.openAbsolute(dirname(bwrap!));
+      try {
+        bwrapFd = executableParent.openFile(basename(bwrap!));
+      } finally {
+        executableParent.close();
+      }
+      const runtimeParent = HeldDirectory.openAbsolute(dirname(busybox!));
+      try {
+        busyboxFd = runtimeParent.openFile(basename(busybox!));
+      } finally {
+        runtimeParent.close();
+      }
+      const cache = HeldDirectory.openAbsolute(join(root, "cache"), { private: true });
+      const outputDirectory = HeldDirectory.openAbsolute(join(root, "outputs"), { private: true });
+      const inputDirectory = HeldDirectory.openAbsolute(join(root, "inputs"), { private: true });
+      const managedState = HeldDirectory.openAbsolute(join(root, "locations"), { private: true });
+      const delegatedCgroup = HeldDirectory.openAbsolute(cgroupRoot!);
+      const protectedRoot = HeldDirectory.openAbsolute(root, { private: true });
+      const sourceAnchor = HeldDirectory.openAbsolute(sourceRoot, { private: true });
+      held.push(
+        cache,
+        outputDirectory,
+        inputDirectory,
+        managedState,
+        delegatedCgroup,
+        protectedRoot,
+        sourceAnchor,
+      );
+      const store = JobOutputStore.open(outputDirectory);
+      outputs = store;
+      owner = await MachineJobOwner.open({
+        machineId: "machine",
+        admissionPublicKey: keys.publicKey.export({ type: "spki", format: "pem" }).toString(),
+        journal: new JobJournal(
+          HeldDirectory.openAbsolute(join(root, "journal"), { private: true }),
+        ),
+        cache,
+        managedState,
+        outputs: store,
+        boundInputs: JobBoundInputStore.open(inputDirectory),
+        delegatedCgroup,
+        bubblewrapFd: bwrapFd,
+        anchors: { state: sourceAnchor },
+        protectedDirectories: [protectedRoot],
+        runtimeTools: {
+          busybox: [{ fd: busyboxFd, target: "/bin/busybox", writable: false }],
+        },
+        artifactAuthority: {
+          origins: ["https://example.invalid"],
+          maxRedirects: 0,
+          timeoutMs: 1000,
+        },
+      });
+      const events: JobEvent[] = [];
+      const results = new Map<string, JobResult>();
+      const stdout = new Map<string, string>();
+      let changed = Promise.withResolvers<void>();
+      detach = owner.attach((event) => {
+        events.push(event);
+        if (event.type === "output" && event.outputId === "stdout")
+          stdout.set(
+            event.jobId,
+            (stdout.get(event.jobId) ?? "") + Buffer.from(event.data, "base64").toString(),
+          );
+        if (
+          event.type === "result" &&
+          ["exited", "interrupted", "cancelled", "refused"].includes(event.result.state)
+        )
+          results.set(event.result.jobId, event.result);
+        changed.resolve();
+        changed = Promise.withResolvers<void>();
+        return true;
+      });
+      const waitFor = async (jobId: string, observation: string, ready: () => boolean) => {
+        while (!ready()) {
+          const refusal = events.find((event) => event.type === "refusal" && event.jobId === jobId);
+          if (refusal || results.has(jobId))
+            throw new Error(
+              `${jobId}: missing ${observation}; ${JSON.stringify(refusal ?? results.get(jobId))}; stdout=${stdout.get(jobId) ?? ""}`,
+            );
+          // Native output/result events drive progress; the admitted timeout and test
+          // watchdog bound a stuck worker without guessing at a scheduling delay.
+          await changed.promise;
+        }
+      };
+      const start = async (jobId: string, peer: string, consume?: string) => {
+        const body = {
+          jobId,
+          machineId: "machine",
+          operationId: "fixture.jobs.run",
+          pluginId: install.pluginId,
+          installationRevision: install.installationRevision,
+          artifactSha256: sha256,
+          input: { mode: consume ? "consume" : "produce", label: jobId, peer },
+          limits,
+          outputs: consume ? [] : [{ name: "material", locationId, components: [jobId] }],
+          ...(consume
+            ? { inputs: [{ name: "selected", from: { jobId: consume, output: "material" } }] }
+            : {}),
+          parent: null,
+          credential: {
+            principalId: "actor",
+            tokenId: "token",
+            grantId: "grant",
+            caps: [],
+            containerScope: null,
+          },
+          traceId: "trace",
+        };
+        const request: JobRequest = { ...body, requestDigest: jobDigest(body) };
+        const now = Date.now();
+        const permit = {
+          permitId: `${jobId}-permit`,
+          jobId,
+          requestDigest: request.requestDigest,
+          ownerId: owner!.identity.ownerId,
+          ownerGeneration: owner!.identity.generation,
+          decisionId: "decision",
+          policyRevision: "policy",
+          issuedAt: now,
+          expiresAt: now + 30000,
+        };
+        await owner!.execute({
+          type: "start",
+          request,
+          permit: {
+            ...permit,
+            signature: sign(null, Buffer.from(canonicalJobJson(permit)), keys.privateKey).toString(
+              "base64",
+            ),
+          },
+        });
+      };
+      const input = async (jobId: string, seq: number, command: string) => {
+        const requestId = `${jobId}-${seq}`;
+        const sending = owner!.execute({
+          type: "input",
+          jobId,
+          requestId,
+          seq,
+          data: Buffer.from(`${command}\n`).toString("base64"),
+          eof: false,
+        });
+        await owner!.execute({ type: "input_authorized", jobId, requestId, allowed: true });
+        await sending;
+        expect(events).toContainEqual(
+          expect.objectContaining({ type: "input_result", requestId, accepted: true }),
+        );
+      };
+      const observe = (jobId: string, line: string) =>
+        waitFor(jobId, line, () => (stdout.get(jobId) ?? "").split("\n").includes(line));
+      const settled = async (jobId: string) => {
+        await waitFor(jobId, "sealed result", () => results.has(jobId));
+        const result = results.get(jobId)!;
+        const contextLine = stdout
+          .get(jobId)!
+          .split("\n")
+          .find((line) => line.startsWith("context:"))!;
+        const context: unknown = JSON.parse(contextLine.slice("context:".length));
+        expect(context).toMatchObject({ type: "context", locations: [] });
+        return result;
+      };
+      const sealed = async (jobId: string) => {
+        const result = await settled(jobId);
+        expect(result).toMatchObject({ state: "exited", exitCode: 0, reason: null });
+        const material = result.outputs.find((output) => output.name === "material")!;
+        expect(material.files).toBe(1);
+        const archive = store.read(jobId, material.outputId, 0, 65536).data;
+        expect(archive.length).toBe(material.bytes);
+        expect(createHash("sha256").update(archive).digest("hex")).toBe(material.sha256);
+        expect(result.outputs.reduce((sum, output) => sum + output.bytes, 0)).toBeLessThanOrEqual(
+          limits.outputBytes,
+        );
+        expect(() => store.read("unrelated", material.outputId, 0, 1)).toThrow(
+          "unknown_job_output",
+        );
+        return result;
+      };
+
+      await start("solo", "sibling");
+      await observe("solo", "ready");
+      await input("solo", 0, "probe");
+      await observe("solo", "isolated");
+      await input("solo", 1, "finish");
+      await sealed("solo");
+      expect(readFileSync(sentinel, "utf8")).toBe("private sibling sentinel\n");
+      // A later consumer must see the sealed snapshot, not subsequent backing-tree mutation.
+      writeFileSync(join(sourceRoot, "source", "solo", "payload"), "changed after sealing\n");
+      await start("consumer", "sibling", "solo");
+      expect(await settled("consumer")).toMatchObject({
+        state: "exited",
+        exitCode: 0,
+        reason: null,
+      });
+      expect(stdout.get("consumer")!.split("\n").slice(1).join("\n")).toBe("solo\n");
+      expect(inputDirectory.names()).toEqual([]);
+
+      await start("first", "second");
+      await start("second", "first");
+      await observe("first", "ready");
+      await observe("second", "ready");
+      for (const jobId of ["first", "second"]) {
+        expect(readFileSync(join(sourceRoot, "source", jobId, "payload"), "utf8")).toBe(
+          `${jobId}\n`,
+        );
+        expect(results.has(jobId)).toBe(false);
+      }
+      await input("first", 0, "probe");
+      await input("second", 0, "probe");
+      await observe("first", "isolated");
+      await observe("second", "isolated");
+      await input("first", 1, "finish");
+      // The second process is still blocked on stdin: a retained broad root writer would
+      // prevent this result from sealing until that unrelated process exited.
+      await sealed("first");
+      expect(results.has("second")).toBe(false);
+      expect(readFileSync(join(sourceRoot, "source", "second", "payload"), "utf8")).toBe(
+        "second\n",
+      );
+      await input("second", 1, "finish");
+      await sealed("second");
+      expect(readFileSync(join(sourceRoot, "source", "first", "payload"), "utf8")).toBe("first\n");
+      expect(readFileSync(sentinel, "utf8")).toBe("private sibling sentinel\n");
+
+      await start("cancelled", "sibling");
+      await observe("cancelled", "ready");
+      await owner.execute({ type: "cancel", jobId: "cancelled", reason: "fixture-cleanup" });
+      expect(await settled("cancelled")).toMatchObject({ state: "cancelled", reason: "cancelled" });
+      expect(inputDirectory.names()).toEqual([]);
+      for (const result of results.values())
+        for (const output of result.outputs) {
+          store.release(result.jobId, output.outputId);
+          expect(() => store.read(result.jobId, output.outputId, 0, 1)).toThrow(
+            "unknown_job_output",
+          );
+        }
+      expect(outputDirectory.names()).toEqual([]);
+    } finally {
+      detach?.();
+      await owner?.shutdown();
+      outputs?.close();
+      if (bwrapFd >= 0) closeSync(bwrapFd);
+      if (busyboxFd >= 0) closeSync(busyboxFd);
+      for (const directory of held.reverse()) directory.close();
+      rmSync(sourceRoot, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+  90000,
+);
+
 test
   .skipIf(!realBackend || !outputRoot)
   .each(["aggregate", "full-blocks", "full-inodes", "location-inodes"] as const)(

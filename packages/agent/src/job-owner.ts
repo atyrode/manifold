@@ -2537,15 +2537,16 @@ export class MachineJobOwner {
               beforeCreate,
             );
         job.locations.set(declaration.locationId, resolved);
-        if (resolved.writable)
+        if (resolved.writable && !declaration.outputOnly)
           job.releaseWriters.push(
             this.options.outputs.retainWriter(resolved.fd, resolved.parentFd, preparation),
           );
-        locations.push({
-          fd: resolved.fd,
-          target: resolved.guestPath,
-          writable: resolved.writable,
-        });
+        if (!declaration.outputOnly)
+          locations.push({
+            fd: resolved.fd,
+            target: resolved.guestPath,
+            writable: resolved.writable,
+          });
       }
       const workingDirectory = operation.workingDirectory
         ? job.locations.get(operation.workingDirectory.locationId)
@@ -2610,11 +2611,12 @@ export class MachineJobOwner {
       job.context.send(
         WorkerContextSchema.parse({
           type: "context",
-          locations: [...job.locations].map(([locationId, location]) => ({
-            locationId,
-            guestPath: location.guestPath,
-            access: location.access,
-          })),
+          locations: operation.locations
+            .filter((binding) => !binding.outputOnly)
+            .map(({ locationId }) => {
+              const location = job.locations.get(locationId)!;
+              return { locationId, guestPath: location.guestPath, access: location.access };
+            }),
         }),
       );
       const runtime: LinuxJobBind[] = [];

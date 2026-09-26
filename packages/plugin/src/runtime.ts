@@ -41,6 +41,7 @@ export type JobExecution = Pick<
   resourceBindings?: JobResourceBindings | undefined;
   /** Host-controlled one-use association to a Run admitted before native execution. */
   agentRun?: NativeAgentRunBinding | undefined;
+  expectedServiceBindings?: JobRequest["serviceBindings"] | undefined;
 };
 export interface JobScheduleTiming {
   scheduleId: string;
@@ -70,6 +71,7 @@ export interface PluginJobContext {
     machineId: string;
     pluginId: string;
     installationRevision?: string | undefined;
+    includeServiceBindings?: boolean | undefined;
   }): JobDescription;
   describeDeployment(args: { machineId: string; pluginId: string }): JobDeploymentDescription;
   execute(args: JobExecution): PublicJob;

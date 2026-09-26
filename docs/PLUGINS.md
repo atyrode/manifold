@@ -1830,6 +1830,14 @@ Operations independently report readiness and their `resourceBindingDigest`; a p
 configured installation does not make unrelated operations unavailable. An explicit
 `workingDirectory` selects one declared location. Managed companions retain their own
 artifact/member hashes; no source executable or host-PATH fallback is permitted.
+For an output lease without access to its shared parent, declare
+`{ locationId, access: "write", outputOnly: true }` in the operation's `locations`.
+It takes the same reviewed `locations:write` authority, but the native owner keeps the backing
+directory private: only the requested fresh output lease is mounted at `/outputs/<name>`.
+The backing location is not a working directory or a mounted job-context location.
+It must be a directory and cannot also be requested as an ordinary mount.
+Omitting `outputOnly` preserves normal read/write/create mounts. Older accepted owners omit
+unsupported operations from installation and refuse `output_only_locations_protocol_unsupported`.
 
 **Read an operator's host directory.** Besides the six built-in anchors (`home`, `data`,
 `state`, `cache`, `config`, `runtime`), all rooted in the owner's own storage, a location may
@@ -1867,6 +1875,20 @@ Consent is the ordinary `locations:read` on the location node. An owner older th
 plugin's other operations are unaffected. Older hubs and plugin kits reject the manifest
 outright, so adopt operator anchors only once your kit and every target hub carry them.
 
+When a product needs to verify the owner of a declared native instance service, opt into
+`ctx.jobs.describe({ machineId, pluginId, includeServiceBindings: true })`. Read
+`operations[operationId].serviceBindings[serviceId]` as
+`{ machineId, serviceId, revision, policySha256 }`; `machineId` is the source owner, and
+`revision` is its instance configuration revision, not the declared policy revision.
+Missing entries are unavailable proof, never permission to infer the owner from the executor.
+Persist the reference, operation `resourceBindingDigest` and installation/artifact pins. Supply
+`expectedServiceBindings: { [serviceId]: reference }` with those pins to `execute` or `schedule`
+for both same-machine and remote layouts. Native admission rejects changed/missing required refs
+and retains them in the signed request for queued starts and service-effect reauthorization.
+This includes identical-policy configuration A→B→A on the same machine, which the existing
+resource digest alone cannot fence. Older accepted owners refuse explicit pins with
+`service_bindings_protocol_unsupported`; callers omitting them retain their existing behavior.
+See the [describe contract](CONTRACTS.md#governed-machine-jobs) for authority and compatibility.
 **Review installation through the same native authority.** The existing per-machine
 runtime inspector already installs artifacts and reviews revision-bound resource/operation
 consent. [ADR 0036](decisions/0036-reviewed-native-deployment.md) extends that review path
