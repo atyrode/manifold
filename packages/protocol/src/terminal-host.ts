@@ -4,6 +4,7 @@ import {
   AgentMessageSchema,
   ServerToAgentMessageSchema,
   TerminalExecutionSchema,
+  TerminalOwnerStopReasonSchema,
   type AgentMessage,
   type ServerToAgentMessage,
 } from "./machine.ts";
@@ -199,6 +200,18 @@ export const TerminalHostShuttingDownSchema = z.strictObject({
   terminalHostId: TERMINAL_HOST_ID,
 });
 
+/**
+ * The host is ending every PTY on its DESTRUCTIVE stop path (issue #853): sent once to the
+ * seated transport before the exits that stop causes, which the transport forwards to the hub
+ * with this reason. It is a new event TYPE rather than a key on `exited` because a transport
+ * ignores an unknown type but refuses an unknown key on a strict frame it knows, so an older
+ * transport in front of a newer host keeps its seat and IPC version 3 stays compatible.
+ */
+export const TerminalHostDestructiveStopSchema = z.strictObject({
+  type: z.literal("destructive_stop"),
+  reason: TerminalOwnerStopReasonSchema,
+});
+
 export const TERMINAL_HOST_ATTACH_REFUSALS = ["transport_attached"] as const;
 export const TerminalHostAttachRefusedSchema = z.strictObject({
   type: z.literal("attach_refused"),
@@ -229,6 +242,7 @@ export const TerminalHostEventSchema = z.discriminatedUnion("type", [
   TerminalHostAttachRefusedSchema,
   TerminalHostShutdownRefusedSchema,
   TerminalHostShuttingDownSchema,
+  TerminalHostDestructiveStopSchema,
   TerminalHostErrorSchema,
   ...membersOf(AgentMessageSchema.options, TERMINAL_HOST_MACHINE_EVENT_TYPES),
 ]);
@@ -238,6 +252,7 @@ export type TerminalHostEvent =
   | z.infer<typeof TerminalHostAttachRefusedSchema>
   | z.infer<typeof TerminalHostShutdownRefusedSchema>
   | z.infer<typeof TerminalHostShuttingDownSchema>
+  | z.infer<typeof TerminalHostDestructiveStopSchema>
   | z.infer<typeof TerminalHostErrorSchema>
   | Extract<AgentMessage, { type: MachineEventType }>;
 
@@ -256,6 +271,7 @@ export const TERMINAL_HOST_EVENT_TYPES = [
   "attach_refused",
   "shutdown_refused",
   "shutting_down",
+  "destructive_stop",
   "error",
   ...TERMINAL_HOST_MACHINE_EVENT_TYPES,
 ] as const satisfies readonly TerminalHostEvent["type"][];
