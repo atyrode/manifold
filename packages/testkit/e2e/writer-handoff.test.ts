@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { rmSync } from "node:fs";
 import { ActionOutcomeSchema, HealthResponseSchema } from "@manifold/protocol";
 import type { ConnectionStatus, SessionClient } from "@manifold/sdk";
 import {
@@ -342,6 +343,10 @@ test("a fenced handoff keeps one writer, acknowledged writes, sessions and the P
     await Promise.all(probes);
     for (const capture of captures) capture.stop();
     closeClients(clients);
-    await stopProcesses([...servers, ...agents]);
+    try {
+      await stopProcesses([...servers, ...agents]);
+    } finally {
+      for (const server of servers) rmSync(server.dataDir, { recursive: true, force: true });
+    }
   }
 }, 90_000);
