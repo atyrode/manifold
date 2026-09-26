@@ -4726,6 +4726,24 @@ synchronization makes the plugin-image journal durable before filesystem activat
 `packages/server/src/db.ts` remains the authoritative migration source; the handwritten
 inventory below records selected durable fields rather than acting as a second runner.
 
+**One writer per data directory** ([#318](https://github.com/atyrode/manifold/issues/318)). Before
+opening `manifold.db` the server takes `<data>/manifold.writer`, a SQLite file held in exclusive
+locking mode for the process's lifetime; the kernel releases it on close or death, so there is no
+stale lock to judge. A starting server waits up to 30 seconds for it (`writer_waiting`), polling
+every 10ms, then fails to start. After migrations it claims the next writer epoch in
+`meta.writer-epoch` (`<n>:active`) and logs `writer_claimed` with `predecessor` `sealed`,
+`unsealed` (at `warn`: the previous writer never sealed, so its last commits may be absent from
+this history) or `none`. A graceful stop (`RunningServer.stop`, SIGTERM/SIGINT) quiesces in this
+order: every new request and WebSocket upgrade except `GET /healthz` is answered `503` with
+`Retry-After: 1`; session, machine and instance sockets close with 1001; admitted HTTP requests
+and action dispatches get up to three seconds to settle and produced responses to finish writing;
+scenes flush; the HTTP server, isolates and plugin databases close; the epoch is sealed
+(`<n>:sealed`) as the final commit, after which the connection is `query_only`; `writer_sealed`
+records `settled` and `quiesceMs`; the database closes and the lock is released last. Work cut
+off at the deadline is never acknowledged. The lock fences processes sharing one data directory,
+not instances on separate disks sharing a replica; builds older than this contract neither take
+the lock nor record an epoch.
+
 ```
 containers(id TEXT PK, name TEXT, created_at INTEGER, sort_order INTEGER, folder_id TEXT,
      discipline TEXT NOT NULL DEFAULT 'canvas')        -- canvas | composition
@@ -4934,7 +4952,8 @@ meta(key TEXT PK, value TEXT)                         -- schema_version, plugins
                                                       -- workspace-setting:<ref>,
                                                       -- native_local_machine_id,
                                                       -- jobs:signing-key,
-                                                      -- agent-runs:declarations-after-event-id
+                                                      -- agent-runs:declarations-after-event-id,
+                                                      -- writer-epoch (<n>:active|<n>:sealed)
 ```
 
 An object-store replica of `manifold.db` is a sensitive, authority-bearing backup. It contains
