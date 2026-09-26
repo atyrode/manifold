@@ -871,6 +871,37 @@ describe("machine admission and terminal continuity", () => {
     };
   }
 
+  test("owner refusal diagnostics survive absent job authority without exposing free text", () => {
+    const fix = fixture("d".repeat(64), []);
+    fix.gateway.setJobs(new JobService(fix.store, fix.auth, fix.runtime));
+    fix.hello("refusal-source");
+    try {
+      for (const event of [
+        { type: "refusal", jobId: "job-123", reason: "resource_bindings_mismatch" },
+        { type: "refusal", jobId: "private /path", reason: "Bearer private-value" },
+      ]) {
+        fix.gateway.message("refusal-source", JSON.stringify({ type: "job_event", event }));
+      }
+      expect(fix.logger.warnings.filter((row) => row.evt === "machine_job_refusal")).toEqual([
+        {
+          evt: "machine_job_refusal",
+          fields: {
+            machineId: fix.machineId,
+            jobId: "job-123",
+            reason: "resource_bindings_mismatch",
+          },
+        },
+        {
+          evt: "machine_job_refusal",
+          fields: { machineId: fix.machineId, jobId: "[redacted]", reason: "[redacted]" },
+        },
+      ]);
+    } finally {
+      fix.gateway.shutdown();
+      fix.store.close();
+    }
+  });
+
   test("any compatible transport may advertise 1,024 terminals; 1,025 or a duplicate id is refused before effects", () => {
     const fix = fixture("f".repeat(64), ["durable"], "retained-host");
     let authentications = 0;
@@ -941,7 +972,6 @@ describe("machine admission and terminal continuity", () => {
       fix.store.close();
     }
   });
-
   test("pre-cutover transports cannot advertise ownership or adopt durable terminals", () => {
     const fix = fixture("9".repeat(64), ["t1"]);
     const jobs = new JobService(fix.store, fix.auth, fix.runtime);

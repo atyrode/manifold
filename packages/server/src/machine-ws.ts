@@ -34,6 +34,11 @@ const KNOWN_AGENT_TYPES: Readonly<Record<string, true>> = Object.fromEntries(
 
 const SUPERSEDE_DAMP_MS = 5_000;
 
+// Refusal fields are machine claims, not permission to log free-form exception text.
+function refusalIdentifier(value: string): string {
+  return /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value) ? value : "[redacted]";
+}
+
 /**
  * How long the hub waits for one repository answer (issue #529). The agent bounds its own
  * git probe at a second; this is that second plus the round trip, so a machine that is
@@ -471,6 +476,13 @@ export class MachineGateway {
   private dispatch(channel: LiveMachineChannel, message: AgentMessage): void {
     switch (message.type) {
       case "job_event":
+        if (message.event.type === "refusal") {
+          this.logger.warn("machine_job_refusal", {
+            machineId: channel.machineId,
+            jobId: refusalIdentifier(message.event.jobId),
+            reason: refusalIdentifier(message.event.reason),
+          });
+        }
         try {
           this.jobs?.event(channel, message.event);
         } catch {
