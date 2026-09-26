@@ -192,6 +192,16 @@ gate check for this is S18 (`REGISTRY.md` §Gates).
 Out-of-tree plugins (§9) are untouched at runtime — their bundles import no in-tree
 code — and the same directory convention applies in their own repositories.
 
+**Naming the directories.** A part's directory is named by the LAST segment of its id and sits
+directly inside its parent's directory: `core.canvas.draw` is `canvas/draw`,
+`atyrode.code.generator` is `<code-root>/generator`. That is the one fixed rule. A peer or
+independent plugin's own root directory is the author's choice — `packages/plugins/canvas` in
+tree, or a full-id root such as `example.hello/` (§10) in an author repository — as long as it is
+legible. The directory is never load-bearing: identity, family and load order come from the
+manifest's `id` and `dependencies` edges, and `pack <plugin-dir>` reads
+`<plugin-dir>/manifest.json` (§9, Packing), so renaming a directory changes nothing a hub sees.
+The in-tree `packages/plugins/canvas/draw` is the conforming reference.
+
 ### Your skin ships with you
 
 A plugin that paints anything carries `src/styles.css` and imports it from its web half:
