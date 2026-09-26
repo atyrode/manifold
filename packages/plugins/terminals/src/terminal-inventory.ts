@@ -1,4 +1,4 @@
-import type { MachineSummary, TerminalInfo } from "@manifold/protocol";
+import type { MachineSummary, TerminalExitReason, TerminalInfo } from "@manifold/protocol";
 
 /** One row of the terminals janitor panel: a PTY terminal and how it is bound. */
 export interface TerminalRow {
@@ -10,6 +10,8 @@ export interface TerminalRow {
   readonly machineOnline: boolean | null;
   readonly status: TerminalInfo["status"];
   readonly exitCode: number | null;
+  /** Why the machine's terminal owner ended it; null while running or after an ordinary exit. */
+  readonly exitReason: TerminalExitReason | null;
   /** Every live canvas mirror in stable scene order. */
   readonly boundElementIds: readonly string[];
   readonly isController: boolean;
@@ -53,6 +55,7 @@ export function buildTerminalRows(input: TerminalInventoryInput): readonly Termi
         machineOnline: machine === undefined ? null : machine.online,
         status: terminal.status,
         exitCode: terminal.exitCode,
+        exitReason: terminal.exitReason,
         boundElementIds,
         isController,
         /*
