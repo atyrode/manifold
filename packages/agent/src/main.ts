@@ -14,6 +14,7 @@ import { listenTerminalHost } from "./terminal-host-listener.ts";
 import { TerminalHost } from "./terminal-host.ts";
 import { listenJobOwner, unixJobOwnerDialer } from "./job-owner-link.ts";
 import { openConfiguredJobOwner } from "./job-runtime.ts";
+import { OOM_KILL_SAMPLE_INTERVAL_MS, OomKillWatch, cgroupOomKillCounter } from "./oom-kills.ts";
 
 /**
  * One binary, three separately supervised lifetimes.
@@ -90,10 +91,16 @@ async function terminalHostMain(): Promise<void> {
         )
       : undefined;
   let jobListener: { stop(): void } | undefined;
+  // Linux cgroup v2 only: elsewhere a destructive stop is reported without OOM attribution.
+  const oomKillCounter = cgroupOomKillCounter();
+  const oomKills =
+    oomKillCounter === null ? undefined : new OomKillWatch(oomKillCounter, () => Date.now());
+  if (oomKills) setInterval(() => oomKills.sample(), OOM_KILL_SAMPLE_INTERVAL_MS).unref();
   const host = new TerminalHost({
     sink: stdoutSink,
     build,
     ...(owner ? { jobOwner: owner } : {}),
+    ...(oomKills ? { oomKills } : {}),
     onMaintenanceShutdown: () => {
       // Accepted only when drained and empty (terminal-host.ts): nothing to kill, so exit
       // once the accepting frame has left the socket.
@@ -115,13 +122,14 @@ async function terminalHostMain(): Promise<void> {
     terminalHostProtocolVersion: TERMINAL_HOST_PROTOCOL_VERSION,
     protocolVersion: PROTOCOL_VERSION,
     build,
+    oomKillObservation: oomKills !== undefined,
   });
   if (owner && jobSocket) jobListener = await listenJobOwner(owner, jobSocket);
   listener = await listenTerminalHost(host, socketPath, stdoutSink);
   onShutdownSignal(async () => {
     // Kill first, close the socket last: the attached transport receives every `exited`
-    // before its connection goes, so the hub records the deliberate stop as exits, not as a
-    // machine that merely went offline with its terminals in limbo.
+    // before its connection goes, so the hub records the deliberate stop as exits naming the
+    // owner's stop, not as a machine that merely went offline with its terminals in limbo.
     await host.shutdown();
     await owner?.shutdown();
     jobListener?.stop();

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FrameReader, FrameTooLargeError, FrameWriter } from "../src/ipc-framing.ts";
 import { TerminalHost, type TerminalHostSession } from "../src/terminal-host.ts";
+import { OomKillWatch } from "../src/oom-kills.ts";
 
 /**
  * The PTY owner's own contracts (issue #278), exercised directly on the seam: which
@@ -235,6 +236,38 @@ test("destructive shutdown escalates a signal-trapping PTY after its grace windo
   expect(host.terminalCount).toBe(0);
   expect(transport.closed).toBe(true);
 }, 5000);
+
+test.each([
+  ["without", 0, "owner_stopped"],
+  ["after", 1, "owner_oom_stopped"],
+] as const)(
+  "a destructive stop %s a preceding OOM kill names itself before the exits it causes",
+  async (_when, killsBeforeStop, reason) => {
+    let kills = 0;
+    const host = new TerminalHost({
+      shellCommand: [BASH, "--norc", "-i"],
+      oomKills: new OomKillWatch(
+        () => kills,
+        () => Date.now(),
+      ),
+    });
+    const transport = openPeer(host);
+    transport.session.deliver({ type: "attach" });
+    transport.session.deliver({ type: "create", terminalId: "held", cols: 80, rows: 24, env: {} });
+    expect(transport.events.at(-1)).toEqual({ type: "created", terminalId: "held" });
+    kills += killsBeforeStop;
+
+    await host.shutdown();
+    const stop = transport.events.findIndex((event) => event.type === "destructive_stop");
+    const exit = transport.events.findIndex((event) => event.type === "exited");
+    expect(transport.events[stop]).toEqual({ type: "destructive_stop", reason });
+    expect(exit).toBeGreaterThan(stop);
+    // The host's own exit stays the frame an older transport parses; the transport adds why.
+    expect(transport.events[exit]).not.toHaveProperty("exitReason");
+    expect(transport.closed).toBe(true);
+  },
+  10000,
+);
 
 test("frames are bounded: a partial line accumulates, an oversize line is refused, a stalled peer overflows", () => {
   const reader = new FrameReader(16);
