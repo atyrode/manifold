@@ -272,7 +272,8 @@ export function jobContext(
     schedules: () =>
       service()
         .schedules(auth, pluginId)
-        .map(({ request, ...metadata }) => ({
+        // The carried container authority is the hub's, never a schedule fact (ADR 0051).
+        .map(({ request, containerGrants: _carried, ...metadata }) => ({
           ...metadata,
           machineId: request.machineId,
           pluginId: request.pluginId,

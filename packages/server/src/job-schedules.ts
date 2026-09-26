@@ -6,6 +6,7 @@ import {
   type JobRequest,
   type JobInvocationEdge,
 } from "@manifold/protocol";
+import type { ContainerGrant } from "./auth.ts";
 import type { ServerStore } from "./stores.ts";
 import { JobOutputRuleSchema } from "../../protocol/src/jobs.ts";
 
@@ -36,12 +37,17 @@ CREATE TABLE IF NOT EXISTS job_invocation_edges (
 
 export interface JobScheduleSpec extends JobScheduleTiming {
   request: JobRequest;
+  /**
+   * The registering lineage's carried container authority (ADR 0051), beside the signed
+   * request rather than inside it; absent on every schedule that carries none.
+   */
+  containerGrants?: readonly ContainerGrant[];
 }
 export interface JobScheduleCallbacks {
   /** Common authority evaluator; null permits, otherwise a durable refusal reason. */
   reauthorize(request: JobRequest): string | null;
   /** Persist the job in this same SQLite transaction. Do not dispatch network I/O here. */
-  enqueue(request: JobRequest): void;
+  enqueue(request: JobRequest, containerGrants?: readonly ContainerGrant[]): void;
   isOnline(machineId: string): boolean;
 }
 interface ScheduleRow {
@@ -304,7 +310,7 @@ export class JobSchedules {
               this.disableSchedule(spec.scheduleId, spec.revision, reason);
               break;
             }
-            callbacks.enqueue(request);
+            callbacks.enqueue(request, spec.containerGrants);
             this.store.db
               .query("UPDATE job_schedule_occurrences SET state='enqueued' WHERE job_id=?")
               .run(pending.job_id);

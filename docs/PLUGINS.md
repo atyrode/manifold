@@ -725,7 +725,9 @@ and the check is per hop. The engine's OWN rows are not dependencies you can cal
 they belong to — `ctx.jobs`, `ctx.services` and `ctx.machines` are the way to them, and they are
 bound to you. In `onEnable`, `onDisable` and `onAssemblyChanged` the slice is `ctx.actions?` on
 the same terms as `ctx.jobs?` — the installer's credential, absent when it no longer restores —
-and `onJobSettled` always carries it, bound to the settled job's own credential.
+and `onJobSettled` always carries it, bound to the settled job's own credential and to any
+container authority the door that started the job handed it (ADR 0051; see
+[Governed jobs and continuous streams](#governed-jobs-and-continuous-streams)).
 
 Inside an action handler, `ctx.callerPlugin` identifies the **immediate** plugin that opened
 this door through `ctx.actions.call`, or is `null` when the door was opened directly by a
@@ -2447,6 +2449,37 @@ subscription belongs to a dispatch. Same bound and same no-veto rule as the othe
 is at-least-once so the consumer stays idempotent, and a disabled plugin is not woken because
 its jobs were cancelled rather than delivered. Exit 0 is process success and not your
 postcondition. Do not poll `status` or keep a refresh timer in place of declaring the hook.
+
+**Hand one container to the work you start (ADR 0051).** A wake runs under the job's
+credential, and that credential holds only what your door lent it — so a wake cannot open a
+door that asks its caller for `containers:write` at a container (Code's and OMP's `runSession`)
+unless the door you pressed named that container. A GOVERNED door does it with a container
+target:
+
+```ts
+defineServerAction({
+  name: "drain",
+  caps: ["machines:run", "containers:write"],
+  requirements: [
+    { cap: "machines:run", target: ["operation"] },
+    // `profile` is `{ kind: "container", containerId }` in the door's input.
+    { cap: "containers:write", target: ["profile"] },
+  ],
+  // …
+});
+```
+
+The press admits only if the caller holds `containers:write` at that container (no consent row
+is involved, as for `terminals:*`), and a target that is not a container is refused. Every job
+that dispatch executes and every schedule it registers then carries `containers:write` bound to
+that container alone, and so does their `onJobSettled`: a door it opens through
+`ctx.actions.call` sees the cap in `ctx.auth.caps`, and `ctx.auth.allows(cap, ref)` answers true
+at that container and false at every other one, the root included; `ctx.outsideScope` refuses
+the others for a container-graded door. `containers:read` works the same way. Only governed
+doors carry it, `delegates` stay native-only, and a door without a container target lends no
+container authority. The wake loses it when the pressing credential is revoked or expires, or a
+grant row stops allowing it at that container; and work carrying it is never root-class, even
+when an owner pressed.
 
 Raw follow/output bytes can contain secrets. Publish only your product's safe metadata
 onto its public stream; keep raw inputs, stdout/stderr, prompts and private output bodies
