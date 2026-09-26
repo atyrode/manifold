@@ -124,7 +124,8 @@ export class JobDeployments {
     const current = this.service.auth.restoreCredential(
       this.service.auth.credentialReference(auth),
     );
-    if (!current?.isRoot) throw new ServiceError("forbidden", "deployment_admin_required");
+    if (current === null || !this.service.auth.holdsRoot(current))
+      throw new ServiceError("forbidden", "deployment_admin_required");
     return current;
   }
   private get(deploymentId: string): StoredApproval | null {
@@ -638,7 +639,7 @@ export class JobDeployments {
     applied: boolean,
   ): string | null {
     const auth = this.service.auth.restoreCredential(approval.credential);
-    if (!auth?.isRoot) return "credential_revoked_or_expired";
+    if (auth === null || !this.service.auth.holdsRoot(auth)) return "credential_revoked_or_expired";
     const request = approval.review.request;
     if (!approval.evidence[index]?.invocations) return "deployment_review_stale";
     if (

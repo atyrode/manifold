@@ -1,0 +1,6 @@
+---
+section: Breaking Changes
+issue: 411
+---
+
+A minted `*` credential now loses root-only authority while any administered deny decides an engine capability for it anywhere in the workspace, including a deny at a single container and including tokens minted onto the owner principal. Until the deny is removed, it can no longer open declared-`*` doors such as grant administration, plugin inventory and credential administration. It can mint no tokens or shares, even for concrete capabilities it also carries. Open sessions are re-evaluated on their next request without signing in again, and root authority returns when the deny is revoked. A hardened plugin handler that started as root and loses that authority mid-dispatch has its further host calls and returned emissions refused with `root_authority_withdrawn`; effects it already committed remain. Class denials such as `any-human` now also narrow the owner principal's minted tokens. The raw owner key is unaffected: it remains the non-deniable recovery credential and can always remove the deny. Denies that decide nothing for a credential leave root authority in place. Examples are a class deny overridden by that principal's own allow at the same element, tile or other node with nothing beneath it, or a deny naming only plugin capabilities. Ordinary capabilities outside the deny are unchanged.

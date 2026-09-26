@@ -341,7 +341,7 @@ describe("core.access ladder", () => {
     if (typeof token !== "string") throw new Error("no token in the grant");
     // The point of the door is a WORKING identity, not a row: the browser's whole boot path
     // is this call followed by authenticating with what it returned.
-    expect(fix.auth.authenticate(token).isRoot).toBe(true);
+    expect(fix.auth.holdsRoot(fix.auth.authenticate(token))).toBe(true);
     fix.store.close();
   });
 
@@ -1242,6 +1242,239 @@ describe("core.access grant ladder", () => {
     expect(result(revoked)).toEqual({ revoked: 1 });
     // And it was a real revocation, not a bookkeeping one: the caller it widened is refused.
     expect(denial(await rename(fix, reader, container)).rule).toBe("forbidden");
+    fix.store.close();
+  });
+
+  /*
+    ROOT-CLASS AUTHORITY UNDER DENIES (#411, decided 2026-09-22). A minted `*` credential is full
+    administration only while its engine-wide reach is unattenuated: any administered deny that
+    decides a capability for it anywhere withdraws the root-class doors, for a socket that was
+    already open as much as for a fresh authentication, until the deny is removed. The raw owner
+    key is the one credential no deny reaches.
+  */
+
+  /** A minted `*` bearer: on a fresh human principal, or on the principal named. */
+  function wildcard(fix: Fixture, principalId?: string): string {
+    return fix.auth.mintToken(
+      principalId === undefined
+        ? { principal: { name: "administrator", kind: "human" }, caps: ["*"] }
+        : { principalId, caps: ["*"] },
+      fix.owner,
+    ).token;
+  }
+
+  /** A declared-`*` door that reads and changes nothing. */
+  async function rootDoor(fix: Fixture, actor: AuthContext) {
+    return await fix.host.dispatch(actor, "core.access.listGrants", {});
+  }
+
+  /** An ordinary `plugins:manage` door, asked at the root; enabling an enabled plugin is a no-op. */
+  async function manageDoor(fix: Fixture, actor: AuthContext) {
+    return await fix.host.dispatch(actor, "engine.plugins.setEnabled", {
+      id: "core.canvas.draw",
+      enabled: true,
+    });
+  }
+
+  const ROOT_REFUSAL = { rule: "forbidden", message: "* capability required" };
+
+  test("an effective deny withdraws a minted wildcard's root class, live and re-authenticated", async () => {
+    const fix = await fixture();
+    const raw = wildcard(fix);
+    const live = fix.auth.authenticate(raw);
+    const bystander = fix.auth.authenticate(wildcard(fix));
+
+    // Unattenuated, a minted wildcard is full administration — and this warms the live verdicts.
+    expect(result(await rootDoor(fix, live))).toBeDefined();
+    expect(result(await manageDoor(fix, live))).toEqual({});
+
+    const deny = await write(fix, {
+      principal: { kind: "principal", id: live.principal.id },
+      node: ROOT,
+      caps: ["plugins:manage"],
+      effect: "deny",
+      reach: "subtree",
+    });
+    const reauthenticated = fix.auth.authenticate(raw);
+
+    for (const actor of [live, reauthenticated]) {
+      expect(denial(await rootDoor(fix, actor))).toEqual(ROOT_REFUSAL);
+      expect(denial(await manageDoor(fix, actor))).toEqual({
+        rule: "forbidden",
+        message: "plugins:manage capability required",
+      });
+      // The anti-bypass: withdrawn administration cannot retire the row that withdrew it.
+      expect(
+        denial(await fix.host.dispatch(actor, "core.access.revokeGrant", { grantId: deny.id })),
+      ).toEqual(ROOT_REFUSAL);
+      // Nothing ordinary is withdrawn beyond what the waterfall itself decides.
+      expect(fix.auth.allows(actor, "containers:write")).toBe(true);
+    }
+    // Another wildcard principal, and the break-glass key, are untouched.
+    expect(result(await rootDoor(fix, bystander))).toBeDefined();
+    expect(result(await manageDoor(fix, bystander))).toEqual({});
+    expect(result(await rootDoor(fix, fix.owner))).toBeDefined();
+
+    // Removing the deny restores the same open session without re-authentication.
+    expect(
+      result(await fix.host.dispatch(fix.owner, "core.access.revokeGrant", { grantId: deny.id })),
+    ).toEqual({ revoked: 1 });
+    expect(result(await rootDoor(fix, live))).toBeDefined();
+    expect(result(await manageDoor(fix, live))).toEqual({});
+    fix.store.close();
+  });
+
+  test("a local class deny withdraws root from minted owner-principal bearers, never the owner key", async () => {
+    const fix = await fixture();
+    const container = accessContainer(fix);
+    const raw = wildcard(fix, fix.owner.principal.id);
+    const live = fix.auth.authenticate(raw);
+    expect(result(await rootDoor(fix, live))).toBeDefined();
+
+    const deny = await write(fix, {
+      principal: { kind: "any-human" },
+      node: containerNodeUri(container),
+      caps: ["*"],
+      effect: "deny",
+      reach: "subtree",
+    });
+    const reauthenticated = fix.auth.authenticate(raw);
+
+    for (const actor of [live, reauthenticated]) {
+      expect(actor.principal.id).toBe(fix.owner.principal.id);
+      expect(denial(await rootDoor(fix, actor))).toEqual(ROOT_REFUSAL);
+      expect(fix.auth.allows(actor, "containers:read", container)).toBe(false);
+      // One container's deny withdraws workspace administration, not the workspace itself.
+      expect(fix.auth.allows(actor, "containers:read")).toBe(true);
+      expect(result(await manageDoor(fix, actor))).toEqual({});
+    }
+
+    // The raw recovery key is the break-glass path: undeniable, and able to undo the deny.
+    expect(fix.auth.allows(fix.owner, "containers:write", container)).toBe(true);
+    expect(result(await rootDoor(fix, fix.owner))).toBeDefined();
+    expect(
+      result(await fix.host.dispatch(fix.owner, "core.access.revokeGrant", { grantId: deny.id })),
+    ).toEqual({ revoked: 1 });
+    expect(result(await rootDoor(fix, live))).toBeDefined();
+    expect(fix.auth.allows(live, "containers:read", container)).toBe(true);
+    fix.store.close();
+  });
+
+  test("only a deny that decides an engine capability within reach withdraws root", async () => {
+    const fix = await fixture();
+    const container = accessContainer(fix);
+    const live = fix.auth.authenticate(wildcard(fix));
+    const node = containerNodeUri(container);
+
+    await write(fix, {
+      principal: { kind: "any-human" },
+      node,
+      caps: ["containers:write"],
+      effect: "deny",
+      reach: "subtree",
+    });
+    const exception = await write(fix, {
+      principal: { kind: "principal", id: live.principal.id },
+      node,
+      caps: ["containers:write"],
+      effect: "allow",
+      reach: "subtree",
+    });
+    await write(fix, {
+      principal: { kind: "principal", id: live.principal.id },
+      node: ROOT,
+      caps: ["atyrode.babel:archive"],
+      effect: "deny",
+      reach: "subtree",
+    });
+
+    // A class deny the principal's own allow outranks decides nothing for it, and `*` never
+    // reached a plugin's namespace, so neither row attenuates the wildcard.
+    expect(result(await rootDoor(fix, live))).toBeDefined();
+
+    // A node-reach exception covers the container alone; the class deny still decides beneath it.
+    await fix.host.dispatch(fix.owner, "core.access.revokeGrant", { grantId: exception.id });
+    await write(fix, {
+      principal: { kind: "principal", id: live.principal.id },
+      node,
+      caps: ["containers:write"],
+      effect: "allow",
+      reach: "node",
+    });
+    expect(fix.auth.allows(live, "containers:write", container)).toBe(true);
+    expect(denial(await rootDoor(fix, live))).toEqual(ROOT_REFUSAL);
+    fix.store.close();
+  });
+
+  test("a node-reach exception at a leaf leaves nothing beneath for the class deny to decide", async () => {
+    const fix = await fixture();
+    const container = accessContainer(fix);
+    const live = fix.auth.authenticate(wildcard(fix));
+    const element = `${containerNodeUri(container)}/element/${fix.runtime.newId()}`;
+
+    await write(fix, {
+      principal: { kind: "any-human" },
+      node: element,
+      caps: ["containers:write"],
+      effect: "deny",
+      reach: "subtree",
+    });
+    await write(fix, {
+      principal: { kind: "principal", id: live.principal.id },
+      node: element,
+      caps: ["containers:write"],
+      effect: "allow",
+      reach: "node",
+    });
+
+    // An element has no descendants in the address algebra, so the principal's allow wins every
+    // contest the class deny can enter: nothing is attenuated and root stays.
+    expect(fix.auth.effectiveCaps(live, element).has("containers:write")).toBe(true);
+    expect(result(await rootDoor(fix, live))).toBeDefined();
+    fix.store.close();
+  });
+
+  test("a withdrawn wildcard delegates nothing, not even concrete caps it also carries", async () => {
+    const fix = await fixture();
+    const container = accessContainer(fix);
+    const mixed = fix.auth.authenticate(
+      fix.auth.mintToken(
+        { principal: { name: "mixed", kind: "human" }, caps: ["*", "containers:write"] },
+        fix.owner,
+      ).token,
+    );
+    const ordinary = context(fix, ["tokens:mint", "containers:write"]);
+    await write(fix, {
+      principal: { kind: "principal", id: mixed.principal.id },
+      node: containerNodeUri(container),
+      caps: ["containers:write"],
+      effect: "deny",
+      reach: "subtree",
+    });
+    const mint = async (actor: AuthContext) =>
+      await fix.host.dispatch(actor, "core.access.mint", {
+        principal: { name: "delegate", kind: "human" },
+        caps: ["containers:write"],
+        containerId: container,
+      });
+    const share = async (actor: AuthContext) =>
+      await fix.host.dispatch(actor, "core.access.mintShare", {
+        node: { kind: "container", containerId: container },
+        caps: ["containers:write"],
+        origin: "http://guest.localhost:7778",
+      });
+    const withdrawn = {
+      rule: "refused",
+      message: "wildcard authority withdrawn by an administered deny",
+    };
+
+    // The fresh principal is not named by the minter's deny, so a literal `containers:write`
+    // riding beside `*` would hand the denied container straight back out.
+    expect(denial(await mint(mixed))).toEqual(withdrawn);
+    expect(denial(await share(mixed))).toEqual(withdrawn);
+    // A non-wildcard minter, which never held root, keeps its literal-subset delegation.
+    expect(result(await mint(ordinary))).toMatchObject({ caps: ["containers:write"] });
+    expect(result(await share(ordinary))).toMatchObject({ share: { caps: ["containers:write"] } });
     fix.store.close();
   });
 });
