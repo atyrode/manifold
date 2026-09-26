@@ -4618,6 +4618,13 @@ Released legacy combined-owner agents still lose their PTYs on replacement: they
 transfer live terminals to this host. Their migration must remain held while work is live;
 this source contract neither claims deployment nor authorizes production changes.
 
+A kernel OOM kill of a host descendant is not a host stop. Every PTY, and everything started
+from one, shares the host's service cgroup, so systemd's default `OOMPolicy=stop` would turn
+the kernel killing any one of those processes into a unit stop, the destructive SIGTERM above
+for every terminal. A Linux host unit without `Delegate=` must therefore set
+`OOMPolicy=continue`, so that only the kernel's victim is lost; a delegated owner unit already
+defaults to `continue`.
+
 Proposed design only, not implemented: [ADR 0050](decisions/0050-coordinated-installer-updates.md)
 describes a future installer-owned plan/apply/status/recovery operation for coordinated hub and
 spoke updates. It grants no new software-replacement authority and changes none of the maintenance

@@ -126,6 +126,7 @@ Environment=MANIFOLD_TERMINAL_HOST_SOCKET=%h/.local/state/manifold/terminal-host
 ExecStart=/nix/store/<...>-manifold-agent/bin/manifold-agent --terminal-host
 Restart=on-failure
 RestartSec=3
+OOMPolicy=continue
 UMask=0077
 
 [Install]
@@ -165,6 +166,8 @@ to transport or hub. Replacing the transport preserves the retained host; a stop
 of the host is held behind drain and its private atomic `shutdown_request`, not a signal.
 For native jobs, delegated cgroups, reviewed configuration and output backing are additionally
 required; use the full-native profile rather than adding privileges to these terminal units.
+`OOMPolicy=continue` keeps a kernel OOM kill of one process started from a terminal from
+stopping the host and ending every terminal with it; systemd's default is `stop`.
 
 ### launchd (macOS) — `~/Library/LaunchAgents/dev.tyrode.manifold-agent.plist`
 
