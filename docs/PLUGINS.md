@@ -1309,6 +1309,12 @@ their work invisible without deleting it, which is the one outcome worse than a 
   A leaf may also carry **`arg`**, an opaque record of YOUR OWN naming what that tile is
   showing it for; the panel reads it off `PanelProps.arg` and opens more of its own tiles with
   `host.openPanel` (below). Absent ≡ no argument, which is every panel that takes none.
+  A workspace leaf may instead name a CONTAINER, `{ kind: "container", containerId }`: the
+  workspace mounts that canvas or composition inline with its own renderer, so your panel and a
+  composition of live terminals your panel births into (`core.terminals.create` with
+  `placement: "tile"`) share one screen with no `navigate()` hop. Commit the tree through
+  `core.space.setLayout`; it refuses a container the caller cannot read (CONTRACTS.md §Workspace
+  layout).
 - **`seats`** say where your panels ask to SIT in a workspace nobody has arranged yet. The
   engine composes that default from the enabled roster's seats — one row of leaves in `order`,
   `ratio` weighting each against its siblings — so there is no default-layout constant to edit

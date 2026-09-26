@@ -1424,8 +1424,9 @@ there is no dedicated implementation issue for S17-C, S17-D or S17-E.
   protocol-version change, not an unversioned reinterpretation of existing leaves.
   **Implemented today:** `TileRefSchema` in `packages/protocol/src/layout.ts` still enumerates
   terminal, container, element, panel and spacer forms; a panel carries `panelId`, not an address.
-  `spaceHandlers.setLayout` accepts only panel, spacer and vacant workspace leaves and names a
-  refusal for other kinds. Gate **R4 workspace panel leaves** checks this current shape, and
+  `spaceHandlers.setLayout` accepts panel, spacer, vacant and readable container workspace leaves
+  (§Workspace layout, issue #201) and names a refusal for terminal and element leaves. Gate
+  **R4 workspace panel leaves** checks the panel-based default shape, and
   **S1 default workspace** checks that manifest-declared seats compose a valid tree whose panel
   leaves resolve. S17-B's manifest seeding has therefore landed as well as S17-A; neither is R3.
 - **ADR R4 — Viewport as seat → cursor: ratified, not yet implemented (S17-C, after R2/R3;
@@ -1802,20 +1803,44 @@ roster asking for nothing composes an empty-but-valid root leaf and reports the 
 `MAX_TILE_CHILDREN`. Only the DEFAULT is composed: a stored tree is read out of the store
 untouched, so toggling a plugin changes what the next unarranged principal sees and nobody's
 arrangement. Its
-leaves are `{ kind:"panel", panelId }` refs — the shell IS a composition, rendered by the
-same `TileTree` a composition container uses, so there is one tree vocabulary everywhere. The ONLY
-writer is
+leaves are `{ kind:"panel", panelId }` refs, spacers, vacant seats and `{ kind:"container",
+containerId }` refs — the shell IS a composition, rendered by the same `TileTree` a composition
+container uses, so there is one tree vocabulary everywhere. The ONLY writer is
 `core.space.setLayout { layout }` (self-targeted; the ladder already refuses container-scoped
-tokens), and
-its validation is STRUCTURAL ONLY: `validateTileLayout` plus "every leaf ref is a panel".
-Unknown or disabled panel ids are ACCEPTED — a disabled plugin must never brick layout writes —
-and those leaves render placeholders whose chrome offers a remove control that commits the pruned
-tree through the same action. A panel leaf may also carry `arg`, the opaque
-`Record<string, unknown>` naming what that tile is showing it for (ADR 0037): legal on a panel
-leaf and nowhere else, refused past `MAX_PANEL_ARG_BYTES` (4 KiB of JSON) or when it is not JSON
-data, absent ≡ none, delivered to the panel as `PanelProps.arg`, travelling with the panel when a
-seat moves, and written by the same one door — `host.openPanel` computes the tree and commits it
-through it, so an opening is an ordinary arrangement write.
+tokens). Its validation is STRUCTURAL for panels and spacers: `validateTileLayout` plus "every
+occupied leaf is a panel, a spacer or a container"; terminal and element leaves are refused
+(`workspace leaves hold panels or containers, not "<kind>"`), because an item lives in a container
+whose document owns its lifecycle. Unknown or disabled panel ids are ACCEPTED — a disabled plugin
+must never brick layout writes — and those leaves render placeholders whose chrome offers a remove
+control that commits the pruned tree through the same action. A panel leaf may also carry `arg`,
+the opaque `Record<string, unknown>` naming what that tile is showing it for (ADR 0037): legal on
+a panel leaf and nowhere else, refused past `MAX_PANEL_ARG_BYTES` (4 KiB of JSON) or when it is not
+JSON data, absent ≡ none, delivered to the panel as `PanelProps.arg`, travelling with the panel
+when a seat moves, and written by the same one door — `host.openPanel` computes the tree and
+commits it through it, so an opening is an ordinary arrangement write.
+
+**Container leaves (issue #201).** A workspace container leaf shows that canvas or composition
+inline, so a plugin panel and a live terminal tile tree are one addressable view with no
+`navigate()` hop; a plugin authors one by committing the tree through `core.space.setLayout` like
+any other arrangement. A NEWLY written container leaf must name a container that exists and that
+the caller holds `containers:read` AT — the question the room door asks before a socket may join.
+Either failure is the one refusal `workspace leaf names no readable container "<id>"`, so the door
+is no oracle for ids behind a denied read, and nothing is stored. A container leaf the caller's
+STORED tree already shows (same `containerId`) passes unchanged, for the panel rule's reason: a
+container deleted, or a read revoked, after it was seated must not make later divider drags
+unwritable. The browser mounts the leaf with the container's own discipline renderer through the
+projection registry (`ContainerRenderer`, as a composition leaf does), embedded at depth 2: the
+routed container view remains the one mount that publishes location and view state, owns the
+canvas viewport seam and answers Escape, while the inline container dials its own room so its
+terminals are live and take input. Its titlebar offers Open (navigate to the container) and Remove
+from the workspace (the pruned tree through the same door). A container the index no longer lists
+for this principal renders the engine placeholder in state `missing`, with the same remove
+control. A workspace leaf is a per-principal VIEW, not a reference in the containment graph: no
+container census counts it, so it keeps nothing alive, never makes an item placed, and placement
+neither repoints nor prunes it — a composition emptied by a departure still retires, and the leaf
+becomes that placeholder. `core.arrange` moves and nudges a container leaf like a panel seat;
+Shelf and Remove stay the panel and structure verbs, and the leaf's own titlebar Remove takes it
+out.
 
 An enablement never rewrites that stored tree. `core.plugins` instead compares enabled
 manifest-declared seats with the principal's current panel leaves. An absent→enabled live-roster
