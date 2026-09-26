@@ -482,6 +482,8 @@ export type AssemblyDelta = z.infer<typeof AssemblyDeltaSchema>;
  */
 export const IsolateDispatchCtxSchema = z.strictObject({
   traceId: z.number().int().positive(),
+  /** Host-derived immediate plugin caller for contract 8+; omitted entirely for older guests. */
+  callerPlugin: PluginIdSchema.nullable().optional(),
   principal: PrincipalSchema,
   caps: CapSchema.array(),
   isRoot: z.boolean(),
@@ -818,10 +820,12 @@ export const PLUGIN_BUNDLE_FORMAT = 1;
  *    Hosts retain contracts 1/2/3/4 and send only the guest's admitted load stamp.
  * 5 -> 6: Additive authenticated agent-run context and run-access declarations.
  * 6 -> 7: Additive harness metadata and correlated harness calls; profile validation has no ctx.
+ * 7 -> 8: Additive-optional `ctx.callerPlugin` names the immediate calling plugin or null for
+ *    non-plugin entry. Hosts omit it for older admitted guests, including strict contract-1 parsers.
  */
-export const HARDENED_CONTRACT_VERSION = 7;
+export const HARDENED_CONTRACT_VERSION = 8;
 export const HARDENED_CONTRACT_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  1, 2, 3, 4, 5, 6, 7,
+  1, 2, 3, 4, 5, 6, 7, 8,
 ]);
 export const HARDENED_CONTRACT_MINIMUM = Math.min(...HARDENED_CONTRACT_COMPAT_VERSIONS);
 

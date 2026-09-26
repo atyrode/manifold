@@ -231,7 +231,7 @@ describe("the isolate frames", () => {
       maxArrayItems: 4,
       maxResultBytes: 256,
     };
-    for (const contract of [1, 2, 3, 4, 5, 6, HARDENED_CONTRACT_VERSION]) {
+    for (const contract of [1, 2, 3, 4, 5, 6, 7, HARDENED_CONTRACT_VERSION]) {
       expect(HARDENED_CONTRACT_COMPAT_VERSIONS.has(contract)).toBe(true);
       expect(
         IsolateHostFrameSchema.safeParse({

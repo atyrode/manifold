@@ -101,6 +101,42 @@ test("only the seat holder mutates; observers read status and are cut on a mutat
   }
 });
 
+test("a full retained inventory refuses a new PTY without dropping any record", async () => {
+  const host = new TerminalHost();
+  // Synthetic retained records avoid launching 1,024 PTYs just to exercise admission.
+  const internals: unknown = host;
+  if (
+    internals === null ||
+    typeof internals !== "object" ||
+    !("terminals" in internals) ||
+    !(internals.terminals instanceof Map)
+  )
+    throw new Error("terminal host inventory unavailable");
+  const records = internals.terminals;
+  try {
+    const transport = openPeer(host);
+    transport.session.deliver({ type: "attach" });
+    for (let i = 0; i < 1024; i++) records.set(`retained-${i}`, {});
+    transport.session.deliver({
+      type: "create",
+      terminalId: "one-too-many",
+      cols: 80,
+      rows: 24,
+      env: {},
+    });
+    expect(transport.events.at(-1)).toEqual({
+      type: "create_error",
+      terminalId: "one-too-many",
+      message: "terminal inventory at capacity",
+    });
+    expect(host.terminalCount).toBe(1024);
+    expect(records.has("one-too-many")).toBe(false);
+  } finally {
+    records.clear();
+    await host.shutdown();
+  }
+});
+
 test("readiness follows creation and survives transport replacement in inventory", async () => {
   const host = new TerminalHost({
     shellCommand: [BASH, "--norc", "-c", "printf '\\033]777;ManifoldReady\\007'; read -r _"],

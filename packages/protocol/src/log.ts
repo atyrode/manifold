@@ -72,6 +72,7 @@ export const LOG_EVENTS = [
   "machine_drain_timeout",
   "machine_forgotten",
   "machine_hello_timeout",
+  "machine_job_refusal",
   "machine_liveness_timeout",
   "machine_malformed_frame",
   "machine_name_conflict",
@@ -155,6 +156,7 @@ export const LOG_EVENTS = [
   "liveness_timeout",
   "socket_backpressure",
   "protocol_version_rejected",
+  "terminal_inventory_refused",
 
   // Agent: inbound frame classification.
   "malformed_frame",
