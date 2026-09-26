@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { renameSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { canonicalJobJson, type JobDeploymentReview } from "@manifold/protocol";
 import { migrateToGrantRows } from "./migrate-grants.ts";
@@ -1097,4 +1098,177 @@ export function openDatabase(path: string): Database {
     }
   }
   return db;
+}
+
+/*
+  THE SINGLE-WRITER FENCE (#318). Exactly one hub process writes a data directory at a time,
+  and a cutover HANDS authority from one process to the next instead of letting two overlap.
+  Two mechanisms, because there are two questions:
+
+  - THE LOCK answers "who may write now". `<data>/manifold.writer` is a tiny SQLite file held in
+    EXCLUSIVE locking mode for the writer's whole life, taken before the database is opened and
+    released only after it is closed. The kernel's advisory lock is the fence: a successor
+    started early, a stray restart or a second container mounting the SAME local volume cannot
+    take it until the holder closes it or dies, and death releases it with no cleanup, so there
+    is never a stale lock to adjudicate. SQLite rather than a pid file, because a pid means
+    nothing across the container PID namespaces that share one volume during a switch. Its reach
+    is exactly SQLite's locking: processes on one local filesystem. It fences nothing on another
+    disk (a replacement container restoring a replica) and is unreliable on network filesystems.
+
+  - THE EPOCH records "which writer last wrote this history, and did it hand over". Each writer
+    claims `<n+1>:active` after its migrations and SEALS `<n>:sealed` as its final commit once it
+    has quiesced. An `active` record is a definite finding: the history was left mid-epoch — a
+    crash, a SIGKILL, or a replica restored from before that writer's last commits. A `sealed`
+    record is only history: it says epoch n ended cleanly, NOT that no later epoch exists. A
+    replica restored from before a later writer's never-uploaded commits reads exactly like a
+    clean handover, and nothing in this database can tell the difference; that takes an
+    expected epoch established outside it.
+
+  Sealing also switches the connection to `query_only`, so a straggling timer or handler in the
+  retiring process fails loudly instead of committing behind its successor's back.
+*/
+
+/** The lock file beside `manifold.db`; its content is irrelevant, its lock is the fence. */
+export const WRITER_LOCK_FILE = "manifold.writer";
+const WRITER_LOCK_POLL_MS = 10;
+const WRITER_EPOCH_KEY = "writer-epoch";
+const WRITER_EPOCH_VALUE = /^([1-9][0-9]{0,14}):(active|sealed)$/;
+
+/** A starting hub gave up waiting for the process that still holds the data directory. */
+export class WriterLockTimeoutError extends Error {
+  constructor(readonly waitedMs: number) {
+    super(`another hub still holds this data directory's writer lock after ${waitedMs}ms`);
+    this.name = "WriterLockTimeoutError";
+  }
+}
+
+/** The durable writer record contradicts the process that holds the lock. */
+export class WriterFenceError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "WriterFenceError";
+  }
+}
+
+/** Held for the writer's whole life; releasing it is what lets a successor claim. */
+export interface WriterLock {
+  release(): void;
+}
+
+export interface WriterLockOptions {
+  /** Longest a starting hub waits for its predecessor to release the directory. */
+  readonly waitMs: number;
+  /** Called once, the first time the lock is found held, so the wait is never silent. */
+  readonly onWait?: () => void;
+}
+
+function tryWriterLock(path: string): Database | null {
+  const lock = new Database(path, { create: true, strict: true });
+  try {
+    lock.exec("PRAGMA busy_timeout = 0");
+    lock.exec("PRAGMA locking_mode = EXCLUSIVE");
+    // Exclusive locking mode keeps the lock the first WRITE takes until the connection closes.
+    lock.exec("BEGIN EXCLUSIVE");
+    lock.exec("CREATE TABLE IF NOT EXISTS lock(taken_at INTEGER NOT NULL)");
+    lock.exec("DELETE FROM lock");
+    lock.query<void, [number]>("INSERT INTO lock(taken_at) VALUES (?)").run(Date.now());
+    lock.exec("COMMIT");
+    return lock;
+  } catch (error) {
+    lock.close();
+    if (error instanceof Error && "code" in error && error.code === "SQLITE_BUSY") return null;
+    throw error;
+  }
+}
+
+/**
+ * Takes `<dataDir>/manifold.writer`, polling while another process holds it. Polling rather
+ * than SQLite's busy handler, whose back-off sleeps up to 100ms between attempts: the wait sits
+ * inside a cutover's unavailability window, so the successor must notice the release promptly.
+ */
+export async function acquireWriterLock(
+  dataDir: string,
+  options: WriterLockOptions,
+): Promise<WriterLock> {
+  const path = join(dataDir, WRITER_LOCK_FILE);
+  const started = performance.now();
+  let announced = false;
+  for (;;) {
+    const lock = tryWriterLock(path);
+    if (lock !== null) {
+      let held = true;
+      return {
+        release(): void {
+          if (!held) return;
+          held = false;
+          lock.close();
+        },
+      };
+    }
+    const waited = performance.now() - started;
+    if (waited >= options.waitMs) throw new WriterLockTimeoutError(Math.round(waited));
+    if (!announced) {
+      announced = true;
+      options.onWait?.();
+    }
+    await Bun.sleep(WRITER_LOCK_POLL_MS);
+  }
+}
+
+/** The last writer epoch this history records, and whether that writer sealed it. */
+export interface WriterRecord {
+  readonly epoch: number;
+  readonly sealed: boolean;
+}
+
+export interface WriterClaim {
+  readonly epoch: number;
+  /** Null for history no fenced hub has written yet (a new database or an unfenced build's). */
+  readonly previous: WriterRecord | null;
+}
+
+function readWriterEpoch(db: Database): WriterRecord | null {
+  const row = db
+    .query<VersionRow, [string]>("SELECT value FROM meta WHERE key = ?")
+    .get(WRITER_EPOCH_KEY);
+  if (row === null) return null;
+  const parsed = WRITER_EPOCH_VALUE.exec(row.value);
+  if (parsed === null) throw new WriterFenceError("the writer epoch record is malformed");
+  return { epoch: Number(parsed[1]), sealed: parsed[2] === "sealed" };
+}
+
+function writeWriterEpoch(db: Database, epoch: number, state: "active" | "sealed"): void {
+  db.query<void, [string, string]>("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)").run(
+    WRITER_EPOCH_KEY,
+    `${epoch}:${state}`,
+  );
+}
+
+/** Records this process as the next writer. Call with the writer lock held, after migrations. */
+export function claimWriterEpoch(db: Database): WriterClaim {
+  return db
+    .transaction((): WriterClaim => {
+      const previous = readWriterEpoch(db);
+      const epoch = (previous?.epoch ?? 0) + 1;
+      writeWriterEpoch(db, epoch, "active");
+      return { epoch, previous };
+    })
+    .immediate();
+}
+
+/**
+ * The retiring writer's final commit: marks its epoch sealed, then refuses every later write
+ * on this connection. Refuses to seal an epoch that is not this process's active one.
+ */
+export function sealWriterEpoch(db: Database, epoch: number): void {
+  db.transaction(() => {
+    const current = readWriterEpoch(db);
+    if (current === null || current.epoch !== epoch || current.sealed) {
+      const recorded =
+        current === null ? "absent" : `${current.epoch}:${current.sealed ? "sealed" : "active"}`;
+      throw new WriterFenceError(`cannot seal writer epoch ${epoch}: the record is ${recorded}`);
+    }
+    writeWriterEpoch(db, epoch, "sealed");
+  }).immediate();
+  db.exec("PRAGMA query_only = ON");
 }

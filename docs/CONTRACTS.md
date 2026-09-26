@@ -4726,6 +4726,35 @@ synchronization makes the plugin-image journal durable before filesystem activat
 `packages/server/src/db.ts` remains the authoritative migration source; the handwritten
 inventory below records selected durable fields rather than acting as a second runner.
 
+**One writer per data directory** ([#318](https://github.com/atyrode/manifold/issues/318)). Before
+opening `manifold.db` the server takes `<data>/manifold.writer`, a SQLite file held in exclusive
+locking mode for the process's lifetime; the kernel releases it on close or death, so there is no
+stale lock to judge. A starting server waits up to 30 seconds for it (`writer_waiting`), polling
+every 10ms, then fails to start. The lock fences only processes that open the same data directory
+on one local filesystem with working POSIX advisory locks, which SQLite's locking relies on. It does
+not fence a second container with its own volume, an instance on another host, or a replacement
+that restores the replica onto a new disk, and it is not reliable on network filesystems.
+
+After migrations the server claims the next writer epoch in `meta.writer-epoch` (`<n>:active`) and
+logs `writer_claimed` with `epoch`, `previousEpoch` and `previousState`: the last epoch this
+history records and whether its writer sealed it (`sealed`, `active` or `null`). `active` is logged
+at `warn`: this history was left mid-epoch by a crash or kill, or it is a replica restored from before
+that writer's last commits, and those commits may be absent. `sealed` records only that epoch
+`previousEpoch` ended cleanly. It is not evidence that the opened history is the newest: a replica
+restored from before a later writer's unuploaded commits reads exactly the same. The server has no
+expected epoch to compare against and does not refuse on either state.
+
+A graceful stop (`RunningServer.stop`, SIGTERM/SIGINT) quiesces in this order. Every new request and
+WebSocket upgrade except `GET /healthz` is answered `503` with `Retry-After: 1`, under the same
+CORS policy as other API answers, with `Retry-After` exposed; an API preflight still answers 204.
+Session, machine and instance sockets close with 1001. Admitted HTTP requests and action dispatches
+get up to three seconds to settle and produced responses to finish writing. Scenes flush; the HTTP
+server, isolates and plugin databases close; the epoch is sealed (`<n>:sealed`) as the final
+commit, after which the connection is `query_only`; `writer_sealed` records `settled` and
+`quiesceMs`; the database closes and the lock is released last. Work cut off at the deadline is
+never acknowledged. Builds older than this contract neither take the lock nor record an epoch.
+They ignore the `writer-epoch` row.
+
 ```
 containers(id TEXT PK, name TEXT, created_at INTEGER, sort_order INTEGER, folder_id TEXT,
      discipline TEXT NOT NULL DEFAULT 'canvas')        -- canvas | composition
@@ -4934,7 +4963,8 @@ meta(key TEXT PK, value TEXT)                         -- schema_version, plugins
                                                       -- workspace-setting:<ref>,
                                                       -- native_local_machine_id,
                                                       -- jobs:signing-key,
-                                                      -- agent-runs:declarations-after-event-id
+                                                      -- agent-runs:declarations-after-event-id,
+                                                      -- writer-epoch (<n>:active|<n>:sealed)
 ```
 
 An object-store replica of `manifold.db` is a sensitive, authority-bearing backup. It contains

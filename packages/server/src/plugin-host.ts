@@ -2397,6 +2397,16 @@ export class PluginHost {
     };
   }
 
+  /**
+   * Resolves once every dispatch already in flight has settled, across all plugins — the
+   * quiesce step of a graceful stop (#318), so a handler that started before admission closed
+   * commits before the writer seals. The caller bounds the wait: a dispatch that outlives it
+   * meets a sealed database and fails instead of committing behind the successor.
+   */
+  async settleDispatches(): Promise<void> {
+    await Promise.all([...this.activeDispatches.values()].flatMap((pending) => [...pending]));
+  }
+
   private async drainDispatches(pluginId: string): Promise<void> {
     const pending = this.activeDispatches.get(pluginId);
     if (pending === undefined || pending.size === 0) return;

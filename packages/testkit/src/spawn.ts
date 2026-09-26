@@ -96,6 +96,8 @@ export interface StartServerOptions {
   readonly ownerKey?: string;
   readonly spawnAgent?: boolean;
   readonly env?: Readonly<Record<string, string>>;
+  /** Sees every stdout line as it arrives, including before readiness (a successor's wait). */
+  readonly onStdout?: (line: string) => void;
 }
 
 /** Agent startup options deliberately take the pre-authenticated ready URL for readiness polling. */
@@ -467,6 +469,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Tes
   const { promise: ready, resolve, reject } = Promise.withResolvers<ReadyInfo>();
   let settled = false;
   const observed = observeProcess(["bun", "packages/server/src/main.ts"], env, (line) => {
+    options.onStdout?.(line);
     if (settled) return;
     try {
       const info = parseReadyLine(line);
