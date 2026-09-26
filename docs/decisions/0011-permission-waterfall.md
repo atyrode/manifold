@@ -585,3 +585,33 @@ replacement. Compare their preservation of waterfall precedence, credential atte
 revocation, and measure permission-check latency against the in-process path at the target grant
 count and topology. These are candidates to watch, not dependencies adopted, and meeting a trigger
 opens an evaluation rather than authorizing a migration.
+
+## Addendum 2026-09-22
+
+**Root-class authority is asked live, and the owner KEY — not the owner principal — is
+undeniable.** This records the operator decision on
+[#411](https://github.com/atyrode/manifold/issues/411). It amends §3 (`isRoot` "cap-derived and
+unchanged"), §5's narrow consequence (deny rows cannot narrow a credential acting as the owner
+principal) and the matching confirmation in §8.
+
+- Any effective administered deny within a minted wildcard credential's reach withdraws its
+  root-class authority — declared-`*` doors and root-only service verbs — until the deny is
+  removed, including minted bearers on the owner principal. _Effective_ means the row decides an
+  engine capability for that credential somewhere: it is asked at its node, and beneath it for a
+  `subtree` row. A deny outranked everywhere it applies, or naming only plugin capabilities that
+  `*` never reached, withdraws nothing.
+- The answer is `AuthService.holdsRoot(context)`, evaluated per request and memoized under the
+  grant epoch like every other verdict. `AuthContext` no longer carries a root flag, so an
+  already-open socket is re-evaluated at its next request rather than keeping the class it
+  authenticated with.
+- The evaluator drops deny rows only for the raw owner key (no token, no row, the owner
+  principal). A token minted onto the owner principal is narrowed by class denies like any other
+  bearer. The owner key remains ADR 0019 §1's non-deniable break-glass path and can always remove
+  the deny.
+- Unchanged: `grant` still refuses a principal-specific deny naming the owner, who may author a
+  deny remains §8's deferred question, and concrete capabilities are still the waterfall's alone.
+
+The consequence is chosen, not incidental: one container's deny removes workspace administration
+from every minted wildcard it reaches. Treating root-class authority as a separate permission
+withdrawn only by a root `*` deny was rejected, because a partial deny would then be no fence
+against the administration that could step around or retire it.
