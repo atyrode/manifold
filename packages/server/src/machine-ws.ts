@@ -26,7 +26,7 @@ import type { JobService } from "./job-service.ts";
 type ClassifiedFrame =
   | { kind: "message"; message: AgentMessage }
   | { kind: "unknown_type"; frameType: string }
-  | { kind: "malformed"; detail: string };
+  | { kind: "malformed"; detail: string; closeReason?: string };
 
 const KNOWN_AGENT_TYPES: Readonly<Record<string, true>> = Object.fromEntries(
   AGENT_MESSAGE_TYPES.map((type): [string, true] => [type, true]),
@@ -130,7 +130,20 @@ function classifyAgentFrame(data: unknown): ClassifiedFrame {
     return { kind: "unknown_type", frameType };
   }
   const parsed = AgentMessageSchema.safeParse(raw);
-  if (!parsed.success) return { kind: "malformed", detail: `invalid ${frameType} frame` };
+  if (!parsed.success) {
+    // An array-level `terminals` issue is the hello inventory bound or a duplicate id: name it
+    // in the close so the spoke's log says which, rather than an opaque malformed frame.
+    const inventory = parsed.error.issues.find(
+      (issue) =>
+        issue.path.length === 1 &&
+        issue.path[0] === "terminals" &&
+        (issue.code === "too_big" || issue.code === "custom"),
+    );
+    if (inventory !== undefined) {
+      return { kind: "malformed", detail: inventory.message, closeReason: inventory.message };
+    }
+    return { kind: "malformed", detail: `invalid ${frameType} frame` };
+  }
   return { kind: "message", message: parsed.data };
 }
 
@@ -279,7 +292,7 @@ export class MachineGateway {
         return;
       case "malformed":
         this.logger.warn("machine_malformed_frame", { detail: classified.detail });
-        connection.socket.close(4002, "malformed agent frame");
+        connection.socket.close(4002, classified.closeReason ?? "malformed agent frame");
         return;
       case "message":
         if (connection.channel === null) {

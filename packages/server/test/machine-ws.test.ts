@@ -871,6 +871,77 @@ describe("machine admission and terminal continuity", () => {
     };
   }
 
+  test("any compatible transport may advertise 1,024 terminals; 1,025 or a duplicate id is refused before effects", () => {
+    const fix = fixture("f".repeat(64), ["durable"], "retained-host");
+    let authentications = 0;
+    let lookups = 0;
+    let runningReads = 0;
+    const authenticate = fix.auth.authenticateMachine.bind(fix.auth);
+    const getTerminal = fix.store.getTerminal.bind(fix.store);
+    const listRunning = fix.store.listRunningTerminalsForMachine.bind(fix.store);
+    fix.auth.authenticateMachine = (...args) => {
+      authentications++;
+      return authenticate(...args);
+    };
+    fix.store.getTerminal = (...args) => {
+      lookups++;
+      return getTerminal(...args);
+    };
+    fix.store.listRunningTerminalsForMachine = (...args) => {
+      runningReads++;
+      return listRunning(...args);
+    };
+    const ids = ["durable", ...Array.from({ length: 1023 }, (_, i) => `unknown-${i}`)];
+    try {
+      // The oldest accepted transport: the bound narrows admission, not the compatibility set.
+      const accepted = fix.hello("accepted", {
+        protocolVersion: 30,
+        terminalHostId: "retained-host",
+        alive: ids,
+      });
+      expect(accepted.closed).toBeNull();
+      expect(machineMessages(accepted)[0]?.type).toBe("welcome");
+      expect(machineMessages(accepted).filter((frame) => frame.type === "kill")).toHaveLength(1023);
+      expect(authentications).toBe(1);
+      expect(lookups).toBe(1024);
+      expect(fix.status("durable")).toBe("running");
+
+      for (const protocolVersion of [30, PROTOCOL_VERSION]) {
+        for (const [name, alive, reason] of [
+          ["excess", [...ids, "unknown-1023"], "terminal inventory exceeds 1024 entries"],
+          ["duplicate", ["durable", "durable"], "duplicate terminal id in hello inventory"],
+          [
+            "duplicate-4096",
+            Array(4096).fill("unknown"),
+            "terminal inventory exceeds 1024 entries",
+          ],
+        ] as const) {
+          authentications = 0;
+          runningReads = 0;
+          lookups = 0;
+          const socket = fix.hello(`${name}-${protocolVersion}`, {
+            protocolVersion,
+            terminalHostId: "retained-host",
+            alive,
+          });
+          expect(socket.closed).toEqual({ code: 4002, reason });
+          expect(machineMessages(socket)).toEqual([]);
+          expect({ authentications, runningReads, lookups }).toEqual({
+            authentications: 0,
+            runningReads: 0,
+            lookups: 0,
+          });
+          expect(fix.gateway.isOnline(fix.machineId)).toBe(true);
+        }
+      }
+      expect(fix.status("durable")).toBe("running");
+      expect(machineMessages(accepted).filter((frame) => frame.type === "kill")).toHaveLength(1023);
+    } finally {
+      fix.gateway.shutdown();
+      fix.store.close();
+    }
+  });
+
   test("pre-cutover transports cannot advertise ownership or adopt durable terminals", () => {
     const fix = fixture("9".repeat(64), ["t1"]);
     const jobs = new JobService(fix.store, fix.auth, fix.runtime);
