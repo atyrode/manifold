@@ -1,4 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
+import { z } from "zod";
 import {
   AgentSchema,
   AgentGrantSchema,
@@ -231,6 +232,53 @@ export interface AuthContext {
   agentRunId?: string | undefined;
   /** A runner credential admits runs for exactly this Agent and cannot invoke ordinary doors. */
   agentRunnerId?: string | undefined;
+  /**
+   * CONTAINER AUTHORITY CARRIED BY BACKGROUND WORK (ADR 0051). Absent on every credential a
+   * client authenticates, and absent means exactly what it always meant. Present only on the
+   * native bridge of a dispatch and on the job and schedule credentials restored from it: each
+   * grant's caps are held ONLY at and beneath its container — never in `caps`, never at the
+   * root — and a present list, even an empty one, marks work whose lineage was confined, which
+   * is never root-class.
+   */
+  containerGrants?: readonly ContainerGrant[] | undefined;
+}
+
+/**
+ * The engine capabilities a governed door may hand to the work it starts, bound to the ONE
+ * container its requirement names (ADR 0051). Container authority only: `delegates` stay
+ * native-only and every other cap keeps the flat ceiling ADR 0041 §2 describes.
+ */
+export const CONTAINER_GRANT_CAPS = [
+  "containers:read",
+  "containers:write",
+] as const satisfies readonly Cap[];
+export type ContainerGrantCap = (typeof CONTAINER_GRANT_CAPS)[number];
+export function isContainerGrantCap(cap: AuthoredCap): cap is ContainerGrantCap {
+  return (CONTAINER_GRANT_CAPS as readonly string[]).includes(cap);
+}
+/** Caps a credential holds only at and beneath `manifold://container/<containerId>`. */
+export interface ContainerGrant {
+  readonly containerId: string;
+  readonly caps: readonly ContainerGrantCap[];
+}
+/** The persisted form, parsed wherever a job or schedule row is read back. */
+export const ContainerGrantsSchema = z
+  .array(
+    z.strictObject({
+      containerId: z.string().min(1).max(128),
+      caps: z
+        .array(z.enum(CONTAINER_GRANT_CAPS))
+        .min(1)
+        .max(CONTAINER_GRANT_CAPS.length)
+        .refine((caps) => new Set(caps).size === caps.length),
+    }),
+  )
+  .max(64);
+
+function withinContainer(node: string, containerId: string): boolean {
+  return (
+    containmentPath(node)?.includes(formatManifoldUri({ kind: "container", containerId })) === true
+  );
 }
 
 export interface NativeRunAuthority {
@@ -248,7 +296,13 @@ function contextContainsNode(context: AuthContext, node: string): boolean {
   );
 }
 
-/** Non-secret lineage; never reconstruct delayed authority from a principal alone. */
+/**
+ * Non-secret lineage; never reconstruct delayed authority from a principal alone.
+ *
+ * It is also the `credential` of a signed job request, which a machine's owner parses strictly,
+ * so carried container authority (ADR 0051) never rides inside it: it is persisted beside the
+ * reference by the hub and handed back to {@link AuthService.restoreCredential} explicitly.
+ */
 export type CredentialReference = Readonly<
   Pick<AuthContext, "tokenId" | "grantId" | "caps" | "containerScope" | "expiresAt"> & {
     principalId: string;
@@ -279,6 +333,8 @@ export interface GovernedAdmissionRequest {
   readonly pluginId: string;
   readonly action: string;
   readonly evidence: readonly AuthorityEvidence[];
+  /** The container authority the admitting credential carries, if any (ADR 0051). */
+  readonly containerGrants?: readonly ContainerGrant[] | undefined;
 }
 export type GovernedAdmissionDecision =
   | { readonly allowed: false }
@@ -810,6 +866,9 @@ export class AuthService {
    * write, revocation and pause bumps; expiry is time, so it is asked on every call.
    */
   holdsRoot(context: AuthContext): boolean {
+    // Work whose lineage carries container authority was bounded to containers; root is the
+    // workspace, so neither the owner key nor a `*` token lends root through it (ADR 0051).
+    if (context.containerGrants !== undefined) return false;
     if (context.tokenId === null) return this.isOwnerKey(context);
     const cached = this.authorityFor(context);
     cached.root ??= this.wildcardUnattenuated(context);
@@ -907,8 +966,30 @@ export class AuthService {
    * workspace cannot address has named nothing, and "you may do nothing at nowhere" is the only
    * safe answer; refusing loudly would turn a malformed address into a 500 at a door whose job
    * is to answer yes or no.
+   *
+   * CARRIED CONTAINER AUTHORITY IS CONFINED HERE (ADR 0051), after the waterfall and never in
+   * its cache: a capability a credential carries only in `containerGrants` is answered at and
+   * beneath its containers and removed everywhere else, the root included. The waterfall still
+   * decides at the container, so a revocation, expiry, pause or deny there ends the carried
+   * authority exactly as it ends the presser's own. A credential carrying nothing is untouched.
    */
   effectiveCaps(context: AuthContext, node: string): ReadonlySet<AskableCap> {
+    const answer = this.evaluatedCaps(context, node);
+    const grants = context.containerGrants;
+    if (grants === undefined) return answer;
+    let confined: Set<AskableCap> | null = null;
+    for (const cap of CONTAINER_GRANT_CAPS) {
+      if (!answer.has(cap) || hasCap(context.caps, cap)) continue;
+      const carried = grants.filter((grant) => grant.caps.includes(cap));
+      if (carried.length === 0 || carried.some((grant) => withinContainer(node, grant.containerId)))
+        continue;
+      confined ??= new Set(answer);
+      confined.delete(cap);
+    }
+    return confined ?? answer;
+  }
+
+  private evaluatedCaps(context: AuthContext, node: string): ReadonlySet<AskableCap> {
     if (
       context.principal.id !== this.ownerPrincipal.id &&
       this.pausedPrincipals.has(context.principal.id)
@@ -1031,6 +1112,52 @@ export class AuthService {
     return this.effectiveCaps(context, node).has(cap);
   }
 
+  /**
+   * Whether the credential's CEILING admits `cap` at `ref` (ADR 0051): its flat caps, or a
+   * container grant it carries for the container `ref` lies in. The ceiling half only — what
+   * the grant rows say at that node is the evaluator's question, asked separately.
+   */
+  ceilingAdmits(context: AuthContext, cap: AskableCap, ref: ManifoldRef): boolean {
+    if (hasCap(context.caps, cap)) return true;
+    if (!isContainerGrantCap(cap) || context.containerGrants === undefined) return false;
+    const node = formatManifoldUri(ref);
+    return context.containerGrants.some(
+      (grant) => grant.caps.includes(cap) && withinContainer(node, grant.containerId),
+    );
+  }
+
+  /**
+   * What a handler reads as `ctx.auth.caps`: the flat ceiling plus every cap the credential
+   * carries bound to a container (ADR 0051). The list says a cap is HELD; only `allows` with a
+   * node says where, and for a carried cap the answer is its container alone.
+   */
+  ceilingCaps(context: AuthContext): readonly Cap[] {
+    const grants = context.containerGrants;
+    if (grants === undefined || grants.length === 0) return context.caps;
+    return [...new Set([...context.caps, ...grants.flatMap((grant) => grant.caps)])];
+  }
+
+  /**
+   * The containers where a CONTAINER-GRADED door's flat caps are held through carried container
+   * authority (ADR 0051), for the ladder to confine the dispatch to. Null when no cap rests on a
+   * carried grant — every credential that carries nothing, and every cap held at the
+   * credential's own anchor — which is the answer the door always had. Empty when the carried
+   * caps name no container in common, so no single container holds the door's authority.
+   */
+  carriedScope(context: AuthContext, caps: readonly AuthoredCap[]): readonly string[] | null {
+    const grants = context.containerGrants;
+    if (grants === undefined) return null;
+    let scope: string[] | null = null;
+    for (const cap of caps) {
+      if (!isContainerGrantCap(cap) || this.allows(context, cap)) continue;
+      const held = grants
+        .filter((grant) => grant.caps.includes(cap) && this.allows(context, cap, grant.containerId))
+        .map((grant) => grant.containerId);
+      scope = scope === null ? held : scope.filter((containerId) => held.includes(containerId));
+    }
+    return scope;
+  }
+
   credentialReference(context: AuthContext): CredentialReference {
     return {
       principalId: context.principal.id,
@@ -1042,8 +1169,25 @@ export class AuthService {
     };
   }
 
-  /** Reconstruct delayed authority from its original credential, never its principal alone. */
-  restoreCredential(reference: CredentialReference): AuthContext | null {
+  /**
+   * Reconstruct delayed authority from its original credential, never its principal alone.
+   *
+   * `containerGrants` is the container authority a lineage carries BESIDE its reference
+   * (ADR 0051), held to the reference's own rule: never wider than the token it rides. A
+   * malformed list, a grant naming a cap the reference already carries flat, or one the token
+   * does not carry restores nothing at all rather than a narrowed guess. Where the grant is
+   * exercised is the evaluator's question, asked live at the container (`effectiveCaps`).
+   * Omitted, the answer is exactly what it always was.
+   */
+  restoreCredential(
+    reference: CredentialReference,
+    containerGrants?: readonly ContainerGrant[] | undefined,
+  ): AuthContext | null {
+    const grants =
+      containerGrants === undefined ? undefined : ContainerGrantsSchema.safeParse(containerGrants);
+    if (grants?.success === false) return null;
+    const carried = grants?.data.flatMap((grant) => grant.caps) ?? [];
+    if (carried.some((cap) => hasCap(reference.caps, cap))) return null;
     const principal = this.store.getPrincipal(reference.principalId);
     if (!principal) return null;
     if (reference.expiresAt !== undefined && reference.expiresAt <= this.runtime.now()) return null;
@@ -1056,7 +1200,8 @@ export class AuthService {
         token.grantId !== reference.grantId ||
         token.containerId !== reference.containerScope ||
         (token.expiresAt !== null && token.expiresAt <= this.runtime.now()) ||
-        reference.caps.some((c) => !token.caps.includes(c) && !token.caps.includes("*"))
+        reference.caps.some((c) => !token.caps.includes(c) && !token.caps.includes("*")) ||
+        carried.some((c) => !token.caps.includes(c) && !token.caps.includes("*"))
       )
         return null;
     } else if (reference.principalId !== this.ownerPrincipal.id) return null;
@@ -1067,6 +1212,7 @@ export class AuthService {
       tokenId: reference.tokenId,
       grantId: reference.grantId,
       ...(reference.expiresAt === undefined ? {} : { expiresAt: reference.expiresAt }),
+      ...(grants === undefined ? {} : { containerGrants: grants.data }),
       ...(reference.tokenId === null || principal.kind !== "agent"
         ? {}
         : (() => {
@@ -1251,7 +1397,8 @@ export class AuthService {
       )
         return { allowed: false };
     } else if (context.principal.id !== this.ownerPrincipal.id) return { allowed: false };
-    if (requirements.some(({ cap }) => !hasCap(context.caps, cap))) return { allowed: false };
+    if (requirements.some(({ cap, ref }) => !this.ceilingAdmits(context, cap, ref)))
+      return { allowed: false };
     if (
       requirements.length === 0 ||
       !requirements.some((requirement) => GOVERNED_CAPS.includes(requirement.cap))
@@ -1265,6 +1412,9 @@ export class AuthService {
         pluginId,
         action,
         evidence,
+        ...(context.containerGrants === undefined
+          ? {}
+          : { containerGrants: context.containerGrants }),
       }) ?? { allowed: false }
     );
   }

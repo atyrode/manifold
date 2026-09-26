@@ -9,7 +9,7 @@ import { JOB_SCHEDULE_SCHEMA_SQL } from "./job-schedules.ts";
 import { migrateToDurableAgents } from "./migrate-agents.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 46;
+export const SCHEMA_VERSION = 47;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
@@ -1002,6 +1002,23 @@ INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','45');
 ALTER TABLE terminals ADD COLUMN exit_reason TEXT;
 INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','46');
 `,
+  /**
+   * The container authority a job's posting lineage carried (ADR 0051), kept BESIDE the signed
+   * request because a machine's owner parses the request's credential strictly. Nullable, and
+   * NULL is every existing row: it restores exactly the credential it always did.
+   */
+  47: {
+    backup: false,
+    apply(db) {
+      const columns = db
+        .query<{ name: string }, []>("PRAGMA table_info(machine_jobs)")
+        .all()
+        .map((column) => column.name);
+      if (columns.length > 0 && !columns.includes("container_grants"))
+        db.exec("ALTER TABLE machine_jobs ADD COLUMN container_grants TEXT;");
+      db.exec("INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','47')");
+    },
+  },
 };
 
 interface TableRow {
