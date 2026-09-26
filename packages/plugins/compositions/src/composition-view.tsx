@@ -180,6 +180,7 @@ export function CompositionView({
   soloOccupants = NO_SOLO_OCCUPANTS,
   navigate,
   depth = 1,
+  routed = depth === 1,
   projectionScope,
   frame = "window",
   titlebarDragProps,
@@ -226,21 +227,21 @@ export function CompositionView({
       projectionScope !== undefined
         ? projectionScope
         : (inheritedScope ??
-          (depth === 1
+          (routed
             ? {
                 host,
                 client,
                 locationPath: [{ kind: "container", containerId }],
               }
             : null)),
-    [projectionScope, inheritedScope, depth, host, client, containerId],
+    [projectionScope, inheritedScope, routed, host, client, containerId],
   );
   const publishHere = usePublishLocation(scope);
   useEffect(() => {
-    if (depth !== 1) return;
+    if (!routed) return;
     publishHere();
     return () => publishLocation(null);
-  }, [depth, publishHere]);
+  }, [routed, publishHere]);
   const registerRoomPipe = useRoomPipeRegistration();
   useEffect(() => registerRoomPipe(containerId, client), [registerRoomPipe, containerId, client]);
   const [status, setStatus] = useState<ConnectionStatus>("idle");
@@ -289,7 +290,7 @@ export function CompositionView({
    * per device, and the socket that speaks for it is whichever route is mounted.
    */
   useEffect(() => {
-    if (depth !== 1) return;
+    if (!routed) return;
     const send = (): void => client.sendPresence({ vantage: currentVantage() });
     const offVantage = subscribeVantage(send);
     const offStatus = client.on("status", (status) => {
@@ -300,7 +301,7 @@ export function CompositionView({
       offVantage();
       offStatus();
     };
-  }, [client, depth]);
+  }, [client, routed]);
 
   useEffect(() => {
     // The tree is small and read whole: subscribers re-read rather than diff tile ids.
@@ -384,7 +385,7 @@ export function CompositionView({
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
-      if (depth !== 1) return;
+      if (!routed) return;
       if (event.key !== "Escape" || event.defaultPrevented) return;
       // Escape belongs to whatever shell has focus inside a tile — vim would be
       // unusable otherwise. It only shrinks the view from the view's own chrome.
@@ -394,7 +395,7 @@ export function CompositionView({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [depth, shrink]);
+  }, [routed, shrink]);
 
   /**
    * The machine a terminal in a composition is running on, straight off the inventory. The dot's colour
@@ -1228,11 +1229,11 @@ export function CompositionView({
               <span className={`composition-status is-${status}`}>{status}</span>
             </>
           }
-          onMaximize={depth === 1 ? shrink : undefined}
+          onMaximize={routed ? shrink : undefined}
           maximizeControl="shrink"
           maximizeLabel="Shrink view"
           maximizeTooltip="Leave this view (Esc)"
-          onClose={depth === 1 ? removeView : undefined}
+          onClose={routed ? removeView : undefined}
           closeLabel={`Delete view ${containerName ?? containerId}`}
           closeTooltip="Delete this view for everyone"
         />

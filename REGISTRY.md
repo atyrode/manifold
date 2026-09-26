@@ -436,7 +436,7 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     },
     {
       "glob": "packages/web/src/workspace.tsx",
-      "why": "the workspace host: fetches the per-principal layout, renders its panel leaves through TileTree, and publishes the live tree (its layout plus its own DOM root) as the tile-geometry read surface core.arrange reads (issue #89) — the frame owns no grip, no gesture and no arrange chrome beyond the `.is-arranging` state class that blanks its own tile content hosts while the plugin's overlay is armed"
+      "why": "the workspace host: fetches the per-principal layout, renders its panel leaves and inline container leaves (issue #201) through TileTree, and publishes the live tree (its layout plus its own DOM root) as the tile-geometry read surface core.arrange reads (issue #89) — the frame owns no grip, no gesture and no arrange chrome beyond the `.is-arranging` state class that blanks its own tile content hosts while the plugin's overlay is armed"
     },
     {
       "glob": "packages/web/src/notice.tsx",

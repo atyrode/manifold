@@ -106,13 +106,16 @@ export function panelArrangeMessage(rule: PanelArrangeRule): string {
 
 const refuse = (rule: PanelArrangeRule): PanelArrangeOutcome => ({ ok: false, rule });
 
-/** The panel a leaf shows, or null when the leaf is a split, empty, or holds something else. */
-function panelRefAt(layout: TileLayout, tileId: string): TileRef | null {
+/**
+ * The VIEW a leaf seats — a panel, or a container the workspace mounts inline (issue #201) —
+ * or null when the leaf is a split, empty, or holds structure. A grip moves either kind the
+ * same way: `releasedTileLayout` moves a seat, whatever it shows.
+ */
+function seatRefAt(layout: TileLayout, tileId: string): TileRef | null {
   const tile = layout[tileId];
   if (tile === undefined || tile.dir !== null) return null;
   const ref = tile.ref;
-  if (ref === null || ref.kind !== "panel") return null;
-  return ref;
+  return ref?.kind === "panel" || ref?.kind === "container" ? ref : null;
 }
 
 /**
@@ -154,7 +157,7 @@ export function movedPanelLayout(
   movedTileId: string,
   aim: TileAim,
 ): PanelArrangeOutcome {
-  if (panelRefAt(layout, movedTileId) === null) return refuse("not_a_panel");
+  if (seatRefAt(layout, movedTileId) === null) return refuse("not_a_panel");
   if (!panelsCanMove(layout)) return refuse("panel_alone");
   if (aim.tileId === movedTileId) return refuse("aim_unchanged");
   return settled(releasedTileLayout(layout, { kind: "seat", tileId: movedTileId }, aim));
@@ -198,7 +201,7 @@ export function nudgedPanelLayout(
   movedTileId: string,
   direction: Exclude<TileEdge, "center">,
 ): PanelArrangeOutcome {
-  if (panelRefAt(layout, movedTileId) === null) return refuse("not_a_panel");
+  if (seatRefAt(layout, movedTileId) === null) return refuse("not_a_panel");
   if (!panelsCanMove(layout)) return refuse("panel_alone");
 
   const parentId = tileParentId(layout, movedTileId);
@@ -268,7 +271,7 @@ export function shelvedPanels(
 /** Shelf's unseat: removes one panel's leaf, which is what puts it on the shelf. */
 export function shelved(layout: TileLayout | null, tileId: string): PanelArrangeOutcome {
   if (layout === null) return refuse("tree_refused");
-  if (panelRefAt(layout, tileId) === null) return refuse("not_a_panel");
+  if (seatRefAt(layout, tileId)?.kind !== "panel") return refuse("not_a_panel");
   return settled(withoutTileLeaf(layout, tileId));
 }
 

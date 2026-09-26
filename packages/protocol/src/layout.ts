@@ -84,6 +84,12 @@ export type ContainerDiscipline = z.infer<typeof ContainerDisciplineSchema>;
  */
 export const TileRefSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("terminal"), terminalId: z.string().min(1) }),
+  /**
+   * A CONTAINER, shown in place by its own discipline's renderer. Legal in a composition's
+   * tree and — since issue #201 — in a principal's workspace tree, where it is how a plugin
+   * panel and a live terminal tile tree share one addressable view. The workspace door
+   * refuses a newly written one naming no container the caller may read.
+   */
   z.strictObject({ kind: z.literal("container"), containerId: z.string().min(1) }),
   z.strictObject({ kind: z.literal("element"), elementId: z.string().min(1) }),
   /**
@@ -100,7 +106,7 @@ export const TileRefSchema = z.discriminatedUnion("kind", [
    * everywhere `panel` is (issue #89). It exists so a stack can be given deliberate empty
    * room without a vacant `ref: null` leaf being mistaken for a target nobody has filled
    * in yet — `core.arrange`'s Spacer tool is the one writer, and only into the workspace's
-   * own tree (`core.space.setLayout`'s handler still refuses every other kind there).
+   * own tree (`core.space.setLayout`'s handler refuses terminal and element leaves there).
    * Carries no identity: every spacer is interchangeable with every other, the way an
    * empty leaf already is (`sameTileRef`, `refKey`).
    */
