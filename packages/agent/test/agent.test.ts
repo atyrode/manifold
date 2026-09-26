@@ -739,6 +739,59 @@ test("server close code and reason ref in logs; 4409 gets the version-rejected m
   }
 }, 20000);
 
+test("an oversized retained-owner inventory is refused locally without emitting a hello", async () => {
+  const host = new TerminalHost();
+  const status = host.status.bind(host);
+  host.status = () => ({
+    ...status(),
+    terminals: Array.from({ length: 1025 }, (_, i) => ({
+      terminalId: `retained-${i}`,
+      cols: 80,
+      rows: 24,
+      alive: true,
+      seq: 0,
+    })),
+  });
+  const socket = new ScriptedSocket();
+  const refused = Promise.withResolvers<void>();
+  const records: Array<{ evt: string; [key: string]: unknown }> = [];
+  const agent = new Agent({
+    serverUrl: "http://fake.invalid",
+    machineToken: "machine-token",
+    machineName: "retained",
+    backoff: { baseMs: 5_000, capMs: 5_000 },
+    dialTerminalHost: inMemoryDialer(host),
+    sink: (record) => {
+      records.push(record);
+      if (record.evt === "terminal_inventory_refused") refused.resolve();
+    },
+    createSocket: () => {
+      queueMicrotask(() => socket.open());
+      return socket.asWebSocket();
+    },
+  });
+  const connectAttempt = agent.connect();
+  try {
+    await refused.promise;
+    expect(socket.sent).toEqual([]);
+    expect(socket.closedByAgent).toEqual({
+      code: 4002,
+      reason: "terminal inventory exceeds 1024 entries",
+    });
+    expect(records.find((record) => record.evt === "terminal_inventory_refused")).toMatchObject({
+      level: "error",
+      reason: "over_limit",
+      terminals: 1025,
+      maximum: 1024,
+    });
+    expect(host.terminalCount).toBe(0);
+  } finally {
+    await agent.shutdown();
+    await host.shutdown();
+    void connectAttempt;
+  }
+});
+
 test("disconnected exit is advertised with its code and forgotten on welcome", async () => {
   const sockets: ScriptedSocket[] = [];
   const created = Promise.withResolvers<void>();
