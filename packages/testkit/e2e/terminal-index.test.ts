@@ -21,7 +21,15 @@ import {
   type TestAgent,
   type TestServer,
 } from "../src/index.ts";
-import { closeClients, e2eFailure, nextMessage, openTerminalAt, stopProcesses } from "./helpers.ts";
+import {
+  attachedCapture,
+  closeClients,
+  e2eFailure,
+  nextMessage,
+  openTerminalAt,
+  stopProcesses,
+  waitForTerminalText,
+} from "./helpers.ts";
 
 /**
  * THE terminal index, over real processes. There is no pool any more: every terminal lives
@@ -115,14 +123,16 @@ test("a bearer creates over HTTP, observes the durable row, and attaches later",
       reconnect: false,
     });
     clients.push(later);
-    const snapshot = nextMessage(
-      later,
-      "terminal_snapshot",
-      15_000,
-      (message) => message.terminalId === terminal.id,
-    );
-    later.attachTerminal(terminal.id);
-    expect(base64ToText((await snapshot).data)).toContain("http-born");
+    // `printf` runs asynchronously after creation; attaching may snapshot before the shell has
+    // written, in which case the text arrives as live output right after the snapshot. Output
+    // written before the attach can only reach this client through the snapshot, so a snapshot
+    // that dropped earlier output still fails here.
+    const capture = await attachedCapture(later, terminal.id, 15_000);
+    try {
+      await waitForTerminalText(capture, "http-born", 15_000);
+    } finally {
+      capture.stop();
+    }
 
     expect(await invokeAction(server, "core.terminals.kill", { terminalId: terminal.id })).toEqual({
       ok: true,
