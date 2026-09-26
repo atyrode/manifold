@@ -70,8 +70,12 @@ import type {
  * carries no domain knowledge beyond the five contribution kinds above.
  */
 
-/** Why a projection is inert. Mirrored into `data-plugin-state` for gate assertions. */
-export type ProjectionState = "disabled" | "unknown" | "unavailable";
+/**
+ * Why a projection is inert. Mirrored into `data-plugin-state` for gate assertions. `missing`
+ * is the one that is not about a plugin: the reference names a node this viewer cannot find —
+ * a workspace container leaf whose container was deleted or is no longer readable.
+ */
+export type ProjectionState = "disabled" | "unknown" | "unavailable" | "missing";
 
 export interface ProjectionPlaceholderProps {
   /** What to name: a plugin title when one is known, the raw contribution id otherwise. */
