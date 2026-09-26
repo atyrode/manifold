@@ -504,7 +504,8 @@ Your component receives
 | `presence`           | Required `readonly Attendance[]`: attendance supplied by the mount site.                                                              |
 | `soloOccupants?`     | `ReadonlyMap<string, PlacementItem>`: the index's single-occupant composition fold, which an embedded renderer cannot compute itself. |
 | `navigate`           | Required `(path: string) => void` navigation callback.                                                                                |
-| `depth?`             | Container nesting depth: 1 when routed, 2 when embedded one level down.                                                               |
+| `depth?`             | Container nesting depth: 1 at the root (routed, or a workspace container leaf), 2 when embedded one level down.                       |
+| `routed?`            | Whether this mount is the route (publishes view state and location, owns the viewport, answers Escape). Absent ≡ `depth === 1`.       |
 | `projectionScope?`   | `ProjectionScope \| null`: mounted ancestry and its root attendance client (§6 Mounted location and shared titlebars).                |
 | `frame?`             | `"window"` (default, outer frame) or `"tile"` (square seams against adjacent leaves).                                                 |
 | `titlebarDragProps?` | `TitlebarDragProps`: drag affordance to forward to the shared titlebar.                                                               |

@@ -1829,18 +1829,23 @@ is no oracle for ids behind a denied read, and nothing is stored. A container le
 STORED tree already shows (same `containerId`) passes unchanged, for the panel rule's reason: a
 container deleted, or a read revoked, after it was seated must not make later divider drags
 unwritable. The browser mounts the leaf with the container's own discipline renderer through the
-projection registry (`ContainerRenderer`, as a composition leaf does), embedded at depth 2: the
-routed container view remains the one mount that publishes location and view state, owns the
-canvas viewport seam and answers Escape, while the inline container dials its own room so its
-terminals are live and take input. Its titlebar offers Open (navigate to the container) and Remove
-from the workspace (the pruned tree through the same door). A container the index no longer lists
-for this principal renders the engine placeholder in state `missing`, with the same remove
-control. A workspace leaf is a per-principal VIEW, not a reference in the containment graph: no
-container census counts it, so it keeps nothing alive, never makes an item placed, and placement
-neither repoints nor prunes it — a composition emptied by a departure still retires, and the leaf
-becomes that placeholder. `core.arrange` moves and nudges a container leaf like a panel seat;
-Shelf and Remove stay the panel and structure verbs, and the leaf's own titlebar Remove takes it
-out.
+projection registry (`ContainerRenderer`, as a composition leaf does) as a ROOT mount that is not
+the route: `depth` 1, `routed: false` (`ContainerRendererProps.routed`, absent ≡ `depth === 1`).
+Depth 1 because nothing above it holds a room, so its content is as live as the routed view's —
+a composition's terminal tiles and a canvas's terminal portals render live and take input, and it
+dials its own room. Not routed, so the routed container view remains the one mount that publishes
+this device's view state, owns the canvas viewport seam, reports to the shell and answers Escape;
+an inline canvas keeps its own per-container camera. The inline mount has no attendance scope:
+engaging it publishes a `null` location, so the device reads as not engaged in the routed
+container until the reader returns to it, and it paints no titlebar attendance. Its titlebar
+offers Open (navigate to the container) and Remove from the workspace (the pruned tree through the
+same door). A container the index no longer lists for this principal renders the engine
+placeholder in state `missing`, with the same remove control. A workspace leaf is a per-principal
+VIEW, not a reference in the containment graph: no container census counts it, so it keeps
+nothing alive, never makes an item placed, and placement neither repoints nor prunes it — a
+composition emptied by a departure still retires, and the leaf becomes that placeholder.
+`core.arrange` moves and nudges a container leaf like a panel seat; Shelf and Remove stay the panel
+and structure verbs, and the leaf's own titlebar Remove takes it out.
 
 An enablement never rewrites that stored tree. `core.plugins` instead compares enabled
 manifest-declared seats with the principal's current panel leaves. An absent→enabled live-roster

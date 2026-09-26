@@ -204,8 +204,19 @@ export interface ContainerRendererProps {
   /** The index's solo-composition fold; an embedded renderer cannot compute it. */
   readonly soloOccupants?: ReadonlyMap<string, PlacementItem>;
   readonly navigate: (path: string) => void;
-  /** Container nesting depth: 1 when routed, 2 when embedded in another container. */
+  /**
+   * Container nesting depth: 1 at the root — the routed mount, or a workspace container leaf
+   * beside it — and 2 when embedded in another container. It budgets what renders live below
+   * this mount (a canvas's portals stay live only at depth 1).
+   */
   readonly depth?: number;
+  /**
+   * Whether this mount IS the route: the one mount that publishes this device's view state
+   * and location, owns the viewport seam, reports to the shell and answers Escape. Absent ≡
+   * `depth === 1`. A workspace container leaf (issue #201) is a root mount beside the route —
+   * `depth` 1, `routed: false` — so its own content stays live without claiming the route.
+   */
+  readonly routed?: boolean;
   readonly projectionScope?: ProjectionScope | null;
   /** `window` (default) owns an outer frame; `tile` meets adjacent leaves with square seams. */
   readonly frame?: "window" | "tile";

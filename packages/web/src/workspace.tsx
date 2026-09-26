@@ -101,10 +101,13 @@ interface WorkspaceContainerLeafProps {
  * discipline, through the projection registry — so the workspace paints no container of its
  * own and learns no discipline's name.
  *
- * Mounted as EMBEDDED (`depth` 2), never as the route: the routed view in the container-view
- * panel stays the one mount that publishes this viewer's location and view state, owns the
- * canvas viewport seam and answers Escape. An inline composition still dials its own room,
- * so its terminals are live and take input.
+ * Mounted at the ROOT but NOT as the route (`depth` 1, `routed: false`). Depth 1 because
+ * nothing above it holds a room: its own content renders exactly as the routed view's would —
+ * a composition's terminal tiles, and a canvas's portals, live and taking input. Not routed,
+ * so the container-view panel stays the one mount that publishes this device's view state,
+ * owns the canvas viewport seam, reports to the shell and answers Escape. Engaging this mount
+ * publishes no location (it has no attendance scope), so this device reads as not engaged in
+ * the routed container until the reader returns to it.
  *
  * The discipline comes from the index, which lists exactly the containers this principal may
  * read. A container the index does not hold — deleted, or no longer readable — is the
@@ -142,7 +145,8 @@ function WorkspaceContainerLeaf({
           presence={route.presence}
           soloOccupants={route.soloOccupants}
           navigate={route.navigate}
-          depth={2}
+          depth={1}
+          routed={false}
           titlebarExtras={
             <>
               <button
