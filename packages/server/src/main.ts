@@ -87,22 +87,6 @@ async function settledBy(work: Promise<unknown>, deadline: number): Promise<bool
   }
 }
 
-/**
- * What a quiescing hub answers every door except `/healthz` with, WebSocket upgrades included: a
- * retryable refusal, because the successor is about to serve the same origin. `/healthz` keeps
- * answering so a probe can tell a handover from an absent hub.
- */
-function handoverResponse(): Response {
-  return new Response("manifold is handing over to its successor; retry shortly\n", {
-    status: 503,
-    headers: {
-      "cache-control": "no-store",
-      "content-type": "text/plain; charset=utf-8",
-      "retry-after": "1",
-    },
-  });
-}
-
 /** Optional dependency injection for embedded and deterministic server starts. */
 export interface StartServerOptions {
   config?: ServerConfig;
@@ -146,13 +130,20 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     writer.release();
     throw error;
   }
-  const predecessor = claim.predecessor;
+  /*
+    What the opened history records about its last writer — reported, not judged. `active` means
+    this history was left mid-epoch (a crash, a kill, or a replica restored from before that
+    writer's last commits), so it warns. `sealed` is only the record of a clean END to that epoch:
+    a replica restored from before a later writer's unuploaded commits reads the same, so it is
+    not evidence that this is the newest history.
+  */
+  const previous = claim.previous;
   const claimed = {
     epoch: claim.epoch,
-    predecessor: predecessor === null ? "none" : predecessor.sealed ? "sealed" : "unsealed",
+    previousEpoch: previous?.epoch ?? null,
+    previousState: previous === null ? null : previous.sealed ? "sealed" : "active",
   };
-  // An unsealed predecessor stopped without handing over; its last commits may be absent.
-  if (predecessor?.sealed === false) logger.warn("writer_claimed", claimed);
+  if (previous?.sealed === false) logger.warn("writer_claimed", claimed);
   else logger.info("writer_claimed", claimed);
   const auth = new AuthService(
     store,
@@ -354,7 +345,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     maxRequestBodySize: MAX_HTTP_BODY_BYTES,
     fetch(request, bunServer) {
       const pathname = new URL(request.url).pathname;
-      if (quiescing && pathname !== "/healthz") return handoverResponse();
+      if (quiescing && pathname !== "/healthz") return http.handover(request);
       let endpoint: WebSocketData["endpoint"] | null = null;
       if (pathname === "/ws/session") endpoint = "session";
       if (pathname === "/ws/machine") endpoint = "machine";

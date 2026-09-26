@@ -137,10 +137,10 @@ test("the writer lock admits one holder across processes and is released by clos
   (await acquireWriterLock(dataDir, { waitMs: 1_000 })).release();
 });
 
-test("each writer claims the next epoch and learns whether its predecessor sealed", () => {
+test("each writer claims the next epoch and reads the last writer this history records", () => {
   const path = join(directory(), "manifold.db");
   const first = openDatabase(path);
-  expect(claimWriterEpoch(first)).toEqual({ epoch: 1, predecessor: null });
+  expect(claimWriterEpoch(first)).toEqual({ epoch: 1, previous: null });
   sealWriterEpoch(first, 1);
   // The retiring connection refuses every later write, whoever attempts it.
   expect(() =>
@@ -149,12 +149,12 @@ test("each writer claims the next epoch and learns whether its predecessor seale
   first.close();
 
   const second = openDatabase(path);
-  expect(claimWriterEpoch(second)).toEqual({ epoch: 2, predecessor: { epoch: 1, sealed: true } });
+  expect(claimWriterEpoch(second)).toEqual({ epoch: 2, previous: { epoch: 1, sealed: true } });
   expect(() => sealWriterEpoch(second, 1)).toThrow(WriterFenceError);
   second.close(); // a writer that dies without sealing
 
   const third = openDatabase(path);
-  expect(claimWriterEpoch(third)).toEqual({ epoch: 3, predecessor: { epoch: 2, sealed: false } });
+  expect(claimWriterEpoch(third)).toEqual({ epoch: 3, previous: { epoch: 2, sealed: false } });
   third.exec("UPDATE meta SET value = 'garbage' WHERE key = 'writer-epoch'");
   expect(() => claimWriterEpoch(third)).toThrow(WriterFenceError);
   third.close();
@@ -192,7 +192,7 @@ test("a successor on the same data directory becomes the writer only after its p
     expect(secondLines.find((line) => line.evt === "writer_claimed")).toEqual({
       evt: "writer_claimed",
       level: "info",
-      fields: { epoch: 2, predecessor: "sealed" },
+      fields: { epoch: 2, previousEpoch: 1, previousState: "sealed" },
     });
     expect(await containerNames(successor)).toEqual(
       expect.arrayContaining(["before handover", "while successor waits"]),
@@ -230,13 +230,27 @@ test("a quiescing hub refuses new work with a retryable 503 and commits what it 
   const stopping = server.stop();
   expect(lines.some((line) => line.evt === "writer_quiescing")).toBe(true);
 
+  // A cross-origin lens must be able to read the refusal: same CORS policy as every door.
+  const lens = { origin: "https://lens.invalid" };
+  const preflight = await fetch(`${url}/api/actions/core.index.listContainers`, {
+    method: "OPTIONS",
+    headers: { ...lens, "access-control-request-method": "POST" },
+  });
+  expect(preflight.status).toBe(204);
+  expect(preflight.headers.get("access-control-allow-origin")).toBe("*");
   const refused = await fetch(`${url}/api/actions/core.index.listContainers`, {
     method: "POST",
-    headers: { authorization: `Bearer ${OWNER_KEY}`, "content-type": "application/json" },
+    headers: {
+      ...lens,
+      authorization: `Bearer ${OWNER_KEY}`,
+      "content-type": "application/json",
+    },
     body: "{}",
   });
   expect(refused.status).toBe(503);
   expect(refused.headers.get("retry-after")).toBe("1");
+  expect(refused.headers.get("access-control-allow-origin")).toBe("*");
+  expect(refused.headers.get("access-control-expose-headers")).toContain("retry-after");
   const upgrade = await fetch(`${url}/ws/session`, { headers: { upgrade: "websocket" } });
   expect(upgrade.status).toBe(503);
   expect((await fetch(`${url}/healthz`)).status).toBe(200);
