@@ -1108,17 +1108,21 @@ export function openDatabase(path: string): Database {
   - THE LOCK answers "who may write now". `<data>/manifold.writer` is a tiny SQLite file held in
     EXCLUSIVE locking mode for the writer's whole life, taken before the database is opened and
     released only after it is closed. The kernel's advisory lock is the fence: a successor
-    started early, a stray restart or a second container on the same volume cannot take it
-    until the holder closes it or dies, and death releases it with no cleanup, so there is never
-    a stale lock to adjudicate. SQLite rather than a pid file, because a pid means nothing across
-    the container PID namespaces that share one volume during a switch.
+    started early, a stray restart or a second container mounting the SAME local volume cannot
+    take it until the holder closes it or dies, and death releases it with no cleanup, so there
+    is never a stale lock to adjudicate. SQLite rather than a pid file, because a pid means
+    nothing across the container PID namespaces that share one volume during a switch. Its reach
+    is exactly SQLite's locking: processes on one local filesystem. It fences nothing on another
+    disk (a replacement container restoring a replica) and is unreliable on network filesystems.
 
-  - THE EPOCH answers "did the previous writer hand over". `meta.writer-epoch` is claimed
-    (`<n+1>:active`) by each writer after its migrations and SEALED (`<n>:sealed`) as that
-    writer's final commit once it has quiesced. It travels inside the database, including
-    through a Litestream replica, so a successor that finds its predecessor unsealed knows the
-    history it opened may lack that writer's last commits — a crash, a SIGKILL, or a replica
-    restored from before them — and says so rather than carrying on silently.
+  - THE EPOCH records "which writer last wrote this history, and did it hand over". Each writer
+    claims `<n+1>:active` after its migrations and SEALS `<n>:sealed` as its final commit once it
+    has quiesced. An `active` record is a definite finding: the history was left mid-epoch — a
+    crash, a SIGKILL, or a replica restored from before that writer's last commits. A `sealed`
+    record is only history: it says epoch n ended cleanly, NOT that no later epoch exists. A
+    replica restored from before a later writer's never-uploaded commits reads exactly like a
+    clean handover, and nothing in this database can tell the difference; that takes an
+    expected epoch established outside it.
 
   Sealing also switches the connection to `query_only`, so a straggling timer or handler in the
   retiring process fails loudly instead of committing behind its successor's back.
@@ -1211,8 +1215,8 @@ export async function acquireWriterLock(
   }
 }
 
-/** The previous writer as the durable record left it. */
-export interface WriterPredecessor {
+/** The last writer epoch this history records, and whether that writer sealed it. */
+export interface WriterRecord {
   readonly epoch: number;
   readonly sealed: boolean;
 }
@@ -1220,10 +1224,10 @@ export interface WriterPredecessor {
 export interface WriterClaim {
   readonly epoch: number;
   /** Null for history no fenced hub has written yet (a new database or an unfenced build's). */
-  readonly predecessor: WriterPredecessor | null;
+  readonly previous: WriterRecord | null;
 }
 
-function readWriterEpoch(db: Database): WriterPredecessor | null {
+function readWriterEpoch(db: Database): WriterRecord | null {
   const row = db
     .query<VersionRow, [string]>("SELECT value FROM meta WHERE key = ?")
     .get(WRITER_EPOCH_KEY);
@@ -1244,10 +1248,10 @@ function writeWriterEpoch(db: Database, epoch: number, state: "active" | "sealed
 export function claimWriterEpoch(db: Database): WriterClaim {
   return db
     .transaction((): WriterClaim => {
-      const predecessor = readWriterEpoch(db);
-      const epoch = (predecessor?.epoch ?? 0) + 1;
+      const previous = readWriterEpoch(db);
+      const epoch = (previous?.epoch ?? 0) + 1;
       writeWriterEpoch(db, epoch, "active");
-      return { epoch, predecessor };
+      return { epoch, previous };
     })
     .immediate();
 }

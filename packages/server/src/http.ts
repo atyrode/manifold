@@ -107,7 +107,8 @@ function corsResponse(response: Response): Response {
     "access-control-allow-headers",
     `authorization, content-type, ${AGENT_JUSTIFICATION_HEADER}, ${ACTION_RESULT_PROJECTION_HEADER}`,
   );
-  response.headers.set("access-control-expose-headers", ACTION_TRACE_ID_HEADER);
+  // Retry-After is not CORS-safelisted; a lens reads it from a quiescing hub's 503 (#318).
+  response.headers.set("access-control-expose-headers", `${ACTION_TRACE_ID_HEADER}, retry-after`);
   response.headers.set("access-control-max-age", "600");
   return response;
 }
@@ -326,13 +327,42 @@ export class HttpApp {
    * The SHELL is deliberately excluded. Static files answer same-origin only, because a page
    * that wants manifold's bundle should be served it by an instance rather than hotlink one.
    */
-  async fetch(request: Request): Promise<Response> {
+  fetch(request: Request): Promise<Response> {
+    return this.answer(request, (url) => this.route(request, url));
+  }
+
+  /**
+   * What a quiescing hub (#318) answers every door except `/healthz` with, WebSocket upgrades
+   * included: a retryable 503, because its successor is about to serve this origin. It carries
+   * the same response policy as every other answer, so a cross-origin lens sees the status and
+   * `Retry-After` rather than a network error, and a preflight still succeeds so the request it
+   * guards can reach the refusal.
+   */
+  handover(request: Request): Promise<Response> {
+    return this.answer(
+      request,
+      () =>
+        new Response("manifold is handing over to its successor; retry shortly\n", {
+          status: 503,
+          headers: {
+            "cache-control": "no-store",
+            "content-type": "text/plain; charset=utf-8",
+            "retry-after": "1",
+          },
+        }),
+    );
+  }
+
+  private async answer(
+    request: Request,
+    respond: (url: URL) => Response | Promise<Response>,
+  ): Promise<Response> {
     const url = new URL(request.url);
     const api = url.pathname.startsWith("/api") || url.pathname === "/healthz";
     const response =
       api && request.method === "OPTIONS"
         ? new Response(null, { status: 204 })
-        : await this.route(request, url);
+        : await respond(url);
     response.headers.set("x-content-type-options", "nosniff");
     // Callback documents deliberately carry the stricter no-referrer policy.
     if (!response.headers.has("referrer-policy")) {
