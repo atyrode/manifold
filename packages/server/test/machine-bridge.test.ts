@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -14,7 +14,11 @@ import {
 import { z } from "zod";
 import { HARDENED_SOURCE_RECIPES, SERVER_PLUGIN_DEFS } from "../src/assembly.ts";
 import { AuthService, type AuthContext } from "../src/auth.ts";
-import { compileTrustedBuilds, type TrustedBuild } from "../src/first-party-builds.ts";
+import {
+  compileTrustedBuilds,
+  trustedArtifactFile,
+  type TrustedBuild,
+} from "../src/first-party-builds.ts";
 import { IsolateSupervisor } from "../src/isolate/supervisor.ts";
 import { silentLogger, type Logger } from "../src/log.ts";
 import type { ActionCtx, PluginHost, ServerPluginDef } from "../src/plugin-host.ts";
@@ -272,6 +276,27 @@ describe("core.machines hardened by the trusted bootstrap", () => {
     await expect(
       compileTrustedBuilds(["core.terminals"], SERVER_PLUGIN_DEFS, HARDENED_SOURCE_RECIPES),
     ).rejects.toThrow('"core.terminals" has no hardened source recipe');
+  });
+
+  test("a packaged hub's build-time artifact binds to the registered definition or fails by name", async () => {
+    const build = builds[0];
+    if (build === undefined) throw new Error("no build");
+    const dir = mkdtempSync(join(tmpdir(), "manifold-first-party-artifacts-"));
+    try {
+      const select = () =>
+        compileTrustedBuilds(["core.machines"], SERVER_PLUGIN_DEFS, HARDENED_SOURCE_RECIPES, dir);
+      await expect(select()).rejects.toThrow("core.machines: hardened build failed");
+      writeFileSync(trustedArtifactFile(dir, "core.machines"), build.bytes);
+      expect((await select()).map(({ sha256 }) => sha256)).toEqual([build.sha256]);
+      // Same compiler output, one declaration changed: not this binary's registered plugin.
+      const drifted = { ...build.bundle, manifest: { ...build.bundle.manifest, version: "9.9.9" } };
+      writeFileSync(trustedArtifactFile(dir, "core.machines"), JSON.stringify(drifted));
+      await expect(select()).rejects.toThrow(
+        "core.machines: hardened build refused: its manifest is not the registered manifest",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("runs the same doors in a child: atomic enrollment, inventory, withdrawal, and its effective mode", async () => {

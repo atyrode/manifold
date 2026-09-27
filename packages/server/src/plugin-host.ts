@@ -177,6 +177,7 @@ import {
   IsolateDenial,
   IsolateLoadError,
   isolateLifecycleState,
+  type InstalledPluginRef,
   type IsolateRunner,
 } from "./isolate/contract.ts";
 import { localActionDef } from "./isolate/proxy-def.ts";
@@ -686,13 +687,16 @@ interface InstalledPlugin {
 
 /**
  * A first-party definition this process compiled and runs hardened at the operator's choice
- * (`first-party-builds.ts`): the pin its portable Worker entry is served under. There is no
+ * (`first-party-builds.ts`): the pin its portable Worker entry is served under, the registered
+ * definition every child it starts must bind to, and where that child's code is. There is no
  * install row, installer or grant — the definition's own manifest is its ceiling, exactly as
  * when it runs in-realm.
  */
 interface TrustedPlugin {
   readonly sha256: string;
   readonly worker: Uint8Array<ArrayBuffer> | null;
+  readonly registered: ServerPluginDef;
+  readonly ref: InstalledPluginRef;
 }
 
 /** A migration chain staged by `prepareMigrations`, published in phases (see there). */
@@ -1553,6 +1557,8 @@ export class PluginHost {
   private firstParty: readonly ServerPluginDef[];
   /** First-party definitions running hardened by the operator's choice, by id. */
   private readonly trusted = new Map<string, TrustedPlugin>();
+  /** Trusted builds whose child an assembly hold retired; started again once released. */
+  private readonly retiredTrusted = new Set<string>();
   private readonly handlers = new Map<string, Readonly<Record<string, ActionHandler>>>();
   private readonly guestInputPlugins = new Set<string>();
   /** Installed plugins by id: the row, the verified bundle, and the def the runner produced. */
@@ -2234,31 +2240,50 @@ export class PluginHost {
     const isolates = this.isolates;
     if (isolates === null)
       throw new Error("hardened first-party plugins require the isolate runner");
-    const firstParty = [...this.firstParty];
     for (const build of builds) {
       const id = build.bundle.manifest.id;
-      const index = firstParty.findIndex((def) => def.manifest.id === id);
-      const registered = this.builtins.has(id) ? undefined : firstParty[index];
+      const registered = this.builtins.has(id)
+        ? undefined
+        : this.firstParty.find((def) => def.manifest.id === id);
       if (registered === undefined || this.trusted.has(id))
         throw new Error(`${id}: hardened build names no registered first-party plugin`);
       assertTrustedBinding(registered, build);
-      const loaded = await isolates.runner.load({
-        pluginId: id,
-        manifest: registered.manifest,
-        dir: extractTrustedBuild(isolates.dataDir, build),
-        hardenedContract: build.bundle.hardenedContract,
+      this.trusted.set(id, {
+        sha256: build.sha256,
+        worker: workerModuleOf(build.bundle),
+        registered,
+        ref: {
+          pluginId: id,
+          manifest: registered.manifest,
+          dir: extractTrustedBuild(isolates.dataDir, build),
+          hardenedContract: build.bundle.hardenedContract,
+        },
       });
-      const def: ServerPluginDef = { ...loaded.def, lifecycle: loaded.lifecycle };
-      try {
-        assertLoadedBinding(registered, def);
-      } catch (error) {
-        await isolates.runner.unload(id);
-        throw error;
-      }
-      firstParty[index] = def;
-      this.trusted.set(id, { sha256: build.sha256, worker: workerModuleOf(build.bundle) });
+      await this.startTrusted(id);
     }
-    this.firstParty = firstParty;
+  }
+
+  /**
+   * Starts a trusted build's child and serves its proxy in place of the registered def — at
+   * boot, and again when an assembly that held the plugin (and so retired its child, exactly as
+   * it retires an installed hardened child) releases it. The child must publish the registered
+   * doors every time, or it is unloaded and the start fails.
+   */
+  private async startTrusted(id: string): Promise<void> {
+    const trusted = this.trusted.get(id);
+    if (this.isolates === null || trusted === undefined) throw new Error(`${id}: no trusted build`);
+    const loaded = await this.isolates.runner.load(trusted.ref);
+    const def: ServerPluginDef = { ...loaded.def, lifecycle: loaded.lifecycle };
+    try {
+      assertLoadedBinding(trusted.registered, def);
+    } catch (error) {
+      await this.isolates.runner.unload(id);
+      throw error;
+    }
+    this.firstParty = this.firstParty.map((existing) =>
+      existing.manifest.id === id ? def : existing,
+    );
+    this.retiredTrusted.delete(id);
     this.syncDefs();
   }
 
@@ -2558,6 +2583,29 @@ export class PluginHost {
         this.syncDefs();
         return this.reassemble();
       }
+      /*
+        A trusted build an earlier hold retired starts again once no hold names it — enabled or
+        not, as at boot, so a disabled plugin's cleanup doors keep a child to answer them. A
+        start that fails leaves the proxy refusing `unavailable` and the roster `enable_failed`
+        until the next process start, never the in-realm module.
+      */
+      for (const id of this.retiredTrusted) {
+        if (assembly.roster.some((entry) => entry.manifest.id === id && entry.held !== undefined))
+          continue;
+        try {
+          await this.startTrusted(id);
+        } catch (error) {
+          this.retiredTrusted.delete(id);
+          this.lifecycleStates.set(id, "enable_failed");
+          this.logger.error("plugin_lifecycle", {
+            plugin: id,
+            hook: "load",
+            error: error instanceof Error ? error.message : "load failed",
+          });
+          continue;
+        }
+        return this.reassemble();
+      }
     }
     this.jobs?.setHeldPlugins(
       assembly.roster.filter((entry) => entry.held !== undefined).map((entry) => entry.manifest.id),
@@ -2569,6 +2617,10 @@ export class PluginHost {
       this.guestInputPlugins.delete(id);
       this.retireDatabase(id);
       if (this.installed.get(id)?.row.hardened === true) await this.isolates?.runner.unload(id);
+      else if (this.trusted.has(id) && !this.retiredTrusted.has(id)) {
+        this.retiredTrusted.add(id);
+        await this.isolates?.runner.unload(id);
+      }
     }
     return assembly;
   }

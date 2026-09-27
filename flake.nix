@@ -259,12 +259,17 @@
             extraBuild = ''
               bun run changelog:generate
               (cd packages/web && bun run build)
+              # The compiled hub carries no source tree, so the trusted first-party builds an
+              # operator may select with MANIFOLD_HARDENED_PLUGINS are compiled here, by the
+              # same compiler and recipes, and re-bound to the binary's definitions at start.
+              bun scripts/build-first-party.ts first-party
             '';
             extraInstall = ''
               mkdir -p "$out/share/manifold"
               cp -r packages/web/dist "$out/share/manifold/web"
+              cp -r first-party "$out/share/manifold/first-party"
             '';
-            wrapperArgs = ''--set-default MANIFOLD_WEB_DIST "$out/share/manifold/web" --set-default MANIFOLD_SPAWN_AGENT 0 --prefix PATH : "${bun}/bin"'';
+            wrapperArgs = ''--set-default MANIFOLD_WEB_DIST "$out/share/manifold/web" --set-default MANIFOLD_FIRST_PARTY_ARTIFACTS "$out/share/manifold/first-party" --set-default MANIFOLD_SPAWN_AGENT 0 --prefix PATH : "${bun}/bin"'';
           };
         }
       );

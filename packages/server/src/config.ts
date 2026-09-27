@@ -38,6 +38,12 @@ export interface ServerConfig {
    */
   hardenedPlugins?: readonly string[];
   /**
+   * `MANIFOLD_FIRST_PARTY_ARTIFACTS=<dir>`: where a packaged hub's own build wrote its trusted
+   * first-party artifacts (`scripts/build-first-party.ts`), for a binary that carries no source
+   * to compile. Set by the package, not an operator; absent compiles from this checkout.
+   */
+  firstPartyArtifacts?: string;
+  /**
    * What this process is, as `/healthz` reports it: `MANIFOLD_VERSION`, `MANIFOLD_BUILD` and
    * `MANIFOLD_CHANNEL` when the deployment says, derived from the checkout's git tags otherwise
    * (`scripts/build-identity.ts`).
@@ -242,6 +248,7 @@ export function loadConfig(
       ? undefined
       : resolve(cwd, configuredAgentPolicyFile);
   const hardenedPlugins = parseHardenedPlugins(env.MANIFOLD_HARDENED_PLUGINS);
+  const configuredArtifacts = env.MANIFOLD_FIRST_PARTY_ARTIFACTS?.trim();
   const previewIdentityKey = loadPreviewIdentityKey(dataDir);
   return {
     port,
@@ -259,6 +266,9 @@ export function loadConfig(
     announceKey: env.MANIFOLD_ANNOUNCE_KEY === "1",
     pluginDevPaths: env.MANIFOLD_PLUGIN_DEV_PATHS === "1",
     ...(hardenedPlugins.length === 0 ? {} : { hardenedPlugins }),
+    ...(configuredArtifacts === undefined || configuredArtifacts === ""
+      ? {}
+      : { firstPartyArtifacts: resolve(cwd, configuredArtifacts) }),
     previewIdentityAuthority,
     previewDomain,
     ...(agentPolicyFile === undefined ? {} : { agentPolicyFile }),

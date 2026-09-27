@@ -1,4 +1,4 @@
-import { rmSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { AnyActionDef } from "@manifold/plugin";
@@ -10,7 +10,8 @@ import {
 } from "@manifold/protocol";
 import { z } from "zod";
 import type { ServerPluginDef } from "./plugin-host.ts";
-import { extractBundle, parseBundle } from "./plugin-installs.ts";
+import { extractBundle, parseBundle, PLUGIN_BUNDLE_SUFFIX } from "./plugin-installs.ts";
+import { sha256Hex } from "./stores.ts";
 
 /**
  * TRUSTED FIRST-PARTY HARDENING (ADR 0053 §7, issue #259).
@@ -42,8 +43,9 @@ export interface HardenedSourceRecipe {
   readonly web: string;
 }
 
-/** One compiled first-party definition: the verified artifact and the pin it is served under. */
+/** One compiled first-party definition: the exact artifact bytes, parsed, and their pin. */
 export interface TrustedBuild {
+  readonly bytes: Uint8Array;
   readonly bundle: PluginBundle;
   readonly sha256: string;
 }
@@ -51,14 +53,26 @@ export interface TrustedBuild {
 /** Under the data dir: `first-party/<id>/<sha256>/`, never an installation's directory. */
 const FIRST_PARTY_DIR = "first-party";
 
+/** Where a build-time artifact of one id lives in an artifact directory. */
+export function trustedArtifactFile(dir: string, id: string): string {
+  return join(dir, `${id}${PLUGIN_BUNDLE_SUFFIX}`);
+}
+
 /**
- * Compiles every selected id, in order, from its registered definition and recipe. Resolves
- * only when every selection produced an artifact bound to its definition.
+ * Resolves every selected id, in order, to an artifact bound to its registered definition.
+ *
+ * A source checkout (development, the Docker hub) compiles the recipe here with the one plugin
+ * compiler. A packaged hub that carries no source tree (the Nix `bun build --compile` binary)
+ * names `artifacts`: the directory its OWN build wrote with the same compiler over the same
+ * recipes (`scripts/build-first-party.ts`), shipped beside the binary. Either way the artifact
+ * must bind to this binary's registered definition, and an id with no registration, recipe or
+ * artifact fails by name.
  */
 export async function compileTrustedBuilds(
   ids: readonly string[],
   defs: readonly ServerPluginDef[],
   recipes: ReadonlyMap<string, () => HardenedSourceRecipe>,
+  artifacts?: string,
 ): Promise<readonly TrustedBuild[]> {
   const builds: TrustedBuild[] = [];
   for (const id of ids) {
@@ -70,15 +84,24 @@ export async function compileTrustedBuilds(
       throw new Error(`MANIFOLD_HARDENED_PLUGINS: "${id}" has no hardened source recipe`);
     let compiled: CompiledPlugin;
     try {
-      const recipe = resolveRecipe();
-      compiled = await compilePlugin(recipe.pluginDir, {
-        source: { manifest: def.manifest, server: recipe.server, web: recipe.web },
-      });
+      if (artifacts === undefined) {
+        const recipe = resolveRecipe();
+        compiled = await compilePlugin(recipe.pluginDir, {
+          source: { manifest: def.manifest, server: recipe.server, web: recipe.web },
+        });
+      } else {
+        const bytes = readFileSync(trustedArtifactFile(artifacts, id));
+        compiled = { bytes, sha256: sha256Hex(bytes) };
+      }
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       throw new Error(`${id}: hardened build failed: ${detail}`, { cause: error });
     }
-    const build = { bundle: parseBundle(compiled.bytes), sha256: compiled.sha256 };
+    const build = {
+      bytes: compiled.bytes,
+      bundle: parseBundle(compiled.bytes),
+      sha256: compiled.sha256,
+    };
     assertTrustedBinding(def, build);
     builds.push(build);
   }

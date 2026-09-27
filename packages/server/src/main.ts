@@ -376,6 +376,7 @@ async function startAsWriter({
         config.hardenedPlugins ?? [],
         SERVER_PLUGIN_DEFS,
         HARDENED_SOURCE_RECIPES,
+        config.firstPartyArtifacts,
       ),
       /*
         Where a plugin's own SQLite file lives (ADR 0034 §1). The same directory the isolates
