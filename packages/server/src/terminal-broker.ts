@@ -965,7 +965,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       });
       this.rooms.evictIfIdle(pending.containerId);
     }, CREATE_DEADLINE_MS);
-    if (placement === "element") {
+    if (hasCols) {
       this.dispatchOpen(pending, message.cols!, message.rows!);
     }
   }

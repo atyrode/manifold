@@ -952,9 +952,6 @@ describe("TerminalBroker first-viewer tile fit", () => {
     setup.broker.open(setup.opener, {
       type: "terminal_open",
       elementId: "fit-me",
-      // Legacy/advisory values cannot outrank the first measured viewer.
-      cols: 10,
-      rows: 5,
       placement: "tile",
     });
 
@@ -989,6 +986,43 @@ describe("TerminalBroker first-viewer tile fit", () => {
       cols: 132,
       rows: 41,
     });
+    setup.store.close();
+  });
+
+  test("an explicit viewport starts only its own terminal without fitting concurrent leaves", () => {
+    const setup = brokerSetup();
+    setup.broker.open(setup.opener, {
+      type: "terminal_open",
+      elementId: "unrelated-viewer",
+      placement: "tile",
+    });
+    const waitingId = pendingTerminalId(setup);
+    setup.broker.open(setup.opener, {
+      type: "terminal_open",
+      elementId: "headless-viewer",
+      placement: "tile",
+      cols: 96,
+      rows: 30,
+    });
+    const created = setup.machine.sent.find((message) => message.type === "create");
+    if (created?.type !== "create") throw new Error("explicit viewport did not start its terminal");
+    expect(created.terminalId).not.toBe(waitingId);
+    expect(created).toMatchObject({ cols: 96, rows: 30 });
+    expect(setup.machine.sent).toHaveLength(1);
+    setup.broker.onCreated(setup.machine.machineId, created.terminalId);
+    expect(setup.broker.listForContainer(setup.container.id)).toMatchObject([
+      { id: created.terminalId, cols: 96, rows: 30 },
+    ]);
+    expect(setup.store.getTerminal(waitingId)).toBeNull();
+    setup.broker.resize(setup.opener, {
+      type: "terminal_resize",
+      terminalId: waitingId,
+      cols: 132,
+      rows: 41,
+    });
+    expect(setup.machine.sent).toContainEqual(
+      expect.objectContaining({ type: "create", terminalId: waitingId, cols: 132, rows: 41 }),
+    );
     setup.store.close();
   });
 

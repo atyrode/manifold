@@ -293,6 +293,9 @@
     },
     "packages/plugins/terminals": {
       "name": "@manifold-plugin/terminals",
+      "bin": {
+        "manifold": "./cli/main.ts",
+      },
       "dependencies": {
         "@manifold/plugin": "workspace:*",
         "@manifold/protocol": "workspace:*",

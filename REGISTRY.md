@@ -488,6 +488,10 @@ Everything not floor-matched is plugin territory. The authoritative list of core
 is a second door onto the concept "which plugins exist", violating
 [One authoritative implementation](docs/CONTRACTS.md#one-authoritative-implementation).
 
+The terminal plugin also owns the installed `manifold` command and its point-of-use skill.
+They are SDK consumers of discovered core doors, not floor additions or a separate terminal
+transport; package executable metadata and the compiled Nix output carry the entrypoint.
+
 A plugin package holds a manifest, its actions (server half) and its contributions (web half),
 and it imports only the three named layers (ADR 0025 §8, #240): the SDK — `@manifold/protocol`,
 `@manifold/sdk` (and `@manifold/scene`), talking to the hub; the ENGINE API — `@manifold/plugin`,

@@ -1,8 +1,53 @@
 # External actions, without browser control
 
 Effects on a live Manifold go through discovered action doors. Drive DOM controls only when
-verifying the human-facing interaction itself. The SDK's `manifold-action-runner` is the
-supported bounded external process; no browser session or handwritten HTTP is needed.
+verifying the human-facing interaction itself. Ordinary terminal-local processes use the
+terminal plugin's SDK-backed `manifold` client; external Agent/Run processes use the SDK's
+`manifold-action-runner`. Neither needs a browser session or handwritten HTTP.
+
+## Ordinary terminal-local client
+
+Install the compiled package from the same release as the hub:
+
+```sh
+nix profile install github:atyrode/manifold/<release-tag>#manifold
+manifold context
+manifold doctor
+manifold actions
+manifold machines
+manifold exec --machine <machine-id-or-exact-name> -- /bin/sh -c 'printf "remote output\n"'
+```
+
+The client privately consumes the ordinary terminal's inherited `MANIFOLD_URL`,
+`MANIFOLD_CONTAINER` and `MANIFOLD_TOKEN`. Do not print them, put them on argv, copy another
+principal's credential or register a Run to replace a valid terminal binding. An Agent/Run
+binding belongs to the runner below. The current session protocol must match the hub;
+upgrade the hub and client together rather than spoofing a version. Compatible older
+machine transports do not need an unrelated owner restart.
+
+`exec` selects one explicitly named online unconfined Unix/WSL machine, creates only its
+own terminal with a virtual viewport, attaches and confirms control before releasing the
+command. It never fits another viewer's pending leaf or replays a command after uncertain
+completion. `--timeout-ms` and `--max-output-bytes` bound the operation. Its JSON receipt
+reports owned PTY output as base64, whether output is complete, observed command completion,
+controller status, action trace IDs and cleanup evidence. This is a terminal stream, not
+separate lossless stdout/stderr or an RPC exit status inferred from an HTTP success.
+Cancellation or removal without a confirmed owner exit does not prove the process stopped.
+
+An absent executable is an installation failure. `doctor` distinguishes missing bindings,
+protocol skew, authentication and missing/disabled core doors; `exec` separately diagnoses
+the selected machine's suitability. A missing harness-specific tool does not establish
+that core access is unavailable. Terminal access is not Windows desktop or game control.
+
+The package installs its product-owned skill at
+`share/agent-skills/manifold-terminal/SKILL.md`. A machine's configuration owner should
+install the executable and expose that same skill through its managed harness loaders.
+Default/global agent context should route a terminal-bound process to `manifold context`
+even outside this checkout. Installing files does not update an already-running agent's
+loaded context; verify a fresh session through the actual harness loader.
+
+From a development checkout, the equivalent entrypoint is
+`bun packages/plugins/terminals/cli/main.ts`; it consumes only public SDK exports.
 
 ## Trusted launcher
 
