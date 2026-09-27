@@ -194,6 +194,30 @@ describe("installArtifact", () => {
     expect(existsSync(join(drop.dataDir, "plugins"))).toBeFalse();
   });
 
+  test("a request whose caller closes after admission writes nothing", async () => {
+    const drop = box();
+    const bytes = bundleBytes();
+    const source = drop.upload("sample.manifold-plugin.json", bytes);
+    const lifetime = new AbortController();
+    const outcome = await installArtifact({
+      source,
+      sha256: sha256Hex(bytes),
+      dataDir: drop.dataDir,
+      signal: lifetime.signal,
+      // The verdict is not the last await before the write: the member verification follows
+      // it, and a shutdown landing there must still find nothing written (#318).
+      admit: () => {
+        lifetime.abort(new Error("the caller closed"));
+        return null;
+      },
+    }).then(
+      () => "written",
+      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    );
+    expect(outcome).toBe("the caller closed");
+    expect(existsSync(join(drop.dataDir, "plugins"))).toBeFalse();
+  });
+
   test("an https source is fetched, bounded, and refused on a non-2xx answer", async () => {
     const drop = box();
     const bytes = bundleBytes();

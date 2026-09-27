@@ -69,7 +69,7 @@ import { serveCtxCall } from "../src/isolate/proxy-def.ts";
 import { IsolateSupervisor } from "../src/isolate/supervisor.ts";
 import { silentLogger } from "../src/log.ts";
 import { PlaceExecutor, assemblyPlacementVocabulary, assemblyItemNouns } from "../src/placement.ts";
-import { PLUGIN_UPLOADS_DIR } from "../src/plugin-installs.ts";
+import { PLUGIN_UPLOADS_DIR, installLayout } from "../src/plugin-installs.ts";
 import {
   openPluginDatabase,
   pluginDatabasePath,
@@ -3898,6 +3898,179 @@ describe("PluginHost install doors", () => {
     expect(fixture.runner.unloads).toEqual([SAMPLE_ID]);
     expect(fixture.runner.loads).toEqual([SAMPLE_ID, SAMPLE_ID]);
     fixture.store.close();
+  });
+
+  /*
+    SHUTDOWN INSIDE AN ASSEMBLY CHANGE (#318). Each case suspends a door on a runner call — a
+    child spawn or exit the host must await — closes the host there, boots its successor over
+    the same store and directory, and only then lets the old continuation resume. Whatever the
+    successor now answers for (the row, the switch, the files under `plugins/<id>/`) must be
+    exactly as it left them, and the closed host must neither publish a roster nor answer.
+  */
+  test("a replacement suspended across shutdown publishes no row and keeps the successor's bundle", async () => {
+    const fixture = await installFixture();
+    const host = await customHost(fixture, [], { isolates: fixture.isolates });
+    expect((await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, fixture.drop())).ok).toBe(
+      true,
+    );
+    // Off, so the candidate commits without a migration chain close() could discard.
+    expect(await host.setEnabled(SAMPLE_ID, false, "admin")).toEqual({ ok: true });
+    const [installed] = fixture.store.pluginInstalls();
+    if (installed === undefined) throw new Error("no install row");
+    const candidate = fixture.drop({ ...SAMPLE_MANIFEST, version: "2.0.0" });
+    const entered = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    const load = fixture.runner.load.bind(fixture.runner);
+    fixture.runner.load = async (ref) => {
+      entered.resolve();
+      await resume.promise;
+      return load(ref);
+    };
+    const published: PluginRoster[] = [];
+    host.onRosterChange((roster) => published.push(roster));
+    let replacing: Promise<unknown> = Promise.resolve();
+    let successor: PluginHost | undefined;
+    try {
+      replacing = host.install({ ...candidate, replace: true }, fixture.owner.principal.id, null);
+      await entered.promise;
+      host.close();
+      successor = await customHost(fixture, [], {
+        isolates: { runner: new FakeRunner((ref) => sampleLoad(ref)), dataDir: fixture.dataDir },
+      });
+      resume.resolve();
+      const outcome = await replacing.then(
+        (settled) => settled,
+        () => "cut",
+      );
+
+      // The successor booted from the old row: its bundle is still there, its row unreplaced.
+      const { dir } = installLayout(fixture.dataDir, SAMPLE_ID, installed.sha256);
+      expect(existsSync(installed.bundlePath)).toBe(true);
+      expect(existsSync(join(dir, "server.js"))).toBe(true);
+      expect(fixture.store.pluginInstalls()).toEqual([installed]);
+      expect(outcome).toBe("cut");
+      expect(published).toEqual([]);
+      expect(fixture.store.listEvents({ type: "plugin_installed", limit: 10 })).toHaveLength(1);
+      expect(installedRow(successor, SAMPLE_ID)).toMatchObject({
+        enabled: false,
+        manifest: { version: SAMPLE_MANIFEST.version },
+        install: { sha256: installed.sha256 },
+      });
+    } finally {
+      resume.resolve();
+      await Promise.allSettled([replacing]);
+      successor?.close();
+      host.close();
+      fixture.store.close();
+    }
+  });
+
+  test("an install suspended across shutdown rolls back nothing its successor has installed since", async () => {
+    const fixture = await installFixture();
+    const host = await customHost(fixture, [], { isolates: fixture.isolates });
+    const request = fixture.drop();
+    const entered = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    const load = fixture.runner.load.bind(fixture.runner);
+    fixture.runner.load = async (ref) => {
+      entered.resolve();
+      await resume.promise;
+      return load(ref);
+    };
+    const published: PluginRoster[] = [];
+    host.onRosterChange((roster) => published.push(roster));
+    let installing: Promise<unknown> = Promise.resolve();
+    let successor: PluginHost | undefined;
+    try {
+      installing = host.install(request, fixture.owner.principal.id, null);
+      await entered.promise;
+      host.close();
+      successor = await customHost(fixture, [], {
+        isolates: { runner: new FakeRunner((ref) => sampleLoad(ref)), dataDir: fixture.dataDir },
+      });
+      // The operator retries on the new writer. The same pin lands on the same paths, which
+      // are the successor's from here on, whatever the old host wrote there before it closed.
+      expect((await successor.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, request)).ok).toBe(
+        true,
+      );
+      const [installed] = fixture.store.pluginInstalls();
+      if (installed === undefined) throw new Error("no install row");
+      resume.resolve();
+      const outcome = await installing.then(
+        (settled) => settled,
+        () => "cut",
+      );
+
+      const { dir } = installLayout(fixture.dataDir, SAMPLE_ID, installed.sha256);
+      expect(existsSync(installed.bundlePath)).toBe(true);
+      expect(existsSync(join(dir, "server.js"))).toBe(true);
+      expect(fixture.store.pluginInstalls()).toEqual([installed]);
+      expect(outcome).toBe("cut");
+      expect(published).toEqual([]);
+      expect(await successor.dispatch(fixture.owner, `${SAMPLE_ID}.ping`, {})).toEqual({
+        ok: true,
+        result: { pong: true },
+      });
+    } finally {
+      resume.resolve();
+      await Promise.allSettled([installing]);
+      successor?.close();
+      host.close();
+      fixture.store.close();
+    }
+  });
+
+  test("an uninstall suspended across shutdown deletes nothing its successor booted from", async () => {
+    const fixture = await installFixture();
+    const host = await customHost(fixture, [], { isolates: fixture.isolates });
+    expect((await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, fixture.drop())).ok).toBe(
+      true,
+    );
+    expect(await host.setEnabled(SAMPLE_ID, false, "admin")).toEqual({ ok: true });
+    const [installed] = fixture.store.pluginInstalls();
+    if (installed === undefined) throw new Error("no install row");
+    const entered = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    const unload = fixture.runner.unload.bind(fixture.runner);
+    fixture.runner.unload = async (pluginId) => {
+      entered.resolve();
+      await resume.promise;
+      return unload(pluginId);
+    };
+    const published: PluginRoster[] = [];
+    host.onRosterChange((roster) => published.push(roster));
+    let removing: Promise<unknown> = Promise.resolve();
+    let successor: PluginHost | undefined;
+    try {
+      removing = host.uninstall(SAMPLE_ID, fixture.owner.principal.id, false);
+      await entered.promise;
+      host.close();
+      successor = await customHost(fixture, [], {
+        isolates: { runner: new FakeRunner((ref) => sampleLoad(ref)), dataDir: fixture.dataDir },
+      });
+      resume.resolve();
+      const outcome = await removing.then(
+        (settled) => settled,
+        () => "cut",
+      );
+
+      expect(existsSync(installed.bundlePath)).toBe(true);
+      expect(fixture.store.pluginInstalls()).toEqual([installed]);
+      expect(fixture.store.disabledPlugins().has(SAMPLE_ID)).toBe(true);
+      expect(outcome).toBe("cut");
+      expect(published).toEqual([]);
+      expect(fixture.store.listEvents({ type: "plugin_uninstalled", limit: 10 })).toEqual([]);
+      // The installation is still the successor's to remove, through its own door.
+      expect(await successor.uninstall(SAMPLE_ID, "admin", false)).toEqual({ ok: true });
+      expect(existsSync(installed.bundlePath)).toBe(false);
+      expect(fixture.store.pluginInstalls()).toEqual([]);
+    } finally {
+      resume.resolve();
+      await Promise.allSettled([removing]);
+      successor?.close();
+      host.close();
+      fixture.store.close();
+    }
   });
 
   test("an assembly refusal at install time rolls back and answers artifact_invalid", async () => {
