@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.24.0] - 2026-09-27
+
+### Added
+
+- Ordinary Manifold terminals can use the installed `manifold` client to discover available actions and machines, diagnose their inherited access, and run a bounded command on an explicitly selected Unix or WSL machine. The client uses the existing terminal identity and public SDK, reports observed output, completion and cleanup without replaying uncertain work, and never measures another caller's pending terminal. Its Nix package includes shared agent guidance without requiring an OMP plugin or browser relay. Update the hub and client together for session protocol 46; compatible older machine owners remain supported. (#898, #902)
+
+### Fixed
+
+- Native terminals now deliver their final admitted output before reporting completion or replacing a restarted process. Fast commands and resumed harnesses no longer lose their last response, and output-limit or consumer failures cannot appear as successful terminal exits. (#832, #901)
+- Terminal clients now receive a successful process exit status before its terminal is removed, so a clean completion can be distinguished from a kill or departure without retaining an exited tile. (#899, #900)
+
 ## [0.23.0] - 2026-09-27
 
 ### Added
