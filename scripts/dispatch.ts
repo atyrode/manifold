@@ -3,12 +3,13 @@
  * The ready queue. `bun scripts/dispatch.ts [--next|--claims] [--limit N] [--json]
  * [--repo owner/name]`.
  *
- * `--next` first answers whether integration is drained: any open non-draft pull request refuses
- * new work. Otherwise it lists ready issues in the order `docs/TRIAGE.md` §Claims and dispatch
- * defines: priority, then oldest. It removes what someone else already holds: an issue with an
- * open pull request against it, or a `Claim:` comment from another login with no later `Release:`
- * and less than CLAIM_HOURS old. Your own claims stay in the list, because resuming your own work
- * is the normal case. `--claims` shows exactly what `--next` removed.
+ * `--next` first answers whether integration is drained: any open non-draft pull request outside
+ * the ship integration lane refuses new work. Otherwise it lists ready issues in the order
+ * `docs/TRIAGE.md` §Claims and dispatch defines: priority, then oldest. It removes what someone
+ * else already holds: an issue with an open pull request against it, or a `Claim:` comment from
+ * another login with no later `Release:` and less than CLAIM_HOURS old. Your own claims stay in
+ * the list, because resuming your own work is the normal case. `--claims` shows exactly what
+ * `--next` removed.
  *
  * This script never writes. Claiming is a comment you post; the claim is the comment, not a
  * label, an assignee or a row in a second tracker.
@@ -22,6 +23,7 @@ const HOUR_MS = 3_600_000;
 const DAY_MS = 86_400_000;
 const DEFAULT_LIMIT = 10;
 const CLOSING_REFERENCE = /(?:Closes|Fixes|Resolves|Refs)\s+#(\d+)\b/gi;
+const VERDICT = /^## Verdict:\s*(\w+)/;
 
 type Priority = (typeof PRIORITY)[number] | "-";
 
@@ -58,11 +60,42 @@ export interface DrainPull {
   readonly title: string;
   readonly url: string;
   readonly isDraft: boolean;
+  /** The armed auto-merge method (`SQUASH`, `REBASE` or `MERGE`), or null when none is armed. */
+  readonly autoMerge: string | null;
+  /** Committer date of the current head commit, or null when it was not resolved. */
+  readonly headCommittedAt: string | null;
+  /** Conversation comments, oldest first; `## Verdict:` reviews live here. */
+  readonly comments: readonly Pick<QueueComment, "body" | "createdAt">[];
 }
 
-/** Non-draft work is integration work; the ready issue queue stays closed until it drains. */
+/**
+ * The newest `## Verdict:` comment is `pass` and was posted after the head commit: a push
+ * invalidates earlier verdicts (`docs/TRIAGE.md` §Pull requests). GitHub exposes no push time, so
+ * the head commit's committer date is the bound. Anything unresolved is not current; an
+ * unresolved head parses to NaN, which no verdict postdates.
+ */
+function currentPassVerdict(pull: DrainPull): boolean {
+  const head = Date.parse(pull.headCommittedAt ?? "");
+  let newest: { readonly at: number; readonly pass: boolean } | undefined;
+  for (const comment of pull.comments) {
+    const verdict = VERDICT.exec(comment.body.trimStart());
+    if (verdict === null) continue;
+    const at = Date.parse(comment.createdAt);
+    if (Number.isNaN(at)) return false;
+    if (newest === undefined || at >= newest.at) newest = { at, pass: verdict[1] === "pass" };
+  }
+  return newest !== undefined && newest.pass && newest.at > head;
+}
+
+/**
+ * Non-draft work is integration work, and the ready issue queue stays closed until it drains. A
+ * reviewed head with squash auto-merge armed is in the ship integration lane (`docs/TRIAGE.md`
+ * §Runbooks › ship), which owns its integration; it no longer holds new work back.
+ */
 export function drainingPulls(pulls: readonly DrainPull[]): readonly DrainPull[] {
-  return pulls.filter((pull) => !pull.isDraft).sort((left, right) => left.number - right.number);
+  return pulls
+    .filter((pull) => !pull.isDraft && !(pull.autoMerge === "SQUASH" && currentPassVerdict(pull)))
+    .sort((left, right) => left.number - right.number);
 }
 
 /**
@@ -151,6 +184,21 @@ function asArray(value: unknown): readonly unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
+const REVIEW_EVIDENCE = `query($owner: String!, $name: String!, $number: Int!, $head: GitObjectID!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) { headRefOid comments(last: 100) { nodes { body createdAt } } }
+    object(oid: $head) { ... on Commit { committedDate } }
+  }
+}`;
+
+/** GraphQL repository variables: `gh` fills its placeholders from the current checkout. */
+function repoFields(repo: string | undefined): readonly string[] {
+  if (repo === undefined) return ["-F", "owner={owner}", "-F", "name={repo}"];
+  const match = /^([^/\s]+)\/([^/\s]+)$/.exec(repo);
+  if (match === null) throw new Error("--repo needs owner/name");
+  return ["-f", `owner=${match[1] ?? ""}`, "-f", `name=${match[2] ?? ""}`];
+}
+
 if (import.meta.main) {
   const args = process.argv.slice(2);
   const valueOf = (flag: string): string | undefined => {
@@ -215,6 +263,47 @@ if (import.meta.main) {
     ];
   });
 
+  // Verdict evidence is read only for armed squash auto-merges. The newest verdict, if any, is
+  // among the newest 100 comments; the head commit is the listed head SHA. A head that moved
+  // between the two reads, or a verdict older than that window, is therefore not current.
+  const reviewEvidence = async (
+    number: number,
+    head: string,
+  ): Promise<Pick<DrainPull, "headCommittedAt" | "comments">> => {
+    const repository = asRecord(
+      asRecord(
+        asRecord(
+          JSON.parse(
+            await gh([
+              "api",
+              "graphql",
+              "-f",
+              `query=${REVIEW_EVIDENCE}`,
+              ...repoFields(repo),
+              "-F",
+              `number=${String(number)}`,
+              "-f",
+              `head=${head}`,
+            ]),
+          ),
+        )["data"],
+      )["repository"],
+    );
+    const pull = asRecord(repository["pullRequest"]);
+    const commit = repository["object"];
+    const committedAt =
+      text(pull, "headRefOid") === head && commit !== null && commit !== undefined
+        ? text(commit, "committedDate")
+        : "";
+    return {
+      headCommittedAt: committedAt === "" ? null : committedAt,
+      comments: asArray(asRecord(pull["comments"])["nodes"]).map((comment) => ({
+        body: text(comment, "body"),
+        createdAt: text(comment, "createdAt"),
+      })),
+    };
+  };
+
   const pullBodies = new Map<number, string>();
   const openPulls: DrainPull[] = [];
   for (const raw of asArray(
@@ -228,7 +317,7 @@ if (import.meta.main) {
         "--limit",
         "200",
         "--json",
-        "number,title,url,body,isDraft,headRefName",
+        "number,title,url,body,isDraft,headRefName,headRefOid,autoMergeRequest",
       ]),
     ),
   )) {
@@ -236,11 +325,20 @@ if (import.meta.main) {
     const number = record["number"];
     if (typeof number !== "number") continue;
     pullBodies.set(number, text(record, "body"));
+    const isDraft = record["isDraft"] === true;
+    const request = record["autoMergeRequest"];
+    const method = request === null || request === undefined ? "" : text(request, "mergeMethod");
+    const autoMerge = method === "" ? null : method;
+    const head = text(record, "headRefOid");
     openPulls.push({
       number,
       title: text(record, "title"),
       url: text(record, "url"),
-      isDraft: record["isDraft"] === true,
+      isDraft,
+      autoMerge,
+      ...(!wantClaims && !isDraft && autoMerge === "SQUASH" && head !== ""
+        ? await reviewEvidence(number, head)
+        : { headCommittedAt: null, comments: [] }),
     });
   }
 
@@ -251,15 +349,23 @@ if (import.meta.main) {
         console.log(
           JSON.stringify(
             {
-              blocked: "open non-draft pull requests must drain before new work",
-              pulls: draining,
+              blocked:
+                "open non-draft pull requests outside the integration lane must drain before new work",
+              pulls: draining.map(({ number, title, url, isDraft }) => ({
+                number,
+                title,
+                url,
+                isDraft,
+              })),
             },
             null,
             2,
           ),
         );
       } else {
-        console.error("Dispatch blocked: drain every open non-draft pull request first.");
+        console.error(
+          "Dispatch blocked: drain every open non-draft pull request outside the integration lane first.",
+        );
         for (const pull of draining) {
           console.error(`- #${String(pull.number)} ${pull.title} (${pull.url})`);
         }

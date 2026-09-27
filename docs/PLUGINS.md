@@ -504,7 +504,8 @@ Your component receives
 | `presence`           | Required `readonly Attendance[]`: attendance supplied by the mount site.                                                              |
 | `soloOccupants?`     | `ReadonlyMap<string, PlacementItem>`: the index's single-occupant composition fold, which an embedded renderer cannot compute itself. |
 | `navigate`           | Required `(path: string) => void` navigation callback.                                                                                |
-| `depth?`             | Container nesting depth: 1 when routed, 2 when embedded one level down.                                                               |
+| `depth?`             | Container nesting depth: 1 at the root (routed, or a workspace container leaf), 2 when embedded one level down.                       |
+| `routed?`            | Whether this mount is the route (publishes view state and location, owns the viewport, answers Escape). Absent ≡ `depth === 1`.       |
 | `projectionScope?`   | `ProjectionScope \| null`: mounted ancestry and its root attendance client (§6 Mounted location and shared titlebars).                |
 | `frame?`             | `"window"` (default, outer frame) or `"tile"` (square seams against adjacent leaves).                                                 |
 | `titlebarDragProps?` | `TitlebarDragProps`: drag affordance to forward to the shared titlebar.                                                               |
@@ -1309,6 +1310,12 @@ their work invisible without deleting it, which is the one outcome worse than a 
   A leaf may also carry **`arg`**, an opaque record of YOUR OWN naming what that tile is
   showing it for; the panel reads it off `PanelProps.arg` and opens more of its own tiles with
   `host.openPanel` (below). Absent ≡ no argument, which is every panel that takes none.
+  A workspace leaf may instead name a CONTAINER, `{ kind: "container", containerId }`: the
+  workspace mounts that canvas or composition inline with its own renderer, so your panel and a
+  composition of live terminals your panel births into (`core.terminals.create` with
+  `placement: "tile"`) share one screen with no `navigate()` hop. Commit the tree through
+  `core.space.setLayout`; it refuses a container the caller cannot read (CONTRACTS.md §Workspace
+  layout).
 - **`seats`** say where your panels ask to SIT in a workspace nobody has arranged yet. The
   engine composes that default from the enabled roster's seats — one row of leaves in `order`,
   `ratio` weighting each against its siblings — so there is no default-layout constant to edit

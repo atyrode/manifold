@@ -5,10 +5,11 @@ description: Pick up ready manifold work — claim it, implement it to its accep
 
 Read [`docs/TRIAGE.md`](../../../docs/TRIAGE.md) and execute §Runbooks › **dispatch**.
 
-Command: `bun scripts/dispatch.ts --next --limit 5`. A non-draft PR closes dispatch: review,
-correct, hold or ship it before claiming anything new. Otherwise claim before the first substantive
-commit, work in your own worktree on `<prefix>/<issue>-<slug>` from current `origin/main`, and take
-at most two claims at once.
+Command: `bun scripts/dispatch.ts --next --limit 5`. A non-draft PR outside the ship integration
+lane closes dispatch: review, correct, hold or ship it before claiming anything new. A PR with
+squash auto-merge armed and a pass verdict newer than its head commit is in the lane and counts as
+drained. Otherwise claim before the first substantive commit, work in your own worktree on
+`<prefix>/<issue>-<slug>` from current `origin/main`, and take at most two claims at once.
 
 Read the issue's latest follow-through first. An already-merged implementation needs its recorded
 operational action, not a duplicate implementation PR; defects follow the runbook's repair path.

@@ -9,6 +9,7 @@ import {
   type AuthoringHandle,
 } from "@manifold/plugin";
 import {
+  ContainerRenderer,
   ContainerRouteProvider,
   TileTree,
   WORKSPACE_TREE_CLASSES,
@@ -16,8 +17,10 @@ import {
   carriesItem,
   projectLocalPresence,
   setVantage,
+  useContainerRoute,
   useNotice,
   usePolledResource,
+  useProjection,
   useVantage,
   ATTENDANCE_RESOURCE,
   INDEX_RESOURCE,
@@ -27,6 +30,7 @@ import {
   type WorkspaceSidebarState,
 } from "@manifold/plugin/hooks";
 import { ContainerResponseSchema } from "@manifold/protocol";
+import { ControlIcon } from "@manifold/ui";
 import type {
   Container,
   Attendance,
@@ -71,17 +75,106 @@ import { WEB_CHANGELOG, WEB_VERSION_LABEL } from "./web-version.ts";
 
 /**
  * THE workspace shell — and it is a composition, not a frame with plugin holes cut in it
- * (D2). A principal's layout is a `TileLayout` whose leaves are `panel` refs, rendered by
- * the same {@link TileTree} every composition uses: the sidebar and the container view are
- * panes, and the seam between them is an ordinary divider. One tree vocabulary everywhere,
- * which is why the v0.5 tiling behaviour (seam bands, ratio normalization, drag) applies to
- * the workspace for free and needed no new code — only a third skin.
+ * (D2). A principal's layout is a `TileLayout` whose leaves are `panel` refs — and, since
+ * issue #201, `container` refs mounted inline — rendered by the same {@link TileTree} every
+ * composition uses: the sidebar and the container view are panes, and the seam between them
+ * is an ordinary divider. One tree vocabulary everywhere, which is why the v0.5 tiling
+ * behaviour (seam bands, ratio normalization, drag) applies to the workspace for free and
+ * needed no new code — only a third skin.
  *
  * What this file still owns is what a shell owns: the layout (fetch, optimistic drag, one
  * committed write per gesture), the workspace index the container renderers need as props, and the
  * two contexts its own two panels read. Everything a user recognises AS a feature — the
  * sections, the drawing tool, the terminal actions — is a plugin.
  */
+
+interface WorkspaceContainerLeafProps {
+  readonly containerId: string;
+  /** Prunes this leaf from the caller's own tree through `core.space.setLayout`. */
+  readonly onRemove: () => void;
+}
+
+/**
+ * A `container` leaf of the workspace tree: the referenced container's OWN renderer, mounted
+ * in place (issue #201). It is the call a composition makes for a container leaf and the
+ * routed container view makes for the route — `ContainerRenderer` keyed by the container's
+ * discipline, through the projection registry — so the workspace paints no container of its
+ * own and learns no discipline's name.
+ *
+ * Mounted at the ROOT but NOT as the route (`depth` 1, `routed: false`). Depth 1 because
+ * nothing above it holds a room: its own content renders exactly as the routed view's would —
+ * a composition's terminal tiles, and a canvas's portals, live and taking input. Not routed,
+ * so the container-view panel stays the one mount that publishes this device's view state,
+ * owns the canvas viewport seam, reports to the shell and answers Escape. Engaging this mount
+ * publishes no location (it has no attendance scope), so this device reads as not engaged in
+ * the routed container until the reader returns to it.
+ *
+ * The discipline comes from the index, which lists exactly the containers this principal may
+ * read. A container the index does not hold — deleted, or no longer readable — is the
+ * engine's named placeholder with the remove control, never a guess: the door keeps
+ * accepting a container leaf the stored tree already shows, so this is the recovery.
+ */
+function WorkspaceContainerLeaf({
+  containerId,
+  onRemove,
+}: WorkspaceContainerLeafProps): ReactElement | null {
+  const host = useHostServices();
+  const route = useContainerRoute();
+  const ErrorBoundary = useProjection().ErrorBoundary;
+  const { containers } = route;
+  if (containers === null) return null;
+  const container = containers.find((candidate) => candidate.id === containerId);
+  if (container === undefined) {
+    return (
+      <PluginPlaceholder name={`Container ${containerId}`} state="missing" onRemove={onRemove} />
+    );
+  }
+  const label = container.name;
+  return (
+    <section
+      className="workspace-canvas"
+      aria-label={`Workspace view ${label}`}
+      data-workspace-container={containerId}
+    >
+      <ErrorBoundary key={containerId}>
+        <ContainerRenderer
+          layout={container.discipline}
+          host={host}
+          containerId={containerId}
+          containers={containers}
+          presence={route.presence}
+          soloOccupants={route.soloOccupants}
+          navigate={route.navigate}
+          depth={1}
+          routed={false}
+          titlebarExtras={
+            <>
+              <button
+                type="button"
+                className="node-titlebar__ctl"
+                data-action={SPACE_SET_LAYOUT_ACTION}
+                aria-label={`Remove ${label} from the workspace`}
+                title="Remove from the workspace"
+                onClick={onRemove}
+              >
+                <ControlIcon kind="park" size={12} />
+              </button>
+              <button
+                type="button"
+                className="node-titlebar__ctl"
+                aria-label={`Open ${label}`}
+                title="Open this container"
+                onClick={() => route.navigate(`/p/${encodeURIComponent(containerId)}`)}
+              >
+                <ControlIcon kind="maximize" size={12} />
+              </button>
+            </>
+          }
+        />
+      </ErrorBoundary>
+    </section>
+  );
+}
 
 /**
  * The FALLBACK cadence of the workspace index (ADR 0012, wave 2).
@@ -385,25 +478,33 @@ export function WorkspaceHost({
   const renderLeaf = useCallback(
     (node: Tile): ReactNode => {
       const ref = node.ref;
-      if (ref === null || ref.kind !== "panel") {
-        // `core.space.setLayout` refuses a non-panel, non-spacer leaf, so this is either an
-        // empty pane, a spacer (its own inert render, never a placeholder) or a tree written
-        // by a client that spoke a different vocabulary. Named, and removable.
-        return ref?.kind === "spacer" ? (
-          <div className="workspace-tile-spacer" aria-hidden="true" />
-        ) : (
-          <PluginPlaceholder
-            name={ref === null ? "empty pane" : ref.kind}
-            state="unknown"
+      if (ref?.kind === "panel") {
+        return (
+          <PanelOutlet
+            panelId={ref.panelId}
+            tileId={node.id}
+            arg={node.arg}
             onRemove={() => pruneLeaf(node.id)}
           />
         );
       }
-      return (
-        <PanelOutlet
-          panelId={ref.panelId}
-          tileId={node.id}
-          arg={node.arg}
+      if (ref?.kind === "container") {
+        return (
+          <WorkspaceContainerLeaf
+            containerId={ref.containerId}
+            onRemove={() => pruneLeaf(node.id)}
+          />
+        );
+      }
+      // `core.space.setLayout` refuses terminal and element leaves, so this is either an
+      // empty pane, a spacer (its own inert render, never a placeholder) or a tree written
+      // by a client that spoke a different vocabulary. Named, and removable.
+      return ref?.kind === "spacer" ? (
+        <div className="workspace-tile-spacer" aria-hidden="true" />
+      ) : (
+        <PluginPlaceholder
+          name={ref === null ? "empty pane" : ref.kind}
+          state="unknown"
           onRemove={() => pruneLeaf(node.id)}
         />
       );

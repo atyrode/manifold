@@ -363,8 +363,9 @@ interface RemoteSelectionRect {
  * The canvas takes the NEUTRAL projection props and nothing else: an address, the index facts
  * the placement algebra needs locally, and how deep it is nested. Who this device is comes
  * from `host`; the routed extras — report your connection state, is this point over the
- * sidebar — come from {@link useContainerRoute}, and only while this mount IS the route (depth 1).
- * That is what lets one component be both the routed canvas and a tile leaf's embedded one.
+ * sidebar — come from {@link useContainerRoute}, and only while this mount IS the route
+ * (`routed`, absent ≡ depth 1). That is what lets one component be the routed canvas, a
+ * workspace container leaf beside it, and a tile leaf's embedded one.
  */
 export function CanvasView({
   host,
@@ -373,6 +374,7 @@ export function CanvasView({
   containers,
   soloOccupants = NO_SOLO_OCCUPANTS,
   depth = 1,
+  routed = depth === 1,
   projectionScope,
   frame = "window",
   titlebarDragProps,
@@ -381,7 +383,6 @@ export function CanvasView({
 }: ContainerRendererProps) {
   const { notify } = useNotice();
   const route = useContainerRoute();
-  const routed = depth === 1;
   /*
     THIS ROOM'S OCCUPANT PIPE (A4): the canvas dials the room it renders with the host's grant.
     Its terminals are born on this channel and typed into through it, so it is also what a
@@ -564,11 +565,11 @@ export function CanvasView({
    * send path.
    *
    * The routed canvas is the one that speaks for this device: an embedded canvas inside a
-   * composition tile holds its own tool, and two publishers of one per-principal state would
-   * fight over it. `depth === 1` is that test.
+   * composition tile, or a workspace container leaf beside the route, holds its own tool, and
+   * two publishers of one per-principal state would fight over it. `routed` is that test.
    */
   useEffect(() => {
-    if (depth !== 1) return;
+    if (!routed) return;
     const send = (): void => client.sendPresence({ vantage: currentVantage() });
     const offVantage = subscribeVantage(send);
     const offStatus = client.on("status", (status) => {
@@ -579,17 +580,17 @@ export function CanvasView({
       offVantage();
       offStatus();
     };
-  }, [client, depth]);
+  }, [client, routed]);
 
   useEffect(() => {
-    if (depth !== 1) return;
+    if (!routed) return;
     setVantage({ tool });
-  }, [depth, tool]);
+  }, [routed, tool]);
 
   useEffect(() => {
-    if (depth !== 1) return;
+    if (!routed) return;
     setVantage({ editingElementId: editingId });
-  }, [depth, editingId]);
+  }, [routed, editingId]);
 
   useEffect(() => {
     const invalidate = (): void => setSceneRevision((value) => value + 1);

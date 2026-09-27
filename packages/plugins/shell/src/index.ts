@@ -130,7 +130,7 @@ export const spaceManifest: PluginManifest = {
   title: "Workspace Space",
   description:
     "Stores each principal's workspace tile tree, and places items into the containers they compose.",
-  capabilities: ["containers:write"],
+  capabilities: ["containers:read", "containers:write"],
   essential: true,
   contributes: {
     panels: [],
@@ -149,7 +149,9 @@ export const spaceActions = [
   /**
    * Writing a layout needs no capability: dispatch already refuses container-scoped tokens, and a
    * workspace tree is per principal — the only tree this door can write is the caller's own,
-   * so there is nothing to attenuate. A layout is chrome that happens to be shared state.
+   * so there is nothing to attenuate. A layout is chrome that happens to be shared state. The
+   * one leaf that names somebody else's node — a `container` shown inline — is asked
+   * `containers:read` AT that container by the handler, which is why the manifest declares it.
    */
   defineAction({
     name: "setLayout",

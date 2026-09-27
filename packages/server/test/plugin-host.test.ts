@@ -22,6 +22,7 @@ import {
   JOB_OWNER_PROTOCOL_VERSION,
   JobDeploymentReviewSchema,
   MAX_PANEL_ARG_BYTES,
+  formatManifoldUri,
 } from "@manifold/protocol";
 import {
   ENGINE_AUTHOR_ACTION,
@@ -960,20 +961,124 @@ describe("core.space.setLayout", () => {
     fixture.store.close();
   });
 
-  test("a leaf that is not a panel is refused", async () => {
+  test("an item leaf is refused: the workspace shows panels and containers, not terminals", async () => {
     const fixture = await hostFixture();
 
     const outcome = await fixture.host.dispatch(fixture.owner, "core.space.setLayout", {
       layout: layoutWith({ kind: "terminal", terminalId: "s1" }),
     });
 
-    // A workspace shows panels. A terminal or container ref at this level is a category error
-    // the renderer could not honour, so it is refused rather than stored and ignored.
-    expect(denial(outcome)).toEqual({
-      rule: "refused",
-      message: 'workspace leaves hold panels, not "terminal"',
-    });
+    // A terminal lives in a container whose document owns its lifecycle (its last leaf reaps
+    // it), so a terminal at this level is refused rather than stored and ignored.
+    const refused = denial(outcome);
+    expect(refused.rule).toBe("refused");
+    expect(refused.message).toContain('"terminal"');
     expect(fixture.store.workspaceLayout(fixture.owner.principal.id)).toBeNull();
+    fixture.store.close();
+  });
+
+  /** A plugin panel beside an inline container: the one-view shape issue #201 asks for. */
+  function panelBesideContainer(containerId: string, ratios = [0.3, 0.7]): TileLayout {
+    return {
+      root: { id: "root", dir: "row", ratios, children: ["panel", "view"], ref: null },
+      panel: {
+        id: "panel",
+        dir: null,
+        ratios: [],
+        children: [],
+        ref: { kind: "panel", panelId: "core.shell.sidebar" },
+      },
+      view: {
+        id: "view",
+        dir: null,
+        ratios: [],
+        children: [],
+        ref: { kind: "container", containerId },
+      },
+    };
+  }
+
+  function composition(fixture: HostFixture, name: string): string {
+    const id = fixture.runtime.newId();
+    fixture.store.createContainer({
+      id,
+      name,
+      createdAt: fixture.runtime.now(),
+      discipline: "composition",
+    });
+    return id;
+  }
+
+  test("a container leaf is stored beside a panel when the caller may read that container", async () => {
+    const fixture = await hostFixture();
+    const reader = context(fixture, ["containers:read", "containers:write"]);
+    const layout = panelBesideContainer(composition(fixture, "launchpad"));
+
+    const outcome = await fixture.host.dispatch(reader, "core.space.setLayout", { layout });
+
+    expect(outcome).toEqual({ ok: true, result: {} });
+    expect(fixture.store.workspaceLayout(reader.principal.id)).toEqual(layout);
+    fixture.store.close();
+  });
+
+  test("a container leaf naming an unknown or unreadable container is refused by id", async () => {
+    const fixture = await hostFixture();
+    const reader = context(fixture, ["containers:read", "containers:write"]);
+    const hidden = composition(fixture, "hidden");
+    // Readable everywhere EXCEPT here: the door must ask at the container, not at the root.
+    fixture.auth.grant(
+      {
+        principal: { kind: "principal", id: reader.principal.id },
+        node: formatManifoldUri({ kind: "container", containerId: hidden }),
+        caps: ["containers:read"],
+        effect: "deny",
+        reach: "subtree",
+      },
+      fixture.owner,
+    );
+
+    const unknown = denial(
+      await fixture.host.dispatch(reader, "core.space.setLayout", {
+        layout: panelBesideContainer("no-such-container"),
+      }),
+    );
+    const unreadable = denial(
+      await fixture.host.dispatch(reader, "core.space.setLayout", {
+        layout: panelBesideContainer(hidden),
+      }),
+    );
+
+    expect(unknown.rule).toBe("refused");
+    expect(unknown.message).toContain('"no-such-container"');
+    expect(unreadable.rule).toBe("refused");
+    expect(unreadable.message).toContain(`"${hidden}"`);
+    // One sentence for both: the door is no oracle for which ids exist behind a denied read.
+    expect(unreadable.message.replace(hidden, "")).toBe(
+      unknown.message.replace("no-such-container", ""),
+    );
+    expect(fixture.store.workspaceLayout(reader.principal.id)).toBeNull();
+    fixture.store.close();
+  });
+
+  test("a seated container that is later deleted never bricks the caller's layout writes", async () => {
+    const fixture = await hostFixture();
+    const reader = context(fixture, ["containers:read", "containers:write"]);
+    const containerId = composition(fixture, "short-lived");
+    const seated = panelBesideContainer(containerId);
+    expect(await fixture.host.dispatch(reader, "core.space.setLayout", { layout: seated })).toEqual(
+      { ok: true, result: {} },
+    );
+    fixture.store.deleteContainer(containerId);
+
+    // A divider drag still carries the stale leaf: the stored tree already showed it, so it
+    // passes and renders the placeholder whose remove control prunes it (D4's rule for panels).
+    const dragged = panelBesideContainer(containerId, [0.4, 0.6]);
+    const outcome = await fixture.host.dispatch(reader, "core.space.setLayout", {
+      layout: dragged,
+    });
+
+    expect(outcome).toEqual({ ok: true, result: {} });
+    expect(fixture.store.workspaceLayout(reader.principal.id)).toEqual(dragged);
     fixture.store.close();
   });
 

@@ -1680,6 +1680,7 @@ const PLACEHOLDER_LABELS: Readonly<Record<PlaceholderState, string>> = {
   disabled: "disabled",
   unknown: "unknown plugin",
   unavailable: "no renderer",
+  missing: "not found",
 };
 
 export type PluginPlaceholderProps = ProjectionPlaceholderProps;

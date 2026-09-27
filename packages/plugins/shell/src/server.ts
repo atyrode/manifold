@@ -22,7 +22,17 @@ import {
  */
 interface LayoutCtx {
   readonly principal: { readonly id: string };
+  /**
+   * The one authority question a container leaf asks: may this caller READ that container?
+   * The same `containers:read`-at-the-node question the room door asks before it lets a
+   * socket join, so a leaf the door accepts is a leaf whose room the renderer can open.
+   */
+  readonly auth: {
+    allows(cap: "containers:read", ref: { kind: "container"; containerId: string }): boolean;
+  };
   readonly store: {
+    workspaceLayout(principalId: string): TileLayout | null;
+    getContainer(id: string): { readonly id: string } | null;
     setWorkspaceLayout(principalId: string, layout: TileLayout): void;
   };
   /**
@@ -88,17 +98,41 @@ function placedTopic(
   return ref.kind === "structure" ? null : ref;
 }
 
+/** Every container a workspace tree already shows, by id. */
+function containerLeafIds(layout: TileLayout | null): ReadonlySet<string> {
+  const ids = new Set<string>();
+  for (const node of Object.values(layout ?? {})) {
+    if (node.ref?.kind === "container") ids.add(node.ref.containerId);
+  }
+  return ids;
+}
+
 /**
- * Validation here is STRUCTURAL ONLY, and that is a decision rather than an omission.
+ * Validation here is STRUCTURAL for panels and spacers, and one READ for containers — both
+ * decisions rather than omissions.
  *
- * The tree must be a tree (`validateTileLayout`) and every occupied leaf must hold a PANEL OR
- * A SPACER — a workspace shows panels, plus the inert furniture `core.arrange`'s Spacer tool
- * writes (issue #89), and a terminal or container ref at this level would be a category error
- * the renderer could not honour. But an UNKNOWN or DISABLED panel id is accepted: panel ids
- * come and go as plugins are enabled, and a layout write that failed because one leaf named a
- * plugin somebody just switched off would mean a disable could lock a principal out of
- * rearranging their own workspace. Those leaves render an inert placeholder naming the
- * plugin, with a remove control that commits the pruned tree back through this same door (D4).
+ * The tree must be a tree (`validateTileLayout`) and every occupied leaf must hold a VIEW: a
+ * PANEL, a SPACER — the inert furniture `core.arrange`'s Spacer tool writes (issue #89) — or a
+ * CONTAINER, which the workspace mounts inline through that container's own renderer, so a
+ * plugin panel and a live terminal tile tree are one addressable view (issue #201). A
+ * terminal or element leaf stays refused: those are ITEMS, and an item lives in a container
+ * whose document owns its lifecycle (a terminal's last leaf reaps it); the workspace is a
+ * per-principal arrangement of views, not a home.
+ *
+ * An UNKNOWN or DISABLED panel id is accepted: panel ids come and go as plugins are enabled,
+ * and a layout write that failed because one leaf named a plugin somebody just switched off
+ * would mean a disable could lock a principal out of rearranging their own workspace. Those
+ * leaves render an inert placeholder naming the plugin, with a remove control that commits
+ * the pruned tree back through this same door (D4).
+ *
+ * A container leaf is different in kind, because its id names a node with authority on it: a
+ * NEWLY written one must name a container that exists and that the caller may read, and is
+ * refused by id otherwise. One sentence answers both conditions, so the door is no oracle for
+ * which ids exist behind a grant the caller lacks. A container the caller's STORED tree
+ * already shows passes unchanged, for the panel rule's reason: a container deleted — or a
+ * read revoked — after it was seated must not make every later divider drag unwritable. That
+ * leaf renders the engine placeholder with the same remove control, and the room door still
+ * refuses to open a container the caller can no longer read.
  *
  * A VACANT leaf — `ref: null` — passes, and now load-bearing rather than incidental: dropping
  * a Stack row or Stack column from `core.arrange`'s palette writes a split holding two empty
@@ -110,9 +144,22 @@ export const spaceHandlers = {
     if (!validateTileLayout(args.layout)) {
       return { refused: "layout is not a valid tile tree" };
     }
+    let seated: ReadonlySet<string> | null = null;
     for (const node of Object.values(args.layout)) {
-      if (node.ref === null || node.ref.kind === "panel" || node.ref.kind === "spacer") continue;
-      return { refused: `workspace leaves hold panels, not "${node.ref.kind}"` };
+      const ref = node.ref;
+      if (ref === null || ref.kind === "panel" || ref.kind === "spacer") continue;
+      if (ref.kind === "container") {
+        seated ??= containerLeafIds(ctx.store.workspaceLayout(ctx.principal.id));
+        if (seated.has(ref.containerId)) continue;
+        if (
+          ctx.store.getContainer(ref.containerId) !== null &&
+          ctx.auth.allows("containers:read", { kind: "container", containerId: ref.containerId })
+        ) {
+          continue;
+        }
+        return { refused: `workspace leaf names no readable container "${ref.containerId}"` };
+      }
+      return { refused: `workspace leaves hold panels or containers, not "${ref.kind}"` };
     }
     ctx.store.setWorkspaceLayout(ctx.principal.id, args.layout);
     // The client commits once at gesture release; intermediate divider frames stay local.
