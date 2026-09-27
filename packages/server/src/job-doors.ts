@@ -61,6 +61,7 @@ export const JobExecuteArgsSchema = JobRequestSchema.pick({
   resourceBindingDigest: PublicJobSchema.shape.resourceBindingDigest.optional(),
   resourceBindings: JobResourceBindingsSchema.optional(),
   agentRun: NativeAgentRunBindingSchema.optional(),
+  expectedServiceBindings: JobRequestSchema.shape.serviceBindings,
 });
 const execute = JobExecuteArgsSchema.omit({ agentRun: true });
 const nativeExecute = JobExecuteArgsSchema;
@@ -81,7 +82,12 @@ const publicSchedule = schedule
   .extend(JobInvocationTargetSchema.shape);
 export const jobDoorSchemas = {
   execute: execute.extend({ pluginId: id }),
-  describe: z.strictObject({ machineId: id, pluginId: id, installationRevision: id.optional() }),
+  describe: z.strictObject({
+    machineId: id,
+    pluginId: id,
+    installationRevision: id.optional(),
+    includeServiceBindings: z.boolean().optional(),
+  }),
   reviewDeployment: JobDeploymentRequestSchema,
   applyDeployment: JobDeploymentApplyArgsSchema,
   readDeployment: JobDeploymentReadArgsSchema,

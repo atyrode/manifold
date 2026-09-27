@@ -296,6 +296,7 @@ export interface GuestJobs {
     machineId: string;
     pluginId: string;
     installationRevision?: string;
+    includeServiceBindings?: boolean;
   }): Promise<JobDescription>;
   describeDeployment(args: {
     machineId: string;

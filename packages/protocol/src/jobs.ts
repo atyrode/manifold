@@ -5,6 +5,7 @@ import {
   ServiceAuthoritySubjectSchema,
   ServiceBindingSchema,
   ServiceConfigurationSchema,
+  ServicePolicySchema,
   ServiceReadArgsSchema,
   ServiceInvokeArgsSchema,
   ServiceRefusalSchema,
@@ -19,8 +20,10 @@ import {
   readsOperatorAnchor,
 } from "./job-resources.ts";
 
+/** Feature floor after v41 agent tools; v38 and v39 stay reserved by drafts. */
+const ISOLATED_JOB_PROTOCOL_VERSION = 42;
 /** Native owner RPC changes independently of hub, session, and transport releases. */
-export const JOB_OWNER_PROTOCOL_VERSION = 41;
+export const JOB_OWNER_PROTOCOL_VERSION = ISOLATED_JOB_PROTOCOL_VERSION;
 
 /**
  * Native owners outlive hub deploys. An unchanged or strictly additive-optional RPC change
@@ -35,13 +38,21 @@ export const JOB_OWNER_PROTOCOL_VERSION = 41;
  * invoking installation. v40 adds operator anchors: `operator.<name>` locations, read-only by
  * construction, and the inventory's `anchorDefinitions`. v41 adds the optional signed native
  * Run identity/expiry and ephemeral tool relay; only explicitly bound jobs use it, and both
- * machine v43 and owner v41 are required. v38 and v39 were reserved by drafts and are never
- * accepted: capability checks compare revisions, so a later change must not reuse them.
- * Revision-pinned policies and ordinary admissions remain unchanged; contextual policies are
- * sent only to owners and machine transports that parse that mode.
+ * machine v43 and owner v41 are required. v42 adds optional signed instance service
+ * references and output-only lease backing locations; both require their capability, and
+ * ordinary requests retain their accepted older owners. v38 and v39 were reserved by drafts
+ * and are never accepted: capability checks compare revisions, so a later change must not
+ * reuse them. Revision-pinned policies and ordinary admissions remain unchanged; contextual
+ * policies are sent only to owners and machine transports that parse that mode.
  */
 export const JOB_OWNER_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  34, 35, 36, 37, 40, 41,
+  34,
+  35,
+  36,
+  37,
+  40,
+  41,
+  ISOLATED_JOB_PROTOCOL_VERSION,
 ]);
 
 export type JobOwnerCapability =
@@ -50,7 +61,9 @@ export type JobOwnerCapability =
   | "boundInputs"
   | "selfServiceRuntime"
   | "operatorAnchors"
-  | "agentTools";
+  | "agentTools"
+  | "serviceBindings"
+  | "outputOnlyLocations";
 const jobOwnerCapabilityVersions: Readonly<Record<JobOwnerCapability, number>> = {
   privateEnv: 35,
   launchBinding: 35,
@@ -58,6 +71,8 @@ const jobOwnerCapabilityVersions: Readonly<Record<JobOwnerCapability, number>> =
   selfServiceRuntime: 37,
   operatorAnchors: 40,
   agentTools: 41,
+  serviceBindings: ISOLATED_JOB_PROTOCOL_VERSION,
+  outputOnlyLocations: ISOLATED_JOB_PROTOCOL_VERSION,
 };
 
 /** Capability support never grants execution authority to an owner outside the accepted set. */
@@ -329,7 +344,14 @@ export const MachineOperationSchema = z
     providesService: z.boolean().optional(),
     workingDirectory: z.strictObject({ locationId: id }).optional(),
     locations: z
-      .array(z.strictObject({ locationId: id, access: z.enum(["read", "write", "create"]) }))
+      .array(
+        z.strictObject({
+          locationId: id,
+          access: z.enum(["read", "write", "create"]),
+          /** Back named output leases only; never mount the backing directory in the job. */
+          outputOnly: z.literal(true).optional(),
+        }),
+      )
       .max(32),
     outputs: z.array(boundOutputName).max(32),
     /**
@@ -389,10 +411,26 @@ export const MachineOperationSchema = z
     (operation) =>
       !operation.workingDirectory ||
       operation.locations.some(
-        (location) => location.locationId === operation.workingDirectory!.locationId,
+        (location) =>
+          location.locationId === operation.workingDirectory!.locationId && !location.outputOnly,
       ),
     {
       message: "The working directory must name a declared location",
+    },
+  )
+  .refine(
+    (operation) =>
+      operation.locations.every(
+        (location, index) =>
+          !location.outputOnly ||
+          (location.access === "write" &&
+            !operation.locations.some(
+              (other, otherIndex) =>
+                otherIndex !== index && other.locationId === location.locationId,
+            )),
+      ),
+    {
+      message: "Output-only backing locations require write access and cannot also be mounted",
     },
   )
   .refine(
@@ -453,6 +491,20 @@ export const MachineHalfSchema = z
     {
       message: "Operator anchors are read-only",
     },
+  )
+  .refine(
+    (machine) =>
+      Object.values(machine.operations).every((operation) =>
+        operation.locations.every(
+          (location) =>
+            !location.outputOnly ||
+            (machine.locations[location.locationId] !== undefined &&
+              machine.locations[location.locationId]!.kind !== "file"),
+        ),
+      ),
+    {
+      message: "Output-only backing locations must name declared directories",
+    },
   );
 export type MachineHalf = z.infer<typeof MachineHalfSchema>;
 export type MachineArtifact = z.infer<typeof MachineArtifactSchema>;
@@ -478,13 +530,22 @@ export function jobOwnerOperationRefusal(
     readsOperatorAnchor(machine, operation)
   )
     return "operator_anchors_protocol_unsupported";
+  if (
+    !jobOwnerSupports(protocolVersion, "outputOnlyLocations") &&
+    operation.locations.some((location) => location.outputOnly)
+  )
+    return "output_only_locations_protocol_unsupported";
   return null;
 }
 
 /** Preserve complete supported declarations; an omitted operation never gains weaker semantics. */
 export function jobOwnerMachine(protocolVersion: number, machine: MachineHalf): MachineHalf | null {
   if (!JOB_OWNER_PROTOCOL_COMPAT_VERSIONS.has(protocolVersion)) return null;
-  if (jobOwnerSupports(protocolVersion, "operatorAnchors")) return machine;
+  if (
+    jobOwnerSupports(protocolVersion, "operatorAnchors") &&
+    jobOwnerSupports(protocolVersion, "outputOnlyLocations")
+  )
+    return machine;
   let operations: MachineHalf["operations"] | undefined;
   for (const [id, operation] of Object.entries(machine.operations)) {
     if (jobOwnerOperationRefusal(protocolVersion, operation, machine) === null) continue;
@@ -493,11 +554,12 @@ export function jobOwnerMachine(protocolVersion: number, machine: MachineHalf): 
   }
   // An older strict parser refuses the anchor name itself, and no retained operation reads it.
   let locations: MachineHalf["locations"] | undefined;
-  for (const [id, location] of Object.entries(machine.locations)) {
-    if (!isOperatorAnchor(location.anchor)) continue;
-    locations ??= { ...machine.locations };
-    delete locations[id];
-  }
+  if (!jobOwnerSupports(protocolVersion, "operatorAnchors"))
+    for (const [id, location] of Object.entries(machine.locations)) {
+      if (!isOperatorAnchor(location.anchor)) continue;
+      locations ??= { ...machine.locations };
+      delete locations[id];
+    }
   if (!operations && !locations) return machine;
   operations ??= machine.operations;
   return Object.keys(operations).length
@@ -557,6 +619,13 @@ export const InspectJobInputsResultSchema = z.strictObject({
     .max(16),
 });
 export type InspectJobInputsResult = z.infer<typeof InspectJobInputsResultSchema>;
+const instanceServiceBindings = z
+  .record(id, ServicePolicySchema.shape.remote.unwrap())
+  .refine(
+    (bindings) =>
+      Object.keys(bindings).length <= 64 &&
+      Object.entries(bindings).every(([serviceId, reference]) => serviceId === reference.serviceId),
+  );
 export const JobRequestSchema = z.strictObject({
   jobId: id,
   machineId: id,
@@ -565,6 +634,8 @@ export const JobRequestSchema = z.strictObject({
   installationRevision: id,
   artifactSha256: hash,
   resourceBindings: JobResourceBindingsSchema.optional(),
+  /** Explicit native instance references, retained in the signed request for reauthorization. */
+  serviceBindings: instanceServiceBindings.optional(),
   input: z
     .record(component, z.union([z.string().max(65536), z.number().finite(), z.boolean()]))
     .refine(
@@ -597,7 +668,10 @@ export type JobRequest = z.infer<typeof JobRequestSchema>;
 /** Check before signing or replaying admission; never strip fields from a signed request. */
 export function jobOwnerRequestRefusal(
   protocolVersion: number,
-  request: Pick<JobRequest, "inputs" | "limits" | "terminal" | "agentRunId" | "agentRunExpiresAt">,
+  request: Pick<
+    JobRequest,
+    "inputs" | "limits" | "terminal" | "agentRunId" | "agentRunExpiresAt" | "serviceBindings"
+  >,
 ): string | null {
   if (!JOB_OWNER_PROTOCOL_COMPAT_VERSIONS.has(protocolVersion)) return "owner_protocol_unsupported";
   if (
@@ -612,6 +686,11 @@ export function jobOwnerRequestRefusal(
     (request.inputs !== undefined || request.limits.inputBytes !== undefined)
   )
     return "bound_inputs_protocol_unsupported";
+  if (
+    request.serviceBindings !== undefined &&
+    !jobOwnerSupports(protocolVersion, "serviceBindings")
+  )
+    return "service_bindings_protocol_unsupported";
   return null;
 }
 
@@ -764,6 +843,8 @@ export const JobDescriptionSchema = z.strictObject({
         ready: z.boolean(),
         reason: id.nullable(),
         resourceBindingDigest: hash,
+        /** Opt-in current instance identities, not credentials or general policy documents. */
+        serviceBindings: instanceServiceBindings.optional(),
       }),
     )
     .optional(),
