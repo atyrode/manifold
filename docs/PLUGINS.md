@@ -2496,12 +2496,16 @@ is involved, as for `terminals:*`), and a target that is not a container is refu
 that dispatch executes and every schedule it registers then carries `containers:write` bound to
 that container alone, and so does their `onJobSettled`: a door it opens through
 `ctx.actions.call` sees the cap in `ctx.auth.caps`, and `ctx.auth.allows(cap, ref)` answers true
-at that container and false at every other one, the root included; `ctx.outsideScope` refuses
-the others for a container-graded door. `containers:read` works the same way. Only governed
-doors carry it, `delegates` stay native-only, and a door without a container target lends no
-container authority. The wake loses it when the pressing credential is revoked or expires, or a
-grant row stops allowing it at that container; and work carrying it is never root-class, even
-when an owner pressed.
+at that container and false at every other one, the root included. A container-graded door
+(`scope: "container"`) opened that way runs scoped to that container: `ctx.containerScope`,
+`ctx.auth.containerScope` and `ctx.outsideScope` name it exactly as for a container-scoped
+token, so a door that already honours a scoped token confines itself. `containers:read` works
+the same way. Only governed doors grant it, `delegates` stay native-only, and a door without a
+container target lends no container authority — opened by such a run, it lends only the carried
+caps it declares itself, and a door declaring none leaves the next run with none at all. The wake
+loses it when the pressing credential is revoked or expires, or a grant row stops allowing it at
+that container; and work carrying it is never root-class through any refresh, even when an owner
+pressed, and cannot sponsor an Agent.
 
 Raw follow/output bytes can contain secrets. Publish only your product's safe metadata
 onto its public stream; keep raw inputs, stdout/stderr, prompts and private output bodies

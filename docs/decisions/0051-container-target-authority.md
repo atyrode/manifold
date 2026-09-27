@@ -46,32 +46,47 @@ write — the widening the operator's ruling excludes.
    are: nothing is installed at a container, so there is no revision to consent to. A caller that
    lacks the cap there is refused `forbidden` at the press.
 
-2. **Representation: container grants, bound and hub-side.** `AuthContext.containerGrants` is a
-   bounded list of `{ containerId, caps }` (`containers:read` / `containers:write`, at most 64
-   grants). A carried cap is NOT in the flat `caps`. The native bridge of a governed dispatch drops
-   its container-targeted caps from the flat ceiling and carries exactly the grants its admission
-   discharged. The list never enters `CredentialReference` or the signed job request, whose
-   credential a machine owner parses strictly: the hub persists it beside the request
-   (`machine_jobs.container_grants`, nullable; `JobScheduleSpec.containerGrants`, optional) and
-   hands it to `restoreCredential` explicitly. The owner RPC is unchanged.
+2. **Representation: container grants, carried by the lineage and kept hub-side.**
+   `AuthContext.containerGrants` is a bounded list of `{ containerId, caps }` (`containers:read` /
+   `containers:write`, at most 64 grants). A carried cap is NOT in the flat `caps`. The native
+   bridge of a governed dispatch drops its container-targeted caps from the flat ceiling and
+   carries exactly the grants its admission discharged. `CredentialReference` carries the list,
+   so `credentialReference` and `restoreCredential` round-trip it and every existing refresh of a
+   live context stays exactly as confined as the context. The one place a reference leaves the
+   hub, the signed job request whose credential a machine owner parses strictly, omits it: the
+   hub persists it beside the request (`machine_jobs.container_grants`, nullable;
+   `JobScheduleSpec.containerGrants`, optional), every reservation must state it, and every
+   restore of a job's authority that is handed onward (the wake, a deferred start, an invocation
+   child) reads the request's credential together with that column. The owner RPC is unchanged.
 
-3. **Evaluation.** `effectiveCaps` answers a carried-only cap at and beneath its container and
-   removes it everywhere else, the workspace root included; the waterfall still decides at the
-   container. `ctx.auth.caps` lists carried caps (they are held), while `allows` says where. A
-   credential carrying grants — even an empty list — is never root-class, whoever pressed. A door
-   graded by a `requirements` target is admitted by that target. A `scope: "container"` door with
-   flat caps opens on carried authority only at the containers that carry it, and
-   `ctx.outsideScope` refuses every other container for that dispatch, as it does for a scoped
-   token; a workspace-graded door never opens on it.
+3. **Evaluation: presence is confinement.** For a context carrying the list, even an empty one,
+   `effectiveCaps` answers a container capability only at and beneath a container a grant names it
+   for and removes it everywhere else, the workspace root included. Neither a flat cap nor the
+   absence of a grant restores the unconfined answer. The waterfall still decides at the
+   container. `ctx.auth.caps` lists the carried caps (they are held) in place of any flat
+   container caps, while `allows` says where. A context carrying the list is never root-class,
+   whoever pressed. An Agent's stored sponsor lineage has no room for the list, so such a context
+   never sponsors an Agent or Run.
 
-4. **Carriage.** Every job the dispatch executes and every schedule it registers keeps the grants,
-   and so does every occurrence. `onJobSettled` restores them with the job's credential, so the
-   wake's `ctx.actions.call` is graded with them at the callee, and jobs the wake posts keep them.
-   A door without container targets lends no container authority: under a lineage that carries
-   some, its native bridge carries the empty list, staying confined without lending anything.
-   Invocation children carry none.
+4. **Admission of other doors under carried authority.** A door graded by a `requirements`
+   target is admitted by that target. A `scope: "container"` door with flat caps opens on carried
+   authority only when exactly one container carries every container cap it declares. The
+   dispatch then runs SCOPED to that container, as a container-scoped token's does:
+   `ctx.containerScope`, `ctx.auth.containerScope`, `ctx.outsideScope` and `ctx.auth.allows`
+   (anchored at that container, refusing any node outside it) all read it, so every handler that
+   already honours a scoped token confines itself. A workspace-graded door never opens on carried
+   authority.
 
-5. **Lineage.** Restoration never widens. Grants must be well formed, name no cap the reference
+5. **Carriage.** Every job the dispatch executes and every schedule it registers keeps the grants,
+   and so does every occurrence, invocation child and terminal job the lineage starts.
+   `onJobSettled` restores them with the job's credential, so the wake's `ctx.actions.call` is
+   graded with them at the callee, and jobs the wake posts keep them. A door opened under a
+   confined lineage lends that lineage's grants through the same intersection as its flat ceiling:
+   only the container caps the door declares, and only at the container it was admitted at when
+   carried authority admitted it. A door declaring none lends an empty list, confined and carrying
+   nothing.
+
+6. **Lineage.** Restoration never widens. Grants must be well formed, name no cap the reference
    already carries flat, and lie inside the token's caps, or nothing restores at all. Revocation
    or expiry of the pressing credential restores nothing, so there is no wake; an administered deny
    or a pause at the container withdraws the carried cap at use exactly as it does the presser's.
@@ -79,10 +94,11 @@ write — the widening the operator's ruling excludes.
 
 ## Not changed
 
-Doors that name no container target keep a byte-identical native bridge and job request. `delegates`
-stay native-only. A non-governed door's requirements and its flat `caps` ceiling, including what
-that ceiling already lends its jobs, are unchanged. Every other admission, consent and ceiling rule
-holds, including the caller ceiling on sibling calls (ADR 0041 §3).
+A dispatch whose caller carries no grants — every client dispatch — through a door that names no
+container target keeps a byte-identical native bridge and job request. `delegates` stay
+native-only. A non-governed door's requirements and its flat `caps` ceiling, including what that
+ceiling already lends its jobs, are unchanged for such callers. Every other admission, consent and
+ceiling rule holds, including the caller ceiling on sibling calls (ADR 0041 §3).
 
 ## Alternatives
 

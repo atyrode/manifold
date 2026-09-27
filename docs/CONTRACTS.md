@@ -4618,21 +4618,29 @@ exitCode, reason, finishedAt, scheduleId?, revision?, outputs }` — the job's o
   consent row, as for `terminals:*`: a caller lacking it there is refused `forbidden`
   (`containers:write capability required at target`). The door's native bridge then carries the
   cap bound to that container rather than in its flat ceiling, as
-  `containerGrants: [{ containerId, caps }]`. The hub keeps that list BESIDE the signed request
-  (`machine_jobs.container_grants`, a schedule's spec), never in the credential an owner
-  parses, so the owner RPC is unchanged. Every job the dispatch executes, every schedule it
-  registers and each occurrence keep it; `onJobSettled` restores it with the job's credential,
-  so the wake's `ctx.actions.call` is graded with it at the callee and the jobs the wake posts
-  keep it. There `ctx.auth.caps` lists the carried cap and `allows(cap, ref)` answers it only
-  at or beneath its container, never at the root or another container. A `scope: "container"`
-  door with flat caps opens on it only at those containers, where `ctx.outsideScope` refuses
-  any other; a workspace-graded door never opens on it, and a door with a target is graded
-  there. Work carrying container grants — even an empty list, which is what a door without
-  container targets carries when opened under such a lineage — is never root-class. Restoring
-  never widens: grants must be well formed, outside the reference's flat caps and inside the
-  token's caps, or nothing restores. The grant rows are asked live at the container, so
-  revocation, expiry, a pause or a deny ends the carried cap. Doors without container targets,
-  `delegates` (native-only), non-governed doors and invocation children are unchanged.
+  `containerGrants: [{ containerId, caps }]`. The credential reference carries the list, so
+  every `restoreCredential(credentialReference(context))` refresh answers as confined as the
+  context; only the signed job request omits it, and the hub keeps it BESIDE that request
+  (`machine_jobs.container_grants`, a schedule's spec), so the owner RPC is unchanged. Every job
+  the dispatch executes, every schedule it registers and each occurrence, invocation child and
+  terminal job keep it; `onJobSettled` restores it with the job's credential, so the wake's
+  `ctx.actions.call` is graded with it at the callee and the jobs the wake posts keep it.
+  **Presence is confinement**: for a context carrying the list, even an empty one, a container
+  cap is held only at or beneath a container a grant names it for — never through flat `caps`,
+  never at the root or another container — and the context is never root-class, through any
+  refresh. There `ctx.auth.caps` lists the carried caps in place of flat container caps. A
+  `scope: "container"` door with flat caps opens on carried authority only when exactly one
+  container carries every container cap it declares, and that dispatch runs scoped to it:
+  `ctx.containerScope`, `ctx.auth.containerScope`, `ctx.outsideScope` and `ctx.auth.allows`
+  read it exactly as for a container-scoped token. A workspace-graded door never opens on it,
+  and a door with a target is graded there. A door opened under a confined lineage lends only
+  the carried caps it declares, only at the container it was admitted at; a door declaring none
+  lends an empty list. Confined work never sponsors an Agent (`agent_sponsor_confined`).
+  Restoring never widens: grants must be well formed, outside the reference's flat caps and
+  inside the token's caps, or nothing restores. The grant rows are asked live at the container,
+  so revocation, expiry, a pause or a deny ends the carried cap. Dispatches whose caller carries
+  no grants through doors without container targets, and `delegates` (native-only), are
+  unchanged.
 - **Schedules.** The same admission path consumes durable schedule revision, nominal
   occurrence, interval, deadline, expiry and `skip`/`coalesce-one` offline policy. Occurrence
   identity is committed before enqueue. Original credential lineage/ceiling persists;
