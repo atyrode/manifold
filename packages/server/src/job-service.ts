@@ -181,6 +181,19 @@ function fail(code = "governed_authority_refused"): never {
   throw new ServiceError("forbidden", code);
 }
 const active = new Set(["queued", "admitted", "start-committed", "started"]);
+/**
+ * Force-cancel reasons after which an enabled instance service may be readmitted under the same
+ * revision. Because they are recoverable, none of them may relabel a force cancellation that is
+ * already recorded.
+ */
+const readmittableCancellations: Readonly<Record<string, true>> = {
+  requested: true,
+  plugin_held: true,
+  installation_changed: true,
+  plugin_disabled: true,
+  owner_fenced: true,
+  owner_restart_effects_unknown: true,
+};
 const runCursorSchema = z.strictObject({
   filter: z.strictObject({
     pluginId: z.string().min(1).max(256),
@@ -827,23 +840,17 @@ export class JobService {
    * same disable revokes its native installation, and re-enabling the plugin is not a native
    * review, so the replacement waits for that installation to be re-approved and acknowledged
    * ready again; until then the service reports `installation_disabled`, never `cancelled`.
+   *
+   * The reason is the one recorded first: `cancelRecord` never lets a recoverable reason
+   * relabel an earlier force cancellation, so a disable or operator cancel arriving while a
+   * revoked or consent-refused workload is still stopping cannot make it readmittable.
    */
   private instanceReadmissionReason(job: JobRecord | null): string | null {
     if (!job || active.has(job.state)) return null;
     const cancellation = this.jobs.cancellation(job.request.jobId);
     if (cancellation?.mode === "retire") return null;
     const reason = cancellation?.reason ?? job.result?.reason;
-    switch (reason) {
-      case "requested":
-      case "plugin_held":
-      case "installation_changed":
-      case "plugin_disabled":
-      case "owner_fenced":
-      case "owner_restart_effects_unknown":
-        return reason;
-      default:
-        return null;
-    }
+    return reason && readmittableCancellations[reason] === true ? reason : null;
   }
   private ensureInstanceService(serviceId: string): void {
     let record = this.instanceServices.get(serviceId);
@@ -5919,7 +5926,11 @@ export class JobService {
     mode: JobCancellation["mode"] = "cancel",
   ): void {
     if (!active.has(job.state) && (!job.request.service || !job.permit || job.ownerClosed)) return;
-    this.jobs.cancel(job.request.jobId, reason, mode);
+    const recorded = this.jobs.cancellation(job.request.jobId);
+    // A recoverable reason never relabels a recorded force cancellation: instance readmission
+    // would otherwise revive a workload whose credential was revoked or consent refused.
+    if (recorded?.mode !== "cancel" || readmittableCancellations[reason] !== true)
+      this.jobs.cancel(job.request.jobId, reason, mode);
     this.settleAgentJob(job, "cancelled");
     const cancellation = this.jobs.cancellation(job.request.jobId)!;
     if (job.state === "queued") {

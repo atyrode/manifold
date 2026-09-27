@@ -4453,7 +4453,10 @@ provider handling and postconditions belong to plugins, never the common floor.
   cancellations (including retained `core.access.revoke` outcomes), other explicit job
   cancellations and retire-mode cancellations are not readmitted. Automatic authority
   reconciliation preserves an existing force-cancel reason rather than relabeling an
-  explicit revoke as recoverable managed-credential loss.
+  explicit revoke as recoverable managed-credential loss. Likewise, a readmittable reason
+  (an operator cancel or plugin disable) never replaces a force-cancel reason already
+  recorded on a still-running job, so a later disable cannot revive a revoked or
+  consent-refused workload; a final reason recorded later still replaces a readmittable one.
 - **Metered inference** ([ADR 0038](decisions/0038-brokered-inference.md)). A job that drives a
   model never holds the model's credential: inference is an Instance Service whose origin is a
   provider and whose credential only the machine owner resolves, and the job is handed a loopback
