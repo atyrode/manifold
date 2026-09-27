@@ -617,6 +617,79 @@ test.skipIf(!realLinux)(
 );
 
 test.skipIf(!realLinux)(
+  "[real-linux] native PTY completion drains fast final output before generation disposal",
+  async () => {
+    await withLinux('printf "%s" "$1"; printf ":last" >&2', async (spec) => {
+      for (const generation of ["initial", "resumed"]) {
+        let text = "";
+        const terminal = new PtyTerminal({
+          terminalId: "fast-native",
+          cols: 80,
+          rows: 24,
+          onOutput(output) {
+            text += Buffer.from(output.bytes).toString();
+          },
+          runtime: (pty) => startLinuxJob({ ...spec, argv: [generation], terminal: pty }),
+        });
+        const handle = await terminal.runtimeHandle!;
+        try {
+          // No output waiter: completion itself must make the final bytes observable.
+          expect(await terminal.exited).toEqual({ exitCode: 0 });
+          expect(text).toBe(`${generation}:last`);
+          const result = await handle.result;
+          expect(result.reason).toBe("exited");
+          expect(result.empty).toBe(true);
+          expect(result.usage.outputBytes).toBe(Buffer.byteLength(text));
+        } finally {
+          await handle.cancel();
+          handle.release();
+          // Restart/dismiss can dispose synchronously once completion is published.
+          terminal.dispose();
+        }
+      }
+    });
+  },
+);
+
+test.skipIf(!realLinux).each(["output-limit", "output-consumer"] as const)(
+  "[real-linux] native PTY final output %s cannot publish successful completion",
+  async (failure) => {
+    await withLinux("printf final", async (spec) => {
+      const terminal = new PtyTerminal({
+        terminalId: "final-output-failure",
+        cols: 80,
+        rows: 24,
+        onOutput() {
+          if (failure === "output-consumer") throw new Error("consumer refused final bytes");
+        },
+        runtime: (pty) =>
+          startLinuxJob({
+            ...spec,
+            terminal: pty,
+            limits: { ...spec.limits, outputBytes: failure === "output-limit" ? 1 : 4096 },
+          }),
+      });
+      const handle = await terminal.runtimeHandle!;
+      try {
+        expect(await terminal.exited).toEqual({ exitCode: null });
+        expect(await handle.result).toMatchObject({
+          reason: failure,
+          empty: true,
+          usage: { outputBytes: 5 },
+        });
+        // Cancelling an already completed generation must not restore its process's code 0.
+        expect(await terminal.kill()).toEqual({ exitCode: null });
+        expect(terminal.toAdvertised()).toMatchObject({ alive: false, exitCode: null });
+      } finally {
+        await handle.cancel();
+        handle.release();
+        terminal.dispose();
+      }
+    });
+  },
+);
+
+test.skipIf(!realLinux)(
   "[real-linux] harness launch receives its private credential and keeps control input separate from the PTY",
   async () => {
     const token = randomBytes(32).toString("hex");

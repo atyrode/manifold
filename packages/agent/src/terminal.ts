@@ -233,7 +233,7 @@ export class PtyTerminal {
   private readonly proc: Bun.Subprocess | undefined;
   readonly runtimeHandle: Promise<LinuxJobHandle> | undefined;
   private runtimeCancelled = false;
-  private readonly pty: Bun.Terminal;
+  private pty: Bun.Terminal | undefined;
   private readonly mirror: HeadlessTerminal;
   private readonly serializer: SerializeAddon;
   private readonly graphics: TerminalGraphicsMirror;
@@ -313,7 +313,7 @@ export class PtyTerminal {
     this.pasteMode = trackTerminalPrivateMode(this.mirror.parser, 5522);
     try {
       this.graphics = new TerminalGraphicsMirror(this.mirror, (data) => {
-        if (!this.disposed && !this.pty.closed) this.pty.write(data);
+        if (!this.disposed && this.pty && !this.pty.closed) this.pty.write(data);
       });
     } catch (error) {
       this.pasteMode.dispose();
@@ -327,21 +327,14 @@ export class PtyTerminal {
     try {
       if (opts.runtime) {
         this.proc = undefined;
-        let outputHandler: (bytes: Uint8Array) => void = () => {
-          throw new PtyError("native terminal output handler not installed");
-        };
-        this.pty = new Bun.Terminal({
-          cols: opts.cols,
-          rows: opts.rows,
-          data: (_pty, chunk) => outputHandler(chunk),
-        });
         // Defer the callback so even synchronous launch errors retain this terminal's ownership.
         this.runtimeHandle = Promise.resolve().then(() =>
           opts.runtime!({
-            pty: this.pty,
+            cols: this.colsValue,
+            rows: this.rowsValue,
             onOutput: (bytes) => this.ingest(bytes),
-            setOutputHandler: (handler) => {
-              outputHandler = handler;
+            setTerminal: (pty) => {
+              this.pty = pty;
             },
             ...(opts.restartCwd !== undefined ? { restartCwd: opts.restartCwd } : {}),
             setProcessId: (pid, bootstrapExecutable) => {
@@ -363,8 +356,8 @@ export class PtyTerminal {
             this.emptyObserved = true;
             this.aliveFlag = false;
             this.stopCwdTracking();
-            this.exitCodeValue = result.exitCode;
-            return { exitCode: result.exitCode };
+            this.exitCodeValue = result.reason === "exited" ? result.exitCode : null;
+            return { exitCode: this.exitCodeValue };
           },
           (error: unknown) => {
             if (error instanceof LinuxJobRefusal) {
@@ -510,6 +503,7 @@ export class PtyTerminal {
 
   /** Writes caller bytes (decoded terminal input) straight to the PTY. */
   write(data: string | Uint8Array): void {
+    if (!this.pty) throw new PtyError("terminal PTY not attached");
     this.pty.write(data);
   }
 
@@ -517,7 +511,7 @@ export class PtyTerminal {
   resize(cols: number, rows: number): void {
     this.colsValue = cols;
     this.rowsValue = rows;
-    this.pty.resize(cols, rows);
+    this.pty?.resize(cols, rows);
     this.mirror.write("", () => this.mirror.resize(cols, rows));
   }
 
@@ -535,7 +529,8 @@ export class PtyTerminal {
         if (observed.empty !== true) throw new PtyError("native workload empty proof required");
         this.emptyObserved = true;
         this.aliveFlag = false;
-        this.exitCodeValue = observed.exitCode;
+        this.stopCwdTracking();
+        this.exitCodeValue = observed.reason === "exited" ? observed.exitCode : null;
         return await this.exited;
       } catch (error) {
         if (!this.emptyObserved && this.startupFailure?.cleanup) {
@@ -547,7 +542,7 @@ export class PtyTerminal {
       }
     }
     this.proc?.kill();
-    if (!this.pty.closed) this.pty.close();
+    if (this.pty && !this.pty.closed) this.pty.close();
     return this.exited;
   }
 
@@ -557,7 +552,7 @@ export class PtyTerminal {
     if (this.runtimeHandle)
       void this.runtimeHandle.then((handle) => handle.cancel()).catch(() => {});
     this.proc?.kill("SIGKILL");
-    if (!this.runtimeHandle && !this.pty.closed) this.pty.close();
+    if (!this.runtimeHandle && this.pty && !this.pty.closed) this.pty.close();
   }
 
   /**
@@ -666,7 +661,7 @@ export class PtyTerminal {
       throw new PtyError("native workload empty proof required before disposal");
     this.disposed = true;
     this.stopCwdTracking();
-    if (!this.pty.closed) this.pty.close();
+    if (this.pty && !this.pty.closed) this.pty.close();
     this.pasteMode.dispose();
     this.bracketedPasteMode.dispose();
     this.readinessOsc.dispose();

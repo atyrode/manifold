@@ -74,15 +74,16 @@ export interface LinuxJobOutput {
   channel: "stdout" | "stderr";
   bytes: Uint8Array;
 }
-/** Private PTY handoff. The runtime installs its meter before any process can emit bytes. */
+/** Private PTY handoff. The runtime owns spawning and metering before releasing the gate. */
 export interface LinuxJobTerminal {
-  pty: Bun.Terminal;
+  cols: number;
+  rows: number;
+  setTerminal(pty: Bun.Terminal): void;
   onOutput(bytes: Uint8Array): void;
   /** Owner-only restart preference; never adds a mount or executable authority. */
   restartCwd?: string;
   setProcessId?(pid: number, bootstrapExecutable: { dev: number; ino: number }): void;
   setWorkingDirectory?(cwd: string, fallback?: "original" | "home"): void;
-  setOutputHandler(handler: (bytes: Uint8Array) => void): void;
 }
 export interface LinuxJobSpec {
   /** Pinned, trusted bubblewrap supporting --bind-fd and --ro-bind-fd. */
@@ -797,6 +798,8 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
   let stdin: ChildProcess["stdin"] = null;
   let stdout: ChildProcess["stdout"] = null;
   let stderr: ChildProcess["stderr"] = null;
+  let terminalProcess: Bun.Subprocess | undefined;
+  const terminalDrained = spec.terminal ? Promise.withResolvers<void>() : undefined;
   let outputBytes = 0;
   let sequence = 0;
   let reason: LinuxJobResult["reason"] = "exited";
@@ -814,14 +817,6 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
     }
     return true;
   }
-  spec.terminal?.setOutputHandler((bytes) => {
-    if (!admitOutput(bytes)) return;
-    try {
-      spec.terminal!.onOutput(bytes);
-    } catch {
-      terminate("output-consumer");
-    }
-  });
   const inputFds: number[] = [];
   const stagedChildFds: number[] = [];
   let harnessControl: PrivateSocketPair | undefined;
@@ -914,11 +909,37 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
           "inherit",
           ...stdio.slice(3).map((fd) => (typeof fd === "number" ? fd : "ignore")),
         ],
-        terminal: spec.terminal.pty,
+        // A reusable Bun.Terminal retains the owner's slave fd after child exit, so it
+        // cannot report EOF. Inline ownership lets Bun drain and release that fd on exit;
+        // the reader then finishes only after the last descendant's slave is gone.
+        terminal: {
+          cols: spec.terminal.cols,
+          rows: spec.terminal.rows,
+          data: (_pty, bytes) => {
+            if (!admitOutput(bytes)) return;
+            try {
+              spec.terminal!.onOutput(bytes);
+            } catch {
+              terminate("output-consumer");
+            }
+          },
+          exit: (pty) => {
+            // Bun reports Linux's normal last-slave EIO as PTY status 1. It is not
+            // a process exit code. An explicitly closed reader or a reader ending
+            // before the inline owner's exit, however, cannot attest a final drain.
+            if (
+              pty.closed ||
+              (terminalProcess?.exitCode == null && terminalProcess?.signalCode == null)
+            )
+              terminate("output-consumer");
+            terminalDrained!.resolve();
+          },
+        },
         env: spec.privateEnv ?? {},
         cwd: "/",
       });
       child = proc;
+      terminalProcess = proc;
       exited = proc.exited.then((code) => ({
         code: proc.signalCode ? null : code,
         signal: proc.signalCode ?? null,
@@ -991,11 +1012,16 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
     stream.once("close", resolve);
     return promise;
   }
-  const drained = spec.terminal
-    ? Promise.resolve([])
-    : Promise.all([consume("stdout", stdout!), consume("stderr", stderr!)]);
+  const drained =
+    terminalDrained?.promise ??
+    Promise.all([consume("stdout", stdout!), consume("stderr", stderr!)]);
   try {
     if (!child.pid) refuse("supervisor-spawn-failed");
+    if (spec.terminal) {
+      const pty = terminalProcess?.terminal;
+      if (!pty) refuse("terminal-allocation-failed");
+      spec.terminal.setTerminal(pty);
+    }
     writeControl(groups.supervisor, "cgroup.procs", String(child.pid));
     const pid = await sandboxPid(metadata, exited);
     writeControl(groups.main, "cgroup.procs", String(pid));
@@ -1021,8 +1047,13 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
       writeControl(groups.root, "cgroup.kill", "1");
       child.kill("SIGKILL");
       await awaitEmpty(groups.root);
+      // Empty cgroups do not imply that the event loop has delivered the last bytes.
+      // Reap the inline owner so Bun releases its slave, then retain the reader to EOF.
+      await exited;
+      await drained;
       if (cleaned) return;
       cleaned = true;
+      terminalProcess?.terminal?.close();
       gate.destroy();
       metadata.destroy();
       closeGroups(groups);
@@ -1060,8 +1091,9 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
       if (!spec.retirementSignal?.aborted || terminating)
         writeControl(groups.root, "cgroup.kill", "1");
       await awaitEmpty(groups.root);
-      await drained;
+      await Promise.race([drained, terminalFailure.promise]);
       if (fatal) throw fatal;
+      terminalProcess?.terminal?.close();
       const finishedAt = Date.now();
       return {
         exitCode: exit.code,
