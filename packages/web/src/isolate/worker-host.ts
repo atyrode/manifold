@@ -2,16 +2,25 @@ import type { HostServices, SessionHandle, StreamHandle } from "@manifold/plugin
 import { requestResponse } from "../http.ts";
 import {
   ISOLATE_ERROR_TEXT_MAX,
+  HARDENED_CONTRACT_COMPAT_VERSIONS,
+  HARDENED_CONTRACT_VERSION,
   IsolateReplyFrameSchema,
   WebIsolateWorkerFrameSchema,
+  ManifoldRefSchema,
+  PLUGIN_BUNDLE_WEB_WORKER_FILE,
+  TerminalRuntimeSchema,
+  WebHostContextSchema,
   StreamOpenSchema,
   type Cap,
   type PlacementDestination,
   type PlacementRef,
   type Principal,
   type IsolateReplyFrame,
+  type PanelArg,
+  type ManifoldRef,
   type UiNode,
   type WebHostMethod,
+  type WebHostContext,
   type WebIsolateHostFrame,
   type WebIsolateWorkerFrame,
 } from "@manifold/protocol";
@@ -58,12 +67,15 @@ export interface WorkerHostDeps {
   readonly containerId: string | null;
   /** The host ref every `call` is served from; the live one, via {@link WorkerHost.bind}. */
   readonly host: HostServices;
+  /** Portable React bundles have a separate, self-contained Worker entry. */
+  readonly portableWorker?: boolean | undefined;
   readonly workerFactory?: WorkerFactory | undefined;
 }
 
-/** Where an installed plugin's web half is served, as a path on the instance (CONTRACTS.md). */
-export function webModulePath(pluginId: string): string {
-  return `/api/plugins/${encodeURIComponent(pluginId)}/web.js`;
+/** Authenticated plugin module routes; no credential is ever carried in the path. */
+export function webModulePath(pluginId: string, worker = false): string {
+  const member = worker ? PLUGIN_BUNDLE_WEB_WORKER_FILE : "web.js";
+  return `/api/plugins/${encodeURIComponent(pluginId)}/${member}`;
 }
 
 /**
@@ -125,18 +137,42 @@ function argText(method: WebHostMethod, args: readonly unknown[], index: number)
   return value;
 }
 
+const SubscriptionTopicsSchema = ManifoldRefSchema.array().max(64);
+
+interface MountOptions {
+  readonly kind?: "panel" | "section";
+  readonly host?: HostServices;
+  readonly arg?: PanelArg | undefined;
+}
+
 interface Mounted {
   readonly panel: string;
+  readonly kind: "panel" | "section";
+  host: HostServices;
+  arg: PanelArg | undefined;
+  offStatus: (() => void) | null;
+  contextStamp: string | null;
+  faulted: boolean;
   readonly onRender: (tree: UiNode) => void;
   readonly onFault: (error: string) => void;
   /** Whether a `mount` frame has gone out: only then does an `unmount` owe one. */
   announced: boolean;
 }
 
+interface Subscription {
+  readonly instance: string;
+  readonly topics: readonly ManifoldRef[];
+  release: () => void;
+  pending: boolean;
+  dirty: boolean;
+}
+
 export class WorkerHost {
   private worker: WorkerLike | null = null;
   /** The panels the guest announced with `ready`; null until it has. */
   private panels: ReadonlySet<string> | null = null;
+  private sections: ReadonlySet<string> = new Set();
+  private contract = 0;
   private readonly mounted = new Map<string, Mounted>();
   private readonly streams = new Map<
     string,
@@ -147,6 +183,9 @@ export class WorkerHost {
       unacknowledged: number;
     }
   >();
+  private readonly subscriptions = new Map<string, Subscription>();
+  private offVisibility: (() => void) | null = null;
+  private started = false;
   /** The worker-wide fault, once there is one; sticky for the life of this supervisor. */
   private fault: string | null = null;
   private stopped = false;
@@ -166,7 +205,16 @@ export class WorkerHost {
 
   /** Spawns the worker and sends `init`. Once per supervisor; a stopped one never restarts. */
   start(): void {
-    if (this.worker !== null || this.stopped || this.fault !== null) return;
+    if (this.started || this.stopped || this.fault !== null) return;
+    this.started = true;
+    if (typeof document !== "undefined") {
+      const page = document;
+      const changed = (): void => {
+        for (const [instance, entry] of this.mounted) this.sendContext(instance, entry);
+      };
+      page.addEventListener("visibilitychange", changed);
+      this.offVisibility = () => page.removeEventListener("visibilitychange", changed);
+    }
     const { pluginId } = this.deps;
     const factory: WorkerFactory =
       this.deps.workerFactory ?? ((url) => blobModuleWorker(url, this.host.token, pluginId));
@@ -193,7 +241,7 @@ export class WorkerHost {
     };
     let made: WorkerLike | Promise<WorkerLike>;
     try {
-      made = factory(webModulePath(pluginId));
+      made = factory(webModulePath(pluginId, this.deps.portableWorker));
     } catch (reason) {
       this.crash(`web half failed to load: ${describe(reason)}`);
       return;
@@ -217,28 +265,73 @@ export class WorkerHost {
     panel: string,
     onRender: (tree: UiNode) => void,
     onFault: (error: string) => void,
+    options: MountOptions = {},
   ): () => void {
-    if (this.fault !== null) {
-      onFault(this.fault);
+    if (this.fault !== null || this.stopped) {
+      onFault(this.fault ?? "worker is stopped");
       return () => {};
     }
-    const entry: Mounted = { panel, onRender, onFault, announced: false };
+    if (this.mounted.has(instance)) throw new Error("duplicate mounted instance");
+    const entry: Mounted = {
+      panel,
+      kind: options.kind ?? "panel",
+      host: options.host ?? this.host,
+      arg: options.arg,
+      offStatus: null,
+      contextStamp: null,
+      faulted: false,
+      onRender,
+      onFault,
+      announced: false,
+    };
     this.mounted.set(instance, entry);
     if (this.panels !== null) this.announce(instance, entry);
     return () => {
       if (this.mounted.get(instance) !== entry) return;
       this.mounted.delete(instance);
-      for (const [id, stream] of this.streams) {
-        if (stream.instance === instance) this.closeStream(id);
-      }
+      this.releaseInstance(instance, entry);
       if (entry.announced && this.fault === null) this.post({ t: "unmount", instance });
     };
+  }
+
+  /** Update one mount's presentation and live authority without resetting its React state. */
+  update(instance: string, host: HostServices, arg?: PanelArg): void {
+    const entry = this.mounted.get(instance);
+    if (entry === undefined || entry.faulted) return;
+    const changedClient = entry.host.client !== host.client;
+    entry.host = host;
+    entry.arg = arg;
+    if (entry.announced && this.contract >= 9) {
+      if (changedClient) {
+        try {
+          this.observeStatus(instance, entry);
+          for (const [id, stream] of this.streams) {
+            if (stream.instance !== instance) continue;
+            this.closeStream(id);
+            this.post({
+              t: "stream",
+              id,
+              message: { type: "stream_closed", subscriptionId: id, reason: "host_context_changed" },
+            });
+          }
+          for (const [id, subscription] of this.subscriptions) {
+            if (subscription.instance !== instance) continue;
+            this.bindSubscription(id, subscription, host.client);
+            this.notify(id, subscription);
+          }
+        } catch (reason) {
+          this.faultInstance(instance, entry, describe(reason));
+          return;
+        }
+      }
+      this.sendContext(instance, entry);
+    }
   }
 
   /** A named callback firing on a mounted instance's tree; dropped if the instance is gone. */
   event(instance: string, event: string, payload?: unknown): void {
     const entry = this.mounted.get(instance);
-    if (entry === undefined || !entry.announced || this.fault !== null) return;
+    if (entry === undefined || !entry.announced || entry.faulted || this.fault !== null) return;
     this.post(
       payload === undefined
         ? { t: "event", instance, event }
@@ -250,22 +343,97 @@ export class WorkerHost {
   stop(): void {
     if (this.stopped) return;
     this.stopped = true;
+    for (const [instance, entry] of this.mounted) this.releaseInstance(instance, entry);
     this.mounted.clear();
-    for (const id of this.streams.keys()) this.closeStream(id);
+    this.offVisibility?.();
+    this.offVisibility = null;
     this.worker?.terminate();
     this.worker = null;
   }
 
   private announce(instance: string, entry: Mounted): void {
     if (this.panels === null) return;
-    if (!this.panels.has(entry.panel)) {
-      entry.onFault(
-        `panel "${entry.panel}" is declared by ${this.deps.pluginId} but its web half serves no program for it`,
+    const contributions = entry.kind === "section" ? this.sections : this.panels;
+    if (!contributions.has(entry.panel)) {
+      this.faultInstance(
+        instance,
+        entry,
+        `${entry.kind} "${entry.panel}" is declared by ${this.deps.pluginId} but its web half serves no component for it`,
       );
       return;
     }
     entry.announced = true;
-    this.post({ t: "mount", instance, panel: entry.panel });
+    if (this.contract < 9) {
+      this.post({ t: "mount", instance, panel: entry.panel });
+      return;
+    }
+    this.observeStatus(instance, entry);
+    const context = this.context(entry);
+    entry.contextStamp = JSON.stringify({ context, arg: entry.arg });
+    this.post({
+      t: "mount",
+      instance,
+      panel: entry.panel,
+      kind: entry.kind,
+      context,
+      ...(entry.arg === undefined ? {} : { arg: entry.arg }),
+    });
+  }
+
+  private context(entry: Mounted): WebHostContext {
+    const { host } = entry;
+    return WebHostContextSchema.parse({
+      principal: host.principal,
+      caps: host.client.selfCaps(),
+      containerId: host.containerId,
+      topics: host.topics,
+      status: host.client.status,
+      hidden: typeof document !== "undefined" && document.hidden,
+      canAuthor: host.authoring !== null,
+    });
+  }
+
+  private observeStatus(instance: string, entry: Mounted): void {
+    entry.offStatus?.();
+    entry.offStatus = entry.host.client.on("status", () => this.sendContext(instance, entry));
+  }
+
+  private sendContext(instance: string, entry: Mounted): void {
+    if (
+      this.contract < 9 ||
+      !entry.announced ||
+      entry.faulted ||
+      this.mounted.get(instance) !== entry
+    ) return;
+    const context = this.context(entry);
+    const stamp = JSON.stringify({ context, arg: entry.arg });
+    if (stamp === entry.contextStamp) return;
+    entry.contextStamp = stamp;
+    this.post({
+      t: "context",
+      instance,
+      context,
+      ...(entry.arg === undefined ? {} : { arg: entry.arg }),
+    });
+  }
+
+  private releaseInstance(instance: string, entry: Mounted): void {
+    entry.offStatus?.();
+    entry.offStatus = null;
+    for (const [id, stream] of this.streams) {
+      if (stream.instance === instance) this.closeStream(id);
+    }
+    for (const [id, subscription] of this.subscriptions) {
+      if (subscription.instance === instance) this.closeSubscription(id);
+    }
+  }
+
+  private faultInstance(instance: string, entry: Mounted, error: string): void {
+    if (entry.faulted) return;
+    entry.faulted = true;
+    this.releaseInstance(instance, entry);
+    if (entry.announced) this.post({ t: "unmount", instance });
+    entry.onFault(error);
   }
 
   private post(frame: WebIsolateHostFrame): void {
@@ -273,7 +441,7 @@ export class WorkerHost {
   }
 
   private receive(data: unknown): void {
-    if (this.fault !== null) return;
+    if (this.fault !== null || this.stopped) return;
     const parsed = WebIsolateWorkerFrameSchema.safeParse(data);
     if (!parsed.success) {
       const unserved = unservedCall(data);
@@ -291,13 +459,23 @@ export class WorkerHost {
     switch (frame.t) {
       case "ready": {
         if (this.panels !== null) return;
+        const contract = frame.hardenedContract ?? 1;
+        if (
+          !HARDENED_CONTRACT_COMPAT_VERSIONS.has(contract) ||
+          (this.deps.portableWorker === true && contract !== HARDENED_CONTRACT_VERSION)
+        ) {
+          this.crash(`unsupported web hardened contract ${String(contract)}`);
+          return;
+        }
+        this.contract = contract;
+        this.sections = new Set(frame.sections ?? []);
         this.panels = new Set(frame.panels);
         for (const [instance, entry] of this.mounted) this.announce(instance, entry);
         return;
       }
       case "render": {
         const entry = this.mounted.get(frame.instance);
-        if (entry?.announced === true) entry.onRender(frame.tree);
+        if (entry?.announced === true && !entry.faulted) entry.onRender(frame.tree);
         return;
       }
       case "call": {
@@ -309,7 +487,8 @@ export class WorkerHost {
           this.crash(frame.error);
           return;
         }
-        this.mounted.get(frame.instance)?.onFault(frame.error);
+        const entry = this.mounted.get(frame.instance);
+        if (entry !== undefined) this.faultInstance(frame.instance, entry, frame.error);
         return;
       }
       default: {
@@ -321,13 +500,24 @@ export class WorkerHost {
 
   private async serve(frame: CallFrame): Promise<void> {
     let reply: IsolateReplyFrame;
+    const scoped = this.contract >= 9 || this.deps.portableWorker === true;
+    const owner = frame.instance === undefined ? undefined : this.mounted.get(frame.instance);
+    if (scoped && (owner === undefined || !owner.announced || owner.faulted)) {
+      this.reply(refusalFrame(frame.id, "call owner is not mounted"));
+      return;
+    }
     try {
-      const result: unknown = await this.dispatch(frame.method, frame.args);
+      const result: unknown = await this.dispatch(frame.method, frame.args, frame.instance);
       reply = { t: "reply", id: frame.id, ok: true, result };
     } catch (reason) {
       reply = refusalFrame(frame.id, reason);
     }
     if (this.fault !== null || this.stopped) return;
+    if (
+      scoped &&
+      owner !== undefined &&
+      (this.mounted.get(frame.instance!) !== owner || owner.faulted)
+    ) return;
     this.reply(reply);
   }
 
@@ -356,14 +546,131 @@ export class WorkerHost {
     stream.handle.close();
   }
 
-  private dispatch(method: WebHostMethod, args: readonly unknown[]): unknown {
-    const client: SessionHandle = this.host.client;
+  private closeSubscription(id: string): void {
+    const subscription = this.subscriptions.get(id);
+    if (subscription === undefined) return;
+    this.subscriptions.delete(id);
+    subscription.release();
+  }
+
+  private bindSubscription(id: string, subscription: Subscription, client: SessionHandle): void {
+    subscription.release();
+    subscription.release = client.subscribe(subscription.topics, () => this.notify(id, subscription));
+  }
+
+  private notify(id: string, subscription: Subscription): void {
+    if (this.subscriptions.get(id) !== subscription) return;
+    if (subscription.pending) {
+      subscription.dirty = true;
+      return;
+    }
+    subscription.pending = true;
+    this.post({ t: "notification", id });
+  }
+
+  private mountedOwner(instance: string | undefined): Mounted {
+    const entry = instance === undefined ? undefined : this.mounted.get(instance);
+    if (entry === undefined || !entry.announced || entry.faulted) {
+      throw new Error("call owner is not mounted");
+    }
+    return entry;
+  }
+
+  private checkResourceOwner(resource: { readonly instance: string } | undefined, instance: string | undefined): void {
+    if (this.contract >= 9 && resource !== undefined && resource.instance !== instance) {
+      throw new Error("resource belongs to another mounted instance");
+    }
+  }
+
+  private async createTerminal(instance: string | undefined, args: readonly unknown[]): Promise<unknown> {
+    const entry = this.mountedOwner(instance);
+    const currentHost = entry.host;
+    if (currentHost.authoring === null) throw new Error("terminal authoring is unavailable");
+    const machineId = args[0];
+    if (machineId !== null && (typeof machineId !== "string" || machineId.length === 0)) {
+      throw new TypeError("createTerminal: machine id must be a string or null");
+    }
+    const runtime = args[1] === null ? undefined : TerminalRuntimeSchema.parse(args[1]);
+    const machine = machineId === null
+      ? undefined
+      : (await currentHost.client.machines()).find((candidate) => candidate.id === machineId);
+    // The lookup is asynchronous: neither a retired mount nor an obsolete host may author.
+    if (
+      this.stopped ||
+      this.fault !== null ||
+      this.mountedOwner(instance) !== entry ||
+      entry.host.client !== currentHost.client ||
+      entry.host.token !== currentHost.token
+    ) {
+      throw new Error("terminal authoring context changed");
+    }
+    const authoring = entry.host.authoring;
+    if (authoring === null) throw new Error("terminal authoring is unavailable");
+    if (machineId !== null && machine === undefined) throw new Error("machine is no longer available");
+    return authoring.createTerminal(machine, runtime);
+  }
+
+  private dispatch(method: WebHostMethod, args: readonly unknown[], instance: string | undefined): unknown {
+    const host = this.contract >= 9 ? this.mountedOwner(instance).host : this.host;
+    const client = host.client;
+    if (
+      this.contract < 9 &&
+      (method === "subscribe" || method === "unsubscribe" || method === "ackEvent" || method === "createTerminal")
+    ) {
+      throw new Error(`slice_unavailable: ${method} requires hardened contract 9`);
+    }
     switch (method) {
+      case "subscribe": {
+        this.mountedOwner(instance);
+        const id = argText(method, args, 0);
+        if (id.length === 0 || id.length > 64) throw new Error("invalid subscription id");
+        if (this.subscriptions.has(id)) throw new Error("duplicate subscription id");
+        if (this.subscriptions.size >= 64) throw new Error("too many event subscriptions");
+        const topics = SubscriptionTopicsSchema.parse(args[1]);
+        const subscription: Subscription = {
+          instance: instance!,
+          topics,
+          release: () => {},
+          pending: false,
+          dirty: false,
+        };
+        this.subscriptions.set(id, subscription);
+        try {
+          this.bindSubscription(id, subscription, client);
+        } catch (reason) {
+          this.closeSubscription(id);
+          throw reason;
+        }
+        return null;
+      }
+      case "unsubscribe": {
+        const id = argText(method, args, 0);
+        this.checkResourceOwner(this.subscriptions.get(id), instance);
+        this.closeSubscription(id);
+        return null;
+      }
+      case "ackEvent": {
+        const id = argText(method, args, 0);
+        const subscription = this.subscriptions.get(id);
+        this.checkResourceOwner(subscription, instance);
+        if (subscription === undefined || !subscription.pending) return null;
+        subscription.pending = false;
+        if (subscription.dirty) {
+          subscription.dirty = false;
+          this.notify(id, subscription);
+        }
+        return null;
+      }
+      case "createTerminal":
+        return this.createTerminal(instance, args);
       case "openStream": {
         const id = argText(method, args, 0);
         if (id.length === 0 || id.length > 64) throw new Error("invalid stream handle id");
-        const instance = argText(method, args, 2);
-        if (!this.mounted.get(instance)?.announced) throw new Error("stream owner is not mounted");
+        const owner = this.contract >= 9 ? instance : argText(method, args, 2);
+        this.mountedOwner(owner);
+        if (this.contract >= 9 && args[2] !== undefined && args[2] !== owner) {
+          throw new Error("stream owner does not match call owner");
+        }
         if (this.streams.has(id)) throw new Error("duplicate stream handle");
         if (this.streams.size >= 64) throw new Error("too many stream subscriptions");
         const options = args[1];
@@ -375,7 +682,7 @@ export class WorkerHost {
           subscriptionId: id,
         });
         const handle = client.openStream(request);
-        const stream = { instance, handle, release: () => {}, unacknowledged: 0 };
+        const stream = { instance: owner!, handle, release: () => {}, unacknowledged: 0 };
         this.streams.set(id, stream);
         stream.release = handle.on((message) => {
           if (this.streams.get(id) !== stream) return;
@@ -399,11 +706,15 @@ export class WorkerHost {
         });
         return null;
       }
-      case "closeStream":
-        this.closeStream(argText(method, args, 0));
+      case "closeStream": {
+        const id = argText(method, args, 0);
+        this.checkResourceOwner(this.streams.get(id), instance);
+        this.closeStream(id);
         return null;
+      }
       case "ackStream": {
         const stream = this.streams.get(argText(method, args, 0));
+        this.checkResourceOwner(stream, instance);
         if (stream !== undefined && stream.unacknowledged > 0) stream.unacknowledged -= 1;
         return null;
       }
@@ -418,7 +729,7 @@ export class WorkerHost {
       case "resolve":
         return client.resolve(argText(method, args, 0));
       case "navigate":
-        this.host.navigate(argText(method, args, 0));
+        host.navigate(argText(method, args, 0));
         return null;
       case "openTerminal": {
         // The SDK parses the frame against the protocol before it goes out; this only keeps a
@@ -452,9 +763,7 @@ export class WorkerHost {
     this.fault = error;
     console.error("evt=web_isolate_fault", { plugin: this.deps.pluginId, error });
     for (const entry of this.mounted.values()) entry.onFault(error);
-    for (const id of this.streams.keys()) this.closeStream(id);
-    this.worker?.terminate();
-    this.worker = null;
+    this.stop();
   }
 }
 
@@ -497,8 +806,8 @@ export class WorkerRegistry {
 
   constructor(private readonly options: WorkerRegistryOptions = {}) {}
 
-  acquire(pluginId: string, host: HostServices): WorkerLease {
-    const key = `${pluginId}\u0000${host.containerId ?? ""}`;
+  acquire(pluginId: string, host: HostServices, portableWorker = false): WorkerLease {
+    const key = `${pluginId}\u0000${host.containerId ?? ""}\u0000${portableWorker ? "react" : "legacy"}`;
     let held = this.held.get(key);
     if (held !== undefined && held.token !== host.token) {
       if (held.reaper !== null) clearTimeout(held.reaper);
@@ -513,6 +822,7 @@ export class WorkerRegistry {
         caps: host.client.selfCaps(),
         containerId: host.containerId,
         host,
+        portableWorker,
         workerFactory: this.options.workerFactory,
       });
       held = { worker, token: host.token, refs: 0, reaper: null };

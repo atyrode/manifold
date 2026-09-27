@@ -1115,6 +1115,7 @@ export function isolateVocabulary(): Record<string, unknown> {
   return {
     uiTones: UI_TONES,
     uiNodeTypes: UI_NODE_TYPES,
+    uiControlKinds: UI_CONTROL_KINDS,
     maxUiDepth: MAX_UI_DEPTH,
     maxUiNodes: MAX_UI_NODES,
     ctxMethods: ISOLATE_CTX_METHODS,
@@ -1131,6 +1132,7 @@ export function isolateVocabulary(): Record<string, unknown> {
     hostEnvelope: z.toJSONSchema(IsolateHostEnvelopeSchema),
     bundleFormat: PLUGIN_BUNDLE_FORMAT,
     bundleServerFile: PLUGIN_BUNDLE_SERVER_FILE,
+    bundleWebWorkerFile: PLUGIN_BUNDLE_WEB_WORKER_FILE,
     uiEvent: z.toJSONSchema(UiEventSchema),
     bundle: z.toJSONSchema(PluginBundleSchema),
   };

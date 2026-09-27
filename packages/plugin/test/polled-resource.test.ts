@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { ManifoldRef } from "@manifold/protocol";
 import type { SessionStatus } from "../src/host.ts";
 import {
@@ -77,23 +77,17 @@ const clock = new VirtualClock();
 
 const store: Record<string, string> = { "manifold:debug": "1" };
 
-Object.defineProperty(globalThis, "window", {
-  configurable: true,
-  writable: true,
-  value: {
-    setTimeout: (fn: () => void, ms: number) => clock.after(fn, ms, null),
-    clearTimeout: (id: number | undefined) => clock.clear(id),
-    setInterval: (fn: () => void, ms: number) => clock.after(fn, ms, ms),
-    clearInterval: (id: number | undefined) => clock.clear(id),
-    localStorage: { getItem: (key: string): string | null => store[key] ?? null },
-  },
-});
-
-Object.defineProperty(globalThis, "document", {
-  configurable: true,
-  writable: true,
-  value: { hidden: false, addEventListener: (): void => undefined },
-});
+const globals = {
+  setTimeout: (fn: () => void, ms: number) => clock.after(fn, ms, null),
+  clearTimeout: (id: number | undefined) => clock.clear(id),
+  setInterval: (fn: () => void, ms: number) => clock.after(fn, ms, ms),
+  clearInterval: (id: number | undefined) => clock.clear(id),
+  window: { localStorage: { getItem: (key: string): string | null => store[key] ?? null } },
+  document: { hidden: false, addEventListener: (): void => undefined },
+};
+const originalGlobals = new Map(
+  Object.keys(globals).map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]),
+);
 
 /**
  * Lets every settled promise in the store's read chain land before an assertion reads it.
@@ -216,6 +210,17 @@ function reader(
 beforeEach(() => {
   resetPolledResources();
   clock.reset();
+  for (const [key, value] of Object.entries(globals)) {
+    Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
+  }
+});
+
+afterEach(() => {
+  resetPolledResources();
+  for (const [key, descriptor] of originalGlobals) {
+    if (descriptor === undefined) Reflect.deleteProperty(globalThis, key);
+    else Object.defineProperty(globalThis, key, descriptor);
+  }
 });
 
 describe("a subscription-backed feed", () => {
@@ -707,4 +712,51 @@ describe("the feed probe", () => {
     index.release();
     machines.release();
   });
+});
+
+test("a Worker feed pauses on host visibility and releases the old visibility binding", async () => {
+  Reflect.deleteProperty(globalThis, "window");
+  Reflect.deleteProperty(globalThis, "document");
+  let hidden = true;
+  const visibility = new Set<() => void>();
+  const socket = fakeSocket("reconnecting");
+  const door: FeedEvents = {
+    subscribe: (topics, listener) => socket.subscribe(topics, listener),
+    get status() {
+      return socket.status;
+    },
+    on: (event, listener) => socket.on(event, listener),
+    get hidden() {
+      return hidden;
+    },
+    onVisibilityChange(listener) {
+      visibility.add(listener);
+      return () => visibility.delete(listener);
+    },
+  };
+  // No topics still needs visibility: this is a pure fallback poll, without any DOM.
+  const index = reader(door, { topics: [] });
+  await flush();
+  clock.advance(10_000);
+  await flush();
+  expect(index.reads()).toBe(1);
+  hidden = false;
+  for (const listener of visibility) listener();
+  await flush();
+  expect(index.reads()).toBe(2);
+  clock.advance(2_000);
+  await flush();
+  expect(index.reads()).toBe(3);
+
+  rebindFeed("core.index.read|null", socket, [INDEX_TOPIC], "manifold://plugin/core.index");
+  expect(visibility.size).toBe(0);
+  socket.moveTo("open");
+  await flush();
+  expect(index.reads()).toBe(4);
+  clock.advance(10_000);
+  await flush();
+  expect(index.reads()).toBe(4);
+  index.release();
+  expect(clock.pending).toBe(0);
+  expect(socket.standing).toBe(0);
 });

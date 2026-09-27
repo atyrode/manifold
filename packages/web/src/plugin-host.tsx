@@ -81,7 +81,7 @@ import { dispatchAction, type StoredIdentity } from "./api.ts";
 import { requestJson, requestResponse } from "./http.ts";
 import { createRoomPipeRegistry, panelSessionHandle } from "./room-pipes.ts";
 import { ContainerErrorBoundary } from "./error-boundary.tsx";
-import { isolatedPanel } from "./isolate/index.ts";
+import { isolatedPanel, isolatedSection } from "./isolate/index.ts";
 import { webModulePath } from "./isolate/worker-host.ts";
 import { FEED_TOPICS, SPACE_SET_LAYOUT_ACTION, WEB_PLUGIN_DEFS } from "./assembly.ts";
 
@@ -356,15 +356,15 @@ export function buildBrowserAssembly(
     if (entry.held !== undefined) continue;
     if (enabled) enabledIds.add(manifest.id);
 
-    // Hardening is the installer's choice, never inferred from installation provenance.
-    const isolated = entry.install?.hardened === true && manifest.entry?.web !== undefined;
+    // Effective execution mode is independent of where this plugin was installed or built.
+    const isolated = entry.hardened === true && manifest.entry?.web !== undefined;
     for (const panel of manifest.contributes.panels) {
       panels.set(`${manifest.id}.${panel.id}`, {
         plugin: manifest.id,
         title: panel.title,
         arranges: panel.arranges,
         Component: isolated
-          ? isolatedPanel(manifest.id, panel.id)
+          ? isolatedPanel(manifest.id, panel.id, manifest.entry?.worker === true)
           : (def?.panels?.[panel.id] ?? null),
         enabled,
       });
@@ -388,7 +388,9 @@ export function buildBrowserAssembly(
           default is (`AssemblySection.presentation`).
         */
         presentation: section.presentation ?? DEFAULT_SECTION_PRESENTATION,
-        Component: def?.sections?.[section.id] ?? null,
+        Component: isolated
+          ? isolatedSection(manifest.id, section.id, manifest.entry?.worker === true)
+          : (def?.sections?.[section.id] ?? null),
         enabled,
       });
     }
@@ -939,7 +941,7 @@ function AssemblyOwner({ identity, children }: AssemblyProviderProps): ReactElem
           (row) =>
             row.enabled &&
             row.install !== undefined &&
-            row.install.hardened !== true &&
+            row.hardened !== true &&
             row.install.refusal === undefined &&
             row.manifest.entry?.web !== undefined,
         )

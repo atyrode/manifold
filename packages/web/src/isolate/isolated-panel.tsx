@@ -1,5 +1,5 @@
-import { panelRefId, type HostServices, type PanelProps } from "@manifold/plugin";
-import type { UiNode } from "@manifold/protocol";
+import { panelRefId, type HostServices, type PanelProps, type SectionProps } from "@manifold/plugin";
+import type { PanelArg, UiNode } from "@manifold/protocol";
 import {
   useCallback,
   useEffect,
@@ -13,12 +13,10 @@ import { VocabularyRenderer } from "./vocabulary.tsx";
 import { WorkerRegistry, type WorkerLease } from "./worker-host.ts";
 
 /**
- * THE PANEL AN INSTALLED PLUGIN GETS (ADR 0016 §1, §3): a tile ref exactly like an in-tree
- * panel's — same `PanelProps`, same host ref, same outlet — whose body is whatever tree the
- * plugin's worker last rendered for this instance, painted through the vocabulary. It holds
- * one instance id, mounts it on the plugin's worker for the life of the tile, forwards every
- * control event, and shows the two states the worker cannot: a spinner until the first
- * `render`, and a danger-toned `empty` naming the fault when the worker or its program breaks.
+ * A HARDENED CONTRIBUTION: the same panel or section slot, host and React source, rendered in
+ * the plugin's Worker and painted through the closed vocabulary. One mounted instance owns
+ * its callbacks, calls and resources. The host paints loading and fault states the guest
+ * cannot; a context or panel-argument update does not remount the guest component.
  *
  * WHICH WORKER. One registry per page holds a worker per (plugin, container) — see
  * `WorkerRegistry` — so every instance of every panel of one plugin shares a worker, and a
@@ -32,6 +30,9 @@ const WORKERS = new WorkerRegistry();
 interface IsolatedInstanceProps {
   readonly pluginId: string;
   readonly panelId: string;
+  readonly kind: "panel" | "section";
+  readonly portableWorker: boolean;
+  readonly arg?: PanelArg | undefined;
   readonly host: HostServices;
 }
 
@@ -44,7 +45,7 @@ const LOADING: PanelState = { kind: "loading" };
 
 function ignoreEvent(): void {}
 
-function IsolatedInstance({ pluginId, panelId, host }: IsolatedInstanceProps): ReactElement {
+function IsolatedInstance({ pluginId, panelId, kind, portableWorker, host, arg }: IsolatedInstanceProps): ReactElement {
   const [instance] = useState(() => crypto.randomUUID());
   const [state, setState] = useState<PanelState & { readonly token: string }>(() => ({
     ...LOADING,
@@ -57,28 +58,31 @@ function IsolatedInstance({ pluginId, panelId, host }: IsolatedInstanceProps): R
     panel nobody touched. Credential changes acquire a fresh supervisor; all other host
     changes still serve every call through the second effect.
   */
-  const hostAtMount = useEffectEvent((): HostServices => host);
+  const propsAtMount = useEffectEvent(() => ({ host, arg }));
 
   useEffect(() => {
-    const currentHost = hostAtMount();
-    const held = WORKERS.acquire(pluginId, currentHost);
+    const { host: currentHost, arg: currentArg } = propsAtMount();
+    const held = WORKERS.acquire(pluginId, currentHost, portableWorker);
     lease.current = held;
     const unmount = held.worker.mount(
       instance,
       panelId,
       (tree) => setState({ kind: "tree", tree, token: currentHost.token }),
       (error) => setState({ kind: "fault", error, token: currentHost.token }),
+      { kind, host: currentHost, arg: currentArg },
     );
     return () => {
       unmount();
       held.release();
       lease.current = null;
     };
-  }, [pluginId, panelId, instance, host.token]);
+  }, [pluginId, panelId, kind, portableWorker, instance, host.token]);
 
   useEffect(() => {
-    lease.current?.worker.bind(host);
-  }, [host]);
+    const worker = lease.current?.worker;
+    worker?.bind(host);
+    worker?.update(instance, host, arg);
+  }, [host, arg, instance]);
 
   const onEvent = useCallback(
     (event: string, payload?: unknown): void => {
@@ -90,7 +94,9 @@ function IsolatedInstance({ pluginId, panelId, host }: IsolatedInstanceProps): R
   const currentState = state.token === host.token ? state : LOADING;
   switch (currentState.kind) {
     case "loading": {
-      const title = host.assembly.panels.get(panelRefId(pluginId, panelId))?.title;
+      const title = kind === "panel"
+        ? host.assembly.panels.get(panelRefId(pluginId, panelId))?.title
+        : host.assembly.sections.find((section) => section.plugin === pluginId && section.id === panelId)?.title;
       return (
         <VocabularyRenderer
           tree={title === undefined ? { type: "spinner" } : { type: "spinner", label: title }}
@@ -117,26 +123,44 @@ function IsolatedInstance({ pluginId, panelId, host }: IsolatedInstanceProps): R
 
 const COMPONENTS = new Map<string, ComponentType<PanelProps>>();
 
-/**
- * The component the composition resolves for a panel of an installed plugin
- * (`buildBrowserAssembly`): closed over (plugin, panel) so it has `PanelProps` and nothing
- * more, and CACHED by full panel id so the composition's every rebuild resolves the same
- * component — a fresh one per roster change would remount the tile and re-init the guest's
- * panel each time a plugin was toggled.
- */
-export function isolatedPanel(pluginId: string, panelId: string): ComponentType<PanelProps> {
-  const id = panelRefId(pluginId, panelId);
+/** Stable component identity across roster recomposition; execution mode is part of the key. */
+function isolatedContribution(
+  pluginId: string,
+  panelId: string,
+  kind: "panel" | "section",
+  portableWorker: boolean,
+): ComponentType<PanelProps> {
+  const id = `${kind}:${panelRefId(pluginId, panelId)}:${portableWorker ? "react" : "legacy"}`;
   const cached = COMPONENTS.get(id);
   if (cached !== undefined) return cached;
-  const IsolatedPanel = ({ host }: PanelProps): ReactElement => (
+  const IsolatedPanel = ({ host, arg }: PanelProps): ReactElement => (
     <IsolatedInstance
       key={host.containerId ?? ""}
       pluginId={pluginId}
       panelId={panelId}
+      kind={kind}
+      portableWorker={portableWorker}
+      arg={arg}
       host={host}
     />
   );
   IsolatedPanel.displayName = `IsolatedPanel(${id})`;
   COMPONENTS.set(id, IsolatedPanel);
   return IsolatedPanel;
+}
+
+export function isolatedPanel(
+  pluginId: string,
+  panelId: string,
+  portableWorker = false,
+): ComponentType<PanelProps> {
+  return isolatedContribution(pluginId, panelId, "panel", portableWorker);
+}
+
+export function isolatedSection(
+  pluginId: string,
+  sectionId: string,
+  portableWorker = false,
+): ComponentType<SectionProps> {
+  return isolatedContribution(pluginId, sectionId, "section", portableWorker);
 }
