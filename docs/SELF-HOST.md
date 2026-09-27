@@ -846,6 +846,9 @@ the public domain — it feeds `MANIFOLD_PUBLIC_URL`.
 Everything durable is in the `manifold-data` named volume, mounted at `/data`:
 
 - `manifold.db` — SQLite store (scenes, principals, hashed tokens, session lifecycle).
+- `manifold.writer` — the writer lock, held for its whole life by the one hub process allowed to
+  write this directory ([Hub handover](#hub-handover)). It carries no data and is left out of
+  full-state checkpoints.
 - `owner.key` (mode 600) — the root bootstrap secret, generated on first boot unless
   `MANIFOLD_OWNER_KEY` pins it.
 - `preview-identity.key` (mode 600) — the Ed25519 private key that signs short-lived preview
@@ -945,8 +948,8 @@ protection and recovery retention, then rehearse a restore. Transport security a
 rest are properties you must configure and verify with the chosen provider or endpoint:
 S3-compatible means API-compatible, not encrypted.
 
-With the four variables set, the entrypoint runs one fail-closed preparation gate before either
-Litestream replication or the server may start:
+With the four variables set, the entrypoint first runs a fail-closed preparation gate. Neither
+Litestream replication nor the server may start before this gate succeeds:
 
 - An existing `${MANIFOLD_DATA_DIR:-/data}/manifold.db` must pass a read-only SQLite integrity
   check and have a positive schema version supported by this image. A zero-byte, foreign, corrupt,
@@ -956,11 +959,12 @@ Litestream replication or the server may start:
   publishes restored or initialized history beside them.
 - With no local database, the gate gives `litestream restore` five minutes to restore the configured
   replica into a private staging directory on the same data filesystem. A usable restored database
-  is published without replacing another file. A restore error or timeout always refuses startup.
+  must also carry a sealed replica-writer record and matching database-set fingerprints before
+  publication. An active or untracked writer, restore error, or timeout refuses startup.
 - A successful restore that produces no database means the configured replica is empty. It refuses
   by default. Only a valid one-time first-initialization acknowledgement consumed by this same
   attempt permits the gate to initialize a new database.
-- On every refusal, neither `litestream replicate` nor the server starts. Preparation removes only
+- On every preparation refusal, neither `litestream replicate` nor the server starts. Preparation removes only
   the private staging directory owned by that attempt; it does not delete or rewrite local data or
   replica objects.
 
@@ -1008,17 +1012,57 @@ than clearing it. Quarantining local data is a recovery operation and does not a
 history. The authenticated full-state checkpoint procedure in [Backup](#backup) remains the separate
 recovery path for the rest of `/data`.
 
-Once preparation succeeds, the entrypoint runs the server under `litestream replicate`, shipping
-every WAL segment as it lands, with a fresh snapshot every hour and 72 hours of retention
-(`infra/litestream.yml`). Without the replica variables the entrypoint remains exactly
-`bun packages/server/src/main.ts`.
+After preparation, `replica-guard.ts` supervises the application and Litestream. Before the
+application starts it reads the latest replica, even with a valid local database. Unavailable,
+untracked, newer or conflicting writer history refuses readiness. Retained local data must be the
+same authoritative durable volume, not an older copy substituted at the live pathname. The guard
+then records a new active epoch/UUID and requires a read-only restore to observe that exact claim
+before the application may serve. The freshness gate gets five minutes after preparation; allow
+for both budgets in an orchestrator's startup checks. Without replica variables, the entrypoint
+still runs `bun packages/server/src/main.ts` directly.
 
-One writer per replica. Never run two instances against one bucket path — the second
-one restores over the first one's history — which also means "zero-downtime" deploys
-that overlap old and new instances are off the table for a replicated hub.
+During service, Litestream ships WAL segments with the configured hourly snapshots and 72-hour
+retention (`infra/litestream.yml`). On SIGTERM the supervisor stops the application, then all
+replication. It fingerprints any auxiliary databases and checks their restored copies before
+writing a main-database seal; only main replication reopens to publish that seal. Successful
+shutdown logs `hub_replica_boot` with state `replica_seal_durable` after readback confirms it.
+The application's ten-second stop budget is followed by a shared five-minute synchronization
+budget. Compose grants six minutes of termination grace. Give another container/service manager
+that grace too; do not replace it with the usual ten-second container kill.
 
-Take a consistent copy at any time (this is the same command that would rebuild the
-store on a new host):
+One writer per replica remains mandatory. Never overlap old and new instances against one bucket
+path, including on different disks. Neither SQLite lock is a distributed fence. The hosting
+boundary must also kill the whole owned process group on forced supervisor death; container PID-1
+teardown does this, but killing only a native supervisor does not.
+
+The guard's `replica-writer` record is separate from the server's diagnostic `writer-epoch`.
+After disk loss, an active replica refuses before an application starts, rather than serving a
+possibly missing acknowledged tail. A sealed record admits only its complete database set. Nothing
+merges or invents missing writes. This depends on trustworthy latest/read-after-write-consistent
+storage: it is not authentication against a hostile store replaying an older valid history.
+
+**Adopting an untracked replica.** An older deployment's replica has no supervisor claim and is
+deliberately refused, even beside a valid local database. Use a reviewed offline maintenance window:
+
+1. Stop the incumbent and exclude every other writer. Preserve its final durable volume; account
+   for any hub-hosted terminal workload before stopping it.
+2. Capture an authenticated full-state checkpoint from that quiesced volume using [Backup](#backup).
+   Retain its exact source-build identity and receipt; no later writes may be omitted.
+3. Restore that authenticated receipt into a fresh, empty volume, with the expected source build
+   and private one-shot control files. This is offline adoption, not a serving emergency recovery
+   deployment; do not clear an existing deployment's recovery flags to imitate it.
+4. Configure the ordinary image to use a new, empty, dedicated replica bucket or prefix, leaving
+   the old replica intact. Start with the restored volume and require `replica_claim_durable`
+   before ordinary health and state verification. Preserve the checkpoint and old history until
+   that verification succeeds.
+
+Do not use first-initialization intent, hand-written seal metadata, or deletion of the old replica
+to bypass admission. Provider migration and production/fleet actions still need their own
+authorization. The dated reasoning and disposable proof boundary are in
+[ADR 0047](decisions/0047-replica-first-initialization.md).
+
+Take a consistent inspection copy of the ordinary replica with the command below. A live writer's
+copy is normally active and is not an admitted replacement volume; do not overwrite `/data` with it:
 
 ```sh
 docker compose exec manifold litestream restore -config /app/infra/litestream.yml -o /tmp/copy.db /data/manifold.db
@@ -1210,6 +1254,48 @@ docker compose pull && docker compose up -d
 SQLite schema migrations run automatically on boot (`packages/server/src/db.ts`
 MIGRATIONS); the volume carries the data across image rebuilds.
 
+### Hub handover
+
+One hub process writes a data directory at a time, and a replacement takes over by handover
+rather than overlap. On start the server takes `<data>/manifold.writer` before it opens
+`manifold.db`. While another process holds it, the new one logs `writer_waiting` and waits up to
+30 seconds, then fails to start. The lock only works for processes that open the same data
+directory on one local filesystem. It does not fence a second container with its own volume, an
+instance on another host, or a replacement that restores the replica onto a new disk. Do not keep
+`/data` on a network filesystem, where SQLite's locks are not reliable.
+
+Once the server holds the lock and has migrated, it claims the next writer epoch. It logs
+`writer_claimed` with `previousEpoch` and a `previousState`:
+
+- `sealed`: the last recorded writer handed over cleanly. On a shared directory, that writer is
+  the process that just released the lock. After a replica restore, it is only the last epoch the
+  replica holds.
+- `active` (logged at `warn`): the last recorded writer stopped without handing over. It crashed,
+  was killed, or the replica was restored from before its last commits.
+- `null`: a new database, or one written only by builds older than the handover.
+
+On SIGTERM or SIGINT the server quiesces before it exits. It logs `writer_quiescing` and answers
+every new request and WebSocket upgrade except `/healthz` with `503` and `Retry-After: 1`, using the
+API's usual cross-origin headers. It closes browser, machine and instance sockets with `1001`,
+which every client already redials. Requests and action dispatches it had already admitted get up
+to three seconds to finish. Then it flushes scenes, seals its epoch as its final commit, logs
+`writer_sealed` and releases the lock. A direct, unreplicated server needs time for that quiesce
+and plugin shutdown. The replicated supervisor additionally proves the replica seal and needs the
+six-minute container grace described above. A process killed before sealing leaves an `active`
+record; an active replica restore is refused before serving.
+
+An unreplicated replacement may be started beside the running hub on the same local directory and
+port. It loads, waits on the application lock, and binds after the old process releases it. The gap
+is bounded, not zero: requests in it are refused or cannot connect, and clients reconnect under
+their existing back-off. Replicated containers also have the supervisor's seal to finish: stop the
+old container completely before starting the new one, as the container commands above do.
+
+Builds older than the handover neither take the lock nor record an epoch; they ignore the
+`writer-epoch` row. Start one only after the current process has exited. Read the next
+`previousEpoch` as the last handover-aware writer, not the older build.
+The recovery image runs the compiled replica guard outside that pinned older application, so
+ignoring application-local epoch metadata cannot bypass replica admission or final sealing.
+
 ## The hub is also a machine
 
 The container auto-spawns a terminal host and a separate network transport enrolled as
@@ -1313,6 +1399,21 @@ described above; it is not covered by the checkpoint's authentication. Ordinary 
 then checks the recovered previous
 build against the unchanged pre-switch snapshot. The workflow remains failed even when recovery
 succeeds; failed recovery stays visible rather than claiming that the previous release is serving.
+
+Before an older application starts, recovery restores all available database prefixes and validates
+the main seal's complete path/fingerprint set. An active main record, an auxiliary-only prefix or a
+mixed-age set refuses instead of silently falling back to checkpoint-era database files. A
+checkpoint-specific prefix that has never existed may start from the authenticated baseline, only
+after both the complete replica sweep and the guard's latest main-replica read confirm it is empty.
+The authenticated checkpoint digests establish this baseline's bytes; inherited replica file hashes
+can differ because checkpoint capture compacts SQLite pages. Later recovery restarts still require
+the complete replica seal. This is not an override for a failed or nonempty replica.
+For that new namespace only, the guard runs Litestream's local-state reset before claiming it, so
+tracking files inherited from the source checkpoint cannot prevent fresh snapshots. This leaves
+SQLite contents and the original replica namespace unchanged.
+The compiled supervisor then proves its new claim before launching the actual previous executable
+and proves its final seal on shutdown; it does not substitute a newer application with an older
+build label. These replicas retain the trusted-storage boundary above, not checkpoint authenticity.
 
 Recovery settings remain active after a successful rollback so a provider restart repeats the
 authenticated file restore and resumes each database from that recovery prefix. Do not install

@@ -31,6 +31,14 @@ export const LOG_EVENTS = [
   "http_request_failed",
   "shutdown_failed",
 
+  // Server: the single-writer handoff (#318) — waiting for the data directory's writer lock,
+  // claiming the next writer epoch (warn when the history's last recorded epoch was never
+  // sealed), closing admission for a graceful stop, and the retiring writer's final sealed commit.
+  "writer_waiting",
+  "writer_claimed",
+  "writer_quiescing",
+  "writer_sealed",
+
   // Server: the plugin host's own bookkeeping (ADR 0013 §2, §6, §11).
   "plugin_lifecycle",
   "plugin_migration",

@@ -23,4 +23,4 @@ fi
 export MANIFOLD_DATA_DIR="${MANIFOLD_DATA_DIR:-/data}"
 bun scripts/replica-bootstrap.ts prepare
 printf '%s\n' '{"evt":"hub_replica_boot","state":"replication_starting"}'
-exec litestream replicate -config /app/infra/litestream.yml -exec "bun packages/server/src/main.ts"
+exec bun scripts/replica-guard.ts

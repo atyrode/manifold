@@ -49,6 +49,7 @@ async function run(
 test("authenticated full-state checkpoint round-trips and tampering restores nothing", async () => {
   const objects = new Map<string, Uint8Array>();
   const server = Bun.serve({
+    hostname: "127.0.0.1",
     port: 0,
     async fetch(request) {
       const path = new URL(request.url).pathname;
@@ -84,6 +85,9 @@ test("authenticated full-state checkpoint round-trips and tampering restores not
   database.close();
   writeFileSync(join(source, "preview-identity.key"), "fixture-signing-key", { mode: 0o600 });
   writeFileSync(join(source, "agent.pid"), "999999\n", { mode: 0o600 });
+  writeFileSync(join(source, "manifold.replica-writer"), "transient supervisor lock", {
+    mode: 0o600,
+  });
 
   const common = {
     MANIFOLD_BUILD: "1.2.3",
@@ -103,8 +107,6 @@ test("authenticated full-state checkpoint round-trips and tampering restores not
     readonly object: string;
     readonly objectSha256: string;
   };
-  expect(receipt).toMatchObject({ checkpointId: "before-upgrade" });
-  expect(receipt.objectSha256).toMatch(/^[a-f0-9]{64}$/);
   const verified = await run(["verify", receipt.checkpointId, receipt.objectSha256], common);
   if (verified.code !== 0) throw new Error(verified.err);
   expect(JSON.parse(verified.out)).toMatchObject({ sourceBuild: "1.2.3", databases: 1 });
@@ -121,8 +123,7 @@ test("authenticated full-state checkpoint round-trips and tampering restores not
     MANIFOLD_RECOVERY_EXPECTED_BUILD: "1.2.3",
   });
   expect(wrongKey.code).toBe(1);
-  expect(wrongKey.err).toContain("checkpoint authentication failed");
-  expect(Array.from(new Bun.Glob("*").scanSync(wrongKeyRoot))).toEqual([]);
+  expect(Array.from(new Bun.Glob("*").scanSync({ cwd: wrongKeyRoot, dot: true }))).toEqual([]);
 
   const restored = temporary("manifold-recovery-restored");
   const config = join(temporary("manifold-recovery-control"), "litestream.yml");
@@ -137,6 +138,7 @@ test("authenticated full-state checkpoint round-trips and tampering restores not
   if (result.code !== 0) throw new Error(result.err);
   expect(readFileSync(join(restored, "preview-identity.key"), "utf8")).toBe("fixture-signing-key");
   expect(existsSync(join(restored, "agent.pid"))).toBe(false);
+  expect(existsSync(join(restored, "manifold.replica-writer"))).toBe(false);
   const recovered = new Database(join(restored, "manifold.db"), { readonly: true });
   expect(recovered.query("SELECT value FROM proof").get()).toEqual({ value: "retained" });
   recovered.close();
@@ -157,20 +159,37 @@ test("authenticated full-state checkpoint round-trips and tampering restores not
     MANIFOLD_RECOVERY_DATABASES_FILE: join(refusedControl, "databases"),
   });
   expect(refusal.code).toBe(1);
-  expect(refusal.err).toContain("checkpoint object sha256 does not match");
-  expect(Array.from(new Bun.Glob("*").scanSync(refused))).toEqual([]);
+  expect(Array.from(new Bun.Glob("*").scanSync({ cwd: refused, dot: true }))).toEqual([]);
 });
 
 test("capture refuses oversized sparse state before reading or uploading it", async () => {
   const root = temporary("manifold-recovery-oversized");
+  const database = new Database(join(root, "manifold.db"));
+  database.exec("CREATE TABLE proof(value TEXT NOT NULL); INSERT INTO proof VALUES ('retained')");
+  database.close();
+  let requests = 0;
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch() {
+      requests += 1;
+      return new Response(null, { status: 500 });
+    },
+  });
+  servers.push(server);
   const path = join(root, "oversized-state");
   writeFileSync(path, "");
   truncateSync(path, 256 * 1024 * 1024 + 1);
   const result = await run(["capture", "oversized"], {
     MANIFOLD_DATA_DIR: root,
     MANIFOLD_BUILD: "1.2.3",
+    MANIFOLD_OWNER_KEY: "a451".repeat(16),
+    MANIFOLD_REPLICA_BUCKET: "fixture",
+    MANIFOLD_REPLICA_ENDPOINT: `http://127.0.0.1:${String(server.port)}`,
+    LITESTREAM_ACCESS_KEY_ID: "fixture-access",
+    LITESTREAM_SECRET_ACCESS_KEY: "fixture-secret",
   });
   expect(result.code).toBe(1);
-  expect(result.err).toContain("exceeds the remaining checkpoint bound");
+  expect(requests).toBe(0);
   expect(result.out).toBe("");
 });

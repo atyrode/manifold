@@ -2127,7 +2127,7 @@ INSERT INTO machines(id, name, token_id, last_seen) VALUES
   });
 });
 
-test("migration 24 refuses to rewrite credentials when its backup cannot be published", () => {
+test("migration 24 backup refusal preserves credentials and releases the database for recovery", () => {
   const dir = mkdtempSync(join(tmpdir(), "manifold-db-credential-backup-"));
   const path = join(dir, "manifold.db");
   try {
@@ -2143,12 +2143,14 @@ VALUES ('legacy', 'historical-hash', 'human', '["containers:read"]', 1);
     // image must stop the migration before any credential deadline or schema marker moves.
     mkdirSync(`${path}.pre-v24.bak`);
     expect(() => openDatabase(path)).toThrow();
-    const unchanged = new Database(path, { readonly: true, strict: true });
+    const unchanged = new Database(path, { strict: true });
     try {
+      unchanged.exec("PRAGMA locking_mode = EXCLUSIVE; BEGIN EXCLUSIVE;");
       expect(unchanged.query("SELECT * FROM tokens").all()).toEqual(before);
       expect(unchanged.query("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
         value: "23",
       });
+      unchanged.exec("COMMIT;");
     } finally {
       unchanged.close();
     }

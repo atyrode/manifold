@@ -13,7 +13,13 @@ import { spawnLocalAgent } from "./agent-spawn.ts";
 import { FLOOR_EVENT_OWNERS, SERVER_PLUGIN_DEFS, SHIPPED_PLUGIN_IDS } from "./assembly.ts";
 import { AuthService } from "./auth.ts";
 import { finalizePublicUrl, loadConfig, type ServerConfig } from "./config.ts";
-import { openDatabase } from "./db.ts";
+import {
+  acquireWriterLock,
+  claimWriterEpoch,
+  openDatabase,
+  sealWriterEpoch,
+  type WriterLock,
+} from "./db.ts";
 import { EventHub } from "./event-hub.ts";
 import { HttpApp, MAX_HTTP_BODY_BYTES } from "./http.ts";
 import { InstanceDialer } from "./instance-dialer.ts";
@@ -56,6 +62,31 @@ class BunSocket implements RawSocket {
   }
 }
 
+/**
+ * How long a starting hub waits for the data directory's writer lock (#318). A successor started
+ * beside its predecessor waits out that predecessor's quiesce; a lock still held after this is a
+ * process that will not hand over, and the start fails rather than waiting forever.
+ */
+const WRITER_LOCK_WAIT_MS = 30_000;
+/**
+ * How long a stopping hub lets admitted requests and dispatches settle, and produced responses
+ * finish writing, before it seals. Well inside a platform's stop grace period (Docker's default
+ * is 10s), because the teardown and seal after it must fit there too; work that outlives it is
+ * cut off and meets a sealed database, so it is never acknowledged.
+ */
+const QUIESCE_DEADLINE_MS = 3_000;
+
+/** Whether `work` settled before `deadline`, a `performance.now()` instant. */
+async function settledBy(work: Promise<unknown>, deadline: number): Promise<boolean> {
+  const expired = Promise.withResolvers<boolean>();
+  const timer = setTimeout(() => expired.resolve(false), Math.max(0, deadline - performance.now()));
+  try {
+    return await Promise.race([work.then(() => true), expired.promise]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** Optional dependency injection for embedded and deterministic server starts. */
 export interface StartServerOptions {
   config?: ServerConfig;
@@ -72,17 +103,132 @@ export interface RunningServer {
   stop(): Promise<void>;
 }
 
+// Failed revocation is fail-stop: keep the fence reachable until process exit, not just until GC.
+const retainedWriterLocks = new Set<WriterLock>();
+
+async function failAfterCleanup(
+  error: unknown,
+  opened: readonly (() => unknown)[],
+  writer: WriterLock,
+  deadline = performance.now() + QUIESCE_DEADLINE_MS,
+): Promise<never> {
+  const failures: unknown[] = [];
+  retainedWriterLocks.add(writer);
+  const pending: Promise<unknown>[] = [];
+  // Start every revocation before awaiting teardown: an admitted request can itself be waiting
+  // for a later resource's close signal. A stalled finalizer must not keep the remaining host live.
+  for (let index = opened.length - 1; index >= 0; index -= 1) {
+    try {
+      pending.push(
+        Promise.resolve(opened[index]!()).catch((failure: unknown) => {
+          failures.push(failure);
+        }),
+      );
+    } catch (failure) {
+      failures.push(failure);
+    }
+  }
+  if (!(await settledBy(Promise.all(pending), deadline))) {
+    failures.push(new Error("resource cleanup exceeded the quiesce deadline"));
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(
+      [error, ...failures],
+      "server cleanup incomplete; writer fence retained until process exit",
+      { cause: error },
+    );
+  }
+  writer.release();
+  retainedWriterLocks.delete(writer);
+  throw error;
+}
+
 /**
  * Wires SQLite, rooms, brokers, HTTP, and both WebSockets into one Bun process. Resolves
  * once the socket is bound — and the socket is bound only after the plugin host has booted,
  * because boot is where pending data migrations run (ADR 0016 §4 made them awaited).
+ *
+ * Before anything touches the database it takes the data directory's writer lock and claims
+ * the next writer epoch (#318); `stop` quiesces, seals that epoch and releases the lock last,
+ * so a successor waiting on the same directory becomes the writer only after this one is done.
+ * Failed initialization and exceptional stop revoke every owned resource; unconfirmed cleanup
+ * retains the fence until process exit rather than allowing a successor beside a live old host.
  */
 export async function startServer(options: StartServerOptions = {}): Promise<RunningServer> {
   const runtime = options.runtime ?? defaultRuntime;
   const config = options.config ?? loadConfig();
   const timers = options.timers ?? defaultRoomTimers;
   const logger = options.logger ?? createLogger(runtime);
-  const store = new ServerStore(openDatabase(resolve(config.dataDir, "manifold.db")));
+  const writer = await acquireWriterLock(config.dataDir, {
+    waitMs: WRITER_LOCK_WAIT_MS,
+    onWait: () => logger.info("writer_waiting", { waitMs: WRITER_LOCK_WAIT_MS }),
+  });
+  /*
+    A failed start has no RunningServer for its caller to stop. Unwind its owned resources
+    before releasing the writer; incomplete cleanup retains the fence until process exit.
+    A claimed epoch stays active, never sealed.
+  */
+  const opened: (() => unknown)[] = [];
+  try {
+    return await startAsWriter({
+      writer,
+      opened,
+      runtime,
+      config,
+      timers,
+      logger,
+      announce: options.announce !== false,
+    });
+  } catch (error) {
+    return failAfterCleanup(error, opened, writer);
+  }
+}
+
+/** A start that holds the writer lock, with its unwind list and every option resolved. */
+interface WriterStart {
+  readonly writer: WriterLock;
+  /** Owned resource cleanup, in opening order, also used after an exceptional stop. */
+  readonly opened: (() => unknown)[];
+  readonly runtime: RuntimeDeps;
+  readonly config: ServerConfig;
+  readonly timers: RoomTimers;
+  readonly logger: Logger;
+  readonly announce: boolean;
+}
+
+/**
+ * Everything a start does as the writer: open and claim the database, wire the process, bind
+ * it. A resource's close joins `opened` the moment the resource exists — before the call that
+ * opens it, where that call can open some and then throw. Once this resolves, `stop` owns them.
+ */
+async function startAsWriter({
+  writer,
+  opened,
+  runtime,
+  config,
+  timers,
+  logger,
+  announce,
+}: WriterStart): Promise<RunningServer> {
+  const db = openDatabase(resolve(config.dataDir, "manifold.db"));
+  opened.push(() => db.close());
+  const store = new ServerStore(db);
+  const claim = claimWriterEpoch(store.db);
+  /*
+    What the opened history records about its last writer — reported, not judged. `active` means
+    this history was left mid-epoch (a crash, a kill, or a replica restored from before that
+    writer's last commits), so it warns. `sealed` is only the record of a clean END to that epoch:
+    a replica restored from before a later writer's unuploaded commits reads the same, so it is
+    not evidence that this is the newest history.
+  */
+  const previous = claim.previous;
+  const claimed = {
+    epoch: claim.epoch,
+    previousEpoch: previous?.epoch ?? null,
+    previousState: previous === null ? null : previous.sealed ? "sealed" : "active",
+  };
+  if (previous?.sealed === false) logger.warn("writer_claimed", claimed);
+  else logger.info("writer_claimed", claimed);
   const auth = new AuthService(
     store,
     config.ownerKey,
@@ -106,6 +252,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
   const vocabulary = assemblyPlacementVocabulary(() => plugins.roster());
   const tileTrees = assemblyTileTrees(vocabulary);
   const rooms = new RoomManager(store, runtime, timers, logger, tileTrees);
+  opened.push(() => rooms.flushAll());
   const broker = new TerminalBroker(
     store,
     auth,
@@ -188,6 +335,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     closed at shutdown after the sockets, so no dispatch in flight finds its child gone.
   */
   const isolates = new IsolateSupervisor({ logger, runtime });
+  opened.push(() => isolates.close());
   /*
     The assembly, and the host that answers for it. It is built BEFORE the gateways
     that consult it: the session gateway pushes the roster and refuses terminal
@@ -222,6 +370,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
       dataDir: config.dataDir,
     },
   );
+  opened.push(() => plugins.close());
   plugins.setJobs(jobs);
   jobs.setChangeNotifier({
     run: (node, actor) => events.emit(FLOOR_EVENT_OWNERS.jobs, node, "job_changed", actor),
@@ -234,6 +383,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
       ),
   });
   const jobTick = setInterval(() => jobs.tick(), 1000);
+  opened.push(() => clearInterval(jobTick));
   /*
     THE element-payload boundary, installed rather than constructed for the same reason the
     terminal view above it is: the schemas belong to the assembly, the assembly belongs to the
@@ -264,13 +414,26 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     events,
   );
   const http = new HttpApp(config, store, auth, rooms, broker, machines, plugins, logger, runtime);
-
+  /*
+    ADMISSION, for the quiesce a graceful stop performs (#318). Every request counts itself in
+    flight until its response exists; once `quiescing` is set, no new request or upgrade is
+    admitted at all, so the in-flight count can only fall and `stop` can wait for it to reach
+    zero before sealing.
+  */
+  let quiescing = false;
+  let requestsInFlight = 0;
+  let requestsSettled: PromiseWithResolvers<void> | null = null;
+  const requestDone = (): void => {
+    requestsInFlight -= 1;
+    if (requestsInFlight === 0) requestsSettled?.resolve();
+  };
   const server = Bun.serve<WebSocketData>({
     port: config.port,
     hostname: config.hostname,
     maxRequestBodySize: MAX_HTTP_BODY_BYTES,
     fetch(request, bunServer) {
       const pathname = new URL(request.url).pathname;
+      if (quiescing && pathname !== "/healthz") return http.handover(request);
       let endpoint: WebSocketData["endpoint"] | null = null;
       if (pathname === "/ws/session") endpoint = "session";
       if (pathname === "/ws/machine") endpoint = "machine";
@@ -284,7 +447,8 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
         });
         if (upgraded) return undefined;
       }
-      return http.fetch(request);
+      requestsInFlight += 1;
+      return http.fetch(request).finally(requestDone);
     },
     websocket: {
       open(socket) {
@@ -312,6 +476,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
       idleTimeout: 120,
     },
   });
+  opened.push(() => server.stop(true));
   const boundPort = server.port;
   if (boundPort === undefined) {
     throw new Error("Bun did not expose a TCP port for the server");
@@ -321,12 +486,14 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
   const localAgent = spawnLocalAgent(config, boundPort, auth, store, logger, undefined, {
     admissionPublicKey: jobs.admissionPublicKey,
   });
+  opened.push(() => localAgent?.release());
   /*
     Dials resume AFTER the socket is bound and the public URL is final, and both halves of
     that ordering are load-bearing: a dial declares this instance's origin in its hello, so
     it cannot run before `finalizePublicUrl`, and a partner that answers a welcome may want
     to reach back, so it should not run before this process can be reached.
   */
+  opened.push(() => dialer.shutdown());
   dialer.start();
   /*
     The unpacked directory's watch (ADR 0025 §4) starts here too: a rebuild it finds at start
@@ -334,7 +501,8 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     than delaying the first request behind a build.
   */
   const unwatchAuthored = plugins.watchAuthored();
-  if (options.announce !== false) {
+  opened.push(unwatchAuthored);
+  if (announce) {
     // The pre-authed fragment is announce-key opt-in (MANIFOLD_ANNOUNCE_KEY=1,
     // dev/test only) so the owner key never enters persisted log streams;
     // operators read <data>/owner.key instead (docs/SELF-HOST.md).
@@ -346,21 +514,50 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
   return {
     port: boundPort,
     publicUrl: config.publicUrl,
+    /*
+      THE HANDOVER, in the order the single-writer rule needs it (#318): close admission, cut
+      the sockets that could carry new work, let admitted work settle, flush, tear down, and
+      only then seal the epoch as this process's last commit and release the writer lock.
+      Sockets close with 1001 exactly as before, and every client already redials on that.
+    */
     async stop(): Promise<void> {
       if (stopped) return;
       stopped = true;
-      clearInterval(jobTick);
-      rooms.flushAll();
-      unwatchAuthored();
-      sessions.shutdown();
-      machines.shutdown();
-      instances.shutdown();
-      dialer.shutdown();
-      await server.stop(true);
-      await isolates.close();
-      plugins.close();
-      localAgent?.release();
-      store.close();
+      const quiesceStarted = performance.now();
+      const deadline = quiesceStarted + QUIESCE_DEADLINE_MS;
+      quiescing = true;
+      try {
+        logger.info("writer_quiescing", { epoch: claim.epoch });
+        clearInterval(jobTick);
+        rooms.flushAll();
+        unwatchAuthored();
+        sessions.shutdown();
+        machines.shutdown();
+        instances.shutdown();
+        dialer.shutdown();
+        // Admitted work — HTTP requests and every action dispatch — settles before the seal.
+        if (requestsInFlight > 0) requestsSettled = Promise.withResolvers<void>();
+        const settled = await settledBy(
+          Promise.all([requestsSettled?.promise, plugins.settleDispatches()]),
+          deadline,
+        );
+        rooms.flushAll();
+        // Responses already produced finish writing; a transfer still running at the deadline is cut.
+        if (!(await settledBy(server.stop(), deadline))) await server.stop(true);
+        await isolates.close();
+        plugins.close();
+        localAgent?.release();
+        sealWriterEpoch(store.db, claim.epoch);
+        logger.info("writer_sealed", {
+          epoch: claim.epoch,
+          settled,
+          quiesceMs: Math.round(performance.now() - quiesceStarted),
+        });
+        store.close();
+      } catch (error) {
+        return failAfterCleanup(error, opened, writer, deadline);
+      }
+      writer.release();
     },
   };
 }
