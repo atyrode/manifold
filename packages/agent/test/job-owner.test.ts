@@ -2237,6 +2237,407 @@ test.skipIf(!linux || !cgroupRoot)(
   },
 );
 
+/**
+ * A real owner over a real journal whose kernel boundary alone is replaced: no workload is
+ * spawned, a started job's service endpoints are read from the input file it would be given,
+ * and every upstream request waits until the test releases it.
+ */
+async function reconfiguredServiceOwner() {
+  const root = mkdtempSync(join(tmpdir(), "owner-service-reconfiguration-"));
+  const keys = generateKeyPairSync("ed25519");
+  const held: HeldDirectory[] = [];
+  const gates = new Map<
+    string,
+    { entered: PromiseWithResolvers<void>; release: PromiseWithResolvers<Response> }
+  >();
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch(request) {
+      const gate = gates.get(new URL(request.url).pathname)!;
+      gate.entered.resolve();
+      return gate.release.promise;
+    },
+  });
+  const endpoints = new Map<string, { url: string; bearer: string }>();
+  const protectedRoot = HeldDirectory.openAbsolute(root, { private: true });
+  const cache = protectedRoot.openChild("cache", { create: true });
+  const outputDirectory = protectedRoot.openChild("outputs", { create: true });
+  const managedState = protectedRoot.openChild("locations", { create: true });
+  // Never delegated to: no workload is launched.
+  const delegatedCgroup = protectedRoot.openChild("cgroup", { create: true });
+  held.push(protectedRoot, cache, outputDirectory, managedState, delegatedCgroup);
+  const recover = spyOn(nativeRuntime, "recoverLinuxJobs").mockResolvedValue(undefined);
+  const preflight = spyOn(nativeRuntime, "preflightLinuxJob").mockReturnValue(0);
+  const launch = spyOn(nativeRuntime, "startLinuxJob").mockImplementation(async (spec) => {
+    for (const file of spec.inputFiles ?? []) {
+      const endpoint = JSON.parse(readFileSync(`/proc/self/fd/${file.fd}`, "utf8")) as {
+        service: string;
+        url: string;
+        bearer: string;
+      };
+      endpoints.set(endpoint.service, endpoint);
+    }
+    const exited = Promise.withResolvers<LinuxJobResult>();
+    const exit = () =>
+      exited.resolve({
+        empty: true,
+        exitCode: null,
+        signal: "SIGKILL",
+        reason: "cancelled",
+        startedAt: Date.now(),
+        finishedAt: Date.now(),
+        boundary: "linux-bubblewrap-cgroup-v2",
+        usage: {
+          wallMs: 0,
+          cpuUsec: 0,
+          memoryPeakBytes: 0,
+          processesPeak: 0,
+          outputBytes: 0,
+          oomKills: 0,
+        },
+      });
+    return {
+      result: exited.promise,
+      childDelegation: spec.delegatedCgroup,
+      ownsLoopbackListener: () => false,
+      ownsLoopbackConnection: () => false,
+      input: async () => {},
+      endInput() {},
+      release() {},
+      async cancel() {
+        exit();
+        return exited.promise;
+      },
+    };
+  });
+  const outputs = JobOutputStore.open(outputDirectory);
+  const release = async () => {
+    outputs.close();
+    for (const directory of held.reverse()) directory.close();
+    launch.mockRestore();
+    preflight.mockRestore();
+    recover.mockRestore();
+    await server.stop(true);
+    rmSync(root, { recursive: true, force: true });
+  };
+  const journal = new JobJournal(protectedRoot.openChild("journal", { create: true }));
+  let owner: MachineJobOwner;
+  try {
+    owner = await MachineJobOwner.open({
+      machineId: "machine",
+      admissionPublicKey: keys.publicKey.export({ type: "spki", format: "pem" }).toString(),
+      journal,
+      cache,
+      managedState,
+      outputs,
+      delegatedCgroup,
+      protectedDirectories: [protectedRoot],
+      bubblewrapFd: -1,
+      anchors: {},
+      runtimeTools: {},
+      artifactAuthority: { origins: [], maxRedirects: 0, timeoutMs: 1000 },
+    });
+  } catch (error) {
+    journal.close();
+    await release();
+    throw error;
+  }
+  const events: JobEvent[] = [];
+  const detach = owner.attach((raw) => {
+    const event = JobEventSchema.parse(raw);
+    events.push(event);
+    if (event.type === "service_authorize")
+      void owner.execute({
+        type: "service_authorized",
+        subject: event.subject,
+        authorizationId: event.authorizationId,
+        allowed: true,
+      });
+    return true;
+  });
+  return {
+    owner,
+    events,
+    endpoints,
+    /** A service with one direct operation and one proxied route, each its own upstream path. */
+    service(serviceId: string, timeoutMs = 5000): ServicePolicy {
+      return {
+        serviceId,
+        revision: "r1",
+        origin: server.url.origin,
+        allowLoopbackHttp: true,
+        maxConcurrent: 1,
+        operations: {
+          update: {
+            method: "PATCH",
+            invocable: true,
+            path: `/${serviceId}/update`,
+            input: { enabled: { type: "boolean", required: true } },
+            query: {},
+            body: [{ path: ["enabled"], value: { input: "enabled" } }],
+            timeoutMs,
+            maxRequestBytes: 1024,
+            maxResponseBytes: 4096,
+            maxResultBytes: 1024,
+            response: { kind: "projected-json", fields: [["changed"]], maxArrayItems: 1 },
+          },
+          stream: {
+            kind: "http-proxy",
+            method: "POST",
+            path: `/${serviceId}/stream`,
+            request: { kind: "json", disclosure: "full" },
+            response: {
+              kind: "stream",
+              disclosure: "full",
+              contentTypes: ["application/json"],
+              headers: [],
+            },
+            timeoutMs,
+            maxRequestBytes: 1024,
+            maxResponseBytes: 1024,
+          },
+        },
+      };
+    },
+    /** The next upstream request to `path` is held until `release` resolves. */
+    gate(path: string) {
+      const next = {
+        entered: Promise.withResolvers<void>(),
+        release: Promise.withResolvers<Response>(),
+      };
+      gates.set(path, next);
+      return next;
+    },
+    configure(policies: ServicePolicy[]) {
+      return owner.execute({
+        type: "configure_services",
+        configuration: { revision: jobDigest(policies), policies },
+      });
+    },
+    /** Starts one job bound to each policy's proxied route, its endpoint in an input file. */
+    async startConsumers(policies: ServicePolicy[]) {
+      const bytes = Buffer.from("#!/bin/sh\nexit 0\n");
+      const hash = createHash("sha256").update(bytes).digest("hex");
+      const install: Extract<JobCommand, { type: "install" }> = {
+        type: "install",
+        pluginId: "fixture.consumer",
+        installationRevision: "r1",
+        artifactSha256: hash,
+        artifact: { bundleFile: "worker", data: bytes.toString("base64") },
+        resourceBindings: {
+          tools: {},
+          anchors: {},
+          services: Object.fromEntries(
+            policies.map((policy) => [policy.serviceId, jobDigest(policy)]),
+          ),
+        },
+        machine: {
+          requiresResourceBindings: true,
+          artifacts: {
+            [`linux-${process.arch}`]: {
+              bundleFile: "worker",
+              sha256: hash,
+              format: "raw",
+              entry: ["worker"],
+              entrySha256: hash,
+              maxBytes: bytes.length,
+              maxExpandedBytes: bytes.length,
+              maxMembers: 1,
+            },
+          },
+          locations: {},
+          operations: Object.fromEntries(
+            policies.map(({ serviceId, revision }) => [
+              `fixture.consumer.${serviceId}`,
+              {
+                argv: [],
+                input: {},
+                runtimeTools: [],
+                locations: [],
+                outputs: [],
+                network: "host" as const,
+                limits: {
+                  timeoutMs: 60_000,
+                  memoryBytes: 1048576,
+                  processes: 1,
+                  outputBytes: 1024,
+                },
+                stdin: false,
+                services: [{ serviceId, revision, operationIds: ["stream"] }],
+                inputFiles: {
+                  endpoint: {
+                    literal: JSON.stringify({ service: serviceId, url: "", bearer: "" }),
+                    jsonValues: [
+                      { path: ["url"], serviceId, value: "url" as const },
+                      { path: ["bearer"], serviceId, value: "bearer" as const },
+                    ],
+                  },
+                },
+              },
+            ]),
+          ),
+        },
+      };
+      await owner.execute(install);
+      for (const { serviceId } of policies) {
+        const operationId = `fixture.consumer.${serviceId}`;
+        const body: Omit<JobRequest, "requestDigest"> = {
+          jobId: `consumer-${serviceId}`,
+          machineId: "machine",
+          pluginId: install.pluginId,
+          operationId,
+          installationRevision: install.installationRevision,
+          artifactSha256: install.artifactSha256,
+          resourceBindings: jobResourceBindingsFor(
+            install.machine,
+            operationId,
+            `linux-${process.arch}` as "linux-x64" | "linux-arm64",
+            install.resourceBindings,
+          ),
+          input: {},
+          outputs: [],
+          limits: install.machine.operations[operationId]!.limits,
+          credential: {
+            principalId: "root",
+            tokenId: null,
+            grantId: null,
+            containerScope: null,
+            caps: ["machines:run"],
+          },
+          parent: null,
+          traceId: "service-reconfiguration",
+        };
+        const request = { ...body, requestDigest: jobDigest(body) };
+        const permit = {
+          permitId: request.jobId,
+          jobId: request.jobId,
+          requestDigest: request.requestDigest,
+          ownerId: owner.identity.ownerId,
+          ownerGeneration: owner.identity.generation,
+          decisionId: "decision",
+          policyRevision: "revision",
+          issuedAt: Date.now(),
+          expiresAt: Date.now() + 30_000,
+        };
+        await owner.execute({
+          type: "start",
+          request,
+          permit: {
+            ...permit,
+            signature: sign(null, Buffer.from(canonicalJobJson(permit)), keys.privateKey).toString(
+              "base64",
+            ),
+          },
+        });
+      }
+    },
+    async close() {
+      for (const gate of gates.values()) gate.release.resolve(Response.json({ released: true }));
+      detach();
+      await owner.shutdown();
+      await release();
+    },
+  };
+}
+
+// An owned update reconfigures one service; a call to any other service is not its to end.
+test.skipIf(!linux)(
+  "reconfiguration closes only direct calls whose service policy it changed or removed",
+  async () => {
+    const f = await reconfiguredServiceOwner();
+    try {
+      const invoke = async (requestId: string, policy: ServicePolicy) => {
+        await f.owner.execute({
+          type: "service_invoke",
+          requestId,
+          machineId: "machine",
+          serviceId: policy.serviceId,
+          revision: policy.revision,
+          policySha256: jobDigest(policy),
+          operationId: "update",
+          input: { enabled: true },
+        });
+        return f.events.findLast(
+          (event) => event.type === "service_invoke_result" && event.requestId === requestId,
+        );
+      };
+      const kept = f.service("inventory");
+      await f.configure([kept, f.service("ledger")]);
+      const keptGate = f.gate("/inventory/update");
+      const changedGate = f.gate("/ledger/update");
+      const survivor = invoke("kept-1", kept);
+      const revoked = invoke("changed-1", f.service("ledger"));
+      await Promise.all([keptGate.entered.promise, changedGate.entered.promise]);
+      await f.configure([kept, f.service("ledger", 6000)]);
+      expect(await revoked).toMatchObject({ reply: { ok: false, refusal: "service_closed" } });
+      keptGate.release.resolve(Response.json({ changed: true }));
+      expect(await survivor).toEqual({
+        type: "service_invoke_result",
+        requestId: "kept-1",
+        reply: { type: "service_result", requestId: "kept-1", ok: true, result: { changed: true } },
+      });
+      const removedGate = f.gate("/inventory/update");
+      const removed = invoke("kept-2", kept);
+      await removedGate.entered.promise;
+      await f.configure([f.service("ledger", 6000)]);
+      expect(await removed).toMatchObject({ reply: { ok: false, refusal: "service_closed" } });
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+test.skipIf(!linux)(
+  "reconfiguration closes only proxied job calls whose service policy it changed or removed",
+  async () => {
+    const f = await reconfiguredServiceOwner();
+    try {
+      const kept = f.service("inventory");
+      await f.configure([kept, f.service("ledger")]);
+      await f.startConsumers([kept, f.service("ledger")]);
+      const stream = (serviceId: string) => {
+        const endpoint = f.endpoints.get(serviceId)!;
+        return fetch(`${endpoint.url}/${serviceId}/stream`, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${endpoint.bearer}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ prompt: "unrelated session" }),
+        });
+      };
+      const refusals = (serviceId: string) =>
+        f.events.filter(
+          (event) => event.type === "service_refused" && event.serviceId === serviceId,
+        );
+      const keptGate = f.gate("/inventory/stream");
+      const changedGate = f.gate("/ledger/stream");
+      const survivor = stream("inventory");
+      const revoked = stream("ledger");
+      await Promise.all([keptGate.entered.promise, changedGate.entered.promise]);
+      await f.configure([kept, f.service("ledger", 6000)]);
+      const refused = await revoked;
+      expect(refused.status).toBe(503);
+      expect(await refused.json()).toEqual({ error: "service_cancelled" });
+      expect(refusals("ledger")).toMatchObject([{ reason: "service_cancelled" }]);
+      keptGate.release.resolve(Response.json({ done: true }));
+      const served = await survivor;
+      expect(served.status).toBe(200);
+      expect(await served.json()).toEqual({ done: true });
+      expect(refusals("inventory")).toEqual([]);
+      const removedGate = f.gate("/inventory/stream");
+      const removed = stream("inventory");
+      await removedGate.entered.promise;
+      await f.configure([f.service("ledger", 6000)]);
+      expect((await removed).status).toBe(503);
+      expect(refusals("inventory")).toMatchObject([{ reason: "service_cancelled" }]);
+    } finally {
+      await f.close();
+    }
+  },
+);
+
 async function resourceServiceOwner(
   scope: "job" | "instance",
   contextual = false,

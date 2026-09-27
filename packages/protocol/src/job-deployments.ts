@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { CapSchema } from "./capabilities.ts";
 import { JobResourceBindingsSchema } from "./job-resources.ts";
+import { ServicePolicySchema, ServicePolicyTemplateSchema } from "./services.ts";
 import {
   JobInvocationEdgeSchema,
   JobOwnerSchema,
@@ -13,27 +14,53 @@ const hash = JobRequestSchema.shape.artifactSha256;
 const revision = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 const reason = z.string().min(1).max(2048).nullable();
 
-/** Approval names an explicit destination set; enrolling another machine never widens it. */
-export const JobDeploymentRequestSchema = z.strictObject({
-  deploymentId: id,
-  pluginId: JobRequestSchema.shape.pluginId,
-  targets: z
-    .array(
-      z.strictObject({
-        machineId: JobRequestSchema.shape.machineId,
-        platform: JobOwnerSchema.shape.platforms.element.optional(),
-      }),
-    )
-    .min(1)
-    .max(64)
-    .refine(
-      (targets) => new Set(targets.map((target) => target.machineId)).size === targets.length,
-    ),
-  operationIds: z
-    .array(JobRequestSchema.shape.operationId)
-    .max(128)
-    .refine((operations) => new Set(operations).size === operations.length),
+/**
+ * One reviewed instance-service bootstrap or update, proposed alongside the installation that
+ * provides it. The caller owns policy CONTENT, the selected provider operation and its literal
+ * input; review owns every pin — the installation the provider runs from, its artifact, its
+ * resource-binding digest and the resulting `ServicePolicy.runtime` — because those name the
+ * installation this same request creates. `expectedRevision` is the instance-service record
+ * revision the proposal replaces, `null` for a first bootstrap.
+ */
+export const JobDeploymentInstanceServiceRequestSchema = z.strictObject({
+  expectedRevision: id.nullable(),
+  policy: ServicePolicyTemplateSchema,
+  operationId: JobRequestSchema.shape.operationId,
+  input: JobRequestSchema.shape.input,
 });
+export type JobDeploymentInstanceServiceRequest = z.infer<
+  typeof JobDeploymentInstanceServiceRequestSchema
+>;
+
+/** Approval names an explicit destination set; enrolling another machine never widens it. */
+export const JobDeploymentRequestSchema = z
+  .strictObject({
+    deploymentId: id,
+    pluginId: JobRequestSchema.shape.pluginId,
+    targets: z
+      .array(
+        z.strictObject({
+          machineId: JobRequestSchema.shape.machineId,
+          platform: JobOwnerSchema.shape.platforms.element.optional(),
+        }),
+      )
+      .min(1)
+      .max(64)
+      .refine(
+        (targets) => new Set(targets.map((target) => target.machineId)).size === targets.length,
+      ),
+    operationIds: z
+      .array(JobRequestSchema.shape.operationId)
+      .max(128)
+      .refine((operations) => new Set(operations).size === operations.length),
+    /**
+     * Initially one exact target and one exact service: a bootstrap stops a reviewed provider
+     * workload and replaces the installation under it, and that authority is granted per
+     * destination, never fanned out.
+     */
+    instanceServices: z.array(JobDeploymentInstanceServiceRequestSchema).max(1).optional(),
+  })
+  .refine((request) => !request.instanceServices?.length || request.targets.length === 1);
 export type JobDeploymentRequest = z.infer<typeof JobDeploymentRequestSchema>;
 
 export const JobDeploymentConsentSchema = z.strictObject({
@@ -50,6 +77,27 @@ export const JobDeploymentInvocationEdgeSchema = z.strictObject({
   revision: id.nullable(),
 });
 export type JobDeploymentInvocationEdge = z.infer<typeof JobDeploymentInvocationEdgeSchema>;
+
+/**
+ * What the operator approves for one proposed instance service: the record identity being
+ * replaced — including the exact provider workload apply may quiesce — beside the concrete
+ * policy review resolved. A reader never needs the plugin's own manifest to see which
+ * installation the provider will run from: `policy.runtime` names it.
+ */
+export const JobDeploymentInstanceServiceSchema = z.strictObject({
+  expectedRevision: id.nullable(),
+  previous: z
+    .strictObject({
+      machineId: JobRequestSchema.shape.machineId,
+      revision: id,
+      enabled: z.boolean(),
+      policySha256: hash,
+      jobId: id.nullable(),
+    })
+    .nullable(),
+  policy: ServicePolicySchema,
+});
+export type JobDeploymentInstanceService = z.infer<typeof JobDeploymentInstanceServiceSchema>;
 
 export const JobDeploymentTargetReviewSchema = z.strictObject({
   machineId: JobRequestSchema.shape.machineId,
@@ -71,6 +119,7 @@ export const JobDeploymentTargetReviewSchema = z.strictObject({
   ),
   consents: z.array(JobDeploymentConsentSchema),
   invocationEdges: z.array(JobDeploymentInvocationEdgeSchema),
+  instanceServices: z.array(JobDeploymentInstanceServiceSchema).max(1).optional(),
   approvable: z.boolean(),
   reason,
 });
