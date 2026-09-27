@@ -19,6 +19,8 @@ services:
         VITE_MANIFOLD_SITE_TITLE: ${VITE_MANIFOLD_SITE_TITLE:-manifold}
         VITE_MANIFOLD_ICON_BACKGROUND: ${VITE_MANIFOLD_ICON_BACKGROUND:-}
     restart: unless-stopped
+    # The replicated supervisor stops the app, then proves the final replica seal.
+    stop_grace_period: 6m
     environment:
       - MANIFOLD_PUBLIC_URL=https://${MANIFOLD_DOMAIN:?set MANIFOLD_DOMAIN in .env}
       - MANIFOLD_MACHINE_NAME=${MANIFOLD_MACHINE_NAME:-hub}

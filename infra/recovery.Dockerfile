@@ -6,9 +6,12 @@ FROM oven/bun:1.4.2@sha256:9114c058aeae42162ee16dd5084b95fe9473970bb6bcb5b232ab1
 WORKDIR /src
 COPY scripts/full-state-recovery.ts ./full-state-recovery.ts
 RUN bun build --compile --target=bun --outfile=/out/manifold-full-state-recovery ./full-state-recovery.ts
+COPY scripts/replica-guard.ts ./replica-guard.ts
+RUN bun build --compile --target=bun --outfile=/out/manifold-replica-guard ./replica-guard.ts
 
 FROM ${MANIFOLD_RECOVERY_BASE_IMAGE}
 RUN test -x /app/infra/entrypoint.sh && test -x /usr/local/bin/litestream
 COPY --from=recovery-build /out/manifold-full-state-recovery /usr/local/bin/manifold-full-state-recovery
+COPY --from=recovery-build /out/manifold-replica-guard /usr/local/bin/manifold-replica-guard
 COPY --chmod=755 infra/recovery-entrypoint.sh /app/infra/recovery-entrypoint.sh
 CMD ["/app/infra/recovery-entrypoint.sh"]

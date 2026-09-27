@@ -18,6 +18,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
+import { ReplicaGuardRefusal, requireSealedReplica } from "./replica-guard.ts";
 
 const ACK_NAME = ".replica-init-once.json";
 const ACK_LIFETIME_MS = 15 * 60 * 1000;
@@ -215,6 +216,7 @@ function prepare(dataDir: string, db: string, target: string): void {
     const hasHistory = exists(restored);
     if (hasHistory) {
       requireHistory(restored, "restored_history_unusable");
+      requireSealedReplica(restored);
     } else {
       state("empty_replica");
       if (!mayInitialize) throw new BootstrapRefusal("initialization_required");
@@ -279,7 +281,10 @@ if (import.meta.main) {
       JSON.stringify({
         evt: "hub_replica_boot",
         state: "refused",
-        reason: error instanceof BootstrapRefusal ? error.reason : "storage_or_process_error",
+        reason:
+          error instanceof BootstrapRefusal || error instanceof ReplicaGuardRefusal
+            ? error.reason
+            : "storage_or_process_error",
       }),
     );
     process.exit(1);

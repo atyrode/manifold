@@ -4856,6 +4856,43 @@ synchronization makes the plugin-image journal durable before filesystem activat
 `packages/server/src/db.ts` remains the authoritative migration source; the handwritten
 inventory below records selected durable fields rather than acting as a second runner.
 
+**One writer per data directory** ([#318](https://github.com/atyrode/manifold/issues/318)). Before
+opening `manifold.db` the server takes `<data>/manifold.writer`, a SQLite file held in exclusive
+locking mode for the process's lifetime; the kernel releases it on close or death, so there is no
+stale lock to judge. A starting server waits up to 30 seconds for it (`writer_waiting`), polling
+every 10ms, then fails to start. The lock fences only processes that open the same data directory
+on one local filesystem with working POSIX advisory locks, which SQLite's locking relies on. It does
+not fence a second container with its own volume, an instance on another host, or a replacement
+that restores the replica onto a new disk, and it is not reliable on network filesystems.
+
+After migrations the server claims the next writer epoch in `meta.writer-epoch` (`<n>:active`) and
+logs `writer_claimed` with `epoch`, `previousEpoch` and `previousState`: the last epoch this
+history records and whether its writer sealed it (`sealed`, `active` or `null`). `active` is logged
+at `warn`: this history was left mid-epoch by a crash or kill, or it is a replica restored from before
+that writer's last commits, and those commits may be absent. `sealed` records only that epoch
+`previousEpoch` ended cleanly. It is not evidence that the opened history is the newest: a replica
+restored from before a later writer's unuploaded commits reads exactly the same. The server has no
+expected epoch to compare against and does not refuse on either state.
+A failed initialization or exceptional stop attempts every owned cleanup before releasing the
+writer lock and rejecting. An initialization claim stays active, never sealed. Cleanup starts every
+revocation before awaiting finalizers. If cleanup fails or exceeds the quiesce deadline, the process
+retains a strongly reachable writer fence until exit and reports the failures; garbage collection,
+late finalizer completion or an embedded caller catching the error cannot admit a successor.
+
+A graceful stop (`RunningServer.stop`, SIGTERM/SIGINT) quiesces in this order. Every new request and
+WebSocket upgrade except `GET /healthz` is answered `503` with `Retry-After: 1`, under the same
+CORS policy as other API answers, with `Retry-After` exposed; an API preflight still answers 204.
+Session, machine and instance sockets close with 1001. Admitted HTTP requests and action dispatches
+get up to three seconds to settle and produced responses to finish writing. Scenes flush; the HTTP
+server, isolates and plugin databases close; the epoch is sealed (`<n>:sealed`) as the final
+commit, after which the connection is `query_only`; `writer_sealed` records `settled` and
+`quiesceMs`; the database closes and the lock is released last. Work cut off at the deadline is
+never acknowledged. Closing the plugin host revokes retained storage/database leases, discards
+uncommitted migration stages, and prevents asynchronous installation or authoring work from
+publishing over a successor's files. This fences host-owned authority, not arbitrary filesystem or
+network effects performed directly by trusted in-realm code. Builds older than this contract
+neither take the lock nor record an epoch; they ignore the `writer-epoch` row.
+
 ```
 containers(id TEXT PK, name TEXT, created_at INTEGER, sort_order INTEGER, folder_id TEXT,
      discipline TEXT NOT NULL DEFAULT 'canvas')        -- canvas | composition
@@ -5064,7 +5101,9 @@ meta(key TEXT PK, value TEXT)                         -- schema_version, plugins
                                                       -- workspace-setting:<ref>,
                                                       -- native_local_machine_id,
                                                       -- jobs:signing-key,
-                                                      -- agent-runs:declarations-after-event-id
+                                                      -- agent-runs:declarations-after-event-id,
+                                                      -- writer-epoch (<n>:active|<n>:sealed),
+                                                      -- replica-writer (versioned supervisor claim/seal)
 ```
 
 An object-store replica of `manifold.db` is a sensitive, authority-bearing backup. It contains
@@ -5079,8 +5118,9 @@ to this hub with least-privilege credentials and provider-appropriate integrity 
 controls. Restoring from storage writable by an untrusted party requires an authenticity mechanism
 whose verification secret is kept outside that store; Manifold does not currently provide one.
 
-The ordinary replicated-container bootstrap is a single gate:
-`bun scripts/replica-bootstrap.ts prepare`. Before an attempt it consumes and synchronizes any
+The ordinary replicated-container preparation gate is
+`bun scripts/replica-bootstrap.ts prepare`; successful preparation alone is not readiness.
+Before an attempt it consumes and synchronizes any
 well-formed, unexpired `.replica-init-once.json` acknowledgement; the mode-0600 file is created
 exclusively by `replica-bootstrap.ts acknowledge`, is valid for 15 minutes, is bound by digest to
 the Litestream configuration, its referenced environment inputs and replica credentials, and can be
@@ -5102,13 +5142,15 @@ timeout 300 litestream restore -if-replica-exists -integrity-check full \
   -config /app/infra/litestream.yml -o <staged-db> <db>
 ```
 
-A usable result is published exclusively; a nonzero result or timeout refuses
+A usable restored result must also carry a sealed replica-writer record and satisfy its complete
+database-set fingerprints before exclusive publication. Missing, malformed or active records refuse;
+a first-initialization acknowledgement cannot bless them. A nonzero restore result or timeout refuses
 regardless of acknowledgement. Zero exit with no restored database is the empty-replica state: it
 refuses unless this attempt consumed a valid acknowledgement, in which case the existing database
 opener initializes the staged database before exclusive publication. Invalid, expired, or
-target-mismatched acknowledgements refuse. Every refusal prevents both replication and server
-startup, and cleanup is limited to staging owned by that run. No persistent environment boolean
-authorizes initialization.
+target-mismatched acknowledgements refuse. Every preparation refusal prevents both replication and
+server startup, and cleanup is limited to staging owned by that run. No persistent environment
+boolean authorizes initialization.
 
 This first-initialization acknowledgement is not recovery authority: it cannot bless failed or
 missing history, overwrite local data, or replace replica objects. Operators preserve or
@@ -5116,6 +5158,69 @@ quarantine invalid local data and all its SQLite sidecars together for inspectio
 configured replica rather than clearing it. Full-state recovery remains the authenticated recovery-image procedure; ordinary
 bootstrap restores only `manifold.db`. Replica bootstrap emits only structured, non-secret
 `evt`/state diagnostics: child stderr, storage endpoints, credentials, and data are not logged.
+
+**Replica freshness before serving** ([#318](https://github.com/atyrode/manifold/issues/318)).
+The replicated entrypoints run `scripts/replica-guard.ts` as the supervisor, with a separate
+`<data>/manifold.replica-writer` exclusive lock held through final replication. This lock is local,
+not a distributed lease. The provider must still prevent overlapping writers to one replica and
+terminate the whole owned application/replicator process group when the supervisor is forcibly
+removed. Container PID-1 teardown satisfies that boundary; killing only a native supervisor does not.
+
+The guard reads the latest replica even when preparation admitted a valid local database. Retained
+local data means the same authoritative durable volume, not an arbitrary restored or rolled-back
+copy presented as a local file. Unavailable or untracked remote history refuses readiness. A newer
+remote writer epoch, a conflicting identity at the same epoch, or a remote seal newer than the
+local active record also refuses. An empty replica can be seeded from admitted local history;
+it cannot authorize creating replacement local history.
+
+Before starting the application, the guard commits the next positive epoch and a fresh UUID in
+`meta['replica-writer']`, with version 1, state `active`, and the configured auxiliary database paths.
+It starts replication and requires a read-only restore to observe that exact claim. Thus an
+application cannot acknowledge writes while a future restore still sees only an older sealed
+writer. These supervisor epochs are independent of the application's `writer-epoch`; older
+applications need not implement the latter to run under the guard. The freshness gate has one
+five-minute deadline, in addition to preparation's bounded restore. A timeout, replica failure or
+stop request before admission leaves the application unstarted.
+
+On shutdown the guard gives the application ten seconds to stop, then gives final replication a
+shared five-minute deadline. It stops all replication before checkpointing and hashing auxiliary
+databases, and requires each restored auxiliary database to match. The final main-database seal
+records the same epoch/UUID and that complete path/SHA-256 set. Only main-database replication
+reopens after this point: reopening auxiliary databases would mutate Litestream's internal tables
+and invalidate their fingerprints. Success is `hub_replica_boot` / `replica_seal_durable`, emitted
+only after a read-only restore observes the seal. An application failure or premature replicator
+exit refuses sealing; an unconfirmed final upload is not reported as a successful handover.
+Compose grants six minutes of termination grace; other supervisors must provide that grace and the
+same whole-process teardown boundary.
+
+Ordinary restore admits only a sealed main history. The recovery image first authenticates its
+full-state checkpoint, restores every available checkpoint-specific database replica, and admits
+the set only when the main seal names matching auxiliary files. An auxiliary-only prefix, an
+active main writer, a missing database, an escaped/symlinked path or a mismatched fingerprint refuses
+before the previous application starts. The compiled guard runs outside the pinned previous
+application image, so the same admission and sealing rules apply to a real older executable.
+Non-SQLite application recovery files remain pinned to the authenticated checkpoint.
+
+A checkpoint-specific namespace with no database replicas starts from its authenticated checkpoint
+baseline instead. The recovery entrypoint normalizes the data directory before both helpers and
+passes that internal admission mode only after its entire replica sweep was empty; the guard also
+requires its own latest main-replica read to be empty. The checkpoint's authenticated file digests,
+not inherited replica fingerprints, establish those baseline bytes: `VACUUM INTO` can change
+physical SQLite pages while preserving their data. Before claiming that empty namespace, it uses
+`litestream reset` to discard inherited local replication tracking files without changing SQLite
+contents or remote history. The guard still publishes and observes a new active claim before the
+application starts. This mode is not available to ordinary startup and
+cannot admit a nonempty, partial or active recovery replica.
+
+This protocol relies on a trusted, latest-read/read-after-write-consistent replica store. It does
+not authenticate hostile replica contents, detect a store that deliberately replays an older valid
+history, coordinate concurrent hosts, or recover an acknowledged but unreplicated tail after the
+authoritative disk is lost. Such an active restore refuses instead of serving uncertain history.
+An existing untracked replica requires reviewed offline adoption: stop the incumbent, authenticate
+a full-state checkpoint of the quiesced volume, restore it into a fresh volume, and seed a new
+dedicated replica target while preserving the old one. Initialization intent, fabricated metadata
+and clearing active recovery settings are not migration paths. `SELF-HOST.md` owns the operator
+procedure.
 
 Schema version 40 (10 added `plugin_kv`; 11 is the lexicon cut; 12 is cross-instance sharing
 — `shares`, `share_tickets`, `dials` and `principals.origin`; 13 is the permission waterfall's
