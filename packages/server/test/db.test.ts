@@ -2525,6 +2525,105 @@ UPDATE meta SET value='33' WHERE key='schema_version';
   }
 });
 
+test.each([46, 47] as const)(
+  "a populated schema %i database upgrades through migration 48 with every target and job row intact",
+  (from) => {
+    const dir = mkdtempSync(join(tmpdir(), "manifold-db-deployment-targets-upgrade-"));
+    const path = join(dir, "manifold.db");
+    let db = openDatabase(path);
+    const grants = JSON.stringify([{ containerId: "home", caps: ["containers:read"] }]);
+    const targetRows =
+      "SELECT deployment_id,machine_id,plugin_id,phase,attempt,reason,receipt FROM machine_job_deployment_targets ORDER BY rowid";
+    try {
+      // Schema 47 is the current schema without 48's target-table rebuild; 46 also lacks 47's
+      // job column. Every legacy phase is present, and a finished `applied` target shares its
+      // machine/plugin pair with a `pending` one, which the pre-48 index permitted.
+      db.exec(`
+DROP TABLE machine_job_deployment_targets;
+CREATE TABLE machine_job_deployment_targets(
+ deployment_id TEXT NOT NULL REFERENCES machine_job_deployments(deployment_id),
+ machine_id TEXT NOT NULL, plugin_id TEXT NOT NULL,
+ phase TEXT NOT NULL CHECK(phase IN ('pending','applying','applied','needs_review','cancelled')),
+ attempt TEXT, reason TEXT, receipt TEXT,
+ PRIMARY KEY(deployment_id,machine_id)
+);
+CREATE UNIQUE INDEX machine_job_deployment_pending
+ ON machine_job_deployment_targets(machine_id,plugin_id) WHERE phase IN ('pending','applying');
+INSERT INTO machine_job_deployments VALUES
+ ('d-pending','plugin',1,1,0,'{"approval":"pending"}'),
+ ('d-applying','plugin',2,2,0,'{"approval":"applying"}'),
+ ('d-applied','plugin',3,3,0,'{"approval":"applied"}'),
+ ('d-review','plugin',4,4,0,'{"approval":"needs_review"}'),
+ ('d-cancelled','plugin',5,5,1,'{"approval":"cancelled"}');
+INSERT INTO machine_job_deployment_targets VALUES
+ ('d-pending','m-shared','plugin','pending',NULL,NULL,NULL),
+ ('d-applying','m-applying','plugin','applying','attempt',NULL,NULL),
+ ('d-applied','m-shared','plugin','applied','attempt','done','{"consents":"c","invocationEdges":"e"}'),
+ ('d-review','m-review','plugin','needs_review',NULL,'deployment_application_uncertain',NULL),
+ ('d-cancelled','m-cancelled','plugin','cancelled',NULL,'approval_cancelled',NULL);
+${from === 46 ? "ALTER TABLE machine_jobs DROP COLUMN container_grants;" : ""}
+INSERT INTO machine_jobs(job_id,machine_id,plugin_id,digest,request,state,created_at) VALUES
+ ('ungoverned','m-shared','plugin','digest-a','{}','started',1),
+ ('governed','m-shared','plugin','digest-b','{}','queued',2);
+${from === 47 ? `UPDATE machine_jobs SET container_grants='${grants}' WHERE job_id='governed';` : ""}
+UPDATE meta SET value='${from}' WHERE key='schema_version';
+`);
+      const before = db.query(targetRows).all();
+      const jobColumns = "job_id,machine_id,plugin_id,digest,request,state,created_at";
+      const jobs = db.query(`SELECT ${jobColumns} FROM machine_jobs ORDER BY job_id`).all();
+      db.close();
+      db = openDatabase(path);
+      expect(db.query("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({
+        value: String(SCHEMA_VERSION),
+      });
+      expect(db.query(targetRows).all()).toEqual(before);
+      // Every pre-48 target predates reviewed bootstraps, so each finishes at `applied`.
+      expect(
+        db.query("SELECT DISTINCT final_phase FROM machine_job_deployment_targets").all(),
+      ).toEqual([{ final_phase: "applied" }]);
+      expect(db.query(`SELECT ${jobColumns} FROM machine_jobs ORDER BY job_id`).all()).toEqual(
+        jobs,
+      );
+      expect(
+        db.query("SELECT job_id,container_grants FROM machine_jobs ORDER BY job_id").all(),
+      ).toEqual([
+        { job_id: "governed", container_grants: from === 47 ? grants : null },
+        { job_id: "ungoverned", container_grants: null },
+      ]);
+      expect(db.query("PRAGMA integrity_check").all()).toEqual([{ integrity_check: "ok" }]);
+      expect(db.query("PRAGMA foreign_key_check").all()).toEqual([]);
+      // The rebuilt index still admits one owner per pair, and a finished target is no owner.
+      const insert = db.query<void, [string, string, string, string]>(
+        "INSERT INTO machine_job_deployment_targets(deployment_id,machine_id,plugin_id,phase,final_phase) VALUES(?,?,'plugin',?,?)",
+      );
+      expect(() => insert.run("d-review", "m-shared", "pending", "applied")).toThrow(
+        "UNIQUE constraint failed",
+      );
+      // A reviewed bootstrap's `applied` still owns its pair until it reaches `bound`.
+      insert.run("d-cancelled", "m-bootstrap", "applied", "bound");
+      expect(() => insert.run("d-review", "m-bootstrap", "pending", "applied")).toThrow(
+        "UNIQUE constraint failed",
+      );
+      db.query(
+        "UPDATE machine_job_deployment_targets SET phase='bound' WHERE machine_id='m-bootstrap'",
+      ).run();
+      insert.run("d-review", "m-bootstrap", "pending", "applied");
+      db.close();
+      db = openDatabase(path);
+      expect(
+        db
+          .query(
+            "SELECT phase FROM machine_job_deployment_targets WHERE machine_id='m-bootstrap' ORDER BY rowid",
+          )
+          .all(),
+      ).toEqual([{ phase: "bound" }, { phase: "pending" }]);
+    } finally {
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);
+
 test("migration 39 leaves legacy cwd unknown and persists new launch intent across reopening", () => {
   const dir = mkdtempSync(join(tmpdir(), "manifold-db-terminal-restart-"));
   const path = join(dir, "manifold.db");

@@ -7539,7 +7539,7 @@ describe("reviewed native deployment approvals", () => {
     }
   });
 
-  test("an ordinary pending approval from schema 46 remains valid on reconnect", () => {
+  test("an ordinary pending approval from schema 47 remains valid on reconnect", () => {
     const f = fixture();
     try {
       prove(f);
@@ -7547,7 +7547,7 @@ describe("reviewed native deployment approvals", () => {
       const value = request(f, "legacy-pending", [operationId]);
       const { review, deployment } = apply(f, value);
       expect(deployment.targets[0]!.state).toBe("pending");
-      // Schema 46 approvals have no instance-service evidence member.
+      // Schema 47 and earlier approvals have no instance-service evidence member.
       f.store.db
         .query(
           "UPDATE machine_job_deployments SET approval=json_remove(approval,'$.evidence[0].instanceServices') WHERE deployment_id=?",
