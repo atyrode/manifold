@@ -1177,6 +1177,209 @@ test("an operator's cancellation cycles an enabled instance service rather than 
   }
 });
 
+test("a plugin disable readmits the same instance revision once its native installation is ready again", async () => {
+  const { f, policy, provider, start, revision } = await instanceFixture();
+  const fact = (command: Extract<JobCommand, { type: "start" }>) => ({
+    jobId: command.request.jobId,
+    requestDigest: command.request.requestDigest,
+    ownerId: command.permit.ownerId,
+    ownerGeneration: command.permit.ownerGeneration,
+  });
+  const ready = (command: Extract<JobCommand, { type: "start" }>) => {
+    f.service.event(f.channel, { type: "state", ...fact(command), state: "started" });
+    f.service.event(f.channel, {
+      type: "service_ready",
+      jobId: command.request.jobId,
+      service: command.request.service!,
+    });
+  };
+  // `PluginHost.setEnabledNow`: the durable flag, then native revocation on a disable only.
+  const setEnabled = (enabled: boolean) => {
+    f.store.setPluginEnabled(pluginId, enabled, "admin", f.runtime.now());
+    if (!enabled) f.service.disablePlugin(pluginId);
+  };
+  const description = () =>
+    f.service.describeInstanceService(f.root, { serviceId: policy.serviceId });
+  const starts = () => f.commands.filter((command) => command.type === "start");
+  try {
+    ready(start);
+    expect(description().state).toBe("ready");
+    f.commands.length = 0;
+    setEnabled(false);
+    expect(f.service.jobs.cancellation(start.request.jobId)).toEqual({
+      mode: "cancel",
+      reason: "plugin_disabled",
+    });
+    expect(f.commands).toContainEqual(
+      expect.objectContaining({
+        type: "cancel",
+        jobId: start.request.jobId,
+        reason: "plugin_disabled",
+      }),
+    );
+    f.service.event(f.channel, {
+      type: "result",
+      result: {
+        ...fact(start),
+        state: "cancelled",
+        reason: "cancelled",
+        exitCode: null,
+        startedAt: f.runtime.now(),
+        finishedAt: f.runtime.now(),
+        usage: null,
+        limits: start.request.limits,
+        outputs: [],
+      },
+    });
+    f.service.event(f.channel, { type: "workload_empty", ...fact(start) });
+    f.service.tick();
+    expect(starts()).toEqual([]);
+    expect(description()).toMatchObject({
+      state: "unavailable",
+      reason: "installation_disabled",
+      configuration: { revision, enabled: true },
+    });
+
+    // Re-enabling the plugin is not a native review: the revoked installation stays off.
+    setEnabled(true);
+    f.service.tick();
+    expect(starts()).toEqual([]);
+    expect(description()).toMatchObject({ state: "unavailable", reason: "installation_disabled" });
+
+    // Re-approving the same installation restores intent; admission waits for the owner's ack.
+    f.service.install(f.root, {
+      machineId: f.machineId,
+      pluginId,
+      installationRevision: "r1",
+      artifactSha256: hash,
+      machine: provider,
+    });
+    f.service.tick();
+    expect(starts()).toEqual([]);
+    f.service.event(f.channel, {
+      type: "installed",
+      pluginId,
+      installationRevision: "r1",
+      artifactSha256: hash,
+    });
+    f.service.tick();
+    const [replacement, ...extra] = starts();
+    expect(extra).toEqual([]);
+    if (!replacement)
+      throw new Error("the re-enabled plugin's instance service was never readmitted");
+    expect(replacement.request.jobId).not.toBe(start.request.jobId);
+    expect(replacement.request.service).toEqual(start.request.service);
+    expect(
+      f.store.db
+        .query<{ previousJobId: string; cancelReason: string }, []>(
+          `SELECT json_extract(payload,'$.previousJobId') AS previousJobId,
+           json_extract(payload,'$.cancelReason') AS cancelReason FROM events
+           WHERE json_extract(payload,'$.jobLifecycle')='readmitted'`,
+        )
+        .all(),
+    ).toEqual([{ previousJobId: start.request.jobId, cancelReason: "plugin_disabled" }]);
+    ready(replacement);
+    expect(description()).toMatchObject({
+      state: "ready",
+      reason: null,
+      configuration: { revision, enabled: true },
+    });
+    f.service.tick();
+    expect(starts()).toEqual([replacement]);
+  } finally {
+    f.store.close();
+  }
+});
+
+test.each([
+  ["a consent refusal", "after", "job_consent_refused:machines:run"],
+  ["a credential revocation", "after", "credential_revoked"],
+  ["a credential revocation", "before", "credential_revoked"],
+] as const)(
+  "%s stays final for an instance service when the plugin disable comes %s it",
+  async (_, disableOrder, reason) => {
+    const { f, policy, provider, start } = await instanceFixture();
+    const fact = {
+      jobId: start.request.jobId,
+      requestDigest: start.request.requestDigest,
+      ownerId: start.permit.ownerId,
+      ownerGeneration: start.permit.ownerGeneration,
+    };
+    const refuse = () => {
+      if (reason === "credential_revoked")
+        f.auth.revokeNativeServiceCredential(start.request.credential, "admin");
+      else consent(f, "machines:run", false);
+      f.service.tick();
+    };
+    const disable = () => {
+      f.store.setPluginEnabled(pluginId, false, "admin", f.runtime.now());
+      f.service.disablePlugin(pluginId);
+    };
+    try {
+      f.service.event(f.channel, { type: "state", ...fact, state: "started" });
+      if (disableOrder === "before") {
+        disable();
+        expect(f.service.jobs.cancellation(start.request.jobId)?.reason).toBe("plugin_disabled");
+        refuse();
+      } else {
+        refuse();
+        expect(f.service.jobs.cancellation(start.request.jobId)?.reason).toBe(reason);
+        // The workload is still running when the plugin disable arrives.
+        disable();
+      }
+      expect(f.service.jobs.cancellation(start.request.jobId)).toEqual({ mode: "cancel", reason });
+      f.service.event(f.channel, {
+        type: "result",
+        result: {
+          ...fact,
+          state: "cancelled",
+          reason: "cancelled",
+          exitCode: null,
+          startedAt: f.runtime.now(),
+          finishedAt: f.runtime.now(),
+          usage: null,
+          limits: start.request.limits,
+          outputs: [],
+        },
+      });
+      f.service.event(f.channel, { type: "workload_empty", ...fact });
+      // Lift every gate the disable raised: plugin, reviewed installation and owner ack.
+      f.store.setPluginEnabled(pluginId, true, "admin", f.runtime.now());
+      if (reason !== "credential_revoked") consent(f, "machines:run");
+      f.service.install(f.root, {
+        machineId: f.machineId,
+        pluginId,
+        installationRevision: "r1",
+        artifactSha256: hash,
+        machine: provider,
+      });
+      f.service.event(f.channel, {
+        type: "installed",
+        pluginId,
+        installationRevision: "r1",
+        artifactSha256: hash,
+      });
+      f.commands.length = 0;
+      f.service.tick();
+      expect(f.commands.filter((command) => command.type === "start")).toEqual([]);
+      expect(f.service.jobs.cancellation(start.request.jobId)).toEqual({ mode: "cancel", reason });
+      expect(f.service.instanceServices.get(policy.serviceId)?.credential).toEqual(
+        start.request.credential,
+      );
+      expect(
+        f.store.db
+          .query<{ count: number }, []>(
+            `SELECT COUNT(*) AS count FROM events WHERE type='service_credential_reminted'
+             OR json_extract(payload,'$.jobLifecycle')='readmitted'`,
+          )
+          .get()!.count,
+      ).toBe(0);
+    } finally {
+      f.store.close();
+    }
+  },
+);
+
 test.each([
   "installation_changed",
   "owner_fenced",
