@@ -1,14 +1,16 @@
 import {
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readdirSync,
+  renameSync,
   rmSync,
   statSync,
   watch,
   writeFileSync,
 } from "node:fs";
 import type { FSWatcher } from "node:fs";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { packPlugin } from "@manifold/plugin-kit/pack";
 import type { PluginAuthorRequest, PluginAuthorResult } from "@manifold/plugin";
 import type { CredentialReference } from "./auth.ts";
@@ -88,6 +90,8 @@ export class AuthoredPlugins {
   /** The pending debounce per id, as its cancellation (the seam `room.ts` uses for timers). */
   private readonly pending = new Map<string, () => void>();
   private readonly watchers = new Map<string, FSWatcher>();
+  private readonly watching = new Set<() => void>();
+  private closed = false;
 
   constructor(
     private readonly dataDir: string,
@@ -110,6 +114,7 @@ export class AuthoredPlugins {
     authoredBy: string,
     credential: CredentialReference,
   ): Promise<AuthorRefused | PluginAuthorResult> {
+    this.requireOpen();
     if (!this.host.developerMode()) {
       return { refused: `developer_mode_off: ${request.id}` };
     }
@@ -142,9 +147,10 @@ export class AuthoredPlugins {
     const previous = this.building.get(id) ?? Promise.resolve(null);
     const next = previous.then(() => this.build(id, by, credential));
     this.building.set(id, next);
-    void next.finally(() => {
+    const settled = (): void => {
       if (this.building.get(id) === next) this.building.delete(id);
-    });
+    };
+    void next.then(settled, settled);
     return next;
   }
 
@@ -153,18 +159,27 @@ export class AuthoredPlugins {
     by: string,
     credential: CredentialReference | null,
   ): Promise<AuthorRefused | PluginAuthorResult> {
+    this.requireOpen();
     if (!this.host.developerMode()) return { refused: `developer_mode_off: ${id}` };
     const { dir, bundle } = authoredLayout(this.dataDir, id);
     if (!existsSync(join(dir, "manifest.json"))) {
       return { refused: `artifact_invalid: ${dir} has no manifest.json` };
     }
     let sha256: string;
+    mkdirSync(dirname(bundle), { recursive: true, mode: 0o700 });
+    const staging = mkdtempSync(join(dirname(bundle), `.${id}-`));
     try {
-      ({ sha256 } = await this.pack(dir, bundle));
+      const candidate = join(staging, basename(bundle));
+      ({ sha256 } = await this.pack(dir, candidate));
+      this.requireOpen();
+      renameSync(candidate, bundle);
     } catch (error) {
       const detail = error instanceof Error ? error.message : "build failed";
       this.logger.warn("plugin_authored_build_failed", { plugin: id });
       return { refused: `artifact_invalid: ${detail}` };
+    } finally {
+      // The packer may finish after close. Its unique output is never a successor's file.
+      rmSync(staging, { recursive: true, force: true });
     }
     const current = this.host.unpackedRow(id);
     if (current !== null && current.sha256 === sha256) {
@@ -202,6 +217,7 @@ export class AuthoredPlugins {
    * down reaches the roster. Returns the stop.
    */
   watch(): () => void {
+    this.requireOpen();
     mkdirSync(this.root, { recursive: true, mode: 0o700 });
     const rootWatcher = watch(this.root, (_event, filename) => {
       if (filename === null) return;
@@ -210,13 +226,31 @@ export class AuthoredPlugins {
       if (this.isPluginDir(id)) this.follow(id);
       else this.unfollow(id);
     });
-    for (const id of readdirSync(this.root)) {
-      if (!id.startsWith(".") && this.isPluginDir(id)) this.follow(id);
-    }
-    return () => {
+    const stop = (): void => {
+      this.watching.delete(stop);
       rootWatcher.close();
       for (const id of [...this.watchers.keys()]) this.unfollow(id);
     };
+    this.watching.add(stop);
+    try {
+      for (const id of readdirSync(this.root)) {
+        if (!id.startsWith(".") && this.isPluginDir(id)) this.follow(id);
+      }
+    } catch (error) {
+      stop();
+      throw error;
+    }
+    return stop;
+  }
+
+  private requireOpen(): void {
+    if (this.closed) throw new Error("the authored plugin host is closed");
+  }
+
+  /** Revoke queued/running publication and stop every watcher owned by this host. */
+  close(): void {
+    this.closed = true;
+    for (const stop of this.watching) stop();
   }
 
   private isPluginDir(id: string): boolean {

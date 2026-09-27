@@ -1062,50 +1062,46 @@ const SQLITE_BUSY_TIMEOUT_MS = 5000;
 /** Opens a Bun SQLite database, enables WAL, and applies numbered migrations atomically. */
 export function openDatabase(path: string): Database {
   const db = new Database(path, { create: true, strict: true });
-  db.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS};`);
-  db.exec("PRAGMA journal_mode = WAL;");
-  // The plugin image journal must be durable before filesystem activation, and its commit
-  // marker must survive with the KV/install transaction before the old image is removed.
-  db.exec("PRAGMA synchronous = FULL;");
-  const meta = db
-    .query<TableRow, []>("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'meta'")
-    .get();
-  const row =
-    meta === null
-      ? null
-      : db.query<VersionRow, []>("SELECT value FROM meta WHERE key = 'schema_version'").get();
-  const current = row === null ? 0 : Number(row.value);
-  if (!Number.isInteger(current) || current < 0 || current > SCHEMA_VERSION) {
-    db.close();
-    throw new Error(`unsupported database schema version: ${row?.value ?? "missing"}`);
-  }
+  try {
+    db.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS};`);
+    db.exec("PRAGMA journal_mode = WAL;");
+    // The plugin image journal must be durable before filesystem activation, and its commit
+    // marker must survive with the KV/install transaction before the old image is removed.
+    db.exec("PRAGMA synchronous = FULL;");
+    const meta = db
+      .query<TableRow, []>("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'meta'")
+      .get();
+    const row =
+      meta === null
+        ? null
+        : db.query<VersionRow, []>("SELECT value FROM meta WHERE key = 'schema_version'").get();
+    const current = row === null ? 0 : Number(row.value);
+    if (!Number.isInteger(current) || current < 0 || current > SCHEMA_VERSION) {
+      throw new Error(`unsupported database schema version: ${row?.value ?? "missing"}`);
+    }
 
-  for (let version = current + 1; version <= SCHEMA_VERSION; version += 1) {
-    const migration = MIGRATIONS[version];
-    if (migration === undefined) {
-      db.close();
-      throw new Error(`missing database migration ${version}`);
-    }
-    // The snapshot is taken OUTSIDE the transaction because a VACUUM cannot run inside
-    // one — which is also what makes it a true pre-migration image: nothing this migration
-    // does has happened yet. It is equally why a throw below cannot cost the image: by the
-    // time the transaction opens the file already carries its final name.
-    if (typeof migration !== "string" && migration.backup) {
-      backupBeside(db, path, version, current);
-    }
-    const migrate = db.transaction(() => {
-      if (typeof migration === "string") db.exec(migration);
-      else if ("sql" in migration) db.exec(migration.sql);
-      else migration.apply(db, path);
-    });
-    try {
+    for (let version = current + 1; version <= SCHEMA_VERSION; version += 1) {
+      const migration = MIGRATIONS[version];
+      if (migration === undefined) throw new Error(`missing database migration ${version}`);
+      // The snapshot is taken OUTSIDE the transaction because a VACUUM cannot run inside
+      // one — which is also what makes it a true pre-migration image: nothing this migration
+      // does has happened yet. It is equally why a throw below cannot cost the image: by the
+      // time the transaction opens the file already carries its final name.
+      if (typeof migration !== "string" && migration.backup) {
+        backupBeside(db, path, version, current);
+      }
+      const migrate = db.transaction(() => {
+        if (typeof migration === "string") db.exec(migration);
+        else if ("sql" in migration) db.exec(migration.sql);
+        else migration.apply(db, path);
+      });
       migrate();
-    } catch (error) {
-      db.close();
-      throw error;
     }
+    return db;
+  } catch (error) {
+    db.close();
+    throw error;
   }
-  return db;
 }
 
 /*
