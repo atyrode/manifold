@@ -451,8 +451,7 @@ async function main(): Promise<void> {
     process.argv[2] === "--config-stdin" &&
     process.argv[3] === "--authenticated-baseline";
   const fromStdin =
-    authenticatedBaseline ||
-    (process.argv.length === 3 && process.argv[2] === "--config-stdin");
+    authenticatedBaseline || (process.argv.length === 3 && process.argv[2] === "--config-stdin");
   if (process.argv.length !== 2 && !fromStdin) throw new ReplicaGuardRefusal("usage_replica_guard");
   const dataDir = resolve(process.env.MANIFOLD_DATA_DIR || "/data");
   const db = join(dataDir, "manifold.db");

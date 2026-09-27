@@ -199,6 +199,7 @@ describe("installArtifact", () => {
     const bytes = bundleBytes();
     const source = drop.upload("sample.manifold-plugin.json", bytes);
     const lifetime = new AbortController();
+    const reason = new Error("caller lifetime ended");
     const outcome = await installArtifact({
       source,
       sha256: sha256Hex(bytes),
@@ -207,14 +208,14 @@ describe("installArtifact", () => {
       // The verdict is not the last await before the write: the member verification follows
       // it, and a shutdown landing there must still find nothing written (#318).
       admit: () => {
-        lifetime.abort(new Error("the caller closed"));
+        lifetime.abort(reason);
         return null;
       },
     }).then(
       () => "written",
-      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+      (error: unknown) => error,
     );
-    expect(outcome).toBe("the caller closed");
+    expect(outcome).toBe(reason);
     expect(existsSync(join(drop.dataDir, "plugins"))).toBeFalse();
   });
 
