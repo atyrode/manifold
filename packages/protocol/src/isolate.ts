@@ -18,12 +18,13 @@ import { AgentSchema, HarnessDefinitionSchema, HarnessTargetSchema } from "./age
 import { AgentRunSchema, SendRunInputRequestSchema } from "./agent-runs.ts";
 import { SessionRefSchema } from "./session-ref.ts";
 import { TerminalRuntimeSchema } from "./jobs.ts";
+import { PanelArgSchema, validPanelArg } from "./layout.ts";
 
 /**
  * THE ISOLATION VOCABULARY (ADR 0016): everything that crosses the boundary between the engine
  * and a plugin it does not trust with its own realm.
  *
- * An INSTALLED plugin runs its server half in its own OS process and its web half in its own
+ * A hardened plugin runs its server half in its own OS process and its web half in its own
  * dedicated Worker (ADR 0016 §1). Both boundaries are message boundaries, so what crosses them
  * is wire, and wire lives here (docs/CONTRACTS.md §Protocol and compatibility): the bounded
  * newline-delimited JSON frames a supervisor and a child exchange over a dedicated socket, the
@@ -32,8 +33,8 @@ import { TerminalRuntimeSchema } from "./jobs.ts";
  * numbers that bound a runner's patience (§6).
  *
  * Nothing in this file names a plugin, a panel or a host class: the same three-way neutrality
- * the rest of the protocol keeps. First-party plugins never see any of it — the runner is
- * selected by the roster row's `install`, and an in-realm row has none.
+ * the rest of the protocol keeps. The host selects execution independently of whether a
+ * definition came from its trusted build or an admitted installation.
  */
 
 // ---------------------------------------------------------------------------- UI vocabulary
@@ -47,6 +48,27 @@ import { TerminalRuntimeSchema } from "./jobs.ts";
 export const UI_TONES = ["neutral", "accent", "muted", "danger", "success"] as const;
 export const UiToneSchema = z.enum(UI_TONES);
 export type UiTone = (typeof UI_TONES)[number];
+
+/** The existing host-owned control glyph names, shared by native and frame rendering. */
+export const UI_CONTROL_KINDS = [
+  "park", "maximize", "shrink", "close", "confirm", "cancel", "add", "more",
+  "disclosed", "collapsed", "sidebarCollapse", "sidebarExpand", "reveal", "discard",
+  "revoke", "restart", "equalize", "grip", "locked", "takeControl", "assembly",
+  "nesting", "scopeIn", "bindings", "swap", "settings",
+] as const;
+export const UiIconSchema = z.discriminatedUnion("family", [
+  z.strictObject({
+    family: z.literal("control"),
+    name: z.enum(UI_CONTROL_KINDS),
+    size: z.number().int().min(8).max(32).optional(),
+  }),
+  z.strictObject({
+    family: z.literal("item"),
+    name: z.string().min(1).max(128),
+    size: z.number().int().min(8).max(32).optional(),
+  }),
+]);
+export type UiIcon = z.infer<typeof UiIconSchema>;
 
 /**
  * The node kinds of the closed, host-owned component vocabulary (ADR 0016 §3, R2). An isolated
@@ -62,6 +84,7 @@ export const UI_NODE_TYPES = [
   "text",
   "code",
   "badge",
+  "icon",
   "divider",
   "spinner",
   "button",
@@ -109,16 +132,36 @@ export interface UiListItem {
   readonly payload?: unknown;
 }
 
+/** Presentation data, never arbitrary DOM properties or an authority-bearing identifier. */
+export interface UiNodeMeta {
+  readonly key?: string | undefined;
+  readonly title?: string | undefined;
+  readonly ariaLabel?: string | undefined;
+  readonly testId?: string | undefined;
+  readonly role?: "status" | "alert" | undefined;
+}
+const uiNodeMeta = {
+  key: z.string().min(1).max(128).optional(),
+  title: uiText.optional(),
+  ariaLabel: uiText.optional(),
+  testId: z.string().min(1).max(128).optional(),
+  role: z.enum(["status", "alert"]).optional(),
+} as const;
+
 /**
  * One node of an isolated panel's tree. `button.action` is the FULL action name the button's
  * event ultimately dispatches: the renderer paints it as `data-action`, so a stranger's
  * affordance names the door it opens exactly as a first-party one does (AXIOMS.md §Foundation law and REGISTRY.md §Foundation, S4).
  */
-export type UiNode =
+export type UiNode = UiNodeMeta & (
   | {
       readonly type: "box";
       readonly direction?: "row" | "column" | undefined;
+      /** Legacy spacing steps retain their wire meaning. New components use gapRem. */
       readonly gap?: 0 | 1 | 2 | 3 | undefined;
+      readonly gapRem?: number | undefined;
+      readonly align?: "start" | "center" | "end" | "stretch" | undefined;
+      readonly justify?: "start" | "center" | "end" | "between" | undefined;
       readonly grow?: boolean | undefined;
       readonly wrap?: boolean | undefined;
       readonly children: readonly UiNode[];
@@ -130,23 +173,30 @@ export type UiNode =
       readonly tone?: UiTone | undefined;
       readonly mono?: boolean | undefined;
       readonly wrap?: boolean | undefined;
+      readonly strong?: boolean | undefined;
+      readonly grow?: boolean | undefined;
     }
   | { readonly type: "code"; readonly text: string }
   | { readonly type: "badge"; readonly text: string; readonly tone?: UiTone | undefined }
+  | { readonly type: "icon"; readonly icon: UiIcon }
   | { readonly type: "divider" }
   | { readonly type: "spinner"; readonly label?: string | undefined }
   | {
       readonly type: "button";
       readonly label: string;
       readonly event: string;
+      readonly blurEvent?: string | undefined;
       readonly payload?: unknown;
       readonly tone?: UiTone | undefined;
       readonly disabled?: boolean | undefined;
       readonly action?: string | undefined;
+      readonly icon?: UiIcon | undefined;
+      readonly iconOnly?: boolean | undefined;
     }
   | {
       readonly type: "select";
       readonly event: string;
+      readonly blurEvent?: string | undefined;
       readonly value: string | null;
       readonly options: readonly UiSelectOption[];
       readonly label?: string | undefined;
@@ -155,6 +205,7 @@ export type UiNode =
   | {
       readonly type: "input";
       readonly event: string;
+      readonly blurEvent?: string | undefined;
       readonly value: string;
       readonly label?: string | undefined;
       readonly placeholder?: string | undefined;
@@ -164,12 +215,14 @@ export type UiNode =
   | {
       readonly type: "toggle";
       readonly event: string;
+      readonly blurEvent?: string | undefined;
       readonly value: boolean;
       readonly label: string;
       readonly disabled?: boolean | undefined;
     }
   | { readonly type: "list"; readonly items: readonly UiListItem[] }
-  | { readonly type: "empty"; readonly text: string };
+  | { readonly type: "empty"; readonly text: string }
+);
 
 /*
   The inventory and the union are pinned to each other the way the instance frames are:
@@ -187,41 +240,56 @@ void uiNodeInventoryComplete;
 const uiNode: z.ZodType<UiNode> = z.lazy(() =>
   z.discriminatedUnion("type", [
     z.strictObject({
+      ...uiNodeMeta,
       type: z.literal("box"),
       direction: z.enum(["row", "column"]).optional(),
       gap: z.literal([0, 1, 2, 3]).optional(),
+      gapRem: z.number().min(0).max(4).optional(),
+      align: z.enum(["start", "center", "end", "stretch"]).optional(),
+      justify: z.enum(["start", "center", "end", "between"]).optional(),
       grow: z.boolean().optional(),
       wrap: z.boolean().optional(),
       children: z.array(uiNode).max(MAX_UI_NODES),
     }),
     z.strictObject({
+      ...uiNodeMeta,
       type: z.literal("heading"),
       text: uiText,
       level: z.literal([1, 2, 3]).optional(),
     }),
     z.strictObject({
+      ...uiNodeMeta,
       type: z.literal("text"),
       text: uiText,
       tone: UiToneSchema.optional(),
       mono: z.boolean().optional(),
       wrap: z.boolean().optional(),
+      strong: z.boolean().optional(),
+      grow: z.boolean().optional(),
     }),
-    z.strictObject({ type: z.literal("code"), text: z.string().max(MAX_UI_CODE_LENGTH) }),
-    z.strictObject({ type: z.literal("badge"), text: uiText, tone: UiToneSchema.optional() }),
-    z.strictObject({ type: z.literal("divider") }),
-    z.strictObject({ type: z.literal("spinner"), label: uiText.optional() }),
+    z.strictObject({ ...uiNodeMeta, type: z.literal("code"), text: z.string().max(MAX_UI_CODE_LENGTH) }),
+    z.strictObject({ ...uiNodeMeta, type: z.literal("badge"), text: uiText, tone: UiToneSchema.optional() }),
+    z.strictObject({ ...uiNodeMeta, type: z.literal("icon"), icon: UiIconSchema }),
+    z.strictObject({ ...uiNodeMeta, type: z.literal("divider") }),
+    z.strictObject({ ...uiNodeMeta, type: z.literal("spinner"), label: uiText.optional() }),
     z.strictObject({
+      ...uiNodeMeta,
       type: z.literal("button"),
       label: uiText,
       event: uiEventName,
+      blurEvent: uiEventName.optional(),
       payload: z.unknown().optional(),
       tone: UiToneSchema.optional(),
       disabled: z.boolean().optional(),
       action: z.string().min(1).max(96).optional(),
+      icon: UiIconSchema.optional(),
+      iconOnly: z.boolean().optional(),
     }),
     z.strictObject({
+      ...uiNodeMeta,
       type: z.literal("select"),
       event: uiEventName,
+      blurEvent: uiEventName.optional(),
       value: z.string().max(MAX_UI_TEXT_LENGTH).nullable(),
       options: z
         .array(z.strictObject({ value: z.string().max(MAX_UI_TEXT_LENGTH), label: uiText }))
@@ -230,8 +298,10 @@ const uiNode: z.ZodType<UiNode> = z.lazy(() =>
       disabled: z.boolean().optional(),
     }),
     z.strictObject({
+      ...uiNodeMeta,
       type: z.literal("input"),
       event: uiEventName,
+      blurEvent: uiEventName.optional(),
       value: z.string().max(MAX_UI_TEXT_LENGTH),
       label: uiText.optional(),
       placeholder: uiText.optional(),
@@ -239,13 +309,16 @@ const uiNode: z.ZodType<UiNode> = z.lazy(() =>
       disabled: z.boolean().optional(),
     }),
     z.strictObject({
+      ...uiNodeMeta,
       type: z.literal("toggle"),
       event: uiEventName,
+      blurEvent: uiEventName.optional(),
       value: z.boolean(),
       label: uiText,
       disabled: z.boolean().optional(),
     }),
     z.strictObject({
+      ...uiNodeMeta,
       type: z.literal("list"),
       items: z
         .array(
@@ -260,7 +333,7 @@ const uiNode: z.ZodType<UiNode> = z.lazy(() =>
         )
         .max(MAX_UI_LIST_ITEMS),
     }),
-    z.strictObject({ type: z.literal("empty"), text: uiText }),
+    z.strictObject({ ...uiNodeMeta, type: z.literal("empty"), text: uiText }),
   ]),
 );
 
@@ -374,6 +447,12 @@ export const ISOLATE_CTX_METHODS = [
   "machines.isOnline",
   "machines.getTerminalExecution",
   "machines.repository",
+  "machines.inventory",
+  "machines.drain",
+  "identity.enrollMachine",
+  "identity.rotateMachineToken",
+  "identity.revokeMachine",
+  "identity.forgetMachine",
   "placement.place",
   "host.roster",
   "host.enabled",
@@ -735,7 +814,28 @@ export const WEB_HOST_METHODS = [
   "openStream",
   "closeStream",
   "ackStream",
+  "subscribe",
+  "unsubscribe",
+  "ackEvent",
+  "createTerminal",
 ] as const;
+
+/** Mounted-view facts only. A current host call, not this snapshot, decides authority. */
+export const WebHostContextSchema = z.strictObject({
+  principal: PrincipalSchema,
+  caps: CapSchema.array(),
+  containerId: z.string().min(1).nullable(),
+  topics: z.strictObject({
+    index: ManifoldRefSchema.array().max(64),
+    terminals: ManifoldRefSchema.array().max(64),
+    attendance: ManifoldRefSchema.array().max(64),
+    machines: ManifoldRefSchema.array().max(64),
+  }),
+  status: z.enum(["idle", "connecting", "open", "reconnecting", "closed"]),
+  hidden: z.boolean(),
+  canAuthor: z.boolean(),
+});
+export type WebHostContext = z.infer<typeof WebHostContextSchema>;
 export const WebHostMethodSchema = z.enum(WEB_HOST_METHODS);
 export type WebHostMethod = (typeof WEB_HOST_METHODS)[number];
 
@@ -753,7 +853,21 @@ export const WebIsolateHostFrameSchema = z.discriminatedUnion("t", [
     caps: CapSchema.array(),
     containerId: z.string().min(1).nullable(),
   }),
-  z.strictObject({ t: z.literal("mount"), instance: instanceId, panel: LocalNameSchema }),
+  z.strictObject({
+    t: z.literal("mount"),
+    instance: instanceId,
+    panel: LocalNameSchema,
+    kind: z.enum(["panel", "section"]).optional(),
+    context: WebHostContextSchema.optional(),
+    arg: PanelArgSchema.refine(validPanelArg, "panel argument must be bounded JSON data").optional(),
+  }),
+  z.strictObject({
+    t: z.literal("context"),
+    instance: instanceId,
+    context: WebHostContextSchema,
+    arg: PanelArgSchema.refine(validPanelArg, "panel argument must be bounded JSON data").optional(),
+  }),
+  z.strictObject({ t: z.literal("notification"), id: frameId }),
   z.strictObject({ t: z.literal("unmount"), instance: instanceId }),
   z.strictObject({ t: z.literal("event"), ...UiEventFields }),
   z.strictObject({ t: z.literal("stream"), id: frameId, message: StreamServerMessageSchema }),
@@ -776,11 +890,14 @@ export const WebIsolateWorkerFrameSchema = z.discriminatedUnion("t", [
   z.strictObject({
     t: z.literal("ready"),
     panels: LocalNameSchema.array().max(MAX_ISOLATE_PANELS),
+    sections: LocalNameSchema.array().max(MAX_ISOLATE_PANELS).optional(),
+    hardenedContract: z.number().int().positive().optional(),
   }),
   z.strictObject({ t: z.literal("render"), instance: instanceId, tree: UiNodeSchema }),
   z.strictObject({
     t: z.literal("call"),
     id: frameId,
+    instance: instanceId.optional(),
     method: WebHostMethodSchema,
     args: callArgs,
   }),
@@ -822,10 +939,13 @@ export const PLUGIN_BUNDLE_FORMAT = 1;
  * 6 -> 7: Additive harness metadata and correlated harness calls; profile validation has no ctx.
  * 7 -> 8: Additive-optional `ctx.callerPlugin` names the immediate calling plugin or null for
  *    non-plugin entry. Hosts omit it for older admitted guests, including strict contract-1 parsers.
+ * 8 -> 9: Real React frame roots, section contributions and mounted host context; portable
+ *    web.worker.js artifacts, event invalidations, authoring and narrow machine bridges.
+ *    Legacy web guests keep their original init/mount shapes and existing control frames.
  */
-export const HARDENED_CONTRACT_VERSION = 8;
+export const HARDENED_CONTRACT_VERSION = 9;
 export const HARDENED_CONTRACT_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  1, 2, 3, 4, 5, 6, 7, 8,
+  1, 2, 3, 4, 5, 6, 7, 8, 9,
 ]);
 export const HARDENED_CONTRACT_MINIMUM = Math.min(...HARDENED_CONTRACT_COMPAT_VERSIONS);
 
@@ -835,6 +955,9 @@ export const HARDENED_CONTRACT_MINIMUM = Math.min(...HARDENED_CONTRACT_COMPAT_VE
  * and `Bun.spawn(["bun", "--smol", "<dir>/server.js"])` is the whole loader.
  */
 export const PLUGIN_BUNDLE_SERVER_FILE = "server.js";
+
+/** Self-contained portable React entry, selected only for a hardened browser contribution. */
+export const PLUGIN_BUNDLE_WEB_WORKER_FILE = "web.worker.js";
 
 /**
  * The file the web half's skin lives in when `entry.styles` is true (ADR 0025 §7, #258): one
@@ -946,6 +1069,26 @@ export const PluginBundleSchema = z
     }
     if (entry.web !== undefined && !Object.hasOwn(ctx.value.files, entry.web)) {
       missing(entry.web, "web");
+    }
+    if (entry.worker === true) {
+      if (entry.web === undefined || entry.web === PLUGIN_BUNDLE_WEB_WORKER_FILE) {
+        ctx.issues.push({
+          code: "custom",
+          input: ctx.value,
+          path: ["manifest", "entry", "worker"],
+          message: "a portable Worker requires a separate in-realm web entry",
+        });
+      }
+      if ((ctx.value.hardenedContract ?? 0) < 9) {
+        ctx.issues.push({
+          code: "custom",
+          input: ctx.value,
+          path: ["hardenedContract"],
+          message: "portable React requires hardened contract 9 or newer",
+        });
+      }
+      if (!Object.hasOwn(files, PLUGIN_BUNDLE_WEB_WORKER_FILE))
+        missing(PLUGIN_BUNDLE_WEB_WORKER_FILE, "worker");
     }
     if (entry.styles !== true) return;
     if (entry.web === undefined) {

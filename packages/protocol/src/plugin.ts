@@ -627,6 +627,8 @@ export const PluginEntrySchema = z.strictObject({
   web: z.string().min(1).max(128).optional(),
   server: z.boolean().optional(),
   styles: z.boolean().optional(),
+  /** A portable React build also carries the fixed web.worker.js entry. Not a mode choice. */
+  worker: z.literal(true).optional(),
 });
 export type PluginEntry = z.infer<typeof PluginEntrySchema>;
 
@@ -1304,6 +1306,8 @@ export type PluginInstall = z.infer<typeof PluginInstallSchema>;
 export const PluginRosterEntrySchema = z.strictObject({
   manifest: PluginManifestSchema,
   enabled: z.boolean(),
+  /** Effective execution selected by the host, independent of installation provenance. */
+  hardened: z.boolean().optional(),
   source: PluginSourceSchema,
   actions: ActionSummarySchema.array(),
   /** Absent ≡ `ok`: the plugin's last transition did what it said. */
@@ -1324,8 +1328,8 @@ export const PluginRosterEntrySchema = z.strictObject({
   changedBy: z.string().min(1).max(128).nullish(),
   changedAt: z.number().int().min(0).nullish(),
   /**
-   * Present iff the plugin was installed. The installer chooses the runner with
-   * `hardened`; absent or false runs in-realm, true selects the hardened runner.
+   * Present iff the plugin was installed. Its `hardened` member records the installer's
+   * choice; the roster's own `hardened` reports effective execution for every provenance.
    * Bundled first-party and builtin rows have no install record.
    */
   install: PluginInstallSchema.optional(),

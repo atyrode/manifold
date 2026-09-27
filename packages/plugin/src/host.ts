@@ -30,6 +30,7 @@ import type { ScenePatch, Y } from "@manifold/scene";
 import type { AssemblyPanel, AssemblySection } from "./assemble.ts";
 import type { ComposedBinding } from "./bindings.ts";
 import type { ComposedSetting } from "./settings.ts";
+import type { FeedEvents } from "./polled-resource.ts";
 
 /**
  * What `place()` answers: the placement it executed, or the declared RULE that refused it.
@@ -619,6 +620,37 @@ export interface PanelProps {
 /** A contributed sidebar section, ordered by its manifest's declared `order`. */
 export interface SectionProps {
   readonly host: HostServices;
+}
+
+/** The client slice whose data and calls have a bounded hardened representation. */
+export interface PortableSessionHandle
+  extends Pick<
+      SessionHandle,
+      | "action"
+      | "place"
+      | "selfCaps"
+      | "machines"
+      | "resolve"
+      | "openStream"
+      | "openTerminal"
+      | "sendTerminalInput"
+      | "terminalsByContainer"
+    >,
+    FeedEvents {}
+
+/** No bearer, DOM handle, room replica, assembly object or arbitrary host service. */
+export interface PortableHostServices
+  extends Pick<HostServices, "principal" | "containerId" | "navigate" | "topics" | "authoring"> {
+  readonly client: PortableSessionHandle;
+}
+
+export interface PortablePanelProps {
+  readonly host: PortableHostServices;
+  readonly arg?: PanelArg | undefined;
+}
+
+export interface PortableSectionProps {
+  readonly host: PortableHostServices;
 }
 
 /**

@@ -117,6 +117,9 @@ export interface FeedEvents {
   subscribe(topics: readonly ManifoldRef[], handler: (event: unknown) => void): () => void;
   readonly status: SessionStatus;
   on(event: "status", fn: (status: SessionStatus) => void): () => void;
+  /** A non-DOM consumer receives its host page's visibility as data. */
+  readonly hidden?: boolean;
+  onVisibilityChange?(fn: () => void): () => void;
 }
 
 /** How the feed compares an incoming answer with the published one. */
