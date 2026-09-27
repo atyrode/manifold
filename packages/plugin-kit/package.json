@@ -7,7 +7,6 @@
     ".": "./src/index.ts",
     "./server": "./src/server.ts",
     "./web": "./src/web.ts",
-    "./ui": "./src/ui.ts",
     "./pack": "./src/pack.ts",
     "./hub": "./src/hub.ts",
     "./install": "./src/install.ts",

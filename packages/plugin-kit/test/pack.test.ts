@@ -13,10 +13,12 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import {
+  HARDENED_CONTRACT_VERSION,
   ISOLATE_MAX_ARTIFACT_BYTES,
   MAX_PLUGIN_CHANGELOG_BYTES,
   PLUGIN_BUNDLE_SERVER_FILE,
   PLUGIN_BUNDLE_STYLES_FILE,
+  PLUGIN_BUNDLE_WEB_WORKER_FILE,
   PROTOCOL_VERSION,
   PluginBundleSchema,
   PluginManifestSchema,
@@ -25,6 +27,10 @@ import {
   type MachineArtifact,
   type PluginBundle,
   type PluginManifest,
+  type UiNode,
+  type WebHostContext,
+  type WebIsolateHostFrame,
+  type WebIsolateWorkerFrame,
 } from "@manifold/protocol";
 import { z } from "zod";
 import {
@@ -68,7 +74,7 @@ beforeAll(async () => {
   dir = mkdtempSync(`${tmpdir()}/plugin-kit-pack-`);
   const out = `${dir}/example.counter.manifold-plugin.json`;
   const command = Bun.spawn(
-    ["bun", `${KIT}/src/pack.ts`, SAMPLE, "--out", out, "--self-contained"],
+    ["bun", `${KIT}/src/pack.ts`, SAMPLE, "--out", out],
     {
       cwd: KIT,
       stdout: "pipe",
@@ -96,8 +102,12 @@ describe("the artifact", () => {
     expect(packed.sha256).toBe(new Bun.CryptoHasher("sha256").update(bytes).digest("hex"));
     expect(bundle.format).toBe(1);
     expect(bundle.manifest.id).toBe("example.counter");
-    expect(bundle.manifest.entry).toEqual({ server: true, web: "web.js" });
-    expect(Object.keys(bundle.files).sort()).toEqual([PLUGIN_BUNDLE_SERVER_FILE, "web.js"]);
+    expect(bundle.manifest.entry).toEqual({ server: true, web: "web.js", worker: true });
+    expect(Object.keys(bundle.files).sort()).toEqual([
+      PLUGIN_BUNDLE_SERVER_FILE,
+      "web.js",
+      PLUGIN_BUNDLE_WEB_WORKER_FILE,
+    ]);
   });
 
   test("pack output is independent of source location and process cwd", async () => {
@@ -106,7 +116,7 @@ describe("the artifact", () => {
     const second = `${locations}/another/depth/sample`;
     const run = async (source: string, out: string, cwd: string): Promise<PackResult> => {
       const command = Bun.spawn(
-        ["bun", `${KIT}/src/pack.ts`, source, "--out", out, "--self-contained"],
+        ["bun", `${KIT}/src/pack.ts`, source, "--out", out],
         { cwd, stdout: "pipe", stderr: "pipe" },
       );
       const [stdout, stderr, code] = await Promise.all([
@@ -182,13 +192,17 @@ describe("the artifact", () => {
     }
   });
 
-  test("both halves are self-contained: the kit, the protocol and zod are inlined", () => {
-    for (const name of [PLUGIN_BUNDLE_SERVER_FILE, "web.js"]) {
-      const source = Buffer.from(bundle.files[name] ?? "", "base64").toString("utf8");
-      // No bare specifier survives: nothing for a loader to resolve.
+  test("no member leaves a bare import to resolve; only the page entry links the shell's registry", () => {
+    const member = (name: string): string =>
+      Buffer.from(bundle.files[name] ?? "", "base64").toString("utf8");
+    for (const name of [PLUGIN_BUNDLE_SERVER_FILE, "web.js", PLUGIN_BUNDLE_WEB_WORKER_FILE]) {
+      const source = member(name);
       expect(source.match(/^\s*import\b[^\n]*\bfrom\s*["'][^./]/m)).toBeNull();
       expect(source.match(/\brequire\(\s*["']@manifold/)).toBeNull();
     }
+    // The page entry renders with the shell's own React; the Worker carries its one copy.
+    expect(member("web.js")).toContain('Symbol.for("manifold.shared")');
+    expect(member(PLUGIN_BUNDLE_WEB_WORKER_FILE)).not.toContain('Symbol.for("manifold.shared")');
   });
 
   test("refuses a directory whose manifest names no entry", async () => {
@@ -380,6 +394,8 @@ describe("in-memory compilation", () => {
     mkdirSync(`${source}/output`);
     original = PluginManifestSchema.parse({
       ...bundle.manifest,
+      // A plain module, not a React definition: this suite is about members, not linkage.
+      entry: { server: true, web: "web.js" },
       machine: {
         artifacts: { "linux-x64": raw("worker", originalWorker) },
         tools: { engine: { "linux-x64": raw("engine", originalEngine) } },
@@ -632,6 +648,153 @@ describe("in-memory compilation", () => {
     expect(await serverValue(artifact)).toEqual({ manifest: original, nested, settings });
     expect(Buffer.from(artifact.files.worker!, "base64")).toEqual(originalWorker);
     expect(Buffer.from(artifact.files.engine!, "base64")).toEqual(originalEngine);
+  });
+});
+
+describe("the packed web half, as a real Worker", () => {
+  const principal = { id: "p1", kind: "human", name: "Ada", color: "#e03131" } as const;
+  const context: WebHostContext = {
+    principal,
+    caps: ["containers:read"],
+    containerId: "c1",
+    topics: { index: [], terminals: [], attendance: [], machines: [] },
+    status: "open",
+    hidden: false,
+    canAuthor: false,
+  };
+  const nodes = (tree: UiNode): UiNode[] =>
+    tree.type === "box" ? [tree, ...tree.children.flatMap(nodes)] : [tree];
+
+  test("the portable entry renders the sample with its one React and routes its button to an owned call", async () => {
+    const file = `${dir}/${PLUGIN_BUNDLE_WEB_WORKER_FILE}`;
+    await Bun.write(file, Buffer.from(bundle.files[PLUGIN_BUNDLE_WEB_WORKER_FILE] ?? "", "base64"));
+    const worker = new Worker(file, { type: "module" });
+    const queue: WebIsolateWorkerFrame[] = [];
+    const waiting: ((frame: WebIsolateWorkerFrame) => void)[] = [];
+    worker.addEventListener("message", (event: MessageEvent<WebIsolateWorkerFrame>) => {
+      const waiter = waiting.shift();
+      if (waiter === undefined) queue.push(event.data);
+      else waiter(event.data);
+    });
+    const next = (): Promise<WebIsolateWorkerFrame> => {
+      const queued = queue.shift();
+      if (queued !== undefined) return Promise.resolve(queued);
+      const { promise, resolve } = Promise.withResolvers<WebIsolateWorkerFrame>();
+      waiting.push(resolve);
+      return promise;
+    };
+    const send = (frame: WebIsolateHostFrame): void => worker.postMessage(frame);
+    try {
+      send({ t: "init", pluginId: "example.counter", principal, caps: [], containerId: "c1" });
+      expect(await next()).toEqual({
+        t: "ready",
+        panels: ["counter"],
+        sections: [],
+        hardenedContract: HARDENED_CONTRACT_VERSION,
+      });
+      send({ t: "mount", instance: "i1", panel: "counter", kind: "panel", context });
+      const first = await next();
+      if (first.t !== "render") throw new Error(`expected a render, got ${JSON.stringify(first)}`);
+      const painted = nodes(first.tree);
+      expect(painted).toContainEqual(expect.objectContaining({ type: "text", text: "Hello, Ada." }));
+      const bump = painted.find((node) => node.type === "button" && node.label === "Bump");
+      if (bump?.type !== "button") throw new Error("the sample painted no Bump button");
+      expect(bump.action).toBe("example.counter.bump");
+
+      send({ t: "event", instance: "i1", event: bump.event });
+      const call = await next();
+      if (call.t !== "call") throw new Error(`expected a call, got ${JSON.stringify(call)}`);
+      expect(call).toMatchObject({
+        instance: "i1",
+        method: "action",
+        args: ["example.counter.bump", { by: 1 }],
+      });
+      send({ t: "reply", id: call.id, ok: true, result: { ok: true, result: { count: 7 } } });
+      const second = await next();
+      if (second.t !== "render") throw new Error(`expected a render, got ${JSON.stringify(second)}`);
+      expect(nodes(second.tree)).toContainEqual(
+        expect.objectContaining({ type: "badge", text: "count 7" }),
+      );
+    } finally {
+      worker.terminate();
+    }
+  });
+
+  test("portable linkage refuses a self-contained page entry and page-only imports by name", async () => {
+    await expect(compilePlugin(SAMPLE, { shared: false })).rejects.toThrow(
+      "entry.worker requires the page-linked web entry",
+    );
+    const source = mkdtempSync(`${tmpdir()}/plugin-kit-portable-`);
+    try {
+      await Bun.write(
+        `${source}/manifest.json`,
+        JSON.stringify({ ...bundle.manifest, entry: { web: "web.js", worker: true } }),
+      );
+      for (const [specifier, binding] of [
+        ["react-dom", "createPortal"],
+        ["@manifold/plugin", "defineAction"],
+      ] as const) {
+        await Bun.write(
+          `${source}/web.ts`,
+          `import { ${binding} } from "${specifier}";\nexport default { id: "example.counter", panels: {}, uses: ${binding} };\n`,
+        );
+        // The page entry links through the shared inventory, which only the command resolves.
+        const command = Bun.spawn(
+          ["bun", `${KIT}/src/pack.ts`, source, "--out", `${source}/out.json`],
+          { cwd: KIT, stdout: "ignore", stderr: "pipe" },
+        );
+        const [code, stderr] = await Promise.all([
+          command.exited,
+          new Response(command.stderr).text(),
+        ]);
+        expect(code).not.toBe(0);
+        expect(stderr).toContain(`a portable Worker cannot import ${specifier}`);
+      }
+    } finally {
+      rmSync(source, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("registered source", () => {
+  test("compiles the given manifest and entries without a manifest file, owning them first", async () => {
+    const source = mkdtempSync(`${tmpdir()}/plugin-kit-registered-`);
+    try {
+      await Bun.write(`${source}/src/server.ts`, `console.log("server guest");\n`);
+      await Bun.write(`${source}/src/entry.ts`, `export default { id: "example.registered" };\n`);
+      const manifest = PluginManifestSchema.parse({
+        ...bundle.manifest,
+        id: "example.registered",
+        entry: { server: true, web: "web.js" },
+      });
+      const expected = structuredClone(manifest);
+      const pending = compilePlugin(source, {
+        shared: false,
+        source: { manifest, server: "src/server.ts", web: `${source}/src/entry.ts` },
+      });
+      manifest.id = "substituted.identity";
+      const compiled = PluginBundleSchema.parse(
+        JSON.parse(new TextDecoder().decode((await pending).bytes)),
+      );
+      expect<PluginManifest>(compiled.manifest).toEqual(expected);
+      expect(Object.keys(compiled.files).sort()).toEqual([PLUGIN_BUNDLE_SERVER_FILE, "web.js"]);
+      // The compiled module exists only as bytes; loading them is the boundary under test.
+      const web = await import(`data:text/javascript;base64,${compiled.files["web.js"]!}`);
+      expect(web.default).toEqual({ id: "example.registered" });
+
+      await expect(
+        compilePlugin(source, { shared: false, source: { manifest: expected, server: "src/server.ts" } }),
+      ).rejects.toThrow("a web source is required exactly when entry.web is declared");
+      await expect(
+        compilePlugin(source, {
+          shared: false,
+          source: { manifest: expected, server: "src/server.ts", web: "src/entry.ts" },
+          generated: { manifest: expected, members: new Map() },
+        }),
+      ).rejects.toThrow("not both");
+    } finally {
+      rmSync(source, { recursive: true, force: true });
+    }
   });
 });
 

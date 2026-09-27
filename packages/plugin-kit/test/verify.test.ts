@@ -31,7 +31,7 @@ let client = "";
 /** Packs one fixture directory the way an author's release would: the command, a second process. */
 async function pack(source: string, out: string): Promise<void> {
   const command = Bun.spawn(
-    ["bun", `${KIT}/src/pack.ts`, source, "--out", out, "--self-contained"],
+    ["bun", `${KIT}/src/pack.ts`, source, "--out", out],
     {
       cwd: KIT,
       stdout: "pipe",

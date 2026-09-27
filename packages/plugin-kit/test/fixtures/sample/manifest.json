@@ -25,6 +25,6 @@
     "tools": [],
     "events": [{ "id": "counter_bumped", "title": "Counter bumped" }]
   },
-  "entry": { "server": true, "web": "web.js" },
+  "entry": { "server": true, "web": "web.js", "worker": true },
   "links": { "repository": "https://github.com/atyrode/manifold" }
 }

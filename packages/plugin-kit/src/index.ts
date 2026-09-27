@@ -1,12 +1,12 @@
 /**
  * `@manifold/plugin-kit` — the authoring kit for an ISOLATED plugin (ADR 0016).
  *
- * The root export is the pure half: the vocabulary builders, the error classes and every
- * public type. The runtimes live behind their own doors so a bundle carries only the half it
- * runs — `@manifold/plugin-kit/server` (`defineServerPlugin`), `@manifold/plugin-kit/web`
- * (`defineWebPlugin`) — and the commands are `pack` (a directory to an artifact), `install` (an
- * artifact onto a hub), `dev` (pack and install on every change) and `verify` (artifacts against
- * a real spawned engine), each its own file under `src/` (issue #319).
+ * The root export is the pure half: the error classes and every public type. The runtimes live
+ * behind their own doors so a bundle carries only the half it runs — `@manifold/plugin-kit/server`
+ * (`defineServerPlugin`) and `@manifold/plugin-kit/web` (`defineWebPlugin`, a React definition
+ * the packer runs in-realm or in a Worker) — and the commands are `pack` (a directory to an
+ * artifact), `install` (an artifact onto a hub), `dev` (pack and install on every change) and
+ * `verify` (artifacts against a real spawned engine), each its own file under `src/` (issue #319).
  */
 export {
   ActionCallError,
@@ -22,16 +22,6 @@ export type {
   SessionRef,
   TerminalRuntime,
 } from "@manifold/plugin";
-export {
-  ui,
-  type BoxOptions,
-  type ButtonOptions,
-  type InputOptions,
-  type SelectOptions,
-  type TextOptions,
-  type ToggleOptions,
-  type UiNodeOf,
-} from "./ui.ts";
 export type {
   GuestActions,
   GuestAuth,
@@ -58,15 +48,5 @@ export type {
   ServerHandler,
   ServerPluginDef,
 } from "./server.ts";
-export type {
-  GuestHost,
-  GuestStreamHandle,
-  OpenStreamOptions,
-  GuestWebPlaceOutcome,
-  OpenTerminalOptions,
-  PanelEvent,
-  PanelProgram,
-  WebGuestPort,
-  WebPluginDef,
-} from "./web.ts";
+export type { ReactWebPluginDef } from "./web.ts";
 export type { CompiledPlugin, CompileOptions, PackOptions, PackResult } from "./pack.ts";

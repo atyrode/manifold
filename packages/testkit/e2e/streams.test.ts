@@ -44,7 +44,6 @@ test("a declared 20fps stream runs for sixty seconds without journaling its fram
         join(import.meta.dir, "../../plugin-kit/test/fixtures/streams"),
         "--out",
         join(dir, "streams.json"),
-        "--self-contained",
       ],
       { stdout: "pipe", stderr: "pipe" },
     );

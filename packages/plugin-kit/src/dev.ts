@@ -102,7 +102,8 @@ async function cycle(
     const built: PackResult[] = [];
     for (const plugin of await discoverPlugins(options.root)) {
       const file = join(options.packDir, `${plugin.id}.manifold-plugin.json`);
-      built.push(await packPlugin(plugin.dir, file, { shared: options.hardened !== true }));
+      // A hardened install runs the portable Worker entry; the page entry stays shell-linked.
+      built.push(await packPlugin(plugin.dir, file));
     }
     results = built;
   }

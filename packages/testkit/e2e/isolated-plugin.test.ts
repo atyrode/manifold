@@ -45,7 +45,7 @@ beforeAll(async () => {
   packDir = mkdtempSync(join(tmpdir(), "manifold-isolated-plugin-"));
   bundlePath = join(packDir, BUNDLE_NAME);
   const pack = Bun.spawn(
-    ["bun", join(KIT, "src/pack.ts"), SAMPLE, "--out", bundlePath, "--self-contained"],
+    ["bun", join(KIT, "src/pack.ts"), SAMPLE, "--out", bundlePath],
     {
       cwd: KIT,
       stdout: "pipe",
@@ -113,8 +113,9 @@ function uninstall(server: TestServer, purge = false): Promise<ActionOutcome> {
   });
 }
 
+/** A hardened install's browser half is its portable Worker entry. */
 async function webModule(server: TestServer): Promise<Response> {
-  return fetch(new URL(`/api/plugins/${PLUGIN_ID}/web.js`, server.httpUrl), {
+  return fetch(new URL(`/api/plugins/${PLUGIN_ID}/web.worker.js`, server.httpUrl), {
     headers: { authorization: `Bearer ${server.ownerKey}` },
   });
 }
@@ -165,7 +166,7 @@ test("an installed plugin composes, answers its door from its own process, and u
     expect(row?.enabled).toBe(true);
     expect(row?.lifecycle).toBeUndefined();
     expect(row?.actions.map((action) => action.name)).toEqual([BUMP]);
-    expect(row?.manifest.entry).toEqual({ server: true, web: "web.js" });
+    expect(row?.manifest.entry).toEqual({ server: true, web: "web.js", worker: true });
 
     // Storage is the child's only memory and it lives on the host: the second answer carries
     // the first, proving the `storage.set` call crossed the boundary and landed.

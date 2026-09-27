@@ -1270,7 +1270,6 @@ test("installed module, stylesheet, and isolated-module refusals recover identit
           join(import.meta.dir, "../../plugin-kit/test/fixtures", fixture),
           "--out",
           join(dir, `${fixture}.json`),
-          ...(fixture === "sample" ? ["--self-contained"] : []),
         ],
         { stdout: "pipe", stderr: "pipe" },
       );
@@ -1294,14 +1293,14 @@ test("installed module, stylesheet, and isolated-module refusals recover identit
       },
       {
         name: "isolated-module",
-        asset: "web.js",
+        asset: "web.worker.js",
         bundle: isolated,
         hardened: true,
         replacement: false,
       },
       {
         name: "isolated-replacement",
-        asset: "web.js",
+        asset: "web.worker.js",
         bundle: isolated,
         hardened: true,
         replacement: true,
