@@ -91,12 +91,13 @@ async function fixture() {
     builtAgainst: Record<string, string> | null = {
       [BUILT_AGAINST_PROTOCOL]: String(PROTOCOL_VERSION),
     },
+    hardenedContract: number | null = HARDENED_CONTRACT_VERSION,
   ) => {
     const web = `export const revision = ${JSON.stringify(definition.version)};`;
     const bytes = Buffer.from(
       JSON.stringify({
         format: 1,
-        hardenedContract: HARDENED_CONTRACT_VERSION,
+        ...(hardenedContract === null ? {} : { hardenedContract }),
         manifest: definition,
         ...(builtAgainst === null ? {} : { builtAgainst }),
         files: {
@@ -348,6 +349,22 @@ describe("reviewed plugin updates", () => {
       manifest: { version: "two", entry: {}, machine: manifest.machine },
       install: { sha256: next.sha256 },
     });
+  });
+
+  test("in-realm review blocks an executable contract the shared loader cannot admit", async () => {
+    const f = await fixture();
+    const old = f.bundle(f.manifest("vendor.updates", "one"));
+    await f.install(old);
+    const candidate = f.bundle(f.manifest(old.id, "unstamped"), undefined, null);
+    f.feed(candidate);
+    const blocked = await f.review();
+    expect(blocked.blockers.some((blocker) => blocker.reason.startsWith("repack_required:"))).toBe(
+      true,
+    );
+    await expect(
+      f.call("engine.plugins.applyUpdate", { digest: blocked.digest, consent: [] }),
+    ).rejects.toThrow("update_blocked");
+    expect(await f.web()).toBe(old.web);
   });
 
   test("legacy metadata warns while a known incompatible candidate cannot replace it", async () => {

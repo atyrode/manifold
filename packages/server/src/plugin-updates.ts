@@ -541,9 +541,8 @@ export class PluginUpdates {
               "repack_required: the candidate targets an incompatible protocol or shared React major",
           });
         if (
-          hardened &&
-          (artifact.bundle.hardenedContract === undefined ||
-            !HARDENED_CONTRACT_COMPAT_VERSIONS.has(artifact.bundle.hardenedContract))
+          artifact.bundle.hardenedContract === undefined ||
+          !HARDENED_CONTRACT_COMPAT_VERSIONS.has(artifact.bundle.hardenedContract)
         )
           blockers.push({
             id: manifest.id,
