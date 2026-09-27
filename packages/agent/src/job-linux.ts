@@ -1047,10 +1047,12 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
       writeControl(groups.root, "cgroup.kill", "1");
       child.kill("SIGKILL");
       await awaitEmpty(groups.root);
-      // Empty cgroups do not imply that the event loop has delivered the last bytes.
-      // Reap the inline owner so Bun releases its slave, then retain the reader to EOF.
-      await exited;
-      await drained;
+      if (terminalDrained) {
+        // Empty cgroups do not imply that the event loop delivered the last PTY bytes.
+        // Reap the inline owner so Bun releases its slave, then retain the reader to EOF.
+        await exited;
+        await drained;
+      }
       if (cleaned) return;
       cleaned = true;
       terminalProcess?.terminal?.close();

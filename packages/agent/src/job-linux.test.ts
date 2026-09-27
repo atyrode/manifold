@@ -500,6 +500,26 @@ async function withLinux(
 }
 
 test.skipIf(!realLinux)(
+  "[real-linux] failed non-PTY supervisor spawn retains positive startup cleanup proof",
+  async () => {
+    const root = mkdtempSync(join(tmpdir(), "job-failed-spawn-"));
+    const executable = join(root, "supervisor");
+    writeFileSync(executable, `#!${join(root, "missing-interpreter")}\n`, { mode: 0o500 });
+    const fd = openSync(executable, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      await withLinux("printf ready", async (spec) => {
+        await expect(startLinuxJob({ ...spec, bubblewrapFd: fd })).rejects.toMatchObject({
+          workloadEmpty: true,
+        });
+      });
+    } finally {
+      closeSync(fd);
+      rmSync(root, { recursive: true });
+    }
+  },
+);
+
+test.skipIf(!realLinux)(
   "[real-linux] absolute Run deadline bounds a workload whose operation timeout is longer",
   async () => {
     await withLinux("/bin/busybox sleep 5; printf completed", async (spec) => {
