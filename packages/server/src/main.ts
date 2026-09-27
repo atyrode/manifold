@@ -18,7 +18,7 @@ import {
   claimWriterEpoch,
   openDatabase,
   sealWriterEpoch,
-  type WriterClaim,
+  type WriterLock,
 } from "./db.ts";
 import { EventHub } from "./event-hub.ts";
 import { HttpApp, MAX_HTTP_BODY_BYTES } from "./http.ts";
@@ -111,6 +111,8 @@ export interface RunningServer {
  * Before anything touches the database it takes the data directory's writer lock and claims
  * the next writer epoch (#318); `stop` quiesces, seals that epoch and releases the lock last,
  * so a successor waiting on the same directory becomes the writer only after this one is done.
+ * A start that fails after taking the lock rejects only once it has closed what it opened and
+ * released the lock, leaving its epoch unsealed.
  */
 export async function startServer(options: StartServerOptions = {}): Promise<RunningServer> {
   const runtime = options.runtime ?? defaultRuntime;
@@ -121,15 +123,71 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     waitMs: WRITER_LOCK_WAIT_MS,
     onWait: () => logger.info("writer_waiting", { waitMs: WRITER_LOCK_WAIT_MS }),
   });
-  let store: ServerStore;
-  let claim: WriterClaim;
+  /*
+    A START THAT FAILS while it holds the lock has no `RunningServer` for its caller to stop,
+    so it unwinds itself. Each resource registers its close in `opened` as it comes into being,
+    and whatever throws before the start resolves — a port already bound, a boot that refuses —
+    closes what this start opened, newest first, and only then releases the lock, so a
+    successor can take the directory at once. The epoch is NOT sealed: a start that never
+    served ends as a crash does, `active`, and that successor warns that it follows one. The
+    failure is rethrown as it was; a close that also fails is logged and never replaces it.
+  */
+  const opened: (() => unknown)[] = [];
   try {
-    store = new ServerStore(openDatabase(resolve(config.dataDir, "manifold.db")));
-    claim = claimWriterEpoch(store.db);
+    return await startAsWriter({
+      writer,
+      opened,
+      runtime,
+      config,
+      timers,
+      logger,
+      announce: options.announce !== false,
+    });
   } catch (error) {
+    for (const close of opened.reverse()) {
+      try {
+        await close();
+      } catch (closeError) {
+        logger.error("shutdown_failed", {
+          error: closeError instanceof Error ? closeError.message : "unknown failure",
+        });
+      }
+    }
     writer.release();
     throw error;
   }
+}
+
+/** A start that holds the writer lock, with its unwind list and every option resolved. */
+interface WriterStart {
+  readonly writer: WriterLock;
+  /** The close of every resource opened so far, in opening order, for a failed start. */
+  readonly opened: (() => unknown)[];
+  readonly runtime: RuntimeDeps;
+  readonly config: ServerConfig;
+  readonly timers: RoomTimers;
+  readonly logger: Logger;
+  readonly announce: boolean;
+}
+
+/**
+ * Everything a start does as the writer: open and claim the database, wire the process, bind
+ * it. A resource's close joins `opened` the moment the resource exists — before the call that
+ * opens it, where that call can open some and then throw. Once this resolves, `stop` owns them.
+ */
+async function startAsWriter({
+  writer,
+  opened,
+  runtime,
+  config,
+  timers,
+  logger,
+  announce,
+}: WriterStart): Promise<RunningServer> {
+  const db = openDatabase(resolve(config.dataDir, "manifold.db"));
+  opened.push(() => db.close());
+  const store = new ServerStore(db);
+  const claim = claimWriterEpoch(store.db);
   /*
     What the opened history records about its last writer — reported, not judged. `active` means
     this history was left mid-epoch (a crash, a kill, or a replica restored from before that
@@ -168,6 +226,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
   const vocabulary = assemblyPlacementVocabulary(() => plugins.roster());
   const tileTrees = assemblyTileTrees(vocabulary);
   const rooms = new RoomManager(store, runtime, timers, logger, tileTrees);
+  opened.push(() => rooms.flushAll());
   const broker = new TerminalBroker(
     store,
     auth,
@@ -250,6 +309,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     closed at shutdown after the sockets, so no dispatch in flight finds its child gone.
   */
   const isolates = new IsolateSupervisor({ logger, runtime });
+  opened.push(() => isolates.close());
   /*
     The assembly, and the host that answers for it. It is built BEFORE the gateways
     that consult it: the session gateway pushes the roster and refuses terminal
@@ -284,6 +344,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
       dataDir: config.dataDir,
     },
   );
+  opened.push(() => plugins.close());
   plugins.setJobs(jobs);
   jobs.setChangeNotifier({
     run: (node, actor) => events.emit(FLOOR_EVENT_OWNERS.jobs, node, "job_changed", actor),
@@ -296,6 +357,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
       ),
   });
   const jobTick = setInterval(() => jobs.tick(), 1000);
+  opened.push(() => clearInterval(jobTick));
   /*
     THE element-payload boundary, installed rather than constructed for the same reason the
     terminal view above it is: the schemas belong to the assembly, the assembly belongs to the
@@ -388,6 +450,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
       idleTimeout: 120,
     },
   });
+  opened.push(() => server.stop(true));
   const boundPort = server.port;
   if (boundPort === undefined) {
     throw new Error("Bun did not expose a TCP port for the server");
@@ -397,12 +460,14 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
   const localAgent = spawnLocalAgent(config, boundPort, auth, store, logger, undefined, {
     admissionPublicKey: jobs.admissionPublicKey,
   });
+  opened.push(() => localAgent?.release());
   /*
     Dials resume AFTER the socket is bound and the public URL is final, and both halves of
     that ordering are load-bearing: a dial declares this instance's origin in its hello, so
     it cannot run before `finalizePublicUrl`, and a partner that answers a welcome may want
     to reach back, so it should not run before this process can be reached.
   */
+  opened.push(() => dialer.shutdown());
   dialer.start();
   /*
     The unpacked directory's watch (ADR 0025 §4) starts here too: a rebuild it finds at start
@@ -410,7 +475,8 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     than delaying the first request behind a build.
   */
   const unwatchAuthored = plugins.watchAuthored();
-  if (options.announce !== false) {
+  opened.push(unwatchAuthored);
+  if (announce) {
     // The pre-authed fragment is announce-key opt-in (MANIFOLD_ANNOUNCE_KEY=1,
     // dev/test only) so the owner key never enters persisted log streams;
     // operators read <data>/owner.key instead (docs/SELF-HOST.md).
