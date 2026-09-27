@@ -1379,6 +1379,13 @@ export class PluginHost {
    */
   private readonly databases = new Map<string, PluginDatabaseAdmin>();
   /**
+   * The discard of every migration chain staged right now. Its image and draft are not in
+   * `databases`, so shutdown discards them here, and a discarded chain can never be published.
+   */
+  private readonly stagedMigrations = new Set<() => void>();
+  /** Set by `close`: every lease refuses, and no plugin file is opened or recovered again. */
+  private closed = false;
+  /**
    * Where `plugins/<id>/data.db` lives (ADR 0034 §1) — `config.dataDir`, the same directory
    * the isolate runner extracts bundles into. Null for a host assembled without one, which is
    * a unit fixture: no directory, no file, and `ctx.database` is absent for every plugin.
@@ -2324,7 +2331,7 @@ export class PluginHost {
     return created;
   }
 
-  /** Request-scoped durable authority; settlement, timeout and retirement revoke it. */
+  /** Request-scoped durable authority; settlement, timeout, retirement and shutdown revoke it. */
   private dataLease(
     pluginId: string,
     storage: PluginStorage = this.storage(pluginId),
@@ -2332,11 +2339,11 @@ export class PluginHost {
   ): { storage: PluginStorage; database?: PluginDatabase; close(): void } {
     let open = true;
     const check = (): void => {
-      if (!open) throw new Error("plugin data request is closed");
+      if (!open || this.closed) throw new Error("plugin data request is closed");
     };
     const live = database !== null && this.databases.get(pluginId) === database;
     const checkDatabase = (): void => {
-      if (!open) throw new PluginDatabaseError("plugin database request is closed");
+      if (!open || this.closed) throw new PluginDatabaseError("plugin database request is closed");
       if (live && this.databases.get(pluginId) !== database)
         throw new PluginDatabaseError("plugin database request belongs to a retired handle");
     };
@@ -2434,6 +2441,8 @@ export class PluginHost {
    */
   private database(pluginId: string): PluginDatabaseAdmin | null {
     if (this.dataDir === null) return null;
+    // A closed host never reopens or recovers a file: its successor may already own it.
+    if (this.closed) throw new PluginDatabaseError("the plugin host is closed");
     const existing = this.databases.get(pluginId);
     if (existing !== undefined) return existing;
     const journal = this.store.pluginDatabaseJournal(pluginId);
@@ -2476,7 +2485,8 @@ export class PluginHost {
 
   /**
    * Stage the entire chain, including the native ledger/version, on private plugin storage.
-   * No data is published on failure, timeout or process loss; late work sees a closed handle.
+   * No data is published on failure, timeout, shutdown or process loss; late work sees a
+   * closed handle.
    * The caller commits synchronously, optionally with the installed row and element claims.
    *
    * The plugin's OWN FILE is the exception, and deliberately so (ADR 0034 §1): `data.db` is
@@ -2491,6 +2501,7 @@ export class PluginHost {
     migrations: readonly PluginMigration[],
     manifest = this.defs.find((def) => def.manifest.id === pluginId)?.manifest,
   ): Promise<PluginMigrationSession> {
+    if (this.closed) throw new Error("the plugin host is closed");
     // Revoke the live admin before snapshotting, including when the candidate removed its
     // declaration. A replacement's page budget must never come from the installed def.
     this.retireDatabase(pluginId);
@@ -2498,6 +2509,14 @@ export class PluginHost {
     const admin = staged.storage;
     let image: PluginDatabaseStage | undefined;
     let closeActiveLease = (): void => {};
+    // Once only: shutdown may discard first, and a later discard must not remove, by path, a
+    // stage image the next host has created since.
+    const discard = (): void => {
+      if (!this.stagedMigrations.delete(discard)) return;
+      staged.discard();
+      image?.discard();
+    };
+    this.stagedMigrations.add(discard);
     try {
       if (this.dataDir !== null && manifest?.database !== undefined) {
         const options = {
@@ -2543,11 +2562,10 @@ export class PluginHost {
       if (!outcome.ok) throw new Error(`plugin migration failed: ${outcome.reason}`);
       return {
         storage: admin,
-        discard: () => {
-          staged.discard();
-          image?.discard();
-        },
+        discard,
         commit: (publish) => {
+          if (!this.stagedMigrations.delete(discard))
+            throw new Error("plugin migration was discarded before it committed");
           try {
             image?.activate();
             staged.commit(() => {
@@ -2573,8 +2591,7 @@ export class PluginHost {
       };
     } catch (error) {
       closeActiveLease();
-      staged.discard();
-      image?.discard();
+      discard();
       throw error;
     }
   }
@@ -3638,7 +3655,7 @@ export class PluginHost {
    */
   private async jobSettled(delivery: SettledJobDelivery): Promise<void> {
     const id = delivery.settled.pluginId;
-    if (!this.assembled.enabled(id)) return;
+    if (this.closed || !this.assembled.enabled(id)) return;
     const invoke = this.defs.find((def) => def.manifest.id === id)?.lifecycle?.onJobSettled;
     if (invoke === undefined) return;
     const auth = delivery.auth;
@@ -4551,6 +4568,8 @@ export class PluginHost {
         const answer = await invoke(ctx, parsed.data);
         if (guestInput && !guestAdmitted)
           throw new IsolateDenial("unavailable", "isolate returned before admission");
+        // Shutdown revoked this dispatch: nothing it staged may be announced as committed.
+        if (this.closed) throw new Error("plugin host closed before the action settled");
         return answer;
       } finally {
         lease.close();
@@ -4650,11 +4669,15 @@ export class PluginHost {
    * SHUTDOWN. Every SQLite handle this host opened on a plugin's behalf is closed, so the
    * process leaves no `-wal` mid-checkpoint behind and a restart opens clean files. It is the
    * host's counterpart to `store.close()` and belongs to the same stop sequence — after the
-   * sockets, so no dispatch in flight finds its database gone. Clearing the admin map also
-   * revokes outstanding logical leases; retained callbacks cannot reopen a retired file.
+   * sockets, so no dispatch in flight finds its database gone. It also revokes every
+   * outstanding lease and discards every migration chain still staged: a handler, hook or
+   * migration that resumes afterwards finds its data refused and nothing it can publish, and
+   * no plugin file is opened or recovered again.
    */
   close(): void {
+    this.closed = true;
     this.broker.clearRunLaunches();
+    for (const discard of this.stagedMigrations) discard();
     for (const database of this.databases.values()) database.close();
     this.databases.clear();
   }
