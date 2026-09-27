@@ -270,9 +270,8 @@ for (const contract of [undefined, 999]) {
         (await fetch(`${server.publicUrl}/api/plugins/example.counter/web.js`, { headers })).status,
       ).toBe(404);
 
-      const repacked = await packPlugin(sample, join(uploads, "repacked.manifold-plugin.json"), {
-        shared: false,
-      });
+      // The sample is portable React: page-linked web.js plus its self-contained Worker entry.
+      const repacked = await packPlugin(sample, join(uploads, "repacked.manifold-plugin.json"));
       expect(
         await action(server, "engine.plugins.install", {
           source: repacked.file,
