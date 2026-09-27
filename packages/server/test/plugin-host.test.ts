@@ -5990,6 +5990,7 @@ const SUITE_EXTRA_ID = "vendor.suite.extra";
 async function suiteFixture(
   serve?: (ref: InstalledPluginRef) => IsolateLoadResult,
   dataVersions = false,
+  database = false,
 ) {
   const fixture = await installFixture(serve);
   const host = await customHost(fixture, [], { isolates: fixture.isolates });
@@ -6000,7 +6001,10 @@ async function suiteFixture(
     title: id,
     version: `${String(major)}.0.0`,
     ...(dataVersions ? { dataVersion: { major, minor: 0 } } : {}),
-    ...(id === SUITE_ID ? { releases: feed } : {}),
+    ...(database ? { database: {} } : {}),
+    ...(id === SUITE_ID
+      ? { releases: feed }
+      : { dependencies: { [SUITE_ID]: { type: "required" as const } } }),
   });
   for (const id of [SUITE_ID, SUITE_EXTRA_ID]) {
     const installed = await host.dispatch(
@@ -6093,9 +6097,9 @@ describe("reviewed family updates through the one installer", () => {
       if (!outcome.ok) throw new Error(outcome.denial.message);
       const applied = PluginUpdateApplyResultSchema.parse(outcome.result);
       expect(applied.rootId).toBe(SUITE_ID);
-      expect(Object.fromEntries(applied.installed.map((member) => [member.id, member.sha256]))).toEqual(
-        { [SUITE_ID]: next.root.sha256, [SUITE_EXTRA_ID]: next.extra.sha256 },
-      );
+      expect(
+        Object.fromEntries(applied.installed.map((member) => [member.id, member.sha256])),
+      ).toEqual({ [SUITE_ID]: next.root.sha256, [SUITE_EXTRA_ID]: next.extra.sha256 });
       // One publication carries both members: no roster ever showed the family half replaced,
       // and a read while candidates loaded answered the committed family.
       expect(published).toHaveLength(1);
@@ -6174,11 +6178,97 @@ describe("reviewed family updates through the one installer", () => {
         ok: true,
         result: { pong: true },
       });
-      expect(
-        published.flat().some((entry) => entry.manifest.version === "2.0.0"),
-      ).toBe(false);
+      expect(published.flat().some((entry) => entry.manifest.version === "2.0.0")).toBe(false);
       expect(installedRow(host, SUITE_ID).manifest.version).toBe("1.0.0");
     } finally {
+      fixture.store.close();
+    }
+  });
+
+  test("a family metadata commit failure restores every SQLite image and can be retried", async () => {
+    const { fixture, host } = await suiteFixture(
+      (ref) => {
+        const loaded = sampleLoad(ref);
+        if (ref.manifest.version !== "2.0.0") return loaded;
+        return {
+          ...loaded,
+          def: {
+            ...loaded.def,
+            migrations: [
+              {
+                name: "to-two",
+                to: { major: 2, minor: 0 },
+                migrate: async (storage: PluginStorage, database?: PluginDatabase) => {
+                  await database!.run("ALTER TABLE state ADD COLUMN migrated TEXT");
+                  await database!.run("UPDATE state SET value = 'v2', migrated = 'yes'");
+                  await storage.set("row", "v2");
+                },
+              },
+            ],
+          },
+        };
+      },
+      true,
+      true,
+    );
+    try {
+      for (const id of [SUITE_ID, SUITE_EXTRA_ID]) {
+        const database = openPluginDatabase({ dataDir: fixture.dataDir, pluginId: id });
+        try {
+          await database.run("CREATE TABLE state(value TEXT NOT NULL)");
+          await database.run("INSERT INTO state(value) VALUES ('v1')");
+        } finally {
+          database.close();
+        }
+        await fixture.store.pluginStorage(id).set("row", "v1");
+      }
+      const before = fixture.store.pluginInstalls();
+      fixture.store.db.exec(`
+        CREATE TRIGGER reject_family_commit BEFORE INSERT ON plugin_installs
+        WHEN NEW.plugin_id = '${SUITE_EXTRA_ID}'
+        BEGIN SELECT RAISE(ABORT, 'family metadata commit failed'); END;
+      `);
+      const refused = await reviewThenApply(host, fixture.owner, SUITE_ID);
+      expect(denial(refused).message).toContain("family metadata commit failed");
+      expect(fixture.store.pluginInstalls()).toEqual(before);
+      for (const id of [SUITE_ID, SUITE_EXTRA_ID]) {
+        const database = openPluginDatabase({ dataDir: fixture.dataDir, pluginId: id });
+        try {
+          expect(await database.query("SELECT value FROM state")).toEqual([{ value: "v1" }]);
+          await expect(database.query("SELECT migrated FROM state")).rejects.toThrow(
+            "no such column",
+          );
+        } finally {
+          database.close();
+        }
+        const storage = fixture.store.pluginStorage(id);
+        expect(await storage.get("row")).toBe("v1");
+        expect(await storage.dataVersion()).toEqual({ major: 1, minor: 0 });
+        expect(await storage.appliedMigrations()).toEqual([]);
+        expect(installedRow(host, id).manifest.version).toBe("1.0.0");
+      }
+      expect(fixture.store.pluginDatabaseJournals()).toEqual([]);
+      fixture.store.db.exec("DROP TRIGGER reject_family_commit");
+      const applied = await reviewThenApply(host, fixture.owner, SUITE_ID);
+      expect(applied.ok).toBe(true);
+      for (const id of [SUITE_ID, SUITE_EXTRA_ID]) {
+        const database = openPluginDatabase({ dataDir: fixture.dataDir, pluginId: id });
+        try {
+          expect(await database.query("SELECT value, migrated FROM state")).toEqual([
+            { value: "v2", migrated: "yes" },
+          ]);
+        } finally {
+          database.close();
+        }
+        const storage = fixture.store.pluginStorage(id);
+        expect(await storage.get("row")).toBe("v2");
+        expect(await storage.dataVersion()).toEqual({ major: 2, minor: 0 });
+        expect(await storage.appliedMigrations()).toEqual(["to-two"]);
+        expect(installedRow(host, id).manifest.version).toBe("2.0.0");
+      }
+      expect(fixture.store.pluginDatabaseJournals()).toEqual([]);
+    } finally {
+      host.close();
       fixture.store.close();
     }
   });
@@ -6210,6 +6300,81 @@ describe("reviewed family updates through the one installer", () => {
     }
   });
 
+  test("failed replacement never executes a hardened incumbent held at boot", async () => {
+    const fixture = await installFixture();
+    const runner = new IsolateSupervisor({ logger: silentLogger, runtime: fixture.runtime });
+    let host: PluginHost | undefined;
+    try {
+      const feed = join(fixture.dataDir, PLUGIN_UPLOADS_DIR, "held-releases.json");
+      const sentinel = join(fixture.dataDir, "incompatible-code-ran");
+      const manifest: PluginManifest = {
+        ...SAMPLE_MANIFEST,
+        capabilities: [],
+        releases: feed,
+        entry: { server: true },
+      };
+      const bytes = Buffer.from(
+        JSON.stringify({
+          format: 1,
+          hardenedContract: 2,
+          builtAgainst: { "manifold:protocol": "1" },
+          manifest,
+          files: {
+            "server.js": Buffer.from(
+              `await Bun.write(${JSON.stringify(sentinel)}, "executed"); export default { actions: [], handlers: {} };`,
+            ).toString("base64"),
+          },
+        }),
+      );
+      const sha256 = sha256Hex(bytes);
+      const { bundlePath, dir } = installLayout(fixture.dataDir, SAMPLE_ID, sha256);
+      mkdirSync(join(dir, ".."), { recursive: true });
+      writeFileSync(bundlePath, bytes);
+      fixture.store.putPluginInstall({
+        pluginId: SAMPLE_ID,
+        sha256,
+        bundlePath,
+        source: join(fixture.dataDir, PLUGIN_UPLOADS_DIR, "held.manifold-plugin.json"),
+        installedBy: fixture.owner.principal.id,
+        installedAt: 0,
+        grantedCaps: [],
+        actions: [],
+        hardened: true,
+        builtAgainst: { "manifold:protocol": "1" },
+      });
+      host = await customHost(fixture, [], { isolates: { ...fixture.isolates, runner } });
+      expect(installedRow(host, SAMPLE_ID)).toMatchObject({
+        enabled: false,
+        held: { reason: "repack_required" },
+      });
+      expect(existsSync(sentinel)).toBe(false);
+      const candidate = fixture.drop(
+        { ...manifest, version: "2.0.0" },
+        {
+          "server.js": 'throw new Error("candidate load failed");',
+          "web.js": "export {};",
+        },
+      );
+      writeFileSync(
+        feed,
+        JSON.stringify([{ version: "2.0.0", url: candidate.source, sha256: candidate.sha256 }]),
+      );
+      const before = fixture.store.pluginInstalls();
+      expect((await reviewThenApply(host, fixture.owner, SAMPLE_ID)).ok).toBe(false);
+      expect(existsSync(sentinel)).toBe(false);
+      expect(fixture.store.pluginInstalls()).toEqual(before);
+      expect(installedRow(host, SAMPLE_ID)).toMatchObject({
+        enabled: false,
+        held: { reason: "repack_required" },
+      });
+    } finally {
+      host?.close();
+      await runner.close();
+      fixture.store.close();
+      rmSync(fixture.dataDir, { recursive: true, force: true });
+    }
+  });
+
   test("an update never replaces an enabled native declaration", async () => {
     const f = await retainedServiceFixture();
     try {
@@ -6219,7 +6384,12 @@ describe("reviewed family updates through the one installer", () => {
       expect((await installBundle({ ...current, hub: f.hub })).outcome).toBe("replaced");
       const machine = structuredClone(f.machine);
       machine.operations[f.operationId]!.network = "host";
-      const candidate = f.fixture.drop({ ...f.manifest, version: "2.0.0", releases: feed, machine });
+      const candidate = f.fixture.drop({
+        ...f.manifest,
+        version: "2.0.0",
+        releases: feed,
+        machine,
+      });
       writeFileSync(
         feed,
         JSON.stringify([{ version: "2.0.0", url: candidate.source, sha256: candidate.sha256 }]),

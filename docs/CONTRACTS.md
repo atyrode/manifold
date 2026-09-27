@@ -2430,7 +2430,12 @@ React, React DOM, the JSX runtimes, all three `@manifold/plugin` entries, `@mani
 `globalThis[Symbol.for("manifold.shared")]`. The shell and hub publish their own namespace
 identities; the kit rewrites shared imports at build time, without an import map or runtime
 dependency. The bundle's optional `builtAgainst` version map is recorded as
-`install.builtAgainst`; compatibility presentation belongs to #238.
+`install.builtAgainst`. Every new pack stamps `manifold:protocol` with the wire version;
+shared builds also record React/package versions. Admission and boot compare the wire version
+exactly and React by major. Known incompatibility refuses fresh admission or holds an incumbent
+with `repack_required` before import/spawn, independent of a declared release feed. Missing
+legacy metadata is `unknown`, never falsely called compatible. `install.compatibility` exposes
+the component, built/current values and classification, and the manager names that difference.
 
 **Ink ownership at load — S13's runtime twin (ADR 0025 §7, #258).** An installed or unpacked
 plugin's `styles.css` is admitted only if the leftmost compound of EVERY selector anchors on the
@@ -2567,6 +2572,41 @@ guests omit newer metadata and preserve their normalized declarations and digest
 optional fields are gated by the admitted contract, never sent speculatively.
 “Isolate answered out of protocol” denotes an internal
 protocol violation, not an SDK-upgrade remedy exposed after version drift.
+
+**Reviewed plugin updates (ADR 0052, #238).** `manifest.releases` declares the publisher's
+preferred pinned release feed or GitHub latest-release source. The host polls at startup and
+hourly, and only observes availability: no background application. `reviewUpdate` and
+`applyUpdate` are root-only `engine.plugins` doors. A review binds the complete topmost
+installed dotted family and exact candidate bytes to the reviewing principal and credential,
+with a ten-minute lifetime. Its snapshot covers committed installation identity, grants,
+desired enablement, retained data version and native installation evidence; the effective
+current state is separately presented, so a compatibility-held incumbent remains repairable.
+
+Discovery, bundles and external changelogs reuse the one bounded artifact reader and its
+per-hop HTTPS policy. The updater does not inherit development path exceptions, and remote
+feeds cannot point at local files. Bounds are 256 KiB per feed, 16 family members, 16 MiB per
+bundle, 32 MiB verified bytes per family, 64 KiB UTF-8 changelog text, 512 KiB serialized review,
+and eight reviews/64 MiB in the in-memory cache. At most two discoveries and two review
+preparations run concurrently; discovery and changelog preparation each have a 60-second
+outer deadline. Shutdown cancels discovery and polling and drops outstanding reviews.
+
+Review runs no candidate code. The member diff includes exact pins, versions, source,
+capability ceiling/prospective grant, dependencies, halves, retained/declared data versions,
+compatibility and escaped changelog text. Every growing ceiling requires the exact reviewed
+per-member acknowledgement. Existing withheld caps remain withheld, removed caps narrow the
+grant, and governed caps never become ordinary grants. An apply attempt consumes the review;
+expiry, changed snapshot, revoked authority or a different credential cannot apply it.
+
+The existing single install path stages family members in dependency order, retires only
+previously loaded children, and commits installation metadata, KV migration state and managed
+SQLite images as one group. Before commit, any member failure restores all prior managed
+state and definitions without running a boot-held incumbent. Desired enablement and hardening
+are retained. One final roster publication describes the committed group; no intermediate
+candidate roster is published. Unchanged native declarations retain installation identity and
+jobs; an enabled native declaration cannot be replaced by this update path. This is not a
+transaction over arbitrary plugin hook effects, external services or fleet deployments.
+Core/engine code remains Manifold-release-owned; unpacked plugins remain source-tree-owned.
+The feed/door examples and publisher rules live in [PLUGINS.md](PLUGINS.md#reviewed-third-party-updates).
 
 **Installed deployment export.** Root-only `engine.plugins.exportInstalled {}` returns a
 versioned snapshot of the installed bundle bytes and the safe `plugin_installs` projection,

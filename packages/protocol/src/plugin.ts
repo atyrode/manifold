@@ -660,7 +660,9 @@ export const PluginReleaseSchema = z.strictObject({
   version: z.string().min(1).max(32),
   url: PluginReleaseSourceSchema,
   sha256: z.string().regex(/^[a-fA-F0-9]{64}$/),
-  family: PluginReleaseArtifactSchema.array().max(MAX_PLUGIN_UPDATE_FAMILY - 1).optional(),
+  family: PluginReleaseArtifactSchema.array()
+    .max(MAX_PLUGIN_UPDATE_FAMILY - 1)
+    .optional(),
 });
 export const PluginReleaseFeedSchema = PluginReleaseSchema.array().min(1).max(MAX_PLUGIN_RELEASES);
 export type PluginReleaseFeed = z.infer<typeof PluginReleaseFeedSchema>;
@@ -1162,6 +1164,18 @@ export const PluginUpdateStatusSchema = z.discriminatedUnion("state", [
 ]);
 export type PluginUpdateStatus = z.infer<typeof PluginUpdateStatusSchema>;
 
+export const PLUGIN_UPDATE_REFUSALS = [
+  "review_missing",
+  "review_expired",
+  "review_stale",
+  "consent_required",
+  "update_blocked",
+  "update_unavailable",
+  "update_failed",
+] as const;
+export const PluginUpdateRefusalSchema = z.enum(PLUGIN_UPDATE_REFUSALS);
+export type PluginUpdateRefusal = z.infer<typeof PluginUpdateRefusalSchema>;
+
 export const PluginUpdateDescriptionSchema = z.strictObject({
   version: z.string().min(1).max(32),
   sha256: z.string().regex(/^[a-f0-9]{64}$/),
@@ -1169,14 +1183,19 @@ export const PluginUpdateDescriptionSchema = z.strictObject({
   capabilities: AuthoredCapSchema.array().max(MAX_MANIFEST_CAPABILITIES),
   dependencies: PluginDependencyMapSchema,
   entry: PluginEntrySchema,
+  machine: z.boolean(),
   dataVersion: PluginDataVersionSchema.nullable(),
   builtAgainst: z.record(z.string(), z.string()).optional(),
 });
 export const PluginUpdateMemberSchema = z.strictObject({
   id: PluginIdSchema,
   title: z.string().min(1).max(128),
-  current: PluginUpdateDescriptionSchema.nullable(),
+  current: PluginUpdateDescriptionSchema.extend({
+    /** Effective state at review, distinct from the retained desired state below. */
+    enabled: z.boolean(),
+  }).nullable(),
   candidate: PluginUpdateDescriptionSchema,
+  /** Retained desired enablement; assembly may still hold a candidate off. */
   enabled: z.boolean(),
   hardened: z.boolean(),
   storedDataVersion: PluginDataVersionSchema.nullable(),
@@ -1618,6 +1637,7 @@ export function pluginVocabulary(): Record<string, unknown> {
     install: z.toJSONSchema(PluginInstallSchema),
     releaseFeed: z.toJSONSchema(PluginReleaseFeedSchema),
     updateReview: z.toJSONSchema(PluginUpdateReviewSchema),
+    updateRefusals: PLUGIN_UPDATE_REFUSALS,
     denialRules: ACTION_DENIAL_RULES,
     actionScopes: ACTION_SCOPES,
     /*

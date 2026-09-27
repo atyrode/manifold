@@ -586,7 +586,7 @@ function CompatibilityIssues({
         {compatibility.status === "compatible"
           ? "Built against what this hub runs."
           : compatibility.status === "unknown"
-            ? "Its build does not record everything this hub compares; it loads as unrecorded bundles always have."
+            ? "Build compatibility cannot be verified from this bundle's metadata."
             : "Built against something this hub does not run."}
       </p>
       {compatibility.issues.length === 0 ? null : (
@@ -654,15 +654,13 @@ function UpdatesCard({
       body =
         rootId === entry.manifest.id ? (
           <p className="plugin-manager-relation">
-            Unpacked: this hub rebuilds it from <code>{`<data>/authored/${rootId}/`}</code> on
-            every save. That source tree is the only way to change it; no release source replaces
-            it.
+            Unpacked: this hub rebuilds it from <code>{`<data>/authored/${rootId}/`}</code> on every
+            save. That source tree is the only way to change it; no release source replaces it.
           </p>
         ) : (
           <p className="plugin-manager-relation">
-            Its family root{" "}
-            <PluginLink id={rootId} pluginTitle={pluginTitle} onSelect={onSelect} /> is unpacked:
-            that source tree owns the family, so no release source updates it.
+            Its family root <PluginLink id={rootId} pluginTitle={pluginTitle} onSelect={onSelect} />{" "}
+            is unpacked: that source tree owns the family, so no release source updates it.
           </p>
         );
       break;
@@ -672,14 +670,14 @@ function UpdatesCard({
       body =
         rootId === entry.manifest.id ? (
           <p className="plugin-manager-sheet-muted">
-            Declares no release source, so the hub never checks for a newer version and no update
-            is offered here.
+            Declares no release source, so the hub never checks for a newer version and no update is
+            offered here.
           </p>
         ) : (
           <p className="plugin-manager-relation">
             Part of the installed family{" "}
-            <PluginLink id={rootId} pluginTitle={pluginTitle} onSelect={onSelect} />, which
-            declares no release source: no update is checked for or offered.
+            <PluginLink id={rootId} pluginTitle={pluginTitle} onSelect={onSelect} />, which declares
+            no release source: no update is checked for or offered.
           </p>
         );
       break;
@@ -783,8 +781,8 @@ function UpdateMemberReview({
   const addedGoverned = added.filter((cap) => GOVERNED_CAPS.includes(cap));
   const dependencies = dependencyChanges(current?.dependencies ?? null, candidate.dependencies);
   const halves = PLUGIN_HALVES.flatMap((half) => {
-    const before = current !== null && hasHalf(current.entry, half);
-    const after = hasHalf(candidate.entry, half);
+    const before = current !== null && hasHalf(current, half);
+    const after = hasHalf(candidate, half);
     if (!before && !after) return [];
     const change =
       current === null ? "included" : before === after ? "kept" : after ? "added" : "removed";
@@ -861,12 +859,12 @@ function UpdateMemberReview({
         <dt>State</dt>
         <dd>
           {current === null
-            ? `Installed ${member.enabled ? "on" : "off"}`
+            ? `New; requested ${member.enabled ? "on" : "off"} after installation`
             : unchanged
-              ? `${member.enabled ? "On" : "Off"}; not replaced`
-              : member.enabled
-                ? "On; stays on, running the new version"
-                : "Off; stays off"}
+              ? `${current.enabled ? "On" : "Off"}; not replaced`
+              : !member.enabled
+                ? "Off; stays off"
+                : `${current.enabled ? "On" : "Off (held)"}; requested on after update`}
         </dd>
       </dl>
       {settled ? (
@@ -898,7 +896,7 @@ function UpdateMemberReview({
               </p>
             )}
             {permissions.length === 0 ? (
-              <p>The candidate declares no capabilities: it can only read.</p>
+              <p>The candidate declares no capabilities.</p>
             ) : (
               <>
                 <p className="plugin-manager-sheet-muted">
@@ -936,6 +934,11 @@ function UpdateMemberReview({
                     </li>
                   ))}
                 </ul>
+                <p className="plugin-manager-sheet-muted">
+                  Ordinary grant after this update: {listNames(member.grantedCaps) || "none"}.
+                  Previously withheld authority stays withheld; governed capabilities still require
+                  separate per-node consent.
+                </p>
               </>
             )}
             {added.length === 0 ? null : (
@@ -948,7 +951,7 @@ function UpdateMemberReview({
                   onChange={(event) => onAcknowledge(event.target.checked)}
                 />
                 <span>
-                  I acknowledge that {member.title} gains {listNames(added)}
+                  I acknowledge that {member.title}'s capability ceiling grows by {listNames(added)}
                   {addedGoverned.length === 0
                     ? "."
                     : `; ${listNames(addedGoverned)} ${addedGoverned.length === 1 ? "stays" : "stay"} governed, consented per node and never granted.`}
@@ -983,7 +986,9 @@ function UpdateMemberReview({
           <div className="plugin-manager-update-block">
             <h5>Data</h5>
             <p>
-              {stored === null ? "No stored data version" : `Stored data ${dataVersionWords(stored)}`}
+              {stored === null
+                ? "No stored data version"
+                : `Stored data ${dataVersionWords(stored)}`}
               {" · "}
               {declared === null
                 ? "the candidate declares no data version"
@@ -1444,9 +1449,9 @@ function UpdateReviewDialog({
                   </p>
                 )}
                 <p className="plugin-manager-sheet-muted">
-                  Verified against the release source; none of the candidate code has run.
-                  Review <code title={review.digest}>{review.digest.slice(0, 12)}</code> · usable
-                  until {WHEN.format(held.deadline)}.
+                  Verified against the release source; none of the candidate code has run. Review{" "}
+                  <code title={review.digest}>{review.digest.slice(0, 12)}</code> · usable until{" "}
+                  {WHEN.format(held.deadline)}.
                 </p>
                 {review.blockers.length === 0 ? null : (
                   <div className="plugin-manager-update-blockers" role="alert">
@@ -1775,7 +1780,7 @@ function PluginDetail({
 
       <SheetCard title="Permissions" testid="plugin-manager-detail-permissions">
         {permissions.length === 0 ? (
-          <p className="plugin-manager-sheet-muted">Declares no capabilities: it can only read.</p>
+          <p className="plugin-manager-sheet-muted">Declares no capabilities.</p>
         ) : (
           <>
             {entry.install === undefined ? null : (

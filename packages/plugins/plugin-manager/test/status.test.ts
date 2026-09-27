@@ -13,17 +13,15 @@ import type {
 } from "@manifold/protocol";
 import {
   appliedMismatch,
-  installRefusalWords,
   linkHost,
   needsAttention,
   permissionCount,
-  permissionSummary,
   pluginPermissions,
   pluginStatus,
   reviewStaleness,
   updateConsent,
   updateOwnership,
-  updateRefusalWords,
+  updatePermissions,
 } from "../src/status.ts";
 
 function row(
@@ -82,6 +80,7 @@ function description(sha256: string, version: string): PluginUpdateMember["candi
     capabilities: [],
     dependencies: {},
     entry: { web: "web.js" },
+    machine: false,
     dataVersion: null,
   };
 }
@@ -99,7 +98,7 @@ function member(
   return {
     id,
     title: id,
-    current: current === null ? null : description(current, "1.0.0"),
+    current: current === null ? null : { ...description(current, "1.0.0"), enabled: true },
     candidate: description(options.candidate ?? SHA.next, "1.1.0"),
     enabled: true,
     hardened: false,
@@ -258,8 +257,6 @@ describe("permissions", () => {
       ["containers:read", true],
     ]);
     expect(permissionCount(canvas)).toBe(2);
-    expect(permissionSummary(canvas)).toBe("Declares scenes:write, containers:read");
-    expect(permissionSummary(row("core.a"))).toBe("Declares no capabilities");
   });
 
   test("an installed row holds its grant, and the card greys what the installer withheld", () => {
@@ -272,16 +269,6 @@ describe("permissions", () => {
       ["tokens:mint", false],
     ]);
     expect(permissionCount(code)).toBe(1);
-    expect(permissionSummary(code)).toBe(
-      "Granted 1 of 2 declared: containers:read; withheld tokens:mint",
-    );
-    const nothing = row("atyrode.none", {
-      capabilities: ["tokens:mint"],
-      install: { grantedCaps: [] },
-    });
-    expect(permissionSummary(nothing)).toBe(
-      "Granted 0 of 1 declared: nothing; withheld tokens:mint",
-    );
   });
 
   test("a governed capability reads as governed, never as one the installer withheld", () => {
@@ -306,44 +293,33 @@ describe("permissions", () => {
     expect(states.get("machines:read")).toBe("granted");
     expect(states.get("machines:run")).toBe("governed");
     expect(states.get("locations:write")).toBe("governed");
-    const summary = permissionSummary(babel);
-    expect(summary).toBe(
-      "Granted 3 of 9 declared: containers:read, containers:write, machines:read; " +
-        "6 governed by per-node consent: machines:run, jobs:read, jobs:input, jobs:cancel, " +
-        "locations:read, locations:write",
-    );
-    expect(summary).not.toContain("withheld");
     // Governed authority is not exercisable on the grant alone, so the chip still counts three.
     expect(permissionCount(babel)).toBe(3);
-    // A high-risk cap the installer did not name is still withheld, and says so beside them.
-    const both = row("atyrode.mixed", {
-      capabilities: ["machines:run", "tokens:mint"],
-      install: { grantedCaps: [] },
-    });
-    expect(permissionSummary(both)).toBe(
-      "Granted 0 of 2 declared: nothing; 1 governed by per-node consent: machines:run; " +
-        "withheld tokens:mint",
-    );
   });
 
-  test("every permission carries a meaning in words, never the bare cap", () => {
-    const everything = row("acme.all", {
-      capabilities: [
-        "*",
-        "containers:read",
-        "containers:write",
-        "scenes:write",
-        "terminals:spawn",
-        "terminals:write",
-        "tokens:mint",
-        "machines:mint",
-        "plugins:manage",
-      ],
+  test("wildcard ceilings expose narrowed grants and preserve previously withheld authority", () => {
+    const next = member("acme.code", { added: ["*"] });
+    next.current!.capabilities = ["containers:read", "tokens:mint"];
+    next.candidate.capabilities = ["*"];
+    next.grantedCaps = ["containers:read", "machines:mint"];
+    const reviewed = new Map(
+      updatePermissions(next).map((permission) => [permission.cap, permission]),
+    );
+    expect(reviewed.get("containers:read")?.state).toBe("granted");
+    expect(reviewed.get("machines:mint")?.state).toBe("granted");
+    expect(reviewed.get("tokens:mint")?.state).toBe("withheld");
+    expect(reviewed.get("jobs:read")?.state).toBe("governed");
+    expect(reviewed.get("*")?.state).toBe("withheld");
+    expect(reviewed.get("containers:read")?.added).toBe(false);
+    expect(reviewed.get("machines:mint")?.added).toBe(true);
+    expect(reviewed.get("tokens:mint")?.added).toBe(false);
+    const installed = row(next.id, {
+      capabilities: ["*"],
+      install: { grantedCaps: next.grantedCaps },
     });
-    for (const permission of pluginPermissions(everything)) {
-      expect(permission.meaning.length).toBeGreaterThan(10);
-      expect(permission.meaning).not.toBe(permission.cap);
-    }
+    expect(pluginPermissions(installed).map(({ cap, state }) => [cap, state])).toEqual(
+      [...reviewed.values()].map(({ cap, state }) => [cap, state]),
+    );
   });
 });
 
@@ -359,7 +335,7 @@ describe("updates (#238)", () => {
     const root = row("acme.code", { install: {}, releases: "https://acme.example/releases.json" });
     const part = row("acme.code.gen", { install: {} });
     const roster = [root, part];
-    const feed = { kind: "feed", root, source: "https://acme.example/releases.json" };
+    const feed = { kind: "feed", root, source: "https://acme.example/releases.json" } as const;
     expect(updateOwnership(roster, root)).toEqual(feed);
     expect(updateOwnership(roster, part)).toEqual(feed);
 
@@ -422,6 +398,17 @@ describe("updates (#238)", () => {
     expect(reviewStaleness([...installed, joined], held).join("\n")).toContain("acme.code.extra");
   });
 
+  test("a held incumbent is reviewable until its effective state actually changes", () => {
+    const next = member("acme.code");
+    next.current!.enabled = false;
+    const approved = review("acme.code", [next]);
+    const incumbent = row("acme.code", { install: {}, enabled: false });
+    expect(reviewStaleness([incumbent], approved)).toEqual([]);
+    expect(reviewStaleness([{ ...incumbent, enabled: true }], approved)).toEqual([
+      "acme.code was switched on",
+    ]);
+  });
+
   test("consent is exactly each expanding member's additions, and only once all are acknowledged", () => {
     const held = review("acme.code", [
       member("acme.code", { added: ["acme.code:admin"] }),
@@ -457,15 +444,5 @@ describe("updates (#238)", () => {
     for (const record of wrong) expect(appliedMismatch(held, record)).not.toBeNull();
     const family = review("acme.code", [member("acme.code"), member("acme.code.gen")]);
     expect(appliedMismatch(family, { rootId: "acme.code", installed: [root] })).not.toBeNull();
-  });
-
-  test("an update refusal reads as words with its detail; other classes fall through", () => {
-    const words = updateRefusalWords("review_expired: review d41d8c");
-    expect(words).not.toContain("review_expired");
-    expect(words).toContain("review d41d8c");
-    expect(updateRefusalWords("hash_mismatch: bytes moved")).toBe(
-      installRefusalWords("hash_mismatch: bytes moved"),
-    );
-    expect(updateRefusalWords("something else")).toBe("something else");
   });
 });

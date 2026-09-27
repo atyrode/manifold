@@ -1,13 +1,14 @@
 import {
+  CAPS,
   CORE_NAMESPACE_PREFIX,
   GOVERNED_CAPS,
   PLUGIN_INSTALL_REFUSALS,
+  hasCap,
   isEngineCap,
   type AuthoredCap,
   type Cap,
   type PluginDependency,
   type PluginDependencyMap,
-  type PluginEntry,
   type PluginInstallRefusal,
   type PluginLifecycleState,
   type PluginRefusalReason,
@@ -15,6 +16,7 @@ import {
   type PluginUpdateApplyRequest,
   type PluginUpdateApplyResult,
   type PluginUpdateMember,
+  type PluginUpdateRefusal,
   type PluginUpdateReview,
 } from "@manifold/protocol";
 
@@ -233,12 +235,17 @@ export function pluginStatus(
   entry: PluginRosterEntry,
 ): PluginStatus {
   if (entry.held !== undefined) {
+    const incompatibilities = entry.install?.compatibility?.issues.filter(
+      (issue) => issue.kind === "incompatible",
+    );
     return {
       word: "Held",
       tone: "attention",
       why:
         entry.held.reason === "repack_required"
-          ? `Repack this bundle once with plugin-kit hardened contract ${String(entry.held.minimum)} or a newer accepted contract; no code from this bundle was loaded.`
+          ? incompatibilities !== undefined && incompatibilities.length > 0
+            ? `Repack for this hub: ${incompatibilities.map((issue) => `${issue.component} built ${issue.built ?? "unknown"}, hub ${issue.current}`).join("; ")}. No code from this bundle was loaded.`
+            : `Repack this bundle once with plugin-kit hardened contract ${String(entry.held.minimum)} or a newer accepted contract; no code from this bundle was loaded.`
           : entry.held.reason,
     };
   }
@@ -355,8 +362,8 @@ export interface Permission {
  * every action against (ADR 0023 §8). An installed row holds its GRANT (`install.grantedCaps`,
  * the installer's consent, enforced at rung 4 before the caller's own caps), and the card
  * shows the declared caps the installer withheld greyed beside it, because "this plugin asked
- * for more than it was given" is the sentence an operator reads a grant for. A grant can
- * never exceed the declaration, so the declared list is the card's whole domain.
+ * for more than it was given" is the sentence an operator reads a grant for. Wildcard ceilings
+ * expand to engine capabilities, so a narrowed named grant is never hidden behind `*`.
  *
  * THREE STATES, NOT TWO. A governed capability is never in any grant — `grantFor` filters
  * `GOVERNED_CAPS` out of the default grant AND out of an explicit installer grant, because
@@ -367,13 +374,18 @@ export interface Permission {
  */
 export type PermissionState = "granted" | "withheld" | "governed";
 
-export function pluginPermissions(entry: PluginRosterEntry): readonly Permission[] {
-  const install = entry.install;
-  const granted = install === undefined ? null : new Set<AuthoredCap>(install.grantedCaps);
-  return entry.manifest.capabilities.map((cap) => {
+function permissionRows(
+  declared: readonly AuthoredCap[],
+  granted: readonly AuthoredCap[] | null,
+): Permission[] {
+  const domain = new Set(declared);
+  if (declared.includes("*")) {
+    for (const cap of CAPS) domain.add(cap);
+  }
+  return [...domain].map((cap) => {
     const state: PermissionState = GOVERNED_CAPS.includes(cap)
       ? "governed"
-      : granted === null || granted.has(cap)
+      : granted === null || (cap === "*" ? granted.includes("*") : hasCap(granted, cap))
         ? "granted"
         : "withheld";
     return {
@@ -383,6 +395,10 @@ export function pluginPermissions(entry: PluginRosterEntry): readonly Permission
       granted: state === "granted",
     };
   });
+}
+
+export function pluginPermissions(entry: PluginRosterEntry): readonly Permission[] {
+  return permissionRows(entry.manifest.capabilities, entry.install?.grantedCaps ?? null);
 }
 
 /** The chip's number: what the row can actually do — its grant, or its declaration. */
@@ -505,7 +521,7 @@ export function reviewStaleness(
       reasons.push(`${member.id} is no longer installed`);
     } else if (row.install.sha256 !== member.current.sha256) {
       reasons.push(`${member.id} now runs different bytes`);
-    } else if (row.enabled !== member.enabled) {
+    } else if (row.enabled !== member.current.enabled) {
       reasons.push(`${member.id} was switched ${row.enabled ? "on" : "off"}`);
     }
   }
@@ -591,21 +607,16 @@ export interface UpdatePermission {
 }
 
 export function updatePermissions(member: PluginUpdateMember): readonly UpdatePermission[] {
-  const granted = new Set<AuthoredCap>(member.grantedCaps);
   const added = new Set<AuthoredCap>(member.capabilitiesAdded);
-  return member.candidate.capabilities.map((cap) => {
-    const state: PermissionState = GOVERNED_CAPS.includes(cap)
-      ? "governed"
-      : granted.has(cap)
-        ? "granted"
-        : "withheld";
-    return {
-      cap,
-      meaning: isEngineCap(cap) ? CAP_MEANINGS[cap] : PLUGIN_CAP_MEANING,
-      state,
-      added: added.has(cap),
-    };
-  });
+  return permissionRows(member.candidate.capabilities, member.grantedCaps).map((permission) => ({
+    ...permission,
+    added:
+      added.has(permission.cap) ||
+      (added.has("*") &&
+        permission.cap !== "*" &&
+        isEngineCap(permission.cap) &&
+        !hasCap(member.current?.capabilities ?? [], permission.cap)),
+  }));
 }
 
 /** One declared relationship that differs between the installed and the candidate manifest. */
@@ -630,25 +641,26 @@ export function dependencyChanges(
 }
 
 /** The halves a bundle can carry, in the words the review uses. */
-export const PLUGIN_HALVES = ["web", "server", "styles"] as const satisfies readonly (
-  keyof PluginEntry
-)[];
+export const PLUGIN_HALVES = ["web", "server", "machine", "styles"] as const;
 export type PluginHalf = (typeof PLUGIN_HALVES)[number];
 export const PLUGIN_HALF_LABELS: Readonly<Record<PluginHalf, string>> = {
   web: "Web half",
   server: "Server half",
+  machine: "Machine half",
   styles: "Stylesheet",
 };
 
-/** Whether an entry carries a half: a named web member, or a `true` server/styles flag. */
-export function hasHalf(entry: PluginEntry, half: PluginHalf): boolean {
+/** Executable halves and stylesheet declared by the reviewed artifact. */
+export function hasHalf(description: PluginUpdateMember["candidate"], half: PluginHalf): boolean {
   switch (half) {
     case "web":
-      return entry.web !== undefined;
+      return description.entry.web !== undefined;
     case "server":
-      return entry.server === true;
+      return description.entry.server === true;
+    case "machine":
+      return description.machine;
     case "styles":
-      return entry.styles === true;
+      return description.entry.styles === true;
     default: {
       const exhaustive: never = half;
       return exhaustive;
@@ -661,13 +673,14 @@ export function hasHalf(entry: PluginEntry, half: PluginHalf): boolean {
  * and ownership classes the updater shares with the install door fall through to that door's
  * words, and a message with no known class is returned as it came.
  */
-const UPDATE_REFUSAL_WORDS = {
+const UPDATE_REFUSAL_WORDS: Record<PluginUpdateRefusal, string> = {
   review_stale: "The installed family changed since this review",
   review_expired: "This review expired",
   review_missing: "The hub no longer holds this review",
   consent_required: "Each capability expansion must be acknowledged exactly as reviewed",
   update_blocked: "This update is blocked",
   update_unavailable: "No update can be reviewed for this family",
+  update_failed: "The update could not be completed",
 } as const;
 type UpdateRefusal = keyof typeof UPDATE_REFUSAL_WORDS;
 

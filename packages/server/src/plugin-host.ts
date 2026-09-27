@@ -203,12 +203,7 @@ import {
 } from "./plugin-updates.ts";
 import { exportInstalledPlugins, listInstalledPlugins } from "./installed-plugins.ts";
 import type { RoomManager } from "./room.ts";
-import type {
-  MachineRecord,
-  PluginInstallRow,
-  ServerStore,
-  TraceAttribution,
-} from "./stores.ts";
+import type { MachineRecord, PluginInstallRow, ServerStore, TraceAttribution } from "./stores.ts";
 import type { DrainOutcome, TerminalBroker } from "./terminal-broker.ts";
 import type { MachineRepositoryOutcome } from "./machine-ws.ts";
 import { StreamService } from "./stream-service.ts";
@@ -690,7 +685,7 @@ interface GroupMember {
   readonly previousLifecycle: PluginLifecycleState | undefined;
   /** A verified previous module serving now, told `onDisable` before it is replaced. */
   readonly live: boolean;
-  /** A verified previous hardened module: the only kind with a child to retire and restore. */
+  /** A previously loaded hardened module, including disabled but not boot-held children. */
   readonly previousChild: boolean;
   row: PluginInstallRow;
   def: ServerPluginDef | undefined;
@@ -2680,12 +2675,8 @@ export class PluginHost {
    * never itself wrapped in an outer transaction: its `finish` would delete the old image
    * before the outer commit was durable.
    *
-   * The plugin's OWN FILE is the exception, and deliberately so (ADR 0034 §1): `data.db` is
-   * not `manifold.db`, so its statements cannot join this transaction, and staging a copy of
-   * a file the ADR caps at 4 GiB would be a second consistency model for the same chain.
-   * Its DDL commits as it runs; a discarded chain leaves the ledger unwritten, so the same
-   * migration is planned again — which is why `docs/PLUGINS.md` §"Your tables" tells authors
-   * to write DDL that can run twice.
+   * Managed SQLite files activate under prepared recovery journals. Their committed markers
+   * join the metadata transaction; old images are released only after its durable commit.
    */
   private async prepareMigrations(
     pluginId: string,
@@ -3287,7 +3278,10 @@ export class PluginHost {
         (issue) =>
           `${issue.component} built against ${issue.built ?? "an unrecorded version"}, this server runs ${issue.current}`,
       );
-    return new InstallRefusal("artifact_invalid", `${id}: repack_required; ${mismatches.join("; ")}`);
+    return new InstallRefusal(
+      "artifact_invalid",
+      `${id}: repack_required; ${mismatches.join("; ")}`,
+    );
   }
 
   /**
@@ -3322,7 +3316,8 @@ export class PluginHost {
         })),
       ).map(({ candidate }) => candidate);
     } catch (error) {
-      if (error instanceof BundleOrderError) return installRefused("artifact_invalid", error.message);
+      if (error instanceof BundleOrderError)
+        return installRefused("artifact_invalid", error.message);
       throw error;
     }
     const current = (): void => {
@@ -3344,7 +3339,11 @@ export class PluginHost {
         const { bundle } = candidate.artifact;
         const id = bundle.manifest.id;
         const previous = this.installed.get(id);
-        const artifact = publishArtifact(candidate.artifact, isolates.dataDir, this.lifetime.signal);
+        const artifact = publishArtifact(
+          candidate.artifact,
+          isolates.dataDir,
+          this.lifetime.signal,
+        );
         members.push({
           id,
           bundle,
@@ -3357,7 +3356,9 @@ export class PluginHost {
           previousLifecycle: this.lifecycleStates.get(id),
           live: previous !== undefined && previous.bundle !== null && wasEnabled.has(id),
           previousChild:
-            previous?.row.hardened === true && previous.bundle?.manifest.entry.server === true,
+            previous?.row.hardened === true &&
+            previous.bundle?.manifest.entry.server === true &&
+            !this.heldUnloaded.has(id),
           row: {
             pluginId: id,
             sha256: artifact.sha256,
@@ -3383,7 +3384,8 @@ export class PluginHost {
       // A closed host deletes nothing: the files may already be its successor's.
       if (!this.closed) {
         for (const member of members) {
-          if (member.previous?.row.sha256 !== member.artifact.sha256) removeInstall(member.artifact);
+          if (member.previous?.row.sha256 !== member.artifact.sha256)
+            removeInstall(member.artifact);
         }
       }
       if (error instanceof InstallRefusal) return { refused: error.message };
@@ -3585,18 +3587,6 @@ export class PluginHost {
         this.heldUnloaded.delete(member.id);
       }
       this.syncDefs();
-      // Durable, and every in-memory row final: the coordinator records the new family state
-      // now, synchronously with the commit, so the one publication below already carries it.
-      // An observer cannot un-commit SQL: its failure is reported and the family still lands.
-      try {
-        attribution.committed?.();
-      } catch (error) {
-        this.logger.error("plugin_lifecycle", {
-          plugin: members.map((member) => member.id).join(","),
-          hook: "update_committed",
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
       this.assembled = await this.reassemble();
       if (await this.runPendingMigrations()) this.assembled = await this.reassemble();
       await this.stampDeclaredVersions();
@@ -3630,7 +3620,18 @@ export class PluginHost {
       for (const member of members)
         reconciled = this.reconcileIsolateState(member.id) || reconciled;
       if (reconciled) this.assembled = await this.reassemble();
+      // Finalize the review only after migration, native and lifecycle metadata settle.
+      // No asynchronous work separates this snapshot from the one roster publication.
       this.assertOpen();
+      try {
+        attribution.committed?.();
+      } catch (error) {
+        this.logger.error("plugin_lifecycle", {
+          plugin: members.map((member) => member.id).join(","),
+          hook: "update_committed",
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
       // One roster for the whole family: no member was ever published half replaced.
       this.publish();
       for (const member of members) {
@@ -3814,7 +3815,7 @@ export class PluginHost {
         if (!verdict.ok) throw new InstallRefusal(verdict.refusal, verdict.detail);
         this.installedDefs.set(id, await this.loadBundle(verdict.bundle, verdict.dir, true));
       } else {
-        // A boot-unverified placeholder never owned a child or trusted rollback bytes.
+        // Keep dormant, never-loaded incumbents dormant, and reuse in-realm definitions.
         this.installedDefs.set(id, previousDef);
       }
     }

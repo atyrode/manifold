@@ -460,7 +460,9 @@ describe("inspectArtifact and publishArtifact", () => {
     expect(existsSync(join(drop.dataDir, "plugins"))).toBeFalse();
 
     const published = publishArtifact(inspected, drop.dataDir, new AbortController().signal);
-    expect(published.bundlePath).toBe(installLayout(drop.dataDir, "vendor.sample", sha256).bundlePath);
+    expect(published.bundlePath).toBe(
+      installLayout(drop.dataDir, "vendor.sample", sha256).bundlePath,
+    );
     expect(readFileSync(published.bundlePath)).toEqual(bytes);
     expect(readdirSync(published.dir).sort()).toEqual(["server.js", "web.js"]);
   });
@@ -483,16 +485,19 @@ describe("readArtifact", () => {
     );
 
     // An endless body, so the refusal names whichever cap actually ended the read.
-    const endless = ((): Promise<Response> =>
-      Promise.resolve(
-        new Response(
-          new ReadableStream<Uint8Array>({
-            pull(controller) {
-              controller.enqueue(new Uint8Array(1024 * 1024));
-            },
-          }),
+    const endless = Object.assign(
+      (): Promise<Response> =>
+        Promise.resolve(
+          new Response(
+            new ReadableStream<Uint8Array>({
+              pull(controller) {
+                controller.enqueue(new Uint8Array(1024 * 1024));
+              },
+            }),
+          ),
         ),
-      )) as typeof fetch;
+      { preconnect: fetch.preconnect },
+    );
     const widened = await refusal(() =>
       readArtifact({
         source: "https://1.1.1.1/endless",

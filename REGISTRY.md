@@ -71,6 +71,8 @@ must never be taught one.
         "packages/plugin/src/**",
         "packages/server/src/plugin-host.ts",
         "packages/server/src/plugin-installs.ts",
+        "packages/server/src/plugin-releases.ts",
+        "packages/server/src/plugin-updates.ts",
         "packages/server/src/artifact-https.ts",
         "packages/server/src/authored.ts",
         "packages/server/src/shared-modules.ts",
@@ -337,6 +339,14 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     {
       "glob": "packages/server/src/plugin-installs.ts",
       "why": "the install door's hands (ADR 0016 stage 2): an artifact fetched or read, pinned by hash before it is parsed, admitted before it is written, re-verified and re-extracted at every boot — the runner's input, which is why it sits beside the host"
+    },
+    {
+      "glob": "packages/server/src/plugin-releases.ts",
+      "why": "the install loader's release metadata input (ADR 0052): producer-neutral pinned feed and GitHub asset selection plus bounded text changelogs through the same artifact reader; no candidate code executes during discovery"
+    },
+    {
+      "glob": "packages/server/src/plugin-updates.ts",
+      "why": "the assembly engine's reviewed family coordinator (ADR 0052): plugins cannot arbitrate their own replacement; exact actor-bound pins, grants, data and native state are checked under the host's one assembly mutex before the one installer commits them"
     },
     {
       "glob": "packages/server/src/artifact-https.ts",

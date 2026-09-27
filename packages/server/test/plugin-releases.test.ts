@@ -52,10 +52,15 @@ function dataDir(): string {
 
 /** Answers every request with `body` and records the URL each one reached. */
 function serve(body: string | Uint8Array, asked: string[] = []): typeof fetch {
-  return ((input: string | URL | Request): Promise<Response> => {
-    asked.push(input instanceof Request ? input.url : String(input));
-    return Promise.resolve(new Response(body));
-  }) as typeof fetch;
+  return Object.assign(
+    (input: string | URL | Request): Promise<Response> => {
+      asked.push(input instanceof Request ? input.url : String(input));
+      return Promise.resolve(
+        new Response(typeof body === "string" ? body : Uint8Array.from(body).buffer),
+      );
+    },
+    { preconnect: fetch.preconnect },
+  );
 }
 
 async function refusal(run: () => Promise<unknown>): Promise<InstallRefusal> {
@@ -88,7 +93,11 @@ describe("discoverPluginRelease", () => {
           ],
         },
         // Publisher order, not a version comparison: a "higher" label later is not preferred.
-        { version: "9.9.9", url: "https://1.1.1.1/old.manifold-plugin.json", sha256: "c".repeat(64) },
+        {
+          version: "9.9.9",
+          url: "https://1.1.1.1/old.manifold-plugin.json",
+          sha256: "c".repeat(64),
+        },
       ]),
     );
     expect(await discoverPluginRelease({ id: ROOT, source, dataDir: dir })).toEqual({
@@ -265,7 +274,9 @@ describe("readPluginChangelog", () => {
     const gone = await refusal(() =>
       readPluginChangelog(candidate({}, link), {
         dataDir: dir,
-        fetchImpl: (() => Promise.resolve(new Response("gone", { status: 404 }))) as typeof fetch,
+        fetchImpl: Object.assign(() => Promise.resolve(new Response("gone", { status: 404 })), {
+          preconnect: fetch.preconnect,
+        }),
       }),
     );
     expect(gone.detail).toBe("changelog: HTTP 404");
