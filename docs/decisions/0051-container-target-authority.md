@@ -71,11 +71,14 @@ write — the widening the operator's ruling excludes.
 4. **Admission of other doors under carried authority.** A door graded by a `requirements`
    target is admitted by that target. A `scope: "container"` door with flat caps opens on carried
    authority only when exactly one container carries every container cap it declares. The
-   dispatch then runs SCOPED to that container, as a container-scoped token's does:
-   `ctx.containerScope`, `ctx.auth.containerScope`, `ctx.outsideScope` and `ctx.auth.allows`
-   (anchored at that container, refusing any node outside it) all read it, so every handler that
-   already honours a scoped token confines itself. A workspace-graded door never opens on carried
-   authority.
+   dispatch then runs SCOPED to that container for every container question, as a
+   container-scoped token's does: `ctx.containerScope`, `ctx.auth.containerScope` and
+   `ctx.outsideScope` name it, and `ctx.auth.allows` asks a container capability, or any node
+   inside a container, as if scoped to it, so every handler that already honours a scoped token
+   confines itself. Every other question — a machine, operation, job or service node, or a
+   non-container capability at the anchor — answers from the flat caps and grant rows exactly as
+   before, so a session door's `machines:run` check at its machine still passes. A
+   workspace-graded door never opens on carried authority.
 
 5. **Carriage.** Every job the dispatch executes and every schedule it registers keeps the grants,
    and so does every occurrence, invocation child and terminal job the lineage starts.

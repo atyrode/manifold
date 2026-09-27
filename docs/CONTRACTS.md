@@ -4630,9 +4630,11 @@ exitCode, reason, finishedAt, scheduleId?, revision?, outputs }` — the job's o
   never at the root or another container — and the context is never root-class, through any
   refresh. There `ctx.auth.caps` lists the carried caps in place of flat container caps. A
   `scope: "container"` door with flat caps opens on carried authority only when exactly one
-  container carries every container cap it declares, and that dispatch runs scoped to it:
-  `ctx.containerScope`, `ctx.auth.containerScope`, `ctx.outsideScope` and `ctx.auth.allows`
-  read it exactly as for a container-scoped token. A workspace-graded door never opens on it,
+  container carries every container cap it declares, and that dispatch runs scoped to it for
+  container questions: `ctx.containerScope`, `ctx.auth.containerScope` and `ctx.outsideScope`
+  name it, and `ctx.auth.allows` asks a container cap, or a node inside a container, as for a
+  container-scoped token; machine, operation, job and service questions answer from the flat
+  caps and grants unchanged. A workspace-graded door never opens on it,
   and a door with a target is graded there. A door opened under a confined lineage lends only
   the carried caps it declares, only at the container it was admitted at; a door declaring none
   lends an empty list. Confined work never sponsors an Agent (`agent_sponsor_confined`).
