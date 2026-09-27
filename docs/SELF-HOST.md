@@ -32,9 +32,10 @@ without making unrelated source changes invalidate dependency vendoring.
 
 Run `bun scripts/verify-nix-packaging.ts` on the target with Nix and Bun 1.4.2 available;
 it needs no workspace dependency installation. The verifier builds and independently
-rebuilds the fixed-output dependency tree, then builds both compiled packages. From a private
-temporary directory with no inherited operator configuration, it exercises agent maintenance
-help and a loopback-only disposable hub, checking health and the installed web assets.
+rebuilds the fixed-output dependency tree, then builds the compiled agent, hub and terminal
+client packages. From a private temporary directory with no inherited operator configuration,
+it exercises agent maintenance help, terminal-client guidance and missing-binding refusal,
+and a loopback-only disposable hub, checking health and the installed web assets.
 CI runs this proof natively on Linux and macOS, each on x64 and arm64. A warm dependency
 store path alone is not proof that the current recipe reproduces its pinned hash.
 
@@ -42,6 +43,18 @@ When dependency inputs change, derive any replacement hashes from fresh installs
 the independent rebuild check. Explicit `--os`/`--cpu` controls can measure another target's
 dependency bytes, but cannot prove its compiled binary executes. Package smoke does not
 enroll or activate a native owner, nor establish the target kernel's containment guarantees.
+
+### Terminal-local command
+
+The `packages.<system>.manifold` flake output installs the `manifold` terminal client for
+all four package targets. It embeds the runtime and carries the terminal plugin's owned
+skill under `share/agent-skills/manifold-terminal/SKILL.md`. Install it through the machine's
+existing configuration/profile owner and route global harness context to `manifold context`,
+not only repository-local instructions. It uses an ordinary terminal's inherited lifecycle
+binding; it does not enroll the machine, create a human credential or admit an Agent/Run.
+See [terminal-local usage](../packages/sdk/README.md#ordinary-terminal-local-client).
+Use a client built for the hub's current session protocol. This package is separate from
+the retained native owner, so installing the client does not require restarting that owner.
 
 ### Declare one node
 

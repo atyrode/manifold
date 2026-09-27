@@ -610,12 +610,14 @@ export function CompositionView({
         null;
       if (target !== null) terminals?.rememberMachine(containerId, target.id);
       try {
-        const terminal = await client.openTerminal({
+        const placement = {
           elementId: crypto.randomUUID(),
-          placement: "tile",
+          placement: "tile" as const,
           ...(target === null ? {} : { machineId: target.id }),
-          ...(runtime === undefined ? {} : { runtime }),
-        });
+        };
+        const terminal = await client.openTerminal(
+          runtime === undefined ? placement : { ...placement, runtime },
+        );
         const placed = tileIdForRef(client.layout(), {
           kind: "terminal",
           terminalId: terminal.id,

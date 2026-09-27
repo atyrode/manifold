@@ -2,9 +2,10 @@
   # Fleet packaging (issue #40): standalone binaries for dotfiles-managed nodes.
   #
   #   nix build .#manifold-agent    -> result/bin/manifold-agent (transport or --terminal-host)
+  #   nix build .#manifold          -> result/bin/manifold (terminal-local SDK client)
   #   nix build .#manifold-server   -> result/bin/manifold-server (hub + bundled web dist)
   #
-  # Both are `bun build --compile` binaries: the Bun runtime plus the bundled
+  # These are `bun build --compile` binaries: the Bun runtime plus the bundled
   # workspace sources, so nodes need no repo checkout and no bun install.
   # Configuration (see docs/CONTRACTS.md): both agent modes require
   # MANIFOLD_TERMINAL_HOST_SOCKET. Plain agent is the replaceable transport and
@@ -35,10 +36,10 @@
       # Measured with the pinned Bun's explicit optional-dependency target selectors.
       # Regenerate and independently rebuild these trees when their inputs change.
       depsHashes = {
-        x86_64-linux = "sha256-cBlYw1XCtt+o5KDZ3OBfRDEElZ/Oboz4H/pAji/ob3I=";
-        aarch64-linux = "sha256-0gDixTyjjct8gyArIL5JskfztrU6HgP1TCLWrxf2z2I=";
-        x86_64-darwin = "sha256-dUXt+9OK7sCiziR/B/J2cIiKdB10pJ4s1DdYTt0DxQ4=";
-        aarch64-darwin = "sha256-27UbVj2E/Lt/b63olVFwDl9cH99YP9Se/rqLrvn3ckc=";
+        x86_64-linux = "sha256-jiqfpRcmDFGzxqOuWVAszj2Y1kF45D5fNP1eIdE69uw=";
+        aarch64-linux = "sha256-AxEN3ij2kEYzjYqqrLSMxGt3IoDRxJ96USj+JBSVKsY=";
+        x86_64-darwin = "sha256-S0uwB/JwJRivDv5QvJk5XUnpBVMYGcPVeZLwMqqxmiU=";
+        aarch64-darwin = "sha256-SoqISJEvfGG45jmonzWxcdbd0NuBKUNMCwekESEc8sA=";
       };
 
       # Keep the dependency input independent of unrelated workspace sources.
@@ -244,6 +245,15 @@
           #   nix build .#bun-deps --rebuild   # must not report a hash mismatch
           bun-deps = bunDeps;
           bun-runtime = bun;
+
+          manifold = compiled {
+            pname = "manifold";
+            entry = "packages/plugins/terminals/cli/main.ts";
+            extraInstall = ''
+              install -Dm644 packages/plugins/terminals/terminal-skill.md \
+                "$out/share/agent-skills/manifold-terminal/SKILL.md"
+            '';
+          };
 
           manifold-agent = compiled {
             pname = "manifold-agent";

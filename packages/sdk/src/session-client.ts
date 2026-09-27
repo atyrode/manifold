@@ -1308,10 +1308,10 @@ export class SessionClient {
    * token and the id the caller authors its own element under — a `portal` onto
    * `terminal.containerId`, never a terminal element, because a canvas only ever references the
    * container a terminal lives in. `placement: "tile"` is how a TILED container births
-   * one: that container IS the home, so the server writes the tile leaf first and waits for
-   * the first measured viewer to choose the PTY geometry. The caller authors nothing and
-   * omits `cols`/`rows`. Read the leaf from `layout()` (`tileIdForRef`) while this promise
-   * waits; resolving means the measured PTY is running.
+   * one: that container IS the home, so the server writes the tile leaf first. Supply both
+   * `cols`/`rows` when this caller already owns a measured or virtual viewport, or omit both
+   * to wait for the first viewer's `terminal_resize`. The caller authors nothing; resolving
+   * means the measured PTY is running.
    *
    * `program` names what the PTY execs instead of the machine's shell, and `env` is merged
    * under the fixed `MANIFOLD_*` keys (issue #192). Both ride the one `terminal_open` frame,
@@ -1333,6 +1333,7 @@ export class SessionClient {
     ) &
       (
         | { placement: "tile"; cols?: never; rows?: never }
+        | { placement: "tile"; cols: number; rows: number }
         | { placement?: never; cols: number; rows: number }
       ),
   ): Promise<TerminalInfo> {
