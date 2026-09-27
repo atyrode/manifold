@@ -3759,13 +3759,14 @@ env? }` → server targets `machineId` when given (error `no_machine` if it is u
   into
   the home as `terminal_event { kind:"renamed", name }`, where every titlebar and index row picks
   it up without a refetch. Labels everywhere are `name ?? machine name`.
-- `output { terminalId, seq, data }` streams to all LIVE viewers; `terminal_event
-{ kind:"exited", exitCode, exitReason? }` retains a PTY's nonzero or unknown natural exit. Such a terminal
-  stays listed (status `exited`, real code) with its leaf and portals intact until dismissed.
-  A successful natural exit (`exitCode === 0`) and an explicit kill instead share canonical
-  removal: no `exited` frame or retained row, and leaves and retired-home references vanish
-  through their persisted documents. The existing `terminal_killed` collection event
-  announces canonical removal, including successful natural exits.
+- `output { terminalId, seq, data }` streams to all LIVE viewers. A natural root exit publishes
+  `terminal_event { kind:"exited", exitCode, exitReason? }` in its home, including a successful
+  exit with code 0. A nonzero or unknown exit stays listed (status `exited`, real code) with its
+  leaf and portals intact until dismissed. A successful natural exit then removes the terminal
+  canonically: `exited` precedes `parked`, no row is retained, and leaves and retired-home
+  references vanish through their persisted documents. An explicit kill removes it without
+  an `exited` frame. Collection events distinguish `terminal_exited` from `terminal_killed`;
+  neither disappearance nor `parked` alone proves successful completion.
 - **Owner exit reasons** (#853). `TerminalInfo.exitReason` is null for a running terminal and
   an ordinary exit; otherwise it says the machine's terminal owner ended the terminal:
   `owner_stopped` (the host's destructive stop), `owner_oom_stopped` (that stop immediately

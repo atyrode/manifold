@@ -1838,6 +1838,13 @@ export class TerminalBroker implements TerminalPlacementPort {
       if (!terminal || terminal.info.machineId !== machineId || terminal.info.status === "exited")
         return;
       terminal.info = { ...terminal.info, status: "exited", exitCode, controllerId: null };
+      // Home-scoped clients need the outcome before removal makes the terminal unavailable.
+      this.rooms.live(terminal.info.containerId)?.broadcast({
+        type: "terminal_event",
+        terminalId,
+        kind: "exited",
+        exitCode,
+      });
       this.destroyTerminal(terminalId, "exited");
       this.announce(terminal.info.containerId, "terminal_exited", terminal.info.createdBy, {
         terminalId,
