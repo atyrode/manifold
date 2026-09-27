@@ -558,7 +558,7 @@ describe("L1 birth: a terminal and its home are created together", () => {
 });
 
 describe("L2 exit: a clean root exit removes the terminal", () => {
-  test("a clean exit removes every mirror, including persisted portals, for every viewer", async () => {
+  test("a clean exit reports success before removing every mirror for every viewer", async () => {
     const fixture = await lifecycleFixture();
     const born = bornOnCanvas(fixture, "ref-1");
     const first = joinPeer(fixture, born.homeId);
@@ -584,6 +584,7 @@ describe("L2 exit: a clean root exit removes the terminal", () => {
     expect(fixture.machine.sent).toEqual([]);
     for (const viewer of [first, second]) {
       expect(bodiesOfType(viewer.socket, "terminal_event")).toEqual([
+        { type: "terminal_event", terminalId: born.terminalId, kind: "exited", exitCode: 0 },
         { type: "terminal_event", terminalId: born.terminalId, kind: "parked" },
       ]);
     }
@@ -657,6 +658,7 @@ describe("L3 reap: a terminal's last home leaf IS the terminal", () => {
   test("an exit frame arriving after a kill finds nothing, so no exited row comes back", async () => {
     const fixture = await lifecycleFixture();
     const born = bornOnCanvas(fixture, "ref-1");
+    const viewer = joinPeer(fixture, born.homeId);
 
     await call(fixture, "POST", "/api/actions/core.terminals.kill", OWNER_KEY, {
       terminalId: born.terminalId,
@@ -665,6 +667,9 @@ describe("L3 reap: a terminal's last home leaf IS the terminal", () => {
     // how the two halves of the lifecycle predicate could quietly become one, and the whole
     // reason the predicate is structural — a killed terminal is gone before it can arrive.
     fixture.broker.onExited(fixture.machine.machineId, born.terminalId, 0);
+    expect(bodiesOfType(viewer.socket, "terminal_event")).toEqual([
+      { type: "terminal_event", terminalId: born.terminalId, kind: "parked" },
+    ]);
 
     expect(fixture.store.getTerminal(born.terminalId)).toBeNull();
     expect(fixture.store.getContainer(born.homeId)).toBeNull();
