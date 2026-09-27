@@ -103,6 +103,46 @@ export interface RunningServer {
   stop(): Promise<void>;
 }
 
+// Failed revocation is fail-stop: keep the fence reachable until process exit, not just until GC.
+const retainedWriterLocks = new Set<WriterLock>();
+
+async function failAfterCleanup(
+  error: unknown,
+  opened: readonly (() => unknown)[],
+  writer: WriterLock,
+  deadline = performance.now() + QUIESCE_DEADLINE_MS,
+): Promise<never> {
+  const failures: unknown[] = [];
+  retainedWriterLocks.add(writer);
+  const pending: Promise<unknown>[] = [];
+  // Start every revocation before awaiting teardown: an admitted request can itself be waiting
+  // for a later resource's close signal. A stalled finalizer must not keep the remaining host live.
+  for (let index = opened.length - 1; index >= 0; index -= 1) {
+    try {
+      pending.push(
+        Promise.resolve(opened[index]!()).catch((failure: unknown) => {
+          failures.push(failure);
+        }),
+      );
+    } catch (failure) {
+      failures.push(failure);
+    }
+  }
+  if (!(await settledBy(Promise.all(pending), deadline))) {
+    failures.push(new Error("resource cleanup exceeded the quiesce deadline"));
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(
+      [error, ...failures],
+      "server cleanup incomplete; writer fence retained until process exit",
+      { cause: error },
+    );
+  }
+  writer.release();
+  retainedWriterLocks.delete(writer);
+  throw error;
+}
+
 /**
  * Wires SQLite, rooms, brokers, HTTP, and both WebSockets into one Bun process. Resolves
  * once the socket is bound — and the socket is bound only after the plugin host has booted,
@@ -111,8 +151,8 @@ export interface RunningServer {
  * Before anything touches the database it takes the data directory's writer lock and claims
  * the next writer epoch (#318); `stop` quiesces, seals that epoch and releases the lock last,
  * so a successor waiting on the same directory becomes the writer only after this one is done.
- * A start that fails after taking the lock rejects only once it has closed what it opened and
- * released the lock, leaving its epoch unsealed.
+ * Failed initialization and exceptional stop revoke every owned resource; unconfirmed cleanup
+ * retains the fence until process exit rather than allowing a successor beside a live old host.
  */
 export async function startServer(options: StartServerOptions = {}): Promise<RunningServer> {
   const runtime = options.runtime ?? defaultRuntime;
@@ -124,13 +164,9 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     onWait: () => logger.info("writer_waiting", { waitMs: WRITER_LOCK_WAIT_MS }),
   });
   /*
-    A START THAT FAILS while it holds the lock has no `RunningServer` for its caller to stop,
-    so it unwinds itself. Each resource registers its close in `opened` as it comes into being,
-    and whatever throws before the start resolves — a port already bound, a boot that refuses —
-    closes what this start opened, newest first, and only then releases the lock, so a
-    successor can take the directory at once. The epoch is NOT sealed: a start that never
-    served ends as a crash does, `active`, and that successor warns that it follows one. The
-    failure is rethrown as it was; a close that also fails is logged and never replaces it.
+    A failed start has no RunningServer for its caller to stop. Unwind its owned resources
+    before releasing the writer; incomplete cleanup retains the fence until process exit.
+    A claimed epoch stays active, never sealed.
   */
   const opened: (() => unknown)[] = [];
   try {
@@ -144,24 +180,14 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
       announce: options.announce !== false,
     });
   } catch (error) {
-    for (const close of opened.reverse()) {
-      try {
-        await close();
-      } catch (closeError) {
-        logger.error("shutdown_failed", {
-          error: closeError instanceof Error ? closeError.message : "unknown failure",
-        });
-      }
-    }
-    writer.release();
-    throw error;
+    return failAfterCleanup(error, opened, writer);
   }
 }
 
 /** A start that holds the writer lock, with its unwind list and every option resolved. */
 interface WriterStart {
   readonly writer: WriterLock;
-  /** The close of every resource opened so far, in opening order, for a failed start. */
+  /** Owned resource cleanup, in opening order, also used after an exceptional stop. */
   readonly opened: (() => unknown)[];
   readonly runtime: RuntimeDeps;
   readonly config: ServerConfig;
@@ -500,8 +526,8 @@ async function startAsWriter({
       const quiesceStarted = performance.now();
       const deadline = quiesceStarted + QUIESCE_DEADLINE_MS;
       quiescing = true;
-      logger.info("writer_quiescing", { epoch: claim.epoch });
       try {
+        logger.info("writer_quiescing", { epoch: claim.epoch });
         clearInterval(jobTick);
         rooms.flushAll();
         unwatchAuthored();
@@ -527,10 +553,11 @@ async function startAsWriter({
           settled,
           quiesceMs: Math.round(performance.now() - quiesceStarted),
         });
-      } finally {
         store.close();
-        writer.release();
+      } catch (error) {
+        return failAfterCleanup(error, opened, writer, deadline);
       }
+      writer.release();
     },
   };
 }

@@ -4839,8 +4839,11 @@ that writer's last commits, and those commits may be absent. `sealed` records on
 `previousEpoch` ended cleanly. It is not evidence that the opened history is the newest: a replica
 restored from before a later writer's unuploaded commits reads exactly the same. The server has no
 expected epoch to compare against and does not refuse on either state.
-A failed initialization closes the resources it acquired and releases the writer lock before
-rejecting; an epoch claimed before that failure stays active, never sealed.
+A failed initialization or exceptional stop attempts every owned cleanup before releasing the
+writer lock and rejecting. An initialization claim stays active, never sealed. Cleanup starts every
+revocation before awaiting finalizers. If cleanup fails or exceeds the quiesce deadline, the process
+retains a strongly reachable writer fence until exit and reports the failures; garbage collection,
+late finalizer completion or an embedded caller catching the error cannot admit a successor.
 
 A graceful stop (`RunningServer.stop`, SIGTERM/SIGINT) quiesces in this order. Every new request and
 WebSocket upgrade except `GET /healthz` is answered `503` with `Retry-After: 1`, under the same

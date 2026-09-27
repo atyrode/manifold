@@ -404,13 +404,14 @@ const PAUSE_KEY = "manifold.test.writer-fence.pause";
 function uploadNotes(
   dataDir: string,
   major: 1 | 2,
+  withStream = false,
 ): { readonly source: string; readonly sha256: string } {
   const manifest: PluginManifest = {
     id: NOTES_ID,
     version: `${String(major)}.0.0`,
     title: "Notes",
     description: "A disposable in-realm plugin whose writes a test can hold mid-flight",
-    capabilities: [],
+    capabilities: withStream ? ["containers:read"] : [],
     dataVersion: { major, minor: 0 },
     database: { maxBytes: 4 * 1024 * 1024 },
     contributes: {
@@ -419,6 +420,23 @@ function uploadNotes(
       elements: [],
       tools: [],
       events: [{ id: "wrote", title: "Wrote" }],
+      ...(withStream
+        ? {
+            streams: [
+              {
+                id: "updates",
+                title: "Updates",
+                body: { type: "integer" as const },
+                nodeKinds: ["plugin" as const],
+                readCapability: "containers:read" as const,
+                maxFrameBytes: 128,
+                maxRingBytes: 1024,
+                maxRingFrames: 4,
+                maxInstances: 1,
+              },
+            ],
+          }
+        : {}),
     },
     entry: { server: true },
   };
@@ -453,6 +471,7 @@ function uploadNotes(
           await ctx.database.run("INSERT INTO notes(body) VALUES (?)", [body]);
           await ctx.storage.set("row", body);
           ctx.emit({ kind: "plugin", pluginId: ctx.pluginId }, "wrote", { body });
+          ${withStream ? `ctx.streams.open("${NOTES_ID}.updates", { kind: "plugin", pluginId: ctx.pluginId });` : ""}
           await pause(ctx.storage, ctx.database);
           return {};
         },
@@ -790,4 +809,66 @@ test("a migration held past the quiesce deadline publishes nothing and cannot un
     await restarted?.stop();
   }
   expect(writerRecord(dataDir)).toBe("3:sealed");
+}, 20_000);
+
+test("a shutdown stream journal failure revokes plugin authority and retains an unconfirmed writer fence", async () => {
+  const dataDir = directory();
+  const timeline: string[] = [];
+  const point = pausePoint(timeline);
+  const oldLog = handoverLog(timeline, "old");
+  const old = await hub(dataDir, oldLog.lines, { onLine: oldLog.onLine });
+  try {
+    expect(
+      await answer(old, "engine.plugins.install", uploadNotes(dataDir, 1, true)),
+    ).toMatchObject({
+      ok: true,
+    });
+    const hold = point.arm(1);
+    const writing = act(old, `${NOTES_ID}.write`, JSON.stringify({ body: "old" }));
+    const acknowledged = writing.then(
+      (response) => response.status,
+      () => "cut",
+    );
+    await heldBy(hold, writing);
+    const settledLate = oldLog.next(
+      (line) => line.evt === "action" && line.fields.name === `${NOTES_ID}.write`,
+    );
+    const faulty = new Database(join(dataDir, "manifold.db"));
+    try {
+      faulty.exec(`CREATE TRIGGER refuse_shutdown_trace BEFORE INSERT ON events
+        BEGIN SELECT RAISE(ABORT, 'shutdown trace persistence unavailable'); END;`);
+    } finally {
+      faulty.close();
+    }
+    await expect(old.stop()).rejects.toThrow();
+    expect(writerRecord(dataDir)).toBe("1:active");
+    const repair = new Database(join(dataDir, "manifold.db"));
+    repair.exec("DROP TRIGGER refuse_shutdown_trace");
+    repair.close();
+    // The forced HTTP listener still awaits the held action. A failed/expired finalizer is
+    // fail-stop, even once that action later settles: the fence lives until this process exits.
+    const attempted = await acquireWriterLock(dataDir, { waitMs: 0 }).then(
+      (lock) => {
+        lock.release();
+        return null;
+      },
+      (error: unknown) => error,
+    );
+    expect(attempted).toBeInstanceOf(WriterLockTimeoutError);
+    hold.probes[0]!.go.resolve();
+    await hold.probes[0]!.tried.promise;
+    hold.release.resolve();
+    await settledLate;
+    expect(await acknowledged).not.toBe(200);
+    expect(timeline.filter((entry) => entry.startsWith("late:"))).toEqual([
+      "late:refused",
+      "late:refused",
+    ]);
+    await expect(acquireWriterLock(dataDir, { waitMs: 0 })).rejects.toBeInstanceOf(
+      WriterLockTimeoutError,
+    );
+  } finally {
+    point.close();
+    await old.stop();
+  }
 }, 20_000);
