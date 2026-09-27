@@ -4494,11 +4494,15 @@ policySha256, jobId }` or null), the expected revision, the resolved policy and 
   installation or other authority revocation remain forceful; retirement cannot downgrade
   an already-requested cancellation.
 - **Instance-service readmission** ([#632](https://github.com/atyrode/manifold/issues/632)).
-  An enabled service whose recorded job ended after `plugin_held`, `installation_changed`,
-  `owner_fenced` or `owner_restart_effects_unknown` is reconciled from durable configuration
-  and cancellation evidence, not only transient start notifications. Once the hold clears,
-  the pinned installation is ready, the owner proves its current connection and the machine
-  is not draining, ordinary admission may create a fresh job without a configure toggle.
+  An enabled service whose recorded job ended after `plugin_held`, `plugin_disabled`,
+  `installation_changed`, `owner_fenced` or `owner_restart_effects_unknown` is reconciled from
+  durable configuration and cancellation evidence, not only transient start notifications.
+  Once the hold clears, the pinned installation is ready, the owner proves its current
+  connection and the machine is not draining, ordinary admission may create a fresh job
+  without a configure toggle. A plugin disable also revokes that plugin's native installation,
+  and re-enabling the plugin is not a native review: after `plugin_disabled` the service
+  reports `installation_disabled` and waits until a reviewed deployment or install re-enables
+  the same pinned installation and the owner acknowledges it.
   This also applies after rollback to a hub build that never held the plugin: owner proof
   replays the installation, and even an unchanged installation returns a fresh `installed`
   acknowledgement. No hold-clear callback or optimistic write of `ready=1` is required.
@@ -4511,7 +4515,10 @@ policySha256, jobId }` or null), the expected revision, the resolved policy and 
   cancellations (including retained `core.access.revoke` outcomes), other explicit job
   cancellations and retire-mode cancellations are not readmitted. Automatic authority
   reconciliation preserves an existing force-cancel reason rather than relabeling an
-  explicit revoke as recoverable managed-credential loss.
+  explicit revoke as recoverable managed-credential loss. Likewise, a readmittable reason
+  (an operator cancel or plugin disable) never replaces a force-cancel reason already
+  recorded on a still-running job, so a later disable cannot revive a revoked or
+  consent-refused workload; a final reason recorded later still replaces a readmittable one.
 - **Metered inference** ([ADR 0038](decisions/0038-brokered-inference.md)). A job that drives a
   model never holds the model's credential: inference is an Instance Service whose origin is a
   provider and whose credential only the machine owner resolves, and the job is handed a loopback
