@@ -446,7 +446,13 @@ async function main(): Promise<void> {
     requireSealedReplica(process.argv[3]!);
     return;
   }
-  const fromStdin = process.argv.length === 3 && process.argv[2] === "--config-stdin";
+  const authenticatedBaseline =
+    process.argv.length === 4 &&
+    process.argv[2] === "--config-stdin" &&
+    process.argv[3] === "--authenticated-baseline";
+  const fromStdin =
+    authenticatedBaseline ||
+    (process.argv.length === 3 && process.argv[2] === "--config-stdin");
   if (process.argv.length !== 2 && !fromStdin) throw new ReplicaGuardRefusal("usage_replica_guard");
   const dataDir = resolve(process.env.MANIFOLD_DATA_DIR || "/data");
   const db = join(dataDir, "manifold.db");
@@ -480,10 +486,15 @@ async function main(): Promise<void> {
     lock.run("BEGIN EXCLUSIVE");
     lock.run("COMMIT");
     const previous = readRecord(db);
-    if (previous?.state === "sealed") requireFiles(dataDir, previous.databases, deadline);
+    // The recovery entrypoint has verified every baseline byte before this internal handoff.
+    // VACUUM checkpoint copies need not retain a prior replica seal's physical file hashes.
+    if (!authenticatedBaseline && previous?.state === "sealed")
+      requireFiles(dataDir, previous.databases, deadline);
     // Retained local storage is authoritative, but cannot replace newer or conflicting remote
     // history. Untracked remote history is uncertain and requires reviewed migration, not adoption.
     const remote = await restoredRecord(db, config, staging, deadline);
+    if (authenticatedBaseline && remote !== null)
+      throw new ReplicaGuardRefusal("authenticated_baseline_replica_not_empty");
     if (
       remote !== null &&
       (previous === null ||
@@ -493,6 +504,20 @@ async function main(): Promise<void> {
             (previous.state === "active" && remote.state === "sealed"))))
     ) {
       throw new ReplicaGuardRefusal("local_history_behind_replica");
+    }
+    if (authenticatedBaseline) {
+      // A compacted checkpoint may inherit tracking state for another replica namespace.
+      // Reset only local Litestream files, after proving the new replica is empty.
+      for (const name of ["manifold.db", ...configured.databases]) {
+        await exitBefore(
+          Bun.spawn(["litestream", "reset", "-config", "/dev/stdin", join(dataDir, name)], {
+            stdin: new Blob([config]),
+            stdout: "inherit",
+            stderr: "inherit",
+          }),
+          deadline,
+        );
+      }
     }
     if (requestedStop) throw new ReplicaGuardRefusal("replica_start_interrupted");
     const owner = claim(db, configured.databases);

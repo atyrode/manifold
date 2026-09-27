@@ -1403,7 +1403,14 @@ succeeds; failed recovery stays visible rather than claiming that the previous r
 Before an older application starts, recovery restores all available database prefixes and validates
 the main seal's complete path/fingerprint set. An active main record, an auxiliary-only prefix or a
 mixed-age set refuses instead of silently falling back to checkpoint-era database files. A
-checkpoint-specific prefix that has never existed may start from the authenticated baseline.
+checkpoint-specific prefix that has never existed may start from the authenticated baseline, only
+after both the complete replica sweep and the guard's latest main-replica read confirm it is empty.
+The authenticated checkpoint digests establish this baseline's bytes; inherited replica file hashes
+can differ because checkpoint capture compacts SQLite pages. Later recovery restarts still require
+the complete replica seal. This is not an override for a failed or nonempty replica.
+For that new namespace only, the guard runs Litestream's local-state reset before claiming it, so
+tracking files inherited from the source checkpoint cannot prevent fresh snapshots. This leaves
+SQLite contents and the original replica namespace unchanged.
 The compiled supervisor then proves its new claim before launching the actual previous executable
 and proves its final seal on shutdown; it does not substitute a newer application with an older
 build label. These replicas retain the trusted-storage boundary above, not checkpoint authenticity.

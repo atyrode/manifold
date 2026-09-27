@@ -20,6 +20,10 @@ if [ "${MANIFOLD_BUILD:-}" != "$MANIFOLD_RECOVERY_EXPECTED_BUILD" ]; then
   exit 1
 fi
 
+# Match the checkpoint helper's trim/default/resolve rule before classifying replica paths.
+MANIFOLD_DATA_DIR="$(bun -e 'import { resolve } from "node:path"; process.stdout.write(resolve(process.env.MANIFOLD_DATA_DIR?.trim() || "/data"));')"
+export MANIFOLD_DATA_DIR
+
 control="$(mktemp -d /tmp/manifold-recovery.XXXXXX)"
 chmod 700 "$control"
 trap 'rm -rf -- "$control"' EXIT
@@ -41,7 +45,7 @@ while IFS= read -r database; do
     -config "$config" -o "$latest" "$database"
   if [ -f "$latest" ]; then
     any_replica=1
-    if [ "$database" = "${MANIFOLD_DATA_DIR:-/data}/manifold.db" ]; then
+    if [ "$database" = "$MANIFOLD_DATA_DIR/manifold.db" ]; then
       main_replica=1
     fi
     mv "$latest" "$database"
@@ -56,11 +60,14 @@ if [ "$any_replica" -eq 1 ]; then
     echo '{"evt":"hub_replica_boot","state":"refused","reason":"replica_freshness_unestablished"}' >&2
     exit 1
   fi
-  /usr/local/bin/manifold-replica-guard validate-restored "${MANIFOLD_DATA_DIR:-/data}/manifold.db"
+  /usr/local/bin/manifold-replica-guard validate-restored "$MANIFOLD_DATA_DIR/manifold.db"
 fi
 
 exec < "$config"
 rm -rf -- "$control"
 trap - EXIT
 unset MANIFOLD_RECOVERY_LITESTREAM_CONFIG MANIFOLD_RECOVERY_DATABASES_FILE
+if [ "$any_replica" -eq 0 ]; then
+  exec /usr/local/bin/manifold-replica-guard --config-stdin --authenticated-baseline
+fi
 exec /usr/local/bin/manifold-replica-guard --config-stdin

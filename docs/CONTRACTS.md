@@ -4839,6 +4839,8 @@ that writer's last commits, and those commits may be absent. `sealed` records on
 `previousEpoch` ended cleanly. It is not evidence that the opened history is the newest: a replica
 restored from before a later writer's unuploaded commits reads exactly the same. The server has no
 expected epoch to compare against and does not refuse on either state.
+A failed initialization closes the resources it acquired and releases the writer lock before
+rejecting; an epoch claimed before that failure stays active, never sealed.
 
 A graceful stop (`RunningServer.stop`, SIGTERM/SIGINT) quiesces in this order. Every new request and
 WebSocket upgrade except `GET /healthz` is answered `503` with `Retry-After: 1`, under the same
@@ -4848,8 +4850,11 @@ get up to three seconds to settle and produced responses to finish writing. Scen
 server, isolates and plugin databases close; the epoch is sealed (`<n>:sealed`) as the final
 commit, after which the connection is `query_only`; `writer_sealed` records `settled` and
 `quiesceMs`; the database closes and the lock is released last. Work cut off at the deadline is
-never acknowledged. Builds older than this contract neither take the lock nor record an epoch.
-They ignore the `writer-epoch` row.
+never acknowledged. Closing the plugin host revokes retained storage/database leases, discards
+uncommitted migration stages, and prevents asynchronous installation or authoring work from
+publishing over a successor's files. This fences host-owned authority, not arbitrary filesystem or
+network effects performed directly by trusted in-realm code. Builds older than this contract
+neither take the lock nor record an epoch; they ignore the `writer-epoch` row.
 
 ```
 containers(id TEXT PK, name TEXT, created_at INTEGER, sort_order INTEGER, folder_id TEXT,
@@ -5157,7 +5162,18 @@ the set only when the main seal names matching auxiliary files. An auxiliary-onl
 active main writer, a missing database, an escaped/symlinked path or a mismatched fingerprint refuses
 before the previous application starts. The compiled guard runs outside the pinned previous
 application image, so the same admission and sealing rules apply to a real older executable.
-Non-SQLite recovery files remain pinned to the authenticated checkpoint.
+Non-SQLite application recovery files remain pinned to the authenticated checkpoint.
+
+A checkpoint-specific namespace with no database replicas starts from its authenticated checkpoint
+baseline instead. The recovery entrypoint normalizes the data directory before both helpers and
+passes that internal admission mode only after its entire replica sweep was empty; the guard also
+requires its own latest main-replica read to be empty. The checkpoint's authenticated file digests,
+not inherited replica fingerprints, establish those baseline bytes: `VACUUM INTO` can change
+physical SQLite pages while preserving their data. Before claiming that empty namespace, it uses
+`litestream reset` to discard inherited local replication tracking files without changing SQLite
+contents or remote history. The guard still publishes and observes a new active claim before the
+application starts. This mode is not available to ordinary startup and
+cannot admit a nonempty, partial or active recovery replica.
 
 This protocol relies on a trusted, latest-read/read-after-write-consistent replica store. It does
 not authenticate hostile replica contents, detect a store that deliberately replays an older valid
@@ -5166,8 +5182,8 @@ authoritative disk is lost. Such an active restore refuses instead of serving un
 An existing untracked replica requires reviewed offline adoption: stop the incumbent, authenticate
 a full-state checkpoint of the quiesced volume, restore it into a fresh volume, and seed a new
 dedicated replica target while preserving the old one. Initialization intent, fabricated metadata
-and clearing active recovery settings are not migration paths. The dated refinement in ADR 0047
-records the decision and proof boundary; `SELF-HOST.md` owns the operator procedure.
+and clearing active recovery settings are not migration paths. `SELF-HOST.md` owns the operator
+procedure.
 
 Schema version 40 (10 added `plugin_kv`; 11 is the lexicon cut; 12 is cross-instance sharing
 — `shares`, `share_tickets`, `dials` and `principals.origin`; 13 is the permission waterfall's
