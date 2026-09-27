@@ -85,6 +85,12 @@ export interface ArtifactRequest {
    * a namespace squat, an id already installed. Returning a refusal writes nothing.
    */
   readonly admit?: (bundle: PluginBundle) => InstallRefusal | null;
+  /**
+   * The caller's lifetime (#318). Aborting it cancels a fetch still in flight, and it is asked
+   * again immediately before the first write, after every await: a caller that closed while
+   * the bytes were verified must find nothing written under a directory its successor owns.
+   */
+  readonly signal?: AbortSignal;
 }
 
 /** A bundle the door admitted: parsed, pinned, and on disk. */
@@ -131,7 +137,9 @@ async function fetchArtifact(request: ArtifactRequest): Promise<Uint8Array> {
   try {
     const response = await fetchArtifactResponse(
       request.source,
-      AbortSignal.timeout(ARTIFACT_FETCH_TIMEOUT_MS),
+      request.signal === undefined
+        ? AbortSignal.timeout(ARTIFACT_FETCH_TIMEOUT_MS)
+        : AbortSignal.any([AbortSignal.timeout(ARTIFACT_FETCH_TIMEOUT_MS), request.signal]),
       request.fetchImpl,
     );
     if (!response.ok) {
@@ -288,9 +296,9 @@ export function extractBundle(bundle: PluginBundle, dir: string): void {
 
 /**
  * Fetch, pin, parse, admit, write — in that order, and the order is the contract: a hash
- * mismatch or a refused bundle writes nothing. The pin is compared on the EXACT bytes read,
- * never on a re-serialization. The host's verdict (namespace, replace) comes before the
- * sheet's, so a squat is named as a squat.
+ * mismatch, a refused bundle or a caller whose `signal` aborted before the write writes
+ * nothing. The pin is compared on the EXACT bytes read, never on a re-serialization. The
+ * host's verdict (namespace, replace) comes before the sheet's, so a squat is named as a squat.
  */
 export async function installArtifact(request: ArtifactRequest): Promise<InstalledArtifact> {
   const bytes = await readArtifact(request);
@@ -309,6 +317,7 @@ export async function installArtifact(request: ArtifactRequest): Promise<Install
       error instanceof Error ? error.message : "invalid machine member",
     );
   }
+  request.signal?.throwIfAborted();
   const { bundlePath, dir } = installLayout(request.dataDir, bundle.manifest.id, sha256);
   mkdirSync(dirname(bundlePath), { recursive: true, mode: 0o700 });
   writeFileSync(bundlePath, bytes, { mode: 0o600 });

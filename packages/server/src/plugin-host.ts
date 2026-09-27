@@ -1383,8 +1383,15 @@ export class PluginHost {
    * `databases`, so shutdown discards them here, and a discarded chain can never be published.
    */
   private readonly stagedMigrations = new Set<() => void>();
-  /** Set by `close`: every lease refuses, and no plugin file is opened or recovered again. */
-  private closed = false;
+  /**
+   * Aborted by `close`: every lease refuses, no plugin file is opened or recovered again, an
+   * artifact fetch or write in flight is cancelled, and no assembly change starts, commits,
+   * deletes an install's files, publishes a roster or answers.
+   */
+  private readonly lifetime = new AbortController();
+  private get closed(): boolean {
+    return this.lifetime.signal.aborted;
+  }
   /**
    * Where `plugins/<id>/data.db` lives (ADR 0034 §1) — `config.dataDir`, the same directory
    * the isolate runner extracts bundles into. Null for a host assembled without one, which is
@@ -2501,7 +2508,7 @@ export class PluginHost {
     migrations: readonly PluginMigration[],
     manifest = this.defs.find((def) => def.manifest.id === pluginId)?.manifest,
   ): Promise<PluginMigrationSession> {
-    if (this.closed) throw new Error("the plugin host is closed");
+    this.assertOpen();
     // Revoke the live admin before snapshotting, including when the candidate removed its
     // declaration. A replacement's page budget must never come from the installed def.
     this.retireDatabase(pluginId);
@@ -2665,10 +2672,22 @@ export class PluginHost {
     });
     await preceding;
     try {
-      return await change();
+      // Queued behind a shutdown, a change never starts; outliving one, it never answers.
+      this.assertOpen();
+      const result = await change();
+      this.assertOpen();
+      return result;
     } finally {
       release();
     }
+  }
+
+  /**
+   * Asked by every assembly commit point after its last await (#318). Once closed, the rows,
+   * switches, files and roster a change would touch are the successor's.
+   */
+  private assertOpen(): void {
+    if (this.closed) throw new Error("the plugin host is closed");
   }
 
   /**
@@ -2702,6 +2721,8 @@ export class PluginHost {
       this.replacing = id;
       try {
         await this.drainDispatches(id);
+        // The enable re-extracts the installed bundle into a directory a successor may own.
+        this.assertOpen();
         return await this.setEnabledNow(id, enabled, changedBy);
       } catch (error) {
         if (error instanceof InstallRefusal || error instanceof PluginDatabaseError)
@@ -2794,6 +2815,7 @@ export class PluginHost {
       }
     }
 
+    this.assertOpen();
     const wasEnabled = new Set(
       this.assembled.roster.filter((row) => row.enabled).map((row) => row.manifest.id),
     );
@@ -2898,6 +2920,7 @@ export class PluginHost {
         });
       }
     }
+    this.assertOpen();
 
     const storage = this.storage(id);
     const removedRows = await storage.clear();
@@ -3004,6 +3027,7 @@ export class PluginHost {
         source: request.source,
         sha256,
         dataDir: isolates.dataDir,
+        signal: this.lifetime.signal,
         ...(isolates.devPaths === undefined ? {} : { devPaths: isolates.devPaths }),
         admit: (bundle) => {
           const id = bundle.manifest.id;
@@ -3070,6 +3094,8 @@ export class PluginHost {
       // Refuse new dispatches above, and finish admitted old handlers before any hook,
       // runner replacement or snapshot. Other plugins remain independently serviceable.
       await this.drainDispatches(id);
+      // Re-extraction below writes the previous install's directory.
+      this.assertOpen();
       // Only a verified hardened module has a child to restore. A boot-unverified row keeps
       // its fail-closed def on rollback; unreadable old bytes must not prevent its repair.
       if (previousChild) {
@@ -3129,6 +3155,7 @@ export class PluginHost {
           );
         }
         const publish = (): void => {
+          this.assertOpen();
           // Native admission can occur while candidate loading or migration awaits.
           const nativeRefusal = this.nativeReplacementRefusal(bundle.manifest);
           if (nativeRefusal !== null) throw nativeRefusal;
@@ -3167,6 +3194,8 @@ export class PluginHost {
         this.assembled = await this.reassemble();
         this.publish();
       } catch (rollbackError) {
+        // A closed host rolls nothing back: what it would restore or delete is the successor's.
+        this.assertOpen();
         this.lifecycleStates.set(id, "enable_failed");
         this.assembled = await this.reassemble();
         this.publish();
@@ -3185,6 +3214,9 @@ export class PluginHost {
     this.assembled = await this.reassemble();
     if (await this.runPendingMigrations()) this.assembled = await this.reassemble();
     await this.stampDeclaredVersions();
+    // Past the commit, the replaced bundle is the only file left to delete, and a successor may
+    // have booted from it.
+    this.assertOpen();
     if (
       previous !== undefined &&
       (previous.bundle === null ||
@@ -3206,6 +3238,7 @@ export class PluginHost {
     if (delta.enabled.length > 0) await this.fanOut(delta, wasEnabled);
     this.replacing = null;
     if (this.reconcileIsolateState(id)) this.assembled = await this.reassemble();
+    this.assertOpen();
     this.publish();
     this.logger.info("plugin_installed", {
       plugin: id,
@@ -3326,6 +3359,7 @@ export class PluginHost {
         if ("refused" in outcome) return outcome;
       }
     }
+    this.assertOpen();
     this.store.setDeveloperMode(on);
     this.assembled = await this.reassemble();
     this.publish();
@@ -3346,6 +3380,7 @@ export class PluginHost {
     authoredBy: string,
     credential: CredentialReference,
   ): Promise<ActionRefused | PluginAuthorResult> {
+    this.assertOpen();
     if (this.authored === null) {
       return installRefused("artifact_unreadable", "this server admits no bundles");
     }
@@ -3362,6 +3397,7 @@ export class PluginHost {
     candidateChild: boolean,
   ): Promise<void> {
     if (this.isolates !== null && candidateChild) await this.isolates.runner.unload(id);
+    this.assertOpen();
     if (previous === undefined || previous.row.sha256 !== artifact.sha256) {
       removeInstall(artifact);
     }
@@ -3439,10 +3475,12 @@ export class PluginHost {
         );
       }
     }
+    this.assertOpen();
     // Removing a held plugin is an explicit revocation, not recovery from its runtime hold.
     // Revoke native intent before reassembly can remove that hold's disable projection.
     this.jobs?.disablePlugin(id);
     if (entry.row.hardened === true) await this.isolates.runner.unload(id);
+    this.assertOpen();
     removeInstall(entry.row);
     this.store.deletePluginInstall(id);
     this.store.clearPluginEnablement(id);
@@ -3455,6 +3493,7 @@ export class PluginHost {
     this.retireDatabase(id);
     this.syncDefs();
     this.assembled = await this.reassemble();
+    this.assertOpen();
     this.publish();
     this.logger.info("plugin_uninstalled", {
       plugin: id,
@@ -3700,6 +3739,7 @@ export class PluginHost {
   }
 
   private publish(): void {
+    if (this.closed) return;
     this.streams.reconcile();
     const developerMode = this.store.developerMode();
     for (const listener of this.rosterListeners) listener(this.assembled.roster, developerMode);
@@ -4672,10 +4712,13 @@ export class PluginHost {
    * sockets, so no dispatch in flight finds its database gone. It also revokes every
    * outstanding lease and discards every migration chain still staged: a handler, hook or
    * migration that resumes afterwards finds its data refused and nothing it can publish, and
-   * no plugin file is opened or recovered again.
+   * no plugin file is opened or recovered again. An install, replacement or uninstall that
+   * resumes finds its artifact fetch cancelled and every write, row, deletion, roster and
+   * answer refused, and the authored loop builds nothing further (#318).
    */
   close(): void {
-    this.closed = true;
+    this.lifetime.abort(new Error("the plugin host is closed"));
+    this.authored?.close();
     this.broker.clearRunLaunches();
     for (const discard of this.stagedMigrations) discard();
     for (const database of this.databases.values()) database.close();
