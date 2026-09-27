@@ -1026,11 +1026,18 @@ INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','46');
    * `configuring` brackets the configuration effect the way `applying` brackets installation.
    * `bound` is the configuration's terminal receipt, the counterpart of `applied`.
    *
+   * That makes `applied` final for an ordinary target only: a bootstrap's `applied` is the
+   * installation's receipt with its configuration still owed, so each target records the phase
+   * it finishes at, fixed at approval. The partial uniqueness that keeps two approvals from
+   * racing one machine/plugin covers every row that is neither resolved (`needs_review`,
+   * `cancelled`) nor at its own final phase — a bootstrap keeps the pair through `configuring`
+   * to `bound`, while a finished ordinary `applied` target, or a `bound` one, stays outside it
+   * so a later approval can still supersede it.
+   *
    * The CHECK constraint is the reason this is a table rebuild rather than an ALTER: SQLite
-   * has no way to widen one in place. Existing rows carry existing phases and are copied
-   * unchanged; the partial uniqueness that keeps two approvals from racing one machine widens
-   * to the new in-flight phases, and terminal `applied`/`bound` stay outside it so a later
-   * approval can still supersede a finished one.
+   * has no way to widen one in place. Existing rows carry existing phases, are copied unchanged
+   * and predate bootstraps, so each finishes at `applied` and the widened index covers exactly
+   * the `pending`/`applying` rows the previous one did.
    */
   48: `
 CREATE TABLE machine_job_deployment_targets_next(
@@ -1038,17 +1045,18 @@ CREATE TABLE machine_job_deployment_targets_next(
  machine_id TEXT NOT NULL, plugin_id TEXT NOT NULL,
  phase TEXT NOT NULL CHECK(phase IN
   ('pending','quiescing','applying','applied','configuring','bound','needs_review','cancelled')),
+ final_phase TEXT NOT NULL DEFAULT 'applied' CHECK(final_phase IN ('applied','bound')),
  attempt TEXT, reason TEXT, receipt TEXT,
  PRIMARY KEY(deployment_id,machine_id)
 );
-INSERT INTO machine_job_deployment_targets_next
+INSERT INTO machine_job_deployment_targets_next(deployment_id,machine_id,plugin_id,phase,attempt,reason,receipt)
  SELECT deployment_id,machine_id,plugin_id,phase,attempt,reason,receipt
  FROM machine_job_deployment_targets;
 DROP TABLE machine_job_deployment_targets;
 ALTER TABLE machine_job_deployment_targets_next RENAME TO machine_job_deployment_targets;
 CREATE UNIQUE INDEX machine_job_deployment_pending
  ON machine_job_deployment_targets(machine_id,plugin_id)
- WHERE phase IN ('pending','quiescing','applying','configuring');
+ WHERE phase NOT IN ('needs_review','cancelled') AND phase<>final_phase;
 INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','48');
 `,
 };

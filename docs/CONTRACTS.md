@@ -4231,7 +4231,10 @@ policySha256, jobId }` or null), the expected revision, the resolved policy and 
   interrupted `applying` or `configuring` phase recovers as `needs_review` with
   `deployment_application_uncertain` — never a replayed effect. `ready` still requires the
   owner to advertise the configured policy and the provider job to be running; until then the
-  target reports `installing` with the reason it is waiting on.
+  target reports `installing` with the reason it is waiting on. `applied` is not final for a
+  bootstrap: its configuration is still owed, so the approval keeps the machine/plugin pair
+  through `configuring` until `bound`, and a bootstrap whose installation is replaced before
+  it binds becomes `needs_review` with `installation_replaced` rather than `superseded`.
   The configuration receipt retains the exact instance-service revision written by this
   approval: a later content-equal replacement is a different identity, not a restored receipt.
   Readiness checks the proposed service itself even when no consumer operation was selected.
@@ -4253,9 +4256,13 @@ policySha256, jobId }` or null), the expected revision, the resolved policy and 
   it retains no credential value or owner key. Applying a new ID requires the whole review
   to remain current and approvable. An exact duplicate ID, request, digest and credential
   recovers the retained record under current root authority; conflicting reuse refuses.
-  At most one pending/applying approval may own a machine/plugin pair. Approval persistence
-  is atomic across the explicit destination set, but installation effects are committed per
-  destination, not an all-or-nothing fleet transaction.
+  At most one approval may own a machine/plugin pair: a target owns it from `pending` until it
+  is resolved (`needs_review`, `cancelled`) or reaches its own final phase — `applied` for an
+  ordinary installation, `bound` for a reviewed instance-service bootstrap — and a competing
+  approval refuses with `deployment_target_pending`. A finished target never blocks a later
+  approval from superseding it. Approval persistence is atomic across the explicit
+  destination set, but installation effects are committed per destination, not an
+  all-or-nothing fleet transaction.
 
   Every pending application restores the original credential and rechecks current root
   authority, enrollment/owner identity, plugin enablement, declaration, installation,
@@ -4272,8 +4279,10 @@ policySha256, jobId }` or null), the expected revision, the resolved policy and 
   authority-changing effects.
 
   Cancellation requires the current deployment `revision`; stale revisions refuse before
-  mutation. It marks the approval cancelled and fences remaining `pending`, `quiescing`,
-  `applying` and `configuring` targets, not effects already committed as `applied` or `bound`.
+  mutation. It marks the approval cancelled and fences every target that still owns its pair
+  — remaining `pending`, `quiescing`, `applying` and `configuring` targets, and a bootstrap's
+  `applied` target whose configuration has not run, which keeps its installation but never
+  configures — not effects already finished as an ordinary `applied` or a `bound` target.
   It is not uninstall, purge, consent revocation or distributed rollback. In particular,
   cancellation after quiescing does not restart the retired provider: the unchanged instance
   record remains configured but visibly unavailable until a new reviewed configuration
@@ -4293,10 +4302,10 @@ policySha256, jobId }` or null), the expected revision, the resolved policy and 
   An install-only deployment may be ready with no execution consent. An explicit instance-service
   proposal starts only its reviewed provider through the ordinary native service lifecycle;
   ordinary deployment requests do not execute operations. Readiness guarantees no future
-  job admission or product postcondition. Replacement of an applied installation revision
-  projects `superseded`; invalidated scope or uncertain application projects `needs_review`;
-  cancelled unapplied targets project `cancelled`. The public state schema also admits
-  `refused`; review/apply refusal does not itself create an applied target.
+  job admission or product postcondition. Replacement of a finished target's installation
+  revision projects `superseded`; invalidated scope or uncertain application projects
+  `needs_review`; cancelled unfinished targets project `cancelled`. The public state schema
+  also admits `refused`; review/apply refusal does not itself create an applied target.
 
   `JobDeploymentDescription` returns only `{ deployment, installation }` for the authorized
   machine/plugin. `deployment` is null or the newest retained target's
@@ -5046,7 +5055,9 @@ machine_job_deployments(deployment_id TEXT PK, plugin_id TEXT NOT NULL, revision
 machine_job_deployment_targets(deployment_id TEXT NOT NULL REFERENCES
                                machine_job_deployments(deployment_id), machine_id TEXT NOT NULL,
                                plugin_id TEXT NOT NULL, phase TEXT NOT NULL CHECK(phase IN
-                               ('pending', 'applying', 'applied', 'needs_review', 'cancelled')),
+                               ('pending', 'quiescing', 'applying', 'applied', 'configuring',
+                               'bound', 'needs_review', 'cancelled')), final_phase TEXT NOT NULL
+                               DEFAULT 'applied' CHECK(final_phase IN ('applied', 'bound')),
                                attempt TEXT, reason TEXT, receipt TEXT,
                                PRIMARY KEY(deployment_id, machine_id))
 machine_job_journal(job_id TEXT NOT NULL, seq INTEGER NOT NULL, at INTEGER NOT NULL,
@@ -5069,7 +5080,8 @@ job_invocation_edges(caller TEXT NOT NULL, operation_id TEXT NOT NULL, edge TEXT
                             -- machine_jobs_instance_service (partial expression index),
                             -- machine_job_deployments_plugin(plugin_id),
                             -- machine_job_deployment_pending (partial unique machine/plugin
-                            -- pending-or-applying), job_invocation_root(root_job_id);
+                            -- over targets neither resolved nor at their final_phase),
+                            -- job_invocation_root(root_job_id);
                             -- open-time partial indexes: machine_jobs_live(state) over
                             -- live states, job_schedule_occurrences_pending(schedule_id,
                             -- revision) over pending rows, so per-tick and per-owner-event
@@ -5431,8 +5443,9 @@ rebuild and correlation cutover; 38 reclassifies proved service principals; 39 a
 restart state and a bounded run-id backfill; 40 adds inference aggregates with an explicit
 legacy-incomplete sentinel; 47 adds the nullable `machine_jobs.container_grants` column; and 48
 rebuilds the deployment-target table to admit the reviewed instance-service bootstrap's
-`quiescing`, `configuring` and `bound` phases, copying existing rows unchanged and widening the
-in-flight uniqueness index to the new non-terminal phases.
+`quiescing`, `configuring` and `bound` phases and each target's `final_phase`, copying existing
+rows unchanged as `applied`-final, and keys the in-flight uniqueness index on targets that are
+neither resolved nor at their final phase.
 Migrations 9, 11, 13, 16, 19, 23, 24 and 37 each take a consistent `VACUUM INTO` snapshot BEFORE
 the transaction opens (a VACUUM cannot run inside one, which is also what makes it a true
 pre-migration image), skipped only for an in-memory or not-yet-existing database.

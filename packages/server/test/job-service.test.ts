@@ -7614,6 +7614,58 @@ describe("reviewed native deployment approvals", () => {
     }
   });
 
+  test("an ordinary applied installation stays supersedable while awaiting its ACK", () => {
+    const f = fixture();
+    const phases = () =>
+      f.store.db
+        .query<{ deployment_id: string; phase: string }, []>(
+          "SELECT deployment_id,phase FROM machine_job_deployment_targets ORDER BY rowid",
+        )
+        .all();
+    try {
+      prove(f);
+      replacement(f);
+      const first = apply(f, request(f, "ordinary-first", [operationId]));
+      expect(first.deployment.targets[0]).toMatchObject({
+        state: "installing",
+        reason: "owner_acknowledgement_pending",
+      });
+      f.store.setMachineDraining(f.machineId, true);
+      // `applied` is an ordinary target's final receipt, so the next artifact is approvable
+      // while the first still waits for its owner, exactly as before bootstraps existed.
+      f.service.setManifestResolver((id) => (id === pluginId ? machine : null));
+      const second = apply(f, request(f, "ordinary-second", [operationId]));
+      expect(second.deployment.targets[0]).toMatchObject({
+        state: "pending",
+        reason: "machine_draining",
+      });
+      expect(phases()).toEqual([
+        { deployment_id: "ordinary-first", phase: "applied" },
+        { deployment_id: "ordinary-second", phase: "pending" },
+      ]);
+      f.service.event(f.channel, {
+        type: "installed",
+        pluginId,
+        installationRevision: first.review.targets[0]!.installationRevision!,
+        artifactSha256: "c".repeat(64),
+      });
+      f.store.setMachineDraining(f.machineId, false);
+      f.service.tick();
+      expect(phases()).toEqual([
+        { deployment_id: "ordinary-first", phase: "applied" },
+        { deployment_id: "ordinary-second", phase: "applied" },
+      ]);
+      expect(f.service.jobs.installation(f.machineId, pluginId)?.revision).toBe(
+        second.review.targets[0]!.installationRevision!,
+      );
+      expect(
+        f.service.readDeployment(f.root, { deploymentId: "ordinary-first" }).targets[0],
+      ).toMatchObject({ state: "superseded", reason: "installation_replaced" });
+    } finally {
+      f.store.close();
+    }
+  });
+
   test("cancel between write-ahead claim and effects cannot grant consent", () => {
     const f = fixture();
     try {
@@ -8587,6 +8639,94 @@ describe("reviewed same-plugin instance-service bootstrap", () => {
       f.store.close();
     }
   });
+
+  test("an applied bootstrap owns its machine and plugin until its configuration binds", () => {
+    const f = bootstrap();
+    const phases = () =>
+      f.store.db
+        .query<{ deployment_id: string; phase: string }, []>(
+          "SELECT deployment_id,phase FROM machine_job_deployment_targets ORDER BY rowid",
+        )
+        .all();
+    try {
+      const first = apply(f, proposal("first", f.machineId));
+      expect(f.service.readDeployment(f.root, { deploymentId: "first" }).targets[0]).toMatchObject({
+        state: "installing",
+        reason: "owner_acknowledgement_pending",
+      });
+      expect(phases()).toEqual([{ deployment_id: "first", phase: "applied" }]);
+      expect(f.service.instanceServices.get(serviceId)).toBeNull();
+      f.store.setMachineDraining(f.machineId, true);
+      // Installed is not finished while the configuration is still owed: an identical second
+      // approval is refused instead of waiting to collide with the first one's `configuring`.
+      expect(() => apply(f, proposal("second", f.machineId))).toThrow("deployment_target_pending");
+      expect(phases()).toEqual([{ deployment_id: "first", phase: "applied" }]);
+      acknowledge(f, first.target.installationRevision!);
+      expect(phases()).toEqual([{ deployment_id: "first", phase: "applied" }]);
+      f.store.setMachineDraining(f.machineId, false);
+      f.service.tick();
+      f.service.tick();
+      expect(phases()).toEqual([{ deployment_id: "first", phase: "bound" }]);
+      expect(sha256(f.service.instanceServices.get(serviceId)!.policy)).toBe(
+        sha256(first.entry.policy),
+      );
+      startProvider(f);
+      advertise(f, first.entry.policy);
+      expect(f.service.readDeployment(f.root, { deploymentId: "first" }).targets[0]).toMatchObject({
+        state: "ready",
+        reason: null,
+      });
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test.each(["cancelled", "replaced"] as const)(
+    "an applied bootstrap %s before binding gives up the pair and configures nothing",
+    (variant) => {
+      const f = bootstrap();
+      try {
+        const first = apply(f, proposal("bootstrap-unbound", f.machineId));
+        expect(() => apply(f, proposal("bootstrap-next", f.machineId))).toThrow(
+          "deployment_target_pending",
+        );
+        if (variant === "cancelled") {
+          f.service.cancelDeployment(f.root, {
+            deploymentId: "bootstrap-unbound",
+            expectedRevision: f.service.readDeployment(f.root, {
+              deploymentId: "bootstrap-unbound",
+            }).revision,
+          });
+          // The installation stays; the acknowledgement no longer admits its configuration.
+          acknowledge(f, first.target.installationRevision!);
+        } else
+          f.service.install(f.root, {
+            machineId: f.machineId,
+            pluginId: selfPlugin,
+            installationRevision: "out-of-band",
+            artifactSha256: hash,
+            machine: declaration,
+            resourceBindings: { tools: {}, services: {}, anchors: {} },
+          });
+        f.service.tick();
+        expect(
+          f.service.readDeployment(f.root, { deploymentId: "bootstrap-unbound" }).targets[0],
+        ).toMatchObject(
+          variant === "cancelled"
+            ? { state: "cancelled", reason: "approval_cancelled" }
+            : { state: "needs_review", reason: "installation_replaced" },
+        );
+        expect(f.service.instanceServices.get(serviceId)).toBeNull();
+        expect(f.commands.some((command) => command.type === "start")).toBe(false);
+        apply(f, proposal("bootstrap-next", f.machineId));
+        expect(
+          f.service.readDeployment(f.root, { deploymentId: "bootstrap-next" }).targets[0]!.state,
+        ).toBe("installing");
+      } finally {
+        f.store.close();
+      }
+    },
+  );
 
   test.each([
     ["unselected", "instance_service_provider_unselected"],

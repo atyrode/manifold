@@ -65,6 +65,17 @@ type Phase =
   | "bound"
   | "needs_review"
   | "cancelled";
+/**
+ * Whether a target row still owns its machine/plugin pair: neither resolved nor at the phase it
+ * finishes at. `applied` is final for an ordinary installation, but a reviewed instance-service
+ * bootstrap still owes its configuration there and finishes only at `bound`, so it keeps the
+ * pair until then; a second approval is refused rather than left to collide with its
+ * `configuring` transition. The same predicate is `machine_job_deployment_pending`'s partial
+ * unique index, so the admission check and the storage invariant cannot drift apart.
+ */
+const OWNS_TARGET = "(phase NOT IN ('needs_review','cancelled') AND phase<>final_phase)";
+const finalPhase = (target: JobDeploymentTargetReview): Phase =>
+  target.instanceServices?.length ? "bound" : "applied";
 interface TargetEvidence {
   identity: string;
   installation: string;
@@ -219,7 +230,7 @@ export class JobDeployments {
         `SELECT d.deployment_id FROM machine_job_deployments d
        WHERE d.approval<>'' AND NOT EXISTS (
          SELECT 1 FROM machine_job_deployment_targets t WHERE t.deployment_id=d.deployment_id
-         AND (t.phase IN ('pending','quiescing','applying','configuring') OR t.reason='deployment_application_uncertain')
+         AND (${OWNS_TARGET} OR t.reason='deployment_application_uncertain')
        ) ORDER BY d.approved_at,d.rowid`,
       )
       .all();
@@ -908,7 +919,7 @@ export class JobDeployments {
       for (const target of snapshot.review.targets) {
         const competing = this.service.store.db
           .query<{ deployment_id: string }, [string, string]>(
-            "SELECT deployment_id FROM machine_job_deployment_targets WHERE machine_id=? AND plugin_id=? AND phase IN ('pending','quiescing','applying','configuring') LIMIT 1",
+            `SELECT deployment_id FROM machine_job_deployment_targets WHERE machine_id=? AND plugin_id=? AND ${OWNS_TARGET} LIMIT 1`,
           )
           .get(target.machineId, parsed.request.pluginId);
         if (competing) conflict("deployment_target_pending");
@@ -932,9 +943,14 @@ export class JobDeployments {
       for (const target of snapshot.review.targets)
         this.service.store.db
           .query(
-            "INSERT INTO machine_job_deployment_targets(deployment_id,machine_id,plugin_id,phase) VALUES(?,?,?,'pending')",
+            "INSERT INTO machine_job_deployment_targets(deployment_id,machine_id,plugin_id,phase,final_phase) VALUES(?,?,?,'pending',?)",
           )
-          .run(parsed.request.deploymentId, target.machineId, parsed.request.pluginId);
+          .run(
+            parsed.request.deploymentId,
+            target.machineId,
+            parsed.request.pluginId,
+            finalPhase(target),
+          );
       this.service.store.afterCommit(() => this.host.changed());
     });
     this.reconcile();
@@ -1370,6 +1386,15 @@ export class JobDeployments {
         (item) => item.machine_id === target.machineId,
       );
       if (this.get(row.deployment_id)?.cancelled || retained?.phase !== "applied") return false;
+      // The installation this configuration pins was replaced before it ran, so it can never
+      // bind: give the pair up for a new review instead of holding it for good.
+      if (
+        this.service.jobs.installation(target.machineId, approval.review.request.pluginId)
+          ?.revision !== target.installationRevision
+      ) {
+        this.transition(approval, target, "applied", "needs_review", "installation_replaced");
+        return false;
+      }
       const reason = this.refusal(approval, target, index, "applied");
       if (reason) {
         this.transition(approval, target, "applied", "needs_review", reason);
@@ -1477,7 +1502,11 @@ export class JobDeployments {
         (record.phase === "applied" || record.phase === "bound") &&
         current?.revision !== target.installationRevision
       )
-        return result("superseded", "installation_replaced");
+        // Only a finished target was superseded; a bootstrap still owing its configuration
+        // never finished, and reconciliation records exactly that.
+        return record.phase === finalPhase(target)
+          ? result("superseded", "installation_replaced")
+          : result("needs_review", "installation_replaced");
       const receipt = record.receipt ? (JSON.parse(record.receipt) as TargetReceipt) : null;
       if (
         record.phase === "bound" &&
@@ -1584,11 +1613,21 @@ export class JobDeployments {
         )
         .run(deploymentId, expectedRevision);
       const approval = JSON.parse(row.approval) as Approval;
-      for (const target of approval.review.targets)
-        // Every phase that has not yet produced a durable installation or configuration
-        // receipt. `applied` and `bound` are receipts and stay exactly where they are.
-        for (const phase of ["pending", "quiescing", "applying", "configuring"] as const)
-          this.transition(approval, target, phase, "cancelled", "approval_cancelled");
+      // Every target short of its final receipt, which is exactly what still owns the pair. A
+      // bootstrap's `applied` installation stays installed, but its configuration never runs;
+      // a finished `applied` or `bound` target stays exactly where it is.
+      for (const record of this.service.store.db
+        .query<{ machine_id: string; phase: Phase }, [string]>(
+          `SELECT machine_id,phase FROM machine_job_deployment_targets WHERE deployment_id=? AND ${OWNS_TARGET} ORDER BY rowid`,
+        )
+        .all(deploymentId))
+        this.transition(
+          approval,
+          approval.review.targets.find((target) => target.machineId === record.machine_id)!,
+          record.phase,
+          "cancelled",
+          "approval_cancelled",
+        );
       this.service.store.afterCommit(() => this.host.changed());
     });
     return this.read(auth, { deploymentId });
