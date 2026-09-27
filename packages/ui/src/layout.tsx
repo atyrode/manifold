@@ -92,7 +92,11 @@ function frameLayout(
       refuseInFrame(component, `gap "${gap}" (a rem length from 0 to ${String(MAX_FRAME_GAP_REM)})`);
     }
   }
-  return frameElement("box", { ...box, gapRem, ...frameMeta(component, extra) }, children);
+  return frameElement(
+    "box",
+    { ...box, gap: gap === undefined ? "adaptive" : undefined, gapRem, ...frameMeta(component, extra) },
+    children,
+  );
 }
 
 /** Joins the primitive's own class with the adopter's, dropping the blanks. */

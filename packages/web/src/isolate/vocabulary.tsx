@@ -2,6 +2,7 @@ import type { UiIcon, UiNode, UiTone } from "@manifold/protocol";
 import {
   Badge,
   Button,
+  Cluster,
   Code,
   ControlIcon,
   Divider,
@@ -12,6 +13,7 @@ import {
   List,
   Select,
   Spinner,
+  Stack,
   Text,
   Toggle,
   type VocabularyMeta,
@@ -137,7 +139,7 @@ function Node({ node, onEvent }: NodeProps): ReactElement {
         <Button
           tone={node.tone}
           disabled={node.disabled}
-          action={node.action}
+          data-action={node.action}
           icon={node.icon}
           iconOnly={node.iconOnly}
           {...metaOf(node)}
@@ -205,28 +207,39 @@ function Node({ node, onEvent }: NodeProps): ReactElement {
   }
 }
 
+const LEGACY_GAPS = ["0", "0.25rem", "0.5rem", "1rem"] as const;
+
 /**
- * The wire's layout node. A `gapRem` is painted as the gap itself; the legacy spacing steps
- * keep their `data-gap` meaning. Children reconcile under the Worker's stable node keys, and
- * under their position only for an older guest that sends none — two namespaces, so a
- * guest's key can never collide with a sibling's index.
+ * Paint through the same layout primitives as the page. New roots explicitly name their
+ * adaptive default; numeric/absent gaps and wrapping flags keep older guests' behavior.
+ * Stable node keys preserve the DOM when siblings move; legacy nodes retain positional keys.
  */
 function BoxNode({ node, onEvent }: NodeProps<NodeOf<"box">>): ReactElement {
   const { gapRem } = node;
+  const gap =
+    gapRem !== undefined
+      ? `${String(gapRem)}rem`
+      : node.gap === "adaptive"
+        ? undefined
+        : LEGACY_GAPS[node.gap ?? 1];
+  const Layout = node.direction === "row" ? Cluster : Stack;
   return (
-    <div
+    <Layout
       className={`mf-vocab-box${node.grow === true ? " is-grow" : ""}${node.wrap === true ? " is-wrap" : ""}`}
+      {...(gap === undefined ? {} : { gap })}
+      align={node.align}
       data-direction={node.direction ?? "column"}
       data-gap={gapRem === undefined ? (node.gap ?? 1) : undefined}
-      data-align={node.align}
-      data-justify={node.justify}
-      style={gapRem === undefined ? undefined : { gap: `${String(gapRem)}rem` }}
+      style={{
+        flexWrap: node.wrap === true ? undefined : "nowrap",
+        justifyContent: node.justify === "between" ? "space-between" : node.justify,
+      }}
       {...metaOf(node)}
     >
       {node.children.map((child, index) => (
         <Node key={child.key === undefined ? index : `key:${child.key}`} node={child} onEvent={onEvent} />
       ))}
-    </div>
+    </Layout>
   );
 }
 

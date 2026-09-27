@@ -101,6 +101,7 @@ function IsolatedInstance({ pluginId, panelId, kind, portableWorker, host, arg }
         <VocabularyRenderer
           tree={title === undefined ? { type: "spinner" } : { type: "spinner", label: title }}
           onEvent={ignoreEvent}
+          kind={kind}
         />
       );
     }
@@ -110,10 +111,11 @@ function IsolatedInstance({ pluginId, panelId, kind, portableWorker, host, arg }
           tree={{ type: "empty", text: currentState.error }}
           onEvent={ignoreEvent}
           tone="danger"
+          kind={kind}
         />
       );
     case "tree":
-      return <VocabularyRenderer tree={currentState.tree} onEvent={onEvent} />;
+      return <VocabularyRenderer tree={currentState.tree} onEvent={onEvent} kind={kind} />;
     default: {
       const unreachable: never = currentState;
       throw new Error(`unhandled panel state ${String(unreachable)}`);

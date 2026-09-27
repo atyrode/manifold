@@ -139,7 +139,7 @@ export function MachinesSection({ host }: PortableSectionProps): ReactElement {
                       icon={CREATE_ICON}
                       iconOnly
                       tone="accent"
-                      action="core.terminals.open"
+                      data-action="core.terminals.open"
                       aria-label={`New terminal on ${machine.name}`}
                       title={`New terminal on ${machine.name}`}
                       onClick={() => {
@@ -160,7 +160,7 @@ export function MachinesSection({ host }: PortableSectionProps): ReactElement {
                       icon={revoked ? undefined : REVOKE_ICON}
                       iconOnly={!revoked}
                       tone={armed ? "danger" : "muted"}
-                      action={revoked ? MACHINES_FORGET_ACTION : MACHINES_REVOKE_ACTION}
+                      data-action={revoked ? MACHINES_FORGET_ACTION : MACHINES_REVOKE_ACTION}
                       data-testid={revoked ? "machine-forget" : "machine-revoke"}
                       aria-label={
                         revoked

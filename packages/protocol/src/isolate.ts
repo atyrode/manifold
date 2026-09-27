@@ -157,8 +157,8 @@ export type UiNode = UiNodeMeta & (
   | {
       readonly type: "box";
       readonly direction?: "row" | "column" | undefined;
-      /** Legacy spacing steps retain their wire meaning. New components use gapRem. */
-      readonly gap?: 0 | 1 | 2 | 3 | undefined;
+      /** Numeric and absent gaps retain their legacy meaning; portable layouts name the adaptive default. */
+      readonly gap?: 0 | 1 | 2 | 3 | "adaptive" | undefined;
       readonly gapRem?: number | undefined;
       readonly align?: "start" | "center" | "end" | "stretch" | undefined;
       readonly justify?: "start" | "center" | "end" | "between" | undefined;
@@ -243,7 +243,7 @@ const uiNode: z.ZodType<UiNode> = z.lazy(() =>
       ...uiNodeMeta,
       type: z.literal("box"),
       direction: z.enum(["row", "column"]).optional(),
-      gap: z.literal([0, 1, 2, 3]).optional(),
+      gap: z.literal([0, 1, 2, 3, "adaptive"]).optional(),
       gapRem: z.number().min(0).max(4).optional(),
       align: z.enum(["start", "center", "end", "stretch"]).optional(),
       justify: z.enum(["start", "center", "end", "between"]).optional(),

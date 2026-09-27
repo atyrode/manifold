@@ -724,72 +724,11 @@ button.chip:focus-visible {
   padding: 0;
 }
 
-/* ── box ── the wire's layout node, holding the layout algebra's discipline: children may
-   shrink (`min-width: 0`), spacing is the gap. A row centres its items. */
+/* ── box ── Stack/Cluster own layout; these flags preserve the older wire's sizing knobs. */
 .mf-vocab-box {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
   min-height: 0;
 }
 
-.mf-vocab-box > * {
-  min-width: 0;
-}
-
-.mf-vocab-box[data-direction="row"] {
-  flex-direction: row;
-  align-items: center;
-}
-
-/* The legacy spacing steps keep their wire meaning; a `gapRem` is painted as the gap itself. */
-.mf-vocab-box[data-gap="0"] {
-  gap: 0;
-}
-
-.mf-vocab-box[data-gap="1"] {
-  gap: 0.25rem;
-}
-
-.mf-vocab-box[data-gap="2"] {
-  gap: 0.5rem;
-}
-
-.mf-vocab-box[data-gap="3"] {
-  gap: 1rem;
-}
-
-.mf-vocab-box[data-align="start"] {
-  align-items: flex-start;
-}
-
-.mf-vocab-box[data-align="center"] {
-  align-items: center;
-}
-
-.mf-vocab-box[data-align="end"] {
-  align-items: flex-end;
-}
-
-.mf-vocab-box[data-align="stretch"] {
-  align-items: stretch;
-}
-
-.mf-vocab-box[data-justify="start"] {
-  justify-content: flex-start;
-}
-
-.mf-vocab-box[data-justify="center"] {
-  justify-content: center;
-}
-
-.mf-vocab-box[data-justify="end"] {
-  justify-content: flex-end;
-}
-
-.mf-vocab-box[data-justify="between"] {
-  justify-content: space-between;
-}
 
 .mf-vocab-box.is-grow {
   flex: 1 1 auto;

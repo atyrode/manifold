@@ -213,7 +213,7 @@ export interface ButtonProps extends VocabularyMeta {
    * affordance names the door it opens (AXIOMS.md §Foundation law and REGISTRY.md §Foundation,
    * S4). Unset when the press dispatches none.
    */
-  readonly action?: string | undefined;
+  readonly "data-action"?: string | undefined;
   readonly icon?: UiIcon | undefined;
   /** Shows only the icon; ignored without one, so a label is never lost. */
   readonly iconOnly?: boolean | undefined;
@@ -225,7 +225,7 @@ export function Button({
   onBlur,
   tone,
   disabled,
-  action,
+  "data-action": action,
   icon,
   iconOnly,
   ...rest
