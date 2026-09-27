@@ -38,6 +38,7 @@ import {
 } from "@manifold/plugin";
 import type { SqlParam, SqlRow, SqlStatement } from "@manifold/plugin";
 import type { ServerMigration as GuestMigration } from "@manifold/plugin-kit/server";
+import { BundleOrderError, familyOrder, requiredDependencyIds } from "@manifold/plugin-kit/install";
 import {
   ActionCallArgsSchema,
   AgentToolReplySchema,
@@ -120,6 +121,7 @@ import type {
   ManifoldRef,
   MintShareRequest,
   MintTokenRequest,
+  PluginBuildCompatibility,
   PluginBundle,
   PluginId,
   PluginInstall,
@@ -133,6 +135,9 @@ import type {
   RenewAgentRunRequest,
   RenewAgentRunResult,
   PluginRoster,
+  PluginUpdateApplyRequest,
+  PluginUpdateApplyResult,
+  PluginUpdateReviewResult,
   Principal,
   PrincipalCredentials,
   PrincipalAccessPauseRequest,
@@ -182,18 +187,25 @@ import {
 } from "./plugin-database.ts";
 import {
   InstallRefusal,
-  installArtifact,
+  inspectArtifact,
   installLayout,
+  publishArtifact,
   removeInstall,
   verifyInstalledBundle,
   type InstalledArtifact,
+  type VerifiedPluginArtifact,
 } from "./plugin-installs.ts";
+import {
+  PluginUpdates,
+  pluginBuildCompatibility,
+  type PluginUpdateAuthority,
+  type PreparedPluginUpdate,
+} from "./plugin-updates.ts";
 import { exportInstalledPlugins, listInstalledPlugins } from "./installed-plugins.ts";
 import type { RoomManager } from "./room.ts";
 import type {
   MachineRecord,
   PluginInstallRow,
-  PluginMigrationSession,
   ServerStore,
   TraceAttribution,
 } from "./stores.ts";
@@ -588,6 +600,19 @@ export interface HostControl {
   ): Promise<ActionRefused | PluginAuthorResult>;
   roster(): PluginRoster;
   enabled(id: string): boolean;
+  /**
+   * The reviewed family update doors (#238). `authority` names the root caller and its
+   * credential; the host re-proves both, and the coordinator its bound snapshot, after every
+   * await and immediately before the one commit.
+   */
+  reviewUpdate(
+    id: string,
+    authority: PluginUpdateAuthority,
+  ): Promise<ActionRefused | PluginUpdateReviewResult>;
+  applyUpdate(
+    request: PluginUpdateApplyRequest,
+    authority: PluginUpdateAuthority,
+  ): Promise<ActionRefused | PluginUpdateApplyResult>;
 }
 
 /**
@@ -613,7 +638,74 @@ interface InstalledPlugin {
   readonly bundle: PluginBundle | null;
   readonly web: Uint8Array<ArrayBuffer> | null;
   readonly styles: Uint8Array<ArrayBuffer> | null;
+  /** The bundle's recorded build against this server, derived once when its bytes verify. */
+  readonly compatibility: PluginBuildCompatibility | null;
   readonly refusal?: PluginInstallRefusal;
+}
+
+/** A migration chain staged by `prepareMigrations`, published in phases (see there). */
+interface StagedMigration {
+  activate(): void;
+  commitMetadata(publish?: () => void): void;
+  finish(): void;
+  discard(): void;
+  commit(publish?: () => void): void;
+}
+
+/** One member of an installation: exact verified bytes and the consent its row will carry. */
+interface InstallCandidate {
+  readonly artifact: VerifiedPluginArtifact;
+  readonly grantedCaps: readonly AuthoredCap[];
+  readonly hardened: boolean;
+}
+
+/** Who an installation is attributed to, and what it must keep proving until it commits. */
+interface InstallAttribution {
+  readonly installedBy: string;
+  readonly installer: CredentialReference | null;
+  readonly unpacked?: { readonly id: string };
+  /** A reviewed update's authority and bound snapshot: asked after every await and at commit. */
+  readonly assertCurrent?: () => void;
+  /**
+   * Told exactly once, synchronously, after the durable commit with every in-memory row final
+   * and before the one roster publication; never for a refusal or rollback.
+   */
+  readonly committed?: () => void;
+}
+
+/**
+ * One member of an atomic installation from publication to outcome: the row it will write,
+ * the candidate it loaded, and everything a rollback restores.
+ */
+interface GroupMember {
+  readonly id: string;
+  readonly bundle: PluginBundle;
+  readonly artifact: InstalledArtifact;
+  /** Derived from the verified bytes before any commit, so nothing after it can throw here. */
+  readonly web: Uint8Array<ArrayBuffer> | null;
+  readonly styles: Uint8Array<ArrayBuffer> | null;
+  readonly compatibility: PluginBuildCompatibility;
+  readonly previous: InstalledPlugin | undefined;
+  readonly previousDef: ServerPluginDef | undefined;
+  readonly previousLifecycle: PluginLifecycleState | undefined;
+  /** A verified previous module serving now, told `onDisable` before it is replaced. */
+  readonly live: boolean;
+  /** A verified previous hardened module: the only kind with a child to retire and restore. */
+  readonly previousChild: boolean;
+  row: PluginInstallRow;
+  def: ServerPluginDef | undefined;
+  staged: StagedMigration | undefined;
+  retired: boolean;
+  candidateChild: boolean;
+  notified: boolean;
+}
+
+/** An update's authority or reviewed snapshot stopped being current; the message is the refusal. */
+class InstallAuthorityLost extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InstallAuthorityLost";
+  }
 }
 
 /**
@@ -841,6 +933,12 @@ interface EngineDoorCtx {
 }
 
 /**
+ * The refusal a reviewed update answers once its caller no longer holds root, whether the
+ * door's live read or the host's credential restore noticed first.
+ */
+const UPDATE_AUTHORITY_REFUSAL = "forbidden: root authority required";
+
+/**
  * THE ENGINE'S BUILTIN ROWS. Registered by the host itself rather than through
  * `assembly.ts`, because administration of the assembly cannot be a member of it: a
  * plugin owning `setEnabled` can be disabled, and then the door that would re-enable it
@@ -883,6 +981,35 @@ const ENGINE_BUILTIN_DEFS: readonly ServerPluginDef[] = [
         args: PluginInstallRequest,
       ): Promise<ActionRefused | PluginInstallResult> {
         return ctx.host.install(args, ctx.principal.id, ctx.credential);
+      },
+      /**
+       * The reviewed update pair (#238). As thin as the install pair: the coordinator owns the
+       * review and its digest, the host owns the one atomic replacement. Authority is the
+       * caller's own and is asked again live, never frozen at dispatch.
+       */
+      async reviewUpdate(
+        ctx: EngineDoorCtx,
+        args: { id: string },
+      ): Promise<ActionRefused | PluginUpdateReviewResult> {
+        return ctx.host.reviewUpdate(args.id, {
+          principalId: ctx.principal.id,
+          credential: ctx.credential,
+          assertCurrent: () => {
+            if (!ctx.auth.isRoot) throw new Error(UPDATE_AUTHORITY_REFUSAL);
+          },
+        });
+      },
+      async applyUpdate(
+        ctx: EngineDoorCtx,
+        args: PluginUpdateApplyRequest,
+      ): Promise<ActionRefused | PluginUpdateApplyResult> {
+        return ctx.host.applyUpdate(args, {
+          principalId: ctx.principal.id,
+          credential: ctx.credential,
+          assertCurrent: () => {
+            if (!ctx.auth.isRoot) throw new Error(UPDATE_AUTHORITY_REFUSAL);
+          },
+        });
       },
       async listInstalled(ctx: EngineDoorCtx): Promise<InstalledPluginStates> {
         return ctx.host.listInstalled();
@@ -1365,7 +1492,12 @@ export class PluginHost {
   private readonly heldUnloaded = new Set<string>();
   /** Assembly mutations share the runner's one-child-per-id and data-commit boundary. */
   private assemblyChange: Promise<void> = Promise.resolve();
-  private replacing: string | null = null;
+  /**
+   * THE REPLACEMENT FENCE: every id whose module, row or data is mid-change. One member or a
+   * whole family is fenced together, so no door, tool, harness or isolate report reaches a
+   * member while its siblings are half replaced.
+   */
+  private readonly replacing = new Set<string>();
   private readonly activeDispatches = new Map<string, Set<Promise<void>>>();
   private readonly isolates: IsolateDeps | null;
   /**
@@ -1373,6 +1505,11 @@ export class PluginHost {
    * bundles, because an unpacked row IS an installed row and lands through the same door.
    */
   private readonly authored: AuthoredPlugins | null;
+  /**
+   * The reviewed release coordinator (#238), present exactly when this host admits bundles.
+   * Its observations decorate every roster this host answers or publishes.
+   */
+  private readonly updates: PluginUpdates | null;
   private readonly storages = new Map<string, PluginStorageAdmin>();
   /**
    * One open handle per plugin that has touched its file, closed by a disable, a purge and
@@ -1460,7 +1597,7 @@ export class PluginHost {
     if (
       !def?.harness ||
       !this.assembled.enabled(def.manifest.id) ||
-      this.replacing === def.manifest.id
+      this.replacing.has(def.manifest.id)
     )
       throw new ServiceError("forbidden", "harness unavailable");
     return { ...def, harness: def.harness };
@@ -1672,7 +1809,7 @@ export class PluginHost {
       row?.source !== "plugin" ||
       entry.def.runAccess !== undefined ||
       !this.assembled.enabled(entry.plugin.id) ||
-      this.replacing === entry.plugin.id ||
+      this.replacing.has(entry.plugin.id) ||
       !this.handlers.get(entry.plugin.id)?.[entry.def.name] ||
       !entry.resultProjection
     )
@@ -1898,6 +2035,34 @@ export class PluginHost {
             logger,
             this.isolates.pack,
           );
+    this.updates =
+      this.isolates === null
+        ? null
+        : new PluginUpdates({
+            store,
+            dataDir: this.isolates.dataDir,
+            signal: this.lifetime.signal,
+            now: () => this.runtime.now(),
+            host: {
+              installed: () => this.installed,
+              // Raw: the coordinator decorates this, so it must never read its own decoration.
+              roster: () => this.assembled.roster,
+              serialize: (run) => this.changeAssembly(run),
+              // Invoked by the coordinator INSIDE `serialize`, so it never queues again.
+              apply: (members, authority) => this.applyUpdateNow(members, authority),
+              publish: () => {
+                this.publish();
+              },
+              nativeSnapshot: (ids) => {
+                const wanted = new Set(ids);
+                return canonicalJobJson(
+                  this.jobs?.jobs
+                    .installations()
+                    .filter((installation) => wanted.has(installation.pluginId)) ?? [],
+                );
+              },
+            },
+          });
     this.lifecycleTimeoutMs = options.lifecycleTimeoutMs ?? LIFECYCLE_TIMEOUT_MS;
     this.syncDefs();
   }
@@ -1998,6 +2163,7 @@ export class PluginHost {
           bundle: null,
           web: null,
           styles: null,
+          compatibility: null,
           refusal: verdict.refusal,
         });
         this.installedDefs.set(row.pluginId, unverifiedDef(row, verdict.refusal));
@@ -2014,6 +2180,7 @@ export class PluginHost {
         bundle: verdict.bundle,
         web: webModuleOf(verdict.bundle),
         styles: stylesheetOf(verdict.bundle),
+        compatibility: pluginBuildCompatibility(verdict.bundle),
       });
       this.installedDefs.set(row.pluginId, this.dormantDef(row, verdict.bundle));
       this.heldUnloaded.add(row.pluginId);
@@ -2207,7 +2374,7 @@ export class PluginHost {
   private onIsolateState(pluginId: string): void {
     // A candidate child is not the published installation. Leaving replacement reconciles
     // the surviving child, including terminal transitions that arrive during admission.
-    if (this.replacing === pluginId || !this.reconcileIsolateState(pluginId)) return;
+    if (this.replacing.has(pluginId) || !this.reconcileIsolateState(pluginId)) return;
     this.changeAssembly(async () => {
       this.assembled = await this.reassemble();
       this.publish();
@@ -2220,14 +2387,21 @@ export class PluginHost {
     });
   }
 
-  private bundleProblems(except?: string): AssemblyProblem[] {
+  /**
+   * Executable-contract holds, asked before any module loads: an SDK contract this build no
+   * longer accepts, or recorded build metadata KNOWN to disagree with this server's protocol or
+   * shared React. Unknown legacy metadata is a visible warning on the roster, never a hold.
+   * `except` names candidates whose old bytes are being replaced and so owe nothing.
+   */
+  private bundleProblems(except?: ReadonlySet<string>): AssemblyProblem[] {
     const problems: AssemblyProblem[] = [];
-    for (const [id, { bundle }] of this.installed) {
+    for (const [id, { bundle, compatibility }] of this.installed) {
       if (
-        id !== except &&
+        except?.has(id) !== true &&
         bundle !== null &&
         (bundle.hardenedContract === undefined ||
-          !HARDENED_CONTRACT_COMPAT_VERSIONS.has(bundle.hardenedContract))
+          !HARDENED_CONTRACT_COMPAT_VERSIONS.has(bundle.hardenedContract) ||
+          compatibility?.status === "incompatible")
       )
         problems.push({
           reason: "repack_required",
@@ -2496,7 +2670,15 @@ export class PluginHost {
    * Stage the entire chain, including the native ledger/version, on private plugin storage.
    * No data is published on failure, timeout, shutdown or process loss; late work sees a
    * closed handle.
-   * The caller commits synchronously, optionally with the installed row and element claims.
+   *
+   * Publication is PHASED so several chains can land as one installation (#238): `activate`
+   * swaps every private database image in under a durable prepared journal BEFORE the caller's
+   * one SQL transaction, `commitMetadata` runs INSIDE it (KV, ledger, the caller's rows, the
+   * image's committed marker), `finish` removes the old backup only after that transaction
+   * committed, and `discard` recovers the prepared image and drops the draft on any failure.
+   * `commit` is the single-session convenience of the same phases for enable and boot. It is
+   * never itself wrapped in an outer transaction: its `finish` would delete the old image
+   * before the outer commit was durable.
    *
    * The plugin's OWN FILE is the exception, and deliberately so (ADR 0034 §1): `data.db` is
    * not `manifold.db`, so its statements cannot join this transaction, and staging a copy of
@@ -2509,7 +2691,7 @@ export class PluginHost {
     pluginId: string,
     migrations: readonly PluginMigration[],
     manifest = this.defs.find((def) => def.manifest.id === pluginId)?.manifest,
-  ): Promise<PluginMigrationSession> {
+  ): Promise<StagedMigration> {
     this.assertOpen();
     // Revoke the live admin before snapshotting, including when the candidate removed its
     // declaration. A replacement's page budget must never come from the installed def.
@@ -2569,33 +2751,48 @@ export class PluginHost {
       // stops waiting, rather than when that promise eventually settles.
       closeActiveLease();
       if (!outcome.ok) throw new Error(`plugin migration failed: ${outcome.reason}`);
+      // Every phase finds the chain still registered: shutdown discards what is staged, and a
+      // discarded chain can never be published. Registration ends only at the final outcome.
+      const activate = (): void => {
+        if (!this.stagedMigrations.has(discard))
+          throw new Error("plugin migration was discarded before it committed");
+        image?.activate();
+      };
+      const commitMetadata = (publish?: () => void): void => {
+        if (!this.stagedMigrations.has(discard))
+          throw new Error("plugin migration was discarded before it committed");
+        staged.commit(() => {
+          publish?.();
+          image?.committed();
+        });
+      };
+      const finish = (): void => {
+        if (!this.stagedMigrations.delete(discard)) return;
+        // Metadata is committed: cleanup may be retried, but never roll it back. A failed
+        // cleanup keeps the journal, and database() must recover it before admitting SQL.
+        try {
+          image?.finish();
+        } catch (error) {
+          this.logger.error("plugin_database_recovery", {
+            plugin: pluginId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      };
       return {
-        storage: admin,
+        activate,
+        commitMetadata,
+        finish,
         discard,
         commit: (publish) => {
-          if (!this.stagedMigrations.delete(discard))
-            throw new Error("plugin migration was discarded before it committed");
           try {
-            image?.activate();
-            staged.commit(() => {
-              publish?.();
-              image?.committed();
-            });
+            activate();
+            commitMetadata(publish);
           } catch (error) {
-            staged.discard();
-            image?.discard();
+            discard();
             throw error;
           }
-          // Metadata is committed: cleanup may be retried, but never roll it back. A failed
-          // cleanup keeps the journal, and database() must recover it before admitting SQL.
-          try {
-            image?.finish();
-          } catch (error) {
-            this.logger.error("plugin_database_recovery", {
-              plugin: pluginId,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          }
+          finish();
         },
       };
     } catch (error) {
@@ -2625,8 +2822,9 @@ export class PluginHost {
     return this.assembled;
   }
 
+  /** The roster every reader is answered: the assembly's, with the coordinator's observations. */
   roster(): PluginRoster {
-    return this.assembled.roster;
+    return this.updates?.roster(this.assembled.roster) ?? this.assembled.roster;
   }
 
   /** Serialize installed hashes and configured intent with installation and enablement changes. */
@@ -2664,6 +2862,15 @@ export class PluginHost {
    */
   watchAuthored(): () => void {
     return this.authored?.watch() ?? (() => {});
+  }
+
+  /**
+   * THE RELEASE POLL (#238), started by the composition root beside `watchAuthored`: hourly,
+   * sequential observations the roster carries, never an install. Returns the stop; a host
+   * that admits no bundles has nothing to poll and returns a no-op.
+   */
+  watchUpdates(): () => void {
+    return this.updates?.startPolling() ?? (() => {});
   }
 
   private async changeAssembly<T>(change: () => Promise<T>): Promise<T> {
@@ -2720,7 +2927,7 @@ export class PluginHost {
     return this.changeAssembly(async () => {
       if (!enabled || this.assembled.enabled(id) || this.assembled.builtin(id))
         return this.setEnabledNow(id, enabled, changedBy);
-      this.replacing = id;
+      this.replacing.add(id);
       try {
         await this.drainDispatches(id);
         // The enable re-extracts the installed bundle into a directory a successor may own.
@@ -2731,7 +2938,7 @@ export class PluginHost {
           return { refused: error.message };
         throw error;
       } finally {
-        this.replacing = null;
+        this.replacing.delete(id);
       }
     });
   }
@@ -2994,6 +3201,7 @@ export class PluginHost {
    * A failed candidate restores the old module or boot-unverified placeholder, reloading only
    * a prior hardened child. Migrations and their ledger commit with the install row or roll
    * back together. Lifecycle hooks retain their no-veto contract: failures are roster-visible.
+   * The door is a one-member `installGroup`, the same installer a reviewed family update uses.
    */
   async install(
     request: PluginInstallRequest,
@@ -3002,280 +3210,478 @@ export class PluginHost {
     unpacked?: { readonly id: string },
   ): Promise<ActionRefused | PluginInstallResult> {
     return this.changeAssembly(async () => {
-      try {
-        return await this.installNext(request, installedBy, installer, unpacked);
-      } finally {
-        this.replacing = null;
+      const isolates = this.isolates;
+      if (isolates === null) {
+        return installRefused("artifact_unreadable", "this server admits no bundles");
       }
+      if (unpacked !== undefined && !this.store.developerMode())
+        return refused("developer_mode_off", [unpacked.id]);
+      let artifact: VerifiedPluginArtifact;
+      try {
+        artifact = await inspectArtifact({
+          source: request.source,
+          sha256: request.sha256.toLowerCase(),
+          dataDir: isolates.dataDir,
+          signal: this.lifetime.signal,
+          ...(isolates.devPaths === undefined ? {} : { devPaths: isolates.devPaths }),
+          admit: (bundle) => this.admissionRefusal(bundle, request.replace === true, unpacked),
+        });
+      } catch (error) {
+        if (error instanceof InstallRefusal) return { refused: error.message };
+        throw error;
+      }
+      const outcome = await this.installGroup(
+        [
+          {
+            artifact,
+            grantedCaps: grantFor(artifact.bundle.manifest.capabilities, request.grant),
+            hardened: request.hardened === true,
+          },
+        ],
+        { installedBy, installer, ...(unpacked === undefined ? {} : { unpacked }) },
+      );
+      return "refused" in outcome ? outcome : outcome[0]!;
     });
   }
 
-  private async installNext(
-    request: PluginInstallRequest,
-    installedBy: string,
-    installer: CredentialReference | null,
+  /**
+   * The door's own verdicts on verified bytes, asked before anything is written: a namespace
+   * squat, an authored directory's id, an id already installed, an enabled native installation
+   * a changed declaration would strand, and recorded build metadata KNOWN not to run on this
+   * server. Unknown legacy metadata is admitted exactly as before; the roster shows it.
+   */
+  private admissionRefusal(
+    bundle: PluginBundle,
+    replace: boolean,
     unpacked?: { readonly id: string },
-  ): Promise<ActionRefused | PluginInstallResult> {
+  ): InstallRefusal | null {
+    const id = bundle.manifest.id;
+    if (id.startsWith(ENGINE_NAMESPACE_PREFIX) || id.startsWith(CORE_NAMESPACE_PREFIX)) {
+      return new InstallRefusal(
+        "namespace_reserved",
+        `"${id}" claims a namespace only this build may use`,
+      );
+    }
+    if (unpacked !== undefined && unpacked.id !== id) {
+      return new InstallRefusal(
+        "artifact_invalid",
+        `manifest id "${id}" is not the directory it was authored in, "${unpacked.id}"`,
+      );
+    }
+    const existing = this.installed.get(id);
+    if (existing !== undefined) {
+      if (!replace) {
+        return new InstallRefusal(
+          "already_installed",
+          `"${id}" is installed at ${existing.row.sha256}; pass replace to upgrade it`,
+        );
+      }
+      const native = this.nativeReplacementRefusal(bundle.manifest);
+      if (native !== null) return native;
+    }
+    const compatibility = pluginBuildCompatibility(bundle);
+    if (compatibility.status !== "incompatible") return null;
+    const mismatches = compatibility.issues
+      .filter((issue) => issue.kind === "incompatible")
+      .map(
+        (issue) =>
+          `${issue.component} built against ${issue.built ?? "an unrecorded version"}, this server runs ${issue.current}`,
+      );
+    return new InstallRefusal("artifact_invalid", `${id}: repack_required; ${mismatches.join("; ")}`);
+  }
+
+  /**
+   * THE INSTALLER — one bundle or a whole family (#238), always inside the assembly mutex.
+   *
+   * Every member's exact verified bytes are published; every member is fenced and drained;
+   * the prospective assembly is admitted with every candidate at once; every candidate is
+   * loaded and every migration chain staged. Then ONE synchronous commit writes every row,
+   * ledger and database marker, and ONE roster is published after the lifecycle fan-out.
+   * Until that commit the assembly every reader is answered is the committed old one.
+   * Any failure before it restores every member's previous module, row, data and lifecycle
+   * state, and publishes that roster instead. `attribution.assertCurrent` is asked after
+   * every await and immediately before the commit; its refusal is answered verbatim.
+   */
+  private async installGroup(
+    candidates: readonly InstallCandidate[],
+    attribution: InstallAttribution,
+  ): Promise<ActionRefused | readonly PluginInstallResult[]> {
     const isolates = this.isolates;
     if (isolates === null) {
       return installRefused("artifact_unreadable", "this server admits no bundles");
     }
-    if (unpacked !== undefined && !this.store.developerMode())
-      return refused("developer_mode_off", [unpacked.id]);
-    const sha256 = request.sha256.toLowerCase();
-    let artifact: InstalledArtifact;
+    let ordered: InstallCandidate[];
     try {
-      artifact = await installArtifact({
-        source: request.source,
-        sha256,
-        dataDir: isolates.dataDir,
-        signal: this.lifetime.signal,
-        ...(isolates.devPaths === undefined ? {} : { devPaths: isolates.devPaths }),
-        admit: (bundle) => {
-          const id = bundle.manifest.id;
-          if (id.startsWith(ENGINE_NAMESPACE_PREFIX) || id.startsWith(CORE_NAMESPACE_PREFIX)) {
-            return new InstallRefusal(
-              "namespace_reserved",
-              `"${id}" claims a namespace only this build may use`,
-            );
-          }
-          if (unpacked !== undefined && unpacked.id !== id) {
-            return new InstallRefusal(
-              "artifact_invalid",
-              `manifest id "${id}" is not the directory it was authored in, "${unpacked.id}"`,
-            );
-          }
-          const existing = this.installed.get(id);
-          if (existing === undefined) return null;
-          if (request.replace !== true) {
-            return new InstallRefusal(
-              "already_installed",
-              `"${id}" is installed at ${existing.row.sha256}; pass replace to upgrade it`,
-            );
-          }
-          return this.nativeReplacementRefusal(bundle.manifest);
-        },
-      });
+      // Namespace parents and supplied required dependencies first: every load, hook and
+      // commit below follows this order.
+      ordered = familyOrder(
+        candidates.map((candidate) => ({
+          id: candidate.artifact.bundle.manifest.id,
+          requiredDependencies: requiredDependencyIds(candidate.artifact.bundle.manifest),
+          candidate,
+        })),
+      ).map(({ candidate }) => candidate);
     } catch (error) {
-      if (error instanceof InstallRefusal) return { refused: error.message };
+      if (error instanceof BundleOrderError) return installRefused("artifact_invalid", error.message);
       throw error;
     }
-    const { bundle } = artifact;
-    const id = bundle.manifest.id;
-    const previous = this.installed.get(id);
-    const previousDef = this.installedDefs.get(id);
-    const consent: PluginInstallRow = {
-      pluginId: id,
-      sha256,
-      source: request.source,
-      grantedCaps: grantFor(bundle.manifest.capabilities, request.grant),
-      installedBy,
-      installedAt: this.runtime.now(),
-      bundlePath: artifact.bundlePath,
-      actions: [],
-      hardened: request.hardened === true,
-      ...(bundle.builtAgainst === undefined ? {} : { builtAgainst: bundle.builtAgainst }),
-      ...(unpacked === undefined ? {} : { mode: "unpacked" as const }),
-      ...(installer === null ? {} : { installer }),
+    const current = (): void => {
+      try {
+        attribution.assertCurrent?.();
+      } catch (error) {
+        throw new InstallAuthorityLost(
+          error instanceof Error ? error.message : UPDATE_AUTHORITY_REFUSAL,
+        );
+      }
     };
-    const web = webModuleOf(bundle);
-    const styles = stylesheetOf(bundle);
     const wasEnabled = new Set(
       this.assembled.roster.filter((entry) => entry.enabled).map((entry) => entry.manifest.id),
     );
-    const live = previous !== undefined && previous.bundle !== null && wasEnabled.has(id);
-    const previousChild =
-      previous?.row.hardened === true && previous.bundle?.manifest.entry.server === true;
-    const previousLifecycle = this.lifecycleStates.get(id);
-    let retired = false;
-    let candidateChild = false;
-    let notified = false;
-    let row: PluginInstallRow;
-    this.replacing = id;
+    const installedAt = this.runtime.now();
+    const members: GroupMember[] = [];
     try {
-      // Refuse new dispatches above, and finish admitted old handlers before any hook,
-      // runner replacement or snapshot. Other plugins remain independently serviceable.
-      await this.drainDispatches(id);
-      // Re-extraction below writes the previous install's directory.
-      this.assertOpen();
-      // Only a verified hardened module has a child to restore. A boot-unverified row keeps
-      // its fail-closed def on rollback; unreadable old bytes must not prevent its repair.
-      if (previousChild) {
-        const verdict = verifyInstalledBundle(previous.row);
-        if (!verdict.ok) throw new InstallRefusal(verdict.refusal, verdict.detail);
+      for (const candidate of ordered) {
+        const { bundle } = candidate.artifact;
+        const id = bundle.manifest.id;
+        const previous = this.installed.get(id);
+        const artifact = publishArtifact(candidate.artifact, isolates.dataDir, this.lifetime.signal);
+        members.push({
+          id,
+          bundle,
+          artifact,
+          web: webModuleOf(bundle),
+          styles: stylesheetOf(bundle),
+          compatibility: pluginBuildCompatibility(bundle),
+          previous,
+          previousDef: this.installedDefs.get(id),
+          previousLifecycle: this.lifecycleStates.get(id),
+          live: previous !== undefined && previous.bundle !== null && wasEnabled.has(id),
+          previousChild:
+            previous?.row.hardened === true && previous.bundle?.manifest.entry.server === true,
+          row: {
+            pluginId: id,
+            sha256: artifact.sha256,
+            source: candidate.artifact.source,
+            grantedCaps: [...candidate.grantedCaps],
+            installedBy: attribution.installedBy,
+            installedAt,
+            bundlePath: artifact.bundlePath,
+            actions: [],
+            hardened: candidate.hardened,
+            ...(bundle.builtAgainst === undefined ? {} : { builtAgainst: bundle.builtAgainst }),
+            ...(attribution.unpacked === undefined ? {} : { mode: "unpacked" as const }),
+            ...(attribution.installer === null ? {} : { installer: attribution.installer }),
+          },
+          def: undefined,
+          staged: undefined,
+          retired: false,
+          candidateChild: false,
+          notified: false,
+        });
       }
-      const env = await this.env();
-      // Manifest/dependency preflight needs no child. The module supplies the candidate's
-      // actions and migrations, which are checked separately after loading.
-      const dataState = new Map(env.dataState);
-      dataState.delete(id);
-      this.preflightInstall(
-        id,
-        { manifest: bundle.manifest, actions: [], handlers: {} },
-        { ...env, dataState },
-      );
-      let candidate: ServerPluginDef;
-      if (consent.hardened !== true) {
-        candidate = await this.loadBundle(bundle, artifact.dir, false);
-        this.preflightInstall(id, candidate, await this.env());
-      } else {
-        // One child owns one id. A failed candidate reloads only an actual prior child.
-        if (live) {
-          await this.hook(id, "onDisable", "disable_failed");
-          notified = true;
-        }
-        if (previousChild) {
-          retired = true;
-          await isolates.runner.unload(id);
-        }
-        candidateChild = true;
-        candidate = await this.loadBundle(bundle, artifact.dir, true);
-      }
-      const prospective = this.preflightInstall(id, candidate, await this.env());
-      if (candidateChild && isolates.runner.state(id) === "crashed")
-        throw new IsolateLoadError("candidate child crashed during admission");
-      if (live && !notified) {
-        await this.hook(id, "onDisable", "disable_failed");
-        notified = true;
-      }
-      if (previousChild && !retired) {
-        retired = true;
-        await isolates.runner.unload(id);
-      }
-      row = {
-        ...consent,
-        actions: prospective.roster.find((entry) => entry.manifest.id === id)?.actions ?? [],
-      };
-      let staged: PluginMigrationSession | undefined;
-      try {
-        if (!prospective.enabled(id)) this.retireDatabase(id);
-        if (prospective.enabled(id)) {
-          staged = await this.prepareMigrations(
-            id,
-            prospective.pendingMigrations.get(id) ?? [],
-            bundle.manifest,
-          );
-        }
-        const publish = (): void => {
-          this.assertOpen();
-          // Native admission can occur while candidate loading or migration awaits.
-          const nativeRefusal = this.nativeReplacementRefusal(bundle.manifest);
-          if (nativeRefusal !== null) throw nativeRefusal;
-          this.store.putPluginInstall(row);
-          const types = bundle.manifest.contributes.elements.map((element) => element.type);
-          if (types.length > 0) this.store.claimElementTypes(id, types);
-        };
-        if (staged !== undefined) staged.commit(publish);
-        else this.store.transaction(publish);
-      } catch (error) {
-        staged?.discard();
-        if (error instanceof InstallRefusal) throw error;
-        throw new InstallRefusal(
-          "artifact_invalid",
-          error instanceof Error ? error.message : "migration failed",
-        );
-      }
-      this.installed.set(id, { row, bundle, web, styles });
-      this.installedDefs.set(
-        id,
-        !prospective.enabled(id) && row.hardened !== true
-          ? this.dormantDef(row, bundle)
-          : candidate,
-      );
-      this.lifecycleStates.delete(id);
-      this.heldUnloaded.delete(id);
-      this.syncDefs();
     } catch (error) {
-      try {
-        await this.rollbackInstall(id, artifact, previous, previousDef, retired, candidateChild);
-        if (previousLifecycle === undefined) this.lifecycleStates.delete(id);
-        else this.lifecycleStates.set(id, previousLifecycle);
-        if (notified) await this.hook(id, "onEnable", "enable_failed");
-        this.replacing = null;
-        this.reconcileIsolateState(id);
-        this.assembled = await this.reassemble();
-        this.publish();
-      } catch (rollbackError) {
-        // A closed host rolls nothing back: what it would restore or delete is the successor's.
-        this.assertOpen();
-        this.lifecycleStates.set(id, "enable_failed");
-        this.assembled = await this.reassemble();
-        this.publish();
-        throw new AggregateError(
-          [error, rollbackError],
-          `replacement and rollback failed for ${id}`,
-        );
+      // A closed host deletes nothing: the files may already be its successor's.
+      if (!this.closed) {
+        for (const member of members) {
+          if (member.previous?.row.sha256 !== member.artifact.sha256) removeInstall(member.artifact);
+        }
       }
       if (error instanceof InstallRefusal) return { refused: error.message };
-      if (error instanceof AssemblyError)
-        return installRefused("artifact_invalid", error.problems.join("; "));
-      if (error instanceof IsolateLoadError)
-        return installRefused("artifact_invalid", error.message);
       throw error;
     }
-    this.assembled = await this.reassemble();
-    if (await this.runPendingMigrations()) this.assembled = await this.reassemble();
-    await this.stampDeclaredVersions();
-    // Past the commit, the replaced bundle is the only file left to delete, and a successor may
-    // have booted from it.
-    this.assertOpen();
-    if (
-      previous !== undefined &&
-      (previous.bundle === null ||
-        canonicalJobJson(previous.bundle.manifest.machine ?? null) !==
-          canonicalJobJson(bundle.manifest.machine ?? null))
-    ) {
-      // No consent is copied or granted. The reviewed deployment door alone can admit
-      // the changed native declaration, artifact and resources.
-      this.jobs?.disablePlugin(id);
+    // Declarations only until a member's module is loaded, so admission never runs code early.
+    const candidateDefs = (): Map<string, ServerPluginDef> =>
+      new Map(
+        members.map((member) => [
+          member.id,
+          member.def ?? { manifest: member.bundle.manifest, actions: [], handlers: {} },
+        ]),
+      );
+    for (const member of members) this.replacing.add(member.id);
+    try {
+      let prospective!: Assembly;
+      try {
+        // Refuse new dispatches above, and finish admitted old handlers before any hook,
+        // runner replacement or snapshot. Other plugins remain independently serviceable.
+        await Promise.all(members.map((member) => this.drainDispatches(member.id)));
+        // Re-extraction below writes the previous installs' directories.
+        this.assertOpen();
+        current();
+        // Only a verified hardened module has a child to restore. A boot-unverified row keeps
+        // its fail-closed def on rollback; unreadable old bytes must not prevent its repair.
+        for (const member of members) {
+          if (!member.previousChild || member.previous === undefined) continue;
+          const verdict = verifyInstalledBundle(member.previous.row);
+          if (!verdict.ok) throw new InstallRefusal(verdict.refusal, verdict.detail);
+        }
+        const env = await this.env();
+        current();
+        // Manifest/dependency preflight needs no module. Each module supplies its candidate's
+        // actions and migrations, which are checked once it is loaded.
+        const declared = new Map(env.dataState);
+        for (const member of members) declared.delete(member.id);
+        this.preflightGroup(candidateDefs(), { ...env, dataState: declared });
+        // In-realm candidates load beside the modules still serving.
+        for (const member of members) {
+          if (member.row.hardened === true) continue;
+          member.def = await this.loadBundle(member.bundle, member.artifact.dir, false);
+          current();
+        }
+        if (members.some((member) => member.row.hardened !== true)) {
+          const loaded = await this.env();
+          current();
+          const dataState = new Map(loaded.dataState);
+          for (const member of members) if (member.def === undefined) dataState.delete(member.id);
+          this.preflightGroup(candidateDefs(), { ...loaded, dataState });
+        }
+        // One child owns one id: a hardened candidate starts only once its predecessor retired.
+        // A failed candidate reloads only an actual prior child.
+        for (const member of members) {
+          if (member.row.hardened !== true) continue;
+          if (member.live) {
+            await this.hook(member.id, "onDisable", "disable_failed");
+            member.notified = true;
+            current();
+          }
+          if (member.previousChild) {
+            member.retired = true;
+            await isolates.runner.unload(member.id);
+            current();
+          }
+          member.candidateChild = true;
+          member.def = await this.loadBundle(member.bundle, member.artifact.dir, true);
+          current();
+        }
+        prospective = this.preflightGroup(candidateDefs(), await this.env());
+        current();
+        for (const member of members) {
+          if (member.candidateChild && isolates.runner.state(member.id) === "crashed")
+            throw new IsolateLoadError(`${member.id}: candidate child crashed during admission`);
+        }
+        for (const member of members) {
+          if (member.live && !member.notified) {
+            await this.hook(member.id, "onDisable", "disable_failed");
+            member.notified = true;
+            current();
+          }
+          if (member.previousChild && !member.retired) {
+            member.retired = true;
+            await isolates.runner.unload(member.id);
+            current();
+          }
+        }
+        for (const member of members) {
+          member.row = {
+            ...member.row,
+            actions:
+              prospective.roster.find((entry) => entry.manifest.id === member.id)?.actions ?? [],
+          };
+          if (!prospective.enabled(member.id)) {
+            this.retireDatabase(member.id);
+            continue;
+          }
+          try {
+            member.staged = await this.prepareMigrations(
+              member.id,
+              prospective.pendingMigrations.get(member.id) ?? [],
+              member.bundle.manifest,
+            );
+          } catch (error) {
+            if (error instanceof InstallRefusal) throw error;
+            throw new InstallRefusal(
+              "artifact_invalid",
+              error instanceof Error ? error.message : "migration failed",
+            );
+          }
+          current();
+        }
+        /*
+          THE COMMIT, synchronous from here: nothing separates the last authority, snapshot and
+          native checks from the rows they admit. Every private image is swapped in under its
+          prepared journal first, ONE transaction then publishes every ledger, row and image
+          marker, and only after it committed are the old images released.
+        */
+        this.assertOpen();
+        current();
+        for (const member of members) {
+          // Native admission can occur while candidate loading or migration awaits.
+          const nativeRefusal = this.nativeReplacementRefusal(member.bundle.manifest);
+          if (nativeRefusal !== null) throw nativeRefusal;
+        }
+        try {
+          for (const member of members) member.staged?.activate();
+          this.store.transaction(() => {
+            for (const member of members) {
+              const publish = (): void => {
+                this.store.putPluginInstall(member.row);
+                const types = member.bundle.manifest.contributes.elements.map(
+                  (element) => element.type,
+                );
+                if (types.length > 0) this.store.claimElementTypes(member.id, types);
+              };
+              if (member.staged === undefined) publish();
+              else member.staged.commitMetadata(publish);
+            }
+          });
+        } catch (error) {
+          if (error instanceof InstallRefusal) throw error;
+          throw new InstallRefusal(
+            "artifact_invalid",
+            error instanceof Error ? error.message : "migration failed",
+          );
+        }
+      } catch (error) {
+        try {
+          for (const member of members) member.staged?.discard();
+          for (const member of [...members].reverse()) await this.rollbackMember(member);
+          this.syncDefs();
+          for (const member of members) {
+            if (member.previousLifecycle === undefined) this.lifecycleStates.delete(member.id);
+            else this.lifecycleStates.set(member.id, member.previousLifecycle);
+          }
+          for (const member of members) {
+            if (member.notified) await this.hook(member.id, "onEnable", "enable_failed");
+          }
+          for (const member of members) this.replacing.delete(member.id);
+          for (const member of members) this.reconcileIsolateState(member.id);
+          this.assembled = await this.reassemble();
+          this.publish();
+        } catch (rollbackError) {
+          // A closed host rolls nothing back: what it would restore or delete is the successor's.
+          this.assertOpen();
+          for (const member of members) this.lifecycleStates.set(member.id, "enable_failed");
+          this.assembled = await this.reassemble();
+          this.publish();
+          throw new AggregateError(
+            [error, rollbackError],
+            `replacement and rollback failed for ${members.map((member) => member.id).join(", ")}`,
+          );
+        }
+        if (error instanceof InstallRefusal || error instanceof InstallAuthorityLost)
+          return { refused: error.message };
+        if (error instanceof AssemblyError)
+          return installRefused("artifact_invalid", error.problems.join("; "));
+        if (error instanceof IsolateLoadError)
+          return installRefused("artifact_invalid", error.message);
+        throw error;
+      }
+      // COMMITTED: nothing below may roll it back. The old images go only now.
+      for (const member of members) member.staged?.finish();
+      for (const member of members) {
+        this.installed.set(member.id, {
+          row: member.row,
+          bundle: member.bundle,
+          web: member.web,
+          styles: member.styles,
+          compatibility: member.compatibility,
+        });
+        this.installedDefs.set(
+          member.id,
+          !prospective.enabled(member.id) && member.row.hardened !== true
+            ? this.dormantDef(member.row, member.bundle)
+            : member.def!,
+        );
+        this.lifecycleStates.delete(member.id);
+        this.heldUnloaded.delete(member.id);
+      }
+      this.syncDefs();
+      // Durable, and every in-memory row final: the coordinator records the new family state
+      // now, synchronously with the commit, so the one publication below already carries it.
+      // An observer cannot un-commit SQL: its failure is reported and the family still lands.
+      try {
+        attribution.committed?.();
+      } catch (error) {
+        this.logger.error("plugin_lifecycle", {
+          plugin: members.map((member) => member.id).join(","),
+          hook: "update_committed",
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      this.assembled = await this.reassemble();
+      if (await this.runPendingMigrations()) this.assembled = await this.reassemble();
+      await this.stampDeclaredVersions();
+      // Past the commit, the replaced bundles are the only files left to delete, and a
+      // successor may have booted from them.
+      this.assertOpen();
+      for (const member of members) {
+        const { previous } = member;
+        if (previous === undefined) continue;
+        if (
+          previous.bundle === null ||
+          canonicalJobJson(previous.bundle.manifest.machine ?? null) !==
+            canonicalJobJson(member.bundle.manifest.machine ?? null)
+        ) {
+          // No consent is copied or granted. The reviewed deployment door alone can admit
+          // the changed native declaration, artifact and resources.
+          this.jobs?.disablePlugin(member.id);
+        }
+        if (previous.row.sha256 !== member.row.sha256) removeInstall(previous.row);
+        wasEnabled.delete(member.id);
+      }
+      const delta: AssemblyDelta = {
+        enabled: this.assembled.order.filter(
+          (pluginId) => this.assembled.enabled(pluginId) && !wasEnabled.has(pluginId),
+        ),
+        disabled: [],
+      };
+      if (delta.enabled.length > 0) await this.fanOut(delta, wasEnabled);
+      for (const member of members) this.replacing.delete(member.id);
+      let reconciled = false;
+      for (const member of members)
+        reconciled = this.reconcileIsolateState(member.id) || reconciled;
+      if (reconciled) this.assembled = await this.reassemble();
+      this.assertOpen();
+      // One roster for the whole family: no member was ever published half replaced.
+      this.publish();
+      for (const member of members) {
+        this.logger.info("plugin_installed", {
+          plugin: member.id,
+          version: member.bundle.manifest.version,
+          sha256: member.row.sha256,
+          principal: attribution.installedBy,
+          caps: member.row.grantedCaps,
+          replaced: member.previous !== undefined,
+          ...(attribution.unpacked === undefined ? {} : { mode: "unpacked" }),
+        });
+        // The commit point, on the engine's own node, for the reason `setEnabled` gives.
+        this.events.emit(
+          enginePluginsManifest.id,
+          { kind: "plugin", pluginId: enginePluginsManifest.id },
+          ENGINE_INSTALLED_EVENT,
+          attribution.installedBy,
+          { plugin: member.id, version: member.bundle.manifest.version, sha256: member.row.sha256 },
+        );
+      }
+      return members.map((member) => ({
+        id: member.id,
+        version: member.bundle.manifest.version,
+        grantedCaps: [...member.row.grantedCaps],
+      }));
+    } finally {
+      for (const member of members) this.replacing.delete(member.id);
     }
-    if (previous !== undefined && previous.row.sha256 !== sha256) removeInstall(previous.row);
-    if (previous !== undefined) wasEnabled.delete(id);
-    const delta: AssemblyDelta = {
-      enabled: this.assembled.order.filter(
-        (pluginId) => this.assembled.enabled(pluginId) && !wasEnabled.has(pluginId),
-      ),
-      disabled: [],
-    };
-    if (delta.enabled.length > 0) await this.fanOut(delta, wasEnabled);
-    this.replacing = null;
-    if (this.reconcileIsolateState(id)) this.assembled = await this.reassemble();
-    this.assertOpen();
-    this.publish();
-    this.logger.info("plugin_installed", {
-      plugin: id,
-      version: bundle.manifest.version,
-      sha256,
-      principal: installedBy,
-      caps: row.grantedCaps,
-      replaced: previous !== undefined,
-      ...(unpacked === undefined ? {} : { mode: "unpacked" }),
-    });
-    // The commit point, on the engine's own node, for the reason `setEnabled` gives.
-    this.events.emit(
-      enginePluginsManifest.id,
-      { kind: "plugin", pluginId: enginePluginsManifest.id },
-      ENGINE_INSTALLED_EVENT,
-      installedBy,
-      { plugin: id, version: bundle.manifest.version, sha256 },
-    );
-    return { id, version: bundle.manifest.version, grantedCaps: [...row.grantedCaps] };
   }
 
-  /** Assemble a candidate without exposing its bundle or handlers to native resolvers. */
-  private preflightInstall(id: string, candidate: ServerPluginDef, env: AssemblyEnv): Assembly {
+  /** Assemble every candidate at once, never exposing their bundles or handlers to native resolvers. */
+  private preflightGroup(
+    candidates: ReadonlyMap<string, ServerPluginDef>,
+    env: AssemblyEnv,
+  ): Assembly {
     const defs = new Map(this.installedDefs);
-    defs.set(id, candidate);
+    for (const [id, candidate] of candidates) defs.set(id, candidate);
     const prospective = [...this.firstParty, ...defs.values()];
     const dataState = new Map(env.dataState);
-    for (const heldId of this.heldUnloaded) if (heldId !== id) dataState.delete(heldId);
+    for (const heldId of this.heldUnloaded) if (!candidates.has(heldId)) dataState.delete(heldId);
     const assembly = assembleRoster(prospective, this.store.disabledPlugins(), {
       ...env,
       dataState,
       problemPolicy: "hold",
-      problems: [...this.bundleProblems(id), ...this.harnessProblems(prospective)],
+      problems: [
+        ...this.bundleProblems(new Set(candidates.keys())),
+        ...this.harnessProblems(prospective),
+      ],
     });
-    // Existing, unrelated holds cannot make a compatible repair impossible. The candidate
+    // Existing, unrelated holds cannot make a compatible repair impossible. Every candidate
     // and every previously admitted definition must nevertheless pass strict admission.
     const previouslyHeld = new Set(
       this.assembled.roster.filter((row) => row.held !== undefined).map((row) => row.manifest.id),
@@ -3284,7 +3690,7 @@ export class PluginHost {
       .filter(
         (row) =>
           row.held !== undefined &&
-          (row.manifest.id === id || !previouslyHeld.has(row.manifest.id)),
+          (candidates.has(row.manifest.id) || !previouslyHeld.has(row.manifest.id)),
       )
       .map((row) => row.held!.reason);
     if (problems.length > 0) throw new AssemblyError(problems);
@@ -3389,26 +3795,21 @@ export class PluginHost {
     return this.authored.author(request, authoredBy, credential);
   }
 
-  /** Retire only the candidate and restore the exact old installation, never native jobs. */
-  private async rollbackInstall(
-    id: string,
-    artifact: InstalledArtifact,
-    previous: InstalledPlugin | undefined,
-    previousDef: ServerPluginDef | undefined,
-    retired: boolean,
-    candidateChild: boolean,
-  ): Promise<void> {
-    if (this.isolates !== null && candidateChild) await this.isolates.runner.unload(id);
+  /**
+   * Retire only this member's candidate and restore its exact old installation, never native
+   * jobs. The caller rebuilds the def index once every member is restored.
+   */
+  private async rollbackMember(member: GroupMember): Promise<void> {
+    const { id, previous, previousDef } = member;
+    if (this.isolates !== null && member.candidateChild) await this.isolates.runner.unload(id);
     this.assertOpen();
-    if (previous === undefined || previous.row.sha256 !== artifact.sha256) {
-      removeInstall(artifact);
-    }
+    if (previous?.row.sha256 !== member.artifact.sha256) removeInstall(member.artifact);
     if (previous === undefined || previousDef === undefined) {
       this.installed.delete(id);
       this.installedDefs.delete(id);
     } else {
       this.installed.set(id, previous);
-      if (retired) {
+      if (member.retired) {
         const verdict = verifyInstalledBundle(previous.row);
         if (!verdict.ok) throw new InstallRefusal(verdict.refusal, verdict.detail);
         this.installedDefs.set(id, await this.loadBundle(verdict.bundle, verdict.dir, true));
@@ -3417,7 +3818,125 @@ export class PluginHost {
         this.installedDefs.set(id, previousDef);
       }
     }
-    this.syncDefs();
+  }
+
+  /** THE REVIEW DOOR (#238): the coordinator's verified comparison, under re-proved root. */
+  async reviewUpdate(
+    id: string,
+    authority: PluginUpdateAuthority,
+  ): Promise<ActionRefused | PluginUpdateReviewResult> {
+    if (this.updates === null) {
+      return installRefused("artifact_unreadable", "this server admits no bundles");
+    }
+    return this.updates.review(id, this.rootAuthority(authority));
+  }
+
+  /**
+   * THE APPLY DOOR (#238): the coordinator binds the exact reviewed digest and consent, then
+   * hands the whole family to `applyUpdateNow` inside the assembly mutex.
+   */
+  async applyUpdate(
+    request: PluginUpdateApplyRequest,
+    authority: PluginUpdateAuthority,
+  ): Promise<ActionRefused | PluginUpdateApplyResult> {
+    if (this.updates === null) {
+      return installRefused("artifact_unreadable", "this server admits no bundles");
+    }
+    return this.updates.apply(request, this.rootAuthority(authority));
+  }
+
+  /**
+   * The door's live root read, plus the credential itself restored afresh on every question:
+   * a revoked, expired or re-scoped token, a removed principal or a deny landing mid-update
+   * refuses the update even when the dispatch context was admitted as root.
+   */
+  private rootAuthority(authority: PluginUpdateAuthority): PluginUpdateAuthority {
+    return {
+      ...authority,
+      assertCurrent: () => {
+        authority.assertCurrent();
+        const restored = this.authService.restoreCredential(authority.credential);
+        if (
+          restored === null ||
+          restored.principal.id !== authority.principalId ||
+          !this.authService.holdsRoot(restored)
+        )
+          throw new Error(UPDATE_AUTHORITY_REFUSAL);
+      },
+    };
+  }
+
+  /**
+   * The coordinator's apply, already inside `serialize`. Every reviewed member is admitted
+   * again against the live installation; an unpacked row belongs to its source tree and is
+   * never taken over. Members whose pin, hardening and grant are all unchanged keep their
+   * running module and row untouched; the rest are ONE group through the one installer.
+   */
+  private async applyUpdateNow(
+    members: readonly PreparedPluginUpdate[],
+    authority: PluginUpdateAuthority,
+  ): Promise<ActionRefused | readonly PluginInstallResult[]> {
+    const changed: PreparedPluginUpdate[] = [];
+    for (const member of members) {
+      const { bundle } = member.artifact;
+      const id = bundle.manifest.id;
+      const existing = this.installed.get(id)?.row;
+      if (existing?.mode === "unpacked") {
+        return installRefused(
+          "artifact_invalid",
+          `"${id}" is built from this instance's authored directory, which alone updates it`,
+        );
+      }
+      const refusal = this.admissionRefusal(bundle, true);
+      if (refusal !== null) return { refused: refusal.message };
+      if (
+        existing === undefined ||
+        existing.sha256 !== member.artifact.sha256 ||
+        (existing.hardened === true) !== member.hardened ||
+        existing.grantedCaps.length !== member.grantedCaps.length ||
+        member.grantedCaps.some((cap) => !existing.grantedCaps.includes(cap))
+      )
+        changed.push(member);
+    }
+    let installed: readonly PluginInstallResult[] = [];
+    if (changed.length > 0) {
+      const outcome = await this.installGroup(changed, {
+        installedBy: authority.principalId,
+        installer: authority.credential,
+        // Called through `authority`, whatever shape the coordinator gives its callbacks.
+        assertCurrent: () => {
+          authority.assertCurrent();
+        },
+        ...(authority.committed === undefined
+          ? {}
+          : {
+              committed: () => {
+                authority.committed?.();
+              },
+            }),
+      });
+      if ("refused" in outcome) return outcome;
+      installed = outcome;
+    } else {
+      // Nothing to replace: the reviewed family is already the committed one.
+      try {
+        authority.assertCurrent();
+      } catch (error) {
+        return { refused: error instanceof Error ? error.message : UPDATE_AUTHORITY_REFUSAL };
+      }
+      authority.committed?.();
+      this.publish();
+    }
+    return members.map((member) => {
+      const id = member.artifact.bundle.manifest.id;
+      return (
+        installed.find((result) => result.id === id) ?? {
+          id,
+          version: member.artifact.bundle.manifest.version,
+          grantedCaps: [...(this.installed.get(id)?.row.grantedCaps ?? member.grantedCaps)],
+        }
+      );
+    });
   }
 
   /**
@@ -3744,7 +4263,8 @@ export class PluginHost {
     if (this.closed) return;
     this.streams.reconcile();
     const developerMode = this.store.developerMode();
-    for (const listener of this.rosterListeners) listener(this.assembled.roster, developerMode);
+    const roster = this.roster();
+    for (const listener of this.rosterListeners) listener(roster, developerMode);
   }
 
   /**
@@ -4092,7 +4612,7 @@ export class PluginHost {
       // creation and administration, never the ability to remove what already exists.
       return refuse("plugin_disabled", `plugin "${pluginId}" is disabled`);
     }
-    if (this.replacing === pluginId) {
+    if (this.replacing.has(pluginId)) {
       return refuse("unavailable", `plugin "${pluginId}" is being replaced`);
     }
     /*
@@ -4203,7 +4723,7 @@ export class PluginHost {
         if (
           this.assembled.actions.get(fullName) !== entry ||
           !this.assembled.enabled(pluginId) ||
-          this.replacing === pluginId
+          this.replacing.has(pluginId)
         )
           return new ActionAdmissionDenial("unavailable", "action unavailable");
         if (auth.containerScope !== null && scope !== "container" && runAccess === undefined)
@@ -4531,7 +5051,7 @@ export class PluginHost {
                 ...this.defs.flatMap((def) =>
                   def.harness &&
                   this.assembled.enabled(def.manifest.id) &&
-                  this.replacing !== def.manifest.id &&
+                  !this.replacing.has(def.manifest.id) &&
                   def.manifest.contributes.harness
                     ? [def.manifest.contributes.harness]
                     : [],
@@ -4794,6 +5314,7 @@ export class PluginHost {
    */
   close(): void {
     this.lifetime.abort(new Error("the plugin host is closed"));
+    this.updates?.close();
     this.authored?.close();
     this.broker.clearRunLaunches();
     for (const discard of this.stagedMigrations) discard();
