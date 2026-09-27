@@ -11,6 +11,10 @@ import {
   InstalledPluginStatesSchema,
   InstalledPluginsSnapshotSchema,
   SettingValueSchema,
+  PluginUpdateReviewRequestSchema,
+  PluginUpdateReviewResultSchema,
+  PluginUpdateApplyRequestSchema,
+  PluginUpdateApplyResultSchema,
   type PluginManifest,
 } from "@manifold/protocol";
 import { z } from "zod";
@@ -56,6 +60,8 @@ export const ENGINE_LIST_INSTALLED_ACTION = `${ENGINE_PLUGINS_ID}.listInstalled`
 export const ENGINE_EXPORT_INSTALLED_ACTION = `${ENGINE_PLUGINS_ID}.exportInstalled`;
 export const ENGINE_SET_DEVELOPER_MODE_ACTION = `${ENGINE_PLUGINS_ID}.setDeveloperMode`;
 export const ENGINE_AUTHOR_ACTION = `${ENGINE_PLUGINS_ID}.author`;
+export const ENGINE_REVIEW_UPDATE_ACTION = `${ENGINE_PLUGINS_ID}.reviewUpdate`;
+export const ENGINE_APPLY_UPDATE_ACTION = `${ENGINE_PLUGINS_ID}.applyUpdate`;
 
 /**
  * THE ENGINE DOOR'S EVENT KINDS (ADR 0012). The enablement door is the one door the engine
@@ -238,6 +244,20 @@ export const enginePluginsActions: readonly AnyActionDef[] = [
     caps: ["*"],
     input: PluginInstallRequestSchema,
     result: PluginInstallResultSchema,
+  }),
+  defineAction({
+    name: "reviewUpdate",
+    title: "Review a verified plugin family update",
+    caps: ["*"],
+    input: PluginUpdateReviewRequestSchema,
+    result: PluginUpdateReviewResultSchema,
+  }),
+  defineAction({
+    name: "applyUpdate",
+    title: "Apply an exact reviewed plugin family update",
+    caps: ["*"],
+    input: PluginUpdateApplyRequestSchema,
+    result: PluginUpdateApplyResultSchema,
   }),
   defineAction({
     name: "listInstalled",

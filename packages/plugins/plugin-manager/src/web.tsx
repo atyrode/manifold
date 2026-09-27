@@ -1,7 +1,9 @@
 import "./styles.css";
 import {
+  ENGINE_APPLY_UPDATE_ACTION,
   ENGINE_INSTALL_ACTION,
   ENGINE_PURGE_ACTION,
+  ENGINE_REVIEW_UPDATE_ACTION,
   ENGINE_SET_DEVELOPER_MODE_ACTION,
   ENGINE_SET_ENABLED_ACTION,
   ENGINE_SET_SETTING_ACTION,
@@ -14,12 +16,18 @@ import {
   GOVERNED_CAPS,
   PLUGIN_PURGE_TARGETS,
   PluginPurgeResultSchema,
+  PluginUpdateApplyResultSchema,
+  PluginUpdateReviewResultSchema,
   type ActionSummary,
   type Cap,
   type ManifoldRef,
+  type PluginBuildCompatibility,
   type PluginPurgeResult,
   type PluginPurgeTarget,
   type PluginRosterEntry,
+  type PluginUpdateMember,
+  type PluginUpdateReview,
+  type PluginUpdateStatus,
   type TileLayout,
 } from "@manifold/protocol";
 import { useWorkspaceShell } from "@manifold/plugin/hooks";
@@ -54,13 +62,26 @@ import {
   type PluginSort,
 } from "./catalog.ts";
 import {
+  PLUGIN_HALF_LABELS,
+  PLUGIN_HALVES,
+  appliedMismatch,
+  dataVersionWords,
+  dependencyChanges,
+  expandingMembers,
+  hasHalf,
   installRefusalWords,
-  latestVersion,
   linkHost,
+  listNames,
   permissionCount,
   permissionSummary,
   pluginPermissions,
   pluginStatus,
+  reviewStaleness,
+  updateConsent,
+  updateOwnership,
+  updatePermissions,
+  updateRefusalWords,
+  type DependencyChange,
   type PluginStatus,
 } from "./status.ts";
 import {
@@ -77,10 +98,10 @@ import { MachineRuntime } from "./runtime.tsx";
  * Composition administration, rendered by the composition it administers (issue #239). The
  * list is the server's roster verbatim (`host.assembly.roster()`), so this section can never
  * disagree with what the workspace actually composed, and every lever is one of the ENGINE's
- * doors — `engine.plugins.setEnabled`, `purge`, `install`, `uninstall`, `setSetting` — so
- * this plugin owns the UI and only the UI. Enablement is workspace-GLOBAL and hot: flipping a
- * toggle here changes what every principal's client composes, and the new roster is pushed
- * rather than polled (D4).
+ * doors — `engine.plugins.setEnabled`, `purge`, `install`, `uninstall`, `setSetting`,
+ * `reviewUpdate`, `applyUpdate` — so this plugin owns the UI and only the UI. Enablement is
+ * workspace-GLOBAL and hot: flipping a toggle here changes what every principal's client
+ * composes, and the new roster is pushed rather than polled (D4).
  *
  * THE SHAPE is one list in three collapsible sections (Installed, Built-in, Engine) with a
  * detail sheet beside it — master-detail inside one modal — because the roster is one ledger
@@ -176,7 +197,7 @@ function Chip({
   testid,
   children,
 }: {
-  readonly tone?: PluginStatus["tone"] | "muted" | "publisher";
+  readonly tone?: PluginStatus["tone"] | "muted" | "publisher" | "update";
   readonly title?: string | undefined;
   readonly testid?: string;
   readonly children: ReactNode;
@@ -528,6 +549,980 @@ function ContributedKind({
   );
 }
 
+/** The hub's last observation of a family's release source, in words (#238). */
+function updateStatusWords(status: PluginUpdateStatus | undefined): string {
+  if (status === undefined) return "Not checked yet.";
+  switch (status.state) {
+    case "unchecked":
+      return "Not checked yet.";
+    case "checking":
+      return "Checking the release source now.";
+    case "current":
+      return `Current: the release source's preferred release is what is installed (checked ${WHEN.format(status.checkedAt)}).`;
+    case "available":
+      return `${status.version} is available for ${listNames(status.family)} (found ${WHEN.format(status.checkedAt)}). Nothing installs until it is reviewed and applied.`;
+    case "failed":
+      return `The last check failed (${WHEN.format(status.checkedAt)}): ${status.message}`;
+    default: {
+      const exhaustive: never = status;
+      return exhaustive;
+    }
+  }
+}
+
+/**
+ * WHAT A BUNDLE WAS BUILT AGAINST beside what this hub runs (ADR 0025 §Consequences b), per
+ * component: both versions and whether the mismatch is known or merely unrecorded. Unknown is
+ * legacy metadata and loads as it always did; a known mismatch is the server's to hold.
+ */
+function CompatibilityIssues({
+  compatibility,
+}: {
+  readonly compatibility: PluginBuildCompatibility;
+}): ReactElement {
+  return (
+    <div className="plugin-manager-update-compatibility" data-status={compatibility.status}>
+      <p>
+        {compatibility.status === "compatible"
+          ? "Built against what this hub runs."
+          : compatibility.status === "unknown"
+            ? "Build compatibility cannot be verified from this bundle's metadata."
+            : "Built against something this hub does not run."}
+      </p>
+      {compatibility.issues.length === 0 ? null : (
+        <ul>
+          {compatibility.issues.map((issue) => (
+            <li key={issue.component} data-kind={issue.kind}>
+              <code>{issue.component}</code> built against {issue.built ?? "an unrecorded version"};
+              this hub runs {issue.current}
+              {issue.kind === "incompatible" ? " — incompatible" : " — not verifiable"}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/**
+ * THE UPDATES CARD (#238): who owns this row's next version and, for an installed bundle
+ * family whose root declares a release source, the hub's last observation of it and the one
+ * door that reviews it. A part routes to its family's root, because the whole installed family
+ * is reviewed and applied together. Everything else names its real owner and offers no button:
+ * a compiled seat rides the Manifold release it was proven with, and an unpacked row belongs to
+ * its source tree. Reviewing is root-only — it admits a stranger's code — so `plugins:manage`
+ * sees the observation and the sentence, never the door.
+ */
+function UpdatesCard({
+  entry,
+  roster,
+  canInstall,
+  busy,
+  pluginTitle,
+  onSelect,
+  onReviewUpdate,
+}: {
+  readonly entry: PluginRosterEntry;
+  readonly roster: readonly PluginRosterEntry[];
+  readonly canInstall: boolean;
+  readonly busy: boolean;
+  readonly pluginTitle: (id: string) => string;
+  readonly onSelect: (id: string) => void;
+  readonly onReviewUpdate: (rootId: string) => void;
+}): ReactElement {
+  const ownership = updateOwnership(roster, entry);
+  const compatibility = entry.install?.compatibility;
+  let body: ReactElement;
+  switch (ownership.kind) {
+    case "engine":
+      body = (
+        <p className="plugin-manager-sheet-muted">
+          An engine door: it changes only when Manifold itself is upgraded.
+        </p>
+      );
+      break;
+    case "build":
+      body = (
+        <p className="plugin-manager-sheet-muted">
+          Compiled into this Manifold build and released with it: it changes only when Manifold is
+          upgraded, never on its own.
+        </p>
+      );
+      break;
+    case "unpacked": {
+      const rootId = ownership.root.manifest.id;
+      body =
+        rootId === entry.manifest.id ? (
+          <p className="plugin-manager-relation">
+            Unpacked: this hub rebuilds it from <code>{`<data>/authored/${rootId}/`}</code> on every
+            save. That source tree is the only way to change it; no release source replaces it.
+          </p>
+        ) : (
+          <p className="plugin-manager-relation">
+            Its family root <PluginLink id={rootId} pluginTitle={pluginTitle} onSelect={onSelect} />{" "}
+            is unpacked: that source tree owns the family, so no release source updates it.
+          </p>
+        );
+      break;
+    }
+    case "unsourced": {
+      const rootId = ownership.root.manifest.id;
+      body =
+        rootId === entry.manifest.id ? (
+          <p className="plugin-manager-sheet-muted">
+            Declares no release source, so the hub never checks for a newer version and no update is
+            offered here.
+          </p>
+        ) : (
+          <p className="plugin-manager-relation">
+            Part of the installed family{" "}
+            <PluginLink id={rootId} pluginTitle={pluginTitle} onSelect={onSelect} />, which declares
+            no release source: no update is checked for or offered.
+          </p>
+        );
+      break;
+    }
+    case "feed": {
+      const rootId = ownership.root.manifest.id;
+      const status = entry.install?.update ?? ownership.root.install?.update;
+      body = (
+        <>
+          {rootId === entry.manifest.id ? null : (
+            <p className="plugin-manager-relation">
+              Updated with its family:{" "}
+              <PluginLink id={rootId} pluginTitle={pluginTitle} onSelect={onSelect} /> reviews and
+              applies every installed part together.
+            </p>
+          )}
+          <p className="plugin-manager-update-source">
+            Release source <code title={ownership.source}>{ownership.source}</code>
+          </p>
+          <p className="plugin-manager-update-status" data-state={status?.state ?? "unchecked"}>
+            {updateStatusWords(status)}
+          </p>
+          {canInstall ? (
+            <div>
+              <button
+                className="plugin-manager-filter"
+                type="button"
+                data-action={ENGINE_REVIEW_UPDATE_ACTION}
+                data-plugin={rootId}
+                title={`Fetch and verify the preferred release of ${pluginTitle(rootId)}, then show exactly what it changes for the whole family. Nothing installs until you apply it.`}
+                disabled={busy}
+                onClick={() => onReviewUpdate(rootId)}
+              >
+                {status?.state === "available"
+                  ? `Review the ${status.version} update`
+                  : "Check and review"}
+              </button>
+            </div>
+          ) : (
+            <p className="plugin-manager-sheet-muted">
+              Reviewing and applying an update admits new code, so it needs the root capability —
+              plugins:manage is not enough.
+            </p>
+          )}
+        </>
+      );
+      break;
+    }
+    default: {
+      const exhaustive: never = ownership;
+      return exhaustive;
+    }
+  }
+  return (
+    <SheetCard title="Updates">
+      {body}
+      {compatibility === undefined ? null : <CompatibilityIssues compatibility={compatibility} />}
+    </SheetCard>
+  );
+}
+
+/** A declared relationship's change between the installed and the candidate manifest. */
+function dependencyChangeWords({ before, after }: DependencyChange): string {
+  const reason = after?.reason === undefined ? "" : ` (“${after.reason}”)`;
+  if (after === null) return `dropped — was ${before?.type ?? "declared"}`;
+  if (before === null) return `new — ${after.type}${reason}`;
+  if (before.type === after.type) return `${after.type}, with a new reason${reason}`;
+  return `${before.type} → ${after.type}${reason}`;
+}
+
+/**
+ * ONE PART OF THE FAMILY, as the review describes it: exact pins, what its capability ceiling
+ * gains and loses with the grant it would hold afterwards, its relationships, its halves, its
+ * stored data against the version the candidate declares, the compatibility of its build, and
+ * its changelog as TEXT — React escapes it, so a publisher's markup is shown, never run.
+ */
+function UpdateMemberReview({
+  member,
+  isRoot,
+  acknowledged,
+  disabled,
+  onAcknowledge,
+}: {
+  readonly member: PluginUpdateMember;
+  readonly isRoot: boolean;
+  readonly acknowledged: boolean;
+  readonly disabled: boolean;
+  readonly onAcknowledge: (acknowledged: boolean) => void;
+}): ReactElement {
+  const { current, candidate } = member;
+  const unchanged = current !== null && current.sha256 === candidate.sha256;
+  /** Same bytes and nothing to consent to or migrate: the part is named, not re-described. */
+  const settled =
+    unchanged &&
+    member.capabilitiesAdded.length === 0 &&
+    member.capabilitiesRemoved.length === 0 &&
+    !member.migrationRequired;
+  const headingId = `plugin-manager-update-member-${member.id}`;
+  const permissions = updatePermissions(member);
+  const added = member.capabilitiesAdded;
+  const addedGoverned = added.filter((cap) => GOVERNED_CAPS.includes(cap));
+  const dependencies = dependencyChanges(current?.dependencies ?? null, candidate.dependencies);
+  const halves = PLUGIN_HALVES.flatMap((half) => {
+    const before = current !== null && hasHalf(current, half);
+    const after = hasHalf(candidate, half);
+    if (!before && !after) return [];
+    const change =
+      current === null ? "included" : before === after ? "kept" : after ? "added" : "removed";
+    return [{ half, change }];
+  });
+  const stored = member.storedDataVersion;
+  const declared = candidate.dataVersion;
+  return (
+    <section
+      className="plugin-manager-update-member"
+      aria-labelledby={headingId}
+      data-plugin={member.id}
+    >
+      <header className="plugin-manager-update-member-head">
+        <div>
+          <h4 id={headingId}>{member.title}</h4>
+          <small>{member.id}</small>
+        </div>
+        <Cluster gap="0.3rem">
+          {isRoot ? <Chip tone="muted">Family root</Chip> : null}
+          {current === null ? (
+            <Chip tone="update" title="Not installed yet: this release adds it to the family">
+              New part
+            </Chip>
+          ) : unchanged ? (
+            <Chip tone="muted" title="The candidate is the same bytes as the installed pin">
+              Unchanged
+            </Chip>
+          ) : (
+            <Chip tone="update" title="The installed pin is replaced">
+              Replaced
+            </Chip>
+          )}
+          <Chip
+            tone="muted"
+            title={
+              member.hardened
+                ? "Keeps running in a separate process and browser Worker"
+                : "Keeps running with React and the full engine API"
+            }
+          >
+            {member.hardened ? "Hardened" : "In-realm"}
+          </Chip>
+        </Cluster>
+      </header>
+      <dl className="plugin-manager-update-facts">
+        <dt>Version</dt>
+        <dd>
+          {current === null
+            ? `${candidate.version} (new)`
+            : unchanged
+              ? `${candidate.version} (same bytes)`
+              : `${current.version} → ${candidate.version}`}
+        </dd>
+        <dt>Pin</dt>
+        <dd>
+          {current === null || unchanged ? null : (
+            <>
+              <code title={current.sha256}>{current.sha256.slice(0, 12)}</code> →{" "}
+            </>
+          )}
+          <code title={candidate.sha256}>{candidate.sha256.slice(0, 12)}</code>
+        </dd>
+        <dt>From</dt>
+        <dd>
+          <code title={candidate.source}>{candidate.source}</code>
+          {current === null || current.source === candidate.source ? null : (
+            <>
+              {" "}
+              (was <code title={current.source}>{current.source}</code>)
+            </>
+          )}
+        </dd>
+        <dt>State</dt>
+        <dd>
+          {current === null
+            ? `New; requested ${member.enabled ? "on" : "off"} after installation`
+            : unchanged
+              ? `${current.enabled ? "On" : "Off"}; not replaced`
+              : !member.enabled
+                ? "Off; stays off"
+                : `${current.enabled ? "On" : "Off (held)"}; requested on after update`}
+        </dd>
+      </dl>
+      {settled ? (
+        <>
+          <p className="plugin-manager-sheet-muted">
+            Same bytes as installed: nothing about this part changes.
+          </p>
+          {member.compatibility.status === "compatible" ? null : (
+            <CompatibilityIssues compatibility={member.compatibility} />
+          )}
+        </>
+      ) : (
+        <>
+          <div className="plugin-manager-update-block">
+            <h5>Capabilities</h5>
+            {added.length === 0 && member.capabilitiesRemoved.length === 0 ? (
+              <p>Its capability ceiling does not change.</p>
+            ) : null}
+            {member.capabilitiesRemoved.length === 0 ? null : (
+              <p>
+                No longer declares{" "}
+                {member.capabilitiesRemoved.map((cap, index) => (
+                  <span key={cap}>
+                    {index === 0 ? "" : ", "}
+                    <code>{cap}</code>
+                  </span>
+                ))}
+                : its grant narrows with its ceiling.
+              </p>
+            )}
+            {permissions.length === 0 ? (
+              <p>The candidate declares no capabilities.</p>
+            ) : (
+              <>
+                <p className="plugin-manager-sheet-muted">
+                  {added.length === 0
+                    ? "What it holds after this update:"
+                    : "What it holds after this update, once the new capabilities are acknowledged:"}
+                </p>
+                <ul className="plugin-manager-permissions">
+                  {permissions.map((permission) => (
+                    <li
+                      key={permission.cap}
+                      className={`plugin-manager-permission${
+                        permission.state === "granted" ? "" : ` is-${permission.state}`
+                      }${permission.added ? " is-added" : ""}`}
+                      title={
+                        permission.state === "withheld"
+                          ? "Declared, but not in its grant after this update"
+                          : permission.state === "governed"
+                            ? "Governed: no grant ever carries this one. It is discharged per node, bound to an artifact revision, by consent."
+                            : undefined
+                      }
+                    >
+                      <code>{permission.cap}</code>
+                      <span>{permission.meaning}</span>
+                      {permission.added || permission.state !== "granted" ? (
+                        <small>
+                          {[
+                            permission.added ? "new" : null,
+                            permission.state === "granted" ? null : permission.state,
+                          ]
+                            .filter((word) => word !== null)
+                            .join(" · ")}
+                        </small>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+                <p className="plugin-manager-sheet-muted">
+                  Ordinary grant after this update: {listNames(member.grantedCaps) || "none"}.
+                  Previously withheld authority stays withheld; governed capabilities still require
+                  separate per-node consent.
+                </p>
+              </>
+            )}
+            {added.length === 0 ? null : (
+              <label className="plugin-manager-update-consent">
+                <input
+                  type="checkbox"
+                  checked={acknowledged}
+                  disabled={disabled}
+                  data-plugin={member.id}
+                  onChange={(event) => onAcknowledge(event.target.checked)}
+                />
+                <span>
+                  I acknowledge that {member.title}'s capability ceiling grows by {listNames(added)}
+                  {addedGoverned.length === 0
+                    ? "."
+                    : `; ${listNames(addedGoverned)} ${addedGoverned.length === 1 ? "stays" : "stay"} governed, consented per node and never granted.`}
+                </span>
+              </label>
+            )}
+          </div>
+          <div className="plugin-manager-update-block">
+            <h5>Dependencies</h5>
+            {dependencies.length === 0 ? (
+              <p>No change to what it requires, uses or refuses.</p>
+            ) : (
+              <ul>
+                {dependencies.map((change) => (
+                  <li key={change.id}>
+                    <code>{change.id}</code> {dependencyChangeWords(change)}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          <div className="plugin-manager-update-block">
+            <h5>Halves</h5>
+            <ul>
+              {halves.map(({ half, change }) => (
+                <li key={half} data-change={change}>
+                  {PLUGIN_HALF_LABELS[half]}: {change}
+                </li>
+              ))}
+            </ul>
+          </div>
+          <div className="plugin-manager-update-block">
+            <h5>Data</h5>
+            <p>
+              {stored === null
+                ? "No stored data version"
+                : `Stored data ${dataVersionWords(stored)}`}
+              {" · "}
+              {declared === null
+                ? "the candidate declares no data version"
+                : `the candidate declares ${dataVersionWords(declared)}`}
+            </p>
+            <p data-migration={member.migrationRequired}>
+              {member.migrationRequired
+                ? "Its stored data is migrated when this update is applied."
+                : "No data migration is needed."}
+            </p>
+          </div>
+          <div className="plugin-manager-update-block">
+            <h5>Compatibility</h5>
+            <CompatibilityIssues compatibility={member.compatibility} />
+          </div>
+          <div className="plugin-manager-update-block">
+            <h5>Changelog</h5>
+            {member.changelog === null ? (
+              <p>No changelog: the bundle packs no CHANGELOG.md and declares no changelog link.</p>
+            ) : (
+              <>
+                <small>
+                  From <code title={member.changelog.source}>{member.changelog.source}</code>
+                </small>
+                {member.changelog.text.trim() === "" ? (
+                  <p>The changelog is empty.</p>
+                ) : (
+                  <pre
+                    className="plugin-manager-update-changelog"
+                    tabIndex={0}
+                    aria-label={`Changelog of ${member.title}`}
+                  >
+                    {member.changelog.text}
+                  </pre>
+                )}
+              </>
+            )}
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
+/** A review the hub answered, with the local instant it stops being usable. */
+interface HeldReview {
+  readonly review: PluginUpdateReview;
+  /**
+   * The server's lifetime for the review, counted from when the REQUEST left: a slow answer
+   * can only shorten the window this client offers, never stretch it past the server's.
+   */
+  readonly deadline: number;
+}
+
+/** One open update review: the family asked about, and where the conversation stands. */
+interface UpdateSession {
+  readonly rootId: string;
+  readonly phase: "review" | "apply" | null;
+  readonly held: HeldReview | null;
+  /** The hub's "nothing newer" answer, with the root it resolved. */
+  readonly current: { readonly rootId: string; readonly checkedAt: number } | null;
+  /** The expanding members whose new capabilities the reader has acknowledged. */
+  readonly acknowledged: ReadonlySet<string>;
+  /** The last request's own failure, in words. */
+  readonly failure: string | null;
+  /** Why a held review was dropped without a request: it expired, or the family moved. */
+  readonly cleared: string | null;
+}
+
+const UNUSABLE = { held: null, acknowledged: new Set<string>() } as const;
+
+/**
+ * THE UPDATE CONVERSATION (#238), held at section level beside the other doors' pending
+ * state: review a family, acknowledge exactly what it expands, apply exactly that review.
+ *
+ * A review is only offered while it is usable. It is DROPPED — never quietly kept — when its
+ * lifetime runs out or the published roster shows the family moved (`reviewStaleness`), and
+ * after ANY failed apply, because the hub holds one digest and a refusal or a lost answer
+ * leaves nothing this client may assume about it; the reader is offered a fresh review
+ * instead. Nothing is written to the roster here: an applied update arrives on the next
+ * `plugins` frame like every other install, and the notice repeats only the hub's own record,
+ * checked against the review it answered.
+ *
+ * `ticket` retires an answer whose conversation was closed or restarted, so a late review can
+ * never repopulate a dialog the reader dismissed.
+ */
+function useUpdateReview({
+  host,
+  roster,
+  canInstall,
+  holdPending,
+  onApplied,
+}: {
+  readonly host: SectionProps["host"];
+  readonly roster: readonly PluginRosterEntry[];
+  readonly canInstall: boolean;
+  readonly holdPending: (ids: readonly string[], held: boolean) => void;
+  readonly onApplied: (rootId: string, notice: string) => void;
+}) {
+  const [session, setSession] = useState<UpdateSession | null>(null);
+  const ticket = useRef(0);
+  /** Set synchronously on the apply press, before React re-renders the button disabled. */
+  const applying = useRef(false);
+  const patch = (at: number, change: Partial<UpdateSession>): void => {
+    if (ticket.current !== at) return;
+    setSession((current) => (current === null ? null : { ...current, ...change }));
+  };
+
+  const held = session?.held ?? null;
+  if (session !== null && held !== null && session.phase !== "apply") {
+    const stale = reviewStaleness(roster, held.review);
+    if (stale.length > 0) {
+      setSession({
+        ...session,
+        ...UNUSABLE,
+        cleared: `The installed family changed since this review: ${stale.join("; ")}. It no longer describes what is installed, so it was cleared — review again for a current answer.`,
+      });
+    }
+  }
+
+  const deadline = held?.deadline ?? null;
+  useEffect(() => {
+    if (deadline === null) return;
+    const timer = window.setTimeout(
+      () => {
+        setSession((current) =>
+          current === null || current.held?.deadline !== deadline || current.phase === "apply"
+            ? current
+            : {
+                ...current,
+                ...UNUSABLE,
+                cleared: `This review expired at ${WHEN.format(deadline)}. Review again for a current answer.`,
+              },
+        );
+      },
+      Math.max(0, deadline - Date.now()),
+    );
+    return () => window.clearTimeout(timer);
+  }, [deadline]);
+
+  const review = async (rootId: string): Promise<void> => {
+    if (!canInstall || session?.phase === "apply") return;
+    ticket.current += 1;
+    const at = ticket.current;
+    const sentAt = Date.now();
+    setSession({
+      rootId,
+      phase: "review",
+      held: null,
+      current: null,
+      acknowledged: new Set(),
+      failure: null,
+      cleared: null,
+    });
+    holdPending([ENGINE_REVIEW_UPDATE_ACTION], true);
+    try {
+      const outcome = await host.client.action(ENGINE_REVIEW_UPDATE_ACTION, { id: rootId });
+      if (!outcome.ok) {
+        patch(at, {
+          failure: `${updateRefusalWords(outcome.denial.message)}. Nothing was installed.`,
+        });
+        return;
+      }
+      const parsed = PluginUpdateReviewResultSchema.safeParse(outcome.result);
+      if (!parsed.success) {
+        patch(at, {
+          failure: "The hub answered, but its review could not be read. Nothing was installed.",
+        });
+        return;
+      }
+      const answer = parsed.data;
+      if (answer.state === "current") {
+        patch(at, { current: { rootId: answer.rootId, checkedAt: answer.checkedAt } });
+        return;
+      }
+      const lifetime = Math.max(0, answer.review.expiresAt - answer.review.createdAt);
+      patch(at, { held: { review: answer.review, deadline: sentAt + lifetime } });
+    } catch (reason: unknown) {
+      patch(at, {
+        failure: `${reason instanceof Error ? reason.message : "Could not review the update"}. Nothing was installed.`,
+      });
+    } finally {
+      patch(at, { phase: null });
+      if (ticket.current === at) holdPending([ENGINE_REVIEW_UPDATE_ACTION], false);
+    }
+  };
+
+  const apply = async (): Promise<void> => {
+    if (
+      applying.current ||
+      session === null ||
+      session.phase !== null ||
+      session.held === null ||
+      !canInstall
+    ) {
+      return;
+    }
+    const { review: reviewed, deadline: until } = session.held;
+    const consent = updateConsent(reviewed, session.acknowledged);
+    if (reviewed.blockers.length > 0 || consent === null) return;
+    if (Date.now() >= until) {
+      setSession({
+        ...session,
+        ...UNUSABLE,
+        cleared: `This review expired at ${WHEN.format(until)}. Review again for a current answer.`,
+      });
+      return;
+    }
+    applying.current = true;
+    const at = ticket.current;
+    const pendingKeys = [
+      ENGINE_APPLY_UPDATE_ACTION,
+      ...reviewed.members.map((member) => member.id),
+    ];
+    setSession({ ...session, phase: "apply", failure: null, cleared: null });
+    holdPending(pendingKeys, true);
+    try {
+      const outcome = await host.client.action(ENGINE_APPLY_UPDATE_ACTION, {
+        digest: reviewed.digest,
+        consent,
+      });
+      if (!outcome.ok) {
+        patch(at, {
+          ...UNUSABLE,
+          failure: `${updateRefusalWords(outcome.denial.message)}. This review can no longer be applied; the list shows what is installed now.`,
+        });
+        return;
+      }
+      const parsed = PluginUpdateApplyResultSchema.safeParse(outcome.result);
+      const mismatch = parsed.success
+        ? appliedMismatch(reviewed, parsed.data)
+        : "its record could not be read";
+      if (!parsed.success || mismatch !== null) {
+        patch(at, {
+          ...UNUSABLE,
+          failure: `The hub accepted the update, but ${mismatch ?? "its record could not be read"}. Check the list for what is installed now before reviewing again.`,
+        });
+        return;
+      }
+      ticket.current += 1;
+      setSession(null);
+      onApplied(
+        reviewed.rootId,
+        `Updated the ${reviewed.rootId} family to exactly the reviewed bytes — ${parsed.data.installed
+          .map((installed) => `${installed.id} ${installed.version}`)
+          .join(", ")}`,
+      );
+    } catch (reason: unknown) {
+      patch(at, {
+        ...UNUSABLE,
+        failure: `${reason instanceof Error ? reason.message : "Could not apply the update"}. The outcome is unknown: do not assume it did or did not apply. The list shows what is installed; review again before retrying.`,
+      });
+    } finally {
+      applying.current = false;
+      patch(at, { phase: null });
+      holdPending(pendingKeys, false);
+    }
+  };
+
+  /** Dismiss the conversation; refused while an apply is in flight, whose answer must be read. */
+  const close = (): boolean => {
+    if (applying.current || session?.phase === "apply") return false;
+    ticket.current += 1;
+    holdPending([ENGINE_REVIEW_UPDATE_ACTION], false);
+    setSession(null);
+    return true;
+  };
+
+  const acknowledge = (id: string, on: boolean): void => {
+    setSession((current) => {
+      if (current === null || current.phase !== null || current.held === null) return current;
+      const next = new Set(current.acknowledged);
+      if (on) next.add(id);
+      else next.delete(id);
+      return { ...current, acknowledged: next };
+    });
+  };
+
+  return { session, review, apply, close, acknowledge };
+}
+
+/**
+ * THE REVIEW DIALOG: a modal over the manager, because consent to new code is a moment that
+ * owns the screen until it is answered. Escape and the backdrop dismiss it — except while an
+ * apply is in flight, when the hub's answer is the one thing the reader must see. Focus lands
+ * on the title while the hub works, on the review's summary when one arrives, and on "Review
+ * again" when a review is dropped or refused; the section returns it to the opener on close.
+ */
+function UpdateReviewDialog({
+  session,
+  canInstall,
+  pluginTitle,
+  onReview,
+  onApply,
+  onAcknowledge,
+  onClose,
+}: {
+  readonly session: UpdateSession;
+  readonly canInstall: boolean;
+  readonly pluginTitle: (id: string) => string;
+  readonly onReview: () => void;
+  readonly onApply: () => void;
+  readonly onAcknowledge: (id: string, acknowledged: boolean) => void;
+  readonly onClose: () => void;
+}): ReactElement {
+  const dialogRef = useRef<HTMLDialogElement | null>(null);
+  const titleRef = useRef<HTMLHeadingElement | null>(null);
+  const summaryRef = useRef<HTMLDivElement | null>(null);
+  const againRef = useRef<HTMLButtonElement | null>(null);
+  const { phase, held, current, acknowledged, failure, cleared } = session;
+  const review = held?.review ?? null;
+  const familyId = review?.rootId ?? current?.rootId ?? session.rootId;
+  const digest = review?.digest ?? null;
+  const settledKey =
+    phase === null && review === null && (failure !== null || cleared !== null)
+      ? `${failure ?? ""}\n${cleared ?? ""}`
+      : null;
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (dialog !== null && !dialog.open) dialog.showModal();
+  }, []);
+  useEffect(() => {
+    if (phase !== null) titleRef.current?.focus();
+  }, [phase]);
+  useEffect(() => {
+    if (digest !== null) summaryRef.current?.focus();
+  }, [digest]);
+  useEffect(() => {
+    if (settledKey !== null) againRef.current?.focus();
+  }, [settledKey]);
+
+  const members = review?.members ?? [];
+  const fresh = members.filter((member) => member.current === null);
+  const unchanged = members.filter(
+    (member) => member.current !== null && member.current.sha256 === member.candidate.sha256,
+  ).length;
+  const replaced = members.length - fresh.length - unchanged;
+  const unacknowledged =
+    review === null
+      ? []
+      : expandingMembers(review).filter((member) => !acknowledged.has(member.id));
+  const gate = !canInstall
+    ? "Reviewing and applying an update needs the root capability."
+    : review === null
+      ? null
+      : review.blockers.length > 0
+        ? "Blocked: this review cannot be applied."
+        : unacknowledged.length > 0
+          ? `Acknowledge the new capabilities of ${listNames(unacknowledged.map((member) => member.title))} to apply.`
+          : null;
+  const state =
+    phase === "review"
+      ? "Fetching the release source and verifying the candidate bytes. A review installs nothing and runs none of the candidate's code."
+      : phase === "apply"
+        ? "Applying the reviewed update to the whole family. Keep this open for the hub's answer."
+        : current !== null
+          ? `Current: the preferred release of ${current.rootId} is what is installed (checked ${WHEN.format(current.checkedAt)}). There is nothing to apply.`
+          : review !== null
+            ? "Nothing has changed yet. Read what this update does, then apply it or cancel."
+            : "No review is held.";
+
+  return (
+    <dialog
+      ref={dialogRef}
+      className="plugin-manager-update-dialog"
+      aria-labelledby="plugin-manager-update-title"
+      aria-describedby="plugin-manager-update-state"
+      aria-busy={phase !== null}
+      onCancel={(event) => {
+        // The manager's own dialog retreats on Escape too; this one answers it alone.
+        event.preventDefault();
+        event.stopPropagation();
+        onClose();
+      }}
+      onClose={() => {
+        // A browser may close a modal despite a cancelled Escape (its close-watcher rules): the
+        // conversation follows the element instead of lingering unseen — unless an apply is in
+        // flight, whose answer still has to be read.
+        if (phase === "apply") dialogRef.current?.showModal();
+        else onClose();
+      }}
+      onPointerDown={(event) => {
+        event.stopPropagation();
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <section className="plugin-manager-update-card">
+        <header>
+          <div>
+            <span>Update review</span>
+            <h3 id="plugin-manager-update-title" ref={titleRef} tabIndex={-1}>
+              {pluginTitle(familyId)} family
+            </h3>
+            <small>{familyId}</small>
+          </div>
+          <button
+            type="button"
+            aria-label="Close the update review"
+            title={
+              phase === "apply"
+                ? "The update is being applied; wait for the hub's answer"
+                : "Close without applying anything"
+            }
+            disabled={phase === "apply"}
+            onClick={onClose}
+          >
+            <ControlIcon kind="close" />
+          </button>
+        </header>
+        <div
+          className="plugin-manager-update-body"
+          tabIndex={0}
+          role="region"
+          aria-label="What this update changes"
+        >
+          <p id="plugin-manager-update-state" className="plugin-manager-update-state" role="status">
+            {state}
+          </p>
+          {failure === null ? null : (
+            <p className="plugin-manager-error" role="alert">
+              {failure}
+            </p>
+          )}
+          {cleared === null ? null : (
+            <p className="plugin-manager-update-cleared" role="status">
+              {cleared}
+            </p>
+          )}
+          {review === null || held === null ? null : (
+            <>
+              <div
+                ref={summaryRef}
+                tabIndex={-1}
+                className="plugin-manager-update-summary"
+                role="group"
+                aria-label="Review summary"
+              >
+                <p>
+                  <strong>
+                    The whole family is reviewed and applied together: {String(members.length)}{" "}
+                    {members.length === 1 ? "part" : "parts"}
+                  </strong>
+                  {" — "}
+                  {[
+                    replaced === 0 ? null : `${String(replaced)} replaced`,
+                    fresh.length === 0 ? null : `${String(fresh.length)} new`,
+                    unchanged === 0 ? null : `${String(unchanged)} unchanged`,
+                  ]
+                    .filter((count) => count !== null)
+                    .join(", ")}
+                  .
+                </p>
+                {fresh.length === 0 ? null : (
+                  <p>
+                    New parts this release adds, installed with the family:{" "}
+                    {listNames(fresh.map((member) => member.id))}.
+                  </p>
+                )}
+                <p className="plugin-manager-sheet-muted">
+                  Verified against the release source; none of the candidate code has run. Review{" "}
+                  <code title={review.digest}>{review.digest.slice(0, 12)}</code> · usable until{" "}
+                  {WHEN.format(held.deadline)}.
+                </p>
+                {review.blockers.length === 0 ? null : (
+                  <div className="plugin-manager-update-blockers" role="alert">
+                    <strong>Blocked — nothing from this review can be applied:</strong>
+                    <ul>
+                      {review.blockers.map((blocker, index) => (
+                        <li key={index}>
+                          <code>{blocker.id}</code> {blocker.reason}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+              {members.map((member) => (
+                <UpdateMemberReview
+                  key={member.id}
+                  member={member}
+                  isRoot={member.id === review.rootId}
+                  acknowledged={acknowledged.has(member.id)}
+                  disabled={phase !== null}
+                  onAcknowledge={(on) => onAcknowledge(member.id, on)}
+                />
+              ))}
+            </>
+          )}
+        </div>
+        <footer className="plugin-manager-update-actions">
+          {gate === null ? null : (
+            <p id="plugin-manager-update-gate" className="plugin-manager-sheet-muted">
+              {gate}
+            </p>
+          )}
+          {review === null ? null : (
+            <button
+              className="plugin-manager-filter plugin-manager-update-primary"
+              type="button"
+              data-action={ENGINE_APPLY_UPDATE_ACTION}
+              aria-describedby={gate === null ? undefined : "plugin-manager-update-gate"}
+              disabled={gate !== null || phase !== null}
+              onClick={onApply}
+            >
+              {phase === "apply"
+                ? "Applying…"
+                : `Apply to ${String(members.length)} ${members.length === 1 ? "part" : "parts"}`}
+            </button>
+          )}
+          <button
+            ref={againRef}
+            className="plugin-manager-filter"
+            type="button"
+            data-action={ENGINE_REVIEW_UPDATE_ACTION}
+            disabled={phase !== null || !canInstall}
+            onClick={onReview}
+          >
+            {phase === "review" ? "Reviewing…" : current !== null ? "Check again" : "Review again"}
+          </button>
+          <button
+            className="plugin-manager-filter"
+            type="button"
+            disabled={phase === "apply"}
+            onClick={onClose}
+          >
+            {review === null ? "Close" : "Cancel"}
+          </button>
+        </footer>
+      </section>
+    </dialog>
+  );
+}
+
 /**
  * THE DETAIL SHEET: roster declarations and composed settings, with machine installation
  * and consent read separately through the public jobs door for the selected machine.
@@ -552,6 +1547,7 @@ function PluginDetail({
   onPurge,
   onUninstall,
   onSet,
+  onReviewUpdate,
 }: {
   readonly host: SectionProps["host"];
   readonly entry: PluginRosterEntry;
@@ -572,6 +1568,7 @@ function PluginDetail({
   readonly onUninstall: () => void;
   readonly onSeatPanels: (panelIds: readonly string[]) => void;
   readonly onSet: (setting: ComposedSetting, value: boolean | string) => void;
+  readonly onReviewUpdate: (rootId: string) => void;
 }): ReactElement {
   const { manifest } = entry;
   const status = pluginStatus(roster, entry);
@@ -728,6 +1725,18 @@ function PluginDetail({
         )}
       </SheetCard>
 
+      <UpdatesCard
+        entry={entry}
+        roster={roster}
+        canInstall={canInstall}
+        busy={
+          pendingIds.has(ENGINE_REVIEW_UPDATE_ACTION) || pendingIds.has(ENGINE_APPLY_UPDATE_ACTION)
+        }
+        pluginTitle={pluginTitle}
+        onSelect={onSelect}
+        onReviewUpdate={onReviewUpdate}
+      />
+
       {declaredSeats.length === 0 ? null : (
         <SheetCard title="Workspace panels">
           <p className="plugin-manager-sheet-muted">
@@ -771,7 +1780,7 @@ function PluginDetail({
 
       <SheetCard title="Permissions" testid="plugin-manager-detail-permissions">
         {permissions.length === 0 ? (
-          <p className="plugin-manager-sheet-muted">Declares no capabilities: it can only read.</p>
+          <p className="plugin-manager-sheet-muted">Declares no capabilities.</p>
         ) : (
           <>
             {entry.install === undefined ? null : (
@@ -1073,7 +2082,9 @@ function toggleRefusal(
  * ONE ROW of the list: the ledger line a reader acts on. A family's parent carries the
  * chevron and the family summary; a child is the same row, indented. The row itself is
  * focusable and opens the sheet on click or Enter; its controls stop the click so a toggle
- * press never also opens the detail.
+ * press never also opens the detail. An installed family's ROOT wears the hub's update
+ * observation — the one row a family update is reviewed from — and only a root-capable reader
+ * gets it as a button.
  */
 function PluginRow({
   entry,
@@ -1085,6 +2096,9 @@ function PluginRow({
   jump,
   pending,
   canManage,
+  canInstall,
+  updateBusy,
+  onReviewUpdate,
   onExpand,
   onSelect,
   onToggle,
@@ -1098,6 +2112,9 @@ function PluginRow({
   readonly jump: boolean;
   readonly pending: boolean;
   readonly canManage: boolean;
+  readonly canInstall: boolean;
+  readonly updateBusy: boolean;
+  readonly onReviewUpdate: (rootId: string) => void;
   readonly onExpand: () => void;
   readonly onSelect: () => void;
   readonly onToggle: (enabled: boolean) => void;
@@ -1105,7 +2122,11 @@ function PluginRow({
   const { manifest } = entry;
   const status = pluginStatus(roster, entry);
   const permissions = permissionCount(entry);
-  const latest = latestVersion(entry);
+  const ownership = updateOwnership(roster, entry);
+  const update =
+    ownership.kind === "feed" && ownership.root.manifest.id === manifest.id
+      ? entry.install?.update
+      : undefined;
   const links = manifest.links;
   const classes = [
     "plugin-manager-row",
@@ -1217,9 +2238,33 @@ function PluginRow({
             {publisherOf(manifest.id)}
           </a>
         )}
-        {latest === null ? null : (
-          <Chip tone="muted" title={`${latest} is available; ${manifest.version} is installed`}>
-            {latest} available
+        {update?.state !== "available" ? null : canInstall ? (
+          <button
+            className="plugin-manager-chip"
+            data-tone="update"
+            type="button"
+            data-action={ENGINE_REVIEW_UPDATE_ACTION}
+            title={`${updateStatusWords(update)} Press to review exactly what it changes.`}
+            aria-label={`Review the ${update.version} update of ${manifest.title}`}
+            disabled={updateBusy}
+            onClick={(event) => {
+              event.stopPropagation();
+              onReviewUpdate(manifest.id);
+            }}
+          >
+            {update.version} available
+          </button>
+        ) : (
+          <Chip
+            tone="update"
+            title={`${updateStatusWords(update)} Reviewing and applying it needs the root capability.`}
+          >
+            {update.version} available
+          </Chip>
+        )}
+        {update?.state !== "failed" ? null : (
+          <Chip tone="muted" title={updateStatusWords(update)}>
+            Update check failed
           </Chip>
         )}
         <Chip tone={status.tone} title={status.why ?? status.word} testid="plugin-manager-status">
@@ -1393,15 +2438,6 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
     if (dialog !== null && !dialog.open) dialog.showModal();
   }, [open]);
 
-  /** Closing DISARMS and forgets the sheet: nothing destructive waits behind a closed door. */
-  const close = (): void => {
-    setOpen(false);
-    setArmed(false);
-    setSelectedId(null);
-    setInstallOpen(false);
-    window.requestAnimationFrame(() => buttonRef.current?.focus());
-  };
-
   const holdPending = (ids: readonly string[], held: boolean): void => {
     setPendingIds((current) => {
       const next = new Set(current);
@@ -1411,6 +2447,57 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
       }
       return next;
     });
+  };
+
+  /**
+   * Where focus returns when an update review closes: the control that opened it, or — when
+   * that control is gone, as an "available" chip is once its update lands — the family root's
+   * own row, which stays in the list.
+   */
+  const updateOpener = useRef<HTMLElement | null>(null);
+  const refocusUpdate = (rootId: string): void => {
+    const opener = updateOpener.current;
+    updateOpener.current = null;
+    window.requestAnimationFrame(() => {
+      if (opener?.isConnected === true) opener.focus();
+      if (opener !== null && document.activeElement === opener) return;
+      dialogRef.current
+        ?.querySelector<HTMLElement>(
+          `[data-testid="plugin-manager"] [data-plugin="${CSS.escape(rootId)}"]`,
+        )
+        ?.focus();
+    });
+  };
+  const updates = useUpdateReview({
+    host,
+    roster,
+    canInstall,
+    holdPending,
+    onApplied: (rootId, notice) => {
+      setInstallNotice(notice);
+      refocusUpdate(rootId);
+    },
+  });
+  const reviewUpdate = (rootId: string): void => {
+    updateOpener.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    void updates.review(rootId);
+  };
+  const closeUpdate = (): void => {
+    const rootId = updates.session?.rootId;
+    if (updates.close() && rootId !== undefined) refocusUpdate(rootId);
+  };
+  const updateBusy =
+    pendingIds.has(ENGINE_REVIEW_UPDATE_ACTION) || pendingIds.has(ENGINE_APPLY_UPDATE_ACTION);
+
+  /** Closing DISARMS and forgets the sheet: nothing destructive waits behind a closed door. */
+  const close = (): void => {
+    setOpen(false);
+    setArmed(false);
+    setSelectedId(null);
+    setInstallOpen(false);
+    updates.close();
+    window.requestAnimationFrame(() => buttonRef.current?.focus());
   };
 
   /** One press on the enablement door; answers whether the workspace agreed. */
@@ -1626,6 +2713,9 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
       jump={jumpId === entry.manifest.id}
       pending={pendingIds.has(entry.manifest.id)}
       canManage={canManage}
+      canInstall={canInstall}
+      updateBusy={updateBusy}
+      onReviewUpdate={reviewUpdate}
       onExpand={() =>
         setExpanded((current) => {
           const next = new Set(current);
@@ -1967,11 +3057,25 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
                         onPurge={() => void purge(selected.manifest.id)}
                         onUninstall={() => void uninstall(selected.manifest.id)}
                         onSet={(setting, value) => void setSetting(setting, value)}
+                        onReviewUpdate={reviewUpdate}
                       />
                     </ScrollRegion>
                   )}
                 </div>
               </section>
+              {updates.session === null ? null : (
+                <UpdateReviewDialog
+                  session={updates.session}
+                  canInstall={canInstall}
+                  pluginTitle={pluginTitle}
+                  onReview={() => {
+                    if (updates.session !== null) void updates.review(updates.session.rootId);
+                  }}
+                  onApply={() => void updates.apply()}
+                  onAcknowledge={updates.acknowledge}
+                  onClose={closeUpdate}
+                />
+              )}
             </dialog>,
             document.body,
           )

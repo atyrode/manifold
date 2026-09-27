@@ -502,6 +502,8 @@ async function startAsWriter({
   */
   const unwatchAuthored = plugins.watchAuthored();
   opened.push(unwatchAuthored);
+  const unwatchUpdates = plugins.watchUpdates();
+  opened.push(unwatchUpdates);
   if (announce) {
     // The pre-authed fragment is announce-key opt-in (MANIFOLD_ANNOUNCE_KEY=1,
     // dev/test only) so the owner key never enters persisted log streams;
@@ -531,6 +533,7 @@ async function startAsWriter({
         clearInterval(jobTick);
         rooms.flushAll();
         unwatchAuthored();
+        unwatchUpdates();
         sessions.shutdown();
         machines.shutdown();
         instances.shutdown();

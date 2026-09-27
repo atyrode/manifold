@@ -74,6 +74,7 @@ import {
   type TileLayout,
   type TerminalExitReason,
   type TraceOutcome,
+  type PluginDataVersion,
 } from "@manifold/protocol";
 import { Y } from "@manifold/scene";
 import { z } from "zod";
@@ -1295,6 +1296,22 @@ export class ServerStore {
     );
   }
 
+  private pluginValue(pluginId: string, key: string): string | null {
+    return (
+      this.db
+        .query<PluginKvRow, [string, string]>(
+          "SELECT value FROM plugin_kv WHERE plugin_id = ? AND key = ?",
+        )
+        .get(pluginId, key)?.value ?? null
+    );
+  }
+
+  /** Synchronous committed version for a review's final no-await installation fence. */
+  pluginDataVersion(pluginId: string): PluginDataVersion | null {
+    const raw = this.pluginValue(pluginId, DATA_VERSION_KEY);
+    return raw === null ? null : parseDataVersion(raw);
+  }
+
   /**
    * PER-PLUGIN STORAGE, bound to one plugin id. The engine hands this to a plugin as
    * `ctx.storage`; the plugin sees a namespaced key-value store and never the database,
@@ -1452,13 +1469,7 @@ export class ServerStore {
         draft.assertOpen();
         return draft.rows.get(key) ?? null;
       }
-      return (
-        this.db
-          .query<PluginKvRow, [string, string]>(
-            "SELECT value FROM plugin_kv WHERE plugin_id = ? AND key = ?",
-          )
-          .get(pluginId, key)?.value ?? null
-      );
+      return this.pluginValue(pluginId, key);
     };
     const write = (key: string, value: string): void => {
       if (draft !== undefined) return draft.write(key, value);

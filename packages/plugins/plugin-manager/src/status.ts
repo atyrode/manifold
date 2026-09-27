@@ -1,14 +1,23 @@
 import {
+  CAPS,
+  CORE_NAMESPACE_PREFIX,
   GOVERNED_CAPS,
   PLUGIN_INSTALL_REFUSALS,
+  hasCap,
   isEngineCap,
   type AuthoredCap,
   type Cap,
-  type PluginInstall,
+  type PluginDependency,
+  type PluginDependencyMap,
   type PluginInstallRefusal,
   type PluginLifecycleState,
   type PluginRefusalReason,
   type PluginRosterEntry,
+  type PluginUpdateApplyRequest,
+  type PluginUpdateApplyResult,
+  type PluginUpdateMember,
+  type PluginUpdateRefusal,
+  type PluginUpdateReview,
 } from "@manifold/protocol";
 
 /**
@@ -226,12 +235,17 @@ export function pluginStatus(
   entry: PluginRosterEntry,
 ): PluginStatus {
   if (entry.held !== undefined) {
+    const incompatibilities = entry.install?.compatibility?.issues.filter(
+      (issue) => issue.kind === "incompatible",
+    );
     return {
       word: "Held",
       tone: "attention",
       why:
         entry.held.reason === "repack_required"
-          ? `Repack this bundle once with plugin-kit hardened contract ${String(entry.held.minimum)} or a newer accepted contract; no code from this bundle was loaded.`
+          ? incompatibilities !== undefined && incompatibilities.length > 0
+            ? `Repack for this hub: ${incompatibilities.map((issue) => `${issue.component} built ${issue.built ?? "unknown"}, hub ${issue.current}`).join("; ")}. No code from this bundle was loaded.`
+            : `Repack this bundle once with plugin-kit hardened contract ${String(entry.held.minimum)} or a newer accepted contract; no code from this bundle was loaded.`
           : entry.held.reason,
     };
   }
@@ -348,8 +362,8 @@ export interface Permission {
  * every action against (ADR 0023 §8). An installed row holds its GRANT (`install.grantedCaps`,
  * the installer's consent, enforced at rung 4 before the caller's own caps), and the card
  * shows the declared caps the installer withheld greyed beside it, because "this plugin asked
- * for more than it was given" is the sentence an operator reads a grant for. A grant can
- * never exceed the declaration, so the declared list is the card's whole domain.
+ * for more than it was given" is the sentence an operator reads a grant for. Wildcard ceilings
+ * expand to engine capabilities, so a narrowed named grant is never hidden behind `*`.
  *
  * THREE STATES, NOT TWO. A governed capability is never in any grant — `grantFor` filters
  * `GOVERNED_CAPS` out of the default grant AND out of an explicit installer grant, because
@@ -360,13 +374,18 @@ export interface Permission {
  */
 export type PermissionState = "granted" | "withheld" | "governed";
 
-export function pluginPermissions(entry: PluginRosterEntry): readonly Permission[] {
-  const install = entry.install;
-  const granted = install === undefined ? null : new Set<AuthoredCap>(install.grantedCaps);
-  return entry.manifest.capabilities.map((cap) => {
+function permissionRows(
+  declared: readonly AuthoredCap[],
+  granted: readonly AuthoredCap[] | null,
+): Permission[] {
+  const domain = new Set(declared);
+  if (declared.includes("*")) {
+    for (const cap of CAPS) domain.add(cap);
+  }
+  return [...domain].map((cap) => {
     const state: PermissionState = GOVERNED_CAPS.includes(cap)
       ? "governed"
-      : granted === null || granted.has(cap)
+      : granted === null || (cap === "*" ? granted.includes("*") : hasCap(granted, cap))
         ? "granted"
         : "withheld";
     return {
@@ -376,6 +395,10 @@ export function pluginPermissions(entry: PluginRosterEntry): readonly Permission
       granted: state === "granted",
     };
   });
+}
+
+export function pluginPermissions(entry: PluginRosterEntry): readonly Permission[] {
+  return permissionRows(entry.manifest.capabilities, entry.install?.grantedCaps ?? null);
 }
 
 /** The chip's number: what the row can actually do — its grant, or its declaration. */
@@ -411,17 +434,276 @@ export function permissionSummary(entry: PluginRosterEntry): string {
   return clauses.join("; ");
 }
 
-/** An installed row's optional release-feed version (#238). */
-export interface RosterInstall extends PluginInstall {
-  /** The newest version the plugin's release feed lists, when the hub has polled one (#238). */
-  readonly latest?: string;
+/**
+ * WHERE A ROW'S NEXT VERSION COMES FROM (#238), which decides whether the manager may offer an
+ * update at all. Only an installed BUNDLE family whose root declares a release source is ever
+ * reviewed and applied from here; everything else names its real owner instead of a button:
+ *
+ *   `engine`    an engine door, changed only by upgrading Manifold itself;
+ *   `build`     a plugin compiled into this build (every `core.` seat), proven with it and
+ *               released with it — never updated on its own;
+ *   `unpacked`  a row this hub builds from its own source tree (ADR 0025 §4) — the tree is the
+ *               only way to change it, and no release may take it over;
+ *   `unsourced` an installed bundle family whose root declares no release source;
+ *   `feed`      an installed bundle family whose root declares `releases`.
+ *
+ * The FAMILY is the topmost installed dotted-namespace ancestor and everything installed under
+ * it — the unit the coordinator reviews and applies — so a part routes to its root, whose
+ * `manifest.releases` is the family's source.
+ */
+export type UpdateOwnership =
+  | { readonly kind: "engine" }
+  | { readonly kind: "build" }
+  | { readonly kind: "unpacked"; readonly root: PluginRosterEntry }
+  | { readonly kind: "unsourced"; readonly root: PluginRosterEntry }
+  | { readonly kind: "feed"; readonly root: PluginRosterEntry; readonly source: string };
+
+/** Whether `id` is `root` itself or a dotted-namespace descendant of it. */
+export function inUpdateFamily(rootId: string, id: string): boolean {
+  return id === rootId || id.startsWith(`${rootId}.`);
 }
 
-/** The update an installed row could take, or null while no feed has been polled (#238). */
-export function latestVersion(entry: PluginRosterEntry): string | null {
-  const install: RosterInstall | undefined = entry.install;
-  const latest = install?.latest;
-  return latest === undefined || latest === entry.manifest.version ? null : latest;
+/**
+ * The installed row a family is reviewed under: the shortest dotted-namespace prefix of the
+ * row's id that is itself an installed row, or the row itself. Null for a row nobody installed
+ * (an engine door or a compiled seat), which has no family to update.
+ */
+export function updateFamilyRoot(
+  roster: readonly PluginRosterEntry[],
+  entry: PluginRosterEntry,
+): PluginRosterEntry | null {
+  if (entry.install === undefined || entry.source === "builtin") return null;
+  const segments = entry.manifest.id.split(".");
+  for (let length = 2; length < segments.length; length += 1) {
+    const prefix = segments.slice(0, length).join(".");
+    const ancestor = roster.find((candidate) => candidate.manifest.id === prefix);
+    if (ancestor?.install !== undefined && ancestor.source !== "builtin") return ancestor;
+  }
+  return entry;
+}
+
+export function updateOwnership(
+  roster: readonly PluginRosterEntry[],
+  entry: PluginRosterEntry,
+): UpdateOwnership {
+  if (entry.source === "builtin") return { kind: "engine" };
+  const root = updateFamilyRoot(roster, entry);
+  if (root === null || entry.manifest.id.startsWith(CORE_NAMESPACE_PREFIX)) {
+    return { kind: "build" };
+  }
+  if (entry.install?.mode === "unpacked") return { kind: "unpacked", root: entry };
+  if (root.install?.mode === "unpacked") return { kind: "unpacked", root };
+  const source = root.manifest.releases;
+  return source === undefined ? { kind: "unsourced", root } : { kind: "feed", root, source };
+}
+
+/**
+ * WHY A HELD REVIEW NO LONGER DESCRIBES WHAT IS INSTALLED, read off the published roster: a
+ * member's pin or on/off state moved, a member was uninstalled, a part the review would add
+ * was installed meanwhile, or an installed bundle joined the family. Unpacked rows are their
+ * source tree's, never a member, so one appearing is not a family change. Empty ≡ still current
+ * as far as this client can see; the coordinator re-checks everything (grants, data versions,
+ * native state) at apply and refuses `review_stale` on its own evidence.
+ */
+export function reviewStaleness(
+  roster: readonly PluginRosterEntry[],
+  review: PluginUpdateReview,
+): readonly string[] {
+  const reasons: string[] = [];
+  const reviewed = new Set(review.members.map((member) => member.id));
+  for (const member of review.members) {
+    const row = roster.find((candidate) => candidate.manifest.id === member.id);
+    if (member.current === null) {
+      if (row?.install !== undefined) reasons.push(`${member.id} was installed since the review`);
+      continue;
+    }
+    if (row?.install === undefined) {
+      reasons.push(`${member.id} is no longer installed`);
+    } else if (row.install.sha256 !== member.current.sha256) {
+      reasons.push(`${member.id} now runs different bytes`);
+    } else if (row.enabled !== member.current.enabled) {
+      reasons.push(`${member.id} was switched ${row.enabled ? "on" : "off"}`);
+    }
+  }
+  for (const row of roster) {
+    if (
+      row.install !== undefined &&
+      row.install.mode !== "unpacked" &&
+      row.source !== "builtin" &&
+      inUpdateFamily(review.rootId, row.manifest.id) &&
+      !reviewed.has(row.manifest.id)
+    ) {
+      reasons.push(`${row.manifest.id} joined the family`);
+    }
+  }
+  return reasons;
+}
+
+/** The members whose capability CEILING grows: each needs its own explicit acknowledgement. */
+export function expandingMembers(review: PluginUpdateReview): readonly PluginUpdateMember[] {
+  return review.members.filter((member) => member.capabilitiesAdded.length > 0);
+}
+
+/**
+ * THE CONSENT an apply carries: exactly each expanding member's added capabilities, and only
+ * once every one of them has been acknowledged. Null while any is not — the coordinator
+ * refuses a missing, extra or partial consent rather than withholding silently, so the button
+ * stays shut instead of sending a request that can only be refused. A member with nothing
+ * added is never named: there is nothing of it to consent to.
+ */
+export function updateConsent(
+  review: PluginUpdateReview,
+  acknowledged: ReadonlySet<string>,
+): PluginUpdateApplyRequest["consent"] | null {
+  const expanding = expandingMembers(review);
+  if (expanding.some((member) => !acknowledged.has(member.id))) return null;
+  return expanding.map((member) => ({
+    id: member.id,
+    capabilities: [...member.capabilitiesAdded],
+  }));
+}
+
+/**
+ * Why an apply's own record does NOT describe the review it answered, or null when it does:
+ * the same family, only reviewed parts, each at exactly its reviewed version and bytes, and
+ * every part whose bytes the review changes accounted for. A part the review leaves unchanged
+ * may be named or omitted — the installer skips a pin that does not move.
+ */
+export function appliedMismatch(
+  review: PluginUpdateReview,
+  result: PluginUpdateApplyResult,
+): string | null {
+  if (result.rootId !== review.rootId) return `it names ${result.rootId}, not ${review.rootId}`;
+  for (const installed of result.installed) {
+    const member = review.members.find((candidate) => candidate.id === installed.id);
+    if (member === undefined) return `${installed.id} was not part of this review`;
+    if (
+      member.candidate.sha256 !== installed.sha256 ||
+      member.candidate.version !== installed.version
+    ) {
+      return `${installed.id} is not the reviewed ${member.candidate.version}`;
+    }
+  }
+  const missing = review.members.find(
+    (member) =>
+      member.current?.sha256 !== member.candidate.sha256 &&
+      !result.installed.some((installed) => installed.id === member.id),
+  );
+  return missing === undefined ? null : `it does not account for ${missing.id}`;
+}
+
+/** One capability of a candidate, as the review lists it. */
+export interface UpdatePermission {
+  readonly cap: AuthoredCap;
+  readonly meaning: string;
+  /**
+   * What the row holds AFTER the update, with every shown addition acknowledged: `granted`
+   * rides its grant, `withheld` is declared but not granted (an old withholding survives an
+   * update), `governed` never rides a grant and is consented per node.
+   */
+  readonly state: PermissionState;
+  /** New to the ceiling in this update — what the acknowledgement is about. */
+  readonly added: boolean;
+}
+
+export function updatePermissions(member: PluginUpdateMember): readonly UpdatePermission[] {
+  const added = new Set<AuthoredCap>(member.capabilitiesAdded);
+  return permissionRows(member.candidate.capabilities, member.grantedCaps).map((permission) => ({
+    ...permission,
+    added:
+      added.has(permission.cap) ||
+      (added.has("*") &&
+        permission.cap !== "*" &&
+        isEngineCap(permission.cap) &&
+        !hasCap(member.current?.capabilities ?? [], permission.cap)),
+  }));
+}
+
+/** One declared relationship that differs between the installed and the candidate manifest. */
+export interface DependencyChange {
+  readonly id: string;
+  readonly before: PluginDependency | null;
+  readonly after: PluginDependency | null;
+}
+
+/** The relationships a candidate adds, drops or retypes, by id; unchanged ones are omitted. */
+export function dependencyChanges(
+  before: PluginDependencyMap | null,
+  after: PluginDependencyMap,
+): readonly DependencyChange[] {
+  const ids = [...new Set([...Object.keys(before ?? {}), ...Object.keys(after)])].sort();
+  return ids.flatMap((id) => {
+    const was = before?.[id] ?? null;
+    const now = after[id] ?? null;
+    if (was?.type === now?.type && was?.reason === now?.reason) return [];
+    return [{ id, before: was, after: now }];
+  });
+}
+
+/** The halves a bundle can carry, in the words the review uses. */
+export const PLUGIN_HALVES = ["web", "server", "machine", "styles"] as const;
+export type PluginHalf = (typeof PLUGIN_HALVES)[number];
+export const PLUGIN_HALF_LABELS: Readonly<Record<PluginHalf, string>> = {
+  web: "Web half",
+  server: "Server half",
+  machine: "Machine half",
+  styles: "Stylesheet",
+};
+
+/** Executable halves and stylesheet declared by the reviewed artifact. */
+export function hasHalf(description: PluginUpdateMember["candidate"], half: PluginHalf): boolean {
+  switch (half) {
+    case "web":
+      return description.entry.web !== undefined;
+    case "server":
+      return description.entry.server === true;
+    case "machine":
+      return description.machine;
+    case "styles":
+      return description.entry.styles === true;
+    default: {
+      const exhaustive: never = half;
+      return exhaustive;
+    }
+  }
+}
+
+/**
+ * The update doors' refusal classes (`{ refused: "<class>: detail" }`), as sentences. Artifact
+ * and ownership classes the updater shares with the install door fall through to that door's
+ * words, and a message with no known class is returned as it came.
+ */
+const UPDATE_REFUSAL_WORDS: Record<PluginUpdateRefusal, string> = {
+  review_stale: "The installed family changed since this review",
+  review_expired: "This review expired",
+  review_missing: "The hub no longer holds this review",
+  consent_required: "Each capability expansion must be acknowledged exactly as reviewed",
+  update_blocked: "This update is blocked",
+  update_unavailable: "No update can be reviewed for this family",
+  update_failed: "The update could not be completed",
+} as const;
+type UpdateRefusal = keyof typeof UPDATE_REFUSAL_WORDS;
+
+function isUpdateRefusal(candidate: string): candidate is UpdateRefusal {
+  return Object.hasOwn(UPDATE_REFUSAL_WORDS, candidate);
+}
+
+export function updateRefusalWords(message: string): string {
+  const split = message.indexOf(": ");
+  const reason = split === -1 ? message : message.slice(0, split);
+  if (!isUpdateRefusal(reason)) return installRefusalWords(message);
+  const detail = split === -1 ? "" : message.slice(split + 2);
+  return detail === ""
+    ? UPDATE_REFUSAL_WORDS[reason]
+    : `${UPDATE_REFUSAL_WORDS[reason]} — ${detail}`;
+}
+
+/** A data version as the review prints it. */
+export function dataVersionWords(version: {
+  readonly major: number;
+  readonly minor: number;
+}): string {
+  return `v${String(version.major)}.${String(version.minor)}`;
 }
 
 /** The host of a URL, for a link's visible text; the whole URL is the reader's on hover. */

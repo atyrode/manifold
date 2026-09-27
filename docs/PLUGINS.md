@@ -3096,9 +3096,10 @@ shape is `docs/CONTRACTS.md` §Hardened plugins). Its roster row is `source: "pl
 assembled row, and carries one block no first-party row has: `install`, what the installer
 consented to — including which runner (`install.hardened`).
 
-Two doors on the engine's own row, and both are **root only** (`caps: ["*"]`): `plugins:manage`
-lets a principal decide which of the shipped plugins are on; installing admits code nobody in this
-build wrote, and a manager token that could do that would be `*` by another name.
+Code-admission doors on the engine's own row are **root only** (`caps: ["*"]`):
+`plugins:manage` lets a principal decide which shipped plugins are on; installing or updating
+admits code nobody in this build wrote, and a manager token that could do that would be `*`
+by another name.
 
 ```
 engine.plugins.install   { source, sha256, grant?, replace?, hardened? }  → { id, version, grantedCaps }
@@ -3164,8 +3165,77 @@ reached through it or with nothing to destroy. Uninstall also takes the row's sw
 fresh install of the same id is a fresh row, on by default and attributed to nobody, whatever the
 toggle said before — exactly like the first install.
 
-The plugin manager (`core.plugins`, issue #239) is one UI over these two doors and the three
-beside them. Its list is three collapsible bands — **Installed** (rows carrying `install`, grouped
+### Reviewed third-party updates
+
+An installed family root may declare `releases`, an HTTPS JSON feed or a GitHub
+`https://github.com/<owner>/<repo>/releases[/latest]` URL. A feed is an array, with the
+publisher's preferred release **first**; version strings are labels, not a semver ordering rule:
+
+```json
+[
+  {
+    "version": "2.0.0",
+    "url": "https://plugins.example/acme.notes.manifold-plugin.json",
+    "sha256": "<64 hexadecimal characters>",
+    "family": [
+      {
+        "id": "acme.notes.search",
+        "url": "https://plugins.example/acme.notes.search.manifold-plugin.json",
+        "sha256": "<64 hexadecimal characters>"
+      }
+    ]
+  }
+]
+```
+
+The root and every already-installed dotted descendant must be present; new descendants are
+allowed, omissions/removals and unrelated ids are refused. The family has at most 16 members.
+GitHub discovery reads its latest-release API: one asset may name the root; multiple assets
+must name `<plugin-id>.manifold-plugin.json`. Every selected asset needs GitHub's `sha256:`
+digest; the hub never downloads arbitrary bytes merely to invent a pin for them.
+
+The hub checks at startup and hourly, exposes `install.update` on each family member, and
+never installs automatically. A manual review checks immediately. Feeds, candidate bundles and
+external changelogs all use the install door's per-hop public-HTTPS policy. Local feeds and
+artifacts may instead live under `<data>/plugin-uploads/`; remote feeds cannot name local files,
+and updater reads never inherit the development path exemption.
+
+```text
+engine.plugins.reviewUpdate { id } → { state: "current", ... } | { state: "review", review }
+engine.plugins.applyUpdate  { digest, consent: [{ id, capabilities }] } → { rootId, members }
+```
+
+Review fetches and verifies exact candidate bytes without executing them. The manager displays
+versions/pins/source, capabilities and prospective grants, dependencies, web/server/machine
+halves and stylesheets, stored versus declared data versions, compatibility and changelog text.
+`pack` includes a UTF-8 `CHANGELOG.md` of at most 64 KiB when present; otherwise the candidate's
+`links.changelog` is read through the same bounded reader. Publisher text is escaped, never HTML.
+
+Every member whose capability ceiling grows requires explicit acknowledgement of its exact
+additions. Existing withheld capabilities stay withheld, narrowed ceilings narrow the grant,
+and governed capabilities remain separately consented authority, never entries in a grant.
+The review belongs to the exact principal **and credential**, expires after ten minutes, and is
+consumed by an apply attempt. Changed pins, grants, desired enablement, stored data or native
+installation evidence require a fresh review. Cancel changes nothing. A failed apply requires
+review again; the browser also clears a review when its visible family baseline changes.
+
+Application stages the complete family in dependency order through the existing installer.
+Installation metadata, staged KV migrations and managed SQLite images commit as one group;
+failure before that commit restores the old serving modules and managed state. Desired
+enablement and runner choice are retained, including disabled children. Effective state can
+still be held by assembly: a currently held-off row is not the same thing as an intentionally
+disabled row. An unchanged native declaration retains its installations/jobs; replacement of
+enabled native declarations is refused, not silently redeployed. Plugin hooks and other external
+effects are not a distributed transaction.
+
+`core.*` and engine plugins ship with Manifold and never update independently. Unpacked rows
+belong to their source directory/rebuild loop, not a release feed. Missing legacy build metadata
+is visibly unknown, not guessed compatible. A known protocol or React-major mismatch is refused
+before new code loads and held at boot, with the built/current versions on the row and detail.
+Repacking a compatible candidate lets the same reviewed flow repair that hold.
+
+The plugin manager (`core.plugins`, issue #239) presents installation, enablement and reviewed
+updates. Its list is three collapsible bands — **Installed** (rows carrying `install`, grouped
 by publisher), **Built-in** (`core.*`) and **Engine** (builtin rows, not toggleable) — and a plugin
 FAMILY (ADR 0023: a three-segment id whose parent is composed and declared `required`) is one row
 with a chevron, its parts nested under it, the parent's switch being the family's. Every row wears
@@ -3727,9 +3797,9 @@ bun run --cwd packages/plugin-kit pack <plugin-dir> --out example.counter.manifo
 
 `pack --self-contained` reads `<plugin-dir>/manifest.json`, bundles `server.ts` (target `bun`)
 and `web.ts` (target `browser`) with the kit's guest runtimes, the protocol and zod INLINED, and
-writes one JSON document (`PluginBundleSchema`: `format: 1`, `hardenedContract: 7`, the manifest
-with its `entry`, the members as base64, no `builtAgainst`). All packing modes stamp the same
-executable contract. The artifact is self-contained because the runner resolves
+writes one JSON document (`PluginBundleSchema`: `format: 1`, `hardenedContract: 8`, the manifest
+with its `entry`, base64 members, and `builtAgainst["manifold:protocol"]`). All packing modes
+stamp the executable contract and protocol wire version. The artifact is self-contained because the runner resolves
 nothing: the hub's process runner is one `Bun.spawn` of the bundle's `server.js`; the page fetches
 `/api/plugins/<id>/web.js` with the bearer and starts a module Worker from a Blob of those bytes.
 Neither has the shared-module registry an in-realm bundle imports through. A server half that
@@ -4148,11 +4218,13 @@ the shell's `Stack`, and a `PluginManifestSchema` you parse with is the hub's. E
 import (`zod` above) is inlined into your member, which is why your directory needs it installed
 (`bun add zod` — a `pack` from a directory without it stops at `Could not resolve: "zod"`). The
 floor resolves from your directory first and from the checkout the kit runs in otherwise. The
-bundle records the version of each shared package it was built against (`builtAgainst`, copied to
-`install.builtAgainst` on your row); a hub upgrade can move those versions under you, which is
-the coupling ADR 0025 (b) accepts — the manager's presentation of it is #238. Outside the shell
-and the hub the registry does not exist, and the module throws `Missing shared module: <name>`
-on import: that is what a hardened runner sees when handed an in-realm bundle (§9 Packing).
+bundle records the version of each shared package and the protocol wire version it was built
+against (`builtAgainst`, copied to `install.builtAgainst` on your row). The hub compares the
+wire version exactly and the React major on every boot and admission; a known mismatch holds
+the row before code loads, and the manager names the built/current versions. Legacy missing
+metadata remains visibly unknown. Outside the shell and hub the registry does not exist, and
+the module throws `Missing shared module: <name>` on import: that is what a hardened runner
+sees when handed an in-realm bundle (§9 Packing).
 
 ### Pack
 
@@ -4196,7 +4268,7 @@ reads the bundle from the path you give it when it runs on the same machine with
 `MANIFOLD_PLUGIN_DEV_PATHS=1`, or from its drop box `<data>/plugin-uploads/`; `--deliver
 docker:<container>` copies it into a containerised hub's drop box (§9 Developing against a hub has
 the two strategies in full). The second run at the same bytes is `{"outcome":"unchanged"}` and
-asks the hub nothing; different bytes are `replaced` — off, install over with `replace: true`, on.
+asks the hub nothing; different bytes are `replaced` through `replace: true`, retaining enablement.
 
 What a refusal looks like, verbatim from the run behind this section — a handler declaring a cap
 the manifest did not, and a pin that no longer matched the file:

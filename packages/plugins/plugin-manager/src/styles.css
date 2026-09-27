@@ -1459,3 +1459,397 @@ a.plugin-manager-chip[data-tone="publisher"]:focus-visible {
 .plugin-manager-runtime-preparation :is([data-state="refused"], [data-state="superseded"]) {
   border-color: #c92a2a;
 }
+
+/*
+ * UPDATES (#238). The row wears the hub's observation as an `update` chip — a button for a
+ * root-capable reader — and the sheet's Updates card names who owns the next version.
+ */
+.plugin-manager-chip[data-tone="update"] {
+  border-color: #748ffc;
+  color: #edf2ff;
+  background: rgb(66 99 235 / 14%);
+}
+
+button.plugin-manager-chip {
+  font: inherit;
+  font-size: 0.64rem;
+  line-height: 1.3;
+  cursor: pointer;
+}
+
+button.plugin-manager-chip:hover:not(:disabled),
+button.plugin-manager-chip:focus-visible {
+  border-color: #b6c6f5;
+  outline: none;
+}
+
+button.plugin-manager-chip:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.plugin-manager-update-source,
+.plugin-manager-update-status {
+  margin: 0;
+  color: #868e96;
+  font-size: 0.7rem;
+  overflow-wrap: anywhere;
+}
+
+.plugin-manager-update-status {
+  color: #adb5bd;
+}
+
+.plugin-manager-update-status[data-state="available"] {
+  color: #b6c6f5;
+}
+
+.plugin-manager-update-status[data-state="failed"] {
+  color: #ffa8a8;
+}
+
+.plugin-manager-update-compatibility {
+  display: grid;
+  gap: 0.25rem;
+  color: #adb5bd;
+  font-size: 0.72rem;
+}
+
+.plugin-manager-update-compatibility p {
+  margin: 0;
+}
+
+.plugin-manager-update-compatibility[data-status="unknown"] > p {
+  color: #ffd43b;
+}
+
+.plugin-manager-update-compatibility[data-status="incompatible"] > p,
+.plugin-manager-update-compatibility li[data-kind="incompatible"] {
+  color: #ffa8a8;
+}
+
+/*
+ * THE UPDATE REVIEW: a modal over the ledger. Like the runtime review, orientation and the
+ * effectful action stay OUTSIDE the scrolling evidence — the header names the family, the
+ * body scrolls through every part, and the footer holds Apply beside the reason it is shut.
+ */
+.plugin-manager-update-dialog {
+  width: min(44rem, calc(100vw - 2rem));
+  max-height: min(42rem, calc(100vh - 2rem));
+  overflow: hidden;
+  border: 1px solid #3b4149;
+  border-radius: 0.9rem;
+  padding: 0;
+  color: #e9ecef;
+  background: #1d2025;
+  box-shadow: 0 1.5rem 4rem rgb(0 0 0 / 55%);
+}
+
+.plugin-manager-update-dialog::backdrop {
+  background: rgb(7 9 12 / 72%);
+}
+
+.plugin-manager-update-card {
+  display: grid;
+  max-height: min(42rem, calc(100vh - 2rem));
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.plugin-manager-update-card > header {
+  display: flex;
+  align-items: flex-start;
+  gap: 1rem;
+  border-bottom: 1px solid #2b3036;
+  padding: 0.9rem 1.2rem 0.7rem;
+}
+
+.plugin-manager-update-card > header > div {
+  display: grid;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: 0.1rem;
+}
+
+.plugin-manager-update-card > header span {
+  color: #748ffc;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.plugin-manager-update-card > header h3 {
+  margin: 0;
+  font-size: 1rem;
+  letter-spacing: -0.02em;
+  overflow-wrap: anywhere;
+}
+
+.plugin-manager-update-card > header small {
+  color: #868e96;
+  font-family: var(--font-family-monospace, monospace);
+  font-size: 0.66rem;
+}
+
+.plugin-manager-update-card > header button {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 1.9rem;
+  height: 1.9rem;
+  border: 1px solid #343a40;
+  border-radius: 0.5rem;
+  color: #adb5bd;
+  background: #22262c;
+  cursor: pointer;
+}
+
+.plugin-manager-update-card > header button:hover:not(:disabled),
+.plugin-manager-update-card > header button:focus-visible {
+  border-color: #495057;
+  color: #f1f3f5;
+  background: #2b3036;
+}
+
+.plugin-manager-update-card > header button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.plugin-manager-update-card :is(h3, [tabindex]):focus-visible,
+.plugin-manager-update-actions button:focus-visible {
+  outline: 2px solid #8ea4e8;
+  outline-offset: 2px;
+}
+
+.plugin-manager-update-card :is(h3, [tabindex="-1"]):focus:not(:focus-visible) {
+  outline: none;
+}
+
+.plugin-manager-update-body {
+  display: grid;
+  align-content: start;
+  gap: 0.75rem;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 0.85rem 1.2rem;
+  scrollbar-gutter: stable;
+}
+
+.plugin-manager-update-body p {
+  margin: 0;
+}
+
+.plugin-manager-update-state {
+  color: #adb5bd;
+  font-size: 0.76rem;
+}
+
+.plugin-manager-update-cleared {
+  color: #ffd43b;
+  font-size: 0.72rem;
+  overflow-wrap: anywhere;
+}
+
+.plugin-manager-update-summary {
+  display: grid;
+  gap: 0.35rem;
+  color: #dee2e6;
+  font-size: 0.76rem;
+}
+
+.plugin-manager-update-summary code,
+.plugin-manager-update-member code,
+.plugin-manager-update-source code {
+  color: #dee2e6;
+  font-family: var(--font-family-monospace, monospace);
+  font-size: 0.66rem;
+  overflow-wrap: anywhere;
+}
+
+.plugin-manager-update-blockers {
+  display: grid;
+  gap: 0.3rem;
+  border: 1px solid #c92a2a;
+  border-radius: 0.45rem;
+  padding: 0.55rem 0.65rem;
+  color: #ffa8a8;
+  background: rgb(201 42 42 / 18%);
+  font-size: 0.72rem;
+}
+
+.plugin-manager-update-blockers ul,
+.plugin-manager-update-block ul,
+.plugin-manager-update-compatibility ul {
+  display: grid;
+  gap: 0.25rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.plugin-manager-update-member {
+  display: grid;
+  gap: 0.55rem;
+  border: 1px solid #343a40;
+  border-radius: 0.55rem;
+  padding: 0.7rem 0.8rem;
+  background: #1a1d21;
+}
+
+.plugin-manager-update-member-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.4rem;
+}
+
+.plugin-manager-update-member-head > div {
+  display: grid;
+  min-width: 0;
+}
+
+.plugin-manager-update-member-head h4 {
+  margin: 0;
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+
+.plugin-manager-update-member-head small {
+  color: #868e96;
+  font-family: var(--font-family-monospace, monospace);
+  font-size: 0.64rem;
+}
+
+.plugin-manager-update-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0.2rem 0.7rem;
+  margin: 0;
+  font-size: 0.72rem;
+}
+
+.plugin-manager-update-facts dt {
+  color: #868e96;
+}
+
+.plugin-manager-update-facts dd {
+  min-width: 0;
+  margin: 0;
+  color: #dee2e6;
+  overflow-wrap: anywhere;
+}
+
+.plugin-manager-update-block {
+  display: grid;
+  gap: 0.3rem;
+  border-top: 1px solid #2b3036;
+  padding-top: 0.5rem;
+  color: #adb5bd;
+  font-size: 0.72rem;
+}
+
+.plugin-manager-update-block h5 {
+  margin: 0;
+  color: #868e96;
+  font-size: 0.64rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.plugin-manager-update-block [data-change="added"] {
+  color: #b2f2bb;
+}
+
+.plugin-manager-update-block [data-change="removed"],
+.plugin-manager-update-block [data-migration="true"] {
+  color: #ffd43b;
+}
+
+.plugin-manager-permission.is-added > code {
+  color: #edf2ff;
+}
+
+.plugin-manager-permission.is-added > small {
+  color: #b6c6f5;
+}
+
+/* The acknowledgement is the consent itself: amber until pressed, green once it is given. */
+.plugin-manager-update-consent {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  border: 1px solid #ffd43b;
+  border-radius: 0.45rem;
+  padding: 0.5rem 0.6rem;
+  color: #e9ecef;
+  cursor: pointer;
+}
+
+.plugin-manager-update-consent input {
+  flex: 0 0 auto;
+  margin: 0.15rem 0 0;
+  accent-color: #748ffc;
+}
+
+.plugin-manager-update-consent:has(input:checked) {
+  border-color: #2f6f4f;
+  background: #1b2b22;
+}
+
+.plugin-manager-update-consent:has(input:focus-visible) {
+  outline: 2px solid #8ea4e8;
+  outline-offset: 2px;
+}
+
+.plugin-manager-update-consent:has(input:disabled) {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.plugin-manager-update-changelog {
+  max-height: 16rem;
+  overflow: auto;
+  margin: 0;
+  border: 1px solid #343a40;
+  border-radius: 0.35rem;
+  padding: 0.5rem;
+  color: #dee2e6;
+  background: #1d2025;
+  font-size: 0.68rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.plugin-manager-update-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.4rem;
+  border-top: 1px solid #2b3036;
+  padding: 0.7rem 1.2rem 0.85rem;
+}
+
+.plugin-manager-update-actions > p {
+  flex: 1 1 14rem;
+  margin: 0;
+}
+
+.plugin-manager-update-actions .plugin-manager-filter {
+  padding: 0.35rem 0.7rem;
+}
+
+.plugin-manager-update-actions .plugin-manager-update-primary {
+  border-color: #748ffc;
+  color: #e9ecef;
+  background: #4263eb;
+  font-weight: 600;
+}
+
+.plugin-manager-update-actions .plugin-manager-filter:disabled {
+  cursor: not-allowed;
+}

@@ -23,10 +23,14 @@ import {
   JobDeploymentReviewSchema,
   MAX_PANEL_ARG_BYTES,
   formatManifoldUri,
+  PluginUpdateApplyResultSchema,
+  PluginUpdateReviewResultSchema,
 } from "@manifold/protocol";
 import {
+  ENGINE_APPLY_UPDATE_ACTION,
   ENGINE_AUTHOR_ACTION,
   ENGINE_INSTALL_ACTION,
+  ENGINE_REVIEW_UPDATE_ACTION,
   ENGINE_PLUGINS_ID,
   ENGINE_PURGE_ACTION,
   ENGINE_SET_DEVELOPER_MODE_ACTION,
@@ -3380,7 +3384,7 @@ describe("PluginHost install doors", () => {
     const row = installedRow(host, SAMPLE_ID);
     expect(row.source).toBe("plugin");
     expect(row.enabled).toBe(true);
-    expect(row.install).toEqual({
+    expect(row.install).toMatchObject({
       sha256,
       source,
       grantedCaps: ["containers:read"],
@@ -3388,6 +3392,8 @@ describe("PluginHost install doors", () => {
       installedAt: fixture.runtime.now(),
       hardened: true,
     });
+    // Unrecorded build metadata is shown as unknown, never invented into a refusal.
+    expect(row.install?.compatibility?.status).toBe("unknown");
     expect(row.actions.map((action) => action.name)).toEqual([
       `${SAMPLE_ID}.ping`,
       `${SAMPLE_ID}.mint`,
@@ -5972,4 +5978,502 @@ test("a declared read action cannot acquire invocation authority from a root cal
   } finally {
     fixture.store.close();
   }
+});
+
+const SUITE_ID = "vendor.suite";
+const SUITE_EXTRA_ID = "vendor.suite.extra";
+
+/**
+ * An installed two-member family — `vendor.suite`, declaring a drop-box JSON release feed, and
+ * its dotted child — with the next release of both already published in that feed.
+ */
+async function suiteFixture(
+  serve?: (ref: InstalledPluginRef) => IsolateLoadResult,
+  dataVersions = false,
+  database = false,
+) {
+  const fixture = await installFixture(serve);
+  const host = await customHost(fixture, [], { isolates: fixture.isolates });
+  const feed = join(fixture.dataDir, PLUGIN_UPLOADS_DIR, "suite-releases.json");
+  const manifest = (id: string, major: number): PluginManifest => ({
+    ...SAMPLE_MANIFEST,
+    id,
+    title: id,
+    version: `${String(major)}.0.0`,
+    ...(dataVersions ? { dataVersion: { major, minor: 0 } } : {}),
+    ...(database ? { database: {} } : {}),
+    ...(id === SUITE_ID
+      ? { releases: feed }
+      : { dependencies: { [SUITE_ID]: { type: "required" as const } } }),
+  });
+  for (const id of [SUITE_ID, SUITE_EXTRA_ID]) {
+    const installed = await host.dispatch(
+      fixture.owner,
+      ENGINE_INSTALL_ACTION,
+      fixture.drop(manifest(id, 1)),
+    );
+    if (!installed.ok) throw new Error(installed.denial.message);
+  }
+  const next = {
+    root: fixture.drop(manifest(SUITE_ID, 2)),
+    extra: fixture.drop(manifest(SUITE_EXTRA_ID, 2)),
+  };
+  writeFileSync(
+    feed,
+    JSON.stringify([
+      {
+        version: "2.0.0",
+        url: next.root.source,
+        sha256: next.root.sha256,
+        family: [{ id: SUITE_EXTRA_ID, url: next.extra.source, sha256: next.extra.sha256 }],
+      },
+    ]),
+  );
+  return { fixture, host, next };
+}
+
+/** The review door, then the apply door with exactly the digest it answered. */
+async function reviewThenApply(
+  host: PluginHost,
+  actor: AuthContext,
+  id: string,
+  between: () => void = () => {},
+): Promise<ActionOutcome> {
+  const reviewed = await host.dispatch(actor, ENGINE_REVIEW_UPDATE_ACTION, { id });
+  if (!reviewed.ok) throw new Error(reviewed.denial.message);
+  const result = PluginUpdateReviewResultSchema.parse(reviewed.result);
+  if (result.state !== "review") throw new Error(`no release was offered for ${id}`);
+  between();
+  return host.dispatch(actor, ENGINE_APPLY_UPDATE_ACTION, {
+    digest: result.review.digest,
+    consent: [],
+  });
+}
+
+/**
+ * THE GROUP INSTALLER (#238): a reviewed family replaces every member in one commit and one
+ * roster, or none of them. The coordinator's review, consent and staleness contracts are
+ * `plugin-updates.test.ts`'s; these cases defend what the host alone decides.
+ */
+describe("reviewed family updates through the one installer", () => {
+  test("every member lands in one commit and one roster, keeping disablement and withheld grants", async () => {
+    let observe = (): void => {};
+    const { fixture, host, next } = await suiteFixture((ref) => {
+      // The last candidate loading is the latest point a reader could see preparation.
+      if (ref.pluginId === SUITE_EXTRA_ID && ref.manifest.version === "2.0.0") observe();
+      return sampleLoad(ref);
+    });
+    const suiteVersions = (roster: PluginRoster): Record<string, string> =>
+      Object.fromEntries(
+        roster
+          .filter((entry) => entry.manifest.id.startsWith(SUITE_ID))
+          .map((entry) => [entry.manifest.id, entry.manifest.version]),
+      );
+    let midway: Record<string, string> = {};
+    observe = () => {
+      midway = suiteVersions(host.roster());
+    };
+    try {
+      expect(
+        (
+          await host.dispatch(
+            fixture.owner,
+            ENGINE_INSTALL_ACTION,
+            fixture.drop({ ...SAMPLE_MANIFEST, id: "vendor.other" }),
+          )
+        ).ok,
+      ).toBe(true);
+      expect(await host.setEnabled(SUITE_EXTRA_ID, false, fixture.owner.principal.id)).toEqual({
+        ok: true,
+      });
+      const before = new Map(fixture.store.pluginInstalls().map((row) => [row.pluginId, row]));
+      const published: PluginRoster[] = [];
+      host.onRosterChange((roster) => {
+        published.push(roster);
+      });
+      const outcome = await reviewThenApply(host, fixture.owner, SUITE_ID, () => {
+        published.length = 0;
+      });
+      if (!outcome.ok) throw new Error(outcome.denial.message);
+      const applied = PluginUpdateApplyResultSchema.parse(outcome.result);
+      expect(applied.rootId).toBe(SUITE_ID);
+      expect(
+        Object.fromEntries(applied.installed.map((member) => [member.id, member.sha256])),
+      ).toEqual({ [SUITE_ID]: next.root.sha256, [SUITE_EXTRA_ID]: next.extra.sha256 });
+      // One publication carries both members: no roster ever showed the family half replaced,
+      // and a read while candidates loaded answered the committed family.
+      expect(published).toHaveLength(1);
+      expect(suiteVersions(published[0]!)).toEqual({
+        [SUITE_ID]: "2.0.0",
+        [SUITE_EXTRA_ID]: "2.0.0",
+      });
+      expect(midway).toEqual({ [SUITE_ID]: "1.0.0", [SUITE_EXTRA_ID]: "1.0.0" });
+      const after = new Map(fixture.store.pluginInstalls().map((row) => [row.pluginId, row]));
+      for (const id of [SUITE_ID, SUITE_EXTRA_ID]) {
+        // The manifest ceiling did not move, so the withheld high-risk caps stay withheld.
+        expect(after.get(id)?.grantedCaps).toEqual(["containers:read"]);
+        expect(after.get(id)?.hardened).toBe(true);
+        expect(existsSync(before.get(id)!.bundlePath)).toBe(false);
+      }
+      expect(after.get("vendor.other")).toEqual(before.get("vendor.other"));
+      expect(host.enabled(SUITE_EXTRA_ID)).toBe(false);
+      expect(host.enabled(SUITE_ID)).toBe(true);
+      expect(await host.dispatch(fixture.owner, `${SUITE_ID}.ping`, {})).toEqual({
+        ok: true,
+        result: { pong: true },
+      });
+    } finally {
+      fixture.store.close();
+    }
+  });
+
+  test("a member whose migration fails rolls every member's module, row and staged data back", async () => {
+    const { fixture, host, next } = await suiteFixture((ref) => {
+      const loaded = sampleLoad(ref);
+      if (ref.manifest.version !== "2.0.0") return loaded;
+      return {
+        ...loaded,
+        def: {
+          ...loaded.def,
+          migrations: [
+            {
+              name: "to-two",
+              to: { major: 2, minor: 0 },
+              migrate: async (storage: PluginStorage) => {
+                if (ref.pluginId !== SUITE_ID) throw new Error("the extra refuses its data");
+                await storage.set("row", "v2");
+              },
+            },
+          ],
+        },
+      };
+    }, true);
+    try {
+      const storage = fixture.store.pluginStorage(SUITE_ID);
+      await storage.set("row", "v1");
+      const before = fixture.store.pluginInstalls();
+      const published: PluginRoster[] = [];
+      host.onRosterChange((roster) => {
+        published.push(roster);
+      });
+      const outcome = await reviewThenApply(host, fixture.owner, SUITE_ID, () => {
+        published.length = 0;
+      });
+      // The root's chain ran and was staged first; the extra's failure discards it with it.
+      expect(denial(outcome).message).toContain("the extra refuses its data");
+      expect(fixture.store.pluginInstalls()).toEqual(before);
+      expect(await storage.get("row")).toBe("v1");
+      expect(await storage.dataVersion()).toEqual({ major: 1, minor: 0 });
+      expect(await storage.appliedMigrations()).toEqual([]);
+      expect(fixture.store.pluginDatabaseJournals()).toEqual([]);
+      for (const [id, candidate] of [
+        [SUITE_ID, next.root],
+        [SUITE_EXTRA_ID, next.extra],
+      ] as const)
+        expect(existsSync(installLayout(fixture.dataDir, id, candidate.sha256).bundlePath)).toBe(
+          false,
+        );
+      // The prior children were restored, and no roster ever exposed a staged candidate.
+      expect(await host.dispatch(fixture.owner, `${SUITE_ID}.ping`, {})).toEqual({
+        ok: true,
+        result: { pong: true },
+      });
+      expect(published.flat().some((entry) => entry.manifest.version === "2.0.0")).toBe(false);
+      expect(installedRow(host, SUITE_ID).manifest.version).toBe("1.0.0");
+    } finally {
+      fixture.store.close();
+    }
+  });
+
+  test("a family metadata commit failure restores every SQLite image and can be retried", async () => {
+    const { fixture, host } = await suiteFixture(
+      (ref) => {
+        const loaded = sampleLoad(ref);
+        if (ref.manifest.version !== "2.0.0") return loaded;
+        return {
+          ...loaded,
+          def: {
+            ...loaded.def,
+            migrations: [
+              {
+                name: "to-two",
+                to: { major: 2, minor: 0 },
+                migrate: async (storage: PluginStorage, database?: PluginDatabase) => {
+                  await database!.run("ALTER TABLE state ADD COLUMN migrated TEXT");
+                  await database!.run("UPDATE state SET value = 'v2', migrated = 'yes'");
+                  await storage.set("row", "v2");
+                },
+              },
+            ],
+          },
+        };
+      },
+      true,
+      true,
+    );
+    try {
+      for (const id of [SUITE_ID, SUITE_EXTRA_ID]) {
+        const database = openPluginDatabase({ dataDir: fixture.dataDir, pluginId: id });
+        try {
+          await database.run("CREATE TABLE state(value TEXT NOT NULL)");
+          await database.run("INSERT INTO state(value) VALUES ('v1')");
+        } finally {
+          database.close();
+        }
+        await fixture.store.pluginStorage(id).set("row", "v1");
+      }
+      const before = fixture.store.pluginInstalls();
+      fixture.store.db.exec(`
+        CREATE TRIGGER reject_family_commit BEFORE INSERT ON plugin_installs
+        WHEN NEW.plugin_id = '${SUITE_EXTRA_ID}'
+        BEGIN SELECT RAISE(ABORT, 'family metadata commit failed'); END;
+      `);
+      const refused = await reviewThenApply(host, fixture.owner, SUITE_ID);
+      expect(denial(refused).message).toContain("family metadata commit failed");
+      expect(fixture.store.pluginInstalls()).toEqual(before);
+      for (const id of [SUITE_ID, SUITE_EXTRA_ID]) {
+        const database = openPluginDatabase({ dataDir: fixture.dataDir, pluginId: id });
+        try {
+          expect(await database.query("SELECT value FROM state")).toEqual([{ value: "v1" }]);
+          await expect(database.query("SELECT migrated FROM state")).rejects.toThrow(
+            "no such column",
+          );
+        } finally {
+          database.close();
+        }
+        const storage = fixture.store.pluginStorage(id);
+        expect(await storage.get("row")).toBe("v1");
+        expect(await storage.dataVersion()).toEqual({ major: 1, minor: 0 });
+        expect(await storage.appliedMigrations()).toEqual([]);
+        expect(installedRow(host, id).manifest.version).toBe("1.0.0");
+      }
+      expect(fixture.store.pluginDatabaseJournals()).toEqual([]);
+      fixture.store.db.exec("DROP TRIGGER reject_family_commit");
+      const applied = await reviewThenApply(host, fixture.owner, SUITE_ID);
+      expect(applied.ok).toBe(true);
+      for (const id of [SUITE_ID, SUITE_EXTRA_ID]) {
+        const database = openPluginDatabase({ dataDir: fixture.dataDir, pluginId: id });
+        try {
+          expect(await database.query("SELECT value, migrated FROM state")).toEqual([
+            { value: "v2", migrated: "yes" },
+          ]);
+        } finally {
+          database.close();
+        }
+        const storage = fixture.store.pluginStorage(id);
+        expect(await storage.get("row")).toBe("v2");
+        expect(await storage.dataVersion()).toEqual({ major: 2, minor: 0 });
+        expect(await storage.appliedMigrations()).toEqual(["to-two"]);
+        expect(installedRow(host, id).manifest.version).toBe("2.0.0");
+      }
+      expect(fixture.store.pluginDatabaseJournals()).toEqual([]);
+    } finally {
+      host.close();
+      fixture.store.close();
+    }
+  });
+
+  test("authority withdrawn while candidates load refuses the commit and restores the family", async () => {
+    let withdraw = (): void => {};
+    const { fixture, host } = await suiteFixture((ref) => {
+      // The last candidate's admission is the latest await before the commit's own checks.
+      if (ref.pluginId === SUITE_EXTRA_ID && ref.manifest.version === "2.0.0") withdraw();
+      return sampleLoad(ref);
+    });
+    try {
+      const administrator = context(fixture, ["*"]);
+      withdraw = () => {
+        fixture.auth.revokePrincipal(administrator.principal.id, fixture.owner);
+      };
+      const before = fixture.store.pluginInstalls();
+      const outcome = await reviewThenApply(host, administrator, SUITE_ID);
+      expect(denial(outcome).message).toContain("forbidden");
+      expect(fixture.store.pluginInstalls()).toEqual(before);
+      expect(installedRow(host, SUITE_ID).manifest.version).toBe("1.0.0");
+      expect(installedRow(host, SUITE_EXTRA_ID).manifest.version).toBe("1.0.0");
+      expect(await host.dispatch(fixture.owner, `${SUITE_EXTRA_ID}.ping`, {})).toEqual({
+        ok: true,
+        result: { pong: true },
+      });
+    } finally {
+      fixture.store.close();
+    }
+  });
+
+  test("failed replacement never executes a hardened incumbent held at boot", async () => {
+    const fixture = await installFixture();
+    const runner = new IsolateSupervisor({ logger: silentLogger, runtime: fixture.runtime });
+    let host: PluginHost | undefined;
+    try {
+      const feed = join(fixture.dataDir, PLUGIN_UPLOADS_DIR, "held-releases.json");
+      const sentinel = join(fixture.dataDir, "incompatible-code-ran");
+      const manifest: PluginManifest = {
+        ...SAMPLE_MANIFEST,
+        capabilities: [],
+        releases: feed,
+        entry: { server: true },
+      };
+      const bytes = Buffer.from(
+        JSON.stringify({
+          format: 1,
+          hardenedContract: 2,
+          builtAgainst: { "manifold:protocol": "1" },
+          manifest,
+          files: {
+            "server.js": Buffer.from(
+              `await Bun.write(${JSON.stringify(sentinel)}, "executed"); export default { actions: [], handlers: {} };`,
+            ).toString("base64"),
+          },
+        }),
+      );
+      const sha256 = sha256Hex(bytes);
+      const { bundlePath, dir } = installLayout(fixture.dataDir, SAMPLE_ID, sha256);
+      mkdirSync(join(dir, ".."), { recursive: true });
+      writeFileSync(bundlePath, bytes);
+      fixture.store.putPluginInstall({
+        pluginId: SAMPLE_ID,
+        sha256,
+        bundlePath,
+        source: join(fixture.dataDir, PLUGIN_UPLOADS_DIR, "held.manifold-plugin.json"),
+        installedBy: fixture.owner.principal.id,
+        installedAt: 0,
+        grantedCaps: [],
+        actions: [],
+        hardened: true,
+        builtAgainst: { "manifold:protocol": "1" },
+      });
+      host = await customHost(fixture, [], { isolates: { ...fixture.isolates, runner } });
+      expect(installedRow(host, SAMPLE_ID)).toMatchObject({
+        enabled: false,
+        held: { reason: "repack_required" },
+      });
+      expect(existsSync(sentinel)).toBe(false);
+      const candidate = fixture.drop(
+        { ...manifest, version: "2.0.0" },
+        {
+          "server.js": 'throw new Error("candidate load failed");',
+          "web.js": "export {};",
+        },
+      );
+      writeFileSync(
+        feed,
+        JSON.stringify([{ version: "2.0.0", url: candidate.source, sha256: candidate.sha256 }]),
+      );
+      const before = fixture.store.pluginInstalls();
+      expect((await reviewThenApply(host, fixture.owner, SAMPLE_ID)).ok).toBe(false);
+      expect(existsSync(sentinel)).toBe(false);
+      expect(fixture.store.pluginInstalls()).toEqual(before);
+      expect(installedRow(host, SAMPLE_ID)).toMatchObject({
+        enabled: false,
+        held: { reason: "repack_required" },
+      });
+    } finally {
+      host?.close();
+      await runner.close();
+      fixture.store.close();
+      rmSync(fixture.dataDir, { recursive: true, force: true });
+    }
+  });
+
+  test("an update never replaces an enabled native declaration", async () => {
+    const f = await retainedServiceFixture();
+    try {
+      const feed = join(f.fixture.dataDir, PLUGIN_UPLOADS_DIR, "sample-releases.json");
+      // The same declaration, now naming its release feed: native execution is retained.
+      const current = f.fixture.drop({ ...f.manifest, version: "1.2.4", releases: feed });
+      expect((await installBundle({ ...current, hub: f.hub })).outcome).toBe("replaced");
+      const machine = structuredClone(f.machine);
+      machine.operations[f.operationId]!.network = "host";
+      const candidate = f.fixture.drop({
+        ...f.manifest,
+        version: "2.0.0",
+        releases: feed,
+        machine,
+      });
+      writeFileSync(
+        feed,
+        JSON.stringify([{ version: "2.0.0", url: candidate.source, sha256: candidate.sha256 }]),
+      );
+      expect((await reviewThenApply(f.host, f.fixture.owner, SAMPLE_ID)).ok).toBe(false);
+      expect(installedRow(f.host, SAMPLE_ID).install?.sha256).toBe(current.sha256);
+      expect(await f.host.dispatch(f.fixture.owner, `${SAMPLE_ID}.ping`, {})).toEqual({
+        ok: true,
+        result: { version: "1.2.4" },
+      });
+      f.jobs.tick();
+      await f.readService();
+      expect(f.jobs.jobs.cancellation(f.start.request.jobId)).toBeNull();
+    } finally {
+      f.close();
+    }
+  });
+
+  test.each([
+    ["protocol", { "manifold:protocol": "1" }],
+    ["React", { react: "18.3.1" }],
+  ] as const)(
+    "a known %s mismatch is refused on upgrade and held at boot before its module runs",
+    async (kind, builtAgainst) => {
+      const fixture = await installFixture();
+      const ranKey = `manifold.test.mismatch-ran:${kind}:${fixture.dataDir}`;
+      const globals = globalThis as Record<symbol, unknown>;
+      try {
+        const host = await customHost(fixture, [], { isolates: fixture.isolates });
+        expect((await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, fixture.drop())).ok).toBe(
+          true,
+        );
+        const installed = fixture.store.pluginInstalls();
+        const bytes = Buffer.from(
+          JSON.stringify({
+            format: 1,
+            hardenedContract: 2,
+            builtAgainst,
+            manifest: { ...SAMPLE_MANIFEST, version: "1.2.4" },
+            files: {
+              "server.js": Buffer.from(
+                `globalThis[Symbol.for(${JSON.stringify(ranKey)})] = true;
+                export default { actions: [], handlers: {} };`,
+              ).toString("base64"),
+              "web.js": Buffer.from("export const web = 1;").toString("base64"),
+            },
+          }),
+        );
+        const sha256 = sha256Hex(bytes);
+        const source = join(fixture.dataDir, PLUGIN_UPLOADS_DIR, "mismatched.manifold-plugin.json");
+        writeFileSync(source, bytes);
+        const { bundlePath } = installLayout(fixture.dataDir, SAMPLE_ID, sha256);
+        const outcome = await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, {
+          source,
+          sha256,
+          replace: true,
+        });
+        expect(denial(outcome).message).toMatch(/^artifact_invalid: .*repack_required/);
+        expect(fixture.store.pluginInstalls()).toEqual(installed);
+        expect(existsSync(bundlePath)).toBe(false);
+        expect(globals[Symbol.for(ranKey)]).toBeUndefined();
+        // A row admitted before this server moved on: boot holds it before importing its code.
+        host.close();
+        writeFileSync(bundlePath, bytes);
+        fixture.store.putPluginInstall({
+          ...installed[0]!,
+          sha256,
+          source,
+          bundlePath,
+          hardened: false,
+          builtAgainst,
+        });
+        const rebooted = await customHost(fixture, [], { isolates: fixture.isolates });
+        expect(installedRow(rebooted, SAMPLE_ID).held).toMatchObject({
+          reason: "repack_required",
+        });
+        expect(installedRow(rebooted, SAMPLE_ID).install?.compatibility?.status).toBe(
+          "incompatible",
+        );
+        expect(globals[Symbol.for(ranKey)]).toBeUndefined();
+      } finally {
+        delete globals[Symbol.for(ranKey)];
+        fixture.store.close();
+      }
+    },
+  );
 });
