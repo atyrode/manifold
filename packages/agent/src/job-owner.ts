@@ -247,9 +247,13 @@ export class MachineJobOwner {
   >();
   private readonly resources: JobResources;
   private serviceConfiguration: ServiceConfiguration = { revision: null, policies: [] };
-  private serviceRunner: JobServiceRunner = createJobServiceRunner({ policies: [] });
+  private readonly serviceRunner: JobServiceRunner;
   private seatController = new AbortController();
-  private configurationController = new AbortController();
+  /** One revocation per configured service: a reconfiguration aborts only the services whose
+   * policy it changed or removed, so work admitted under an unchanged policy keeps running. */
+  private readonly serviceAuthorities = new Map<string, AbortController>();
+  /** A service with no configured policy has no authority a reconfiguration could keep. */
+  private unconfiguredServices = new AbortController();
   private readonly serviceTunnels = new Map<string, OwnedServiceTunnel>();
   private readonly serviceAuthorizations = new Map<
     string,
@@ -276,6 +280,13 @@ export class MachineJobOwner {
       runtimeTools: options.runtimeTools,
       credentialReferences: () => this.credentialReferences(),
       runtimeAvailable: (policy, inventory) => this.runtimeAvailable(policy, inventory, new Set()),
+    });
+    this.serviceRunner = createJobServiceRunner({
+      policies: [],
+      resolveCredential: heldServiceCredentialResolver(
+        new Map([...(options.serviceCredentials ?? [])].map(([ref, value]) => [ref, value.fd])),
+      ),
+      resolveRuntime: (policy, signal) => this.instanceService(policy, signal),
     });
   }
 
@@ -638,23 +649,28 @@ export class MachineJobOwner {
         this.publishInstanceReady(instance);
       return;
     }
-    this.configurationController.abort();
-    this.configurationController = new AbortController();
-    this.serviceRunner.close();
+    // Only the services this configuration changed or removed lose their authority: a request,
+    // proxy, tunnel or instance connection admitted under a byte-identical policy finishes on
+    // it, and new work is admitted under the new set.
+    for (const serviceId of this.serviceRunner.configure(configuration.policies)) {
+      this.serviceAuthorities.get(serviceId)?.abort();
+      this.serviceAuthorities.delete(serviceId);
+    }
+    this.unconfiguredServices.abort();
+    this.unconfiguredServices = new AbortController();
+    for (const policy of configuration.policies)
+      if (!this.serviceAuthorities.has(policy.serviceId))
+        this.serviceAuthorities.set(policy.serviceId, new AbortController());
     this.serviceConfiguration = configuration;
     this.resources.configure(configuration.policies);
-    this.serviceRunner = createJobServiceRunner({
-      policies: configuration.policies,
-      resolveCredential: heldServiceCredentialResolver(
-        new Map(
-          [...(this.options.serviceCredentials ?? [])].map(([ref, value]) => [ref, value.fd]),
-        ),
-      ),
-      resolveRuntime: (policy, signal) => this.instanceService(policy, signal),
-    });
     this.publishResources();
     for (const installation of this.installs.values())
       this.publishInstallation(installation.command);
+  }
+
+  /** Aborts when a reconfiguration changes or removes `serviceId`'s policy, or at shutdown. */
+  private serviceAuthority(serviceId: string): AbortSignal {
+    return (this.serviceAuthorities.get(serviceId) ?? this.unconfiguredServices).signal;
   }
 
   private runtimeInstallation(
@@ -1004,11 +1020,7 @@ export class MachineJobOwner {
             command.policySha256,
             signal,
           ),
-        AbortSignal.any([
-          controller.signal,
-          this.seatController.signal,
-          this.configurationController.signal,
-        ]),
+        AbortSignal.any([controller.signal, this.seatController.signal]),
       );
       if (this.sink === seat) this.emit({ type: resultType, requestId: command.requestId, reply });
     } finally {
@@ -1047,12 +1059,7 @@ export class MachineJobOwner {
           fingerprint,
           authoritySignal,
         ),
-      AbortSignal.any([
-        signal,
-        job.serviceController.signal,
-        this.seatController.signal,
-        this.configurationController.signal,
-      ]),
+      AbortSignal.any([signal, job.serviceController.signal, this.seatController.signal]),
     );
     // The worker is sandboxed: it learns its call's fate, never the owner's state (#708), and an
     // undecided authorization now names that state (#841).
@@ -1183,7 +1190,7 @@ export class MachineJobOwner {
         bindings: [binding],
         signal: job.serviceController.signal,
         authoritySignal: () =>
-          AbortSignal.any([this.seatController.signal, this.configurationController.signal]),
+          AbortSignal.any([this.seatController.signal, this.serviceAuthority(serviceId)]),
         resolveCredential: heldServiceCredentialResolver(
           new Map(
             [...(this.options.serviceCredentials ?? [])].map(([ref, value]) => [ref, value.fd]),
@@ -1478,7 +1485,11 @@ export class MachineJobOwner {
     return { ...endpoint, socket };
   }
 
-  private openServiceTunnel(channelId: string, signal: AbortSignal): OwnedServiceTunnel {
+  private openServiceTunnel(
+    channelId: string,
+    serviceId: string,
+    signal: AbortSignal,
+  ): OwnedServiceTunnel {
     // Four unrelated reasons a tunnel cannot be opened: no hub seat to carry its frames, an
     // owner already draining, a channel id already in use, and the ceiling on open channels.
     if (!this.sink) throw new ServiceFailure("service_owner_unavailable");
@@ -1490,7 +1501,7 @@ export class MachineJobOwner {
       signal,
       controller.signal,
       this.seatController.signal,
-      this.configurationController.signal,
+      this.serviceAuthority(serviceId),
     ]);
     lifetime.throwIfAborted();
     const wire = createServiceTunnel({
@@ -1524,6 +1535,7 @@ export class MachineJobOwner {
     const channelId = randomUUID();
     const tunnel = this.openServiceTunnel(
       channelId,
+      policy.serviceId,
       AbortSignal.any([signal, job.serviceController.signal]),
     );
     const ready = Promise.withResolvers<JobServiceEndpoint | null>();
@@ -1574,7 +1586,11 @@ export class MachineJobOwner {
     let proxy: JobServiceProxy | undefined;
     let socket: Socket | undefined;
     try {
-      tunnel = this.openServiceTunnel(command.channelId, this.seatController.signal);
+      tunnel = this.openServiceTunnel(
+        command.channelId,
+        command.serviceId,
+        this.seatController.signal,
+      );
       tunnel.command = command;
       const signal = tunnel.signal;
       proxy = await createJobServiceProxy({
@@ -1653,7 +1669,7 @@ export class MachineJobOwner {
     const lifetime = AbortSignal.any([
       signal,
       instance.job.serviceController.signal,
-      this.configurationController.signal,
+      this.serviceAuthority(policy.serviceId),
     ]);
     const socket = await connectWorkloadLoopback(
       instance.port,
@@ -3354,7 +3370,8 @@ export class MachineJobOwner {
     if (!this.ready) return;
     this.draining = true;
     this.seatController.abort();
-    this.configurationController.abort();
+    for (const authority of this.serviceAuthorities.values()) authority.abort();
+    this.unconfiguredServices.abort();
     this.serviceRunner.close();
     for (const pending of this.directServiceCalls.values()) pending.controller.abort();
     this.options.journal.append({ kind: "drain", draining: true });

@@ -3,6 +3,7 @@ import { Agent, request as httpRequest, type IncomingMessage } from "node:http";
 import { request as httpsRequest } from "node:https";
 import type { Socket } from "node:net";
 import {
+  canonicalJobJson,
   JsonProjectionError,
   SERVICE_FRAME_BYTES,
   ServiceBindingSchema,
@@ -43,6 +44,10 @@ export interface JobServiceRunner {
     authorize: AuthorizeServiceCall,
     signal?: AbortSignal,
   ): Promise<ServiceReply>;
+  /** Replace the configured policies and return the service ids whose policy changed or was
+   * removed. Their active requests are aborted; a policy byte-identical in the new set keeps its
+   * active requests, which finish under the policy they were admitted with, and its concurrency. */
+  configure(policies: readonly ServicePolicy[]): ReadonlySet<string>;
   /** Abort active requests; descriptors supplied by the owner remain borrowed. */
   close(): void;
 }
@@ -327,8 +332,8 @@ function inspectJson(value: unknown, credentials: ReadonlyMap<string, string>): 
 }
 
 /** One runner per native owner: concurrency is shared across that owner's jobs, not per call.
- * Policies are validated and copied once; exact revision bindings and current authorization
- * are checked for every request. This object is transport, not an authority store. */
+ * Policies are validated and copied once per configuration; exact revision bindings and current
+ * authorization are checked for every request. This object is transport, not an authority store. */
 export function createJobServiceRunner(options: {
   policies: readonly ServicePolicy[];
   resolveCredential?: ResolveServiceCredential;
@@ -340,30 +345,57 @@ export function createJobServiceRunner(options: {
     signal: AbortSignal,
   ) => Promise<JobServiceEndpoint & { signal: AbortSignal; socket: Socket }>;
 }): JobServiceRunner {
-  const policies = new Map<
-    string,
-    { policy: ServicePolicy; active: number; projections: Map<string, JsonProjection> }
-  >();
-  if (options.policies.length > 64) throw new Error("service_policy_invalid");
-  for (const raw of options.policies) {
-    const parsed = ServicePolicySchema.safeParse(raw);
-    if (!parsed.success || policies.has(parsed.data.serviceId))
-      throw new Error("service_policy_invalid");
-    const policy = parsed.data;
-    const projections = new Map<string, JsonProjection>();
-    for (const [id, operation] of Object.entries(policy.operations)) {
-      if (!("kind" in operation) && operation.response.kind === "projected-json")
-        projections.set(id, compileJsonProjection(operation.response.fields));
-    }
-    policies.set(policy.serviceId, { policy, active: 0, projections });
+  interface Entry {
+    policy: ServicePolicy;
+    canonical: string;
+    active: Set<AbortController>;
+    projections: Map<string, JsonProjection>;
   }
+  // Every policy is checked before any replaces the current set, so a refused configuration
+  // leaves the admitted one, and its requests, as they were.
+  const admit = (raw: readonly ServicePolicy[], current: ReadonlyMap<string, Entry>) => {
+    if (raw.length > 64) throw new Error("service_policy_invalid");
+    const next = new Map<string, Entry>();
+    for (const item of raw) {
+      const parsed = ServicePolicySchema.safeParse(item);
+      if (!parsed.success || next.has(parsed.data.serviceId))
+        throw new Error("service_policy_invalid");
+      const policy = parsed.data;
+      const canonical = canonicalJobJson(policy);
+      const kept = current.get(policy.serviceId);
+      if (kept?.canonical === canonical) {
+        next.set(policy.serviceId, kept);
+        continue;
+      }
+      const projections = new Map<string, JsonProjection>();
+      for (const [id, operation] of Object.entries(policy.operations)) {
+        if (!("kind" in operation) && operation.response.kind === "projected-json")
+          projections.set(id, compileJsonProjection(operation.response.fields));
+      }
+      next.set(policy.serviceId, { policy, canonical, active: new Set(), projections });
+    }
+    return next;
+  };
+  let policies = admit(options.policies, new Map());
   const resolveCredential = options.resolveCredential;
-  const active = new Set<AbortController>();
   let closed = false;
   return {
+    configure(raw) {
+      const next = admit(raw, policies);
+      const revoked = new Set<string>();
+      const previous = policies;
+      policies = next;
+      for (const [serviceId, entry] of previous) {
+        if (next.get(serviceId) === entry) continue;
+        revoked.add(serviceId);
+        for (const controller of entry.active) controller.abort();
+      }
+      return revoked;
+    },
     close() {
       closed = true;
-      for (const controller of active) controller.abort();
+      for (const entry of policies.values())
+        for (const controller of entry.active) controller.abort();
     },
     async call(raw, rawBinding, authorize, callerSignal) {
       const parsed = ServiceCallSchema.safeParse(raw);
@@ -400,7 +432,7 @@ export function createJobServiceRunner(options: {
         (instanceRuntime && operation.response.kind !== "projected-json")
       )
         return refusal("service_operation_unknown");
-      if (entry.active >= entry.policy.maxConcurrent) return refusal("service_busy");
+      if (entry.active.size >= entry.policy.maxConcurrent) return refusal("service_busy");
       const controller = new AbortController();
       let timedOut = false;
       const timer = setTimeout(() => {
@@ -409,8 +441,7 @@ export function createJobServiceRunner(options: {
       }, operation.timeoutMs);
       const abort = () => controller.abort();
       callerSignal?.addEventListener("abort", abort, { once: true });
-      active.add(controller);
-      entry.active++;
+      entry.active.add(controller);
       const credentials = new Map<string, string>();
       let runtimeSocket: Socket | undefined;
       let runtimeSignal: AbortSignal | undefined;
@@ -561,8 +592,13 @@ export function createJobServiceRunner(options: {
         return reply;
       } catch (error) {
         if (controller.signal.aborted)
+          // A request whose policy a reconfiguration replaced was closed by it, not cancelled.
           return refusal(
-            closed ? "service_closed" : timedOut ? "service_timeout" : "service_cancelled",
+            closed || policies.get(request.serviceId) !== entry
+              ? "service_closed"
+              : timedOut
+                ? "service_timeout"
+                : "service_cancelled",
           );
         return refusal(
           error instanceof JsonProjectionError
@@ -580,8 +616,7 @@ export function createJobServiceRunner(options: {
         credentials.clear();
         clearTimeout(timer);
         callerSignal?.removeEventListener("abort", abort);
-        active.delete(controller);
-        entry.active--;
+        entry.active.delete(controller);
       }
     },
   };
