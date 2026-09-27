@@ -1,5 +1,5 @@
 /** Wire revision; session joins require the current version (close 4409 otherwise). */
-export const PROTOCOL_VERSION = 44;
+export const PROTOCOL_VERSION = 45;
 
 /**
  * Machine-channel acceptance set. Agents are long-lived (they hold PTYs and
@@ -423,9 +423,13 @@ export const PROTOCOL_VERSION = 44;
  * together. Terminal-host IPC stays 3: the host announces its stop with a new
  * `destructive_stop` event, which an older transport ignores as an unknown type, and never
  * adds the key to its own `exited`. The instance wire is unchanged and adds 44.
+ *
+ * v45: manifest release sources, verified plugin-update reviews and installer compatibility
+ * observations extend the session/HTTP plugin vocabulary. Machine and instance messages and
+ * adoption semantics are unchanged; both compatibility sets retain their older members.
  */
 export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44,
+  30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45,
 ]);
 
 /**
@@ -476,10 +480,10 @@ export const MACHINE_AGENT_TOOLS_PROTOCOL_VERSION = 43;
  * never receives a machine ref, so the instance wire is unchanged.
  * v26: image-aware terminal viewers; instance frames remain unchanged.
  * v27: governed jobs expand the closed share resource/capability vocabularies (ADR 0033);
- * instance compatibility resets to protocol 27. v28 through v44 leave that wire unchanged.
+ * instance compatibility resets to protocol 27. v28 through v45 leave that wire unchanged.
  */
 export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44,
+  27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45,
 ]);
 
 /**
