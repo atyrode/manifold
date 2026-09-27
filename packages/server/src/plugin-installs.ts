@@ -1,11 +1,15 @@
 import {
+  closeSync,
+  constants,
   existsSync,
+  fstatSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
+  readSync,
   realpathSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
@@ -66,31 +70,56 @@ export class InstallRefusal extends Error {
   }
 }
 
-export interface ArtifactRequest {
+/** Where bytes come from, and the lifetime and bound their read runs under. */
+export interface ArtifactReadRequest {
   /** An `https://` URL, or an absolute path. */
   readonly source: string;
-  /** The pin, lowercase hex: the sha256 of the artifact's exact bytes. */
-  readonly sha256: string;
   readonly dataDir: string;
   /** Injected for body/redirect tests; destination policy still runs before this seam. */
   readonly fetchImpl?: typeof fetch;
   /**
    * `MANIFOLD_PLUGIN_DEV_PATHS=1`: accept an absolute path anywhere on this host rather than
    * only under `<dataDir>/plugin-uploads/`. A development convenience, off by default, because
-   * "install the file at this path" is a read of any file root can name.
+   * "install the file at this path" is a read of any file root can name. Never set for a
+   * source a publisher declared: only the operator's own spelling may widen the read.
    */
   readonly devPaths?: boolean;
+  /**
+   * The caller's lifetime (#318). Aborting it cancels a fetch still in flight and rejects with
+   * the signal's own reason rather than a refusal, so a closed caller is never told its source
+   * was bad; an install asks it again immediately before the first write, after every await: a
+   * caller that closed while the bytes were verified must find nothing written under a
+   * directory its successor owns.
+   */
+  readonly signal?: AbortSignal;
+  /**
+   * A tighter byte bound for metadata (a release feed, a changelog). It may only narrow
+   * `ISOLATE_MAX_ARTIFACT_BYTES`: a larger value reads under the artifact cap anyway.
+   */
+  readonly maxBytes?: number;
+}
+
+export interface ArtifactRequest extends ArtifactReadRequest {
+  /** The pin, lowercase hex: the sha256 of the artifact's exact bytes. */
+  readonly sha256: string;
   /**
    * The door's own verdicts, asked ONCE the bundle is parsed and BEFORE anything is written:
    * a namespace squat, an id already installed. Returning a refusal writes nothing.
    */
   readonly admit?: (bundle: PluginBundle) => InstallRefusal | null;
-  /**
-   * The caller's lifetime (#318). Aborting it cancels a fetch still in flight, and it is asked
-   * again immediately before the first write, after every await: a caller that closed while
-   * the bytes were verified must find nothing written under a directory its successor owns.
-   */
-  readonly signal?: AbortSignal;
+}
+
+/**
+ * A bundle that passed every check the door makes before writing — pin, schema, admission,
+ * sheet and embedded machine members — and nothing else: no file exists for it and none of
+ * its code has run. `bytes` are the EXACT bytes the pin was computed over.
+ */
+export interface VerifiedPluginArtifact {
+  readonly bundle: PluginBundle;
+  readonly bytes: Uint8Array;
+  readonly sha256: string;
+  /** The url or path as the caller gave it. */
+  readonly source: string;
 }
 
 /** A bundle the door admitted: parsed, pinned, and on disk. */
@@ -112,28 +141,54 @@ export function installLayout(
   return { bundlePath: join(home, `${sha256}${PLUGIN_BUNDLE_SUFFIX}`), dir: join(home, sha256) };
 }
 
-function tooLarge(bytes: number): InstallRefusal {
+function tooLarge(bytes: number, limit: number): InstallRefusal {
   return new InstallRefusal(
     "artifact_unreadable",
-    `artifact is ${String(bytes)} bytes, over the ${String(ISOLATE_MAX_ARTIFACT_BYTES)}-byte cap`,
+    `artifact is ${String(bytes)} bytes, over the ${String(limit)}-byte cap`,
   );
+}
+
+function byteLimit(request: ArtifactReadRequest): number {
+  const { maxBytes } = request;
+  if (maxBytes === undefined) return ISOLATE_MAX_ARTIFACT_BYTES;
+  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
+    throw new RangeError(`maxBytes must be a positive integer, not ${String(maxBytes)}`);
+  }
+  return Math.min(maxBytes, ISOLATE_MAX_ARTIFACT_BYTES);
+}
+
+/**
+ * A transport failure as refusal detail: one line, no control or format characters, bounded.
+ * The detail is wire text a principal reads, and the error it came from is a stranger's
+ * server, resolver or TLS stack talking.
+ */
+function failureDetail(error: unknown): string {
+  const message = error instanceof Error ? error.message : "";
+  const line = message
+    .replace(/[\p{Cc}\p{Cf}]+/gu, " ")
+    .trim()
+    .slice(0, 256);
+  return line === "" ? "fetch failed" : line;
 }
 
 /**
  * The bytes at `source`. `https://` only over the network — a bundle is code, and code fetched
  * in the clear is code somebody on the path chose — and paths only from the uploads drop box
- * unless dev paths are on. Both bounded by `ISOLATE_MAX_ARTIFACT_BYTES` before the whole body
- * is held in memory.
+ * unless dev paths are on. Both bounded by `ISOLATE_MAX_ARTIFACT_BYTES`, or the request's
+ * narrower `maxBytes`, before the whole body is held in memory. Unpinned metadata and pinned
+ * bundles meet the same reader: there is one egress policy, not one per purpose.
  */
-export async function readArtifact(request: ArtifactRequest): Promise<Uint8Array> {
-  if (request.source.startsWith("https://")) return fetchArtifact(request);
+export async function readArtifact(request: ArtifactReadRequest): Promise<Uint8Array> {
+  const limit = byteLimit(request);
+  request.signal?.throwIfAborted();
+  if (request.source.startsWith("https://")) return fetchArtifact(request, limit);
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(request.source)) {
     throw new InstallRefusal("artifact_unreadable", "only https:// sources are fetched");
   }
-  return readArtifactFile(request);
+  return readArtifactFile(request, limit);
 }
 
-async function fetchArtifact(request: ArtifactRequest): Promise<Uint8Array> {
+async function fetchArtifact(request: ArtifactReadRequest, limit: number): Promise<Uint8Array> {
   try {
     const response = await fetchArtifactResponse(
       request.source,
@@ -147,9 +202,9 @@ async function fetchArtifact(request: ArtifactRequest): Promise<Uint8Array> {
       throw new InstallRefusal("artifact_unreadable", `HTTP ${String(response.status)}`);
     }
     const declared = response.headers.get("content-length");
-    if (declared !== null && Number(declared) > ISOLATE_MAX_ARTIFACT_BYTES) {
+    if (declared !== null && Number(declared) > limit) {
       await response.body?.cancel();
-      throw tooLarge(Number(declared));
+      throw tooLarge(Number(declared), limit);
     }
     const reader = response.body?.getReader();
     if (reader === undefined) throw new InstallRefusal("artifact_unreadable", "empty response");
@@ -159,30 +214,33 @@ async function fetchArtifact(request: ArtifactRequest): Promise<Uint8Array> {
       const chunk = await reader.read();
       if (chunk.done) break;
       received += chunk.value.byteLength;
-      if (received > ISOLATE_MAX_ARTIFACT_BYTES) {
+      if (received > limit) {
         await reader.cancel();
-        throw tooLarge(received);
+        throw tooLarge(received, limit);
       }
       chunks.push(chunk.value);
     }
     return Buffer.concat(chunks, received);
   } catch (error) {
     if (error instanceof InstallRefusal) throw error;
-    const detail = error instanceof Error ? error.message : "fetch failed";
-    throw new InstallRefusal("artifact_unreadable", detail);
+    // A closed caller learns of its own abort, never of a refusal it would report as the source's.
+    request.signal?.throwIfAborted();
+    throw new InstallRefusal("artifact_unreadable", failureDetail(error));
   }
 }
 
-function readArtifactFile(request: ArtifactRequest): Uint8Array {
+function readArtifactFile(request: ArtifactReadRequest, limit: number): Uint8Array {
   if (!isAbsolute(request.source)) {
     throw new InstallRefusal("artifact_unreadable", "a path source must be absolute");
   }
+  const unreadable = () =>
+    new InstallRefusal("artifact_unreadable", "no readable file at that path");
   let path: string;
   try {
     // The REAL path, so a symlink dropped into the uploads box cannot point out of it.
     path = realpathSync(request.source);
   } catch {
-    throw new InstallRefusal("artifact_unreadable", "no readable file at that path");
+    throw unreadable();
   }
   if (request.devPaths !== true) {
     const uploads = resolve(request.dataDir, PLUGIN_UPLOADS_DIR);
@@ -202,21 +260,42 @@ function readArtifactFile(request: ArtifactRequest): Uint8Array {
       );
     }
   }
-  let size: number;
+  let fd: number;
   try {
-    const stat = statSync(path);
-    if (!stat.isFile()) throw new Error("not a file");
-    size = stat.size;
+    // No-follow on the resolved path, and non-blocking so a FIFO swapped in cannot hang the door.
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   } catch {
-    throw new InstallRefusal("artifact_unreadable", "no readable file at that path");
+    throw unreadable();
   }
-  if (size > ISOLATE_MAX_ARTIFACT_BYTES) throw tooLarge(size);
-  return readFileSync(path);
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) throw unreadable();
+    if (stat.size > limit) throw tooLarge(stat.size, limit);
+    // One byte of headroom: a file that grew after `fstat` is seen growing, never cut short.
+    const bytes = Buffer.alloc(stat.size + 1);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count = readSync(fd, bytes, offset, bytes.length - offset, null);
+      if (count === 0) break;
+      offset += count;
+    }
+    if (offset !== stat.size) {
+      throw new InstallRefusal("artifact_unreadable", "the file changed while it was read");
+    }
+    return bytes.subarray(0, offset);
+  } catch (error) {
+    if (error instanceof InstallRefusal) throw error;
+    throw unreadable();
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /** The bytes as a bundle, or `artifact_invalid` naming the first zod path that failed. */
 export function parseBundle(bytes: Uint8Array): PluginBundle {
-  if (bytes.byteLength > ISOLATE_MAX_ARTIFACT_BYTES) throw tooLarge(bytes.byteLength);
+  if (bytes.byteLength > ISOLATE_MAX_ARTIFACT_BYTES) {
+    throw tooLarge(bytes.byteLength, ISOLATE_MAX_ARTIFACT_BYTES);
+  }
   let raw: unknown;
   try {
     raw = JSON.parse(new TextDecoder().decode(bytes));
@@ -295,12 +374,13 @@ export function extractBundle(bundle: PluginBundle, dir: string): void {
 }
 
 /**
- * Fetch, pin, parse, admit, write — in that order, and the order is the contract: a hash
- * mismatch, a refused bundle or a caller whose `signal` aborted before the write writes
- * nothing. The pin is compared on the EXACT bytes read, never on a re-serialization. The
- * host's verdict (namespace, replace) comes before the sheet's, so a squat is named as a squat.
+ * Fetch, pin, parse, admit, verify — in that order, and the order is the contract: the pin is
+ * compared on the EXACT bytes read, never on a re-serialization, before anything is parsed.
+ * The host's verdict (namespace, replace) comes before the sheet's, so a squat is named as a
+ * squat. NOTHING is written, extracted or run: an update review holds the result for a
+ * principal to read, and only `publishArtifact` turns it into files.
  */
-export async function installArtifact(request: ArtifactRequest): Promise<InstalledArtifact> {
+export async function inspectArtifact(request: ArtifactRequest): Promise<VerifiedPluginArtifact> {
   const bytes = await readArtifact(request);
   const sha256 = sha256Hex(bytes);
   if (sha256 !== request.sha256) {
@@ -318,11 +398,34 @@ export async function installArtifact(request: ArtifactRequest): Promise<Install
     );
   }
   request.signal?.throwIfAborted();
-  const { bundlePath, dir } = installLayout(request.dataDir, bundle.manifest.id, sha256);
+  return { bundle, bytes, sha256, source: request.source };
+}
+
+/**
+ * Writes a verified artifact to its layout: the exact inspected bytes beside their extracted
+ * members. Synchronous from the lifetime check to the last write, so a caller whose `signal`
+ * aborted writes nothing and one that had not cannot be interleaved by its own shutdown.
+ */
+export function publishArtifact(
+  artifact: VerifiedPluginArtifact,
+  dataDir: string,
+  signal?: AbortSignal,
+): InstalledArtifact {
+  signal?.throwIfAborted();
+  const { bundle, bytes, sha256 } = artifact;
+  const { bundlePath, dir } = installLayout(dataDir, bundle.manifest.id, sha256);
   mkdirSync(dirname(bundlePath), { recursive: true, mode: 0o700 });
   writeFileSync(bundlePath, bytes, { mode: 0o600 });
   extractBundle(bundle, dir);
   return { bundle, sha256, bundlePath, dir };
+}
+
+/**
+ * Inspect, then publish: a hash mismatch, a refused bundle or a caller whose `signal` aborted
+ * before the write writes nothing.
+ */
+export async function installArtifact(request: ArtifactRequest): Promise<InstalledArtifact> {
+  return publishArtifact(await inspectArtifact(request), request.dataDir, request.signal);
 }
 
 export type BundleVerdict =

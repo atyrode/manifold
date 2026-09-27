@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   ActionOutcomeSchema,
+  ISOLATE_MAX_ARTIFACT_BYTES,
   PluginsResponseSchema,
   type PluginManifest,
 } from "@manifold/protocol";
@@ -22,8 +23,11 @@ import { startServer, type RunningServer } from "../src/main.ts";
 import {
   InstallRefusal,
   PLUGIN_UPLOADS_DIR,
+  inspectArtifact,
   installArtifact,
   installLayout,
+  publishArtifact,
+  readArtifact,
   removeInstall,
   verifyInstalledBundle,
 } from "../src/plugin-installs.ts";
@@ -428,6 +432,101 @@ describe("installArtifact", () => {
     } finally {
       rmSync(drop.dataDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("inspectArtifact and publishArtifact", () => {
+  test("inspection verifies without writing; publication writes exactly the inspected bytes", async () => {
+    const drop = box();
+    const bytes = bundleBytes();
+    const sha256 = sha256Hex(bytes);
+    const source = drop.upload("sample.manifold-plugin.json", bytes);
+    const inspected = await inspectArtifact({ source, sha256, dataDir: drop.dataDir });
+    expect(inspected.bundle.manifest.id).toBe("vendor.sample");
+    expect(inspected.source).toBe(source);
+    expect(existsSync(join(drop.dataDir, "plugins"))).toBeFalse();
+
+    // A lifetime that ended between review and apply publishes nothing.
+    const ended = new AbortController();
+    const reason = new Error("caller lifetime ended");
+    ended.abort(reason);
+    let thrown: unknown;
+    try {
+      publishArtifact(inspected, drop.dataDir, ended.signal);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBe(reason);
+    expect(existsSync(join(drop.dataDir, "plugins"))).toBeFalse();
+
+    const published = publishArtifact(inspected, drop.dataDir, new AbortController().signal);
+    expect(published.bundlePath).toBe(installLayout(drop.dataDir, "vendor.sample", sha256).bundlePath);
+    expect(readFileSync(published.bundlePath)).toEqual(bytes);
+    expect(readdirSync(published.dir).sort()).toEqual(["server.js", "web.js"]);
+  });
+});
+
+describe("readArtifact", () => {
+  test("maxBytes narrows the read bound and never widens the artifact cap", async () => {
+    const drop = box();
+    const bytes = bundleBytes();
+    const source = drop.upload("sample.manifold-plugin.json", bytes);
+    expect(
+      Buffer.from(await readArtifact({ source, dataDir: drop.dataDir, maxBytes: bytes.length })),
+    ).toEqual(bytes);
+    const narrowed = await refusal(() =>
+      readArtifact({ source, dataDir: drop.dataDir, maxBytes: bytes.length - 1 }),
+    );
+    expect(narrowed.reason).toBe("artifact_unreadable");
+    expect(narrowed.detail).toBe(
+      `artifact is ${String(bytes.length)} bytes, over the ${String(bytes.length - 1)}-byte cap`,
+    );
+
+    // An endless body, so the refusal names whichever cap actually ended the read.
+    const endless = ((): Promise<Response> =>
+      Promise.resolve(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              controller.enqueue(new Uint8Array(1024 * 1024));
+            },
+          }),
+        ),
+      )) as typeof fetch;
+    const widened = await refusal(() =>
+      readArtifact({
+        source: "https://1.1.1.1/endless",
+        dataDir: drop.dataDir,
+        fetchImpl: endless,
+        maxBytes: ISOLATE_MAX_ARTIFACT_BYTES * 2,
+      }),
+    );
+    expect(widened.detail).toEndWith(`over the ${String(ISOLATE_MAX_ARTIFACT_BYTES)}-byte cap`);
+  });
+
+  test("a caller's abort during a fetch rejects with its own reason, not a refusal", async () => {
+    const drop = box();
+    const lifetime = new AbortController();
+    const reason = new Error("caller lifetime ended");
+    const fetchImpl = ((_: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const { promise, reject } = Promise.withResolvers<Response>();
+      // The transport fails with its own error when the combined signal fires, as a socket does.
+      init?.signal?.addEventListener("abort", () => reject(new Error("socket destroyed")), {
+        once: true,
+      });
+      lifetime.abort(reason);
+      return promise;
+    }) as typeof fetch;
+    const outcome = await readArtifact({
+      source: "https://1.1.1.1/slow",
+      dataDir: drop.dataDir,
+      fetchImpl,
+      signal: lifetime.signal,
+    }).then(
+      () => "read",
+      (error: unknown) => error,
+    );
+    expect(outcome).toBe(reason);
   });
 });
 

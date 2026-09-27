@@ -8,15 +8,28 @@ import { verifyBundledArtifacts } from "./artifacts.ts";
 import {
   HARDENED_CONTRACT_VERSION,
   ISOLATE_MAX_ARTIFACT_BYTES,
+  MAX_PLUGIN_CHANGELOG_BYTES,
   PLUGIN_BUNDLE_FORMAT,
   PLUGIN_BUNDLE_SERVER_FILE,
   PLUGIN_BUNDLE_STYLES_FILE,
+  PROTOCOL_VERSION,
   PluginBundleSchema,
   PluginManifestSchema,
   machineArtifacts,
   type PluginBundle,
   type PluginManifest,
 } from "@manifold/protocol";
+
+/**
+ * The author's release notes, carried as a flat member when `CHANGELOG.md` sits beside the
+ * manifest, so an update review reads the candidate's own words without another fetch.
+ */
+export const PLUGIN_BUNDLE_CHANGELOG_FILE = "CHANGELOG.md";
+/**
+ * The `builtAgainst` key every pack stamps with the wire revision it was compiled against. The
+ * `manifold:` prefix cannot collide with a package name, which is what the other keys are.
+ */
+export const BUILT_AGAINST_PROTOCOL = "manifold:protocol";
 
 /** Packing changes linkage, not trust: only the installer chooses `install.hardened`. */
 export interface PackOptions {
@@ -164,6 +177,50 @@ async function webEntry(pluginDir: string): Promise<string> {
   return (await Bun.file(tsx).exists()) ? tsx : `${pluginDir}/web.ts`;
 }
 
+/**
+ * `CHANGELOG.md` as a member's base64, or undefined when there is none (or it is empty). Read
+ * like a machine member — no-follow, regular, bounded, whole — and refused unless it is
+ * UTF-8 text, so the bytes the hub later reads as notes are text by construction.
+ */
+async function changelogMember(pluginDir: string): Promise<string | undefined> {
+  const file = await open(
+    join(pluginDir, PLUGIN_BUNDLE_CHANGELOG_FILE),
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  ).catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw new Error(`${PLUGIN_BUNDLE_CHANGELOG_FILE} is not a readable regular file`, {
+      cause: error,
+    });
+  });
+  if (file === undefined) return undefined;
+  try {
+    const stat = await file.stat();
+    if (!stat.isFile() || stat.size > MAX_PLUGIN_CHANGELOG_BYTES)
+      throw new Error(
+        `${PLUGIN_BUNDLE_CHANGELOG_FILE} must be a regular file of at most ${String(MAX_PLUGIN_CHANGELOG_BYTES)} bytes`,
+      );
+    if (stat.size === 0) return undefined;
+    const bytes = Buffer.alloc(stat.size + 1);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const result = await file.read(bytes, offset, bytes.length - offset, null);
+      if (!result.bytesRead) break;
+      offset += result.bytesRead;
+    }
+    if (offset !== stat.size)
+      throw new Error(`${PLUGIN_BUNDLE_CHANGELOG_FILE} changed while packing`);
+    const text = bytes.subarray(0, offset);
+    try {
+      new TextDecoder("utf-8", { fatal: true }).decode(text);
+    } catch {
+      throw new Error(`${PLUGIN_BUNDLE_CHANGELOG_FILE} is not UTF-8 text`);
+    }
+    return text.toString("base64");
+  } finally {
+    await file.close();
+  }
+}
+
 /** Compile and verify a complete bundle without writing source files or an output artifact. */
 export async function compilePlugin(
   pluginDir: string,
@@ -212,6 +269,9 @@ export async function compilePlugin(
   if (manifest.entry === undefined) {
     throw new Error(`${manifestFile}: manifest.entry must name the halves this bundle runs`);
   }
+  if (manifest.entry.web === PLUGIN_BUNDLE_CHANGELOG_FILE) {
+    throw new Error(`${manifestFile}: entry.web may not claim ${PLUGIN_BUNDLE_CHANGELOG_FILE}`);
+  }
   const files: Record<string, string> = {};
   /*
     The sheet is carried as it is, never bundled: the hub admits it under the root-class rule
@@ -228,13 +288,16 @@ export async function compilePlugin(
       `${manifestFile}: ${PLUGIN_BUNDLE_STYLES_FILE} is beside the manifest but entry.styles is not true`,
     );
   }
+  const changelog = await changelogMember(pluginDir);
+  if (changelog !== undefined) files[PLUGIN_BUNDLE_CHANGELOG_FILE] = changelog;
   for (const artifact of machineArtifacts(manifest.machine)) {
     const name = artifact.bundleFile;
     if (name === undefined) continue;
     if (
       name === PLUGIN_BUNDLE_SERVER_FILE ||
       name === manifest.entry.web ||
-      name === PLUGIN_BUNDLE_STYLES_FILE
+      name === PLUGIN_BUNDLE_STYLES_FILE ||
+      name === PLUGIN_BUNDLE_CHANGELOG_FILE
     )
       throw new Error(`machine member collides with a plugin entry: ${name}`);
     if (Object.hasOwn(files, name)) continue;
@@ -281,7 +344,14 @@ export async function compilePlugin(
       },
     });
   }
-  const builtAgainst: Record<string, string> = {};
+  /*
+    Every pack stamps the wire revision it compiled against, shared or self-contained, so the
+    hub names a protocol mismatch from the bundle's own word rather than guessing one; a
+    shared pack adds the floor-package versions it links to beside it.
+  */
+  const builtAgainst: Record<string, string> = {
+    [BUILT_AGAINST_PROTOCOL]: String(PROTOCOL_VERSION),
+  };
   const plugins =
     manifest.entry.web === undefined || shared === false
       ? manifestPlugins
@@ -300,7 +370,7 @@ export async function compilePlugin(
     hardenedContract: HARDENED_CONTRACT_VERSION,
     manifest,
     files,
-    ...(shared === false ? {} : { builtAgainst }),
+    builtAgainst,
   });
   await verifyBundledArtifacts(bundle);
   const bytes = new TextEncoder().encode(JSON.stringify(bundle));

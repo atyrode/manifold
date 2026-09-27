@@ -14,8 +14,10 @@ import {
 import { tmpdir } from "node:os";
 import {
   ISOLATE_MAX_ARTIFACT_BYTES,
+  MAX_PLUGIN_CHANGELOG_BYTES,
   PLUGIN_BUNDLE_SERVER_FILE,
   PLUGIN_BUNDLE_STYLES_FILE,
+  PROTOCOL_VERSION,
   PluginBundleSchema,
   PluginManifestSchema,
   type IsolateChildFrame,
@@ -25,7 +27,14 @@ import {
   type PluginManifest,
 } from "@manifold/protocol";
 import { z } from "zod";
-import { compilePlugin, packPlugin, type CompileOptions, type PackResult } from "../src/pack.ts";
+import {
+  BUILT_AGAINST_PROTOCOL,
+  PLUGIN_BUNDLE_CHANGELOG_FILE,
+  compilePlugin,
+  packPlugin,
+  type CompileOptions,
+  type PackResult,
+} from "../src/pack.ts";
 import * as React from "react";
 import * as Plugin from "@manifold/plugin";
 import * as UI from "@manifold/ui";
@@ -208,6 +217,40 @@ describe("the artifact", () => {
     }
   });
 
+  test("a CHANGELOG.md beside the manifest is carried as written, and every pack stamps its protocol", async () => {
+    const source = mkdtempSync(`${tmpdir()}/plugin-kit-changelog-`);
+    try {
+      await Bun.write(
+        `${source}/manifest.json`,
+        JSON.stringify({ ...bundle.manifest, entry: { web: "web.js" } }),
+      );
+      await Bun.write(`${source}/web.ts`, "export {};");
+      const notes = "## 1.2.3\n\n- Counts — both ways.\n";
+      await Bun.write(`${source}/${PLUGIN_BUNDLE_CHANGELOG_FILE}`, notes);
+      const out = `${source}/out.json`;
+      const packed = PluginBundleSchema.parse(
+        await Bun.file((await packPlugin(source, out, { shared: false })).file).json(),
+      );
+      expect(
+        Buffer.from(packed.files[PLUGIN_BUNDLE_CHANGELOG_FILE] ?? "", "base64").toString("utf8"),
+      ).toBe(notes);
+      // Self-contained links no shared package, yet still names the wire it was built against.
+      expect(packed.builtAgainst).toEqual({ [BUILT_AGAINST_PROTOCOL]: String(PROTOCOL_VERSION) });
+
+      await Bun.write(
+        `${source}/${PLUGIN_BUNDLE_CHANGELOG_FILE}`,
+        "x".repeat(MAX_PLUGIN_CHANGELOG_BYTES + 1),
+      );
+      await expect(packPlugin(source, out, { shared: false })).rejects.toThrow(
+        PLUGIN_BUNDLE_CHANGELOG_FILE,
+      );
+      await Bun.write(`${source}/${PLUGIN_BUNDLE_CHANGELOG_FILE}`, new Uint8Array([0xff, 0xfe]));
+      await expect(packPlugin(source, out, { shared: false })).rejects.toThrow("not UTF-8");
+    } finally {
+      rmSync(source, { recursive: true, force: true });
+    }
+  });
+
   test("in-realm exports resolve from the host registry, with no shared bare imports", async () => {
     const out = `${dir}/in-realm.json`;
     const command = Bun.spawn(
@@ -234,6 +277,7 @@ describe("the artifact", () => {
     expect(artifact.builtAgainst?.["@manifold/plugin"]).toMatch(/^\d+\.\d+\.\d+/);
     // The design system is a shared module too, or a mod could not import it (issue #240).
     expect(artifact.builtAgainst?.["@manifold/ui"]).toMatch(/^\d+\.\d+\.\d+/);
+    expect(artifact.builtAgainst?.[BUILT_AGAINST_PROTOCOL]).toBe(String(PROTOCOL_VERSION));
     const key = Symbol.for("manifold.shared");
     const previous = Object.getOwnPropertyDescriptor(globalThis, key);
     Object.defineProperty(globalThis, key, {
