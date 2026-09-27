@@ -86,7 +86,7 @@ import {
 import { RoomManager } from "../src/room.ts";
 import { TRACE_ROW_TYPE, sha256Hex, ServerStore } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
-import type { PluginDatabase, StreamProducer } from "@manifold/plugin";
+import type { PluginDatabase, PluginStorage, StreamProducer } from "@manifold/plugin";
 import {
   FakeClock,
   FakeRuntime,
@@ -2078,6 +2078,222 @@ describe("PluginHost database", () => {
       });
     } finally {
       disabled.resolve();
+      host.close();
+      fixture.store.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  /*
+    SHUTDOWN REVOKES WHAT IT INTERRUPTS (#318). A stopping hub waits a bounded time for
+    admitted work and then closes the host, so an in-realm handler or migration can still be
+    suspended there; nothing can cancel its promise, and it resumes later. What it must not
+    keep is the host's authority: every data surface refuses, nothing it staged is published,
+    and a host opened next over the same store and directory — live before the old code
+    resumes — finds exactly what was committed before the close.
+  */
+  interface Suspension {
+    readonly entered: PromiseWithResolvers<void>;
+    readonly resume: PromiseWithResolvers<void>;
+    /** One entry per data attempt made after `resume`: `written` or `refused`. */
+    readonly late: string[];
+    /** Only the first caller suspends, so a later host's run goes straight through. */
+    armed: boolean;
+  }
+
+  function suspension(): Suspension {
+    return {
+      entered: Promise.withResolvers<void>(),
+      resume: Promise.withResolvers<void>(),
+      late: [],
+      armed: true,
+    };
+  }
+
+  async function suspend(
+    gate: Suspension,
+    storage: PluginStorage,
+    database: PluginDatabase,
+  ): Promise<void> {
+    if (!gate.armed) return;
+    gate.armed = false;
+    gate.entered.resolve();
+    await gate.resume.promise;
+    // Each surface is tried on its own, so one refusal cannot hide the other's write.
+    const attempts: (() => Promise<unknown>)[] = [
+      () => storage.set("late", "written"),
+      () => database.run("INSERT INTO notes(body) VALUES ('late')"),
+    ];
+    for (const attempt of attempts)
+      await attempt().then(
+        () => gate.late.push("written"),
+        () => gate.late.push("refused"),
+      );
+  }
+
+  /** The rows plugin, whose `write` door (and, when it migrates, its migration) suspends. */
+  function suspendingDef(gate: Suspension, migrates: boolean): ServerPluginDef {
+    return {
+      manifest: {
+        id: ROWS_ID,
+        version: "1.0.0",
+        title: "Rows",
+        description: "Keeps its data as rows.",
+        capabilities: [],
+        database: { maxBytes: 4 * 1024 * 1024 },
+        ...(migrates ? { dataVersion: { major: 2, minor: 0 } } : {}),
+        contributes: {
+          panels: [],
+          sections: [],
+          elements: [],
+          tools: [],
+          events: [{ id: "wrote", title: "Wrote" }],
+        },
+      },
+      actions: [
+        defineAction({
+          name: "write",
+          title: "Write a row",
+          caps: [],
+          input: z.strictObject({}),
+          result: z.strictObject({}),
+        }),
+        defineAction({
+          name: "read",
+          title: "Read the rows",
+          caps: [],
+          input: z.strictObject({}),
+          result: z.strictObject({ rows: z.array(z.string()), row: z.string().nullable() }),
+        }),
+      ],
+      handlers: {
+        write: async (ctx: ActionCtx) => {
+          const database = ctx.database!;
+          await database.run("CREATE TABLE IF NOT EXISTS notes(body TEXT NOT NULL)");
+          await database.run("INSERT INTO notes(body) VALUES ('before')");
+          await ctx.storage.set("row", "before");
+          ctx.emit({ kind: "plugin", pluginId: ctx.pluginId }, "wrote", {});
+          await suspend(gate, ctx.storage, database);
+          return {};
+        },
+        read: async (ctx: ActionCtx) => ({
+          rows: (
+            await ctx.database!.query<{ body: string }>("SELECT body FROM notes ORDER BY rowid")
+          ).map((row) => row.body),
+          row: await ctx.storage.get("row"),
+        }),
+      },
+      ...(migrates
+        ? {
+            migrations: [
+              {
+                name: "0001-mark-migrated",
+                to: { major: 2, minor: 0 },
+                migrate: async (storage: PluginStorage, database?: PluginDatabase) => {
+                  await database!.run("INSERT INTO notes(body) VALUES ('migrated')");
+                  await storage.set("row", "migrated");
+                  await suspend(gate, storage, database!);
+                },
+              },
+            ],
+          }
+        : {}),
+    };
+  }
+
+  test("an action suspended across shutdown resumes into refusals and is never acknowledged", async () => {
+    const fixture = await hostFixture();
+    const dataDir = mkdtempSync(join(tmpdir(), "manifold-host-db-"));
+    const gate = suspension();
+    const def = suspendingDef(gate, false);
+    const host = await customHost(fixture, [def], { dataDir });
+    let successor: PluginHost | undefined;
+    let inFlight: Promise<unknown> = Promise.resolve();
+    try {
+      inFlight = host.dispatch(fixture.owner, `${ROWS_ID}.write`, {});
+      await gate.entered.promise;
+      host.close();
+      successor = await customHost(fixture, [def], { dataDir });
+      gate.resume.resolve();
+      const outcome = await inFlight.then(
+        () => "acknowledged",
+        () => "cut",
+      );
+
+      expect(gate.late).toEqual(["refused", "refused"]);
+      expect(outcome).toBe("cut");
+      // Its emission was staged before the close, for an action that never settled.
+      expect(fixture.store.listEvents({ type: "wrote", limit: 10 })).toEqual([]);
+      expect(await fixture.store.pluginStorage(ROWS_ID).get("late")).toBeNull();
+      expect(await successor.dispatch(fixture.owner, `${ROWS_ID}.read`, {})).toEqual({
+        ok: true,
+        result: { rows: ["before"], row: "before" },
+      });
+    } finally {
+      gate.resume.resolve();
+      await Promise.allSettled([inFlight]);
+      successor?.close();
+      host.close();
+      fixture.store.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  test("a migration suspended across shutdown publishes nothing; the next host still owes it", async () => {
+    const fixture = await hostFixture();
+    const dataDir = mkdtempSync(join(tmpdir(), "manifold-host-db-"));
+    const livePath = pluginDatabasePath(dataDir, ROWS_ID);
+    const seeded = openPluginDatabase({ dataDir, pluginId: ROWS_ID });
+    await seeded.run("CREATE TABLE notes(body TEXT NOT NULL)");
+    await seeded.run("INSERT INTO notes(body) VALUES ('old')");
+    seeded.close();
+    const storage = fixture.store.pluginStorage(ROWS_ID);
+    await storage.set("row", "old");
+    await storage.stampDataVersion({ major: 1, minor: 0 });
+    // Disabled at boot, so the chain runs at the enable door of a host that is already live.
+    fixture.store.setPluginEnabled(ROWS_ID, false, "admin", 0);
+    const gate = suspension();
+    const def = suspendingDef(gate, true);
+    const host = await customHost(fixture, [def], { dataDir });
+    let successor: PluginHost | undefined;
+    let enabling: Promise<unknown> = Promise.resolve();
+    try {
+      enabling = host.setEnabled(ROWS_ID, true, "admin");
+      await gate.entered.promise;
+      host.close();
+      successor = await customHost(fixture, [def], { dataDir });
+      gate.resume.resolve();
+      const outcome = await enabling.then(
+        (settled) => settled,
+        () => "cut",
+      );
+
+      expect(gate.late).toEqual(["refused", "refused"]);
+      expect(outcome).not.toEqual({ ok: true });
+      // Nothing of the interrupted chain reached the store, the plugin's file, or the switch.
+      expect(await storage.get("row")).toBe("old");
+      expect(await storage.get("late")).toBeNull();
+      expect(await storage.dataVersion()).toEqual({ major: 1, minor: 0 });
+      expect(await storage.appliedMigrations()).toEqual([]);
+      expect(fixture.store.disabledPlugins().has(ROWS_ID)).toBe(true);
+      expect(fixture.store.pluginDatabaseJournals()).toEqual([]);
+      expect(existsSync(`${livePath}.stage`)).toBe(false);
+      expect(existsSync(`${livePath}.backup`)).toBe(false);
+      const kept = openPluginDatabase({ dataDir, pluginId: ROWS_ID });
+      expect(await kept.query("SELECT body FROM notes")).toEqual([{ body: "old" }]);
+      kept.close();
+
+      // The current host still owes the chain, stages it from the retained image, runs it once.
+      expect(await successor.setEnabled(ROWS_ID, true, "admin")).toEqual({ ok: true });
+      expect(await storage.appliedMigrations()).toEqual(["0001-mark-migrated"]);
+      expect(await successor.dispatch(fixture.owner, `${ROWS_ID}.read`, {})).toEqual({
+        ok: true,
+        result: { rows: ["old", "migrated"], row: "migrated" },
+      });
+    } finally {
+      gate.resume.resolve();
+      await Promise.allSettled([enabling]);
+      successor?.close();
       host.close();
       fixture.store.close();
       rmSync(dataDir, { recursive: true, force: true });
