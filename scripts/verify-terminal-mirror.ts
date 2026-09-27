@@ -392,7 +392,25 @@ try {
   // Screen state that must exist BEFORE the clone is born.
   const c0 = await center();
   await browser.drag([c0], 30); // click-to-focus
-  await sleep(500);
+  // Focus and portal DOM can precede the occupant's subscriptions. Let pending view
+  // effects settle at browser idle rather than sending input to the read-only preview.
+  await until(
+    () =>
+      browser!.evaluate<boolean>(
+        `(() => {
+          const { promise, resolve } = Promise.withResolvers();
+          requestIdleCallback(deadline => {
+            const terminal = document.querySelector('.terminal-frame');
+            resolve(!deadline.didTimeout &&
+              terminal?.closest('.portal')?.classList.contains('portal--engaged') === true &&
+              terminal.querySelector('.xterm-helper-textarea') === document.activeElement);
+          }, { timeout: 20_000 });
+          return promise;
+        })()`,
+      ),
+    20_000,
+    "focused occupant terminal before marker input",
+  );
   await browser.typeText("clear; echo PRE_CLONE_STATE");
   await browser.typeText("\r");
   await until(
