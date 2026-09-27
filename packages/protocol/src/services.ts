@@ -581,96 +581,95 @@ export const ServiceRuntimeSchema = z.strictObject({
 export type ServiceRuntime = z.infer<typeof ServiceRuntimeSchema>;
 
 /** Owner-installed policy. No raw credential values or caller-selected transport controls. */
-export const ServicePolicySchema = z
-  .strictObject({
-    serviceId: name,
-    revision: name,
-    origin: z.url().max(4096).optional(),
-    allowLoopbackHttp: z.boolean().optional(),
-    runtime: ServiceRuntimeSchema.optional(),
-    remote: z
-      .strictObject({
-        machineId: name,
-        serviceId: name,
-        revision: name,
-        policySha256: z.string().regex(/^[a-f0-9]{64}$/),
-      })
-      .optional(),
-    credential: z
-      .strictObject({
-        ref: name,
-        header: z
-          .string()
-          .regex(/^[A-Za-z0-9-]{1,64}$/)
-          .refine(
-            (value) =>
-              ![
-                "host",
-                "connection",
-                "content-length",
-                "transfer-encoding",
-                "content-type",
-                "accept",
-                "accept-encoding",
-                "cookie",
-                "proxy-authorization",
-                "trailer",
-                "te",
-                "upgrade",
-                "expect",
-              ].includes(value.toLowerCase()) &&
-              !value.toLowerCase().startsWith("proxy-") &&
-              !value.toLowerCase().startsWith("sec-"),
-          ),
-        prefix: z.enum(["", "Bearer ", "Basic "]),
-      })
-      .optional(),
-    maxConcurrent: z.number().int().positive().max(64),
-    operations: z
-      .record(name, z.union([ServiceOperationPolicySchema, ServiceProxyOperationPolicySchema]))
-      .refine((value) => Object.keys(value).length > 0 && Object.keys(value).length <= 64),
-    /**
-     * Integer micro-dollars per million tokens, keyed by the model id a metered call names;
-     * `default` prices any model the map does not. Policy content, so pinned by `revision` and
-     * consented like the rest of it: a price change is a new revision.
-     */
-    prices: z
-      .strictObject({
-        default: ServiceModelPriceSchema.optional(),
-        models: z
-          .record(z.string().min(1).max(256), ServiceModelPriceSchema)
-          .refine((value) => Object.keys(value).length <= 256),
-      })
-      .optional(),
-  })
-  .refine((policy) => {
-    if (policy.runtime || policy.remote)
-      return (
-        !(policy.runtime && policy.remote) &&
-        policy.origin === undefined &&
-        policy.credential === undefined &&
-        policy.allowLoopbackHttp === undefined &&
-        Object.values(policy.operations).every(
-          (operation) =>
-            "kind" in operation ||
-            (policy.runtime?.scope === "instance" &&
-              operation.body.every((field) => !("credentialRef" in field.value))),
-        ) &&
-        (policy.runtime?.scope !== "instance" ||
-          (policy.runtime.installationRevision !== undefined &&
-            Object.values(policy.runtime.input).every((source) => "literal" in source)))
-      );
-    if (policy.origin === undefined || policy.allowLoopbackHttp === undefined) return false;
-    const url = new URL(policy.origin);
-    if (url.username || url.password || url.hash || url.search || policy.origin !== url.origin)
-      return false;
+const ServicePolicyObjectSchema = z.strictObject({
+  serviceId: name,
+  revision: name,
+  origin: z.url().max(4096).optional(),
+  allowLoopbackHttp: z.boolean().optional(),
+  runtime: ServiceRuntimeSchema.optional(),
+  remote: z
+    .strictObject({
+      machineId: name,
+      serviceId: name,
+      revision: name,
+      policySha256: z.string().regex(/^[a-f0-9]{64}$/),
+    })
+    .optional(),
+  credential: z
+    .strictObject({
+      ref: name,
+      header: z
+        .string()
+        .regex(/^[A-Za-z0-9-]{1,64}$/)
+        .refine(
+          (value) =>
+            ![
+              "host",
+              "connection",
+              "content-length",
+              "transfer-encoding",
+              "content-type",
+              "accept",
+              "accept-encoding",
+              "cookie",
+              "proxy-authorization",
+              "trailer",
+              "te",
+              "upgrade",
+              "expect",
+            ].includes(value.toLowerCase()) &&
+            !value.toLowerCase().startsWith("proxy-") &&
+            !value.toLowerCase().startsWith("sec-"),
+        ),
+      prefix: z.enum(["", "Bearer ", "Basic "]),
+    })
+    .optional(),
+  maxConcurrent: z.number().int().positive().max(64),
+  operations: z
+    .record(name, z.union([ServiceOperationPolicySchema, ServiceProxyOperationPolicySchema]))
+    .refine((value) => Object.keys(value).length > 0 && Object.keys(value).length <= 64),
+  /**
+   * Integer micro-dollars per million tokens, keyed by the model id a metered call names;
+   * `default` prices any model the map does not. Policy content, so pinned by `revision` and
+   * consented like the rest of it: a price change is a new revision.
+   */
+  prices: z
+    .strictObject({
+      default: ServiceModelPriceSchema.optional(),
+      models: z
+        .record(z.string().min(1).max(256), ServiceModelPriceSchema)
+        .refine((value) => Object.keys(value).length <= 256),
+    })
+    .optional(),
+});
+export const ServicePolicySchema = ServicePolicyObjectSchema.refine((policy) => {
+  if (policy.runtime || policy.remote)
     return (
-      url.protocol === "https:" ||
-      (policy.allowLoopbackHttp &&
-        url.protocol === "http:" &&
-        (url.hostname === "127.0.0.1" || url.hostname === "[::1]"))
+      !(policy.runtime && policy.remote) &&
+      policy.origin === undefined &&
+      policy.credential === undefined &&
+      policy.allowLoopbackHttp === undefined &&
+      Object.values(policy.operations).every(
+        (operation) =>
+          "kind" in operation ||
+          (policy.runtime?.scope === "instance" &&
+            operation.body.every((field) => !("credentialRef" in field.value))),
+      ) &&
+      (policy.runtime?.scope !== "instance" ||
+        (policy.runtime.installationRevision !== undefined &&
+          Object.values(policy.runtime.input).every((source) => "literal" in source)))
     );
-  })
+  if (policy.origin === undefined || policy.allowLoopbackHttp === undefined) return false;
+  const url = new URL(policy.origin);
+  if (url.username || url.password || url.hash || url.search || policy.origin !== url.origin)
+    return false;
+  return (
+    url.protocol === "https:" ||
+    (policy.allowLoopbackHttp &&
+      url.protocol === "http:" &&
+      (url.hostname === "127.0.0.1" || url.hostname === "[::1]"))
+  );
+})
   .refine(
     (policy) =>
       !policy.credential ||
@@ -683,6 +682,31 @@ export const ServicePolicySchema = z
   .refine((policy) => encodedBytes(policy) <= 128 * 1024, {
     message: "Service policy exceeds the native configuration bound",
   });
+
+/**
+ * Policy CONTENT a reviewed instance-service bootstrap proposes, without the fields review
+ * resolves itself. `runtime` is the whole point: its installation pin names the installation
+ * the same review is proposing, so a caller cannot supply it without either guessing that
+ * revision or hashing an identity into itself. `remote` is a placement decision, and an
+ * `origin`/`credential` source belongs to a native HTTP service, not to a provider operation.
+ */
+export const ServicePolicyTemplateSchema = ServicePolicyObjectSchema.omit({
+  runtime: true,
+  remote: true,
+  origin: true,
+  allowLoopbackHttp: true,
+  credential: true,
+})
+  .refine((policy) =>
+    Object.values(policy.operations).every(
+      (operation) =>
+        "kind" in operation || operation.body.every((field) => !("credentialRef" in field.value)),
+    ),
+  )
+  .refine((policy) => encodedBytes(policy) <= 128 * 1024, {
+    message: "Service policy exceeds the native configuration bound",
+  });
+export type ServicePolicyTemplate = z.infer<typeof ServicePolicyTemplateSchema>;
 
 /** Native bootstrap advertises references and allowed origins, never source paths or values. */
 export const ServiceCredentialReferenceSchema = z.strictObject({

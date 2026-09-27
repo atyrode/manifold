@@ -4023,7 +4023,8 @@ provider handling and postconditions belong to plugins, never the common floor.
   grant may contain, so no plugin could reach the door whatever it was consented.
   **`machines:read` is asked of the CALLER as well as the plugin.** A plugin door's native
   bridge is the caller's capabilities intersected with the door's `caps` plus its `delegates`
-  and never widens either side, so a door declaring `machines:read` covers its own half only:
+  and never widens either side (a governed door's container-targeted caps ride bound to their
+  container instead, ADR 0051), so a door declaring `machines:read` covers its own half only:
   an owner or root credential passes on `*`, while a narrowly scoped token naming
   `machines:run` and the job verbs — the authority this read took before #735/#736 moved it
   onto the narrower word — is refused `job_capability_absent:machines:read`, or
@@ -4104,14 +4105,14 @@ provider handling and postconditions belong to plugins, never the common floor.
   the ordinary typed action dispatcher; headless agents and the plugin-manager client
   share their schemas and authority path.
 
-  | Action                           | Arguments                                           | Result and authority                                                                             |
-  | -------------------------------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-  | `engine.jobs.reviewDeployment`   | `{ deploymentId, pluginId, targets, operationIds }` | `JobDeploymentReview`; current root only; observes without installing or granting consent        |
-  | `engine.jobs.applyDeployment`    | `{ request, reviewDigest }`                         | `JobDeployment`; current root only; saves the exact approval and attempts eligible targets       |
-  | `engine.jobs.readDeployment`     | `{ deploymentId }`                                  | `JobDeployment`; current root only; retained review and projected progress                       |
-  | `engine.jobs.listDeployments`    | `{ pluginId, limit? }`                              | `{ deployments }`; current root only; newest first, default 20, maximum 100                      |
-  | `engine.jobs.cancelDeployment`   | `{ deploymentId, expectedRevision }`                | `JobDeployment`; current root only; compare-and-set cancellation of unapplied effects            |
-  | `engine.jobs.describeDeployment` | `{ machineId, pluginId }`                           | `JobDeploymentDescription`; current `machines:read` authority at the machine, not administration |
+  | Action                           | Arguments                                                              | Result and authority                                                                             |
+  | -------------------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+  | `engine.jobs.reviewDeployment`   | `{ deploymentId, pluginId, targets, operationIds, instanceServices? }` | `JobDeploymentReview`; current root only; observes without installing or granting consent        |
+  | `engine.jobs.applyDeployment`    | `{ request, reviewDigest }`                                            | `JobDeployment`; current root only; saves the exact approval and attempts eligible targets       |
+  | `engine.jobs.readDeployment`     | `{ deploymentId }`                                                     | `JobDeployment`; current root only; retained review and projected progress                       |
+  | `engine.jobs.listDeployments`    | `{ pluginId, limit? }`                                                 | `{ deployments }`; current root only; newest first, default 20, maximum 100                      |
+  | `engine.jobs.cancelDeployment`   | `{ deploymentId, expectedRevision }`                                   | `JobDeployment`; current root only; compare-and-set cancellation of unapplied effects            |
+  | `engine.jobs.describeDeployment` | `{ machineId, pluginId }`                                              | `JobDeploymentDescription`; current `machines:read` authority at the machine, not administration |
 
   The five administrative actions are native `engine.jobs` context doors, not methods on
   an ordinary product's `ctx.jobs`, even when that product's caller is root. The bounded
@@ -4187,6 +4188,57 @@ provider handling and postconditions belong to plugins, never the common floor.
   Upgrade/reconnect restores the full configuration. Explicit revision and instance-service
   policy semantics are unchanged, including instance services' required revision pin.
 
+- **Reviewed instance-service bootstrap.** A request may carry at most one optional
+  `instanceServices` entry — `{ expectedRevision, policy, operationId, input }` — and only
+  alongside exactly one destination. `policy` is `ServicePolicyTemplateSchema`: the policy
+  content without `runtime`, `remote`, `origin`, `allowLoopbackHttp` or `credential`, because
+  review resolves those itself. This exists for the one shape ordinary configuration cannot
+  reach: a plugin whose own operation provides the service its other operations bind, whose
+  provider pin names the installation the same request creates. The provider operation must
+  belong to this plugin, be declared `providesService`, be one of the request's own
+  `operationIds`, and bind none of the proposed services; some declared operation must bind
+  the proposed `serviceId` at the proposed policy revision. Violations refuse the review
+  itself (`instance_service_provider_unsupported`, `instance_service_provider_unselected`,
+  `instance_service_binding_undeclared`, `instance_service_provider_cycle`).
+
+  Review resolves the concrete `ServicePolicy`: instance scope, this plugin, the selected
+  provider operation, the proposed installation revision and artifact, that operation's
+  proposed resource-binding digest, and the request's literal `input` as literal runtime
+  values. The dependency cycle is broken by ordering, not by weakening a pin: the proposed
+  installation revision is a digest of the request — declaration, artifact, the bindings that
+  exist independently of this approval, and the instance-service entries as written — never of
+  the resolved policy, which pins that revision; the promoted binding then carries the
+  resolved policy's digest like any other service binding. An unchanged declaration, artifact
+  and binding set still reuses the installed revision, so a proposal whose policy content is
+  unchanged reinstalls nothing. Within this review the proposal stands in for the record it
+  will create — policy lookup, promoted binding, the owner inventory projection and the
+  instance record — while the proved owner, protocol support, credential sources, the
+  provider operation's own resources and the approving authority are evaluated live.
+  `reviewDigest` binds the prior record identity (`{ machineId, revision, enabled,
+policySha256, jobId }` or null), the expected revision, the resolved policy and the
+  destination's `services:configure` authority.
+
+  Apply is a bounded per-destination lifecycle: `pending` → `quiescing` → `applying` →
+  `applied` → `configuring` → `bound`. `quiescing` is entered only when the installation is
+  actually replaced and only stops the exact provider job named by `previous.jobId`; any other
+  unsettled job of this plugin holds the target at `active_installation` and no cancellation is
+  issued, and jobs of other plugins are never considered. `configuring` happens only after the
+  owner's own acknowledgement of the exact installation, and configures through the ordinary
+  instance-service door under the retained root credential, rechecked rather than copied.
+  A replaced record, a provider workload the approval never saw, a changed policy, owner or
+  authority refuses (`instance_service_configuration_changed`, `instance_service_workload_changed`,
+  `instance_service_owner_changed`, `service_definition_changed`) instead of proceeding, and an
+  interrupted `applying` or `configuring` phase recovers as `needs_review` with
+  `deployment_application_uncertain` — never a replayed effect. `ready` still requires the
+  owner to advertise the configured policy and the provider job to be running; until then the
+  target reports `installing` with the reason it is waiting on. `applied` is not final for a
+  bootstrap: its configuration is still owed, so the approval keeps the machine/plugin pair
+  through `configuring` until `bound`, and a bootstrap whose installation is replaced before
+  it binds becomes `needs_review` with `installation_replaced` rather than `superseded`.
+  The configuration receipt retains the exact instance-service revision written by this
+  approval: a later content-equal replacement is a different identity, not a restored receipt.
+  Readiness checks the proposed service itself even when no consumer operation was selected.
+
 - **Bounded offline evidence.** A disconnected destination is approvable only with known
   enrolled identity and a previously proved native owner, a selected available declaration
   artifact, and every required resource pin. Online review reads the proved owner's
@@ -4204,9 +4256,13 @@ provider handling and postconditions belong to plugins, never the common floor.
   it retains no credential value or owner key. Applying a new ID requires the whole review
   to remain current and approvable. An exact duplicate ID, request, digest and credential
   recovers the retained record under current root authority; conflicting reuse refuses.
-  At most one pending/applying approval may own a machine/plugin pair. Approval persistence
-  is atomic across the explicit destination set, but installation effects are committed per
-  destination, not an all-or-nothing fleet transaction.
+  At most one approval may own a machine/plugin pair: a target owns it from `pending` until it
+  is resolved (`needs_review`, `cancelled`) or reaches its own final phase — `applied` for an
+  ordinary installation, `bound` for a reviewed instance-service bootstrap — and a competing
+  approval refuses with `deployment_target_pending`. A finished target never blocks a later
+  approval from superseding it. Approval persistence is atomic across the explicit
+  destination set, but installation effects are committed per destination, not an
+  all-or-nothing fleet transaction.
 
   Every pending application restores the original credential and rechecks current root
   authority, enrollment/owner identity, plugin enablement, declaration, installation,
@@ -4223,27 +4279,33 @@ provider handling and postconditions belong to plugins, never the common floor.
   authority-changing effects.
 
   Cancellation requires the current deployment `revision`; stale revisions refuse before
-  mutation. It marks the approval cancelled and fences remaining `pending`/`applying`
-  targets, not effects already committed as `applied`. It is not uninstall, purge, job
-  cancellation, consent revocation or distributed rollback. A new review is required to
-  replace cancelled or invalidated work. After effects commit, reconnect or duplicate apply
-  never repairs revoked consent: a changed consent receipt reports `needs_review`, and the
-  old approval cannot grant it again.
+  mutation. It marks the approval cancelled and fences every target that still owns its pair
+  — remaining `pending`, `quiescing`, `applying` and `configuring` targets, and a bootstrap's
+  `applied` target whose configuration has not run, which keeps its installation but never
+  configures — not effects already finished as an ordinary `applied` or a `bound` target.
+  It is not uninstall, purge, consent revocation or distributed rollback. In particular,
+  cancellation after quiescing does not restart the retired provider: the unchanged instance
+  record remains configured but visibly unavailable until a new reviewed configuration
+  starts a replacement. A new review is required to replace cancelled or invalidated work.
+  After effects commit, reconnect or duplicate apply never repairs revoked consent: a changed
+  consent receipt reports `needs_review`, and the old approval cannot grant it again.
 
 - **Progress is native observation.** `JobDeployment` returns approval attribution, a
   lifecycle/CAS `revision`, the immutable review, a cancellation flag and per-target
   `{ machineId, connected, state, reason }`. That revision tracks retained lifecycle
   transitions, not every change in projected connectivity/readiness. `pending` means no
-  effects have committed; `installing` means committed native installation/consent state
-  still lacks live readiness, including while the owner is offline. `ready` requires the
-  current proved owner's matching revision/artifact `installed` acknowledgement, enabled
-  installation/plugin, no purge, unchanged reviewed evidence/consent and current readiness
-  of every selected operation. An install-only deployment may be ready with no execution
-  consent. No deployment action executes an operation, and readiness guarantees no future
-  job admission or product postcondition. Replacement of an applied installation revision
-  projects `superseded`; invalidated scope or uncertain application projects `needs_review`;
-  cancelled unapplied targets project `cancelled`. The public state schema also admits
-  `refused`; review/apply refusal does not itself create an applied target.
+  effects have committed; `installing` means the exact reviewed provider is quiescing or
+  committed native installation/configuration state still lacks live readiness, including
+  while the owner is offline. `ready` requires the current proved owner's matching
+  revision/artifact `installed` acknowledgement, enabled installation/plugin, no purge,
+  unchanged reviewed evidence/consent and current readiness of every selected operation.
+  An install-only deployment may be ready with no execution consent. An explicit instance-service
+  proposal starts only its reviewed provider through the ordinary native service lifecycle;
+  ordinary deployment requests do not execute operations. Readiness guarantees no future
+  job admission or product postcondition. Replacement of a finished target's installation
+  revision projects `superseded`; invalidated scope or uncertain application projects
+  `needs_review`; cancelled unfinished targets project `cancelled`. The public state schema
+  also admits `refused`; review/apply refusal does not itself create an applied target.
 
   `JobDeploymentDescription` returns only `{ deployment, installation }` for the authorized
   machine/plugin. `deployment` is null or the newest retained target's
@@ -4616,6 +4678,39 @@ exitCode, reason, finishedAt, scheduleId?, revision?, outputs }` — the job's o
   discharges caps, grants and that revision's consent. `follow` is not served there. The hook
   obeys the lifecycle bound and the no-veto rule: nothing waits for it, a throw or overrun is
   logged and never retried, no lifecycle state is recorded, and a disabled plugin is skipped.
+- **Carried container authority (ADR 0051).** A GOVERNED door — one whose `caps` include a
+  governed capability — may declare `containers:read` or `containers:write` with a
+  `requirements` target, and that target must be a container `ManifoldRef`; any other ref is
+  refused `invalid_args` (`containers:write requires a container target`). Admission discharges
+  it against the CALLER at that container, its flat ceiling and the waterfall both, with no
+  consent row, as for `terminals:*`: a caller lacking it there is refused `forbidden`
+  (`containers:write capability required at target`). The door's native bridge then carries the
+  cap bound to that container rather than in its flat ceiling, as
+  `containerGrants: [{ containerId, caps }]`. The credential reference carries the list, so
+  every `restoreCredential(credentialReference(context))` refresh answers as confined as the
+  context; only the signed job request omits it, and the hub keeps it BESIDE that request
+  (`machine_jobs.container_grants`, a schedule's spec), so the owner RPC is unchanged. Every job
+  the dispatch executes, every schedule it registers and each occurrence, invocation child and
+  terminal job keep it; `onJobSettled` restores it with the job's credential, so the wake's
+  `ctx.actions.call` is graded with it at the callee and the jobs the wake posts keep it.
+  **Presence is confinement**: for a context carrying the list, even an empty one, a container
+  cap is held only at or beneath a container a grant names it for — never through flat `caps`,
+  never at the root or another container — and the context is never root-class, through any
+  refresh. There `ctx.auth.caps` lists the carried caps in place of flat container caps. A
+  `scope: "container"` door with flat caps opens on carried authority only when exactly one
+  container carries every container cap it declares, and that dispatch runs scoped to it for
+  container questions: `ctx.containerScope`, `ctx.auth.containerScope` and `ctx.outsideScope`
+  name it, and `ctx.auth.allows` asks a container cap, or a node inside a container, as for a
+  container-scoped token; machine, operation, job and service questions answer from the flat
+  caps and grants unchanged. A workspace-graded door never opens on it,
+  and a door with a target is graded there. A door opened under a confined lineage lends only
+  the carried caps it declares, only at the container it was admitted at; a door declaring none
+  lends an empty list. Confined work never sponsors an Agent (`agent_sponsor_confined`).
+  Restoring never widens: grants must be well formed, outside the reference's flat caps and
+  inside the token's caps, or nothing restores. The grant rows are asked live at the container,
+  so revocation, expiry, a pause or a deny ends the carried cap. Dispatches whose caller carries
+  no grants through doors without container targets, and `delegates` (native-only), are
+  unchanged.
 - **Schedules.** The same admission path consumes durable schedule revision, nominal
   occurrence, interval, deadline, expiry and `skip`/`coalesce-one` offline policy. Occurrence
   identity is committed before enqueue. Original credential lineage/ceiling persists;
@@ -4967,7 +5062,9 @@ machine_job_deployments(deployment_id TEXT PK, plugin_id TEXT NOT NULL, revision
 machine_job_deployment_targets(deployment_id TEXT NOT NULL REFERENCES
                                machine_job_deployments(deployment_id), machine_id TEXT NOT NULL,
                                plugin_id TEXT NOT NULL, phase TEXT NOT NULL CHECK(phase IN
-                               ('pending', 'applying', 'applied', 'needs_review', 'cancelled')),
+                               ('pending', 'quiescing', 'applying', 'applied', 'configuring',
+                               'bound', 'needs_review', 'cancelled')), final_phase TEXT NOT NULL
+                               DEFAULT 'applied' CHECK(final_phase IN ('applied', 'bound')),
                                attempt TEXT, reason TEXT, receipt TEXT,
                                PRIMARY KEY(deployment_id, machine_id))
 machine_job_journal(job_id TEXT NOT NULL, seq INTEGER NOT NULL, at INTEGER NOT NULL,
@@ -4990,7 +5087,8 @@ job_invocation_edges(caller TEXT NOT NULL, operation_id TEXT NOT NULL, edge TEXT
                             -- machine_jobs_instance_service (partial expression index),
                             -- machine_job_deployments_plugin(plugin_id),
                             -- machine_job_deployment_pending (partial unique machine/plugin
-                            -- pending-or-applying), job_invocation_root(root_job_id);
+                            -- over targets neither resolved nor at their final_phase),
+                            -- job_invocation_root(root_job_id);
                             -- open-time partial indexes: machine_jobs_live(state) over
                             -- live states, job_schedule_occurrences_pending(schedule_id,
                             -- revision) over pending rows, so per-tick and per-owner-event
@@ -5349,8 +5447,12 @@ assigns fresh per-row revisions, and reclassifies only deployment reviews whose 
 service-invocation scope cannot be proven; 35 is additive agent-run and exact-policy-snapshot
 storage. Migration 36 adds the declaration trust cutoff; 37 is the backed-up durable-agent
 rebuild and correlation cutover; 38 reclassifies proved service principals; 39 adds terminal
-restart state and a bounded run-id backfill; and 40 adds inference aggregates with an explicit
-legacy-incomplete sentinel.
+restart state and a bounded run-id backfill; 40 adds inference aggregates with an explicit
+legacy-incomplete sentinel; 47 adds the nullable `machine_jobs.container_grants` column; and 48
+rebuilds the deployment-target table to admit the reviewed instance-service bootstrap's
+`quiescing`, `configuring` and `bound` phases and each target's `final_phase`, copying existing
+rows unchanged as `applied`-final, and keys the in-flight uniqueness index on targets that are
+neither resolved nor at their final phase.
 Migrations 9, 11, 13, 16, 19, 23, 24 and 37 each take a consistent `VACUUM INTO` snapshot BEFORE
 the transaction opens (a VACUUM cannot run inside one, which is also what makes it a true
 pre-migration image), skipped only for an in-memory or not-yet-existing database.

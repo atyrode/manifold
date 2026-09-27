@@ -143,12 +143,14 @@ import type {
   TokenGrant,
   UNTRACED_DENIAL_RULE,
 } from "@manifold/protocol";
-import { ServiceError } from "./auth.ts";
+import { isContainerGrantCap, ServiceError } from "./auth.ts";
 import type {
   AuthContext,
   AuthService,
   NativeRunAuthority,
   AuthorityRequirement,
+  ContainerGrant,
+  ContainerGrantCap,
   CredentialReference,
   GovernedAdmissionDecision,
   MachineEnrollment,
@@ -4128,7 +4130,23 @@ export class PluginHost {
         return refuse("forbidden", `${cap} not granted to plugin ${pluginId}`);
       }
     }
+    /*
+      CARRIED CONTAINER AUTHORITY (ADR 0051) answers a CONTAINER-graded door at its container
+      and nowhere else. The evaluator removes a carried cap at the credential's anchor, so the
+      flat question below refuses it there; for a `scope: "container"` door — whose whole effect
+      is confined to one container by contract — the ladder asks instead which container the
+      credential carries every one of the door's container caps at. Exactly one, or the door does
+      not open: the dispatch then runs SCOPED to that container, so every scope consumer —
+      `ctx.containerScope`, `ctx.auth.containerScope`, `ctx.outsideScope`, `ctx.auth.allows`
+      without a node — reads it exactly as it would a container-scoped token's. A
+      workspace-graded door is never opened by carried authority, and a credential carrying
+      none has no carried container here.
+    */
+    let carriedContainer: string | null = null;
     if (entry.def.requirements === undefined) {
+      const carriedScope =
+        scope === "container" ? this.authService.carriedScope(auth, entry.def.caps) : null;
+      if (carriedScope?.length === 1) carriedContainer = carriedScope[0] ?? null;
       for (const cap of entry.def.caps) {
         if (
           cap === "agents:delegate" &&
@@ -4143,10 +4161,15 @@ export class PluginHost {
             "governed actions require resource targets and explicit consent",
           );
         const held =
-          cap === "*" ? this.authService.holdsRoot(auth) : this.authService.allows(auth, cap);
+          cap === "*"
+            ? this.authService.holdsRoot(auth)
+            : this.authService.allows(auth, cap) ||
+              (isContainerGrantCap(cap) && carriedContainer !== null);
         if (!held) return refuse("forbidden", `${cap} capability required`);
       }
     }
+    // What the handler reads as its container scope: the token's own, or the carried one.
+    const handlerScope = auth.containerScope ?? carriedContainer;
     const parsed = entry.def.input.safeParse(rawArgs);
     if (!parsed.success) {
       const detail = parsed.error.issues
@@ -4155,6 +4178,9 @@ export class PluginHost {
       return refuse("invalid_args", detail);
     }
     let admission: GovernedAdmissionDecision | null = null;
+    const governed = entry.def.caps.some((cap) => GOVERNED_CAPS.includes(cap));
+    // What this dispatch's admission discharged at containers, for its native bridge (ADR 0051).
+    let carried: readonly ContainerGrant[] | undefined;
     const admitInput = (
       args: unknown,
       preparedTargets?: readonly unknown[],
@@ -4202,6 +4228,7 @@ export class PluginHost {
       if (preparedTargets !== undefined && preparedTargets.length !== declaredRequirements.length)
         return new ActionAdmissionDenial("invalid_args", "invalid authority targets");
       const requirements: AuthorityRequirement[] = [];
+      const carrying: { readonly containerId: string; readonly caps: ContainerGrantCap[] }[] = [];
       for (const [index, declared] of declaredRequirements.entries()) {
         let value: unknown = args;
         if (preparedTargets === undefined) {
@@ -4217,6 +4244,22 @@ export class PluginHost {
         const ref = ManifoldRefSchema.safeParse(value);
         if (!ref.success)
           return new ActionAdmissionDenial("invalid_args", "invalid authority target");
+        /*
+          A GOVERNED door's container authority is discharged at ONE CONTAINER and carried, bound
+          to it, by the work this dispatch starts (ADR 0051). Anything but a container names no
+          container to bind it to, so it is refused here rather than carried somewhere wider.
+        */
+        if (governed && isContainerGrantCap(declared.cap)) {
+          if (ref.data.kind !== "container")
+            return new ActionAdmissionDenial(
+              "invalid_args",
+              `${declared.cap} requires a container target`,
+            );
+          const { containerId } = ref.data;
+          const grant = carrying.find((entry) => entry.containerId === containerId);
+          if (grant === undefined) carrying.push({ containerId, caps: [declared.cap] });
+          else if (!grant.caps.includes(declared.cap)) grant.caps.push(declared.cap);
+        }
         if (!this.authService.allowsRef(auth, declared.cap, ref.data))
           return new ActionAdmissionDenial(
             "forbidden",
@@ -4225,10 +4268,11 @@ export class PluginHost {
         // Only engine capabilities have native revision-bound admission evidence.
         if (isEngineCap(declared.cap)) requirements.push({ cap: declared.cap, ref: ref.data });
       }
-      if (entry.def.caps.some((cap) => GOVERNED_CAPS.includes(cap))) {
+      if (governed) {
         admission = this.authService.admitGoverned(auth, pluginId, fullName, requirements);
         if (!admission.allowed)
           return new ActionAdmissionDenial("forbidden", "explicit version-bound consent required");
+        if (carrying.length > 0) carried = carrying;
       }
       return null;
     };
@@ -4289,14 +4333,34 @@ export class PluginHost {
     // Attenuate only the native bridge, retaining the original token, grant, scope and
     // expiry. Jobs persist this cap ceiling and recheck it at every deferred effect.
     // The engine's native doors resolve their own authority; they are not orchestrators.
-    const nativeAuth =
+    //
+    // Container authority never enters that flat ceiling for work under ADR 0051. A governed
+    // door's container caps ride only as the grants its admission discharged, bound to their
+    // containers. Any other door opened under a confined lineage lends that lineage's grants
+    // read through the same intersection — only the caps the door declares, and only at the
+    // container it was admitted at when it was admitted on carried authority — so a door that
+    // declares none lends an EMPTY list: confined, carrying nothing, never regaining the
+    // unconfined or root-class answer the lineage gave up.
+    const lent = auth.containerGrants?.flatMap((grant) => {
+      if (carriedContainer !== null && grant.containerId !== carriedContainer) return [];
+      const caps = grant.caps.filter((cap) => withinCeiling(cap, entry.def.caps));
+      return caps.length === 0 ? [] : [{ containerId: grant.containerId, caps }];
+    });
+    const nativeAuth: AuthContext =
       pluginId === "engine.jobs" || pluginId === "engine.services"
         ? auth
         : {
             ...auth,
             caps: CAPS.filter(
-              (cap) => withinCeiling(cap, auth.caps) && withinCeiling(cap, nativeCaps),
+              (cap) =>
+                withinCeiling(cap, auth.caps) &&
+                withinCeiling(cap, nativeCaps) &&
+                !(governed && isContainerGrantCap(cap)),
             ),
+            // Read at use: an isolated guest is admitted only after this bridge is built.
+            get containerGrants() {
+              return carried ?? lent;
+            },
           };
     let lease: ReturnType<PluginHost["dataLease"]>;
     try {
@@ -4419,20 +4483,32 @@ export class PluginHost {
       principal: auth.principal,
       auth: {
         principal: auth.principal,
-        caps: auth.caps,
-        containerScope: auth.containerScope,
+        // Carried container caps are HELD, so they are listed; `allows` says where (ADR 0051).
+        caps: this.authService.ceilingCaps(auth),
+        containerScope: handlerScope,
         // Asked when read, never frozen at dispatch: a deny landing mid-handler withdraws it.
         get isRoot(): boolean {
           return authService.holdsRoot(auth);
         },
-        allows: (cap, ref) =>
-          ref === undefined
-            ? this.authService.allows(auth, cap)
-            : this.authService.allowsRef(auth, cap, ref),
+        // A dispatch admitted on carried authority answers CONTAINER questions as if scoped to
+        // its container — a container capability, or any node inside a container — so nothing
+        // in another container answers (ADR 0051). Every other question (a machine, operation,
+        // job or service node; a non-container capability at the anchor) answers from the flat
+        // caps and the grant rows exactly as it did before this door was opened.
+        allows: (cap, ref) => {
+          const graded =
+            carriedContainer !== null &&
+            (isContainerGrantCap(cap) || (ref !== undefined && "containerId" in ref))
+              ? { ...auth, containerScope: carriedContainer }
+              : auth;
+          return ref === undefined
+            ? this.authService.allows(graded, cap)
+            : this.authService.allowsRef(graded, cap, ref);
+        },
       },
-      containerScope: auth.containerScope,
+      containerScope: handlerScope,
       outsideScope: (containerId) =>
-        auth.containerScope !== null && containerId !== auth.containerScope
+        handlerScope !== null && containerId !== handlerScope
           ? { refused: OUTSIDE_SCOPE_REFUSAL }
           : null,
       store: this.store,

@@ -615,6 +615,62 @@ test("authorization concurrency is bounded, cancellation releases capacity, and 
   }
 });
 
+test("reconfiguration closes only requests whose policy it changed or removed", async () => {
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: () => Response.json({ items: [{ id: "kept", enabled: true }] }),
+  });
+  const kept = policy(server.url.origin);
+  const changed: ServicePolicy = { ...policy(server.url.origin), serviceId: "ledger" };
+  const runner = createJobServiceRunner({ policies: [kept, changed] });
+  const decisions: PromiseWithResolvers<boolean>[] = [];
+  // Each request waits in authorization, so it is admitted and in flight when policy changes.
+  const held = (request: ServiceCall, bound: ServiceBinding) => {
+    const entered = Promise.withResolvers<void>();
+    const decision = Promise.withResolvers<boolean>();
+    decisions.push(decision);
+    const reply = runner.call(request, bound, async () => {
+      entered.resolve();
+      return decision.promise;
+    });
+    return { entered: entered.promise, decision, reply };
+  };
+  const ledger = { ...call, requestId: "request-2", serviceId: "ledger" };
+  const ledgerBinding = { ...binding, serviceId: "ledger" };
+  try {
+    const survivor = held(call, binding);
+    const revoked = held(ledger, ledgerBinding);
+    await Promise.all([survivor.entered, revoked.entered]);
+    expect(runner.configure([kept, { ...changed, maxConcurrent: 2 }])).toEqual(new Set(["ledger"]));
+    expect(await revoked.reply).toMatchObject({ refusal: "service_closed" });
+    // The unchanged policy keeps its admitted request and the concurrency it occupies.
+    expect(await runner.call({ ...call, requestId: "request-3" }, binding, allow)).toMatchObject({
+      refusal: "service_busy",
+    });
+    survivor.decision.resolve(true);
+    expect(await survivor.reply).toEqual({
+      type: "service_result",
+      requestId: call.requestId,
+      ok: true,
+      result: { items: [{ id: "kept", enabled: true }] },
+    });
+    // The changed policy admits new requests under the new set.
+    expect(await runner.call(ledger, ledgerBinding, allow)).toMatchObject({ ok: true });
+    const removed = held(call, binding);
+    await removed.entered;
+    expect(runner.configure([{ ...changed, maxConcurrent: 2 }])).toEqual(new Set(["inventory"]));
+    expect(await removed.reply).toMatchObject({ refusal: "service_closed" });
+    expect(await runner.call(call, binding, allow)).toMatchObject({
+      refusal: "service_unavailable",
+    });
+  } finally {
+    for (const decision of decisions) decision.resolve(false);
+    runner.close();
+    await server.stop(true);
+  }
+});
+
 test("timeouts include authority waits and callback exception text is never reflected", async () => {
   const spec = policy("https://example.invalid");
   spec.operations.read!.timeoutMs = 10;
