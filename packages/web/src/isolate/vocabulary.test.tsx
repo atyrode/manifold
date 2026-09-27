@@ -5,10 +5,11 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { VocabularyRenderer } from "./vocabulary.tsx";
 
 /**
- * THE VOCABULARY'S CONTRACT (ADR 0016 §3): every one of the thirteen node kinds paints into the
- * one `mf-vocab` family, a button's `action` is painted as `data-action` (S4, AXIOMS.md §Foundation law and REGISTRY.md §Foundation), the
- * three controls show the tree's value, and a gesture on any control becomes exactly one named
- * event carrying what the node said it would.
+ * THE VOCABULARY'S CONTRACT (ADR 0016 §3, ADR 0053): every one of the fourteen node kinds
+ * paints into the one `mf-vocab` family through the design system's own components, a button's
+ * `action` is painted as `data-action` (S4, AXIOMS.md §Foundation law and REGISTRY.md
+ * §Foundation), the three controls show the tree's value, and a gesture on any control becomes
+ * exactly one named event carrying what the node said it would.
  */
 
 const EVERYTHING: UiNode = {
@@ -23,10 +24,25 @@ const EVERYTHING: UiNode = {
     { type: "text", text: "mono", mono: true, wrap: true, tone: "muted" },
     { type: "code", text: "const x = 1;\nx;" },
     { type: "badge", text: "3 open", tone: "success" },
+    { type: "icon", icon: { family: "item", name: "machine", size: 14 } },
     { type: "divider" },
     { type: "spinner", label: "Syncing" },
-    { type: "button", label: "Save", event: "save", action: "acme.notes.save", tone: "accent" },
+    {
+      type: "button",
+      label: "Save",
+      event: "save",
+      blurEvent: "saveBlur",
+      action: "acme.notes.save",
+      tone: "accent",
+    },
     { type: "button", label: "Later", event: "later", disabled: true },
+    {
+      type: "button",
+      label: "Add",
+      event: "add",
+      icon: { family: "control", name: "add" },
+      iconOnly: true,
+    },
     {
       type: "select",
       event: "pick",
@@ -48,6 +64,16 @@ const EVERYTHING: UiNode = {
       ],
     },
     { type: "empty", text: "Nothing yet" },
+    {
+      type: "box",
+      key: "n7",
+      direction: "row",
+      gapRem: 0.35,
+      align: "start",
+      justify: "between",
+      testId: "rail",
+      children: [],
+    },
   ],
 };
 
@@ -63,23 +89,48 @@ interface Painted {
 }
 
 /**
- * Evaluates a React element tree WITHOUT a DOM: function components are called (the vocabulary's
- * are hook-free by design), host elements are kept with their handler props intact — which is
- * what lets a test press a button and read the event it posts.
+ * Evaluates a React element tree WITHOUT a DOM: function components are called, host elements
+ * are kept with their handler props intact — which is what lets a test press a button and
+ * read the event it posts. The walk runs inside a real (server) render so the design-system
+ * components' frame-mode context read has a React owner.
  */
 function paint(node: ReactNode): readonly Painted[] {
+  let painted: readonly Painted[] = [];
+  renderToStaticMarkup(
+    <Walk
+      node={node}
+      report={(result) => {
+        painted = result;
+      }}
+    />,
+  );
+  return painted;
+}
+
+function Walk({
+  node,
+  report,
+}: {
+  readonly node: ReactNode;
+  readonly report: (painted: readonly Painted[]) => void;
+}): null {
+  report(walk(node));
+  return null;
+}
+
+function walk(node: ReactNode): readonly Painted[] {
   if (node === null || node === undefined || typeof node === "boolean") return [];
   if (typeof node === "string" || typeof node === "number") return [];
-  if (Array.isArray(node)) return node.flatMap((child: ReactNode) => paint(child));
+  if (Array.isArray(node)) return node.flatMap((child: ReactNode) => walk(child));
   if (!isValidElement<Record<string, unknown>>(node)) return [];
   const { type, props } = node;
   const { children, ...rest } = props;
-  if (type === Fragment) return paint(children as ReactNode);
+  if (type === Fragment) return walk(children as ReactNode);
   if (typeof type === "function") {
     const component = type as (props: Record<string, unknown>) => ReactNode;
-    return paint(component(props));
+    return walk(component(props));
   }
-  return [{ tag: String(type), props: rest, children: paint(children as ReactNode) }];
+  return [{ tag: String(type), props: rest, children: walk(children as ReactNode) }];
 }
 
 function find(painted: readonly Painted[], className: string): Painted | null {
@@ -119,6 +170,7 @@ describe("VocabularyRenderer paints every kind into the one family", () => {
       "text",
       "code",
       "badge",
+      "icon",
       "divider",
       "spinner",
       "button",
@@ -128,7 +180,7 @@ describe("VocabularyRenderer paints every kind into the one family", () => {
       "list",
       "empty",
     ]) {
-      expect(html).toContain(`class="mf-vocab-${kind}`);
+      expect(html).toMatch(new RegExp(`class="(?:[^"]* )?mf-vocab-${kind}[" ]`));
     }
     expect(html).toStartWith('<div class="mf-vocab">');
   });
@@ -138,6 +190,11 @@ describe("VocabularyRenderer paints every kind into the one family", () => {
     expect(html).toContain('data-tone="accent"');
     expect(html.match(/data-action=/g)).toHaveLength(1);
     expect(html).toContain('class="mf-vocab-button" disabled="">Later</button>');
+  });
+
+  test("an icon-only button keeps its label as its accessible name", () => {
+    expect(html).toContain('class="mf-vocab-button is-icon-only" aria-label="Add">');
+    expect(html).not.toContain(">Add</button>");
   });
 
   test("box, heading, text and code carry their declared shape", () => {
@@ -153,6 +210,9 @@ describe("VocabularyRenderer paints every kind into the one family", () => {
     expect(html).toContain('<span class="mf-vocab-badge" data-tone="success">3 open</span>');
     expect(html).toContain('<hr class="mf-vocab-divider"/>');
     expect(html).toContain("Syncing");
+    expect(html).toContain(
+      '<div class="mf-vocab-box" data-direction="row" data-align="start" data-justify="between" style="gap:0.35rem" data-testid="rail"></div>',
+    );
   });
 
   test("the controls show the tree's value: selected option, field value, checked toggle", () => {
@@ -204,11 +264,15 @@ describe("VocabularyRenderer posts one named event per gesture", () => {
     return { events, painted };
   }
 
-  test("button → its event and payload", () => {
+  test("button → its event and payload, and its blur event where it asked for one", () => {
     const { events, painted } = pressed();
     const buttons = findAll(painted, "mf-vocab-button");
     fire(buttons[0] ?? null, "onClick");
-    expect(events).toEqual([["save", undefined]]);
+    fire(buttons[0] ?? null, "onBlur");
+    expect(events).toEqual([
+      ["save", undefined],
+      ["saveBlur", undefined],
+    ]);
     expect(buttons[1]?.props["disabled"]).toBe(true);
   });
 

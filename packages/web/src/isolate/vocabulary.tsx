@@ -1,26 +1,39 @@
-import "./vocabulary.css";
-import type { UiListItem, UiNode, UiTone } from "@manifold/protocol";
+import type { UiIcon, UiNode, UiTone } from "@manifold/protocol";
+import {
+  Badge,
+  Button,
+  Code,
+  ControlIcon,
+  Divider,
+  Empty,
+  Heading,
+  Input,
+  ItemIcon,
+  List,
+  Select,
+  Spinner,
+  Text,
+  Toggle,
+  type VocabularyMeta,
+} from "@manifold/ui";
 import type { ReactElement } from "react";
 
 /**
- * THE COMPONENT VOCABULARY, PAINTED (ADR 0016 §3, R2). An isolated plugin describes its panel
- * as a tree of the protocol's thirteen node kinds and the engine paints every one of them into
- * ONE css family it owns (`mf-vocab`, REGISTRY.md §Lexicon cssFamilies): no plugin CSS, no
- * plugin DOM, no plugin event handler — a gesture on a control becomes `onEvent(name, payload)`,
- * which the panel forwards to the worker as an `event` frame. Text reaches the DOM as
- * `textContent` only, so nothing a guest writes is ever markup.
+ * THE COMPONENT VOCABULARY, PAINTED (ADR 0016 §3, R2; ADR 0053). A hardened plugin's Worker
+ * describes its panel or section as a tree of the protocol's node kinds, and the engine
+ * paints every one of them with the design system's own vocabulary components
+ * (`@manifold/ui`, the `mf-vocab` family) — the SAME components a portable plugin rendered in
+ * the page uses, so the two modes cannot drift and no control's semantics are written twice.
+ * No plugin CSS, no plugin DOM, no plugin event handler: a gesture on a control becomes
+ * `onEvent(name, payload)`, which the host forwards to the Worker as an `event` frame. Text
+ * reaches the DOM as `textContent` only, so nothing a guest writes is ever markup.
  *
- * One component per node kind, hook-free on purpose: the tree is the state. The three controls
- * are CONTROLLED BY THE TREE — `select` and `toggle` show the tree's value and post a change for
- * the worker to render back — with one documented exception. An `input` posts every keystroke
- * but keeps the DOM as its buffer while focused: a controlled field would revert to the tree's
- * value until the worker's echo arrived, which drops characters typed inside the round trip and
- * breaks composition (IME) outright. So the field is uncontrolled, the tree's value is written
- * into it on every render it is NOT focused for, and on blur — the worker's answer wins the
- * moment the reader stops typing, never while they are.
- *
- * Tones are the shell's own colours read back (`vocabulary.css`); keyboard focus and hover follow
- * the shell's row conventions; nothing animates.
+ * What this module still owns is the part no component does: the host's frame around the
+ * tree, the box node's legacy spacing steps and flags, and turning each node's named events
+ * back into callbacks. Every node's `key` — the Worker renderer's stable identity for it — is
+ * the React key its DOM is reconciled under, so a field keeps focus when siblings arrive.
+ * The `input` kind keeps its focused-buffer discipline inside `Input`, where the page's own
+ * fields get it too.
  */
 
 export interface VocabularyRendererProps {
@@ -32,11 +45,25 @@ export interface VocabularyRendererProps {
    * danger-toned `empty` this way, since the protocol's `empty` carries no tone of its own.
    */
   readonly tone?: UiTone | undefined;
+  /**
+   * Where the tree is mounted. A `section` sits in the rail's own body, which already insets
+   * and scrolls it; a `panel` (unset) gets the frame's own inset and scroll.
+   */
+  readonly kind?: "panel" | "section" | undefined;
 }
 
-export function VocabularyRenderer({ tree, onEvent, tone }: VocabularyRendererProps): ReactElement {
+export function VocabularyRenderer({
+  tree,
+  onEvent,
+  tone,
+  kind,
+}: VocabularyRendererProps): ReactElement {
   return (
-    <div className="mf-vocab" data-tone={tone} role={tone === "danger" ? "alert" : undefined}>
+    <div
+      className={kind === "section" ? "mf-vocab is-section" : "mf-vocab"}
+      data-tone={tone}
+      role={tone === "danger" ? "alert" : undefined}
+    >
       <Node node={tree} onEvent={onEvent} />
     </div>
   );
@@ -49,35 +76,128 @@ interface NodeProps<N extends UiNode = UiNode> {
 
 type NodeOf<T extends UiNode["type"]> = Extract<UiNode, { readonly type: T }>;
 
+/** A node's presentation metadata, as the attributes the vocabulary components take. */
+function metaOf(node: UiNode): VocabularyMeta {
+  return {
+    title: node.title,
+    "aria-label": node.ariaLabel,
+    "data-testid": node.testId,
+    role: node.role,
+  };
+}
+
+/** A blur listener only where the node asked for one, so an unwatched blur posts nothing. */
+function blurOf(
+  blurEvent: string | undefined,
+  onEvent: VocabularyRendererProps["onEvent"],
+): (() => void) | undefined {
+  return blurEvent === undefined ? undefined : () => onEvent(blurEvent);
+}
+
 /** Dispatches one node to its component; the `never` guard is what keeps the vocabulary closed. */
 function Node({ node, onEvent }: NodeProps): ReactElement {
   switch (node.type) {
     case "box":
       return <BoxNode node={node} onEvent={onEvent} />;
     case "heading":
-      return <HeadingNode node={node} />;
+      return (
+        <Heading level={node.level} {...metaOf(node)}>
+          {node.text}
+        </Heading>
+      );
     case "text":
-      return <TextNode node={node} />;
+      return (
+        <Text
+          tone={node.tone}
+          mono={node.mono}
+          wrap={node.wrap}
+          strong={node.strong}
+          grow={node.grow}
+          {...metaOf(node)}
+        >
+          {node.text}
+        </Text>
+      );
     case "code":
-      return <CodeNode node={node} />;
+      return <Code {...metaOf(node)}>{node.text}</Code>;
     case "badge":
-      return <BadgeNode node={node} />;
+      return (
+        <Badge tone={node.tone} {...metaOf(node)}>
+          {node.text}
+        </Badge>
+      );
+    case "icon":
+      return <IconNode icon={node.icon} />;
     case "divider":
-      return <DividerNode />;
+      return <Divider {...metaOf(node)} />;
     case "spinner":
-      return <SpinnerNode node={node} />;
+      return <Spinner label={node.label} {...metaOf(node)} />;
     case "button":
-      return <ButtonNode node={node} onEvent={onEvent} />;
+      return (
+        <Button
+          tone={node.tone}
+          disabled={node.disabled}
+          action={node.action}
+          icon={node.icon}
+          iconOnly={node.iconOnly}
+          {...metaOf(node)}
+          onClick={() => onEvent(node.event, node.payload)}
+          onBlur={blurOf(node.blurEvent, onEvent)}
+        >
+          {node.label}
+        </Button>
+      );
     case "select":
-      return <SelectNode node={node} onEvent={onEvent} />;
+      return (
+        <Select
+          value={node.value}
+          options={node.options}
+          label={node.label}
+          disabled={node.disabled}
+          {...metaOf(node)}
+          onChange={(value) => onEvent(node.event, value)}
+          onBlur={blurOf(node.blurEvent, onEvent)}
+        />
+      );
     case "input":
-      return <InputNode node={node} onEvent={onEvent} />;
+      return (
+        <Input
+          value={node.value}
+          label={node.label}
+          placeholder={node.placeholder}
+          mono={node.mono}
+          disabled={node.disabled}
+          {...metaOf(node)}
+          onChange={(value) => onEvent(node.event, value)}
+          onBlur={blurOf(node.blurEvent, onEvent)}
+        />
+      );
     case "toggle":
-      return <ToggleNode node={node} onEvent={onEvent} />;
+      return (
+        <Toggle
+          value={node.value}
+          label={node.label}
+          disabled={node.disabled}
+          {...metaOf(node)}
+          onChange={(value) => onEvent(node.event, value)}
+          onBlur={blurOf(node.blurEvent, onEvent)}
+        />
+      );
     case "list":
-      return <ListNode node={node} onEvent={onEvent} />;
+      return (
+        <List
+          {...metaOf(node)}
+          items={node.items.map(({ key, primary, secondary, tone, event, payload }) => ({
+            key,
+            primary,
+            secondary,
+            tone,
+            onClick: event === undefined ? undefined : () => onEvent(event, payload),
+          }))}
+        />
+      );
     case "empty":
-      return <EmptyNode node={node} />;
+      return <Empty {...metaOf(node)}>{node.text}</Empty>;
     default: {
       const unreachable: never = node;
       throw new Error(`unknown vocabulary node ${String(unreachable)}`);
@@ -86,213 +206,38 @@ function Node({ node, onEvent }: NodeProps): ReactElement {
 }
 
 /**
- * The anchor plus the shell's `is-<flag>` state class for every flag that is on
- * (`.sidebar-row.is-editing`): the anchor names the family for S13, a flag qualifies it and
- * registers nothing.
+ * The wire's layout node. A `gapRem` is painted as the gap itself; the legacy spacing steps
+ * keep their `data-gap` meaning. Children reconcile under the Worker's stable node keys, and
+ * under their position only for an older guest that sends none — two namespaces, so a
+ * guest's key can never collide with a sibling's index.
  */
-function anchored(anchor: string, flags: Readonly<Record<string, boolean | undefined>>): string {
-  let className = anchor;
-  for (const flag in flags) if (flags[flag] === true) className += ` is-${flag}`;
-  return className;
-}
-
 function BoxNode({ node, onEvent }: NodeProps<NodeOf<"box">>): ReactElement {
+  const { gapRem } = node;
   return (
     <div
-      className={anchored("mf-vocab-box", { grow: node.grow, wrap: node.wrap })}
+      className={`mf-vocab-box${node.grow === true ? " is-grow" : ""}${node.wrap === true ? " is-wrap" : ""}`}
       data-direction={node.direction ?? "column"}
-      data-gap={node.gap ?? 1}
+      data-gap={gapRem === undefined ? (node.gap ?? 1) : undefined}
+      data-align={node.align}
+      data-justify={node.justify}
+      style={gapRem === undefined ? undefined : { gap: `${String(gapRem)}rem` }}
+      {...metaOf(node)}
     >
       {node.children.map((child, index) => (
-        <Node key={index} node={child} onEvent={onEvent} />
+        <Node key={child.key === undefined ? index : `key:${child.key}`} node={child} onEvent={onEvent} />
       ))}
-    </div>
-  );
-}
-
-function HeadingNode({ node }: { readonly node: NodeOf<"heading"> }): ReactElement {
-  const level = node.level ?? 2;
-  const Tag = `h${level}` as const;
-  return (
-    <Tag className="mf-vocab-heading" data-level={level}>
-      {node.text}
-    </Tag>
-  );
-}
-
-function TextNode({ node }: { readonly node: NodeOf<"text"> }): ReactElement {
-  return (
-    <span
-      className={anchored("mf-vocab-text", { mono: node.mono, wrap: node.wrap })}
-      data-tone={node.tone}
-    >
-      {node.text}
-    </span>
-  );
-}
-
-function CodeNode({ node }: { readonly node: NodeOf<"code"> }): ReactElement {
-  return <pre className="mf-vocab-code">{node.text}</pre>;
-}
-
-function BadgeNode({ node }: { readonly node: NodeOf<"badge"> }): ReactElement {
-  return (
-    <span className="mf-vocab-badge" data-tone={node.tone}>
-      {node.text}
-    </span>
-  );
-}
-
-function DividerNode(): ReactElement {
-  return <hr className="mf-vocab-divider" />;
-}
-
-function SpinnerNode({ node }: { readonly node: NodeOf<"spinner"> }): ReactElement {
-  return (
-    <div className="mf-vocab-spinner" role="status" aria-live="polite">
-      <span className="mf-vocab-spinner__mark" aria-hidden="true" />
-      <span className="mf-vocab-spinner__label">{node.label ?? "Loading"}</span>
     </div>
   );
 }
 
 /**
- * `data-action` is the FULL action name the button's event ultimately dispatches, painted so a
- * stranger's affordance names the door it opens exactly as a first-party one does (AXIOMS.md §Foundation law and REGISTRY.md §Foundation, S4); absent when the guest declared none.
+ * A named glyph from the icon vocabulary's own tables: an item name this build has never
+ * heard of wears the contributed-element fallback, and no drawing ever comes from the guest.
  */
-function ButtonNode({ node, onEvent }: NodeProps<NodeOf<"button">>): ReactElement {
-  return (
-    <button
-      type="button"
-      className="mf-vocab-button"
-      data-tone={node.tone}
-      data-action={node.action}
-      disabled={node.disabled === true}
-      onClick={() => onEvent(node.event, node.payload)}
-    >
-      {node.label}
-    </button>
+function IconNode({ icon }: { readonly icon: UiIcon }): ReactElement {
+  return icon.family === "control" ? (
+    <ControlIcon kind={icon.name} size={icon.size} className="mf-vocab-icon" />
+  ) : (
+    <ItemIcon kind={icon.name} size={icon.size} className="mf-vocab-icon" />
   );
-}
-
-/** `value: null` is "nothing chosen yet": an empty option holds the seat so the tree can say so. */
-function SelectNode({ node, onEvent }: NodeProps<NodeOf<"select">>): ReactElement {
-  const control = (
-    <select
-      className="mf-vocab-select"
-      value={node.value ?? ""}
-      disabled={node.disabled === true}
-      onChange={(event) => onEvent(node.event, event.currentTarget.value)}
-    >
-      {node.value === null ? <option value="" /> : null}
-      {node.options.map((option) => (
-        <option key={option.value} value={option.value}>
-          {option.label}
-        </option>
-      ))}
-    </select>
-  );
-  if (node.label === undefined) return control;
-  return (
-    <label className="mf-vocab-select__field">
-      <span className="mf-vocab-select__label">{node.label}</span>
-      {control}
-    </label>
-  );
-}
-
-function InputNode({ node, onEvent }: NodeProps<NodeOf<"input">>): ReactElement {
-  const { value } = node;
-  const control = (
-    <input
-      type="text"
-      className={anchored("mf-vocab-input", { mono: node.mono })}
-      defaultValue={value}
-      placeholder={node.placeholder}
-      disabled={node.disabled === true}
-      /*
-        The buffer discipline described at the top of the file: this callback runs on every
-        commit (it is a fresh closure each render), so a tree value that arrived while the field
-        was not being typed into lands in the DOM; one that arrived mid-typing waits for the blur.
-      */
-      ref={(element) => {
-        if (element !== null && element.ownerDocument.activeElement !== element) {
-          element.value = value;
-        }
-      }}
-      onChange={(event) => onEvent(node.event, event.currentTarget.value)}
-      onBlur={(event) => {
-        event.currentTarget.value = value;
-      }}
-    />
-  );
-  if (node.label === undefined) return control;
-  return (
-    <label className="mf-vocab-input__field">
-      <span className="mf-vocab-input__label">{node.label}</span>
-      {control}
-    </label>
-  );
-}
-
-function ToggleNode({ node, onEvent }: NodeProps<NodeOf<"toggle">>): ReactElement {
-  return (
-    <label className="mf-vocab-toggle">
-      <input
-        type="checkbox"
-        className="mf-vocab-toggle__control"
-        checked={node.value}
-        disabled={node.disabled === true}
-        onChange={(event) => onEvent(node.event, event.currentTarget.checked)}
-      />
-      <span className="mf-vocab-toggle__label">{node.label}</span>
-    </label>
-  );
-}
-
-interface ListItemProps {
-  readonly item: UiListItem;
-  readonly onEvent: VocabularyRendererProps["onEvent"];
-}
-
-/** A row with an `event` is a button; one without is a reading. One shape, so a list reads evenly. */
-function ListItem({ item, onEvent }: ListItemProps): ReactElement {
-  const body = (
-    <>
-      <span className="mf-vocab-list__primary">{item.primary}</span>
-      {item.secondary === undefined ? null : (
-        <span className="mf-vocab-list__secondary">{item.secondary}</span>
-      )}
-    </>
-  );
-  const { event } = item;
-  return (
-    <li className="mf-vocab-list__item" data-tone={item.tone}>
-      {event === undefined ? (
-        <div className="mf-vocab-list__row">{body}</div>
-      ) : (
-        <button
-          type="button"
-          className="mf-vocab-list__row is-pressable"
-          onClick={() => onEvent(event, item.payload)}
-        >
-          {body}
-        </button>
-      )}
-    </li>
-  );
-}
-
-function ListNode({ node, onEvent }: NodeProps<NodeOf<"list">>): ReactElement {
-  return (
-    <ul className="mf-vocab-list">
-      {node.items.map((item) => (
-        <ListItem key={item.key} item={item} onEvent={onEvent} />
-      ))}
-    </ul>
-  );
-}
-
-function EmptyNode({ node }: { readonly node: NodeOf<"empty"> }): ReactElement {
-  return <p className="mf-vocab-empty">{node.text}</p>;
 }

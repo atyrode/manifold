@@ -83,6 +83,48 @@ export {
   type SwitcherProps,
 } from "./layout.tsx";
 /**
+ * THE COMPONENT VOCABULARY — the closed set of things to show and press that holds in both
+ * execution modes (ADR 0053): the same components paint the page's DOM and, under a frame
+ * root, emit the bounded tree a hardened Worker sends, which the host paints back through
+ * them. `@manifold/ui/frames` is the portable subset of this barrel; the frame seam is
+ * exported here too so the page and the Worker name one set of symbols.
+ */
+export {
+  Badge,
+  Button,
+  Code,
+  Divider,
+  Empty,
+  Heading,
+  Input,
+  List,
+  Select,
+  Spinner,
+  Text,
+  Toggle,
+  type BadgeProps,
+  type ButtonProps,
+  type CodeProps,
+  type DividerProps,
+  type EmptyProps,
+  type HeadingProps,
+  type InputProps,
+  type ListItem,
+  type ListProps,
+  type SelectProps,
+  type SpinnerProps,
+  type TextProps,
+  type ToggleProps,
+  type VocabularyMeta,
+  type VocabularyText,
+} from "./vocabulary.tsx";
+export {
+  FRAME_ELEMENT_PREFIX,
+  FrameModeProvider,
+  useFrameMode,
+  type FrameModeProviderProps,
+} from "./frame-mode.tsx";
+/**
  * The behavior chrome: THE disclosure (a header that folds the body under it, keyboard
  * and ARIA included, body kept mounted while closed) and THE scroll container (vertical
  * only, slim overlay thumb, horizontal overflow refused by contract). Their behavior
