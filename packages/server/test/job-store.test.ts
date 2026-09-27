@@ -83,7 +83,7 @@ function fixture() {
 
 test("retirement survives restart and cannot downgrade a durable forced cancellation", () => {
   const f = fixture();
-  f.jobs.reserve(request("retiring"), 1);
+  f.jobs.reserve(request("retiring"), 1, undefined);
   expect(f.jobs.cancellation("retiring")).toBeNull();
   f.jobs.cancel("retiring", "configuration_changed", "retire");
   f.reopen();
@@ -100,7 +100,7 @@ test("retirement survives restart and cannot downgrade a durable forced cancella
 
 test("native input cursor and unknown attempts survive restart without permitting replay or rewind", () => {
   const f = fixture();
-  const job = f.jobs.reserve(request("stdin"), 1);
+  const job = f.jobs.reserve(request("stdin"), 1, undefined);
   f.jobs.inputCursor("stdin", 4, false);
   expect(f.jobs.reserveInput(job, "attempt", 4, "input-actor", "input-trace")).toBe(true);
   f.jobs.inputResult("stdin", "attempt", "unknown", "job_input_delivery_unknown");
@@ -234,11 +234,11 @@ test("installation bindings survive restart by exact revision while legacy rows 
 
 test("durable discovery de-duplicates scheduled jobs and continues strictly through tied timestamps", () => {
   const f = fixture();
-  f.jobs.reserve(request("newest"), 101);
-  f.jobs.reserve(request("z-direct"), 100);
-  f.jobs.reserve(request("a-direct"), 100);
+  f.jobs.reserve(request("newest"), 101, undefined);
+  f.jobs.reserve(request("z-direct"), 100, undefined);
+  f.jobs.reserve(request("a-direct"), 100, undefined);
   f.occurrence(request("z-scheduled"), 100, "enqueued");
-  f.jobs.reserve(request("z-scheduled"), 999);
+  f.jobs.reserve(request("z-scheduled"), 999, undefined);
   f.occurrence(request("a-scheduled"), 100, "skipped");
   f.occurrence(request("older"), 99, "refused");
   f.reopen();
@@ -264,7 +264,7 @@ test("durable discovery de-duplicates scheduled jobs and continues strictly thro
 
 test("candidate filters use exact durable targets for direct jobs and every occurrence state", () => {
   const f = fixture();
-  f.jobs.reserve(request("direct"), 10);
+  f.jobs.reserve(request("direct"), 10, undefined);
   for (const [index, state] of ["pending", "enqueued", "skipped", "refused"].entries()) {
     f.occurrence(request(state), 20 + index, state);
   }
@@ -273,7 +273,7 @@ test("candidate filters use exact durable targets for direct jobs and every occu
     { pluginId: "sample.worker-other" },
     { operationId: "sample.worker.run-other" },
   ].entries()) {
-    f.jobs.reserve(request(`foreign-direct-${index}`, overrides), 100);
+    f.jobs.reserve(request(`foreign-direct-${index}`, overrides), 100, undefined);
     f.occurrence(request(`foreign-occurrence-${index}`, overrides), 100);
   }
   const runs = f.jobs.runCandidates({ ...filter, operationId: "sample.worker.run" }, 100);
@@ -303,7 +303,8 @@ test("candidate reads enforce their hard bound and parse stored requests before 
   for (const limit of [0, -1, 1.5, 258, NaN, Infinity]) {
     expect(() => f.jobs.runCandidates(filter, limit)).toThrow("invalid-job-run-limit");
   }
-  for (let index = 0; index < 258; index++) f.jobs.reserve(request(`job-${index}`), index);
+  for (let index = 0; index < 258; index++)
+    f.jobs.reserve(request(`job-${index}`), index, undefined);
   expect(f.jobs.runCandidates(filter, 1).map((run) => run.position.jobId)).toEqual(["job-257"]);
   const bounded = f.jobs.runCandidates(filter, 257);
   expect(bounded.length).toBe(257);

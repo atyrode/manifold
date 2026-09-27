@@ -235,10 +235,11 @@ export interface AuthContext {
   /**
    * CONTAINER AUTHORITY CARRIED BY BACKGROUND WORK (ADR 0051). Absent on every credential a
    * client authenticates, and absent means exactly what it always meant. Present only on the
-   * native bridge of a dispatch and on the job and schedule credentials restored from it: each
-   * grant's caps are held ONLY at and beneath its container — never in `caps`, never at the
-   * root — and a present list, even an empty one, marks work whose lineage was confined, which
-   * is never root-class.
+   * native bridge of a dispatch and on the job and schedule credentials restored from it.
+   * PRESENCE IS THE CONFINEMENT: a context carrying a list — even an empty one — holds the
+   * container capabilities ONLY where a grant in it names them, never through `caps` and never
+   * at the root, and is never root-class. `credentialReference` keeps the list on the lineage
+   * and `restoreCredential` reads it back, so no refresh can shed it.
    */
   containerGrants?: readonly ContainerGrant[] | undefined;
 }
@@ -299,12 +300,17 @@ function contextContainsNode(context: AuthContext, node: string): boolean {
 /**
  * Non-secret lineage; never reconstruct delayed authority from a principal alone.
  *
- * It is also the `credential` of a signed job request, which a machine's owner parses strictly,
- * so carried container authority (ADR 0051) never rides inside it: it is persisted beside the
- * reference by the hub and handed back to {@link AuthService.restoreCredential} explicitly.
+ * It carries the lineage's container confinement (`containerGrants`, ADR 0051), so every
+ * `restoreCredential(credentialReference(context))` refresh answers as confined as the context
+ * it came from. The one place it leaves the hub — the `credential` of a signed job request,
+ * which a machine's owner parses strictly — takes it apart: the request carries the rest, and
+ * the hub keeps the grants beside it (`JobService` `build`, `jobCredential`).
  */
 export type CredentialReference = Readonly<
-  Pick<AuthContext, "tokenId" | "grantId" | "caps" | "containerScope" | "expiresAt"> & {
+  Pick<
+    AuthContext,
+    "tokenId" | "grantId" | "caps" | "containerScope" | "expiresAt" | "containerGrants"
+  > & {
     principalId: string;
   }
 >;
@@ -333,8 +339,6 @@ export interface GovernedAdmissionRequest {
   readonly pluginId: string;
   readonly action: string;
   readonly evidence: readonly AuthorityEvidence[];
-  /** The container authority the admitting credential carries, if any (ADR 0051). */
-  readonly containerGrants?: readonly ContainerGrant[] | undefined;
 }
 export type GovernedAdmissionDecision =
   | { readonly allowed: false }
@@ -968,10 +972,12 @@ export class AuthService {
    * is to answer yes or no.
    *
    * CARRIED CONTAINER AUTHORITY IS CONFINED HERE (ADR 0051), after the waterfall and never in
-   * its cache: a capability a credential carries only in `containerGrants` is answered at and
-   * beneath its containers and removed everywhere else, the root included. The waterfall still
-   * decides at the container, so a revocation, expiry, pause or deny there ends the carried
-   * authority exactly as it ends the presser's own. A credential carrying nothing is untouched.
+   * its cache. For a context carrying `containerGrants` — an empty list included — a container
+   * capability is answered only at and beneath a container a grant names it for, and removed
+   * everywhere else, the root included; neither its flat `caps` nor an absent grant restores
+   * the unconfined answer. The waterfall still decides at the container, so a revocation,
+   * expiry, pause or deny there ends the carried authority exactly as it ends the presser's
+   * own. A credential carrying no list is untouched.
    */
   effectiveCaps(context: AuthContext, node: string): ReadonlySet<AskableCap> {
     const answer = this.evaluatedCaps(context, node);
@@ -979,9 +985,10 @@ export class AuthService {
     if (grants === undefined) return answer;
     let confined: Set<AskableCap> | null = null;
     for (const cap of CONTAINER_GRANT_CAPS) {
-      if (!answer.has(cap) || hasCap(context.caps, cap)) continue;
-      const carried = grants.filter((grant) => grant.caps.includes(cap));
-      if (carried.length === 0 || carried.some((grant) => withinContainer(node, grant.containerId)))
+      if (
+        !answer.has(cap) ||
+        grants.some((grant) => grant.caps.includes(cap) && withinContainer(node, grant.containerId))
+      )
         continue;
       confined ??= new Set(answer);
       confined.delete(cap);
@@ -1113,28 +1120,33 @@ export class AuthService {
   }
 
   /**
-   * Whether the credential's CEILING admits `cap` at `ref` (ADR 0051): its flat caps, or a
-   * container grant it carries for the container `ref` lies in. The ceiling half only — what
-   * the grant rows say at that node is the evaluator's question, asked separately.
+   * Whether the credential's CEILING admits `cap` at `ref` (ADR 0051): its flat caps, or — for
+   * a context carrying container grants, where the grants are the only ceiling a container
+   * capability has — a grant naming it for the container `ref` lies in. The ceiling half only:
+   * what the grant rows say at that node is the evaluator's question, asked separately.
    */
   ceilingAdmits(context: AuthContext, cap: AskableCap, ref: ManifoldRef): boolean {
-    if (hasCap(context.caps, cap)) return true;
-    if (!isContainerGrantCap(cap) || context.containerGrants === undefined) return false;
+    const grants = context.containerGrants;
+    if (grants === undefined || !isContainerGrantCap(cap)) return hasCap(context.caps, cap);
     const node = formatManifoldUri(ref);
-    return context.containerGrants.some(
+    return grants.some(
       (grant) => grant.caps.includes(cap) && withinContainer(node, grant.containerId),
     );
   }
 
   /**
-   * What a handler reads as `ctx.auth.caps`: the flat ceiling plus every cap the credential
-   * carries bound to a container (ADR 0051). The list says a cap is HELD; only `allows` with a
-   * node says where, and for a carried cap the answer is its container alone.
+   * What a handler reads as `ctx.auth.caps`: the flat ceiling, and for a context carrying
+   * container grants, the container capabilities those grants name in place of any flat ones
+   * (ADR 0051). The list says a cap is HELD; only `allows` with a node says where, and for a
+   * carried cap the answer is its container alone.
    */
   ceilingCaps(context: AuthContext): readonly Cap[] {
     const grants = context.containerGrants;
-    if (grants === undefined || grants.length === 0) return context.caps;
-    return [...new Set([...context.caps, ...grants.flatMap((grant) => grant.caps)])];
+    if (grants === undefined) return context.caps;
+    const caps: Cap[] = context.caps.filter((cap) => !isContainerGrantCap(cap));
+    for (const cap of CONTAINER_GRANT_CAPS)
+      if (grants.some((grant) => grant.caps.includes(cap))) caps.push(cap);
+    return caps;
   }
 
   /**
@@ -1166,25 +1178,27 @@ export class AuthService {
       caps: [...context.caps],
       containerScope: context.containerScope,
       ...(context.expiresAt === undefined ? {} : { expiresAt: context.expiresAt }),
+      ...(context.containerGrants === undefined
+        ? {}
+        : { containerGrants: context.containerGrants }),
     };
   }
 
   /**
    * Reconstruct delayed authority from its original credential, never its principal alone.
    *
-   * `containerGrants` is the container authority a lineage carries BESIDE its reference
-   * (ADR 0051), held to the reference's own rule: never wider than the token it rides. A
-   * malformed list, a grant naming a cap the reference already carries flat, or one the token
-   * does not carry restores nothing at all rather than a narrowed guess. Where the grant is
-   * exercised is the evaluator's question, asked live at the container (`effectiveCaps`).
-   * Omitted, the answer is exactly what it always was.
+   * A reference carrying `containerGrants` (ADR 0051) restores exactly as confined, held to the
+   * reference's own rule: never wider than the token it rides. A malformed list, a grant naming
+   * a cap the reference already carries flat, or one the token does not carry restores nothing
+   * at all rather than a narrowed guess. Where a grant is exercised is the evaluator's question,
+   * asked live at the container (`effectiveCaps`). A reference without the field restores
+   * exactly what it always did.
    */
-  restoreCredential(
-    reference: CredentialReference,
-    containerGrants?: readonly ContainerGrant[] | undefined,
-  ): AuthContext | null {
+  restoreCredential(reference: CredentialReference): AuthContext | null {
     const grants =
-      containerGrants === undefined ? undefined : ContainerGrantsSchema.safeParse(containerGrants);
+      reference.containerGrants === undefined
+        ? undefined
+        : ContainerGrantsSchema.safeParse(reference.containerGrants);
     if (grants?.success === false) return null;
     const carried = grants?.data.flatMap((grant) => grant.caps) ?? [];
     if (carried.some((cap) => hasCap(reference.caps, cap))) return null;
@@ -1412,9 +1426,6 @@ export class AuthService {
         pluginId,
         action,
         evidence,
-        ...(context.containerGrants === undefined
-          ? {}
-          : { containerGrants: context.containerGrants }),
       }) ?? { allowed: false }
     );
   }
@@ -1984,6 +1995,10 @@ export class AuthService {
   }
 
   private agentAuthorizationCredential(actor: AuthContext): AgentRun["authorizationCredential"] {
+    // An Agent's stored sponsor lineage has no room for carried container confinement, so work
+    // carrying it (ADR 0051) never sponsors one: dropping the list would widen it back.
+    if (actor.containerGrants !== undefined)
+      throw new ServiceError("forbidden", "agent_sponsor_confined");
     const credential = this.credentialReference(actor);
     return {
       tokenId: credential.tokenId,

@@ -1860,7 +1860,7 @@ test("retiring an instance preserves admitted descendants but refuses new descen
         ...unsigned,
         requestDigest: createHash("sha256").update(canonicalJobJson(unsigned)).digest("hex"),
       };
-      f.service.jobs.reserve(request, f.runtime.now());
+      f.service.jobs.reserve(request, f.runtime.now(), undefined);
       f.store.db
         .query(
           "INSERT INTO job_invocation_reservations(parent_job_id,invocation_id,job_id,root_job_id,depth,request,edge,active) VALUES(?,?,?,?,1,?,?,1)",
@@ -2780,7 +2780,7 @@ test("uncertain service completion holds its lifetime until a fenced empty-tree 
       ...unsigned,
       requestDigest: createHash("sha256").update(canonicalJobJson(unsigned)).digest("hex"),
     };
-    f.service.jobs.reserve(request, f.runtime.now());
+    f.service.jobs.reserve(request, f.runtime.now(), undefined);
     f.service.jobs.state(request.jobId, "start-committed", {
       ...admitted.permit,
       jobId: request.jobId,

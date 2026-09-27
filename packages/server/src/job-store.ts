@@ -169,10 +169,11 @@ export class JobStore {
       throw new Error("job_digest_conflict");
     return previous;
   }
+  /** `containerGrants` is required so every reservation states the lineage's confinement. */
   reserve(
     request: JobRequest,
     now: number,
-    containerGrants?: readonly ContainerGrant[],
+    containerGrants: readonly ContainerGrant[] | undefined,
   ): JobRecord {
     const previous = this.reservation(request);
     if (previous !== null) return previous;

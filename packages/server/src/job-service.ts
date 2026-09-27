@@ -922,7 +922,9 @@ export class JobService {
       const job = this.store.transaction(() => {
         if (!this.instanceServices.setJob(serviceId, record.revision, request.jobId))
           throw new ServiceError("conflict", "instance_service_configuration_changed");
-        this.jobs.reserve(request, this.runtime.now());
+        // A native service credential is minted for its runtime by a root configurer, and root
+        // is never confined, so it carries no container grants (ADR 0051).
+        this.jobs.reserve(request, this.runtime.now(), undefined);
         const decision = this.decide({
           credential: request.credential,
           pluginId: request.pluginId,
@@ -2220,9 +2222,20 @@ export class JobService {
           : {}),
         outputs: result.outputs,
       },
-      auth: this.auth.restoreCredential(job.request.credential, job.containerGrants),
+      auth: this.auth.restoreCredential(this.jobCredential(job)),
       traceId: job.request.traceId,
     };
+  }
+  /**
+   * A job's whole lineage: the signed request's credential and, beside it, the container
+   * confinement the hub kept off the owner's wire (ADR 0051). Every restore of a job's
+   * authority that is handed onward — a wake, a start, an invocation child — reads this, never
+   * the request's credential alone.
+   */
+  private jobCredential(job: JobRecord): CredentialReference {
+    return job.containerGrants === undefined
+      ? job.request.credential
+      : { ...job.request.credential, containerGrants: job.containerGrants };
   }
   /**
    * The wake, published where the result frame is — after the row and its journal entry are
@@ -3188,7 +3201,8 @@ export class JobService {
       .get(canonicalJobJson(caller), event.operationId);
     if (!stored?.enabled) fail("invocation_edge_missing");
     const edge = JSON.parse(stored.edge) as JobInvocationEdge;
-    const context = this.auth.restoreCredential(parent.request.credential);
+    // A child is the parent's lineage, confinement included (ADR 0051).
+    const context = this.auth.restoreCredential(this.jobCredential(parent));
     if (!context) fail("invocation_credential_revoked");
     const template = this.build(
       context,
@@ -3232,7 +3246,7 @@ export class JobService {
       {
         reauthorize: (request) => this.reauthorizeDeferred(request),
         enqueue: (request) => {
-          this.jobs.reserve(request, this.runtime.now());
+          this.jobs.reserve(request, this.runtime.now(), context.containerGrants);
         },
       },
     );
@@ -3805,7 +3819,7 @@ export class JobService {
     beforeEffect?: () => void,
   ): GovernedAdmissionDecision & { decisionId: string; policyRevision: string } {
     return this.store.transaction(() => {
-      const context = this.auth.restoreCredential(request.credential, request.containerGrants);
+      const context = this.auth.restoreCredential(request.credential);
       let allowed = context !== null && request.evidence.length > 0 && refusal === null;
       const consents: { node: string; revision: string; artifactSha256: string }[] = [];
       const evidence: AuthorityEvidence[] = [];
@@ -3890,22 +3904,18 @@ export class JobService {
         ),
       );
       const decisionId = randomUUID();
-      this.store.db.query("INSERT INTO machine_job_decisions VALUES (?,?,?,?,?,?,?,?)").run(
-        decisionId,
-        this.runtime.now(),
-        request.pluginId,
-        request.action,
-        canonicalJobJson({
-          ...request.credential,
-          credentialRevision,
-          ...(request.containerGrants === undefined
-            ? {}
-            : { containerGrants: request.containerGrants }),
-        }),
-        policyRevision,
-        canonicalJobJson(verdict),
-        canonicalJobJson(consents),
-      );
+      this.store.db
+        .query("INSERT INTO machine_job_decisions VALUES (?,?,?,?,?,?,?,?)")
+        .run(
+          decisionId,
+          this.runtime.now(),
+          request.pluginId,
+          request.action,
+          canonicalJobJson({ ...request.credential, credentialRevision }),
+          policyRevision,
+          canonicalJobJson(verdict),
+          canonicalJobJson(consents),
+        );
       return allowed
         ? { allowed: true, decisionId, policyRevision, consentRevisions: consents }
         : { allowed: false, decisionId, policyRevision };
@@ -4356,7 +4366,8 @@ export class JobService {
         : {}),
       parent: null,
       ...(inputs.length ? { inputs } : {}),
-      credential: this.auth.credentialReference(auth),
+      // The owner's wire parses this strictly; the confinement stays with the hub (ADR 0051).
+      credential: this.auth.credentialReference({ ...auth, containerGrants: undefined }),
       ...(terminal ? { terminal } : {}),
       ...(agentRun ? { agentRunId: agentRun.runId, agentRunExpiresAt: agentRun.expiresAt } : {}),
     };
@@ -4374,12 +4385,7 @@ export class JobService {
   ): JobRecord {
     if ("terminal" in args) fail("native_terminal_admission_required");
     if ("service" in args) fail("native_service_admission_required");
-    // The lineage's carried container authority rides beside the request, never inside it:
-    // the request is signed for an owner that parses its credential strictly (ADR 0051).
-    const context = this.auth.restoreCredential(
-      this.auth.credentialReference(auth),
-      auth.containerGrants,
-    );
+    const context = this.auth.restoreCredential(this.auth.credentialReference(auth));
     if (!context) fail("credential_revoked_or_expired");
     const binding =
       args.agentRun === undefined ? null : NativeAgentRunBindingSchema.parse(args.agentRun);
@@ -4421,7 +4427,7 @@ export class JobService {
       }
       const decision = this.decide(
         {
-          credential: request.credential,
+          credential: this.auth.credentialReference(context),
           pluginId,
           action:
             (previous === null ? this.jobs.origin(request) : previous.auditOrigin)?.door ??
@@ -4587,7 +4593,9 @@ export class JobService {
       undefined,
       terminal,
     );
-    const job = this.store.transaction(() => this.jobs.reserve(pinned, this.runtime.now()));
+    const job = this.store.transaction(() =>
+      this.jobs.reserve(pinned, this.runtime.now(), context.containerGrants),
+    );
     const command = this.start(job, false);
     if (!command) {
       this.jobs.state(pinned.jobId, "refused");
@@ -4627,7 +4635,8 @@ export class JobService {
           : null);
       if (!install.ready && !protocolReason) return null;
       const operationReason = protocolReason ?? this.operationRefusal(install, request.operationId);
-      const context = this.auth.restoreCredential(request.credential);
+      const credential = this.jobCredential(current);
+      const context = this.auth.restoreCredential(credential);
       let runRefusal: string | null = null;
       if (request.agentRunId) {
         try {
@@ -4672,7 +4681,7 @@ export class JobService {
       }
       const decision = this.decide(
         {
-          credential: request.credential,
+          credential,
           pluginId: request.pluginId,
           action: current.auditOrigin?.door ?? "engine.jobs.execute",
           evidence: requirements.map((requirement) =>
