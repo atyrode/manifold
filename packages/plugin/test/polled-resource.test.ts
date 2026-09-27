@@ -1,12 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { ManifoldRef } from "@manifold/protocol";
-import type { SessionStatus } from "../src/host.ts";
+import type { FeedEvents, SessionStatus } from "../src/host.ts";
 import {
   attachFeed,
   polledFeedReport,
   rebindFeed,
   resetPolledResources,
-  type FeedEvents,
 } from "../src/polled-resource.ts";
 
 /**
@@ -440,6 +439,32 @@ describe("a subscription-backed feed", () => {
     section.release();
     expect(socket.standing).toBe(0);
     expect(polledFeedReport()).toHaveLength(0);
+  });
+
+  test("retiring the bound mount keeps the surviving mount subscribed without polling", async () => {
+    const survivingDoor = fakeSocket("open");
+    const retiringDoor = fakeSocket("open");
+    const survivor = reader(survivingDoor);
+    const retiring = reader(retiringDoor);
+    await flush();
+
+    retiring.release();
+    retiringDoor.moveTo("closed");
+    await flush();
+    const before = survivor.reads();
+    survivingDoor.fire();
+    clock.advance(50);
+    await flush();
+    expect(survivor.reads()).toBe(before + 1);
+
+    retiringDoor.fire();
+    clock.advance(10_000);
+    await flush();
+    expect(survivor.reads()).toBe(before + 1);
+    survivor.release();
+    expect(survivingDoor.standing).toBe(0);
+    expect(retiringDoor.standing).toBe(0);
+    expect(clock.pending).toBe(0);
   });
 });
 

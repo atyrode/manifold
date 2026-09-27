@@ -13,11 +13,11 @@ import { TerminalExecutionSchema } from "./machine.ts";
  * THE FLEET BRIDGE (issue #259): the only machine and identity questions a plugin handler may
  * ask its host, whether the handler runs in the host's realm or in a hardened child.
  *
- * Every answer is PUBLIC METADATA or a refusal. No token, token id, owner-host identity or
- * private container datum crosses, and nothing here is a store handle: the host resolves every
- * machine id against current state and re-proves the live caller against the plugin's admitted
- * ceiling at the moment of use. A plugin can therefore never hand the host a machine RECORD,
- * only an id the host looks up again.
+ * Inventory contains only public metadata: no token, token id, owner-host identity or private
+ * container datum. Enrollment and rotation return a newly minted credential only after their
+ * authority check. Nothing here is a store handle: the host resolves every machine id against
+ * current state and re-proves the live caller against the plugin's admitted ceiling at use.
+ * A plugin therefore names a machine id, never supplies a machine record.
  *
  * Enrollment is one host-side find-or-create decision. A guest cannot compose "look the name
  * up, then mint" across two round trips, because that would race two concurrent enrollments of

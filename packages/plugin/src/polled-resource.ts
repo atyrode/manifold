@@ -43,7 +43,7 @@ import { useCallback, useDebugValue, useEffect, useRef, useSyncExternalStore } f
 import type { Dispatch, SetStateAction } from "react";
 import { formatManifoldUri, type ManifoldRef } from "@manifold/protocol";
 import { debugProbeEnabled } from "./debug-probe.ts";
-import type { SessionStatus } from "./host.ts";
+import type { FeedEvents, SessionStatus } from "./host.ts";
 
 /**
  * THE feed vocabulary: one name per collection the browser half reads.
@@ -107,20 +107,6 @@ const HELD_STARVATION_MS = 10_000;
  * and the budget gate asserts exactly that (`__manifoldFeeds`).
  */
 type ReadReason = "initial" | "event" | "timer" | "manual" | "resume";
-
-/**
- * The event-plane door a feed subscribes through — {@link SessionHandle} narrowed to the
- * three members this module uses, so a test may hand it a socket made of two closures and
- * the engine never imports the SDK.
- */
-export interface FeedEvents {
-  subscribe(topics: readonly ManifoldRef[], handler: (event: unknown) => void): () => void;
-  readonly status: SessionStatus;
-  on(event: "status", fn: (status: SessionStatus) => void): () => void;
-  /** A non-DOM consumer receives its host page's visibility as data. */
-  readonly hidden?: boolean;
-  onVisibilityChange?(fn: () => void): () => void;
-}
 
 /** How the feed compares an incoming answer with the published one. */
 export type PolledEquality<T> = (current: T, incoming: T) => boolean;
@@ -197,6 +183,8 @@ function digest(value: unknown): string {
 
 interface Subscriber {
   readonly intervalMs: number;
+  /** The live reader owns its event door just as it owns its fetch callback. */
+  readonly binding: Pick<FeedAttachment, "events" | "topics">;
   /** Reading and comparison follow a live reader, never a departed first attachment. */
   readonly fetchFn: () => Promise<unknown>;
   readonly equal: PolledEquality<never> | undefined;
@@ -600,6 +588,7 @@ export function attachFeed(attachment: FeedAttachment): () => void {
   const feed = ensureFeed(attachment);
   const subscriber: Subscriber = {
     intervalMs: attachment.intervalMs,
+    binding: attachment,
     fetchFn: attachment.fetchFn,
     get equal() {
       return attachment.equal;
@@ -617,7 +606,15 @@ export function attachFeed(attachment: FeedAttachment): () => void {
   if (!feed.seeded && !feed.inFlight) fetchOnce(feed, "initial");
   return () => {
     feed.subscribers.delete(subscriber);
-    if (feed.subscribers.size > 0) {
+    const survivor = feed.subscribers.values().next().value;
+    if (survivor !== undefined) {
+      const topics = survivor.binding.topics ?? NO_TOPICS;
+      bindEvents(
+        feed,
+        survivor.binding.events ?? null,
+        topics,
+        topics.map(formatManifoldUri).join(" "),
+      );
       arm(feed);
       return;
     }
@@ -705,7 +702,6 @@ export function usePolledResource<T>(
     (notify: () => void): (() => void) => {
       if (!enabled) return () => undefined;
       const current = policy.current;
-      const { events: door, topics: nodes } = current;
       return attachFeed({
         feedId,
         intervalMs,
@@ -718,8 +714,12 @@ export function usePolledResource<T>(
         onError: (reason) => current.onError?.(reason),
         onSuccess: () => current.onSuccess?.(),
         notify,
-        events: door,
-        topics: nodes,
+        get events() {
+          return current.events ?? null;
+        },
+        get topics() {
+          return current.topics;
+        },
       });
     },
     [enabled, feedId, intervalMs],

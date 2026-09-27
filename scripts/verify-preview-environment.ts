@@ -1371,7 +1371,6 @@ try {
           join(repo, "packages/plugin-kit/test/fixtures/sample"),
           "--out",
           bundlePath,
-          "--self-contained",
         ],
         { cwd: join(repo, "packages/plugin-kit"), timeoutMs: 120_000 },
       );

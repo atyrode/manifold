@@ -52,6 +52,7 @@ import {
   GuestMigrationDeclarationsSchema,
   HARDENED_CONTRACT_COMPAT_VERSIONS,
   HARDENED_CONTRACT_MINIMUM,
+  HARDENED_CONTRACT_VERSION,
   ISOLATE_MIGRATION_DEADLINE_MS,
   MAX_ACTION_CALL_DEPTH,
   CAPS,
@@ -2256,7 +2257,7 @@ export class PluginHost {
           pluginId: id,
           manifest: registered.manifest,
           dir: extractTrustedBuild(isolates.dataDir, build),
-          hardenedContract: build.bundle.hardenedContract,
+          hardenedContract: HARDENED_CONTRACT_VERSION,
         },
       });
       await this.startTrusted(id);
@@ -5216,7 +5217,7 @@ export class PluginHost {
       if (
         !machineBridgeOpen ||
         this.closed ||
-        this.assembled.actions.get(fullName) !== entry ||
+        this.assembled.actions.get(fullName)?.def !== entry.def ||
         this.replacing.has(pluginId) ||
         (!this.assembled.enabled(pluginId) && entry.def.cleanup !== true)
       )

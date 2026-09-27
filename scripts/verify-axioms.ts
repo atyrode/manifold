@@ -2569,7 +2569,6 @@ try {
       join(kit, "test/fixtures/sample"),
       "--out",
       bundlePath,
-      "--self-contained",
     ],
     { cwd: kit, stdout: "pipe", stderr: "pipe" },
   );

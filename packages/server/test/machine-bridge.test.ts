@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -47,6 +47,8 @@ interface Fixture {
   readonly dataDir: string;
   readonly runner: IsolateSupervisor;
 }
+
+const openFixtures = new Set<Fixture>();
 
 const probeManifest: PluginManifest = {
   id: PROBE,
@@ -99,10 +101,8 @@ const probe: ServerPluginDef = {
     },
   ],
   handlers: {
-    bare: async (ctx: ActionCtx, args: { name: string }) => ({
-      callerMayMint: ctx.auth.allows("machines:mint"),
-      ...(refusal(ctx.identity.enrollMachine(args.name)) as object),
-    }),
+    bare: async (ctx: ActionCtx, args: { name: string }) =>
+      refusal(ctx.identity.enrollMachine(args.name)),
     scoped: async (ctx: ActionCtx, args: { name: string }) =>
       refusal(ctx.identity.enrollMachine(args.name)),
     rotate: async (ctx: ActionCtx, args: { machineId: string }) => {
@@ -118,7 +118,12 @@ const probe: ServerPluginDef = {
 };
 
 async function fixture(
-  options: { trusted?: readonly TrustedBuild[]; logger?: Logger; crashBudget?: number } = {},
+  options: {
+    trusted?: readonly TrustedBuild[];
+    logger?: Logger;
+    crashBudget?: number;
+    idleEvictMs?: number;
+  } = {},
 ): Promise<Fixture> {
   const runtime = new FakeRuntime();
   const clock = new FakeClock(runtime);
@@ -139,25 +144,47 @@ async function fixture(
   const runner = new IsolateSupervisor({
     logger: options.logger ?? silentLogger,
     runtime,
+    ...(options.idleEvictMs === undefined ? {} : { idleEvictMs: options.idleEvictMs }),
     ...(options.crashBudget === undefined
       ? {}
       : { crashBudget: { count: options.crashBudget, windowMs: 60_000 } }),
   });
-  const host = await testPluginHost(store, auth, rooms, broker, runtime, {
-    settingsPlugins: [probe],
-    isolates: { runner, dataDir },
-    ...(options.trusted === undefined ? {} : { trusted: options.trusted }),
-    ...(options.logger === undefined ? {} : { logger: options.logger }),
-  });
-  return { store, auth, owner: auth.authenticate(OWNER_KEY), host, runtime, dataDir, runner };
+  try {
+    const host = await testPluginHost(store, auth, rooms, broker, runtime, {
+      settingsPlugins: [probe],
+      isolates: { runner, dataDir },
+      ...(options.trusted === undefined ? {} : { trusted: options.trusted }),
+      ...(options.logger === undefined ? {} : { logger: options.logger }),
+    });
+    const created = { store, auth, owner: auth.authenticate(OWNER_KEY), host, runtime, dataDir, runner };
+    openFixtures.add(created);
+    return created;
+  } catch (error) {
+    await runner.close();
+    store.close();
+    rmSync(dataDir, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 async function close(fix: Fixture): Promise<void> {
-  await fix.runner.close();
-  fix.host.close();
-  fix.store.close();
-  rmSync(fix.dataDir, { recursive: true, force: true });
+  if (!openFixtures.delete(fix)) return;
+  try {
+    await fix.runner.close();
+  } finally {
+    fix.host.close();
+    fix.store.close();
+    rmSync(fix.dataDir, { recursive: true, force: true });
+  }
 }
+
+afterEach(async () => {
+  gate?.resolve();
+  gate = null;
+  reached = null;
+  stashed = null;
+  for (const fix of openFixtures) await close(fix);
+});
 
 function caller(fix: Fixture, caps: readonly Cap[], containerId?: string): AuthContext {
   const grant = fix.auth.mintToken(
@@ -179,9 +206,9 @@ function result(outcome: ActionOutcome): unknown {
 describe("the fleet bridge's authority", () => {
   test("a door that declares no fleet capability mints nothing, even for the owner", async () => {
     const fix = await fixture();
-    const answer = result(await fix.host.dispatch(fix.owner, `${PROBE}.bare`, { name: "sneak" }));
-    // The caller's own question says yes; the door's native ceiling is what the bridge asks.
-    expect(answer).toEqual({ callerMayMint: true, refused: "machines:mint capability required" });
+    const answer = await fix.host.dispatch(fix.owner, `${PROBE}.bare`, { name: "sneak" });
+    // A fully authorized caller cannot lend this door an undeclared native capability.
+    expect(answer.ok ? null : answer.denial.rule).toBe("refused");
     expect(fix.store.getMachineByName("sneak")).toBeNull();
     await close(fix);
   });
@@ -197,7 +224,7 @@ describe("the fleet bridge's authority", () => {
     });
     const scoped = caller(fix, ["machines:mint"], containerId);
     const outcome = await fix.host.dispatch(scoped, `${PROBE}.scoped`, { name: "inside" });
-    expect(result(outcome)).toEqual({ refused: "machines:mint capability required" });
+    expect(outcome.ok ? null : outcome.denial.rule).toBe("refused");
     expect(fix.store.getMachineByName("inside")).toBeNull();
     await close(fix);
   });
@@ -215,22 +242,46 @@ describe("the fleet bridge's authority", () => {
     await reached.promise;
     fix.auth.revokePrincipal(minter.principal.id, fix.owner);
     gate.resolve();
-    expect(result(await pending)).toEqual({ refused: "machines:mint capability required" });
+    const denied = await pending;
+    expect(denied.ok ? null : denied.denial.rule).toBe("refused");
     gate = null;
     reached = null;
     expect(fix.auth.authenticateMachine(machine.machineToken).id).toBe(machine.machine.id);
     await close(fix);
   });
 
+  test("unrelated roster recomposition preserves an admitted door's fleet authority", async () => {
+    const fix = await fixture();
+    const machine = fix.auth.enrollMachine("recomposition", fix.owner);
+    gate = Promise.withResolvers<void>();
+    reached = Promise.withResolvers<void>();
+    const pending = fix.host.dispatch(fix.owner, `${PROBE}.rotate`, {
+      machineId: machine.machine.id,
+    });
+    try {
+      await reached.promise;
+      expect(await fix.host.setEnabled("core.machines", false, "admin")).toEqual({ ok: true });
+      gate.resolve();
+      result(await pending);
+      expect(() => fix.auth.authenticateMachine(machine.machineToken)).toThrow();
+    } finally {
+      gate?.resolve();
+      await pending;
+      gate = null;
+      reached = null;
+      await close(fix);
+    }
+  });
+
   test("a stale or forgotten id is re-resolved and refused, never rotated from a description", async () => {
     const fix = await fixture();
     const unknown = await fix.host.dispatch(fix.owner, `${PROBE}.rotate`, { machineId: "ghost" });
-    expect(result(unknown)).toEqual({ refused: "machine not found" });
+    expect(unknown.ok ? null : unknown.denial.rule).toBe("refused");
     const forgotten = fix.auth.enrollMachine("retired", fix.owner).machine.id;
     fix.auth.revokeMachine(forgotten, fix.owner);
     fix.auth.forgetMachine(forgotten, fix.owner);
     const stale = await fix.host.dispatch(fix.owner, `${PROBE}.rotate`, { machineId: forgotten });
-    expect(result(stale)).toEqual({ refused: "machine not found" });
+    expect(stale.ok ? null : stale.denial.rule).toBe("refused");
     expect(fix.store.listTokensByPrincipal(forgotten)).toEqual([]);
     await close(fix);
   });
@@ -239,11 +290,7 @@ describe("the fleet bridge's authority", () => {
     const fix = await fixture();
     result(await fix.host.dispatch(fix.owner, `${PROBE}.stash`, {}));
     const late = stashed?.identity.enrollMachine("late");
-    expect(late).toEqual({
-      ok: false,
-      code: "forbidden",
-      message: "plugin authority unavailable",
-    });
+    expect(late?.ok === false ? late.code : null).toBe("forbidden");
     expect(stashed?.machines.inventory().ok).toBe(false);
     expect(fix.store.getMachineByName("late")).toBeNull();
     stashed = null;

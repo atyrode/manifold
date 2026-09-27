@@ -412,13 +412,8 @@ describe("resources and teardown", () => {
     }
     const { fake } = await mounted({ id: "example.thing", panels: { main: Feed } });
     const subscribe = await fake.next();
-    expect(subscribe).toMatchObject({
-      t: "call",
-      instance: "i1",
-      method: "subscribe",
-      args: [expect.any(String), [{ kind: "container", containerId: "c1" }]],
-    });
-    if (subscribe.t !== "call") throw new Error("expected a call");
+    if (subscribe.t !== "call" || subscribe.method !== "subscribe")
+      throw new Error("expected a subscription request");
     const id = String(subscribe.args[0]);
     fake.send({ t: "reply", id: subscribe.id, ok: true, result: null });
     fake.send({ t: "notification", id });

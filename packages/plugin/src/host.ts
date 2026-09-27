@@ -30,7 +30,6 @@ import type { ScenePatch, Y } from "@manifold/scene";
 import type { AssemblyPanel, AssemblySection } from "./assemble.ts";
 import type { ComposedBinding } from "./bindings.ts";
 import type { ComposedSetting } from "./settings.ts";
-import type { FeedEvents } from "./polled-resource.ts";
 
 /**
  * What `place()` answers: the placement it executed, or the declared RULE that refused it.
@@ -50,6 +49,20 @@ export type PlaceOutcome =
  * its timer for one has to know when the trade is off (ADR 0012 §5: catch-up is reading state).
  */
 export type SessionStatus = "idle" | "connecting" | "open" | "reconnecting" | "closed";
+/**
+ * The event-plane door a feed subscribes through — {@link SessionHandle} narrowed to the
+ * three members this module uses, so a test may hand it a socket made of two closures and
+ * the engine never imports the SDK.
+ */
+export interface FeedEvents {
+  subscribe(topics: readonly ManifoldRef[], handler: (event: unknown) => void): () => void;
+  readonly status: SessionStatus;
+  on(event: "status", fn: (status: SessionStatus) => void): () => void;
+  /** A non-DOM consumer receives its host page's visibility as data. */
+  readonly hidden?: boolean;
+  onVisibilityChange?(fn: () => void): () => void;
+}
+
 
 /**
  * One server frame body, by type — the shape the SDK hands its own listeners, restated over the

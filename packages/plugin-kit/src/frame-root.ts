@@ -113,7 +113,7 @@ interface Registration {
 }
 
 interface Projected {
-  readonly tree: UiNode;
+  readonly tree: unknown;
   readonly registry: ReadonlyMap<string, Registration>;
 }
 
@@ -254,8 +254,8 @@ const hostConfig: FrameHostConfig = {
   supportsMutation: true,
   supportsPersistence: false,
   supportsHydration: false,
-  // A Worker realm has only this renderer, but a page realm's primary slot is React DOM's.
-  isPrimaryRenderer: false,
+  // This renderer owns its dedicated Worker's primary React context slot.
+  isPrimaryRenderer: true,
   warnsIfNotActing: false,
   supportsMicrotasks: true,
   scheduleMicrotask: (fn) => queueMicrotask(fn),
@@ -376,7 +376,7 @@ class Projection {
     this.count = synthesizedRoot ? 1 : 0;
   }
 
-  node(node: FrameNode, depth: number): UiNode {
+  node(node: FrameNode, depth: number): unknown {
     if (depth > MAX_UI_DEPTH) {
       throw new Error(`ui tree nests deeper than ${String(MAX_UI_DEPTH)} levels`);
     }
@@ -396,7 +396,7 @@ class Projection {
         .map((child) => this.node(child, depth + 1));
     }
     if (node.kind === "list") out["items"] = this.rows(node);
-    return out as UiNode;
+    return out;
   }
 
   private register(node: FrameNode, slot: "click" | "blur" | "change"): string {
