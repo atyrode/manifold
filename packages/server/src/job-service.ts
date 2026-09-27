@@ -922,7 +922,9 @@ export class JobService {
       const job = this.store.transaction(() => {
         if (!this.instanceServices.setJob(serviceId, record.revision, request.jobId))
           throw new ServiceError("conflict", "instance_service_configuration_changed");
-        this.jobs.reserve(request, this.runtime.now());
+        // A native service credential is minted for its runtime by a root configurer, and root
+        // is never confined, so it carries no container grants (ADR 0051).
+        this.jobs.reserve(request, this.runtime.now(), undefined);
         const decision = this.decide({
           credential: request.credential,
           pluginId: request.pluginId,
@@ -2220,9 +2222,20 @@ export class JobService {
           : {}),
         outputs: result.outputs,
       },
-      auth: this.auth.restoreCredential(job.request.credential),
+      auth: this.auth.restoreCredential(this.jobCredential(job)),
       traceId: job.request.traceId,
     };
+  }
+  /**
+   * A job's whole lineage: the signed request's credential and, beside it, the container
+   * confinement the hub kept off the owner's wire (ADR 0051). Every restore of a job's
+   * authority that is handed onward — a wake, a start, an invocation child — reads this, never
+   * the request's credential alone.
+   */
+  private jobCredential(job: JobRecord): CredentialReference {
+    return job.containerGrants === undefined
+      ? job.request.credential
+      : { ...job.request.credential, containerGrants: job.containerGrants };
   }
   /**
    * The wake, published where the result frame is — after the row and its journal entry are
@@ -2581,7 +2594,7 @@ export class JobService {
     auth: AuthContext,
     pluginId: string,
     traceId: string,
-    args: JobExecution & Omit<JobScheduleSpec, "request">,
+    args: JobExecution & Omit<JobScheduleSpec, "request" | "containerGrants">,
     callerPluginId = pluginId,
     beforeEffect?: () => void,
   ): JobScheduleSpec {
@@ -2614,6 +2627,8 @@ export class JobService {
       expiresAt,
       offlinePolicy,
       request,
+      // Every occurrence keeps the registering lineage's container authority (ADR 0051).
+      ...(auth.containerGrants === undefined ? {} : { containerGrants: [...auth.containerGrants] }),
     };
     this.store.transaction(() => {
       const prior = this.store.db
@@ -2713,8 +2728,8 @@ export class JobService {
     this.jobSchedules.tick(this.runtime.now(), {
       reauthorize: (request) => this.reauthorizeDeferred(request),
       isOnline: (machineId) => this.channels.get(machineId)?.proved === true,
-      enqueue: (request) => {
-        this.jobs.reserve(request, this.runtime.now());
+      enqueue: (request, containerGrants) => {
+        this.jobs.reserve(request, this.runtime.now(), containerGrants);
       },
     });
     for (const job of this.jobs.active()) if (job.state === "queued") this.start(job);
@@ -3186,7 +3201,8 @@ export class JobService {
       .get(canonicalJobJson(caller), event.operationId);
     if (!stored?.enabled) fail("invocation_edge_missing");
     const edge = JSON.parse(stored.edge) as JobInvocationEdge;
-    const context = this.auth.restoreCredential(parent.request.credential);
+    // A child is the parent's lineage, confinement included (ADR 0051).
+    const context = this.auth.restoreCredential(this.jobCredential(parent));
     if (!context) fail("invocation_credential_revoked");
     const template = this.build(
       context,
@@ -3230,7 +3246,7 @@ export class JobService {
       {
         reauthorize: (request) => this.reauthorizeDeferred(request),
         enqueue: (request) => {
-          this.jobs.reserve(request, this.runtime.now());
+          this.jobs.reserve(request, this.runtime.now(), context.containerGrants);
         },
       },
     );
@@ -3818,8 +3834,15 @@ export class JobService {
             servicePolicies.set(ref.machineId, policies);
           }
         }
-        const terminalAuthority =
-          (cap === "terminals:spawn" || cap === "terminals:write") && ref.kind === "container";
+        // Nothing is installed at a container, so there is no revision to consent to: a
+        // terminal the presser spawns or writes there, and the container authority a governed
+        // door hands the work it starts (ADR 0051), discharge against the caller alone.
+        const containerAuthority =
+          (cap === "terminals:spawn" ||
+            cap === "terminals:write" ||
+            cap === "containers:read" ||
+            cap === "containers:write") &&
+          ref.kind === "container";
         const install = ref.kind === "service" ? null : this.resolve(ref);
         const fresh = context
           ? this.auth.explain(context, prior.requirement)
@@ -3829,10 +3852,12 @@ export class JobService {
           (install ? this.consentFor(install, ref, cap) : null);
         const discharged =
           context !== null &&
-          (terminalAuthority || install !== null || (ref.kind === "service" && consent !== null)) &&
-          (context.caps.includes("*") || context.caps.includes(cap)) &&
+          (containerAuthority ||
+            install !== null ||
+            (ref.kind === "service" && consent !== null)) &&
+          this.auth.ceilingAdmits(context, cap, ref) &&
           fresh.allowed &&
-          (terminalAuthority || consent !== null);
+          (containerAuthority || consent !== null);
         if (!discharged) allowed = false;
         const observedConsent =
           consent ?? (install ? this.consentFor(install, ref, cap, false) : null);
@@ -4341,7 +4366,8 @@ export class JobService {
         : {}),
       parent: null,
       ...(inputs.length ? { inputs } : {}),
-      credential: this.auth.credentialReference(auth),
+      // The owner's wire parses this strictly; the confinement stays with the hub (ADR 0051).
+      credential: this.auth.credentialReference({ ...auth, containerGrants: undefined }),
       ...(terminal ? { terminal } : {}),
       ...(agentRun ? { agentRunId: agentRun.runId, agentRunExpiresAt: agentRun.expiresAt } : {}),
     };
@@ -4401,7 +4427,7 @@ export class JobService {
       }
       const decision = this.decide(
         {
-          credential: request.credential,
+          credential: this.auth.credentialReference(context),
           pluginId,
           action:
             (previous === null ? this.jobs.origin(request) : previous.auditOrigin)?.door ??
@@ -4413,7 +4439,7 @@ export class JobService {
         this.concurrencyRefusal(request),
         beforeEffect,
       );
-      const reserved = this.jobs.reserve(request, this.runtime.now());
+      const reserved = this.jobs.reserve(request, this.runtime.now(), context.containerGrants);
       this.jobs.decision(request.jobId, decision.decisionId);
       const allowed = decision.allowed;
       if (!allowed) {
@@ -4567,7 +4593,9 @@ export class JobService {
       undefined,
       terminal,
     );
-    const job = this.store.transaction(() => this.jobs.reserve(pinned, this.runtime.now()));
+    const job = this.store.transaction(() =>
+      this.jobs.reserve(pinned, this.runtime.now(), context.containerGrants),
+    );
     const command = this.start(job, false);
     if (!command) {
       this.jobs.state(pinned.jobId, "refused");
@@ -4607,7 +4635,8 @@ export class JobService {
           : null);
       if (!install.ready && !protocolReason) return null;
       const operationReason = protocolReason ?? this.operationRefusal(install, request.operationId);
-      const context = this.auth.restoreCredential(request.credential);
+      const credential = this.jobCredential(current);
+      const context = this.auth.restoreCredential(credential);
       let runRefusal: string | null = null;
       if (request.agentRunId) {
         try {
@@ -4652,7 +4681,7 @@ export class JobService {
       }
       const decision = this.decide(
         {
-          credential: request.credential,
+          credential,
           pluginId: request.pluginId,
           action: current.auditOrigin?.door ?? "engine.jobs.execute",
           evidence: requirements.map((requirement) =>

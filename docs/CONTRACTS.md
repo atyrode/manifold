@@ -4023,7 +4023,8 @@ provider handling and postconditions belong to plugins, never the common floor.
   grant may contain, so no plugin could reach the door whatever it was consented.
   **`machines:read` is asked of the CALLER as well as the plugin.** A plugin door's native
   bridge is the caller's capabilities intersected with the door's `caps` plus its `delegates`
-  and never widens either side, so a door declaring `machines:read` covers its own half only:
+  and never widens either side (a governed door's container-targeted caps ride bound to their
+  container instead, ADR 0051), so a door declaring `machines:read` covers its own half only:
   an owner or root credential passes on `*`, while a narrowly scoped token naming
   `machines:run` and the job verbs — the authority this read took before #735/#736 moved it
   onto the narrower word — is refused `job_capability_absent:machines:read`, or
@@ -4609,6 +4610,39 @@ exitCode, reason, finishedAt, scheduleId?, revision?, outputs }` — the job's o
   discharges caps, grants and that revision's consent. `follow` is not served there. The hook
   obeys the lifecycle bound and the no-veto rule: nothing waits for it, a throw or overrun is
   logged and never retried, no lifecycle state is recorded, and a disabled plugin is skipped.
+- **Carried container authority (ADR 0051).** A GOVERNED door — one whose `caps` include a
+  governed capability — may declare `containers:read` or `containers:write` with a
+  `requirements` target, and that target must be a container `ManifoldRef`; any other ref is
+  refused `invalid_args` (`containers:write requires a container target`). Admission discharges
+  it against the CALLER at that container, its flat ceiling and the waterfall both, with no
+  consent row, as for `terminals:*`: a caller lacking it there is refused `forbidden`
+  (`containers:write capability required at target`). The door's native bridge then carries the
+  cap bound to that container rather than in its flat ceiling, as
+  `containerGrants: [{ containerId, caps }]`. The credential reference carries the list, so
+  every `restoreCredential(credentialReference(context))` refresh answers as confined as the
+  context; only the signed job request omits it, and the hub keeps it BESIDE that request
+  (`machine_jobs.container_grants`, a schedule's spec), so the owner RPC is unchanged. Every job
+  the dispatch executes, every schedule it registers and each occurrence, invocation child and
+  terminal job keep it; `onJobSettled` restores it with the job's credential, so the wake's
+  `ctx.actions.call` is graded with it at the callee and the jobs the wake posts keep it.
+  **Presence is confinement**: for a context carrying the list, even an empty one, a container
+  cap is held only at or beneath a container a grant names it for — never through flat `caps`,
+  never at the root or another container — and the context is never root-class, through any
+  refresh. There `ctx.auth.caps` lists the carried caps in place of flat container caps. A
+  `scope: "container"` door with flat caps opens on carried authority only when exactly one
+  container carries every container cap it declares, and that dispatch runs scoped to it for
+  container questions: `ctx.containerScope`, `ctx.auth.containerScope` and `ctx.outsideScope`
+  name it, and `ctx.auth.allows` asks a container cap, or a node inside a container, as for a
+  container-scoped token; machine, operation, job and service questions answer from the flat
+  caps and grants unchanged. A workspace-graded door never opens on it,
+  and a door with a target is graded there. A door opened under a confined lineage lends only
+  the carried caps it declares, only at the container it was admitted at; a door declaring none
+  lends an empty list. Confined work never sponsors an Agent (`agent_sponsor_confined`).
+  Restoring never widens: grants must be well formed, outside the reference's flat caps and
+  inside the token's caps, or nothing restores. The grant rows are asked live at the container,
+  so revocation, expiry, a pause or a deny ends the carried cap. Dispatches whose caller carries
+  no grants through doors without container targets, and `delegates` (native-only), are
+  unchanged.
 - **Schedules.** The same admission path consumes durable schedule revision, nominal
   occurrence, interval, deadline, expiry and `skip`/`coalesce-one` offline policy. Occurrence
   identity is committed before enqueue. Original credential lineage/ceiling persists;
