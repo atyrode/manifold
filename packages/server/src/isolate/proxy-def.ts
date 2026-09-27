@@ -31,6 +31,7 @@ import {
   IsolateHarnessRequestSchema,
   IsolateHarnessResultSchemas,
   HarnessDefinitionSchema,
+  MachineBridgeArgsSchemas,
   type IsolateHarnessRequest,
   type ActionSummary,
   type IsolateChildFrame,
@@ -262,6 +263,16 @@ function stringArg(args: readonly unknown[], index: number, method: IsolateCtxMe
     throw new Error(`${method}: argument ${String(index)} must be a string`);
   }
   return value;
+}
+
+/** A fleet-bridge call's one machine id: an id for the host to resolve, never a record. */
+function machineIdArg(
+  method: "identity.rotateMachineToken" | "identity.revokeMachine" | "identity.forgetMachine",
+  args: readonly unknown[],
+): string {
+  const parsed = MachineBridgeArgsSchemas[method].safeParse(args);
+  if (!parsed.success) throw new Error(`${method}: argument 0 must be a machine id`);
+  return parsed.data[0];
 }
 
 /** The `jobs.*` slice, which a dispatch and any hook holding a credential serve from its ctx. */
@@ -559,6 +570,12 @@ export async function serveCtxCall(
     case "machines.isOnline":
     case "machines.getTerminalExecution":
     case "machines.repository":
+    case "machines.inventory":
+    case "machines.drain":
+    case "identity.enrollMachine":
+    case "identity.rotateMachineToken":
+    case "identity.revokeMachine":
+    case "identity.forgetMachine":
     case "placement.place":
     case "host.roster":
     case "host.enabled":
@@ -668,6 +685,33 @@ export async function serveCtxCall(
       if (!query.success) throw new Error(`${method}: argument 0 is not a repository query`);
       return ctx.machines.repository(query.data.machineId, query.data.path);
     }
+    /*
+      THE FLEET BRIDGE (#259), served from the same objects an in-realm handler calls. The
+      host re-proves the live caller against this dispatch's native ceiling inside each verb,
+      so a guest reaches no machine its door's declaration and its caller do not both allow.
+      Arguments are ids and a bounded name, never a record: a guest cannot describe the machine
+      or token it wants acted on, only name one for the host to resolve again.
+    */
+    case "machines.inventory":
+      if (!MachineBridgeArgsSchemas[method].safeParse(args).success)
+        throw new Error(`${method}: takes no arguments`);
+      return ctx.machines.inventory();
+    case "machines.drain": {
+      const parsed = MachineBridgeArgsSchemas[method].safeParse(args);
+      if (!parsed.success) throw new Error(`${method}: arguments are a machine id and a boolean`);
+      return ctx.machines.drain(parsed.data[0], parsed.data[1]);
+    }
+    case "identity.enrollMachine": {
+      const parsed = MachineBridgeArgsSchemas[method].safeParse(args);
+      if (!parsed.success) throw new Error(`${method}: argument 0 must be a machine name`);
+      return ctx.identity.enrollMachine(parsed.data[0]);
+    }
+    case "identity.rotateMachineToken":
+      return ctx.identity.rotateMachineToken(machineIdArg(method, args));
+    case "identity.revokeMachine":
+      return ctx.identity.revokeMachine(machineIdArg(method, args));
+    case "identity.forgetMachine":
+      return ctx.identity.forgetMachine(machineIdArg(method, args));
     case "placement.place": {
       const request = PlaceRequestSchema.safeParse(args[0]);
       if (!request.success) throw new Error(`${method}: argument 0 is not a placement request`);

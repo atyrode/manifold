@@ -145,6 +145,7 @@ function ctxWith(
     machines: {
       isOnline: (machineId) => machineId === "m-online",
       getTerminalExecution: () => null,
+      inventory: () => ({ ok: true, value: { machines: [] } }),
       drain: () => Promise.resolve({ ok: false, reason: "fixture has no terminal owner" }),
       repository: (machineId, path) =>
         Promise.resolve(
@@ -640,6 +641,42 @@ describe("serveCtxCall", () => {
     expect(allowed).toEqual([]);
   });
 
+  test("a fleet bridge call names machines by id only; a described record is refused unread", async () => {
+    const runtime = new FakeRuntime();
+    const { ctx } = ctxWith(testStore().pluginStorage(manifest.id), runtime);
+    const rotated: string[] = [];
+    const served = {
+      kind: "dispatch" as const,
+      ctx: {
+        ...ctx,
+        identity: {
+          rotateMachineToken: (machineId: string) => {
+            rotated.push(machineId);
+            return { ok: false, code: "not_found", message: "machine not found" };
+          },
+        },
+      } as unknown as ActionCtx,
+    };
+    // A guest describing the credential it wants rotated is not asking the host anything.
+    const record = { id: "m1", name: "one", tokenId: "attacker-chosen", ownerHostId: null };
+    await expect(serveCtxCall("identity.rotateMachineToken", [record], served)).rejects.toThrow(
+      "identity.rotateMachineToken: argument 0 must be a machine id",
+    );
+    await expect(
+      serveCtxCall("identity.rotateMachineToken", ["m1", "extra"], served),
+    ).rejects.toThrow("argument 0 must be a machine id");
+    await expect(serveCtxCall("machines.drain", ["m1"], served)).rejects.toThrow(
+      "machines.drain: arguments are a machine id and a boolean",
+    );
+    expect(rotated).toEqual([]);
+    expect(await serveCtxCall("identity.rotateMachineToken", ["m1"], served)).toEqual({
+      ok: false,
+      code: "not_found",
+      message: "machine not found",
+    });
+    expect(rotated).toEqual(["m1"]);
+  });
+
   test("a hook serves storage and nothing else", async () => {
     const storage = testStore().pluginStorage(manifest.id);
     const served = {
@@ -662,6 +699,9 @@ describe("serveCtxCall", () => {
       "services.configureConfiguration",
       "services.read",
       "services.invoke",
+      "machines.inventory",
+      "identity.enrollMachine",
+      "identity.revokeMachine",
     ] as const) {
       await expect(serveCtxCall(method, [{ machineId: "machine" }], served)).rejects.toThrow(
         "slice_unavailable",

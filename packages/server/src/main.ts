@@ -10,7 +10,12 @@ import {
   type RuntimeDeps,
 } from "@manifold/protocol";
 import { spawnLocalAgent } from "./agent-spawn.ts";
-import { FLOOR_EVENT_OWNERS, SERVER_PLUGIN_DEFS, SHIPPED_PLUGIN_IDS } from "./assembly.ts";
+import {
+  FLOOR_EVENT_OWNERS,
+  HARDENED_SOURCE_RECIPES,
+  SERVER_PLUGIN_DEFS,
+  SHIPPED_PLUGIN_IDS,
+} from "./assembly.ts";
 import { AuthService } from "./auth.ts";
 import { finalizePublicUrl, loadConfig, type ServerConfig } from "./config.ts";
 import {
@@ -20,6 +25,7 @@ import {
   sealWriterEpoch,
   type WriterLock,
 } from "./db.ts";
+import { compileTrustedBuilds } from "./first-party-builds.ts";
 import { EventHub } from "./event-hub.ts";
 import { HttpApp, MAX_HTTP_BODY_BYTES } from "./http.ts";
 import { InstanceDialer } from "./instance-dialer.ts";
@@ -361,6 +367,16 @@ async function startAsWriter({
       */
       distribution: SHIPPED_PLUGIN_IDS,
       isolates: { runner: isolates, dataDir: config.dataDir, devPaths: config.pluginDevPaths },
+      /*
+        TRUSTED FIRST-PARTY HARDENING (ADR 0053 §7): the operator's selection, compiled from this
+        build's own registered source and bound to its registered definition, or the start
+        fails by name. None selected is the in-realm distribution, and compiles nothing.
+      */
+      trusted: await compileTrustedBuilds(
+        config.hardenedPlugins ?? [],
+        SERVER_PLUGIN_DEFS,
+        HARDENED_SOURCE_RECIPES,
+      ),
       /*
         Where a plugin's own SQLite file lives (ADR 0034 §1). The same directory the isolates
         extract into, named separately because a plugin's database has nothing to do with

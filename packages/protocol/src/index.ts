@@ -1159,6 +1159,28 @@ export {
   type WebIsolateWorkerFrame,
 } from "./isolate.ts";
 export {
+  MACHINE_BRIDGE_METHODS,
+  MachineBridgeArgsSchemas,
+  MachineBridgeRefusalSchema,
+  MachineBridgeResultSchemas,
+  MachineCredentialGrantSchema,
+  MachineDrainOutcomeSchema,
+  MachineEnrollmentOutcomeSchema,
+  MachineIdentitySchema,
+  MachineInventoryEntrySchema,
+  MachineInventorySchema,
+  isMachineBridgeMethod,
+  type MachineBridgeAnswer,
+  type MachineBridgeMethod,
+  type MachineBridgeRefusal,
+  type MachineCredentialGrant,
+  type MachineDrainOutcome,
+  type MachineEnrollmentOutcome,
+  type MachineIdentity,
+  type MachineInventory,
+  type MachineInventoryEntry,
+} from "./machine-bridge.ts";
+export {
   TRACE_AUTHORITY_OPEN,
   TRACE_AUTHORITY_ROOT,
   TRACE_OUTCOMES,

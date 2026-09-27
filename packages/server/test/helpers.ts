@@ -23,7 +23,13 @@ import {
   assemblyTileTrees,
   type PlaceOutcome,
 } from "../src/placement.ts";
-import { PluginHost, type MachineAdmission, type ServerPluginDef } from "../src/plugin-host.ts";
+import {
+  PluginHost,
+  type IsolateDeps,
+  type MachineAdmission,
+  type ServerPluginDef,
+} from "../src/plugin-host.ts";
+import type { TrustedBuild } from "../src/first-party-builds.ts";
 import type { RoomManager, RoomTimers, TileTreeDisciplines } from "../src/room.ts";
 import type { RawSocket } from "../src/session-channel.ts";
 import { ServerStore } from "../src/stores.ts";
@@ -353,6 +359,10 @@ export async function testPluginHost(
      * the `core.access` dial doors pass here and refuse in the server.
      */
     readonly dialer?: InstanceDialer;
+    /** The real supervisor and data directory, for a case that runs code hardened. */
+    readonly isolates?: IsolateDeps;
+    /** First-party builds compiled by the composition root's own `compileTrustedBuilds`. */
+    readonly trusted?: readonly TrustedBuild[];
   } = {},
 ): Promise<PluginHost> {
   /*

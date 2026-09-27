@@ -718,6 +718,28 @@ export class HttpApp {
     }
 
     /*
+      THE PORTABLE WORKER ENTRY (ADR 0053): a contract-9 bundle's declared `web.worker.js`, for
+      an installed plugin or a trusted first-party build this process compiled, on the web
+      module's exact terms — same authority, enabled only, `no-store` with the pin as ETag. One
+      fixed member name; the route never serves any other file of any bundle.
+    */
+    const workerModuleMatch = /^\/api\/plugins\/([^/]+)\/web\.worker\.js$/.exec(pathname);
+    if (workerModuleMatch !== null && request.method === "GET") {
+      const id = decodePathSegment(workerModuleMatch[1], "plugin id");
+      const context = this.authenticate(request);
+      this.requireCap(context, "containers:read");
+      const module = this.plugins.webWorkerModule(id);
+      if (module === null) throw new RequestError("not_found", "no portable worker module");
+      return new Response(module.bytes, {
+        headers: {
+          "content-type": "text/javascript; charset=utf-8",
+          "cache-control": "no-store",
+          etag: `"${module.sha256}"`,
+        },
+      });
+    }
+
+    /*
       THE SHEET of an installed plugin (ADR 0025 §7, #258), on the module's exact terms: the
       verified bundle's `styles.css`, admitted under the root-class rule, served only while the
       row is enabled, `no-store` with the pin as ETag. The loader injects it beside the module

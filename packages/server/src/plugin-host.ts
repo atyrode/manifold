@@ -62,6 +62,10 @@ import {
   CORE_NAMESPACE_PREFIX,
   ENGINE_NAMESPACE_PREFIX,
   PLUGIN_BUNDLE_SERVER_FILE,
+  PLUGIN_BUNDLE_WEB_WORKER_FILE,
+  type MachineCredentialGrant,
+  type MachineEnrollmentOutcome,
+  type MachineInventory,
   type TerminalExecution,
   PLUGIN_BUNDLE_STYLES_FILE,
   formatManifoldUri,
@@ -158,10 +162,15 @@ import type {
   ContainerGrantCap,
   CredentialReference,
   GovernedAdmissionDecision,
-  MachineEnrollment,
   ServiceErrorCode,
 } from "./auth.ts";
 import { AuthoredPlugins, type AuthoredPack, type UnpackedRow } from "./authored.ts";
+import {
+  assertLoadedBinding,
+  assertTrustedBinding,
+  extractTrustedBuild,
+  type TrustedBuild,
+} from "./first-party-builds.ts";
 import type { EventHub } from "./event-hub.ts";
 import type { InstanceDialer } from "./instance-dialer.ts";
 import {
@@ -203,7 +212,7 @@ import {
 } from "./plugin-updates.ts";
 import { exportInstalledPlugins, listInstalledPlugins } from "./installed-plugins.ts";
 import type { RoomManager } from "./room.ts";
-import type { MachineRecord, PluginInstallRow, ServerStore, TraceAttribution } from "./stores.ts";
+import type { PluginInstallRow, ServerStore, TraceAttribution } from "./stores.ts";
 import type { DrainOutcome, TerminalBroker } from "./terminal-broker.ts";
 import type { MachineRepositoryOutcome } from "./machine-ws.ts";
 import { StreamService } from "./stream-service.ts";
@@ -304,10 +313,20 @@ export interface IdentityDoor {
   resumePrincipalAccess(
     input: PrincipalAccessPauseRequest,
   ): IdentityResult<PrincipalAccessPauseResult>;
-  /** Enrolls a machine, refusing a scoped or `machines:mint`-less caller. */
-  enrollMachine(name: string): IdentityResult<MachineEnrollment>;
-  /** Re-mints an enrolled machine's secret, revoking the previous one. */
-  rotateMachineToken(machine: MachineRecord): IdentityResult<MachineEnrollment>;
+  /*
+    THE FLEET'S IDENTITY VERBS (#259). Unlike the rest of this door they are bound to the
+    dispatch's NATIVE ceiling as well as its caller: every call restores the caller's live
+    credential, narrowed to the capabilities the dispatched door declares (and, for an
+    installed row, its grant), and refuses once the dispatch has settled. Machines are named by
+    id and re-resolved; answers carry public identity and at most one raw token.
+  */
+  /**
+   * Enrolls by name as ONE find-or-create decision for an unscoped `machines:mint` caller:
+   * an existing name answers its identity with no token, a new one answers the only raw token.
+   */
+  enrollMachine(name: string): IdentityResult<MachineEnrollmentOutcome>;
+  /** Re-mints the machine this id names NOW, revoking the credential its row references. */
+  rotateMachineToken(machineId: string): IdentityResult<MachineCredentialGrant>;
   /**
    * WITHDRAWS an enrolled machine's credential, keeping the inventory row. The door ADR 0019
    * §3 names as missing: `rotateMachineToken` above replaces a secret, and nothing could ask
@@ -315,7 +334,7 @@ export interface IdentityDoor {
    * withdrawn, which is a success and not a refusal.
    */
   revokeMachine(machineId: string): IdentityResult<number>;
-  forgetMachine(machineId: string): IdentityResult<void>;
+  forgetMachine(machineId: string): IdentityResult<null>;
   /**
    * Every principal this caller may administer, when it was created, and its live
    * credentials (ADR 0019 §3). `tokens:mint`, narrowed to what this caller could revoke —
@@ -512,7 +531,7 @@ function unverifiedDef(row: PluginInstallRow, refusal: PluginInstallRefusal): Se
   };
 }
 
-/** The worker module's bytes, decoded once at load so the route serves without re-decoding. */
+/** The web entry's bytes, decoded once at load so the route serves without re-decoding. */
 function webModuleOf(bundle: PluginBundle): Uint8Array<ArrayBuffer> | null {
   const name = bundle.manifest.entry.web;
   if (name === undefined) return null;
@@ -525,6 +544,31 @@ function stylesheetOf(bundle: PluginBundle): Uint8Array<ArrayBuffer> | null {
   if (bundle.manifest.entry.styles !== true) return null;
   const encoded = bundle.files[PLUGIN_BUNDLE_STYLES_FILE];
   return encoded === undefined ? null : Buffer.from(encoded, "base64");
+}
+
+/**
+ * The declared portable Worker entry (`entry.worker`, contract 9), on the same terms: decoded
+ * once, and served only because the manifest declared it — never an arbitrary member.
+ */
+function workerModuleOf(bundle: PluginBundle): Uint8Array<ArrayBuffer> | null {
+  if (bundle.manifest.entry.worker !== true) return null;
+  const encoded = bundle.files[PLUGIN_BUNDLE_WEB_WORKER_FILE];
+  return encoded === undefined ? null : Buffer.from(encoded, "base64");
+}
+
+/**
+ * Whether a bundle's web half CANNOT run hardened. From contract 9 an ordinary `web.js` is
+ * compiled against the page's shared module registry, so only a declared portable Worker entry
+ * runs in a hardened Worker; a contract-9 hardened installation without one is refused before
+ * any of its code is evaluated. Older contracts' `web.js` WAS their Worker module and keeps its
+ * original path.
+ */
+function unportableHardenedWeb(bundle: PluginBundle): boolean {
+  return (
+    bundle.manifest.entry.web !== undefined &&
+    (bundle.hardenedContract ?? 0) >= 9 &&
+    bundle.manifest.entry.worker !== true
+  );
 }
 
 /**
@@ -625,17 +669,30 @@ export interface IsolateDeps {
 
 /**
  * One installed plugin as the host holds it: the row (the installer's consent), the bundle
- * when the stored file re-hashed to the pin, the decoded web module and sheet the routes
+ * when the stored file re-hashed to the pin, the decoded web modules and sheet the routes
  * serve, and the refusal when it did not.
  */
 interface InstalledPlugin {
   readonly row: PluginInstallRow;
   readonly bundle: PluginBundle | null;
   readonly web: Uint8Array<ArrayBuffer> | null;
+  /** The declared portable Worker entry, when the bundle carries one. */
+  readonly worker: Uint8Array<ArrayBuffer> | null;
   readonly styles: Uint8Array<ArrayBuffer> | null;
   /** The bundle's recorded build against this server, derived once when its bytes verify. */
   readonly compatibility: PluginBuildCompatibility | null;
   readonly refusal?: PluginInstallRefusal;
+}
+
+/**
+ * A first-party definition this process compiled and runs hardened at the operator's choice
+ * (`first-party-builds.ts`): the pin its portable Worker entry is served under. There is no
+ * install row, installer or grant — the definition's own manifest is its ceiling, exactly as
+ * when it runs in-realm.
+ */
+interface TrustedPlugin {
+  readonly sha256: string;
+  readonly worker: Uint8Array<ArrayBuffer> | null;
 }
 
 /** A migration chain staged by `prepareMigrations`, published in phases (see there). */
@@ -678,6 +735,7 @@ interface GroupMember {
   readonly artifact: InstalledArtifact;
   /** Derived from the verified bytes before any commit, so nothing after it can throw here. */
   readonly web: Uint8Array<ArrayBuffer> | null;
+  readonly worker: Uint8Array<ArrayBuffer> | null;
   readonly styles: Uint8Array<ArrayBuffer> | null;
   readonly compatibility: PluginBuildCompatibility;
   readonly previous: InstalledPlugin | undefined;
@@ -724,6 +782,20 @@ export interface MachineAdmission {
    * `ok: false` with the state that stopped it rather than a fact nobody observed.
    */
   repository(machineId: string, path: string): Promise<MachineRepositoryOutcome>;
+}
+
+/**
+ * What a handler may ask about the fleet: the gateway's live per-machine facts, and the two
+ * fleet-bridge reads that answer the whole inventory or move the admission latch (#259). The
+ * bridge half re-proves the caller against the dispatch's admitted ceiling at every call, so
+ * the same questions are safe to serve to a hardened guest, one round trip each.
+ */
+export interface ActionMachines
+  extends Pick<MachineAdmission, "isOnline" | "getTerminalExecution" | "repository"> {
+  /** Every machine's public metadata in one answer; never a token or a private id. */
+  inventory(): IdentityResult<MachineInventory>;
+  /** An unknown machine is refused before the latch is touched; otherwise the gateway's. */
+  drain(machineId: string, draining: boolean): Promise<DrainOutcome>;
 }
 
 /**
@@ -804,12 +876,12 @@ export interface ActionCtx {
   readonly rooms: RoomManager;
   readonly broker: TerminalBroker;
   /**
-   * Live machine liveness and admission, straight from the socket registry. Persisted machine
-   * rows are a store read like any other; whether a machine is CONNECTED right now, and what
-   * its PTY owner holds, is knowledge only the gateway has, and `core.machines.list` and
+   * Live machine liveness and admission, straight from the socket registry, plus the fleet
+   * bridge's inventory and drain. Whether a machine is CONNECTED right now, and what its PTY
+   * owner holds, is knowledge only the gateway has, and `core.machines.list` and
    * `core.machines.drain` have to answer with it.
    */
-  readonly machines: MachineAdmission;
+  readonly machines: ActionMachines;
   /**
    * THE placement executor — one door onto every way a thing comes to be somewhere
    * (`core.space.place`). A plugin declares the minimal slice it uses, which for placement
@@ -1474,10 +1546,13 @@ export class PluginHost {
   /**
    * The live definition list: the engine's own rows, the first-party defs the composition root
    * handed over, then every INSTALLED plugin's def appended after them (ADR 0016 §8 stage 2).
-   * Rebuilt by `syncDefs` whenever an install lands or leaves; the first two parts never move.
+   * Rebuilt by `syncDefs` whenever an install lands or leaves; the first two parts never move
+   * after boot, where a trusted hardened build may replace a first-party def with its proxy.
    */
   private defs: readonly ServerPluginDef[];
-  private readonly firstParty: readonly ServerPluginDef[];
+  private firstParty: readonly ServerPluginDef[];
+  /** First-party definitions running hardened by the operator's choice, by id. */
+  private readonly trusted = new Map<string, TrustedPlugin>();
   private readonly handlers = new Map<string, Readonly<Record<string, ActionHandler>>>();
   private readonly guestInputPlugins = new Set<string>();
   /** Installed plugins by id: the row, the verified bundle, and the def the runner produced. */
@@ -2098,6 +2173,13 @@ export class PluginHost {
        * repeat it; absent entirely means no plugin gets a `ctx.database`.
        */
       readonly dataDir?: string;
+      /**
+       * First-party definitions the composition root compiled for hardened execution
+       * (`compileTrustedBuilds`). Each must bind to a registered first-party def; it runs under
+       * the same runner, proxy, ladder and lifecycle as a hardened installation, with no install
+       * row. Empty or absent is the default in-realm distribution.
+       */
+      readonly trusted?: readonly TrustedBuild[];
     } = {},
   ): Promise<PluginHost> {
     const host = new PluginHost(
@@ -2115,6 +2197,7 @@ export class PluginHost {
       options,
     );
     if (host.dataDir !== null) recoverPluginDatabases(host.dataDir, store);
+    await host.loadTrusted(options.trusted ?? []);
     await host.loadInstalled();
     host.assembled = await host.reassemble();
     const migrated = await host.runPendingMigrations();
@@ -2140,6 +2223,46 @@ export class PluginHost {
   }
 
   /**
+   * TRUSTED FIRST-PARTY HARDENING (ADR 0053 §7). Each build replaces its registered first-party
+   * def with the child's proxy BEFORE the first assembly, so nothing ever composes or serves the
+   * in-realm module for it. The binding is re-proved here — a build this host cannot tie to a
+   * registered, non-builtin first-party definition by manifest and published doors never
+   * loads — and any failure fails the boot by name rather than running the plugin in-realm.
+   */
+  private async loadTrusted(builds: readonly TrustedBuild[]): Promise<void> {
+    if (builds.length === 0) return;
+    const isolates = this.isolates;
+    if (isolates === null)
+      throw new Error("hardened first-party plugins require the isolate runner");
+    const firstParty = [...this.firstParty];
+    for (const build of builds) {
+      const id = build.bundle.manifest.id;
+      const index = firstParty.findIndex((def) => def.manifest.id === id);
+      const registered = this.builtins.has(id) ? undefined : firstParty[index];
+      if (registered === undefined || this.trusted.has(id))
+        throw new Error(`${id}: hardened build names no registered first-party plugin`);
+      assertTrustedBinding(registered, build);
+      const loaded = await isolates.runner.load({
+        pluginId: id,
+        manifest: registered.manifest,
+        dir: extractTrustedBuild(isolates.dataDir, build),
+        hardenedContract: build.bundle.hardenedContract,
+      });
+      const def: ServerPluginDef = { ...loaded.def, lifecycle: loaded.lifecycle };
+      try {
+        assertLoadedBinding(registered, def);
+      } catch (error) {
+        await isolates.runner.unload(id);
+        throw error;
+      }
+      firstParty[index] = def;
+      this.trusted.set(id, { sha256: build.sha256, worker: workerModuleOf(build.bundle) });
+    }
+    this.firstParty = firstParty;
+    this.syncDefs();
+  }
+
+  /**
    * BOOT RE-VERIFICATION (R8, fail-closed). Every install row's bundle is re-hashed against
    * its pin and re-extracted; one that no longer matches — or cannot be read, or no longer
    * parses — is put on the roster in `enable_failed` with the refusal on its `install` block,
@@ -2157,6 +2280,7 @@ export class PluginHost {
           row,
           bundle: null,
           web: null,
+          worker: null,
           styles: null,
           compatibility: null,
           refusal: verdict.refusal,
@@ -2174,6 +2298,7 @@ export class PluginHost {
         row,
         bundle: verdict.bundle,
         web: webModuleOf(verdict.bundle),
+        worker: workerModuleOf(verdict.bundle),
         styles: stylesheetOf(verdict.bundle),
         compatibility: pluginBuildCompatibility(verdict.bundle),
       });
@@ -2257,6 +2382,10 @@ export class PluginHost {
     )
       throw new IsolateLoadError(
         `${bundle.manifest.id}: repack_required; repack with plugin-kit hardened contract ${String(HARDENED_CONTRACT_MINIMUM)} or a newer accepted contract`,
+      );
+    if (hardened && unportableHardenedWeb(bundle))
+      throw new IsolateLoadError(
+        `${bundle.manifest.id}: its hardened contract ${String(bundle.hardenedContract)} web half declares no portable Worker entry; repack with entry.worker or install in-realm`,
       );
     if (bundle.manifest.entry.server !== true) {
       return { manifest: bundle.manifest, actions: [], handlers: {} };
@@ -2347,8 +2476,8 @@ export class PluginHost {
     const installed = this.installed.get(pluginId);
     if (
       this.isolates === null ||
-      installed?.row.hardened !== true ||
-      installed.bundle?.manifest.entry.server !== true
+      (!this.trusted.has(pluginId) &&
+        (installed?.row.hardened !== true || installed.bundle?.manifest.entry.server !== true))
     )
       return false;
     // Notifications can belong to a retired child. Only the runner's current child for
@@ -2813,9 +2942,21 @@ export class PluginHost {
     return this.assembled;
   }
 
-  /** The roster every reader is answered: the assembly's, with the coordinator's observations. */
+  /**
+   * The roster every reader is answered: the assembly's, with the coordinator's observations
+   * and each row's EFFECTIVE execution. `hardened: true` means this host runs the plugin's
+   * server half in the supervisor and serves its browser half for a Worker, whether the
+   * installer chose that (`install.hardened`, which stays the persisted choice) or the operator
+   * selected a trusted first-party build. Absent is in-realm.
+   */
   roster(): PluginRoster {
-    return this.updates?.roster(this.assembled.roster) ?? this.assembled.roster;
+    const roster = this.updates?.roster(this.assembled.roster) ?? this.assembled.roster;
+    return roster.map((entry) =>
+      this.trusted.has(entry.manifest.id) ||
+      this.installed.get(entry.manifest.id)?.row.hardened === true
+        ? { ...entry, hardened: true }
+        : entry,
+    );
   }
 
   /** Serialize installed hashes and configured intent with installation and enablement changes. */
@@ -3349,6 +3490,7 @@ export class PluginHost {
           bundle,
           artifact,
           web: webModuleOf(bundle),
+          worker: workerModuleOf(bundle),
           styles: stylesheetOf(bundle),
           compatibility: pluginBuildCompatibility(bundle),
           previous,
@@ -3574,6 +3716,7 @@ export class PluginHost {
           row: member.row,
           bundle: member.bundle,
           web: member.web,
+          worker: member.worker,
           styles: member.styles,
           compatibility: member.compatibility,
         });
@@ -4033,17 +4176,39 @@ export class PluginHost {
   }
 
   /**
-   * The worker module `GET /api/plugins/:id/web.js` serves: the bytes of `files[entry.web]`
-   * for an installed, verified, ENABLED plugin, with the pin the response tags them with.
-   * Null for everything else, which the route answers as 404 — a disabled plugin's code is not
-   * fetched by anyone, and a refused bundle's never is.
+   * The module `GET /api/plugins/:id/web.js` serves: the bytes of `files[entry.web]` for an
+   * installed, verified, ENABLED plugin, with the pin the response tags them with. Null for
+   * everything else, which the route answers as 404 — a disabled plugin's code is not fetched
+   * by anyone, a refused bundle's never is, and neither is a contract-9 web half an installer
+   * hardened without its portable Worker entry: that module was built for the page's registry
+   * and is refused before any of it is evaluated.
    */
   webModule(
     id: string,
   ): { readonly sha256: string; readonly bytes: Uint8Array<ArrayBuffer> } | null {
     const entry = this.installed.get(id);
     if (entry === undefined || entry.web === null || !this.assembled.enabled(id)) return null;
-    return { sha256: entry.row.sha256, bytes: entry.web };
+    const unportable =
+      entry.row.hardened === true && entry.bundle !== null && unportableHardenedWeb(entry.bundle);
+    return unportable ? null : { sha256: entry.row.sha256, bytes: entry.web };
+  }
+
+  /**
+   * The portable React Worker entry `GET /api/plugins/:id/web.worker.js` serves (ADR 0053):
+   * the declared `web.worker.js` of an installed, verified, ENABLED plugin under its install
+   * pin, or of an enabled trusted first-party build under the pin of the artifact this process
+   * compiled. Only the declared member, never another file, and nothing while disabled.
+   */
+  webWorkerModule(
+    id: string,
+  ): { readonly sha256: string; readonly bytes: Uint8Array<ArrayBuffer> } | null {
+    if (!this.assembled.enabled(id)) return null;
+    const trusted = this.trusted.get(id);
+    if (trusted !== undefined)
+      return trusted.worker === null ? null : { sha256: trusted.sha256, bytes: trusted.worker };
+    const entry = this.installed.get(id);
+    if (entry === undefined || entry.worker === null) return null;
+    return { sha256: entry.row.sha256, bytes: entry.worker };
   }
 
   /**
@@ -4488,6 +4653,95 @@ export class PluginHost {
     return outcome;
   }
 
+  /**
+   * THE FLEET BRIDGE (#259): the machine and identity verbs a handler may reach — one object
+   * for an in-realm handler and for the proxy serving a hardened guest (`serveCtxCall`).
+   * `authority` is the dispatch's live, ceiling-bound caller (`run`); every verb asks it at the
+   * moment of use and resolves machines by id against current state, so no stale record,
+   * token id or store handle is ever accepted or answered: only public identity, a count, the
+   * latch's report, at most one raw token, or a refusal as data.
+   *
+   * Withdrawal and forgetting name the machine as the trace's target before they are graded,
+   * so a refused attempt is as attributable as a committed one.
+   */
+  private machineBridge(
+    authority: (cap: "containers:read" | "machines:mint", workspace: boolean) => AuthContext,
+    target: (machineId: string) => void,
+  ): {
+    readonly machines: Pick<ActionMachines, "inventory" | "drain">;
+    readonly identity: Pick<
+      IdentityDoor,
+      "enrollMachine" | "rotateMachineToken" | "revokeMachine" | "forgetMachine"
+    >;
+  } {
+    return {
+      machines: {
+        inventory: () =>
+          identityCall(() => {
+            authority("containers:read", false);
+            // One read of the withdrawn set for the whole roster, never a question per row.
+            const withdrawn = this.store.revokedMachineIds();
+            return {
+              machines: this.store.listMachines().map((machine) => ({
+                id: machine.id,
+                name: machine.name,
+                online: this.machines.isOnline(machine.id),
+                revoked: withdrawn.has(machine.id),
+                draining: machine.draining,
+                terminalExecution: this.machines.getTerminalExecution(machine.id),
+                lastRefusal: machine.lastRefusal,
+              })),
+            };
+          }),
+        drain: async (machineId, draining) => {
+          const allowed = identityCall(() => authority("machines:mint", true));
+          if (!allowed.ok) return { ok: false, reason: allowed.message };
+          if (this.store.getMachine(machineId) === null)
+            return { ok: false, reason: "unknown machine" };
+          return this.machines.drain(machineId, draining);
+        },
+      },
+      identity: {
+        enrollMachine: (name) =>
+          identityCall((): MachineEnrollmentOutcome => {
+            const actor = authority("machines:mint", true);
+            const found = this.authService.findOrEnrollMachine(name, actor);
+            // The public identity only: the record's token id and owner stay on the host.
+            if (!found.created) {
+              const { id, name: enrolled } = found.machine;
+              return { created: false, machine: { id, name: enrolled } };
+            }
+            const { machine, machineToken } = found.enrollment;
+            return { created: true, machine: { id: machine.id, name: machine.name }, machineToken };
+          }),
+        rotateMachineToken: (machineId) =>
+          identityCall((): MachineCredentialGrant => {
+            const actor = authority("machines:mint", true);
+            const rotated = this.authService.rotateEnrolledMachineToken(machineId, actor);
+            return {
+              machine: { id: rotated.machine.id, name: rotated.machine.name },
+              machineToken: rotated.machineToken,
+            };
+          }),
+        revokeMachine: (machineId) => {
+          target(machineId);
+          return identityCall(() =>
+            this.authService.revokeMachine(machineId, authority("machines:mint", true)),
+          );
+        },
+        forgetMachine: (machineId) => {
+          target(machineId);
+          return identityCall(() => {
+            const actor = authority("machines:mint", true);
+            this.authService.forgetMachine(machineId, actor);
+            this.logger.info("machine_forgotten", { machineId, principal: actor.principal.id });
+            return null;
+          });
+        },
+      },
+    };
+  }
+
   private async run(
     auth: AuthContext,
     fullName: string,
@@ -4893,6 +5147,51 @@ export class PluginHost {
     const database = lease.database;
     let guestAdmitted = false;
     const actionStack = [...(options.origin?.stack ?? []), pluginId];
+    /*
+      THE FLEET BRIDGE'S AUTHORITY (#259), asked at every inventory, drain and machine-credential
+      call rather than frozen here: this dispatch is still open and its door still assembled,
+      enabled (or a cleanup carve-out) and not being replaced; the capability is inside this
+      door's NATIVE ceiling — its declared caps and, for an installation, the installer's grant —
+      not merely the caller's; and the caller's credential is live and still holds it here.
+      `ctx.auth.allows` answers the caller's question alone and is NOT that ceiling, so a handler
+      whose door declares nothing reaches no machine however much its caller holds.
+    */
+    let machineBridgeOpen = true;
+    const machineAuthority = (
+      cap: "containers:read" | "machines:mint",
+      workspace: boolean,
+    ): AuthContext => {
+      if (
+        !machineBridgeOpen ||
+        this.closed ||
+        this.assembled.actions.get(fullName) !== entry ||
+        this.replacing.has(pluginId) ||
+        (!this.assembled.enabled(pluginId) && entry.def.cleanup !== true)
+      )
+        throw new ServiceError("forbidden", "plugin authority unavailable");
+      const grant = this.installed.get(pluginId)?.row.grantedCaps;
+      const live =
+        withinCeiling(cap, nativeCaps) && (grant === undefined || withinCeiling(cap, grant))
+          ? this.authService.restoreCredential(this.authService.credentialReference(nativeAuth))
+          : null;
+      // Graded where `ctx.auth.allows` grades a dispatch admitted on carried authority.
+      const graded =
+        live !== null && carriedContainer !== null && isContainerGrantCap(cap)
+          ? { ...live, containerScope: carriedContainer }
+          : live;
+      if (
+        live === null ||
+        graded === null ||
+        !hasCap(this.authService.ceilingCaps(live), cap) ||
+        !this.authService.allows(graded, cap) ||
+        (workspace && live.containerScope !== null)
+      )
+        throw new ServiceError("forbidden", `${cap} capability required`);
+      return live;
+    };
+    const machineBridge = this.machineBridge(machineAuthority, (machineId) => {
+      if (!opaque) targets.push({ kind: "machine", machineId });
+    });
     const authService = this.authService;
     const ctx: ActionCtx = {
       traceId,
@@ -5035,7 +5334,12 @@ export class PluginHost {
       store: this.store,
       rooms: this.rooms,
       broker: this.broker,
-      machines: this.machines,
+      machines: {
+        isOnline: (machineId) => this.machines.isOnline(machineId),
+        getTerminalExecution: (machineId) => this.machines.getTerminalExecution(machineId),
+        repository: (machineId, path) => this.machines.repository(machineId, path),
+        ...machineBridge.machines,
+      },
       placement: this.placement,
       host: this,
       identity: {
@@ -5145,22 +5449,13 @@ export class PluginHost {
           identityCall(() => this.authService.pausePrincipalAccess(input, auth)),
         resumePrincipalAccess: (input) =>
           identityCall(() => this.authService.resumePrincipalAccess(input, auth)),
-        enrollMachine: (name) => identityCall(() => this.authService.enrollMachine(name, auth)),
-        rotateMachineToken: (machine) =>
-          identityCall(() => this.authService.rotateMachineToken(machine, auth.principal.id)),
+        ...machineBridge.identity,
         mintShare: (input) => identityCall(() => this.authService.mintShare(input, auth)),
         revokeShare: (shareId) => identityCall(() => this.authService.revokeShare(shareId, auth)),
         listShares: () => identityCall(() => this.authService.listShares(auth)),
         grant: (input) => identityCall(() => this.authService.grant(input, auth)),
         revokeGrant: (grantId) => identityCall(() => this.authService.revokeGrant(grantId, auth)),
         listGrants: (filter) => identityCall(() => this.authService.listGrants(filter, auth)),
-        revokeMachine: (machineId) =>
-          identityCall(() => this.authService.revokeMachine(machineId, auth)),
-        forgetMachine: (machineId) =>
-          identityCall(() => {
-            this.authService.forgetMachine(machineId, auth);
-            this.logger.info("machine_forgotten", { machineId, principal: auth.principal.id });
-          }),
         listCredentials: () => identityCall(() => this.authService.listCredentials(auth)),
       },
       /*
@@ -5210,6 +5505,7 @@ export class PluginHost {
         return answer;
       } finally {
         lease.close();
+        machineBridgeOpen = false;
       }
     };
     try {

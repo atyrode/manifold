@@ -1,71 +1,52 @@
 import type { EmitEvent } from "@manifold/plugin";
 import {
   identityColorFor,
+  type MachineBridgeAnswer,
+  type MachineCredentialGrant,
+  type MachineDrainOutcome,
   type MachineDrainStatus,
+  type MachineEnrollmentOutcome,
+  type MachineIdentity,
+  type MachineInventory,
   type MachineRefusal,
-  type ManifoldRef,
   type TerminalExecution,
 } from "@manifold/protocol";
-import { machinesManifest } from "./index.ts";
+import { MACHINES_PLUGIN_ID } from "./names.ts";
+
+/** An in-realm host answers now; a hardened host answers across its process boundary. */
+type Awaitable<T> = T | PromiseLike<T>;
 
 /**
- * The slice of the host this plugin touches, declared locally (D1): two narrow store reads,
- * one liveness question, and two credential verbs — exactly what `GET`/`POST /api/machines`
- * reached for, and nothing else. The identity door is pre-bound to the caller by the engine,
- * so this plugin never sees an `AuthService`, an `AuthContext`, or any way to verify a
- * secret: it can ask for a machine credential to be minted, and it can be told no.
+ * The slice of the host this plugin touches, declared locally (D1): the fleet bridge and the
+ * event stager, and nothing else. It is STRUCTURAL and awaitable on purpose: the engine's
+ * in-realm `ActionCtx` answers synchronously and a hardened guest's context answers with
+ * promises, and both satisfy this one type, so there is one set of handlers for both modes.
+ *
+ * The bridge is pre-bound to the caller and to this plugin's admitted ceiling by the engine,
+ * so this plugin never sees an `AuthService`, an `AuthContext`, a store or any way to verify a
+ * secret. It names machines only by id; the host resolves every id against current state,
+ * re-proves the live caller, and answers public metadata or a refusal. Target attribution for
+ * the trace is the host's too, recorded where the id is resolved.
  */
-interface MachineRow {
-  readonly id: string;
-  readonly name: string;
-  /** The admission latch `core.machines.drain` sets; the roster publishes it beside liveness. */
-  readonly draining: boolean;
-  readonly lastRefusal: MachineRefusal | null;
-}
-
-/** The owner's answer to a drain request, or why there is none (the door relays the reason). */
-type DrainOutcome =
-  | { readonly ok: true; readonly status: MachineDrainStatus }
-  | { readonly ok: false; readonly reason: string };
-
-interface Enrollment {
-  readonly machine: MachineRow;
-  readonly machineToken: string;
-}
-
-type IdentityResult<T> =
-  | { readonly ok: true; readonly value: T }
-  | { readonly ok: false; readonly code: string; readonly message: string };
-
 interface MachinesCtx {
-  readonly store: {
-    listMachines(): readonly MachineRow[];
-    getMachine(id: string): MachineRow | null;
-    getMachineByName(name: string): MachineRow | null;
-    /**
-     * Which machines hold a WITHDRAWN credential. One store read for the whole roster
-     * rather than a question per row, and the definition lives there because it is a join
-     * between a machine and the token it references — not something a plugin should
-     * reconstruct (ADR 0019 §3).
-     */
-    revokedMachineIds(): ReadonlySet<string>;
-  };
   readonly machines: {
-    isOnline(machineId: string): boolean;
-    getTerminalExecution(machineId: string): TerminalExecution | null;
+    /** The whole fleet in one answer: no per-row question, in either mode. */
+    inventory(): Awaitable<MachineBridgeAnswer<MachineInventory>>;
     /**
      * Closes or reopens a machine's terminal admission and asks its PTY owner what it holds
      * (#278). The latch is the floor's and persisted; this plugin only turns the answer into
      * the door's result, or the reason there is none into a refusal.
      */
-    drain(machineId: string, draining: boolean): Promise<DrainOutcome>;
+    drain(machineId: string, draining: boolean): Awaitable<MachineDrainOutcome>;
   };
   readonly identity: {
-    enrollMachine(name: string): IdentityResult<Enrollment>;
-    rotateMachineToken(machine: MachineRow): IdentityResult<Enrollment>;
+    /** One host-side find-or-create by name; a raw token only when this call minted one. */
+    enrollMachine(name: string): Awaitable<MachineBridgeAnswer<MachineEnrollmentOutcome>>;
+    /** Re-mints the CURRENT credential of the machine this id names now, revoking the old. */
+    rotateMachineToken(machineId: string): Awaitable<MachineBridgeAnswer<MachineCredentialGrant>>;
     /** Withdraws a machine's credential and answers how many died; 0 is a success. */
-    revokeMachine(machineId: string): IdentityResult<number>;
-    forgetMachine(machineId: string): IdentityResult<void>;
+    revokeMachine(machineId: string): Awaitable<MachineBridgeAnswer<number>>;
+    forgetMachine(machineId: string): Awaitable<MachineBridgeAnswer<null>>;
   };
   /**
    * The fleet's news, staged on the engine and published only if this dispatch commits. Only
@@ -73,7 +54,6 @@ interface MachinesCtx {
    * which is floor and emits under this plugin's declared vocabulary (ADR 0012 §1).
    */
   readonly emit: EmitEvent;
-  target(ref: ManifoldRef): void;
 }
 
 /** A machine as the wire carries it: the row, its derived dot, and — for the list — liveness. */
@@ -106,7 +86,7 @@ type Refusable<T> = T | { readonly refused: string };
  * paints and the dot a second client nobody has written yet paints all come from one wire
  * field, so there is no algorithm to keep in sync.
  */
-function dot(machine: MachineRow): MachineDot {
+function dot(machine: MachineIdentity): MachineDot {
   return { id: machine.id, name: machine.name, color: identityColorFor(machine.id) };
 }
 
@@ -131,31 +111,30 @@ function dot(machine: MachineRow): MachineDot {
  *
  * The unscoped-caller and `machines:mint` checks the route made itself are now two rungs of
  * the ladder above this code (`enroll` declares the cap and keeps the default workspace
- * scope), and the identity door re-checks both at the point of minting. A refusal from it
- * is relayed rather than thrown: an attenuation failure is an answer, not a server fault.
+ * scope), and the bridge re-checks both — against the live caller AND this plugin's admitted
+ * ceiling — at the point of minting. A refusal from it is relayed rather than thrown: an
+ * attenuation failure is an answer, not a server fault.
  */
 export const machinesHandlers = {
   async list(
     ctx: MachinesCtx,
     _args: Record<string, never>,
-  ): Promise<{ machines: readonly MachineSummary[] }> {
-    /*
-      One read for the whole roster, hoisted out of the map for the reason the map exists:
-      the alternative is a query per machine, which is the N+1 a list door must not ship.
-    */
-    const withdrawn = ctx.store.revokedMachineIds();
+  ): Promise<Refusable<{ machines: readonly MachineSummary[] }>> {
+    const inventory = await ctx.machines.inventory();
+    if (!inventory.ok) return { refused: inventory.message };
     return {
-      machines: ctx.store.listMachines().map((machine) => {
-        const terminalExecution = ctx.machines.getTerminalExecution(machine.id);
-        return {
+      machines: inventory.value.machines.map(
+        (machine): MachineSummary => ({
           ...dot(machine),
-          online: ctx.machines.isOnline(machine.id),
-          ...(terminalExecution === null ? {} : { terminalExecution }),
-          ...(withdrawn.has(machine.id) ? { revoked: true } : {}),
+          online: machine.online,
+          ...(machine.terminalExecution === null
+            ? {}
+            : { terminalExecution: machine.terminalExecution }),
+          ...(machine.revoked ? { revoked: true } : {}),
           ...(machine.draining ? { draining: true } : {}),
           ...(machine.lastRefusal === null ? {} : { lastRefusal: machine.lastRefusal }),
-        };
-      }),
+        }),
+      ),
     };
   },
 
@@ -163,28 +142,29 @@ export const machinesHandlers = {
     ctx: MachinesCtx,
     args: { name: string; rotateToken?: boolean },
   ): Promise<Refusable<{ machine: MachineDot; machineToken?: string }>> {
-    const existing = ctx.store.getMachineByName(args.name);
-    if (existing !== null && args.rotateToken !== true) return { machine: dot(existing) };
-    const outcome =
-      existing === null
-        ? ctx.identity.enrollMachine(args.name)
-        : ctx.identity.rotateMachineToken(existing);
-    if (!outcome.ok) return { refused: outcome.message };
+    const enrolled = await ctx.identity.enrollMachine(args.name);
+    if (!enrolled.ok) return { refused: enrolled.message };
+    const outcome = enrolled.value;
     /*
       ONE EMISSION PER COMMIT, and the commit here is an ENROLMENT rather than a call.
       Enrolment is idempotent by name (issue #40): a re-run provision flow answers with the
-      existing row and mints nothing, and it returned above without reaching this line. A
-      `rotateToken: true` recovery is the other non-event — the machine did not join the fleet,
-      its secret changed — so the announcement is gated on the row having actually been born.
-      The token itself never enters a payload; only the identity does.
+      existing row and mints nothing. A `rotateToken: true` recovery is the other non-event —
+      the machine did not join the fleet, its secret changed — so the announcement is gated on
+      the host having actually created the row. The token itself never enters a payload; only
+      the identity does.
      */
-    if (existing === null) {
-      ctx.emit({ kind: "plugin", pluginId: machinesManifest.id }, "machine_enrolled", {
-        machineId: outcome.value.machine.id,
-        name: outcome.value.machine.name,
+    if (outcome.created) {
+      ctx.emit({ kind: "plugin", pluginId: MACHINES_PLUGIN_ID }, "machine_enrolled", {
+        machineId: outcome.machine.id,
+        name: outcome.machine.name,
       });
+      return { machine: dot(outcome.machine), machineToken: outcome.machineToken };
     }
-    return { machine: dot(outcome.value.machine), machineToken: outcome.value.machineToken };
+    if (args.rotateToken !== true) return { machine: dot(outcome.machine) };
+    // By id, never by the row just read: the host re-resolves and re-authorizes it.
+    const rotated = await ctx.identity.rotateMachineToken(outcome.machine.id);
+    if (!rotated.ok) return { refused: rotated.message };
+    return { machine: dot(rotated.value.machine), machineToken: rotated.value.machineToken };
   },
 
   /**
@@ -207,34 +187,32 @@ export const machinesHandlers = {
     ctx: MachinesCtx,
     args: { machineId: string },
   ): Promise<Refusable<{ revoked: number }>> {
-    ctx.target({ kind: "machine", machineId: args.machineId });
-    const outcome = ctx.identity.revokeMachine(args.machineId);
+    const outcome = await ctx.identity.revokeMachine(args.machineId);
     return outcome.ok ? { revoked: outcome.value } : { refused: outcome.message };
   },
 
   /**
    * REMOVAL, relayed. Legal only after withdrawal: the mechanism refuses a live credential,
    * retained terminals and a pending drain by name, and a second forget answers as unknown.
-   * The trace names the machine explicitly because this is the last row that ever will —
+   * The host names the machine on the trace because this is the last row that ever will —
    * once the roster row is gone, nothing derives that address from an emission.
    */
   async forget(
     ctx: MachinesCtx,
     args: { machineId: string },
   ): Promise<Refusable<Record<string, never>>> {
-    ctx.target({ kind: "machine", machineId: args.machineId });
-    const outcome = ctx.identity.forgetMachine(args.machineId);
+    const outcome = await ctx.identity.forgetMachine(args.machineId);
     return outcome.ok ? {} : { refused: outcome.message };
   },
 
   /**
    * ADMISSION, relayed (issue #278). The mechanism is the floor's — the persisted latch, the
    * refusal in `open`, the owner round trip — and this handler turns its answer into the
-   * result the door declares, or the reason there is none into a `refused` denial. Every
-   * refusal below happens AFTER the floor has set the latch the caller asked for, which is
-   * the property a maintenance caller relies on: a refused `draining: true` is a machine
-   * whose state is unknown AND whose admission is now closed, never one left open because
-   * the answer was awkward.
+   * result the door declares, or the reason there is none into a `refused` denial. An unknown
+   * machine is refused before the mechanism is asked. Every other refusal happens AFTER the
+   * floor has set the latch the caller asked for, which is the property a maintenance caller
+   * relies on: a refused `draining: true` is a machine whose state is unknown AND whose
+   * admission is now closed, never one left open because the answer was awkward.
    *
    * NO EVENT EMITTED, for `revoke`'s reason: the roster already carries `draining` beside
    * `online`, the trace ledger records the act at the door, and a second announcement of one
@@ -244,7 +222,6 @@ export const machinesHandlers = {
     ctx: MachinesCtx,
     args: { machineId: string; draining: boolean },
   ): Promise<Refusable<MachineDrainStatus>> {
-    if (ctx.store.getMachine(args.machineId) === null) return { refused: "unknown machine" };
     const outcome = await ctx.machines.drain(args.machineId, args.draining);
     return outcome.ok ? outcome.status : { refused: outcome.reason };
   },

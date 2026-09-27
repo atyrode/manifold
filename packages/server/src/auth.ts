@@ -3150,10 +3150,29 @@ export class AuthService {
 
   /** Enrolls a machine only for an unscoped principal holding `machines:mint`. */
   enrollMachine(name: string, actor: AuthContext): MachineEnrollment {
-    if (!this.allows(actor, "machines:mint") || actor.containerScope !== null) {
-      throw new ServiceError("forbidden", "machines:mint capability required");
-    }
+    this.requireMachineAuthority(actor);
     return this.persistMachine(name, actor.principal.id);
+  }
+
+  /**
+   * ENROLMENT BY NAME, AS ONE DECISION (issue #40, #259). The lookup and the mint happen in one
+   * synchronous transaction after the authority check, so two concurrent enrolments of one
+   * name cannot both decide "absent": one creates the row and receives the only raw token, the
+   * other answers that existing identity with none. A caller composing lookup and mint across
+   * two awaited steps would race exactly there, which is why no such pair is exposed.
+   */
+  findOrEnrollMachine(
+    name: string,
+    actor: AuthContext,
+  ):
+    | { readonly created: true; readonly enrollment: MachineEnrollment }
+    | { readonly created: false; readonly machine: MachineRecord } {
+    this.requireMachineAuthority(actor);
+    return this.store.transaction(() => {
+      const existing = this.store.getMachineByName(name);
+      if (existing !== null) return { created: false, machine: existing };
+      return { created: true, enrollment: this.persistMachine(name, actor.principal.id) };
+    });
   }
 
   /** Enrolls the trusted local daemon as the owner during boot. */
@@ -3164,11 +3183,31 @@ export class AuthService {
   /**
    * Rotates an existing machine's raw secret: revokes the old token and mints a fresh one.
    * `actorId` attributes the rotation; local-agent boot recovery omits it because that path
-   * acts with owner authority by definition.
+   * acts with owner authority by definition. NO CALLER CHECK: this is the trusted boot path.
+   * A caller-bound rotation goes through {@link rotateEnrolledMachineToken}.
    */
   rotateMachineToken(machine: MachineRecord, actorId?: string): MachineEnrollment {
-    const actor = actorId ?? this.ownerPrincipal.id;
+    return this.rotateMachine(() => machine, actorId ?? this.ownerPrincipal.id);
+  }
+
+  /**
+   * A CALLER'S rotation, by id: the enrolment authority is asked of the caller first, and the
+   * machine is re-resolved inside the rotating transaction, so a stale or forgotten id is
+   * `not_found` and the token revoked is always the one the row references NOW — never one a
+   * caller described.
+   */
+  rotateEnrolledMachineToken(machineId: string, actor: AuthContext): MachineEnrollment {
+    this.requireMachineAuthority(actor);
+    return this.rotateMachine(() => {
+      const machine = this.store.getMachine(machineId);
+      if (machine === null) throw new ServiceError("not_found", "machine not found");
+      return machine;
+    }, actor.principal.id);
+  }
+
+  private rotateMachine(resolve: () => MachineRecord, actor: string): MachineEnrollment {
     const result = this.store.transaction(() => {
+      const machine = resolve();
       const at = this.runtime.now();
       const revoked = this.store.revokeToken(machine.tokenId, at);
       if (revoked.tokens > 0) {
@@ -3189,9 +3228,16 @@ export class AuthService {
       };
     });
     if (this.settleRevocation(result.revoked) > 0) {
-      for (const listener of [...this.revokedListeners]) listener(machine.id, null);
+      for (const listener of [...this.revokedListeners]) listener(result.enrollment.machine.id, null);
     }
     return result.enrollment;
+  }
+
+  /** Minting and withdrawing a machine credential are one unscoped `machines:mint` authority. */
+  private requireMachineAuthority(actor: AuthContext): void {
+    if (!this.allows(actor, "machines:mint") || actor.containerScope !== null) {
+      throw new ServiceError("forbidden", "machines:mint capability required");
+    }
   }
 
   /**
@@ -3216,9 +3262,7 @@ export class AuthService {
    * answer to "who administers the fleet".
    */
   revokeMachine(machineId: string, actor: AuthContext): number {
-    if (!this.allows(actor, "machines:mint") || actor.containerScope !== null) {
-      throw new ServiceError("forbidden", "machines:mint capability required");
-    }
+    this.requireMachineAuthority(actor);
     const machine = this.store.getMachine(machineId);
     if (machine === null) throw new ServiceError("not_found", "machine not found");
     const revoked = this.store.transaction(() => {
@@ -3246,9 +3290,7 @@ export class AuthService {
 
   /** Removes only withdrawn inventory; terminal ownership and history are never torn down. */
   forgetMachine(machineId: string, actor: AuthContext): void {
-    if (!this.allows(actor, "machines:mint") || actor.containerScope !== null) {
-      throw new ServiceError("forbidden", "machines:mint capability required");
-    }
+    this.requireMachineAuthority(actor);
     this.store.transaction(() => {
       const machine = this.store.getMachine(machineId);
       if (machine === null) throw new ServiceError("not_found", "machine not found");
