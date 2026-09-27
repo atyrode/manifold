@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.23.0] - 2026-09-27
+
+### Added
+
+- Installed third-party plugins can declare a release feed, show available updates, and review a whole plugin family before applying it. The review names exact versions and pins, capability changes and retained grants, dependencies, executable halves, data migrations, compatibility and changelogs; increased capability ceilings need explicit consent. Failed precommit updates restore the family's managed data and prior bundles. Known protocol or React-major incompatibilities are held before code runs and can be repaired with a compatible update. Core plugins still update with Manifold, and unpacked plugins with their source tree. The browser protocol is now 45. (#238, #893)
+- A native deployment review can now carry one instance-service bootstrap or update beside the installation that provides it, so a plugin whose own operation serves the service its other operations bind can be installed for the first time, or updated in place, through the existing root-only review and apply. Review resolves the concrete provider pin, its policy and its promoted binding, and shows the prior record and the exact provider workload the approval may stop; apply installs, waits for the owner's own acknowledgement, configures the reviewed policy and starts the provider, stopping nothing else on the machine. Ordinary deployment requests and instance-service configuration are unchanged. (#827, #829)
+- A governed plugin door can now name one container its background work may act in: declaring `containers:read` or `containers:write` with a container target admits the press only when the caller holds that capability there, and every job and schedule the press starts then carries it bound to that container alone, so a plugin's own settled-job wake can open a container door such as a Code or OMP session there and is refused at any other container. Revoking or expiring the pressing credential ends it, work carrying it is never root-class, doors without a container target lend nothing new, and machine owners see an unchanged job request. (#883, #886)
+
+### Fixed
+
+- Changing a machine's service configuration, including the instance-service update a native deployment review applies, now stops only the calls in flight to the services whose policy it changed or removed. A call admitted under a policy the new configuration keeps byte-for-byte, such as a model stream another session is making through an unrelated service, finishes under the policy it was admitted with instead of being cancelled along with every other service call, proxied request, tunnel and instance-service connection on the machine. (#827, #829)
+- An enabled native instance service now recovers after its provider plugin is disabled and enabled again, instead of staying `unavailable` with reason `cancelled` until its configuration revision changed. A plugin disable still revokes the plugin's native installation, and enabling the plugin alone still restarts nothing: the service reports `installation_disabled` until a reviewed deployment or install re-enables the same pinned installation, then starts one replacement job under the unchanged revision, traced as `readmitted` with `cancelReason: plugin_disabled`. Retired, revoked and disabled configurations stay final, and a workload already cancelled for a revoked credential or refused consent keeps that reason when the plugin is then disabled or an operator cancels it, so it is never readmitted. (#854, #855)
+
 ## [0.22.0] - 2026-09-27
 
 ### Breaking Changes
