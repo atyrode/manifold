@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import type { TerminalHostEvent } from "@manifold/protocol";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { FrameReader, FrameTooLargeError, FrameWriter } from "../src/ipc-framing.ts";
 import { TerminalHost, type TerminalHostSession } from "../src/terminal-host.ts";
 import { OomKillWatch } from "../src/oom-kills.ts";
+import { PtyTerminal } from "../src/terminal.ts";
 
 /**
  * The PTY owner's own contracts (issue #278), exercised directly on the seam: which
@@ -520,6 +521,44 @@ test.skipIf(process.platform !== "linux")(
   },
   10_000,
 );
+
+test("restart delivers admitted old-generation output before publishing the new generation", async () => {
+  const host = new TerminalHost({
+    shellCommand: [BASH, "--norc", "-c", "printf ready; read -r _"],
+  });
+  const kill = PtyTerminal.prototype.kill;
+  const intercepted = spyOn(PtyTerminal.prototype, "kill").mockImplementation(function (
+    this: PtyTerminal,
+  ) {
+    // Admit final output at the exact restart/kill boundary, rather than depending on
+    // whether a process signal or a PTY readability callback wins an event-loop turn.
+    const ingest: unknown = Reflect.get(this, "ingest");
+    if (typeof ingest !== "function") throw new Error("PTY output callback unavailable");
+    ingest.call(this, new TextEncoder().encode("old-final"));
+    return kill.call(this);
+  });
+  try {
+    const peer = openPeer(host);
+    peer.session.deliver({ type: "attach" });
+    peer.session.deliver({ type: "create", terminalId: "draining", cols: 80, rows: 24, env: {} });
+    await peer.matching(
+      (event) => event.type === "output" && Buffer.from(event.data, "base64").includes("ready"),
+    );
+    peer.events.length = 0;
+    peer.session.deliver({ type: "terminal_restart", terminalId: "draining" });
+    await peer.next("terminal_restarted");
+    const finalOutputAt = peer.events.findIndex(
+      (event) => event.type === "output" && Buffer.from(event.data, "base64").includes("old-final"),
+    );
+    const restartedAt = peer.events.findIndex((event) => event.type === "terminal_restarted");
+    expect(finalOutputAt).toBeGreaterThanOrEqual(0);
+    expect(restartedAt).toBeGreaterThan(finalOutputAt);
+    expect(peer.events.some((event) => event.type === "exited")).toBe(false);
+  } finally {
+    intercepted.mockRestore();
+    await host.shutdown();
+  }
+});
 
 test("failed restart retains unknown exit evidence across reconnect and repair retries the same terminal", async () => {
   const root = mkdtempSync(join(tmpdir(), "manifold-terminal-restart-failure-"));

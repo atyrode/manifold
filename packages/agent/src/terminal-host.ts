@@ -77,6 +77,11 @@ interface LaunchRecipe {
   readonly cwd?: string;
 }
 
+interface TerminalStartup {
+  terminal: PtyTerminal;
+  publishOutput(): void;
+}
+
 /** Construction inputs for a {@link TerminalHost}. */
 export interface TerminalHostOptions {
   readonly sink?: AgentLogSink;
@@ -485,9 +490,10 @@ export class TerminalHost {
     this.pendingCreates.add(msg.terminalId);
     try {
       const spawned = this.spawnTerminal(msg);
-      const terminal = spawned instanceof PtyTerminal ? spawned : await spawned;
+      const { terminal, publishOutput } = spawned instanceof Promise ? await spawned : spawned;
       this.rememberLaunch(msg, terminal);
       connection.peer.write({ type: "created", terminalId: msg.terminalId });
+      publishOutput();
       this.watchReadiness(msg.terminalId, terminal);
       void this.watchExit(msg.terminalId, terminal);
       this.log("info", "created", { terminalId: msg.terminalId, cols: msg.cols, rows: msg.rows });
@@ -518,10 +524,23 @@ export class TerminalHost {
     msg: CreateCommand,
     recipe?: LaunchRecipe,
     restartCwd?: string,
-  ): PtyTerminal | Promise<PtyTerminal> {
+  ): TerminalStartup | Promise<TerminalStartup> {
     let terminal: PtyTerminal | undefined;
+    // Native admission may yield after the gated process has already written and exited.
+    // Keep its metered chunks until created/restarted establishes this generation's seq
+    // domain. The native output budget bounds this queue; the bytes are already owned by
+    // PtyTerminal, so staging does not copy them or depend on the ring's eviction window.
+    let pending: PtyOutput[] | undefined = [];
+    const publishOutput = (): void => {
+      const staged = pending;
+      pending = undefined;
+      for (const output of staged ?? []) this.onOutput(msg.terminalId, output);
+    };
     const callbacks = {
-      onOutput: (output: PtyOutput) => this.onOutput(msg.terminalId, output),
+      onOutput: (output: PtyOutput) => {
+        if (pending) pending.push(output);
+        else this.onOutput(msg.terminalId, output);
+      },
       onCwd: (cwd: string) => {
         if (!this.restarting.has(msg.terminalId))
           this.transport?.peer.write({ type: "terminal_cwd", terminalId: msg.terminalId, cwd });
@@ -561,7 +580,7 @@ export class TerminalHost {
             await terminal?.kill();
             throw new Error("terminal_runtime_start_interrupted");
           }
-          return terminal;
+          return { terminal, publishOutput };
         } catch (error) {
           if (terminal) {
             await terminal.kill().catch(() => {});
@@ -602,7 +621,7 @@ export class TerminalHost {
       ...(environment ? { environment } : {}),
     });
     this.terminals.set(msg.terminalId, terminal);
-    return terminal;
+    return { terminal, publishOutput };
   }
 
   private async onRestart(
@@ -722,7 +741,8 @@ export class TerminalHost {
         ...(runtime ? { runtime } : { cwd }),
         env: runtime ? create.env : (msg.create?.env ?? create.env),
       };
-      replacement = await this.spawnTerminal(next, recipe, preferred);
+      const started = await this.spawnTerminal(next, recipe, preferred);
+      replacement = started.terminal;
       if (this.stopping || this.cancelledRestarts.has(msg.terminalId)) {
         await replacement.kill();
         throw new Error("restart_interrupted");
@@ -738,6 +758,7 @@ export class TerminalHost {
         ...(observed !== undefined ? { cwd: observed } : {}),
         ...(restartedFallback !== undefined ? { fallback: restartedFallback } : {}),
       });
+      started.publishOutput();
       this.watchReadiness(msg.terminalId, replacement);
       void this.watchExit(msg.terminalId, replacement);
     } catch (error) {
@@ -773,7 +794,6 @@ export class TerminalHost {
   }
 
   private onOutput(terminalId: string, output: PtyOutput): void {
-    if (this.restarting.has(terminalId)) return;
     // Ring + mirror were already updated inside the PtyTerminal. Stream to the transport ONLY
     // while one holds the seat; output produced with no transport stays in ring+mirror and
     // heals on the next hub attach via snapshot semantics (CONTRACTS.md §attach).
