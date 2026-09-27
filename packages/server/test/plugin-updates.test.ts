@@ -31,7 +31,7 @@ afterEach(async () => {
 
 async function fixture() {
   const cwd = mkdtempSync(join(tmpdir(), "manifold-updates-"));
-  let stop: (() => Promise<void>) | undefined;
+  let stop: (() => Promise<void>) | undefined = undefined;
   cleanups.push(async () => {
     try {
       await stop?.();
