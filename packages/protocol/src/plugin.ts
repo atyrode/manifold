@@ -645,6 +645,26 @@ export const CEILING_DATABASE_MAX_BYTES = 4 * 1024 * 1024 * 1024;
  */
 export const MAX_MANIFEST_CAPABILITIES = 16;
 
+/** Publisher order, not a semantic-version guess, chooses the preferred release. */
+export const MAX_PLUGIN_UPDATE_FAMILY = 16;
+export const MAX_PLUGIN_RELEASES = 32;
+export const MAX_PLUGIN_CHANGELOG_BYTES = 64 * 1024;
+export const PluginReleaseSourceSchema = z.string().min(1).max(2048);
+export const PluginReleaseArtifactSchema = z.strictObject({
+  id: PluginIdSchema,
+  url: PluginReleaseSourceSchema,
+  sha256: z.string().regex(/^[a-fA-F0-9]{64}$/),
+});
+export type PluginReleaseArtifact = z.infer<typeof PluginReleaseArtifactSchema>;
+export const PluginReleaseSchema = z.strictObject({
+  version: z.string().min(1).max(32),
+  url: PluginReleaseSourceSchema,
+  sha256: z.string().regex(/^[a-fA-F0-9]{64}$/),
+  family: PluginReleaseArtifactSchema.array().max(MAX_PLUGIN_UPDATE_FAMILY - 1).optional(),
+});
+export const PluginReleaseFeedSchema = PluginReleaseSchema.array().min(1).max(MAX_PLUGIN_RELEASES);
+export type PluginReleaseFeed = z.infer<typeof PluginReleaseFeedSchema>;
+
 export const PluginManifestSchema = z
   .strictObject({
     id: PluginIdSchema,
@@ -727,6 +747,8 @@ export const PluginManifestSchema = z
         changelog: z.string().url().max(512).optional(),
       })
       .optional(),
+    /** Declared release feed; retrieval uses the installer's ordinary source policy. */
+    releases: PluginReleaseSourceSchema.optional(),
   })
   /*
     A PLUGIN DECLARES ITS OWN CAPABILITIES AND NOBODY ELSE'S (ADR 0035).
@@ -1105,6 +1127,120 @@ export const PLUGIN_INSTALL_MODES = ["bundle", "unpacked"] as const;
 export const PluginInstallModeSchema = z.enum(PLUGIN_INSTALL_MODES);
 export type PluginInstallMode = (typeof PLUGIN_INSTALL_MODES)[number];
 
+export const PluginBuildCompatibilitySchema = z.strictObject({
+  status: z.enum(["compatible", "unknown", "incompatible"]),
+  issues: z
+    .strictObject({
+      component: z.string().min(1).max(128),
+      built: z.string().max(128).nullable(),
+      current: z.string().min(1).max(128),
+      kind: z.enum(["unknown", "incompatible"]),
+    })
+    .array()
+    .max(16),
+});
+export type PluginBuildCompatibility = z.infer<typeof PluginBuildCompatibilitySchema>;
+
+/** A bounded server observation, never an authorization to install the discovered code. */
+export const PluginUpdateStatusSchema = z.discriminatedUnion("state", [
+  z.strictObject({ state: z.enum(["unchecked", "checking"]) }),
+  z.strictObject({
+    state: z.literal("current"),
+    checkedAt: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    state: z.literal("available"),
+    checkedAt: z.number().int().nonnegative(),
+    version: z.string().min(1).max(32),
+    family: PluginIdSchema.array().min(1).max(MAX_PLUGIN_UPDATE_FAMILY),
+  }),
+  z.strictObject({
+    state: z.literal("failed"),
+    checkedAt: z.number().int().nonnegative(),
+    message: z.string().min(1).max(1000),
+  }),
+]);
+export type PluginUpdateStatus = z.infer<typeof PluginUpdateStatusSchema>;
+
+export const PluginUpdateDescriptionSchema = z.strictObject({
+  version: z.string().min(1).max(32),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
+  source: PluginReleaseSourceSchema,
+  capabilities: AuthoredCapSchema.array().max(MAX_MANIFEST_CAPABILITIES),
+  dependencies: PluginDependencyMapSchema,
+  entry: PluginEntrySchema,
+  dataVersion: PluginDataVersionSchema.nullable(),
+  builtAgainst: z.record(z.string(), z.string()).optional(),
+});
+export const PluginUpdateMemberSchema = z.strictObject({
+  id: PluginIdSchema,
+  title: z.string().min(1).max(128),
+  current: PluginUpdateDescriptionSchema.nullable(),
+  candidate: PluginUpdateDescriptionSchema,
+  enabled: z.boolean(),
+  hardened: z.boolean(),
+  storedDataVersion: PluginDataVersionSchema.nullable(),
+  capabilitiesAdded: AuthoredCapSchema.array().max(MAX_MANIFEST_CAPABILITIES),
+  capabilitiesRemoved: AuthoredCapSchema.array().max(MAX_MANIFEST_CAPABILITIES),
+  grantedCaps: AuthoredCapSchema.array(),
+  migrationRequired: z.boolean(),
+  compatibility: PluginBuildCompatibilitySchema,
+  changelog: z
+    .strictObject({
+      text: z.string().max(MAX_PLUGIN_CHANGELOG_BYTES),
+      source: z.string().min(1).max(2048),
+    })
+    .nullable(),
+});
+export type PluginUpdateMember = z.infer<typeof PluginUpdateMemberSchema>;
+export const PluginUpdateReviewSchema = z.strictObject({
+  digest: z.string().regex(/^[a-f0-9]{64}$/),
+  rootId: PluginIdSchema,
+  createdAt: z.number().int().nonnegative(),
+  expiresAt: z.number().int().nonnegative(),
+  members: PluginUpdateMemberSchema.array().min(1).max(MAX_PLUGIN_UPDATE_FAMILY),
+  blockers: z
+    .strictObject({ id: PluginIdSchema, reason: z.string().min(1).max(1000) })
+    .array()
+    .max(MAX_PLUGIN_UPDATE_FAMILY * 4),
+});
+export type PluginUpdateReview = z.infer<typeof PluginUpdateReviewSchema>;
+export const PluginUpdateReviewRequestSchema = z.strictObject({ id: PluginIdSchema });
+export const PluginUpdateReviewResultSchema = z.discriminatedUnion("state", [
+  z.strictObject({
+    state: z.literal("current"),
+    rootId: PluginIdSchema,
+    checkedAt: z.number().int().nonnegative(),
+  }),
+  z.strictObject({ state: z.literal("review"), review: PluginUpdateReviewSchema }),
+]);
+export type PluginUpdateReviewResult = z.infer<typeof PluginUpdateReviewResultSchema>;
+export const PluginUpdateApplyRequestSchema = z.strictObject({
+  digest: z.string().regex(/^[a-f0-9]{64}$/),
+  /** Exact ceiling expansions acknowledged per member; withheld old grants stay withheld. */
+  consent: z
+    .strictObject({
+      id: PluginIdSchema,
+      capabilities: AuthoredCapSchema.array().max(MAX_MANIFEST_CAPABILITIES),
+    })
+    .array()
+    .max(MAX_PLUGIN_UPDATE_FAMILY),
+});
+export type PluginUpdateApplyRequest = z.infer<typeof PluginUpdateApplyRequestSchema>;
+export const PluginUpdateApplyResultSchema = z.strictObject({
+  rootId: PluginIdSchema,
+  installed: z
+    .strictObject({
+      id: PluginIdSchema,
+      version: z.string().min(1).max(32),
+      sha256: z.string().regex(/^[a-f0-9]{64}$/),
+    })
+    .array()
+    .min(1)
+    .max(MAX_PLUGIN_UPDATE_FAMILY),
+});
+export type PluginUpdateApplyResult = z.infer<typeof PluginUpdateApplyResultSchema>;
+
 /**
  * What an installer CONSENTED TO, on the row (ADR 0016 §5): the artifact pinned by hash, where
  * it came from as the installer spelled it, and the capability set granted — the roster is
@@ -1124,6 +1260,8 @@ export const PluginInstallSchema = z.strictObject({
   hardened: z.boolean().optional(),
   /** Shared React and floor-package versions used to build the bundle. */
   builtAgainst: z.record(z.string(), z.string()).optional(),
+  compatibility: PluginBuildCompatibilitySchema.optional(),
+  update: PluginUpdateStatusSchema.optional(),
   sha256: z.string().length(64),
   /** The url or path as given, so an operator can tell where a stranger's code came from. */
   source: z.string().max(2048),
@@ -1478,6 +1616,8 @@ export function pluginVocabulary(): Record<string, unknown> {
     installRefusals: PLUGIN_INSTALL_REFUSALS,
     installModes: PLUGIN_INSTALL_MODES,
     install: z.toJSONSchema(PluginInstallSchema),
+    releaseFeed: z.toJSONSchema(PluginReleaseFeedSchema),
+    updateReview: z.toJSONSchema(PluginUpdateReviewSchema),
     denialRules: ACTION_DENIAL_RULES,
     actionScopes: ACTION_SCOPES,
     /*
