@@ -259,6 +259,7 @@ test("a start that fails after binding closes its socket before handing the dire
   const vacated = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response(null) });
   const port = vacated.port;
   await vacated.stop(true);
+  if (port === undefined) throw new Error("fixture did not bind a TCP port");
   await expect(hub(dataDir, [], { port })).rejects.toMatchObject({ code: "EEXIST" });
   expect(writerRecord(dataDir)).toBe("1:active");
   (await acquireWriterLock(dataDir, { waitMs: 0 })).release();
