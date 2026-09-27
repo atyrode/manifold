@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LogEvent } from "@manifold/protocol";
@@ -15,6 +15,7 @@ import {
 } from "../src/db.ts";
 import type { Logger } from "../src/log.ts";
 import { startServer, type RunningServer } from "../src/main.ts";
+import { AUTHORED_DIR } from "../src/plugin-installs.ts";
 
 const OWNER_KEY = "a".repeat(64);
 const directories: string[] = [];
@@ -61,16 +62,19 @@ function recordingLogger(lines: LogLine[], onLine?: (line: LogLine) => void): Lo
 function hub(
   dataDir: string,
   lines: LogLine[],
-  onLine?: (line: LogLine) => void,
+  options: {
+    readonly onLine?: (line: LogLine) => void;
+    readonly port?: number | undefined;
+  } = {},
 ): Promise<RunningServer> {
   return startServer({
     config: loadConfig({
-      MANIFOLD_PORT: "0",
+      MANIFOLD_PORT: String(options.port ?? 0),
       MANIFOLD_DATA_DIR: dataDir,
       MANIFOLD_OWNER_KEY: OWNER_KEY,
       MANIFOLD_SPAWN_AGENT: "0",
     }),
-    logger: recordingLogger(lines, onLine),
+    logger: recordingLogger(lines, options.onLine),
     announce: false,
   });
 }
@@ -170,8 +174,10 @@ test("a successor on the same data directory becomes the writer only after its p
     expect((await createContainer(first, "before handover")).status).toBe(200);
     let secondReady = false;
     const waiting = Promise.withResolvers<void>();
-    const starting = hub(dataDir, secondLines, (line) => {
-      if (line.evt === "writer_waiting") waiting.resolve();
+    const starting = hub(dataDir, secondLines, {
+      onLine: (line) => {
+        if (line.evt === "writer_waiting") waiting.resolve();
+      },
     }).then((server) => {
       secondReady = true;
       second = server;
@@ -200,6 +206,60 @@ test("a successor on the same data directory becomes the writer only after its p
   } finally {
     await first.stop();
     await second?.stop();
+  }
+  expect(writerRecord(dataDir)).toBe("2:sealed");
+});
+
+test("a start that cannot bind its port hands the directory straight on, its epoch left active", async () => {
+  const dataDir = directory();
+  const occupant = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response(null) });
+  let successor: RunningServer | undefined;
+  try {
+    await expect(hub(dataDir, [], { port: occupant.port })).rejects.toMatchObject({
+      code: "EADDRINUSE",
+    });
+    // It failed as the writer: the epoch it claimed is on record, and was never sealed.
+    expect(writerRecord(dataDir)).toBe("1:active");
+    // Its lock is already free: no wait, and nothing left for a collector to close.
+    (await acquireWriterLock(dataDir, { waitMs: 0 })).release();
+
+    const lines: LogLine[] = [];
+    successor = await hub(dataDir, lines);
+    expect(lines.find((line) => line.evt === "writer_claimed")).toEqual({
+      evt: "writer_claimed",
+      level: "warn",
+      fields: { epoch: 2, previousEpoch: 1, previousState: "active" },
+    });
+    expect((await createContainer(successor, "after a failed start")).status).toBe(200);
+    expect(await containerNames(successor)).toContain("after a failed start");
+  } finally {
+    await successor?.stop();
+    await occupant.stop(true);
+  }
+  expect(writerRecord(dataDir)).toBe("2:sealed");
+});
+
+test("a start that fails after binding closes its socket before handing the directory on", async () => {
+  const dataDir = directory();
+  // A file where the unpacked-plugin directory belongs: the authored watch, a start's last
+  // step, refuses it once the socket is already bound.
+  const authored = join(dataDir, AUTHORED_DIR);
+  writeFileSync(authored, "");
+  const vacated = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response(null) });
+  const port = vacated.port;
+  await vacated.stop(true);
+  await expect(hub(dataDir, [], { port })).rejects.toMatchObject({ code: "EEXIST" });
+  expect(writerRecord(dataDir)).toBe("1:active");
+  (await acquireWriterLock(dataDir, { waitMs: 0 })).release();
+
+  rmSync(authored);
+  // The successor binds the very port the failed start had bound, on the same directory.
+  const successor = await hub(dataDir, [], { port });
+  try {
+    expect(successor.port).toBe(port);
+    expect((await createContainer(successor, "on the same port")).status).toBe(200);
+  } finally {
+    await successor.stop();
   }
   expect(writerRecord(dataDir)).toBe("2:sealed");
 });
