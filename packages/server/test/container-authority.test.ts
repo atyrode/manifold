@@ -130,7 +130,13 @@ function drain(wake: { current: Wake }): ServerPluginDef {
       version: "1.0.0",
       title: DRAIN,
       description: "Posts a governed job and opens a session from its wake.",
-      capabilities: ["machines:run", "containers:read", "containers:write", "services:configure"],
+      capabilities: [
+        "machines:read",
+        "machines:run",
+        "containers:read",
+        "containers:write",
+        "services:configure",
+      ],
       dependencies: { [CODE]: { type: "required" }, [INDEX]: { type: "required" } },
       contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
       machine: machineHalf(DRAIN),
@@ -140,8 +146,9 @@ function drain(wake: { current: Wake }): ServerPluginDef {
         name: "start",
         title: "Start, handing the profile's container to the run",
         caps: ["machines:run", "containers:write"],
-        // Lent only to a presser that holds it: the owner, in the refresh regression.
-        delegates: ["services:configure"],
+        // Babel's drain lends its run the machine read a session posting makes; the service
+        // configuration is lent only to a presser that holds it (the refresh regression).
+        delegates: ["machines:read", "services:configure"],
         requirements: [
           { cap: "machines:run", target: ["operation"] },
           { cap: "containers:write", target: ["profile"] },
@@ -178,13 +185,24 @@ function drain(wake: { current: Wake }): ServerPluginDef {
 function code(wake: { current: Wake }): ServerPluginDef {
   const Profile = z.strictObject({ profile: ContainerRefSchema });
   const Machine = z.strictObject({ machineId: z.string() });
+  const Observe = z.strictObject({
+    machineId: z.string(),
+    profile: ContainerRefSchema,
+    other: ContainerRefSchema,
+  });
   return {
     manifest: {
       id: CODE,
       version: "1.0.0",
       title: CODE,
       description: "Starts a session in a container.",
-      capabilities: ["machines:run", "containers:write", "services:configure"],
+      capabilities: [
+        "machines:read",
+        "machines:run",
+        "jobs:read",
+        "containers:write",
+        "services:configure",
+      ],
       dependencies: { [INDEX]: { type: "required" } },
       contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
       machine: machineHalf(CODE),
@@ -214,6 +232,15 @@ function code(wake: { current: Wake }): ServerPluginDef {
         scope: "container",
         input: z.strictObject({ machineId: z.string(), jobId: z.string() }),
         result: z.strictObject({}),
+      }),
+      defineAction({
+        name: "observe",
+        title: "OMP's session preflight: the caller at the machine, then at the container",
+        caps: ["containers:write"],
+        delegates: ["machines:read", "machines:run", "jobs:read"],
+        scope: "container",
+        input: Observe,
+        result: z.unknown(),
       }),
       defineAction({
         name: "configuration",
@@ -266,6 +293,37 @@ function code(wake: { current: Wake }): ServerPluginDef {
           outputs: [],
         });
         return {};
+      },
+      /*
+        atyrode.omp's `observeNative` then `authorizeContainer`, as `runSession` and
+        `reviewSession` reach them: `callerCapabilityRefusal` asks `hasCap(ctx.auth.caps, cap)`
+        and `ctx.auth.allows(cap, ref)` at the MACHINE, the native describe runs on the door's
+        bridge, and the same question is then asked at the container the session writes.
+      */
+      observe: async (ctx: ActionCtx, args: z.infer<typeof Observe>) => {
+        const machine = { kind: "machine" as const, machineId: args.machineId };
+        const refusal = (cap: "machines:run" | "containers:write", ref: ManifoldRef) =>
+          hasCap(ctx.auth.caps, cap) && ctx.auth.allows(cap, ref)
+            ? null
+            : `caller_${cap.replace(":", "_")}_required`;
+        const atMachine = refusal("machines:run", machine);
+        if (atMachine !== null) return { refused: atMachine };
+        const description = await ctx.jobs.describe({
+          machineId: args.machineId,
+          pluginId: ctx.pluginId,
+        });
+        if (
+          ctx.outsideScope(args.profile.containerId) !== null ||
+          refusal("containers:write", args.profile) !== null
+        )
+          return { refused: "scope_refused" };
+        return {
+          connected: description.connected,
+          other: {
+            allows: ctx.auth.allows("containers:write", args.other),
+            outside: ctx.outsideScope(args.other.containerId) !== null,
+          },
+        };
       },
       configuration: async (ctx: ActionCtx, args: z.infer<typeof Machine>) => {
         let read = true;
@@ -404,7 +462,7 @@ async function fixture(): Promise<Fixture> {
       const minted = auth.mintToken(
         {
           principal: { name, kind: "human" },
-          caps: ["machines:run", "containers:read", "containers:write"],
+          caps: ["machines:read", "machines:run", "containers:read", "containers:write"],
         },
         root,
       );
@@ -549,7 +607,7 @@ test("the wake of a job from that dispatch holds the container's authority there
     const job = f.service.jobs.get("run");
     expect(job?.request.credential).toEqual({
       ...f.auth.credentialReference(operator),
-      caps: ["machines:run"],
+      caps: ["machines:read", "machines:run"],
     });
     const answers = await wakeAnswers(f, "run", [
       session(HOME),
@@ -569,7 +627,7 @@ test("the wake of a job from that dispatch holds the container's authority there
       {
         ok: true,
         result: {
-          caps: ["containers:write", "machines:run"],
+          caps: ["containers:write", "machines:read", "machines:run"],
           // Work bounded to a container is never workspace root, whoever pressed.
           isRoot: false,
           at: [
@@ -599,6 +657,31 @@ test("the wake of a job from that dispatch holds the container's authority there
     await posted.promise;
     expect(f.service.jobs.get("run-3")?.containerGrants).toEqual([
       { containerId: HOME, caps: ["containers:write"] },
+    ]);
+  } finally {
+    f.store.close();
+  }
+});
+
+test("a confined wake still answers machine questions from its flat caps: OMP's session preflight passes at the named container", async () => {
+  const f = await fixture();
+  try {
+    const operator = f.operator();
+    expect((await f.press(operator, "start", { profile: container(HOME), jobId: "run" })).ok).toBe(
+      true,
+    );
+    const observe = (profile: string) =>
+      [
+        "observe",
+        { machineId: f.machineId, profile: container(profile), other: container(OTHER) },
+      ] as const;
+    expect(await wakeAnswers(f, "run", [observe(HOME), observe(OTHER)])).toEqual([
+      // The machine question answers from the flat `machines:run` and the grant rows, as it
+      // did before the door opened; only the container question is confined to HOME.
+      { ok: true, result: { connected: true, other: { allows: false, outside: true } } },
+      // The same preflight for another container passes the machine question and is refused
+      // at the container one, as `authorizeContainer` refuses it.
+      { ok: false, refusal: `refused: ${DRAIN} -> ${CODE}.observe (scope_refused)` },
     ]);
   } finally {
     f.store.close();

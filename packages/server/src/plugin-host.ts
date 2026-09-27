@@ -4423,12 +4423,17 @@ export class PluginHost {
         get isRoot(): boolean {
           return authService.holdsRoot(auth);
         },
-        // A dispatch admitted on carried authority is graded as scoped to its container, the
-        // way a container-scoped token is: its anchor is that container and nothing outside it
-        // answers (ADR 0051).
+        // A dispatch admitted on carried authority answers CONTAINER questions as if scoped to
+        // its container — a container capability, or any node inside a container — so nothing
+        // in another container answers (ADR 0051). Every other question (a machine, operation,
+        // job or service node; a non-container capability at the anchor) answers from the flat
+        // caps and the grant rows exactly as it did before this door was opened.
         allows: (cap, ref) => {
           const graded =
-            carriedContainer === null ? auth : { ...auth, containerScope: carriedContainer };
+            carriedContainer !== null &&
+            (isContainerGrantCap(cap) || (ref !== undefined && "containerId" in ref))
+              ? { ...auth, containerScope: carriedContainer }
+              : auth;
           return ref === undefined
             ? this.authService.allows(graded, cap)
             : this.authService.allowsRef(graded, cap, ref);
