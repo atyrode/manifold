@@ -4720,10 +4720,14 @@ export class PluginHost {
    * so a refused attempt is as attributable as a committed one.
    */
   private machineBridge(
-    authority: (cap: "containers:read" | "machines:mint", workspace: boolean) => AuthContext,
+    authority: (
+      cap: "containers:read" | "machines:mint" | "machines:read",
+      workspace: boolean,
+      node?: ManifoldRef,
+    ) => AuthContext,
     target: (machineId: string) => void,
   ): {
-    readonly machines: Pick<ActionMachines, "inventory" | "drain">;
+    readonly machines: Pick<ActionMachines, "inventory" | "drain" | "repository">;
     readonly identity: Pick<
       IdentityDoor,
       "enrollMachine" | "rotateMachineToken" | "revokeMachine" | "forgetMachine"
@@ -4731,6 +4735,13 @@ export class PluginHost {
   } {
     return {
       machines: {
+        repository: async (machineId, path) => {
+          const allowed = identityCall(() =>
+            authority("machines:read", false, { kind: "machine", machineId }),
+          );
+          if (!allowed.ok) return { ok: false, reason: allowed.message };
+          return this.machines.repository(machineId, path);
+        },
         inventory: () =>
           identityCall(() => {
             authority("containers:read", false);
@@ -5203,18 +5214,19 @@ export class PluginHost {
     let guestAdmitted = false;
     const actionStack = [...(options.origin?.stack ?? []), pluginId];
     /*
-      THE FLEET BRIDGE'S AUTHORITY (#259), asked at every inventory, drain and machine-credential
-      call rather than frozen here: this dispatch is still open and its door still assembled,
-      enabled (or a cleanup carve-out) and not being replaced; the capability is inside this
-      door's NATIVE ceiling — its declared caps and, for an installation, the installer's grant —
+      THE FLEET BRIDGE'S AUTHORITY (#259, #897), asked at every inventory, repository, drain and
+      machine-credential call rather than frozen here: this dispatch is still open and its door
+      still assembled, enabled (or a cleanup carve-out) and not being replaced; the capability
+      is inside this door's NATIVE ceiling — its declared caps and the current installation grant —
       not merely the caller's; and the caller's credential is live and still holds it here.
       `ctx.auth.allows` answers the caller's question alone and is NOT that ceiling, so a handler
       whose door declares nothing reaches no machine however much its caller holds.
     */
     let machineBridgeOpen = true;
     const machineAuthority = (
-      cap: "containers:read" | "machines:mint",
+      cap: "containers:read" | "machines:mint" | "machines:read",
       workspace: boolean,
+      node?: ManifoldRef,
     ): AuthContext => {
       if (
         !machineBridgeOpen ||
@@ -5239,7 +5251,9 @@ export class PluginHost {
       if (
         live === null ||
         graded === null ||
-        !this.authService.allows(graded, cap) ||
+        !(node === undefined
+          ? this.authService.allows(graded, cap)
+          : this.authService.allowsRef(graded, cap, node)) ||
         (workspace && live.containerScope !== null)
       )
         throw new ServiceError("forbidden", `${cap} capability required`);
@@ -5393,7 +5407,6 @@ export class PluginHost {
       machines: {
         isOnline: (machineId) => this.machines.isOnline(machineId),
         getTerminalExecution: (machineId) => this.machines.getTerminalExecution(machineId),
-        repository: (machineId, path) => this.machines.repository(machineId, path),
         ...machineBridge.machines,
       },
       placement: this.placement,

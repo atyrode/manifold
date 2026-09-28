@@ -2104,6 +2104,18 @@ origin. The agent's probe is bounded at one second per git invocation, runs with
 cached on the host for 60 s over at most 4096 paths. The door traces `opaque`: the act and the
 machine target enter the ledger, the folder does not.
 
+The native `ctx.machines.repository(machineId, path)` and public kit
+`ctx.machines.repository({ machineId, path })` share the live fleet bridge guard (#897).
+Before enrollment or observation, each use verifies the dispatch is still active, the same
+action is assembled and enabled (or a cleanup action), and the plugin is not being replaced.
+`machines:read` must be within the action's declared `caps` plus `delegates` and its current
+installation grant. The caller's credential is restored at use and evaluated at the requested
+machine through the grant waterfall, not a flat issued-cap or root-anchor veto. Machine-only
+administered grants remain effective; container scope, expiry, revocation and machine denials
+remain restrictive. An authority refusal is `{ ok: false, reason }` with no machine/path
+existence or observation metadata. The existing gateway still owns enrollment, online state,
+protocol compatibility, bounded transport and validated replies.
+
 A machine summary now carries an optional **`color`**, derived server-side by `identityColorFor`
 over the shared `IDENTITY_COLORS` palette — both exported from `@manifold/protocol`
 (`packages/protocol/src/principal.ts`), with the web layer re-exporting the palette rather than

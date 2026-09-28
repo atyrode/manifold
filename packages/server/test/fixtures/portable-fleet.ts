@@ -1,8 +1,8 @@
 import type { AnyActionDef, PluginStorage } from "@manifold/plugin";
-import { defineServerPlugin } from "@manifold/plugin-kit/server";
+import { defineServerPlugin, type GuestCtx } from "@manifold/plugin-kit/server";
 import type { PluginManifest } from "@manifold/protocol";
 import { z } from "zod";
-import type { ServerPluginDef } from "../../src/plugin-host.ts";
+import type { ActionCtx, ServerPluginDef } from "../../src/plugin-host.ts";
 
 /** The probe forwards opaque bridge answers; both synchronous and remote ports fit. */
 interface ProbeCtx {
@@ -28,7 +28,47 @@ const manifest: PluginManifest = {
   entry: { server: true },
 };
 
+const repositoryInput = z.strictObject({
+  machineId: z.string(),
+  path: z.string(),
+  wait: z.boolean().optional(),
+});
+type RepositoryArgs = z.infer<typeof repositoryInput>;
+
+async function repositoryBarrier(ctx: Pick<ProbeCtx, "storage">, args: RepositoryArgs) {
+  if (!args.wait) return;
+  await ctx.storage.set("repository-entered", "yes");
+  // The parent releases durable state over IPC; its fake clock cannot drive this child.
+  while ((await ctx.storage.get("repository-release")) !== "yes") await Bun.sleep(1);
+}
+
+async function nativeRepository(ctx: ActionCtx, args: RepositoryArgs) {
+  await repositoryBarrier(ctx, args);
+  return ctx.machines.repository(args.machineId, args.path);
+}
+
+async function guestRepository(ctx: GuestCtx, args: RepositoryArgs) {
+  await repositoryBarrier(ctx, args);
+  return ctx.machines.repository({ machineId: args.machineId, path: args.path });
+}
+
 const actions: readonly AnyActionDef[] = [
+  {
+    name: "bareRepository",
+    title: "Undeclared repository read",
+    caps: [],
+    input: repositoryInput,
+    result: z.unknown(),
+  },
+  {
+    name: "repository",
+    title: "Delegated repository read",
+    caps: [],
+    delegates: ["machines:read"],
+    scope: "container",
+    input: repositoryInput,
+    result: z.unknown(),
+  },
   {
     name: "bare",
     title: "Undeclared enrollment",
@@ -73,6 +113,8 @@ export const portableFleetProbe = {
   manifest,
   actions,
   handlers: {
+    bareRepository: nativeRepository,
+    repository: nativeRepository,
     bare: async (ctx: ProbeCtx, args: { name: string }) =>
       await ctx.identity.enrollMachine(args.name),
     enroll: async (ctx: ProbeCtx, args: { name: string }) =>
@@ -91,5 +133,12 @@ export const portableFleetProbe = {
   },
 } satisfies ServerPluginDef;
 
-// Inert when imported by the native test; the same declaration serves the compiled child.
-defineServerPlugin(portableFleetProbe);
+// Each public surface keeps its own call shape: native takes two arguments, guest one query.
+defineServerPlugin({
+  ...portableFleetProbe,
+  handlers: {
+    ...portableFleetProbe.handlers,
+    bareRepository: guestRepository,
+    repository: guestRepository,
+  },
+});
