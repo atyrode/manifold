@@ -132,6 +132,7 @@ test
         },
       };
       const request = { ...immutable, requestDigest: jobDigest(immutable) };
+      const issuedAt = Date.now();
       const signed = {
         permitId: "unused-permit",
         jobId: request.jobId,
@@ -140,8 +141,8 @@ test
         ownerGeneration: owner.identity.generation,
         decisionId: "decision",
         policyRevision: "revision",
-        issuedAt: mode === "expired" ? 1 : Date.now(),
-        expiresAt: mode === "expired" ? 2 : Date.now() + 30000,
+        issuedAt: mode === "expired" ? 1 : issuedAt,
+        expiresAt: mode === "expired" ? 2 : issuedAt + 30000,
       };
       const permit = {
         ...signed,
@@ -210,13 +211,14 @@ test
       owner.attach(receive);
       await owner.execute({ type: "drain", draining: false });
       events.length = 0;
+      const renewedAt = Date.now();
       // A newly signed, currently valid permit cannot undo an already proved empty identity.
       const renewed = {
         ...signed,
         permitId: "renewed-permit",
         ownerGeneration: owner.identity.generation,
-        issuedAt: Date.now(),
-        expiresAt: Date.now() + 30000,
+        issuedAt: renewedAt,
+        expiresAt: renewedAt + 30000,
       };
       await owner.execute({
         type: "start",
@@ -2541,6 +2543,7 @@ async function reconfiguredServiceOwner() {
           traceId: "service-reconfiguration",
         };
         const request = { ...body, requestDigest: jobDigest(body) };
+        const issuedAt = Date.now();
         const permit = {
           permitId: request.jobId,
           jobId: request.jobId,
@@ -2549,8 +2552,8 @@ async function reconfiguredServiceOwner() {
           ownerGeneration: owner.identity.generation,
           decisionId: "decision",
           policyRevision: "revision",
-          issuedAt: Date.now(),
-          expiresAt: Date.now() + 30_000,
+          issuedAt,
+          expiresAt: issuedAt + 30_000,
         };
         await owner.execute({
           type: "start",
@@ -2889,6 +2892,9 @@ async function resourceServiceOwner(
         traceId: "resource-service",
       };
       const request = { ...body, requestDigest: jobDigest(body) };
+      // One clock read: a millisecond tick between two reads signs a 30001 ms permit,
+      // which the owner refuses as start_permit_refused before readiness is checked.
+      const issuedAt = Date.now();
       const signed = {
         permitId: request.jobId,
         jobId: request.jobId,
@@ -2897,8 +2903,8 @@ async function resourceServiceOwner(
         ownerGeneration: owner.identity.generation,
         decisionId: "decision",
         policyRevision: "revision",
-        issuedAt: Date.now(),
-        expiresAt: Date.now() + 30000,
+        issuedAt,
+        expiresAt: issuedAt + 30000,
       };
       await owner.execute({
         type: "start",
