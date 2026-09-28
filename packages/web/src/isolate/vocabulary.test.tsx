@@ -2,6 +2,12 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { compilePlugin } from "@manifold/plugin-kit/pack";
+import {
+  PLUGIN_BUNDLE_WEB_WORKER_FILE,
+  PluginBundleSchema,
+  PluginManifestSchema,
+} from "@manifold/protocol";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Browser } from "../../../../scripts/cdp.ts";
 import { VocabularyRenderer } from "./vocabulary.tsx";
@@ -23,43 +29,43 @@ test("a keyed Worker field keeps its DOM, focus and pending edit as root sibling
   let server: Bun.Server<undefined> | undefined;
   try {
     const entry = join(scratch, "fixture.js");
-    const worker = join(scratch, "worker.js");
+    const author = join(scratch, "web.js");
     const output = join(scratch, "dist");
     await Bun.write(
-      worker,
+      author,
       `
-      import { createElement, Fragment } from ${JSON.stringify(Bun.resolveSync("react", import.meta.dir))};
-      import { FrameModeProvider, Input, Text } from ${JSON.stringify(Bun.resolveSync("@manifold/ui/frames", import.meta.dir))};
-      import { createUiRoot } from ${JSON.stringify(resolve(import.meta.dir, "../../../plugin-kit/src/frame-root.ts"))};
-      let pending;
-      const calls = [];
-      const root = createUiRoot({
-        commit: tree => postMessage({ id: pending, tree }),
-        fault: error => postMessage({ id: pending, error: String(error) }),
-        report: error => postMessage({ id: pending, error: String(error) }),
-      });
-      function Form({ before, after, visible = true, value = "server" }) {
+      import { createElement, Fragment } from "react";
+      import { Input, Text } from "@manifold/ui";
+      import { defineWebPlugin } from ${JSON.stringify(Bun.resolveSync("@manifold/plugin-kit/web", import.meta.dir))};
+      function Form({ arg = {}, host }) {
+        const { before, after, visible = true, value = "server" } = arg;
         return createElement(Fragment, null,
           before ? createElement(Text, { key: "before", "data-testid": "before" }, "Before") : null,
           visible ? createElement(Input, {
             key: "field", label: "Name", value,
-            onChange: edited => calls.push(edited),
+            onChange: edited => { void host.client.action("example.frame.edit", { value: edited }); },
           }) : null,
           after ? createElement(Text, { key: "after", "data-testid": "after" }, "After") : null);
       }
-      onmessage = ({ data }) => {
-        if (data.op === "render") {
-          pending = data.id;
-          root.render(createElement(FrameModeProvider, null, createElement(Form, data.props)));
-        } else if (data.op === "event") {
-          const refusal = root.event(data.event, data.payload);
-          postMessage({ id: data.id, refusal, calls });
-        } else {
-          postMessage({ id: data.id, calls });
-        }
-      };
+      export default defineWebPlugin({ id: "example.frame", panels: { main: Form } });
       `,
     );
+    const compiled = await compilePlugin(scratch, {
+      source: {
+        manifest: PluginManifestSchema.parse({
+          id: "example.frame",
+          title: "Root identity fixture",
+          version: "1.0.0",
+          description: "Exercises keyed root fields through the packed portable Worker.",
+          capabilities: [],
+          contributes: { panels: [{ id: "main", title: "Form" }] },
+          entry: { web: "web.js", worker: true },
+        }),
+        web: author,
+      },
+    });
+    const bundle = PluginBundleSchema.parse(JSON.parse(new TextDecoder().decode(compiled.bytes)));
+    const workerSource = Buffer.from(bundle.files[PLUGIN_BUNDLE_WEB_WORKER_FILE]!, "base64");
     await Bun.write(
       entry,
       `
@@ -69,20 +75,44 @@ test("a keyed Worker field keeps its DOM, focus and pending edit as root sibling
       import { VocabularyRenderer } from ${JSON.stringify(resolve(import.meta.dir, "vocabulary.tsx"))};
       const worker = new Worker("/worker.js", { type: "module" });
       const root = createRoot(document.getElementById("root"));
-      const pending = new Map();
-      let nextId = 0, inputEvent;
-      worker.onmessage = ({ data }) => {
-        const request = pending.get(data.id);
-        pending.delete(data.id);
-        if (data.error) request.reject(new Error(data.error));
-        else request.resolve(data);
+      const principal = { id: "viewer", kind: "human", name: "Viewer", color: "#74c0fc" };
+      const context = {
+        principal, caps: [], containerId: null,
+        topics: { index: [], terminals: [], attendance: [], machines: [] },
+        status: "open", hidden: false, canAuthor: false,
       };
-      function ask(message) {
-        const id = ++nextId;
-        const deferred = Promise.withResolvers();
-        pending.set(id, deferred);
-        worker.postMessage({ ...message, id });
-        return deferred.promise;
+      const init = { t: "init", pluginId: "example.frame", principal, caps: [], containerId: null };
+      const calls = [], barriers = [], errors = [];
+      let mounted = false, inputEvent, pendingPaint;
+      worker.addEventListener("error", event => errors.push(event.message));
+      worker.onmessage = ({ data: frame }) => {
+        if (frame.t === "ready") barriers.shift()?.();
+        else if (frame.t === "render") {
+          inputEvent = fieldEvent(frame.tree);
+          flushSync(() => root.render(createElement(VocabularyRenderer, {
+            tree: frame.tree,
+            onEvent: (event, payload) => worker.postMessage({ t: "event", instance: "form", event, payload }),
+          })));
+          pendingPaint?.resolve();
+          pendingPaint = null;
+        } else if (frame.t === "call") {
+          if (frame.method === "action" && frame.args[0] === "example.frame.edit") {
+            calls.push(frame.args[1].value);
+            worker.postMessage({ t: "reply", id: frame.id, ok: true, result: { ok: true, result: {} } });
+          } else errors.push("Unexpected host call: " + frame.method);
+        } else if (frame.t === "fault") {
+          errors.push(frame.error);
+          pendingPaint?.reject(new Error(frame.error));
+          pendingPaint = null;
+        }
+      };
+      async function settle() {
+        const barrier = Promise.withResolvers();
+        barriers.push(barrier.resolve);
+        // A ready reply fences all preceding event effects over the real Worker port.
+        worker.postMessage(init);
+        await barrier.promise;
+        if (errors.length) throw new Error(errors.join("; "));
       }
       function fieldEvent(node) {
         if (node.type === "input") return node.event;
@@ -90,22 +120,33 @@ test("a keyed Worker field keeps its DOM, focus and pending edit as root sibling
       }
       window.frameFixture = {
         async paint(props) {
-          const { tree } = await ask({ op: "render", props });
-          inputEvent = fieldEvent(tree);
-          flushSync(() => root.render(createElement(VocabularyRenderer, {
-            tree,
-            onEvent: (event, payload) => { void ask({ op: "event", event, payload }); },
-          })));
+          await settle();
+          const painted = Promise.withResolvers();
+          pendingPaint = painted;
+          worker.postMessage(mounted
+            ? { t: "context", instance: "form", context, arg: props }
+            : { t: "mount", instance: "form", panel: "main", kind: "panel", context, arg: props });
+          mounted = true;
+          await painted.promise;
         },
         inputEvent: () => inputEvent,
-        deliver: (event, payload) => ask({ op: "event", event, payload }),
-        calls: async () => (await ask({ op: "calls" })).calls,
-        close: () => { worker.terminate(); root.unmount(); },
+        async deliver(event, payload) {
+          worker.postMessage({ t: "event", instance: "form", event, payload });
+          await settle();
+          return calls.slice();
+        },
+        calls: async () => { await settle(); return calls.slice(); },
+        async close() {
+          worker.postMessage({ t: "unmount", instance: "form" });
+          await settle();
+          root.unmount();
+          worker.terminate();
+        },
       };
       `,
     );
     const build = await Bun.build({
-      entrypoints: [entry, worker],
+      entrypoints: [entry],
       target: "browser",
       outdir: output,
     });
@@ -115,7 +156,10 @@ test("a keyed Worker field keeps its DOM, focus and pending edit as root sibling
       port: 0,
       fetch(request) {
         const path = new URL(request.url).pathname;
-        if (path === "/fixture.js" || path === "/worker.js") {
+        if (path === "/worker.js") {
+          return new Response(workerSource, { headers: { "Content-Type": "text/javascript" } });
+        }
+        if (path === "/fixture.js") {
           return new Response(Bun.file(join(output, path.slice(1))), {
             headers: { "Content-Type": "text/javascript" },
           });
@@ -181,11 +225,10 @@ test("a keyed Worker field keeps its DOM, focus and pending edit as root sibling
       await browser.evaluate("document.querySelector('input') === null && !originalInput.isConnected"),
     ).toBe(true);
     const callsBeforeRetired = await browser.evaluate<string[]>("window.frameFixture.calls()");
-    const retired = await browser.evaluate<{ refusal: string; calls: string[] }>(
+    const callsAfterRetired = await browser.evaluate<string[]>(
       `window.frameFixture.deliver(${JSON.stringify(originalEvent)}, "retired edit")`,
     );
-    expect(retired.refusal).not.toBeNull();
-    expect(retired.calls).toEqual(callsBeforeRetired);
+    expect(callsAfterRetired).toEqual(callsBeforeRetired);
     await browser.evaluate<void>("window.frameFixture.paint({ value: 'returned' })");
     expect(await browser.evaluate<string>("window.frameFixture.inputEvent()")).not.toBe(
       originalEvent,
