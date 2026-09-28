@@ -6,6 +6,8 @@
 # Browser consumers download the web dist built from this exact commit. A dist is evidence, never a
 # cross-tree cache: changing the source SHA necessarily changes the artifact name.
 # Exact-tree artifacts expire after one day; rerun the whole workflow rather than reusing partial evidence.
+# The plan job derives this commit's build identity once; every job that builds or holds that dist
+# runs under it, so a release tag pushed mid-run cannot split the bundle's label from `/healthz`.
 # The 1–2-minute ordinary PR target and under-7-minute full-lane SLO assume hosted-runner capacity.
 name: CI
 
@@ -32,6 +34,7 @@ jobs:
       checks: ${{ steps.plan.outputs.checks }}
       risk: ${{ steps.plan.outputs.risk }}
       unitPaths: ${{ steps.plan.outputs.unitPaths }}
+      identity: ${{ steps.identity.outputs.identity }}
     steps:
       - name: Check out
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -53,12 +56,22 @@ jobs:
           else
             bun scripts/ci-plan.ts --full --github-output
           fi
+      - name: Derive the run's one build identity
+        id: identity
+        shell: bash
+        run: |
+          identity=$(bun scripts/build-identity.ts --revision "$GITHUB_SHA")
+          echo "identity=$identity" >> "$GITHUB_OUTPUT"
 
   build:
     name: build
     runs-on: ubuntu-latest
     needs: plan
     timeout-minutes: 15
+    env:
+      MANIFOLD_VERSION: ${{ fromJSON(needs.plan.outputs.identity).version }}
+      MANIFOLD_BUILD: ${{ fromJSON(needs.plan.outputs.identity).build }}
+      MANIFOLD_CHANNEL: ${{ fromJSON(needs.plan.outputs.identity).channel }}
     steps:
       - name: Check out
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -124,6 +137,10 @@ jobs:
     needs: [plan, build]
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      MANIFOLD_VERSION: ${{ fromJSON(needs.plan.outputs.identity).version }}
+      MANIFOLD_BUILD: ${{ fromJSON(needs.plan.outputs.identity).build }}
+      MANIFOLD_CHANNEL: ${{ fromJSON(needs.plan.outputs.identity).channel }}
     steps:
       - name: Check out
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -203,6 +220,10 @@ jobs:
     if: contains(fromJSON(needs.plan.outputs.checks), 'e2e-rest')
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      MANIFOLD_VERSION: ${{ fromJSON(needs.plan.outputs.identity).version }}
+      MANIFOLD_BUILD: ${{ fromJSON(needs.plan.outputs.identity).build }}
+      MANIFOLD_CHANNEL: ${{ fromJSON(needs.plan.outputs.identity).channel }}
     steps:
       - name: Check out
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -223,6 +244,10 @@ jobs:
     if: contains(fromJSON(needs.plan.outputs.checks), 'e2e-preview-recovery')
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      MANIFOLD_VERSION: ${{ fromJSON(needs.plan.outputs.identity).version }}
+      MANIFOLD_BUILD: ${{ fromJSON(needs.plan.outputs.identity).build }}
+      MANIFOLD_CHANNEL: ${{ fromJSON(needs.plan.outputs.identity).channel }}
     steps:
       - name: Check out
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -243,6 +268,10 @@ jobs:
     if: contains(fromJSON(needs.plan.outputs.checks), 'convergence')
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      MANIFOLD_VERSION: ${{ fromJSON(needs.plan.outputs.identity).version }}
+      MANIFOLD_BUILD: ${{ fromJSON(needs.plan.outputs.identity).build }}
+      MANIFOLD_CHANNEL: ${{ fromJSON(needs.plan.outputs.identity).channel }}
     steps:
       - name: Check out
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -261,6 +290,10 @@ jobs:
     if: contains(fromJSON(needs.plan.outputs.checks), 'terminal-selection')
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      MANIFOLD_VERSION: ${{ fromJSON(needs.plan.outputs.identity).version }}
+      MANIFOLD_BUILD: ${{ fromJSON(needs.plan.outputs.identity).build }}
+      MANIFOLD_CHANNEL: ${{ fromJSON(needs.plan.outputs.identity).channel }}
     steps:
       - name: Check out
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -280,6 +313,10 @@ jobs:
     if: contains(fromJSON(needs.plan.outputs.checks), 'terminal-mirror')
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      MANIFOLD_VERSION: ${{ fromJSON(needs.plan.outputs.identity).version }}
+      MANIFOLD_BUILD: ${{ fromJSON(needs.plan.outputs.identity).build }}
+      MANIFOLD_CHANNEL: ${{ fromJSON(needs.plan.outputs.identity).channel }}
     steps:
       - name: Check out
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -308,6 +345,10 @@ jobs:
     if: contains(fromJSON(needs.plan.outputs.checks), 'tile-drop')
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      MANIFOLD_VERSION: ${{ fromJSON(needs.plan.outputs.identity).version }}
+      MANIFOLD_BUILD: ${{ fromJSON(needs.plan.outputs.identity).build }}
+      MANIFOLD_CHANNEL: ${{ fromJSON(needs.plan.outputs.identity).channel }}
     steps:
       - name: Check out
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -326,6 +367,10 @@ jobs:
     if: contains(fromJSON(needs.plan.outputs.checks), 'budgets')
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      MANIFOLD_VERSION: ${{ fromJSON(needs.plan.outputs.identity).version }}
+      MANIFOLD_BUILD: ${{ fromJSON(needs.plan.outputs.identity).build }}
+      MANIFOLD_CHANNEL: ${{ fromJSON(needs.plan.outputs.identity).channel }}
     steps:
       - name: Check out
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -344,6 +389,10 @@ jobs:
     if: contains(fromJSON(needs.plan.outputs.checks), 'pwa')
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      MANIFOLD_VERSION: ${{ fromJSON(needs.plan.outputs.identity).version }}
+      MANIFOLD_BUILD: ${{ fromJSON(needs.plan.outputs.identity).build }}
+      MANIFOLD_CHANNEL: ${{ fromJSON(needs.plan.outputs.identity).channel }}
     steps:
       - name: Check out
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -362,6 +411,10 @@ jobs:
     if: contains(fromJSON(needs.plan.outputs.checks), 'axioms')
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      MANIFOLD_VERSION: ${{ fromJSON(needs.plan.outputs.identity).version }}
+      MANIFOLD_BUILD: ${{ fromJSON(needs.plan.outputs.identity).build }}
+      MANIFOLD_CHANNEL: ${{ fromJSON(needs.plan.outputs.identity).channel }}
     steps:
       - name: Check out
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -419,6 +472,10 @@ jobs:
     if: contains(fromJSON(needs.plan.outputs.checks), 'runtime-browser')
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      MANIFOLD_VERSION: ${{ fromJSON(needs.plan.outputs.identity).version }}
+      MANIFOLD_BUILD: ${{ fromJSON(needs.plan.outputs.identity).build }}
+      MANIFOLD_CHANNEL: ${{ fromJSON(needs.plan.outputs.identity).channel }}
     steps:
       - name: Check out
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

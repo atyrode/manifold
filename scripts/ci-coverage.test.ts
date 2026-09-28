@@ -88,6 +88,39 @@ describe("risk-selected CI topology coverage", () => {
     );
   });
 
+  test("builds and serves the exact-commit dist under the plan's one build identity", () => {
+    // #920: a release tag pushed between the build and convergence checkouts split the web
+    // bundle's label from the /healthz of the server that later served it.
+    const identity = [
+      "    env:",
+      "      MANIFOLD_VERSION: ${{ fromJSON(needs.plan.outputs.identity).version }}",
+      "      MANIFOLD_BUILD: ${{ fromJSON(needs.plan.outputs.identity).build }}",
+      "      MANIFOLD_CHANNEL: ${{ fromJSON(needs.plan.outputs.identity).channel }}",
+      "",
+    ].join("\n");
+    // The bundle's producer, a direct artifact download, and a gate slice serving the dist.
+    for (const id of ["build", "smoke", "convergence"]) {
+      const at = ci.indexOf(identity, ci.indexOf(`\n  ${id}:\n`));
+      const rederived = ci.slice(0, at) + ci.slice(at + identity.length);
+      expect(ciCoverageErrors(registry, rederived)).toEqual([
+        `workflow job ${id} must build and serve the plan's one build identity`,
+      ]);
+    }
+
+    const unshared = ci.replace("      identity: ${{ steps.identity.outputs.identity }}\n", "");
+    expect(ciCoverageErrors(registry, unshared)).toContain(
+      "plan job must expose the run's one build identity output",
+    );
+
+    const overridden = ci.replace(
+      '          task: convergence\n          dist: "true"\n',
+      '          task: convergence\n          dist: "true"\n        env:\n          MANIFOLD_BUILD: lab\n',
+    );
+    expect(ciCoverageErrors(registry, overridden)).toEqual([
+      "workflow job convergence must not override the run's build identity in a step",
+    ]);
+  });
+
   test("fails when a future gate registry group has no workflow execution", () => {
     expect(ciCoverageErrors(`${registry}\nfuture\tfuture proof`, ci)).toContain(
       "uncovered gate group: future",

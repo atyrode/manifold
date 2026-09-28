@@ -30,6 +30,17 @@ const e2eSelectors: Readonly<Record<string, string>> = {
   "e2e-rest": "e2e (testkit except preview recovery)",
   "e2e-preview-recovery": "e2e (preview recovery)",
 };
+const exactDist = "manifold-web-dist-${{ github.sha }}";
+const identityDerivation = 'identity=$(bun scripts/build-identity.ts --revision "$GITHUB_SHA")';
+/**
+ * The plan job's one derivation, as every job that builds or holds the exact-commit dist reads
+ * it: a job deriving its own could see a release tag pushed mid-run that another did not (#920).
+ */
+const runIdentity: Readonly<Record<string, string>> = {
+  MANIFOLD_VERSION: "${{ fromJSON(needs.plan.outputs.identity).version }}",
+  MANIFOLD_BUILD: "${{ fromJSON(needs.plan.outputs.identity).build }}",
+  MANIFOLD_CHANNEL: "${{ fromJSON(needs.plan.outputs.identity).channel }}",
+};
 
 const isMap = (value: unknown): value is YamlMap =>
   value !== null && typeof value === "object" && !Array.isArray(value);
@@ -143,6 +154,17 @@ const jobNeeds = (job: YamlMap): string[] =>
 const sorted = (values: readonly string[]): string[] => [...values].sort();
 const same = (left: readonly string[], right: readonly string[]): boolean =>
   JSON.stringify(sorted(left)) === JSON.stringify(sorted(right));
+
+/** Whether a job builds the exact-commit web dist or holds a copy of it. */
+const holdsExactDist = (id: string, job: YamlMap): boolean =>
+  sequence(job["steps"], `${id} steps`).some((value, index) => {
+    const step = map(value, `${id} step ${index + 1}`);
+    const uses = typeof step["uses"] === "string" ? step["uses"] : "";
+    const inputs = optionalChildMap(step, "with", `${id} step ${index + 1} inputs`);
+    if (uses === "./.github/actions/gate-slice")
+      return inputs?.["task"] === "build" || String(inputs?.["dist"]) === "true";
+    return /^actions\/(?:up|down)load-artifact@/.test(uses) && inputs?.["name"] === exactDist;
+  });
 
 const staticStringArray = (source: string): string[] | undefined => {
   const normalized = source.trim().replace(/,\s*]$/, "]");
@@ -432,11 +454,18 @@ export const ciCoverageErrors = (
         errors.push("plan job must expose the exact checks JSON output");
       if (String(outputs["unitPaths"] ?? "") !== "${{ steps.plan.outputs.unitPaths }}")
         errors.push("plan job must expose the exact unitPaths JSON output");
-      const steps = sequence(plan["steps"], "plan steps");
-      const workspaceStep = steps
-        .map((step, index) => map(step, `plan step ${index + 1}`))
-        .find((step) => step["uses"] === "./.github/actions/bun-workspace");
+      if (String(outputs["identity"] ?? "") !== "${{ steps.identity.outputs.identity }}")
+        errors.push("plan job must expose the run's one build identity output");
+      const steps = sequence(plan["steps"], "plan steps").map((step, index) =>
+        map(step, `plan step ${index + 1}`),
+      );
+      const workspaceStep = steps.find(
+        (step) => step["uses"] === "./.github/actions/bun-workspace",
+      );
       if (!workspaceStep) errors.push("plan job must install frozen workspace dependencies");
+      const identityStep = steps.find((step) => step["id"] === "identity");
+      if (!String(identityStep?.["run"] ?? "").includes(identityDerivation))
+        errors.push("plan job must derive the build identity once from the exact commit");
       const script = collectKey(plan["steps"], "run").map(String).join("\n");
       for (const argument of [
         'MERGE_BASE_SHA=$(git merge-base "$BASE_SHA" "$HEAD_SHA")',
@@ -446,6 +475,20 @@ export const ciCoverageErrors = (
         if (!script.includes(argument))
           errors.push(`plan job missing fail-closed invocation: ${argument}`);
       }
+    }
+
+    for (const [id, value] of Object.entries(jobs)) {
+      const job = map(value, `workflow job ${id}`);
+      if (!holdsExactDist(id, job)) continue;
+      const environment = optionalChildMap(job, "env", `${id} environment`);
+      if (
+        !jobNeeds(job).includes("plan") ||
+        Object.entries(runIdentity).some(([key, expected]) => environment?.[key] !== expected)
+      )
+        errors.push(`workflow job ${id} must build and serve the plan's one build identity`);
+      const stepEnvironments = collectKey(job["steps"], "env").filter(isMap);
+      if (stepEnvironments.some((step) => Object.keys(runIdentity).some((key) => key in step)))
+        errors.push(`workflow job ${id} must not override the run's build identity in a step`);
     }
 
     for (const id of expectedMandatory) {
