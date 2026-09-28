@@ -65,7 +65,7 @@ class FakeWorker implements WorkerLike {
   }
 }
 
-const VIEWER: Principal = { id: "p1", kind: "human", name: "Ada", color: "#fff" };
+const VIEWER: Principal = { id: "p1", kind: "human", name: "Ada", color: "#ffffff" };
 
 /** The doors a served call reaches, each recording the call and answering recognisably. */
 interface FakeClient {
@@ -157,13 +157,23 @@ function bench(client?: FakeClient): Bench {
 
 /** Faults are reported to the console as well; the tests read the panel-facing report. */
 let consoleError: ReturnType<typeof spyOn> | null = null;
+let documentDescriptor: PropertyDescriptor | undefined;
 beforeEach(() => {
+  // Agent graphics tests install a canvas-only DOM; this suite owns a browser event target.
+  documentDescriptor = Object.getOwnPropertyDescriptor(globalThis, "document");
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    writable: true,
+    value: Object.assign(new EventTarget(), { hidden: false }),
+  });
   consoleError = spyOn(console, "error").mockImplementation(() => {});
 });
 afterEach(() => {
   consoleError?.mockRestore();
   consoleError = null;
   vi.useRealTimers();
+  if (documentDescriptor === undefined) Reflect.deleteProperty(globalThis, "document");
+  else Object.defineProperty(globalThis, "document", documentDescriptor);
 });
 
 test("stream delivery is bounded for a stalled worker and releases the SDK subscription", async () => {
