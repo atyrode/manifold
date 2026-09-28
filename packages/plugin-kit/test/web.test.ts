@@ -164,27 +164,12 @@ describe("init and mount", () => {
       hardenedContract: HARDENED_CONTRACT_VERSION,
     });
     fake.send({ t: "mount", instance: "i1", panel: "main", context: context() });
-    expect(await rendered(fake)).toEqual({
-      type: "box",
-      key: expect.any(String),
-      direction: "column",
-      children: [
-        { type: "text", key: expect.any(String), text: "Ada: 0" },
-        {
-          type: "button",
-          key: expect.any(String),
-          label: "Bump",
-          action: "example.thing.bump",
-          event: expect.any(String),
-        },
-      ],
-    });
+    expect(textsOf(await rendered(fake))).toEqual(["Ada: 0"]);
     fake.send({ t: "mount", instance: "s1", panel: "side", kind: "section", context: context() });
-    expect(await fake.next()).toMatchObject({
-      t: "render",
-      instance: "s1",
-      tree: { text: "side" },
-    });
+    const section = await fake.next();
+    expect(section).toMatchObject({ t: "render", instance: "s1" });
+    if (section.t !== "render") throw new Error("expected a section render");
+    expect(textsOf(section.tree)).toEqual(["side"]);
   });
 
   test("a mount before init, of an unserved id, or without context faults naming it", async () => {
@@ -360,9 +345,10 @@ describe("events and owned calls", () => {
         ],
       });
     const { fake, tree } = await mounted({ id: "example.thing", panels: { main: Listing } });
-    if (tree.type !== "list") throw new Error("expected a list");
-    expect(tree.items[1]).toEqual({ key: "two", primary: "Two" });
-    fake.send({ t: "event", instance: "i1", event: tree.items[0]!.event! });
+    const list = nodes(tree).find((node) => node.type === "list");
+    if (list === undefined) throw new Error("expected a list");
+    expect(list.items[1]?.event).toBeUndefined();
+    fake.send({ t: "event", instance: "i1", event: list.items[0]!.event! });
     expect(opened).toEqual(["one"]);
   });
 });

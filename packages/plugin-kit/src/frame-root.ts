@@ -364,14 +364,10 @@ function copyFields(from: Props, names: readonly string[], into: Record<string, 
 /** One commit's tree and the registry of exactly the controls it paints. */
 class Projection {
   readonly registry = new Map<string, Registration>();
-  private count: number;
+  /** The stable frame container is itself the first node of every emitted tree. */
+  private count = 1;
 
-  constructor(
-    private readonly container: FrameContainer,
-    synthesizedRoot: boolean,
-  ) {
-    this.count = synthesizedRoot ? 1 : 0;
-  }
+  constructor(private readonly container: FrameContainer) {}
 
   node(node: FrameNode, depth: number): unknown {
     if (depth > MAX_UI_DEPTH) {
@@ -425,15 +421,13 @@ class Projection {
 }
 
 function project(container: FrameContainer): Projected {
-  const visible = container.children.filter((child) => !child.hidden);
-  const [only] = visible;
-  // One root node is the tree; nothing, or siblings, sit in the column a contribution fills.
-  if (visible.length === 1 && only !== undefined) {
-    const projection = new Projection(container, false);
-    return { tree: projection.node(only, 1), registry: projection.registry };
+  const projection = new Projection(container);
+  const children: unknown[] = [];
+  for (const child of container.children) {
+    if (!child.hidden) children.push(projection.node(child, 2));
   }
-  const projection = new Projection(container, true);
-  const children = visible.map((child) => projection.node(child, 2));
+  // Always keep children in this container, including a lone leaf: changing its parent when
+  // siblings arrive would remount the consumer's keyed field and discard its focused buffer.
   return { tree: { type: "box", key: "root", children }, registry: projection.registry };
 }
 
