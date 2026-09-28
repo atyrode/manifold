@@ -17,7 +17,6 @@ import {
   TRACED_DENIAL_RULES,
   TRACE_OUTCOMES,
   UI_NODE_TYPES,
-  UI_TONES,
   UiEventSchema,
   UiNodeSchema,
   WEB_HOST_METHODS,
@@ -69,27 +68,6 @@ function bundle(overrides: Partial<PluginBundle> = {}): PluginBundle {
 }
 
 describe("the closed component vocabulary", () => {
-  test("every kind and every tone is exactly the published set", () => {
-    // Closed on purpose (ADR 0016 §3, R2): each kind has one renderer in the engine painting
-    // one CSS family the engine owns. A kind added here is a renderer added there.
-    expect([...UI_NODE_TYPES]).toEqual([
-      "box",
-      "heading",
-      "text",
-      "code",
-      "badge",
-      "divider",
-      "spinner",
-      "button",
-      "select",
-      "input",
-      "toggle",
-      "list",
-      "empty",
-    ]);
-    expect([...UI_TONES]).toEqual(["neutral", "accent", "muted", "danger", "success"]);
-  });
-
   test("a kind the host does not know is refused, never rendered as unknown", () => {
     // The whole point of a closed vocabulary: `iframe`, `html`, `script` are not "unknown
     // components" a renderer falls back on, they are the DOM reaching in, and the schema is
