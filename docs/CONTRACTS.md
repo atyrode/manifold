@@ -1459,12 +1459,15 @@ the packages promise each other about that. Assembly happens twice from the same
 `packages/server/src/assembly.ts` registers server halves, `packages/web/src/assembly.ts`
 web halves — and both run `assembleRoster` from `@manifold/plugin`, which refuses duplicate
 plugin ids, action names, panel ids, element types and tool ids by NAMING every offender.
-Manifests are inert DATA: no executable fields; `entry` names which halves an INSTALLED bundle
-runs and is absent on every in-tree manifest (§Hardened plugins). Plugins are trusted in-process
-code (ADR 0010, ADR 0025) and hardened only when their installer chose `hardened: true`
-(ADR 0016; §Hardened plugins); the
-wire is the security boundary and every authority decision happens at a door. What happens to a
-plugin's data, contributions and neighbours across an enable/disable is the **behavioral contract**
+Manifests are inert DATA: no executable fields. A bundle's `entry` names its executable
+halves; the composition root may separately register a trusted hardened source recipe
+for a first-party definition without creating an installed row (§Hardened plugins).
+In-realm is the default (ADR 0025); an installer may select `hardened: true`
+for an installed row, or the operator may select registered source at boot
+with `MANIFOLD_HARDENED_PLUGINS`.
+Neither selection changes the wire boundary or the rule that every authority decision
+happens at a door. What happens to a plugin's data, contributions and neighbours
+across enable/disable is the **behavioral contract**
 (`docs/decisions/0013-plugin-behavioral-contract.md`, per-kind table in `REGISTRY.md`
 §Disable semantics).
 
@@ -2391,20 +2394,34 @@ segment in the URI (ADR 0014).
 
 ## Hardened plugins
 
-Every plugin runs in-realm with the full engine API — `core.*`, installed from a bundle, unpacked
-from a directory alike — and isolation is HARDENING an installer may choose for one row, never
-the default (ADR 0025, operator-ratified 2026-09-05, reversing ADR 0016 §1's "an installed row
-runs isolated"). A HARDENED row runs on ADR 0016's runner: its server half in its own OS process
-and its web half in its own dedicated `Worker`, against the narrower interface this section
-describes. The selector is `install?.hardened === true`; absent or false runs in-realm.
-The installer chooses it at `engine.plugins.install`, never the manifest author. The manager's
-Installed band names each row's runner in words, **In-realm** or **Hardened**. Every first-party
-row — `builtin` and every `packages/plugins/*` package — runs in-realm. No third `source` value
-is needed. The hardened boundaries are message boundaries, so both frame
-sets are `@manifold/protocol` schemas (`packages/protocol/src/isolate.ts`) and both are published
-under `isolateContract` at `GET /api/protocol` beside the closed component vocabulary, the served
-ctx methods, the runner's numbers and the artifact shape — an out-of-tree author reads the whole
-target from one document.
+In-realm is the default for registered and installed plugins (ADR 0025,
+operator-ratified 2026-09-05). An installer may choose hardening for an installed
+row at `engine.plugins.install`; only `install?.hardened === true` runs its server
+half in a separate Bun child and portable web half in a dedicated Worker. The
+manager's Installed band names that row **In-realm** or **Hardened**.
+
+**Trusted first-party selection (ADR 0053, #259).** A registered first-party
+plugin can also be selected by `MANIFOLD_HARDENED_PLUGINS=<id>[,<id>…]` at
+bootstrap; absent means all first-party definitions run in-realm. The composition
+root alone names source recipes. At present `core.machines` has a recipe: the
+*actual* server handlers and portable web definition compile from the registered
+manifest, not a renamed stand-in. Source/Docker builds compile selected definitions
+at boot. The source-free Nix package builds these artifacts with the same compiler
+ahead of time and its wrapper sets `MANIFOLD_FIRST_PARTY_ARTIFACTS` to their own
+directory. A selected id without registration, recipe or artifact, a compile failure
+or a binding mismatch stops startup naming that id; there is no in-realm fallback.
+Binding checks the exact registered manifest, artifact hash/current contract (9),
+server/Worker halves, and the child's published door declarations/schemas. An
+element payload-schema definition cannot cross this boundary. Trusted artifacts
+live under `first-party/<id>/<sha256>/`, not plugin installs: no install row,
+third-party provenance or reserved `core.*`/`engine.*` upload exception results.
+They use the ordinary isolate supervisor, enablement, dispatch ladder and
+lifecycle; a held child's process is retired and restarted on release, including
+when ordinary disable retained it for cleanup.
+
+Both hardened frame sets are `@manifold/protocol` schemas
+(`packages/protocol/src/isolate.ts`), published under `isolateContract` at
+`GET /api/protocol` with the closed UI vocabulary and artifact shape.
 
 **In-realm rows (ADR 0025 §1, §6).** An in-realm plugin holds the process: the web half gets
 React, all three `@manifold/plugin` entries, the real `HostServices` (token included) and the
@@ -2420,11 +2437,12 @@ dialled guest's browser runs the host's in-realm plugins with the guest's token 
 no authority beyond what the hub already holds for that principal, and nothing that reaches the
 guest's own instance (ADR 0016 T5/T6, ADR 0025 §Consequences).
 
-The browser fetches an enabled installed web half with the Authorization bearer header and
-imports a Blob URL; credentials never ride a module URL. The module's default `WebPluginDef`
-joins the shipped definitions whenever the live roster changes. Disable drops the loaded
-definition, retaining layout and data; re-enable imports afresh. A server half likewise exports
-its default server definition and is imported in the hub, not evaluated by a second module system.
+The browser fetches an enabled installed in-realm web half with the Authorization
+bearer header and imports a Blob URL; credentials never ride a module URL.
+The module's default `WebPluginDef` or portable `ReactWebPluginDef` joins the
+shipped definitions whenever the roster changes. Disable drops the loaded
+definition, retaining layout and data; re-enable imports afresh. An in-realm
+server half is likewise imported in the hub, not evaluated by a second module system.
 React, React DOM, the JSX runtimes, all three `@manifold/plugin` entries, `@manifold/protocol`,
 `@manifold/sdk` and `@manifold/scene` resolve through
 `globalThis[Symbol.for("manifold.shared")]`. The shell and hub publish their own namespace
@@ -2491,21 +2509,23 @@ the module is imported; the element is removed when the row leaves the wanted se
 uninstalled, or replaced at a new pin — so a disabled plugin paints nothing (D4′) as it renders
 nothing. A plugin's own JSX wears the root class on its root element; the engine adds no wrapper.
 
-**The artifact (`PluginBundleSchema`).** One JSON file, `<id>.manifold-plugin.json`, at most
-`ISOLATE_MAX_ARTIFACT_BYTES` (16 MiB):
+**The artifact (`PluginBundleSchema`).** One JSON file, `<id>.manifold-plugin.json`,
+at most `ISOLATE_MAX_ARTIFACT_BYTES` (16 MiB). A portable pack has
+`format: 1`, `hardenedContract: 9`, the validated `PluginManifest`
+([reference](../packages/plugin-kit/test/fixtures/sample/manifest.json), whose
+`entry` declares `{ "server": true, "web": "web.js", "worker": true }`),
+and base64 `files["server.js"]`, `files["web.js"]`,
+`files["web.worker.js"]`; optional declared stylesheet/machine members follow
+the same bundle schema.
 
-```json
-{ "format": 1,
-  "hardenedContract": 4,
-  "manifest": { ...PluginManifest, "entry": { "server": true, "web": "web.js", "styles": true } },
-  "files": { "server.js": "<base64>", "web.js": "<base64>", "styles.css": "<base64>" } }
-```
-
-`format` is the literal `1` and nothing else parses. `manifest.entry` is REQUIRED here (optional
-on an in-tree manifest, which has no code to point at) and must name at least one half:
-`entry.server === true` means `files["server.js"]` is the server guest module (the name is fixed,
-`PLUGIN_BUNDLE_SERVER_FILE`), `entry.web` names the key of the worker module. Every half named
-must be a member of `files`, refused at the schema naming the half. `entry.styles === true`
+`format` is the literal `1` and nothing else parses. `manifest.entry` is REQUIRED
+in a bundle (optional on an in-tree manifest with no executable source pointer)
+and must name at least one half: `entry.server === true` requires the fixed
+`files["server.js"]` child entry (`PLUGIN_BUNDLE_SERVER_FILE`);
+`entry.web` names the page module key, and `entry.worker: true` additionally
+requires the distinct fixed `files["web.worker.js"]` with contract 9.
+Every declared half must be a member of `files`, refused by name if missing.
+`entry.styles === true`
 (additive-optional, #258) means `files["styles.css"]` (`PLUGIN_BUNDLE_STYLES_FILE`, fixed like
 the server's) is the web half's stylesheet — refused at the schema when the member is missing or
 no web half is named, and admitted only under the root-class rule above; absent, the bundle is
@@ -2527,10 +2547,12 @@ assembly admitted it, never from the file — under a manifest whose `version` i
 and whose `capabilities` is the union of what those doors declare; a dispatch to one answers the
 runner's rung, `unavailable`, with message `bundle failed verification at boot: <class>`, traced
 like every other rung (a row admitted before its doors were recorded composes doorless, as it
-always did). Hardened bundles are self-contained (`pack --self-contained`) and run with the
-existing process/Worker runners. In-realm bundles use the shared-module registry and plain
-`import()`. Selecting hardening does not turn a React definition into a worker program; the
-React-over-frames reconciler is #259.
+always did). A portable pack links `web.js` to the page's React/design system and
+generates a separate, self-contained `web.worker.js` with the kit's React and
+`react-reconciler` 0.33.0; it is selected by the runner, never handwritten or
+produced by `--self-contained`. Older compatible hardened artifacts keep their
+own declared frame behavior. A server child remains self-contained; in-realm
+web bundles use the shared-module registry and plain `import()`.
 
 **Server artifact retrieval (#415).** Both runners use the same source policy. Network sources
 and each of at most five followed redirects must use HTTPS without embedded URL credentials.
@@ -2688,16 +2710,20 @@ spawning, not diagnosed by a timeout or first dispatch. Both sides retain strict
 validation. Future optional fields must have an explicit minimum contract, and the host
 sends them only to an admitted bundle that understands them.
 
-The ctx slices served over `call` are exactly `ISOLATE_CTX_METHODS`: `storage.get` / `set` /
-`compareAndSet` / `delete` / `keys` (namespaced by plugin id), `auth.allows` (graded as the dispatching principal,
-found by the dispatch id), `outsideScope`, `newId`, `machines.isOnline`, `placement.place`,
-`host.roster`, `host.enabled`, and `actions.call` — one declared dependency's door, on the same
-terms an in-realm handler gets it (§Plugins, actions, and the workspace layout; ADR 0041), served
-from a dispatch's ctx and from a hook's only when that ctx carries the slice, with the refusal
-crossing as a throw the guest raises as `ActionCallError` carrying the host's sentence. Every
-other `ActionCtx` member is NOT served in stage 1; the guest
-runtime raises `IsolateSliceUnavailable(method)` and answers `{ ok: false, rule: "refused" }`, so
-the absence is a named refusal at the door. Arguments are validated in the child against the
+`ISOLATE_CTX_METHODS` enumerates correlated child→host calls, including
+namespaced `storage.*` and `database.*`, `auth.allows`, `outsideScope`,
+`newId`, the existing `machines.isOnline`, `machines.getTerminalExecution`,
+`machines.repository`, `placement.place`, `host.roster`/`enabled`, declared
+dependency `actions.call`, and bounded stream/job/service methods. Contract 9
+adds **six** fleet methods: `machines.inventory`, `machines.drain`,
+`identity.enrollMachine`, `identity.rotateMachineToken`,
+`identity.revokeMachine`, `identity.forgetMachine`. These do not export a raw
+machine store, broker or identity service. The host resolves machine ids against
+current state; reads check live `containers:read`, and fleet mutations require
+live workspace `machines:mint`, caller scope, published-door declaration and
+installed grant ceiling. A named refusal crosses as data; captured snapshots
+and held credentials do not authorize later child calls. Unserved members raise
+`IsolateSliceUnavailable` and answer the ordinary `refused` rung. Child arguments are validated against the
 action's own zod `input` (the schema lives where the code lives; the roster still publishes the
 JSON Schema the child reported), which is why the supervisor's `ServerPluginDef` carries
 `z.unknown()` inputs and a proxy handler that throws `IsolateDenial { rule: "invalid_args" |
@@ -2707,9 +2733,9 @@ stages in the child ride back in `dispatched.emits` and are re-staged through th
 
 **A guest's `ctx.auth.isRoot` is a per-dispatch snapshot, fenced by the host (#411).** The `dispatch` and
 `harness` frames carry the caller's root-class authority as the boolean `AuthService.holdsRoot`
-answered when the frame was built. A guest reads that value for the rest of the handler; it is
-not re-read, and no contract through 7 offers a live guest root query. The host keeps the value
-it sent with each request. If it sent `true` and the live answer is now `false` (an administered
+answered when the frame was built. A guest reads that snapshot for the rest of the
+handler; the host keeps the value it sent with each request. If it sent `true`
+and the live answer is now `false` (an administered
 deny landed mid-handler), it serves nothing more of that request. Every further correlated ctx
 call except the resource releases `jobs.ack`, `jobs.unfollow` and `streams.close` is refused with
 `root_authority_withdrawn`. An answer that still carries emissions becomes
@@ -2738,26 +2764,30 @@ as `isolate_output`, capped. Log events: `isolate_spawned`, `isolate_exited`, `i
 `plugin_uninstalled`, `plugin_authored`, `plugin_authored_build_failed`,
 `developer_mode_changed`, `web_isolate_fault`.
 
-**Web isolate — page ↔ Worker (`WebIsolateHostFrameSchema` / `WebIsolateWorkerFrameSchema`).**
-`postMessage` frames, discriminated on `t`:
+**Web isolate — page ↔ Worker (`WebIsolateHostFrameSchema` /
+`WebIsolateWorkerFrameSchema`).** `postMessage` frames are discriminated on `t`:
 
-| Direction   | `t`       | Carries                                                                                                                             |
-| ----------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| page→worker | `init`    | `pluginId`, `principal`, `caps`, `containerId` — the viewer as data; never the token                                                |
-| page→worker | `mount`   | `instance`, `panel` (local panel id) — one tile of one panel                                                                        |
-| page→worker | `unmount` | `instance`                                                                                                                          |
-| page→worker | `event`   | `instance`, `event`, `payload?` — a named callback firing (`UiEventSchema`)                                                         |
-| page→worker | `reply`   | `id`, `ok: true, result` or `ok: false, error`                                                                                      |
-| worker→page | `ready`   | `panels: string[]` — the local panel ids the guest serves                                                                           |
-| worker→page | `render`  | `instance`, `tree: UiNode` — the whole tree, replaced wholesale; the host diffs                                                     |
-| worker→page | `call`    | `id`, `method: WebHostMethod`, `args: unknown[]`                                                                                    |
-| worker→page | `fault`   | `instance?`, `error` — the panel shows `empty` with tone `danger`; per-session, the roster is untouched, logged `web_isolate_fault` |
+| Direction | `t` | Carries |
+| --- | --- | --- |
+| page→worker | `init` | `pluginId`, `principal`, `caps`, `containerId`: viewer data, not bearer |
+| page→worker | `mount` | `instance`, local `panel`, optional `kind: "panel" | "section"`, mounted `context`, optional bounded panel `arg` |
+| page→worker | `context` | fresh mounted host context and optional panel argument |
+| page→worker | `notification`, `stream` | bounded event invalidation / stream delivery |
+| page→worker | `event` | `instance`, current control's event and scalar payload |
+| page→worker | `unmount`, `reply` | instance retirement / correlated host reply |
+| worker→page | `ready` | local panel/section ids, optional contract stamp |
+| worker→page | `render` | `instance`, whole validated `UiNode` tree |
+| worker→page | `call`, `fault` | correlated bounded host method / per-view failure |
 
-`WEB_HOST_METHODS` — `action`, `place`, `selfCaps`, `machines`, `resolve`, `navigate`,
-`openTerminal`, `sendTerminalInput`, `terminalsByContainer` — have the semantics of
-`SessionHandle`'s methods of those names and are served from the panel's REAL `HostServices`,
-which is how the worker calls the door with the caller's authority without ever holding
-`HostServices.token` (ADR 0016 §3). The worker is terminated on disable.
+`WEB_HOST_METHODS` include `action`, `place`, `selfCaps`, `machines`,
+`resolve`, `navigate`, terminal read/input/open/create, streams and event
+subscriptions/acknowledgements. The Worker calls the page's **current**
+`HostServices` through these bounded methods, never receiving its bearer.
+Events address only controls in the latest committed React tree; teardown
+unmounts the root, runs effect cleanup, releases subscriptions/streams and
+retires outstanding instance calls. Disable or a moved SPA session terminates
+its Worker. A recovered error boundary can render again; an uncaught root
+fault paints a bounded error state and cannot keep event authority.
 
 **Present browser limit (#409).** The init frame does not carry the viewer's bearer, and the
 Worker receives neither the page DOM nor live host objects. This is a message/DOM boundary,
@@ -2775,46 +2805,46 @@ host RPC. Its opaque-origin bootstrap, classic-bundle compatibility transition a
 checks are not shipped. Neither a fetch wrapper nor that design is current protection; the
 server-process boundary is a separate contract.
 
-**The component vocabulary (`UiNodeSchema`, ADR 0016 §3, R2).** A hardened web half never touches
-the DOM by any route; it renders by sending a tree of `UI_NODE_TYPES` — `box`, `heading`, `text`,
-`code`, `badge`, `divider`, `spinner`, `button`, `select`, `input`, `toggle`, `list`, `empty` —
-with tones from `UI_TONES` (`neutral`, `accent`, `muted`, `danger`, `success`; meaning, never
-colour). Every node is a strict object (a stray `style`, `className` or `onClick` is a refusal),
-a kind the host does not know is refused rather than rendered as "unknown", and a tree is refused
-past `MAX_UI_DEPTH` (32) or `MAX_UI_NODES` (2000) rather than clipped. `button.action` is the
-FULL action name the button ultimately dispatches and is painted verbatim as `data-action`, so a
-stranger's affordance names its door exactly as a first-party one does (S4). The engine renders
-every kind into one CSS family it owns (`mf-vocab`); no plugin CSS ever crosses.
+**The component vocabulary (`UiNodeSchema`, ADR 0053).** The Worker runs
+actual React with `react-reconciler` 0.33.0 and `@manifold/ui/frames`; its
+committed tree contains only fourteen strict `UI_NODE_TYPES`: `box`,
+`heading`, `text`, `code`, `badge`, `icon`, `divider`, `spinner`, `button`,
+`select`, `input`, `toggle`, `list`, `empty`. The host paints the same
+`@manifold/ui` components under its own `mf-vocab` family. Tones are
+`neutral`, `accent`, `muted`, `danger`, `success`. A stray `style`,
+`className`, raw DOM node or unknown prop is refused rather than dropped;
+trees over `MAX_UI_DEPTH` (32) or `MAX_UI_NODES` (2000) are refused rather
+than clipped. The box accepts legacy numeric gap 0–3, adaptive default or
+bounded `gapRem` 0–4; portable `Stack`/`Cluster` map their rem gaps to it.
+Buttons expose `data-action` on the public component prop; the wire's
+`button.action` is its full action name, painted verbatim. Scalar control
+events and `onBlur` maintain the same confirmation/IME behavior in both modes.
+No CSS, markup or arbitrary DOM attribute travels in the frame.
 
 **`GET /api/plugins/:id/web.js`.** Serves `files[entry.web]` of an INSTALLED, ENABLED plugin
 with `Content-Type: text/javascript`, `Cache-Control: no-store` and `ETag` equal to the install's
 `sha256`; 404 otherwise (not installed, disabled, or no web half). Same auth as `GET /api/plugins`.
+
+**`GET /api/plugins/:id/web.worker.js`.** Serves the declared
+`files["web.worker.js"]` of an ENABLED installed portable bundle or selected
+trusted first-party artifact, at its exact pin (`ETag`, `Cache-Control: no-store`).
+It requires authenticated `containers:read` access like `web.js`; unauthorized
+callers are refused and disabled/missing entries answer 404. Neither route
+serves arbitrary bundle members.
 
 **`GET /api/plugins/:id/styles.css`.** Serves `files["styles.css"]` of an INSTALLED, ENABLED
 plugin whose `entry.styles` is true, with `Content-Type: text/css`, `Cache-Control: no-store` and
 the same `ETag`; 404 otherwise (not installed, disabled, no sheet declared). Same auth. The sheet
 is the one admitted under the root-class rule at install and re-verified at enable and boot.
 
-**The proof (ADR 0016 §8 stage 1).** Every claim above is held by two subjects, both driving the
-kit's reference plugin (`packages/plugin-kit/test/fixtures/sample`, `example.counter`) as a
-stranger's code. `packages/testkit/e2e/isolated-plugin.test.ts` runs REAL server processes: the
-sample is packed by the kit's own `pack` command, admitted through `engine.plugins.install` from
-a path (`MANIFOLD_PLUGIN_DEV_PATHS=1`), published on the roster with its `install` block and
-enabled, dispatched from its own child with storage persisting across dispatches and both
-child-graded rungs (`invalid_args`, `refused`) arriving through the ladder; `web.js` is served with
-the pin as its `ETag`; a tampered artifact is `hash_mismatch` with nothing written; uninstall
-is `still_enabled` until the row is off, then removes row and files and keeps storage; an
-install survives a restart with its count; and a stored bundle tampered with between boots
-comes up `lifecycle: "enable_failed"`, `install.refusal: "hash_mismatch"`, DOORLESS — so its
-door answers `unknown_action`, not `plugin_disabled` (the row is not off) and not `unavailable`
-(no isolate was asked). `bun run verify:axioms` R11 is the browser half: the same bundle
-installed from the drop box (`<data>/plugin-uploads/`), its panel seated through
-`core.space.setLayout` in the viewer's own tree, a real Chromium painting every one of the
-thirteen kinds under its `mf-vocab-<kind>` anchor from the Worker, and one press on the
-`data-action="example.counter.bump"` button becoming exactly one dispatch at the same door the HTTP
-call before it used. One behaviour the proof records rather than endorses: uninstall keeps the
-plugin's ENABLEMENT beside its storage (the disabled set is keyed by id), so a reinstall of an
-id that was switched off in order to be uninstalled comes back off.
+**Proof boundaries.** The `example.counter` reference fixture packs both
+page-linked `web.js` and generated `web.worker.js`; the existing server
+integration exercises installed child dispatch/refusals, storage, exact-byte
+hash holds and restart behavior. Browser acceptance must run both native
+and hardened panels as real Chromium interactions: the fourteen rendered
+kinds, returned events, state/effect/keyed identity, context refresh,
+terminal behavior where applicable, and teardown. Source-only suites and
+server-only `verify --hardened` do not establish browser parity.
 
 ### Unpacked plugins
 
@@ -2883,20 +2913,17 @@ undeclared member never served) and `packages/testkit/e2e/in-realm-plugin.test.t
 Chromium: the fixture's `<style data-plugin="example.counter">` arrives with the module, paints
 the counter's own root, leaves on disable and returns on enable.
 
-**Why no first-party plugin runs hardened yet (ADR 0016 §8.1).** Stage 1 owes one first-party
-plugin running both ways, and none qualifies against `ISOLATE_CTX_METHODS` today. Every
-first-party server half reaches at least one slice the runner does not serve: `core.keys`,
-`core.events`, `core.shell` (`setLayout`), `core.index`, `core.machines` and `core.terminals` read
-or write `ctx.store` directly; `core.presence` and `core.terminals` use `ctx.rooms`;
-`core.terminals` drives `ctx.broker`; `core.machines` and `core.access` mint and revoke through
-`ctx.identity`, and `core.access` dials through `ctx.dials`; `core.shell` removes tiles through
-`ctx.placement.removeTile` and `core.index` deletes containers through
-`ctx.placement.deleteContainer`, where only `placement.place` crosses. Every first-party web half
-is React over `@manifold/plugin` (panels, sections, element renderers, tools, overlays), and a
-Worker serves panels of the closed vocabulary and nothing else. What would unlock the proof is
-a plugin whose server half is storage plus the served slices and whose web half is one panel —
-the shape `example.counter` has and no shipped plugin does — or the runner serving a store-backed
-slice, which is a stage-2 decision, not something this proof may quietly widen.
+**Real first-party parity (ADR 0053).** `core.machines` now has one actual
+source definition for the default hub/page and the selected child/Worker;
+its server handlers use the six bounded fleet calls, including enrollment,
+rotation, withdrawal, forgetting, inventory and draining, with authority
+graded by the host at each call. Its portable panel and section use the
+shared React component vocabulary, including confirmation/blur, refusal
+presentation, live inventory and terminal controls. Native remains the
+default; selecting `MANIFOLD_HARDENED_PLUGINS=core.machines` chooses
+the exact registered source and fails closed by name if its trusted artifact
+cannot bind. Other registered plugins need their own declared source recipe
+and a portable web/ctx surface before an operator can select them.
 
 ## WS /ws/session — session channel (JSON text frames)
 

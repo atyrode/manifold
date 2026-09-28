@@ -55,11 +55,14 @@ runtime costs belong to the implementation's measured evidence.
    inventory refresh, authority-sensitive actions, confirmation and blur disarm, refusal
    presentation, terminal creation, and lifecycle. A renamed demonstration or a browser-only
    run is not that proof.
-6. Necessary host bridges remain narrow and producer-neutral. Credentials stay in the host;
-   serialized state is not authority. Mutating calls re-enter the existing mechanisms with live
-   caller checks and the plugin's admitted ceiling. Async adaptation must preserve atomic
-   decisions rather than introduce a read-then-mutate race across RPCs. Raw stores and live
-   service objects are not exported to guests.
+6. Necessary host bridges remain narrow and producer-neutral. Caller/session bearers
+   stay in the host; the authorized `enrollMachine` and `rotateMachineToken`
+   results necessarily deliver a newly minted machine credential to the server
+   handler that requested one. Serialized caller state is not authority. Mutating
+   calls re-enter the existing mechanisms with live caller checks and the
+   plugin's admitted ceiling; machine ids resolve against current host state.
+   Async adaptation preserves atomic decisions rather than adding read-then-mutate
+   races across RPCs. Raw stores and live service objects are not exported to guests.
 7. Trusted first-party execution selection does not authorize reserved-namespace uploads.
    Ordinary installation continues to refuse `core.*` and `engine.*`. Any bootstrap bundle must
    be bound to the build's own registered definition and use the same isolate supervisor,
@@ -80,3 +83,42 @@ remain separate contracts. Browser interaction and screenshot inspection, real i
 behavior, bounded artifact/frame evidence and the selected repository checks are all required
 before this implementation is complete. A green compiler or counter fixture does not discharge
 the first-party acceptance requirement.
+
+## Implementation record (issue #259)
+
+The shipped source uses `react-reconciler` 0.33.0 over `UiNodeSchema`'s fourteen
+closed kinds. One portable `ReactWebPluginDef` exports React panel/section
+components via `defineWebPlugin`; packing links the in-realm page entry to the
+shell's React and generates a separate self-contained `web.worker.js` from the
+same source, sharing the kit's React with its reconciler. The public Button prop
+is `data-action`, and Worker callbacks are committed-control registrations
+over scalar event frames. `Stack`/`Cluster` map adaptive or bounded rem gaps
+to the host-owned `box`. DOM and `react-dom` do not cross the Worker build.
+The boundary does **not** confine Worker networking or origin storage
+(ADR 0048 remains a proposal).
+
+`core.machines` is the first-party parity subject. Its real server handlers
+use six bounded fleet calls: `machines.inventory`, `machines.drain`,
+`identity.enrollMachine`, `identity.rotateMachineToken`,
+`identity.revokeMachine`, `identity.forgetMachine`. The host regrades the
+current caller, published declaration and install ceiling and resolves
+machine ids itself; it does not export raw machine or identity services.
+Native is the bootstrap default. An operator may select that registered
+definition with `MANIFOLD_HARDENED_PLUGINS=core.machines`; source/Docker
+compiles the trusted artifact at boot, and the source-free Nix wrapper names
+its build-time artifacts with `MANIFOLD_FIRST_PARTY_ARTIFACTS`. A failed
+selection stops the boot by plugin name without native fallback; neither
+artifact is an install row or an exception to reserved-namespace uploads.
+Compatibility stays stamped: contract 9 carries portable React and bounded
+fleet additions, while older admitted artifacts retain their own declared
+frame behavior.
+
+The source evidence covers real browser interaction in both modes (inventory,
+events, confirmation/blur, refusals, terminal, enablement and Worker
+retirement) and real-server isolated fleet dispatch/lifecycle. The packaged
+verifier ran successfully on `x86_64-linux`: independent dependency rebuild,
+ephemeral native and hardened packaged boots, exact pinned-artifact/Worker
+checks, real fleet door/disable cleanup and fail-closed unknown/unsupported
+selector checks. That proof does not execute macOS/arm64 packaged binaries,
+activate the native machine owner or establish target-kernel containment.
+No broader runtime or bundle-size measurement is asserted by this decision.

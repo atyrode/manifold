@@ -3,19 +3,17 @@
 **Read this if you are an agent.** This file plus two live endpoints are the complete
 onboarding surface; you should not need to read manifold's source to author a plugin.
 
-**Two authoring channels, one execution mode, and the installer decides the runner.** The first
-channel is a package inside this repository — `packages/plugins/<name>`, registered in the two
-assembly files (§1) by a maintainer and rebuilt with the tree; it is what §1–§8 describe. The
-second is a plugin authored anywhere, packed into one bundle by `@manifold/plugin-kit` and
-installed at `engine.plugins.install` (§10); a manifest with `entry` is the second kind. Both run
-IN-REALM by default — the web half in the page with React and the real `HostServices`, the server
-half in the hub with the full `ActionCtx` (ADR 0025) — so §1–§8 are the contract for an installed
-plugin too. The exception is a row its installer chose to HARDEN (`hardened: true` at the door,
-ADR 0016): it runs as a stranger's code in its own process and its own `Worker`, against the
-narrower interface §9 documents. Two places below point at the engine's own source for a shape —
-the registration shape in §6 and the web registration channels in §7 — and they are the named
-exceptions to the promise above, flagged as maintainer-only where they occur; neither applies to
-a hardened plugin.
+**Two authoring channels, one execution choice.** A repository plugin lives in
+`packages/plugins/<name>` and is registered by a maintainer (§1); an out-of-tree plugin is
+packed by `@manifold/plugin-kit` and installed through `engine.plugins.install` (§10).
+Both run IN-REALM by default: the web half uses the page's React and `HostServices`, and
+the server half uses the hub's `ActionCtx` (ADR 0025). The installer can choose
+`hardened: true` for an installed row (§9); the trusted build can select a registered
+first-party plugin with `MANIFOLD_HARDENED_PLUGINS` (§9). Either hardened path runs its
+server half in a child process and its portable React web half in a dedicated Worker.
+The bounded host interfaces differ from unrestricted in-realm access, but the same
+portable component source can be packed for both choices. The maintainer-only
+registration shapes in §6 and §7 do not become authoring doors for a hardened guest.
 
 ```sh
 curl -H "authorization: Bearer $TOKEN" http://localhost:7777/api/plugins    # the live roster: every plugin, its manifest, whether it is enabled, its actions
@@ -489,8 +487,8 @@ turning a plugin off does not make its name available. Choose an unclaimed id fo
 `{ id: "core.compositions", renderers: { composition: CompositionView } }`.
 For your own plugin, substitute your plugin id, your declared discipline id and your component,
 and register both halves through the assembly files (§1). This is the in-tree channel; an
-installed in-realm bundle ships the same `WebPluginDef` (§10), while a hardened row's web kit
-serves panels only (§9), not container renderers.
+installed in-realm bundle can also ship a `WebPluginDef` (§10). A portable definition can
+contribute panels and sections in either mode (§9), but not container renderers in a Worker.
 
 Your component receives
 [`ContainerRendererProps`](../packages/plugin/src/projection.ts), imported from
@@ -1503,7 +1501,8 @@ for (const row of host.assembly.sections.filter((row) => row.enabled)) {
 
 #### Browser channel plane
 
-This is the **in-realm browser** contract; hardened workers use §9's `GuestHost` instead.
+This is the **in-realm browser** contract; a portable panel or section uses the bounded
+`PortableHostServices` and `PortableSessionHandle` described in §9 in both execution modes.
 A panel, section, overlay or element renderer uses `host.client` (`SessionHandle`, exported
 from `@manifold/plugin`). It never opens its own socket or constructs a client from
 `host.token`. [Protocol and compatibility](CONTRACTS.md#protocol-and-compatibility) requires
@@ -3147,8 +3146,8 @@ engine.plugins.uninstall { id, purge? }                                   → {}
   `Worker`, against §9's narrower interface — instead of in-realm. Absent or false is in-realm.
   The installer chooses it, never the manifest; the row publishes it as `install.hardened` and
   the manager's Installed band says **In-realm** or **Hardened** in words. A hardened row needs
-  a bundle packed for it (§9 Packing): the selector does not turn a React web half into a worker
-  program.
+  a portable bundle with `entry.worker: true` (§9 Packing); the same React component source
+  is linked for the page and compiled into its Worker entry automatically.
 
 Refusals answer `{ refused: "<class>: detail" }` with a class from `PLUGIN_INSTALL_REFUSALS`
 (`artifact_unreadable`, `artifact_invalid`, `hash_mismatch`, `already_installed`,
@@ -3472,9 +3471,9 @@ SHELL's families — S13 holds that at the gate and, for installed mods, at load
 `data-action` come from the engine API whether or not you compose with `<Stack>`. A panel that
 hand-rolls its flex is legal; a panel that invents a second placement pipeline is not.
 
-**Hardened mods (§9) speak the same vocabulary serialized.** The `ui.box`/`ui.badge` builders the
-kit ships are the frame form of these components — `ui.box` IS `<Stack>` — and the follow-up to
-#240 makes the hardened renderer serialize this one component set rather than a parallel one.
+**Portable web contributions (§9) use the same `@manifold/ui` components in both modes.**
+`Stack` and `Cluster` become bounded `box` nodes in a Worker; the host paints each
+serialized kind through the same design system. DOM-only primitives remain in-realm.
 
 ## 8. What the gate checks
 
@@ -3533,20 +3532,19 @@ are the checks that will fail _your_ plugin:
 
 ## 9. Writing a hardened (out-of-tree) plugin
 
-This section is for one kind of row only: one its installer chose to HARDEN. Everything else in
-this file — §1–§8 for what a plugin is, §10 for authoring and installing one on your instance —
-describes the IN-REALM target, the general installer's default (ADR 0025). Automated receiver
-delivery explicitly selects hardened instead (§9 Delivering). Read this section when the code
-you are writing will be installed with `hardened: true`, or when deciding whether to ask for it.
+This section explains portable authoring when an installer may choose HARDENING. §1–§8
+still govern plugin identity, actions and contributions; §10 covers installation. Trusted
+first-party selection at boot uses the same runner, but is not an install row and does not
+admit uploads in the reserved namespaces.
 
-**What the runner is.** `engine.plugins.install { hardened: true }` (§7) runs the row on ADR
-0016's runner instead of in the page and the hub: its server half in its own Bun process,
-spawned from the bundle's `server.js` and spoken to over ipc frames; its web half in its own
-dedicated `Worker`, painting through `render` frames of a closed vocabulary. Both boundaries are
-message boundaries, so both frame sets are `@manifold/protocol` schemas published under
-`isolateContract` at `GET /api/protocol` (`docs/CONTRACTS.md` §Hardened plugins). Absent or
-false at the door is in-realm. The manifest never chooses: `entry` only names the halves the
-bundle runs (`{ "server": true, "web": "web.js" }`), and the same hash pin, install door,
+**What the runner is.** `engine.plugins.install { hardened: true }` (§7) runs the
+server half in its own Bun process over bounded socket frames and the portable React
+web half in a dedicated Worker reconciled into bounded render frames. Both boundaries
+are message boundaries: their `@manifold/protocol` schemas are published under
+`isolateContract` at `GET /api/protocol` (`docs/CONTRACTS.md` §Hardened plugins). Absent
+or false at the door is in-realm.
+The manifest names executable halves, not the runner:
+`{ "server": true, "web": "web.js", "worker": true }`. The hash pin, install door,
 capability declaration and refusal ladder apply either way. The roster says which runner a row
 got (`install.hardened`); the plugin manager's Installed band says it in words, **In-realm** or
 **Hardened**.
@@ -3564,22 +3562,16 @@ data and authority exposed to a row accordingly; **Hardened does not mean networ
 design, not an activated policy or a new artifact format. The current contract is
 [Hardened plugins](CONTRACTS.md#hardened-plugins).
 
-**When to choose it.** An installer hardens a row they do not trust to hold the process: code
-from a source they have not read, on an instance where a server half that loops or corrupts
-memory must not take the hub down (ADR 0025 §6 names that as the in-realm cost). The price is
-the interface below — no React, no `@manifold/plugin`, no token, panels as the only web
-contribution — and a bundle built for it: hardening does not turn a React web half into a
-worker program, so a hardened row is a hardened row from the first line of code. If the
-installer is you, on your own instance, reading your own agent's output, §10 is the shorter
-road; `hardened: true` stays available when a row earns it, and `uninstall` is the other
-remedy. React delivered over the same frames, so one web half runs either way, is owed (#259);
-until it lands, the `ui.*` builders below are the hardened vocabulary.
-
-The kit is `@manifold/plugin-kit` (`packages/plugin-kit`; the reference plugin it ships is
-`packages/plugin-kit/test/fixtures/sample/`, quoted below). It depends on `@manifold/protocol` and
-zod and on nothing else, which is exactly what a hardened plugin may depend on: it never imports
-React, `@manifold/plugin`, `@manifold/sdk` or `@manifold/scene`, and `pack --self-contained`
-inlines everything it does import (§Packing).
+**When to choose it.** An installer chooses hardening for a row they do not trust to
+hold the hub or page realm. That choice does not make the server child a filesystem
+or network sandbox (§What browser hardening does not promise). Author one portable
+React web definition with `@manifold/plugin-kit/web`, `@manifold/ui`, React and the
+portable `@manifold/plugin/hooks` exports; pack it once for both modes. The worker
+build cannot import DOM, `react-dom`, the page's `@manifold/plugin` engine objects
+or DOM-dependent design-system components; it refuses these rather than supplying
+a fake DOM. An ordinary in-realm mod need not be portable. The reference source is
+`packages/plugin-kit/test/fixtures/sample/web.tsx`; the server half remains a
+`@manifold/plugin-kit/server` guest definition.
 
 ### The server half: `server.ts`
 
@@ -3629,14 +3621,20 @@ served across a process boundary (`docs/CONTRACTS.md` §Hardened plugins, `ISOLA
   dispatch that was sent `true`: every further host call and any returned emission is refused
   with `root_authority_withdrawn` (`docs/CONTRACTS.md` §Hardened plugins). Effects already
   committed stay committed. Treat that refusal as final, not as something to retry.
-- **Questions the host answers, as promises** — `ctx.auth.allows(cap, containerId?)`,
-  `ctx.outsideScope(containerId)`, `ctx.newId()`, `ctx.storage.{get, set, delete, keys}`,
-  `ctx.machines.{isOnline, getTerminalExecution, repository}`, `ctx.placement.place(request)`,
-  `ctx.host.{roster, enabled}`, `ctx.actions.call({ plugin, action, input })` (one declared
-  dependency's door, ADR 0041 — §3 Calling a dependency's door is the whole contract).
-  Every one is a `call` frame correlated to the dispatch it belongs to, graded as that dispatch's
-  caller; a call the host refuses rejects with `HostCallError` carrying the host's own sentence,
-  and a refused sibling call rejects with `ActionCallError` carrying the refusal class.
+- **Questions the host answers, as promises** —
+  `ctx.auth.allows(cap, containerId?)`, `ctx.outsideScope(containerId)`,
+  `ctx.newId()`, `ctx.storage.{get, set, compareAndSet, delete, keys}`,
+  `ctx.machines.{isOnline, getTerminalExecution, repository, inventory, drain}`,
+  `ctx.identity.{enrollMachine, rotateMachineToken, revokeMachine, forgetMachine}`,
+  `ctx.placement.place(request)`, `ctx.host.{roster, enabled}`,
+  `ctx.actions.call({ plugin, action, input })` (one declared dependency's
+  door, ADR 0041). These six added fleet calls operate on the host's live
+  machine ids, principal and declaration/install ceilings; `inventory` needs
+  `containers:read`, while mutations need workspace `machines:mint`. A
+  successful enroll or rotate may return a newly minted machine token to
+  the authorized **server** handler; no caller/session bearer is exported.
+  Calls remain correlated to an admitted dispatch, with refusals returned
+  or thrown according to that method's typed outcome.
 - **`ctx.emit`** stages exactly as in-realm: the emissions ride back with the outcome and the host
   flushes them only when the dispatch is `ok`.
 
@@ -3706,127 +3704,144 @@ job observers make it unavailable rather than granting a borrowed context. While
 new authority-bearing requests refuse immediately. A raw host call during validation terminates
 the violating child; ordinary requests retain their existing concurrency outside that phase.
 
-### The web half: `web.ts`
+### The web half: `web.tsx`
 
-```ts
-import { ui } from "@manifold/plugin-kit";
-import { definePanel, defineWebPlugin } from "@manifold/plugin-kit/web";
+The same React definition runs in-realm and in the Worker. This example is the
+[`example.counter` fixture](../packages/plugin-kit/test/fixtures/sample/web.tsx)
+reduced to its action and state path; its manifest declares
+`"entry": { "server": true, "web": "web.js", "worker": true }` and panel `counter`.
+
+```tsx
+import type { PortablePanelProps } from "@manifold/plugin";
+import { defineWebPlugin } from "@manifold/plugin-kit/web";
+import { Badge, Button, Empty, Heading, Stack, Text } from "@manifold/ui";
+import { useEffect, useState, type ReactElement } from "react";
 import { z } from "zod";
 
 const BumpResult = z.object({ count: z.number().int() });
 
-const counter = definePanel<{ count: number | null; denial: string | null }>({
-  init: () => ({ count: null, denial: null }),
-  view: (state) =>
-    ui.box({ direction: "column", gap: 2 }, [
-      ui.heading("Counter", 2),
-      state.count === null ? ui.spinner("Waiting") : ui.badge(`count ${String(state.count)}`),
-      ui.button("Bump", "bump", { tone: "accent", action: "example.counter.bump" }),
-      state.denial === null
-        ? ui.empty("No refusal yet.")
-        : ui.text(state.denial, { tone: "danger" }),
-    ]),
-  update: async (state, event, host) => {
-    if (event.event !== "bump") return state;
-    const outcome = await host.action("example.counter.bump", { by: 1 });
-    if (!outcome.ok) return { ...state, denial: outcome.denial.message };
-    return { ...state, count: BumpResult.parse(outcome.result).count, denial: null };
-  },
-  subscribe: (_host, emit) => {
-    const timer = setInterval(() => emit({ event: "tick" }), 60_000);
+function Counter({ host }: PortablePanelProps): ReactElement {
+  const [count, setCount] = useState<number | null>(null);
+  const [denial, setDenial] = useState<string | null>(null);
+  const [ticks, setTicks] = useState(0);
+  useEffect(() => {
+    const timer = setInterval(() => setTicks((value) => value + 1), 60_000);
     return () => clearInterval(timer);
-  },
-});
+  }, []);
 
-defineWebPlugin({ id: "example.counter", panels: { counter } });
+  const bump = async (): Promise<void> => {
+    const outcome = await host.client.action("example.counter.bump", { by: 1 });
+    if (!outcome.ok) {
+      setDenial(outcome.denial.message);
+      return;
+    }
+    setCount(BumpResult.parse(outcome.result).count);
+    setDenial(null);
+  };
+
+  return (
+    <Stack gap="0.5rem">
+      <Heading level={2}>Counter</Heading>
+      <Text tone="muted">Hello, {host.principal.name}. Ticks: {ticks}</Text>
+      {count === null ? <Empty>No bump yet.</Empty> : <Badge>count {count}</Badge>}
+      <Button tone="accent" data-action="example.counter.bump" onClick={() => void bump()}>
+        Bump
+      </Button>
+      {denial === null ? null : <Text tone="danger">{denial}</Text>}
+    </Stack>
+  );
+}
+
+export default defineWebPlugin({ id: "example.counter", panels: { counter: Counter } });
 ```
 
-A panel is a PROGRAM over its own state, not a component: `init` makes the state, `view` projects
-it into a tree of the closed vocabulary, `update` folds a named callback (`{ event, payload }`)
-into the next state, and `subscribe` is the only place a timer or a poll lives — its return value
-stops it at unmount. Events fold in order, one at a time, even while an `update` is still
-awaiting the host. The runtime re-renders after every `init` and `update`; there is no manual
-re-render and no partial one — the whole tree is posted and the engine diffs it.
+`ReactWebPluginDef` keys `panels` and optional `sections` by the manifest's LOCAL
+contribution ids. Each receives `{ host }`; panels can also receive their bounded
+tile `arg`. React owns hooks, context, keyed identity, scheduling, error boundaries,
+state and effect cleanup: events call functions retained on the **currently committed**
+controls, not a guest-authored reducer. Unmount/disable retires callbacks and pending
+instance calls; a remount begins a new root. Ordinary disable retains server data and
+layout; a held hardened child is retired and reloaded after the hold clears, even if
+the plugin stayed disabled for cleanup. A Worker fault affects that browser's view,
+not the durable roster. Unknown props, DOM elements, raw text outside a component,
+invalid event values and frames outside the vocabulary refuse instead of being
+silently dropped.
 
-`GuestHost` is the viewer's identity as data (`principal`, `caps`, `containerId`) plus the nine
-`WEB_HOST_METHODS` as promises — `action`, `place`, `selfCaps`, `machines`, `resolve`, `navigate`,
-`openTerminal`, `sendTerminalInput`, `terminalsByContainer` — each with the semantics of the
-`SessionHandle` method of the same name (§Host services). They are served by the page from the
-panel's REAL host services, which is how a worker acts with the viewer's authority without ever
-holding the viewer's token.
+`PortableHostServices` exposes `principal`, `containerId`, `topics`, `navigate`,
+`authoring` and a bounded `client` (including `action`, `place`, `selfCaps`,
+`machines`, `resolve`, streams, event feeds and terminal operations). These are
+the same portable props in either execution mode; the Worker receives mounted
+context as data and calls the page's current host through correlated methods,
+not through a bearer, DOM handle, room replica or live engine object. A snapshot
+of caps or identity does not authorize a later call. Import `PortablePanelProps`
+and `PortableSectionProps` with `import type`; the Worker may import
+`@manifold/plugin/hooks` only for its portable hook exports.
 
 ### The vocabulary
 
-Thirteen kinds, five tones, no escape hatch (`UiNodeSchema`; `GET /api/protocol` publishes it
-under `isolateContract`). `ui` has one builder per kind, typed against the protocol's union:
+Fourteen `UiNode` kinds are emitted by the portable `@manifold/ui` components
+(`UiNodeSchema` and `GET /api/protocol` publish the wire):
 
-| Builder                                                           | Renders as                                                                                                        |
-| ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `ui.box({ direction, gap, grow, wrap }, children)`                | a flex box; `direction` defaults to `column`, `gap` (0–3) to 1                                                    |
-| `ui.heading(text, level?)`                                        | a heading; `level` defaults to 2                                                                                  |
-| `ui.text(text, { tone, mono, wrap }?)`                            | prose; ONE line truncated with an ellipsis unless `wrap: true`; `mono` is the shell's monospace family            |
-| `ui.code(text)`                                                   | a preformatted block (up to 64 KiB)                                                                               |
-| `ui.badge(text, tone?)`                                           | a small status chip                                                                                               |
-| `ui.divider()`                                                    | a rule                                                                                                            |
-| `ui.spinner(label?)`                                              | an in-progress marker                                                                                             |
-| `ui.button(label, event, { payload, tone, disabled, action }?)`   | a button posting `event` with `payload`; `action` is painted as `data-action` (set it, §Marking your affordances) |
-| `ui.select(event, value, options, { label, disabled }?)`          | a select posting `event` with the chosen value; `value: null` shows an empty placeholder option                   |
-| `ui.input(event, value, { label, placeholder, mono, disabled }?)` | a text field posting `event` with the string on every change                                                      |
-| `ui.toggle(event, value, label, { disabled }?)`                   | a switch posting `event` with the new boolean                                                                     |
-| `ui.list(items)`                                                  | rows of `{ key, primary, secondary?, tone?, event?, payload? }`; a row with `event` is a button                   |
-| `ui.empty(text)`                                                  | the engine's own empty-state row                                                                                  |
+| Wire kind | Portable JSX | Accepted meaning |
+| --- | --- | --- |
+| `box` | `Stack`, `Cluster` | column / wrapping row; `align`, `justify`, `grow`, `wrap`; adaptive default gap or explicit `0`–`4rem` |
+| `heading` | `Heading` | text, heading level 1–3 (default 2) |
+| `text` | `Text` | text, tone, `mono`, `wrap`, `strong`, `grow` |
+| `code` | `Code` | preformatted text (up to 64 KiB) |
+| `badge` | `Badge` | text and tone |
+| `icon` | `ControlIcon`, `ItemIcon` | named control/item glyph and optional size |
+| `divider` | `Divider` | horizontal separator |
+| `spinner` | `Spinner` | optional progress label |
+| `button` | `Button` | label, tone, disabled, optional icon; `onClick`, `onBlur`, public `data-action` |
+| `select` | `Select` | controlled string/null, bounded `{ value, label }` options, scalar `onChange`, `onBlur` |
+| `input` | `Input` | text, label, placeholder, `mono`, disabled; scalar `onChange`, `onBlur` |
+| `toggle` | `Toggle` | boolean, label, disabled; scalar `onChange`, `onBlur` |
+| `list` | `List` | keyed rows with primary/secondary text and optional `onClick` |
+| `empty` | `Empty` | empty-state text |
 
-Tones are meanings — `neutral`, `accent`, `muted`, `danger`, `success` — never colours. A tree is
-refused past 32 levels or 2000 nodes, and a node with a key the kind does not have (`style`,
-`className`, `onClick`) is refused rather than ignored; the runtime parses every tree before it
-posts one, so a bad tree becomes a `fault` naming the panel and the engine paints the panel as
-`empty` with tone `danger`.
-
-**The stylesheet rule (S13).** A hardened plugin ships no CSS and paints no ink of its own: there
-is no `styles.css` member in its bundle, no `style` or `className` key in its vocabulary, and the
-engine's renderer owns every pixel the tree becomes — tones are the whole palette. Ink has one
-owner, and for a hardened row that owner is never the plugin. (An in-realm plugin's skin is §1
-Your skin ships with you in the tree, and §10 Your stylesheet for a bundle: the same rule, met
-at load.)
+Five tones mean `neutral`, `accent`, `muted`, `danger`, `success`, never arbitrary
+colours. Text-bearing components take text, not nested markup. Control callbacks
+receive scalars (or no argument), never DOM events. A `Button`'s full action name
+goes in **`data-action`**; its callback actually dispatches through `host.client.action`.
+Metadata is limited to `title`, `aria-label`, `data-testid` and
+`role="status" | "alert"`. A frame has at most 32 levels and 2000 nodes, 256
+select options and 500 list rows; ordinary text is limited to 4096 characters.
+`Stack` / `Cluster` map their absent gap to the adaptive box gap, or a specified
+`"0"` / `"<number>rem"` (0–4) to `gapRem`; wire `box.gap` also retains numeric
+0–3 for already admitted artifacts. No `className`, `style`, arbitrary attributes,
+DOM ref or page-only `@manifold/ui` component crosses the Worker boundary.
+The host paints the same design-system components under its own `mf-vocab` family.
+In-realm bundles may ship a stylesheet under the §10 ownership rule; a Worker
+never receives CSS, even when its page entry imports the sheet.
 
 ### Packing
 
 ```sh
-bun run --cwd packages/plugin-kit pack <plugin-dir> --out example.counter.manifold-plugin.json --self-contained
+bun run --cwd packages/plugin-kit pack <plugin-dir> --out example.counter.manifold-plugin.json
 ```
 
-`pack --self-contained` reads `<plugin-dir>/manifest.json`, bundles `server.ts` (target `bun`)
-and `web.ts` (target `browser`) with the kit's guest runtimes, the protocol and zod INLINED, and
-writes one JSON document (`PluginBundleSchema`: `format: 1`, `hardenedContract: 8`, the manifest
-with its `entry`, base64 members, and `builtAgainst["manifold:protocol"]`). All packing modes
-stamp the executable contract and protocol wire version. The artifact is self-contained because the runner resolves
-nothing: the hub's process runner is one `Bun.spawn` of the bundle's `server.js`; the page fetches
-`/api/plugins/<id>/web.js` with the bearer and starts a module Worker from a Blob of those bytes.
-Neither has the shared-module registry an in-realm bundle imports through. A server half that
-needs that registry exits before loading with `Missing shared module: @manifold/plugin`; the
-install is refused as `artifact_invalid` and rolled back (the hub's `isolate_output` log carries
-the detail). A web-only bundle can instead install successfully and fail later in its browser
-Worker. `verify --hardened` exercises the server/door contract, not Worker rendering: also
-exercise the actual panel in a browser before delivery. Neither failure retries in-realm. The printed
-`sha256` is over the file's exact bytes and is the pin `engine.plugins.install` demands; the
-door itself — where a source may come from, the default grant, the refusal classes, where the
-bundle lives afterwards — is §7 Installing a plugin, and the artifact's shape is
-`docs/CONTRACTS.md` §Hardened plugins.
+The packer reads `manifest.json`; `entry.worker: true` builds `server.js` as an
+isolated Bun child, `web.js` linked to the page's React/design system, and a
+**self-contained** `web.worker.js` with the kit's single React instance, pinned
+`react-reconciler` and frame components. The generated Worker entry imports the
+web definition and attaches the guest runtime; authors do not write a separate
+Worker or add `--self-contained` (that flag conflicts with a page-linked portable
+entry). The JSON artifact carries exact-byte SHA-256, base64 members,
+`format: 1`, `hardenedContract: 9` and a protocol stamp. The host serves the
+declared Worker member at `/api/plugins/<id>/web.worker.js` only while enabled,
+with the artifact pin and `no-store`. A Worker cannot import `react-dom` or the
+page's engine objects; unsupported imports/JSX refuse by name. Hardening
+selection never falls back to native when packing, loading or runtime fails.
+`verify --hardened` exercises actual server doors, not browser rendering:
+exercise the panel in a browser too. The install door and grant remain §7.
 
-`hardenedContract` has an acceptance set separate from releases and machine/session protocols.
-The current hub accepts contracts 1–7; current packs stamp 7. Contract 1 is the bounded
-receipt plus prepared/admitted dispatch baseline, contract 2 adds optional load identity,
-contract 3 adds optional action result projections, contract 4 adds metadata-only `jobs.inspectInputs`,
-contract 5 adds optional exact selected `textFields`, and contract 6 adds authenticated Run context.
-Contract 7 adds declared harness metadata and calls, with context-free original profile validation.
-Older guests retain their existing declarations and digests, without acquiring the newer capabilities.
-The host sends the admitted guest's own contract stamp, not its latest supported version.
-An older accepted bundle uses the compatible frame path and keeps working. A missing stamp
-does not mean contract 1: older bundles need one genuine repack with a current kit. The plugin
-manager and `GET /api/plugins` show `held: { reason: "repack_required", minimum: 1 }` before
-any code loads; new incompatible installs refuse with the bundle name and minimum.
-Maintainers add versions for additive-optional changes and reset the set only for breaks,
-recording the decision in `packages/protocol/src/isolate.ts` HISTORY.
+Current packs stamp contract 9; the hub admits stamped contracts 1–9 using
+each artifact's own compatible frames. Contract 8 adds caller-plugin attribution;
+contract 9 adds React frame roots, mounted context/sections, generated portable
+Worker member, event invalidations, authoring and narrow machine bridges. Older
+admitted artifacts keep their declared behavior rather than acquiring these
+facilities. Missing stamps require a genuine repack, not an assumed contract 1;
+`repack_required` holds incompatible incumbents before import or spawn.
 
 ### Developing against a hub
 
@@ -3842,7 +3857,7 @@ Dependencies absent from the batch are not created, enabled or installed; the hu
 their availability. One JSON line is reported per cycle. The same loop without `--hardened` is the
 in-realm author's loop, walked through in §10.
 
-Repositories with generated worker artifacts can call the exported `devLoop` with a
+Repositories with custom build steps can call the exported `devLoop` with a
 `build(packDir)` callback. It returns the complete batch as `{ file, sha256, bytes }` results from
 the kit's packer. The callback finishes every bundle before installation begins; a failed build
 leaves installed bundles alone. The native loop rereads identity and required dependencies from
@@ -3873,10 +3888,11 @@ bun run --cwd packages/plugin-kit install:bundle <bundle | https://…> --hub <u
   [--sha256 <hex>] [--deliver path | docker:<container>] [--owner-key-file <path>] [--hardened]
 ```
 
-`dev --hardened` packs self-contained code and installs it hardened. `install:bundle --hardened`
-and `verify --hardened` select that same installer choice for already-packed hardened bundles.
-Omit the flag for in-realm definitions (§10); no manifest field chooses a runner, and `install`
-treats a runner change at the same sha as a `replaced`, because the row's consent changed.
+`dev --hardened` packs a portable definition with its automatically generated
+self-contained Worker entry and installs it hardened. `install:bundle --hardened`
+and `verify --hardened` select that installer choice for an already-packed
+portable bundle. Omit the flag for in-realm definitions (§10); no manifest field
+chooses a runner, and changing runner at the same sha still replaces the row.
 
 **Two delivery strategies**, because the door reads a path or an https URL and nothing else
 (§7): `--deliver path` (the default for a file) hands the hub the bundle's absolute path, which a
@@ -3939,14 +3955,16 @@ the later pack/verify pair and suppresses artifact upload, so disposable source-
 proofs do not accidentally publish their fixture bundles.
 
 `plugins/MANIFOLD_REV` and that `@<rev>` are bumped together, so the workflow and the kit it runs
-are one commit of this repository. A hardened-targeted author repository's `plugins/package.json`
-packs with `--self-contained` and wraps `verify` as
+are one commit of this repository. A hardened-targeted author repository's
+`plugins/package.json` packs its portable `entry.worker: true` definition
+without `--self-contained` and wraps `verify` as
 `bun ../../manifold/packages/plugin-kit/src/verify.ts dist/*.manifold-plugin.json --hardened`
 (the shell expands the glob). Its `dev` wrapper is
 `bun ../../manifold/packages/plugin-kit/src/dev.ts .`, with `--hardened` passed after `--`.
-An in-realm repository instead keeps the kit's in-realm pack/verify/dev defaults and explicitly
-appends `--in-realm` to its release receiver command. Pack, verification and delivery must target
-the same runner; the reusable workflow does not infer or override the author's scripts.
+An in-realm repository retains the kit's native defaults and explicitly
+appends `--in-realm` to its release receiver command. Pack, verification and
+delivery must target the same runner; the reusable workflow does not override
+the author's scripts.
 
 ### Delivering
 
@@ -3991,35 +4009,27 @@ same runner, with explicit `--in-realm` receiver delivery for an in-realm reposi
 preview and never on production; and what to tell the operator to look at — the preview's plugin
 manager row for the id, and the actual panel or door the change touched.
 
-### What a hardened plugin does NOT get (ADR 0016 §3)
+### What a hardened plugin does NOT get (ADR 0016 §3, ADR 0053)
 
-Say it out loud rather than discover it. None of this applies to an in-realm row, installed or
-not — an in-realm plugin gets everything §1–§8 describe (ADR 0025 §1); this is the price of the
-runner, paid only by a row whose installer chose it:
+The portable React authoring API is shared, but the Worker still has a narrower
+host boundary than an in-realm plugin:
 
-- **No React, and no `@manifold/plugin`.** No `usePolledResource`, no `@manifold/ui`
-  primitives, no tile geometry, no projection registry, no `HostServices` object. The web half
-  is a program over the vocabulary, full stop.
-- **No token.** `HostServices.token` is a real bearer handed to trusted in-realm code; a worker
-  never holds it. It calls the door through the host, which attaches the viewer's authority.
-- **No Yjs.** `ElementTx.text()` hands back a live `Y.Text`, which cannot cross a boundary, so
-  **a hardened plugin cannot contribute a collaborative-text element renderer** — nor any element
-  renderer, section, tool, route or overlay in stage 1: `panels` are the one web contribution kind
-  a worker serves. This is ADR 0016's T3 stated plainly: element renderers are a two-class
-  contribution, and WHICH interfaces a stranger's agent can author against depends on whether
-  the installer hardened the row. `core.notes` is the worked example of what stays in-realm.
-- **No panel argument, and no `openPanel`.** A worker's panel is mounted by instance id and
-  receives no leaf state, so `PanelProps.arg` and `host.openPanel` (ADR 0037) are in-realm only:
-  both would have to cross the boundary as frames the stage-1 surface does not carry
-  (`WEB_HOST_METHODS`, `mount`). A hardened reading surface therefore still shows one subject
-  per panel.
-- **No engine object.** `ctx.store`, `ctx.rooms`, `ctx.broker`, `ctx.identity`, `ctx.dials` and
-  the storage ledger verbs (`dataVersion`, `appliedMigrations`) are not served in stage 1. They are
-  absent from `GuestCtx`'s type, and reaching one at runtime anyway raises
-  `IsolateSliceUnavailable` — which the runtime answers as `refused`, a named rung at the door.
-- **No other plugin's anything.** Storage, event kinds, roster rows: unreachable by construction
-  rather than by contract.
-- **No CSS.** The stylesheet rule above: no `styles.css`, no `className`, no `style`.
+- **No DOM or page engine.** React hooks/context and the portable
+  `@manifold/ui` and `@manifold/plugin/hooks` exports work. `react-dom`,
+  a live `HostServices`, room replica, arbitrary tile geometry and
+  page-only UI components do not.
+- **No token.** The Worker does not hold `HostServices.token`; calls pass
+  through the page's current host and its ordinary authority checks.
+- **No Yjs element renderer.** A live `Y.Text` or canvas element host cannot
+  cross frames. Portable panels and sections work; document element renderers,
+  tools, overlays and custom routes need in-realm code.
+- **No unbounded server objects.** A guest does not receive `ctx.store`,
+  `ctx.rooms`, `ctx.broker` or raw `ctx.dials`. The bounded `ctx.machines`
+  and `ctx.identity` methods documented above are live, checked host calls,
+  not the corresponding service objects. Unserved operations refuse by name.
+- **No arbitrary CSS across the Worker boundary.** Frame output has no
+  `style`, `className` or CSS member. An installed bundle may still carry
+  an ownership-checked stylesheet for its in-realm page entry (§10).
 
 What you DO get is the same door: a hardened plugin's actions sit on the roster beside first-party
 ones, are traced at every dispatch, and answer the same ladder — plus the runner's own states,
@@ -4236,8 +4246,9 @@ bun run --cwd packages/plugin-kit pack <plugin-dir> --out <id>.manifold-plugin.j
 One JSON document (`PluginBundleSchema`): `format: 1`, your manifest, `builtAgainst`, and the
 built halves as base64 members. The printed `sha256` is over the file's exact bytes and is the
 pin the door demands; identical source and dependencies produce identical bytes regardless of
-the source's absolute location or the pack process's working directory. `--self-contained` is
-§9's flag and not yours.
+the source's absolute location or the pack process's working directory. A portable
+`entry.worker: true` automatically builds both a page-linked entry and a self-contained
+Worker entry; `--self-contained` is incompatible with that pair, not a hardening switch.
 
 Build integrations that generate machine artifacts use `compilePlugin(pluginDir, options)`
 from `@manifold/plugin-kit/pack`. It returns verified `{ bytes, sha256 }` without writing
