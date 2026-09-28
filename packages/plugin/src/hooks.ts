@@ -329,18 +329,4 @@ export {
  * state: subscribers naming one resource share one timer, one request and one snapshot, and
  * an unchanged answer reaches nobody (`./polled-resource.ts`).
  */
-export {
-  usePolledResource,
-  polledFeedReport,
-  resetPolledResources,
-  ATTENDANCE_RESOURCE,
-  CONTAINER_TERMINALS_RESOURCE,
-  FALLBACK_POLL_MS,
-  INDEX_RESOURCE,
-  MACHINES_RESOURCE,
-  TERMINALS_RESOURCE,
-  type PolledResource,
-  type PolledResourceOptions,
-  type PolledEquality,
-  type PolledFeedReport,
-} from "./polled-resource.ts";
+export * from "./portable-hooks.ts";

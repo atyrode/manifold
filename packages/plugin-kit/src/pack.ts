@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { BunPlugin } from "bun";
+import type { BuildOutput, BunPlugin } from "bun";
 import { open, realpath } from "node:fs/promises";
 import { constants } from "node:fs";
 import { verifyBundledArtifacts } from "./artifacts.ts";
@@ -11,6 +11,7 @@ import {
   MAX_PLUGIN_CHANGELOG_BYTES,
   PLUGIN_BUNDLE_FORMAT,
   PLUGIN_BUNDLE_SERVER_FILE,
+  PLUGIN_BUNDLE_WEB_WORKER_FILE,
   PLUGIN_BUNDLE_STYLES_FILE,
   PROTOCOL_VERSION,
   PluginBundleSchema,
@@ -42,6 +43,19 @@ export interface CompileOptions extends PackOptions {
   readonly generated?: {
     readonly manifest: PluginManifest;
     readonly members: ReadonlyMap<string, Uint8Array>;
+  };
+  /**
+   * Compile registered source instead of a manifest directory: `manifest` is the bundle's
+   * manifest as given (no `manifest.json` is read), `server` names the module that starts the
+   * server guest and `web` the module whose default export is the web definition. Paths
+   * resolve against `pluginDir` unless absolute; each is required exactly when the manifest's
+   * entry declares its half. Everything else — members, stamps, bounds, verification — is
+   * the one compilation below.
+   */
+  readonly source?: {
+    readonly manifest: PluginManifest;
+    readonly server?: string | undefined;
+    readonly web?: string | undefined;
   };
 }
 
@@ -137,34 +151,120 @@ async function sharedModules(
   };
 }
 
+/** Where the kit's own React, reconciler and frame barrel resolve from. */
+const KIT_SOURCE = fileURLToPath(new URL(".", import.meta.url));
+const WEB_GUEST = fileURLToPath(new URL("./web-guest.ts", import.meta.url));
+const WORKER_ENTRY = "manifold:web-worker";
+
+/**
+ * THE PORTABLE WORKER'S LINKAGE (ADR 0053 §1): one self-contained module with exactly one
+ * React — the kit's, which its reconciler pairs with — shared by the author's components, the
+ * frame barrel and the portable hooks. `@manifold/ui` is its frame barrel and
+ * `@manifold/plugin/hooks` its portable entry; the page's engine, its DOM layer and React DOM
+ * are refused by name, because a Worker has no document to give them. A side-effect stylesheet
+ * import compiles to nothing: frames are painted by the host's own vocabulary skin. The entry
+ * is generated: it imports the author's default export and starts the guest runtime on it.
+ */
+function portableModules(pluginDir: string, webSource: string): BunPlugin {
+  const fromPlugin = (specifier: string): string => {
+    try {
+      return Bun.resolveSync(specifier, pluginDir);
+    } catch {
+      return Bun.resolveSync(specifier, KIT_SOURCE);
+    }
+  };
+  return {
+    name: "manifold-portable-worker",
+    setup(builder) {
+      builder.onResolve({ filter: /^manifold:web-worker$/ }, () => ({
+        path: WORKER_ENTRY,
+        namespace: "manifold-worker",
+      }));
+      builder.onLoad({ filter: /.*/, namespace: "manifold-worker" }, () => ({
+        contents:
+          `import definition from ${JSON.stringify(webSource)};\n` +
+          `import { startWebWorker } from ${JSON.stringify(WEB_GUEST)};\n` +
+          `startWebWorker(definition);\n`,
+        loader: "js",
+      }));
+      builder.onResolve({ filter: /^react(?:-dom|-reconciler)?(?:\/.*)?$/ }, ({ path }) => {
+        if (path === "react-dom" || path.startsWith("react-dom/")) {
+          throw new Error(`a portable Worker cannot import ${path}: it has no document`);
+        }
+        return { path: Bun.resolveSync(path, KIT_SOURCE) };
+      });
+      builder.onResolve({ filter: /^@manifold\/(?:ui|plugin)(?:\/.*)?$/ }, ({ path }) => {
+        switch (path) {
+          case "@manifold/ui":
+          case "@manifold/ui/frames":
+            return { path: Bun.resolveSync("@manifold/ui/frames", KIT_SOURCE) };
+          case "@manifold/plugin/hooks":
+          case "@manifold/plugin/portable-hooks":
+            return { path: fromPlugin("@manifold/plugin/portable-hooks") };
+          default:
+            throw new Error(
+              `a portable Worker cannot import ${path}: it is the page's own layer (import engine types with \`import type\`)`,
+            );
+        }
+      });
+      builder.onResolve({ filter: /\.css$/ }, ({ path }) => ({
+        path,
+        namespace: "manifold-no-document",
+      }));
+      builder.onLoad({ filter: /.*/, namespace: "manifold-no-document" }, () => ({
+        contents: "",
+        loader: "js",
+      }));
+    },
+  };
+}
+
 async function build(
   entrypoint: string,
   target: "bun" | "browser",
   plugins: BunPlugin[],
+  onlyEntry = false,
 ): Promise<string> {
-  const result = await Bun.build({
-    entrypoints: [entrypoint],
-    target,
-    format: "esm",
-    // Bun's readable output embeds source-path comments relative to the process cwd. The bundle
-    // hash is a security pin, so remove those comments in the build rather than rewriting output.
-    minify: { whitespace: true },
-    plugins,
-    /*
-      A bundle is a PRODUCTION artifact whatever the packing process's NODE_ENV: the shell it
-      runs in is a production React whose shared `react/jsx-dev-runtime` exports `jsxDEV` as
-      undefined, so a member compiled with the development JSX transform (Bun's default when
-      NODE_ENV is unset — the hub's own case when it packs an unpacked directory) throws
-      `jsxDEV is not a function` at first render. This define selects `react/jsx-runtime`.
-    */
-    define: { "process.env.NODE_ENV": '"production"' },
-  });
+  let result: BuildOutput;
+  try {
+    result = await Bun.build({
+      entrypoints: [entrypoint],
+      target,
+      format: "esm",
+      // Bun's readable output embeds source-path comments relative to the process cwd. The bundle
+      // hash is a security pin, so remove those comments in the build rather than rewriting output.
+      minify: { whitespace: true },
+      plugins,
+      /*
+        A bundle is a PRODUCTION artifact whatever the packing process's NODE_ENV: the shell it
+        runs in is a production React whose shared `react/jsx-dev-runtime` exports `jsxDEV` as
+        undefined, so a member compiled with the development JSX transform (Bun's default when
+        NODE_ENV is unset — the hub's own case when it packs an unpacked directory) throws
+        `jsxDEV is not a function` at first render. This define selects `react/jsx-runtime`.
+      */
+      define: { "process.env.NODE_ENV": '"production"' },
+    });
+  } catch (error) {
+    // Bun rejects a failed build with its messages as an aggregate; name them, not "failed".
+    const messages = error instanceof AggregateError ? error.errors : [error];
+    const detail = messages
+      .map((inner: unknown) =>
+        typeof inner === "object" && inner !== null && "message" in inner
+          ? String(inner.message)
+          : String(inner),
+      )
+      .join("; ");
+    throw new Error(`bundling ${entrypoint} failed: ${detail}`, { cause: error });
+  }
   if (!result.success || result.outputs.length === 0) {
     const detail = result.logs.map((log) => log.message).join("; ");
     throw new Error(`bundling ${entrypoint} failed: ${detail === "" ? "no output" : detail}`);
   }
   const [artifact] = result.outputs;
   if (artifact === undefined) throw new Error(`bundling ${entrypoint} produced no artifact`);
+  if (onlyEntry && (result.outputs.length !== 1 || artifact.kind !== "entry-point")) {
+    throw new Error(`bundling ${entrypoint} produced assets a portable Worker cannot carry`);
+  }
   return artifact.text();
 }
 
@@ -256,21 +356,61 @@ export async function compilePlugin(
       );
     }
   }
+  const source = options.source;
+  if (source !== undefined && generated !== undefined) {
+    throw new Error("compile registered source or generated members, not both");
+  }
+  const registered =
+    source === undefined
+      ? undefined
+      : {
+          manifest: PluginManifestSchema.parse(source.manifest),
+          server: source.server,
+          web: source.web,
+        };
   pluginDir = resolve(pluginDir);
   const manifestFile = `${pluginDir}/manifest.json`;
-  const sourceManifest = PluginManifestSchema.parse(await Bun.file(manifestFile).json());
-  const manifest = generatedManifest ?? sourceManifest;
-  if (
-    generatedManifest !== undefined &&
-    (manifest.id !== sourceManifest.id ||
-      JSON.stringify(manifest.entry) !== JSON.stringify(sourceManifest.entry))
-  )
-    throw new Error(`${manifestFile}: generated manifest must preserve the source id and entry`);
+  let manifest: PluginManifest;
+  let where: string;
+  if (registered === undefined) {
+    const sourceManifest = PluginManifestSchema.parse(await Bun.file(manifestFile).json());
+    manifest = generatedManifest ?? sourceManifest;
+    where = manifestFile;
+    if (
+      generatedManifest !== undefined &&
+      (manifest.id !== sourceManifest.id ||
+        JSON.stringify(manifest.entry) !== JSON.stringify(sourceManifest.entry))
+    )
+      throw new Error(`${manifestFile}: generated manifest must preserve the source id and entry`);
+  } else {
+    manifest = registered.manifest;
+    where = `${manifest.id} registered source`;
+  }
   if (manifest.entry === undefined) {
-    throw new Error(`${manifestFile}: manifest.entry must name the halves this bundle runs`);
+    throw new Error(`${where}: manifest.entry must name the halves this bundle runs`);
   }
   if (manifest.entry.web === PLUGIN_BUNDLE_CHANGELOG_FILE) {
-    throw new Error(`${manifestFile}: entry.web may not claim ${PLUGIN_BUNDLE_CHANGELOG_FILE}`);
+    throw new Error(`${where}: entry.web may not claim ${PLUGIN_BUNDLE_CHANGELOG_FILE}`);
+  }
+  if (registered !== undefined) {
+    if ((manifest.entry.server === true) !== (registered.server !== undefined)) {
+      throw new Error(`${where}: a server source is required exactly when entry.server is true`);
+    }
+    if ((manifest.entry.web !== undefined) !== (registered.web !== undefined)) {
+      throw new Error(`${where}: a web source is required exactly when entry.web is declared`);
+    }
+  }
+  if (manifest.entry.worker === true) {
+    if (manifest.entry.web === undefined) {
+      throw new Error(`${where}: entry.worker is compiled beside an in-realm entry.web`);
+    }
+    // The page entry of a portable build IS its in-realm module, so it must link the shell's
+    // React: a self-contained copy would render hooks against a second React in the page.
+    if (shared === false) {
+      throw new Error(
+        `${where}: entry.worker requires the page-linked web entry; a self-contained web entry would load a second React into the page`,
+      );
+    }
   }
   const files: Record<string, string> = {};
   /*
@@ -285,7 +425,7 @@ export async function compilePlugin(
     files[PLUGIN_BUNDLE_STYLES_FILE] = Buffer.from(await sheet.text(), "utf8").toString("base64");
   } else if (await sheet.exists()) {
     throw new Error(
-      `${manifestFile}: ${PLUGIN_BUNDLE_STYLES_FILE} is beside the manifest but entry.styles is not true`,
+      `${where}: ${PLUGIN_BUNDLE_STYLES_FILE} is beside the manifest but entry.styles is not true`,
     );
   }
   const changelog = await changelogMember(pluginDir);
@@ -297,7 +437,8 @@ export async function compilePlugin(
       name === PLUGIN_BUNDLE_SERVER_FILE ||
       name === manifest.entry.web ||
       name === PLUGIN_BUNDLE_STYLES_FILE ||
-      name === PLUGIN_BUNDLE_CHANGELOG_FILE
+      name === PLUGIN_BUNDLE_CHANGELOG_FILE ||
+      (manifest.entry.worker === true && name === PLUGIN_BUNDLE_WEB_WORKER_FILE)
     )
       throw new Error(`machine member collides with a plugin entry: ${name}`);
     if (Object.hasOwn(files, name)) continue;
@@ -358,12 +499,29 @@ export async function compilePlugin(
       : [...manifestPlugins, await sharedModules(pluginDir, builtAgainst)];
   if (manifest.entry.server === true) {
     // A hardened server has no browser realm or shared-module registry.
-    const source = await build(`${pluginDir}/server.ts`, "bun", manifestPlugins);
-    files[PLUGIN_BUNDLE_SERVER_FILE] = Buffer.from(source, "utf8").toString("base64");
+    const entry =
+      registered?.server === undefined
+        ? `${pluginDir}/server.ts`
+        : resolve(pluginDir, registered.server);
+    const server = await build(entry, "bun", manifestPlugins);
+    files[PLUGIN_BUNDLE_SERVER_FILE] = Buffer.from(server, "utf8").toString("base64");
   }
   if (manifest.entry.web !== undefined) {
-    const source = await build(await webEntry(pluginDir), "browser", plugins);
-    files[manifest.entry.web] = Buffer.from(source, "utf8").toString("base64");
+    const entry =
+      registered?.web === undefined
+        ? await webEntry(pluginDir)
+        : resolve(pluginDir, registered.web);
+    const page = await build(entry, "browser", plugins);
+    files[manifest.entry.web] = Buffer.from(page, "utf8").toString("base64");
+    if (manifest.entry.worker === true) {
+      const worker = await build(
+        WORKER_ENTRY,
+        "browser",
+        [...manifestPlugins, portableModules(pluginDir, entry)],
+        true,
+      );
+      files[PLUGIN_BUNDLE_WEB_WORKER_FILE] = Buffer.from(worker, "utf8").toString("base64");
+    }
   }
   const bundle: PluginBundle = PluginBundleSchema.parse({
     format: PLUGIN_BUNDLE_FORMAT,

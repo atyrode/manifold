@@ -32,6 +32,12 @@ import {
   MAX_ISOLATE_EMITS,
   ISOLATE_MAX_FRAME_BYTES,
   ManifoldRefSchema,
+  MachineBridgeResultSchemas,
+  type MachineBridgeAnswer,
+  type MachineCredentialGrant,
+  type MachineDrainOutcome,
+  type MachineEnrollmentOutcome,
+  type MachineInventory,
   InspectJobInputsArgsSchema,
   InspectJobInputsResultSchema,
   type InspectJobInputsArgs,
@@ -407,6 +413,22 @@ export interface GuestCtx {
      * saying nobody could be asked — offline, too old a transport, or silent — never a fact.
      */
     repository(query: MachineRepositoryQuery): Promise<GuestRepositoryOutcome>;
+    /** The whole fleet's public metadata in one round trip, or the host's refusal. */
+    inventory(): Promise<MachineBridgeAnswer<MachineInventory>>;
+    /** Closes or reopens a machine's terminal admission; the host re-proves the caller. */
+    drain(machineId: string, draining: boolean): Promise<MachineDrainOutcome>;
+  };
+  /**
+   * THE FLEET'S IDENTITY VERBS (contract 9), and only these: the host binds each to the live
+   * caller AND this door's declared ceiling, names machines by id and re-resolves them, and
+   * answers public identity, a count, at most one raw token, or a refusal as data.
+   */
+  readonly identity: {
+    /** One host-side find-or-create by name; a token only when this call minted the machine. */
+    enrollMachine(name: string): Promise<MachineBridgeAnswer<MachineEnrollmentOutcome>>;
+    rotateMachineToken(machineId: string): Promise<MachineBridgeAnswer<MachineCredentialGrant>>;
+    revokeMachine(machineId: string): Promise<MachineBridgeAnswer<number>>;
+    forgetMachine(machineId: string): Promise<MachineBridgeAnswer<null>>;
   };
   readonly placement: { place(request: PlaceRequest): Promise<GuestPlaceOutcome> };
   readonly host: { roster(): Promise<PluginRoster>; enabled(id: string): Promise<boolean> };
@@ -811,7 +833,7 @@ function sqlParamsToWire(params: readonly GuestSqlParam[]): readonly unknown[] {
 // ---------------------------------------------------------------------------- the runtime
 
 /** The ActionCtx members stage 1 does not serve; reaching one is a named refusal, not a TypeError. */
-const UNSERVED_SLICES = ["store", "rooms", "broker", "identity", "dials"] as const;
+const UNSERVED_SLICES = ["store", "rooms", "broker", "dials"] as const;
 
 /** One request's calls: `<requestId>:<n>`, so the host finds the dispatch a call belongs to. */
 type Call = (method: IsolateCtxMethod, args: readonly unknown[]) => Promise<unknown>;
@@ -1270,6 +1292,32 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
           (await call("machines.getTerminalExecution", [machineId])) as TerminalExecution | null,
         repository: async (query) =>
           (await call("machines.repository", [query])) as GuestRepositoryOutcome,
+        inventory: async () =>
+          MachineBridgeResultSchemas["machines.inventory"].parse(
+            await call("machines.inventory", []),
+          ),
+        drain: async (machineId, draining) =>
+          MachineBridgeResultSchemas["machines.drain"].parse(
+            await call("machines.drain", [machineId, draining]),
+          ),
+      },
+      identity: {
+        enrollMachine: async (name) =>
+          MachineBridgeResultSchemas["identity.enrollMachine"].parse(
+            await call("identity.enrollMachine", [name]),
+          ),
+        rotateMachineToken: async (machineId) =>
+          MachineBridgeResultSchemas["identity.rotateMachineToken"].parse(
+            await call("identity.rotateMachineToken", [machineId]),
+          ),
+        revokeMachine: async (machineId) =>
+          MachineBridgeResultSchemas["identity.revokeMachine"].parse(
+            await call("identity.revokeMachine", [machineId]),
+          ),
+        forgetMachine: async (machineId) =>
+          MachineBridgeResultSchemas["identity.forgetMachine"].parse(
+            await call("identity.forgetMachine", [machineId]),
+          ),
       },
       placement: {
         place: async (request) => (await call("placement.place", [request])) as GuestPlaceOutcome,

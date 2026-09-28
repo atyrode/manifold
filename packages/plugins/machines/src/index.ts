@@ -1,4 +1,4 @@
-import { defineAction } from "@manifold/plugin";
+import type { AnyActionDef } from "@manifold/plugin";
 import {
   DrainMachineRequestSchema,
   EnrollMachineRequestSchema,
@@ -12,6 +12,9 @@ import {
   type PluginManifest,
 } from "@manifold/protocol";
 import { z } from "zod";
+import type { MACHINES_PLUGIN_ID } from "./names.ts";
+
+export { MACHINES_FORGET_ACTION, MACHINES_REVOKE_ACTION } from "./names.ts";
 
 /**
  * The machine fleet, as a plugin: the inventory a workspace can see and the enrolment that
@@ -24,9 +27,10 @@ import { z } from "zod";
  * is the highest-authority thing the fleet can do. `containers:read` is the list's ceiling, matching
  * the route it replaces exactly.
  */
-export const machinesManifest: PluginManifest = {
+export const machinesManifest: PluginManifest & { readonly id: typeof MACHINES_PLUGIN_ID } = {
+  // A literal because the plugin-package gate reads it (S5); the type keeps it the shared name.
   id: "core.machines",
-  version: "1.2.0",
+  version: "1.3.0",
   title: "Machines",
   description:
     "Enrolls machines, lists them with live online state, withdraws a machine's credential, drains a machine's terminal admission, and births terminals.",
@@ -63,15 +67,14 @@ export const machinesManifest: PluginManifest = {
       { id: "machine_offline", title: "Machine offline" },
     ],
   },
+  /*
+    WHAT THIS BUILD CAN BE COMPILED INTO, never how it runs. The same source packs into a
+    server guest, the in-realm web module and the self-contained portable Worker entry, so a
+    trusted bootstrap that selects hardened execution (`MANIFOLD_HARDENED_PLUGINS`) compiles
+    exactly this manifest and nothing else. In-realm execution, the default, ignores it.
+  */
+  entry: { server: true, web: "web.js", worker: true },
 };
-
-/**
- * The withdrawal door's full name, built from the manifest id rather than spelled: the chrome
- * that dispatches it and the `data-action` attribute that names it in the DOM (AXIOMS.md §Foundation law and REGISTRY.md §Foundation)
- * cannot drift from the declaration below. `core.keys` set this precedent.
- */
-export const MACHINES_REVOKE_ACTION = `${machinesManifest.id}.revoke`;
-export const MACHINES_FORGET_ACTION = `${machinesManifest.id}.forget`;
 
 /**
  * The wire shapes are the protocol's, not this plugin's, and deliberately: `MachineSummary`
@@ -80,8 +83,8 @@ export const MACHINES_FORGET_ACTION = `${machinesManifest.id}.forget`;
  * second convention docs/CONTRACTS.md §One authoritative implementation forbids — so the actions publish the protocol schemas and
  * the roster's JSON Schema is that shape, byte for byte.
  */
-export const machinesActions = [
-  defineAction({
+export const machinesActions: readonly AnyActionDef[] = [
+  {
     /*
       A READ, and therefore `scope: "container"`: `GET /api/machines` answered any authenticated
       token including a container-scoped one, because a viewer holding a share link still has to
@@ -96,15 +99,15 @@ export const machinesActions = [
     caps: ["containers:read"],
     input: z.strictObject({}),
     result: MachinesResponseSchema,
-  }),
-  defineAction({
+  },
+  {
     name: "enroll",
     title: "Enroll a machine",
     caps: ["machines:mint"],
     input: EnrollMachineRequestSchema,
     result: MachineEnrollResponseSchema,
-  }),
-  defineAction({
+  },
+  {
     /*
       WITHDRAWAL AS AN ACT — the door ADR 0019 §3 names as the one thing missing from this
       plugin. `list` and `enroll` were the whole vocabulary, so a credential minted for "a
@@ -145,15 +148,15 @@ export const machinesActions = [
       second shape for one answer.
     */
     result: RevokeResultSchema,
-  }),
-  defineAction({
+  },
+  {
     name: "forget",
     title: "Forget a revoked machine",
     caps: ["machines:mint"],
     input: ForgetMachineRequestSchema,
     result: ForgetMachineResultSchema,
-  }),
-  defineAction({
+  },
+  {
     /*
       ADMISSION AS AN ACT (issue #278). A host activation that replaces a machine's agent has
       to know that no terminal will be born between its last look and the replacement, and
@@ -179,5 +182,5 @@ export const machinesActions = [
     caps: ["machines:mint"],
     input: DrainMachineRequestSchema,
     result: MachineDrainStatusSchema,
-  }),
+  },
 ];

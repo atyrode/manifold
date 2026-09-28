@@ -16,6 +16,7 @@ import {
   ISOLATE_MIGRATION_DEADLINE_MS,
   MAX_MIGRATION_STORAGE_OPERATIONS,
   ManifoldRefSchema,
+  isMachineBridgeMethod,
   IsolateHarnessRequestSchema,
   IsolateHarnessResultSchemas,
   type IsolateHarnessRequest,
@@ -987,6 +988,9 @@ export class IsolateSupervisor implements IsolateRunner {
           throw error;
         }
       } else {
+        // The fleet bridge is contract 9's; an older guest was never built to ask for it.
+        if (isMachineBridgeMethod(frame.method) && (isolate.ref.hardenedContract ?? 1) < 9)
+          throw new Error(`slice_unavailable: ${frame.method}`);
         result = await serveCtxCall(frame.method, frame.args, pending.served);
       }
       reply = { t: "reply", id: frame.id, ok: true, result: result ?? null };

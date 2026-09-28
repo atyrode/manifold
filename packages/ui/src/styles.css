@@ -8,9 +8,10 @@
  * sheet that may write a rule with no class (S13).
  *
  * THEN THE COMPONENTS: the one node titlebar, the glyph vocabulary, the layout algebra, the
- * disclosure, the scroll region, the keycap, the chip, the key-value list, the popover. Each
- * block owns exactly the boxes its component emits; the tint an adopter wants is written in the
- * adopter's own family's sheet, never here.
+ * disclosure, the scroll region, the keycap, the chip, the key-value list, the popover, and the
+ * component vocabulary both execution modes paint with. Each block owns exactly the boxes its
+ * component emits; the tint an adopter wants is written in the adopter's own family's sheet,
+ * never here.
  *
  * NOT HERE: the tile tree's three skins, the drop preview and its denial note, the carry ghost,
  * the overlay slots and the zone probe. Those are the ENGINE's chrome — `tile-tree.tsx` asserts
@@ -613,4 +614,402 @@ button.chip:focus-visible {
   color: #dee2e6;
   font-size: 0.72rem;
   line-height: 1.35;
+}
+
+/*
+ * ── The component vocabulary (`vocabulary.tsx`, `mf-vocab`) ──────────────────
+ * THE ONE FAMILY every `UiNode` kind paints into (ADR 0016 §3, ADR 0053): a portable plugin's
+ * components rendered in the page, and the tree a hardened Worker sends, which the host paints
+ * back through those same components. A Worker ships no stylesheet, so the only ink its tree
+ * can have is what these rules give the fourteen kinds — the whole point of a closed
+ * vocabulary. One anchor per kind (`mf-vocab-<type>`), tones as `data-tone`, states as `is-*`.
+ *
+ * EVERY ANCHOR STANDS ALONE. A component rendered in the page has no host root around it, so
+ * each anchor reads its own tokens, tone and type size instead of inheriting them from
+ * `.mf-vocab`, which is only the frame the host puts around a painted tree.
+ *
+ * No new colour is minted here. The five tones are the shell's own reads: neutral and muted are
+ * the two text variables `shell.css` publishes for a section body, and accent, danger and success
+ * are the exact values the sidebar already paints its primary control, its danger row action and
+ * its running mark with. Nothing animates; hover and keyboard focus follow the sidebar's row
+ * conventions (a background lift, `:focus-visible` treated like hover).
+ */
+.mf-vocab,
+.mf-vocab-heading,
+.mf-vocab-text,
+.mf-vocab-code,
+.mf-vocab-badge,
+.mf-vocab-divider,
+.mf-vocab-spinner,
+.mf-vocab-button,
+.mf-vocab-select__field,
+.mf-vocab-select,
+.mf-vocab-input__field,
+.mf-vocab-input,
+.mf-vocab-toggle,
+.mf-vocab-list,
+.mf-vocab-empty {
+  --mf-vocab-neutral: var(--text-primary-color, #e9ecef);
+  --mf-vocab-muted: var(--text-secondary-color, #868e96);
+  --mf-vocab-accent: #bac8ff;
+  --mf-vocab-danger: #ffa8a8;
+  --mf-vocab-success: #51cf66;
+  --mf-vocab-border: var(--default-border-color, #343a40);
+  --mf-vocab-island: var(--island-bg-color, #202329);
+  --mf-vocab-radius: var(--border-radius-md, 0.4rem);
+  --mf-vocab-lift: #2b2e34;
+  --mf-vocab-mono: var(--font-family-monospace, monospace);
+}
+
+/* A tone resolves once, on the node that asked, and everything under it reads the result. */
+.mf-vocab[data-tone="neutral"],
+.mf-vocab-text[data-tone="neutral"],
+.mf-vocab-badge[data-tone="neutral"],
+.mf-vocab-button[data-tone="neutral"],
+.mf-vocab-list__item[data-tone="neutral"] {
+  --mf-vocab-tone: var(--mf-vocab-neutral);
+}
+
+.mf-vocab[data-tone="muted"],
+.mf-vocab-text[data-tone="muted"],
+.mf-vocab-badge[data-tone="muted"],
+.mf-vocab-button[data-tone="muted"],
+.mf-vocab-list__item[data-tone="muted"] {
+  --mf-vocab-tone: var(--mf-vocab-muted);
+}
+
+.mf-vocab[data-tone="accent"],
+.mf-vocab-text[data-tone="accent"],
+.mf-vocab-badge[data-tone="accent"],
+.mf-vocab-button[data-tone="accent"],
+.mf-vocab-list__item[data-tone="accent"] {
+  --mf-vocab-tone: var(--mf-vocab-accent);
+}
+
+.mf-vocab[data-tone="danger"],
+.mf-vocab-text[data-tone="danger"],
+.mf-vocab-badge[data-tone="danger"],
+.mf-vocab-button[data-tone="danger"],
+.mf-vocab-list__item[data-tone="danger"] {
+  --mf-vocab-tone: var(--mf-vocab-danger);
+}
+
+.mf-vocab[data-tone="success"],
+.mf-vocab-text[data-tone="success"],
+.mf-vocab-badge[data-tone="success"],
+.mf-vocab-button[data-tone="success"],
+.mf-vocab-list__item[data-tone="success"] {
+  --mf-vocab-tone: var(--mf-vocab-success);
+}
+
+/* The host's frame around a painted panel tree: its own inset, its own scroll. */
+.mf-vocab {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+  padding: 0.5rem;
+  color: var(--mf-vocab-neutral);
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+/* A section's tree sits in the rail's own body, which already insets and scrolls it. */
+.mf-vocab.is-section {
+  height: auto;
+  overflow: visible;
+  padding: 0;
+}
+
+/* ── box ── Stack/Cluster own layout; these flags preserve the older wire's sizing knobs. */
+.mf-vocab-box {
+  min-height: 0;
+}
+
+.mf-vocab-box.is-grow {
+  flex: 1 1 auto;
+}
+
+.mf-vocab-box.is-wrap {
+  flex-wrap: wrap;
+}
+
+/* ── heading, text, code, badge, divider ────────────────────────────────── */
+.mf-vocab-heading {
+  margin: 0;
+  overflow: hidden;
+  font-weight: 600;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mf-vocab-heading[data-level="1"] {
+  font-size: 1rem;
+}
+
+.mf-vocab-heading[data-level="2"] {
+  font-size: 0.86rem;
+}
+
+.mf-vocab-heading[data-level="3"] {
+  color: var(--mf-vocab-muted);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.mf-vocab-text {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--mf-vocab-tone, inherit);
+  font-size: 0.78rem;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mf-vocab-text.is-wrap {
+  overflow: visible;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: pre-wrap;
+}
+
+.mf-vocab-text.is-strong {
+  font-weight: 600;
+}
+
+/* A zero basis: the label takes the free space and truncates in place, so it never pushes
+   its neighbours onto a new line of a wrapping row. */
+.mf-vocab-text.is-grow {
+  flex: 1 1 0;
+}
+
+.mf-vocab-text.is-mono,
+.mf-vocab-input.is-mono {
+  font-family: var(--mf-vocab-mono);
+}
+
+.mf-vocab-code {
+  margin: 0;
+  border: 1px solid var(--mf-vocab-border);
+  border-radius: var(--mf-vocab-radius);
+  padding: 0.45rem 0.55rem;
+  overflow: auto;
+  background: var(--mf-vocab-island);
+  font-family: var(--mf-vocab-mono);
+  font-size: 0.7rem;
+  line-height: 1.35;
+  white-space: pre;
+}
+
+/* A token sized to its word — never stretched across a column, never squeezed in a row. */
+.mf-vocab-badge {
+  flex: none;
+  width: fit-content;
+  border: 1px solid currentcolor;
+  border-radius: 999px;
+  padding: 0.05rem 0.45rem;
+  color: var(--mf-vocab-tone, var(--mf-vocab-muted));
+  font-size: 0.66rem;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.mf-vocab-divider {
+  width: 100%;
+  height: 1px;
+  margin: 0;
+  border: 0;
+  background: var(--mf-vocab-border);
+}
+
+/* ── spinner, empty ─────────────────────────────────────────────────────── */
+.mf-vocab-spinner {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--mf-vocab-muted);
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+/* A still ring: "the answer is arriving" without motion, like the skeletons. */
+.mf-vocab-spinner__mark {
+  width: 0.7rem;
+  height: 0.7rem;
+  border: 2px solid var(--mf-vocab-border);
+  border-top-color: var(--mf-vocab-accent);
+  border-radius: 999px;
+}
+
+/* The placeholder idiom: dashed, muted, centred, filling whatever box it is handed. */
+.mf-vocab-empty {
+  display: grid;
+  flex: 1 1 auto;
+  place-content: center;
+  margin: 0;
+  border: 1px dashed var(--mf-vocab-border);
+  border-radius: var(--mf-vocab-radius);
+  padding: 0.5rem;
+  color: var(--mf-vocab-tone, var(--mf-vocab-muted));
+  font-size: 0.78rem;
+  line-height: 1.4;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+/* ── button ── sized to its label like the badge; an icon rides before the label in the
+   control's own colour. */
+.mf-vocab-button {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3rem;
+  width: fit-content;
+  border: 1px solid var(--mf-vocab-border);
+  border-radius: var(--mf-vocab-radius);
+  padding: 0.3rem 0.65rem;
+  color: var(--mf-vocab-tone, var(--mf-vocab-neutral));
+  background: transparent;
+  font-size: 0.76rem;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* An icon-only control is the rail's inline action: square around its glyph, and quiet —
+   no border — until it is hovered or focused. */
+.mf-vocab-button.is-icon-only {
+  border-color: transparent;
+  padding: 0.2rem;
+}
+
+.mf-vocab-button:hover:not(:disabled),
+.mf-vocab-button:focus-visible {
+  border-color: #495057;
+  background: var(--mf-vocab-lift);
+}
+
+.mf-vocab-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* ── select, input, toggle ──────────────────────────────────────────────── */
+.mf-vocab-select__field,
+.mf-vocab-input__field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.mf-vocab-select__label,
+.mf-vocab-input__label,
+.mf-vocab-toggle__label {
+  color: var(--mf-vocab-muted);
+  font-size: 0.7rem;
+}
+
+.mf-vocab-select,
+.mf-vocab-input {
+  width: 100%;
+  min-width: 0;
+  height: 1.8rem;
+  border: 1px solid var(--mf-vocab-border);
+  border-radius: var(--mf-vocab-radius);
+  padding: 0.25rem 0.4rem;
+  color: var(--mf-vocab-neutral);
+  background: var(--mf-vocab-island);
+  font: inherit;
+  font-size: 0.76rem;
+}
+
+.mf-vocab-select:disabled,
+.mf-vocab-input:disabled,
+.mf-vocab-toggle__control:disabled {
+  opacity: 0.4;
+}
+
+.mf-vocab-select:focus-visible {
+  border-color: #748ffc;
+  outline: none;
+}
+
+.mf-vocab-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  cursor: pointer;
+}
+
+/* The floor sizes every input for a form field; a checkbox is not one. */
+.mf-vocab-toggle__control {
+  width: 0.9rem;
+  height: 0.9rem;
+  margin: 0;
+  padding: 0;
+  accent-color: #4c6ef5;
+  cursor: inherit;
+}
+
+.mf-vocab-toggle__label {
+  color: var(--mf-vocab-neutral);
+  font-size: 0.76rem;
+}
+
+/* ── list ───────────────────────────────────────────────────────────────── */
+.mf-vocab-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  margin: 0;
+  padding: 0;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  list-style: none;
+}
+
+.mf-vocab-list__row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  border-radius: var(--mf-vocab-radius);
+  padding: 0.3rem 0.45rem;
+  color: var(--mf-vocab-tone, var(--mf-vocab-neutral));
+  background: transparent;
+  font: inherit;
+  text-align: left;
+}
+
+.mf-vocab-list__row.is-pressable {
+  cursor: pointer;
+}
+
+.mf-vocab-list__row.is-pressable:hover,
+.mf-vocab-list__row.is-pressable:focus-visible {
+  background: #22252b;
+}
+
+.mf-vocab-list__primary,
+.mf-vocab-list__secondary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mf-vocab-list__secondary {
+  color: var(--mf-vocab-muted);
+  font-size: 0.68rem;
 }

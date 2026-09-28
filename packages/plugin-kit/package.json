@@ -7,7 +7,6 @@
     ".": "./src/index.ts",
     "./server": "./src/server.ts",
     "./web": "./src/web.ts",
-    "./ui": "./src/ui.ts",
     "./pack": "./src/pack.ts",
     "./hub": "./src/hub.ts",
     "./install": "./src/install.ts",
@@ -28,13 +27,15 @@
   "dependencies": {
     "@manifold/protocol": "workspace:*",
     "@manifold/sdk": "workspace:*",
+    "@manifold/ui": "workspace:*",
+    "react": "19.2.8",
+    "react-reconciler": "0.33.0",
     "zod": "4.4.3"
   },
   "devDependencies": {
     "@manifold/plugin": "workspace:*",
-    "@manifold/ui": "workspace:*",
     "@types/bun": "^1.3.2",
     "@types/react": "^19.2.0",
-    "react": "19.2.8"
+    "@types/react-reconciler": "0.33.0"
   }
 }

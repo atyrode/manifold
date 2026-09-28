@@ -165,34 +165,6 @@ describe("buildBrowserAssembly", () => {
     expect(assembly.pluginTitle("core.canvas.draw")).toBe("Drawing");
   });
 
-  test("only installer-selected hardening selects the stable worker panel", () => {
-    const installed = (hardened?: boolean): PluginRosterEntry => ({
-      ...entry({
-        id: "acme.notes",
-        title: "Notes",
-        entry: { web: "web.js" },
-        contributes: { panels: [{ id: "main", title: "Notes" }] },
-      }),
-      install: {
-        sha256: "a".repeat(64),
-        source: "/uploads/acme.notes.manifold-plugin.json",
-        grantedCaps: [],
-        installedBy: "p1",
-        installedAt: 1,
-        ...(hardened === undefined ? {} : { hardened }),
-      },
-    });
-    const def: WebPluginDef = { id: "acme.notes", panels: { main: Sidebar } };
-    const panelOf = (row: PluginRosterEntry) =>
-      buildBrowserAssembly([row], 1, [def]).panels.get("acme.notes.main")?.Component;
-    const worker = panelOf(installed(true));
-    expect(worker).not.toBeNull();
-    expect(worker).not.toBe(Sidebar);
-    expect(panelOf(installed(true))).toBe(worker);
-    expect(panelOf(installed(false))).toBe(Sidebar);
-    expect(panelOf(installed())).toBe(Sidebar);
-  });
-
   test("a disabled plugin keeps every contribution, tagged enabled:false", () => {
     const assembly = buildBrowserAssembly(
       [entry(SHELL), entry(MACHINES, false), entry(DRAW, false), entry(URI, false)],

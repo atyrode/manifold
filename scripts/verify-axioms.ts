@@ -708,7 +708,14 @@ for (const row of registries.floor) {
 {
   const offenders: string[] = [];
   for (const path of [...floorFiles].sort()) {
-    if (path === WEB_COMPOSITION || path === SERVER_COMPOSITION) continue;
+    // The trusted machine guest entry assembles the same definition as the native root.
+    // This exact file is the only additional exception; its directory is not a boundary.
+    if (
+      path === WEB_COMPOSITION ||
+      path === SERVER_COMPOSITION ||
+      path === "packages/server/src/first-party/machines.server.ts"
+    )
+      continue;
     for (const specifier of moduleSpecifiers(path)) {
       if (specifier.text.startsWith("@manifold-plugin/")) {
         offenders.push(`${path}:${String(specifier.line)} imports ${specifier.text}`);
@@ -719,7 +726,7 @@ for (const row of registries.floor) {
     "S2 floor imports no plugin",
     offenders.length === 0,
     offenders.length === 0
-      ? `${String(floorFiles.size)} floor sources import no @manifold-plugin/*`
+      ? `${String(floorFiles.size)} floor sources import no @manifold-plugin/* outside the two assembly roots and the exact trusted machines entry`
       : list(offenders),
   );
 }
@@ -1060,6 +1067,8 @@ const ROUTE_ALLOWLIST: readonly string[] = [
   "/api/attendance",
   "/api/plugins",
   "/api/plugins/:id/web.js",
+  // The portable Worker uses the web module's authenticated containers:read door.
+  "/api/plugins/:id/web.worker.js",
   "/api/plugins/:id/styles.css",
   "/api/protocol",
   "/api/resolve",
@@ -2563,14 +2572,7 @@ try {
   mkdirSync(uploads, { recursive: true });
   const bundlePath = join(uploads, `${STRANGER_PLUGIN_ID}.manifold-plugin.json`);
   const pack = Bun.spawn(
-    [
-      "bun",
-      join(kit, "src/pack.ts"),
-      join(kit, "test/fixtures/sample"),
-      "--out",
-      bundlePath,
-      "--self-contained",
-    ],
+    ["bun", join(kit, "src/pack.ts"), join(kit, "test/fixtures/sample"), "--out", bundlePath],
     { cwd: kit, stdout: "pipe", stderr: "pipe" },
   );
   const [packOut, packErr, packCode] = await Promise.all([
@@ -5858,10 +5860,11 @@ try {
   // ─────────────────────────────────────────── R11: a stranger's plugin, both halves
 
   /**
-   * AN INSTALLED PLUGIN, END TO END (ADR 0016 §8 stage 1). Every other rung of this gate drives
-   * plugins compiled into the build and handed the engine's real objects. This one takes the
-   * kit's reference plugin the way an operator would — packed into one artifact, dropped into
-   * `<data>/plugin-uploads/`, admitted at `engine.plugins.install` — and asks the two questions
+   * AN INSTALLED PLUGIN, END TO END (ADR 0016 §8 stage 1, ADR 0053). Every other rung of this
+   * gate drives plugins compiled into the build and handed the engine's real objects. This
+   * one takes the kit's reference React plugin (`test/fixtures/sample/web.tsx`) the way an
+   * operator would — packed into one artifact, dropped into `<data>/plugin-uploads/`,
+   * admitted at `engine.plugins.install` — and asks the two questions
    * only a real server and a real browser can answer together: does the server half answer its
    * door from its OWN process, and does the web half, in a Worker that never touches the DOM,
    * paint the closed vocabulary on screen and dispatch through the host's door when its button

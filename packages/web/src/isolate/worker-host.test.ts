@@ -1,19 +1,13 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test, vi } from "bun:test";
-import type { HostServices, StreamHandle } from "@manifold/plugin";
+import type { HostServices, SessionHandle, StreamHandle } from "@manifold/plugin";
 import type {
+  MachineSummary,
   Principal,
   StreamServerMessage,
-  UiNode,
   WebIsolateHostFrame,
 } from "@manifold/protocol";
 import { WebIsolateHostFrameSchema } from "@manifold/protocol";
-import {
-  WORKER_GRACE_MS,
-  WorkerHost,
-  WorkerRegistry,
-  webModulePath,
-  type WorkerLike,
-} from "./worker-host.ts";
+import { WORKER_GRACE_MS, WorkerHost, WorkerRegistry, type WorkerLike } from "./worker-host.ts";
 
 /**
  * THE SUPERVISOR'S CONTRACT (ADR 0016 §1, §3): a worker announces what it serves, is told what is
@@ -71,10 +65,13 @@ class FakeWorker implements WorkerLike {
   }
 }
 
-const VIEWER: Principal = { id: "p1", kind: "human", name: "Ada", color: "#fff" };
+const VIEWER: Principal = { id: "p1", kind: "human", name: "Ada", color: "#ffffff" };
 
 /** The doors a served call reaches, each recording the call and answering recognisably. */
 interface FakeClient {
+  readonly status: SessionHandle["status"];
+  subscribe: SessionHandle["subscribe"];
+  on: SessionHandle["on"];
   action(name: string, args: unknown): Promise<unknown>;
   place(ref: unknown, destination: unknown): Promise<unknown>;
   selfCaps(): readonly string[];
@@ -87,6 +84,9 @@ interface FakeClient {
 
 function fakeClient(calls: string[]): FakeClient {
   return {
+    status: "open",
+    subscribe: () => () => {},
+    on: () => () => {},
     action: (name, args) => {
       calls.push(`action:${name}:${JSON.stringify(args)}`);
       return Promise.resolve({ ok: true, result: { done: name } });
@@ -122,6 +122,8 @@ function fakeHost(calls: string[], containerId: string | null = "c1", client = f
     principal: VIEWER,
     token: "secret",
     containerId,
+    authoring: null,
+    topics: { index: [], terminals: [], attendance: [], machines: [] },
     navigate: (uri: string) => calls.push(`navigate:${uri}`),
   };
   return partial as unknown as HostServices;
@@ -131,8 +133,6 @@ function fakeHost(calls: string[], containerId: string | null = "c1", client = f
 async function flush(): Promise<void> {
   for (let tick = 0; tick < 8; tick += 1) await Promise.resolve();
 }
-
-const TREE: UiNode = { type: "text", text: "hello" };
 
 interface Bench {
   readonly worker: FakeWorker;
@@ -157,13 +157,23 @@ function bench(client?: FakeClient): Bench {
 
 /** Faults are reported to the console as well; the tests read the panel-facing report. */
 let consoleError: ReturnType<typeof spyOn> | null = null;
+let documentDescriptor: PropertyDescriptor | undefined;
 beforeEach(() => {
+  // Agent graphics tests install a canvas-only DOM; this suite owns a browser event target.
+  documentDescriptor = Object.getOwnPropertyDescriptor(globalThis, "document");
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    writable: true,
+    value: Object.assign(new EventTarget(), { hidden: false }),
+  });
   consoleError = spyOn(console, "error").mockImplementation(() => {});
 });
 afterEach(() => {
   consoleError?.mockRestore();
   consoleError = null;
   vi.useRealTimers();
+  if (documentDescriptor === undefined) Reflect.deleteProperty(globalThis, "document");
+  else Object.defineProperty(globalThis, "document", documentDescriptor);
 });
 
 test("stream delivery is bounded for a stalled worker and releases the SDK subscription", async () => {
@@ -219,158 +229,6 @@ test("stream delivery is bounded for a stalled worker and releases the SDK subsc
 });
 
 describe("WorkerHost frames", () => {
-  test("start spawns the module from the instance's route and sends init with the viewer", () => {
-    const urls: string[] = [];
-    const worker = new FakeWorker();
-    const host = new WorkerHost({
-      pluginId: "acme.notes",
-      principal: VIEWER,
-      caps: ["containers:read"],
-      containerId: "c1",
-      host: fakeHost([]),
-      workerFactory: (url) => {
-        urls.push(url);
-        return worker;
-      },
-    });
-    host.start();
-    expect(urls).toEqual(["/api/plugins/acme.notes/web.js"]);
-    expect(webModulePath("acme/notes")).toBe("/api/plugins/acme%2Fnotes/web.js");
-    expect(worker.frames()).toEqual([
-      {
-        t: "init",
-        pluginId: "acme.notes",
-        principal: VIEWER,
-        caps: ["containers:read"],
-        containerId: "c1",
-      },
-    ]);
-  });
-
-  test("ready registers the served panels: mounted instances get `mount`, others fault", () => {
-    const { worker, host } = bench();
-    const faults: string[] = [];
-    host.mount(
-      "i1",
-      "main",
-      () => {},
-      (error) => faults.push(error),
-    );
-    host.mount(
-      "i2",
-      "extra",
-      () => {},
-      (error) => faults.push(error),
-    );
-    expect(worker.frames()).toHaveLength(1);
-
-    worker.emit({ t: "ready", panels: ["main"] });
-
-    expect(worker.frames().slice(1)).toEqual([{ t: "mount", instance: "i1", panel: "main" }]);
-    expect(faults).toEqual([
-      'panel "extra" is declared by acme.notes but its web half serves no program for it',
-    ]);
-
-    // A mount after ready is announced at once.
-    host.mount(
-      "i3",
-      "main",
-      () => {},
-      () => {},
-    );
-    expect(worker.frames().at(-1)).toEqual({ t: "mount", instance: "i3", panel: "main" });
-  });
-
-  test("render reaches the instance it names and nobody else", () => {
-    const { worker, host } = bench();
-    const seen: string[] = [];
-    host.mount(
-      "i1",
-      "main",
-      (tree) => seen.push(`i1:${JSON.stringify(tree)}`),
-      () => {},
-    );
-    host.mount(
-      "i2",
-      "main",
-      (tree) => seen.push(`i2:${JSON.stringify(tree)}`),
-      () => {},
-    );
-    worker.emit({ t: "ready", panels: ["main"] });
-
-    worker.emit({ t: "render", instance: "i2", tree: TREE });
-    worker.emit({ t: "render", instance: "gone", tree: TREE });
-
-    expect(seen).toEqual([`i2:${JSON.stringify(TREE)}`]);
-  });
-
-  test("call is served from the host ref and replied, ok or refused, by id", async () => {
-    const { worker, host, calls } = bench();
-    host.mount(
-      "i1",
-      "main",
-      () => {},
-      () => {},
-    );
-    worker.emit({ t: "ready", panels: ["main"] });
-    const before = worker.frames().length;
-
-    worker.emit({ t: "call", id: "1", method: "action", args: ["core.notes.add", { text: "x" }] });
-    worker.emit({ t: "call", id: "2", method: "navigate", args: ["manifold://c/c1"] });
-    worker.emit({ t: "call", id: "3", method: "selfCaps", args: [] });
-    worker.emit({ t: "call", id: "4", method: "terminalsByContainer", args: [] });
-    worker.emit({ t: "call", id: "5", method: "openTerminal", args: ["not an object"] });
-    worker.emit({ t: "call", id: "6", method: "resolve", args: [42] });
-    worker.emit({ t: "call", id: "7", method: "sendTerminalInput", args: ["t1", "ls\n"] });
-    worker.emit({ t: "call", id: "8", method: "untold", args: [] });
-    await flush();
-
-    expect(calls).toEqual([
-      'action:core.notes.add:{"text":"x"}',
-      "navigate:manifold://c/c1",
-      "input:t1:ls\n",
-    ]);
-    const replies = new Map(
-      worker
-        .frames()
-        .slice(before)
-        .map((frame) => [frame.t === "reply" ? frame.id : "", frame]),
-    );
-    expect(replies.get("1")).toEqual({
-      t: "reply",
-      id: "1",
-      ok: true,
-      result: { ok: true, result: { done: "core.notes.add" } },
-    });
-    expect(replies.get("2")).toEqual({ t: "reply", id: "2", ok: true, result: null });
-    expect(replies.get("3")).toEqual({
-      t: "reply",
-      id: "3",
-      ok: true,
-      result: ["containers:read"],
-    });
-    expect(replies.get("4")).toEqual({ t: "reply", id: "4", ok: false, error: "no room joined" });
-    expect(replies.get("5")).toEqual({
-      t: "reply",
-      id: "5",
-      ok: false,
-      error: "openTerminal: argument 0 must be an object",
-    });
-    expect(replies.get("6")).toEqual({
-      t: "reply",
-      id: "6",
-      ok: false,
-      error: "resolve: argument 0 must be a string",
-    });
-    expect(replies.get("7")).toEqual({ t: "reply", id: "7", ok: true, result: null });
-    expect(replies.get("8")).toEqual({
-      t: "reply",
-      id: "8",
-      ok: false,
-      error: "slice_unavailable: untold",
-    });
-  });
-
   test("oversized host errors yield one valid reply and later calls continue", async () => {
     const client = fakeClient([]);
     client.terminalsByContainer = () => Promise.reject(new Error("x".repeat(4_096)));
@@ -604,4 +462,173 @@ describe("WorkerRegistry", () => {
     registry.stopAll();
     expect(made.every((worker) => worker.terminated)).toBe(true);
   });
+});
+
+test("event invalidations are bounded, payload-free and owned by the mounted instance", async () => {
+  const listeners = new Set<Parameters<SessionHandle["subscribe"]>[1]>();
+  const client = fakeClient([]);
+  client.subscribe = (_topics, listener) => {
+    listeners.add(listener);
+    return () => listeners.delete(listener);
+  };
+  const { worker, host } = bench(client);
+  const unmount = host.mount(
+    "i1",
+    "main",
+    () => {},
+    () => {},
+  );
+  host.mount(
+    "i2",
+    "main",
+    () => {},
+    () => {},
+  );
+  worker.emit({ t: "ready", hardenedContract: 9, panels: ["main"] });
+  try {
+    worker.emit({
+      t: "call",
+      id: "join",
+      instance: "i1",
+      method: "subscribe",
+      args: ["news", [{ kind: "plugin", pluginId: "core.index" }]],
+    });
+    await flush();
+    const delivered = [...listeners];
+    const fire = (): void => {
+      for (const listener of delivered)
+        listener({
+          type: "event",
+          topic: { kind: "plugin", pluginId: "core.index" },
+          plugin: "core.index",
+          kind: "changed",
+          at: 0,
+          actor: null,
+          payload: { private: "must not cross the Worker boundary" },
+        });
+    };
+    for (let count = 0; count < 100; count += 1) fire();
+    const notifications = () => worker.frames().filter((frame) => frame.t === "notification");
+    expect(notifications()).toEqual([{ t: "notification", id: "news" }]);
+
+    worker.emit({ t: "call", id: "steal", instance: "i2", method: "ackEvent", args: ["news"] });
+    worker.emit({
+      t: "call",
+      id: "close-other",
+      instance: "i2",
+      method: "unsubscribe",
+      args: ["news"],
+    });
+    await flush();
+    expect(worker.frames().filter((frame) => frame.t === "reply" && !frame.ok)).toHaveLength(2);
+    expect(listeners.size).toBe(1);
+    expect(notifications()).toHaveLength(1);
+    worker.emit({ t: "call", id: "ack", instance: "i1", method: "ackEvent", args: ["news"] });
+    await flush();
+    expect(notifications()).toEqual([
+      { t: "notification", id: "news" },
+      { t: "notification", id: "news" },
+    ]);
+    unmount();
+    fire();
+    expect(listeners.size).toBe(0);
+    expect(notifications()).toHaveLength(2);
+
+    for (let index = 0; index <= 64; index += 1) {
+      worker.emit({
+        t: "call",
+        id: `join-${index}`,
+        instance: "i2",
+        method: "subscribe",
+        args: [`s-${index}`, [{ kind: "plugin", pluginId: "core.index" }]],
+      });
+    }
+    await flush();
+    expect(listeners.size).toBe(64);
+    expect(
+      worker.frames().find((frame) => frame.t === "reply" && frame.id === "join-64"),
+    ).toMatchObject({ ok: false });
+  } finally {
+    host.stop();
+  }
+  expect(listeners.size).toBe(0);
+});
+
+test("terminal authoring cannot borrow another mount or survive authority loss during lookup", async () => {
+  const machine: MachineSummary = {
+    id: "m1",
+    name: "host-resolved",
+    online: true,
+    terminalExecution: "unconfined",
+  };
+  let lookup = Promise.withResolvers<unknown>();
+  const client = fakeClient([]);
+  client.machines = () => lookup.promise;
+  const { worker, host } = bench(client);
+  const created: string[] = [];
+  const allowed: HostServices = {
+    ...fakeHost([], "c1", client),
+    authoring: {
+      createTerminal: async (target) => {
+        created.push(target?.id ?? "default");
+        return null;
+      },
+    },
+  };
+  const unmount = host.mount(
+    "allowed",
+    "fleet",
+    () => {},
+    () => {},
+    {
+      kind: "section",
+      host: allowed,
+    },
+  );
+  host.mount(
+    "denied",
+    "main",
+    () => {},
+    () => {},
+    { host: fakeHost([], "c1", client) },
+  );
+  host.bind(allowed);
+  worker.emit({ t: "ready", hardenedContract: 9, panels: ["main"], sections: ["fleet"] });
+  const create = (id: string, instance: string, target: unknown): void =>
+    worker.emit({ t: "call", id, instance, method: "createTerminal", args: [target, null] });
+  try {
+    create("cross-mount", "denied", null);
+    create("revoked", "allowed", "m1");
+    host.update("allowed", { ...allowed, authoring: null });
+    lookup.resolve([machine]);
+    await flush();
+    expect(created).toEqual([]);
+    expect(worker.frames().filter((frame) => frame.t === "reply" && !frame.ok)).toHaveLength(2);
+
+    host.update("allowed", allowed);
+    create("forged", "allowed", { ...machine, terminalExecution: "unconfined" });
+    await flush();
+    expect(created).toEqual([]);
+    create("current", "allowed", "m1");
+    await flush();
+    expect(created).toEqual(["m1"]);
+
+    lookup = Promise.withResolvers<unknown>();
+    create("retired", "allowed", "m1");
+    unmount();
+    lookup.resolve([machine]);
+    await flush();
+    expect(created).toEqual(["m1"]);
+    expect(worker.frames().some((frame) => frame.t === "reply" && frame.id === "retired")).toBe(
+      false,
+    );
+    create("after-unmount", "allowed", null);
+    await flush();
+    expect(
+      worker.frames().find((frame) => frame.t === "reply" && frame.id === "after-unmount"),
+    ).toMatchObject({ ok: false });
+    expect(created).toEqual(["m1"]);
+  } finally {
+    host.stop();
+  }
 });

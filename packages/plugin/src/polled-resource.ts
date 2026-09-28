@@ -43,7 +43,7 @@ import { useCallback, useDebugValue, useEffect, useRef, useSyncExternalStore } f
 import type { Dispatch, SetStateAction } from "react";
 import { formatManifoldUri, type ManifoldRef } from "@manifold/protocol";
 import { debugProbeEnabled } from "./debug-probe.ts";
-import type { SessionStatus } from "./host.ts";
+import type { FeedEvents, SessionStatus } from "./host.ts";
 
 /**
  * THE feed vocabulary: one name per collection the browser half reads.
@@ -107,17 +107,6 @@ const HELD_STARVATION_MS = 10_000;
  * and the budget gate asserts exactly that (`__manifoldFeeds`).
  */
 type ReadReason = "initial" | "event" | "timer" | "manual" | "resume";
-
-/**
- * The event-plane door a feed subscribes through — {@link SessionHandle} narrowed to the
- * three members this module uses, so a test may hand it a socket made of two closures and
- * the engine never imports the SDK.
- */
-export interface FeedEvents {
-  subscribe(topics: readonly ManifoldRef[], handler: (event: unknown) => void): () => void;
-  readonly status: SessionStatus;
-  on(event: "status", fn: (status: SessionStatus) => void): () => void;
-}
 
 /** How the feed compares an incoming answer with the published one. */
 export type PolledEquality<T> = (current: T, incoming: T) => boolean;
@@ -194,6 +183,8 @@ function digest(value: unknown): string {
 
 interface Subscriber {
   readonly intervalMs: number;
+  /** The live reader owns its event door just as it owns its fetch callback. */
+  readonly binding: Pick<FeedAttachment, "events" | "topics">;
   /** Reading and comparison follow a live reader, never a departed first attachment. */
   readonly fetchFn: () => Promise<unknown>;
   readonly equal: PolledEquality<never> | undefined;
@@ -210,7 +201,7 @@ interface Feed {
   stamp: string;
   seeded: boolean;
   /** The FALLBACK cadence's handle. Non-null only while no live subscription is standing. */
-  timer: number | null;
+  timer: ReturnType<typeof globalThis.setInterval> | null;
   /** Bumped when the feed is torn down, so a late response cannot revive a dead route. */
   generation: number;
   inFlight: boolean;
@@ -222,6 +213,7 @@ interface Feed {
   topicKey: string;
   release: (() => void) | null;
   offStatus: (() => void) | null;
+  offVisibility: (() => void) | null;
   /** Whether the channel was up at the last transition this feed heard. */
   live: boolean;
   /**
@@ -230,7 +222,7 @@ interface Feed {
    */
   lastReadLive: boolean;
   /** The pending coalesced read; the burst rule lives in this one slot. */
-  settle: number | null;
+  settle: ReturnType<typeof globalThis.setTimeout> | null;
   /** When the current hold began; null while unheld. Feeds the starvation cap. */
   heldSince: number | null;
   reads: { initial: number; event: number; timer: number; manual: number; resume: number };
@@ -247,8 +239,9 @@ let visibilityBound = false;
 /** The feed probe is installed once per document, on the first feed that opens. */
 let feedProbeBound = false;
 
-/** SSR-safe read of the one condition that stops every timer in this module. */
-const isHidden = (): boolean => typeof document !== "undefined" && document.hidden;
+/** A Worker receives its page's visibility; ordinary browser feeds use the document. */
+const isHidden = (feed: Feed): boolean =>
+  feed.events?.hidden ?? (typeof document !== "undefined" && document.hidden);
 
 function cadence(feed: Feed): number | null {
   let smallest: number | null = null;
@@ -271,12 +264,12 @@ function subscriptionBacked(feed: Feed): boolean {
 
 function arm(feed: Feed): void {
   if (feed.timer !== null) {
-    window.clearInterval(feed.timer);
+    globalThis.clearInterval(feed.timer);
     feed.timer = null;
   }
   const intervalMs = cadence(feed);
-  if (intervalMs === null || isHidden() || subscriptionBacked(feed)) return;
-  feed.timer = window.setInterval(() => {
+  if (intervalMs === null || isHidden(feed) || subscriptionBacked(feed)) return;
+  feed.timer = globalThis.setInterval(() => {
     fetchOnce(feed, "timer");
   }, intervalMs);
 }
@@ -305,7 +298,7 @@ function held(feed: Feed): boolean {
 function scheduleRead(feed: Feed, reason: ReadReason, delayMs = EVENT_SETTLE_MS): void {
   if (feed.settle !== null) return;
   const issued = feed.generation;
-  feed.settle = window.setTimeout(() => {
+  feed.settle = globalThis.setTimeout(() => {
     feed.settle = null;
     if (issued !== feed.generation || feed.subscribers.size === 0) return;
     if (held(feed)) {
@@ -391,12 +384,15 @@ function bindEvents(
   if (feed.events === events && feed.topicKey === topicKey) return;
   feed.release?.();
   feed.offStatus?.();
+  feed.offVisibility?.();
   feed.release = null;
   feed.offStatus = null;
+  feed.offVisibility = null;
   feed.events = events;
   feed.topics = topics;
   feed.topicKey = topicKey;
   feed.live = false;
+  feed.offVisibility = events?.onVisibilityChange?.(() => observeVisibility(feed)) ?? null;
   /*
     Whatever this feed holds was read through a channel that is no longer the one delivering
     its news. The first request after binding covers that gap; a request already on the wire
@@ -443,12 +439,20 @@ function observeStatus(feed: Feed, status: SessionStatus): void {
 function detach(feed: Feed): void {
   feed.release?.();
   feed.offStatus?.();
+  feed.offVisibility?.();
   feed.release = null;
   feed.offStatus = null;
-  if (feed.timer !== null) window.clearInterval(feed.timer);
+  feed.offVisibility = null;
+  if (feed.timer !== null) globalThis.clearInterval(feed.timer);
   feed.timer = null;
-  if (feed.settle !== null) window.clearTimeout(feed.settle);
+  if (feed.settle !== null) globalThis.clearTimeout(feed.settle);
   feed.settle = null;
+}
+
+function observeVisibility(feed: Feed): void {
+  // Keep subscriptions while hidden; only the fallback cadence pauses.
+  arm(feed);
+  if (!isHidden(feed)) fetchOnce(feed, "resume");
 }
 
 function bindVisibility(): void {
@@ -456,11 +460,8 @@ function bindVisibility(): void {
   visibilityBound = true;
   document.addEventListener("visibilitychange", () => {
     for (const feed of FEEDS.values()) {
-      // Subscriptions are NOT dropped for a hidden tab: an open socket costs nothing, and a
-      // feed that unsubscribed would owe a resubscribe and a catch-up read per tab switch.
-      arm(feed);
-      // Coming back: the tab owes itself one answer immediately, not one interval from now.
-      if (!isHidden()) fetchOnce(feed, "resume");
+      if (feed.offVisibility !== null) continue;
+      observeVisibility(feed);
     }
   });
 }
@@ -564,6 +565,7 @@ function ensureFeed(attachment: Pick<FeedAttachment, "feedId" | "initial">): Fee
       topicKey: "",
       release: null,
       offStatus: null,
+      offVisibility: null,
       live: false,
       lastReadLive: false,
       settle: null,
@@ -586,6 +588,7 @@ export function attachFeed(attachment: FeedAttachment): () => void {
   const feed = ensureFeed(attachment);
   const subscriber: Subscriber = {
     intervalMs: attachment.intervalMs,
+    binding: attachment,
     fetchFn: attachment.fetchFn,
     get equal() {
       return attachment.equal;
@@ -603,7 +606,15 @@ export function attachFeed(attachment: FeedAttachment): () => void {
   if (!feed.seeded && !feed.inFlight) fetchOnce(feed, "initial");
   return () => {
     feed.subscribers.delete(subscriber);
-    if (feed.subscribers.size > 0) {
+    const survivor = feed.subscribers.values().next().value;
+    if (survivor !== undefined) {
+      const topics = survivor.binding.topics ?? NO_TOPICS;
+      bindEvents(
+        feed,
+        survivor.binding.events ?? null,
+        topics,
+        topics.map(formatManifoldUri).join(" "),
+      );
       arm(feed);
       return;
     }
@@ -691,7 +702,6 @@ export function usePolledResource<T>(
     (notify: () => void): (() => void) => {
       if (!enabled) return () => undefined;
       const current = policy.current;
-      const { events: door, topics: nodes } = current;
       return attachFeed({
         feedId,
         intervalMs,
@@ -704,8 +714,12 @@ export function usePolledResource<T>(
         onError: (reason) => current.onError?.(reason),
         onSuccess: () => current.onSuccess?.(),
         notify,
-        events: door,
-        topics: nodes,
+        get events() {
+          return current.events ?? null;
+        },
+        get topics() {
+          return current.topics;
+        },
       });
     },
     [enabled, feedId, intervalMs],

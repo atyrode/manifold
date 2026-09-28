@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
-import { usePolledResource, type FeedEvents } from "../../src/polled-resource.ts";
+import type { FeedEvents } from "../../src/host.ts";
+import { usePolledResource } from "../../src/polled-resource.ts";
 
 import type { FeedRead } from "./polled-resource-contract.ts";
 

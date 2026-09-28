@@ -1,4 +1,4 @@
-import type { ItemKind } from "@manifold/protocol";
+import type { ItemKind, UI_CONTROL_KINDS } from "@manifold/protocol";
 import {
   ArrowDownToLine,
   ArrowLeftRight,
@@ -35,6 +35,7 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
+import { frameElement, refuseInFrame, useFrameMode } from "./frame-mode.tsx";
 
 /**
  * THE icon vocabulary. Every glyph in the application is named here once, in manifold's
@@ -102,8 +103,37 @@ const ICON_STROKE = 1.75;
 
 export interface IconProps {
   /** Overrides the 16px default where a ref owns a different rhythm (cards, rails). */
-  readonly size?: number;
-  readonly className?: string;
+  readonly size?: number | undefined;
+  readonly className?: string | undefined;
+}
+
+/** `UiIconSchema`'s bounds on a glyph's size, in whole pixels. */
+const MIN_FRAME_ICON_SIZE = 8;
+const MAX_FRAME_ICON_SIZE = 32;
+
+/**
+ * An icon under a frame root (ADR 0053): a NAME from one of the two vocabularies and an
+ * optional size, never a drawing — the host looks the glyph up in these same tables when it
+ * paints the node, so the item fallback below stays the host's and no SVG ever crosses. A
+ * class, or any other attribute, refuses rather than vanishing.
+ */
+function frameIcon(
+  component: string,
+  family: "control" | "item",
+  name: string,
+  { size, className, ...extra }: IconProps,
+): React.ReactElement {
+  if (className !== undefined) refuseInFrame(component, "a `className`");
+  const stray = Object.entries(extra).find((entry) => entry[1] !== undefined);
+  if (stray !== undefined) refuseInFrame(component, `\`${stray[0]}\``);
+  if (size === undefined) return frameElement("icon", { icon: { family, name } });
+  if (!Number.isInteger(size) || size < MIN_FRAME_ICON_SIZE || size > MAX_FRAME_ICON_SIZE) {
+    refuseInFrame(
+      component,
+      `size ${String(size)} (whole pixels from ${String(MIN_FRAME_ICON_SIZE)} to ${String(MAX_FRAME_ICON_SIZE)})`,
+    );
+  }
+  return frameElement("icon", { icon: { family, name, size } });
 }
 
 /**
@@ -202,6 +232,7 @@ export function ItemIcon({
   kind,
   ...rest
 }: IconProps & { readonly kind: string }): React.ReactElement {
+  if (useFrameMode()) return frameIcon("ItemIcon", "item", kind, rest);
   return glyph(ITEM_GLYPHS[kind] ?? CONTRIBUTED_ITEM_GLYPH, rest);
 }
 
@@ -211,95 +242,19 @@ export function ItemIcon({
  * would still earn its place with every plugin in this build replaced. A few members
  * (`bindings`, `assembly`) are nouns instead: those name the thing on the far side of
  * pressing, which the verb alone cannot say, and the neutrality test is the same for them.
+ *
+ * The NAMES are the protocol's (`UI_CONTROL_KINDS`), because a portable plugin's frame names
+ * a control glyph as data and the host must accept exactly the verbs this table can draw: one
+ * inventory, so a verb added here without the wire — or to the wire without a drawing — fails
+ * `CONTROL_GLYPHS`' totality below instead of a stranger's panel. What each verb MEANS is
+ * written beside its drawing.
  */
-export type ControlKind =
-  /** Take this representation out of the container; the object keeps running elsewhere. */
-  | "park"
-  | "maximize"
-  | "shrink"
-  | "close"
-  | "confirm"
-  | "cancel"
-  | "add"
-  | "more"
-  | "disclosed"
-  | "collapsed"
-  | "sidebarCollapse"
-  | "sidebarExpand"
-  | "reveal"
-  | "discard"
-  /**
-   * WITHDRAW an authority: what was granted no longer works, and the thing it was granted to
-   * is still there. Distinct from `discard` on purpose — pressing this destroys nothing, it
-   * stops a credential from authenticating, and the row it sits on survives — and distinct
-   * from `locked`, which is a control's own refusal rather than a verb a reader presses.
-   * A neutral verb with no domain noun in it, so it stays sayable by whatever the next
-   * revocable thing turns out to be; `core.access` and `core.machines` are today's callers.
-   */
-  | "revoke"
-  /**
-   * PUT IT BACK TO ITS BEGINNING, whatever it is. The one caller today is a terminal's own
-   * chrome, and that is fine: the word carries no object, so the vocabulary reads the same
-   * with core.terminals removed. It replaced `endTerminal`, which named a plugin's noun
-   * (#116) and had no caller at all.
-   */
-  | "restart"
-  /**
-   * GIVE THE PARTS ONE EVEN SHARE, whatever they are parts of. A neutral verb by the same
-   * litmus as `restart` above: it carries no object, so the vocabulary reads the same with
-   * `core.arrange` — today's one caller, normalizing a tree's ratios — removed.
-   */
-  | "equalize"
-  | "grip"
-  /**
-   * THIS CONTROL IS NOT YOURS TO OPERATE — the one member of the vocabulary that names a
-   * refusal rather than a verb, drawn in the slot the control would have occupied. It is a
-   * control's shape and a control's place, so it belongs beside the verbs and not with the
-   * status dots: the reason is a sentence the caller supplies as a hint, never a picture.
-   */
-  | "locked"
-  /** Acquire control of a shared interactive surface. */
-  | "takeControl"
-  /**
-   * THE ASSEMBLY, as a list a reader can open: the roster this workspace was composed from.
-   * `assembly` is the registered word for exactly that concept (`REGISTRY.md` §Lexicon), and
-   * it follows `bindings` rather than the verbs — a control named for the thing on the far
-   * side of pressing it. Neutral because the assembly is the ENGINE'S own noun: a workspace
-   * is assembled from a roster whichever plugins fill it, which is the litmus.
-   */
-  | "assembly"
-  /**
-   * REVEAL THE LEVEL NESTED INSIDE EVERY ROW, as one act on a whole list — the bulk sibling
-   * of `disclosed`/`collapsed`, which speak for a single row. Replaced `terminalTree`, whose
-   * name was a plugin's object and whose only caller was hand-importing this exact drawing
-   * behind the vocabulary's back (#116).
-   */
-  | "nesting"
-  /**
-   * GO INTO the arrangement this thing holds. Arrange mode is scoped — the workspace arranges
-   * its panels, and a panel that declared an inner arrangement arranges its own parts — and
-   * this is the control that steps one level down into the second. Named for the move, not
-   * for the picture: the way back up is the bar's own breadcrumb, which needs words.
-   */
-  | "scopeIn"
-  /** The keys this workspace answers to, as a table a reader can open. */
-  | "bindings"
-  /**
-   * Two placements exchange seats. Worn by the drop preview when releasing on the exact
-   * spot of something already there, which trades the two rather than splitting the target.
-   */
-  | "swap"
-  /**
-   * THE PREFERENCES a thing declares, as a pane a reader can open (#133). Neutral by the same
-   * litmus `assembly` passes: a setting is the ENGINE's own noun now — every manifest may
-   * declare one and the engine composes them — so the word carries no plugin's object, and the
-   * vocabulary reads the same with any particular plugin removed.
-   */
-  | "settings";
+export type ControlKind = (typeof UI_CONTROL_KINDS)[number];
 
 const CONTROL_GLYPHS: Record<ControlKind, LucideIcon> = {
   /**
-   * Park is stowing, not shrinking: every use of the minimize slot in this app puts the object
+   * Take this representation out of the container; the object keeps running elsewhere. Park
+   * is stowing, not shrinking: every use of the minimize slot in this app puts the object
    * away into the sidebar while it keeps running, which is a direction, not a size change.
    */
   park: ArrowDownToLine,
@@ -317,22 +272,77 @@ const CONTROL_GLYPHS: Record<ControlKind, LucideIcon> = {
   reveal: Eye,
   discard: Trash2,
   /**
+   * WITHDRAW an authority: what was granted no longer works, and the thing it was granted to
+   * is still there. Distinct from `discard` on purpose — pressing this destroys nothing, it
+   * stops a credential from authenticating, and the row it sits on survives — and distinct
+   * from `locked`, which is a control's own refusal rather than a verb a reader presses.
+   * A neutral verb with no domain noun in it, so it stays sayable by whatever the next
+   * revocable thing turns out to be; `core.access` and `core.machines` are today's callers.
+   *
    * A circle-slash: "this no longer works", not "this is gone". Chosen over `XCircle` and
    * `ShieldOff` because the silhouette has to stay distinguishable from `close`'s bare X and
    * `discard`'s bin at 13-14px, which is the size every control in this app is drawn at.
    */
   revoke: Ban,
+  /**
+   * PUT IT BACK TO ITS BEGINNING, whatever it is. The one caller today is a terminal's own
+   * chrome, and that is fine: the word carries no object, so the vocabulary reads the same
+   * with core.terminals removed. It replaced `endTerminal`, which named a plugin's noun
+   * (#116) and had no caller at all.
+   */
   restart: RotateCw,
-  /** The equals sign itself: two even bars, legible at 13px where a distribute glyph mushes. */
+  /**
+   * GIVE THE PARTS ONE EVEN SHARE, whatever they are parts of. A neutral verb by the same
+   * litmus as `restart` above: it carries no object, so the vocabulary reads the same with
+   * `core.arrange` — today's one caller, normalizing a tree's ratios — removed. The equals
+   * sign itself: two even bars, legible at 13px where a distribute glyph mushes.
+   */
   equalize: Equal,
+  /**
+   * THIS CONTROL IS NOT YOURS TO OPERATE — the one member of the vocabulary that names a
+   * refusal rather than a verb, drawn in the slot the control would have occupied. It is a
+   * control's shape and a control's place, so it belongs beside the verbs and not with the
+   * status dots: the reason is a sentence the caller supplies as a hint, never a picture.
+   */
   locked: Lock,
+  /** Acquire control of a shared interactive surface. */
   takeControl: MousePointer2,
+  /**
+   * THE ASSEMBLY, as a list a reader can open: the roster this workspace was composed from.
+   * `assembly` is the registered word for exactly that concept (`REGISTRY.md` §Lexicon), and
+   * it follows `bindings` rather than the verbs — a control named for the thing on the far
+   * side of pressing it. Neutral because the assembly is the ENGINE'S own noun: a workspace
+   * is assembled from a roster whichever plugins fill it, which is the litmus.
+   */
   assembly: Blocks,
+  /**
+   * REVEAL THE LEVEL NESTED INSIDE EVERY ROW, as one act on a whole list — the bulk sibling
+   * of `disclosed`/`collapsed`, which speak for a single row. Replaced `terminalTree`, whose
+   * name was a plugin's object and whose only caller was hand-importing this exact drawing
+   * behind the vocabulary's back (#116).
+   */
   nesting: ListTree,
   grip: GripVertical,
+  /**
+   * GO INTO the arrangement this thing holds. Arrange mode is scoped — the workspace arranges
+   * its panels, and a panel that declared an inner arrangement arranges its own parts — and
+   * this is the control that steps one level down into the second. Named for the move, not
+   * for the picture: the way back up is the bar's own breadcrumb, which needs words.
+   */
   scopeIn: CornerDownRight,
+  /** The keys this workspace answers to, as a table a reader can open. */
   bindings: Keyboard,
+  /**
+   * Two placements exchange seats. Worn by the drop preview when releasing on the exact
+   * spot of something already there, which trades the two rather than splitting the target.
+   */
   swap: ArrowLeftRight,
+  /**
+   * THE PREFERENCES a thing declares, as a pane a reader can open (#133). Neutral by the same
+   * litmus `assembly` passes: a setting is the ENGINE's own noun now — every manifest may
+   * declare one and the engine composes them — so the word carries no plugin's object, and the
+   * vocabulary reads the same with any particular plugin removed.
+   */
   settings: Settings,
 };
 
@@ -340,6 +350,7 @@ export function ControlIcon({
   kind,
   ...rest
 }: IconProps & { readonly kind: ControlKind }): React.ReactElement {
+  if (useFrameMode()) return frameIcon("ControlIcon", "control", kind, rest);
   return glyph(CONTROL_GLYPHS[kind], rest);
 }
 

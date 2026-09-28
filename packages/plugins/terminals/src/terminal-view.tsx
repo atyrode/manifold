@@ -799,7 +799,10 @@ export function TerminalView({
             {machine === null ? null : (
               <span className="terminal-machine-badge" title={`machine ${machine.name}`}>
                 {machine.color === undefined ? null : (
-                  <span className="machine-dot" style={{ backgroundColor: machine.color }} />
+                  <span
+                    className="terminal-machine-dot"
+                    style={{ backgroundColor: machine.color }}
+                  />
                 )}
                 {machine.name}
               </span>

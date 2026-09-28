@@ -1,4 +1,5 @@
 import type { CSSProperties, HTMLAttributes, ReactElement, ReactNode, Ref } from "react";
+import { frameElement, frameMeta, refuseInFrame, useFrameMode } from "./frame-mode.tsx";
 
 /**
  * THE LAYOUT ALGEBRA — six composable boxes that answer "how do things sit together?"
@@ -29,7 +30,82 @@ import type { CSSProperties, HTMLAttributes, ReactElement, ReactNode, Ref } from
  * SUPERSEDEABLE BY CONSTRUCTION: each primitive merges `className`/`style` and forwards the
  * rest of its div attributes, so an adopter can tighten, extend or entirely out-style one
  * without this module growing a prop. These are a baseline, never a prison.
+ *
+ * PORTABLE, TWO OF THEM: under a frame root (`frame-mode.tsx`, ADR 0053) `Stack` and `Cluster`
+ * are the vocabulary's box — a column, and a row that wraps — and carry only what a box can:
+ * the gap as a bounded rem length, the alignment knobs the box names, and the standard
+ * metadata attributes. The supersedeable half is exactly what a frame cannot carry, so a
+ * `className`, a `style`, a `ref` or any other attribute there refuses by name. The other
+ * four arrange by CSS the vocabulary does not have and stay page-only.
  */
+
+/** `UiNodeSchema`'s bound on a box's `gapRem`. */
+const MAX_FRAME_GAP_REM = 4;
+
+/** A portable gap is `0` or a plain rem length: the one unit the frame's box speaks. */
+const FRAME_GAP = /^(?:0|(\d+(?:\.\d+)?|\.\d+)rem)$/;
+
+/** The CSS spellings of each box alignment a frame can carry. */
+const FRAME_ALIGN: Readonly<Record<string, "start" | "center" | "end" | "stretch">> = {
+  start: "start",
+  "flex-start": "start",
+  center: "center",
+  end: "end",
+  "flex-end": "end",
+  stretch: "stretch",
+};
+
+const FRAME_JUSTIFY: Readonly<Record<string, "start" | "center" | "end" | "between">> = {
+  start: "start",
+  "flex-start": "start",
+  center: "center",
+  end: "end",
+  "flex-end": "end",
+  "space-between": "between",
+};
+
+/** One CSS knob value, translated into the box's closed spelling or refused. */
+function frameKnob<V extends string>(
+  component: string,
+  knob: string,
+  value: unknown,
+  spellings: Readonly<Record<string, V>>,
+): V | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === "string" && Object.hasOwn(spellings, value)) return spellings[value];
+  return refuseInFrame(component, `${knob} "${String(value)}"`);
+}
+
+/** A frame-mode layout primitive: the box, its bounded gap, its metadata, and its children. */
+function frameLayout(
+  component: string,
+  box: Readonly<Record<string, unknown>>,
+  { gap, className, style, children, ...extra }: LayoutProps,
+): ReactElement {
+  if (className !== undefined) refuseInFrame(component, "a `className`");
+  if (style !== undefined) refuseInFrame(component, "a `style`");
+  let gapRem: number | undefined;
+  if (gap !== undefined) {
+    const match = FRAME_GAP.exec(gap);
+    gapRem = match === null ? Number.NaN : Number(match[1] ?? "0");
+    if (!(gapRem <= MAX_FRAME_GAP_REM)) {
+      refuseInFrame(
+        component,
+        `gap "${gap}" (a rem length from 0 to ${String(MAX_FRAME_GAP_REM)})`,
+      );
+    }
+  }
+  return frameElement(
+    "box",
+    {
+      ...box,
+      gap: gap === undefined ? "adaptive" : undefined,
+      gapRem,
+      ...frameMeta(component, extra),
+    },
+    children,
+  );
+}
 
 /** Joins the primitive's own class with the adopter's, dropping the blanks. */
 export function cx(...parts: readonly (string | false | undefined)[]): string {
@@ -81,14 +157,16 @@ export interface StackProps extends LayoutProps {
  * </Stack>
  * ```
  */
-export function Stack({
-  gap,
-  align,
-  className,
-  style,
-  children,
-  ...rest
-}: StackProps): ReactElement {
+export function Stack(props: StackProps): ReactElement {
+  if (useFrameMode()) {
+    const { align, ...layout } = props;
+    return frameLayout(
+      "Stack",
+      { direction: "column", align: frameKnob("Stack", "align", align, FRAME_ALIGN) },
+      layout,
+    );
+  }
+  const { gap, align, className, style, children, ...rest } = props;
   return (
     <div
       className={cx("layout-stack", className)}
@@ -122,15 +200,21 @@ export interface ClusterProps extends LayoutProps {
  * </Cluster>
  * ```
  */
-export function Cluster({
-  gap,
-  justify,
-  align,
-  className,
-  style,
-  children,
-  ...rest
-}: ClusterProps): ReactElement {
+export function Cluster(props: ClusterProps): ReactElement {
+  if (useFrameMode()) {
+    const { justify, align, ...layout } = props;
+    return frameLayout(
+      "Cluster",
+      {
+        direction: "row",
+        wrap: true,
+        align: frameKnob("Cluster", "align", align, FRAME_ALIGN),
+        justify: frameKnob("Cluster", "justify", justify, FRAME_JUSTIFY),
+      },
+      layout,
+    );
+  }
+  const { gap, justify, align, className, style, children, ...rest } = props;
   return (
     <div
       className={cx("layout-cluster", className)}

@@ -36,10 +36,10 @@
       # Measured with the pinned Bun's explicit optional-dependency target selectors.
       # Regenerate and independently rebuild these trees when their inputs change.
       depsHashes = {
-        x86_64-linux = "sha256-jiqfpRcmDFGzxqOuWVAszj2Y1kF45D5fNP1eIdE69uw=";
-        aarch64-linux = "sha256-AxEN3ij2kEYzjYqqrLSMxGt3IoDRxJ96USj+JBSVKsY=";
-        x86_64-darwin = "sha256-S0uwB/JwJRivDv5QvJk5XUnpBVMYGcPVeZLwMqqxmiU=";
-        aarch64-darwin = "sha256-SoqISJEvfGG45jmonzWxcdbd0NuBKUNMCwekESEc8sA=";
+        x86_64-linux = "sha256-Jf97ojyimaQg2kDcdqBsXMzWD2U53j6QDredjxRevuk=";
+        aarch64-linux = "sha256-ORh+NZbzPHHdoBtTZPh69/2iqDqciz6Fbw8NkVPLQ2g=";
+        x86_64-darwin = "sha256-mA5PlPMeUmpK0oJkSiz4xUbhSJI7DCNi3PuM0XOYFYw=";
+        aarch64-darwin = "sha256-FS40otdBH2FKNozSgsDQASSpw35ooVYNt5qUPdk1Zfk=";
       };
 
       # Keep the dependency input independent of unrelated workspace sources.
@@ -269,12 +269,17 @@
             extraBuild = ''
               bun run changelog:generate
               (cd packages/web && bun run build)
+              # The compiled hub carries no source tree, so the trusted first-party builds an
+              # operator may select with MANIFOLD_HARDENED_PLUGINS are compiled here, by the
+              # same compiler and recipes, and re-bound to the binary's definitions at start.
+              bun scripts/build-first-party.ts first-party
             '';
             extraInstall = ''
               mkdir -p "$out/share/manifold"
               cp -r packages/web/dist "$out/share/manifold/web"
+              cp -r first-party "$out/share/manifold/first-party"
             '';
-            wrapperArgs = ''--set-default MANIFOLD_WEB_DIST "$out/share/manifold/web" --set-default MANIFOLD_SPAWN_AGENT 0 --prefix PATH : "${bun}/bin"'';
+            wrapperArgs = ''--set-default MANIFOLD_WEB_DIST "$out/share/manifold/web" --set MANIFOLD_FIRST_PARTY_ARTIFACTS "$out/share/manifold/first-party" --set-default MANIFOLD_SPAWN_AGENT 0 --prefix PATH : "${bun}/bin"'';
           };
         }
       );

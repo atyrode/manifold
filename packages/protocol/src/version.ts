@@ -1,5 +1,5 @@
 /** Wire revision; session joins require the current version (close 4409 otherwise). */
-export const PROTOCOL_VERSION = 46;
+export const PROTOCOL_VERSION = 47;
 
 /**
  * Machine-channel acceptance set. Agents are long-lived (they hold PTYs and
@@ -432,9 +432,14 @@ export const PROTOCOL_VERSION = 46;
  * own measured or virtual cols/rows instead of waiting for another viewer. Existing
  * message shapes are unchanged, but strict session clients update with this semantic
  * contract. Machine and instance frames are unchanged; older transports remain admitted.
+ *
+ * v47: portable React Worker entries and effective plugin execution mode extend the
+ * session/HTTP vocabulary. Hardened contract 9 adds bounded React UI, mounted contexts,
+ * event invalidations and narrow machine bridges. No machine, owner, terminal-host or
+ * instance frame changes; existing transports remain admitted without a fleet restart.
  */
 export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46,
+  30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47,
 ]);
 
 /**
@@ -485,10 +490,10 @@ export const MACHINE_AGENT_TOOLS_PROTOCOL_VERSION = 43;
  * never receives a machine ref, so the instance wire is unchanged.
  * v26: image-aware terminal viewers; instance frames remain unchanged.
  * v27: governed jobs expand the closed share resource/capability vocabularies (ADR 0033);
- * instance compatibility resets to protocol 27. v28 through v46 leave that wire unchanged.
+ * instance compatibility resets to protocol 27. v28 through v47 leave that wire unchanged.
  */
 export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46,
+  27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47,
 ]);
 
 /**

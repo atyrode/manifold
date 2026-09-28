@@ -5,6 +5,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./hooks": "./src/hooks.ts",
+    "./portable-hooks": "./src/portable-hooks.ts",
     "./ui": "./src/ui/index.ts"
   },
   "dependencies": {

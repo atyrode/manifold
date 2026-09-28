@@ -120,7 +120,6 @@ export async function provisionRuntime(
       pluginDir,
       "--out",
       join(control, "fixture.json"),
-      "--self-contained",
     ],
     { stdout: "pipe", stderr: "pipe" },
   );

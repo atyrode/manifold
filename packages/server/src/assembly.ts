@@ -24,7 +24,9 @@ import { uriManifest } from "@manifold-plugin/uri";
 import { debugManifest } from "@manifold-plugin/debug";
 import { indexActions, indexManifest } from "@manifold-plugin/index";
 import { indexHandlers } from "@manifold-plugin/index/server";
+import { fileURLToPath } from "node:url";
 import type { FloorEventOwners } from "./event-hub.ts";
+import type { HardenedSourceRecipe } from "./first-party-builds.ts";
 import type { ServerPluginDef } from "./plugin-host.ts";
 import { jobDoors } from "./job-doors.ts";
 
@@ -177,3 +179,27 @@ export const SERVER_PLUGIN_DEFS: readonly ServerPluginDef[] = [
 export const SHIPPED_PLUGIN_IDS: ReadonlySet<string> = new Set(
   SERVER_PLUGIN_DEFS.map((def) => def.manifest.id),
 );
+
+/**
+ * WHERE A FIRST-PARTY PLUGIN'S OWN SOURCE IS, for the trusted bootstrap that may run it hardened
+ * (`MANIFOLD_HARDENED_PLUGINS`, ADR 0053 §7). Named here because this is the only server file
+ * allowed to name a plugin, and never from configuration: the operator chooses WHICH registered
+ * plugin is hardened, and the build decides what source that is. An id missing from this table
+ * fails the start by name.
+ *
+ * The server entry is the composition root's own guest wrapper over the registered definition;
+ * the web entry is the plugin's portable definition. Both are compiled by the one plugin
+ * compiler against the registered manifest, and the result is bound back to it before it runs.
+ * Resolved only when an operator selects the plugin, so the default in-realm start — including a
+ * compiled single-file hub that carries no source tree — never touches these paths.
+ */
+export const HARDENED_SOURCE_RECIPES: ReadonlyMap<string, () => HardenedSourceRecipe> = new Map([
+  [
+    machinesManifest.id,
+    () => ({
+      pluginDir: fileURLToPath(new URL("..", import.meta.resolve("@manifold-plugin/machines"))),
+      server: fileURLToPath(new URL("./first-party/machines.server.ts", import.meta.url)),
+      web: fileURLToPath(import.meta.resolve("@manifold-plugin/machines/portable")),
+    }),
+  ],
+]);

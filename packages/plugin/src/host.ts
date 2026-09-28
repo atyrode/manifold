@@ -49,6 +49,19 @@ export type PlaceOutcome =
  * its timer for one has to know when the trade is off (ADR 0012 §5: catch-up is reading state).
  */
 export type SessionStatus = "idle" | "connecting" | "open" | "reconnecting" | "closed";
+/**
+ * The event-plane door a feed subscribes through — {@link SessionHandle} narrowed to the
+ * three members this module uses, so a test may hand it a socket made of two closures and
+ * the engine never imports the SDK.
+ */
+export interface FeedEvents {
+  subscribe(topics: readonly ManifoldRef[], handler: (event: unknown) => void): () => void;
+  readonly status: SessionStatus;
+  on(event: "status", fn: (status: SessionStatus) => void): () => void;
+  /** A non-DOM consumer receives its host page's visibility as data. */
+  readonly hidden?: boolean;
+  onVisibilityChange?(fn: () => void): () => void;
+}
 
 /**
  * One server frame body, by type — the shape the SDK hands its own listeners, restated over the
@@ -619,6 +632,40 @@ export interface PanelProps {
 /** A contributed sidebar section, ordered by its manifest's declared `order`. */
 export interface SectionProps {
   readonly host: HostServices;
+}
+
+/** The client slice whose data and calls have a bounded hardened representation. */
+export interface PortableSessionHandle
+  extends
+    Pick<
+      SessionHandle,
+      | "action"
+      | "place"
+      | "selfCaps"
+      | "machines"
+      | "resolve"
+      | "openStream"
+      | "openTerminal"
+      | "sendTerminalInput"
+      | "terminalsByContainer"
+    >,
+    FeedEvents {}
+
+/** No bearer, DOM handle, room replica, assembly object or arbitrary host service. */
+export interface PortableHostServices extends Pick<
+  HostServices,
+  "principal" | "containerId" | "navigate" | "topics" | "authoring"
+> {
+  readonly client: PortableSessionHandle;
+}
+
+export interface PortablePanelProps {
+  readonly host: PortableHostServices;
+  readonly arg?: PanelArg | undefined;
+}
+
+export interface PortableSectionProps {
+  readonly host: PortableHostServices;
 }
 
 /**

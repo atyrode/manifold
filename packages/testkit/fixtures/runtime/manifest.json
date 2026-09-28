@@ -39,5 +39,5 @@
       }
     ]
   },
-  "entry": { "server": true, "web": "web.js" }
+  "entry": { "server": true, "web": "web.js", "worker": true }
 }

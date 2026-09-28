@@ -17,8 +17,11 @@ Choose the deployment profile, not a hosting provider:
 cloud, hostname or product plugin. It requires Linux x64/arm64, unified cgroup v2 with
 `cpu`, `memory`, `pids`, user namespaces, and systemd 254 or newer. The pinned flake packages
 embed Bun >= 1.4.2 and the web bundle; no source checkout is consulted by a running unit.
-The server package also carries that pinned Bun interpreter for installed hardened plugin
-children; it never re-executes a compiled hub as a plugin.
+The server package also carries the pinned Bun interpreter for hardened plugin children.
+Its build compiles each composition-root first-party source recipe into a trusted artifact
+beside the binary; the wrapper sets `MANIFOLD_FIRST_PARTY_ARTIFACTS` to that directory.
+`MANIFOLD_HARDENED_PLUGINS` remains an operator selection (unset: native in-realm).
+No selected artifact is an installation row or an admission of reserved-namespace uploads.
 The owner also needs a bubblewrap build with FD-backed bind, block, info and seccomp support.
 Startup checks its advertised switches; actual namespace, cgroup migration, `memory.peak`,
 `pids.peak`, `memory.swap.max` and `cgroup.kill` enforcement still require disposable-owner
@@ -30,19 +33,30 @@ four package targets. Their input includes dependency manifests and declared wor
 executable targets, so Bun creates the same relative command links as a full-source install
 without making unrelated source changes invalidate dependency vendoring.
 
-Run `bun scripts/verify-nix-packaging.ts` on the target with Nix and Bun 1.4.2 available;
+Run `bun scripts/verify-nix-packaging.ts` on the target with Nix and Bun 1.4.2;
 it needs no workspace dependency installation. The verifier builds and independently
 rebuilds the fixed-output dependency tree, then builds the compiled agent, hub and terminal
-client packages. From a private temporary directory with no inherited operator configuration,
-it exercises agent maintenance help, terminal-client guidance and missing-binding refusal,
-and a loopback-only disposable hub, checking health and the installed web assets.
-CI runs this proof natively on Linux and macOS, each on x64 and arm64. A warm dependency
-store path alone is not proof that the current recipe reproduces its pinned hash.
+client packages. From owner-private temporary directories with no inherited operator
+configuration, it exercises agent maintenance help, terminal-client guidance and
+missing-binding refusal, and boots two **ephemeral packaged hubs** on loopback:
+default native in-realm and `MANIFOLD_HARDENED_PLUGINS=core.machines`.
+It checks health and the installed web HTML and referenced asset in the default
+boot, absence of an unselected child/Worker, and the real roster. In the hardened
+boot it checks the supervised child executes the package's own pinned first-party
+`server.js`, the authenticated `web.worker.js` matches the shipped artifact,
+and the actual `core.machines` doors enroll, inventory, revoke and forget
+disposable machine records; disable refuses ordinary doors and the Worker,
+while the cleanup revoke remains available, and re-enable restores service.
+Unknown or recipe-less selections must refuse before a child/listener starts,
+with the plugin named. The verifier shuts down its own processes and deletes
+only its own temporary data. CI is configured for native Linux and macOS,
+x64 and arm64; a warm dependency store path alone is not proof of a pinned hash.
 
-When dependency inputs change, derive any replacement hashes from fresh installs and retain
-the independent rebuild check. Explicit `--os`/`--cpu` controls can measure another target's
-dependency bytes, but cannot prove its compiled binary executes. Package smoke does not
-enroll or activate a native owner, nor establish the target kernel's containment guarantees.
+When dependency inputs change, derive replacement hashes from fresh installs
+and retain the independent rebuild. Explicit `--os`/`--cpu` can measure another
+target's dependency bytes, not execute that target's binary. This packaged
+smoke does not enroll or activate a native machine owner and does not establish
+kernel containment, production credentials or persistent deployment readiness.
 
 ### Terminal-local command
 

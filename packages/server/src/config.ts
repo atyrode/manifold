@@ -2,7 +2,7 @@ import { createPrivateKey, createPublicKey, generateKeyPairSync } from "node:cry
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { resolveBuildIdentity, type BuildIdentity } from "../../../scripts/build-identity.ts";
-import { JobOwnerConfigSchema, normalizeInstanceOrigin } from "@manifold/protocol";
+import { JobOwnerConfigSchema, normalizeInstanceOrigin, PluginIdSchema } from "@manifold/protocol";
 
 const HEX_64 = /^[0-9a-f]{64}$/i;
 
@@ -31,6 +31,19 @@ export interface ServerConfig {
    */
   pluginDevPaths: boolean;
   /**
+   * `MANIFOLD_HARDENED_PLUGINS=<id>[,<id>…]`: registered first-party plugins this process
+   * compiles from its own source and runs behind the isolate supervisor (ADR 0053 §7). Absent
+   * is the in-realm default. An id this build does not register, or has no hardened source
+   * recipe for, fails the start by name — never a silent in-realm fallback.
+   */
+  hardenedPlugins?: readonly string[];
+  /**
+   * `MANIFOLD_FIRST_PARTY_ARTIFACTS=<dir>`: where a packaged hub's own build wrote its trusted
+   * first-party artifacts (`scripts/build-first-party.ts`), for a binary that carries no source
+   * to compile. Set by the package, not an operator; absent compiles from this checkout.
+   */
+  firstPartyArtifacts?: string;
+  /**
    * What this process is, as `/healthz` reports it: `MANIFOLD_VERSION`, `MANIFOLD_BUILD` and
    * `MANIFOLD_CHANNEL` when the deployment says, derived from the checkout's git tags otherwise
    * (`scripts/build-identity.ts`).
@@ -51,6 +64,19 @@ function randomHex(bytes: number): string {
   const value = new Uint8Array(bytes);
   crypto.getRandomValues(value);
   return Array.from(value, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/** Comma-separated plugin ids, each well-formed and named once; empty or unset is none. */
+function parseHardenedPlugins(value: string | undefined): readonly string[] {
+  if (value === undefined || value.trim() === "") return [];
+  const ids = value.split(",").map((id) => id.trim());
+  for (const id of ids) {
+    if (!PluginIdSchema.safeParse(id).success)
+      throw new Error(`MANIFOLD_HARDENED_PLUGINS names an invalid plugin id: "${id}"`);
+  }
+  if (new Set(ids).size !== ids.length)
+    throw new Error("MANIFOLD_HARDENED_PLUGINS names a plugin more than once");
+  return ids;
 }
 
 function parsePort(value: string | undefined): number {
@@ -221,6 +247,8 @@ export function loadConfig(
     configuredAgentPolicyFile === undefined || configuredAgentPolicyFile === ""
       ? undefined
       : resolve(cwd, configuredAgentPolicyFile);
+  const hardenedPlugins = parseHardenedPlugins(env.MANIFOLD_HARDENED_PLUGINS);
+  const configuredArtifacts = env.MANIFOLD_FIRST_PARTY_ARTIFACTS?.trim();
   const previewIdentityKey = loadPreviewIdentityKey(dataDir);
   return {
     port,
@@ -237,6 +265,10 @@ export function loadConfig(
     ...(serviceOwnerMachineId === undefined ? {} : { serviceOwnerMachineId }),
     announceKey: env.MANIFOLD_ANNOUNCE_KEY === "1",
     pluginDevPaths: env.MANIFOLD_PLUGIN_DEV_PATHS === "1",
+    ...(hardenedPlugins.length === 0 ? {} : { hardenedPlugins }),
+    ...(configuredArtifacts === undefined || configuredArtifacts === ""
+      ? {}
+      : { firstPartyArtifacts: resolve(cwd, configuredArtifacts) }),
     previewIdentityAuthority,
     previewDomain,
     ...(agentPolicyFile === undefined ? {} : { agentPolicyFile }),

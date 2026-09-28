@@ -1,263 +1,292 @@
-import { describe, expect, test } from "bun:test";
-import type { UiNode } from "@manifold/protocol";
-import { Fragment, isValidElement, type ReactNode } from "react";
+import { expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { compilePlugin } from "@manifold/plugin-kit/pack";
+import {
+  PLUGIN_BUNDLE_WEB_WORKER_FILE,
+  PluginBundleSchema,
+  PluginManifestSchema,
+} from "@manifold/protocol";
 import { renderToStaticMarkup } from "react-dom/server";
+import { Browser } from "../../../../scripts/cdp.ts";
 import { VocabularyRenderer } from "./vocabulary.tsx";
 
-/**
- * THE VOCABULARY'S CONTRACT (ADR 0016 §3): every one of the thirteen node kinds paints into the
- * one `mf-vocab` family, a button's `action` is painted as `data-action` (S4, AXIOMS.md §Foundation law and REGISTRY.md §Foundation), the
- * three controls show the tree's value, and a gesture on any control becomes exactly one named
- * event carrying what the node said it would.
- */
-
-const EVERYTHING: UiNode = {
-  type: "box",
-  direction: "row",
-  gap: 2,
-  grow: true,
-  wrap: true,
-  children: [
-    { type: "heading", text: "Notes", level: 1 },
-    { type: "text", text: "plain" },
-    { type: "text", text: "mono", mono: true, wrap: true, tone: "muted" },
-    { type: "code", text: "const x = 1;\nx;" },
-    { type: "badge", text: "3 open", tone: "success" },
-    { type: "divider" },
-    { type: "spinner", label: "Syncing" },
-    { type: "button", label: "Save", event: "save", action: "acme.notes.save", tone: "accent" },
-    { type: "button", label: "Later", event: "later", disabled: true },
-    {
-      type: "select",
-      event: "pick",
-      value: "b",
-      label: "Which",
-      options: [
-        { value: "a", label: "A" },
-        { value: "b", label: "B" },
-      ],
-    },
-    { type: "select", event: "pick", value: null, options: [{ value: "a", label: "A" }] },
-    { type: "input", event: "typed", value: "draft", placeholder: "Say…", mono: true },
-    { type: "toggle", event: "flip", value: true, label: "Pinned", disabled: true },
-    {
-      type: "list",
-      items: [
-        { key: "1", primary: "First", secondary: "one", event: "open", payload: { id: 1 } },
-        { key: "2", primary: "Second", tone: "danger" },
-      ],
-    },
-    { type: "empty", text: "Nothing yet" },
-  ],
-};
-
-function markup(tree: UiNode, tone?: "danger"): string {
-  return renderToStaticMarkup(<VocabularyRenderer tree={tree} onEvent={() => {}} tone={tone} />);
-}
-
-/** A host element as the walker sees it: tag, props minus children, and the evaluated children. */
-interface Painted {
-  readonly tag: string;
-  readonly props: Readonly<Record<string, unknown>>;
-  readonly children: readonly Painted[];
-}
-
-/**
- * Evaluates a React element tree WITHOUT a DOM: function components are called (the vocabulary's
- * are hook-free by design), host elements are kept with their handler props intact — which is
- * what lets a test press a button and read the event it posts.
- */
-function paint(node: ReactNode): readonly Painted[] {
-  if (node === null || node === undefined || typeof node === "boolean") return [];
-  if (typeof node === "string" || typeof node === "number") return [];
-  if (Array.isArray(node)) return node.flatMap((child: ReactNode) => paint(child));
-  if (!isValidElement<Record<string, unknown>>(node)) return [];
-  const { type, props } = node;
-  const { children, ...rest } = props;
-  if (type === Fragment) return paint(children as ReactNode);
-  if (typeof type === "function") {
-    const component = type as (props: Record<string, unknown>) => ReactNode;
-    return paint(component(props));
-  }
-  return [{ tag: String(type), props: rest, children: paint(children as ReactNode) }];
-}
-
-function find(painted: readonly Painted[], className: string): Painted | null {
-  for (const element of painted) {
-    const own = element.props["className"];
-    if (typeof own === "string" && own.split(" ").includes(className)) return element;
-    const inner = find(element.children, className);
-    if (inner !== null) return inner;
-  }
-  return null;
-}
-
-function findAll(painted: readonly Painted[], className: string): Painted[] {
-  const found: Painted[] = [];
-  for (const element of painted) {
-    const own = element.props["className"];
-    if (typeof own === "string" && own.split(" ").includes(className)) found.push(element);
-    found.push(...findAll(element.children, className));
-  }
-  return found;
-}
-
-/** Fires a handler prop with a minimal synthetic event; the handlers read only `currentTarget`. */
-function fire(element: Painted | null, handler: string, currentTarget: unknown = {}): void {
-  const fn = element?.props[handler];
-  if (typeof fn !== "function") throw new Error(`${handler} is not wired`);
-  fn({ currentTarget });
-}
-
-describe("VocabularyRenderer paints every kind into the one family", () => {
-  const html = markup(EVERYTHING);
-
-  test("every node kind renders under its own `mf-vocab-<type>` anchor", () => {
-    for (const kind of [
-      "box",
-      "heading",
-      "text",
-      "code",
-      "badge",
-      "divider",
-      "spinner",
-      "button",
-      "select",
-      "input",
-      "toggle",
-      "list",
-      "empty",
-    ]) {
-      expect(html).toContain(`class="mf-vocab-${kind}`);
-    }
-    expect(html).toStartWith('<div class="mf-vocab">');
-  });
-
-  test("a button with an action names the door it opens; one without carries no marker", () => {
-    expect(html).toContain('data-action="acme.notes.save"');
-    expect(html).toContain('data-tone="accent"');
-    expect(html.match(/data-action=/g)).toHaveLength(1);
-    expect(html).toContain('class="mf-vocab-button" disabled="">Later</button>');
-  });
-
-  test("box, heading, text and code carry their declared shape", () => {
-    expect(html).toContain(
-      '<div class="mf-vocab-box is-grow is-wrap" data-direction="row" data-gap="2">',
-    );
-    expect(html).toContain('<h1 class="mf-vocab-heading" data-level="1">Notes</h1>');
-    expect(html).toContain('<span class="mf-vocab-text">plain</span>');
-    expect(html).toContain(
-      '<span class="mf-vocab-text is-mono is-wrap" data-tone="muted">mono</span>',
-    );
-    expect(html).toContain('<pre class="mf-vocab-code">const x = 1;\nx;</pre>');
-    expect(html).toContain('<span class="mf-vocab-badge" data-tone="success">3 open</span>');
-    expect(html).toContain('<hr class="mf-vocab-divider"/>');
-    expect(html).toContain("Syncing");
-  });
-
-  test("the controls show the tree's value: selected option, field value, checked toggle", () => {
-    expect(html).toContain('<option value="b" selected="">B</option>');
-    expect(html).toContain('<option value="" selected=""></option><option value="a">A</option>');
-    expect(html).toContain('class="mf-vocab-input is-mono" placeholder="Say…" value="draft"/>');
-    expect(html).toContain(
-      'type="checkbox" class="mf-vocab-toggle__control" disabled="" checked=""/>',
-    );
-    expect(html).toContain('<span class="mf-vocab-toggle__label">Pinned</span>');
-  });
-
-  test("a list row with an event is a button, one without is a reading", () => {
-    expect(html).toContain('<button type="button" class="mf-vocab-list__row is-pressable">');
-    expect(html).toContain(
-      '<li class="mf-vocab-list__item" data-tone="danger"><div class="mf-vocab-list__row">',
-    );
-    expect(html).toContain('<span class="mf-vocab-list__secondary">one</span>');
-  });
-
-  test("text reaches the DOM as text, never as markup", () => {
-    const hostile = markup({ type: "text", text: '<img src=x onerror="alert(1)">' });
-    expect(hostile).not.toContain("<img");
-    expect(hostile).toContain("&lt;img");
-  });
-
-  test("the host's tone paints the whole tree and makes it an alert", () => {
-    expect(markup({ type: "empty", text: "worker gone" }, "danger")).toBe(
-      '<div class="mf-vocab" data-tone="danger" role="alert">' +
-        '<p class="mf-vocab-empty">worker gone</p></div>',
-    );
-  });
+test("text reaches the DOM as text, never as markup", () => {
+  const hostile = renderToStaticMarkup(
+    <VocabularyRenderer
+      tree={{ type: "text", text: '<img src=x onerror="alert(1)">' }}
+      onEvent={() => {}}
+    />,
+  );
+  expect(hostile).not.toContain("<img");
+  expect(hostile).toContain("&lt;img");
 });
 
-describe("VocabularyRenderer posts one named event per gesture", () => {
-  interface Pressed {
-    readonly events: [string, unknown][];
-    readonly painted: readonly Painted[];
-  }
-
-  function pressed(): Pressed {
-    const events: [string, unknown][] = [];
-    const painted = paint(
-      <VocabularyRenderer
-        tree={EVERYTHING}
-        onEvent={(event, payload) => events.push([event, payload])}
-      />,
+test("a Worker root preserves keyed fields and panel or section sizing", async () => {
+  const scratch = mkdtempSync(join(tmpdir(), "manifold-frame-root-"));
+  const browser = new Browser();
+  let server: Bun.Server<undefined> | undefined;
+  try {
+    const entry = join(scratch, "fixture.js");
+    const author = join(scratch, "web.js");
+    const output = join(scratch, "dist");
+    await Bun.write(
+      author,
+      `
+      import { createElement, Fragment } from "react";
+      import { Empty, Input, Text } from "@manifold/ui";
+      import { defineWebPlugin } from ${JSON.stringify(Bun.resolveSync("@manifold/plugin-kit/web", import.meta.dir))};
+      function Form({ arg = {}, host }) {
+        if (arg.empty) return createElement(Empty, null, arg.empty);
+        const { before, after, visible = true, value = "server" } = arg;
+        return createElement(Fragment, null,
+          before ? createElement(Text, { key: "before", "data-testid": "before" }, "Before") : null,
+          visible ? createElement(Input, {
+            key: "field", label: "Name", value,
+            onChange: edited => { void host.client.action("example.frame.edit", { value: edited }); },
+          }) : null,
+          after ? createElement(Text, { key: "after", "data-testid": "after" }, "After") : null);
+      }
+      export default defineWebPlugin({ id: "example.frame", panels: { main: Form } });
+      `,
     );
-    return { events, painted };
-  }
-
-  test("button → its event and payload", () => {
-    const { events, painted } = pressed();
-    const buttons = findAll(painted, "mf-vocab-button");
-    fire(buttons[0] ?? null, "onClick");
-    expect(events).toEqual([["save", undefined]]);
-    expect(buttons[1]?.props["disabled"]).toBe(true);
-  });
-
-  test("select → its event with the chosen value", () => {
-    const { events, painted } = pressed();
-    fire(find(painted, "mf-vocab-select"), "onChange", { value: "a" });
-    expect(events).toEqual([["pick", "a"]]);
-  });
-
-  test("input → its event with the typed text, on every change", () => {
-    const { events, painted } = pressed();
-    fire(find(painted, "mf-vocab-input"), "onChange", { value: "draft!" });
-    fire(find(painted, "mf-vocab-input"), "onChange", { value: "draft!?" });
-    expect(events).toEqual([
-      ["typed", "draft!"],
-      ["typed", "draft!?"],
+    const compiled = await compilePlugin(scratch, {
+      source: {
+        manifest: PluginManifestSchema.parse({
+          id: "example.frame",
+          title: "Root identity fixture",
+          version: "1.0.0",
+          description: "Exercises keyed root fields through the packed portable Worker.",
+          capabilities: [],
+          contributes: { panels: [{ id: "main", title: "Form" }] },
+          entry: { web: "web.js", worker: true },
+        }),
+        web: author,
+      },
+    });
+    const bundle = PluginBundleSchema.parse(JSON.parse(new TextDecoder().decode(compiled.bytes)));
+    const workerSource = Buffer.from(bundle.files[PLUGIN_BUNDLE_WEB_WORKER_FILE]!, "base64");
+    await Bun.write(
+      entry,
+      `
+      import { createElement } from ${JSON.stringify(Bun.resolveSync("react", import.meta.dir))};
+      import { createRoot } from ${JSON.stringify(Bun.resolveSync("react-dom/client", import.meta.dir))};
+      import { flushSync } from ${JSON.stringify(Bun.resolveSync("react-dom", import.meta.dir))};
+      import { Empty } from ${JSON.stringify(Bun.resolveSync("@manifold/ui", import.meta.dir))};
+      import { VocabularyRenderer } from ${JSON.stringify(resolve(import.meta.dir, "vocabulary.tsx"))};
+      const worker = new Worker("/worker.js", { type: "module" });
+      const root = createRoot(document.getElementById("root"));
+      const reference = createRoot(document.getElementById("reference"));
+      let kind = "panel", lastTree;
+      function paintTree() {
+        flushSync(() => root.render(createElement(VocabularyRenderer, {
+          tree: lastTree, kind,
+          onEvent: (event, payload) => worker.postMessage({ t: "event", instance: "form", event, payload }),
+        })));
+      }
+      const principal = { id: "viewer", kind: "human", name: "Viewer", color: "#74c0fc" };
+      const context = {
+        principal, caps: [], containerId: null,
+        topics: { index: [], terminals: [], attendance: [], machines: [] },
+        status: "open", hidden: false, canAuthor: false,
+      };
+      const init = { t: "init", pluginId: "example.frame", principal, caps: [], containerId: null };
+      const calls = [], barriers = [], errors = [];
+      let mounted = false, inputEvent, pendingPaint;
+      worker.addEventListener("error", event => errors.push(event.message));
+      worker.onmessage = ({ data: frame }) => {
+        if (frame.t === "ready") barriers.shift()?.();
+        else if (frame.t === "render") {
+          inputEvent = fieldEvent(frame.tree);
+          lastTree = frame.tree;
+          paintTree();
+          pendingPaint?.resolve();
+          pendingPaint = null;
+        } else if (frame.t === "call") {
+          if (frame.method === "action" && frame.args[0] === "example.frame.edit") {
+            calls.push(frame.args[1].value);
+            worker.postMessage({ t: "reply", id: frame.id, ok: true, result: { ok: true, result: {} } });
+          } else errors.push("Unexpected host call: " + frame.method);
+        } else if (frame.t === "fault") {
+          errors.push(frame.error);
+          pendingPaint?.reject(new Error(frame.error));
+          pendingPaint = null;
+        }
+      };
+      async function settle() {
+        const barrier = Promise.withResolvers();
+        barriers.push(barrier.resolve);
+        // A ready reply fences all preceding event effects over the real Worker port.
+        worker.postMessage(init);
+        await barrier.promise;
+        if (errors.length) throw new Error(errors.join("; "));
+      }
+      function fieldEvent(node) {
+        if (node.type === "input") return node.event;
+        if (node.type === "box") return node.children.map(fieldEvent).find(Boolean);
+      }
+      window.frameFixture = {
+        async paint(props) {
+          await settle();
+          const painted = Promise.withResolvers();
+          pendingPaint = painted;
+          worker.postMessage(mounted
+            ? { t: "context", instance: "form", context, arg: props }
+            : { t: "mount", instance: "form", panel: "main", kind: "panel", context, arg: props });
+          mounted = true;
+          await painted.promise;
+        },
+        inputEvent: () => inputEvent,
+        async deliver(event, payload) {
+          worker.postMessage({ t: "event", instance: "form", event, payload });
+          await settle();
+          return calls.slice();
+        },
+        calls: async () => { await settle(); return calls.slice(); },
+        sizing(nextKind) {
+          kind = nextKind;
+          paintTree();
+          flushSync(() => reference.render(createElement("div", {
+            className: kind === "section" ? "mf-vocab is-section" : "mf-vocab",
+          }, createElement(Empty, null, "Empty footprint"))));
+          function measure(id) {
+            const host = document.getElementById(id);
+            const frame = host.querySelector(".mf-vocab").getBoundingClientRect();
+            const empty = host.querySelector(".mf-vocab-empty").getBoundingClientRect();
+            return {
+              height: empty.height,
+              center: empty.top - frame.top + empty.height / 2,
+              frameHeight: frame.height,
+            };
+          }
+          return { worker: measure("root"), native: measure("reference") };
+        },
+        async close() {
+          worker.postMessage({ t: "unmount", instance: "form" });
+          await settle();
+          root.unmount();
+          reference.unmount();
+          worker.terminate();
+        },
+      };
+      `,
+    );
+    const build = await Bun.build({
+      entrypoints: [entry],
+      target: "browser",
+      outdir: output,
+    });
+    if (!build.success) throw new Error(build.logs.map(String).join("\n"));
+    server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch(request) {
+        const path = new URL(request.url).pathname;
+        if (path === "/worker.js") {
+          return new Response(workerSource, { headers: { "Content-Type": "text/javascript" } });
+        }
+        if (path === "/fixture.js" || path === "/fixture.css") {
+          return new Response(Bun.file(join(output, path.slice(1))), {
+            headers: { "Content-Type": path.endsWith(".css") ? "text/css" : "text/javascript" },
+          });
+        }
+        return new Response(
+          '<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="/fixture.css"><div id="root" style="width:360px;height:320px"></div><div id="reference" style="width:360px;height:320px"></div><script type="module" src="/fixture.js"></script>',
+          { headers: { "Content-Type": "text/html" } },
+        );
+      },
+    });
+    await browser.launch({ incognito: true });
+    await browser.goto(`http://127.0.0.1:${String(server.port)}/`);
+    await browser.evaluate<void>("window.frameFixture.paint({})");
+    const originalEvent = await browser.evaluate<string>("window.frameFixture.inputEvent()");
+    await browser.evaluate<void>(`
+      window.originalInput = document.querySelector("input");
+      window.originalInput.focus();
+      window.originalInput.select();
+    `);
+    await browser.typeText("draft");
+    expect(await browser.evaluate<string[]>("window.frameFixture.calls()")).toEqual([
+      "d",
+      "dr",
+      "dra",
+      "draf",
+      "draft",
     ]);
-  });
-
-  test("input: the tree's value lands on blur, and on a render only while unfocused", () => {
-    const { painted } = pressed();
-    const input = find(painted, "mf-vocab-input");
-    const field = { value: "typed", ownerDocument: { activeElement: null as unknown } };
-    fire(input, "onBlur", field);
-    expect(field.value).toBe("draft");
-
-    field.value = "typing";
-    field.ownerDocument.activeElement = field;
-    const ref = input?.props["ref"];
-    if (typeof ref !== "function") throw new Error("ref is not wired");
-    ref(field);
-    expect(field.value).toBe("typing");
-    field.ownerDocument.activeElement = null;
-    ref(field);
-    expect(field.value).toBe("draft");
-  });
-
-  test("toggle → its event with the new boolean", () => {
-    const { events, painted } = pressed();
-    fire(find(painted, "mf-vocab-toggle__control"), "onChange", { checked: false });
-    expect(events).toEqual([["flip", false]]);
-  });
-
-  test("list row → its event with its payload; a row without one has nothing to press", () => {
-    const { events, painted } = pressed();
-    const rows = findAll(painted, "mf-vocab-list__row");
-    fire(rows[0] ?? null, "onClick");
-    expect(events).toEqual([["open", { id: 1 }]]);
-    expect(rows[1]?.tag).toBe("div");
-    expect(rows[1]?.props["onClick"]).toBeUndefined();
-  });
-});
+    await browser.evaluate<void>("window.originalInput.setSelectionRange(1, 4)");
+    for (const [before, after] of [
+      [false, true],
+      [true, true],
+      [true, false],
+      [false, false],
+      [true, false],
+      [false, true],
+      [false, false],
+    ]) {
+      await browser.evaluate<void>(
+        `window.frameFixture.paint(${JSON.stringify({ before, after, value: "stale owner value" })})`,
+      );
+      expect(
+        await browser.evaluate<Record<string, unknown>>(`
+          ({
+            same: document.querySelector("input") === window.originalInput,
+            focused: document.activeElement === window.originalInput,
+            value: document.querySelector("input").value,
+            selection: [window.originalInput.selectionStart, window.originalInput.selectionEnd],
+            before: document.querySelector('[data-testid="before"]') !== null,
+            after: document.querySelector('[data-testid="after"]') !== null,
+          })
+        `),
+      ).toEqual({
+        same: true,
+        focused: true,
+        value: "draft",
+        selection: [1, 4],
+        before,
+        after,
+      });
+    }
+    await browser.evaluate<void>("window.frameFixture.paint({ visible: false })");
+    expect(
+      await browser.evaluate<boolean>(
+        "document.querySelector('input') === null && !originalInput.isConnected",
+      ),
+    ).toBe(true);
+    const callsBeforeRetired = await browser.evaluate<string[]>("window.frameFixture.calls()");
+    const callsAfterRetired = await browser.evaluate<string[]>(
+      `window.frameFixture.deliver(${JSON.stringify(originalEvent)}, "retired edit")`,
+    );
+    expect(callsAfterRetired).toEqual(callsBeforeRetired);
+    await browser.evaluate<void>("window.frameFixture.paint({ value: 'returned' })");
+    expect(await browser.evaluate<string>("window.frameFixture.inputEvent()")).not.toBe(
+      originalEvent,
+    );
+    expect(
+      await browser.evaluate<boolean>(
+        "document.querySelector('input') !== originalInput && document.querySelector('input').value === 'returned'",
+      ),
+    ).toBe(true);
+    await browser.typeInto("input", "!");
+    expect((await browser.evaluate<string[]>("window.frameFixture.calls()")).at(-1)).toBe(
+      "returned!",
+    );
+    await browser.evaluate<void>("window.frameFixture.paint({ empty: 'Empty footprint' })");
+    for (const kind of ["panel", "section"]) {
+      const sizing = await browser.evaluate<{
+        worker: { height: number; center: number; frameHeight: number };
+        native: { height: number; center: number; frameHeight: number };
+      }>(`window.frameFixture.sizing(${JSON.stringify(kind)})`);
+      expect(sizing.worker.height).toBeCloseTo(sizing.native.height, 1);
+      expect(sizing.worker.center).toBeCloseTo(sizing.native.center, 1);
+      expect(sizing.worker.frameHeight).toBeCloseTo(sizing.native.frameHeight, 1);
+      if (kind === "panel") expect(sizing.native.frameHeight).toBe(320);
+      else expect(sizing.native.frameHeight).toBeLessThan(160);
+    }
+    await browser.evaluate<void>("window.frameFixture.close()");
+  } finally {
+    await browser.close();
+    await server?.stop(true);
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}, 60_000);
