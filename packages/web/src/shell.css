@@ -1392,27 +1392,6 @@ button.sidebar-terminal.is-summary > small {
   white-space: nowrap;
 }
 
-.sidebar-machine-create {
-  width: 1.45rem;
-  min-width: 1.45rem;
-  height: 1.45rem;
-  min-height: 1.45rem;
-  border-color: transparent;
-  border-radius: 0.4rem;
-  padding: 0;
-  color: #bac8ff;
-  background: transparent;
-  font-size: 1rem;
-  line-height: 1;
-}
-
-.sidebar-machine-create:hover,
-.sidebar-machine-create:focus-visible {
-  border-color: #495057;
-  color: #edf2ff;
-  background: #292d35;
-}
-
 .sidebar-row.is-editing {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto auto;
@@ -1611,47 +1590,18 @@ button.sidebar-terminal.is-summary > small {
   overflow-wrap: anywhere;
 }
 
-.sidebar-machine-row,
 .sidebar-terminal-row {
   min-width: 0;
   border-radius: var(--border-radius-md);
   padding: 0.4rem 0.45rem;
 }
 
-/* Machine rows share the container-row rhythm: same leading inset, height, and label size. */
-.sidebar-machine-row {
-  display: grid;
-  min-height: 2.1rem;
-  /* Six slots: pip, mark, name, state, and the two trailing controls core.machines fills —
-     "new terminal" and, since ADR 0019 §3, "withdraw this machine's credential". Both are
-     conditional, and an `auto` track with no child in it collapses to nothing. */
-  grid-template-columns: auto auto minmax(0, 1fr) minmax(0, auto) auto auto;
-  align-items: center;
-  gap: 0.45rem;
-  padding-inline: 0.5rem;
-  font-size: 0.82rem;
-}
-
-.sidebar-machine-row:hover,
 .sidebar-terminal-row:hover {
   background: rgb(134 142 150 / 8%);
 }
 
-.sidebar-machine-row.is-offline:not([data-has-refusal]),
 .sidebar-terminal-row.is-exited {
   opacity: 0.55;
-}
-
-.sidebar-machine-row strong {
-  overflow: hidden;
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.sidebar-machine-row > span:not(.machine-dot) {
-  color: var(--text-secondary-color, #868e96);
-  font-size: 0.7rem;
 }
 
 .sidebar-terminal-row {
@@ -1868,14 +1818,6 @@ button.sidebar-terminal.is-summary > small {
    green instead of adding a second dot beside it. */
 .sidebar-item-mark.terminal-state.is-running {
   color: #51cf66;
-}
-
-/* The machine row keeps its colour pip (status + identity colour) and adds the
-   species mark beside it; both are quiet enough to share the row's leading inset. */
-.sidebar-machine-mark {
-  display: inline-grid;
-  place-items: center;
-  color: #868e96;
 }
 
 .sidebar-terminal-row > .terminal-state {

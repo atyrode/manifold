@@ -17,6 +17,13 @@
   font-size: 0.68rem;
 }
 
+.terminal-machine-dot {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 999px;
+  flex: none;
+}
+
 /* No local() source: every client renders the same audited Nerd glyph subset. */
 @font-face {
   font-family: "Manifold Terminal Mono";
