@@ -5234,10 +5234,11 @@ export class PluginHost {
         live !== null && carriedContainer !== null && isContainerGrantCap(cap)
           ? { ...live, containerScope: carriedContainer }
           : live;
+      // Administered grants can widen a live caller beyond its issued token caps.
+      // The independent door and installation ceilings were checked above.
       if (
         live === null ||
         graded === null ||
-        !hasCap(this.authService.ceilingCaps(live), cap) ||
         !this.authService.allows(graded, cap) ||
         (workspace && live.containerScope !== null)
       )

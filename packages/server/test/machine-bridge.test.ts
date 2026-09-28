@@ -360,6 +360,46 @@ describe("core.machines hardened by the trusted bootstrap", () => {
     }
   });
 
+  for (const mode of ["native", "hardened"] as const) {
+    test(`live administered grants authorize ${mode} fleet effects without re-authentication`, async () => {
+      const fix = await fixture({ trusted: mode === "hardened" ? builds : [] });
+      const actor = caller(fix, ["containers:write"]);
+      const before = await fix.host.dispatch(actor, "core.machines.list", {});
+      expect(before.ok ? null : before.denial.rule).toBe("forbidden");
+      const grant = fix.auth.grant(
+        {
+          principal: { kind: "principal", id: actor.principal.id },
+          node: "manifold://",
+          caps: ["machines:mint", "containers:read"],
+          effect: "allow",
+          reach: "subtree",
+        },
+        fix.owner,
+      );
+      // The credential and AuthContext are unchanged; only the live waterfall gained a row.
+      const enrolled = MachineEnrollResponseSchema.parse(
+        result(await fix.host.dispatch(actor, "core.machines.enroll", { name: "administered" })),
+      );
+      expect(fix.auth.authenticateMachine(enrolled.machineToken ?? "").id).toBe(
+        enrolled.machine.id,
+      );
+      const listed = MachinesResponseSchema.parse(
+        result(await fix.host.dispatch(actor, "core.machines.list", {})),
+      );
+      expect(listed.machines.map((machine) => machine.id)).toEqual([enrolled.machine.id]);
+
+      fix.auth.revokeGrant(grant.id, fix.owner);
+      const withdrawn = await fix.host.dispatch(actor, "core.machines.enroll", {
+        name: "after-withdrawal",
+      });
+      expect(withdrawn.ok ? null : withdrawn.denial.rule).toBe("forbidden");
+      expect(fix.store.getMachineByName("after-withdrawal")).toBeNull();
+      const unreadable = await fix.host.dispatch(actor, "core.machines.list", {});
+      expect(unreadable.ok ? null : unreadable.denial.rule).toBe("forbidden");
+      await close(fix);
+    }, 60_000);
+  }
+
   test("runs the same doors in a child: atomic enrollment, inventory, withdrawal, and its effective mode", async () => {
     const fix = await fixture({ trusted: builds });
     const row = fix.host.roster().find((entry) => entry.manifest.id === "core.machines");
@@ -575,34 +615,55 @@ describe("authored child permission and retained trusted lifetime", () => {
     await close(fix);
   }, 60_000);
 
-  test("revocation between real child RPCs leaves the enrolled credential intact", async () => {
-    const fix = await install(["machines:mint"]);
-    const machine = fix.auth.enrollMachine("protected", fix.owner);
-    const minter = caller(fix, ["machines:mint"]);
-    const storage = fix.store.pluginStorage(id);
-    const pending = fix.host.dispatch(minter, `${id}.delayedRotate`, {
-      machineId: machine.machine.id,
-    });
-    try {
-      // The other process reaches this durable barrier over real IPC; a fake clock cannot advance it.
-      const deadline = Date.now() + 3_000;
-      while ((await storage.get("entered")) !== "yes") {
-        if (Date.now() >= deadline) throw new Error("child did not enter the rotation barrier");
-        await Bun.sleep(1);
-      }
-      fix.auth.revokePrincipal(minter.principal.id, fix.owner);
-      await storage.set("release", "yes");
-      const denied = MachineBridgeResultSchemas["identity.rotateMachineToken"].parse(
-        result(await pending),
+  test.each(["credential", "administered grant"] as const)(
+    "withdrawing %s between real child RPCs leaves the enrolled credential intact",
+    async (authority) => {
+      const fix = await install(["machines:mint"]);
+      const machine = fix.auth.enrollMachine("protected", fix.owner);
+      const minter = caller(
+        fix,
+        authority === "credential" ? ["machines:mint"] : ["containers:write"],
       );
-      expect(denied.ok ? null : denied.code).toBe("forbidden");
-      expect(fix.auth.authenticateMachine(machine.machineToken).id).toBe(machine.machine.id);
-    } finally {
-      await storage.set("release", "yes");
-      await pending;
-    }
-    await close(fix);
-  }, 60_000);
+      const grant =
+        authority === "administered grant"
+          ? fix.auth.grant(
+              {
+                principal: { kind: "principal", id: minter.principal.id },
+                node: "manifold://",
+                caps: ["machines:mint"],
+                effect: "allow",
+                reach: "subtree",
+              },
+              fix.owner,
+            )
+          : null;
+      const storage = fix.store.pluginStorage(id);
+      const pending = fix.host.dispatch(minter, `${id}.delayedRotate`, {
+        machineId: machine.machine.id,
+      });
+      try {
+        // The other process reaches this durable barrier over real IPC; a fake clock cannot advance it.
+        const deadline = Date.now() + 3_000;
+        while ((await storage.get("entered")) !== "yes") {
+          if (Date.now() >= deadline) throw new Error("child did not enter the rotation barrier");
+          await Bun.sleep(1);
+        }
+        if (grant === null) fix.auth.revokePrincipal(minter.principal.id, fix.owner);
+        else fix.auth.revokeGrant(grant.id, fix.owner);
+        await storage.set("release", "yes");
+        const denied = MachineBridgeResultSchemas["identity.rotateMachineToken"].parse(
+          result(await pending),
+        );
+        expect(denied.ok ? null : denied.code).toBe("forbidden");
+        expect(fix.auth.authenticateMachine(machine.machineToken).id).toBe(machine.machine.id);
+      } finally {
+        await storage.set("release", "yes");
+        await pending;
+      }
+      await close(fix);
+    },
+    60_000,
+  );
 
   test("a held trusted child is retired and resumes cleanup while remaining disabled", async () => {
     // core.machines is unversioned; this actual authored fixture supplies a real data hold.
