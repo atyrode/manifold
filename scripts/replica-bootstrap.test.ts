@@ -241,15 +241,36 @@ test("restored history wins over initialization even when intent exists", async 
   expect(readMarker(database(h.data))).toBe("recognizable restored history");
 });
 
-test("a restored active writer is refused before its incomplete tail becomes local authority", async () => {
-  const h = harness("unsealed");
-  writeHistory(h.fixture, "incomplete replica", "active");
-  const before = readFileSync(h.fixture);
-  const result = await h.run("prepare", { LITESTREAM_TEST_RESULT: "restore" });
-  expectRefusal(result);
-  expect(existsSync(database(h.data))).toBe(false);
-  expect(readFileSync(h.fixture)).toEqual(before);
-});
+test.each([
+  ["no takeover setting", "", "replica_writer_unsealed"],
+  [
+    "another writer's takeover setting",
+    "5f3a9c1e-2d4b-4e6f-8a7c-1b9d3e5f7a20",
+    "replica_writer_unsealed",
+  ],
+  [
+    "a malformed takeover setting",
+    "11111111-1111-4111-8111-11111111111",
+    "replica_takeover_invalid",
+  ],
+])(
+  "a restored legacy active writer with %s is refused before its incomplete tail becomes local authority",
+  async (_name, setting, reason) => {
+    const h = harness("unsealed");
+    writeHistory(h.fixture, "incomplete replica", "active");
+    const before = readFileSync(h.fixture);
+    const result = await h.run("prepare", {
+      LITESTREAM_TEST_RESULT: "restore",
+      MANIFOLD_REPLICA_TAKEOVER: setting,
+    });
+    expectRefusal(result);
+    expect(result.err).toContain(reason);
+    // One restore and no replica observation: the refusal does not wait out a quiet window.
+    expect(readFileSync(h.paths, "utf8")).toBe("manifold.db\n");
+    expect(existsSync(database(h.data))).toBe(false);
+    expect(readFileSync(h.fixture)).toEqual(before);
+  },
+);
 
 test("initialization intent cannot admit legacy replica history with no freshness evidence", async () => {
   const h = harness("legacy-replica");

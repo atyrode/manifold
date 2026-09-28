@@ -360,6 +360,7 @@ esac
       provenance = true,
       rollbackImage = true,
       adopt = false,
+      takeover = "",
       checkpoint = "fresh-from-recovery",
       pathSupport = true,
     } = {}): Admission => {
@@ -370,6 +371,7 @@ esac
         PATH: `${bin}:${process.env.PATH}`,
         CLEVER: join(bin, "clever"),
         ADOPT_RECOVERY: String(adopt),
+        TAKEOVER_WRITER: takeover,
         RECOVERY_BUILD: build,
         RECOVERY_CHECKPOINT: checkpoint,
         RELEASE_SHA: release,
@@ -398,6 +400,11 @@ esac
         snapshotted: readFileSync(snapshotted, "utf8"),
       };
     };
+    function adoptedPathFor(checkpoint: string): Variable[] {
+      return [
+        { name: "MANIFOLD_REPLICA_PATH", value: `manifold-recovery/${checkpoint}/manifold.db` },
+      ];
+    }
     const refused = (result: Admission) => {
       expect(result.code).toBe(1);
       expect(result.snapshotted).toBe("");
@@ -405,7 +412,7 @@ esac
 
     const ordinary = check();
     expect(ordinary.code).toBe(0);
-    expect(ordinary.classified).toBe("adopt=false\nreplica_path=\n");
+    expect(ordinary.classified).toBe("adopt=false\nreplica_path=\ntakeover=\n");
     refused(check({ build: "1.2.2" }));
     refused(check({ provenance: false }));
     // A rollback image the registry no longer serves is found before the switch, not after it.
@@ -419,7 +426,28 @@ esac
     const adopted = check({ vars: serving, adopt: true });
     expect(adopted.code).toBe(0);
     expect(adopted.classified).toBe(
-      "adopt=true\nreplica_path=manifold-recovery/serving-checkpoint/manifold.db\n",
+      "adopt=true\nreplica_path=manifold-recovery/serving-checkpoint/manifold.db\ntakeover=\n",
+    );
+    // A pre-heartbeat writer is named exactly, and only for an adopted recovery history.
+    const writer = "0f1e2d3c-4b5a-4968-8776-a5b4c3d2e1f0";
+    const takeover = check({ vars: serving, adopt: true, takeover: writer });
+    expect(takeover.code).toBe(0);
+    expect(takeover.classified).toBe(
+      `adopt=true\nreplica_path=manifold-recovery/serving-checkpoint/manifold.db\ntakeover=${writer}\n`,
+    );
+    refused(check({ takeover: writer }));
+    refused(check({ vars: adoptedPathFor("serving-checkpoint"), takeover: writer }));
+    for (const value of [writer.toUpperCase(), `${writer}\nadopt=false`, "not-a-writer"]) {
+      const result = check({ vars: serving, adopt: true, takeover: value });
+      refused(result);
+      expect(result.classified).toBe("");
+    }
+    refused(
+      check({
+        vars: serving,
+        inherited: [{ name: "MANIFOLD_REPLICA_TAKEOVER", value: writer }],
+        adopt: true,
+      }),
     );
     // Rollback must not depend on the checkpoint the serving recovery image itself restored.
     refused(check({ vars: serving, adopt: true, checkpoint: "serving-checkpoint" }));
@@ -433,13 +461,11 @@ esac
     refused(check({ vars: serving, adopt: true, pathSupport: false }));
 
     // Once adopted, the dedicated history stays selected and later candidates must honour it.
-    const adoptedPath = [
-      { name: "MANIFOLD_REPLICA_PATH", value: "manifold-recovery/serving-checkpoint/manifold.db" },
-    ];
+    const adoptedPath = adoptedPathFor("serving-checkpoint");
     const forward = check({ vars: adoptedPath });
     expect(forward.code).toBe(0);
     expect(forward.classified).toBe(
-      "adopt=false\nreplica_path=manifold-recovery/serving-checkpoint/manifold.db\n",
+      "adopt=false\nreplica_path=manifold-recovery/serving-checkpoint/manifold.db\ntakeover=\n",
     );
     refused(check({ vars: adoptedPath, pathSupport: false }));
     refused(check({ inherited: adoptedPath }));

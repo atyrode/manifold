@@ -36,6 +36,11 @@ on:
         required: false
         default: false
         type: boolean
+      takeover_writer:
+        description: UUID of the adopted history's unsealed pre-heartbeat writer (v0.24.0-v0.25.0 guards) that the candidate may take over; only with adopt_recovery
+        required: false
+        default: ""
+        type: string
 
 # The job token only reads source, releases, merged PR checks and full CI evidence.
 # Attestations are verified from release bundles; no write, OIDC or admin grant is needed.
@@ -210,6 +215,7 @@ jobs:
         id: recovery
         env:
           ADOPT_RECOVERY: ${{ inputs.adopt_recovery }}
+          TAKEOVER_WRITER: ${{ inputs.takeover_writer }}
           RECOVERY_CHECKPOINT: ${{ inputs.recovery_checkpoint }}
           RECOVERY_BUILD: ${{ inputs.recovery_build }}
           RELEASE_SHA: ${{ needs.release.outputs.sha }}
@@ -219,8 +225,15 @@ jobs:
           active="$(jq -r '[.env[], .fromAddons[].env[], .fromDependencies[].env[]] |
             map(select((.name | startswith("MANIFOLD_RECOVERY_")) and .value != "")) | length' <<< "$configured")"
           inherited_path="$(jq -r '[.fromAddons[].env[], .fromDependencies[].env[]] |
-            map(select(.name == "MANIFOLD_REPLICA_PATH")) | length' <<< "$configured")"
-          [ "$inherited_path" = 0 ] || fail 'MANIFOLD_REPLICA_PATH may be set only in the application environment'
+            map(select(.name == "MANIFOLD_REPLICA_PATH" or .name == "MANIFOLD_REPLICA_TAKEOVER")) | length' <<< "$configured")"
+          [ "$inherited_path" = 0 ] ||
+            fail 'MANIFOLD_REPLICA_PATH and MANIFOLD_REPLICA_TAKEOVER may be set only in the application environment'
+          if [ -n "$TAKEOVER_WRITER" ]; then
+            [ "${ADOPT_RECOVERY:-false}" = true ] ||
+              fail 'takeover_writer authorizes only an adopted recovery history'
+            [[ "$TAKEOVER_WRITER" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] ||
+              fail 'takeover_writer must be the lowercase UUID of the unsealed writer'
+          fi
           current_path="$(jq -r '[.env[] | select(.name == "MANIFOLD_REPLICA_PATH") | .value] | .[0] // ""' <<< "$configured")"
           if [ "${ADOPT_RECOVERY:-false}" != true ]; then
             [ "$active" = 0 ] ||
@@ -261,7 +274,7 @@ jobs:
           fi
           adopt=false
           [ "${ADOPT_RECOVERY:-false}" != true ] || adopt=true
-          printf 'adopt=%s\nreplica_path=%s\n' "$adopt" "$target_path" >> "$GITHUB_OUTPUT"
+          printf 'adopt=%s\nreplica_path=%s\ntakeover=%s\n' "$adopt" "$target_path" "$TAKEOVER_WRITER" >> "$GITHUB_OUTPUT"
 
       - name: Snapshot live state before the switch
         id: snapshot
@@ -297,6 +310,7 @@ jobs:
         id: switch
         env:
           ADOPTED_REPLICA_PATH: ${{ steps.recovery.outputs.adopt == 'true' && steps.recovery.outputs.replica_path || '' }}
+          TAKEOVER_WRITER: ${{ steps.recovery.outputs.takeover }}
         run: |
           echo 'started=true' >> "$GITHUB_OUTPUT"
           # Application environment is forwarded as Docker --build-arg by the provider:
@@ -308,6 +322,9 @@ jobs:
             # The original forward replica and every checkpoint stay untouched.
             "$CLEVER" env set MANIFOLD_REPLICA_PATH "$ADOPTED_REPLICA_PATH"
           fi
+          # Empty means unset. A named writer can be taken over only while it is that history's
+          # latest unsealed claim; the candidate's own claim retires the value (docs/SELF-HOST.md).
+          "$CLEVER" env set MANIFOLD_REPLICA_TAKEOVER "${TAKEOVER_WRITER:-}"
           "$CLEVER" env set MANIFOLD_RECOVERY_CHECKPOINT ""
           "$CLEVER" env set MANIFOLD_RECOVERY_SHA256 ""
           "$CLEVER" env set MANIFOLD_RECOVERY_EXPECTED_BUILD ""
@@ -371,6 +388,11 @@ jobs:
           TAG: ${{ inputs.tag }}
           VERIFY_LIVE_BOOTSTRAP_GATE: ${{ needs.installed-bundles.outputs.bootstrap_required == 'true' }}
         run: bun scripts/verify-live.ts verify "$RUNNER_TEMP/verify-live.json" "${TAG#v}"
+      - name: Retire the one-time takeover authorization
+        if: success() && inputs.takeover_writer != ''
+        run: |
+          "$CLEVER" link "${{ vars.CLEVER_HUB_APP_ID }}" --org "${{ vars.CLEVER_ORG_ID }}"
+          "$CLEVER" env set MANIFOLD_REPLICA_TAKEOVER ""
       - name: Restore the authenticated full state with the previous release
         if: failure() || needs.clever.result != 'success'
         env:
@@ -390,6 +412,7 @@ jobs:
           "$CLEVER" env set MANIFOLD_RECOVERY_SHA256 "$RECOVERY_SHA256"
           "$CLEVER" env set MANIFOLD_RECOVERY_EXPECTED_BUILD "$PREVIOUS_BUILD"
           "$CLEVER" env set MANIFOLD_RECOVERY_BASE_IMAGE "$PREVIOUS_IMAGE"
+          "$CLEVER" env set MANIFOLD_REPLICA_TAKEOVER ""
           "$CLEVER" deploy --tag "$TAG" --force --same-commit-policy rebuild
           bun scripts/verify-live.ts verify "$RUNNER_TEMP/verify-live.json" "$PREVIOUS_BUILD"
           printf 'The exact previous application is serving through the recovery image, and its restored live-state parity is verified. Recovery settings remain active so a provider restart restores the same checkpoint and then the checkpoint-specific SQLite replica history. Reconcile only through a later promotion with `adopt_recovery` and a fresh checkpoint captured from this recovery image.\n\n' >> "$GITHUB_STEP_SUMMARY"
