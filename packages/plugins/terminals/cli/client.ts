@@ -88,12 +88,17 @@ read to end of file before the command starts and forwarded, then closed; more t
 --max-input-bytes (1048576 by default, at most 16777216) is refused before anything
 starts. With -n, or when stdin is a terminal, the command reads /dev/null; pass -n
 when stdin is an open pipe carrying no input. -t runs the command on the terminal
-as exec does: stdout and stderr merged as raw terminal bytes, no stdin. Windows
+as exec does: stdout and stderr merged as raw terminal bytes, no stdin; it runs as an
+asynchronous command there, so it starts with SIGINT and SIGQUIT ignored. Windows
 console programs reached through WSL (powershell.exe, cmd.exe) need the default
-pipes; on a terminal they wait for a reply that never comes. Any Manifold-side
-failure exits 255 with one "manifold: <code>: <message>" line on stderr.
---receipt <path> writes the JSON result (mode 0600; an existing file is never
-overwritten and refuses the run). --max-output-bytes bounds stdout plus stderr.
+pipes; on a terminal they wait for a reply that never comes. Stopping a run (deadline,
+output bound, cancellation) sends TERM to the command's process group, then KILL
+after 2 s. After the run, local stdout and stderr get 10000 ms to take the rest of
+the output; a write failure or that bound is a Manifold-side failure. Any
+Manifold-side failure exits 255 with one "manifold: <code>: <message>" line on
+stderr. --receipt <path> writes the JSON result once local output has settled (mode
+0600; an existing file is never overwritten and refuses the run). --max-output-bytes
+bounds stdout plus stderr.
 
 exec takes direct argv, not a shell expression; use /bin/sh -c explicitly if shell
 syntax is wanted. No stdin is forwarded. For a leading-hyphen executable, use an
@@ -207,7 +212,9 @@ const DIAGNOSTICS = {
   receipt_failed:
     "The --receipt file could not be written after the run; its remote status is not reported.",
   local_output_failed:
-    "Local stdout or stderr could not be written; the remote command was stopped with scoped cleanup.",
+    "Local stdout or stderr could not be written, so remote output was not fully delivered. A command still running was stopped with scoped cleanup.",
+  local_output_stalled:
+    "Local stdout or stderr did not take the remaining remote output within 10000 ms after the run; the rest was abandoned.",
   target_missing_stty:
     "The target has no stty, which manifold ssh needs; the command was not started.",
   target_missing_od: "The target has no od, which manifold ssh needs; the command was not started.",
@@ -516,22 +523,50 @@ stty "$saved" || exit 125
 printf '\\036manifold-exec:%s\\037' "$nonce"
 exec "$@"`;
 
-// ssh -t: released by the exec barrier, this runner waits for /bin/sh -c instead of exec'ing
-// it, so a signal death still ends the owned terminal with 128+N. Its own job notices are
-// discarded; the command keeps the terminal as stdin, stdout and stderr.
-const TTY_RUNNER = `exec 3>&2 2>/dev/null
-(exec 2>&3 3>&-; exec /bin/sh -c -- "$1")
+// Both ssh launchers stay the PTY leader, which is all the agent's kill reaches: SIGTERM to
+// the leader, then the PTY close (SIGHUP to the session leader). The command is therefore an
+// asynchronous job the leader waits on with `wait`, the one POSIX wait a trapped signal
+// interrupts. On TERM, INT or HUP the leader sends TERM (and CONT) to the command's process
+// group, gives it 2 s (the agent's shutdown escalates to SIGKILL after 3 s), then sends KILL.
+// The job's own `trap : TERM` makes it wait for its command instead of dying first; commands
+// it starts get default TERM again.
+
+// ssh -t, exec'd by the exec barrier. Without job control the command stays in the terminal's
+// foreground process group with the terminal as stdin, stdout and stderr, so group 0 is the
+// command's group; POSIX makes an asynchronous command ignore SIGINT and SIGQUIT here. The
+// runner's own job notices are discarded. A signal death still ends the terminal with 128+N.
+const TTY_RUNNER = `exec 6<&0 3>&2 2>/dev/null
+g() {
+  trap '' TERM INT HUP
+  j=$!
+  [ -n "$j" ] || exit 125
+  kill -TERM 0
+  kill -CONT 0
+  (sleep 2; kill -USR1 $$) </dev/null >/dev/null 2>&1 &
+  trap 'kill -KILL 0' USR1
+  wait $j
+  kill -KILL 0
+}
+trap g TERM INT HUP
+(trap : TERM; /bin/sh -c -- "$1" 2>&3 3>&- 6<&-) <&6 &
+wait $!
 exit "$?"`;
 
 /**
  * ssh's default launch: the command's stdin, stdout and stderr are pipes, never the PTY.
- * After the barrier line `<nonce> <key>` (the key never reaches argv) the wrapper speaks only
- * in `RS manifold-ssh:<key>:<body> US` frames: `m:<tool>` refuses a missing tool, `r` asks for
+ * After the barrier line `<nonce> <key>` (sent as terminal input, not argv; a raced echo of
+ * that line is setup noise the client discards) the wrapper speaks only in
+ * `RS manifold-ssh:<key>:<body> US` frames: `m:<tool>` refuses a missing tool, `r` asks for
  * the next stdin chunk (base64 lines ended by ^D in canonical mode; a bare ^D ends input) and
  * `s` starts the command. From `s` on, dd copies raw stdout from one pipe to the -opost PTY,
  * and stderr becomes `e:<od hex>` frames of at most 80 bytes written into that same pipe: each
- * frame is one write below PIPE_BUF, so stdout can never split it. The terminal's own exit
- * status is the command's (128+N after signal N); no framed byte ever claims a status.
+ * frame is one write below PIPE_BUF, so stdout can never split it. The key keeps command bytes
+ * from being read as framing by accident; it is not hidden from the command, and a forged
+ * frame can only move the command's own bytes to stderr. The terminal's own exit status is the
+ * command's (128+N after signal N); no framed byte ever claims a status. Job control is on
+ * only for the job's fork (dash's `set +m` fails once the terminal is hung up): the job, and so
+ * the command, gets its own process group and default SIGINT. That group is in the background,
+ * so the job ignores SIGTTOU and SIGTTIN: /dev/tty reads fail instead of stopping it.
  */
 const PIPE_WRAPPER = `n=$1 i=$2 c=$3 m= p= l='
 '
@@ -553,11 +588,30 @@ e() {
   done
 }
 x() { exec 2>&1 >&5 3>&- 4>&- 5>&-; exec /bin/sh -c -- "$c"; }
+g() {
+  trap '' TERM INT HUP
+  j=$!
+  [ -n "$j" ] || exit 125
+  kill -TERM -$j
+  kill -CONT -$j
+  (sleep 2; kill -USR1 $$) </dev/null >/dev/null 2>&1 &
+  t=$!
+  trap 'kill -KILL -$j' USR1
+  wait $j
+  kill -KILL -$j
+  kill -KILL $t
+  exit 125
+}
 f s
 exec 3>&1 2>/dev/null
-s=$(exec 4>&1; { { if [ "$i" = n ]; then (x) </dev/null; else { printf %s "$p" | base64 -d; } 3>&- 4>&- 5>&- | (x); fi; echo $? >&4; } | e 4>&-; } 5>&1 | dd bs=65536 >&3 4>&-)
+trap g TERM INT HUP
+set -m
+(trap '' TTOU TTIN; trap : TERM; s=$(exec 4>&1; { { if [ "$i" = n ]; then (x) </dev/null; else { printf %s "$p" | base64 -d; } 3>&- 4>&- 5>&- | (x); fi; echo $? >&4; } | e 4>&-; } 5>&1 | dd bs=65536 >&3 4>&-)
 case $s in ''|*[!0-9]*) exit 125; esac
-exit "$s"`;
+exit "$s") &
+set +m
+wait $!
+exit "$?"`;
 
 type Sink = (bytes: Uint8Array) => void;
 
@@ -826,10 +880,25 @@ class PipeStream implements OutputStream {
   }
 }
 
+/** Local stdout or stderr that failed, or did not take its remaining bytes within its bound. */
+export class LocalOutputError extends Error {
+  constructor(readonly reason: "failed" | "stalled") {
+    super(`local output ${reason}`);
+    this.name = "LocalOutputError";
+  }
+}
+
 /** Local byte streams for `manifold ssh`, owned by the executable. */
 export interface TerminalClientStdio {
+  /** Accepts bytes for local stdout; throws once that stream has failed. */
   stdout(bytes: Uint8Array): void;
   stderr(bytes: Uint8Array): void;
+  /**
+   * Resolves once every byte accepted so far has been written to the OS. Rejects with a
+   * {@link LocalOutputError} on a write failure, or when a stream stops draining within the
+   * executable's bound (its unwritten bytes are then abandoned).
+   */
+  settle(): Promise<void>;
   /** A terminal stdin is never read: ssh then gives the command /dev/null. */
   readonly stdinIsTerminal: boolean;
   /** Reads local stdin to end of file; resolves null once it exceeds `maxBytes`. */
@@ -1374,6 +1443,29 @@ async function runSsh(args: readonly string[], options: TerminalClientOptions): 
     };
   } finally {
     clock?.close();
+  }
+  // Delivery is part of the result: the receipt and the status wait for local stdout/stderr.
+  let delivery: FailureCode | null = null;
+  try {
+    await stdio.settle();
+  } catch (error) {
+    delivery =
+      error instanceof LocalOutputError && error.reason === "stalled"
+        ? "local_output_stalled"
+        : "local_output_failed";
+  }
+  if (delivery !== null) {
+    // Closing local output aborts a running command, so it outranks the cancellation it caused.
+    if (problem === null || problem === "cancelled") problem = delivery;
+    status = null;
+    const output = result["output"];
+    result = {
+      ...result,
+      ok: false,
+      diagnostic: diagnostic(problem),
+      output:
+        typeof output === "object" && output !== null ? { ...output, complete: false } : output,
+    };
   }
   if (receipt !== null && !(await writeReceipt(receipt, result))) {
     problem ??= "receipt_failed";

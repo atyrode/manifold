@@ -39,17 +39,24 @@ by `/bin/sh -c`, and a missing command is refused (no login sessions). The comma
 stdin, stdout and stderr are pipes, never the terminal, so Windows console programs reached
 through WSL interop behave as they do under a pipe instead of waiting for a terminal reply.
 Remote stdout is written to local stdout byte for byte and remote stderr to local stderr:
-the wrapper sends stderr as `od` hex records keyed by a per-run secret that never reaches
-argv, each one atomic write into the pipe that carries raw stdout through a `-opost` PTY.
-Local stdin that is not a terminal is read to end of file (1 MiB by default,
-`--max-input-bytes` up to 16 MiB; more is refused before anything starts), sent in paced
-base64 chunks and closed; `-n`, or a terminal stdin, gives the command `/dev/null`. `-t`
-instead runs the command on the terminal, with exec's merged raw PTY bytes on stdout and no
-stdin. The exit status is the one in the owner's exit event (128+N after signal N); no
-framed byte can claim a status. Every Manifold-side failure exits 255 with one secret-free
-`manifold: <code>: <message>` line on stderr, and `--receipt <path>` writes the JSON result
-(mode 0600, never replacing an existing path). Targets need `/bin/sh`, `stty`, `od` and `dd`,
-plus `base64` to forward stdin; a missing tool is refused by name before the command starts.
+the wrapper sends stderr as `od` hex records tagged with a per-run key, each one atomic write
+into the pipe that carries raw stdout through a `-opost` PTY. The key travels on terminal
+input rather than argv (a raced echo of that line is discarded setup noise); it keeps command
+bytes from being mistaken for framing, and it is not a secret from the command, whose forged
+record could only move its own bytes to stderr. Local stdin that is not a terminal is read to
+end of file (1 MiB by default, `--max-input-bytes` up to 16 MiB; more is refused before
+anything starts), sent in paced base64 chunks and closed; `-n`, or a terminal stdin, gives
+the command `/dev/null`. `-t` instead runs the command on the terminal, with exec's merged
+raw PTY bytes on stdout and no stdin; as an asynchronous command there it starts with SIGINT
+and SIGQUIT ignored. The exit status is the one in the owner's exit event (128+N after signal
+N); no framed byte can claim a status. The wrapper stays the terminal's leader: when a run is
+stopped (deadline, output bound, cancellation) the agent's kill reaches it, and it sends TERM
+to the command's process group and KILL 2 s later. After the run, local stdout and stderr get
+10 s to take the remaining output. Every Manifold-side failure, a failed or stalled local
+output included, exits 255 with one secret-free `manifold: <code>: <message>` line on stderr,
+and `--receipt <path>` writes the JSON result once local output has settled (mode 0600,
+never replacing an existing path). Targets need `/bin/sh`, `stty`, `od` and `dd`, plus
+`base64` to forward stdin; a missing tool is refused by name before the command starts.
 
 `exec` keeps the structured envelope: direct argv, no stdin, and a JSON receipt with owned
 PTY output as base64, whether output is complete, observed command completion, controller

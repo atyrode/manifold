@@ -21,11 +21,14 @@ command's. Piped stdin is forwarded (read to end of file first, 1 MiB by default
 pipe. By default the command's stdio are pipes, never a terminal, which is what Windows console
 programs reached through WSL (`powershell.exe`, `cmd.exe`) need: do not add `-t` or piping
 workarounds for them. Use `-t` only for a program that really needs a terminal; its stdout and
-stderr are then merged raw terminal bytes and no stdin is forwarded.
+stderr are then merged raw terminal bytes, no stdin is forwarded, and it starts with SIGINT and
+SIGQUIT ignored.
 
 Exit status 255 with one `manifold: <code>: <message>` line on stderr is a Manifold-side
-failure (refusal, timeout, output bound, lost connection, unknown completion or unconfirmed
-cleanup), not the command's status: read the code, and never replay automatically.
+failure (refusal, timeout, output bound, lost connection, unknown completion, unconfirmed
+cleanup, or local stdout/stderr that failed or did not drain within 10 s), not the command's
+status: read the code, and never replay automatically. A stopped run's command gets TERM and
+then KILL through its process group.
 `--receipt <path>` keeps the JSON result, including trace receipts and cleanup evidence. Use
 `manifold exec --machine <target> -- <program> <arguments...>` only when a structured JSON
 envelope is wanted; check its completion and cleanup receipt, since uncertain completion is not

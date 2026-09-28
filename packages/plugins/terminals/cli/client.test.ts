@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { mkdtemp, readFile, rm, stat, symlink } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { mkdtemp, open, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -10,7 +11,7 @@ import {
   type MachineSummary,
   type TerminalInfo,
 } from "@manifold/protocol";
-import { runTerminalClient, type TerminalClientStdio } from "./client.ts";
+import { LocalOutputError, runTerminalClient, type TerminalClientStdio } from "./client.ts";
 
 const TOKEN = "private-terminal-bearer-never-print";
 const ORIGIN = "http://private-hub.invalid";
@@ -684,7 +685,11 @@ interface LocalStdio {
   readonly reads: number;
 }
 
-function localStdio(stdin: Uint8Array | "open" = new Uint8Array(), terminal = false): LocalStdio {
+function localStdio(
+  stdin: Uint8Array | "open" = new Uint8Array(),
+  terminal = false,
+  settle: () => Promise<void> = () => Promise.resolve(),
+): LocalStdio {
   const out: Buffer[] = [];
   const err: Buffer[] = [];
   let reads = 0;
@@ -701,6 +706,7 @@ function localStdio(stdin: Uint8Array | "open" = new Uint8Array(), terminal = fa
     stdio: {
       stdout: (bytes) => void out.push(Buffer.from(bytes)),
       stderr: (bytes) => void err.push(Buffer.from(bytes)),
+      settle,
       stdinIsTerminal: terminal,
       readStdin: (maxBytes) => {
         reads++;
@@ -711,15 +717,65 @@ function localStdio(stdin: Uint8Array | "open" = new Uint8Array(), terminal = fa
   };
 }
 
-function ssh(args: string[], local: LocalStdio, webSocketFactory?: (url: string) => WebSocket) {
+function ssh(
+  args: string[],
+  local: LocalStdio,
+  webSocketFactory?: (url: string) => WebSocket,
+  options: { signal?: AbortSignal } = {},
+) {
   return runTerminalClient(["ssh", ...args], {
     environment: environment(),
     output: () => {
       throw new Error("ssh never prints a JSON envelope");
     },
     stdio: local.stdio,
+    ...options,
     ...(webSocketFactory === undefined ? {} : { webSocketFactory }),
   });
+}
+
+/** A receipt's mode, inode and JSON, all read through one open handle (no path re-checks). */
+async function readReceipt(
+  path: string,
+): Promise<{ mode: number; inode: number; receipt: unknown }> {
+  const handle = await open(path, "r");
+  try {
+    const info = await handle.stat();
+    const receipt: unknown = JSON.parse(await handle.readFile("utf8"));
+    return { mode: info.mode & 0o777, inode: info.ino, receipt };
+  } finally {
+    await handle.close();
+  }
+}
+
+// Real processes in a real PTY exit on the platform clock and signal no event to this test,
+// so these two helpers poll /proc with a bound instead of faking time.
+/** The PID a remote command wrote to `path`, once it is there. */
+async function pidIn(path: string): Promise<number> {
+  for (let attempt = 0; attempt < 500; attempt++) {
+    const text = await Bun.file(path)
+      .text()
+      .catch(() => "");
+    if (/^\d+\n$/.test(text)) return Number(text);
+    await Bun.sleep(10);
+  }
+  throw new Error("the remote command never wrote its PID");
+}
+
+/** The PIDs still running (not gone or a zombie) after a 5 s grace. */
+async function stopped(pids: readonly number[]): Promise<number[]> {
+  const running = (pid: number) => {
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      return stat[stat.lastIndexOf(")") + 2] !== "Z";
+    } catch {
+      return false;
+    }
+  };
+  for (let attempt = 0; attempt < 100 && pids.some(running); attempt++) await Bun.sleep(50);
+  const left = pids.filter(running);
+  for (const pid of left) process.kill(pid, "SIGKILL");
+  return left;
 }
 
 /** Plays the pipe wrapper's side of the frame protocol; `run` is the command after `s`. */
@@ -1031,9 +1087,9 @@ describe("manifold ssh", () => {
       expect(
         await ssh(["--receipt", path, MACHINE.id, "true"], localStdio(), fixture.factory),
       ).toBe(0);
-      expect((await stat(path)).mode & 0o777).toBe(0o600);
-      const receipt = JSON.parse(await readFile(path, "utf8"));
-      expect(receipt).toMatchObject({
+      const written = await readReceipt(path);
+      expect(written.mode).toBe(0o600);
+      expect(written.receipt).toMatchObject({
         type: "ssh",
         ok: true,
         terminalId: TERMINAL.id,
@@ -1041,26 +1097,65 @@ describe("manifold ssh", () => {
         completion: { state: "exited", exitCode: 0 },
         cleanup: { state: "confirmed", via: "removal_event" },
       });
-      expect(receipt.receipts).toContainEqual({
-        door: "core.terminals.create",
-        ok: true,
-        traceId: 22,
-      });
+      expect(written.receipt).toHaveProperty(
+        "receipts",
+        expect.arrayContaining([{ door: "core.terminals.create", ok: true, traceId: 22 }]),
+      );
       const again = localStdio();
       expect(await ssh(["--receipt", path, MACHINE.id, "true"], again, fixture.factory)).toBe(255);
       expect(again.stderr.toString()).toMatch(/^manifold: receipt_unavailable: [^\n]+\n$/);
-      expect(JSON.parse(await readFile(path, "utf8"))).toEqual(receipt);
+      // The same file, unchanged: neither replaced by a new inode nor rewritten in place.
+      expect(await readReceipt(path)).toEqual(written);
+      const target = join(dir, "target.json");
       const link = join(dir, "link.json");
-      await symlink(join(dir, "target.json"), link);
+      await symlink(target, link);
       expect(
         await ssh(["--receipt", link, MACHINE.id, "true"], localStdio(), fixture.factory),
       ).toBe(255);
-      expect(await Bun.file(join(dir, "target.json")).exists()).toBe(false);
+      await expect(open(target, "r")).rejects.toMatchObject({ code: "ENOENT" });
       expect(fixture.creates).toBe(1);
     } finally {
       await rm(dir, { recursive: true });
     }
   });
+
+  test.each<[string, LocalOutputError, string]>([
+    ["fails", new LocalOutputError("failed"), "local_output_failed"],
+    ["stops draining", new LocalOutputError("stalled"), "local_output_stalled"],
+  ])(
+    "local output that %s after the remote command ends exits 255 and the receipt claims no delivery",
+    async (_case, error, code) => {
+      const dir = await mkdtemp(join(tmpdir(), "manifold-ssh-delivery-"));
+      try {
+        const path = join(dir, "receipt.json");
+        const fixture = harness({ input: (socket, text) => wrapper.input(socket, text) });
+        const wrapper = pipeWrapper(fixture, (socket) => {
+          socket.output("remote output");
+          exited(socket, 0);
+        });
+        let settled = 0;
+        const local = localStdio(new Uint8Array(), false, () => {
+          settled++;
+          return Promise.reject(error);
+        });
+        expect(await ssh(["--receipt", path, MACHINE.id, "true"], local, fixture.factory)).toBe(
+          255,
+        );
+        expect(settled).toBe(1);
+        expect(local.stdout.toString()).toBe("remote output");
+        expect(local.stderr.toString()).toMatch(new RegExp(`^manifold: ${code}: [^\\n]+\\n$`));
+        const { receipt } = await readReceipt(path);
+        expect(receipt).toMatchObject({
+          ok: false,
+          diagnostic: { code },
+          output: { mode: "pipes", stdoutBytes: 13, complete: false },
+          completion: { state: "exited", exitCode: 0 },
+        });
+      } finally {
+        await rm(dir, { recursive: true });
+      }
+    },
+  );
 });
 
 /** A hub fake whose one terminal is a real PTY running exactly the client's argv. */
@@ -1098,7 +1193,9 @@ function ptyHarness() {
       );
     }
     if (path.endsWith("core.terminals.kill")) {
-      child?.kill("SIGKILL");
+      // The agent's kill (terminal.ts): SIGTERM to the PTY leader only, then close the PTY.
+      child?.kill("SIGTERM");
+      if (child?.terminal !== undefined && !child.terminal.closed) child.terminal.close();
       return Response.json({ ok: true, result: {} }, headers("23"));
     }
     throw new Error("unexpected action");
@@ -1137,4 +1234,43 @@ describe("manifold ssh wrapper in a real PTY", () => {
     expect(local.stdout.toString()).toBe("TTT\r\n");
     expect(local.reads).toBe(0);
   });
+
+  test.each([
+    ["default", []],
+    ["-t", ["-t"]],
+  ])(
+    "%s: the kill stops a HUP-ignoring command's group after a timeout and after cancellation",
+    async (_mode, flags) => {
+      const dir = await mkdtemp(join(tmpdir(), "manifold-ssh-kill-"));
+      try {
+        // A TERM-responsive child that ignores the PTY hangup (TERM must reach it), then a
+        // child ignoring TERM as well, which the command's own TERM-ignoring shell waits for:
+        // only the bounded KILL stops those two.
+        const command = (name: string) =>
+          `trap '' HUP; sleep 3600 & echo $! > ${dir}/${name}.a; trap '' TERM; sleep 3600 & echo $! > ${dir}/${name}.b; wait`;
+        const timedOut = localStdio();
+        const timeout = ssh(
+          [...flags, "--timeout-ms", "1500", MACHINE.id, command("timeout")],
+          timedOut,
+          ptyHarness(),
+        );
+        const survivors = [await pidIn(`${dir}/timeout.a`), await pidIn(`${dir}/timeout.b`)];
+        expect(await timeout).toBe(255);
+        expect(timedOut.stderr.toString()).toMatch(/^manifold: timed_out: [^\n]+\n$/);
+        const controller = new AbortController();
+        const cancelled = localStdio();
+        const cancel = ssh([...flags, MACHINE.id, command("cancel")], cancelled, ptyHarness(), {
+          signal: controller.signal,
+        });
+        survivors.push(await pidIn(`${dir}/cancel.a`), await pidIn(`${dir}/cancel.b`));
+        controller.abort();
+        expect(await cancel).toBe(255);
+        expect(cancelled.stderr.toString()).toMatch(/^manifold: cancelled: [^\n]+\n$/);
+        expect(await stopped(survivors)).toEqual([]);
+      } finally {
+        await rm(dir, { recursive: true });
+      }
+    },
+    30_000,
+  );
 });

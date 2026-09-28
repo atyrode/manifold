@@ -1,6 +1,9 @@
 #!/usr/bin/env bun
 import { isatty } from "node:tty";
-import { runTerminalClient, type TerminalClientStdio } from "./client.ts";
+import { LocalOutputError, runTerminalClient, type TerminalClientStdio } from "./client.ts";
+
+/** How long ssh's local stdout and stderr get to take the remaining output after the run. */
+const OUTPUT_DRAIN_MS = 10_000;
 
 /** Reads stdin to EOF, stopping as soon as it exceeds the bound; never reads a terminal. */
 async function readStdin(maxBytes: number, signal: AbortSignal): Promise<Uint8Array | null> {
@@ -27,33 +30,93 @@ async function readStdin(maxBytes: number, signal: AbortSignal): Promise<Uint8Ar
   }
 }
 
-function writer(stream: NodeJS.WriteStream): (bytes: Uint8Array) => void {
-  return (bytes) => {
-    if (stream.destroyed) throw new Error("output_unavailable");
-    stream.write(bytes);
+/** One local output stream, counting accepted writes until the OS has taken each of them. */
+class TrackedOutput {
+  failed = false;
+  private pending = 0;
+  private idle: PromiseWithResolvers<void> | null = null;
+
+  constructor(private readonly stream: NodeJS.WriteStream) {
+    stream.on("error", () => this.settled(true));
+  }
+
+  get draining(): boolean {
+    return this.pending > 0 && !this.failed;
+  }
+
+  write(bytes: Uint8Array): void {
+    if (this.failed || this.stream.destroyed) throw new LocalOutputError("failed");
+    this.pending++;
+    this.stream.write(bytes, (error) => {
+      this.pending--;
+      this.settled(error !== null && error !== undefined);
+    });
+  }
+
+  /** Resolves once every accepted byte was written, or once the stream failed. */
+  drained(): Promise<void> {
+    if (!this.draining) return Promise.resolve();
+    this.idle ??= Promise.withResolvers<void>();
+    return this.idle.promise;
+  }
+
+  /** Gives up on a stream that stopped draining; its unwritten bytes are dropped. */
+  abandon(): void {
+    this.stream.destroy();
+  }
+
+  private settled(failed: boolean): void {
+    if (failed) this.failed = true;
+    if (this.draining) return;
+    this.idle?.resolve();
+    this.idle = null;
+  }
+}
+
+/** Process stdio for `manifold ssh`; settling waits at most `drainMs` for both streams. */
+export function processStdio(drainMs: number): TerminalClientStdio {
+  const stdout = new TrackedOutput(process.stdout);
+  const stderr = new TrackedOutput(process.stderr);
+  return {
+    stdout: (bytes) => stdout.write(bytes),
+    stderr: (bytes) => stderr.write(bytes),
+    settle: async () => {
+      const bound = Promise.withResolvers<void>();
+      const timer = setTimeout(bound.resolve, drainMs);
+      try {
+        await Promise.race([Promise.all([stdout.drained(), stderr.drained()]), bound.promise]);
+      } finally {
+        clearTimeout(timer);
+      }
+      const failed = stdout.failed || stderr.failed;
+      const stalled = [stdout, stderr].filter((output) => output.draining);
+      for (const output of stalled) output.abandon();
+      if (failed) throw new LocalOutputError("failed");
+      if (stalled.length > 0) throw new LocalOutputError("stalled");
+    },
+    stdinIsTerminal: isatty(0),
+    readStdin,
   };
 }
 
 if (import.meta.main) {
+  const args = process.argv.slice(2);
+  // ssh reports every Manifold-side failure, a local output failure included, as 255.
+  const failedStatus = args[0] === "ssh" ? 255 : 1;
   const controller = new AbortController();
   const interrupt = () => controller.abort();
   const outputFailed = () => {
-    process.exitCode = 1;
+    process.exitCode = failedStatus;
     controller.abort();
   };
-  const stdio: TerminalClientStdio = {
-    stdout: writer(process.stdout),
-    stderr: writer(process.stderr),
-    stdinIsTerminal: isatty(0),
-    readStdin,
-  };
+  const stdio = processStdio(OUTPUT_DRAIN_MS);
   process.on("SIGINT", interrupt);
   process.on("SIGTERM", interrupt);
   process.on("SIGHUP", interrupt);
   process.stdout.on("error", outputFailed);
   process.stderr.on("error", outputFailed);
   try {
-    process.exitCode = await runTerminalClient(process.argv.slice(2), {
+    process.exitCode = await runTerminalClient(args, {
       environment: process.env,
       signal: controller.signal,
       output: (text) => {
@@ -66,11 +129,10 @@ if (import.meta.main) {
     process.off("SIGINT", interrupt);
     process.off("SIGTERM", interrupt);
     process.off("SIGHUP", interrupt);
-    if (process.stdout.writableLength > 0 || process.stderr.writableLength > 0) {
+    if (process.stdout.writableLength > 0) {
       const deadline = setTimeout(() => {
-        process.exitCode = 1;
+        process.exitCode = failedStatus;
         process.stdout.destroy();
-        process.stderr.destroy();
       }, 10_000);
       deadline.unref();
     }
