@@ -53,7 +53,11 @@ const stamped = {
 const identityOf = (argv: readonly string[] | null): string[] =>
   (argv ?? []).filter((argument) => /^MANIFOLD_(?:VERSION|BUILD|CHANNEL)=/.test(argument));
 
-describe("runtime proof wrapper", () => {
+// The wrapper itself refuses non-Linux hosts and root before it reads any identity, so its
+// argv can only be observed where it can run; the real Linux runtime jobs in CI stay mandatory.
+const wrapperHost = process.platform === "linux" && process.getuid?.() !== 0;
+
+describe.skipIf(!wrapperHost)("runtime proof wrapper", () => {
   test("the browser proof serves the dist under the identity the caller stamped on it", () => {
     // #920: a proof re-deriving its identity from git could name a tag pushed mid-run instead.
     const browser = browserWrapper(stamped);
