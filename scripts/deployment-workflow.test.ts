@@ -443,6 +443,17 @@ esac
     );
     refused(check({ vars: adoptedPath, pathSupport: false }));
     refused(check({ inherited: adoptedPath }));
+    // A malformed configured path fails closed instead of reaching step outputs, where an
+    // embedded newline would otherwise override the adoption decision and selected history.
+    for (const value of [
+      "dedicated/history\nadopt=true\nreplica_path=manifold.db",
+      "../manifold.db",
+      "manifold-full-state/checkpoint.mfr",
+    ]) {
+      const result = check({ vars: [{ name: "MANIFOLD_REPLICA_PATH", value }] });
+      refused(result);
+      expect(result.classified).toBe("");
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

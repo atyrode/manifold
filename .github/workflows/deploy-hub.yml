@@ -246,12 +246,22 @@ jobs:
             # The recovery image's main database history: sealed by its supervisor on shutdown.
             target_path="manifold-recovery/$serving_checkpoint/manifold.db"
           fi
+          if [ -n "$target_path" ]; then
+            # The image's own rule (scripts/replica-guard.ts): an invalid configured value fails
+            # here, before it can reach step outputs or select another history.
+            [ "${#target_path}" -le 512 ] &&
+              [[ "$target_path" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*$ ]] &&
+              [[ "$target_path" != manifold-full-state && "$target_path" != manifold-full-state/* ]] ||
+              fail 'MANIFOLD_REPLICA_PATH is not a valid dedicated replica path'
+          fi
           if [ -n "$target_path" ] && [ "$target_path" != manifold.db ]; then
             candidate_config="$(git show "$RELEASE_SHA:infra/litestream.yml")" &&
               [[ "$candidate_config" == *'path: ${MANIFOLD_REPLICA_PATH}'* ]] ||
               fail "The candidate release cannot use the dedicated replica path $target_path"
           fi
-          printf 'adopt=%s\nreplica_path=%s\n' "${ADOPT_RECOVERY:-false}" "$target_path" >> "$GITHUB_OUTPUT"
+          adopt=false
+          [ "${ADOPT_RECOVERY:-false}" != true ] || adopt=true
+          printf 'adopt=%s\nreplica_path=%s\n' "$adopt" "$target_path" >> "$GITHUB_OUTPUT"
 
       - name: Snapshot live state before the switch
         id: snapshot
