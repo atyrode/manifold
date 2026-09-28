@@ -15,6 +15,8 @@ manifold context
 manifold doctor
 manifold actions
 manifold machines
+manifold ssh <machine-id-or-exact-name> uname -srm
+manifold ssh <machine-id-or-exact-name> 'wc -c' < local-file
 manifold exec --machine <machine-id-or-exact-name> -- /bin/sh -c 'printf "remote output\n"'
 ```
 
@@ -25,19 +27,47 @@ binding belongs to the runner below. The current session protocol must match the
 upgrade the hub and client together rather than spoofing a version. Compatible older
 machine transports do not need an unrelated owner restart.
 
-`exec` selects one explicitly named online unconfined Unix/WSL machine, creates only its
-own terminal with a virtual viewport, attaches and confirms control before releasing the
-command. It never fits another viewer's pending leaf or replays a command after uncertain
-completion. `--timeout-ms` and `--max-output-bytes` bound the operation. Its JSON receipt
-reports owned PTY output as base64, whether output is complete, observed command completion,
-controller status, action trace IDs and cleanup evidence. This is a terminal stream, not
-separate lossless stdout/stderr or an RPC exit status inferred from an HTTP success.
+`ssh` and `exec` select one explicitly named online unconfined Unix/WSL machine, create
+only their own terminal with a virtual viewport, attach and confirm control before
+releasing the command. They never fit another viewer's pending leaf or replay a command
+after uncertain completion. `--timeout-ms` and `--max-output-bytes` bound the operation.
 Cancellation or removal without a confirmed owner exit does not prove the process stopped.
 
+`ssh` is the ordinary way to run a remote command, shaped like OpenSSH's client. Options
+come before the machine; the command words after it are joined with single spaces and run
+by `/bin/sh -c`, and a missing command is refused (no login sessions). The command's
+stdin, stdout and stderr are pipes, never the terminal, so Windows console programs reached
+through WSL interop behave as they do under a pipe instead of waiting for a terminal reply.
+Remote stdout is written to local stdout byte for byte and remote stderr to local stderr:
+the wrapper sends stderr as `od` hex records tagged with a per-run key, each one atomic write
+into the pipe that carries raw stdout through a `-opost` PTY. The key travels on terminal
+input rather than argv (a raced echo of that line is discarded setup noise); it keeps command
+bytes from being mistaken for framing, and it is not a secret from the command, whose forged
+record could only move its own bytes to stderr. Local stdin that is not a terminal is read to
+end of file (1 MiB by default, `--max-input-bytes` up to 16 MiB; more is refused before
+anything starts), sent in paced base64 chunks and closed; `-n`, or a terminal stdin, gives
+the command `/dev/null`. `-t` instead runs the command on the terminal, with exec's merged
+raw PTY bytes on stdout and no stdin; as an asynchronous command there it starts with SIGINT
+and SIGQUIT ignored. The exit status is the one in the owner's exit event (128+N after signal
+N); no framed byte can claim a status. The wrapper stays the terminal's leader: when a run is
+stopped (deadline, output bound, cancellation) the agent's kill reaches it, and it sends TERM
+to the command's process group and KILL 2 s later. After the run, local stdout and stderr get
+10 s to take the remaining output. Every Manifold-side failure, a failed or stalled local
+output included, exits 255 with one secret-free `manifold: <code>: <message>` line on stderr,
+and `--receipt <path>` writes the JSON result once local output has settled (mode 0600,
+never replacing an existing path). Targets need `/bin/sh`, `stty`, `od` and `dd`, plus
+`base64` to forward stdin; a missing tool is refused by name before the command starts.
+
+`exec` keeps the structured envelope: direct argv, no stdin, and a JSON receipt with owned
+PTY output as base64, whether output is complete, observed command completion, controller
+status, action trace IDs and cleanup evidence. That is a terminal stream, not separate
+lossless stdout/stderr or an RPC exit status inferred from an HTTP success.
+
 An absent executable is an installation failure. `doctor` distinguishes missing bindings,
-protocol skew, authentication and missing/disabled core doors; `exec` separately diagnoses
-the selected machine's suitability. A missing harness-specific tool does not establish
-that core access is unavailable. Terminal access is not Windows desktop or game control.
+protocol skew, authentication and missing/disabled core doors; `ssh` and `exec` separately
+diagnose the selected machine's suitability. A missing harness-specific tool does not
+establish that core access is unavailable. Terminal access is not Windows desktop or game
+control.
 
 The package installs its product-owned skill at
 `share/agent-skills/manifold-terminal/SKILL.md`. A machine's configuration owner should
