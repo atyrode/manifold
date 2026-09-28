@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.25.0] - 2026-09-28
+
+### Added
+
+- Portable plugins can now use the same React components in the page or in a hardened Worker, with hooks, context, keyed state, effects and accessible controls rendered through Manifold’s bounded component vocabulary. The Machines plugin runs with the same inventory, administration and terminal-creation behavior in either mode; self-hosted hubs can select its isolated server and Worker with `MANIFOLD_HARDENED_PLUGINS=core.machines`, including packaged Nix installations. Unsupported selections fail explicitly rather than silently changing execution mode. (#259, #905)
+
+### Fixed
+
+- A replicated hub that fell back to the authenticated recovery image after a failed promotion can now return to the ordinary image without a durable volume. The optional `MANIFOLD_REPLICA_PATH` selects the replica object path (default `manifold.db`, validated before any restore), and `bun run promote vX.Y.Z --adopt-recovery --recovery-receipt PATH` continues the recovery image's sealed history using a fresh checkpoint captured from that image, rather than refusing every promotion while recovery settings are active. Unsealed, inherited or stale recovery state and candidates that cannot read the path are still refused. (#906, #911)
+
 ## [0.24.0] - 2026-09-27
 
 ### Added
