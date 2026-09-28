@@ -184,10 +184,8 @@ export function MachinesSection({ host }: PortableSectionProps): ReactElement {
                             : `Withdraw ${machine.name}'s credential`
                       }
                       disabled={pendingId !== null}
-                      onBlur={
-                        armed
-                          ? () => setArmedId((current) => (current === machine.id ? null : current))
-                          : undefined
+                      onBlur={() =>
+                        setArmedId((current) => (current === machine.id ? null : current))
                       }
                       onClick={() => {
                         if (!armed) {
