@@ -619,7 +619,7 @@ describe("authored child permission and retained trusted lifetime", () => {
     z.strictObject({ ok: z.literal(true), fact: MachineRepositoryFactSchema }),
     z.strictObject({ ok: z.literal(false), reason: z.string() }),
   ]);
-  const repositoryDenied = { ok: false, reason: "machines:read capability required" };
+  const repositoryDenied = { ok: false, reason: "machines:read capability required" } as const;
 
   for (const mode of ["native", "hardened"] as const) {
     test(`${mode} repository reads intersect the door and caller ceilings before observing`, async () => {
