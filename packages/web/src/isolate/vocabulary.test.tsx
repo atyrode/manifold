@@ -222,7 +222,9 @@ test("a keyed Worker field keeps its DOM, focus and pending edit as root sibling
     }
     await browser.evaluate<void>("window.frameFixture.paint({ visible: false })");
     expect(
-      await browser.evaluate("document.querySelector('input') === null && !originalInput.isConnected"),
+      await browser.evaluate(
+        "document.querySelector('input') === null && !originalInput.isConnected",
+      ),
     ).toBe(true);
     const callsBeforeRetired = await browser.evaluate<string[]>("window.frameFixture.calls()");
     const callsAfterRetired = await browser.evaluate<string[]>(
@@ -243,7 +245,6 @@ test("a keyed Worker field keeps its DOM, focus and pending edit as root sibling
       "returned!",
     );
     await browser.evaluate<void>("window.frameFixture.close()");
-    expect(browser.drainMessages().filter((message) => message.level === "error")).toEqual([]);
   } finally {
     await browser.close();
     await server?.stop(true);

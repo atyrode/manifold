@@ -92,23 +92,29 @@ components via `defineWebPlugin`; packing links the in-realm page entry to the
 shell's React and generates a separate self-contained `web.worker.js` from the
 same source, sharing the kit's React with its reconciler. The public Button prop
 is `data-action`, and Worker callbacks are committed-control registrations
-over scalar event frames. `Stack`/`Cluster` map adaptive or bounded rem gaps
-to the host-owned `box`. DOM and `react-dom` do not cross the Worker build.
-The boundary does **not** confine Worker networking or origin storage
-(ADR 0048 remains a proposal).
+over scalar event frames. A stable outer `box` keeps keyed controls in the
+same painted position when root siblings arrive or disappear; that container
+counts toward the whole-tree depth and node limits. `Stack`/`Cluster` map
+adaptive or bounded rem gaps to the host-owned `box`. DOM and `react-dom` do
+not cross the Worker build. The boundary does **not** confine Worker networking
+or origin storage (ADR 0048 remains a proposal).
 
 `core.machines` is the first-party parity subject. Its real server handlers
 use six bounded fleet calls: `machines.inventory`, `machines.drain`,
 `identity.enrollMachine`, `identity.rotateMachineToken`,
 `identity.revokeMachine`, `identity.forgetMachine`. The host regrades the
-current caller, published declaration and install ceiling and resolves
-machine ids itself; it does not export raw machine or identity services.
+current caller, including live administered grants, independently of the
+published declaration and install ceiling. It resolves machine ids itself
+and does not export raw machine or identity services. Machine confirmation
+registers blur before arming, so focus departure remains deliverable while
+an armed Worker repaint is still in flight.
 Native is the bootstrap default. An operator may select that registered
 definition with `MANIFOLD_HARDENED_PLUGINS=core.machines`; source/Docker
-compiles the trusted artifact at boot, and the source-free Nix wrapper names
-its build-time artifacts with `MANIFOLD_FIRST_PARTY_ARTIFACTS`. A failed
-selection stops the boot by plugin name without native fallback; neither
-artifact is an install row or an exception to reserved-namespace uploads.
+compiles the trusted artifact at boot, and the source-free Nix wrapper binds
+`MANIFOLD_FIRST_PARTY_ARTIFACTS` to its own build-time artifacts even when
+another value is inherited. A failed selection stops the boot by plugin name
+without native fallback; neither artifact is an install row or an exception
+to reserved-namespace uploads.
 Compatibility stays stamped: contract 9 carries portable React and bounded
 fleet additions, while older admitted artifacts retain their own declared
 frame behavior.

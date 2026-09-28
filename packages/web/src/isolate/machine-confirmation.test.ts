@@ -145,7 +145,9 @@ beforeAll(async () => {
   );
   const build = await Bun.build({ entrypoints: [entry], target: "browser", outdir: output });
   if (!build.success)
-    throw new Error(`Machine confirmation fixture build failed: ${build.logs.map(String).join("\n")}`);
+    throw new Error(
+      `Machine confirmation fixture build failed: ${build.logs.map(String).join("\n")}`,
+    );
   server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -188,9 +190,10 @@ for (const mode of ["worker", "native"] as const) {
       });
       const selector = `[data-testid="machine-${revoked ? "forget" : "revoke"}"]`;
       await until(
-        () => browser.evaluate<boolean>(
-          `location.search === "?mode=${mode}&revoked=${String(revoked)}" && window.machineConfirmation !== undefined && document.querySelector(${JSON.stringify(selector)}) !== null`,
-        ),
+        () =>
+          browser.evaluate<boolean>(
+            `location.search === "?mode=${mode}&revoked=${String(revoked)}" && window.machineConfirmation !== undefined && document.querySelector(${JSON.stringify(selector)}) !== null`,
+          ),
         5_000,
         `${mode} machine control`,
       );
@@ -202,22 +205,40 @@ for (const mode of ["worker", "native"] as const) {
           "armed paint held behind delivery gate",
         );
       }
-      expect(await browser.evaluate<boolean>("window.machineConfirmation.leaveAndDeliver()")).toBe(true);
+      expect(await browser.evaluate<boolean>("window.machineConfirmation.leaveAndDeliver()")).toBe(
+        true,
+      );
       await browser.evaluate<void>("window.machineConfirmation.press()");
       // This is the destructive-effect boundary: the later click only arms, even
       // when the first blur happened while the page still showed the old frame.
       expect(await browser.evaluate<unknown[]>("window.machineConfirmation.actions")).toEqual([]);
       await browser.evaluate<void>("window.machineConfirmation.press()");
-      const expected = [{ action: revoked ? "core.machines.forget" : "core.machines.revoke", args: { machineId: "machine-one" } }];
-      expect(await browser.evaluate<unknown[]>("window.machineConfirmation.actions")).toEqual(expected);
-      expect(await browser.evaluate<boolean>(`document.querySelector(${JSON.stringify(selector)}).disabled`)).toBe(true);
+      const expected = [
+        {
+          action: revoked ? "core.machines.forget" : "core.machines.revoke",
+          args: { machineId: "machine-one" },
+        },
+      ];
+      expect(await browser.evaluate<unknown[]>("window.machineConfirmation.actions")).toEqual(
+        expected,
+      );
+      expect(
+        await browser.evaluate<boolean>(
+          `document.querySelector(${JSON.stringify(selector)}).disabled`,
+        ),
+      ).toBe(true);
       await browser.evaluate<void>("window.machineConfirmation.press()");
-      expect(await browser.evaluate<unknown[]>("window.machineConfirmation.actions")).toEqual(expected);
+      expect(await browser.evaluate<unknown[]>("window.machineConfirmation.actions")).toEqual(
+        expected,
+      );
       await browser.evaluate<void>("window.machineConfirmation.complete()");
       await until(
-        () => browser.evaluate<boolean>(revoked
-          ? 'document.querySelector("[data-testid=machines-rail] button") === null'
-          : 'document.querySelector("[data-testid=machine-forget]") !== null'),
+        () =>
+          browser.evaluate<boolean>(
+            revoked
+              ? 'document.querySelector("[data-testid=machines-rail] button") === null'
+              : 'document.querySelector("[data-testid=machine-forget]") !== null',
+          ),
         5_000,
         `${verb} reflected by refreshed machine inventory`,
       );
