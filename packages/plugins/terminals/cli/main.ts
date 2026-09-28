@@ -2,7 +2,7 @@
 import { isatty } from "node:tty";
 import { LocalOutputError, runTerminalClient, type TerminalClientStdio } from "./client.ts";
 
-/** How long ssh's local stdout and stderr get to take the remaining output after the run. */
+/** How long local stdout and stderr get, in total, to take the output left after the run. */
 const OUTPUT_DRAIN_MS = 10_000;
 
 /** Reads stdin to EOF, stopping as soon as it exceeds the bound; never reads a terminal. */
@@ -60,9 +60,9 @@ class TrackedOutput {
     return this.idle.promise;
   }
 
-  /** Gives up on a stream that stopped draining; its unwritten bytes are dropped. */
+  /** Gives up on a stream that stopped draining; its unwritten bytes are dropped at exit. */
   abandon(): void {
-    this.stream.destroy();
+    this.settled(true);
   }
 
   private settled(failed: boolean): void {
@@ -73,16 +73,21 @@ class TrackedOutput {
   }
 }
 
-/** Process stdio for `manifold ssh`; settling waits at most `drainMs` for both streams. */
+/**
+ * Process stdio for the executable. All settling shares one budget of `drainMs`, counted from
+ * the first settle, so output written after it (ssh's final diagnostic) is bounded too.
+ */
 export function processStdio(drainMs: number): TerminalClientStdio {
   const stdout = new TrackedOutput(process.stdout);
   const stderr = new TrackedOutput(process.stderr);
+  let deadlineAt: number | null = null;
   return {
     stdout: (bytes) => stdout.write(bytes),
     stderr: (bytes) => stderr.write(bytes),
     settle: async () => {
+      deadlineAt ??= performance.now() + drainMs;
       const bound = Promise.withResolvers<void>();
-      const timer = setTimeout(bound.resolve, drainMs);
+      const timer = setTimeout(bound.resolve, Math.max(0, deadlineAt - performance.now()));
       try {
         await Promise.race([Promise.all([stdout.drained(), stderr.drained()]), bound.promise]);
       } finally {
@@ -99,42 +104,41 @@ export function processStdio(drainMs: number): TerminalClientStdio {
   };
 }
 
-if (import.meta.main) {
-  const args = process.argv.slice(2);
+/**
+ * The executable: one client run, then every byte it wrote reaches the OS within `drainMs`
+ * or is dropped by exiting, so a local reader that stops reading cannot hold the process.
+ */
+export async function runExecutable(args: readonly string[], drainMs: number): Promise<never> {
   // ssh reports every Manifold-side failure, a local output failure included, as 255.
   const failedStatus = args[0] === "ssh" ? 255 : 1;
   const controller = new AbortController();
   const interrupt = () => controller.abort();
-  const outputFailed = () => {
-    process.exitCode = failedStatus;
-    controller.abort();
-  };
-  const stdio = processStdio(OUTPUT_DRAIN_MS);
+  const stdio = processStdio(drainMs);
   process.on("SIGINT", interrupt);
   process.on("SIGTERM", interrupt);
   process.on("SIGHUP", interrupt);
-  process.stdout.on("error", outputFailed);
-  process.stderr.on("error", outputFailed);
+  process.stdout.on("error", interrupt);
+  process.stderr.on("error", interrupt);
+  let status: number;
   try {
-    process.exitCode = await runTerminalClient(args, {
+    status = await runTerminalClient(args, {
       environment: process.env,
       signal: controller.signal,
-      output: (text) => {
-        if (process.stdout.destroyed) throw new Error("output_unavailable");
-        process.stdout.write(text);
-      },
+      output: (text) => stdio.stdout(Buffer.from(text)),
       stdio,
     });
   } finally {
     process.off("SIGINT", interrupt);
     process.off("SIGTERM", interrupt);
     process.off("SIGHUP", interrupt);
-    if (process.stdout.writableLength > 0) {
-      const deadline = setTimeout(() => {
-        process.exitCode = failedStatus;
-        process.stdout.destroy();
-      }, 10_000);
-      deadline.unref();
-    }
   }
+  try {
+    await stdio.settle();
+  } catch {
+    // The JSON envelope (or ssh's diagnostic) was not delivered: the status says so.
+    status = failedStatus;
+  }
+  process.exit(status);
 }
+
+if (import.meta.main) await runExecutable(process.argv.slice(2), OUTPUT_DRAIN_MS);

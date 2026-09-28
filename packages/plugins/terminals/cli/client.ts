@@ -895,8 +895,9 @@ export interface TerminalClientStdio {
   stderr(bytes: Uint8Array): void;
   /**
    * Resolves once every byte accepted so far has been written to the OS. Rejects with a
-   * {@link LocalOutputError} on a write failure, or when a stream stops draining within the
-   * executable's bound (its unwritten bytes are then abandoned).
+   * {@link LocalOutputError} on a write failure, or when a stream is still draining at the
+   * executable's bound. That bound is one budget counted from the first settle, so later
+   * settles (ssh's final diagnostic) cannot extend it; unwritten bytes are then abandoned.
    */
   settle(): Promise<void>;
   /** A terminal stdin is never read: ssh then gives the command /dev/null. */
@@ -1475,8 +1476,10 @@ async function runSsh(args: readonly string[], options: TerminalClientOptions): 
   const code = problem ?? "completion_unknown";
   try {
     stdio.stderr(Buffer.from(`manifold: ${code}: ${DIAGNOSTICS[code]}\n`));
+    // The diagnostic is output too: it gets what is left of the same bounded settle.
+    await stdio.settle();
   } catch {
-    // Local stderr is gone: 255 is the only report left.
+    // Local stderr failed or stalled after the run: 255 is the only report left.
   }
   return 255;
 }

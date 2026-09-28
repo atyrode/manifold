@@ -1133,15 +1133,16 @@ describe("manifold ssh", () => {
           socket.output("remote output");
           exited(socket, 0);
         });
-        let settled = 0;
+        // stderr bytes already written at each settle: remote output first, then the diagnostic.
+        const seen: number[] = [];
         const local = localStdio(new Uint8Array(), false, () => {
-          settled++;
+          seen.push(local.stderr.length);
           return Promise.reject(error);
         });
         expect(await ssh(["--receipt", path, MACHINE.id, "true"], local, fixture.factory)).toBe(
           255,
         );
-        expect(settled).toBe(1);
+        expect(seen).toEqual([0, local.stderr.length]);
         expect(local.stdout.toString()).toBe("remote output");
         expect(local.stderr.toString()).toMatch(new RegExp(`^manifold: ${code}: [^\\n]+\\n$`));
         const { receipt } = await readReceipt(path);
