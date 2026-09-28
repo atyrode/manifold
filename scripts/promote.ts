@@ -18,6 +18,9 @@ let bootstrapGate = false;
 // Reconciles a serving recovery image (docs/SELF-HOST.md §Environments, Recovery adoption); the
 // workflow verifies the recovery state, the fresh checkpoint's source and the candidate's support.
 let adoptRecovery = false;
+// Names the adopted history's unsealed pre-heartbeat writer that the candidate may take over
+// (docs/SELF-HOST.md §Environments, Recovery adoption); the image refuses any other writer.
+let takeoverWriter = "";
 let tag: string | undefined;
 let recoveryReceiptPath: string | undefined;
 for (let index = 0; index < args.length; index += 1) {
@@ -35,6 +38,11 @@ for (let index = 0; index < args.length; index += 1) {
     index += 1;
     continue;
   }
+  if (arg === "--takeover-writer" && takeoverWriter === "") {
+    takeoverWriter = args[index + 1] ?? "";
+    index += 1;
+    if (takeoverWriter !== "") continue;
+  }
   if (!arg.startsWith("--") && tag === undefined) {
     tag = arg;
     continue;
@@ -42,9 +50,16 @@ for (let index = 0; index < args.length; index += 1) {
   tag = undefined;
   break;
 }
-if (tag === undefined || !/^v\d+\.\d+\.\d+$/.test(tag) || recoveryReceiptPath === undefined) {
+if (
+  tag === undefined ||
+  !/^v\d+\.\d+\.\d+$/.test(tag) ||
+  recoveryReceiptPath === undefined ||
+  (takeoverWriter !== "" &&
+    (!adoptRecovery ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(takeoverWriter)))
+) {
   console.error(
-    "Usage: bun run promote vX.Y.Z [--bootstrap-gate] [--adopt-recovery] --recovery-receipt PATH",
+    "Usage: bun run promote vX.Y.Z [--bootstrap-gate] [--adopt-recovery [--takeover-writer UUID]] --recovery-receipt PATH",
   );
   process.exit(1);
 }
@@ -69,7 +84,7 @@ if (tag !== `v${recovery.sourceBuild}`) {
 }
 
 const since = new Date(Date.now() - 60_000).toISOString();
-await $`gh workflow run deploy-hub.yml --ref main -f ${`tag=${tag}`} -f ${`bootstrap_gate=${bootstrapGate}`} -f ${`adopt_recovery=${adoptRecovery}`} -f ${`recovery_checkpoint=${recovery.checkpointId}`} -f ${`recovery_sha256=${recovery.objectSha256}`} -f ${`recovery_build=${recovery.sourceBuild}`}`;
+await $`gh workflow run deploy-hub.yml --ref main -f ${`tag=${tag}`} -f ${`bootstrap_gate=${bootstrapGate}`} -f ${`adopt_recovery=${adoptRecovery}`} -f ${`takeover_writer=${takeoverWriter}`} -f ${`recovery_checkpoint=${recovery.checkpointId}`} -f ${`recovery_sha256=${recovery.objectSha256}`} -f ${`recovery_build=${recovery.sourceBuild}`}`;
 console.log(`Dispatched deploy-hub.yml for ${tag}; waiting for the run…`);
 
 let run: number | undefined;

@@ -18,7 +18,13 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
-import { ordinaryReplicaPath, ReplicaGuardRefusal, requireSealedReplica } from "./replica-guard.ts";
+import {
+  admitRestoredHistory,
+  ordinaryReplicaPath,
+  ReplicaGuardRefusal,
+  replicaPosition,
+  takeoverSetting,
+} from "./replica-guard.ts";
 
 const ACK_NAME = ".replica-init-once.json";
 const ACK_LIFETIME_MS = 15 * 60 * 1000;
@@ -179,7 +185,35 @@ function initialize(db: string): void {
   }
 }
 
-function prepare(dataDir: string, db: string, target: string): void {
+function restoreInto(output: string, db: string, dataDir: string): boolean {
+  const result = Bun.spawnSync(
+    [
+      "timeout",
+      "300",
+      "litestream",
+      "restore",
+      "-if-replica-exists",
+      "-integrity-check",
+      "full",
+      "-config",
+      LITESTREAM_CONFIG,
+      "-o",
+      output,
+      db,
+    ],
+    { stdout: "ignore", stderr: "ignore", env: { ...process.env, MANIFOLD_DATA_DIR: dataDir } },
+  );
+  if (result.exitCode !== 0)
+    throw new BootstrapRefusal(result.exitCode === 124 ? "replica_timeout" : "replica_unavailable");
+  return exists(output);
+}
+
+async function prepare(
+  dataDir: string,
+  db: string,
+  target: string,
+  configuration: string,
+): Promise<void> {
   const mayInitialize = consumeAcknowledgement(dataDir, target);
   if (exists(db)) {
     requireHistory(db, "local_history_unusable");
@@ -192,31 +226,23 @@ function prepare(dataDir: string, db: string, target: string): void {
   try {
     const restored = join(staging, "manifold.db");
     state("restoring");
-    const result = Bun.spawnSync(
-      [
-        "timeout",
-        "300",
-        "litestream",
-        "restore",
-        "-if-replica-exists",
-        "-integrity-check",
-        "full",
-        "-config",
-        LITESTREAM_CONFIG,
-        "-o",
-        restored,
-        db,
-      ],
-      { stdout: "ignore", stderr: "ignore", env: { ...process.env, MANIFOLD_DATA_DIR: dataDir } },
-    );
-    if (result.exitCode !== 0)
-      throw new BootstrapRefusal(
-        result.exitCode === 124 ? "replica_timeout" : "replica_unavailable",
-      );
-    const hasHistory = exists(restored);
+    const hasHistory = restoreInto(restored, db, dataDir);
     if (hasHistory) {
       requireHistory(restored, "restored_history_unusable");
-      requireSealedReplica(restored);
+      await admitRestoredHistory(restored, {
+        now: () => Date.now(),
+        sleep: (ms) => Bun.sleep(ms),
+        position: (deadline) => replicaPosition([db], configuration, deadline),
+        async restore() {
+          // A takeover admits this final restore, not the copy restored before the quiet window.
+          for (const suffix of ["", "-wal", "-shm", "-journal"])
+            rmSync(`${restored}${suffix}`, { force: true });
+          if (!restoreInto(restored, db, dataDir))
+            throw new ReplicaGuardRefusal("replica_writer_changed");
+          requireHistory(restored, "restored_history_unusable");
+          return restored;
+        },
+      });
     } else {
       state("empty_replica");
       if (!mayInitialize) throw new BootstrapRefusal("initialization_required");
@@ -232,7 +258,7 @@ function prepare(dataDir: string, db: string, target: string): void {
   }
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const [command, ...rest] = process.argv.slice(2);
   if (
     rest.length !== 0 ||
@@ -241,6 +267,7 @@ function main(): void {
     throw new BootstrapRefusal("usage_acknowledge_discard_or_prepare");
   if (RECOVERY_SETTINGS.some((name) => process.env[name]))
     throw new BootstrapRefusal("full_state_recovery_requires_recovery_image");
+  if (command !== "discard") takeoverSetting();
   const dataDir = resolve(process.env.MANIFOLD_DATA_DIR || "/data");
   if (command === "discard") {
     discardAcknowledgement(dataDir);
@@ -271,12 +298,12 @@ function main(): void {
   }
   const target = fingerprint.digest("hex");
   if (command === "acknowledge") acknowledge(dataDir, db, target);
-  else prepare(dataDir, db, target);
+  else await prepare(dataDir, db, target, configuration);
 }
 
 if (import.meta.main) {
   try {
-    main();
+    await main();
   } catch (error) {
     console.error(
       JSON.stringify({

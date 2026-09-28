@@ -994,8 +994,10 @@ Litestream replication nor the server may start before this gate succeeds:
   publishes restored or initialized history beside them.
 - With no local database, the gate gives `litestream restore` five minutes to restore the configured
   replica into a private staging directory on the same data filesystem. A usable restored database
-  must also carry a sealed replica-writer record and matching database-set fingerprints before
-  publication. An active or untracked writer, restore error, or timeout refuses startup.
+  must carry a replica-writer record. A sealed record with matching database-set fingerprints is
+  published at once. An `active` record, whose writer stopped without sealing or is still running,
+  is published only after the unsealed takeover below proves the replica quiet. An untracked
+  writer, restore error, or timeout refuses startup.
 - A successful restore that produces no database means the configured replica is empty. It refuses
   by default. Only a valid one-time first-initialization acknowledgement consumed by this same
   attempt permits the gate to initialize a new database.
@@ -1057,13 +1059,17 @@ for both budgets in an orchestrator's startup checks. Without replica variables,
 still runs `bun packages/server/src/main.ts` directly.
 
 During service, Litestream ships WAL segments with the configured hourly snapshots and 72-hour
-retention (`infra/litestream.yml`). On SIGTERM the supervisor stops the application, then all
-replication. It fingerprints any auxiliary databases and checks their restored copies before
-writing a main-database seal; only main replication reopens to publish that seal. Successful
-shutdown logs `hub_replica_boot` with state `replica_seal_durable` after readback confirms it.
-The application's ten-second stop budget is followed by a shared five-minute synchronization
-budget. Compose grants six minutes of termination grace. Give another container/service manager
-that grace too; do not replace it with the usual ten-second container kill.
+retention (`infra/litestream.yml`), and the supervisor advances a replicated heartbeat every five
+seconds. On SIGTERM it stops the heartbeat and the application. With only `manifold.db` replicated
+it writes the seal at once, so replication's final sync carries it, then stops replication and
+confirms. With auxiliary databases it stops all replication, fingerprints them and checks their
+restored copies before writing a main-database seal; only main replication reopens to publish that
+seal. Successful shutdown logs `hub_replica_boot` with state `replica_seal_durable` after readback
+confirms it. The application's ten-second stop budget is followed by a shared five-minute
+synchronization budget, and Compose grants six minutes of termination grace. The usual ten-second
+container kill (the hosted provider's behaviour) normally still replicates the application's final
+writes but may cut the seal short; the next start then takes the unsealed writer over instead of
+refusing.
 
 One writer per replica remains mandatory. Never overlap old and new instances against one bucket
 path, including on different disks. Neither SQLite lock is a distributed fence. The hosting
@@ -1071,10 +1077,25 @@ boundary must also kill the whole owned process group on forced supervisor death
 teardown does this, but killing only a native supervisor does not.
 
 The guard's `replica-writer` record is separate from the server's diagnostic `writer-epoch`.
-After disk loss, an active replica refuses before an application starts, rather than serving a
-possibly missing acknowledged tail. A sealed record admits only its complete database set. Nothing
-merges or invents missing writes. This depends on trustworthy latest/read-after-write-consistent
-storage: it is not authentication against a hostile store replaying an older valid history.
+A sealed record admits only its complete database set. Nothing merges or invents missing writes.
+This depends on trustworthy latest/read-after-write-consistent storage: it is not authentication
+against a hostile store replaying an older valid history.
+
+**Unsealed takeover** ([ADR 0054](decisions/0054-unsealed-writer-takeover.md)). After a forced stop,
+a crash or disk loss, the replica names an `active` writer. Startup polls the replica's latest
+transaction id every two seconds (logging `replica_takeover_waiting`) and takes the writer over
+only once that position has stayed unchanged for 30 seconds, within 150 seconds; it then restores
+again, requires the same writer and logs `replica_takeover`. This accepts losing the writes the
+stopped writer had not replicated: normally at most Litestream's one-second sync interval, longer if
+replication was failing when it stopped. A replica that keeps advancing belongs to a live writer
+and refuses `replica_writer_active`.
+An `active` record written by a v0.24.0-v0.25.0 guard carries no heartbeat, so an idle live writer
+cannot be told apart; startup takes it over only when `MANIFOLD_REPLICA_TAKEOVER` names that record's
+UUID (`meta['replica-writer']`), and refuses `replica_writer_unsealed` otherwise. Leave the variable
+empty in normal operation: a nonempty value that is not a lowercase UUID refuses startup, and an
+unneeded one is ignored with a `replica_takeover_setting_unused` log line. Takeover does not fence a
+writer cut off from storage for longer than the quiet window that later reconnects, so the one-writer
+rule above still applies.
 
 **Adopting an untracked replica.** An older deployment's replica has no supervisor claim and is
 deliberately refused, even beside a valid local database. Use a reviewed offline maintenance window:
@@ -1095,7 +1116,7 @@ Without a durable volume, step 3's restored volume cannot reach the ordinary ima
 authenticated recovery image performs that restore on empty storage and seeds a new dedicated
 `manifold-recovery/<checkpoint>/` history under the supervisor's claim/seal contract; step 4 is
 then the explicit recovery adoption described in [Environments](#environments), which selects that
-sealed history with `MANIFOLD_REPLICA_PATH`.
+history with `MANIFOLD_REPLICA_PATH` and admits it sealed or through the unsealed takeover above.
 
 Do not use first-initialization intent, hand-written seal metadata, or deletion of the old replica
 to bypass admission. Provider migration and production/fleet actions still need their own
@@ -1321,9 +1342,10 @@ API's usual cross-origin headers. It closes browser, machine and instance socket
 which every client already redials. Requests and action dispatches it had already admitted get up
 to three seconds to finish. Then it flushes scenes, seals its epoch as its final commit, logs
 `writer_sealed` and releases the lock. A direct, unreplicated server needs time for that quiesce
-and plugin shutdown. The replicated supervisor additionally proves the replica seal and needs the
-six-minute container grace described above. A process killed before sealing leaves an `active`
-record; an active replica restore is refused before serving.
+and plugin shutdown. The replicated supervisor additionally proves the replica seal, which the
+six-minute container grace described above allows. A process killed before sealing leaves an
+`active` record, which a later restore takes over only after proving its replica quiet (see
+[Replicate the database](#replicate-the-database-optional)).
 
 An unreplicated replacement may be started beside the running hub on the same local directory and
 port. It loads, waits on the application lock, and binds after the old process releases it. The gap
@@ -1442,13 +1464,16 @@ build against the unchanged pre-switch snapshot. The workflow remains failed eve
 succeeds; failed recovery stays visible rather than claiming that the previous release is serving.
 
 Before an older application starts, recovery restores all available database prefixes and validates
-the main seal's complete path/fingerprint set. An active main record, an auxiliary-only prefix or a
-mixed-age set refuses instead of silently falling back to checkpoint-era database files. A
+the main seal's complete path/fingerprint set, or takes an unsealed writer over as described under
+[Replicate the database](#replicate-the-database-optional): once every database prefix is quiet it
+restores each database again. An auxiliary-only prefix or a mixed-age sealed set refuses instead of
+silently falling back to checkpoint-era database files. A
 checkpoint-specific prefix that has never existed may start from the authenticated baseline, only
 after both the complete replica sweep and the guard's latest main-replica read confirm it is empty.
 The authenticated checkpoint digests establish this baseline's bytes; inherited replica file hashes
-can differ because checkpoint capture compacts SQLite pages. Later recovery restarts still require
-the complete replica seal. This is not an override for a failed or nonempty replica.
+can differ because checkpoint capture compacts SQLite pages. Later recovery restarts admit the
+complete replica seal or take an unsealed writer over the same way. This is not an override for a
+failed or nonempty replica.
 For that new namespace only, the guard runs Litestream's local-state reset before claiming it, so
 tracking files inherited from the source checkpoint cannot prevent fresh snapshots. This leaves
 SQLite contents and the original replica namespace unchanged.
@@ -1464,16 +1489,19 @@ refuses any active recovery setting, and the ordinary entrypoint refuses nonempt
 settings rather than silently ignoring them. Never clear them by hand.
 
 **Recovery adoption.** The serving recovery history is reconciled only by
-`bun run promote vX.Y.Z --adopt-recovery --recovery-receipt PATH`. The workflow admits it only when
+`bun run promote vX.Y.Z --adopt-recovery [--takeover-writer UUID] --recovery-receipt PATH`. The workflow admits it only when
 all four recovery settings are the application's own, the receipt is a fresh checkpoint captured
 from the serving recovery image (not the checkpoint it restored) at the serving build, and the
 candidate release reads `MANIFOLD_REPLICA_PATH`. The switch sets that path to
-`manifold-recovery/<serving checkpoint>/manifold.db`, then clears the recovery settings. Stopping
-the recovery image must let its supervisor publish the final seal; the ordinary preparation gate
-admits only that sealed history, and the supervisor claims it before serving. A forced stop leaves
-an active claim, which the candidate refuses, and automatic recovery restores the fresh checkpoint
-into its own new prefix. The failed candidate's original replica and every checkpoint remain
-untouched. Ordinary replication carries only `manifold.db`: a seal naming auxiliary databases
+`manifold-recovery/<serving checkpoint>/manifold.db`, then clears the recovery settings. The
+candidate admits that history when the recovery supervisor sealed it, or takes its unsealed writer
+over as described under [Replicate the database](#replicate-the-database-optional). A recovery
+image from v0.24.0-v0.25.0 wrote no heartbeat, so its claim is taken over only with
+`--takeover-writer UUID` naming that history's `meta['replica-writer']` id; the switch sets
+`MANIFOLD_REPLICA_TAKEOVER` for the candidate, and the workflow clears it after live verification or
+on rollback. If the candidate refuses, automatic recovery restores the fresh checkpoint into its own
+new prefix. The failed candidate's original replica and every checkpoint remain untouched.
+Ordinary replication carries only `manifold.db`: a record naming auxiliary databases
 refuses adoption, and non-SQLite `/data` files return to the ordinary replica-only behaviour
 described under [Replicate the database](#replicate-the-database-optional). Later promotions keep
 the selected path and refuse a candidate that cannot read it. Neither path restarts a native

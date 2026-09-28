@@ -5299,11 +5299,13 @@ segment and the `manifold-full-state/` checkpoint namespace as `replica_path_inv
 restore; the acknowledgement binds the resolved value like every other referenced input. Selecting
 another path never merges histories: it only chooses which dedicated history the gates admit.
 
-A usable restored result must also carry a sealed replica-writer record and satisfy its complete
-database-set fingerprints before exclusive publication. Missing, malformed or active records refuse;
-a first-initialization acknowledgement cannot bless them. A nonzero restore result or timeout refuses
-regardless of acknowledgement. Zero exit with no restored database is the empty-replica state: it
-refuses unless this attempt consumed a valid acknowledgement, in which case the existing database
+A usable restored result must also carry a replica-writer record: a sealed one satisfies its
+complete database-set fingerprints, and an active one is admitted only through the unsealed
+takeover below, before exclusive publication. Missing or malformed records refuse, as does an
+active record the takeover refuses; a first-initialization acknowledgement cannot bless them. A
+nonzero restore result or timeout refuses regardless of acknowledgement. Zero exit with no restored
+database is the empty-replica state: it refuses unless this attempt consumed a valid
+acknowledgement, in which case the existing database
 opener initializes the staged database before exclusive publication. Invalid, expired, or
 target-mismatched acknowledgements refuse. Every preparation refusal prevents both replication and
 server startup, and cleanup is limited to staging owned by that run. No persistent environment
@@ -5337,26 +5339,52 @@ application cannot acknowledge writes while a future restore still sees only an 
 writer. These supervisor epochs are independent of the application's `writer-epoch`; older
 applications need not implement the latter to run under the guard. The freshness gate has one
 five-minute deadline, in addition to preparation's bounded restore. A timeout, replica failure or
-stop request before admission leaves the application unstarted.
+stop request before admission leaves the application unstarted. The claim also writes
+`meta['replica-writer-heartbeat']` (`{version:1, epoch, id, beat}`, beat 0); while the application
+runs, the guard advances that beat every five seconds for as long as the stored claim is still its
+own, and stops the application with `replica_writer_changed` if it is not. The heartbeat makes a
+live writer's replica advance even when the application is idle.
 
-On shutdown the guard gives the application ten seconds to stop, then gives final replication a
-shared five-minute deadline. It stops all replication before checkpointing and hashing auxiliary
-databases, and requires each restored auxiliary database to match. The final main-database seal
-records the same epoch/UUID and that complete path/SHA-256 set. Only main-database replication
-reopens after this point: reopening auxiliary databases would mutate Litestream's internal tables
-and invalidate their fingerprints. Success is `hub_replica_boot` / `replica_seal_durable`, emitted
-only after a read-only restore observes the seal. An application failure or premature replicator
-exit refuses sealing; an unconfirmed final upload is not reported as a successful handover.
-Compose grants six minutes of termination grace; other supervisors must provide that grace and the
-same whole-process teardown boundary.
+On shutdown the guard stops the heartbeat, then gives the application ten seconds to stop. Without
+auxiliary databases it writes the main seal at once, so the replicator's final sync carries it, then
+stops replication, republishes and confirms. With auxiliary databases it stops all replication before
+checkpointing and hashing them, and requires each restored auxiliary database to match; the final
+main-database seal records the same epoch/UUID and that complete path/SHA-256 set. Only
+main-database replication reopens after this point: reopening auxiliary databases would mutate
+Litestream's internal tables and invalidate their fingerprints. Final replication shares a
+five-minute deadline. Success is `hub_replica_boot` / `replica_seal_durable`, emitted only after a
+read-only restore observes the seal. An application failure or premature replicator exit refuses
+sealing; an unconfirmed final upload is not reported as a successful handover. Compose grants six
+minutes of termination grace. A supervisor that kills sooner (the hosted provider sends SIGTERM and
+kills about ten seconds later) usually still gets the application's final writes replicated, but
+may cut the seal short; the next start then takes over the unsealed writer as below. Every
+supervisor must keep the same whole-process teardown boundary.
 
-Ordinary restore admits only a sealed main history. The recovery image first authenticates its
-full-state checkpoint, restores every available checkpoint-specific database replica, and admits
-the set only when the main seal names matching auxiliary files. An auxiliary-only prefix, an
-active main writer, a missing database, an escaped/symlinked path or a mismatched fingerprint refuses
-before the previous application starts. The compiled guard runs outside the pinned previous
-application image, so the same admission and sealing rules apply to a real older executable.
-Non-SQLite application recovery files remain pinned to the authenticated checkpoint.
+Restored main history is admitted when it is sealed, or when its `active` writer is proven stopped
+([ADR 0054](decisions/0054-unsealed-writer-takeover.md)). Startup polls the maximum transaction id
+over every level of every configured database (`litestream ltx -level all -json`) every two
+seconds, logging `hub_replica_boot` / `replica_takeover_waiting` when it starts; each poll has its
+own 30-second bound. When that position stays unchanged for 30 seconds within a 150-second
+deadline, it restores every configured database again, requires the same writer epoch/UUID, logs
+`hub_replica_boot` / `replica_takeover` and publishes that history; the guard then claims the next
+epoch. A position that keeps advancing refuses `replica_writer_active`, and a changed identity
+refuses `replica_writer_changed`. Writes the stopped writer had not replicated are lost: normally
+Litestream's one-second sync interval, longer during a replication outage. An active record without
+its matching heartbeat comes from a v0.24.0-v0.25.0 guard, whose idle liveness is unobservable; it
+is taken over only when `MANIFOLD_REPLICA_TAKEOVER` equals its UUID, and otherwise refuses
+`replica_writer_unsealed` without waiting. Empty means unset; a nonempty value that is not a
+lowercase UUID refuses `replica_takeover_invalid` at the start of every replicated entrypoint,
+before any history is read or claimed, and an unneeded one is inert and logged as
+`replica_takeover_setting_unused`. A writer cut off from storage for longer than the quiet window
+and then reconnected is not fenced: one instance with stop-before-start remains the boundary.
+
+The recovery image first authenticates its full-state checkpoint, restores every available
+checkpoint-specific database replica, and admits the set only when the main seal names matching
+auxiliary files, or after the takeover above has re-restored every database. An auxiliary-only
+prefix, a missing database, an escaped/symlinked path or a mismatched fingerprint refuses before
+the previous application starts. The compiled guard runs outside the pinned previous application
+image, so the same admission and sealing rules apply to a real older executable. Non-SQLite
+application recovery files remain pinned to the authenticated checkpoint.
 
 A checkpoint-specific namespace with no database replicas starts from its authenticated checkpoint
 baseline instead. The recovery entrypoint normalizes the data directory before both helpers and
@@ -5372,7 +5400,8 @@ cannot admit a nonempty, partial or active recovery replica.
 This protocol relies on a trusted, latest-read/read-after-write-consistent replica store. It does
 not authenticate hostile replica contents, detect a store that deliberately replays an older valid
 history, coordinate concurrent hosts, or recover an acknowledged but unreplicated tail after the
-authoritative disk is lost. Such an active restore refuses instead of serving uncertain history.
+authoritative disk is lost. Such a restore serves the replicated history once the takeover proves it
+quiet, and states that loss rather than refusing forever (ADR 0054).
 An existing untracked replica requires reviewed offline adoption: stop the incumbent, authenticate
 a full-state checkpoint of the quiesced volume, restore it into a fresh volume, and seed a new
 dedicated replica target while preserving the old one. Initialization intent, fabricated metadata

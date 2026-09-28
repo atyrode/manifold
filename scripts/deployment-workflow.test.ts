@@ -360,6 +360,7 @@ esac
       provenance = true,
       rollbackImage = true,
       adopt = false,
+      takeover = "",
       checkpoint = "fresh-from-recovery",
       pathSupport = true,
     } = {}): Admission => {
@@ -370,6 +371,7 @@ esac
         PATH: `${bin}:${process.env.PATH}`,
         CLEVER: join(bin, "clever"),
         ADOPT_RECOVERY: String(adopt),
+        TAKEOVER_WRITER: takeover,
         RECOVERY_BUILD: build,
         RECOVERY_CHECKPOINT: checkpoint,
         RELEASE_SHA: release,
@@ -398,6 +400,11 @@ esac
         snapshotted: readFileSync(snapshotted, "utf8"),
       };
     };
+    function adoptedPathFor(checkpoint: string): Variable[] {
+      return [
+        { name: "MANIFOLD_REPLICA_PATH", value: `manifold-recovery/${checkpoint}/manifold.db` },
+      ];
+    }
     const refused = (result: Admission) => {
       expect(result.code).toBe(1);
       expect(result.snapshotted).toBe("");
@@ -405,7 +412,7 @@ esac
 
     const ordinary = check();
     expect(ordinary.code).toBe(0);
-    expect(ordinary.classified).toBe("adopt=false\nreplica_path=\n");
+    expect(ordinary.classified).toBe("adopt=false\nreplica_path=\ntakeover=\n");
     refused(check({ build: "1.2.2" }));
     refused(check({ provenance: false }));
     // A rollback image the registry no longer serves is found before the switch, not after it.
@@ -419,7 +426,28 @@ esac
     const adopted = check({ vars: serving, adopt: true });
     expect(adopted.code).toBe(0);
     expect(adopted.classified).toBe(
-      "adopt=true\nreplica_path=manifold-recovery/serving-checkpoint/manifold.db\n",
+      "adopt=true\nreplica_path=manifold-recovery/serving-checkpoint/manifold.db\ntakeover=\n",
+    );
+    // A pre-heartbeat writer is named exactly, and only for an adopted recovery history.
+    const writer = "0f1e2d3c-4b5a-4968-8776-a5b4c3d2e1f0";
+    const takeover = check({ vars: serving, adopt: true, takeover: writer });
+    expect(takeover.code).toBe(0);
+    expect(takeover.classified).toBe(
+      `adopt=true\nreplica_path=manifold-recovery/serving-checkpoint/manifold.db\ntakeover=${writer}\n`,
+    );
+    refused(check({ takeover: writer }));
+    refused(check({ vars: adoptedPathFor("serving-checkpoint"), takeover: writer }));
+    for (const value of [writer.toUpperCase(), `${writer}\nadopt=false`, "not-a-writer"]) {
+      const result = check({ vars: serving, adopt: true, takeover: value });
+      refused(result);
+      expect(result.classified).toBe("");
+    }
+    refused(
+      check({
+        vars: serving,
+        inherited: [{ name: "MANIFOLD_REPLICA_TAKEOVER", value: writer }],
+        adopt: true,
+      }),
     );
     // Rollback must not depend on the checkpoint the serving recovery image itself restored.
     refused(check({ vars: serving, adopt: true, checkpoint: "serving-checkpoint" }));
@@ -433,13 +461,11 @@ esac
     refused(check({ vars: serving, adopt: true, pathSupport: false }));
 
     // Once adopted, the dedicated history stays selected and later candidates must honour it.
-    const adoptedPath = [
-      { name: "MANIFOLD_REPLICA_PATH", value: "manifold-recovery/serving-checkpoint/manifold.db" },
-    ];
+    const adoptedPath = adoptedPathFor("serving-checkpoint");
     const forward = check({ vars: adoptedPath });
     expect(forward.code).toBe(0);
     expect(forward.classified).toBe(
-      "adopt=false\nreplica_path=manifold-recovery/serving-checkpoint/manifold.db\n",
+      "adopt=false\nreplica_path=manifold-recovery/serving-checkpoint/manifold.db\ntakeover=\n",
     );
     refused(check({ vars: adoptedPath, pathSupport: false }));
     refused(check({ inherited: adoptedPath }));
@@ -568,6 +594,64 @@ await Bun.write(process.env.DOWNLOAD_RECEIPT, directory);
       expect(await Bun.file(join(downloaded, member)).exists()).toBe(false);
       expect(readFileSync(output, "utf8")).toBe("");
     }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a failed takeover-authorization retirement stays visible without restoring over a verified candidate", async () => {
+  const source = Bun.YAML.parse(
+    await Bun.file(new URL("../.github/workflows/deploy-hub.yml", import.meta.url)).text(),
+  ) as {
+    jobs: Record<
+      string,
+      {
+        steps: {
+          name?: string;
+          id?: string;
+          if?: string;
+          run?: string;
+          "continue-on-error"?: boolean;
+        }[];
+      }
+    >;
+  };
+  const steps = source.jobs["verify-live"]?.steps ?? [];
+  const candidate = steps.findIndex((step) => step.id === "candidate");
+  const restore = steps.findIndex((step) => step.name?.startsWith("Restore the authenticated"));
+  const retire = steps.findIndex((step) => step.id === "retire");
+  const report = steps.findIndex((step) => step.if === "steps.retire.outcome == 'failure'");
+  // The restore decision is taken before retirement runs, and retirement can never fail the job,
+  // so only a failed switch or candidate verification restores the pre-switch checkpoint.
+  expect(candidate).toBeGreaterThanOrEqual(0);
+  expect(restore).toBeGreaterThan(candidate);
+  expect(steps[restore]?.if).toBe("failure() || needs.clever.result != 'success'");
+  expect(retire).toBeGreaterThan(restore);
+  expect(steps[retire]?.["continue-on-error"]).toBe(true);
+  expect(steps[retire]?.if).toContain("steps.candidate.outcome == 'success'");
+  expect(report).toBeGreaterThan(retire);
+
+  const root = mkdtempSync(join(tmpdir(), "manifold-takeover-retirement-"));
+  try {
+    const bin = join(root, "bin");
+    mkdirSync(bin);
+    // The provider rejects the clear after the candidate was verified.
+    writeFileSync(join(bin, "clever"), '#!/usr/bin/env bash\n[ "$1" = link ] && exit 0\nexit 1\n', {
+      mode: 0o700,
+    });
+    const summary = join(root, "summary.md");
+    writeFileSync(summary, "");
+    const run = (script: string) =>
+      Bun.spawnSync(["bash", "-e", "-o", "pipefail", "-c", script], {
+        env: { ...process.env, CLEVER: join(bin, "clever"), GITHUB_STEP_SUMMARY: summary },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+    expect(run(steps[retire]?.run ?? "").exitCode).not.toBe(0);
+    const reported = run(steps[report]?.run ?? "");
+    expect(reported.exitCode).toBe(0);
+    expect(reported.stdout.toString()).toContain("::warning::MANIFOLD_REPLICA_TAKEOVER");
+    expect(readFileSync(summary, "utf8")).toContain("The verified release keeps serving");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
