@@ -955,6 +955,10 @@ LITESTREAM_ACCESS_KEY_ID=<key id>
 LITESTREAM_SECRET_ACCESS_KEY=<secret>
 ```
 
+An optional fifth variable, `MANIFOLD_REPLICA_PATH`, names the main database's object path in that
+bucket (default `manifold.db`). Preparation and the supervisor refuse an absolute path, an empty,
+`.` or `..` segment and the `manifold-full-state/` checkpoint namespace as `replica_path_invalid`.
+
 Treat the replica as a sensitive, authority-bearing backup, not as ordinary application data.
 `manifold.db` includes principals, grants and other authorization state, token and share hashes,
 installed-plugin state, and raw outbound `dials.secret` bearers when this hub connects to another
@@ -963,12 +967,16 @@ who can replace it can replace authority and installed-plugin state on the next 
 local database exists, missing, unreadable, corrupt, or failed replica history refuses startup
 rather than creating replacement history.
 
-Use a dedicated bucket for each hub; the shipped config fixes the object path to `manifold.db`.
-If you maintain a custom Litestream config with a prefix, isolate that prefix to one hub instead.
-Give its credential only the object-list/read/write/delete permissions Litestream requires at that
-location; do not reuse a fleet-wide or general object-storage credential, and keep the secret with
-the hub's other deployment secrets. Its ordinary object deletes support Litestream's configured
-retention, but it should not be able to delete protected versions, bypass retention, or change
+Use a dedicated bucket for each hub, or a `MANIFOLD_REPLICA_PATH` prefix isolated to one hub; never
+point two hubs at one path. Give its credential only the object-list/read/write/delete permissions
+Litestream requires at that location; do not reuse a fleet-wide or general object-storage
+credential, and keep the secret with the hub's other deployment secrets. Its ordinary object
+deletes support Litestream's configured retention. Litestream prunes with multi-object delete
+requests, which some S3-compatible stores authorize against the bucket resource before checking
+each object: an allow scoped only to `<bucket>/*` then fails every retention pass with
+`AccessDenied`. Grant ordinary delete on the bucket resource only where per-object denials still
+apply, and prove with disposable objects that checkpoint objects and versions stay refused. The
+credential should not be able to delete protected versions, bypass retention, or change
 bucket versioning, lifecycle, lock, or access policy. Put those administrative controls under a
 separate identity. Enable provider-appropriate versioning or immutable retention, deletion
 protection and recovery retention, then rehearse a restore. Transport security and encryption at
@@ -1083,6 +1091,12 @@ deliberately refused, even beside a valid local database. Use a reviewed offline
    before ordinary health and state verification. Preserve the checkpoint and old history until
    that verification succeeds.
 
+Without a durable volume, step 3's restored volume cannot reach the ordinary image. There the
+authenticated recovery image performs that restore on empty storage and seeds a new dedicated
+`manifold-recovery/<checkpoint>/` history under the supervisor's claim/seal contract; step 4 is
+then the explicit recovery adoption described in [Environments](#environments), which selects that
+sealed history with `MANIFOLD_REPLICA_PATH`.
+
 Do not use first-initialization intent, hand-written seal metadata, or deletion of the old replica
 to bypass admission. Provider migration and production/fleet actions still need their own
 authorization. The dated reasoning and disposable proof boundary are in
@@ -1092,7 +1106,7 @@ Take a consistent inspection copy of the ordinary replica with the command below
 copy is normally active and is not an admitted replacement volume; do not overwrite `/data` with it:
 
 ```sh
-docker compose exec manifold litestream restore -config /app/infra/litestream.yml -o /tmp/copy.db /data/manifold.db
+docker compose exec manifold sh -c 'MANIFOLD_REPLICA_PATH="${MANIFOLD_REPLICA_PATH:-manifold.db}" exec litestream restore -config /app/infra/litestream.yml -o /tmp/copy.db /data/manifold.db'
 ```
 
 With replication on **and** `MANIFOLD_OWNER_KEY` pinned in `.env`, the container can rebuild its
@@ -1446,11 +1460,24 @@ Recovery settings remain active after a successful rollback so a provider restar
 authenticated file restore and resumes each database from that recovery prefix. Do not install
 plugins, rotate file-backed keys or otherwise mutate non-SQLite `/data` files while this emergency
 image is active: those files intentionally remain pinned to the checkpoint. Ordinary promotion
-refuses any active recovery setting: the serving recovery replica must first be reconciled through
-separately reviewed maintenance, not silently replaced by the failed candidate's original replica.
-There is no automatic recovery-to-forward handoff. Do not clear those settings to bypass the hold.
-The ordinary entrypoint also refuses nonempty recovery settings rather than silently ignoring
-them. Neither path restarts a native execution owner.
+refuses any active recovery setting, and the ordinary entrypoint refuses nonempty recovery
+settings rather than silently ignoring them. Never clear them by hand.
+
+**Recovery adoption.** The serving recovery history is reconciled only by
+`bun run promote vX.Y.Z --adopt-recovery --recovery-receipt PATH`. The workflow admits it only when
+all four recovery settings are the application's own, the receipt is a fresh checkpoint captured
+from the serving recovery image (not the checkpoint it restored) at the serving build, and the
+candidate release reads `MANIFOLD_REPLICA_PATH`. The switch sets that path to
+`manifold-recovery/<serving checkpoint>/manifold.db`, then clears the recovery settings. Stopping
+the recovery image must let its supervisor publish the final seal; the ordinary preparation gate
+admits only that sealed history, and the supervisor claims it before serving. A forced stop leaves
+an active claim, which the candidate refuses, and automatic recovery restores the fresh checkpoint
+into its own new prefix. The failed candidate's original replica and every checkpoint remain
+untouched. Ordinary replication carries only `manifold.db`: a seal naming auxiliary databases
+refuses adoption, and non-SQLite `/data` files return to the ordinary replica-only behaviour
+described under [Replicate the database](#replicate-the-database-optional). Later promotions keep
+the selected path and refuse a candidate that cannot read it. Neither path restarts a native
+execution owner.
 
 A previous binary can refuse a database already migrated to a newer schema. At that boundary,
 code-only rollback is not a recovery path: the authenticated full-state receipt and immutable
@@ -1717,8 +1744,9 @@ promotion policy, with only source/release/PR/check/status/Actions read permissi
 write, OIDC or administration grant. It retains the candidate's verified SHA and immutable
 image reference, requires ordinary-image and recovery scaffolding in that release, matches
 the receipt's source build to the live snapshot, verifies the incumbent through the same
-policy and confirms its image still resolves, refuses active recovery settings, and requires
-one instance with zero-downtime deployment disabled.
+policy and confirms its image still resolves, refuses active recovery settings unless
+`--adopt-recovery` reconciles them as described above, and requires one instance with
+zero-downtime deployment disabled.
 
 The read-only installed-bundle candidate gate and the actual production switch consume the
 same verified image reference. `infra/release.Dockerfile` is only `ARG`/`FROM`, with no default

@@ -278,16 +278,17 @@ esac
   }
 });
 
-test("production refuses unreconciled recovery, foreign receipts and unverified incumbents", async () => {
+test("production admits active recovery only through explicit adoption with a fresh checkpoint", async () => {
   const source = Bun.YAML.parse(
     await Bun.file(new URL("../.github/workflows/deploy-hub.yml", import.meta.url)).text(),
   ) as { jobs: Record<string, { steps: { name?: string; run?: string }[] }> };
   const steps = Object.values(source.jobs).flatMap((job) => job.steps);
-  const hold = steps.find(
-    (step) => step.name === "Refuse promotion from an unreconciled recovery image",
+  const classify = steps.find(
+    (step) => step.name === "Classify recovery state before promotion",
   )?.run;
   const snapshot = steps.find((step) => step.name === "Snapshot live state before the switch")?.run;
-  if (!hold || !snapshot) throw new Error("Production workflow is missing recovery admission");
+  if (!classify || !snapshot) throw new Error("Production workflow is missing recovery admission");
+  const release = "c".repeat(40);
   const root = mkdtempSync(join(tmpdir(), "manifold-production-admission-"));
   try {
     const bin = join(root, "bin");
@@ -297,6 +298,18 @@ test("production refuses unreconciled recovery, foreign receipts and unverified 
       `#!/usr/bin/env bash
 [[ "$*" == "env --format json" ]] || exit 1
 printf '%s\\n' "$FIXTURE_ENV"
+`,
+      { mode: 0o700 },
+    );
+    writeFileSync(
+      join(bin, "git"),
+      `#!/usr/bin/env bash
+[[ "$1 $2" == "show ${release}:infra/litestream.yml" ]] || exit 1
+if [[ "$FIXTURE_PATH_SUPPORT" == true ]]; then
+  printf '%s\\n' '        path: \${MANIFOLD_REPLICA_PATH}'
+else
+  printf '%s\\n' '        path: manifold.db'
+fi
 `,
       { mode: 0o700 },
     );
@@ -320,50 +333,126 @@ esac
 `,
       { mode: 0o700 },
     );
-    const output = join(root, "output");
-    const check = (
-      build: string,
-      vars: { name: string; value: string }[],
-      inherited = false,
+    const classified = join(root, "classified");
+    const snapshotted = join(root, "snapshotted");
+    interface Variable {
+      name: string;
+      value: string;
+    }
+    interface Admission {
+      code: number | null;
+      classified: string;
+      snapshotted: string;
+    }
+    const serving: Variable[] = [
+      { name: "MANIFOLD_RECOVERY_CHECKPOINT", value: "serving-checkpoint" },
+      { name: "MANIFOLD_RECOVERY_SHA256", value: "d".repeat(64) },
+      { name: "MANIFOLD_RECOVERY_EXPECTED_BUILD", value: "1.2.3" },
+      {
+        name: "MANIFOLD_RECOVERY_BASE_IMAGE",
+        value: `ghcr.io/owner/manifold@sha256:${"b".repeat(64)}`,
+      },
+    ];
+    const check = ({
+      build = "1.2.3",
+      vars = [] as Variable[],
+      inherited = [] as Variable[],
       provenance = true,
       rollbackImage = true,
-    ) => {
-      writeFileSync(output, "");
-      return Bun.spawnSync(["bash", "-e", "-o", "pipefail", "-c", `${hold}\n${snapshot}`], {
-        env: {
-          ...process.env,
-          PATH: `${bin}:${process.env.PATH}`,
-          CLEVER: join(bin, "clever"),
-          RECOVERY_BUILD: build,
-          FIXTURE_PROVENANCE: String(provenance),
-          FIXTURE_ROLLBACK_IMAGE: String(rollbackImage),
-          FIXTURE_ENV: JSON.stringify({
-            env: inherited ? [] : vars,
-            fromAddons: inherited ? [{ env: vars }] : [],
-            fromDependencies: [],
-          }),
-          RUNNER_TEMP: root,
-          GITHUB_OUTPUT: output,
-          GITHUB_REPOSITORY: "owner/manifold",
-        },
-        stdout: "pipe",
-        stderr: "pipe",
-      });
+      adopt = false,
+      checkpoint = "fresh-from-recovery",
+      pathSupport = true,
+    } = {}): Admission => {
+      writeFileSync(classified, "");
+      writeFileSync(snapshotted, "");
+      const env = {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH}`,
+        CLEVER: join(bin, "clever"),
+        ADOPT_RECOVERY: String(adopt),
+        RECOVERY_BUILD: build,
+        RECOVERY_CHECKPOINT: checkpoint,
+        RELEASE_SHA: release,
+        FIXTURE_PATH_SUPPORT: String(pathSupport),
+        FIXTURE_PROVENANCE: String(provenance),
+        FIXTURE_ROLLBACK_IMAGE: String(rollbackImage),
+        FIXTURE_ENV: JSON.stringify({
+          env: vars,
+          fromAddons: inherited.length ? [{ env: inherited }] : [],
+          fromDependencies: [],
+        }),
+        RUNNER_TEMP: root,
+        GITHUB_REPOSITORY: "owner/manifold",
+      };
+      // Separate steps receive separate output files in Actions.
+      const run = (script: string, output: string) =>
+        Bun.spawnSync(["bash", "-e", "-o", "pipefail", "-c", script], {
+          env: { ...env, GITHUB_OUTPUT: output },
+          stdout: "pipe",
+          stderr: "pipe",
+        }).exitCode;
+      const code = run(classify, classified);
+      return {
+        code: code === 0 ? run(snapshot, snapshotted) : code,
+        classified: readFileSync(classified, "utf8"),
+        snapshotted: readFileSync(snapshotted, "utf8"),
+      };
     };
-    expect(check("1.2.3", []).exitCode).toBe(0);
-    expect(check("1.2.2", []).exitCode).toBe(1);
-    expect(readFileSync(output, "utf8")).toBe("");
-    expect(check("1.2.3", [], false, false).exitCode).toBe(1);
-    expect(readFileSync(output, "utf8")).toBe("");
+    const refused = (result: Admission) => {
+      expect(result.code).toBe(1);
+      expect(result.snapshotted).toBe("");
+    };
+
+    const ordinary = check();
+    expect(ordinary.code).toBe(0);
+    expect(ordinary.classified).toBe("adopt=false\nreplica_path=\n");
+    refused(check({ build: "1.2.2" }));
+    refused(check({ provenance: false }));
     // A rollback image the registry no longer serves is found before the switch, not after it.
-    expect(check("1.2.3", [], false, true, false).exitCode).toBe(1);
-    expect(readFileSync(output, "utf8")).toBe("");
-    for (const inherited of [false, true]) {
-      expect(
-        check("1.2.3", [{ name: "MANIFOLD_RECOVERY_SHA256", value: "c".repeat(64) }], inherited)
-          .exitCode,
-      ).toBe(1);
-      expect(readFileSync(output, "utf8")).toBe("");
+    refused(check({ rollbackImage: false }));
+    // Active recovery never falls through an ordinary promotion, wherever the setting comes from.
+    const partial = [{ name: "MANIFOLD_RECOVERY_SHA256", value: "c".repeat(64) }];
+    refused(check({ vars: partial }));
+    refused(check({ inherited: partial }));
+    refused(check({ vars: serving }));
+
+    const adopted = check({ vars: serving, adopt: true });
+    expect(adopted.code).toBe(0);
+    expect(adopted.classified).toBe(
+      "adopt=true\nreplica_path=manifold-recovery/serving-checkpoint/manifold.db\n",
+    );
+    // Rollback must not depend on the checkpoint the serving recovery image itself restored.
+    refused(check({ vars: serving, adopt: true, checkpoint: "serving-checkpoint" }));
+    refused(check({ vars: serving, adopt: true, build: "1.2.4" }));
+    refused(check({ vars: [serving[0]!, serving[1]!, serving[2]!], adopt: true }));
+    refused(check({ inherited: serving, adopt: true }));
+    refused(
+      check({ vars: [...serving, { name: "MANIFOLD_RECOVERY_EXTRA", value: "x" }], adopt: true }),
+    );
+    refused(check({ adopt: true }));
+    refused(check({ vars: serving, adopt: true, pathSupport: false }));
+
+    // Once adopted, the dedicated history stays selected and later candidates must honour it.
+    const adoptedPath = [
+      { name: "MANIFOLD_REPLICA_PATH", value: "manifold-recovery/serving-checkpoint/manifold.db" },
+    ];
+    const forward = check({ vars: adoptedPath });
+    expect(forward.code).toBe(0);
+    expect(forward.classified).toBe(
+      "adopt=false\nreplica_path=manifold-recovery/serving-checkpoint/manifold.db\n",
+    );
+    refused(check({ vars: adoptedPath, pathSupport: false }));
+    refused(check({ inherited: adoptedPath }));
+    // A malformed configured path fails closed instead of reaching step outputs, where an
+    // embedded newline would otherwise override the adoption decision and selected history.
+    for (const value of [
+      "dedicated/history\nadopt=true\nreplica_path=manifold.db",
+      "../manifold.db",
+      "manifold-full-state/checkpoint.mfr",
+    ]) {
+      const result = check({ vars: [{ name: "MANIFOLD_REPLICA_PATH", value }] });
+      refused(result);
+      expect(result.classified).toBe("");
     }
   } finally {
     rmSync(root, { recursive: true, force: true });

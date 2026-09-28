@@ -31,6 +31,11 @@ on:
         required: false
         default: false
         type: boolean
+      adopt_recovery:
+        description: Reconcile a serving recovery image by continuing its sealed checkpoint-specific replica history
+        required: false
+        default: false
+        type: boolean
 
 # The job token only reads source, releases, merged PR checks and full CI evidence.
 # Attestations are verified from release bundles; no write, OIDC or admin grant is needed.
@@ -201,14 +206,62 @@ jobs:
             fail 'Production recovery requires exactly one application instance'
           [ "$("$CLEVER" config get zero-downtime)" = false ] ||
             fail 'Production recovery requires zero-downtime deployment to be disabled'
-      - name: Refuse promotion from an unreconciled recovery image
+      - name: Classify recovery state before promotion
+        id: recovery
+        env:
+          ADOPT_RECOVERY: ${{ inputs.adopt_recovery }}
+          RECOVERY_CHECKPOINT: ${{ inputs.recovery_checkpoint }}
+          RECOVERY_BUILD: ${{ inputs.recovery_build }}
+          RELEASE_SHA: ${{ needs.release.outputs.sha }}
         run: |
-          if ! "$CLEVER" env --format json |
-            jq -e '[.env[], .fromAddons[].env[], .fromDependencies[].env[]] |
-              all(.[]; if (.name | startswith("MANIFOLD_RECOVERY_")) then .value == "" else true end)' >/dev/null; then
-            echo "::error::Active recovery state requires separately reviewed reconciliation before ordinary promotion"
-            exit 1
+          fail() { echo "::error::$*" >&2; exit 1; }
+          configured="$("$CLEVER" env --format json)"
+          active="$(jq -r '[.env[], .fromAddons[].env[], .fromDependencies[].env[]] |
+            map(select((.name | startswith("MANIFOLD_RECOVERY_")) and .value != "")) | length' <<< "$configured")"
+          inherited_path="$(jq -r '[.fromAddons[].env[], .fromDependencies[].env[]] |
+            map(select(.name == "MANIFOLD_REPLICA_PATH")) | length' <<< "$configured")"
+          [ "$inherited_path" = 0 ] || fail 'MANIFOLD_REPLICA_PATH may be set only in the application environment'
+          current_path="$(jq -r '[.env[] | select(.name == "MANIFOLD_REPLICA_PATH") | .value] | .[0] // ""' <<< "$configured")"
+          if [ "${ADOPT_RECOVERY:-false}" != true ]; then
+            [ "$active" = 0 ] ||
+              fail 'Active recovery state requires the explicit adopt_recovery reconciliation, never an ordinary promotion'
+            target_path="$current_path"
+          else
+            explicit() {
+              jq -er --arg name "$1" '[.env[] | select(.name == $name and .value != "") | .value] |
+                if length == 1 then .[0] else error("missing") end' <<< "$configured"
+            }
+            serving_checkpoint="$(explicit MANIFOLD_RECOVERY_CHECKPOINT)" &&
+              serving_build="$(explicit MANIFOLD_RECOVERY_EXPECTED_BUILD)" &&
+              explicit MANIFOLD_RECOVERY_SHA256 >/dev/null &&
+              explicit MANIFOLD_RECOVERY_BASE_IMAGE >/dev/null ||
+              fail 'Adoption requires a serving recovery image configured in the application environment'
+            [ "$active" = 4 ] || fail 'Adoption refuses inherited or unknown recovery settings'
+            [[ "$serving_checkpoint" =~ ^[a-z0-9][a-z0-9._-]{0,95}$ ]] ||
+              fail 'The serving recovery checkpoint id is invalid'
+            [ "$serving_checkpoint" != "$RECOVERY_CHECKPOINT" ] ||
+              fail 'Adoption needs a fresh checkpoint captured from the serving recovery image, not the one it restored'
+            [ "$serving_build" = "$RECOVERY_BUILD" ] ||
+              fail 'The fresh checkpoint was not captured from the serving recovery build'
+            # The recovery image's main database history: sealed by its supervisor on shutdown.
+            target_path="manifold-recovery/$serving_checkpoint/manifold.db"
           fi
+          if [ -n "$target_path" ]; then
+            # The image's own rule (scripts/replica-guard.ts): an invalid configured value fails
+            # here, before it can reach step outputs or select another history.
+            [ "${#target_path}" -le 512 ] &&
+              [[ "$target_path" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*$ ]] &&
+              [[ "$target_path" != manifold-full-state && "$target_path" != manifold-full-state/* ]] ||
+              fail 'MANIFOLD_REPLICA_PATH is not a valid dedicated replica path'
+          fi
+          if [ -n "$target_path" ] && [ "$target_path" != manifold.db ]; then
+            candidate_config="$(git show "$RELEASE_SHA:infra/litestream.yml")" &&
+              [[ "$candidate_config" == *'path: ${MANIFOLD_REPLICA_PATH}'* ]] ||
+              fail "The candidate release cannot use the dedicated replica path $target_path"
+          fi
+          adopt=false
+          [ "${ADOPT_RECOVERY:-false}" != true ] || adopt=true
+          printf 'adopt=%s\nreplica_path=%s\n' "$adopt" "$target_path" >> "$GITHUB_OUTPUT"
 
       - name: Snapshot live state before the switch
         id: snapshot
@@ -242,12 +295,19 @@ jobs:
 
       - name: Select the ordinary image and clear prior recovery settings
         id: switch
+        env:
+          ADOPTED_REPLICA_PATH: ${{ steps.recovery.outputs.adopt == 'true' && steps.recovery.outputs.replica_path || '' }}
         run: |
           echo 'started=true' >> "$GITHUB_OUTPUT"
           # Application environment is forwarded as Docker --build-arg by the provider:
           # https://www.clever.cloud/developers/doc/deploy/applications/docker/#build-time-variables
           "$CLEVER" env set MANIFOLD_RELEASE_IMAGE "$IMAGE"
           "$CLEVER" env set CC_DOCKERFILE infra/release.Dockerfile
+          if [ -n "${ADOPTED_REPLICA_PATH:-}" ]; then
+            # Before recovery settings clear: the ordinary image continues the recovery history.
+            # The original forward replica and every checkpoint stay untouched.
+            "$CLEVER" env set MANIFOLD_REPLICA_PATH "$ADOPTED_REPLICA_PATH"
+          fi
           "$CLEVER" env set MANIFOLD_RECOVERY_CHECKPOINT ""
           "$CLEVER" env set MANIFOLD_RECOVERY_SHA256 ""
           "$CLEVER" env set MANIFOLD_RECOVERY_EXPECTED_BUILD ""
@@ -332,7 +392,7 @@ jobs:
           "$CLEVER" env set MANIFOLD_RECOVERY_BASE_IMAGE "$PREVIOUS_IMAGE"
           "$CLEVER" deploy --tag "$TAG" --force --same-commit-policy rebuild
           bun scripts/verify-live.ts verify "$RUNNER_TEMP/verify-live.json" "$PREVIOUS_BUILD"
-          printf 'The exact previous application is serving through the recovery image, and its restored live-state parity is verified. Recovery settings remain active so a provider restart restores the same checkpoint and then the checkpoint-specific SQLite replica history.\n\n' >> "$GITHUB_STEP_SUMMARY"
+          printf 'The exact previous application is serving through the recovery image, and its restored live-state parity is verified. Recovery settings remain active so a provider restart restores the same checkpoint and then the checkpoint-specific SQLite replica history. Reconcile only through a later promotion with `adopt_recovery` and a fresh checkpoint captured from this recovery image.\n\n' >> "$GITHUB_STEP_SUMMARY"
 
   fleet-pin:
     name: Pin the verified production fleet

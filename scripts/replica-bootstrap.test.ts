@@ -29,6 +29,8 @@ interface Harness {
   readonly data: string;
   readonly fixture: string;
   readonly config: string;
+  /** Every MANIFOLD_REPLICA_PATH value Litestream received, one per invocation. */
+  readonly paths: string;
   readonly env: Record<string, string>;
   run(
     command: "acknowledge" | "discard" | "prepare",
@@ -75,6 +77,7 @@ while [ "$#" -gt 0 ]; do
   fi
   shift
 done
+printf '%s\\n' "\${MANIFOLD_REPLICA_PATH-unset}" >> "$LITESTREAM_TEST_PATH_RECORD"
 case "\${LITESTREAM_TEST_RESULT:-empty}" in
   empty) exit 0 ;;
   fail)
@@ -99,12 +102,14 @@ esac
     LITESTREAM_ACCESS_KEY_ID: "fixture-access",
     LITESTREAM_SECRET_ACCESS_KEY: "fixture-secret-must-not-leak",
     LITESTREAM_TEST_FIXTURE: fixture,
+    LITESTREAM_TEST_PATH_RECORD: join(root, "replica-paths"),
   };
 
   return {
     data,
     fixture,
     config,
+    paths: env.LITESTREAM_TEST_PATH_RECORD,
     env,
     async run(command, overrides = {}) {
       const child = Bun.spawn([process.execPath, script, command], {
@@ -275,6 +280,49 @@ test("malformed, expired, and wrong-target intent cannot authorize initializatio
     await wrongTarget.run("prepare", { MANIFOLD_REPLICA_BUCKET: "different-fixture-bucket" }),
   );
   expect(existsSync(database(wrongTarget.data))).toBe(false);
+
+  const wrongPath = harness("wrong-path-intent");
+  expect((await wrongPath.run("acknowledge")).code).toBe(0);
+  expectRefusal(
+    await wrongPath.run("prepare", { MANIFOLD_REPLICA_PATH: "dedicated/hub-2/manifold.db" }),
+  );
+  expect(existsSync(database(wrongPath.data))).toBe(false);
+});
+
+test("the replica path defaults to manifold.db and a dedicated path restores sealed history", async () => {
+  const h = harness("replica-path");
+  expectRefusal(await h.run("prepare"));
+  writeHistory(h.fixture, "dedicated recovery history");
+  const restored = await h.run("prepare", {
+    LITESTREAM_TEST_RESULT: "restore",
+    MANIFOLD_REPLICA_PATH: "manifold-recovery/checkpoint-1/manifold.db",
+  });
+  expect(restored.code).toBe(0);
+  expect(readMarker(database(h.data))).toBe("dedicated recovery history");
+  expect(readFileSync(h.paths, "utf8")).toBe(
+    "manifold.db\nmanifold-recovery/checkpoint-1/manifold.db\n",
+  );
+});
+
+test.each([
+  "../manifold.db",
+  "manifold-recovery/../manifold.db",
+  "manifold-full-state/checkpoint.mfr",
+  "/manifold.db",
+  "dedicated//manifold.db",
+  ".hidden/manifold.db",
+  "dedicated/ manifold.db",
+])("an unsafe replica path (%s) is refused before any restore", async (path) => {
+  const h = harness("unsafe-path");
+  writeHistory(h.fixture, "must not restore");
+  const result = await h.run("prepare", {
+    LITESTREAM_TEST_RESULT: "restore",
+    MANIFOLD_REPLICA_PATH: path,
+  });
+  expectRefusal(result);
+  expect(result.err).toContain("replica_path_invalid");
+  expect(existsSync(h.paths)).toBe(false);
+  expect(existsSync(database(h.data))).toBe(false);
 });
 
 const unusableLocalHistories: Array<readonly [string, (path: string) => void]> = [
@@ -377,8 +425,8 @@ test("configuration, custom-prefix inputs, and storage identity stay bound", asy
   writeFileSync(
     changedConfig.config,
     readFileSync(changedConfig.config, "utf8").replace(
-      "path: manifold.db",
-      "path: custom-prefix/manifold.db",
+      "path: ${MANIFOLD_REPLICA_PATH}",
+      "path: custom-prefix/${MANIFOLD_REPLICA_PATH}",
     ),
   );
   expectRefusal(await changedConfig.run("prepare"));
@@ -388,8 +436,8 @@ test("configuration, custom-prefix inputs, and storage identity stay bound", asy
   writeFileSync(
     changedEnvironment.config,
     readFileSync(changedEnvironment.config, "utf8").replace(
-      "path: manifold.db",
-      "path: ${REPLICA_PREFIX}/manifold.db",
+      "path: ${MANIFOLD_REPLICA_PATH}",
+      "path: ${REPLICA_PREFIX}/${MANIFOLD_REPLICA_PATH}",
     ),
   );
   expect((await changedEnvironment.run("acknowledge", { REPLICA_PREFIX: "first" })).code).toBe(0);

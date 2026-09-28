@@ -38,6 +38,7 @@ services:
       # any S3-compatible store (docs/SELF-HOST.md §Replicate the database).
       - MANIFOLD_REPLICA_BUCKET
       - MANIFOLD_REPLICA_ENDPOINT
+      - MANIFOLD_REPLICA_PATH
       - LITESTREAM_ACCESS_KEY_ID
       - LITESTREAM_SECRET_ACCESS_KEY
     volumes:
