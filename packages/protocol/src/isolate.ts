@@ -51,10 +51,32 @@ export type UiTone = (typeof UI_TONES)[number];
 
 /** The existing host-owned control glyph names, shared by native and frame rendering. */
 export const UI_CONTROL_KINDS = [
-  "park", "maximize", "shrink", "close", "confirm", "cancel", "add", "more",
-  "disclosed", "collapsed", "sidebarCollapse", "sidebarExpand", "reveal", "discard",
-  "revoke", "restart", "equalize", "grip", "locked", "takeControl", "assembly",
-  "nesting", "scopeIn", "bindings", "swap", "settings",
+  "park",
+  "maximize",
+  "shrink",
+  "close",
+  "confirm",
+  "cancel",
+  "add",
+  "more",
+  "disclosed",
+  "collapsed",
+  "sidebarCollapse",
+  "sidebarExpand",
+  "reveal",
+  "discard",
+  "revoke",
+  "restart",
+  "equalize",
+  "grip",
+  "locked",
+  "takeControl",
+  "assembly",
+  "nesting",
+  "scopeIn",
+  "bindings",
+  "swap",
+  "settings",
 ] as const;
 export const UiIconSchema = z.discriminatedUnion("family", [
   z.strictObject({
@@ -153,76 +175,77 @@ const uiNodeMeta = {
  * event ultimately dispatches: the renderer paints it as `data-action`, so a stranger's
  * affordance names the door it opens exactly as a first-party one does (AXIOMS.md §Foundation law and REGISTRY.md §Foundation, S4).
  */
-export type UiNode = UiNodeMeta & (
-  | {
-      readonly type: "box";
-      readonly direction?: "row" | "column" | undefined;
-      /** Numeric and absent gaps retain their legacy meaning; portable layouts name the adaptive default. */
-      readonly gap?: 0 | 1 | 2 | 3 | "adaptive" | undefined;
-      readonly gapRem?: number | undefined;
-      readonly align?: "start" | "center" | "end" | "stretch" | undefined;
-      readonly justify?: "start" | "center" | "end" | "between" | undefined;
-      readonly grow?: boolean | undefined;
-      readonly wrap?: boolean | undefined;
-      readonly children: readonly UiNode[];
-    }
-  | { readonly type: "heading"; readonly text: string; readonly level?: 1 | 2 | 3 | undefined }
-  | {
-      readonly type: "text";
-      readonly text: string;
-      readonly tone?: UiTone | undefined;
-      readonly mono?: boolean | undefined;
-      readonly wrap?: boolean | undefined;
-      readonly strong?: boolean | undefined;
-      readonly grow?: boolean | undefined;
-    }
-  | { readonly type: "code"; readonly text: string }
-  | { readonly type: "badge"; readonly text: string; readonly tone?: UiTone | undefined }
-  | { readonly type: "icon"; readonly icon: UiIcon }
-  | { readonly type: "divider" }
-  | { readonly type: "spinner"; readonly label?: string | undefined }
-  | {
-      readonly type: "button";
-      readonly label: string;
-      readonly event: string;
-      readonly blurEvent?: string | undefined;
-      readonly payload?: unknown;
-      readonly tone?: UiTone | undefined;
-      readonly disabled?: boolean | undefined;
-      readonly action?: string | undefined;
-      readonly icon?: UiIcon | undefined;
-      readonly iconOnly?: boolean | undefined;
-    }
-  | {
-      readonly type: "select";
-      readonly event: string;
-      readonly blurEvent?: string | undefined;
-      readonly value: string | null;
-      readonly options: readonly UiSelectOption[];
-      readonly label?: string | undefined;
-      readonly disabled?: boolean | undefined;
-    }
-  | {
-      readonly type: "input";
-      readonly event: string;
-      readonly blurEvent?: string | undefined;
-      readonly value: string;
-      readonly label?: string | undefined;
-      readonly placeholder?: string | undefined;
-      readonly mono?: boolean | undefined;
-      readonly disabled?: boolean | undefined;
-    }
-  | {
-      readonly type: "toggle";
-      readonly event: string;
-      readonly blurEvent?: string | undefined;
-      readonly value: boolean;
-      readonly label: string;
-      readonly disabled?: boolean | undefined;
-    }
-  | { readonly type: "list"; readonly items: readonly UiListItem[] }
-  | { readonly type: "empty"; readonly text: string }
-);
+export type UiNode = UiNodeMeta &
+  (
+    | {
+        readonly type: "box";
+        readonly direction?: "row" | "column" | undefined;
+        /** Numeric and absent gaps retain their legacy meaning; portable layouts name the adaptive default. */
+        readonly gap?: 0 | 1 | 2 | 3 | "adaptive" | undefined;
+        readonly gapRem?: number | undefined;
+        readonly align?: "start" | "center" | "end" | "stretch" | undefined;
+        readonly justify?: "start" | "center" | "end" | "between" | undefined;
+        readonly grow?: boolean | undefined;
+        readonly wrap?: boolean | undefined;
+        readonly children: readonly UiNode[];
+      }
+    | { readonly type: "heading"; readonly text: string; readonly level?: 1 | 2 | 3 | undefined }
+    | {
+        readonly type: "text";
+        readonly text: string;
+        readonly tone?: UiTone | undefined;
+        readonly mono?: boolean | undefined;
+        readonly wrap?: boolean | undefined;
+        readonly strong?: boolean | undefined;
+        readonly grow?: boolean | undefined;
+      }
+    | { readonly type: "code"; readonly text: string }
+    | { readonly type: "badge"; readonly text: string; readonly tone?: UiTone | undefined }
+    | { readonly type: "icon"; readonly icon: UiIcon }
+    | { readonly type: "divider" }
+    | { readonly type: "spinner"; readonly label?: string | undefined }
+    | {
+        readonly type: "button";
+        readonly label: string;
+        readonly event: string;
+        readonly blurEvent?: string | undefined;
+        readonly payload?: unknown;
+        readonly tone?: UiTone | undefined;
+        readonly disabled?: boolean | undefined;
+        readonly action?: string | undefined;
+        readonly icon?: UiIcon | undefined;
+        readonly iconOnly?: boolean | undefined;
+      }
+    | {
+        readonly type: "select";
+        readonly event: string;
+        readonly blurEvent?: string | undefined;
+        readonly value: string | null;
+        readonly options: readonly UiSelectOption[];
+        readonly label?: string | undefined;
+        readonly disabled?: boolean | undefined;
+      }
+    | {
+        readonly type: "input";
+        readonly event: string;
+        readonly blurEvent?: string | undefined;
+        readonly value: string;
+        readonly label?: string | undefined;
+        readonly placeholder?: string | undefined;
+        readonly mono?: boolean | undefined;
+        readonly disabled?: boolean | undefined;
+      }
+    | {
+        readonly type: "toggle";
+        readonly event: string;
+        readonly blurEvent?: string | undefined;
+        readonly value: boolean;
+        readonly label: string;
+        readonly disabled?: boolean | undefined;
+      }
+    | { readonly type: "list"; readonly items: readonly UiListItem[] }
+    | { readonly type: "empty"; readonly text: string }
+  );
 
 /*
   The inventory and the union are pinned to each other the way the instance frames are:
@@ -267,8 +290,17 @@ const uiNode: z.ZodType<UiNode> = z.lazy(() =>
       strong: z.boolean().optional(),
       grow: z.boolean().optional(),
     }),
-    z.strictObject({ ...uiNodeMeta, type: z.literal("code"), text: z.string().max(MAX_UI_CODE_LENGTH) }),
-    z.strictObject({ ...uiNodeMeta, type: z.literal("badge"), text: uiText, tone: UiToneSchema.optional() }),
+    z.strictObject({
+      ...uiNodeMeta,
+      type: z.literal("code"),
+      text: z.string().max(MAX_UI_CODE_LENGTH),
+    }),
+    z.strictObject({
+      ...uiNodeMeta,
+      type: z.literal("badge"),
+      text: uiText,
+      tone: UiToneSchema.optional(),
+    }),
     z.strictObject({ ...uiNodeMeta, type: z.literal("icon"), icon: UiIconSchema }),
     z.strictObject({ ...uiNodeMeta, type: z.literal("divider") }),
     z.strictObject({ ...uiNodeMeta, type: z.literal("spinner"), label: uiText.optional() }),
@@ -859,13 +891,19 @@ export const WebIsolateHostFrameSchema = z.discriminatedUnion("t", [
     panel: LocalNameSchema,
     kind: z.enum(["panel", "section"]).optional(),
     context: WebHostContextSchema.optional(),
-    arg: PanelArgSchema.refine(validPanelArg, "panel argument must be bounded JSON data").optional(),
+    arg: PanelArgSchema.refine(
+      validPanelArg,
+      "panel argument must be bounded JSON data",
+    ).optional(),
   }),
   z.strictObject({
     t: z.literal("context"),
     instance: instanceId,
     context: WebHostContextSchema,
-    arg: PanelArgSchema.refine(validPanelArg, "panel argument must be bounded JSON data").optional(),
+    arg: PanelArgSchema.refine(
+      validPanelArg,
+      "panel argument must be bounded JSON data",
+    ).optional(),
   }),
   z.strictObject({ t: z.literal("notification"), id: frameId }),
   z.strictObject({ t: z.literal("unmount"), instance: instanceId }),

@@ -2572,13 +2572,7 @@ try {
   mkdirSync(uploads, { recursive: true });
   const bundlePath = join(uploads, `${STRANGER_PLUGIN_ID}.manifold-plugin.json`);
   const pack = Bun.spawn(
-    [
-      "bun",
-      join(kit, "src/pack.ts"),
-      join(kit, "test/fixtures/sample"),
-      "--out",
-      bundlePath,
-    ],
+    ["bun", join(kit, "src/pack.ts"), join(kit, "test/fixtures/sample"), "--out", bundlePath],
     { cwd: kit, stdout: "pipe", stderr: "pipe" },
   );
   const [packOut, packErr, packCode] = await Promise.all([

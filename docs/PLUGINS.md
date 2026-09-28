@@ -3742,7 +3742,9 @@ function Counter({ host }: PortablePanelProps): ReactElement {
   return (
     <Stack gap="0.5rem">
       <Heading level={2}>Counter</Heading>
-      <Text tone="muted">Hello, {host.principal.name}. Ticks: {ticks}</Text>
+      <Text tone="muted">
+        Hello, {host.principal.name}. Ticks: {ticks}
+      </Text>
       {count === null ? <Empty>No bump yet.</Empty> : <Badge>count {count}</Badge>}
       <Button tone="accent" data-action="example.counter.bump" onClick={() => void bump()}>
         Bump
@@ -3782,22 +3784,22 @@ and `PortableSectionProps` with `import type`; the Worker may import
 Fourteen `UiNode` kinds are emitted by the portable `@manifold/ui` components
 (`UiNodeSchema` and `GET /api/protocol` publish the wire):
 
-| Wire kind | Portable JSX | Accepted meaning |
-| --- | --- | --- |
-| `box` | `Stack`, `Cluster` | column / wrapping row; `align`, `justify`, `grow`, `wrap`; adaptive default gap or explicit `0`–`4rem` |
-| `heading` | `Heading` | text, heading level 1–3 (default 2) |
-| `text` | `Text` | text, tone, `mono`, `wrap`, `strong`, `grow` |
-| `code` | `Code` | preformatted text (up to 64 KiB) |
-| `badge` | `Badge` | text and tone |
-| `icon` | `ControlIcon`, `ItemIcon` | named control/item glyph and optional size |
-| `divider` | `Divider` | horizontal separator |
-| `spinner` | `Spinner` | optional progress label |
-| `button` | `Button` | label, tone, disabled, optional icon; `onClick`, `onBlur`, public `data-action` |
-| `select` | `Select` | controlled string/null, bounded `{ value, label }` options, scalar `onChange`, `onBlur` |
-| `input` | `Input` | text, label, placeholder, `mono`, disabled; scalar `onChange`, `onBlur` |
-| `toggle` | `Toggle` | boolean, label, disabled; scalar `onChange`, `onBlur` |
-| `list` | `List` | keyed rows with primary/secondary text and optional `onClick` |
-| `empty` | `Empty` | empty-state text |
+| Wire kind | Portable JSX              | Accepted meaning                                                                                       |
+| --------- | ------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `box`     | `Stack`, `Cluster`        | column / wrapping row; `align`, `justify`, `grow`, `wrap`; adaptive default gap or explicit `0`–`4rem` |
+| `heading` | `Heading`                 | text, heading level 1–3 (default 2)                                                                    |
+| `text`    | `Text`                    | text, tone, `mono`, `wrap`, `strong`, `grow`                                                           |
+| `code`    | `Code`                    | preformatted text (up to 64 KiB)                                                                       |
+| `badge`   | `Badge`                   | text and tone                                                                                          |
+| `icon`    | `ControlIcon`, `ItemIcon` | named control/item glyph and optional size                                                             |
+| `divider` | `Divider`                 | horizontal separator                                                                                   |
+| `spinner` | `Spinner`                 | optional progress label                                                                                |
+| `button`  | `Button`                  | label, tone, disabled, optional icon; `onClick`, `onBlur`, public `data-action`                        |
+| `select`  | `Select`                  | controlled string/null, bounded `{ value, label }` options, scalar `onChange`, `onBlur`                |
+| `input`   | `Input`                   | text, label, placeholder, `mono`, disabled; scalar `onChange`, `onBlur`                                |
+| `toggle`  | `Toggle`                  | boolean, label, disabled; scalar `onChange`, `onBlur`                                                  |
+| `list`    | `List`                    | keyed rows with primary/secondary text and optional `onClick`                                          |
+| `empty`   | `Empty`                   | empty-state text                                                                                       |
 
 Five tones mean `neutral`, `accent`, `muted`, `danger`, `success`, never arbitrary
 colours. Text-bearing components take text, not nested markup. Control callbacks

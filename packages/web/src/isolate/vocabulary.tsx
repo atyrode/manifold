@@ -237,7 +237,11 @@ function BoxNode({ node, onEvent }: NodeProps<NodeOf<"box">>): ReactElement {
       {...metaOf(node)}
     >
       {node.children.map((child, index) => (
-        <Node key={child.key === undefined ? index : `key:${child.key}`} node={child} onEvent={onEvent} />
+        <Node
+          key={child.key === undefined ? index : `key:${child.key}`}
+          node={child}
+          onEvent={onEvent}
+        />
       ))}
     </Layout>
   );

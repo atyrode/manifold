@@ -178,19 +178,35 @@ describe("init and mount", () => {
       ],
     });
     fake.send({ t: "mount", instance: "s1", panel: "side", kind: "section", context: context() });
-    expect(await fake.next()).toMatchObject({ t: "render", instance: "s1", tree: { text: "side" } });
+    expect(await fake.next()).toMatchObject({
+      t: "render",
+      instance: "s1",
+      tree: { text: "side" },
+    });
   });
 
   test("a mount before init, of an unserved id, or without context faults naming it", async () => {
     const fake = page({ id: "example.thing", panels: { main: Counter } });
     fake.send({ t: "mount", instance: "early", panel: "main", context: context() });
-    expect(await fake.next()).toEqual({ t: "fault", instance: "early", error: "mount before init" });
+    expect(await fake.next()).toEqual({
+      t: "fault",
+      instance: "early",
+      error: "mount before init",
+    });
     fake.send({ t: "init", pluginId: "example.thing", principal, caps: [], containerId: "c1" });
     await fake.next();
     fake.send({ t: "mount", instance: "i1", panel: "toString", context: context() });
-    expect(await fake.next()).toEqual({ t: "fault", instance: "i1", error: 'no such panel "toString"' });
+    expect(await fake.next()).toEqual({
+      t: "fault",
+      instance: "i1",
+      error: 'no such panel "toString"',
+    });
     fake.send({ t: "mount", instance: "i2", panel: "main", kind: "section", context: context() });
-    expect(await fake.next()).toEqual({ t: "fault", instance: "i2", error: 'no such section "main"' });
+    expect(await fake.next()).toEqual({
+      t: "fault",
+      instance: "i2",
+      error: 'no such section "main"',
+    });
     fake.send({ t: "mount", instance: "i3", panel: "main" });
     expect(await fake.next()).toEqual({
       t: "fault",
@@ -202,7 +218,10 @@ describe("init and mount", () => {
   test("a Worker started for another plugin faults instead of serving it", async () => {
     const fake = page({ id: "example.thing", panels: { main: Counter } });
     fake.send({ t: "init", pluginId: "example.other", principal, caps: [], containerId: "c1" });
-    expect(await fake.next()).toMatchObject({ t: "fault", error: expect.stringContaining("example.other") });
+    expect(await fake.next()).toMatchObject({
+      t: "fault",
+      error: expect.stringContaining("example.other"),
+    });
   });
 });
 
@@ -245,7 +264,11 @@ describe("events and owned calls", () => {
         "box",
         {},
         frame("input", { label: "Name", value: "", onChange: (value: string) => seen.push(value) }),
-        frame("toggle", { label: "On", value: false, onChange: (value: boolean) => seen.push(value) }),
+        frame("toggle", {
+          label: "On",
+          value: false,
+          onChange: (value: boolean) => seen.push(value),
+        }),
         frame("select", {
           label: "Pick",
           value: pick,
@@ -293,7 +316,9 @@ describe("events and owned calls", () => {
     const hidden = await rendered(fake);
     expect(nodes(hidden).some((node) => "label" in node && node.label === "Target")).toBe(false);
     fake.send({ t: "event", instance: "i1", event: retired });
-    expect(fake.warnings).toEqual([expect.stringContaining("no committed control holds that event")]);
+    expect(fake.warnings).toEqual([
+      expect.stringContaining("no committed control holds that event"),
+    ]);
     fake.send({ t: "event", instance: "i1", event: eventOf(hidden, "Flip") });
     expect(eventOf(await rendered(fake), "Target")).not.toBe(retired);
   });
@@ -360,7 +385,9 @@ describe("host context", () => {
       { arg: { record: "r1" } },
     );
     fake.send({ t: "event", instance: "i1", event: eventOf(tree, "More") });
-    expect(textsOf(await rendered(fake))).toEqual(['1 in c1 for {"record":"r1"} with containers:read']);
+    expect(textsOf(await rendered(fake))).toEqual([
+      '1 in c1 for {"record":"r1"} with containers:read',
+    ]);
     fake.send({
       t: "context",
       instance: "i1",
@@ -494,7 +521,9 @@ describe("resources and teardown", () => {
     fake.send({ t: "unmount", instance: "i1" });
     await Promise.resolve();
     expect(fake.warnings).toEqual([]);
-    const closes = fake.posted.filter((frame) => frame.t === "call" && frame.method === "closeStream");
+    const closes = fake.posted.filter(
+      (frame) => frame.t === "call" && frame.method === "closeStream",
+    );
     expect(closes).toHaveLength(1);
   });
 
@@ -545,7 +574,12 @@ describe("refusals", () => {
     );
     expect(
       await faultOf(() =>
-        frame("list", { items: [{ key: "a", primary: "A" }, { key: "a", primary: "B" }] }),
+        frame("list", {
+          items: [
+            { key: "a", primary: "A" },
+            { key: "a", primary: "B" },
+          ],
+        }),
       ),
     ).toContain('item key "a" is not unique');
   });

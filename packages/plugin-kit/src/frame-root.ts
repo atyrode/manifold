@@ -123,9 +123,7 @@ function typeName(value: unknown): string {
 }
 
 function kindOf(type: string): UiNodeType {
-  const kind = type.startsWith(FRAME_ELEMENT_PREFIX)
-    ? type.slice(FRAME_ELEMENT_PREFIX.length)
-    : "";
+  const kind = type.startsWith(FRAME_ELEMENT_PREFIX) ? type.slice(FRAME_ELEMENT_PREFIX.length) : "";
   if (!(UI_NODE_TYPES as readonly string[]).includes(kind)) {
     throw new Error(
       `<${type}> is not a frame component: a portable contribution renders only the ${FRAME_ELEMENT_PREFIX}* components @manifold/ui emits`,
@@ -191,23 +189,22 @@ function acceptItems(tag: string, items: unknown): void {
 type TimerHandle = ReturnType<typeof setTimeout>;
 
 /** The 0.33 members its type package predates; each is answered honestly below. */
-interface FrameHostConfig
-  extends HostConfig<
-    string,
-    Props,
-    FrameContainer,
-    FrameNode,
-    never,
-    never,
-    never,
-    never,
-    never,
-    object,
-    never,
-    TimerHandle,
-    -1,
-    null
-  > {
+interface FrameHostConfig extends HostConfig<
+  string,
+  Props,
+  FrameContainer,
+  FrameNode,
+  never,
+  never,
+  never,
+  never,
+  never,
+  object,
+  never,
+  TimerHandle,
+  -1,
+  null
+> {
   readonly rendererPackageName: string;
   readonly rendererVersion: string;
   readonly extraDevToolsConfig: null;

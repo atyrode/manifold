@@ -121,9 +121,7 @@ export function assertTrustedBinding(def: ServerPluginDef, build: TrustedBuild):
     throw new Error(`${id}: hardened build refused: ${why}`);
   };
   // Through JSON, as the artifact carried it: an absent optional and an `undefined` one agree.
-  const registered: unknown = JSON.parse(
-    JSON.stringify(PluginManifestSchema.parse(def.manifest)),
-  );
+  const registered: unknown = JSON.parse(JSON.stringify(PluginManifestSchema.parse(def.manifest)));
   if (!isDeepStrictEqual(manifest, registered))
     refuse("its manifest is not the registered manifest");
   if (build.bundle.hardenedContract !== HARDENED_CONTRACT_VERSION)

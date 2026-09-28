@@ -123,18 +123,16 @@ export const machinesHandlers = {
     const inventory = await ctx.machines.inventory();
     if (!inventory.ok) return { refused: inventory.message };
     return {
-      machines: inventory.value.machines.map(
-        (machine): MachineSummary => ({
-          ...dot(machine),
-          online: machine.online,
-          ...(machine.terminalExecution === null
-            ? {}
-            : { terminalExecution: machine.terminalExecution }),
-          ...(machine.revoked ? { revoked: true } : {}),
-          ...(machine.draining ? { draining: true } : {}),
-          ...(machine.lastRefusal === null ? {} : { lastRefusal: machine.lastRefusal }),
-        }),
-      ),
+      machines: inventory.value.machines.map((machine): MachineSummary => ({
+        ...dot(machine),
+        online: machine.online,
+        ...(machine.terminalExecution === null
+          ? {}
+          : { terminalExecution: machine.terminalExecution }),
+        ...(machine.revoked ? { revoked: true } : {}),
+        ...(machine.draining ? { draining: true } : {}),
+        ...(machine.lastRefusal === null ? {} : { lastRefusal: machine.lastRefusal }),
+      })),
     };
   },
 

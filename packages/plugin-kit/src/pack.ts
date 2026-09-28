@@ -508,7 +508,9 @@ export async function compilePlugin(
   }
   if (manifest.entry.web !== undefined) {
     const entry =
-      registered?.web === undefined ? await webEntry(pluginDir) : resolve(pluginDir, registered.web);
+      registered?.web === undefined
+        ? await webEntry(pluginDir)
+        : resolve(pluginDir, registered.web);
     const page = await build(entry, "browser", plugins);
     files[manifest.entry.web] = Buffer.from(page, "utf8").toString("base64");
     if (manifest.entry.worker === true) {

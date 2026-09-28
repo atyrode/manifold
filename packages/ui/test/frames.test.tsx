@@ -1,13 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import {
-  Cluster,
-  FrameModeProvider,
-  ItemIcon,
-  Stack,
-  Text,
-} from "../src/frames.ts";
+import { Cluster, FrameModeProvider, ItemIcon, Stack, Text } from "../src/frames.ts";
 
 /**
  * THE FRAME SEAM'S CONTRACT (ADR 0053): one component is ordinary DOM in the page and one
@@ -15,12 +9,10 @@ import {
  * and whatever only a DOM could carry refuses by name instead of vanishing.
  */
 
-
 /** Let React invoke the component under the real frame-mode context. */
 function emitted(element: ReactElement): string {
   return renderToStaticMarkup(<FrameModeProvider>{element}</FrameModeProvider>);
 }
-
 
 describe("what a frame cannot carry refuses by name", () => {
   test("DOM-only props on a layout primitive", () => {

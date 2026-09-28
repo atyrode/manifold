@@ -2404,7 +2404,7 @@ manager's Installed band names that row **In-realm** or **Hardened**.
 plugin can also be selected by `MANIFOLD_HARDENED_PLUGINS=<id>[,<id>…]` at
 bootstrap; absent means all first-party definitions run in-realm. The composition
 root alone names source recipes. At present `core.machines` has a recipe: the
-*actual* server handlers and portable web definition compile from the registered
+_actual_ server handlers and portable web definition compile from the registered
 manifest, not a renamed stand-in. Source/Docker builds compile selected definitions
 at boot. The source-free Nix package builds these artifacts with the same compiler
 ahead of time and its wrapper sets `MANIFOLD_FIRST_PARTY_ARTIFACTS` to their own
@@ -2767,17 +2767,17 @@ as `isolate_output`, capped. Log events: `isolate_spawned`, `isolate_exited`, `i
 **Web isolate — page ↔ Worker (`WebIsolateHostFrameSchema` /
 `WebIsolateWorkerFrameSchema`).** `postMessage` frames are discriminated on `t`:
 
-| Direction | `t` | Carries |
-| --- | --- | --- |
-| page→worker | `init` | `pluginId`, `principal`, `caps`, `containerId`: viewer data, not bearer |
-| page→worker | `mount` | `instance`, local `panel`, optional `kind: "panel" | "section"`, mounted `context`, optional bounded panel `arg` |
-| page→worker | `context` | fresh mounted host context and optional panel argument |
-| page→worker | `notification`, `stream` | bounded event invalidation / stream delivery |
-| page→worker | `event` | `instance`, current control's event and scalar payload |
-| page→worker | `unmount`, `reply` | instance retirement / correlated host reply |
-| worker→page | `ready` | local panel/section ids, optional contract stamp |
-| worker→page | `render` | `instance`, whole validated `UiNode` tree |
-| worker→page | `call`, `fault` | correlated bounded host method / per-view failure |
+| Direction   | `t`                      | Carries                                                                 |
+| ----------- | ------------------------ | ----------------------------------------------------------------------- |
+| page→worker | `init`                   | `pluginId`, `principal`, `caps`, `containerId`: viewer data, not bearer |
+| page→worker | `mount`                  | `instance`, local `panel`, optional `kind: "panel"                      | "section"`, mounted `context`, optional bounded panel `arg` |
+| page→worker | `context`                | fresh mounted host context and optional panel argument                  |
+| page→worker | `notification`, `stream` | bounded event invalidation / stream delivery                            |
+| page→worker | `event`                  | `instance`, current control's event and scalar payload                  |
+| page→worker | `unmount`, `reply`       | instance retirement / correlated host reply                             |
+| worker→page | `ready`                  | local panel/section ids, optional contract stamp                        |
+| worker→page | `render`                 | `instance`, whole validated `UiNode` tree                               |
+| worker→page | `call`, `fault`          | correlated bounded host method / per-view failure                       |
 
 `WEB_HOST_METHODS` include `action`, `place`, `selfCaps`, `machines`,
 `resolve`, `navigate`, terminal read/input/open/create, streams and event
@@ -2917,7 +2917,7 @@ the counter's own root, leaves on disable and returns on enable.
 source definition for the default hub/page and the selected child/Worker;
 its server handlers use the six bounded fleet calls, including enrollment,
 rotation, withdrawal, forgetting, inventory and draining, with authority
-graded by the host at each call. Its portable panel and section use the
+graded by the host at each call. Its portable section uses the
 shared React component vocabulary, including confirmation/blur, refusal
 presentation, live inventory and terminal controls. Native remains the
 default; selecting `MANIFOLD_HARDENED_PLUGINS=core.machines` chooses

@@ -795,8 +795,10 @@ export interface MachineAdmission {
  * bridge half re-proves the caller against the dispatch's admitted ceiling at every call, so
  * the same questions are safe to serve to a hardened guest, one round trip each.
  */
-export interface ActionMachines
-  extends Pick<MachineAdmission, "isOnline" | "getTerminalExecution" | "repository"> {
+export interface ActionMachines extends Pick<
+  MachineAdmission,
+  "isOnline" | "getTerminalExecution" | "repository"
+> {
   /** Every machine's public metadata in one answer; never a token or a private id. */
   inventory(): IdentityResult<MachineInventory>;
   /** An unknown machine is refused before the latch is touched; otherwise the gateway's. */

@@ -63,7 +63,6 @@ export interface FeedEvents {
   onVisibilityChange?(fn: () => void): () => void;
 }
 
-
 /**
  * One server frame body, by type — the shape the SDK hands its own listeners, restated over the
  * protocol union so a terminal subscription on {@link SessionHandle} is typed without the
@@ -637,7 +636,8 @@ export interface SectionProps {
 
 /** The client slice whose data and calls have a bounded hardened representation. */
 export interface PortableSessionHandle
-  extends Pick<
+  extends
+    Pick<
       SessionHandle,
       | "action"
       | "place"
@@ -652,8 +652,10 @@ export interface PortableSessionHandle
     FeedEvents {}
 
 /** No bearer, DOM handle, room replica, assembly object or arbitrary host service. */
-export interface PortableHostServices
-  extends Pick<HostServices, "principal" | "containerId" | "navigate" | "topics" | "authoring"> {
+export interface PortableHostServices extends Pick<
+  HostServices,
+  "principal" | "containerId" | "navigate" | "topics" | "authoring"
+> {
   readonly client: PortableSessionHandle;
 }
 

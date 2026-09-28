@@ -89,12 +89,20 @@ function frameLayout(
     const match = FRAME_GAP.exec(gap);
     gapRem = match === null ? Number.NaN : Number(match[1] ?? "0");
     if (!(gapRem <= MAX_FRAME_GAP_REM)) {
-      refuseInFrame(component, `gap "${gap}" (a rem length from 0 to ${String(MAX_FRAME_GAP_REM)})`);
+      refuseInFrame(
+        component,
+        `gap "${gap}" (a rem length from 0 to ${String(MAX_FRAME_GAP_REM)})`,
+      );
     }
   }
   return frameElement(
     "box",
-    { ...box, gap: gap === undefined ? "adaptive" : undefined, gapRem, ...frameMeta(component, extra) },
+    {
+      ...box,
+      gap: gap === undefined ? "adaptive" : undefined,
+      gapRem,
+      ...frameMeta(component, extra),
+    },
     children,
   );
 }

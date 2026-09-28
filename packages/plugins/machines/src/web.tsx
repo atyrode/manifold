@@ -125,13 +125,20 @@ export function MachinesSection({ host }: PortableSectionProps): ReactElement {
                 <Cluster gap="0.45rem">
                   <ItemIcon kind="machine" size={ROW_ICON_SIZE} />
                   {/* The name takes the row and truncates in place; the full name is its title. */}
-                  <Text strong grow tone={machine.online ? undefined : "muted"} title={machine.name}>
+                  <Text
+                    strong
+                    grow
+                    tone={machine.online ? undefined : "muted"}
+                    title={machine.name}
+                  >
                     {machine.name}
                   </Text>
                   {/* `Revoked` outranks liveness in the label because it explains it: a machine
                       whose credential is gone is offline as a CONSEQUENCE, and reading "Offline"
                       would send an operator looking for a network problem. */}
-                  <Text tone="muted">{revoked ? "Revoked" : machine.online ? "Online" : "Offline"}</Text>
+                  <Text tone="muted">
+                    {revoked ? "Revoked" : machine.online ? "Online" : "Offline"}
+                  </Text>
                   {machine.online &&
                   machine.terminalExecution === "unconfined" &&
                   authoring !== null ? (
@@ -179,8 +186,7 @@ export function MachinesSection({ host }: PortableSectionProps): ReactElement {
                       disabled={pendingId !== null}
                       onBlur={
                         armed
-                          ? () =>
-                              setArmedId((current) => (current === machine.id ? null : current))
+                          ? () => setArmedId((current) => (current === machine.id ? null : current))
                           : undefined
                       }
                       onClick={() => {

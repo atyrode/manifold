@@ -73,14 +73,11 @@ let bundle: PluginBundle;
 beforeAll(async () => {
   dir = mkdtempSync(`${tmpdir()}/plugin-kit-pack-`);
   const out = `${dir}/example.counter.manifold-plugin.json`;
-  const command = Bun.spawn(
-    ["bun", `${KIT}/src/pack.ts`, SAMPLE, "--out", out],
-    {
-      cwd: KIT,
-      stdout: "pipe",
-      stderr: "pipe",
-    },
-  );
+  const command = Bun.spawn(["bun", `${KIT}/src/pack.ts`, SAMPLE, "--out", out], {
+    cwd: KIT,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
   const [stdout, stderr, code] = await Promise.all([
     new Response(command.stdout).text(),
     new Response(command.stderr).text(),
@@ -115,10 +112,11 @@ describe("the artifact", () => {
     const first = `${locations}/first/sample`;
     const second = `${locations}/another/depth/sample`;
     const run = async (source: string, out: string, cwd: string): Promise<PackResult> => {
-      const command = Bun.spawn(
-        ["bun", `${KIT}/src/pack.ts`, source, "--out", out],
-        { cwd, stdout: "pipe", stderr: "pipe" },
-      );
+      const command = Bun.spawn(["bun", `${KIT}/src/pack.ts`, source, "--out", out], {
+        cwd,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
       const [stdout, stderr, code] = await Promise.all([
         new Response(command.stdout).text(),
         new Response(command.stderr).text(),
@@ -696,7 +694,9 @@ describe("the packed web half, as a real Worker", () => {
       const first = await next();
       if (first.t !== "render") throw new Error(`expected a render, got ${JSON.stringify(first)}`);
       const painted = nodes(first.tree);
-      expect(painted).toContainEqual(expect.objectContaining({ type: "text", text: "Hello, Ada." }));
+      expect(painted).toContainEqual(
+        expect.objectContaining({ type: "text", text: "Hello, Ada." }),
+      );
       const bump = painted.find((node) => node.type === "button" && node.label === "Bump");
       if (bump?.type !== "button") throw new Error("the sample painted no Bump button");
       expect(bump.action).toBe("example.counter.bump");
@@ -711,7 +711,8 @@ describe("the packed web half, as a real Worker", () => {
       });
       send({ t: "reply", id: call.id, ok: true, result: { ok: true, result: { count: 7 } } });
       const second = await next();
-      if (second.t !== "render") throw new Error(`expected a render, got ${JSON.stringify(second)}`);
+      if (second.t !== "render")
+        throw new Error(`expected a render, got ${JSON.stringify(second)}`);
       expect(nodes(second.tree)).toContainEqual(
         expect.objectContaining({ type: "badge", text: "count 7" }),
       );
@@ -783,7 +784,10 @@ describe("registered source", () => {
       expect(web.default).toEqual({ id: "example.registered" });
 
       await expect(
-        compilePlugin(source, { shared: false, source: { manifest: expected, server: "src/server.ts" } }),
+        compilePlugin(source, {
+          shared: false,
+          source: { manifest: expected, server: "src/server.ts" },
+        }),
       ).rejects.toThrow("a web source is required exactly when entry.web is declared");
       await expect(
         compilePlugin(source, {

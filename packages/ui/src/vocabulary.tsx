@@ -1,6 +1,12 @@
 import type { UiIcon, UiSelectOption, UiTone } from "@manifold/protocol";
 import type { ReactElement } from "react";
-import { frameElement, frameMeta, refuseInFrame, useFrameMode, type FrameMeta } from "./frame-mode.tsx";
+import {
+  frameElement,
+  frameMeta,
+  refuseInFrame,
+  useFrameMode,
+  type FrameMeta,
+} from "./frame-mode.tsx";
 import { ControlIcon, ItemIcon } from "./icons.tsx";
 
 /**
@@ -26,13 +32,7 @@ import { ControlIcon, ItemIcon } from "./icons.tsx";
 
 /** What a text-bearing component accepts as children: text, numbers, and React's blanks. */
 export type VocabularyText =
-  | string
-  | number
-  | bigint
-  | boolean
-  | null
-  | undefined
-  | readonly VocabularyText[];
+  string | number | bigint | boolean | null | undefined | readonly VocabularyText[];
 
 /** The metadata every vocabulary component may carry, spelled as the standard attributes. */
 export interface VocabularyMeta {
@@ -119,7 +119,15 @@ export interface TextProps extends VocabularyMeta {
   readonly children?: VocabularyText;
 }
 
-export function Text({ tone, mono, wrap, strong, grow, children, ...rest }: TextProps): ReactElement {
+export function Text({
+  tone,
+  mono,
+  wrap,
+  strong,
+  grow,
+  children,
+  ...rest
+}: TextProps): ReactElement {
   const inFrame = useFrameMode();
   const text = textOf("Text", children);
   const meta = frameMeta("Text", rest);

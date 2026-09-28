@@ -7,12 +7,7 @@ import type {
   WebIsolateHostFrame,
 } from "@manifold/protocol";
 import { WebIsolateHostFrameSchema } from "@manifold/protocol";
-import {
-  WORKER_GRACE_MS,
-  WorkerHost,
-  WorkerRegistry,
-  type WorkerLike,
-} from "./worker-host.ts";
+import { WORKER_GRACE_MS, WorkerHost, WorkerRegistry, type WorkerLike } from "./worker-host.ts";
 
 /**
  * THE SUPERVISOR'S CONTRACT (ADR 0016 §1, §3): a worker announces what it serves, is told what is
@@ -139,7 +134,6 @@ async function flush(): Promise<void> {
   for (let tick = 0; tick < 8; tick += 1) await Promise.resolve();
 }
 
-
 interface Bench {
   readonly worker: FakeWorker;
   readonly host: WorkerHost;
@@ -225,10 +219,6 @@ test("stream delivery is bounded for a stalled worker and releases the SDK subsc
 });
 
 describe("WorkerHost frames", () => {
-
-
-
-
   test("oversized host errors yield one valid reply and later calls continue", async () => {
     const client = fakeClient([]);
     client.terminalsByContainer = () => Promise.reject(new Error("x".repeat(4_096)));
@@ -472,29 +462,53 @@ test("event invalidations are bounded, payload-free and owned by the mounted ins
     return () => listeners.delete(listener);
   };
   const { worker, host } = bench(client);
-  const unmount = host.mount("i1", "main", () => {}, () => {});
-  host.mount("i2", "main", () => {}, () => {});
+  const unmount = host.mount(
+    "i1",
+    "main",
+    () => {},
+    () => {},
+  );
+  host.mount(
+    "i2",
+    "main",
+    () => {},
+    () => {},
+  );
   worker.emit({ t: "ready", hardenedContract: 9, panels: ["main"] });
   try {
     worker.emit({
-      t: "call", id: "join", instance: "i1", method: "subscribe",
+      t: "call",
+      id: "join",
+      instance: "i1",
+      method: "subscribe",
       args: ["news", [{ kind: "plugin", pluginId: "core.index" }]],
     });
     await flush();
     const delivered = [...listeners];
     const fire = (): void => {
-      for (const listener of delivered) listener({
-        type: "event", topic: { kind: "plugin", pluginId: "core.index" },
-        plugin: "core.index", kind: "changed", at: 0, actor: null,
-        payload: { private: "must not cross the Worker boundary" },
-      });
+      for (const listener of delivered)
+        listener({
+          type: "event",
+          topic: { kind: "plugin", pluginId: "core.index" },
+          plugin: "core.index",
+          kind: "changed",
+          at: 0,
+          actor: null,
+          payload: { private: "must not cross the Worker boundary" },
+        });
     };
     for (let count = 0; count < 100; count += 1) fire();
     const notifications = () => worker.frames().filter((frame) => frame.t === "notification");
     expect(notifications()).toEqual([{ t: "notification", id: "news" }]);
 
     worker.emit({ t: "call", id: "steal", instance: "i2", method: "ackEvent", args: ["news"] });
-    worker.emit({ t: "call", id: "close-other", instance: "i2", method: "unsubscribe", args: ["news"] });
+    worker.emit({
+      t: "call",
+      id: "close-other",
+      instance: "i2",
+      method: "unsubscribe",
+      args: ["news"],
+    });
     await flush();
     expect(worker.frames().filter((frame) => frame.t === "reply" && !frame.ok)).toHaveLength(2);
     expect(listeners.size).toBe(1);
@@ -512,14 +526,18 @@ test("event invalidations are bounded, payload-free and owned by the mounted ins
 
     for (let index = 0; index <= 64; index += 1) {
       worker.emit({
-        t: "call", id: `join-${index}`, instance: "i2", method: "subscribe",
+        t: "call",
+        id: `join-${index}`,
+        instance: "i2",
+        method: "subscribe",
         args: [`s-${index}`, [{ kind: "plugin", pluginId: "core.index" }]],
       });
     }
     await flush();
     expect(listeners.size).toBe(64);
-    expect(worker.frames().find((frame) => frame.t === "reply" && frame.id === "join-64"))
-      .toMatchObject({ ok: false });
+    expect(
+      worker.frames().find((frame) => frame.t === "reply" && frame.id === "join-64"),
+    ).toMatchObject({ ok: false });
   } finally {
     host.stop();
   }
@@ -528,7 +546,10 @@ test("event invalidations are bounded, payload-free and owned by the mounted ins
 
 test("terminal authoring cannot borrow another mount or survive authority loss during lookup", async () => {
   const machine: MachineSummary = {
-    id: "m1", name: "host-resolved", online: true, terminalExecution: "unconfined",
+    id: "m1",
+    name: "host-resolved",
+    online: true,
+    terminalExecution: "unconfined",
   };
   let lookup = Promise.withResolvers<unknown>();
   const client = fakeClient([]);
@@ -544,10 +565,23 @@ test("terminal authoring cannot borrow another mount or survive authority loss d
       },
     },
   };
-  const unmount = host.mount("allowed", "fleet", () => {}, () => {}, {
-    kind: "section", host: allowed,
-  });
-  host.mount("denied", "main", () => {}, () => {}, { host: fakeHost([], "c1", client) });
+  const unmount = host.mount(
+    "allowed",
+    "fleet",
+    () => {},
+    () => {},
+    {
+      kind: "section",
+      host: allowed,
+    },
+  );
+  host.mount(
+    "denied",
+    "main",
+    () => {},
+    () => {},
+    { host: fakeHost([], "c1", client) },
+  );
   host.bind(allowed);
   worker.emit({ t: "ready", hardenedContract: 9, panels: ["main"], sections: ["fleet"] });
   const create = (id: string, instance: string, target: unknown): void =>
@@ -575,11 +609,14 @@ test("terminal authoring cannot borrow another mount or survive authority loss d
     lookup.resolve([machine]);
     await flush();
     expect(created).toEqual(["m1"]);
-    expect(worker.frames().some((frame) => frame.t === "reply" && frame.id === "retired")).toBe(false);
+    expect(worker.frames().some((frame) => frame.t === "reply" && frame.id === "retired")).toBe(
+      false,
+    );
     create("after-unmount", "allowed", null);
     await flush();
-    expect(worker.frames().find((frame) => frame.t === "reply" && frame.id === "after-unmount"))
-      .toMatchObject({ ok: false });
+    expect(
+      worker.frames().find((frame) => frame.t === "reply" && frame.id === "after-unmount"),
+    ).toMatchObject({ ok: false });
     expect(created).toEqual(["m1"]);
   } finally {
     host.stop();

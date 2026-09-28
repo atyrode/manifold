@@ -3228,7 +3228,8 @@ export class AuthService {
       };
     });
     if (this.settleRevocation(result.revoked) > 0) {
-      for (const listener of [...this.revokedListeners]) listener(result.enrollment.machine.id, null);
+      for (const listener of [...this.revokedListeners])
+        listener(result.enrollment.machine.id, null);
     }
     return result.enrollment;
   }

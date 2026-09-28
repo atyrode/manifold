@@ -97,7 +97,8 @@ export const MachineBridgeRefusalSchema = z.strictObject({
   message: z.string().max(ISOLATE_ERROR_TEXT_MAX),
 });
 export type MachineBridgeRefusal = z.infer<typeof MachineBridgeRefusalSchema>;
-export type MachineBridgeAnswer<T> = { readonly ok: true; readonly value: T } | MachineBridgeRefusal;
+export type MachineBridgeAnswer<T> =
+  { readonly ok: true; readonly value: T } | MachineBridgeRefusal;
 
 function answered<T extends z.ZodType>(value: T) {
   return z.discriminatedUnion("ok", [

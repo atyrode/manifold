@@ -120,10 +120,16 @@ function Proof({ host }: PortablePanelProps): ReactElement {
       >
         Run bounded job
       </Button>
-      <Button data-action="engine.jobs.status" onClick={() => void act("engine.jobs.status", { node })}>
+      <Button
+        data-action="engine.jobs.status"
+        onClick={() => void act("engine.jobs.status", { node })}
+      >
         Refresh job
       </Button>
-      <Button data-action="engine.jobs.cancel" onClick={() => void act("engine.jobs.cancel", { node })}>
+      <Button
+        data-action="engine.jobs.cancel"
+        onClick={() => void act("engine.jobs.cancel", { node })}
+      >
         Cancel job
       </Button>
       <Button data-action={`${PLUGIN}.start`} onClick={() => void act(`${PLUGIN}.start`, {})}>

@@ -311,7 +311,11 @@ export class WorkerHost {
             this.post({
               t: "stream",
               id,
-              message: { type: "stream_closed", subscriptionId: id, reason: "host_context_changed" },
+              message: {
+                type: "stream_closed",
+                subscriptionId: id,
+                reason: "host_context_changed",
+              },
             });
           }
           for (const [id, subscription] of this.subscriptions) {
@@ -404,7 +408,8 @@ export class WorkerHost {
       !entry.announced ||
       entry.faulted ||
       this.mounted.get(instance) !== entry
-    ) return;
+    )
+      return;
     const context = this.context(entry);
     const stamp = JSON.stringify({ context, arg: entry.arg });
     if (stamp === entry.contextStamp) return;
@@ -517,7 +522,8 @@ export class WorkerHost {
       scoped &&
       owner !== undefined &&
       (this.mounted.get(frame.instance!) !== owner || owner.faulted)
-    ) return;
+    )
+      return;
     this.reply(reply);
   }
 
@@ -555,7 +561,9 @@ export class WorkerHost {
 
   private bindSubscription(id: string, subscription: Subscription, client: SessionHandle): void {
     subscription.release();
-    subscription.release = client.subscribe(subscription.topics, () => this.notify(id, subscription));
+    subscription.release = client.subscribe(subscription.topics, () =>
+      this.notify(id, subscription),
+    );
   }
 
   private notify(id: string, subscription: Subscription): void {
@@ -576,13 +584,19 @@ export class WorkerHost {
     return entry;
   }
 
-  private checkResourceOwner(resource: { readonly instance: string } | undefined, instance: string | undefined): void {
+  private checkResourceOwner(
+    resource: { readonly instance: string } | undefined,
+    instance: string | undefined,
+  ): void {
     if (this.contract >= 9 && resource !== undefined && resource.instance !== instance) {
       throw new Error("resource belongs to another mounted instance");
     }
   }
 
-  private async createTerminal(instance: string | undefined, args: readonly unknown[]): Promise<unknown> {
+  private async createTerminal(
+    instance: string | undefined,
+    args: readonly unknown[],
+  ): Promise<unknown> {
     const entry = this.mountedOwner(instance);
     const currentHost = entry.host;
     if (currentHost.authoring === null) throw new Error("terminal authoring is unavailable");
@@ -591,9 +605,10 @@ export class WorkerHost {
       throw new TypeError("createTerminal: machine id must be a string or null");
     }
     const runtime = args[1] === null ? undefined : TerminalRuntimeSchema.parse(args[1]);
-    const machine = machineId === null
-      ? undefined
-      : (await currentHost.client.machines()).find((candidate) => candidate.id === machineId);
+    const machine =
+      machineId === null
+        ? undefined
+        : (await currentHost.client.machines()).find((candidate) => candidate.id === machineId);
     // The lookup is asynchronous: neither a retired mount nor an obsolete host may author.
     if (
       this.stopped ||
@@ -606,16 +621,24 @@ export class WorkerHost {
     }
     const authoring = entry.host.authoring;
     if (authoring === null) throw new Error("terminal authoring is unavailable");
-    if (machineId !== null && machine === undefined) throw new Error("machine is no longer available");
+    if (machineId !== null && machine === undefined)
+      throw new Error("machine is no longer available");
     return authoring.createTerminal(machine, runtime);
   }
 
-  private dispatch(method: WebHostMethod, args: readonly unknown[], instance: string | undefined): unknown {
+  private dispatch(
+    method: WebHostMethod,
+    args: readonly unknown[],
+    instance: string | undefined,
+  ): unknown {
     const host = this.contract >= 9 ? this.mountedOwner(instance).host : this.host;
     const client = host.client;
     if (
       this.contract < 9 &&
-      (method === "subscribe" || method === "unsubscribe" || method === "ackEvent" || method === "createTerminal")
+      (method === "subscribe" ||
+        method === "unsubscribe" ||
+        method === "ackEvent" ||
+        method === "createTerminal")
     ) {
       throw new Error(`slice_unavailable: ${method} requires hardened contract 9`);
     }

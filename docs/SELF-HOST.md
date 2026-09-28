@@ -48,13 +48,8 @@ disposable machine records; disable refuses ordinary doors and the Worker,
 while the cleanup revoke remains available, and re-enable restores service.
 Unknown or recipe-less selections must refuse before a child/listener starts,
 with the plugin named. The verifier shuts down its own processes and deletes
-only its own temporary data. The current `x86_64-linux` run passed native
-dependency rebuild, compiled agent/hub, both ephemeral boots, packaged
-artifact/Worker authentication, live fleet doors, disable cleanup and
-fail-closed selector refusals. Other platform dependency trees were rebuilt
-but macOS/arm64 runtime execution and native-owner/kernel enforcement were
-not thereby proved. CI is configured for native Linux and macOS, x64 and
-arm64; a warm dependency store path alone is not proof of a pinned hash.
+only its own temporary data. CI is configured for native Linux and macOS,
+x64 and arm64; a warm dependency store path alone is not proof of a pinned hash.
 
 When dependency inputs change, derive replacement hashes from fresh installs
 and retain the independent rebuild. Explicit `--os`/`--cpu` can measure another

@@ -18,13 +18,7 @@ export {
   type FrameModeProviderProps,
 } from "./frame-mode.tsx";
 export { ControlIcon, ItemIcon, type ControlKind, type IconProps } from "./icons.tsx";
-export {
-  Cluster,
-  Stack,
-  type ClusterProps,
-  type LayoutProps,
-  type StackProps,
-} from "./layout.tsx";
+export { Cluster, Stack, type ClusterProps, type LayoutProps, type StackProps } from "./layout.tsx";
 export {
   Badge,
   Button,

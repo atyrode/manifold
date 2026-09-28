@@ -162,7 +162,15 @@ async function fixture(
       ...(options.trusted === undefined ? {} : { trusted: options.trusted }),
       ...(options.logger === undefined ? {} : { logger: options.logger }),
     });
-    const created = { store, auth, owner: auth.authenticate(OWNER_KEY), host, runtime, dataDir, runner };
+    const created = {
+      store,
+      auth,
+      owner: auth.authenticate(OWNER_KEY),
+      host,
+      runtime,
+      dataDir,
+      runner,
+    };
     openFixtures.add(created);
     return created;
   } catch (error) {
@@ -386,9 +394,9 @@ describe("core.machines hardened by the trusted bootstrap", () => {
     expect(denied.ok).toBe(false);
     expect(fix.store.revokedMachineIds().has(machineId)).toBe(false);
 
-    expect(result(await fix.host.dispatch(fix.owner, "core.machines.revoke", { machineId }))).toEqual(
-      { revoked: 1 },
-    );
+    expect(
+      result(await fix.host.dispatch(fix.owner, "core.machines.revoke", { machineId })),
+    ).toEqual({ revoked: 1 });
     expect(fix.store.listEvents({ type: "trace", limit: 1 })[0]).toMatchObject({
       door: "core.machines.revoke",
       outcome: "ok",
@@ -415,9 +423,9 @@ describe("core.machines hardened by the trusted bootstrap", () => {
     expect(fix.host.webWorkerModule("core.machines")).toBeNull();
     const enroll = await fix.host.dispatch(fix.owner, "core.machines.enroll", { name: "late" });
     expect(enroll.ok ? null : enroll.denial.rule).toBe("plugin_disabled");
-    expect(result(await fix.host.dispatch(fix.owner, "core.machines.revoke", { machineId }))).toEqual(
-      { revoked: 1 },
-    );
+    expect(
+      result(await fix.host.dispatch(fix.owner, "core.machines.revoke", { machineId })),
+    ).toEqual({ revoked: 1 });
     await close(fix);
   }, 60_000);
 
@@ -601,9 +609,9 @@ describe("authored child permission and retained trusted lifetime", () => {
     const fix = await fixture({ plugins: [portableFleetProbe], trusted: [build] });
     const storage = fix.store.pluginStorage(id);
     const read = async () =>
-      z.strictObject({ pid: z.number(), marker: z.string().nullable() }).parse(
-        result(await fix.host.dispatch(fix.owner, `${id}.cleanup`, {})),
-      );
+      z
+        .strictObject({ pid: z.number(), marker: z.string().nullable() })
+        .parse(result(await fix.host.dispatch(fix.owner, `${id}.cleanup`, {})));
     await storage.set("marker", "retained");
     const before = await read();
     expect(before.pid).not.toBe(process.pid);

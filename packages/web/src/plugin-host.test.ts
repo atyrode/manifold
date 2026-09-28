@@ -165,7 +165,6 @@ describe("buildBrowserAssembly", () => {
     expect(assembly.pluginTitle("core.canvas.draw")).toBe("Drawing");
   });
 
-
   test("a disabled plugin keeps every contribution, tagged enabled:false", () => {
     const assembly = buildBrowserAssembly(
       [entry(SHELL), entry(MACHINES, false), entry(DRAW, false), entry(URI, false)],

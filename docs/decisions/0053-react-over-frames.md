@@ -22,12 +22,12 @@ behavior it dispatches, including abandoned renders, effect lifetime and keyed i
 
 ## Dated invariant-8 verdict
 
-| Candidate | Code and maintenance saved | Cost and boundary fit | Verdict |
-| --- | --- | --- | --- |
-| `react-reconciler` 0.33.0 | React owns component reconciliation, hooks, context, scheduling and effect cleanup; Manifold supplies the host adapter. | Upstream explicitly calls its renderer API experimental and does not promise ordinary React semver. Its published peer range is React `^19.2.0`, covering the existing exact `19.2.8` pin. The host configuration and upgrade proof remain ours. | Adopt an exact production pin, with matching `@types/react-reconciler` 0.33.0. |
-| Shopify Remote DOM / `@remote-dom/react` | Supplies cross-realm tree transport, remote custom elements and host mappings. | Its documented model mirrors DOM elements, using an iframe or a DOM polyfill in a Worker. Manifold already owns a bounded component schema and correlated transport; adopting that DOM model would replace the isolation boundary rather than implement it. | Reject for this boundary. |
-| Handwritten reconciliation and hooks | Avoids the additional package. | Requires private React dispatcher coupling or a different, React-like hook runtime, plus ownership of reconciliation and effect semantics. A closed output vocabulary does not make those semantics disappear. | Reject; supersedes the earlier hand-roll implementation choice. |
-| React DOM server rendering | Reuses the installed React packages and emits markup. | Does not supply a retained interactive root or the component-frame representation, and markup is not an admitted guest output. | Reject. |
+| Candidate                                | Code and maintenance saved                                                                                              | Cost and boundary fit                                                                                                                                                                                                                                       | Verdict                                                                        |
+| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `react-reconciler` 0.33.0                | React owns component reconciliation, hooks, context, scheduling and effect cleanup; Manifold supplies the host adapter. | Upstream explicitly calls its renderer API experimental and does not promise ordinary React semver. Its published peer range is React `^19.2.0`, covering the existing exact `19.2.8` pin. The host configuration and upgrade proof remain ours.            | Adopt an exact production pin, with matching `@types/react-reconciler` 0.33.0. |
+| Shopify Remote DOM / `@remote-dom/react` | Supplies cross-realm tree transport, remote custom elements and host mappings.                                          | Its documented model mirrors DOM elements, using an iframe or a DOM polyfill in a Worker. Manifold already owns a bounded component schema and correlated transport; adopting that DOM model would replace the isolation boundary rather than implement it. | Reject for this boundary.                                                      |
+| Handwritten reconciliation and hooks     | Avoids the additional package.                                                                                          | Requires private React dispatcher coupling or a different, React-like hook runtime, plus ownership of reconciliation and effect semantics. A closed output vocabulary does not make those semantics disappear.                                              | Reject; supersedes the earlier hand-roll implementation choice.                |
+| React DOM server rendering               | Reuses the installed React packages and emits markup.                                                                   | Does not supply a retained interactive root or the component-frame representation, and markup is not an admitted guest output.                                                                                                                              | Reject.                                                                        |
 
 Primary sources: [React's custom-renderer README](https://github.com/facebook/react/tree/main/packages/react-reconciler),
 [the published 0.33.0 package contract](https://registry.npmjs.org/react-reconciler/0.33.0),
@@ -86,7 +86,7 @@ the first-party acceptance requirement.
 
 ## Implementation record (issue #259)
 
-The shipped source uses `react-reconciler` 0.33.0 over `UiNodeSchema`'s fourteen
+The implementation uses `react-reconciler` 0.33.0 over `UiNodeSchema`'s fourteen
 closed kinds. One portable `ReactWebPluginDef` exports React panel/section
 components via `defineWebPlugin`; packing links the in-realm page entry to the
 shell's React and generates a separate self-contained `web.worker.js` from the

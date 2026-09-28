@@ -9,4 +9,8 @@ import { machinesHandlers } from "@manifold-plugin/machines/server";
  * (`first-party-builds.ts`) and is part of the server composition root, beside the recipe that
  * names it.
  */
-defineServerPlugin({ manifest: machinesManifest, actions: machinesActions, handlers: machinesHandlers });
+defineServerPlugin({
+  manifest: machinesManifest,
+  actions: machinesActions,
+  handlers: machinesHandlers,
+});

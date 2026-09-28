@@ -1,4 +1,9 @@
-import { panelRefId, type HostServices, type PanelProps, type SectionProps } from "@manifold/plugin";
+import {
+  panelRefId,
+  type HostServices,
+  type PanelProps,
+  type SectionProps,
+} from "@manifold/plugin";
 import type { PanelArg, UiNode } from "@manifold/protocol";
 import {
   useCallback,
@@ -45,7 +50,14 @@ const LOADING: PanelState = { kind: "loading" };
 
 function ignoreEvent(): void {}
 
-function IsolatedInstance({ pluginId, panelId, kind, portableWorker, host, arg }: IsolatedInstanceProps): ReactElement {
+function IsolatedInstance({
+  pluginId,
+  panelId,
+  kind,
+  portableWorker,
+  host,
+  arg,
+}: IsolatedInstanceProps): ReactElement {
   const [instance] = useState(() => crypto.randomUUID());
   const [state, setState] = useState<PanelState & { readonly token: string }>(() => ({
     ...LOADING,
@@ -94,9 +106,12 @@ function IsolatedInstance({ pluginId, panelId, kind, portableWorker, host, arg }
   const currentState = state.token === host.token ? state : LOADING;
   switch (currentState.kind) {
     case "loading": {
-      const title = kind === "panel"
-        ? host.assembly.panels.get(panelRefId(pluginId, panelId))?.title
-        : host.assembly.sections.find((section) => section.plugin === pluginId && section.id === panelId)?.title;
+      const title =
+        kind === "panel"
+          ? host.assembly.panels.get(panelRefId(pluginId, panelId))?.title
+          : host.assembly.sections.find(
+              (section) => section.plugin === pluginId && section.id === panelId,
+            )?.title;
       return (
         <VocabularyRenderer
           tree={title === undefined ? { type: "spinner" } : { type: "spinner", label: title }}

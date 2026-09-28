@@ -147,7 +147,12 @@ function definitionProblem(def: unknown): string | null {
 }
 
 function hostKeyOf(context: WebHostContext): string {
-  return JSON.stringify([context.principal, context.containerId, context.topics, context.canAuthor]);
+  return JSON.stringify([
+    context.principal,
+    context.containerId,
+    context.topics,
+    context.canAuthor,
+  ]);
 }
 
 function hostOf(
@@ -388,7 +393,12 @@ export function attachWebGuest(def: ReactWebPluginDef, port: WebGuestPort): void
       );
     },
     terminalsByContainer: async () =>
-      (await send(mounted.id, mounted, "terminalsByContainer", [])) as readonly ContainerTerminalSummary[],
+      (await send(
+        mounted.id,
+        mounted,
+        "terminalsByContainer",
+        [],
+      )) as readonly ContainerTerminalSummary[],
     subscribe: (topics, handler) => subscribeFor(mounted, topics, handler),
     get status() {
       return mounted.live ? mounted.context.status : "closed";

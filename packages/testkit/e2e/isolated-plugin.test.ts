@@ -44,14 +44,11 @@ let sha256 = "";
 beforeAll(async () => {
   packDir = mkdtempSync(join(tmpdir(), "manifold-isolated-plugin-"));
   bundlePath = join(packDir, BUNDLE_NAME);
-  const pack = Bun.spawn(
-    ["bun", join(KIT, "src/pack.ts"), SAMPLE, "--out", bundlePath],
-    {
-      cwd: KIT,
-      stdout: "pipe",
-      stderr: "pipe",
-    },
-  );
+  const pack = Bun.spawn(["bun", join(KIT, "src/pack.ts"), SAMPLE, "--out", bundlePath], {
+    cwd: KIT,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
   const [stdout, stderr, code] = await Promise.all([
     new Response(pack.stdout).text(),
     new Response(pack.stderr).text(),

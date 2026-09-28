@@ -197,8 +197,7 @@ interface Answer {
 }
 
 type Outcome =
-  | { readonly ok: true; readonly result: unknown }
-  | { readonly ok: false; readonly rule: string };
+  { readonly ok: true; readonly result: unknown } | { readonly ok: false; readonly rule: string };
 
 const hubs = new Set<Hub>();
 
