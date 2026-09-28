@@ -12,7 +12,7 @@ import {
   type PluginManifest,
 } from "@manifold/protocol";
 import { z } from "zod";
-import { MACHINES_PLUGIN_ID } from "./names.ts";
+import type { MACHINES_PLUGIN_ID } from "./names.ts";
 
 export { MACHINES_FORGET_ACTION, MACHINES_REVOKE_ACTION } from "./names.ts";
 
