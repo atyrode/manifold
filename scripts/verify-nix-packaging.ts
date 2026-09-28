@@ -234,10 +234,7 @@ async function during<T>(hub: Hub, work: Promise<T>): Promise<T> {
   return value;
 }
 
-/**
- * Starts the packaged hub on a fresh data directory. `MANIFOLD_FIRST_PARTY_ARTIFACTS` is never
- * set here: a selection is served only from the directory the wrapper itself names.
- */
+/** Starts the packaged hub on fresh data with no inherited operator configuration. */
 async function boot(
   label: string,
   selection: Readonly<Record<string, string>> = {},
@@ -789,7 +786,11 @@ try {
   await close(inRealm.hub);
 
   const shipped = shippedArtifact();
-  const hardened = await boot("hardened", { MANIFOLD_HARDENED_PLUGINS: MACHINES });
+  const hardened = await boot("hardened", {
+    MANIFOLD_HARDENED_PLUGINS: MACHINES,
+    // Artifact identity belongs to this package, not a value inherited from another build.
+    MANIFOLD_FIRST_PARTY_ARTIFACTS: join(root, "not-the-packaged-artifacts"),
+  });
   await during(hardened.hub, hardenedSmoke(hardened.hub, hardened.origin, shipped));
   await close(hardened.hub);
 

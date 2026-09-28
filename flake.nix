@@ -269,7 +269,7 @@
               cp -r packages/web/dist "$out/share/manifold/web"
               cp -r first-party "$out/share/manifold/first-party"
             '';
-            wrapperArgs = ''--set-default MANIFOLD_WEB_DIST "$out/share/manifold/web" --set-default MANIFOLD_FIRST_PARTY_ARTIFACTS "$out/share/manifold/first-party" --set-default MANIFOLD_SPAWN_AGENT 0 --prefix PATH : "${bun}/bin"'';
+            wrapperArgs = ''--set-default MANIFOLD_WEB_DIST "$out/share/manifold/web" --set MANIFOLD_FIRST_PARTY_ARTIFACTS "$out/share/manifold/first-party" --set-default MANIFOLD_SPAWN_AGENT 0 --prefix PATH : "${bun}/bin"'';
           };
         }
       );
