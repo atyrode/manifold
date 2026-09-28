@@ -175,6 +175,24 @@ describe("installed image provenance", () => {
     expect(provenance(first, [build], "unknown").code).toBe(2);
   });
 
+  test("a legacy build keeps its identity after its own commit is tagged, and only then", () => {
+    // The stamp is what describe answered at build time (#924). A release tag placed later on that
+    // same commit must not unseat it; a tag on any other commit still decides the comparison.
+    const short = second.slice(0, 7);
+    const build = `1.0.0+2.g${short}`;
+    expect(git("describe", "--tags", "--long", "--abbrev=7", second)).toBe(`v1.0.0-2-g${short}`);
+    try {
+      git("tag", "v1.1.0", second);
+      expect(provenance("missing", [build])).toMatchObject({ code: 0, out: second });
+      expect(provenance("missing", [`1.0.0+1.g${short}`]).code).toBe(2);
+      git("tag", "v1.0.5", first);
+      expect(provenance("missing", [build]).code).toBe(2);
+    } finally {
+      command(["git", "tag", "-d", "v1.1.0"]);
+      command(["git", "tag", "-d", "v1.0.5"]);
+    }
+  });
+
   test("refuses malformed, missing, ambiguous and dirty provenance", () => {
     expect(provenance("short")).toMatchObject({ code: 2 });
     expect(provenance("missing")).toMatchObject({ code: 2 });

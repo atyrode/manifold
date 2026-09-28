@@ -208,7 +208,7 @@ jobs:
     outputs:
       switch_started: ${{ steps.switch.outputs.started }}
       previous_sha: ${{ steps.snapshot.outputs.previous_sha }}
-      previous_build: ${{ steps.snapshot.outputs.previous_build }}
+      previous_rebuild_build: ${{ steps.snapshot.outputs.previous_rebuild_build }}
       expected_build: ${{ steps.identity.outputs.build }}
     environment:
       name: development
@@ -269,7 +269,11 @@ jobs:
           fail() { echo "::error::$*" >&2; exit 1; }
           previous_build="$(jq -er .build "$RUNNER_TEMP/verify-live.json")"
           previous_sha="$(legacy_image_revision "$GITHUB_WORKSPACE" "$previous_build")"
-          printf 'previous_sha=%s\nprevious_build=%s\n' "$previous_sha" "$previous_build" >> "$GITHUB_OUTPUT"
+          # Recovery rebuilds previous_sha under today's tags, exactly as deploy-dev.sh names a
+          # build, so a commit tagged after its image was built comes back under the release
+          # name, not the stamp it served (#924). Recovery verifies the name it will serve.
+          previous_rebuild_build="$(bun scripts/build-identity.ts --revision "$previous_sha" | jq -er .build)"
+          printf 'previous_sha=%s\nprevious_rebuild_build=%s\n' "$previous_sha" "$previous_rebuild_build" >> "$GITHUB_OUTPUT"
 
       - name: Retain the pre-switch snapshot for verification and rollback
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -334,7 +338,7 @@ jobs:
         env:
           SHA: ${{ needs.request.outputs.sha }}
           PREVIOUS_SHA: ${{ needs.deploy.outputs.previous_sha }}
-          PREVIOUS_BUILD: ${{ needs.deploy.outputs.previous_build }}
+          PREVIOUS_REBUILD_BUILD: ${{ needs.deploy.outputs.previous_rebuild_build }}
           ROLLBACK: ${{ needs.request.outputs.rollback }}
           DEV_DEPLOY_SSH_KEY: ${{ secrets.DEV_DEPLOY_SSH_KEY }}
           DEV_DEPLOY_USER: ${{ vars.DEV_DEPLOY_USER }}
@@ -352,7 +356,7 @@ jobs:
           printf '### Automatic development rollback\n\nSwitch or live verification failed. Restoring `%s` through the guarded receiver; this run remains failed.\n\n' "$PREVIOUS_SHA" >> "$GITHUB_STEP_SUMMARY"
           ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -i "$key" \
             "$DEV_DEPLOY_USER@$DEV_DEPLOY_HOST" "$request"
-          bun scripts/verify-live.ts verify "$RUNNER_TEMP/verify-live.json" "$PREVIOUS_BUILD"
+          bun scripts/verify-live.ts verify "$RUNNER_TEMP/verify-live.json" "$PREVIOUS_REBUILD_BUILD"
           printf 'The previous revision `%s` is serving and its live-state parity is verified.\n\n' "$PREVIOUS_SHA" >> "$GITHUB_STEP_SUMMARY"
 
   owner-pin:

@@ -888,13 +888,18 @@ test("a resolved startup build mismatch cannot hide the current service divergen
 test("failed parity triggers the workflow rollback shell through the actual guarded receiver", async () => {
   const root = mkdtempSync(join(tmpdir(), "verify-live-rollback-"));
   const marker = join(root, "restored");
+  // The incumbent serves a legacy development stamp; its commit was tagged afterwards, so the
+  // guarded rebuild serves the release name instead (#924). Recovery must verify that name.
+  const legacy = "1.0.0+4.gaaaaaaa";
+  const rebuilt = "1.0.1";
   const fixture = liveFixture(() => {
     if (existsSync(marker)) {
-      fixture.state.build = "1.0.0";
+      fixture.state.build = rebuilt;
       fixture.state.serviceState = "ready";
     }
   });
   try {
+    fixture.state.build = legacy;
     const before = await snapshotLive(fixture.target);
     writeFileSync(join(root, "verify-live.json"), JSON.stringify(before));
     fixture.state.build = "1.1.0";
@@ -965,7 +970,7 @@ printf '%s\\n' "$1" > "$FIXTURE_RESTORED"
         PATH: `${bin}:${process.env.PATH}`,
         SHA: "b".repeat(40),
         PREVIOUS_SHA: previousSha,
-        PREVIOUS_BUILD: "1.0.0",
+        PREVIOUS_REBUILD_BUILD: rebuilt,
         ROLLBACK: "false",
         DEV_DEPLOY_SSH_KEY: "fixture-only-key",
         DEV_DEPLOY_USER: "fixture",
@@ -989,8 +994,9 @@ printf '%s\\n' "$1" > "$FIXTURE_RESTORED"
     ]);
     if (code !== 0) throw new Error(`Rollback shell failed (${code}): ${stdout}${stderr}`);
     expect(readFileSync(marker, "utf8").trim()).toBe(previousSha);
-    await pollLive(fixture.target, before, before.build, shortPoll);
-    expect(fixture.state).toMatchObject({ serviceState: "ready", build: before.build });
+    expect(before.build).toBe(legacy);
+    await pollLive(fixture.target, before, rebuilt, shortPoll);
+    expect(fixture.state).toMatchObject({ serviceState: "ready", build: rebuilt });
   } finally {
     await fixture.close();
     rmSync(root, { recursive: true, force: true });
