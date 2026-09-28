@@ -310,6 +310,58 @@ describe("events and owned calls", () => {
     expect(eventOf(await rendered(fake), "Target")).not.toBe(retired);
   });
 
+  test("a blur trailing its control's retirement is benign; retired presses and edits stay refused", async () => {
+    const departed: string[] = [];
+    function Confirm(): ReactElement {
+      const [shown, setShown] = useState(true);
+      return frame(
+        "box",
+        {},
+        frame("button", { label: "Retire", onClick: () => setShown(false) }),
+        shown
+          ? frame("button", {
+              label: "Forget",
+              onClick: () => {},
+              onBlur: () => departed.push("Forget"),
+            })
+          : null,
+        shown
+          ? frame("input", {
+              label: "Note",
+              value: "",
+              onChange: () => {},
+              onBlur: () => departed.push("Note"),
+            })
+          : null,
+      );
+    }
+    const { fake, tree } = await mounted({ id: "example.thing", panels: { main: Confirm } });
+    const controls = nodes(tree).flatMap((node) =>
+      (node.type === "button" || node.type === "input") && node.blurEvent !== undefined
+        ? [node]
+        : [],
+    );
+    expect(controls.map((node) => node.label)).toEqual(["Forget", "Note"]);
+    fake.send({ t: "event", instance: "i1", event: eventOf(tree, "Retire") });
+    await rendered(fake);
+    // The page paints asynchronously: focus left these controls in a frame it still showed
+    // after the Worker had already committed their removal.
+    for (const control of controls) {
+      fake.send({ t: "event", instance: "i1", event: control.blurEvent! });
+    }
+    expect(fake.warnings).toEqual([]);
+    expect(departed).toEqual([]);
+    const [forget, note] = controls;
+    fake.send({ t: "event", instance: "i1", event: forget!.event });
+    fake.send({ t: "event", instance: "i1", event: note!.event, payload: "late" });
+    fake.send({ t: "event", instance: "i1", event: "n999.blur" });
+    expect(fake.warnings).toEqual(
+      [forget!.event, note!.event, "n999.blur"].map((event) =>
+        expect.stringContaining(`refused event "${event}": no committed control holds that event`),
+      ),
+    );
+  });
+
   test("keyed children keep their node identity when reordered", async () => {
     function Rows(): ReactElement {
       const [order, setOrder] = useState(["a", "b"]);

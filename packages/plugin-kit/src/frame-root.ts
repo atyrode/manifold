@@ -39,7 +39,8 @@ export interface UiRoot {
   render(element: ReactNode): void;
   /**
    * Delivers one named control event to the callback its CURRENT committed control holds.
-   * Answers null when delivered, or the sentence saying why the event was refused.
+   * Answers null when delivered or when it is a blur trailing the commit that retired its
+   * control, otherwise the sentence saying why the event was refused.
    */
   event(name: string, payload: unknown): string | null;
   /** Unmounts synchronously, running every effect cleanup before it returns. */
@@ -392,6 +393,7 @@ class Projection {
     return out;
   }
 
+  /** Names are `n<id>.<slot>`; {@link BLUR_EVENT} reads the blur form back. */
   private register(node: FrameNode, slot: "click" | "blur" | "change"): string {
     const name = `n${String(node.id)}.${slot}`;
     this.registry.set(name, { node, slot });
@@ -440,6 +442,9 @@ function project(container: FrameContainer): Projected {
 function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
+
+/** A blur event name as {@link Projection} mints it; node identities count up from 1. */
+const BLUR_EVENT = /^n([1-9][0-9]*)\.blur$/;
 
 /** The value a slot's callback receives, or the refusal of a payload of the wrong shape. */
 function checkedValue(
@@ -557,7 +562,18 @@ export function createUiRoot(callbacks: UiRootCallbacks): UiRoot {
     event(name, payload) {
       if (stopped) return "the frame is no longer rendering";
       const registration = registry.get(name);
-      if (registration === undefined) return "no committed control holds that event";
+      if (registration === undefined) {
+        // The page paints each commit asynchronously, so focus can leave a control in a frame
+        // it still shows after the commit that retired it; a browser's deferred focus cleanup
+        // of a focused control that was just disabled lands exactly there. A blur only reports
+        // that departure: the retired control holds no callback and has nothing left to
+        // disarm, so there is nothing to deliver and nothing to refuse. A retired press or
+        // edit asks for an effect its author withdrew and stays refused, as does a blur for an
+        // identity this root never minted.
+        const blur = BLUR_EVENT.exec(name);
+        if (blur !== null && Number(blur[1]) <= container.nextId) return null;
+        return "no committed control holds that event";
+      }
       const { node, slot } = registration;
       if (slot !== "blur" && node.props["disabled"] === true) return "the control is disabled";
       const checked = checkedValue(node, slot, payload);
