@@ -1,8 +1,11 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ENGINE_INSTALL_ACTION } from "@manifold/plugin";
+import { compilePlugin } from "@manifold/plugin-kit/pack";
 import {
+  MachineBridgeResultSchemas,
   MachineEnrollResponseSchema,
   MachinesResponseSchema,
   PLUGIN_BUNDLE_WEB_WORKER_FILE,
@@ -22,17 +25,19 @@ import {
 import { IsolateSupervisor } from "../src/isolate/supervisor.ts";
 import { silentLogger, type Logger } from "../src/log.ts";
 import type { ActionCtx, PluginHost, ServerPluginDef } from "../src/plugin-host.ts";
+import { parseBundle, PLUGIN_UPLOADS_DIR } from "../src/plugin-installs.ts";
 import { RoomManager } from "../src/room.ts";
 import type { ServerStore } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
 import { FakeClock, FakeRuntime, testPluginHost, testStore, testTileTrees } from "./helpers.ts";
+import { portableFleetProbe } from "./fixtures/portable-fleet.ts";
 
 /**
  * THE FLEET BRIDGE UNDER ATTACK (#259). The bridge is what a hardened guest can reach, so
  * these cases are written from the handler's side: a door that declares nothing, a container-
  * scoped door, a caller revoked mid-handler, a handler holding its ctx past its dispatch, and
- * ids the host no longer knows. The in-realm handler reaches the SAME object, so each case is
- * the proof for both modes; the hardened block runs the real `core.machines` build in a child.
+ * ids the host no longer knows. The native handler and installed child exercise the shared
+ * authority boundary; the trusted-bootstrap block runs the real `core.machines` build.
  */
 
 const OWNER_KEY = "e".repeat(64);
@@ -123,6 +128,7 @@ async function fixture(
     logger?: Logger;
     crashBudget?: number;
     idleEvictMs?: number;
+    plugins?: readonly ServerPluginDef[];
   } = {},
 ): Promise<Fixture> {
   const runtime = new FakeRuntime();
@@ -151,7 +157,7 @@ async function fixture(
   });
   try {
     const host = await testPluginHost(store, auth, rooms, broker, runtime, {
-      settingsPlugins: [probe],
+      settingsPlugins: [probe, ...(options.plugins ?? [])],
       isolates: { runner, dataDir },
       ...(options.trusted === undefined ? {} : { trusted: options.trusted }),
       ...(options.logger === undefined ? {} : { logger: options.logger }),
@@ -415,6 +421,51 @@ describe("core.machines hardened by the trusted bootstrap", () => {
     await close(fix);
   }, 60_000);
 
+  test("idle eviction and a recoverable crash preserve real machine bridge authority", async () => {
+    const pids: number[] = [];
+    const evicted = Promise.withResolvers<void>();
+    const logger: Logger = {
+      ...silentLogger,
+      info: (event, fields) => {
+        if (fields?.["plugin"] !== "core.machines") return;
+        if (event === "isolate_spawned" && typeof fields["pid"] === "number")
+          pids.push(fields["pid"]);
+        if (event === "isolate_evicted") evicted.resolve();
+      },
+    };
+    // This observes the real supervisor's idle timer and OS child retirement, not a fake clock.
+    const fix = await fixture({ trusted: builds, logger, idleEvictMs: 100, crashBudget: 2 });
+    await evicted.promise;
+    expect(fix.runner.state("core.machines")).toBe("stopped");
+
+    // This dispatch is admitted before spawning/reassembly; its live bridge must survive both.
+    const enrolled = MachineEnrollResponseSchema.parse(
+      result(await fix.host.dispatch(fix.owner, "core.machines.enroll", { name: "resumed" })),
+    );
+    expect(enrolled.machineToken).toBeDefined();
+    expect(fix.auth.authenticateMachine(enrolled.machineToken ?? "").id).toBe(enrolled.machine.id);
+    const pid = pids.at(-1);
+    if (pid === undefined) throw new Error("no resumed child");
+    const stopped = Promise.withResolvers<void>();
+    const stop = fix.runner.onState((id, state, detail) => {
+      if (id === "core.machines" && state === "stopped" && detail !== "idle") stopped.resolve();
+    });
+    try {
+      process.kill(pid, "SIGKILL");
+      await stopped.promise;
+    } finally {
+      stop();
+    }
+    const inventory = MachinesResponseSchema.parse(
+      result(await fix.host.dispatch(fix.owner, "core.machines.list", {})),
+    );
+    expect(inventory.machines.map((machine) => machine.id)).toEqual([enrolled.machine.id]);
+    expect(fix.runner.state("core.machines")).toBe("running");
+    expect(new Set(pids).size).toBe(3);
+    expect(fix.auth.authenticateMachine(enrolled.machineToken ?? "").id).toBe(enrolled.machine.id);
+    await close(fix);
+  }, 60_000);
+
   test("a crashed child is published on the roster and refuses rather than falling back in-realm", async () => {
     const pids: number[] = [];
     const logger: Logger = {
@@ -440,6 +491,140 @@ describe("core.machines hardened by the trusted bootstrap", () => {
     expect(row?.hardened).toBe(true);
     const outcome = await fix.host.dispatch(fix.owner, "core.machines.list", {});
     expect(outcome.ok ? null : outcome.denial.rule).toBe("unavailable");
+    await close(fix);
+  }, 60_000);
+});
+
+describe("authored child permission and retained trusted lifetime", () => {
+  const id = portableFleetProbe.manifest.id;
+  let build: TrustedBuild;
+  beforeAll(async () => {
+    const compiled = await compilePlugin(join(import.meta.dir, "fixtures"), {
+      source: {
+        manifest: portableFleetProbe.manifest,
+        server: join(import.meta.dir, "fixtures/portable-fleet.ts"),
+      },
+    });
+    build = { ...compiled, bundle: parseBundle(compiled.bytes) };
+  }, 60_000);
+
+  async function install(grant: readonly Cap[] = []): Promise<Fixture> {
+    const fix = await fixture();
+    mkdirSync(join(fix.dataDir, PLUGIN_UPLOADS_DIR), { recursive: true });
+    const source = join(fix.dataDir, PLUGIN_UPLOADS_DIR, "fleet.manifold-plugin.json");
+    writeFileSync(source, build.bytes);
+    result(
+      await fix.host.dispatch(fix.owner, ENGINE_INSTALL_ACTION, {
+        source,
+        sha256: build.sha256,
+        hardened: true,
+        grant,
+      }),
+    );
+    return fix;
+  }
+
+  test("an installed grant cannot replace a door declaration or its caller's authority", async () => {
+    const withheld = await install();
+    const withheldResult = await withheld.host.dispatch(withheld.owner, `${id}.enroll`, {
+      name: "withheld",
+    });
+    expect(withheldResult.ok ? null : withheldResult.denial.rule).toBe("forbidden");
+    expect(withheld.store.getMachineByName("withheld")).toBeNull();
+    await close(withheld);
+
+    const fix = await install(["machines:mint", "containers:read"]);
+    const enrollment = async (actor: AuthContext, action: string, name: string) =>
+      MachineBridgeResultSchemas["identity.enrollMachine"].parse(
+        result(await fix.host.dispatch(actor, `${id}.${action}`, { name })),
+      );
+    const bare = await enrollment(fix.owner, "bare", "undeclared");
+    expect(bare.ok ? null : bare.code).toBe("forbidden");
+    expect(fix.store.getMachineByName("undeclared")).toBeNull();
+    const reader = caller(fix, ["containers:read"]);
+    const borrowed = await fix.host.dispatch(reader, `${id}.enroll`, { name: "borrowed" });
+    expect(borrowed.ok ? null : borrowed.denial.rule).toBe("forbidden");
+    expect(fix.store.getMachineByName("borrowed")).toBeNull();
+
+    const containerId = fix.runtime.newId();
+    fix.store.createContainer({
+      id: containerId,
+      name: "scoped",
+      createdAt: fix.runtime.now(),
+      discipline: "canvas",
+    });
+    const scoped = caller(fix, ["containers:read", "machines:mint"], containerId);
+    const escaped = await enrollment(scoped, "enroll", "outside");
+    expect(escaped.ok ? null : escaped.code).toBe("forbidden");
+    expect(fix.store.getMachineByName("outside")).toBeNull();
+    expect((await enrollment(fix.owner, "enroll", "authorized")).ok).toBe(true);
+    expect(fix.store.getMachineByName("authorized")?.name).toBe("authorized");
+    const inventory = MachineBridgeResultSchemas["machines.inventory"].parse(
+      result(await fix.host.dispatch(scoped, `${id}.inventory`, {})),
+    );
+    if (!inventory.ok) throw new Error(`scoped inventory refused: ${inventory.code}`);
+    expect(inventory.value.machines.map((machine) => machine.name)).toEqual(["authorized"]);
+    await close(fix);
+  }, 60_000);
+
+  test("revocation between real child RPCs leaves the enrolled credential intact", async () => {
+    const fix = await install(["machines:mint"]);
+    const machine = fix.auth.enrollMachine("protected", fix.owner);
+    const minter = caller(fix, ["machines:mint"]);
+    const storage = fix.store.pluginStorage(id);
+    const pending = fix.host.dispatch(minter, `${id}.delayedRotate`, {
+      machineId: machine.machine.id,
+    });
+    try {
+      // The other process reaches this durable barrier over real IPC; a fake clock cannot advance it.
+      const deadline = Date.now() + 3_000;
+      while ((await storage.get("entered")) !== "yes") {
+        if (Date.now() >= deadline) throw new Error("child did not enter the rotation barrier");
+        await Bun.sleep(1);
+      }
+      fix.auth.revokePrincipal(minter.principal.id, fix.owner);
+      await storage.set("release", "yes");
+      const denied = MachineBridgeResultSchemas["identity.rotateMachineToken"].parse(
+        result(await pending),
+      );
+      expect(denied.ok ? null : denied.code).toBe("forbidden");
+      expect(fix.auth.authenticateMachine(machine.machineToken).id).toBe(machine.machine.id);
+    } finally {
+      await storage.set("release", "yes");
+      await pending;
+    }
+    await close(fix);
+  }, 60_000);
+
+  test("a held trusted child is retired and resumes cleanup while remaining disabled", async () => {
+    // core.machines is unversioned; this actual authored fixture supplies a real data hold.
+    const fix = await fixture({ plugins: [portableFleetProbe], trusted: [build] });
+    const storage = fix.store.pluginStorage(id);
+    const read = async () =>
+      z.strictObject({ pid: z.number(), marker: z.string().nullable() }).parse(
+        result(await fix.host.dispatch(fix.owner, `${id}.cleanup`, {})),
+      );
+    await storage.set("marker", "retained");
+    const before = await read();
+    expect(before.pid).not.toBe(process.pid);
+    await storage.stampDataVersion({ major: 99, minor: 0 });
+    expect(await fix.host.setEnabled(PROBE, false, "admin")).toEqual({ ok: true });
+    const held = fix.host.roster().find((row) => row.manifest.id === id);
+    expect(held?.held).toBeDefined();
+    expect(held?.enabled).toBe(false);
+    expect(fix.runner.state(id)).toBe("stopped");
+    expect((await fix.host.dispatch(fix.owner, `${id}.cleanup`, {})).ok).toBe(false);
+
+    await storage.stampDataVersion({ major: 1, minor: 0 });
+    expect(await fix.host.setEnabled(id, false, "admin")).toEqual({ ok: true });
+    const released = fix.host.roster().find((row) => row.manifest.id === id);
+    expect(released?.held).toBeUndefined();
+    expect(released?.enabled).toBe(false);
+    const after = await read();
+    expect(after.marker).toBe("retained");
+    expect(after.pid).not.toBe(process.pid);
+    expect(after.pid).not.toBe(before.pid);
+    expect(fix.runner.state(id)).toBe("running");
     await close(fix);
   }, 60_000);
 });
