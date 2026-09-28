@@ -62,6 +62,45 @@ test("startServer parses a fake bun ready line and stop terminates the child", a
   }
 }, 10_000);
 
+test("startServer keeps the caller's build identity unless the fixture names its own", async () => {
+  // A CI job stamps its bundle with one identity; the server it starts must answer the same (#920).
+  const caller = {
+    MANIFOLD_VERSION: "9.8.7",
+    MANIFOLD_BUILD: "9.8.7+3.gabcdef0",
+    MANIFOLD_CHANNEL: "development",
+  };
+  const saved = Object.fromEntries(Object.keys(caller).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, caller);
+  const servers: TestServer[] = [];
+  const health = async (env?: Record<string, string>): Promise<Record<string, unknown>> => {
+    const server = await startServer(env === undefined ? {} : { env });
+    servers.push(server);
+    const { version, build, channel } = (await (
+      await fetch(`${server.httpUrl}/healthz`)
+    ).json()) as Record<string, unknown>;
+    return { version, build, channel };
+  };
+  try {
+    expect(await health()).toEqual({
+      version: caller.MANIFOLD_VERSION,
+      build: caller.MANIFOLD_BUILD,
+      channel: caller.MANIFOLD_CHANNEL,
+    });
+    // Naming one field claims the whole identity: the caller's version never mixes in.
+    const fixture = await health({ MANIFOLD_BUILD: "fixture-build" });
+    expect(fixture["build"]).toBe("fixture-build");
+    expect(fixture["version"]).not.toBe(caller.MANIFOLD_VERSION);
+  } catch (error) {
+    throw e2eFailure(error, servers);
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    await stopProcesses(servers);
+  }
+}, 30_000);
+
 test("startAgent preserves spawn and wait errors when Bun returns no pipe streams", async () => {
   // Scope the Bun.spawn replacement to a disposable process, not the e2e runner.
   // This exercises the public fixture without introducing a production spawn seam.

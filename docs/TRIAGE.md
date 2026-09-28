@@ -256,6 +256,8 @@ or change must update CI topology and pass `bun scripts/ci-coverage.ts`; no chec
 be removed or weakened for speed without explicit operator acceptance. Full CI partitions types
 into four disjoint shards while no-argument local `bun run gate` retains complete unsharded
 behavior. Build consumers may use only a SHA-named artifact from the exact source tree under test.
+One planner-derived build identity governs every job that builds or holds that artifact, so a
+release tag pushed mid-run cannot split the bundle's label from `/healthz`.
 Exact-tree artifacts expire after one day; after expiry rerun the whole workflow. Required jobs
 have bounded timeouts, and the final aggregator rejects required failures and unexpected skips.
 Full CI retains concurrent plain-preview and integrated-preview runtime proof, and the native

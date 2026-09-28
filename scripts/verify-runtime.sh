@@ -4,7 +4,8 @@
 #   bash scripts/verify-runtime.sh browser
 # CI alone opts into the system manager: bash scripts/verify-runtime.sh --system jobs
 # Absolute overrides: CC, BUN, MANIFOLD_TEST_BWRAP, MANIFOLD_TEST_STATIC_BUSYBOX.
-# Browser-only overrides: MANIFOLD_CHROMIUM, MANIFOLD_GATE_DIST, MANIFOLD_RUNTIME_PROOF_DIR.
+# Browser-only overrides: MANIFOLD_CHROMIUM, MANIFOLD_GATE_DIST, MANIFOLD_RUNTIME_PROOF_DIR, and
+# the dist's stamped identity MANIFOLD_VERSION, MANIFOLD_BUILD, MANIFOLD_CHANNEL.
 set -euo pipefail
 umask 077
 
@@ -115,6 +116,18 @@ if [[ $mode == browser ]]; then
   for name in MANIFOLD_CHROMIUM MANIFOLD_GATE_DIST MANIFOLD_RUNTIME_PROOF_DIR; do
     if [[ -n ${!name:-} ]]; then
       [[ ${!name} == /* ]] || fail "$name must be absolute"
+      proof_env+=("$name=${!name}")
+    fi
+  done
+  # The identity the caller stamped on MANIFOLD_GATE_DIST: inert metadata, so the server this
+  # proof starts answers /healthz as the bundle it serves, never a tag pushed mid-run (#920).
+  for name in MANIFOLD_VERSION MANIFOLD_BUILD MANIFOLD_CHANNEL; do
+    if [[ -n ${!name:-} ]]; then
+      if [[ $name == MANIFOLD_CHANNEL ]]; then
+        [[ ${!name} == release || ${!name} == development ]] || fail "$name must be release or development"
+      else
+        [[ ${!name} =~ ^[0-9A-Za-z][0-9A-Za-z.+-]{0,127}$ ]] || fail "$name must be an inert build identity"
+      fi
       proof_env+=("$name=${!name}")
     fi
   done
