@@ -246,14 +246,31 @@ async function collectLines(
   }
 }
 
+/**
+ * What the caller's build IS (`scripts/build-identity.ts`): non-secret, and the one piece of the
+ * caller's `MANIFOLD_*` a spawned process must keep. A CI job stamps it on the web bundle a test
+ * server then serves; re-deriving it from git could name a tag pushed mid-run instead (#920).
+ */
+const BUILD_IDENTITY_ENV: readonly string[] = [
+  "MANIFOLD_VERSION",
+  "MANIFOLD_BUILD",
+  "MANIFOLD_CHANNEL",
+];
+
 function mergedEnvironment(
   extra: Readonly<Record<string, string>> | undefined,
 ): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
-    if (value !== undefined && !key.startsWith("MANIFOLD_")) env[key] = value;
+    if (value !== undefined && (!key.startsWith("MANIFOLD_") || BUILD_IDENTITY_ENV.includes(key)))
+      env[key] = value;
   }
-  if (extra !== undefined) Object.assign(env, extra);
+  if (extra !== undefined) {
+    // A fixture that names any identity field owns the whole identity; the caller's never mixes in.
+    if (BUILD_IDENTITY_ENV.some((key) => key in extra))
+      for (const key of BUILD_IDENTITY_ENV) delete env[key];
+    Object.assign(env, extra);
+  }
   return env;
 }
 

@@ -2566,7 +2566,8 @@ the syscall probe and provisions the bounded output tmpfs and mount-tree fixture
 disposable namespace. It sets `MANIFOLD_TEST_UNIT`, `MANIFOLD_TEST_SYSCALL_PROBE`,
 `MANIFOLD_TEST_OUTPUT_ROOT` and `MANIFOLD_TEST_MOUNT_TREE` along with the executable
 overrides. This is proof-fixture setup, not automatic production output provisioning.
-Optional `MANIFOLD_CHROMIUM`, `MANIFOLD_GATE_DIST` and `MANIFOLD_RUNTIME_PROOF_DIR`
+Optional `MANIFOLD_CHROMIUM`, `MANIFOLD_GATE_DIST` and `MANIFOLD_RUNTIME_PROOF_DIR`, and the
+dist's validated `MANIFOLD_VERSION`, `MANIFOLD_BUILD` and `MANIFOLD_CHANNEL` identity,
 are explicitly forwarded; arbitrary inherited credentials are not. Required tools,
 controllers, namespace/mount support and fixture inputs must be available or the wrapper/
 gate fails; missing setup is not a successful skip.
