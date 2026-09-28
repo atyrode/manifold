@@ -11,10 +11,18 @@ full_commit() {
 }
 
 legacy_image_revision() {
-  local checkout=$1 build=$2 described candidate
+  local checkout=$1 build=$2 described candidate tag
+  local -a later=()
   if [[ $build =~ ^(.+)\+([1-9][0-9]*)\.g([0-9a-f]{7,40})$ ]]; then
     candidate=$(full_commit "$checkout" "${BASH_REMATCH[3]}")
-    described=$(git -C "$checkout" describe --tags --long --abbrev=7 --match 'v*' "$candidate" 2>/dev/null) ||
+    # A `+N` stamp with N >= 1 is only ever written while no release tag points at its
+    # commit. A tag placed on that exact commit afterwards (a release tagging its own merge
+    # commit, #920) moves today's describe answer but not the image's identity, so it is
+    # excluded; tags on any other commit still decide the comparison.
+    while IFS= read -r tag; do
+      [[ -z $tag ]] || later+=(--exclude "$tag")
+    done < <(git -C "$checkout" tag --points-at "$candidate" --list 'v*')
+    described=$(git -C "$checkout" describe --tags --long --abbrev=7 --match 'v*' "${later[@]}" "$candidate" 2>/dev/null) ||
       fail 'HOLD: legacy development image provenance is not canonical'
     [[ $described =~ ^v(.+)-([0-9]+)-g([0-9a-f]{7,40})$ ]] ||
       fail 'HOLD: legacy development image provenance is not canonical'

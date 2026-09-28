@@ -120,6 +120,9 @@ dirty, divergent or ambiguous identity refuses without building or replacing any
 The marked application revision is authoritative for newly built images. During migration,
 an incumbent without that marker may resolve through its canonical `MANIFOLD_BUILD`: either
 an exact immutable release tag or the clean `<version>+<distance>.g<sha>` development form.
+A development form is what `git describe` answered at build time, so a release tag placed
+afterwards on that same commit is ignored when checking it; tags on any other commit still
+decide the comparison.
 Unmarked OCI revision labels may belong to the base image and are never application evidence.
 The result must identify one full commit and agree with the retained repository; dirty,
 malformed and non-unique legacy identities fail closed. This compatibility path is not a
