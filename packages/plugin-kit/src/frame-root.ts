@@ -428,7 +428,11 @@ function project(container: FrameContainer): Projected {
   }
   // Always keep children in this container, including a lone leaf: changing its parent when
   // siblings arrive would remount the consumer's keyed field and discard its focused buffer.
-  return { tree: { type: "box", key: "root", children }, registry: projection.registry };
+  // Pass panel fill sizing through; auto-height sections still size to their contents.
+  return {
+    tree: { type: "box", key: "root", grow: true, children },
+    registry: projection.registry,
+  };
 }
 
 // ---------------------------------------------------------------------------- the root

@@ -93,7 +93,8 @@ shell's React and generates a separate self-contained `web.worker.js` from the
 same source, sharing the kit's React with its reconciler. The public Button prop
 is `data-action`, and Worker callbacks are committed-control registrations
 over scalar event frames. A stable outer `box` keeps keyed controls in the
-same painted position when root siblings arrive or disappear; that container
+same painted position when root siblings arrive or disappear. It passes fill
+sizing through to panel children without expanding auto-height sections, and
 counts toward the whole-tree depth and node limits. `Stack`/`Cluster` map
 adaptive or bounded rem gaps to the host-owned `box`. DOM and `react-dom` do
 not cross the Worker build. The boundary does **not** confine Worker networking

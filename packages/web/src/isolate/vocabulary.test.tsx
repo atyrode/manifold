@@ -23,7 +23,7 @@ test("text reaches the DOM as text, never as markup", () => {
   expect(hostile).toContain("&lt;img");
 });
 
-test("a keyed Worker field keeps its DOM, focus and pending edit as root siblings change", async () => {
+test("a Worker root preserves keyed fields and panel or section sizing", async () => {
   const scratch = mkdtempSync(join(tmpdir(), "manifold-frame-root-"));
   const browser = new Browser();
   let server: Bun.Server<undefined> | undefined;
@@ -35,9 +35,10 @@ test("a keyed Worker field keeps its DOM, focus and pending edit as root sibling
       author,
       `
       import { createElement, Fragment } from "react";
-      import { Input, Text } from "@manifold/ui";
+      import { Empty, Input, Text } from "@manifold/ui";
       import { defineWebPlugin } from ${JSON.stringify(Bun.resolveSync("@manifold/plugin-kit/web", import.meta.dir))};
       function Form({ arg = {}, host }) {
+        if (arg.empty) return createElement(Empty, null, arg.empty);
         const { before, after, visible = true, value = "server" } = arg;
         return createElement(Fragment, null,
           before ? createElement(Text, { key: "before", "data-testid": "before" }, "Before") : null,
@@ -72,9 +73,18 @@ test("a keyed Worker field keeps its DOM, focus and pending edit as root sibling
       import { createElement } from ${JSON.stringify(Bun.resolveSync("react", import.meta.dir))};
       import { createRoot } from ${JSON.stringify(Bun.resolveSync("react-dom/client", import.meta.dir))};
       import { flushSync } from ${JSON.stringify(Bun.resolveSync("react-dom", import.meta.dir))};
+      import { Empty } from ${JSON.stringify(Bun.resolveSync("@manifold/ui", import.meta.dir))};
       import { VocabularyRenderer } from ${JSON.stringify(resolve(import.meta.dir, "vocabulary.tsx"))};
       const worker = new Worker("/worker.js", { type: "module" });
       const root = createRoot(document.getElementById("root"));
+      const reference = createRoot(document.getElementById("reference"));
+      let kind = "panel", lastTree;
+      function paintTree() {
+        flushSync(() => root.render(createElement(VocabularyRenderer, {
+          tree: lastTree, kind,
+          onEvent: (event, payload) => worker.postMessage({ t: "event", instance: "form", event, payload }),
+        })));
+      }
       const principal = { id: "viewer", kind: "human", name: "Viewer", color: "#74c0fc" };
       const context = {
         principal, caps: [], containerId: null,
@@ -89,10 +99,8 @@ test("a keyed Worker field keeps its DOM, focus and pending edit as root sibling
         if (frame.t === "ready") barriers.shift()?.();
         else if (frame.t === "render") {
           inputEvent = fieldEvent(frame.tree);
-          flushSync(() => root.render(createElement(VocabularyRenderer, {
-            tree: frame.tree,
-            onEvent: (event, payload) => worker.postMessage({ t: "event", instance: "form", event, payload }),
-          })));
+          lastTree = frame.tree;
+          paintTree();
           pendingPaint?.resolve();
           pendingPaint = null;
         } else if (frame.t === "call") {
@@ -136,10 +144,29 @@ test("a keyed Worker field keeps its DOM, focus and pending edit as root sibling
           return calls.slice();
         },
         calls: async () => { await settle(); return calls.slice(); },
+        sizing(nextKind) {
+          kind = nextKind;
+          paintTree();
+          flushSync(() => reference.render(createElement("div", {
+            className: kind === "section" ? "mf-vocab is-section" : "mf-vocab",
+          }, createElement(Empty, null, "Empty footprint"))));
+          function measure(id) {
+            const host = document.getElementById(id);
+            const frame = host.querySelector(".mf-vocab").getBoundingClientRect();
+            const empty = host.querySelector(".mf-vocab-empty").getBoundingClientRect();
+            return {
+              height: empty.height,
+              center: empty.top - frame.top + empty.height / 2,
+              frameHeight: frame.height,
+            };
+          }
+          return { worker: measure("root"), native: measure("reference") };
+        },
         async close() {
           worker.postMessage({ t: "unmount", instance: "form" });
           await settle();
           root.unmount();
+          reference.unmount();
           worker.terminate();
         },
       };
@@ -159,13 +186,13 @@ test("a keyed Worker field keeps its DOM, focus and pending edit as root sibling
         if (path === "/worker.js") {
           return new Response(workerSource, { headers: { "Content-Type": "text/javascript" } });
         }
-        if (path === "/fixture.js") {
+        if (path === "/fixture.js" || path === "/fixture.css") {
           return new Response(Bun.file(join(output, path.slice(1))), {
-            headers: { "Content-Type": "text/javascript" },
+            headers: { "Content-Type": path.endsWith(".css") ? "text/css" : "text/javascript" },
           });
         }
         return new Response(
-          '<!doctype html><meta charset="utf-8"><div id="root"></div><script type="module" src="/fixture.js"></script>',
+          '<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="/fixture.css"><div id="root" style="width:360px;height:320px"></div><div id="reference" style="width:360px;height:320px"></div><script type="module" src="/fixture.js"></script>',
           { headers: { "Content-Type": "text/html" } },
         );
       },
@@ -201,7 +228,7 @@ test("a keyed Worker field keeps its DOM, focus and pending edit as root sibling
         `window.frameFixture.paint(${JSON.stringify({ before, after, value: "stale owner value" })})`,
       );
       expect(
-        await browser.evaluate(`
+        await browser.evaluate<Record<string, unknown>>(`
           ({
             same: document.querySelector("input") === window.originalInput,
             focused: document.activeElement === window.originalInput,
@@ -222,7 +249,7 @@ test("a keyed Worker field keeps its DOM, focus and pending edit as root sibling
     }
     await browser.evaluate<void>("window.frameFixture.paint({ visible: false })");
     expect(
-      await browser.evaluate(
+      await browser.evaluate<boolean>(
         "document.querySelector('input') === null && !originalInput.isConnected",
       ),
     ).toBe(true);
@@ -236,7 +263,7 @@ test("a keyed Worker field keeps its DOM, focus and pending edit as root sibling
       originalEvent,
     );
     expect(
-      await browser.evaluate(
+      await browser.evaluate<boolean>(
         "document.querySelector('input') !== originalInput && document.querySelector('input').value === 'returned'",
       ),
     ).toBe(true);
@@ -244,6 +271,18 @@ test("a keyed Worker field keeps its DOM, focus and pending edit as root sibling
     expect((await browser.evaluate<string[]>("window.frameFixture.calls()")).at(-1)).toBe(
       "returned!",
     );
+    await browser.evaluate<void>("window.frameFixture.paint({ empty: 'Empty footprint' })");
+    for (const kind of ["panel", "section"]) {
+      const sizing = await browser.evaluate<{
+        worker: { height: number; center: number; frameHeight: number };
+        native: { height: number; center: number; frameHeight: number };
+      }>(`window.frameFixture.sizing(${JSON.stringify(kind)})`);
+      expect(sizing.worker.height).toBeCloseTo(sizing.native.height, 1);
+      expect(sizing.worker.center).toBeCloseTo(sizing.native.center, 1);
+      expect(sizing.worker.frameHeight).toBeCloseTo(sizing.native.frameHeight, 1);
+      if (kind === "panel") expect(sizing.native.frameHeight).toBe(320);
+      else expect(sizing.native.frameHeight).toBeLessThan(160);
+    }
     await browser.evaluate<void>("window.frameFixture.close()");
   } finally {
     await browser.close();
