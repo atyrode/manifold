@@ -5299,11 +5299,13 @@ segment and the `manifold-full-state/` checkpoint namespace as `replica_path_inv
 restore; the acknowledgement binds the resolved value like every other referenced input. Selecting
 another path never merges histories: it only chooses which dedicated history the gates admit.
 
-A usable restored result must also carry a sealed replica-writer record and satisfy its complete
-database-set fingerprints before exclusive publication. Missing, malformed or active records refuse;
-a first-initialization acknowledgement cannot bless them. A nonzero restore result or timeout refuses
-regardless of acknowledgement. Zero exit with no restored database is the empty-replica state: it
-refuses unless this attempt consumed a valid acknowledgement, in which case the existing database
+A usable restored result must also carry a replica-writer record: a sealed one satisfies its
+complete database-set fingerprints, and an active one is admitted only through the unsealed
+takeover below, before exclusive publication. Missing or malformed records refuse, as does an
+active record the takeover refuses; a first-initialization acknowledgement cannot bless them. A
+nonzero restore result or timeout refuses regardless of acknowledgement. Zero exit with no restored
+database is the empty-replica state: it refuses unless this attempt consumed a valid
+acknowledgement, in which case the existing database
 opener initializes the staged database before exclusive publication. Invalid, expired, or
 target-mismatched acknowledgements refuse. Every preparation refusal prevents both replication and
 server startup, and cleanup is limited to staging owned by that run. No persistent environment
@@ -5371,7 +5373,8 @@ Litestream's one-second sync interval, longer during a replication outage. An ac
 its matching heartbeat comes from a v0.24.0-v0.25.0 guard, whose idle liveness is unobservable; it
 is taken over only when `MANIFOLD_REPLICA_TAKEOVER` equals its UUID, and otherwise refuses
 `replica_writer_unsealed` without waiting. Empty means unset; a nonempty value that is not a
-lowercase UUID refuses `replica_takeover_invalid`, and an unneeded one is inert and logged as
+lowercase UUID refuses `replica_takeover_invalid` at the start of every replicated entrypoint,
+before any history is read or claimed, and an unneeded one is inert and logged as
 `replica_takeover_setting_unused`. A writer cut off from storage for longer than the quiet window
 and then reconnected is not fenced: one instance with stop-before-start remains the boundary.
 
@@ -5397,7 +5400,8 @@ cannot admit a nonempty, partial or active recovery replica.
 This protocol relies on a trusted, latest-read/read-after-write-consistent replica store. It does
 not authenticate hostile replica contents, detect a store that deliberately replays an older valid
 history, coordinate concurrent hosts, or recover an acknowledged but unreplicated tail after the
-authoritative disk is lost. Such an active restore refuses instead of serving uncertain history.
+authoritative disk is lost. Such a restore serves the replicated history once the takeover proves it
+quiet, and states that loss rather than refusing forever (ADR 0054).
 An existing untracked replica requires reviewed offline adoption: stop the incumbent, authenticate
 a full-state checkpoint of the quiesced volume, restore it into a fresh volume, and seed a new
 dedicated replica target while preserving the old one. Initialization intent, fabricated metadata

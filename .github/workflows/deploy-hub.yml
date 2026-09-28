@@ -388,11 +388,6 @@ jobs:
           TAG: ${{ inputs.tag }}
           VERIFY_LIVE_BOOTSTRAP_GATE: ${{ needs.installed-bundles.outputs.bootstrap_required == 'true' }}
         run: bun scripts/verify-live.ts verify "$RUNNER_TEMP/verify-live.json" "${TAG#v}"
-      - name: Retire the one-time takeover authorization
-        if: success() && inputs.takeover_writer != ''
-        run: |
-          "$CLEVER" link "${{ vars.CLEVER_HUB_APP_ID }}" --org "${{ vars.CLEVER_ORG_ID }}"
-          "$CLEVER" env set MANIFOLD_REPLICA_TAKEOVER ""
       - name: Restore the authenticated full state with the previous release
         if: failure() || needs.clever.result != 'success'
         env:
@@ -416,6 +411,21 @@ jobs:
           "$CLEVER" deploy --tag "$TAG" --force --same-commit-policy rebuild
           bun scripts/verify-live.ts verify "$RUNNER_TEMP/verify-live.json" "$PREVIOUS_BUILD"
           printf 'The exact previous application is serving through the recovery image, and its restored live-state parity is verified. Recovery settings remain active so a provider restart restores the same checkpoint and then the checkpoint-specific SQLite replica history. Reconcile only through a later promotion with `adopt_recovery` and a fresh checkpoint captured from this recovery image.\n\n' >> "$GITHUB_STEP_SUMMARY"
+      # After the restore decision, and never able to fail the job: once the candidate is verified,
+      # restoring the pre-switch checkpoint over it would discard its replicated writes. The value is
+      # already inert (the candidate's claim replaced that writer) and the next switch overwrites it.
+      - name: Retire the one-time takeover authorization
+        id: retire
+        if: success() && steps.candidate.outcome == 'success' && inputs.takeover_writer != ''
+        continue-on-error: true
+        run: |
+          "$CLEVER" link "${{ vars.CLEVER_HUB_APP_ID }}" --org "${{ vars.CLEVER_ORG_ID }}"
+          "$CLEVER" env set MANIFOLD_REPLICA_TAKEOVER ""
+      - name: Report an unretired takeover authorization
+        if: steps.retire.outcome == 'failure'
+        run: |
+          echo "::warning::MANIFOLD_REPLICA_TAKEOVER could not be cleared after live verification; it is inert and the next promotion overwrites it"
+          printf '### Takeover authorization not cleared\n\nThe verified release keeps serving. `MANIFOLD_REPLICA_TAKEOVER` still names the taken-over writer; it cannot authorize anything because the candidate claimed a new writer identity. Clear it with the provider CLI or let the next promotion overwrite it.\n\n' >> "$GITHUB_STEP_SUMMARY"
 
   fleet-pin:
     name: Pin the verified production fleet

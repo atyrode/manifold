@@ -23,6 +23,7 @@ import {
   ordinaryReplicaPath,
   ReplicaGuardRefusal,
   replicaPosition,
+  takeoverSetting,
 } from "./replica-guard.ts";
 
 const ACK_NAME = ".replica-init-once.json";
@@ -266,6 +267,7 @@ async function main(): Promise<void> {
     throw new BootstrapRefusal("usage_acknowledge_discard_or_prepare");
   if (RECOVERY_SETTINGS.some((name) => process.env[name]))
     throw new BootstrapRefusal("full_state_recovery_requires_recovery_image");
+  if (command !== "discard") takeoverSetting();
   const dataDir = resolve(process.env.MANIFOLD_DATA_DIR || "/data");
   if (command === "discard") {
     discardAcknowledgement(dataDir);

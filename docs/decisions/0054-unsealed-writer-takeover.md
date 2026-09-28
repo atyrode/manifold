@@ -58,8 +58,9 @@ that lands earlier leaves a heartbeat-bearing claim, which the next start takes 
 
 ## Consequences
 
-- Restarts, crashes and deploys on the hosted provider recover without an operator, at the
-  cost of up to 30 seconds of added startup and the bounded loss above.
+- Restarts, crashes and deploys on the hosted provider recover without an operator. The cost is
+  the bounded loss above, plus at least a 30-second quiet window and the restores around it; a
+  replica still settling after the stop can extend the wait up to the 150-second deadline.
 - Unchanged refusals:
   - a live writer sharing the replica
   - newer or conflicting epochs

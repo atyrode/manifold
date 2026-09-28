@@ -598,3 +598,61 @@ await Bun.write(process.env.DOWNLOAD_RECEIPT, directory);
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("a failed takeover-authorization retirement stays visible without restoring over a verified candidate", async () => {
+  const source = Bun.YAML.parse(
+    await Bun.file(new URL("../.github/workflows/deploy-hub.yml", import.meta.url)).text(),
+  ) as {
+    jobs: Record<
+      string,
+      {
+        steps: {
+          name?: string;
+          id?: string;
+          if?: string;
+          run?: string;
+          "continue-on-error"?: boolean;
+        }[];
+      }
+    >;
+  };
+  const steps = source.jobs["verify-live"]?.steps ?? [];
+  const candidate = steps.findIndex((step) => step.id === "candidate");
+  const restore = steps.findIndex((step) => step.name?.startsWith("Restore the authenticated"));
+  const retire = steps.findIndex((step) => step.id === "retire");
+  const report = steps.findIndex((step) => step.if === "steps.retire.outcome == 'failure'");
+  // The restore decision is taken before retirement runs, and retirement can never fail the job,
+  // so only a failed switch or candidate verification restores the pre-switch checkpoint.
+  expect(candidate).toBeGreaterThanOrEqual(0);
+  expect(restore).toBeGreaterThan(candidate);
+  expect(steps[restore]?.if).toBe("failure() || needs.clever.result != 'success'");
+  expect(retire).toBeGreaterThan(restore);
+  expect(steps[retire]?.["continue-on-error"]).toBe(true);
+  expect(steps[retire]?.if).toContain("steps.candidate.outcome == 'success'");
+  expect(report).toBeGreaterThan(retire);
+
+  const root = mkdtempSync(join(tmpdir(), "manifold-takeover-retirement-"));
+  try {
+    const bin = join(root, "bin");
+    mkdirSync(bin);
+    // The provider rejects the clear after the candidate was verified.
+    writeFileSync(join(bin, "clever"), '#!/usr/bin/env bash\n[ "$1" = link ] && exit 0\nexit 1\n', {
+      mode: 0o700,
+    });
+    const summary = join(root, "summary.md");
+    writeFileSync(summary, "");
+    const run = (script: string) =>
+      Bun.spawnSync(["bash", "-e", "-o", "pipefail", "-c", script], {
+        env: { ...process.env, CLEVER: join(bin, "clever"), GITHUB_STEP_SUMMARY: summary },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+    expect(run(steps[retire]?.run ?? "").exitCode).not.toBe(0);
+    const reported = run(steps[report]?.run ?? "");
+    expect(reported.exitCode).toBe(0);
+    expect(reported.stdout.toString()).toContain("::warning::MANIFOLD_REPLICA_TAKEOVER");
+    expect(readFileSync(summary, "utf8")).toContain("The verified release keeps serving");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

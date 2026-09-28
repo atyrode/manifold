@@ -237,8 +237,12 @@ export interface TakeoverIO {
   readonly restore: () => Promise<string>;
 }
 
-/** An operator's authorization to take over one legacy writer, which never heartbeats. */
-function takeoverSetting(): string | undefined {
+/**
+ * An operator's authorization to take over one legacy writer, which never heartbeats. Every
+ * replicated start validates it first, so a malformed value refuses before any history is claimed
+ * rather than lying latent until a later restore needs it.
+ */
+export function takeoverSetting(): string | undefined {
   const value = process.env.MANIFOLD_REPLICA_TAKEOVER?.trim();
   if (!value) return undefined;
   if (!UUID.test(value)) throw new ReplicaGuardRefusal("replica_takeover_invalid");
@@ -770,6 +774,7 @@ async function main(): Promise<void> {
   const fromStdin =
     authenticatedBaseline || (process.argv.length === 3 && process.argv[2] === "--config-stdin");
   if (process.argv.length !== 2 && !fromStdin) throw new ReplicaGuardRefusal("usage_replica_guard");
+  takeoverSetting();
   const dataDir = resolve(process.env.MANIFOLD_DATA_DIR || "/data");
   const db = join(dataDir, "manifold.db");
   if (!fromStdin) ordinaryReplicaPath();

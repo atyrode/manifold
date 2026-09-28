@@ -1,7 +1,15 @@
 import { afterEach, expect, spyOn, test, vi } from "bun:test";
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -75,6 +83,41 @@ async function admit(main: string): Promise<number> {
   );
   return child.exited;
 }
+
+test.each([
+  [
+    "a malformed takeover setting refuses before any claim",
+    "not-a-uuid",
+    "replica_takeover_invalid",
+  ],
+  ["an empty takeover setting is unset", " ", "replica_configuration_invalid"],
+  ["an unused valid takeover setting is inert", OTHER, "replica_configuration_invalid"],
+])("an authenticated-baseline supervisor start: %s", async (_name, setting, reason) => {
+  const { data } = fixture();
+  const child = Bun.spawn(
+    [
+      process.execPath,
+      join(import.meta.dir, "replica-guard.ts"),
+      "--config-stdin",
+      "--authenticated-baseline",
+    ],
+    {
+      env: { ...process.env, MANIFOLD_DATA_DIR: data, MANIFOLD_REPLICA_TAKEOVER: setting },
+      stdin: new Blob([""]),
+      stdout: "ignore",
+      stderr: "pipe",
+    },
+  );
+  const [code, err] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+  expect(code).toBe(1);
+  expect(JSON.parse(err.trim()) as unknown).toEqual({
+    evt: "hub_replica_boot",
+    state: "refused",
+    reason,
+  });
+  // Refused before the supervisor's writer lock, and so before any claim or replica read.
+  expect(existsSync(join(data, "manifold.replica-writer"))).toBe(false);
+});
 
 test("a current main seal refuses an older auxiliary database instead of admitting a partial recovery", async () => {
   const { data } = fixture();
@@ -402,9 +445,12 @@ test("a failed beat is logged without detail and retried on the next tick", () =
     vi.advanceTimersByTime(2 * HEARTBEAT_INTERVAL_MS);
     database.run("ALTER TABLE hidden RENAME TO meta");
     vi.advanceTimersByTime(HEARTBEAT_INTERVAL_MS);
-    const failed = '{"evt":"hub_replica_heartbeat","state":"failed"}';
-    expect({ logged: log.mock.calls, heartbeat: beat(main) }).toEqual({
-      logged: [[failed], [failed]],
+    const failed = { evt: "hub_replica_heartbeat", state: "failed" };
+    expect({
+      logged: log.mock.calls.map(([line]) => JSON.parse(String(line)) as unknown),
+      heartbeat: beat(main),
+    }).toEqual({
+      logged: [failed, failed],
       heartbeat: { version: 1, epoch: 3, id: WRITER, beat: 1 },
     });
   } finally {
