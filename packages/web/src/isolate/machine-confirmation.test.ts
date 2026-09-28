@@ -3,10 +3,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { PLUGIN_BUNDLE_WEB_WORKER_FILE, PluginBundleSchema } from "@manifold/protocol";
-import { compilePlugin } from "../../../plugin-kit/src/pack.ts";
+import { compilePlugin } from "@manifold/plugin-kit/pack";
 import { Browser } from "../../../../scripts/cdp.ts";
 import { until } from "../../../../scripts/gate-lib.ts";
-import { machinesManifest } from "../src/index.ts";
+import { machinesManifest } from "@manifold-plugin/machines";
 
 const browser = new Browser();
 let scratch = "";
@@ -14,11 +14,11 @@ let server: Bun.Server<undefined> | undefined;
 
 beforeAll(async () => {
   scratch = mkdtempSync(join(tmpdir(), "manifold-machine-confirmation-"));
-  const plugin = resolve(import.meta.dir, "../../../plugin");
-  const compiled = await compilePlugin(resolve(import.meta.dir, ".."), {
+  const plugin = resolve(import.meta.dir, "../..");
+  const compiled = await compilePlugin(scratch, {
     source: {
       manifest: { ...machinesManifest, entry: { web: "web.js", worker: true } },
-      web: "src/portable.ts",
+      web: Bun.resolveSync("@manifold-plugin/machines/portable", plugin),
     },
   });
   const bundle = PluginBundleSchema.parse(JSON.parse(new TextDecoder().decode(compiled.bytes)));
@@ -31,9 +31,8 @@ beforeAll(async () => {
     import { createElement } from ${JSON.stringify(Bun.resolveSync("react", plugin))};
     import { createRoot } from ${JSON.stringify(Bun.resolveSync("react-dom/client", plugin))};
     import { flushSync } from ${JSON.stringify(Bun.resolveSync("react-dom", plugin))};
-    import { MachinesSection } from ${JSON.stringify(resolve(import.meta.dir, "../src/web.tsx"))};
-    import { VocabularyRenderer } from ${JSON.stringify(resolve(import.meta.dir, "../../../web/src/isolate/vocabulary.tsx"))};
-    import ${JSON.stringify(resolve(import.meta.dir, "../../../ui/src/styles.css"))};
+    import { MachinesSection } from ${JSON.stringify(Bun.resolveSync("@manifold-plugin/machines/web", plugin))};
+    import { VocabularyRenderer } from ${JSON.stringify(resolve(import.meta.dir, "./vocabulary.tsx"))};
 
     const params = new URL(location.href).searchParams;
     const hardened = params.get("mode") === "worker";
@@ -154,12 +153,12 @@ beforeAll(async () => {
       const path = new URL(request.url).pathname;
       if (path === "/worker.js")
         return new Response(workerSource, { headers: { "Content-Type": "text/javascript" } });
-      if (path === "/fixture.js" || path === "/fixture.css")
-        return new Response(Bun.file(join(output, path.slice(1))), {
-          headers: { "Content-Type": path.endsWith(".css") ? "text/css" : "text/javascript" },
+      if (path === "/fixture.js")
+        return new Response(Bun.file(join(output, "fixture.js")), {
+          headers: { "Content-Type": "text/javascript" },
         });
       return new Response(
-        '<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="/fixture.css"><style>body{background:#171b20;color:#dee2e6;font-family:sans-serif}#root{width:340px}</style><div id="root"></div><button id="outside">Leave confirmation</button><script type="module" src="/fixture.js"></script>',
+        '<!doctype html><meta charset="utf-8"><style>body{background:#171b20;color:#dee2e6;font-family:sans-serif}#root{width:340px}</style><div id="root"></div><button id="outside">Leave confirmation</button><script type="module" src="/fixture.js"></script>',
         { headers: { "Content-Type": "text/html" } },
       );
     },
