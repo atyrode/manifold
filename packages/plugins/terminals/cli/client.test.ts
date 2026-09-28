@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { mkdtemp, open, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -749,7 +748,7 @@ async function readReceipt(
 }
 
 // Real processes in a real PTY exit on the platform clock and signal no event to this test,
-// so these two helpers poll /proc with a bound instead of faking time.
+// so these two helpers poll with a bound instead of faking time.
 /** The PID a remote command wrote to `path`, once it is there. */
 async function pidIn(path: string): Promise<number> {
   for (let attempt = 0; attempt < 500; attempt++) {
@@ -764,13 +763,12 @@ async function pidIn(path: string): Promise<number> {
 
 /** The PIDs still running (not gone or a zombie) after a 5 s grace. */
 async function stopped(pids: readonly number[]): Promise<number[]> {
+  // POSIX ps: no line once the process is gone, state "Z…" while it is an unreaped zombie.
   const running = (pid: number) => {
-    try {
-      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-      return stat[stat.lastIndexOf(")") + 2] !== "Z";
-    } catch {
-      return false;
-    }
+    const state = Bun.spawnSync(["ps", "-o", "stat=", "-p", String(pid)])
+      .stdout.toString()
+      .trim();
+    return state !== "" && !state.startsWith("Z");
   };
   for (let attempt = 0; attempt < 100 && pids.some(running); attempt++) await Bun.sleep(50);
   const left = pids.filter(running);
