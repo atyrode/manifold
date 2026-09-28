@@ -18,7 +18,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
-import { ReplicaGuardRefusal, requireSealedReplica } from "./replica-guard.ts";
+import { ordinaryReplicaPath, ReplicaGuardRefusal, requireSealedReplica } from "./replica-guard.ts";
 
 const ACK_NAME = ".replica-init-once.json";
 const ACK_LIFETIME_MS = 15 * 60 * 1000;
@@ -252,6 +252,7 @@ function main(): void {
   const accessKey = process.env.LITESTREAM_ACCESS_KEY_ID;
   const secretKey = process.env.LITESTREAM_SECRET_ACCESS_KEY;
   if (!accessKey || !secretKey) throw new BootstrapRefusal("replica_credentials_missing");
+  ordinaryReplicaPath();
   mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   process.env.MANIFOLD_DATA_DIR = dataDir;
   const db = join(dataDir, "manifold.db");

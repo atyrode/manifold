@@ -189,6 +189,25 @@ export function requireSealedReplica(path: string): void {
   requireFiles(dirname(path), previous.databases, deadline);
 }
 
+/**
+ * The ordinary configuration's main-database object path, exported for Litestream's expansion.
+ * The default is the historical fixed path. A dedicated prefix lets a deployment without a
+ * durable volume continue history that a recovery image established under this supervisor's
+ * claim/seal contract. Relative segments and the full-state checkpoint namespace are refused.
+ */
+export function ordinaryReplicaPath(): string {
+  const value = process.env.MANIFOLD_REPLICA_PATH?.trim() || "manifold.db";
+  const parts = value.split("/");
+  if (
+    value.length > 512 ||
+    parts[0] === "manifold-full-state" ||
+    !parts.every((part) => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(part))
+  )
+    throw new ReplicaGuardRefusal("replica_path_invalid");
+  process.env.MANIFOLD_REPLICA_PATH = value;
+  return value;
+}
+
 function configuration(
   source: string,
   root: string,
@@ -455,6 +474,7 @@ async function main(): Promise<void> {
   if (process.argv.length !== 2 && !fromStdin) throw new ReplicaGuardRefusal("usage_replica_guard");
   const dataDir = resolve(process.env.MANIFOLD_DATA_DIR || "/data");
   const db = join(dataDir, "manifold.db");
+  if (!fromStdin) ordinaryReplicaPath();
   const config = fromStdin
     ? await Bun.stdin.text()
     : readFileSync(

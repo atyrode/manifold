@@ -15,12 +15,19 @@ const args = process.argv.slice(2);
 // §Installed-bundle gate): it only changes what the gate does on `unknown action`, never the
 // direction or the tag of the promotion, so it is a flag on this verb rather than a second one.
 let bootstrapGate = false;
+// Reconciles a serving recovery image (docs/SELF-HOST.md §Environments, Recovery adoption); the
+// workflow verifies the recovery state, the fresh checkpoint's source and the candidate's support.
+let adoptRecovery = false;
 let tag: string | undefined;
 let recoveryReceiptPath: string | undefined;
 for (let index = 0; index < args.length; index += 1) {
   const arg = args[index]!;
   if (arg === "--bootstrap-gate") {
     bootstrapGate = true;
+    continue;
+  }
+  if (arg === "--adopt-recovery") {
+    adoptRecovery = true;
     continue;
   }
   if (arg === "--recovery-receipt") {
@@ -36,7 +43,9 @@ for (let index = 0; index < args.length; index += 1) {
   break;
 }
 if (tag === undefined || !/^v\d+\.\d+\.\d+$/.test(tag) || recoveryReceiptPath === undefined) {
-  console.error("Usage: bun run promote vX.Y.Z [--bootstrap-gate] --recovery-receipt PATH");
+  console.error(
+    "Usage: bun run promote vX.Y.Z [--bootstrap-gate] [--adopt-recovery] --recovery-receipt PATH",
+  );
   process.exit(1);
 }
 const recovery = (await Bun.file(recoveryReceiptPath).json()) as Record<string, unknown>;
@@ -60,7 +69,7 @@ if (tag !== `v${recovery.sourceBuild}`) {
 }
 
 const since = new Date(Date.now() - 60_000).toISOString();
-await $`gh workflow run deploy-hub.yml --ref main -f ${`tag=${tag}`} -f ${`bootstrap_gate=${bootstrapGate}`} -f ${`recovery_checkpoint=${recovery.checkpointId}`} -f ${`recovery_sha256=${recovery.objectSha256}`} -f ${`recovery_build=${recovery.sourceBuild}`}`;
+await $`gh workflow run deploy-hub.yml --ref main -f ${`tag=${tag}`} -f ${`bootstrap_gate=${bootstrapGate}`} -f ${`adopt_recovery=${adoptRecovery}`} -f ${`recovery_checkpoint=${recovery.checkpointId}`} -f ${`recovery_sha256=${recovery.objectSha256}`} -f ${`recovery_build=${recovery.sourceBuild}`}`;
 console.log(`Dispatched deploy-hub.yml for ${tag}; waiting for the run…`);
 
 let run: number | undefined;

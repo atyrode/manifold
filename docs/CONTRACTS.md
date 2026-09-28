@@ -5293,6 +5293,12 @@ timeout 300 litestream restore -if-replica-exists -integrity-check full \
   -config /app/infra/litestream.yml -o <staged-db> <db>
 ```
 
+The shipped configuration stores main-database history at `MANIFOLD_REPLICA_PATH`, default
+`manifold.db`. Preparation and the supervisor refuse an absolute path, an empty, `.` or `..`
+segment and the `manifold-full-state/` checkpoint namespace as `replica_path_invalid` before any
+restore; the acknowledgement binds the resolved value like every other referenced input. Selecting
+another path never merges histories: it only chooses which dedicated history the gates admit.
+
 A usable restored result must also carry a sealed replica-writer record and satisfy its complete
 database-set fingerprints before exclusive publication. Missing, malformed or active records refuse;
 a first-initialization acknowledgement cannot bless them. A nonzero restore result or timeout refuses
