@@ -36,10 +36,10 @@
       # Measured with the pinned Bun's explicit optional-dependency target selectors.
       # Regenerate and independently rebuild these trees when their inputs change.
       depsHashes = {
-        x86_64-linux = "sha256-DNlaD0tW5GutMRzb/dTaowSWscm513FcX8yADuxIAMg=";
-        aarch64-linux = "sha256-vlb9cx6ofXP5N0jDUwiIplkjJj2kycadLs+25/dy8is=";
-        x86_64-darwin = "sha256-b7LqxueVSugJPJuZHvSabhc3EO+oLuM8i0YGrlXQv6k=";
-        aarch64-darwin = "sha256-4+N+2ZzoQX31kKmeWMMIZLgQXQXYR/a1zwniVnxacII=";
+        x86_64-linux = "sha256-Jf97ojyimaQg2kDcdqBsXMzWD2U53j6QDredjxRevuk=";
+        aarch64-linux = "sha256-ORh+NZbzPHHdoBtTZPh69/2iqDqciz6Fbw8NkVPLQ2g=";
+        x86_64-darwin = "sha256-mA5PlPMeUmpK0oJkSiz4xUbhSJI7DCNi3PuM0XOYFYw=";
+        aarch64-darwin = "sha256-FS40otdBH2FKNozSgsDQASSpw35ooVYNt5qUPdk1Zfk=";
       };
 
       # Keep the dependency input independent of unrelated workspace sources.
