@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
   HARDENED_CONTRACT_VERSION,
+  MAX_UI_DEPTH,
+  MAX_UI_NODES,
   type MachineSummary,
   type UiNode,
   type WebHostContext,
@@ -583,6 +585,42 @@ describe("refusals", () => {
       ),
     ).toContain('item key "a" is not unique');
   });
+
+  test.each(["depth", "size"] as const)(
+    "the frame container counts toward the whole-tree %s bound",
+    async (bound) => {
+      let pressed = 0;
+      const makeTree = (overflow: number): ReactElement => {
+        const control = frame("button", { label: "At limit", onClick: () => pressed++ });
+        if (bound === "depth") {
+          let tree = control;
+          for (let level = 0; level < MAX_UI_DEPTH - 2 + overflow; level++) {
+            tree = frame("box", {}, tree);
+          }
+          return tree;
+        }
+        return frame(
+          "box",
+          {},
+          control,
+          ...Array.from({ length: MAX_UI_NODES - 3 + overflow }, (_, index) =>
+            frame("divider", { key: index }),
+          ),
+        );
+      };
+      const { fake, tree } = await mounted({
+        id: "example.thing",
+        panels: { main: () => makeTree(0) },
+      });
+      fake.send({ t: "event", instance: "i1", event: eventOf(tree, "At limit") });
+      expect(pressed).toBe(1);
+      fake.send({ t: "unmount", instance: "i1" });
+      expect(await faultOf(() => makeTree(1))).toContain(
+        bound === "depth" ? "nests deeper than" : "carries more than",
+      );
+      expect(pressed).toBe(1);
+    },
+  );
 
   test("a section refuses a panel argument on its context", async () => {
     const Side = (_props: PortableSectionProps): ReactElement => frame("empty", { text: "side" });
