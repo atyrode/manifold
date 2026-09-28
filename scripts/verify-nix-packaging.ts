@@ -44,6 +44,7 @@ async function command(
   timeoutMs: number,
   cwd = repoRoot,
   env: Record<string, string | undefined> = process.env,
+  expectedExitCode = 0,
 ): Promise<string> {
   interrupted.signal.throwIfAborted();
   const proc = Bun.spawn(argv, { cwd, env, stdin: "ignore", stdout: "pipe", stderr: "inherit" });
@@ -58,7 +59,8 @@ async function command(
     const [out, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
     interrupted.signal.throwIfAborted();
     if (timedOut) throw new Error(`${argv[0]} exceeded its ${timeoutMs / 1000}s deadline`);
-    if (code !== 0) throw new Error(`${argv[0]} ${argv[1] ?? ""} failed (${code})`);
+    if (code !== expectedExitCode)
+      throw new Error(`${argv[0]} ${argv[1] ?? ""} exited ${code}; expected ${expectedExitCode}`);
     return out.trim();
   } finally {
     clearTimeout(timer);
@@ -112,6 +114,7 @@ if ((await build("bun-deps", true)) !== deps) {
 }
 const agentOutput = await build("manifold-agent");
 const serverOutput = await build("manifold-server");
+const clientOutput = await build("manifold");
 const manifest: unknown = JSON.parse(
   readFileSync(join(repoRoot, "packages/web/package.json"), "utf8"),
 );
@@ -780,6 +783,20 @@ try {
     cwd,
     env,
   );
+  await command([join(clientOutput, "bin/manifold"), "context"], 30_000, cwd, env, 1);
+  const diagnosis: unknown = JSON.parse(
+    await command([join(clientOutput, "bin/manifold"), "doctor"], 30_000, cwd, env, 1),
+  );
+  if (
+    typeof diagnosis !== "object" ||
+    diagnosis === null ||
+    !("diagnostic" in diagnosis) ||
+    typeof diagnosis.diagnostic !== "object" ||
+    diagnosis.diagnostic === null ||
+    !("code" in diagnosis.diagnostic) ||
+    diagnosis.diagnostic.code !== "missing_binding"
+  )
+    throw new Error("Packaged terminal client did not refuse an absent terminal binding");
 
   const inRealm = await boot("in-realm");
   await during(inRealm.hub, inRealmSmoke(inRealm.hub, inRealm.origin));
@@ -797,7 +814,7 @@ try {
   await refusal("unsupported", "core.terminals", '"core.terminals" has no hardened source recipe');
   await refusal("unknown", "core.nothing", '"core.nothing" is not a plugin this build registers');
   console.log(
-    `PASS  Nix packaging: ${system}, dependency rebuild, compiled agent, hub ${version}, packaged web and asset, hardened ${MACHINES} artifact, Worker and lifecycle, selector refusals`,
+    `PASS  Nix packaging: ${system}, dependency rebuild, compiled agent and terminal client, hub ${version}, packaged web and asset, hardened ${MACHINES} artifact, Worker and lifecycle, selector refusals`,
   );
 } finally {
   requests.abort();

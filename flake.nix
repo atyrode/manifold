@@ -2,9 +2,10 @@
   # Fleet packaging (issue #40): standalone binaries for dotfiles-managed nodes.
   #
   #   nix build .#manifold-agent    -> result/bin/manifold-agent (transport or --terminal-host)
+  #   nix build .#manifold          -> result/bin/manifold (terminal-local SDK client)
   #   nix build .#manifold-server   -> result/bin/manifold-server (hub + bundled web dist)
   #
-  # Both are `bun build --compile` binaries: the Bun runtime plus the bundled
+  # These are `bun build --compile` binaries: the Bun runtime plus the bundled
   # workspace sources, so nodes need no repo checkout and no bun install.
   # Configuration (see docs/CONTRACTS.md): both agent modes require
   # MANIFOLD_TERMINAL_HOST_SOCKET. Plain agent is the replaceable transport and
@@ -244,6 +245,15 @@
           #   nix build .#bun-deps --rebuild   # must not report a hash mismatch
           bun-deps = bunDeps;
           bun-runtime = bun;
+
+          manifold = compiled {
+            pname = "manifold";
+            entry = "packages/plugins/terminals/cli/main.ts";
+            extraInstall = ''
+              install -Dm644 packages/plugins/terminals/terminal-skill.md \
+                "$out/share/agent-skills/manifold-terminal/SKILL.md"
+            '';
+          };
 
           manifold-agent = compiled {
             pname = "manifold-agent";

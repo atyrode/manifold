@@ -145,6 +145,17 @@ without rewriting retained history. Agent context/profile and inspection request
 traces. `createPrincipal` and `mint` remain human-only; machine, native-service,
 federated-ticket and terminal-lifecycle identities keep their named internal lifecycles.
 
+An ordinary process launched in a Manifold terminal is already admitted through that
+terminal's internal lifecycle. The installed `manifold` terminal client privately consumes
+`MANIFOLD_URL`, `MANIFOLD_CONTAINER` and `MANIFOLD_TOKEN`; it neither registers an Agent nor
+creates a Run to replace that identity. Its machine discovery and owned terminal work use
+the existing SDK, core action doors and home-scoped grants. It cannot acquire a broader
+credential, adopt another terminal's identity or bypass a Run's policy. External Agent/Run
+bindings still use `manifold-action-runner` and exact policy acknowledgement.
+`manifold context` supplies point-of-use instructions and `manifold doctor` distinguishes
+missing bindings, admission failures and incompatible session protocols without printing
+credentials. The terminal plugin owns this consumer, not a second floor transport.
+
 Registration and context updates await the selected harness's original profile validator, including
 asynchronous refinements, before publishing any identity change. Caller and standing sponsor/grant
 authority are rechecked after that wait; concurrent registration cannot mint a second runner
@@ -3570,9 +3581,10 @@ env? }` → server targets `machineId` when given (error `no_machine` if it is u
   explicitly). Discipline decides who authors the placement, and a mismatch is refused
   (`conflict`) rather than spawning a PTY no renderer would ever show. On a CANVAS the opener
   authors the element (`placement` absent ≡ `"element"`) and MUST send both `cols` and `rows`.
-  In a COMPOSITION the container places the leaf itself (`placement: "tile"`) and the opener
-  omits geometry; supplied tile geometry is ignored rather than becoming a hidden fallback.
-  Supplying only one dimension is refused.
+  In a COMPOSITION the container places the leaf itself (`placement: "tile"`). An opener
+  with a measured or virtual viewport may supply both dimensions as that terminal's first
+  geometry; otherwise it omits both and waits for a viewer's first resize. No guessed
+  fallback or unrelated pending leaf is used. Supplying only one dimension is refused.
 - **Unconfined execution requires a positive owner declaration.** A machine reports
   `terminalExecution: "unconfined" | "governed"` independently of job connectivity.
   A runtime-free shell or program is refused `forbidden` on a governed owner and
@@ -3786,13 +3798,14 @@ env? }` → server targets `machineId` when given (error `no_machine` if it is u
   into
   the home as `terminal_event { kind:"renamed", name }`, where every titlebar and index row picks
   it up without a refetch. Labels everywhere are `name ?? machine name`.
-- `output { terminalId, seq, data }` streams to all LIVE viewers; `terminal_event
-{ kind:"exited", exitCode, exitReason? }` retains a PTY's nonzero or unknown natural exit. Such a terminal
-  stays listed (status `exited`, real code) with its leaf and portals intact until dismissed.
-  A successful natural exit (`exitCode === 0`) and an explicit kill instead share canonical
-  removal: no `exited` frame or retained row, and leaves and retired-home references vanish
-  through their persisted documents. The existing `terminal_killed` collection event
-  announces canonical removal, including successful natural exits.
+- `output { terminalId, seq, data }` streams to all LIVE viewers. A natural root exit publishes
+  `terminal_event { kind:"exited", exitCode, exitReason? }` in its home, including a successful
+  exit with code 0. A nonzero or unknown exit stays listed (status `exited`, real code) with its
+  leaf and portals intact until dismissed. A successful natural exit then removes the terminal
+  canonically: `exited` precedes `parked`, no row is retained, and leaves and retired-home
+  references vanish through their persisted documents. An explicit kill removes it without
+  an `exited` frame. Collection events distinguish `terminal_exited` from `terminal_killed`;
+  neither disappearance nor `parked` alone proves successful completion.
 - **Owner exit reasons** (#853). `TerminalInfo.exitReason` is null for a running terminal and
   an ordinary exit; otherwise it says the machine's terminal owner ended the terminal:
   `owner_stopped` (the host's destructive stop), `owner_oom_stopped` (that stop immediately
@@ -3830,8 +3843,8 @@ incumbent continuity mismatch, or `supersession damped`). A name conflict is dec
 same atomic write that would admit the hello; it sends no welcome, changes neither machine row,
 and leaves an incumbent connection untouched. Version acceptance uses
 `MACHINE_PROTOCOL_COMPAT_VERSIONS`, currently
-`{30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44}`; session/browser joins remain strictly
-current at protocol 44. An unchanged machine
+`{30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47}`; session/browser joins remain strictly
+current at protocol 47. An unchanged machine
 wire may add a version to the set. A strictly additive-optional change may also add it only
 when old frames still parse and absent fields preserve the old semantics. Other changes
 reset the set and require a coordinated hub/transport upgrade. An admission bound applied
@@ -3923,7 +3936,7 @@ machine transport. An owner outside the acceptance set that does not qualify for
 receives no native authority, while machine presence, retained terminal continuity and the
 named drain/maintenance path remain available for the coordinated upgrade.
 
-The independent federation set is `{27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44}`; these machine/native changes leave its
+The independent federation set is `{27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46}`; these session/machine changes leave its
 frames and resource vocabularies unchanged. The earlier per-program and per-job transport
 version gates are retired: every accepted transport understands those frames, while
 authority comes from explicit declarations and live owner proof.

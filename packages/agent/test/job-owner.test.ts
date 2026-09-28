@@ -1073,12 +1073,44 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
           const resumed = signedTerminal(resumeBody, 64);
           terminalExit = Promise.withResolvers<void>();
           terminalEvents.length = 0;
+          // Force the fast replacement's output to arrive before startTerminal hands the
+          // generation back to TerminalHost. This deterministically exercises staging
+          // across restart, independently of whether PTY readability or child exit wins.
+          launchJob = async (spec) => {
+            const terminal = spec.terminal;
+            if (!terminal) throw new Error("expected native terminal handoff");
+            const emitted = Promise.withResolvers<void>();
+            let text = "";
+            const handle = await realLaunchJob({
+              ...spec,
+              terminal: {
+                ...terminal,
+                onOutput(bytes) {
+                  terminal.onOutput(bytes);
+                  text += Buffer.from(bytes).toString();
+                  if (text.includes("HARNESS:resumed")) emitted.resolve();
+                },
+              },
+            });
+            await handle.result;
+            await emitted.promise;
+            return handle;
+          };
           restartHarness(resumed);
           expect(await terminalRestarted.promise).toMatchObject({
             type: "terminal_restarted",
             terminalId: "harness-terminal",
           });
           await terminalExit.promise;
+          launchJob = realLaunchJob;
+          const restartedAt = terminalEvents.findIndex(
+            (event) => event.type === "terminal_restarted",
+          );
+          const firstOutputAt = terminalEvents.findIndex((event) => event.type === "output");
+          const lastOutputAt = terminalEvents.findLastIndex((event) => event.type === "output");
+          const exitedAt = terminalEvents.findIndex((event) => event.type === "exited");
+          expect(firstOutputAt).toBeGreaterThan(restartedAt);
+          expect(exitedAt).toBeGreaterThan(lastOutputAt);
           expect(host.status().terminals).toContainEqual(
             expect.objectContaining({ terminalId: "harness-terminal", alive: false, exitCode: 0 }),
           );

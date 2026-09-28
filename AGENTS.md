@@ -13,13 +13,20 @@ maintenance PRs with required CI and maintainer holds. Details are in dotfiles'
 ## Before the first live action
 
 Effects on a live Manifold use actions discovered from `GET /api/protocol`, never DOM
-controls as an administrative fallback. Use the SDK-backed
-[`manifold-action-runner`](packages/sdk/README.md) for external automation: the trusted
-launcher owns an Agent-scoped runner or run credential, the runner owns child credentials,
-and the agent explicitly acknowledges the exact delivered policy before invoking ordinary actions. Retain the returned
-door, declared target, outcome/refusal and trace id. Finish on every terminal path and report
-unconfirmed cleanup. Browser automation remains required when the human-facing interaction
-itself is under verification, not as a substitute for the action plane.
+controls as an administrative fallback. For an ordinary terminal-local process, start with
+`manifold context` and `manifold doctor`: the installed terminal plugin's SDK-backed client
+privately consumes its inherited terminal-lifecycle binding. Do not dump `MANIFOLD_*` values,
+borrow another identity, or infer that a missing OMP host tool means core access is unavailable.
+An absent client, missing binding, protocol mismatch and an authorization refusal are different
+diagnoses. This terminal path does not provide desktop automation or broaden its home scope.
+
+External Agent/Run automation uses the SDK-backed
+[`manifold-action-runner`](packages/sdk/README.md): the trusted launcher owns its Agent-scoped
+runner or Run credential, the runner owns child credentials, and the agent acknowledges the
+exact delivered policy before ordinary actions. Terminal-local access does not replace that
+admission path. Retain returned doors, targets, outcomes/refusals and trace IDs; finish on every
+terminal path and report unconfirmed cleanup. Browser automation remains required when the
+human-facing interaction itself is under verification, not as a substitute for the action plane.
 
 <!-- BEGIN SHARED ENGINEERING: generated; do not edit -->
 

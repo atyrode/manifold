@@ -35,10 +35,11 @@ without making unrelated source changes invalidate dependency vendoring.
 
 Run `bun scripts/verify-nix-packaging.ts` on the target with Nix and Bun 1.4.2;
 it needs no workspace dependency installation. The verifier builds and independently
-rebuilds the fixed-output dependency tree, then builds both compiled packages.
-From owner-private temporary directories with no inherited operator configuration,
-it invokes agent maintenance help and boots two **ephemeral packaged hubs** on
-loopback: default native in-realm and `MANIFOLD_HARDENED_PLUGINS=core.machines`.
+rebuilds the fixed-output dependency tree, then builds the compiled agent, hub and terminal
+client packages. From owner-private temporary directories with no inherited operator
+configuration, it exercises agent maintenance help, terminal-client guidance and
+missing-binding refusal, and boots two **ephemeral packaged hubs** on loopback:
+default native in-realm and `MANIFOLD_HARDENED_PLUGINS=core.machines`.
 It checks health and the installed web HTML and referenced asset in the default
 boot, absence of an unselected child/Worker, and the real roster. In the hardened
 boot it checks the supervised child executes the package's own pinned first-party
@@ -56,6 +57,18 @@ and retain the independent rebuild. Explicit `--os`/`--cpu` can measure another
 target's dependency bytes, not execute that target's binary. This packaged
 smoke does not enroll or activate a native machine owner and does not establish
 kernel containment, production credentials or persistent deployment readiness.
+
+### Terminal-local command
+
+The `packages.<system>.manifold` flake output installs the `manifold` terminal client for
+all four package targets. It embeds the runtime and carries the terminal plugin's owned
+skill under `share/agent-skills/manifold-terminal/SKILL.md`. Install it through the machine's
+existing configuration/profile owner and route global harness context to `manifold context`,
+not only repository-local instructions. It uses an ordinary terminal's inherited lifecycle
+binding; it does not enroll the machine, create a human credential or admit an Agent/Run.
+See [terminal-local usage](../packages/sdk/README.md#ordinary-terminal-local-client).
+Use a client built for the hub's current session protocol. This package is separate from
+the retained native owner, so installing the client does not require restarting that owner.
 
 ### Declare one node
 
