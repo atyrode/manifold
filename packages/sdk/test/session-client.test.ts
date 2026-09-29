@@ -1777,7 +1777,7 @@ describe("scene flow", () => {
         for (const frame of docUpdateFrames(socket).slice(updatesBeforeResync)) {
           Y.applyUpdate(canonical, decodeUpdate(frame.update));
         }
-        expect(readElements(canonical)).toEqual(client.elements);
+        expect(client.elements).toEqual(readElements(canonical));
       } finally {
         canonical.destroy();
         client.close();
@@ -1807,7 +1807,7 @@ describe("scene flow", () => {
         Y.applyUpdate(canonical, decodeUpdate(frame.update));
       }
       expect([...client.elements.keys()].sort()).toEqual(["mine", "peer", "srv"]);
-      expect(readElements(canonical)).toEqual(client.elements);
+      expect(client.elements).toEqual(readElements(canonical));
       expect(client.outboxSize()).toBe(0);
     } finally {
       canonical.destroy();
