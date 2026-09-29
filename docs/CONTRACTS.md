@@ -4542,19 +4542,22 @@ policySha256, jobId }` or null), the expected revision, the resolved policy and 
   requested components are logical output paths inside that root. Several outputs of one job,
   including nested receipt/material paths, are all collected before disposal. No other job and
   no ordinary location can observe or alias that root: a declared location resolving into
-  `job-output-scratch` refuses `private_owner_source_overlap`, and a machine without a
-  `runtime` anchor refuses `temporary_output_storage_unavailable`. Once the workload tree is
+  `job-output-scratch` refuses `private_owner_source_overlap`, and an owner without that
+  scratch store (no `runtime` anchor) refuses `temporary_output_storage_unavailable` rather
+  than falling back to any other storage. Once the workload tree is
   proven empty and the job's final result is published — exited with any status, cancelled,
   refused before spawn, or failed collection such as `output_collection_refused` — the owner
   disposes of that job's roots only, through held descriptors. Sealed outputs stay in the
   private output store and are read, bound and released exactly as before; disposal never
   touches them, another job's root or a retained location. Without empty-workload proof the
   root is kept, never deleted, and the owner closes new admission (`start_permit_refused`)
-  through the same drain latch an unproven interruption sets. A disposal failure never rewrites
-  or rolls back the committed result: the owner logs `job_output_cleanup_failed` with
-  `{ phase, jobId?, code }`, where `code` is an errno name, `output_scratch_changed`,
-  `mount_escape`, `unsafe_file_component` or `unknown` and never a path or file name, and
-  likewise closes admission. At startup it clears only
+  through the same drain latch an unproven interruption sets; like that latch, a hub
+  `drain: false` reopens it. A disposal failure never rewrites or rolls back the committed
+  result: the owner logs `job_output_cleanup_failed` with `{ phase: "release", jobId, code }`
+  (or `{ phase: "recovery", code }` at startup), where `code` is an errno name,
+  `output_scratch_changed`, `directory_tree_changed`, `mount_escape`, `unsafe_file_component`
+  or `unknown` and never a path or file name, and likewise closes admission. At startup it
+  clears only
   `job-output-scratch`, and only after recovery has proven every prior-generation descendant
   gone; legacy retained output paths are never swept. A failure there is logged the same way
   and keeps admission closed rather than failing owner startup. Nested invocations cannot

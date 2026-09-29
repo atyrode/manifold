@@ -244,14 +244,16 @@ never resolves to its declared path: each job gets its own exclusive 0700 root t
 owner removes that root once the workload is proven empty and the job's result is published,
 including failed collection, nonzero exits, cancellations and refused starts. Sealed outputs in
 the owner's private output store are unaffected. A declared ordinary location resolving into
-`job-output-scratch` fails with `private_owner_source_overlap`, and without a `runtime` anchor
-such an operation refuses `temporary_output_storage_unavailable`. If the owner lacks proof
+`job-output-scratch` fails with `private_owner_source_overlap`, and an owner without that
+scratch store (no `runtime` anchor) refuses such an operation with
+`temporary_output_storage_unavailable`. If the owner lacks proof
 that a workload is gone, it keeps the root and stops admitting new jobs
-(`start_permit_refused`) through the same drain latch an unproven interruption sets. If
-removal fails, the result stands, the owner logs
-`job_output_cleanup_failed` (`phase`, `jobId` for per-job disposal, and a bounded `code`: an
-errno name, `output_scratch_changed`, `mount_escape`, `unsafe_file_component` or `unknown`;
-never a path), and likewise stops admitting. At startup the owner clears `job-output-scratch`
+(`start_permit_refused`) through the same drain latch an unproven interruption sets, which a
+hub `drain: false` reopens as it does today. If removal fails, the result stands, the owner
+logs `job_output_cleanup_failed` (`phase` `release` with `jobId` for per-job disposal or
+`recovery` at startup, and a bounded `code`: an errno name, `output_scratch_changed`,
+`directory_tree_changed`, `mount_escape`, `unsafe_file_component` or `unknown`; never a
+path), and likewise stops admitting. At startup the owner clears `job-output-scratch`
 only after recovering its previous generation and proving that generation's processes gone;
 a clearing failure is logged the same way and leaves admission closed instead of failing the
 start. Diagnose the logged code before reopening admission; restarting the owner through the
