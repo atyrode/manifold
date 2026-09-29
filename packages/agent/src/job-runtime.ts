@@ -1,5 +1,7 @@
 import { basename, dirname } from "node:path";
+import { randomUUID } from "node:crypto";
 import { closeSync, fstatSync, readFileSync } from "node:fs";
+import { z } from "zod";
 import { JobOwnerConfigSchema, type JobOwnerConfig, type LogEvent } from "@manifold/protocol";
 import { fdMountReadOnly, HeldDirectory } from "./job-files.ts";
 import { JobJournal } from "./job-journal.ts";
@@ -10,6 +12,91 @@ import { type LinuxJobBind } from "./job-linux.ts";
 import { DirectoryExclusions } from "./job-locations.ts";
 
 type OperatorAnchorRefusal = { reason: string; code?: string };
+
+// Protected owner state names the one runtime directory that is the owner's temporary output
+// namespace. Nothing in runtime storage, which workloads can reach and which predates #933,
+// is trusted to say so: a directory there is the owner's only if this record names it with its
+// exact identity, and the record is published only after the owner's journal lock is held.
+const OUTPUT_SCRATCH_RECORD = "output-scratch";
+const DECIMAL = /^(?:0|[1-9][0-9]{0,19})$/;
+const OutputScratchRecordSchema = z.strictObject({
+  name: z
+    .string()
+    .regex(/^job-output-scratch-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/),
+  dev: z.string().regex(DECIMAL),
+  ino: z.string().regex(DECIMAL),
+});
+type OutputScratchRecord = z.infer<typeof OutputScratchRecordSchema>;
+
+function readOutputScratchRecord(state: HeldDirectory): OutputScratchRecord | null {
+  let fd: number;
+  try {
+    fd = state.openFile(OUTPUT_SCRATCH_RECORD);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  let text: string;
+  try {
+    if (fstatSync(fd).size > 4096) throw new Error("output_scratch_record_invalid");
+    const bytes = readFileSync(fd);
+    if (bytes.length > 4096) throw new Error("output_scratch_record_invalid");
+    text = bytes.toString("utf8");
+  } finally {
+    closeSync(fd);
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    throw new Error("output_scratch_record_invalid");
+  }
+  const record = OutputScratchRecordSchema.safeParse(value);
+  if (!record.success) throw new Error("output_scratch_record_invalid");
+  return record.data;
+}
+
+/**
+ * The runtime directory holding temporary output roots: the one the owner's record names, if it
+ * still has the recorded identity, or else a fresh one it creates exclusively under a random
+ * name and records before any job can be admitted. It never adopts a path it did not record,
+ * so a `job-output-scratch` or any other directory already in runtime storage stays ordinary
+ * retained data. Only a recorded directory that is gone, as when the runtime tmpfs did not
+ * survive a reboot, is replaced; a malformed record, a directory with another identity, or any
+ * other lookup failure refuses the start and leaves everything as found. The caller holds the
+ * owner lock, so no concurrent start can replace an active owner's record.
+ */
+function holdOutputScratchNamespace(runtime: HeldDirectory, state: HeldDirectory): HeldDirectory {
+  const record = readOutputScratchRecord(state);
+  if (record) {
+    let held: HeldDirectory | undefined;
+    try {
+      held = runtime.openChild(record.name);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    if (held) {
+      const stat = fstatSync(held.fd, { bigint: true });
+      if (String(stat.dev) === record.dev && String(stat.ino) === record.ino) return held;
+      held.close();
+      throw new Error("output_scratch_changed");
+    }
+  }
+  const name = `job-output-scratch-${randomUUID()}`;
+  const held = runtime.openChild(name, { create: true, exclusive: true });
+  try {
+    const stat = fstatSync(held.fd, { bigint: true });
+    const created: OutputScratchRecord = { name, dev: String(stat.dev), ino: String(stat.ino) };
+    // Durable before the owner opens, so no job receives a root in an unrecorded directory. A
+    // first record never replaces one that appeared meanwhile; a lost one is replaced in place.
+    state.atomicWrite(OUTPUT_SCRATCH_RECORD, JSON.stringify(created), 0o600, record === null);
+  } catch (error) {
+    // Left empty and unrecorded: never adopted, never removed by the owner.
+    held.close();
+    throw error;
+  }
+  return held;
+}
 
 /**
  * Holds one operator anchor, or names why it stays unavailable. Through an idmapped view the
@@ -65,13 +152,18 @@ export async function openConfiguredJobOwner(
   const anchors: Record<string, HeldDirectory> = {};
   for (const [name, path] of Object.entries(config.anchors))
     anchors[name] = HeldDirectory.openAbsolute(path);
+  // The owner lock comes before any runtime namespace is created, reopened or recorded: a
+  // second start fails here instead of replacing the namespace an active owner is using.
+  const journal = new JobJournal(state.openChild("journal", { create: true }), { log });
   // Bound inputs are extracted onto the bounded runtime backing, beside named output storage:
   // derived bytes on the device the operator already sizes and the kernel already bounds. The
   // owner protects that one subdirectory, so no declared location can resolve into it.
   const boundInputRoot = anchors.runtime?.openChild("job-inputs", { create: true });
-  // Temporary output locations are backed there too, in a namespace of their own: one owner-
-  // private root per job, never a declared path, and equally protected from every location.
-  const outputScratchRoot = anchors.runtime?.openChild("job-output-scratch", { create: true });
+  // Temporary output locations are backed there too, in a recorded namespace of their own: one
+  // owner-private root per job, never a declared path, and equally protected from every location.
+  const outputScratchRoot = anchors.runtime
+    ? holdOutputScratchNamespace(anchors.runtime, state)
+    : undefined;
   const protectedDirectories = [
     state,
     parent,
@@ -123,7 +215,6 @@ export async function openConfiguredJobOwner(
     anchors[name] = held;
     operatorAnchors[name] = { path: definition.path, source: definition.source ?? definition.path };
   }
-  const journal = new JobJournal(state.openChild("journal", { create: true }), { log });
   const cache = state.openChild("artifacts", { create: true });
   const outputs = JobOutputStore.open(state.openChild("outputs", { create: true }));
   const boundInputs = boundInputRoot ? JobBoundInputStore.open(boundInputRoot) : undefined;
