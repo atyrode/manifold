@@ -2594,18 +2594,20 @@ if (outcome.ok && outcome.fact.reason === "repository") {
 }
 ```
 
-`ctx.machines.repository(query)` is the in-realm handle; a hardened plugin's `GuestCtx`
-carries the same method as a promise, and `engine.machines.repository { machineId, path }`
-is the door both go through. `path` must be absolute, at most 4096 characters and free of
-NUL; anything else is `invalid_args` before a host is asked.
+The public kit's `GuestCtx` uses `ctx.machines.repository(query)`; the native server
+`ActionCtx` uses `ctx.machines.repository(machineId, path)`. Both reach the same guarded
+bridge as `engine.machines.repository { machineId, path }`. The guest query and engine door
+validate that `path` is absolute, at most 4096 characters and free of NUL before a host is asked.
 
 The answer is either `{ ok: true, fact }` or `{ ok: false, reason }`, and the split is not
 cosmetic. A `fact` is something a host OBSERVED, and its `reason` is one of `repository`,
 `not_a_repository`, `absent`, `unreadable`, `git_unavailable` or `timed_out` — states of
-that machine, never faults of the asker. `ok: false` is the fleet saying nobody could be
-asked at all, and it says which: the id is not enrolled here, the machine has no live
-transport, its agent is older than machine protocol 31, its transport dropped, or it went
-quiet past the hub's bound. None of them reports a machine as offline, so a refusal naming an
+that machine, never faults of the asker. `ok: false` means authority was refused or nobody
+could be asked at all. An authority refusal reveals neither the machine's enrollment nor
+the path's existence. Once authorized, transport refusals say which: the id is not enrolled
+here, the machine has no live transport, its agent is older than machine protocol 31, its
+transport dropped, or it went quiet past the hub's bound. None reports a machine as offline,
+so a refusal naming an
 unenrolled id means the id — a machine's ID, not its name or a host string a session recorded
 — and not an outage. Do not collapse the two; a repository identity you invented for an
 unreachable host is worse than no answer.
@@ -2617,11 +2619,19 @@ folders" sayable — while two clones of one repository share a `remote` and dif
 local directory: a repository nobody published is still one repository.
 
 Authority is `machines:read` AT `manifold://machine/<id>`, asked at the machine rather than
-in the abstract, so a token entitled to read one host's folders cannot read another's. The
-probe itself is bounded and read-only on the host — one second, `GIT_OPTIONAL_LOCKS=0`,
+in the abstract, so a token entitled to read one host's folders cannot read another's.
+An action using the bridge must declare `machines:read` in `caps` or `delegates`, and an
+installed plugin must currently have it in its installation grant. A delegate is a ceiling,
+not authority lent to the caller: every use restores the caller's live credential and asks
+the current grant waterfall at that machine, including administered machine-only grants
+and denials. Container-scoped, revoked or expired credentials cannot read a machine.
+The bridge also refuses a retired dispatch, replacement in progress, or disabled action
+without a cleanup carve-out before reaching the observer; retaining `ctx` retains no authority.
+
+The probe itself is bounded and read-only on the host — one second, `GIT_OPTIONAL_LOCKS=0`,
 `GIT_TERMINAL_PROMPT=0`, no index and no network — and cached there per path for a minute,
 so a catalogue that asks about the same checkout repeatedly costs one pair of probes. The
-door traces `opaque`: the act and the machine enter the ledger, the folder does not.
+engine door traces `opaque`: the act and the machine enter the ledger, the folder does not.
 
 #### Terminals through the handle
 

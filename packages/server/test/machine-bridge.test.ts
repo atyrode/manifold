@@ -2,11 +2,13 @@ import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { RepositoryObserver } from "@manifold/agent";
 import { ENGINE_INSTALL_ACTION } from "@manifold/plugin";
 import { compilePlugin } from "@manifold/plugin-kit/pack";
 import {
   MachineBridgeResultSchemas,
   MachineEnrollResponseSchema,
+  MachineRepositoryFactSchema,
   MachinesResponseSchema,
   PLUGIN_BUNDLE_WEB_WORKER_FILE,
   identityColorFor,
@@ -24,7 +26,12 @@ import {
 } from "../src/first-party-builds.ts";
 import { IsolateSupervisor } from "../src/isolate/supervisor.ts";
 import { silentLogger, type Logger } from "../src/log.ts";
-import type { ActionCtx, PluginHost, ServerPluginDef } from "../src/plugin-host.ts";
+import type {
+  ActionCtx,
+  MachineAdmission,
+  PluginHost,
+  ServerPluginDef,
+} from "../src/plugin-host.ts";
 import { parseBundle, PLUGIN_UPLOADS_DIR } from "../src/plugin-installs.ts";
 import { RoomManager } from "../src/room.ts";
 import type { ServerStore } from "../src/stores.ts";
@@ -60,7 +67,7 @@ const probeManifest: PluginManifest = {
   version: "1.0.0",
   title: "Fleet probe",
   description: "Handlers that reach for the fleet bridge from doors of every shape.",
-  capabilities: ["machines:mint", "containers:read"],
+  capabilities: ["machines:mint", "containers:read", "machines:read"],
   contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
 };
 
@@ -100,7 +107,7 @@ const probe: ServerPluginDef = {
     {
       name: "stash",
       title: "Stash",
-      caps: ["machines:mint"],
+      caps: ["machines:mint", "machines:read"],
       input: z.strictObject({}),
       result: z.unknown(),
     },
@@ -129,6 +136,7 @@ async function fixture(
     crashBudget?: number;
     idleEvictMs?: number;
     plugins?: readonly ServerPluginDef[];
+    machines?: MachineAdmission;
   } = {},
 ): Promise<Fixture> {
   const runtime = new FakeRuntime();
@@ -159,6 +167,7 @@ async function fixture(
     const host = await testPluginHost(store, auth, rooms, broker, runtime, {
       settingsPlugins: [probe, ...(options.plugins ?? [])],
       isolates: { runner, dataDir },
+      ...(options.machines === undefined ? {} : { machines: options.machines }),
       ...(options.trusted === undefined ? {} : { trusted: options.trusted }),
       ...(options.logger === undefined ? {} : { logger: options.logger }),
     });
@@ -306,6 +315,10 @@ describe("the fleet bridge's authority", () => {
     const late = stashed?.identity.enrollMachine("late");
     expect(late?.ok === false ? late.code : null).toBe("forbidden");
     expect(stashed?.machines.inventory().ok).toBe(false);
+    expect(await stashed?.machines.repository("never-enrolled", "/private/path")).toEqual({
+      ok: false,
+      reason: "plugin authority unavailable",
+    });
     expect(fix.store.getMachineByName("late")).toBeNull();
     stashed = null;
     await close(fix);
@@ -556,8 +569,11 @@ describe("authored child permission and retained trusted lifetime", () => {
     build = { ...compiled, bundle: parseBundle(compiled.bytes) };
   }, 60_000);
 
-  async function install(grant: readonly Cap[] = []): Promise<Fixture> {
-    const fix = await fixture();
+  async function install(
+    grant: readonly Cap[] = [],
+    options: Parameters<typeof fixture>[0] = {},
+  ): Promise<Fixture> {
+    const fix = await fixture(options);
     mkdirSync(join(fix.dataDir, PLUGIN_UPLOADS_DIR), { recursive: true });
     const source = join(fix.dataDir, PLUGIN_UPLOADS_DIR, "fleet.manifold-plugin.json");
     writeFileSync(source, build.bytes);
@@ -571,6 +587,259 @@ describe("authored child permission and retained trusted lifetime", () => {
     );
     return fix;
   }
+
+  async function repositoryFixture(
+    mode: "native" | "hardened",
+    grant: readonly Cap[] = ["machines:read"],
+  ) {
+    const asked: { machineId: string; path: string }[] = [];
+    // The existing admission seam counts access; facts come from the real agent observer,
+    // over this fixture's files, not a fabricated metadata answer.
+    const observer = new RepositoryObserver();
+    const machines: MachineAdmission = {
+      isOnline: () => true,
+      getTerminalExecution: () => null,
+      drain: () => Promise.resolve({ ok: false, reason: "no terminal owner" }),
+      repository: async (machineId, path) => {
+        asked.push({ machineId, path });
+        return { ok: true, fact: await observer.observe(path) };
+      },
+    };
+    const fix =
+      mode === "hardened"
+        ? await install(grant, { machines })
+        : await fixture({ plugins: [portableFleetProbe], machines });
+    const machineId = fix.auth.enrollMachine("repository-host", fix.owner).machine.id;
+    const path = join(fix.dataDir, "private-file");
+    writeFileSync(path, "owned fixture");
+    return { fix, asked, query: { machineId, path } };
+  }
+
+  const repositoryOutcome = z.union([
+    z.strictObject({ ok: z.literal(true), fact: MachineRepositoryFactSchema }),
+    z.strictObject({ ok: z.literal(false), reason: z.string() }),
+  ]);
+  const repositoryDenied = { ok: false, reason: "machines:read capability required" } as const;
+
+  for (const mode of ["native", "hardened"] as const) {
+    test(`${mode} repository reads intersect the door and caller ceilings before observing`, async () => {
+      const { fix, asked, query } = await repositoryFixture(mode);
+      const read = async (actor: AuthContext, action = "repository", path = query.path) =>
+        repositoryOutcome.parse(
+          result(await fix.host.dispatch(actor, `${id}.${action}`, { ...query, path })),
+        );
+      expect(await read(fix.owner, "bareRepository")).toEqual(repositoryDenied);
+      const capless = caller(fix, ["containers:read"]);
+      // Existing and absent paths are indistinguishable, with no observer invocation.
+      expect(await read(capless)).toEqual(repositoryDenied);
+      expect(await read(capless, "repository", join(fix.dataDir, "absent"))).toEqual(
+        repositoryDenied,
+      );
+      expect(asked).toEqual([]);
+      const allowed = await read(fix.owner);
+      if (!allowed.ok) throw new Error(allowed.reason);
+      expect(allowed.fact).toMatchObject({
+        path: query.path,
+        identity: null,
+        remote: null,
+        reason: "not_a_repository",
+      });
+      expect(asked).toEqual([query]);
+    }, 60_000);
+
+    test(`${mode} repository reads cannot escape a container even with a machine grant`, async () => {
+      const { fix, asked, query } = await repositoryFixture(mode);
+      const containerId = fix.runtime.newId();
+      fix.store.createContainer({
+        id: containerId,
+        name: "scoped",
+        createdAt: fix.runtime.now(),
+        discipline: "canvas",
+      });
+      const actor = caller(fix, ["machines:read"], containerId);
+      fix.auth.grant(
+        {
+          principal: { kind: "principal", id: actor.principal.id },
+          node: `manifold://machine/${query.machineId}`,
+          caps: ["machines:read"],
+          effect: "allow",
+          reach: "node",
+        },
+        fix.owner,
+      );
+      expect(result(await fix.host.dispatch(actor, `${id}.repository`, query))).toEqual(
+        repositoryDenied,
+      );
+      expect(asked).toEqual([]);
+    }, 60_000);
+
+    test(`${mode} repository authority sees live machine grants, sibling boundaries and denial`, async () => {
+      const { fix, asked, query } = await repositoryFixture(mode);
+      const actor = caller(fix, ["containers:read"]);
+      const read = async (machineId = query.machineId) =>
+        repositoryOutcome.parse(
+          result(await fix.host.dispatch(actor, `${id}.repository`, { ...query, machineId })),
+        );
+      expect(await read()).toEqual(repositoryDenied);
+      const grant = fix.auth.grant(
+        {
+          principal: { kind: "principal", id: actor.principal.id },
+          node: `manifold://machine/${query.machineId}`,
+          caps: ["machines:read"],
+          effect: "allow",
+          reach: "node",
+        },
+        fix.owner,
+      );
+      // Neither a flat issued-cap veto nor a root-anchor-only question can admit this caller.
+      expect(fix.auth.allows(actor, "machines:read")).toBe(false);
+      const allowed = await read();
+      if (!allowed.ok) throw new Error(allowed.reason);
+      expect(allowed.fact.reason).toBe("not_a_repository");
+      const sibling = fix.auth.enrollMachine("sibling", fix.owner).machine.id;
+      expect(await read(sibling)).toEqual(repositoryDenied);
+      expect(await read("not-enrolled")).toEqual(repositoryDenied);
+      expect(asked).toEqual([query]);
+      fix.auth.revokeGrant(grant.id, fix.owner);
+      expect(await read()).toEqual(repositoryDenied);
+      // A root allow does not erase a more specific deny at the requested machine.
+      fix.auth.grant(
+        {
+          principal: { kind: "principal", id: actor.principal.id },
+          node: "manifold://",
+          caps: ["machines:read"],
+          effect: "allow",
+          reach: "subtree",
+        },
+        fix.owner,
+      );
+      fix.auth.grant(
+        {
+          principal: { kind: "principal", id: actor.principal.id },
+          node: `manifold://machine/${query.machineId}`,
+          caps: ["machines:read"],
+          effect: "deny",
+          reach: "node",
+        },
+        fix.owner,
+      );
+      expect(await read()).toEqual(repositoryDenied);
+      expect(asked).toEqual([query]);
+      const siblingRead = await read(sibling);
+      if (!siblingRead.ok) throw new Error(siblingRead.reason);
+      expect(siblingRead.fact.reason).toBe("not_a_repository");
+      expect(asked).toEqual([query, { ...query, machineId: sibling }]);
+    }, 60_000);
+
+    test.each(["revoked", "expired", "grant withdrawn", "disabled"] as const)(
+      `${mode} repository observes nothing when authority becomes %s inside the handler`,
+      async (withdrawal) => {
+        const { fix, asked, query } = await repositoryFixture(mode);
+        const actor = caller(fix, ["containers:read"]);
+        const grant = fix.auth.grant(
+          {
+            principal: { kind: "principal", id: actor.principal.id },
+            node: `manifold://machine/${query.machineId}`,
+            caps: ["machines:read"],
+            effect: "allow",
+            reach: "node",
+          },
+          fix.owner,
+        );
+        const storage = fix.store.pluginStorage(id);
+        const pending = fix.host.dispatch(actor, `${id}.repository`, { ...query, wait: true });
+        try {
+          // A real child publishes this durable IPC barrier; advancing the parent's fake
+          // clock cannot make its storage call arrive. Bound the condition wait, not a delay.
+          const deadline = Date.now() + 3_000;
+          while ((await storage.get("repository-entered")) !== "yes") {
+            if (Date.now() >= deadline) throw new Error("repository handler missed its barrier");
+            await Bun.sleep(1);
+          }
+          if (withdrawal === "revoked") fix.auth.revokePrincipal(actor.principal.id, fix.owner);
+          else if (withdrawal === "expired") {
+            if (actor.expiresAt === undefined) throw new Error("expected an expiring human token");
+            fix.runtime.time = actor.expiresAt;
+          } else if (withdrawal === "grant withdrawn") fix.auth.revokeGrant(grant.id, fix.owner);
+          else expect(await fix.host.setEnabled(id, false, "admin")).toEqual({ ok: true });
+          await storage.set("repository-release", "yes");
+          expect(result(await pending)).toEqual(
+            withdrawal === "disabled"
+              ? { ok: false, reason: "plugin authority unavailable" }
+              : repositoryDenied,
+          );
+          expect(asked).toEqual([]);
+        } finally {
+          await storage.set("repository-release", "yes");
+          await pending;
+        }
+      },
+      60_000,
+    );
+  }
+
+  test("repository reads obey withheld and replaced installation grants", async () => {
+    const withheld = await repositoryFixture("hardened", []);
+    const denied = await withheld.fix.host.dispatch(
+      withheld.fix.owner,
+      `${id}.repository`,
+      withheld.query,
+    );
+    expect(denied.ok ? null : denied.denial.rule).toBe("forbidden");
+    expect(withheld.asked).toEqual([]);
+    await close(withheld.fix);
+
+    const { fix, asked, query } = await repositoryFixture("hardened");
+    const allowed = repositoryOutcome.parse(
+      result(await fix.host.dispatch(fix.owner, `${id}.repository`, query)),
+    );
+    if (!allowed.ok) throw new Error(allowed.reason);
+    expect(allowed.fact.reason).toBe("not_a_repository");
+    const storage = fix.store.pluginStorage(id);
+    const pending = fix.host.dispatch(fix.owner, `${id}.repository`, { ...query, wait: true });
+    let replacement: Promise<ActionOutcome> | undefined;
+    try {
+      // Both waits observe real child/admission transitions, not a guessed elapsed duration.
+      const deadline = Date.now() + 3_000;
+      while ((await storage.get("repository-entered")) !== "yes") {
+        if (Date.now() >= deadline) throw new Error("repository handler missed its barrier");
+        await Bun.sleep(1);
+      }
+      replacement = fix.host.dispatch(fix.owner, ENGINE_INSTALL_ACTION, {
+        source: join(fix.dataDir, PLUGIN_UPLOADS_DIR, "fleet.manifold-plugin.json"),
+        sha256: build.sha256,
+        hardened: true,
+        replace: true,
+        grant: [],
+      });
+      for (;;) {
+        const fenced = await fix.host.dispatch(fix.owner, `${id}.bareRepository`, query);
+        if (!fenced.ok) {
+          expect(fenced.denial.rule).toBe("unavailable");
+          break;
+        }
+        // Replacement can fence an admitted RPC before it reaches the live bridge.
+        const answer = repositoryOutcome.parse(fenced.result);
+        if (!answer.ok && answer.reason === "plugin authority unavailable") break;
+        expect(answer).toEqual(repositoryDenied);
+        if (Date.now() >= deadline) throw new Error("replacement did not fence admission");
+        await Bun.sleep(1);
+      }
+      await storage.set("repository-release", "yes");
+      expect(result(await pending)).toEqual({
+        ok: false,
+        reason: "plugin authority unavailable",
+      });
+      result(await replacement);
+    } finally {
+      await storage.set("repository-release", "yes");
+      await pending;
+      await replacement;
+    }
+    const replaced = await fix.host.dispatch(fix.owner, `${id}.repository`, query);
+    expect(replaced.ok ? null : replaced.denial.rule).toBe("forbidden");
+    expect(asked).toEqual([query]);
+  }, 60_000);
 
   test("an installed grant cannot replace a door declaration or its caller's authority", async () => {
     const withheld = await install();
