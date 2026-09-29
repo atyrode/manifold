@@ -35,6 +35,9 @@ import {
   type LinuxJobSpec,
 } from "./job-linux.ts";
 import { PtyTerminal } from "./terminal.ts";
+import { isolateGraphicsPlatform } from "../test/graphics-platform.ts";
+
+isolateGraphicsPlatform();
 
 function fixture(): { spec: LinuxJobSpec; close(): void } {
   const path = mkdtempSync(join(tmpdir(), "job-linux-"));
