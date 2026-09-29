@@ -368,9 +368,14 @@ describe.skipIf(process.platform !== "linux")("native temporary output namespace
       expect(startOwner(root)).toEqual({ generation: 1 });
       const namespace = recordedNamespace(root);
       mkdirSync(join(namespace.path, "stale", "tree"), { recursive: true, mode: 0o700 });
-      writeFileSync(join(namespace.path, "stale", "tree", "payload"), "an earlier generation's bytes");
+      writeFileSync(
+        join(namespace.path, "stale", "tree", "payload"),
+        "an earlier generation's bytes",
+      );
       symlinkSync(join(root, "runtime", "keep"), join(namespace.path, "stale", "escape"));
-      const found = tree(join(root, "runtime")).filter((entry) => !entry.startsWith(namespace.name));
+      const found = tree(join(root, "runtime")).filter(
+        (entry) => !entry.startsWith(namespace.name),
+      );
       expect(startOwner(root)).toEqual({ generation: 2 });
       expect(recordedNamespace(root).bytes).toBe(namespace.bytes);
       expect(readdirSync(namespace.path)).toEqual([]);

@@ -22,7 +22,9 @@ const DECIMAL = /^(?:0|[1-9][0-9]{0,19})$/;
 const OutputScratchRecordSchema = z.strictObject({
   name: z
     .string()
-    .regex(/^job-output-scratch-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/),
+    .regex(
+      /^job-output-scratch-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    ),
   dev: z.string().regex(DECIMAL),
   ino: z.string().regex(DECIMAL),
 });
