@@ -41,6 +41,14 @@ export {
 } from "./item-drop.ts";
 
 export { ElementHostProvider, useElementHost } from "./element-host.ts";
+export {
+  DocumentAccessProvider,
+  useDocumentAccess,
+  type DocumentAccessLease,
+  type DocumentAccessOptions,
+  type DocumentAccessPort,
+  type DocumentAccessState,
+} from "./document-access.ts";
 /**
  * The PRESENCE plane's browser mechanism: cursor spaces and their snap epsilons, gesture
  * frames and their decay, the local projection of this device's own presence. Neutral math
@@ -196,6 +204,9 @@ export {
   type ProjectionPlaceholderProps,
   type ProjectionRegistry,
   type ProjectionState,
+  type PointToolContext,
+  type PointToolOutcome,
+  type PointTool,
   type RegisteredElement,
   type RegisteredRenderer,
   type RegisteredTool,

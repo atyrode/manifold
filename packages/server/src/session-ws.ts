@@ -715,7 +715,7 @@ export class SessionGateway {
     const context = this.authenticateHandshake(connection, message.token, message.protocolVersion);
     if (context === null) return;
     if (!this.auth.allows(context, "containers:read", message.containerId)) {
-      this.closeSocket(connection, 4403, "forbidden", "authorization_refused");
+      this.refuseChannel(connection, message.ch, message.containerId, 4403, "forbidden");
       return;
     }
     if (connection.channels.size >= MAX_SESSION_CHANNELS_PER_CONNECTION) {
