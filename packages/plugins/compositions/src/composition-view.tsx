@@ -1125,6 +1125,7 @@ export function CompositionView({
                 elementId={ref.elementId}
                 data={element === undefined ? {} : elementPayload(element)}
                 doc={client}
+                documentBinding="mounted"
                 editingElementId={editingElementId}
                 onBeginEditing={setEditingElementId}
                 onEndEditing={() => setEditingElementId(null)}

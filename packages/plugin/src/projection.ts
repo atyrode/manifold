@@ -27,6 +27,7 @@ import type { TitlebarDragProps } from "@manifold/ui";
 import { publishLocation } from "./vantage.ts";
 import type {
   ElementDocument,
+  ElementHost,
   ElementProps,
   HostServices,
   SectionProps,
@@ -700,6 +701,7 @@ export interface ElementOutletProps {
   /** The element's record, as this ref projected it; `{}` while the record is in flight. */
   readonly data: Readonly<Record<string, unknown>>;
   readonly doc: ElementDocument;
+  readonly documentBinding?: ElementHost["documentBinding"];
   /** This ref's editing focus — one occupant of it is in its editor at a time. */
   readonly editingElementId: string | null;
   readonly onBeginEditing: (elementId: string) => void;
@@ -719,6 +721,7 @@ export function ElementOutlet({
   elementId,
   data,
   doc,
+  documentBinding,
   editingElementId,
   onBeginEditing,
   onEndEditing,
@@ -742,6 +745,7 @@ export function ElementOutlet({
   return createElement(ElementHostProvider, {
     value: {
       doc,
+      documentBinding,
       editingElementId,
       beginEditing: onBeginEditing,
       endEditing: onEndEditing,

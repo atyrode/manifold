@@ -82,6 +82,9 @@ function TextElement({ id, data }: ElementProps): ReactElement {
   const access = useDocumentAccess(reference?.homeContainerId ?? null, {
     document: host.doc,
     mode: editing ? "occupant" : "spectator",
+    ...(reference?.homeContainerId === host.doc.containerId && host.documentBinding !== undefined
+      ? { binding: host.documentBinding }
+      : {}),
   });
   if (reference === null) {
     return (
