@@ -1840,6 +1840,28 @@ It must be a directory and cannot also be requested as an ordinary mount.
 Omitting `outputOnly` preserves normal read/write/create mounts. Older accepted owners omit
 unsupported operations from installation and refuse `output_only_locations_protocol_unsupported`.
 
+**Discard raw output scratch after sealing.** A named output's working directory otherwise
+outlives the job: sealing copies it into the owner's private store, and the raw tree stays on
+the location's backing. When only the sealed output matters, declare the backing location
+`{ anchor: "runtime", components: ["prepare"], revision: "1", kind: "directory", temporary: true }`
+— the `runtime` anchor and an explicit directory, with no `managed` and no `guestPath` — and
+use it only as `{ locationId, access: "write", outputOnly: true }`.
+
+Each job then writes into its own private root, which the owner discards once the workload is
+proven gone and the job's result is published: after success, a nonzero exit, cancellation, a
+refused start or a failed collection alike. Your output `components` are paths within that
+job's root, so another job never sees them and nested paths such as a receipt beside its
+material still work. Collect everything you need as a declared output: raw files that were
+not sealed are gone, while sealed outputs remain readable, bindable as inputs and releasable
+exactly as before. A child job started by a nested invocation cannot write a temporary
+location; admission refuses `temporary_output_invocation_unsupported`, so give the child a
+retained location instead. Omitting `temporary` keeps the existing retained lifetime.
+Owners older than RPC 43 never receive the declaration; operations using it refuse
+`temporary_locations_protocol_unsupported` there while the plugin's other operations install.
+Older hubs and plugin kits reject the manifest outright, so adopt the declaration only once
+your kit and every target hub carry it. See
+[Temporary output locations](CONTRACTS.md#governed-machine-jobs) for the owner's contract.
+
 **Read an operator's host directory.** Besides the six built-in anchors (`home`, `data`,
 `state`, `cache`, `config`, `runtime`), all rooted in the owner's own storage, a location may
 name an **operator anchor**, `anchor: "operator.<name>"`, where `<name>` is 1–63 lowercase
@@ -2076,7 +2098,8 @@ plus bounded input mappings. It starts as an owned nested job, never as a privat
 Native Plugins inspects candidate invocation edges through `engine.jobs.inspectInvocations`;
 an owner explicitly reviews depth, concurrency, aggregate and output ceilings before
 `setInvocationEdge`. Source policy/runtime pins must still match at approval. Stale edges
-remain visible and revocable, but cannot authorize a replacement installation.
+remain visible and revocable, but cannot authorize a replacement installation. A candidate's
+`outputLocations` omit the caller's temporary locations, which a child can never write.
 
 Machine workers import `openWorkerContext` and `attachWorkerInput` from
 `@manifold/sdk/worker`. `ready` supplies owner-resolved locations; `callService` uses
@@ -2342,7 +2365,8 @@ rules are `{ name, locationId, components, maxSuffixComponents }`: zero suffix c
 means exact path, a positive bound means at least one and at most that many components
 below the prefix. Every declared output must be matched once, with exact location ID.
 The child request retains its exact immutable bindings; the rule is an admission ceiling,
-not a mutable binding or a grant of the whole parent directory.
+not a mutable binding or a grant of the whole parent directory. A rule or child binding naming
+a temporary location refuses `temporary_output_invocation_unsupported` at approval and admission.
 Native `invocation_reply` refusals preserve the named domain check, such as
 `invocation_edge_missing` or `invocation-depth-or-concurrency-limit`, rather than just
 `forbidden`. Reasons are bounded identifiers; unexpected exceptions or unsafe/oversized
