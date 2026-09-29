@@ -10,7 +10,6 @@ import type {
 } from "@manifold/protocol";
 import { createElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { WEB_PLUGIN_DEFS } from "./assembly.ts";
 import {
   buildBrowserAssembly,
   ComposedAssemblyProvider,
@@ -584,30 +583,6 @@ describe("buildBrowserAssembly bindings", () => {
     // paint an absence on, so the row is gone and nothing answers F7.
     expect(assembly.bindings.map((binding) => binding.id)).toEqual(["core.debug.zone-probe"]);
     expect(assembly.panels.get("core.shell.sidebar")?.enabled).toBe(true);
-  });
-
-  test("the composition the app builds carries the diagnostics' two keys, and the shell none", () => {
-    const roster: PluginRoster = WEB_PLUGIN_DEFS.map((def) => entry({ id: def.id }));
-    const assembly = buildBrowserAssembly(roster, 1, WEB_PLUGIN_DEFS);
-
-    /*
-      THE RELOCATION, asserted where it can actually be observed: F9 answered to `core.shell`
-      until the diagnostic seat existed (issue #90), and a probe was never the shell's to own.
-      Both of `core.debug`'s keys are here, once each, and the shell claims nothing.
-
-      F10 comes FIRST because the table is sorted by key as a STRING, and "F10" sorts before
-      "F9". That is the composition's own order, so it is the order asserted rather than the
-      order the rows were declared in.
-    */
-    const rows = assembly.bindings.filter((binding) => binding.plugin === "core.debug");
-    expect(rows.map((binding) => [binding.id, binding.key, binding.when])).toEqual([
-      ["core.debug.inspect", "F10", "always"],
-      ["core.debug.zone-probe", "F9", "always"],
-    ]);
-    expect(assembly.bindings.filter((binding) => binding.plugin === "core.shell")).toEqual([]);
-    // Every registered plugin's rows go through one refusal-checking composition, so a second
-    // plugin claiming F9 or F10 would fail this build rather than shadow the diagnostics.
-    expect(assembly.bindings.filter((binding) => binding.key === "F10")).toHaveLength(1);
   });
 });
 

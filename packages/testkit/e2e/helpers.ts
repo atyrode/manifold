@@ -231,21 +231,6 @@ export async function openTerminalAt(
   return { terminal, homeClient };
 }
 
-export function textElement(id: string, text: string): SceneElement {
-  return {
-    id,
-    type: "text",
-    text,
-    x: 0,
-    y: 0,
-    width: 240,
-    height: 48,
-    zIndex: 0,
-    fontSize: 20,
-    color: "#f8f9fa",
-  };
-}
-
 export function drawElement(id: string, points: number[]): SceneElement {
   return {
     id,
