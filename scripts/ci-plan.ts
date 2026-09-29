@@ -62,7 +62,7 @@ const NORMATIVE = /^(?:AGENTS\.md|AXIOMS\.md|REGISTRY\.md|docs\/CONTRACTS\.md)$/
 const DOC_STYLE = /\.(?:md|txt|png|jpe?g|svg|ico)$/i;
 const CSS = /\.(?:css|scss)$/i;
 const KNOWN_SOURCE_ROOT =
-  /^packages\/(?:(?:protocol|ui|plugin|plugin-kit|scene|sdk|server|agent|testkit|web)\/|plugins\/(?:shell|plugin-manager|terminals|presence|machines|index|notes|uri|access|events|debug|brand|keys|canvas|compositions|arrange|commands)\/)/;
+  /^packages\/(?:(?:protocol|ui|plugin|plugin-kit|scene|sdk|server|agent|testkit|web)\/|plugins\/(?:shell|plugin-manager|terminals|presence|machines|index|text|uri|access|events|debug|brand|keys|canvas|compositions|arrange|commands)\/)/;
 const DEPLOYMENT_ROOT =
   /^scripts\/(?:ci-|gate|release|promote|install-runtime-ci|verify-runtime|verify-preview-environment)/;
 

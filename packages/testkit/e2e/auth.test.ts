@@ -118,7 +118,9 @@ test("auth closes invalid credentials, isolates room refusals, and enforces atte
     scopedSocket.sendRaw(sessionFrame({ type: "resync_request" }, "allowed"));
     const retained = await waitFor(
       () =>
-        scopedSocket.frames.find((message) => message.type === "resync" && message.ch === "allowed"),
+        scopedSocket.frames.find(
+          (message) => message.type === "resync" && message.ch === "allowed",
+        ),
       5_000,
       20,
     );
