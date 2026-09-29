@@ -497,6 +497,7 @@ function PortalLeaf({
                 elementId={ref.elementId}
                 data={element === undefined ? {} : elementPayload(element)}
                 doc={client}
+                documentBinding="mounted"
                 editingElementId={interactive ? editingId : null}
                 onBeginEditing={(id) => {
                   onEngage(node.id);

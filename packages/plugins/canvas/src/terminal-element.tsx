@@ -180,6 +180,7 @@ export function CanvasProviders({
   const elementHost = useMemo<ElementHost>(
     () => ({
       doc: value.client,
+      documentBinding: "mounted",
       editingElementId: value.editingId,
       beginEditing: value.beginTextEditing,
       endEditing: value.endTextEditing,

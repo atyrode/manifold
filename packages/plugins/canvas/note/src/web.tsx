@@ -91,6 +91,7 @@ function CanvasNoteImpl({ id, data }: ElementProps): ReactElement {
           elementId={id}
           data={{ ...data, fitContent: true }}
           doc={host.doc}
+          documentBinding={host.documentBinding}
           editingElementId={host.editingElementId}
           onBeginEditing={host.beginEditing}
           onEndEditing={host.endEditing}

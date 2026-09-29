@@ -744,6 +744,11 @@ export interface ElementDocument {
  */
 export interface ElementHost {
   readonly doc: ElementDocument;
+  /**
+   * Mount-owned lifetime, forwarded by nested outlets. Apply only to `doc.containerId`;
+   * foreign-home references keep their independent authority and lease.
+   */
+  readonly documentBinding?: "mounted" | undefined;
   readonly editingElementId: string | null;
   beginEditing(elementId: string): void;
   endEditing(elementId: string): void;

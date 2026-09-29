@@ -54,6 +54,7 @@ import {
 import { resolveWebDist } from "./gate-dist.ts";
 import { Browser } from "./cdp.ts";
 import { ownerKeyOf, sleep, teardownServer, until } from "./gate-lib.ts";
+import { verifyMountedCanvasDocuments } from "./convergence-mounted-documents.ts";
 
 const repoRoot = join(import.meta.dir, "..");
 const { distDir, cleanup: cleanupDist } = resolveWebDist("manifold-conv-");
@@ -2254,6 +2255,7 @@ try {
       10_000,
       "nested canvas keeps its own scene and renders deeper portals as cards without a session",
     );
+    await verifyMountedCanvasDocuments(browserA, origin, ownerKey);
     console.log(
       "PASS  F13 Text home portal previews, edits, disengages, opens and unplaces without a leaked session",
     );
