@@ -17,6 +17,7 @@ import {
   type Principal,
   type RuntimeDeps,
   type SceneElement,
+  type SharedTextRef,
   type Structure,
   type TerminalInfo,
   type TileEdge,
@@ -31,14 +32,18 @@ import {
   SERVER_PLACE_ORIGIN,
   Y,
   changedElementIds,
+  changedSharedTextKeys,
   collaborativeTextFields,
   createSceneDoc,
   decodeUpdate,
   elementsMap,
   encodeUpdate,
+  hasRetainedContent,
   initCompositionLayout,
   nextZIndex,
   patchElement,
+  parseSharedTextKey,
+  readSharedText,
   readElement,
   readElements,
   readTileLayout,
@@ -46,6 +51,8 @@ import {
   removeTileLeaf,
   swapTileLeaves,
   stampElementAuthorship,
+  sharedTextsMap,
+  stampSharedTextAuthorship,
   writeElement,
   writeTileLeaf,
   writeTileLeafRef,
@@ -226,6 +233,7 @@ export class Room {
   private cancelQuiet: (() => void) | null = null;
   private cancelMax: (() => void) | null = null;
   private collectingIds: Set<string> | null = null;
+  private collectingTextKeys: Set<string> | null = null;
   private docBytes = 0;
   private overLimit = false;
 
@@ -284,6 +292,12 @@ export class Room {
       if (this.collectingIds === null) return;
       for (const id of changedElementIds(events as unknown as readonly Y.YEvent<never>[])) {
         this.collectingIds.add(id);
+      }
+    });
+    sharedTextsMap(this.doc).observeDeep((events) => {
+      if (this.collectingTextKeys === null) return;
+      for (const key of changedSharedTextKeys(events as unknown as readonly Y.YEvent<never>[])) {
+        this.collectingTextKeys.add(key);
       }
     });
     this.doc.on("update", (update, origin) => {
@@ -506,7 +520,7 @@ export class Room {
     return true;
   }
 
-  /** Applies one bounded update, then repairs schema-invalid element projections. */
+  /** Applies one bounded update, then repairs schema-invalid element and text records. */
   applyDocUpdate(peer: SessionChannel, encoded: DocUpdate["update"]): boolean {
     let update: Uint8Array;
     try {
@@ -529,6 +543,8 @@ export class Room {
     }
 
     const changed = new Set<string>();
+    const changedTexts = new Set<string>();
+    this.collectingTextKeys = changedTexts;
     this.collectingIds = changed;
     try {
       Y.applyUpdate(this.doc, update, peer.auth.principal.id);
@@ -537,6 +553,7 @@ export class Room {
       return false;
     } finally {
       this.collectingIds = null;
+      this.collectingTextKeys = null;
     }
 
     /*
@@ -567,19 +584,41 @@ export class Room {
           : { type: refusal.type, plugin: refusal.plugin, problems: refusal.problems.join("; ") }),
       });
     }
+    const survivingTexts: SharedTextRef[] = [];
+    const texts = sharedTextsMap(this.doc);
+    for (const key of changedTexts) {
+      const ref = parseSharedTextKey(key);
+      if (ref !== null && readSharedText(this.doc, ref.namespace, ref.id) !== null) {
+        survivingTexts.push(ref);
+        continue;
+      }
+      if (!texts.has(key)) continue;
+      this.doc.transact(() => texts.delete(key), REPAIR_ORIGIN);
+      this.logger.warn("scene_text_repaired", { containerId: this.containerId, key });
+    }
     /*
       Authorship is a SUMMARY of server acceptance order, not field-level causality. One
       accepted update may change several elements, so they share one server clock reading and
       one stamping transaction. Repairs and deletions are absent from `surviving`, and server
       placement paths never call this seam, preserving prior stamps without inventing a person.
     */
-    stampElementAuthorship(
-      this.doc,
-      surviving,
-      peer.auth.principal.id,
-      this.runtime.now(),
-      SERVER_AUTHORSHIP_ORIGIN,
-    );
+    const editedAt = this.runtime.now();
+    this.doc.transact(() => {
+      stampElementAuthorship(
+        this.doc,
+        surviving,
+        peer.auth.principal.id,
+        editedAt,
+        SERVER_AUTHORSHIP_ORIGIN,
+      );
+      stampSharedTextAuthorship(
+        this.doc,
+        survivingTexts,
+        peer.auth.principal.id,
+        editedAt,
+        SERVER_AUTHORSHIP_ORIGIN,
+      );
+    }, SERVER_AUTHORSHIP_ORIGIN);
     return true;
   }
 
@@ -1316,6 +1355,11 @@ export class Room {
   /** This container's census, from its live document. */
   census(): ContainerCensus {
     return censusFor(this.containerId, this.discipline, this.tileLayout(), this.elements());
+  }
+
+  /** Independently retained records do not contribute visual census items. */
+  hasRetainedContent(): boolean {
+    return hasRetainedContent(this.doc);
   }
 
   /** Returns the principal-level live attendance without cursor or viewport payloads. */

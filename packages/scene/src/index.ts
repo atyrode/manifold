@@ -52,4 +52,17 @@ export {
   writeTileLeafRef,
   type TileInsert,
 } from "./tile-layout.ts";
+export {
+  changedSharedTextKeys,
+  createSharedText,
+  hasRetainedContent,
+  listSharedTexts,
+  parseSharedTextKey,
+  readSharedText,
+  removeSharedText,
+  sharedText,
+  sharedTextKey,
+  sharedTextsMap,
+  stampSharedTextAuthorship,
+} from "./shared-text.ts";
 export * as Y from "yjs";
