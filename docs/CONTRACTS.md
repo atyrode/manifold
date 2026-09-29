@@ -866,9 +866,12 @@ may read a sensitive full-data archive, but the preview receives only the curren
 `containers(id,name,created_at,sort_order,folder_id,discipline)`,
 `scene_docs(container_id,epoch,rev,ts,hash,doc)` and, from schema 49,
 `scene_doc_capacity(container_id,epoch,migration_bytes)` for retained scene lineages. The latter
-is fixed document-format overhead, not a credential or grant. Every other table is emptied,
-no adjacent file is copied, and the projected database is vacuumed so deleted authority bytes do not remain in free
-pages. Startup mints fresh owner, preview-signing and machine authority. Real boundary verification
+is fixed document-format overhead, not a credential or grant. Every other table is emptied.
+Projection temporarily removes the copied schema's mutation triggers inside the transaction,
+then restores them after the allowlisted rows: deletion observers must not recreate token
+metadata, nor may restoration populate other tables. Normal preview writes retain those triggers.
+No adjacent file is copied, and the projected database is vacuumed so deleted authority bytes
+do not remain in free pages. Startup mints fresh owner, preview-signing and machine authority. Real boundary verification
 must prove representative data remains usable while the source owner key and reusable bearer are
 refused and source signing, dial, plugin and arbitrary file state is absent.
 Each numbered preview owns one build-aligned `pr-N` execution node. A healthy request for the exact
@@ -3332,6 +3335,8 @@ depends on it.
   after retirement. The mount owns role changes and final close; requested mode and effective
   authority still bound editing. Generic non-tile-tree canvas portals use this owner renderer,
   preserving spectator previews, admitted engagement and retained bodies after unplacement.
+  Nested native element consumers inherit that binding only for the matching mounted home;
+  foreign-body references keep their independent home-scoped leases and authority.
 - This is a trusted in-realm native port, not a serialized isolated-plugin API or a sandbox around
   a live `Y.Text`. The host owns credentials, client construction and channel lifetime. Panels and
   elements neither construct bearer-backed clients nor receive a shared bearer through this port.
@@ -3379,6 +3384,10 @@ depends on it.
   Pending writes count immediately, not only after snapshot flush. Socket updates retain their
   existing accept-then-repair/authorship semantics and single-crossing-update behavior; once over
   capacity, subsequent writes refuse. Native creation instead refuses before crossing the bound.
+  Admission measures the exact current full encoding, not accumulated delta lengths: splitting
+  old Yjs structs can grow the document by more than the update. Transaction cleanup invalidates
+  cached full state even for pending structs/delete sets without an integrated update event.
+  Pending-only operations retain the existing revision and snapshot-scheduling semantics.
   `init`/`resync` egress separately bounds the base64 document to
   `4 * ceil((12 MiB + allowance) / 3)` bytes and its JSON/routing/attendance/terminal envelope to
   4 MiB. Ordinary frames and client ingress retain the 16 MiB transport ceiling. Conversion

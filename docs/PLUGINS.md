@@ -1314,6 +1314,7 @@ interface ElementProps {
 }
 interface ElementHost {
   readonly doc: ElementDocument; // the visual reference's room, not necessarily the body's home
+  readonly documentBinding?: "mounted" | undefined; // propagate only to a matching body home
   readonly editingElementId: string | null;
   beginEditing(elementId: string): void;
   endEditing(elementId: string): void;
@@ -1378,6 +1379,7 @@ deletion makes a surviving borrowed reference report a missing document.
 const access = useDocumentAccess(homeContainerId, {
   document: host.doc,
   mode: host.editingElementId === id ? "occupant" : "spectator",
+  binding: homeContainerId === host.doc.containerId ? host.documentBinding : undefined,
 });
 ```
 
@@ -1394,6 +1396,9 @@ The lifecycle and authority rules are [Scene sync](CONTRACTS.md#scene-sync-yjs-c
 A container owner receiving a mount-owned `client` passes that document with
 `binding: "mounted"`. This observes exactly the supplied same-identity home pipe: it cannot
 promote, reopen or retain a replacement session when the portal disengages or disappears.
+Nested native element outlets propagate that binding through `ElementHost.documentBinding`.
+A body consumer applies it only when its authority home matches `host.doc.containerId`;
+foreign-home references retain their separate home-scoped leases, not the mount's authority.
 The mount alone changes roles and closes its pipe. Requested mode and effective home authority
 still constrain `canWrite`; requesting `"occupant"` cannot make a spectator or read-only grant
 writable. A renderer without a supplied client keeps the ordinary shared-home lease behavior.

@@ -142,7 +142,9 @@ describe("native Text creation capacity", () => {
         expect(undo.undoStack).toEqual([]);
         expect(observed).toEqual([{ body, reference: '["home","fits"]' }]);
         expect(socket.messages()).toEqual([]);
-        expect(store.db.query("SELECT * FROM scene_docs ORDER BY rev").all()).toEqual(pendingHistory);
+        expect(store.db.query("SELECT * FROM scene_docs ORDER BY rev").all()).toEqual(
+          pendingHistory,
+        );
       } finally {
         pending.destroy();
       }
