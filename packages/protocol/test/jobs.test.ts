@@ -480,6 +480,116 @@ test("output-only lease backing cannot become a file, working directory or ordin
   expect(jobOwnerMachine(JOB_OWNER_PROTOCOL_VERSION, mixed)).toEqual(mixed);
   expect(jobOwnerMachine(37, MachineHalfSchema.parse(declaration))).toBeNull();
 });
+
+test("temporary locations are runtime output-lease scratch, and older owners never receive one", () => {
+  const scratch = {
+    anchor: "runtime",
+    components: ["scratch"],
+    revision: "r1",
+    kind: "directory",
+    temporary: true,
+  };
+  const retained = {
+    anchor: "runtime",
+    components: ["retained"],
+    revision: "r1",
+    kind: "directory",
+  };
+  // Omission keeps today's retained lifetime, byte for byte; nothing but the literal opts in.
+  expect(MachineLocationSchema.parse(retained)).toEqual(retained);
+  expect(MachineLocationSchema.parse(scratch)).toEqual(scratch);
+  for (const invalid of [
+    { ...scratch, temporary: false },
+    { ...scratch, anchor: "data" },
+    { ...scratch, anchor: "state", managed: true },
+    { ...scratch, kind: "file" },
+    { ...scratch, kind: undefined },
+    { ...scratch, guestPath: "/home/job/scratch" },
+    { ...scratch, anchor: "operator.omp-sessions", components: [] },
+  ])
+    expect(MachineLocationSchema.safeParse(invalid).success).toBe(false);
+
+  const operation = {
+    argv: [],
+    input: {},
+    runtimeTools: [],
+    locations: [{ locationId: "sample.scratch", access: "write", outputOnly: true }],
+    outputs: ["receipt", "material"],
+    network: "none",
+    limits: { timeoutMs: 1000, memoryBytes: 1048576, processes: 1, outputBytes: 65536 },
+    stdin: false,
+  };
+  const declaration = {
+    artifacts: { "linux-x64": artifact },
+    locations: { "sample.scratch": scratch, "sample.retained": retained },
+    operations: { "sample.prepare": operation },
+  };
+  // Every use backs output leases only: never a mount, a read, a creation or a working directory.
+  for (const locations of [
+    [{ locationId: "sample.scratch", access: "write" }],
+    [{ locationId: "sample.scratch", access: "read" }],
+    [{ locationId: "sample.scratch", access: "create" }],
+  ])
+    expect(
+      MachineHalfSchema.safeParse({
+        ...declaration,
+        operations: { "sample.prepare": { ...operation, locations } },
+      }).success,
+    ).toBe(false);
+  expect(
+    MachineHalfSchema.safeParse({
+      ...declaration,
+      operations: {
+        "sample.prepare": { ...operation, workingDirectory: { locationId: "sample.scratch" } },
+      },
+    }).success,
+  ).toBe(false);
+
+  const ordinary = {
+    ...operation,
+    locations: [{ locationId: "sample.retained", access: "write" }],
+  };
+  const mixed = MachineHalfSchema.parse({
+    ...declaration,
+    operations: { "sample.prepare": operation, "sample.ordinary": ordinary },
+  });
+  const prepare = mixed.operations["sample.prepare"]!;
+  expect(jobOwnerOperationRefusal(42, prepare, mixed)).toBe(
+    "temporary_locations_protocol_unsupported",
+  );
+  for (const older of [37, 40, 41, 42]) {
+    expect(jobOwnerOperationRefusal(older, prepare, mixed)).not.toBeNull();
+    // A strict older parser never sees the lifetime it cannot honour, used or unused.
+    expect(jobOwnerMachine(older, mixed)).toEqual({
+      ...mixed,
+      operations: { "sample.ordinary": mixed.operations["sample.ordinary"]! },
+      locations: { "sample.retained": mixed.locations["sample.retained"]! },
+    });
+  }
+  const unused = MachineHalfSchema.parse({
+    ...declaration,
+    operations: { "sample.ordinary": ordinary },
+  });
+  expect(jobOwnerMachine(42, unused)?.locations).toEqual({
+    "sample.retained": unused.locations["sample.retained"]!,
+  });
+  expect(jobOwnerMachine(42, MachineHalfSchema.parse(declaration))).toBeNull();
+  expect(jobOwnerOperationRefusal(JOB_OWNER_PROTOCOL_VERSION, prepare, mixed)).toBeNull();
+  expect(jobOwnerMachine(JOB_OWNER_PROTOCOL_VERSION, mixed)).toBe(mixed);
+  // Upgrading restores exactly what the older projection omitted, lifetime included.
+  const command = {
+    type: "install",
+    pluginId: "sample",
+    installationRevision: "one",
+    artifactSha256: "a".repeat(64),
+  } as const;
+  expect(
+    jobOwnerInstallRestoresProjection(
+      { ...command, machine: jobOwnerMachine(42, mixed)! },
+      { ...command, machine: mixed },
+    ),
+  ).toBe(true);
+});
 test("artifact executable bundles pin selected members and never admit URL credentials or raw companion files", () => {
   const files = { helper: { entry: ["bin", "helper"], sha256: "c".repeat(64) } };
   expect(MachineArtifactSchema.parse({ ...artifact, files }).files).toEqual(files);
