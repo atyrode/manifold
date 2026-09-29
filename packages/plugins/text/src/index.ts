@@ -43,7 +43,7 @@ export const textManifest: PluginManifest = {
     ],
     disciplines: [
       {
-        id: "text_home",
+        id: "text-home",
         title: "Documents",
         item: {
           groups: ["tileable", "embeddable", "unplaceable", "canvas_item_as_portal"],
