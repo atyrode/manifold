@@ -3680,6 +3680,11 @@ depends on it.
   changes update projections without remounting the editor for each text edit. Missing, forbidden,
   capacity and disconnected outcomes remain explicit. A room-scoped admission refusal closes only
   that channel; invalid credentials/protocol still fail the connection.
+  A container owner supplied a mount-owned pipe uses `binding: "mounted"`: it observes that
+  exact same-identity home without independent promotion, pooling a replacement or reopening
+  after retirement. The mount owns role changes and final close; requested mode and effective
+  authority still bound editing. Generic non-tile-tree canvas portals use this owner renderer,
+  preserving spectator previews, admitted engagement and retained bodies after unplacement.
 - This is a trusted in-realm native port, not a serialized isolated-plugin API or a sandbox around
   a live `Y.Text`. The host owns credentials, client construction and channel lifetime. Panels and
   elements neither construct bearer-backed clients nor receive a shared bearer through this port.
