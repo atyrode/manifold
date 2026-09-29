@@ -293,6 +293,9 @@ export class MachineJobOwner {
       controller: AbortController;
     }
   >();
+  /** Unreserved preparations whose refusal could not be recorded either, each with temporary
+   * roots nothing ran in: the owner's, never deleted, until a durable refusal of that identity. */
+  private readonly unrecordedScratch = new Set<OwnedJob>();
 
   private constructor(private readonly options: JobOwnerOptions) {
     this.admissionKey = createPublicKey(options.admissionPublicKey);
@@ -2285,6 +2288,13 @@ export class MachineJobOwner {
     job.resolveLaunched();
     job.resolveFinalized();
     this.emit({ type: "result", result: job.result }, job);
+    // The durable refusal an earlier preparation of this identity could not record: its roots
+    // go now, exactly as they would have had that refusal been recorded then.
+    for (const unrecorded of this.unrecordedScratch) {
+      if (unrecorded.request.jobId !== request.jobId) continue;
+      this.disposeOutputScratch(unrecorded);
+      if (unrecorded.outputScratch.length === 0) this.unrecordedScratch.delete(unrecorded);
+    }
     return job;
   }
 
@@ -2350,13 +2360,27 @@ export class MachineJobOwner {
         permitId: command.permit.permitId,
         reason: error instanceof Error ? error.message : String(error),
       });
-      if (!this.options.journal.job(command.request.jobId))
-        this.rejectUnadmitted(
-          command,
-          error instanceof LinuxJobRefusal && /^[a-zA-Z0-9_-]{1,128}$/.test(error.code)
-            ? error.code
-            : "start_not_admitted",
-        );
+      if (!this.options.journal.job(command.request.jobId)) {
+        try {
+          this.rejectUnadmitted(
+            command,
+            error instanceof LinuxJobRefusal && /^[a-zA-Z0-9_-]{1,128}$/.test(error.code)
+              ? error.code
+              : "start_not_admitted",
+          );
+        } catch (unrecorded) {
+          const job = unreserved.job;
+          if (!job?.outputScratch.length) throw unrecorded;
+          // Neither its reservation nor this refusal is durable, so no committed result closes
+          // the roots this preparation made, though nothing ran in them. They stay the owner's,
+          // never deleted, until a later durable refusal of this identity disposes them or
+          // recovery clears them; admission closes meanwhile, so nothing adds to them. The
+          // preparation's own failure stays this start's answer.
+          this.unrecordedScratch.add(job);
+          this.outputCleanupFailed(command.request.jobId, unrecorded);
+          throw error;
+        }
+      }
       // Nothing ran in its temporary roots; they go once that rejection is durable.
       if (unreserved.job) this.disposeOutputScratch(unreserved.job);
       throw error;
@@ -3307,11 +3331,17 @@ export class MachineJobOwner {
     )
       return;
     try {
-      // Empty proof ends every writer; no lease, sealed or abandoned, may outlive its tree.
+      // Empty proof ends every writer; no lease, sealed or abandoned, and no handle the job
+      // reopened on a root may outlive its tree. Retained locations keep their own lifetimes.
       for (const release of job.releaseWriters) release();
       job.releaseWriters = [];
       for (const lease of job.leases) this.options.outputs.abort(lease);
       job.leases = [];
+      for (const [locationId, location] of job.locations)
+        if (location.temporary) {
+          job.locations.delete(locationId);
+          location.close();
+        }
     } catch (error) {
       this.outputCleanupFailed(job.request.jobId, error);
       return;
