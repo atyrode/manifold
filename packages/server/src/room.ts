@@ -233,8 +233,6 @@ export class Room {
   private collectingIds: Set<string> | null = null;
   private collectingTextKeys: Set<string> | null = null;
   private docBytes = 0;
-  /** Snapshot plus every subsequent delta: a cheap conservative bound between encodings. */
-  private docBytesUpperBound = 0;
   private readonly docBytesLimit: number;
 
   constructor(
@@ -300,13 +298,16 @@ export class Room {
         this.collectingTextKeys.add(key);
       }
     });
-    this.doc.on("update", (update, origin) => {
-      this.rev += 1;
+    // Pending structs/delete sets change full encodings without emitting an update.
+    // Invalidate after every transaction's GC/merge cleanup, before update fanout.
+    this.doc.on("afterTransactionCleanup", () => {
       this.encodedDoc = null;
       this.docState = null;
-      this.docBytesUpperBound += update.byteLength;
       this.beforeUpdateCheckpoint = null;
       this.recoveryDelta = null;
+    });
+    this.doc.on("update", (update, origin) => {
+      this.rev += 1;
       this.broadcast({
         type: "doc_update",
         update: encodeUpdate(update),
@@ -534,20 +535,13 @@ export class Room {
   }
 
   private snapshotDoc(): Uint8Array {
-    if (this.docState === null) {
-      this.docState = Y.encodeStateAsUpdate(this.doc);
-      this.docBytesUpperBound = this.docState.byteLength;
-    }
-    return this.docState;
+    return (this.docState ??= Y.encodeStateAsUpdate(this.doc));
   }
 
   private isDocOverLimit(): boolean {
-    // Most live edits need no full encoding. Near capacity, measure instead of refusing
-    // because repeated/replaced content made the accumulated bound conservative.
-    return (
-      this.docBytesUpperBound > this.docBytesLimit &&
-      this.snapshotDoc().byteLength > this.docBytesLimit
-    );
+    // Deltas omit the extra headers produced when old Items split. Only the full
+    // current encoding (including pending state) measures capacity soundly.
+    return this.snapshotDoc().byteLength > this.docBytesLimit;
   }
 
   /**
