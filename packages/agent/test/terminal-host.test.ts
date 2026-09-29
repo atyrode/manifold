@@ -7,6 +7,9 @@ import { FrameReader, FrameTooLargeError, FrameWriter } from "../src/ipc-framing
 import { TerminalHost, type TerminalHostSession } from "../src/terminal-host.ts";
 import { OomKillWatch } from "../src/oom-kills.ts";
 import { PtyTerminal } from "../src/terminal.ts";
+import { isolateGraphicsPlatform } from "./graphics-platform.ts";
+
+isolateGraphicsPlatform();
 
 /**
  * The PTY owner's own contracts (issue #278), exercised directly on the seam: which

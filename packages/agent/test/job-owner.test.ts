@@ -43,6 +43,9 @@ import { JobBoundInputStore } from "../src/job-bound-inputs.ts";
 import { artifactCacheKey } from "../src/job-artifacts.ts";
 import { LinuxJobRefusal, startLinuxJob, type LinuxJobResult } from "../src/job-linux.ts";
 import * as nativeRuntime from "../src/job-linux.ts";
+import { isolateGraphicsPlatform } from "./graphics-platform.ts";
+
+isolateGraphicsPlatform();
 
 function tarMember(name: string, contents: Buffer): Buffer {
   const header = Buffer.alloc(512);

@@ -18,6 +18,9 @@ import { OomKillWatch } from "../src/oom-kills.ts";
 import type { TerminalHostDialer } from "../src/terminal-host-link.ts";
 import { PtyTerminal } from "../src/terminal.ts";
 import { unixJobOwnerDialer, type JobOwnerDialer } from "../src/job-owner-link.ts";
+import { isolateGraphicsPlatform } from "./graphics-platform.ts";
+
+isolateGraphicsPlatform();
 
 /**
  * The transport half of a machine, driven against a REAL {@link TerminalHost} through an
