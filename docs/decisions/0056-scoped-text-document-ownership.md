@@ -3,11 +3,13 @@
 Date: 2026-09-29
 Status: accepted
 
-The living specification is [Scene sync](../CONTRACTS.md#scene-sync-yjs-crdt) and
-[plugin topology](../PLUGINS.md). This implements the full ownership transition in
+The living specification is [Scene sync](../CONTRACTS.md#scene-sync-yjs-crdt),
+[placement and retained homes](../CONTRACTS.md#containers-placement-and-the-index), and
+[element/tool authoring](../PLUGINS.md#6-contributions-with-corecanvasdraw-as-the-worked-example).
+This records the full ownership transition required by
 [ADR 0023 §6](0023-plugin-topology.md#6-text-is-its-own-noun-coretext-and-corecanvasnote)
-and [#263](https://github.com/atyrode/manifold/issues/263). The editor dependency is separately
-recorded in [ADR 0055](0055-codemirror-editor.md).
+and [#263](https://github.com/atyrode/manifold/issues/263), not evidence that operational
+acceptance is complete. The editor dependency is recorded in [ADR 0055](0055-codemirror-editor.md).
 
 ## Problem
 
@@ -32,10 +34,11 @@ that plugin's id or vocabulary. This is document-plane storage, not purgeable pl
 second SQLite text value.
 
 The neutral `texts` root is a `Y.Map` of record maps, keyed by `namespace + ":" + id`.
-Namespaces are nonempty ASCII identifier strings of at most 128 characters and contain no
-colon; ids retain the existing scene id bound of 1–128 characters. A record contains its
-namespace, id, one live `Y.Text`, and optional `lastEditedBy`/`lastEditedAt` with the same
-meaning and bounds as element attribution. Its plain text is bounded by `MAX_TEXT_LENGTH`.
+Namespaces match `[A-Za-z0-9][A-Za-z0-9._-]*`, are at most 128 characters and contain no colon;
+ids retain the existing scene id bound of 1–128 characters. Keys split at the first colon,
+so opaque ids may contain colons. A record contains its namespace, id, one live `Y.Text`, and
+optional `lastEditedBy`/`lastEditedAt` with the same meaning and bounds as element attribution.
+Its plain-text projection is bounded by `MAX_TEXT_LENGTH` (20,000 UTF-16 units).
 The existing aggregate document/update limits still apply; the new root is not an escape
 from them. Unsupported embedded values are refused rather than silently stringified. Text
 formatting attributes are preserved as Yjs data even when the plaintext editor does not
@@ -45,8 +48,11 @@ Raw document updates receive the same receiving-boundary validation, accept-then
 server-authored attribution as elements. Unknown namespaces remain data when their owner is
 absent or disabled. The SDK publishes collection changes and document resets, and recognizes
 local transactions made by a native Yjs binding rather than misclassifying every non-SDK
-origin as remote. Each editor owns its collaborative text undo manager; the existing scene
-undo history does not become a second competing editor history.
+origin as remote. Each editor owns one collaborative text undo manager for its binding;
+neither the existing scene undo history nor CodeMirror adds competing history. Local edits
+and undo/redo honor the same text bound without truncation. Refusing an overlength history
+operation leaves live text and history intact; focus/read-only changes do not retire a healthy
+editor's history. Ordinary element-text APIs remain generic scene APIs, not native note storage.
 
 A visual text reference carries an opaque `document` string whose codec is owned by
 `core.text`: the JSON tuple `[homeContainerId, documentId]`. It replaces the legacy `text`
@@ -58,15 +64,19 @@ panel/route after its last visual reference is removed.
 ## Two owners, one editor
 
 `core.text` is a standalone, first-party in-realm plugin with a panel, route, collaborative
-storage and the tileable `text` element. It can also declare the open `text` container
-discipline for new standalone homes; a discipline is contribution data, not a new floor enum.
+storage and the tileable `text` element. Its open `text` container discipline serves new
+standalone homes; this is contribution data, not a new floor enum. Canvas is not a dependency
+of the text owner, and disabling canvas cannot make retained text undiscoverable.
 
 `core.canvas.note` lives under the canvas package, requires `core.canvas` and the peer
 `core.text`, owns the `canvas_note` element and the canvas `text` tool, and borrows the text
 renderer through the registered element outlet. It does not import its peer's implementation
 or keep another editor/body. Its geometry and presentation remain its own data. Document
-creation is opened through the text owner's declared action, with target-specific authority;
-subsequent prose edits use the existing document channel.
+creation uses `core.text.create`, with the structured home as its `scenes:write` authority target.
+The canvas child requests a body only (`reference: false`) before authoring its visual reference;
+subsequent prose edits use the existing document channel. Its borrowed renderer requests intrinsic
+editor height and measures its own wrapper, keeping geometry out of the shared editor. Cancelling
+a late visual write does not silently delete an already committed independent body.
 
 A contributed element may declare `representationOf` another element kind. The base kind
 must exist, must not itself be a representation, and must be owned by the same plugin or a
@@ -78,28 +88,43 @@ and the body remains in its authority home. The existing placement door and its 
 destination checks own this conversion. Browser and server placement decisions use the same
 contribution data.
 
-The native tool registry gains an optional point-authoring attachment. A canvas owns pointer
-coordinates and selection/focus mechanics; the contributed tool owns what it authors, its
-shortcut and optional double-click activation. A missing or disabled tool cannot author a
-hidden note. This removes the parent's text factory/dispatch rather than importing its child.
-The existing draw gesture implementation is not a second text authoring path and is not
-refactored by this change.
+The native tool registry carries optional shortcut and point-authoring attachments keyed by
+manifest-declared tool ids; it does not mount a tool component. A canvas owns pointer coordinates
+and selection/focus mechanics, while the attachment receives the mounted client, container id,
+principal, document point and cancellation signal. The child owns T and double-click activation;
+the parent declares only its own select tool. A missing or disabled tool cannot author a hidden
+note. This removes the parent's text factory/dispatch rather than importing its child.
+The existing continuous draw gesture policy is not a second text authoring path and is not
+replaced by this point API. [PLUGINS.md](../PLUGINS.md#6-contributions-with-corecanvasdraw-as-the-worked-example)
+owns the executable attachment signatures.
 
 ## Native document access and authority
 
-A panel or element must not construct a bearer-backed SDK client. The host exposes a bounded,
-releasable native document-access port, using the existing SDK, connection pool and channel
-protocol. A matching mounted document can be borrowed directly. Foreign homes share host-owned
-leases, which are retired when their consumers release them. Resting foreign previews are
-spectators; an engaged editor uses an occupant channel and remains subject to its home grants.
-The host owns any promotion and client replacement; the plugin receives no credential or
-alternate transport constructor.
+A panel or element must not construct a bearer-backed SDK client. The host exposes
+`useDocumentAccess` above both workspace and plugin routes, using the existing SDK pool and
+channel protocol. A matching same-identity mounted document of sufficient role can be borrowed;
+foreign homes share bounded host-owned leases. Resting previews request spectator access and
+an engaged editor requests occupant access. The host replaces its spectator before opening the
+occupant, retains that engagement while consumers remain, and retires its client on final release
+or identity/origin change. Borrowing never transfers ownership of the original client's lifetime.
+The consumer receives a structural document port and explicit readiness/refusal, never a credential
+or alternate transport constructor.
+
+This native port is trusted in-realm access, not a new isolated-plugin API or a sandbox around a
+mutable `Y.Text`. Native point attachments likewise receive an existing trusted room client.
+Isolated consumers keep their bounded serialized host methods; raw Yjs handles, native point
+contexts and bearers do not cross that boundary. In-realm installation remains code trust;
+neither a structural TypeScript interface nor withholding one property confines such code.
 
 Read admission remains `containers:read` at the home; edits remain `scenes:write` there.
+Protocol 48's `sceneWriteAllowed` is the server-evaluated home write decision, refreshed through
+full-state frames when grants change. `selfCaps()` remains the credential's raw ceiling:
+a wildcard there is not effective authority. Native `canWrite` also requires open, occupant
+access; spectator previews never acquire edit permission just by sharing a promoted entry.
 A destination canvas does not grant access to a referenced foreign body. Inaccessible, missing
 and disabled bodies have explicit noneditable outcomes. A valid credential refused at one
-home must receive the existing channel-local refusal rather than closing unrelated admitted
-channels; credential and protocol failures still close the connection.
+home receives channel-local refusal rather than closing unrelated admitted channels;
+credential and protocol failures still close the connection.
 
 Independent records are **retained content**, not visual census items. Every implicit
 retirement/absorption path checks retained content before deleting a home or retargeting its
@@ -119,9 +144,15 @@ source image intact and names the incompatible input.
 For **each hash-valid, decodable retained revision**, independently:
 
 1. Preserve container, epoch, revision, timestamp and unrelated maps.
-2. Create the owned body under the stable home/id, preserving its own text delta/attributes
-   and existing attribution. A legacy plain string becomes a live `Y.Text` without changing
-   its value. Do not substitute the latest revision's text into older snapshots.
+2. Move the owned body under the stable home/id, preserving that revision's text delta/attributes
+   and existing attribution. Same-epoch snapshots retain the original Y.Text/content Item
+   identities and merge behavior, not merely the same string or a freshly reconstructed delta.
+   The closed-snapshot transformation may use the pinned Yjs codec, never rewrite a live room
+   graph or introduce a second live synchronization implementation. New record-container and
+   constant metadata identities must be stable within the lineage and collision-free against
+   every retained source client id. A legacy plain string needs a stable live-Y.Text conversion;
+   no synthetic Item id may name different content or parents across revisions. Do not substitute
+   the latest revision's text into older snapshots.
 3. Keep element/tile ids and presentation data. Canvas text becomes `canvas_note`; a
    composition's text remains the `text` representation owned by `core.text`. Replace only
    its inline body with the owned document reference.
@@ -170,10 +201,14 @@ The immutable credential ceiling, four planes and plugin import directions are u
 ## Required proof
 
 Prove the receiving boundary with raw updates, local/remote/undo provenance, convergence and
-reset behavior. Exercise an inaccessible foreign home without interrupting an admitted room.
-On disposable historical data, observe identities, references, scoped grants, every disabled
-combination, attribution, reservations/collisions, all valid retained revisions, corruption
-fallback, restart and compatible-binary rollback. Finally exercise actual standalone and
-canvas editing, multiplayer/reconnect behavior, placement between representations and manager
-nesting/enablement, with visual inspection. None of those outcomes is established merely by
-this decision record or a passing typecheck.
+reset behavior. Exercise an inaccessible foreign home without interrupting an admitted room,
+home-effective write denial despite a wildcard raw ceiling, promotion and final-release cleanup,
+and bounded local undo in the presence of peer edits. On disposable historical data, observe
+identities, references, scoped grants, every disabled combination, attribution,
+reservations/collisions, all valid retained revisions, corruption fallback, restart and
+compatible-binary rollback. Merge converted older/newer snapshots with concurrent edits to the
+retained legacy text identity and compare with the equivalent legacy merge; equal initial
+strings do not discharge this obligation. Finally exercise actual standalone and canvas editing,
+multiplayer/reconnect behavior, placement between representations and manager nesting/enablement,
+with visual inspection. None of those outcomes is established merely by this decision record
+or a passing typecheck.
