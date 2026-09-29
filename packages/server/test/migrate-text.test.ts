@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { CreateTextInputSchema } from "@manifold-plugin/text";
+import { textHandlers } from "@manifold-plugin/text/server";
 import { Database } from "bun:sqlite";
 import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -8,6 +10,7 @@ import {
   ELEMENTS_KEY,
   LAYOUT_KEY,
   readElement,
+  readSharedText,
   tileLeaf,
   readTileLayout,
   encodeUpdate,
@@ -317,7 +320,7 @@ describe("migration 49: retained text ownership", () => {
     }
   });
 
-  test("near-capacity history stays joinable and editable without lending migration credit to another epoch", () => {
+  test("near-capacity history stays joinable and editable without lending migration credit to another epoch", async () => {
     const f = fixture();
     let db = f.db;
     const source = legacy();
@@ -395,6 +398,32 @@ describe("migration 49: retained text ownership", () => {
       expect(Buffer.byteLength(socket.sent[0]!)).toBeGreaterThan(SESSION_TRANSPORT_PAYLOAD_BYTES);
       expect(socket.messages()[0]?.type).toBe("init");
       socket.clear();
+      const home = room;
+      const ctx = {
+        rooms: { get: (id: string) => (id === HOME ? home : null) },
+        principal: peer.auth.principal,
+        now: () => runtime.now(),
+        newId: () => runtime.newId(),
+        outsideScope: () => null,
+      };
+      const create = CreateTextInputSchema.parse({
+        home: { kind: "container", containerId: HOME },
+        documentId: "native-with-credit",
+        text: "Admitted within fixed migration credit",
+      });
+      expect(await textHandlers.create(ctx, create)).not.toHaveProperty("refused");
+      expect(readSharedText(room.doc, "core.text", create.documentId!)?.text).toBe(create.text);
+      const nativeState = Y.encodeStateAsUpdate(room.doc);
+      expect(
+        await textHandlers.create(ctx, {
+          ...create,
+          documentId: "beyond-credit",
+          reference: false,
+          text: "x".repeat(20_000),
+        }),
+      ).toHaveProperty("refused");
+      expect(Y.encodeStateAsUpdate(room.doc)).toEqual(nativeState);
+      expect(store.docMigrationBytes(HOME, EPOCH)).toBe(credit);
       const client = decode(Y.encodeStateAsUpdate(room.doc));
       const state = Y.encodeStateVector(client);
       body(client).insert(0, "admitted ");
