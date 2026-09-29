@@ -83,6 +83,11 @@ one canonical delta only if it fits. Refusal leaves content, attribution, histor
 scheduling untouched. Staging keeps deleted structs for conservative undo-history accounting.
 Pending writes count immediately; socket accept-then-repair and the existing single-crossing
 update behavior are retained rather than silently changing that wire contract.
+Admission uses exact full-state encoding after intervening Yjs transactions. Delta lengths
+cannot safely bound encoded growth when old structs split. Transaction-cleanup invalidation
+also preserves pending structs/delete sets in snapshots and full-state delivery without changing
+pending-only revision or snapshot scheduling. This trades an O(document-size) serialization
+after a changed transaction for a sound capacity decision; unchanged state shares the cache.
 
 The canvas child requests a body only (`reference: false`) before authoring its visual reference;
 subsequent prose edits use the existing document channel. Its borrowed renderer requests intrinsic

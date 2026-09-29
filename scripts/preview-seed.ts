@@ -8,6 +8,10 @@ interface VersionRow {
 interface TableRow {
   name: string;
 }
+interface TriggerRow {
+  name: string;
+  sql: string;
+}
 interface FolderRow {
   id: string;
   name: string;
@@ -101,6 +105,11 @@ export function createPreviewSeed(sourcePath: string, destinationPath: string): 
         "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
       )
       .all();
+    const triggers = destination
+      .query<TriggerRow, []>(
+        "SELECT name, sql FROM sqlite_schema WHERE type = 'trigger' ORDER BY name",
+      )
+      .all();
 
     destination.exec("PRAGMA foreign_keys = OFF");
     const insertFolder = destination.query<void, [string, string, number, string | null, number]>(
@@ -117,6 +126,10 @@ export function createPreviewSeed(sourcePath: string, destinationPath: string): 
       [string, string, number, number, string, Uint8Array]
     >("INSERT INTO scene_docs(container_id, epoch, rev, ts, hash, doc) VALUES (?, ?, ?, ?, ?, ?)");
     destination.transaction(() => {
+      // Projection must not run live mutation observers: DELETE can recreate authority
+      // metadata, and restoring representative rows can populate non-allowlisted tables.
+      for (const trigger of triggers)
+        destination.exec(`DROP TRIGGER ${quotedIdentifier(trigger.name)}`);
       for (const table of tables) destination.exec(`DELETE FROM ${quotedIdentifier(table.name)}`);
       destination
         .query("INSERT INTO meta(key, value) VALUES ('schema_version', ?)")
@@ -141,6 +154,7 @@ export function createPreviewSeed(sourcePath: string, destinationPath: string): 
         for (const row of capacities)
           insertCapacity.run(row.container_id, row.epoch, row.migration_bytes);
       }
+      for (const trigger of triggers) destination.exec(trigger.sql);
     })();
 
     const integrity = destination.query<CheckRow, []>("PRAGMA integrity_check").get();
