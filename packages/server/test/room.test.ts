@@ -843,6 +843,50 @@ describe("Room Yjs document consistency", () => {
     fixture.store.close();
   });
 
+  test("a crossing socket update blocks the next write before snapshot cadence", () => {
+    const { room, peer, socket, store, container } = roomFixture();
+    try {
+      room.doc.getMap("padding").set("bytes", new Uint8Array(DOC_BYTES_LIMIT - 1_000));
+      room.flushSnapshot();
+      const saved = store.latestDoc(container.id);
+      expect(
+        room.applyDocUpdate(peer, encodedElements(note("crossing", { text: "x".repeat(2_000) }))),
+      ).toBe(true);
+      const before = Y.encodeStateAsUpdate(room.doc);
+      expect(before.byteLength).toBeGreaterThan(DOC_BYTES_LIMIT);
+      socket.clear();
+      expect(room.applyDocUpdate(peer, encodedElements(note("refused")))).toBe(false);
+      expect(readElement(room.doc, "refused")).toBeNull();
+      expect(Y.encodeStateAsUpdate(room.doc)).toEqual(before);
+      expect(store.latestDoc(container.id)).toEqual(saved);
+      expect(socket.messages()).toEqual([
+        { type: "error", code: "invalid", message: "scene too large" },
+      ]);
+    } finally {
+      room.closeAll(1000, "test complete");
+      room.doc.destroy();
+      store.close();
+    }
+  });
+
+  test("replaced pending content does not spend capacity twice", () => {
+    const { room, peer, store } = roomFixture();
+    try {
+      room.doc.getMap("padding").set("bytes", new Uint8Array(DOC_BYTES_LIMIT - 4_000));
+      room.flushSnapshot();
+      const transient = room.doc.getMap("transient");
+      transient.set("bytes", new Uint8Array(2_000));
+      transient.set("bytes", new Uint8Array(2_000));
+      expect(Y.encodeStateAsUpdate(room.doc).byteLength).toBeLessThan(DOC_BYTES_LIMIT);
+      expect(room.applyDocUpdate(peer, encodedElements(note("fits")))).toBe(true);
+      expect(readElement(room.doc, "fits")?.lastEditedBy).toBe(peer.auth.principal.id);
+    } finally {
+      room.closeAll(1000, "test complete");
+      room.doc.destroy();
+      store.close();
+    }
+  });
+
   test("oversized and malformed updates are rejected without broadcast", () => {
     const fixture = roomFixture();
     fixture.room.applyDocUpdate(

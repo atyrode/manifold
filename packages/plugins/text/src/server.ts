@@ -11,14 +11,19 @@ import {
 import type { z } from "zod";
 import { encodeTextDocument } from "./document.ts";
 import {
-  CreateTextInputSchema,
-  CreateTextResultSchema,
+  type CreateTextInputSchema,
+  type CreateTextResultSchema,
   TextDocumentBodySchema,
   TEXT_NAMESPACE,
 } from "./index.ts";
 
 interface TextCtx {
-  readonly rooms: { get(containerId: string): { readonly doc: Y.Doc } | null };
+  readonly rooms: {
+    get(containerId: string): {
+      readonly doc: Y.Doc;
+      transactDoc(write: (doc: Y.Doc) => void, origin: unknown): boolean;
+    } | null;
+  };
   readonly principal: { readonly id: string };
   now(): number;
   newId(): string;
@@ -68,10 +73,11 @@ export const textHandlers = {
           lastEditedAt: body.lastEditedAt,
         })
       : null;
-    room.doc.transact(() => {
-      createSharedText(room.doc, body, LOCAL_ORIGIN);
-      if (element !== null) writeElement(room.doc, element, LOCAL_ORIGIN);
+    const accepted = room.transactDoc((doc) => {
+      createSharedText(doc, body, LOCAL_ORIGIN);
+      if (element !== null) writeElement(doc, element, LOCAL_ORIGIN);
     }, LOCAL_ORIGIN);
+    if (!accepted) return { refused: "scene too large" };
     return { containerId, documentId, reference };
   },
 };
