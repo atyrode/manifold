@@ -3320,6 +3320,8 @@ depends on it.
   Local edits and undo/redo must respect the text bound without truncation; a refused history
   operation leaves the live body and history intact. Focus/read-only configuration changes
   preserve a healthy editor's history; retiring its body/view destroys the binding and history.
+  A retired view's teardown blur is not a user disengagement: home-role promotion preserves the
+  requested editing state so the replacement view accepts the original activation.
 - Native panels/elements acquire documents through host-owned `useDocumentAccess`, available
   above both workspace and plugin routes. A matching same-identity document of sufficient role
   is borrowed; otherwise bounded, shared leases open the home through the existing SDK pool.
