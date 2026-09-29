@@ -514,6 +514,7 @@ Your component receives
 | `presence`           | Required `readonly Attendance[]`: attendance supplied by the mount site.                                                              |
 | `soloOccupants?`     | `ReadonlyMap<string, PlacementItem>`: the index's single-occupant composition fold, which an embedded renderer cannot compute itself. |
 | `navigate`           | Required `(path: string) => void` navigation callback.                                                                                |
+| `client?`            | Optional mount-owned `SessionClient`: borrow without connecting/closing it. Omission leaves session ownership with the renderer.      |
 | `depth?`             | Container nesting depth: 1 at the root (routed, or a workspace container leaf), 2 when embedded one level down.                       |
 | `routed?`            | Whether this mount is the route (publishes view state and location, owns the viewport, answers Escape). Absent ≡ `depth === 1`.       |
 | `projectionScope?`   | `ProjectionScope \| null`: mounted ancestry and its root attendance client (§6 Mounted location and shared titlebars).                |
@@ -529,6 +530,12 @@ renderer props. The [`ContainerRenderer` outlet](../packages/plugin/src/projecti
 `layout={container.discipline}` and forwards the props above. A missing registration paints
 `unknown`, a disabled registrant paints `disabled`, and a registered row with no component paints
 `unavailable`, using the engine's placeholder rather than asking your component to draw its absence.
+
+Canvas portals keep the existing tile-tree/terminal preview for tile-tree disciplines. Other
+disciplines render through this same outlet with the portal's `client`: the portal owns
+spectator/occupant transitions and final release, while the owner renders its own content.
+Thus a Text-home portal exposes the native document browser/editor rather than an empty tile
+tree. Unplacement removes the representation, not the home or its retained documents.
 
 **Create and place through the existing doors.** `core.index.createContainer` takes
 `{ name, discipline }` ([action declaration](../packages/plugins/index/src/index.ts),
@@ -1383,6 +1390,13 @@ projections after document changes/reset without remounting a healthy editor for
 The host reuses a suitable mounted document or a bounded shared home lease, owns promotion and
 release, and reports missing/forbidden/limit outcomes. Consumers never close the borrowed client.
 The lifecycle and authority rules are [Scene sync](CONTRACTS.md#scene-sync-yjs-crdt).
+
+A container owner receiving a mount-owned `client` passes that document with
+`binding: "mounted"`. This observes exactly the supplied same-identity home pipe: it cannot
+promote, reopen or retain a replacement session when the portal disengages or disappears.
+The mount alone changes roles and closes its pipe. Requested mode and effective home authority
+still constrain `canWrite`; requesting `"occupant"` cannot make a spectator or read-only grant
+writable. A renderer without a supplied client keeps the ordinary shared-home lease behavior.
 
 Use `canWrite` to enable editing. Raw `selfCaps()` remains the credential ceiling:
 `*` or `scenes:write` there does not prove effective authority at the body home.
