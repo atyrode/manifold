@@ -422,7 +422,8 @@ export class SessionClient {
         }
         refs.push(ref);
       }
-      if (refs.length > 0) this.emit("shared_texts_changed", refs, this.classifyOrigin(transaction));
+      if (refs.length > 0)
+        this.emit("shared_texts_changed", refs, this.classifyOrigin(transaction));
     });
     // Canvas containers never write tiles, so this observer stays silent for them and
     // a composition needs no second subscription path.

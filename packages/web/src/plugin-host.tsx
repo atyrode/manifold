@@ -136,6 +136,8 @@ export interface WebPluginDef {
   readonly panels?: Readonly<Record<string, ComponentType<PanelProps>>>;
   readonly sections?: Readonly<Record<string, ComponentType<SectionProps>>>;
   readonly elements?: Readonly<Record<string, ComponentType<never>>>;
+  /** Native shortcuts and point authoring, keyed by manifest-declared tools. */
+  readonly tools?: Readonly<Record<string, Pick<RegisteredTool, "shortcut" | "point">>>;
   /**
    * Who draws a URL space this plugin's manifest CLAIMED, keyed by that claim's first path
    * segment (`uri` serves `/uri/<rest>`). A key the manifest's `contributes.routes` does not
@@ -347,6 +349,8 @@ export function buildBrowserAssembly(
   const overlaySlots: Claims = new Map();
   const workspaceOverlaySlots: Claims = new Map();
   const terminalFacets: Claims = new Map();
+  const toolShortcuts: Claims = new Map();
+  const pointDefaults: Claims = new Map();
 
   for (const entry of roster) {
     const { manifest, enabled } = entry;
@@ -404,12 +408,23 @@ export function buildBrowserAssembly(
       });
     }
     for (const tool of manifest.contributes.tools) {
+      const attachment = isolated ? undefined : def?.tools?.[tool.id];
+      const toolbar = tool.toolbar ?? DEFAULT_TOOLBAR;
+      const claimant = `${manifest.id}.${tool.id}`;
+      if (attachment?.shortcut !== undefined) {
+        claim(toolShortcuts, `${toolbar}:${attachment.shortcut.toLowerCase()}`, claimant);
+      }
+      if (attachment?.point?.doubleClick === true) {
+        claim(pointDefaults, toolbar, claimant);
+      }
       tools.push({
         id: tool.id,
         plugin: manifest.id,
         title: tool.title,
-        toolbar: tool.toolbar ?? DEFAULT_TOOLBAR,
+        toolbar,
         enabled,
+        ...(attachment?.shortcut === undefined ? {} : { shortcut: attachment.shortcut }),
+        ...(attachment?.point === undefined ? {} : { point: attachment.point }),
       });
     }
     /*
@@ -496,7 +511,7 @@ export function buildBrowserAssembly(
   /*
     THE REFUSAL, in the engine's own words and for the engine's own reason: a name two plugins
     claimed is an authoring bug, and the answer is both offenders rather than a winner whose
-    identity depends on registration order (`AssemblyError`). These five channels are checked
+    identity depends on registration order (`AssemblyError`). These channels are checked
     HERE because the server never sees them — a renderer, an overlay slot and the terminal
     facet are browser registrations, and a route's manifest row is re-checked for the reason
     `assembleRoster` is re-runnable at all: the browser composes a roster too.
@@ -511,6 +526,8 @@ export function buildBrowserAssembly(
   reportDuplicates(overlaySlots, "overlay", problems);
   reportDuplicates(workspaceOverlaySlots, "workspace overlay", problems);
   reportDuplicates(terminalFacets, "facet", problems);
+  reportDuplicates(toolShortcuts, "tool shortcut", problems);
+  reportDuplicates(pointDefaults, "double-click point tool", problems);
   if (problems.length > 0) throw new AssemblyError(problems);
 
   // Array#sort is stable, so equal orders keep the roster's own order — the same tiebreak

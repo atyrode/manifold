@@ -9,7 +9,10 @@ type HistoryItem = HistoryStack[number];
 function copyDeletionSet(source: HistoryItem["deletions"]): HistoryItem["deletions"] {
   const copy = Y.createDeleteSet();
   for (const [client, ranges] of source.clients) {
-    copy.clients.set(client, ranges.map(({ clock, len }) => ({ clock, len })));
+    copy.clients.set(
+      client,
+      ranges.map(({ clock, len }) => ({ clock, len })),
+    );
   }
   return copy;
 }
@@ -35,14 +38,22 @@ function copyRedoLinks(source: Y.Doc, copy: Y.Doc): void {
       for (const item of structs) {
         if (!(item instanceof Y.Item) || item.redone === null) continue;
         const copiedItem = Y.getItemCleanStart(transaction, item.id);
-        Y.getItemCleanEnd(transaction, copy.store, Y.createID(item.id.client, item.id.clock + item.length - 1));
+        Y.getItemCleanEnd(
+          transaction,
+          copy.store,
+          Y.createID(item.id.client, item.id.clock + item.length - 1),
+        );
         copiedItem.redone = Y.createID(item.redone.client, item.redone.clock);
       }
     }
   });
 }
 
-function previewHistoryLength(text: Y.Text, history: Y.UndoManager, direction: TextHistoryDirection): number {
+function previewHistoryLength(
+  text: Y.Text,
+  history: Y.UndoManager,
+  direction: TextHistoryDirection,
+): number {
   const copy = new Y.Doc({ gc: false });
   let preview: Y.UndoManager | null = null;
   try {

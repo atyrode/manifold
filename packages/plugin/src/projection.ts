@@ -17,6 +17,7 @@ import type {
   Toolbar,
   LocationPath,
   ManifoldRef,
+  Principal,
 } from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
 
@@ -104,15 +105,30 @@ export interface RegisteredElement {
   readonly Component: ComponentType<never> | null;
 }
 
+/** A native point tool receives the mounted room, never a bearer-backed host constructor. */
+export interface PointToolContext {
+  readonly containerId: string;
+  readonly client: SessionClient;
+  readonly principal: Principal;
+  readonly point: Readonly<{ x: number; y: number }>;
+  /** A retired mount or superseded gesture must not author a late visual reference. */
+  readonly signal: AbortSignal;
+}
+
+export type PointToolOutcome =
+  | { readonly ok: true; readonly elementId: string }
+  | { readonly ok: false; readonly reason: string };
+
+/** Native authoring attachment; the mount site owns coordinates, selection and feedback. */
+export interface PointTool {
+  readonly doubleClick?: boolean;
+  createAt(context: PointToolContext): Promise<PointToolOutcome>;
+}
+
 /**
- * A contributed toolbar mode. Modes carry no component — a tool is a NAME the ref that
- * owns the toolbar switches on — so the registry publishes the vocabulary and nothing else.
- * A disabled tool stays in the list, `enabled: false`, so the strip that draws it can leave
- * it out while the composition still explains why (ADR 0013 §4: chrome hides, data never).
- *
- * `toolbar` is which strip this tool belongs to (`Toolbar`, `@manifold/protocol`) — the
- * composed, defaulted form of the manifest row's optional field, so every reader filters on
- * one closed value instead of re-applying the "absent means canvas" rule itself.
+ * A contributed toolbar mode. Disabled modes remain discoverable but leave the strip.
+ * Native point tools attach their authoring behavior here; continuous gestures retain
+ * their existing mount-site interaction policy.
  */
 export interface RegisteredTool {
   readonly id: string;
@@ -120,6 +136,8 @@ export interface RegisteredTool {
   readonly title: string;
   readonly toolbar: Toolbar;
   readonly enabled: boolean;
+  readonly shortcut?: string;
+  readonly point?: PointTool;
 }
 
 /**

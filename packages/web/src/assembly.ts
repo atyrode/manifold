@@ -2,13 +2,14 @@ import { AgentsSection, SessionsSection } from "@manifold-plugin/access/web";
 import { ArrangeOverlay, ARRANGE_BINDINGS } from "@manifold-plugin/arrange/web";
 import { BrandRow } from "@manifold-plugin/brand/web";
 import { canvasWebPlugin } from "@manifold-plugin/canvas/web";
+import { canvasNoteWeb } from "@manifold-plugin/canvas/note/web";
 import { CommandsOverlay, COMMANDS_BINDINGS } from "@manifold-plugin/commands/web";
 import { compositionsWebPlugin } from "@manifold-plugin/compositions/web";
 import { debugWebPlugin } from "@manifold-plugin/debug/web";
 import { drawWebPlugin } from "@manifold-plugin/canvas/draw/web";
 import { KeysRow } from "@manifold-plugin/keys/web";
 import { MachinesSection } from "@manifold-plugin/machines/web";
-import { notesWebPlugin } from "@manifold-plugin/notes/web";
+import { textWeb } from "@manifold-plugin/text/web";
 import { PluginManagerSection } from "@manifold-plugin/plugin-manager/web";
 import { presenceWebPlugin } from "@manifold-plugin/presence/web";
 import { terminalsWebPlugin } from "@manifold-plugin/terminals/web";
@@ -232,7 +233,8 @@ export const WEB_PLUGIN_DEFS: readonly WebPluginDef[] = [
   canvasWebPlugin,
   compositionsWebPlugin,
   drawWebPlugin,
-  notesWebPlugin,
+  canvasNoteWeb,
+  textWeb,
   presenceWebPlugin,
   terminalsWebPlugin,
   uriWebPlugin,

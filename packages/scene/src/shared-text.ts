@@ -44,7 +44,8 @@ function validatedText(
   }
   // toString() silently drops embeds. Validate the live body before projecting it, while
   // leaving all text formatting attributes in place for other editors and future reads.
-  if (text.toDelta().some((part) => typeof part.insert !== "string")) return null;
+  if (text.toDelta().some((part: { insert: unknown }) => typeof part.insert !== "string"))
+    return null;
   const fields: Record<string, unknown> = Object.fromEntries(map.entries());
   fields["text"] = text.toString();
   const parsed = SharedTextRecordSchema.safeParse(fields);

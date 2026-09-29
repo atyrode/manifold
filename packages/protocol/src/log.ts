@@ -138,6 +138,7 @@ export const LOG_EVENTS = [
   "scene_doc_save_failed",
   "scene_element_repaired",
   "scene_state_exceeds_transport",
+  "scene_text_repaired",
   "snapshot_final_flush_failed",
   "snapshot_shutdown_flush_failed",
 

@@ -676,9 +676,9 @@ describe("SessionGateway channel multiplexing", () => {
         },
         fixture.auth.authenticate(fixture.ownerKey),
       ).token;
-      expect(fixture.auth.allows(fixture.auth.authenticate(token), "containers:read", foreign.id)).toBe(
-        false,
-      );
+      expect(
+        fixture.auth.allows(fixture.auth.authenticate(token), "containers:read", foreign.id),
+      ).toBe(false);
       const socket = new FakeSocket();
       const witness = new FakeSocket();
       join(fixture.gateway, "witness", witness, fixture.container.id, fixture.ownerKey);

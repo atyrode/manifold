@@ -66,11 +66,7 @@ function documentPort(document: SessionClient): ElementDocument {
     sharedTexts: (namespace) => document.sharedTexts(namespace),
     elementText: (id) => document.elementText(id),
     transact: (fn) => {
-      if (
-        document.spectator ||
-        document.status !== "open" ||
-        !document.sceneWriteAllowed
-      ) {
+      if (document.spectator || document.status !== "open" || !document.sceneWriteAllowed) {
         throw new Error("document is read-only");
       }
       document.transact(fn);
@@ -88,10 +84,7 @@ function documentState(document: SessionClient, revision: number): DocumentAcces
   return {
     state: "ready",
     doc: documentPort(document),
-    canWrite:
-      !document.spectator &&
-      document.status === "open" &&
-      document.sceneWriteAllowed,
+    canWrite: !document.spectator && document.status === "open" && document.sceneWriteAllowed,
     revision,
   };
 }
@@ -235,11 +228,7 @@ export class NativeDocumentAccess implements DocumentAccessPort {
       entry = new DocumentEntry(mode, (retiring) => {
         // A caller-owned canvas may retire in the same commit that its standalone reader
         // remains mounted. Transfer only a normally closed, still-held logical home.
-        if (
-          !this.retired &&
-          this.homes.get(home) === retiring &&
-          retiring.listeners.size > 0
-        ) {
+        if (!this.retired && this.homes.get(home) === retiring && retiring.listeners.size > 0) {
           retiring.open(this.url, this.token, home, retiring.mode);
         }
       });
@@ -341,7 +330,10 @@ export function NativeDocumentAccessProvider({
   readonly children: ReactNode;
 }): ReactElement {
   const url = sessionUrl();
-  const access = useMemo(() => new NativeDocumentAccess(url, identity.token), [url, identity.token]);
+  const access = useMemo(
+    () => new NativeDocumentAccess(url, identity.token),
+    [url, identity.token],
+  );
   const lifetime = useRef<{ access: NativeDocumentAccess; generation: object } | null>(null);
   useLayoutEffect(() => {
     const generation = {};

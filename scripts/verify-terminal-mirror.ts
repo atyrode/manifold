@@ -739,11 +739,10 @@ try {
     target.evaluate<number>(
       `document.querySelectorAll('.react-flow__node[data-id="${elementId}"] .portal__tile').length`,
     );
-  // The sidebar's container index labels a composition's row "Open composition <name>". The
-  // canvas portal's own maximize button carries the same wording, so a row assertion scopes to
-  // `.sidebar-row` — otherwise a portal on screen could satisfy a check about the sidebar.
+  // Scope to the sidebar: a portal representing the same container must not satisfy a
+  // check about whether that container is still listed in the index.
   const rowFor = (name: string): string =>
-    JSON.stringify(`.sidebar-row [aria-label="Open composition ${name}"]`);
+    JSON.stringify(`.sidebar-row [aria-label="Open Composition ${name}"]`);
 
   watcher = new Browser();
   await watcher.launch();
@@ -769,7 +768,8 @@ try {
     text: "EMBEDDED_CANVAS_LIVE",
     reference: false,
   });
-  if (!createdText.ok) throw new Error(`embedded text creation refused: ${createdText.denial.message}`);
+  if (!createdText.ok)
+    throw new Error(`embedded text creation refused: ${createdText.denial.message}`);
   const embeddedDocument = CreateTextResultSchema.parse(createdText.result);
   const documentHome = decodeTextDocument(embeddedDocument.reference);
   if (
@@ -778,16 +778,21 @@ try {
     documentHome?.homeContainerId !== embeddedContainerId ||
     documentHome.documentId !== embeddedDocumentId
   ) {
-    throw new Error("embedded text creation changed the requested document identity or authority home");
+    throw new Error(
+      "embedded text creation changed the requested document identity or authority home",
+    );
   }
   await until(
     () =>
-      embedded!.sharedText(TEXT_NAMESPACE, embeddedDocumentId)?.toString() === "EMBEDDED_CANVAS_LIVE" &&
-      embedded!.sharedTexts(TEXT_NAMESPACE).get(embeddedDocumentId)?.text === "EMBEDDED_CANVAS_LIVE",
+      embedded!.sharedText(TEXT_NAMESPACE, embeddedDocumentId)?.toString() ===
+        "EMBEDDED_CANVAS_LIVE" &&
+      embedded!.sharedTexts(TEXT_NAMESPACE).get(embeddedDocumentId)?.text ===
+        "EMBEDDED_CANVAS_LIVE",
     5_000,
     "independent embedded body admitted at its requested home",
   );
-  if (embedded.elements.size !== 0) throw new Error("body-only creation authored a visual reference");
+  if (embedded.elements.size !== 0)
+    throw new Error("body-only creation authored a visual reference");
   embedded.transact((tx) =>
     tx.create({
       id: embeddedDocumentId,
@@ -854,21 +859,18 @@ try {
     if (body === null) throw new Error("embedded document body disappeared after placement");
     body.insert(body.length, "\nEMBEDDED_CANVAS_UPDATED");
   });
-  const embeddedUpdated = await settles(
-    async () => {
-      const note = embedded!.elements.get(embeddedDocumentId);
-      return (
-        note?.type === "canvas_note" &&
-        embedded!.sharedTexts(TEXT_NAMESPACE).get(embeddedDocumentId)?.text === updatedEmbeddedText &&
-        elementString(note, "document") === embeddedDocument.reference &&
-        (await browser!.evaluate<boolean>(
-          `[...(document.querySelector(${embeddedEditor})?.querySelectorAll(".cm-line") ?? [])]
+  const embeddedUpdated = await settles(async () => {
+    const note = embedded!.elements.get(embeddedDocumentId);
+    return (
+      note?.type === "canvas_note" &&
+      embedded!.sharedTexts(TEXT_NAMESPACE).get(embeddedDocumentId)?.text === updatedEmbeddedText &&
+      elementString(note, "document") === embeddedDocument.reference &&
+      (await browser!.evaluate<boolean>(
+        `[...(document.querySelector(${embeddedEditor})?.querySelectorAll(".cm-line") ?? [])]
             .map((line) => line.textContent ?? "").join("\\n") === ${JSON.stringify(updatedEmbeddedText)}`,
-        ))
-      );
-    },
-    15_000,
-  );
+      ))
+    );
+  }, 15_000);
   check(
     "the embedded canvas renders later edits to the body in its original home",
     embeddedUpdated,
@@ -881,7 +883,7 @@ try {
   */
   const containerTileEnter = await pointIn(
     browser,
-    `.canvas-header [aria-label="Open canvas mirror-gate-embedded"]`,
+    `.canvas-header [aria-label="Open Canvas mirror-gate-embedded"]`,
     0.5,
     0.5,
   );
@@ -1431,7 +1433,7 @@ try {
     await browser.goto(`${origin}/p/${gridTerminal.containerId}`);
     await until(async () => (await gridState()).bottom, 15_000, "full-size TUI painted");
     await browser.evaluate(
-      `document.querySelector('[aria-label="Open canvas terminal-mirror-gate"]').click()`,
+      `document.querySelector('[aria-label="Open Canvas terminal-mirror-gate"]').click()`,
     );
     await until(
       () => browser!.evaluate<boolean>("document.querySelector('.react-flow') !== null"),
@@ -1439,7 +1441,7 @@ try {
       "index navigation left the TUI",
     );
     await browser.evaluate(
-      `document.querySelector('[aria-label="Open canvas grid-navigation-regression"]').click()`,
+      `document.querySelector('[aria-label="Open Canvas grid-navigation-regression"]').click()`,
     );
     await until(async () => (await gridState()).bottom, 15_000, "spectator snapshot painted");
     const beforeTick = (await gridState()).tick;

@@ -1992,9 +1992,13 @@ export class ServerStore {
 
   /** Fixed server-certified migration growth; ordinary saves never increase this credit. */
   docMigrationBytes(containerId: string, epoch: string): number {
-    return this.db.query<{ migration_bytes: number }, [string, string]>(
-      "SELECT migration_bytes FROM scene_doc_capacity WHERE container_id = ? AND epoch = ?",
-    ).get(containerId, epoch)?.migration_bytes ?? 0;
+    return (
+      this.db
+        .query<{ migration_bytes: number }, [string, string]>(
+          "SELECT migration_bytes FROM scene_doc_capacity WHERE container_id = ? AND epoch = ?",
+        )
+        .get(containerId, epoch)?.migration_bytes ?? 0
+    );
   }
 
   latestDoc(

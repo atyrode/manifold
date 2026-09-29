@@ -7,7 +7,9 @@
     "./web": "./src/web.tsx",
     "./contract": "./src/contract.ts",
     "./draw": "./draw/src/index.ts",
-    "./draw/web": "./draw/src/web.tsx"
+    "./draw/web": "./draw/src/web.tsx",
+    "./note": "./note/src/index.ts",
+    "./note/web": "./note/src/web.tsx"
   },
   "dependencies": {
     "@manifold/plugin": "workspace:*",

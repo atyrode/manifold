@@ -24,9 +24,18 @@ import {
   type ReactFlowInstance,
 } from "@xyflow/react";
 import "@xyflow/react/dist/base.css";
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ComponentType,
+} from "react";
 import { CanvasToolbar } from "./canvas-toolbar.tsx";
-import { toolFlags, toolForKey } from "./canvas-tool.ts";
+import { toolFlags } from "./canvas-tool.ts";
 import type { CanvasTool } from "./contract.ts";
 import {
   ContainerOverlayOutlet,
@@ -73,6 +82,7 @@ import {
   type ProjectionPlaceholderProps,
   type ProjectionState,
   type RegisteredElement,
+  type RegisteredTool,
 } from "@manifold/plugin/hooks";
 import { ItemIcon, NodeTitleBar, RemoteCursorIcon } from "@manifold/ui";
 import { MONO_PORTAL_CLASS_SELECTOR, PORTAL_DRAG_HANDLE, PortalNode } from "./portal-element.tsx";
@@ -86,9 +96,7 @@ import {
   reconcileNodes,
   createDrawElement,
   createPortalElement,
-  createTextElement,
   projectElements,
-  TEXT_COLLABORATIVE_FIELDS,
   type ProjectedNode,
 } from "./canvas-scene.ts";
 import { loadViewport, saveViewport } from "./viewport-memory.ts";
@@ -105,7 +113,7 @@ import type { ChannelRole } from "./portal-engagement.ts";
  * is ADDRESSING — the projection of one container inside another — so it belongs to whoever
  * draws the canvas rather than to the element registry, which exists to give a STRANGER's
  * element a resizer and a commit path. Everything else on the canvas arrives from the
- * composition, `text` and `draw` included.
+ * composition, including notes and strokes.
  */
 const CANVAS_NODE_TYPES: NodeTypes = {
   portal: PortalNode,
@@ -498,13 +506,16 @@ export function CanvasView({
   const [heldTool, setTool] = useState<CanvasTool>("select");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [activeStrokePoints, setActiveStrokePoints] = useState<readonly number[] | null>(null);
-  const connectStartedRef = useRef(false);
   const remoteCursors = useRemoteCursors(client, "flow");
   const lastClientRef = useRef<{ readonly x: number; readonly y: number } | null>(null);
   const cursorLastSentRef = useRef(0);
   const viewportLastSentRef = useRef(0);
   const flowRef = useRef<ReactFlowInstance<Node, never> | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
+  const pendingPoint = useRef<{
+    readonly controller: AbortController;
+    readonly tool: RegisteredTool;
+  } | null>(null);
   const strokeRef = useRef<{
     readonly id: string;
     readonly pointerId: number;
@@ -553,9 +564,37 @@ export function CanvasView({
     `select` is this plugin's own manifest row, so it needs no special case: a canvas that is
     rendering at all has an enabled `core.canvas`, and therefore an enabled `select`.
   */
-  const tool = projection.tools.some((candidate) => candidate.enabled && candidate.id === heldTool)
-    ? heldTool
-    : "select";
+  const selectedTool = projection.tools.find(
+    (candidate) => candidate.enabled && candidate.toolbar === "canvas" && candidate.id === heldTool,
+  );
+  const tool = selectedTool?.id ?? "select";
+  const cancelPoint = useCallback((): void => {
+    pendingPoint.current?.controller.abort();
+    pendingPoint.current = null;
+  }, []);
+  const chooseTool = useCallback(
+    (next: CanvasTool): void => {
+      cancelPoint();
+      setTool(next);
+    },
+    [cancelPoint],
+  );
+  useLayoutEffect(() => cancelPoint, [cancelPoint]);
+  useEffect(() => client.on("scene_reset", cancelPoint), [client, cancelPoint]);
+  useLayoutEffect(() => {
+    const pending = pendingPoint.current;
+    if (pending === null) return;
+    if (
+      !projection.tools.some(
+        (candidate) =>
+          candidate.enabled &&
+          candidate.id === pending.tool.id &&
+          candidate.plugin === pending.tool.plugin &&
+          candidate.point === pending.tool.point,
+      )
+    )
+      cancelPoint();
+  }, [projection.tools, cancelPoint]);
 
   /**
    * VIEW STATE, published (A2). One subscription, declared FIRST so the mount-time writes
@@ -627,8 +666,6 @@ export function CanvasView({
   useEffect(() => () => gestureStream.cancel(), [gestureStream]);
 
   useEffect(() => {
-    if (connectStartedRef.current) return;
-    connectStartedRef.current = true;
     const offStatus = client.on("status", (status) => {
       if (status !== "closed" || client.connectionError === null) return;
       // Sticky: the canvas stays degraded until this is resolved, so the notice must not
@@ -1521,22 +1558,38 @@ export function CanvasView({
     return client.terminals.size;
   }, [client, sceneRevision]);
 
-  const createTextAt = useCallback(
-    (clientX: number, clientY: number): void => {
+  const createPointAt = useCallback(
+    async (selected: RegisteredTool, clientX: number, clientY: number): Promise<void> => {
       const flow = flowRef.current;
-      if (flow === null) return;
-      const id = crypto.randomUUID();
-      const position = flow.screenToFlowPosition({ x: clientX, y: clientY });
-      client.transact((tx) => {
-        tx.create(
-          createTextElement(id, position, tx.nextZIndex(), host.principal.color),
-          TEXT_COLLABORATIVE_FIELDS,
-        );
-      });
-      setEditingId(id);
+      const point = selected.point;
+      if (flow === null || point === undefined || pendingPoint.current !== null) return;
+      if (client.status !== "open" || !client.sceneWriteAllowed) {
+        notify("This canvas is not writable");
+        return;
+      }
+      const pending = { controller: new AbortController(), tool: selected };
+      pendingPoint.current = pending;
       setTool("select");
+      try {
+        const outcome = await point.createAt({
+          client,
+          containerId,
+          principal: host.principal,
+          point: flow.screenToFlowPosition({ x: clientX, y: clientY }),
+          signal: pending.controller.signal,
+        });
+        if (pendingPoint.current !== pending || pending.controller.signal.aborted) return;
+        if (outcome.ok) setEditingId(outcome.elementId);
+        else notify(outcome.reason);
+      } catch (reason: unknown) {
+        if (!pending.controller.signal.aborted) {
+          notify(reason instanceof Error ? reason.message : "Could not create this item");
+        }
+      } finally {
+        if (pendingPoint.current === pending) pendingPoint.current = null;
+      }
     },
-    [client, host.principal.color, setEditingId, setTool],
+    [client, containerId, host.principal, notify],
   );
 
   const completeStroke = useCallback(
@@ -1570,7 +1623,7 @@ export function CanvasView({
     [client, gestureStream, host.principal.color, setActiveStrokePoints, setTool],
   );
 
-  const flags = toolFlags(tool);
+  const flags = toolFlags(tool, selectedTool?.point !== undefined);
 
   /**
    * The canvas's stable actions. High-cadence gesture snapshots use a separate context,
@@ -1758,15 +1811,29 @@ export function CanvasView({
           tabIndex={0}
           onDoubleClick={(event) => {
             if (
+              tool !== "select" ||
               !(event.target instanceof Element) ||
               !event.target.classList.contains("react-flow__pane")
             ) {
               return;
             }
-            createTextAt(event.clientX, event.clientY);
+            const defaultPoint = projection.tools.find(
+              (candidate) =>
+                candidate.enabled &&
+                candidate.toolbar === "canvas" &&
+                candidate.point?.doubleClick === true,
+            );
+            if (defaultPoint !== undefined) {
+              void createPointAt(defaultPoint, event.clientX, event.clientY);
+            }
           }}
           onKeyDown={(event) => {
             if (isTypingTarget(event.target)) return;
+            if (event.key === "Escape" && pendingPoint.current !== null) {
+              event.preventDefault();
+              cancelPoint();
+              return;
+            }
             const modifier = event.ctrlKey || event.metaKey;
             if (modifier && event.key.toLowerCase() === "z") {
               event.preventDefault();
@@ -1775,15 +1842,15 @@ export function CanvasView({
               return;
             }
             if (!modifier && !event.altKey) {
-              const nextTool = toolForKey(event.key);
-              // A shortcut naming a tool means nothing while its plugin is off: the key binding
-              // is this ref's, the vocabulary is the composition's.
-              if (
-                nextTool !== null &&
-                projection.tools.some((candidate) => candidate.enabled && candidate.id === nextTool)
-              ) {
+              const nextTool = projection.tools.find(
+                (candidate) =>
+                  candidate.enabled &&
+                  candidate.toolbar === "canvas" &&
+                  candidate.shortcut?.toLowerCase() === event.key.toLowerCase(),
+              );
+              if (nextTool !== undefined) {
                 event.preventDefault();
-                setTool(nextTool);
+                chooseTool(nextTool.id);
                 return;
               }
             }
@@ -1792,12 +1859,9 @@ export function CanvasView({
             if (selected.length === 0) return;
             event.preventDefault();
             /*
-            One verb for every species now: Delete removes the REPRESENTATION. A note or
-            a stroke exists nowhere else, so that ends it; a portal's portal is only a
-            reference, so the composition behind it lives on — and a terminal whose last
-            reference goes with it is simply unplaced, since "unplaced" is derived from
-            nothing pointing at its home rather than stored anywhere. That is why this is
-            an ordinary undoable scene edit and no longer a server round trip.
+            Delete removes the visual representation. A text document or a portal's home
+            survives independently; inline strokes end with their representation. This
+            remains an ordinary undoable scene edit, never a hidden owner-resource delete.
           */
             tombstone(selected.map((node) => node.id));
           }}
@@ -1958,7 +2022,7 @@ export function CanvasView({
               />
             </>
           ) : null}
-          <CanvasToolbar tool={tool} onChange={setTool} />
+          <CanvasToolbar tool={tool} onChange={chooseTool} />
           <CanvasProviders value={context} gestures={remoteGestures}>
             {/* Laptop-native gestures (Excalidraw convention): two-finger scroll pans,
               pinch zooms (browsers report trackpad pinch as ctrl+wheel), and plain
@@ -1973,7 +2037,9 @@ export function CanvasView({
               defaultViewport={initialViewport}
               onPaneClick={(event) => {
                 publishHere();
-                if (tool === "text") createTextAt(event.clientX, event.clientY);
+                if (selectedTool?.point !== undefined) {
+                  void createPointAt(selectedTool, event.clientX, event.clientY);
+                }
               }}
               onMove={(_event, viewport) => publishViewport(viewport, false)}
               onMoveEnd={(_event, viewport) => {

@@ -585,7 +585,13 @@ describe("migration 9: solo compositions", () => {
         type: "canvas_note",
         document: JSON.stringify([CANVAS_CONTAINER, NOTE_ELEMENT.id]),
       });
-      expect(canvas.getMap<Y.Map<unknown>>("texts").get(`core.text:${NOTE_ELEMENT.id}`)?.get("text")?.toString()).toBe(noteText);
+      expect(
+        canvas
+          .getMap<Y.Map<unknown>>("texts")
+          .get(`core.text:${NOTE_ELEMENT.id}`)
+          ?.get("text")
+          ?.toString(),
+      ).toBe(noteText);
 
       // A new revision on the SAME epoch: a client resuming from a pre-migration revision
       // resyncs against this instead of silently disagreeing with the server.
@@ -1462,10 +1468,16 @@ CREATE TABLE terminals(id TEXT PRIMARY KEY, machine_id TEXT, container_id TEXT,
 INSERT INTO meta(key, value) VALUES ('schema_version', '18');
 `);
   seedPostV16Authority(db, path);
-  db.query("INSERT INTO containers(id, name, created_at, discipline) VALUES (?, ?, 0, ?)")
-    .run("composition-16", "Composition", "composition");
-  db.query("INSERT INTO containers(id, name, created_at, discipline) VALUES (?, ?, 0, ?)")
-    .run("canvas-16", "Canvas", "canvas");
+  db.query("INSERT INTO containers(id, name, created_at, discipline) VALUES (?, ?, 0, ?)").run(
+    "composition-16",
+    "Composition",
+    "composition",
+  );
+  db.query("INSERT INTO containers(id, name, created_at, discipline) VALUES (?, ?, 0, ?)").run(
+    "canvas-16",
+    "Canvas",
+    "canvas",
+  );
   const doc = createSceneDoc();
   doc.clientID = 1601;
   const refs = [
@@ -1617,7 +1629,10 @@ describe("migration 19: contributed element refs", () => {
         const { text: _text, ...notePresentation } = originalElements["el-note"];
         expect(migrated.getMap(ELEMENTS_KEY).toJSON()).toEqual({
           ...originalElements,
-          "el-note": { ...notePresentation, document: JSON.stringify([before.container_id, "el-note"]) },
+          "el-note": {
+            ...notePresentation,
+            document: JSON.stringify([before.container_id, "el-note"]),
+          },
         });
         expect(migrated.getMap("plugin-state").toJSON()).toEqual(
           original.getMap("plugin-state").toJSON(),
@@ -1629,9 +1644,10 @@ describe("migration 19: contributed element refs", () => {
         const noteAfter = migrated.getMap<Y.Map<unknown>>(ELEMENTS_KEY).get("el-note");
         for (const field of ["text", "caption"]) {
           const textBefore = noteBefore?.get(field);
-          const textAfter = field === "text"
-            ? migrated.getMap<Y.Map<unknown>>("texts").get("core.text:el-note")?.get("text")
-            : noteAfter?.get(field);
+          const textAfter =
+            field === "text"
+              ? migrated.getMap<Y.Map<unknown>>("texts").get("core.text:el-note")?.get("text")
+              : noteAfter?.get(field);
           if (!(textBefore instanceof Y.Text) || !(textAfter instanceof Y.Text)) {
             throw new Error("migration replaced collaborative text");
           }

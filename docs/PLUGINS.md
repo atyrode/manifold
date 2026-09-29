@@ -102,11 +102,11 @@ else from the tree — server internals, web internals, another plugin — fails
 
 `@manifold/plugin` has three entries, and which one you reach for is a real distinction:
 
-| entry                    | what it holds                                                                                                                                                                                               |
-| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@manifold/plugin`       | the registry and the contracts — manifests, `defineAction`, host types. Platform-free, because the SERVER assembles through it.                                                                             |
+| entry                    | what it holds                                                                                                                                                                                                                                             |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@manifold/plugin`       | the registry and the contracts — manifests, `defineAction`, host types. Platform-free, because the SERVER assembles through it.                                                                                                                           |
 | `@manifold/plugin/hooks` | plane mechanism in a browser: the carry/drop vocabulary, the element host, `useDocumentAccess`, native point-tool types, `usePolledResource`, the one tile tree, `useNotice`, the published vantage store (`setVantage`), `requestRebind`, `keyCapLabel`. |
-| `@manifold/plugin/ui`    | the browser-only generated `DoorForm`: give it an action name and `HostServices`; it resolves the current published schema and dispatches through the same host. Its rjsf engine loads lazily.              |
+| `@manifold/plugin/ui`    | the browser-only generated `DoorForm`: give it an action name and `HostServices`; it resolves the current published schema and dispatches through the same host. Its rjsf engine loads lazily.                                                            |
 
 `@manifold/ui` is the third layer and its own package: `ItemIcon`/`ControlIcon`, `NodeTitleBar`,
 the layout algebra (§7b), `Disclosure`, `ScrollRegion`, `Popover`, `Chip`, `KeyValueList`,
