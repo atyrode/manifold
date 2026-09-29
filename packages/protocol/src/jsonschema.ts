@@ -33,6 +33,7 @@ import {
   type PluginRoster,
 } from "./plugin.ts";
 import { ClientMessageSchema, ServerMessageSchema } from "./session.ts";
+import { SharedTextRecordSchema, SharedTextRefSchema } from "./shared-text.ts";
 import { PROTOCOL_VERSION } from "./version.ts";
 import {
   MachineHalfSchema,
@@ -113,6 +114,10 @@ export function buildProtocolJsonSchema(extras?: ProtocolExtras): Record<string,
     session: {
       client: z.toJSONSchema(ClientMessageSchema),
       server: z.toJSONSchema(ServerMessageSchema),
+    },
+    sharedText: {
+      ref: z.toJSONSchema(SharedTextRefSchema),
+      record: z.toJSONSchema(SharedTextRecordSchema),
     },
     machine: {
       agent: z.toJSONSchema(AgentMessageSchema),
