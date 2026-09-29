@@ -17,13 +17,14 @@ import { AuthService, ServiceError } from "../src/auth.ts";
 import { openDatabase, SCHEMA_VERSION } from "../src/db.ts";
 import { JOB_SCHEDULE_SCHEMA_STATEMENTS } from "../src/job-schedules.ts";
 import { migrateToGrantRows } from "../src/migrate-grants.ts";
-import { migrateToCanonLexicon } from "../src/migrate-lexicon.ts";
+import { migrateToCanonLexicon, migrateToElementRefs } from "../src/migrate-lexicon.ts";
 import { ServerStore, sha256Hex } from "../src/stores.ts";
 import { FakeRuntime } from "./helpers.ts";
 import {
   AUTHORITY_V37_FIXTURE_SQL,
   removeScopedAuthority,
 } from "./authority-migration-fixtures.ts";
+import { seedHistoricalSceneTables } from "./migration-fixtures.ts";
 
 const LEGACY_TOKEN_COLUMNS =
   "id, hash, principal_id, caps, container_id, created_at, revoked_at, minted_by, grant_id, expires_at";
@@ -1471,19 +1472,13 @@ function seedPostV16Authority(db: Database, path: string): void {
     .query<{ value: string }, []>("SELECT value FROM meta WHERE key = 'schema_version'")
     .get();
   if (version === null) throw new Error("fixture lacks its historical schema version");
+  seedHistoricalSceneTables(db);
   db.exec(`
 CREATE TABLE IF NOT EXISTS principals(id TEXT PRIMARY KEY,kind TEXT,name TEXT,color TEXT,
   created_at INTEGER,origin TEXT);
 CREATE TABLE share_tickets(share_id TEXT NOT NULL,guest_principal_id TEXT NOT NULL,
   principal_id TEXT NOT NULL,created_at INTEGER NOT NULL,
   PRIMARY KEY(share_id,guest_principal_id)) WITHOUT ROWID;
-CREATE TABLE IF NOT EXISTS containers(id TEXT PRIMARY KEY, name TEXT, created_at INTEGER,
-  sort_order INTEGER, folder_id TEXT, discipline TEXT NOT NULL DEFAULT 'canvas');
-CREATE TABLE IF NOT EXISTS scene_docs(container_id TEXT NOT NULL, epoch TEXT NOT NULL,
-  rev INTEGER NOT NULL, ts INTEGER NOT NULL, hash TEXT NOT NULL, doc BLOB NOT NULL,
-  PRIMARY KEY(container_id, epoch, rev));
-CREATE TABLE IF NOT EXISTS dials(id TEXT PRIMARY KEY, origin TEXT NOT NULL, secret TEXT NOT NULL,
-  ref TEXT, caps TEXT NOT NULL, title TEXT, dialed_at INTEGER NOT NULL, revoked_at INTEGER);
 CREATE TABLE tokens(id TEXT PRIMARY KEY, hash TEXT UNIQUE, principal_id TEXT, caps TEXT,
   container_id TEXT, created_at INTEGER, revoked_at INTEGER, minted_by TEXT);
 CREATE TABLE shares(id TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, container_id TEXT NOT NULL,
@@ -1858,8 +1853,8 @@ describe("migration 19: contributed element refs", () => {
       const upgradedMetadata = db
         .query<{ key: string; value: string }, []>("SELECT key, value FROM meta ORDER BY key")
         .all();
-      // Retry from a valid historical schema carrying the already-converted bytes.
-      // Rewinding only schema_version would leave successor migrations' tables behind.
+      // Reopening the current schema must preserve every converted byte. Migration 19's
+      // own retry is checked separately before any successor can rewrite text ownership.
       db.close();
       const backup = new Database(`${path}.pre-v19.bak`, { strict: true });
       expect(
@@ -1888,18 +1883,20 @@ describe("migration 19: contributed element refs", () => {
       const retryPath = join(dir, "retry.db");
       seedPreV19(retryPath);
       const retryFixture = new Database(retryPath, { strict: true });
-      const replaceDoc = retryFixture.query(
-        "UPDATE scene_docs SET hash=?, doc=? WHERE container_id=? AND epoch=? AND rev=?",
+      migrateToElementRefs(retryFixture, retryPath);
+      const readRetryDocs = retryFixture.query<DocRow, []>(
+        "SELECT container_id, epoch, rev, hash, doc FROM scene_docs ORDER BY container_id, epoch, rev",
       );
-      for (const row of upgraded) {
-        replaceDoc.run(row.hash, row.doc, row.container_id, row.epoch, row.rev);
-      }
-      const replaceMeta = retryFixture.query("INSERT OR REPLACE INTO meta(key,value) VALUES (?,?)");
-      for (const row of upgradedMetadata) {
-        if (row.key !== "schema_version") replaceMeta.run(row.key, row.value);
-      }
+      const readRetryMetadata = retryFixture.query<{ key: string; value: string }, []>(
+        "SELECT key, value FROM meta ORDER BY key",
+      );
+      const refDocs = readRetryDocs.all();
+      const refMetadata = readRetryMetadata.all();
+      migrateToElementRefs(retryFixture, retryPath);
+      expect(readRetryDocs.all()).toEqual(refDocs);
+      expect(readRetryMetadata.all()).toEqual(refMetadata);
       retryFixture.close();
-      const retried = openDatabase(retryPath);
+      const retried = openDatabase(path);
       for (const row of upgraded) {
         expect(
           retried
@@ -2888,6 +2885,7 @@ INSERT INTO machine_jobs VALUES
   ('foreign-job','other-machine',2,'{"terminal":{"terminalId":"legacy","containerId":"home","runId":"foreign-run"}}'),
   ('foreign-home','machine',3,'{"terminal":{"terminalId":"legacy","containerId":"other-home","runId":"foreign-run"}}');
 `);
+    seedHistoricalSceneTables(db);
     db.close();
     db = openDatabase(path);
     const store = new ServerStore(db);

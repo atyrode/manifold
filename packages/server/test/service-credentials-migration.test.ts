@@ -7,11 +7,13 @@ import { PrincipalCredentialsSchema } from "@manifold/protocol";
 import { openDatabase } from "../src/db.ts";
 import { ServerStore, sha256Hex } from "../src/stores.ts";
 import { AUTHORITY_V37_FIXTURE_SQL } from "./authority-migration-fixtures.ts";
+import { seedHistoricalSceneTables } from "./migration-fixtures.ts";
 
 /** The v37 authority and terminal tables needed by later migrations. */
 function seedV37(path: string): void {
   const db = new Database(path, { create: true, strict: true });
   try {
+    seedHistoricalSceneTables(db);
     db.exec(`
 CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT);
 INSERT INTO meta VALUES ('schema_version','37');
