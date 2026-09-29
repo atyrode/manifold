@@ -577,7 +577,7 @@ export function CanvasView({
       cancelPoint();
       setTool(next);
     },
-    [cancelPoint],
+    [cancelPoint, setTool],
   );
   useLayoutEffect(() => cancelPoint, [cancelPoint]);
   useEffect(() => client.on("scene_reset", cancelPoint), [client, cancelPoint]);
@@ -1589,7 +1589,7 @@ export function CanvasView({
         if (pendingPoint.current === pending) pendingPoint.current = null;
       }
     },
-    [client, containerId, host.principal, notify],
+    [client, containerId, host.principal, notify, setEditingId, setTool],
   );
 
   const completeStroke = useCallback(
