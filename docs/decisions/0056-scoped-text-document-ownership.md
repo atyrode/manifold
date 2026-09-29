@@ -77,6 +77,13 @@ cannot make retained text undiscoverable.
 renderer through the registered element outlet. It does not import its peer's implementation
 or keep another editor/body. Its geometry and presentation remain its own data. Document
 creation uses `core.text.create`, with the structured home as its `scenes:write` authority target.
+The room stages both body-only and body/reference creation through a synchronous native write
+seam, measures against its ordinary document allowance plus fixed migration credit, and commits
+one canonical delta only if it fits. Refusal leaves content, attribution, history and snapshot
+scheduling untouched. Staging keeps deleted structs for conservative undo-history accounting.
+Pending writes count immediately; socket accept-then-repair and the existing single-crossing
+update behavior are retained rather than silently changing that wire contract.
+
 The canvas child requests a body only (`reference: false`) before authoring its visual reference;
 subsequent prose edits use the existing document channel. Its borrowed renderer requests intrinsic
 editor height and measures its own wrapper, keeping geometry out of the shared editor. Cancelling

@@ -146,7 +146,7 @@ must never be taught one.
       "id": "scene-sync",
       "globs": ["packages/scene/src/**", "packages/server/src/room.ts"],
       "litmus": ["bootstrap", "neutrality", "arbitration"],
-      "verdict": "the document plane: the canonical Y.Doc per room, bounded elements and independently retained named collaborative texts, receiving-boundary repair/authorship, historical snapshots and certified per-epoch migration size allowances. It arbitrates concurrent edits and retains authority homes independently of visual references; kinds, namespace ownership and editor policy remain contributions.",
+      "verdict": "the document plane: the canonical Y.Doc per room, bounded elements and independently retained named collaborative texts, receiving-boundary repair/authorship, atomic native-write capacity preflight, historical snapshots and certified per-epoch migration size allowances. Pending writes count before snapshot flush. It arbitrates concurrent edits and retains authority homes independently of visual references; kinds, namespace ownership and editor policy remain contributions.",
       "adr": "docs/decisions/0056-scoped-text-document-ownership.md"
     },
     {
@@ -298,7 +298,7 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     },
     {
       "glob": "packages/server/src/room.ts",
-      "why": "the document plane, server half: the canonical Y.Doc per room, accept-then-repair, snapshots"
+      "why": "the document plane, server half: the canonical Y.Doc per room, accept-then-repair, bounded atomic native writes, snapshots"
     },
     {
       "glob": "packages/server/src/session-ws.ts",
