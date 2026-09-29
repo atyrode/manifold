@@ -17,6 +17,8 @@ import type {
   ResolveResponse,
   ServerEvent,
   ServerMessageBody,
+  SharedTextRecord,
+  SharedTextRef,
   TerminalEnv,
   TerminalInfo,
   TerminalProgram,
@@ -679,9 +681,9 @@ export interface PortableSectionProps {
  * structurally, so `SessionClient` satisfies it without knowing this file exists, and what is
  * absent from it is unreachable from plugin code.
  *
- * It is deliberately NOT part of {@link HostServices}: a panel or a section is chrome that
- * talks to the server, while an element renderer edits the one document it is painted in, and
- * conflating the two would hand every sidebar section a write door onto the scene.
+ * Native panels borrow this same bounded port through `useDocumentAccess`; the host owns
+ * admission and lifetime. It carries no bearer, connection constructor or lifecycle mutator.
+ * `selfCaps()` reports home authority, while a spectator is always read-only.
  */
 export interface ElementTx {
   patch(elementId: string, patch: ScenePatch): boolean;
@@ -690,6 +692,20 @@ export interface ElementTx {
 }
 
 export interface ElementDocument {
+  readonly containerId: string | null;
+  readonly spectator: boolean;
+  readonly status: SessionStatus;
+  readonly epoch: string;
+  readonly connectionError: { readonly code: number; readonly reason: string } | null;
+  selfCaps(): readonly Cap[];
+  sharedText(namespace: string, id: string): Y.Text | null;
+  sharedTexts(namespace: string): ReadonlyMap<string, SharedTextRecord>;
+  on(type: "status", listener: (status: SessionStatus) => void): () => void;
+  on(type: "scene_reset", listener: () => void): () => void;
+  on(
+    type: "shared_texts_changed",
+    listener: (refs: readonly SharedTextRef[], origin: "local" | "remote" | "undo") => void,
+  ): () => void;
   elementText(elementId: string): Y.Text | null;
   transact(fn: (tx: ElementTx) => void): void;
 }

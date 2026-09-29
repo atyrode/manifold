@@ -663,10 +663,67 @@ describe("SessionGateway channel multiplexing", () => {
     fixture.store.close();
   });
 
+  test("a forbidden foreign home refuses only its channel and preserves admitted document traffic", async () => {
+    const fixture = await gatewayFixture();
+    try {
+      const foreign = fixture.secondContainer("forbidden document home");
+      const token = fixture.auth.mintToken(
+        {
+          principal: { name: "scoped document editor", kind: "human" },
+          caps: ["containers:read", "scenes:write"],
+          containerId: fixture.container.id,
+        },
+        fixture.auth.authenticate(fixture.ownerKey),
+      ).token;
+      expect(fixture.auth.allows(fixture.auth.authenticate(token), "containers:read", foreign.id)).toBe(
+        false,
+      );
+      const socket = new FakeSocket();
+      const witness = new FakeSocket();
+      join(fixture.gateway, "witness", witness, fixture.container.id, fixture.ownerKey);
+      fixture.gateway.open("editor", socket);
+      joinChannel(fixture, "editor", socket, { ch: "admitted", token });
+      socket.clear();
+      witness.clear();
+
+      send(fixture.gateway, "editor", "foreign", {
+        type: "join",
+        containerId: foreign.id,
+        token,
+        protocolVersion: PROTOCOL_VERSION,
+        spectator: true,
+      });
+      expect(socket.frames()).toEqual([
+        { type: "channel_closed", ch: "foreign", code: 4403, reason: "forbidden" },
+      ]);
+      expect(socket.closed).toBeNull();
+
+      socket.clear();
+      send(fixture.gateway, "editor", "admitted", { type: "resync_request" });
+      expect(socket.frames()).toEqual([
+        expect.objectContaining({ type: "resync", ch: "admitted" }),
+      ]);
+      send(fixture.gateway, "editor", "admitted", {
+        type: "doc_update",
+        update: docUpdateFor("survives-foreign-refusal"),
+      });
+      expect(fixture.rooms.get(fixture.container.id)?.element("survives-foreign-refusal")).toEqual(
+        expect.objectContaining({ id: "survives-foreign-refusal", type: "portal" }),
+      );
+      expect(witness.messages().some((message) => message.type === "doc_update")).toBe(true);
+      expect(socket.closed).toBeNull();
+    } finally {
+      fixture.gateway.shutdown();
+      fixture.store.close();
+    }
+  });
+
   test("a stale protocol version still closes the whole socket", async () => {
     const fixture = await gatewayFixture();
     const socket = new FakeSocket();
     fixture.gateway.open("tab", socket);
+    joinChannel(fixture, "tab", socket, { ch: "admitted" });
+    socket.clear();
     send(fixture.gateway, "tab", "a", {
       type: "join",
       containerId: fixture.container.id,
@@ -677,6 +734,26 @@ describe("SessionGateway channel multiplexing", () => {
 
     fixture.gateway.shutdown();
     fixture.store.close();
+  });
+
+  test("invalid credentials on a second join still close the whole socket", async () => {
+    const fixture = await gatewayFixture();
+    try {
+      const socket = new FakeSocket();
+      fixture.gateway.open("tab", socket);
+      joinChannel(fixture, "tab", socket, { ch: "admitted" });
+      socket.clear();
+      send(fixture.gateway, "tab", "invalid", {
+        type: "join",
+        containerId: fixture.container.id,
+        token: "not-a-credential",
+        protocolVersion: PROTOCOL_VERSION,
+      });
+      expect(socket.closed).toEqual({ code: 4401, reason: "unauthorized" });
+    } finally {
+      fixture.gateway.shutdown();
+      fixture.store.close();
+    }
   });
 
   test("liveness is a socket property: the pair carries no channel", async () => {
