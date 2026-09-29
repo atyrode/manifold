@@ -103,7 +103,10 @@ describe("bounded collaborative history", () => {
 
   test("a counterfactual follows replica-local redone links when restoring a replacement", () => {
     const f = fixture("x".repeat(MAX_TEXT_LENGTH));
-    f.edit((text) => { text.delete(0, 1); text.insert(0, "a"); });
+    f.edit((text) => {
+      text.delete(0, 1);
+      text.insert(0, "a");
+    });
     f.edit((text) => text.delete(0, 1));
     expect(applyTextHistory(f.text, f.history, "undo", false)).toBe("applied");
     expect(f.text.toString()).toBe("a" + "x".repeat(MAX_TEXT_LENGTH - 1));

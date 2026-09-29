@@ -114,7 +114,7 @@ must never be taught one.
         "packages/server/src/migrate-text.ts"
       ],
       "litmus": ["bootstrap", "neutrality", "arbitration"],
-      "verdict": "the SQLite substrate: schema, migrations, and the row-level accessors the engine's own bookkeeping needs (enablement, layout, plugin storage namespaces, ownership tombstones, migration ledgers, and bounded direct-service monetary reservations and once-only settlements). Financial rows arbitrate owner-reviewed service/execution allowances and retain only identity, digest, policy/model pins and exposure, never product input/output. Plugin-domain rows reach it only through ctx.storage, which is why the substrate stays neutral and a purge can be exact.",
+      "verdict": "the SQLite substrate: schema, migrations, and the row-level accessors the engine's own bookkeeping needs (enablement, layout, plugin storage namespaces, ownership tombstones, migration ledgers, fixed per-lineage format-growth allowances, and bounded direct-service monetary reservations and once-only settlements). Financial rows arbitrate owner-reviewed service/execution allowances and retain only identity, digest, policy/model pins and exposure, never product input/output. Plugin-domain rows reach it only through ctx.storage, which is why the substrate stays neutral and a purge can be exact.",
       "adr": "docs/decisions/0013-plugin-behavioral-contract.md"
     },
     {
@@ -146,7 +146,7 @@ must never be taught one.
       "id": "scene-sync",
       "globs": ["packages/scene/src/**", "packages/server/src/room.ts"],
       "litmus": ["bootstrap", "neutrality", "arbitration"],
-      "verdict": "the document plane: the canonical Y.Doc per room, bounded elements and independently retained named collaborative texts, receiving-boundary repair/authorship, and historical snapshots. It arbitrates concurrent edits and retains authority homes independently of visual references; kinds, namespace ownership and editor policy remain contributions.",
+      "verdict": "the document plane: the canonical Y.Doc per room, bounded elements and independently retained named collaborative texts, receiving-boundary repair/authorship, historical snapshots and certified per-epoch migration size allowances. It arbitrates concurrent edits and retains authority homes independently of visual references; kinds, namespace ownership and editor policy remain contributions.",
       "adr": "docs/decisions/0056-scoped-text-document-ownership.md"
     },
     {
@@ -446,7 +446,7 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     },
     {
       "glob": "packages/server/src/migrate-text.ts",
-      "why": "ADR 0056 backed-up historical ownership transition in the persistence pillar: converts retained scene revisions and plugin identity/reservations while retaining authority homes and collaborative lineage; not a live plugin storage API"
+      "why": "ADR 0056 backed-up historical ownership transition in the persistence pillar: streams retained scene revisions and reconciles plugin identity/reservations while retaining authority homes and collaborative lineage, certifying fixed per-epoch encoding overhead; not a live plugin storage API"
     },
     {
       "glob": "packages/web/src/main.tsx",
@@ -623,8 +623,8 @@ work list rather than a ledger of debt: every row lands in this change.
 
 | Was floor                                                                | Converts to                 | Ruling                                                                  |
 | ------------------------------------------------------------------------ | --------------------------- | ----------------------------------------------------------------------- |
-| collaborative text bodies, standalone discovery and shared editor         | `core.text`                 | independent authority homes and tileable text references (ADR 0056)     |
-| canvas note representation, text point tool and note geometry             | `core.canvas.note`          | required canvas parent plus text peer; borrows the text owner's editor  |
+| collaborative text bodies, standalone discovery and shared editor        | `core.text`                 | independent authority homes and tileable text references (ADR 0056)     |
+| canvas note representation, text point tool and note geometry            | `core.canvas.note`          | required canvas parent plus text peer; borrows the text owner's editor  |
 | canvas renderer, portal internals, canvas toolbar, viewport              | `core.canvas`               | moved; decomposed `core.shell.container-view`; absorbed stroke geometry |
 | composition-route internals, tile drop gestures, carry previews          | `core.compositions`         | decomposes `core.shell.container-view`                                  |
 | machine enrollment, admission administration + presentation helpers      | `core.machines`             | enrollment, inventory, drain and atomic host-view metadata are actions  |

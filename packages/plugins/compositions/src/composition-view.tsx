@@ -67,7 +67,6 @@ import {
   cursorFraction,
   denialMessage,
   envelopeRef,
-  firstLineLabel,
   remoteCursorSocketId,
   remoteTileCarries,
   sessionUrl,
@@ -114,10 +113,9 @@ import {
  * rather than a chain of tests, so a new tileable form cannot be added without saying what
  * the placement algebra should call it.
  *
- * The values are `PlacementItem["kind"]` — a plain string — because the kind set is OPEN: a
- * note's leaf reports `text`, which is `core.notes`'s contributed element type rather than a
- * member of the closed floor table, and the algebra reads its traits from the composition
- * (ADR 0013 §12).
+ * The values are `PlacementItem["kind"]` — a plain string — because contributed element
+ * kinds remain open. The placement algebra reads their traits from the roster rather
+ * than treating a leaf as one particular plugin's object (ADR 0013 §12).
  */
 const SOLO_ITEM_KINDS: Record<TileRef["kind"], PlacementItem["kind"]> = {
   terminal: "terminal",
@@ -268,9 +266,8 @@ export function CompositionView({
    * text (and the placement lookup that reads it) needs a reason to re-render.
    */
   const [sceneRevision, setSceneRevision] = useState(0);
-  /** Which note tile is in its editor; a note carries no selection model of its own. */
-  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
-  const connectStartedRef = useRef(false);
+  /** The element editor engaged in this view; selection remains the view's responsibility. */
+  const [editingElementId, setEditingElementId] = useState<string | null>(null);
   /** One delete per view: the confirmed click navigates away, a second would 404. */
   const deletingRef = useRef(false);
   const bodyRef = useRef<HTMLDivElement | null>(null);
@@ -355,8 +352,6 @@ export function CompositionView({
   }, [client, onContainerChanged]);
 
   useEffect(() => {
-    if (connectStartedRef.current) return;
-    connectStartedRef.current = true;
     const offStatus = client.on("status", (status) => {
       if (status !== "closed" || client.connectionError === null) return;
       // Sticky: a composition that lost its session is a degraded ref, not a passing
@@ -371,9 +366,8 @@ export function CompositionView({
       offStatus();
       client.close();
     };
-    // `notify` is the notice provider's own stable callback, so naming it here is honest
-    // without arming a reconnect: this effect connects exactly once per client (the ref
-    // guard), and a dependency that never moves can never trip that guard.
+    // Each effect setup owns a matching connection lifetime, including StrictMode replay.
+    // The notice callback is stable; cleanup must not leave a later setup on a closed client.
   }, [client, notify]);
 
   const shrink = useCallback((): void => {
@@ -1042,7 +1036,8 @@ export function CompositionView({
             renameAction="core.terminals.rename"
           />
         );
-      case "container":
+      case "container": {
+        const title = `${lookup.discipline(disciplineFor(ref.containerId))?.title ?? "container"} ${containerLabelFor(ref.containerId)}`;
         return (
           <ContainerRenderer
             key={ref.containerId}
@@ -1063,7 +1058,7 @@ export function CompositionView({
                   type="button"
                   className="node-titlebar__ctl"
                   data-action="core.space.removeTile"
-                  aria-label={`Remove canvas ${containerLabelFor(ref.containerId)} from this composition`}
+                  aria-label={`Remove ${title} from this composition`}
                   title="Remove this representation"
                   onClick={() => detachContainerTile(node.id)}
                 >
@@ -1072,7 +1067,7 @@ export function CompositionView({
                 <button
                   type="button"
                   className="node-titlebar__ctl"
-                  aria-label={`Open canvas ${containerLabelFor(ref.containerId)}`}
+                  aria-label={`Open ${title}`}
                   title="Open this container"
                   onClick={() => navigate(`/p/${encodeURIComponent(ref.containerId)}`)}
                 >
@@ -1082,7 +1077,7 @@ export function CompositionView({
                   type="button"
                   className="node-titlebar__ctl"
                   data-action="core.index.deleteContainer"
-                  aria-label={`Delete canvas ${containerLabelFor(ref.containerId)}`}
+                  aria-label={`Delete ${title}`}
                   title="Delete this container for everyone"
                   onClick={() => deleteContainerTile(ref.containerId)}
                 >
@@ -1092,12 +1087,11 @@ export function CompositionView({
             }
           />
         );
+      }
       case "element": {
-        // A note has no identity outside the container holding it, so the element is
-        // always in THIS room's document. It is missing only for the frame between a
-        // placement landing in the layout and the element arriving with it.
+        // The visual reference lives in this room. Its owner may retain independent
+        // content in another home; this renderer neither interprets nor moves that body.
         const element = client.elements.get(ref.elementId);
-        const text = element === undefined ? "" : (elementString(element, "text") ?? "");
         /*
           The occupant names ITSELF: its declared element type is what the mark and the
           fallback noun are looked up with, so every contributed element wears its own
@@ -1107,18 +1101,18 @@ export function CompositionView({
         const kind = element?.type ?? "element";
         return (
           /*
-            Every contributed element shares the composition bar/body frame, while its
-            plugin owns the body and edits the same document payload as on a canvas.
+            Every contributed element shares the composition bar/body frame. Its owner
+            resolves the body; removing this local element does not imply deleting it.
           */
           <div className="composition-tile">
             <NodeTitleBar
               className="composition-tile__bar"
               icon={<ItemIcon kind={kind} size={13} />}
-              title={firstLineLabel(text)}
+              title={null}
               defaultTitle={itemNoun(kind, roster)}
               middle={<TitlebarOutlet scope={leafScope} />}
               dragProps={tileDragProps(node.id, refLabel(ref))}
-              // Close removes the leaf and its owned element, not just a representation.
+              // Close removes the leaf and its local element, not independently owned content.
               onClose={() => removeElementTile(node.id)}
               closeLabel={`Delete ${itemNoun(kind, roster)}`}
               closeTooltip={`Delete this ${itemNoun(kind, roster)}`}
@@ -1136,11 +1130,10 @@ export function CompositionView({
                 elementId={ref.elementId}
                 data={element === undefined ? {} : elementPayload(element)}
                 doc={client}
-                editingElementId={editingNoteId}
-                onBeginEditing={setEditingNoteId}
-                onEndEditing={() => setEditingNoteId(null)}
-                // The element IS the leaf's occupant: emptying the note must not delete
-                // it, or the leaf would be left with nothing to render.
+                editingElementId={editingElementId}
+                onBeginEditing={setEditingElementId}
+                onEndEditing={() => setEditingElementId(null)}
+                // Emptying an element must not delete the leaf's occupant.
                 removeWhenEmpty={false}
               />
             </div>

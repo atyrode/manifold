@@ -33,6 +33,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PolledFeedReport as FeedReport } from "../packages/plugin/src/polled-resource.ts";
+import { CreateTextResultSchema } from "../packages/plugins/text/src/index.ts";
 import { ActionOutcomeSchema, type SceneElement } from "../packages/protocol/src/index.ts";
 import { SessionClient } from "../packages/sdk/src/index.ts";
 import { resolveWebDist } from "./gate-dist.ts";
@@ -158,21 +159,6 @@ async function seedCanvas(): Promise<string> {
       zIndex: tx.nextZIndex(),
     } as SceneElement);
     for (let i = 0; i < 6; i += 1) {
-      tx.create(
-        {
-          id: `budget-note-${String(i)}`,
-          type: "text",
-          x: 80 + (i % 3) * 300,
-          y: 900 + Math.floor(i / 3) * 120,
-          width: 240,
-          height: 48,
-          zIndex: tx.nextZIndex(),
-          text: `note ${String(i)}`,
-          color: "#f8f9fa",
-          fontSize: 20,
-        } as SceneElement,
-        ["text"],
-      );
       const points: number[] = [];
       for (let p = 0; p < 600; p += 1) points.push(1200 + i * 40 + Math.sin(p / 9) * 180, 200 + p);
       tx.create({
@@ -189,6 +175,30 @@ async function seedCanvas(): Promise<string> {
       } as SceneElement);
     }
   });
+  for (let i = 0; i < 6; i += 1) {
+    const document = CreateTextResultSchema.parse(
+      await ownerAction("core.text.create", {
+        home: { kind: "container", containerId },
+        documentId: `budget-note-${String(i)}`,
+        text: `note ${String(i)}`,
+        reference: false,
+      }),
+    );
+    client.transact((tx) =>
+      tx.create({
+        id: document.documentId,
+        type: "canvas_note",
+        document: document.reference,
+        x: 80 + (i % 3) * 300,
+        y: 900 + Math.floor(i / 3) * 120,
+        width: 240,
+        height: 48,
+        zIndex: tx.nextZIndex(),
+        color: "#f8f9fa",
+        fontSize: 20,
+      }),
+    );
+  }
   await sleep(1000);
   client.close();
   seeder = null;

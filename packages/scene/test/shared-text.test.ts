@@ -163,7 +163,11 @@ describe("independent shared text records", () => {
       sharedTextsMap(doc).set(sharedTextKey(namespace, "invalid"), invalid);
       stampSharedTextAuthorship(
         doc,
-        [{ namespace, id: "valid" }, { namespace, id: "invalid" }, { namespace, id: "missing" }],
+        [
+          { namespace, id: "valid" },
+          { namespace, id: "invalid" },
+          { namespace, id: "missing" },
+        ],
         "server-actor",
         42,
         SERVER_AUTHORSHIP_ORIGIN,
@@ -178,7 +182,9 @@ describe("independent shared text records", () => {
       });
       expect(invalid.has("lastEditedBy")).toBe(false);
       expect(readSharedText(doc, namespace, "missing")).toBeNull();
-      expect(() => stampSharedTextAuthorship(doc, [{ namespace, id: "valid" }], "", 3, "server")).toThrow();
+      expect(() =>
+        stampSharedTextAuthorship(doc, [{ namespace, id: "valid" }], "", 3, "server"),
+      ).toThrow();
       expect(readSharedText(doc, namespace, "valid")?.lastEditedBy).toBe("server-actor");
     } finally {
       doc.destroy();

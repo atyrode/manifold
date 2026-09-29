@@ -283,9 +283,7 @@ export class PlaceExecutor {
     const source = this.locate(ref);
     if (source === "not_found") return { status: "failed", failure: "not_found" };
     const carriedRef =
-      ref.kind === "tile"
-        ? this.rooms.get(ref.containerId)?.tileLayout()?.[ref.tileId]?.ref
-        : null;
+      ref.kind === "tile" ? this.rooms.get(ref.containerId)?.tileLayout()?.[ref.tileId]?.ref : null;
     const carried =
       ref.kind === "element"
         ? this.elementAt(ref.containerId, ref.elementId)
@@ -301,7 +299,8 @@ export class PlaceExecutor {
         (destination.kind === "canvas" || destination.kind === "tile") &&
         source.containerId !== destination.containerId &&
         this.elementAt(destination.containerId, element.id) !== null
-      ) return { status: "failed", failure: "conflict" };
+      )
+        return { status: "failed", failure: "conflict" };
     }
 
     let outcome: PlaceOutcome;
@@ -343,7 +342,12 @@ export class PlaceExecutor {
         break;
       case "compose":
         outcome = this.executeCompose(
-          ref, resolution.item, destination, source, traceContainerIds, element,
+          ref,
+          resolution.item,
+          destination,
+          source,
+          traceContainerIds,
+          element,
         );
         break;
       case "unplaced":
@@ -404,7 +408,9 @@ export class PlaceExecutor {
    * gets both rules without either of them learning its name.
    */
   private bornUnhomed(kind: string): boolean {
-    return (this.vocabulary.itemTraits(kind) ?? itemTraitsFor(kind, this.lookup())).homed === "on_claim";
+    return (
+      (this.vocabulary.itemTraits(kind) ?? itemTraitsFor(kind, this.lookup())).homed === "on_claim"
+    );
   }
 
   /** Whether a persisted discipline declares containers addressable as tile trees. */
@@ -766,7 +772,8 @@ export class PlaceExecutor {
     if (
       destination.kind === "unplaced" ||
       (destination.kind === "compose" && destination.edge === "center")
-    ) return { element };
+    )
+      return { element };
     const resolved = resolveCarriedPlacement(
       { ref, item: { kind: element.type, containerId: null } },
       destination,
@@ -774,7 +781,8 @@ export class PlaceExecutor {
     );
     if (!resolved.ok) return { denial: resolved.denial };
     return {
-      element: resolved.item.kind === element.type ? element : { ...element, type: resolved.item.kind },
+      element:
+        resolved.item.kind === element.type ? element : { ...element, type: resolved.item.kind },
     };
   }
 
@@ -885,7 +893,12 @@ export class PlaceExecutor {
       // Only an addressed element places text or ink: there is no other way to name one.
       return { status: "failed", failure: "conflict" };
     }
-    const moved = this.moveElementPlacement(source.containerId, ref.elementId, destination, element);
+    const moved = this.moveElementPlacement(
+      source.containerId,
+      ref.elementId,
+      destination,
+      element,
+    );
     if (moved !== "ok") return { status: "failed", failure: moved };
     traceContainerIds?.add(source.containerId);
     traceContainerIds?.add(destination.containerId);
@@ -1274,7 +1287,10 @@ export class PlaceExecutor {
       const current = target.element(occupant.elementId);
       if (current === null) return { status: "failed", failure: "not_found" };
       const prepared = this.prepareElement(current, ref, {
-        kind: "tile", containerId: fromContainerId, targetTileId: fromTileId, edge: "center",
+        kind: "tile",
+        containerId: fromContainerId,
+        targetTileId: fromTileId,
+        edge: "center",
       });
       if ("denial" in prepared) return { status: "denied", denial: prepared.denial };
       displaced = prepared.element;
@@ -1296,7 +1312,8 @@ export class PlaceExecutor {
     if (
       (element !== null && target.element(element.id) !== null) ||
       (displaced !== null && from.element(displaced.id) !== null)
-    ) return { status: "failed", failure: "conflict" };
+    )
+      return { status: "failed", failure: "conflict" };
 
     /*
       Two trees. They cannot share a transaction, so each side is written on its own and
@@ -1415,7 +1432,8 @@ export class PlaceExecutor {
       this.absorbHome(dragged.terminalId, source, containerId, targetTileId, traceContainerIds);
       traceContainerIds?.add(source.homeId);
     }
-    if (fromLeaf === null && element !== null) this.adoptCarriedElement(source, element, composition);
+    if (fromLeaf === null && element !== null)
+      this.adoptCarriedElement(source, element, composition);
     if (
       source.containerId !== null &&
       (fromLeaf !== null ||
@@ -1597,7 +1615,10 @@ export class PlaceExecutor {
       const current = this.elementAt(targetHomeId, targetRef.elementId);
       if (current === null) return { status: "failed", failure: "not_found" };
       const prepared = this.prepareElement(current, ref, {
-        kind: "tile", containerId: targetHomeId, targetTileId: null, edge: null,
+        kind: "tile",
+        containerId: targetHomeId,
+        targetTileId: null,
+        edge: null,
       });
       if ("denial" in prepared) return { status: "denied", denial: prepared.denial };
       targetElement = prepared.element;
@@ -1630,7 +1651,8 @@ export class PlaceExecutor {
 
     // Read and transfer collaborative fields before absorbing the target home: a distinct
     // unseated source element may live in that same document, which the merge will retire.
-    if (fromLeaf === null && element !== null) this.adoptCarriedElement(source, element, composition);
+    if (fromLeaf === null && element !== null)
+      this.adoptCarriedElement(source, element, composition);
 
     // The target's reference becomes a reference to the newborn IN PLACE, before its old
     // home retires — otherwise retiring the home would take this element with it.
@@ -1654,7 +1676,11 @@ export class PlaceExecutor {
       );
     } else {
       this.moveNonTerminalLeaf(
-        targetHomeId, composition, compositionId, traceContainerIds, targetElement,
+        targetHomeId,
+        composition,
+        compositionId,
+        traceContainerIds,
+        targetElement,
       );
     }
     const placedTileId =

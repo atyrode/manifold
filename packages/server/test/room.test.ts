@@ -957,7 +957,11 @@ describe("Room independent shared text boundary", () => {
     try {
       const root = authored.getMap<unknown>("texts");
       const raw = (id: string, body: unknown = new Y.Text("body")) =>
-        new Y.Map<unknown>([["namespace", namespace], ["id", id], ["text", body]]);
+        new Y.Map<unknown>([
+          ["namespace", namespace],
+          ["id", id],
+          ["text", body],
+        ]);
       const invalid: [string, unknown][] = [
         ["invalid-key", raw("invalid-key")],
         ["bad namespace:id", raw("id")],
@@ -966,7 +970,10 @@ describe("Room independent shared text boundary", () => {
         [sharedTextKey(namespace, "mismatch"), raw("another-id")],
         [sharedTextKey(namespace, "flat"), raw("flat", "body")],
         [sharedTextKey(namespace, "array"), raw("array", new Y.Array())],
-        [sharedTextKey(namespace, "long"), raw("long", new Y.Text("x".repeat(MAX_TEXT_LENGTH + 1)))],
+        [
+          sharedTextKey(namespace, "long"),
+          raw("long", new Y.Text("x".repeat(MAX_TEXT_LENGTH + 1))),
+        ],
       ];
       for (const [id, field, value] of [
         ["extra", "undeclared", true],
@@ -992,12 +999,16 @@ describe("Room independent shared text boundary", () => {
         if (message.type === "doc_update") Y.applyUpdate(received, decodeUpdate(message.update));
       }
       for (const doc of [room.doc, received]) {
-        expect([...sharedTextsMap(doc).keys()]).toEqual([sharedTextKey(preserved.namespace, preserved.id)]);
-        expect(listSharedTexts(doc)).toEqual([{
-          ...preserved,
-          lastEditedBy: peer.auth.principal.id,
-          lastEditedAt: 0,
-        }]);
+        expect([...sharedTextsMap(doc).keys()]).toEqual([
+          sharedTextKey(preserved.namespace, preserved.id),
+        ]);
+        expect(listSharedTexts(doc)).toEqual([
+          {
+            ...preserved,
+            lastEditedBy: peer.auth.principal.id,
+            lastEditedAt: 0,
+          },
+        ]);
       }
       expect(room.hasRetainedContent()).toBe(true);
     } finally {
@@ -1022,8 +1033,12 @@ describe("Room independent shared text boundary", () => {
       if (left === null || right === null) throw new Error("missing concurrent text");
       left.insert(0, "LL");
       right.insert(right.length, "RR");
-      expect(readSharedText(first, namespace, "shared")?.text).toBe(`LL${"x".repeat(MAX_TEXT_LENGTH - 2)}`);
-      expect(readSharedText(second, namespace, "shared")?.text).toBe(`${"x".repeat(MAX_TEXT_LENGTH - 2)}RR`);
+      expect(readSharedText(first, namespace, "shared")?.text).toBe(
+        `LL${"x".repeat(MAX_TEXT_LENGTH - 2)}`,
+      );
+      expect(readSharedText(second, namespace, "shared")?.text).toBe(
+        `${"x".repeat(MAX_TEXT_LENGTH - 2)}RR`,
+      );
       room.applyDocUpdate(peer, encodeUpdate(Y.encodeStateAsUpdate(first)));
       expect(readSharedText(room.doc, namespace, "shared")?.text).toBe(left.toString());
       socket.clear();
@@ -1051,7 +1066,11 @@ describe("Room independent shared text boundary", () => {
     const incoming = createSceneDoc();
     try {
       const text = "x".repeat(MAX_TEXT_LENGTH);
-      for (let index = 0; index < Math.ceil(MAX_DOC_UPDATE_BYTES / MAX_TEXT_LENGTH) + 1; index += 1) {
+      for (
+        let index = 0;
+        index < Math.ceil(MAX_DOC_UPDATE_BYTES / MAX_TEXT_LENGTH) + 1;
+        index += 1
+      ) {
         createSharedText(incoming, { namespace, id: `incoming-${index}`, text });
       }
       expect(room.applyDocUpdate(peer, encodeUpdate(Y.encodeStateAsUpdate(incoming)))).toBe(false);

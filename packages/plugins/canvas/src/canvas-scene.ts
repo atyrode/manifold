@@ -11,10 +11,6 @@ import type { Node } from "@xyflow/react";
 // Terminal element defaults live in @manifold/scene: the server authors portals onto
 // solo compositions too, so both sides must size them identically.
 export { DEFAULT_TERMINAL_HEIGHT, DEFAULT_TERMINAL_WIDTH };
-export const DEFAULT_TEXT_WIDTH = 240;
-export const DEFAULT_TEXT_HEIGHT = 48;
-export const DEFAULT_FONT_SIZE = 20;
-export const DEFAULT_TEXT_COLOR = "#f8f9fa";
 
 function shallowDataEqual(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
   const keysA = Object.keys(a);
@@ -188,37 +184,6 @@ export function createPortalElement(
     width: DEFAULT_TERMINAL_WIDTH,
     height: DEFAULT_TERMINAL_HEIGHT,
     zIndex,
-  };
-}
-
-/**
- * The payload field a fresh note holds as COLLABORATIVE text, declared beside the factory that
- * authors one (ADR 0013 §16 clause 6).
- *
- * The canvas names it because the canvas owns the text TOOL — that ruling is REGISTRY.md
- * §Full-conversion inventory, "the text TOOL is canvas chrome" — while `core.notes`
- * owns the element's renderer, its editor and its payload SCHEMA. One statement, so the author
- * and the schema cannot drift into disagreeing about which field a person types into.
- */
-export const TEXT_COLLABORATIVE_FIELDS: readonly string[] = ["text"];
-
-export function createTextElement(
-  id: string,
-  position: { readonly x: number; readonly y: number },
-  zIndex: number,
-  color: string = DEFAULT_TEXT_COLOR,
-): SceneElement {
-  return {
-    id,
-    type: "text",
-    text: "",
-    x: position.x,
-    y: position.y,
-    width: DEFAULT_TEXT_WIDTH,
-    height: DEFAULT_TEXT_HEIGHT,
-    zIndex,
-    fontSize: DEFAULT_FONT_SIZE,
-    color,
   };
 }
 

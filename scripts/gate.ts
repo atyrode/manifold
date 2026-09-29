@@ -63,7 +63,7 @@ const packages = [
   "plugins/presence",
   "plugins/machines",
   "plugins/index",
-  "plugins/notes",
+  "plugins/text",
   "plugins/uri",
   "plugins/access",
   "plugins/events",

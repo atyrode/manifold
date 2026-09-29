@@ -338,7 +338,9 @@ describe("session channel schemas", () => {
     expect(ServerMessageSchema.safeParse({ type: "init", ...missingConnId }).success).toBe(false);
     const missingAuthority = { ...state } as Record<string, unknown>;
     delete missingAuthority["sceneWriteAllowed"];
-    expect(ServerMessageSchema.safeParse({ type: "init", ...missingAuthority }).success).toBe(false);
+    expect(ServerMessageSchema.safeParse({ type: "init", ...missingAuthority }).success).toBe(
+      false,
+    );
     expect(
       ServerMessageSchema.safeParse({ type: "resync", ...state, sceneWriteAllowed: false }).success,
     ).toBe(true);

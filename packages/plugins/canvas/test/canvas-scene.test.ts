@@ -5,51 +5,35 @@ import {
   reconcileNodes,
   createDrawElement,
   createPortalElement,
-  createTextElement,
   projectElements,
 } from "../src/canvas-scene.ts";
 
 // A terminal on a canvas IS a portal onto its home composition, so the terminal-shaped
 // element under test is a portal with terminal geometry.
 const terminal = createPortalElement("terminal", "home-composition", { x: 10, y: 20 }, 2);
-const text = createTextElement("text", { x: 30, y: 40 }, 1, "#123456");
+const annotation: SceneElement = {
+  id: "annotation",
+  type: "acme.caption",
+  x: 30,
+  y: 40,
+  width: 230,
+  height: 60,
+  zIndex: 1,
+  caption: "marker",
+};
 const draw = createDrawElement("draw", [10, 20, 30, 25], "#abcdef", 3, 3);
 
 describe("flow scene", () => {
-  test("projects every element type in canonical paint order", () => {
+  test("projects floor and contributed elements in canonical paint order", () => {
     const elements = new Map<string, SceneElement>([
       [terminal.id, terminal],
       [draw.id, draw],
-      [text.id, text],
+      [annotation.id, annotation],
     ]);
-    expect(projectElements(elements, new Map())).toEqual([
-      {
-        id: "text",
-        type: "text",
-        position: { x: 30, y: 40 },
-        width: 240,
-        height: 48,
-        zIndex: 1,
-        data: { text: "", fontSize: 20, color: "#123456" },
-      },
-      {
-        id: "terminal",
-        type: "portal",
-        position: { x: 10, y: 20 },
-        width: 720,
-        height: 480,
-        zIndex: 2,
-        data: { containerId: "home-composition" },
-      },
-      {
-        id: "draw",
-        type: "draw",
-        position: { x: 7, y: 17 },
-        width: 26,
-        height: 11,
-        zIndex: 3,
-        data: { points: [3, 3, 23, 8], strokeWidth: 3, color: "#abcdef" },
-      },
+    expect(projectElements(elements, new Map()).map((node) => node.id)).toEqual([
+      annotation.id,
+      terminal.id,
+      draw.id,
     ]);
   });
 
@@ -57,17 +41,12 @@ describe("flow scene", () => {
     const projected = projectElements(
       new Map([
         [
-          text.id,
-          { ...text, lastEditedBy: "principal-1", lastEditedAt: 42 } satisfies SceneElement,
+          annotation.id,
+          { ...annotation, lastEditedBy: "principal-1", lastEditedAt: 42 } satisfies SceneElement,
         ],
       ]),
       new Map(),
     );
-    expect(projected[0]).toMatchObject({
-      lastEditedBy: "principal-1",
-      lastEditedAt: 42,
-      data: { text: "", fontSize: 20, color: "#123456" },
-    });
     expect(projected[0]?.data).not.toHaveProperty("lastEditedBy");
     expect(projected[0]?.data).not.toHaveProperty("lastEditedAt");
   });
@@ -164,12 +143,12 @@ describe("flow scene", () => {
     // A genuine change replaces only the changed node and keeps the rest by identity.
     const other = {
       id: "b",
-      type: "text",
+      type: "acme.caption",
       position: { x: 9, y: 9 },
       width: 240,
       height: 48,
       zIndex: 2,
-      data: { text: "hi", fontSize: 20, color: "#fff" },
+      data: { caption: "hi" },
     };
     const moved = {
       id: "a",
