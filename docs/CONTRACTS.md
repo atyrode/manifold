@@ -3686,7 +3686,7 @@ depends on it.
   Isolated consumers retain their bounded serialized host methods; no raw Yjs object, credential
   or native point-tool attachment crosses that boundary. The server remains the authority boundary.
 - `core.text` owns standalone documents, the text panel/route, its named text storage and the
-  tileable `text` representation and distinct `text_home` container discipline. `core.canvas.note` owns `canvas_note` and the canvas text tool,
+  tileable `text` representation and distinct `text-home` container discipline. `core.canvas.note` owns `canvas_note` and the canvas text tool,
   requires both its canvas parent and the text peer, and borrows the one editor through the
   registered element outlet. Text remains independently usable with canvas disabled. A reference
   stores an opaque `document` string encoded by `core.text` as `[homeContainerId, documentId]`;

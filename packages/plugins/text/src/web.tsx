@@ -286,7 +286,7 @@ function DocumentBrowser({ host }: { readonly host: HostServices }): ReactElemen
   const selectedHomeId =
     homeId ??
     host.containerId ??
-    homes.find((home) => home.discipline === "text_home")?.id ??
+    homes.find((home) => home.discipline === "text-home")?.id ??
     homes[0]?.id ??
     null;
 
@@ -296,7 +296,7 @@ function DocumentBrowser({ host }: { readonly host: HostServices }): ReactElemen
     try {
       const outcome = await host.client.action("core.index.createContainer", {
         name: homeName.trim() || "Documents",
-        discipline: "text_home",
+        discipline: "text-home",
       });
       if (!outcome.ok) {
         setFailure(outcome.denial.message);
@@ -489,6 +489,6 @@ export const textWeb = {
   elements: { text: TextElement },
   panels: { documents: DocumentsPanel },
   routes: { text: DocumentsRoute },
-  renderers: { text_home: TextHome },
+  renderers: { "text-home": TextHome },
   sections: { documents: DocumentsSection },
 };

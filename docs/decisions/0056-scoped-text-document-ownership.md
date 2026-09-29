@@ -65,7 +65,7 @@ panel/route after its last visual reference is removed.
 ## Two owners, one editor
 
 `core.text` is a standalone, first-party in-realm plugin with a panel, route, collaborative
-storage and the tileable `text` element. Its open `text_home` container discipline serves new
+storage and the tileable `text` element. Its open `text-home` container discipline serves new
 standalone homes; this is contribution data, not a new floor enum. Home and element kinds
 are distinct because the placement algebra resolves discipline traits before element traits:
 a collection's inline homing and portal placement must not override an individual document's

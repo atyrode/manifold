@@ -195,7 +195,7 @@ async function placementFixture(): Promise<PlacementFixture> {
   const canvas = newContainer("canvas", "canvas");
   const other = newContainer("other", "canvas");
   const spare = newContainer("spare", "canvas");
-  const textHome = newContainer("documents", "text_home");
+  const textHome = newContainer("documents", "text-home");
   const composition = newContainer("composition", "composition");
   const otherComposition = newContainer("other composition", "composition");
   const rooms = new RoomManager(store, runtime, clock, silentLogger, testTileTrees);
@@ -459,7 +459,7 @@ function refs(fixture: PlacementFixture): Readonly<Record<string, PlacementRef>>
     composition: { kind: "container", containerId: fixture.otherComposition.id },
     text: { kind: "element", containerId: fixture.canvas.id, elementId: "el-text" },
     canvas_note: { kind: "element", containerId: fixture.canvas.id, elementId: "el-canvas-note" },
-    text_home: { kind: "container", containerId: fixture.textHome.id },
+    "text-home": { kind: "container", containerId: fixture.textHome.id },
     draw: { kind: "element", containerId: fixture.canvas.id, elementId: "el-draw" },
     tile: {
       kind: "tile",
@@ -561,10 +561,10 @@ describe("the placement algebra, executed", () => {
     ["canvas_note", "tile", "add_tile"],
     ["canvas_note", "compose", "compose"],
     ["canvas_note", "unplaced", "denied:not_accepted"],
-    ["text_home", "canvas", "portal"],
-    ["text_home", "tile", "add_tile"],
-    ["text_home", "compose", "compose"],
-    ["text_home", "unplaced", "unplace"],
+    ["text-home", "canvas", "portal"],
+    ["text-home", "tile", "add_tile"],
+    ["text-home", "compose", "compose"],
+    ["text-home", "unplaced", "unplace"],
     ["draw", "canvas", "move_element"],
     ["draw", "tile", "add_tile"],
     ["draw", "compose", "compose"],
