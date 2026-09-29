@@ -1342,7 +1342,9 @@ try {
     try {
       const retainedBody = sdk.sharedText(TEXT_NAMESPACE, document.documentId);
       if (retainedBody === null || retainedBody.toString() !== "hello world") {
-        throw new Error("delete/undo requires the preceding editor redo to have restored hello world");
+        throw new Error(
+          "delete/undo requires the preceding editor redo to have restored hello world",
+        );
       }
       const textCenter = await browserA.evaluate<{ readonly x: number; readonly y: number }>(
         `(() => {
@@ -2270,7 +2272,7 @@ try {
           active[0]?.spectator === true &&
           ![...channels.values()].some((channel) => channel.home === home.id) &&
           (await browserA.evaluate<boolean>(
-            `document.querySelector('.portal__surface .canvas .portal__card') !== null &&
+            `document.querySelector('.portal__renderer .canvas .portal__card') !== null &&
               document.querySelector('.portal .cm-content') === null`,
           ))
         );
