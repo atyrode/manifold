@@ -41,6 +41,11 @@ export async function verifyMountedCanvasDocuments(
     const prefix = `${String(params["requestId"])}:`;
     for (const key of channels.keys()) if (key.startsWith(prefix)) channels.delete(key);
   });
+  // Navigation retires the page's sockets even when CDP omits their close events.
+  const offNavigated = browser.on("Page.frameNavigated", (params) => {
+    const frame = params["frame"];
+    if (typeof frame === "object" && frame !== null && !("parentId" in frame)) channels.clear();
+  });
   const action = async (name: string, args: unknown): Promise<unknown> => {
     const response = await fetch(`${origin}/api/actions/${name}`, {
       method: "POST",
@@ -321,6 +326,9 @@ export async function verifyMountedCanvasDocuments(
     await key(browser, "v", "KeyV");
     const outerNode = `.react-flow__node[data-id="${outerStroke}"]`;
     const innerNode = `.react-flow__node[data-id="${innerStroke}"]`;
+    // Editing the note left it selected. Clear that local selection before Shift-adding
+    // the stroke, or Delete would correctly remove both and break the later reader fixture.
+    await click(browser, `${nestedCanvas} .react-flow__pane`);
     await click(browser, '.canvas-toolbar [title="Select (V)"]');
     await click(browser, outerNode);
     await browser.send("Input.dispatchKeyEvent", {
@@ -329,13 +337,13 @@ export async function verifyMountedCanvasDocuments(
       code: "ShiftLeft",
       modifiers: 8,
     });
+    // The activation click also selects. A second Shift-click would toggle it back off.
     await click(browser, innerNode);
     await until(
       () => active(inner.id)[0]?.spectator === false,
       5_000,
       "inner canvas re-engaged for selection",
     );
-    await click(browser, innerNode);
     await browser.send("Input.dispatchKeyEvent", {
       type: "keyUp",
       key: "Shift",
@@ -344,7 +352,9 @@ export async function verifyMountedCanvasDocuments(
     await until(
       () =>
         browser.evaluate<boolean>(
-          `document.querySelector(${JSON.stringify(outerNode)})?.classList.contains("selected") && document.querySelector(${JSON.stringify(innerNode)})?.classList.contains("selected")`,
+          `document.querySelector(${JSON.stringify(outerNode)})?.classList.contains("selected") &&
+            document.querySelector(${JSON.stringify(innerNode)})?.classList.contains("selected") &&
+            document.querySelectorAll(${JSON.stringify(`${nestedCanvas} .react-flow__node.selected`)}).length === 1`,
         ),
       5_000,
       "distinct outer and inner selections are active",
@@ -559,6 +569,7 @@ export async function verifyMountedCanvasDocuments(
   } finally {
     offFrames();
     offClosed();
+    offNavigated();
     await reader.close();
     for (const client of clients) client.close();
   }

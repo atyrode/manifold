@@ -164,21 +164,22 @@ describe("flow scene", () => {
     expect(result[0]).toEqual({ ...moved, measured: { width: 720, height: 480 } });
     expect(result[0]).not.toBe(currentA);
     expect(result[1]).toBe(otherCurrent);
+  });
 
-    // Selection flips must not be masked by identity reuse.
-    const selected = [
-      {
-        id: "a",
-        type: "terminal",
-        position: { x: 0, y: 0 },
-        width: 720,
-        height: 480,
-        zIndex: 1,
-        data: { terminalId: "s1" },
-        selected: true,
-      },
-    ];
-    expect(reconcileNodes(selected, current)[0]).not.toBe(currentA);
+  test("keeps local selection when canonical edits replace a node", () => {
+    const selected = {
+      id: "note",
+      position: { x: 0, y: 0 },
+      width: 240,
+      height: 48,
+      data: {},
+      selected: true,
+    };
+    const next = { id: "note", position: { x: 0, y: 0 }, width: 240, height: 75, data: {} };
+    const [resized] = reconcileNodes([next], [selected]);
+    expect(resized).toEqual({ ...next, selected: true });
+    expect(reconcileNodes([next], [resized!])[0]).toBe(resized);
+    expect(reconcileNodes([next], [{ ...selected, selected: false }])[0]?.selected).toBe(false);
   });
 
   test("reuses a node under a live gesture so a trailing projection never stomps it", () => {

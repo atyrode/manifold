@@ -36,7 +36,7 @@ function shallowDataEqual(a: Record<string, unknown>, b: Record<string, unknown>
 /**
  * Reconciles a fresh projection into React Flow's live node state.
  *
- * Three duties:
+ * Four duties:
  * - Yield to a live gesture: React Flow stamps `dragging`/`resizing` onto every node it is
  *   moving or sizing (`applyNodeChanges` writes them from the position and dimension
  *   changes it applies), including every co-dragged node of a multi-selection. While either
@@ -50,6 +50,8 @@ function shallowDataEqual(a: Record<string, unknown>, b: Record<string, unknown>
  *   re-projection landing between two frames erased it, and a resize begun in that
  *   window started from zero and produced negative geometry. Never let it into scene
  *   state.
+ * - Keep local selection: canonical scene edits carry no selection. Typing, auto-sizing,
+ *   or a peer's edit must not remove the handles from a node the user just selected.
  * - Preserve identity: every projection rebuilds every node object, but handing React
  *   Flow a new object per node re-renders the whole canvas (xterm terminals included)
  *   on every drag frame — the main thread saturates and the dragged node visibly trails
@@ -77,7 +79,6 @@ export function reconcileNodes(next: readonly Node[], current: Node[]): Node[] {
       previous.width === node.width &&
       previous.height === node.height &&
       previous.zIndex === node.zIndex &&
-      (previous.selected ?? false) === (node.selected ?? false) &&
       previous.dragHandle === node.dragHandle &&
       shallowDataEqual(
         (previous.domAttributes ?? {}) as Record<string, unknown>,
@@ -89,7 +90,13 @@ export function reconcileNodes(next: readonly Node[], current: Node[]): Node[] {
       return previous;
     }
     reusedAll = false;
-    return previous.measured === undefined ? node : { ...node, measured: previous.measured };
+    return previous.measured === undefined && previous.selected === undefined
+      ? node
+      : {
+          ...node,
+          ...(previous.measured === undefined ? {} : { measured: previous.measured }),
+          ...(previous.selected === undefined ? {} : { selected: previous.selected }),
+        };
   });
   return reusedAll ? current : out;
 }
