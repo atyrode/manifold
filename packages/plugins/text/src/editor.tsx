@@ -96,7 +96,10 @@ export function TextEditor(props: TextEditorProps): ReactElement {
                 callbacks.current.onBeginEditing?.();
                 return false;
               },
-              blur() {
+              blur(_event, editor) {
+                // Replacing a borrowed document destroys its old view; that is not a
+                // user leaving the editor and must not cancel the host's engagement.
+                if (binding.current?.view !== editor) return false;
                 history.stopCapturing();
                 callbacks.current.onEndEditing?.();
                 return false;
