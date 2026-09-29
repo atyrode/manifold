@@ -16,6 +16,9 @@ import {
   type PtyTerminalOptions,
 } from "../src/terminal.ts";
 import { LinuxJobRefusal } from "../src/job-linux.ts";
+import { isolateGraphicsPlatform } from "./graphics-platform.ts";
+
+isolateGraphicsPlatform();
 
 /**
  * Real-PTY unit tests. docs/CONTRACTS.md §Testability (agent-facing) permits the agent's PTY tests to spawn real
