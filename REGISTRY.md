@@ -62,8 +62,8 @@ must never be taught one.
       "id": "placement-algebra",
       "globs": ["packages/protocol/src/placement.ts", "packages/server/src/placement.ts"],
       "litmus": ["bootstrap", "neutrality", "arbitration"],
-      "verdict": "the trait-driven rules engine and its executor: which item may enter which container, and which rule refused. Traits are manifest contribution data (G1), so the engine is neutral over kinds; it arbitrates between kinds no single plugin owns. The VERB is a plugin — core.space.place, not a bespoke route.",
-      "adr": "docs/decisions/0013-plugin-behavioral-contract.md"
+      "verdict": "the trait-driven rules engine and its executor: which item may enter which container, which declared representation preserves its payload there, and which rule refused. Traits and representation edges are contribution data, so no kind is favored. Implicit home retirement respects independently retained document content before references are retargeted. The verb remains the contributed placement action.",
+      "adr": "docs/decisions/0056-scoped-text-document-ownership.md"
     },
     {
       "id": "assembly-engine",
@@ -145,8 +145,8 @@ must never be taught one.
       "id": "scene-sync",
       "globs": ["packages/scene/src/**", "packages/server/src/room.ts"],
       "litmus": ["bootstrap", "neutrality", "arbitration"],
-      "verdict": "the document plane: the canonical Y.Doc per room, accept-then-repair, snapshots, and the scene representation element renderers project from. It arbitrates concurrent edits between principals; element KINDS are contribution data.",
-      "adr": "docs/decisions/0008-yjs-scene-engine.md"
+      "verdict": "the document plane: the canonical Y.Doc per room, bounded elements and independently retained named collaborative texts, receiving-boundary repair/authorship, and historical snapshots. It arbitrates concurrent edits and retains authority homes independently of visual references; kinds, namespace ownership and editor policy remain contributions.",
+      "adr": "docs/decisions/0056-scoped-text-document-ownership.md"
     },
     {
       "id": "presence-transport",
@@ -168,6 +168,7 @@ must never be taught one.
         "packages/web/src/plugin-development-module.d.ts",
         "packages/web/src/shared-registry.ts",
         "packages/web/src/room-pipes.ts",
+        "packages/web/src/document-access.tsx",
         "packages/web/src/assembly.ts",
         "packages/web/src/api.ts",
         "packages/web/src/error-boundary.tsx",
@@ -184,7 +185,7 @@ must never be taught one.
       ],
       "litmus": ["bootstrap", "neutrality", "arbitration"],
       "verdict": "the registry's browser half: AssemblyProvider, PanelOutlet and the engine-owned placeholder, HostServices, the projection registry it publishes to plugin code, the typed HTTP client, fault containment, and the read-only debug probe. It mounts panels without knowing which panels exist — and as of 2026-09-01 that is literally true of the shell's own two panels as well: they moved into @manifold-plugin/shell once `host.assembly` gave every plugin the composition read the sidebar chrome needed, so this pillar claims no component it also renders. What is left is the frame — the tile layout and its one committed write per gesture, the workspace index, the two contexts the host publishes above the tree for its panels to read, and the shell's skin, which stays here because the `sidebar` row vocabulary is filled by core.index, core.machines and core.plugins and a plugin may not own three other plugins' appearance.",
-      "adr": "docs/decisions/0010-plugin-engine-and-action-plane.md"
+      "adr": "docs/decisions/0056-scoped-text-document-ownership.md"
     },
     {
       "id": "sdk",
@@ -481,6 +482,10 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     {
       "glob": "packages/web/src/room-pipes.ts",
       "why": "the occupant room pipes the mounted container renderers publish, by container, and the SessionHandle the host hands plugin code: every read on the host's watching client, every terminal mutation routed through the pipe of the room that owns it (issue #196)"
+    },
+    {
+      "glob": "packages/web/src/document-access.tsx",
+      "why": "bounded host-owned leases onto authorized room documents, including spectator-to-occupant promotion and cleanup; native consumers receive document ports rather than bearers or an alternate transport (ADR 0056)"
     },
     {
       "glob": "packages/web/src/assembly.ts",

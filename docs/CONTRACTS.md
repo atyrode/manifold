@@ -2052,9 +2052,10 @@ and leave the other. The route's two statuses are now `refused` denials carrying
 sentences — `not_found: tile not found`, `conflict: tile is not removable` — which is the
 `core.space.place` move again: a refusal is data, so every outcome answers 200. What did not
 change: removal is still NOT a placement (nothing accepts "nowhere" for a leaf), a terminal's
-last leaf still reaps the terminal, and a composition emptied BY a departure still retires
-while an empty root stays put. The commit announces `tile_removed` on the container that held
-the leaf — `item_placed`'s mirror.
+last leaf still reaps the terminal, and a composition emptied BY a departure retires only
+when it also has no independently retained document content. An empty root stays put.
+Retention is checked before absorption retargets references, not only before deletion.
+The commit announces `tile_removed` on the container that held the leaf — `item_placed`'s mirror.
 
 **Terminal administration (`core.terminals`).** `PATCH /api/terminals/:id`,
 `DELETE /api/terminals/:id`, `GET /api/terminals` and `GET /api/container-terminals` are deleted,
@@ -3596,8 +3597,8 @@ engaged is a socket role rather than a UI mode anyone has to learn.
 Yjs is the floor's document-plane engine because scene edits need commutative field and
 collaborative-text merges across browser, SDK, and server; [ADR 0008](decisions/0008-yjs-scene-engine.md)
 and its 2026-09-15 ratification addendum own that dependency decision. `scene` means the room
-document containing elements (including nested text) and layout, not a canvas renderer. React Flow
-is only `core.canvas`'s plugin-local web renderer under
+document containing elements, independently retained named texts and layout, not a canvas renderer.
+React Flow is only `core.canvas`'s plugin-local web renderer under
 [ADR 0007](decisions/0007-react-flow-renderer.md); no floor document or non-canvas discipline
 depends on it.
 
@@ -3620,6 +3621,44 @@ depends on it.
   types round-trip under these bounds; a known type's payload must also satisfy its owner's
   registered schema at the element-host/scene boundary. Plugin payload schemas belong to
   element registrations, never inert manifests.
+- **Independent collaborative texts** ([ADR 0056](decisions/0056-scoped-text-document-ownership.md)).
+  The same room document's `texts` root holds record maps keyed by `namespace + ":" + id`.
+  `SharedTextRecordSchema` bounds the namespace, opaque id, plain-text projection and optional
+  attribution; the stored body must be a live `Y.Text`. Namespaces contain no colon. The
+  existing document/update bounds apply, and malformed records are removed through the same
+  accept-then-repair boundary as elements. Server acceptance stamps changed surviving records.
+  Namespace ownership does not introduce another authority root: reads require `containers:read`
+  and edits require `scenes:write` at the containing room. Missing/disabled namespace owners do
+  not erase stored data.
+- The SDK exposes shared-text handles/projections and collection/reset notifications. Native
+  editor transactions retain their local provenance; each editor owns its Yjs text undo history
+  rather than layering a second editor history over the same body. Panels and elements acquire
+  foreign documents through the bounded host-owned native access port, never by constructing
+  bearer-backed clients. Resting previews are spectators; engaged editors occupy their home.
+  A room-scoped admission refusal closes only that channel, not unrelated admitted channels.
+- `core.text` owns standalone documents, the text panel/route, its named text storage and the
+  tileable `text` representation. `core.canvas.note` owns `canvas_note` and the canvas text tool,
+  requires both its canvas parent and the text peer, and borrows the one editor through the
+  registered element outlet. A reference stores an opaque `document` string encoded by
+  `core.text` as `[homeContainerId, documentId]`; its standalone route encodes that tuple in one
+  path segment. Removing/moving a reference does not move or delete its body, and the text
+  surface can discover retained bodies without a mounted canvas. Explicit home deletion is
+  still deletion of that home's contents; foreign references then report a missing document.
+- Alternate element kinds declare `representationOf` a canonical kind. Assembly rejects
+  missing bases, chains and undeclared required peer ownership. The placement door preserves
+  an accepted kind, otherwise chooses the accepted canonical/unique alternate kind, refusing
+  ambiguity. It preserves ids, data, geometry, attribution and tile identity without moving a
+  document's home. Container-backed leaf placement follows declared traits, not a canvas-only
+  switch.
+- The text cutover uses the global backed-up migration ledger. Every retained hash-valid,
+  decodable scene revision is converted independently, preserving home/document identity,
+  text deltas and attribution, references/grants, epoch/revision/time and unrelated state.
+  Corrupt rows remain corrupt rather than being laundered; target collisions or unsupported
+  legacy shapes refuse the transaction. Notes state/storage and ownership reservations are
+  explicitly reconciled, including all disabled combinations without fabricated attribution.
+  Protocol 48 fences the old inline-body session format; machine/instance compatibility remains
+  additive. Rollback uses the complete pre-version image with a compatible old binary, not an
+  old binary pointed at the migrated database. Disposable proof does not claim live activation.
 - The SDK applies edits optimistically with `client.transact(tx => ...)`. Field patches are
   independent CRDT writes, text content is a nested `Y.Text`, and one local undo manager
   tracks local create/patch/text/remove transactions. Consumers project the SDK's
