@@ -12,6 +12,8 @@ import type { ElementDocument } from "./host.ts";
 export interface DocumentAccessOptions {
   readonly document?: ElementDocument;
   readonly mode?: "spectator" | "occupant";
+  /** Follow a mount-owned document exactly: never promote it or retain a replacement session. */
+  readonly binding?: "mounted";
 }
 
 export type DocumentAccessState =
@@ -67,10 +69,15 @@ export function useDocumentAccess(
   const port = useContext(DocumentAccessContext);
   const document = options.document;
   const mode = options.mode ?? "spectator";
+  const binding = options.binding;
   const lease = useMemo(() => {
     if (homeContainerId === null) return idleLease;
     if (port === null) return unavailableLease;
-    return port.lease(homeContainerId, { ...(document === undefined ? {} : { document }), mode });
-  }, [port, homeContainerId, document, mode]);
+    return port.lease(homeContainerId, {
+      ...(document === undefined ? {} : { document }),
+      ...(binding === undefined ? {} : { binding }),
+      mode,
+    });
+  }, [port, homeContainerId, document, mode, binding]);
   return useSyncExternalStore(lease.subscribe, lease.getSnapshot, lease.getSnapshot);
 }

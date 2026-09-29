@@ -210,9 +210,9 @@ export interface TerminalFacet {
  * {@link ContainerRoute} itself.
  *
  * `host` arrives as a PROP, exactly as it does for a panel or a section: a renderer dials
- * its own room pipe with the host's token (A4) and paints in the host's principal colour,
- * and every mount site must therefore hand its own host down rather than let a renderer
- * discover one.
+ * its own room pipe with the host's token (A4), unless its mount lends one through `client`,
+ * and paints in the host's principal colour. Every mount site therefore hands its own
+ * host down rather than letting a renderer discover one.
  */
 export interface ContainerRendererProps {
   readonly host: HostServices;
@@ -223,6 +223,12 @@ export interface ContainerRendererProps {
   /** The index's solo-composition fold; an embedded renderer cannot compute it. */
   readonly soloOccupants?: ReadonlyMap<string, PlacementItem>;
   readonly navigate: (path: string) => void;
+  /**
+   * A portal lends its current room pipe rather than asking the owner to open another.
+   * The mount owns connection, role changes and cleanup; the renderer must not close it.
+   * An absent pipe leaves that lifetime with the renderer.
+   */
+  readonly client?: SessionClient;
   /**
    * Container nesting depth: 1 at the root — the routed mount, or a workspace container leaf
    * beside it — and 2 when embedded in another container. It budgets what renders live below

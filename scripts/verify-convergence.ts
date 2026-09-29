@@ -38,6 +38,7 @@ import { join } from "node:path";
 import { SessionClient } from "../packages/sdk/src/index.ts";
 import {
   ActionOutcomeSchema,
+  ClientMessageSchema,
   ContainerResponseSchema,
   MachinesResponseSchema,
   elementNumbers,
@@ -2077,6 +2078,194 @@ try {
     console.log(
       `FAIL  F12 composition cursors converge on the presence overlay — ${error instanceof Error ? error.message : String(error)}`,
     );
+  }
+
+  // A non-tile-tree portal must borrow the owner renderer without inventing an empty
+  // tile layout, a second editing session, or a new document identity.
+  let documentHome: SessionClient | null = null;
+  const channels = new Map<string, { home: string; spectator: boolean }>();
+  const offFrames = browserA.on("Network.webSocketFrameSent", (params) => {
+    const response = params["response"];
+    if (typeof response !== "object" || response === null || !("payloadData" in response)) return;
+    if (typeof response.payloadData !== "string" || response.payloadData[0] !== "{") return;
+    const parsed = ClientMessageSchema.safeParse(JSON.parse(response.payloadData));
+    if (!parsed.success) return;
+    const frame = parsed.data;
+    if (frame.type !== "join" && frame.type !== "leave") return;
+    const key = `${String(params["requestId"])}:${frame.ch}`;
+    if (frame.type === "join") {
+      channels.set(key, { home: frame.containerId, spectator: frame.spectator === true });
+    } else if (frame.type === "leave") {
+      channels.delete(key);
+    }
+  });
+  const offClosed = browserA.on("Network.webSocketClosed", (params) => {
+    const prefix = `${String(params["requestId"])}:`;
+    for (const key of channels.keys()) if (key.startsWith(prefix)) channels.delete(key);
+  });
+  try {
+    await browserA.send("Network.enable");
+    const action = async (name: string, args: unknown): Promise<unknown> => {
+      const response = await fetch(`${origin}/api/actions/${name}`, {
+        method: "POST",
+        headers: httpHeaders,
+        body: JSON.stringify(args),
+      });
+      const outcome = ActionOutcomeSchema.parse(await response.json());
+      if (!outcome.ok) throw new Error(`${name}: ${outcome.denial.message}`);
+      return outcome.result;
+    };
+    const canvas = ContainerResponseSchema.parse(
+      await action("core.index.createContainer", { name: "portal-canvas", discipline: "canvas" }),
+    ).container;
+    const home = ContainerResponseSchema.parse(
+      await action("core.index.createContainer", {
+        name: "portal-documents",
+        discipline: "text-home",
+      }),
+    ).container;
+    const documentId = "portal-document";
+    const initialBody = "A retained document in its original home.";
+    await action("core.text.create", {
+      home: { kind: "container", containerId: home.id },
+      documentId,
+      text: initialBody,
+      reference: false,
+    });
+    await action("core.space.place", {
+      ref: { kind: "container", containerId: home.id },
+      destination: { kind: "canvas", containerId: canvas.id, x: 80, y: 80 },
+    });
+    const homeClient = new SessionClient({
+      url: `${origin.replace(/^http/, "ws")}/ws/session`,
+      token: ownerKey,
+      containerId: home.id,
+      spectator: true,
+    });
+    documentHome = homeClient;
+    await homeClient.connect();
+    const editor = ".portal .cm-content";
+    const waitForPortal = (body: string, spectator: boolean) =>
+      until(
+        async () => {
+          const active = [...channels.values()].filter((channel) => channel.home === home.id);
+          return (
+            active.length === 1 &&
+            active[0]?.spectator === spectator &&
+            [...homeClient.attendance.values()].reduce(
+              (total, row) => total + row.connections,
+              0,
+            ) === (spectator ? 0 : 1) &&
+            (await browserA.evaluate<boolean>(
+              `(() => {
+                const editor = document.querySelector(${JSON.stringify(editor)});
+                return editor?.textContent === ${JSON.stringify(body)} &&
+                  editor.getAttribute("aria-readonly") === ${JSON.stringify(String(spectator))};
+              })()`,
+            ))
+          );
+        },
+        10_000,
+        `Text home portal ${spectator ? "spectator" : "occupant"} body and single channel`,
+      );
+    await browserA.goto(`${origin}/p/${canvas.id}`);
+    await waitForPortal(initialBody, true);
+    const editorPoint = await browserA.evaluate<{ x: number; y: number }>(
+      `(() => {
+        const rect = document.querySelector(${JSON.stringify(editor)}).getBoundingClientRect();
+        return { x: rect.x + 20, y: rect.y + 10 };
+      })()`,
+    );
+    await clickAt(browserA, editorPoint, 1);
+    await waitForPortal(initialBody, false);
+    await pressKey(browserA, "End", "End", 2);
+    await browserA.typeText(" Edited through its portal.");
+    const editedBody = `${initialBody} Edited through its portal.`;
+    await until(
+      () => homeClient.sharedText(TEXT_NAMESPACE, documentId)?.toString() === editedBody,
+      5_000,
+      "portal edits commit to the original retained body",
+    );
+    await clickAt(browserA, await panePoint(browserA, 0.95, 0.9), 1);
+    await waitForPortal(editedBody, true);
+    const openPoint = await browserA.evaluate<{ x: number; y: number }>(
+      `(() => {
+        const rect = document.querySelector('[aria-label="Open documents portal-documents"]').getBoundingClientRect();
+        return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+      })()`,
+    );
+    await clickAt(browserA, openPoint, 1);
+    await until(
+      () =>
+        browserA.evaluate<boolean>(
+          `location.pathname === ${JSON.stringify(`/p/${home.id}`)} &&
+            document.querySelector('.text-documents .cm-content')?.textContent === ${JSON.stringify(editedBody)}`,
+        ),
+      10_000,
+      "opening the Text home retains document identity and body",
+    );
+    await browserA.goto(`${origin}/p/${canvas.id}`);
+    await waitForPortal(editedBody, true);
+    const unplacePoint = await browserA.evaluate<{ x: number; y: number }>(
+      `(() => {
+        const rect = document.querySelector('[aria-label="Put away documents portal-documents"]').getBoundingClientRect();
+        return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+      })()`,
+    );
+    await clickAt(browserA, unplacePoint, 1);
+    await until(
+      async () =>
+        ![...channels.values()].some((channel) => channel.home === home.id) &&
+        homeClient.attendance.size === 0 &&
+        (await browserA.evaluate<boolean>("document.querySelector('.portal') === null")),
+      10_000,
+      "unplacing the Text home releases every portal channel",
+    );
+    if (
+      homeClient.sharedTexts(TEXT_NAMESPACE).size !== 1 ||
+      homeClient.sharedText(TEXT_NAMESPACE, documentId)?.toString() !== editedBody
+    ) {
+      throw new Error("unplacing the Text home replaced or removed its retained document");
+    }
+    const nested = ContainerResponseSchema.parse(
+      await action("core.index.createContainer", { name: "nested-canvas", discipline: "canvas" }),
+    ).container;
+    await action("core.space.place", {
+      ref: { kind: "container", containerId: home.id },
+      destination: { kind: "canvas", containerId: nested.id, x: 30, y: 30 },
+    });
+    await action("core.space.place", {
+      ref: { kind: "container", containerId: nested.id },
+      destination: { kind: "canvas", containerId: canvas.id, x: 80, y: 80 },
+    });
+    await until(
+      async () => {
+        const active = [...channels.values()].filter((channel) => channel.home === nested.id);
+        return (
+          active.length === 1 &&
+          active[0]?.spectator === true &&
+          ![...channels.values()].some((channel) => channel.home === home.id) &&
+          (await browserA.evaluate<boolean>(
+            `document.querySelector('.portal__surface .canvas .portal__card') !== null &&
+              document.querySelector('.portal .cm-content') === null`,
+          ))
+        );
+      },
+      10_000,
+      "nested canvas keeps its own scene and renders deeper portals as cards without a session",
+    );
+    console.log(
+      "PASS  F13 Text home portal previews, edits, disengages, opens and unplaces without a leaked session",
+    );
+  } catch (error) {
+    failures.push("F13 Text home portal");
+    console.log(
+      `FAIL  F13 Text home portal — ${error instanceof Error ? error.message : String(error)}`,
+    );
+  } finally {
+    offFrames();
+    offClosed();
+    documentHome?.close();
   }
 } finally {
   // ---------------------------------------------------------------- teardown

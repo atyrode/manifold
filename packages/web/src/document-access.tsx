@@ -198,6 +198,7 @@ interface HeldDocument {
 /** Bounded authority-home leases. No entry is downgraded while a consumer still holds it. */
 export class NativeDocumentAccess implements DocumentAccessPort {
   private readonly homes = new Map<string, DocumentEntry>();
+  private readonly mounted = new Set<DocumentEntry>();
   private retired = false;
 
   constructor(
@@ -222,6 +223,23 @@ export class NativeDocumentAccess implements DocumentAccessPort {
     if (this.retired) return null;
     const mode = options.mode ?? "spectator";
     const supplied = this.supplied(home, options);
+    if (options.binding === "mounted") {
+      if (supplied === undefined) return null;
+      // This lifetime belongs to the mount, including spectator/occupant swaps. Pooling
+      // it would retain an occupant after disengagement or reopen a removed portal.
+      const mounted = new DocumentEntry(mode, () => undefined);
+      mounted.borrow(supplied);
+      mounted.listeners.add(listener);
+      this.mounted.add(mounted);
+      return {
+        entry: mounted,
+        release: () => {
+          this.mounted.delete(mounted);
+          mounted.listeners.delete(listener);
+          mounted.retire();
+        },
+      };
+    }
     let entry = this.homes.get(home);
     if (entry === undefined) {
       if (this.homes.size >= MAX_SESSION_CHANNELS_PER_CONNECTION) return null;
@@ -274,10 +292,14 @@ export class NativeDocumentAccess implements DocumentAccessPort {
         ? IDLE
         : this.retired
           ? RELEASED
-          : (this.homes.get(home)?.state ??
-            (supplied !== undefined && (mode === "spectator" || !supplied.spectator)
-              ? documentState(supplied, 0)
-              : LOADING));
+          : options.binding === "mounted"
+            ? supplied === undefined
+              ? LOADING
+              : documentState(supplied, 0)
+            : (this.homes.get(home)?.state ??
+              (supplied !== undefined && (mode === "spectator" || !supplied.spectator)
+                ? documentState(supplied, 0)
+                : LOADING));
     // A role-only change must not briefly become loading and unmount a healthy editor.
     let state: DocumentAccessState =
       initial.state === "ready" && mode === "spectator" && initial.canWrite
@@ -315,8 +337,9 @@ export class NativeDocumentAccess implements DocumentAccessPort {
   retire(): void {
     if (this.retired) return;
     this.retired = true;
-    const entries = [...this.homes.values()];
+    const entries = [...this.homes.values(), ...this.mounted];
     this.homes.clear();
+    this.mounted.clear();
     for (const entry of entries) entry.retire();
   }
 }
