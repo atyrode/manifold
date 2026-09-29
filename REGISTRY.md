@@ -103,7 +103,8 @@ must never be taught one.
         "packages/server/src/stores.ts",
         "packages/server/src/migrate-solo.ts",
         "packages/server/src/migrate-lexicon.ts",
-        "packages/server/src/migrate-grants.ts"
+        "packages/server/src/migrate-grants.ts",
+        "packages/server/src/migrate-text.ts"
       ],
       "litmus": ["bootstrap", "neutrality", "arbitration"],
       "verdict": "the SQLite substrate: schema, migrations, and the row-level accessors the engine's own bookkeeping needs (enablement, layout, plugin storage namespaces, ownership tombstones, migration ledgers). Plugin-domain rows reach it only through ctx.storage, which is why the substrate stays neutral and a purge can be exact.",
@@ -238,15 +239,15 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     },
     {
       "glob": "packages/scene/src/**",
-      "why": "the document plane: the Yjs representation of scenes and tile layouts"
+      "why": "the document plane: the canonical room Y.Doc, element and tile-layout representation, and bounded independently retained named Y.Text records with validation, attribution and retention helpers (ADR 0056)"
     },
     {
       "glob": "packages/sdk/src/**",
-      "why": "the only WebSocket state machine plus the typed HTTP client; doc sync, presence relay, action dispatch and PTY streams reach every client through it"
+      "why": "the only WebSocket state machine plus the typed HTTP client; doc sync, shared-text handles/projections and local/remote/undo notifications, evaluated home scene authority, presence relay, action dispatch and PTY streams reach every client through it"
     },
     {
       "glob": "packages/plugin/src/**",
-      "why": "the registry itself: manifests, assembly, action definitions, host contracts, the default workspace layout — plus the plugin-facing standard library behind @manifold/plugin/hooks (plane mechanism: the carry/drop and tile vocabulary, the presence plane's browser half, the element host, the ELEMENT plane's polyline geometry — what a flat coordinate payload extends to and the SVG strings that paint it, neutral over producers so no plugin carries a private copy — the projection registry through which one renderer paints another plugin's occupant, the routed-container context, polling, WHICH INSTANCE the lens looks at and the session URL derived from it, the debug probe, THE one tile-tree renderer with its drop preview and zone debug, the words a keycap wears, the notice consumer half, the published vantage store, and the two device-local handoff slots two plugins that may not import each other pass a gesture through — a rebind request, and the placed structure a grip has in hand for the palette it goes back to (issue #148)) — plus the browser-only generated action form behind @manifold/plugin/ui, promoted when its second plugin consumer arrived (issue #168). The design system is NOT here: it is `@manifold/ui` (#240), and this package re-exports nothing from it"
+      "why": "the registry itself: manifests, assembly, action definitions, host contracts, the default workspace layout — plus the plugin-facing standard library behind @manifold/plugin/hooks (plane mechanism: the carry/drop and tile vocabulary, declared element representations, native point-tool attachments, the presence plane's browser half, the element host and native document-access lease contract, the ELEMENT plane's polyline geometry — what a flat coordinate payload extends to and the SVG strings that paint it, neutral over producers so no plugin carries a private copy — the projection registry through which one renderer paints another plugin's occupant, the routed-container context, polling, WHICH INSTANCE the lens looks at and the session URL derived from it, the debug probe, THE one tile-tree renderer with its drop preview and zone debug, the words a keycap wears, the notice consumer half, the published vantage store, and the two device-local handoff slots two plugins that may not import each other pass a gesture through — a rebind request, and the placed structure a grip has in hand for the palette it goes back to (issue #148)) — plus the browser-only generated action form behind @manifold/plugin/ui, promoted when its second plugin consumer arrived (issue #168). The design system is NOT here: it is `@manifold/ui` (#240), and this package re-exports nothing from it"
     },
     {
       "glob": "packages/ui/src/**",
@@ -413,6 +414,10 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
       "why": "a code migration that materializes the authority substrate — persistence. Every token's flat caps become the grant row its token references, and every share's caps become the instance grant on its shared node"
     },
     {
+      "glob": "packages/server/src/migrate-text.ts",
+      "why": "ADR 0056 backed-up historical ownership transition in the persistence pillar: converts retained scene revisions and plugin identity/reservations while retaining authority homes and collaborative lineage; not a live plugin storage API"
+    },
+    {
       "glob": "packages/web/src/main.tsx",
       "why": "browser entry"
     },
@@ -434,7 +439,7 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     },
     {
       "glob": "packages/web/src/document-access.tsx",
-      "why": "bounded host-owned leases onto authorized room documents, including spectator-to-occupant promotion and cleanup; native consumers receive document ports rather than bearers or an alternate transport (ADR 0056)"
+      "why": "bounded host-owned leases onto authorized room documents, borrowing matching mounted clients or sharing foreign-home channels, spectator-to-occupant promotion, evaluated home write permission and final-release/identity cleanup; native consumers receive document ports rather than bearers or an alternate transport (ADR 0056)"
     },
     {
       "glob": "packages/web/src/assembly.ts",
@@ -552,7 +557,8 @@ work list rather than a ledger of debt: every row lands in this change.
 
 | Was floor                                                                | Converts to                 | Ruling                                                                  |
 | ------------------------------------------------------------------------ | --------------------------- | ----------------------------------------------------------------------- |
-| notes/text element renderer + its inline editor                          | `core.notes`                | moved; the text TOOL is canvas chrome (next row)                        |
+| collaborative text bodies, standalone discovery and shared editor         | `core.text`                 | independent authority homes and tileable text references (ADR 0056)     |
+| canvas note representation, text point tool and note geometry             | `core.canvas.note`          | required canvas parent plus text peer; borrows the text owner's editor  |
 | canvas renderer, portal internals, canvas toolbar, viewport              | `core.canvas`               | moved; decomposed `core.shell.container-view`; absorbed stroke geometry |
 | composition-route internals, tile drop gestures, carry previews          | `core.compositions`         | decomposes `core.shell.container-view`                                  |
 | machine enrollment, admission administration + presentation helpers      | `core.machines`             | enrollment, inventory and drain are actions; color lives on the wire    |
@@ -577,8 +583,10 @@ publisher, the `focus` door, and its chrome — which reaches renderers as REGIS
 (`attendance`, `spotlight`) rather than as imports, so presence still owns its own
 presentation and no renderer names the package.
 
-`core.canvas`, `core.notes` and `core.compositions` together decompose today's
-`core.shell.container-view` panel. Two rows reverse earlier scope notes, ruled in
+`core.canvas`, `core.text`, the borrowing canvas child `core.canvas.note`, and `core.compositions`
+decompose the content rendered by `core.shell.container-view`. The text ownership split is
+recorded in [ADR 0056](docs/decisions/0056-scoped-text-document-ownership.md). Two rows
+reverse earlier scope notes, ruled in
 [`docs/decisions/0013-plugin-behavioral-contract.md`](docs/decisions/0013-plugin-behavioral-contract.md)
 §14: `POST /api/place` is superseded by `core.space.place` rather than left as a permanent
 exception ([One authoritative implementation](docs/CONTRACTS.md#one-authoritative-implementation)
@@ -1565,7 +1573,7 @@ statically assembled.
 
 **A family is a name, which is why this register sits here.** The family of a class is the
 LONGEST `family` below that is a prefix of it ending on a `-` or `__` boundary, so `terminal`
-answers for `.terminal-frame--panel-highlight` while `canvas-text` beats `canvas` for the note
+answers for `.terminal-frame--panel-highlight` while `canvas-note` beats `canvas` for the note
 element and `portal__slot` beats `portal` for the tile-tree's pane. A class matching no row is
 RED: adding a family is a row, exactly as adding a canon word is.
 
@@ -1957,9 +1965,29 @@ prefix, never a scope root, and belongs to no stylesheet.
       "why": "the React Flow node type the ink is drawn into — a longer prefix than `react-flow`, which is how the draw plugin keeps its own node without taking the canvas's vendor dressing"
     },
     {
-      "family": "canvas-text",
-      "owner": "packages/plugins/notes/src/styles.css",
-      "why": "the note element and its in-place editor. The prefix says where a note is painted; the owner is the plugin whose element it is, so disabling notes takes this with it"
+      "family": "canvas-note",
+      "owner": "packages/plugins/canvas/note/src/styles.css",
+      "why": "the canvas child's visual reference and measured content wrapper; the longer prefix keeps note geometry separate from the parent canvas and the borrowed text editor"
+    },
+    {
+      "family": "text-documents",
+      "owner": "packages/plugins/text/src/styles.css",
+      "why": "the standalone document route, panel and home browser, including retained-body discovery and creation controls"
+    },
+    {
+      "family": "text-reference",
+      "owner": "packages/plugins/text/src/styles.css",
+      "why": "the text owner's reference renderer and missing/read-only states, shared by standalone tiles and borrowed representations"
+    },
+    {
+      "family": "text-editor",
+      "owner": "packages/plugins/text/src/styles.css",
+      "why": "the one collaborative editor, its mount, bounded-edit feedback and intrinsic-height presentation"
+    },
+    {
+      "family": "cm",
+      "owner": "packages/plugins/text/src/styles.css",
+      "why": "CodeMirror's vendor classes reached only beneath the text owner's editor scope; a borrowed editor retains this owner"
     },
     {
       "family": "arrange",
