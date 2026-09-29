@@ -114,7 +114,7 @@ export async function verifyMountedCanvasDocuments(
   const active = (home: string) => [...channels.values()].filter((entry) => entry.home === home);
   const attendance = (client: SessionClient) =>
     [...client.attendance.values()].reduce((total, row) => total + row.connections, 0);
-  const nestedCanvas = ".portal__surface .canvas";
+  const nestedCanvas = ".portal__renderer .canvas";
   const editor = `${nestedCanvas} .canvas-note .cm-content`;
   const outerPane = ".canvas > .react-flow > .react-flow__renderer > .react-flow__pane";
   const rendered = (target: Browser, selector: string, text: string, readOnly: boolean) =>
