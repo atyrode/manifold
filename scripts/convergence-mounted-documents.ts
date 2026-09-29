@@ -429,11 +429,10 @@ export async function verifyMountedCanvasDocuments(
       10_000,
       "foreign occupant lease has loaded its original body",
     );
-    await click(browser, foreignEditor, 2);
     await until(
       () => rendered(browser, foreignEditor, "Foreign retained body", false),
       10_000,
-      "foreign home obtains its independent edit lease",
+      "one activation obtains the foreign home's independent edit lease",
     );
     await key(browser, "End", "End", 2);
     await browser.typeText(" — foreign edit");
