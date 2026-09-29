@@ -483,6 +483,8 @@ const ContributesSchema = z.strictObject({
         type: z.string().min(1).max(32),
         title: TitleSchema,
         placement: PlacementTraitsSchema.optional(),
+        /** An alternate placement of the same payload; assembly proves its owner/peer edge. */
+        representationOf: z.string().min(1).max(32).optional(),
         presentation: z
           .record(ContainerDisciplineSchema, z.enum(["body", "titlebar"]))
           .refine((values) => Object.keys(values).length <= 32, {

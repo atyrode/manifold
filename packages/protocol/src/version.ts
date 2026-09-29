@@ -497,6 +497,12 @@ export const PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<string> = new S
  * Absent capability preserves legacy owners. IPC3 keeps every existing frame unchanged;
  * new-type support and geometry events are ignored by older transports. Instance wire and
  * native-owner RPC are unchanged; their supported peers do not require a fleet restart.
+ *
+ * v56: independently retained collaborative text records and declared element
+ * representations replace inline note bodies (issue #263). Strict session admission fences
+ * pre-cutover document replicas; historical room epochs remain unchanged. Machine, instance,
+ * native-owner and terminal-host frames and adoption are unchanged, so machine and instance
+ * compatibility sets add 56.
  */
 export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
   30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52, 53, 54, 55,
@@ -564,6 +570,7 @@ export const MACHINE_CREDENTIAL_ENROLLMENT_PROTOCOL_VERSION = 55;
  * v53 requires explicit host-recipient admission and ticket subset/expiry fields; reset
  * the instance set so old ambient-admission peers cannot resume through the new contract.
  * v54 adds scoped session authority and leaves that host-recipient instance wire unchanged.
+ * v56 changes only session document representation; the instance wire is unchanged.
  */
 export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([53, 54, 55, 56]);
 
