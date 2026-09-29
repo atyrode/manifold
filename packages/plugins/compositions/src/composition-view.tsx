@@ -657,46 +657,38 @@ export function CompositionView({
    * document. The server answers the same two questions from its rows and rooms, so a
    * preview painted here can never disagree with the write that follows it.
    */
-  const lookup = useMemo(
-    () =>
-      createPlacementLookup({
-        containers,
-        self: { containerId, discipline: "composition" },
-        elements: client.elements,
-        // A terminal's home composition rides on its terminal record, so this room can
-        // answer for every terminal it holds without asking the server.
-        terminalHomes: new Map(
-          [...client.terminals.values()].map(
-            (terminal) => [terminal.id, terminal.containerId] as const,
-          ),
+  const lookup = useMemo(() => {
+    // Room projections mutate in place; take new snapshots on every scene revision.
+    void sceneRevision;
+    return createPlacementLookup({
+      containers,
+      self: { containerId, discipline: "composition" },
+      elements: client.elements,
+      // A terminal's home composition rides on its terminal record, so this room can
+      // answer for every terminal it holds without asking the server.
+      terminalHomes: new Map(
+        [...client.terminals.values()].map(
+          (terminal) => [terminal.id, terminal.containerId] as const,
         ),
-        // The index answers the arity question for every OTHER container (it is the
-        // only party that can), and this room answers for ITSELF from its live layout —
-        // its own answer wins, because the index's poll can lag a structural write.
-        soloOccupants: (() => {
-          const merged = new Map(soloOccupants);
-          merged.delete(containerId);
-          for (const [id, item] of soloOccupancy(containerId, client.layout(), client))
-            merged.set(id, item);
-          return merged;
-        })(),
-        /*
+      ),
+      // The index answers the arity question for every OTHER container (it is the
+      // only party that can), and this room answers for ITSELF from its live layout —
+      // its own answer wins, because the index's poll can lag a structural write.
+      soloOccupants: (() => {
+        const merged = new Map(soloOccupants);
+        merged.delete(containerId);
+        for (const [id, item] of soloOccupancy(containerId, client.layout(), client))
+          merged.set(id, item);
+        return merged;
+      })(),
+      /*
           A CONTRIBUTED element kind's placement traits live in its manifest, not in the closed
           floor table (ADR 0013 §12) — a note leaf reports `text`, so without the roster this
           preview would refuse drags the server accepts.
         */
-        roster,
-      }),
-    /*
-      `sceneRevision` is a KEY, not a closure read, and the exhaustive-deps rule says so out
-      loud — leave it anyway: this room's terminal table and layout tree mutate in place, and
-      both snapshots above (terminal homes, merged solo occupancy) are taken HERE. Drop this
-      dependency and a preview answers from the tree as it stood at the last unrelated
-      re-render, which is exactly the disagreement with the server this lookup exists to
-      prevent.
-    */
-    [client, containers, containerId, roster, sceneRevision, soloOccupants],
-  );
+      roster,
+    });
+  }, [client, containers, containerId, roster, sceneRevision, soloOccupants]);
 
   const drop = useItemDrop({
     lookup,

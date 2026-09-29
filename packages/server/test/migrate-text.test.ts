@@ -164,7 +164,8 @@ describe("migration 49: retained text ownership", () => {
         );
         const oldElement = original.getMap<Y.Map<unknown>>(ELEMENTS_KEY).get(ID)!;
         const newElement = migrated.getMap<Y.Map<unknown>>(ELEMENTS_KEY).get(ID)!;
-        const { text: _text, ...presentation } = oldElement.toJSON();
+        const presentation: Record<string, unknown> = oldElement.toJSON();
+        delete presentation["text"];
         expect(newElement.toJSON()).toEqual({
           ...presentation,
           type: "canvas_note",
@@ -801,7 +802,8 @@ describe("migration 49: retained text ownership", () => {
           branches.push(branch);
           let element = branch.getMap<Y.Map<unknown>>(ELEMENTS_KEY).get(ID)!;
           if (change === "generation") {
-            const { text: _body, ...fields } = element.toJSON();
+            const fields: Record<string, unknown> = element.toJSON();
+            delete fields["text"];
             element = new Y.Map<unknown>(Object.entries(fields));
             element.set("text", new Y.Text(`generation-${client}`));
             branch.getMap(ELEMENTS_KEY).set(ID, element);

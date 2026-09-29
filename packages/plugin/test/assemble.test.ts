@@ -1502,7 +1502,8 @@ describe("declared element representations", () => {
   );
 
   test("a genuinely invalid ownership edge holds its declaring plugin, not the canonical owner", () => {
-    const { dependencies: _dependencies, ...withoutEdge } = alternate.manifest;
+    const withoutEdge = { ...alternate.manifest };
+    delete withoutEdge.dependencies;
     const invalid = { ...alternate, manifest: withoutEdge };
     const assembly = assembleRoster([base, invalid], NONE, { problemPolicy: "hold" });
     expect(assembly.enabled(base.manifest.id)).toBe(true);
@@ -1516,7 +1517,8 @@ describe("declared element representations", () => {
   test.each(["missing", "optional", "after"] as const)(
     "a %s peer edge cannot reinterpret another owner's payload",
     (edge) => {
-      const { dependencies: _dependencies, ...withoutEdge } = alternate.manifest;
+      const withoutEdge = { ...alternate.manifest };
+      delete withoutEdge.dependencies;
       const invalid: PluginDef = {
         ...alternate,
         manifest: {

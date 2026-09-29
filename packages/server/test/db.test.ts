@@ -1806,7 +1806,8 @@ describe("migration 19: contributed element refs", () => {
         expected["leaf-1"].ref = { kind: "element", elementId: "el-draw" };
         expect(readTileLayout(migrated, before.container_id)).toEqual(expected);
         const originalElements = original.getMap<Y.Map<unknown>>(ELEMENTS_KEY).toJSON();
-        const { text: _text, ...notePresentation } = originalElements["el-note"];
+        const notePresentation: Record<string, unknown> = { ...originalElements["el-note"] };
+        delete notePresentation["text"];
         expect(migrated.getMap(ELEMENTS_KEY).toJSON()).toEqual({
           ...originalElements,
           "el-note": {
