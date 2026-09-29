@@ -886,8 +886,19 @@ try {
     code: string,
     modifiers = 0,
   ): Promise<void> => {
-    await browser.send("Input.dispatchKeyEvent", { type: "keyDown", key, code, modifiers });
-    await browser.send("Input.dispatchKeyEvent", { type: "keyUp", key, code, modifiers });
+    // CDP does not derive the physical key code from `key`/`code`. Shifted shortcuts
+    // need it just like a real keyboard event (otherwise CodeMirror sees an unknown key).
+    const physicalKey = /^Key[A-Z]$/.test(code) ? code.charCodeAt(3) : undefined;
+    const event = {
+      key,
+      code,
+      modifiers,
+      ...(physicalKey === undefined
+        ? {}
+        : { windowsVirtualKeyCode: physicalKey, nativeVirtualKeyCode: physicalKey }),
+    };
+    await browser.send("Input.dispatchKeyEvent", { type: "keyDown", ...event });
+    await browser.send("Input.dispatchKeyEvent", { type: "keyUp", ...event });
   };
 
   const first = await terminalPortal(280, 180);
@@ -1329,6 +1340,10 @@ try {
     );
 
     try {
+      const retainedBody = sdk.sharedText(TEXT_NAMESPACE, document.documentId);
+      if (retainedBody === null || retainedBody.toString() !== "hello world") {
+        throw new Error("delete/undo requires the preceding editor redo to have restored hello world");
+      }
       const textCenter = await browserA.evaluate<{ readonly x: number; readonly y: number }>(
         `(() => {
           const node = document.querySelector(${JSON.stringify(
@@ -1365,7 +1380,8 @@ try {
         "visual note deletion in both browsers",
       );
       if (
-        sdk.sharedText(TEXT_NAMESPACE, document.documentId)?.toString() !== "hello world" ||
+        sdk.sharedText(TEXT_NAMESPACE, document.documentId) !== retainedBody ||
+        retainedBody.toString() !== "hello world" ||
         sdk.sharedTexts(TEXT_NAMESPACE).get(document.documentId)?.text !== "hello world"
       ) {
         throw new Error("removing the visual note lost its independently retained body");
@@ -1387,7 +1403,8 @@ try {
       const restored = sdk.elements.get(textElement.id);
       if (
         restored === undefined ||
-        elementString(restored, "document") !== elementString(textElement, "document")
+        elementString(restored, "document") !== elementString(textElement, "document") ||
+        sdk.sharedText(TEXT_NAMESPACE, document.documentId) !== retainedBody
       ) {
         throw new Error("scene undo changed the document's authority reference");
       }
@@ -2104,6 +2121,12 @@ try {
     const prefix = `${String(params["requestId"])}:`;
     for (const key of channels.keys()) if (key.startsWith(prefix)) channels.delete(key);
   });
+  // Chromium may discard a navigated page's sockets without WebSocketClosed events.
+  // A new top-level document owns new sockets; old routed channels are not portal leaks.
+  const offNavigated = browserA.on("Page.frameNavigated", (params) => {
+    const frame = params["frame"];
+    if (typeof frame === "object" && frame !== null && !("parentId" in frame)) channels.clear();
+  });
   try {
     await browserA.send("Network.enable", {});
     const action = async (name: string, args: unknown): Promise<unknown> => {
@@ -2267,6 +2290,7 @@ try {
   } finally {
     offFrames();
     offClosed();
+    offNavigated();
     documentHome?.close();
   }
 } finally {
