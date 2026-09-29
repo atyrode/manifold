@@ -579,6 +579,13 @@ export {
   type SceneElementPayloadValue,
 } from "./elements.ts";
 export {
+  SharedTextNamespaceSchema,
+  SharedTextRefSchema,
+  SharedTextRecordSchema,
+  type SharedTextRef,
+  type SharedTextRecord,
+} from "./shared-text.ts";
+export {
   ContainerDisciplineSchema,
   DISCIPLINE_ID_PATTERN,
   MAX_DISCIPLINE_ID_LENGTH,

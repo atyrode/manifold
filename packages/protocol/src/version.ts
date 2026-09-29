@@ -1,5 +1,5 @@
 /** Wire revision; session joins require the current version (close 4409 otherwise). */
-export const PROTOCOL_VERSION = 51;
+export const PROTOCOL_VERSION = 52;
 
 /**
  * Explicit bundle build compatibility, not session or machine-channel negotiation.
@@ -462,10 +462,15 @@ export const PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<string> = new S
  * v51: smallest active terminal viewports (issue #877). Session resize carries a mounted
  * viewport identity and desired geometry (null withdraws); transient sizing attribution
  * carries only connection references. Machine, native-owner and instance wires are unchanged.
- * Versions 49/50 are reserved by held Text/Files branches, not integrated session revisions.
+ * Versions 49/50 were held Text/Files candidates, not integrated session revisions.
+ *
+ * v52: independently retained collaborative text records and declared element
+ * representations replace inline note bodies. Strict session admission fences pre-cutover
+ * document replicas; historical room epochs remain unchanged. Machine and instance frames,
+ * terminal-host ownership and adoption are unchanged, so both compatibility sets add 52.
  */
 export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51,
+  30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52,
 ]);
 
 /**
@@ -516,10 +521,10 @@ export const MACHINE_AGENT_TOOLS_PROTOCOL_VERSION = 43;
  * never receives a machine ref, so the instance wire is unchanged.
  * v26: image-aware terminal viewers; instance frames remain unchanged.
  * v27: governed jobs expand the closed share resource/capability vocabularies (ADR 0033);
- * instance compatibility resets to protocol 27. v28 through v48 and v51 leave that wire unchanged.
+ * instance compatibility resets to protocol 27. v28 through v48 and v51/v52 leave that wire unchanged.
  */
 export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51,
+  27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52,
 ]);
 
 /**
