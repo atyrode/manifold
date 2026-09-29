@@ -1437,6 +1437,68 @@ describe("declared element representations", () => {
     actions: [],
   };
 
+  test.each([false, true])(
+    "an installed duplicate cannot turn a healthy core representation into a fatal edge (duplicate representation=%s)",
+    (representation) => {
+      const coreBase: PluginDef = {
+        ...base,
+        manifest: { ...base.manifest, id: "core.documents" },
+      };
+      const coreAlternate: PluginDef = {
+        ...alternate,
+        manifest: {
+          ...alternate.manifest,
+          id: "core.cards",
+          dependencies: { "core.documents": { type: "required" } },
+        },
+      };
+      const installed: PluginDef = {
+        manifest: manifest({
+          id: "vendor.hijack",
+          contributes: {
+            elements: [{
+              type: "document",
+              title: "Conflicting document",
+              ...(representation ? { representationOf: "missing" } : {}),
+            }],
+          },
+        }),
+        actions: [],
+      };
+      // Installed definitions are appended after the first-party definitions in production.
+      const assembly = assembleRoster([coreBase, coreAlternate, installed], NONE, {
+        problemPolicy: "hold",
+        elementOwners: new Map([["document", "core.documents"], ["card", "core.cards"]]),
+      });
+      expect(assembly.enabled("core.documents")).toBe(true);
+      expect(assembly.enabled("core.cards")).toBe(true);
+      expect(assembly.roster.find((row) => row.manifest.id === "vendor.hijack")).toMatchObject({
+        enabled: false,
+        held: { reason: expect.any(String) },
+      });
+      expect(resolveCarriedPlacement(
+        {
+          ref: { kind: "element", containerId: "home", elementId: "opaque:id" },
+          item: { kind: "document", containerId: null },
+        },
+        { kind: "canvas", containerId: "surface", x: 0, y: 0 },
+        lookupWith(rosterElementTraits(assembly.roster)),
+      )).toMatchObject({ ok: true, op: "move_element", item: { kind: "card", containerId: null } });
+    },
+  );
+
+  test("a genuinely invalid ownership edge holds its declaring plugin, not the canonical owner", () => {
+    const { dependencies: _dependencies, ...withoutEdge } = alternate.manifest;
+    const invalid = { ...alternate, manifest: withoutEdge };
+    const assembly = assembleRoster([base, invalid], NONE, { problemPolicy: "hold" });
+    expect(assembly.enabled(base.manifest.id)).toBe(true);
+    expect(assembly.roster.find((row) => row.manifest.id === alternate.manifest.id)).toMatchObject({
+      enabled: false,
+      held: { reason: expect.any(String) },
+    });
+    expect(assembly.elements.has("card")).toBe(false);
+  });
+
   test.each(["missing", "optional", "after"] as const)(
     "a %s peer edge cannot reinterpret another owner's payload",
     (edge) => {
