@@ -62,7 +62,7 @@ import type { ElementPayloadRefusal } from "@manifold/plugin";
 import type { EventHub } from "./event-hub.ts";
 import type { Logger } from "./log.ts";
 import {
-  SESSION_TRANSPORT_PAYLOAD_BYTES,
+  SESSION_STATE_ENVELOPE_BYTES,
   serializeServerMessage,
   type ChannelMessage,
   type SerializedServerMessage,
@@ -130,10 +130,7 @@ export function censusFor(
   return { containerId, discipline, items, references };
 }
 
-/**
- * Leaves 4 MiB of the WebSocket transport ceiling for the init envelope, attendance, and
- * terminals while allowing canonical documents substantially larger than one client update.
- */
+/** Ordinary user-content capacity; migration growth is certified separately per epoch. */
 export const DOC_BYTES_LIMIT = 12 * 1_048_576;
 const DOC_UPDATES_PER_SECOND = 120;
 const DOC_UPDATE_BURST = 240;
@@ -237,6 +234,7 @@ export class Room {
   private collectingTextKeys: Set<string> | null = null;
   private docBytes = 0;
   private overLimit = false;
+  private readonly docBytesLimit: number;
 
   constructor(
     readonly containerId: string,
@@ -284,10 +282,11 @@ export class Room {
       });
     });
     this.epoch = record?.epoch ?? runtime.newId();
+    this.docBytesLimit = DOC_BYTES_LIMIT + store.docMigrationBytes(containerId, this.epoch);
     this.rev = record?.rev ?? 0;
     if (record !== null) Y.applyUpdate(this.doc, record.doc);
     this.docBytes = Y.encodeStateAsUpdate(this.doc).byteLength;
-    this.overLimit = this.docBytes > DOC_BYTES_LIMIT;
+    this.overLimit = this.docBytes > this.docBytesLimit;
 
     let loading = true;
     elementsMap(this.doc).observeDeep((events) => {
@@ -359,7 +358,7 @@ export class Room {
     return result.sort((left, right) => left.principal.id.localeCompare(right.principal.id));
   }
 
-  private stateMessage(type: "init" | "resync", peer: SessionChannel): ChannelMessage {
+  private stateMessage(type: "init" | "resync", peer: SessionChannel): Extract<ChannelMessage, { type: "init" | "resync" }> {
     return {
       type,
       protocolVersion: PROTOCOL_VERSION,
@@ -376,13 +375,17 @@ export class Room {
   }
 
   private sendState(type: "init" | "resync", peer: SessionChannel): boolean {
-    const frame = serializeServerMessage(this.stateMessage(type, peer));
-    if (frame.bytes > SESSION_TRANSPORT_PAYLOAD_BYTES) {
+    const message = this.stateMessage(type, peer);
+    const frame = serializeServerMessage(message);
+    const bytes = peer.wireBytes(frame);
+    const documentLimit = Math.ceil(this.docBytesLimit / 3) * 4;
+    const stateLimit = documentLimit + SESSION_STATE_ENVELOPE_BYTES;
+    if (message.doc.length > documentLimit || bytes - message.doc.length > SESSION_STATE_ENVELOPE_BYTES) {
       this.logger.error("scene_state_exceeds_transport", {
         containerId: this.containerId,
         type,
-        bytes: frame.bytes,
-        limit: SESSION_TRANSPORT_PAYLOAD_BYTES,
+        bytes,
+        limit: stateLimit,
       });
       peer.send({
         type: "error",
@@ -392,7 +395,7 @@ export class Room {
       peer.close(1009, "initial state exceeds transport limit");
       return false;
     }
-    return peer.sendSerialized(frame);
+    return peer.sendSerialized(frame, false, stateLimit);
   }
 
   /** Registers a tab, sends init first, then publishes principal-level attendance deltas. */
@@ -1014,12 +1017,12 @@ export class Room {
     const at = this.runtime.now();
     const doc = Y.encodeStateAsUpdate(this.doc);
     this.docBytes = doc.byteLength;
-    this.overLimit = this.docBytes > DOC_BYTES_LIMIT;
+    this.overLimit = this.docBytes > this.docBytesLimit;
     if (this.overLimit) {
       this.logger.warn("scene_doc_over_limit", {
         containerId: this.containerId,
         bytes: this.docBytes,
-        limit: DOC_BYTES_LIMIT,
+        limit: this.docBytesLimit,
       });
     }
     this.store.saveDoc(this.containerId, this.epoch, this.rev, at, doc);
