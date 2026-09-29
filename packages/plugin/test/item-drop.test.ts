@@ -428,7 +428,9 @@ describe("denial prose", () => {
 
 test("browser placement distinguishes a document representation from its same-named home discipline", () => {
   const owner = element("acme.documents", "memo", "Document", {
-    groups: ["tileable"], guards: [], homed: "on_claim",
+    groups: ["tileable"],
+    guards: [],
+    homed: "on_claim",
   });
   const roster: PluginRoster = [
     disciplineEntry("acme.surface", CANVAS_DISCIPLINE),
@@ -442,24 +444,35 @@ test("browser placement distinguishes a document representation from its same-na
           elements: [
             ...owner.manifest.contributes.elements,
             {
-              type: "card", title: "Card", representationOf: "memo",
+              type: "card",
+              title: "Card",
+              representationOf: "memo",
               placement: { groups: ["canvas_item"], guards: [], homed: "inline" },
             },
           ],
-          disciplines: [{
-            id: "memo", title: "Documents",
-            item: {
-              groups: ["tileable", "canvas_item_as_portal"], guards: ["no_self_embed"], homed: "inline",
+          disciplines: [
+            {
+              id: "memo",
+              title: "Documents",
+              item: {
+                groups: ["tileable", "canvas_item_as_portal"],
+                guards: ["no_self_embed"],
+                homed: "inline",
+              },
+              accepts: [],
+              guards: ["discipline_match"],
+              destinations: [],
             },
-            accepts: [], guards: ["discipline_match"], destinations: [],
-          }],
+          ],
         },
       },
     },
   ];
   const vocabulary = createPlacementLookup({
     containers: [
-      container("surface", "canvas"), container("tiles", "composition"), container("home", "memo"),
+      container("surface", "canvas"),
+      container("tiles", "composition"),
+      container("home", "memo"),
     ],
     self: { containerId: "surface", discipline: "canvas" },
     elements: new Map([
@@ -470,24 +483,32 @@ test("browser placement distinguishes a document representation from its same-na
     soloOccupants: new Map(),
     roster,
   });
-  expect(resolvePlacement(
-    { kind: "element", containerId: "surface", elementId: "base" },
-    { kind: "canvas", containerId: "surface", x: 10, y: 20 },
-    vocabulary,
-  )).toMatchObject({ ok: true, op: "move_element", item: { kind: "card", containerId: null } });
-  expect(resolvePlacement(
-    { kind: "element", containerId: "surface", elementId: "alternate" },
-    { kind: "tile", containerId: "tiles", targetTileId: null, edge: null },
-    vocabulary,
-  )).toMatchObject({ ok: true, op: "add_tile", item: { kind: "memo", containerId: null } });
-  expect(resolvePlacement(
-    { kind: "container", containerId: "home" },
-    { kind: "canvas", containerId: "surface", x: 10, y: 20 },
-    vocabulary,
-  )).toMatchObject({ ok: true, op: "portal", item: { kind: "memo", containerId: "home" } });
-  expect(resolvePlacement(
-    { kind: "container", containerId: "home" },
-    { kind: "tile", containerId: "tiles", targetTileId: null, edge: null },
-    vocabulary,
-  )).toMatchObject({ ok: true, op: "add_tile", item: { kind: "memo", containerId: "home" } });
+  expect(
+    resolvePlacement(
+      { kind: "element", containerId: "surface", elementId: "base" },
+      { kind: "canvas", containerId: "surface", x: 10, y: 20 },
+      vocabulary,
+    ),
+  ).toMatchObject({ ok: true, op: "move_element", item: { kind: "card", containerId: null } });
+  expect(
+    resolvePlacement(
+      { kind: "element", containerId: "surface", elementId: "alternate" },
+      { kind: "tile", containerId: "tiles", targetTileId: null, edge: null },
+      vocabulary,
+    ),
+  ).toMatchObject({ ok: true, op: "add_tile", item: { kind: "memo", containerId: null } });
+  expect(
+    resolvePlacement(
+      { kind: "container", containerId: "home" },
+      { kind: "canvas", containerId: "surface", x: 10, y: 20 },
+      vocabulary,
+    ),
+  ).toMatchObject({ ok: true, op: "portal", item: { kind: "memo", containerId: "home" } });
+  expect(
+    resolvePlacement(
+      { kind: "container", containerId: "home" },
+      { kind: "tile", containerId: "tiles", targetTileId: null, edge: null },
+      vocabulary,
+    ),
+  ).toMatchObject({ ok: true, op: "add_tile", item: { kind: "memo", containerId: "home" } });
 });

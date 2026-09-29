@@ -23,9 +23,7 @@ export function decodeTextDocument(value: unknown): TextDocumentRef | null {
     return null;
   }
   const parsed = DocumentTupleSchema.safeParse(tuple);
-  return parsed.success
-    ? { homeContainerId: parsed.data[0], documentId: parsed.data[1] }
-    : null;
+  return parsed.success ? { homeContainerId: parsed.data[0], documentId: parsed.data[1] } : null;
 }
 
 export const TextDocumentReferenceSchema = z

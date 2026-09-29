@@ -39,8 +39,9 @@ ids retain the existing scene id bound of 1–128 characters. Keys split at the 
 so opaque ids may contain colons. A record contains its namespace, id, one live `Y.Text`, and
 optional `lastEditedBy`/`lastEditedAt` with the same meaning and bounds as element attribution.
 Its plain-text projection is bounded by `MAX_TEXT_LENGTH` (20,000 UTF-16 units).
-The existing aggregate document/update limits still apply; the new root is not an escape
-from them. Unsupported embedded values are refused rather than silently stringified. Text
+The existing ordinary document/update limits still apply; the new root is not an escape
+from them. Certified migration overhead is accounted for separately below. Unsupported embedded
+values are refused rather than silently stringified. Text
 formatting attributes are preserved as Yjs data even when the plaintext editor does not
 paint them.
 
@@ -64,9 +65,12 @@ panel/route after its last visual reference is removed.
 ## Two owners, one editor
 
 `core.text` is a standalone, first-party in-realm plugin with a panel, route, collaborative
-storage and the tileable `text` element. Its open `text` container discipline serves new
-standalone homes; this is contribution data, not a new floor enum. Canvas is not a dependency
-of the text owner, and disabling canvas cannot make retained text undiscoverable.
+storage and the tileable `text` element. Its open `text_home` container discipline serves new
+standalone homes; this is contribution data, not a new floor enum. Home and element kinds
+are distinct because the placement algebra resolves discipline traits before element traits:
+a collection's inline homing and portal placement must not override an individual document's
+`on_claim`/tileable behavior. Canvas is not a dependency of the text owner, and disabling canvas
+cannot make retained text undiscoverable.
 
 `core.canvas.note` lives under the canvas package, requires `core.canvas` and the peer
 `core.text`, owns the `canvas_note` element and the canvas `text` tool, and borrows the text
@@ -158,6 +162,24 @@ For **each hash-valid, decodable retained revision**, independently:
    its inline body with the owned document reference.
 4. Re-encode and rehash the converted revision. Preserve corrupt rows as corrupt evidence,
    so an older valid converted revision remains the recovery fallback.
+
+The format adds representation metadata, so a previously valid near-limit revision can grow.
+Do not turn that into a read-only or unjoinable document, discard history, or raise ordinary
+client-content limits. Migration records the maximum positive encoded-byte delta across each
+home/epoch's retained revisions as fixed server-owned `scene_doc_capacity`. The ordinary 12 MiB
+document allowance gains only that certified credit. Updates cannot mint more, other epochs
+cannot inherit it, and deleting the last retained lineage row retires it. This finite allowance
+is fungible after later GC; it is not an ongoing accounting of individual migration structs.
+Sanitized preview seeds retain these three document-format columns alongside the snapshots,
+never arbitrary columns or authority from the source database.
+
+Full-state egress accounts for base64 expansion separately: the document gets
+`4 * ceil((12 MiB + credit) / 3)` bytes and JSON/routing/attendance/terminal metadata gets a
+4 MiB envelope. This is not permission for unbounded populations: oversized envelopes still
+refuse admission. Ordinary frames and client ingress retain the 16 MiB ceiling. Conversion
+streams revisions with stable identity indexes instead of keeping every decoded snapshot and
+output blob alive. Disposable near-limit proof must include real state delivery and edits;
+bounded history retention alone does not establish an absolute process-memory ceiling.
 
 Preserve existing element/container references and their grants. Reconcile persisted plugin
 identity references and ownership reservations explicitly, including the transfer of `text`

@@ -26,10 +26,10 @@ interface TextCtx {
 }
 
 export const textHandlers = {
-  create(
+  async create(
     ctx: TextCtx,
     args: z.output<typeof CreateTextInputSchema>,
-  ): z.output<typeof CreateTextResultSchema> | { readonly refused: string } {
+  ): Promise<z.output<typeof CreateTextResultSchema> | { readonly refused: string }> {
     const containerId = args.home.containerId;
     const outside = ctx.outsideScope(containerId);
     if (outside !== null) return outside;

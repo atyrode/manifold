@@ -922,9 +922,11 @@ Agent and machine credentials never enter this browser flow.
 Numbered-preview seeding is a one-way representative-data projection, not restore. Stable tooling
 may read a sensitive full-data archive, but the preview receives only the current schema plus
 `container_folders(id,name,created_at,parent_folder_id,sort_order)`,
-`containers(id,name,created_at,sort_order,folder_id,discipline)` and
-`scene_docs(container_id,epoch,rev,ts,hash,doc)`. Every other table is emptied, no adjacent file is
-copied, and the projected database is vacuumed so deleted authority bytes do not remain in free
+`containers(id,name,created_at,sort_order,folder_id,discipline)`,
+`scene_docs(container_id,epoch,rev,ts,hash,doc)` and, from schema 49,
+`scene_doc_capacity(container_id,epoch,migration_bytes)` for retained scene lineages. The latter
+is fixed document-format overhead, not a credential or grant. Every other table is emptied,
+no adjacent file is copied, and the projected database is vacuumed so deleted authority bytes do not remain in free
 pages. Startup mints fresh owner, preview-signing and machine authority. Real boundary verification
 must prove representative data remains usable while the source owner key and reusable bearer are
 refused and source signing, dial, plugin and arbitrary file state is absent.
@@ -1306,7 +1308,7 @@ shape a contribution uses. The fusion has landed: `ITEM_KINDS` and `CANVAS_OPS` 
 only (`terminal`, `canvas`, `composition`, `tile`, `panel` — the `text` and `draw` rows are
 deleted),
 `PlacementItem.kind` and `CensusItem.kind` are open strings, and resolution reads
-`ITEM_KINDS[kind] ?? lookup.itemTraits(kind) ?? DEFAULT_ELEMENT_PLACEMENT_TRAITS`. A non-floor
+`ITEM_KINDS[kind] ?? lookup.discipline(kind)?.item ?? lookup.itemTraits(kind) ?? DEFAULT_ELEMENT_PLACEMENT_TRAITS`. A non-floor
 kind's canvas op is `move_element`, decided by `canvasOpFor` — the canvas operation stays a floor
 table, never manifest data. Every closed wire literal here is `snake_case`, which is the whole
 casing rule: `canvas_item`, `no_self_embed`, `on_claim`, `add_tile`.
@@ -1316,8 +1318,8 @@ casing rule: `canvas_item`, `no_self_embed`, `on_claim`, `add_tile`.
 | `terminal`    | tileable, unplaceable, canvas_item_as_portal             | —                        | eager    |
 | `canvas`      | tileable, embeddable, unplaceable, canvas_item_as_portal | no_self_embed            | inline   |
 | `composition` | mergeable, unplaceable, canvas_item_as_portal            | no_self_embed, solo_only | inline   |
-| `text`        | tileable                                                | —                        | on_claim |
-| `canvas_note` | canvas_item                                             | —                        | on_claim |
+| `text`        | tileable                                                 | —                        | on_claim |
+| `canvas_note` | canvas_item                                              | —                        | on_claim |
 | `draw`        | tileable, canvas_item                                    | —                        | on_claim |
 | `tile`        | extractable                                              | —                        | inline   |
 | `panel`       | tileable                                                 | —                        | none     |
@@ -3574,7 +3576,7 @@ untouched — when it concerns one room:
 | 4008      | socket  | liveness timeout: the server's `ping` still unanswered as the next fires, or the client's silence deadline elapsing     |
 | 4404      | channel | unknown container at join; a DELETED container closes every channel of its room with the same code                      |
 | 4429      | channel | `MAX_SESSION_CHANNELS_PER_CONNECTION` (64) already held                                                                 |
-| 1009      | channel | that room's `init`/`resync` state exceeding the 16 MiB transport payload ceiling                                        |
+| 1009      | channel | that room's `init`/`resync` exceeding its certified document or bounded state-envelope allowance                        |
 | 1013      | channel | that channel's outbound queue overflowing (256 frames or 1 MiB, per channel)                                            |
 | 1009/1013 | socket  | one frame exceeding the transport ceiling, or the socket refusing a write — transport failures no single room can heal  |
 
@@ -3684,7 +3686,7 @@ depends on it.
   Isolated consumers retain their bounded serialized host methods; no raw Yjs object, credential
   or native point-tool attachment crosses that boundary. The server remains the authority boundary.
 - `core.text` owns standalone documents, the text panel/route, its named text storage and the
-  tileable `text` representation. `core.canvas.note` owns `canvas_note` and the canvas text tool,
+  tileable `text` representation and distinct `text_home` container discipline. `core.canvas.note` owns `canvas_note` and the canvas text tool,
   requires both its canvas parent and the text peer, and borrows the one editor through the
   registered element outlet. Text remains independently usable with canvas disabled. A reference
   stores an opaque `document` string encoded by `core.text` as `[homeContainerId, documentId]`;
@@ -3692,6 +3694,8 @@ depends on it.
   structured `home` with `scenes:write` authority there, creates the body, and by default a text
   reference; `reference: false` creates only the body. The canvas child uses that action, then
   authors its own visual reference and geometry without decoding, copying or moving the body.
+  Resting notes retain their spatial frame and scroll overflow locally, including after edits
+  from a standalone document; reading a longer body does not pan the canvas or rewrite geometry.
   Removing/moving a reference does not remove/move its body. The text panel/route discovers
   retained bodies without a canvas or surviving reference. Explicit home deletion is still
   deletion of that home's contents; foreign references then report a missing document.
@@ -3711,6 +3715,16 @@ depends on it.
   Protocol 48 fences the old inline-body session format; machine/instance compatibility remains
   additive. Rollback uses the complete pre-version image with a compatible old binary, not an
   old binary pointed at the migrated database. Disposable proof does not claim live activation.
+  Migration records the maximum positive encoding growth across retained revisions as a fixed
+  server-owned `(home, epoch)` allowance in `scene_doc_capacity`. Ordinary updates cannot increase
+  it; a new epoch cannot inherit it, and deleting the last retained row retires it. The ordinary
+  12 MiB document bound remains, plus this certified allowance for a migrated lineage. Credit is
+  finite but fungible: subsequent GC can free some of it for other content in the same epoch.
+  `init`/`resync` egress separately bounds the base64 document to
+  `4 * ceil((12 MiB + allowance) / 3)` bytes and its JSON/routing/attendance/terminal envelope to
+  4 MiB. Ordinary frames and client ingress retain the 16 MiB transport ceiling. Conversion
+  streams retained revisions through one source graph and a validation probe; identity indexes
+  remain proportional to retained identities rather than retaining every full decoded history.
 - The SDK applies edits optimistically with `client.transact(tx => ...)`. Field patches are
   independent CRDT writes; ordinary element text remains a nested `Y.Text`. The SDK's local scene
   undo tracks its own create/patch/text/remove transactions, not native editor binding edits or
@@ -5890,11 +5904,13 @@ neither take the lock nor record an epoch; they ignore the `writer-epoch` row.
 
 ```
 containers(id TEXT PK, name TEXT, created_at INTEGER, sort_order INTEGER, folder_id TEXT,
-     discipline TEXT NOT NULL DEFAULT 'canvas')        -- canvas | composition
+     discipline TEXT NOT NULL DEFAULT 'canvas')        -- contributed discipline id
 container_folders(id TEXT PK, name TEXT, created_at INTEGER, parent_folder_id TEXT,
             sort_order INTEGER)
 scene_docs(container_id TEXT, epoch TEXT, rev INTEGER, ts INTEGER, hash TEXT, doc BLOB,
            PRIMARY KEY (container_id, epoch, rev))     -- keep newest 30 valid docs each
+scene_doc_capacity(container_id TEXT, epoch TEXT, migration_bytes INTEGER CHECK(migration_bytes >= 0),
+                   PRIMARY KEY (container_id, epoch)) -- fixed migration overhead; retired with last lineage row
 events(id INTEGER PK AUTOINCREMENT, container_id TEXT, ts INTEGER, principal_id TEXT,
        type TEXT, payload TEXT, door TEXT, authority TEXT, targets TEXT, outcome TEXT,
        session TEXT, run_id TEXT, credential_id TEXT)

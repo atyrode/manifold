@@ -14,9 +14,8 @@ import { NewCanvasRow } from "./new-canvas-row.tsx";
  * it, one SECTION: the rail's "New canvas" creator, which is this plugin's opinion about its
  * own discipline and therefore not the sidebar's to hand-write.
  *
- * The tools this plugin declares (`select`, `text`) need no attachment: a tool is a NAME the
- * ref owning the toolbar switches on, and this ref owns it. The element species on the
- * canvas are other plugins' (`text`, `draw`) and reach it through the element registry.
+ * Selection's shortcut is registered here. Content and its tools belong to the child or
+ * peer that declared them and reach the canvas through the shared registries.
  *
  * It is inert data: `packages/web/src/assembly.ts` is the one file that reads it, and the
  * host joins it against the server's roster before anything renders.
@@ -24,6 +23,7 @@ import { NewCanvasRow } from "./new-canvas-row.tsx";
 export const canvasWebPlugin = {
   id: "core.canvas",
   renderers: { canvas: CanvasView },
+  tools: { select: { shortcut: "v" } },
   /*
     The one SECTION this plugin registers: the rail's canvas creator. Its manifest declares the
     row and this line says who draws it — the same two halves every other contribution has, and

@@ -358,7 +358,10 @@ export class Room {
     return result.sort((left, right) => left.principal.id.localeCompare(right.principal.id));
   }
 
-  private stateMessage(type: "init" | "resync", peer: SessionChannel): Extract<ChannelMessage, { type: "init" | "resync" }> {
+  private stateMessage(
+    type: "init" | "resync",
+    peer: SessionChannel,
+  ): Extract<ChannelMessage, { type: "init" | "resync" }> {
     return {
       type,
       protocolVersion: PROTOCOL_VERSION,
@@ -380,7 +383,10 @@ export class Room {
     const bytes = peer.wireBytes(frame);
     const documentLimit = Math.ceil(this.docBytesLimit / 3) * 4;
     const stateLimit = documentLimit + SESSION_STATE_ENVELOPE_BYTES;
-    if (message.doc.length > documentLimit || bytes - message.doc.length > SESSION_STATE_ENVELOPE_BYTES) {
+    if (
+      message.doc.length > documentLimit ||
+      bytes - message.doc.length > SESSION_STATE_ENVELOPE_BYTES
+    ) {
       this.logger.error("scene_state_exceeds_transport", {
         containerId: this.containerId,
         type,

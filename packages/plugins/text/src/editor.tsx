@@ -48,7 +48,9 @@ export function TextEditor(props: TextEditorProps): ReactElement {
   const binding = useRef<{ view: EditorView; configuration: Compartment } | null>(null);
   const callbacks = useRef(props);
   const messageId = useId();
-  const [status, setStatus] = useState<{ text: Y.Text; length: number; refused: boolean } | null>(null);
+  const [status, setStatus] = useState<{ text: Y.Text; length: number; refused: boolean } | null>(
+    null,
+  );
   const length = status?.text === text ? status.length : text.length;
   const refused = status?.text === text && status.refused;
 
@@ -82,33 +84,45 @@ export function TextEditor(props: TextEditorProps): ReactElement {
           refusedLength,
           textLimit,
           // Upstream native history events act directly on Yjs, so gate them before yCollab.
-          Prec.highest(EditorView.domEventHandlers({
-            beforeinput(event, editor) {
-              if (event.inputType !== "historyUndo" && event.inputType !== "historyRedo") return false;
-              event.preventDefault();
-              return performHistory(event.inputType === "historyUndo" ? "undo" : "redo", editor);
-            },
-            focus() {
-              callbacks.current.onBeginEditing?.();
-              return false;
-            },
-            blur() {
-              history.stopCapturing();
-              callbacks.current.onEndEditing?.();
-              return false;
-            },
-            keydown(event) {
-              if (event.key !== "Escape" || event.isComposing) return false;
-              callbacks.current.onEndEditing?.();
-              event.preventDefault();
-              event.stopPropagation();
-              return true;
-            },
-          })),
+          Prec.highest(
+            EditorView.domEventHandlers({
+              beforeinput(event, editor) {
+                if (event.inputType !== "historyUndo" && event.inputType !== "historyRedo")
+                  return false;
+                event.preventDefault();
+                return performHistory(event.inputType === "historyUndo" ? "undo" : "redo", editor);
+              },
+              focus() {
+                callbacks.current.onBeginEditing?.();
+                return false;
+              },
+              blur() {
+                history.stopCapturing();
+                callbacks.current.onEndEditing?.();
+                return false;
+              },
+              keydown(event) {
+                if (event.key !== "Escape" || event.isComposing) return false;
+                callbacks.current.onEndEditing?.();
+                event.preventDefault();
+                event.stopPropagation();
+                return true;
+              },
+            }),
+          ),
           keymap.of([
             { key: "Mod-z", run: (editor) => performHistory("undo", editor), preventDefault: true },
-            { key: "Mod-y", mac: "Mod-Shift-z", run: (editor) => performHistory("redo", editor), preventDefault: true },
-            { key: "Mod-Shift-z", run: (editor) => performHistory("redo", editor), preventDefault: true },
+            {
+              key: "Mod-y",
+              mac: "Mod-Shift-z",
+              run: (editor) => performHistory("redo", editor),
+              preventDefault: true,
+            },
+            {
+              key: "Mod-Shift-z",
+              run: (editor) => performHistory("redo", editor),
+              preventDefault: true,
+            },
             ...defaultKeymap,
           ]),
           yCollab(text, null, { undoManager: history }),

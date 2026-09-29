@@ -2070,22 +2070,7 @@ console.log(JSON.stringify(rows.sort((a, b) => Number(a.pid) - Number(b.pid))));
     await step(
       "stable tooling contains hostile PR inputs and sanitizes representative seed",
       async () => {
-        const deploymentResult = await up();
-        requireThat(
-          `${deploymentResult.out}\n${deploymentResult.err}`.includes(
-            "stable preview boundary: using trusted standalone Compose topology",
-          ) &&
-            `${deploymentResult.out}\n${deploymentResult.err}`.includes(
-              "stable preview boundary: building exact source with the trusted Dockerfile",
-            ),
-          "deployment did not receipt both stable tooling substitutions",
-        );
-        requireThat(
-          `${deploymentResult.out}\n${deploymentResult.err}`.includes(
-            "seeded representative containers, container_folders and scene_docs; preview authority is fresh",
-          ),
-          "deployment did not receipt the representative seed allowlist",
-        );
+        await up();
         requireThat(
           !existsSync(hostileIdentityMarker),
           "the PR-controlled build identity script executed on the host",

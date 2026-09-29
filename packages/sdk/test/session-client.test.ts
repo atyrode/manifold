@@ -1845,15 +1845,20 @@ describe("independent shared texts", () => {
       expect(records.get(record.id)).toEqual({ ...record, text: "hello world" });
       expect(client.sharedTexts("another.owner").get(record.id)?.text).toBe("other");
       expect(client.elements.has(record.id)).toBe(false);
-      for (const frame of docUpdateFrames(socket)) Y.applyUpdate(replica, decodeUpdate(frame.update));
-      expect(readSharedText(replica, namespace, record.id)).toEqual(records.get(record.id));
+      for (const frame of docUpdateFrames(socket))
+        Y.applyUpdate(replica, decodeUpdate(frame.update));
+      expect(readSharedText(replica, namespace, record.id)).toEqual(records.get(record.id)!);
       const map = sharedTextsMap(replica).get(sharedTextKey(namespace, record.id));
       if (map === undefined) throw new Error("missing remote record");
       replica.transact(() => {
         map.set("lastEditedBy", "peer");
         map.set("lastEditedAt", 25);
       });
-      socket.receive({ type: "doc_update", update: encodeUpdate(Y.encodeStateAsUpdate(replica)), by: "peer" });
+      socket.receive({
+        type: "doc_update",
+        update: encodeUpdate(Y.encodeStateAsUpdate(replica)),
+        by: "peer",
+      });
       expect(records.get(record.id)).toEqual({
         ...record,
         text: "hello world",
@@ -1865,7 +1870,13 @@ describe("independent shared texts", () => {
       expect(client.sharedText(namespace, record.id)).toBeNull();
       expect(client.sharedTexts("another.owner").get(record.id)?.text).toBe("other");
       expect(changes).toEqual([
-        { refs: [{ namespace, id: record.id }, { namespace: "another.owner", id: record.id }], origin: "local" },
+        {
+          refs: [
+            { namespace, id: record.id },
+            { namespace: "another.owner", id: record.id },
+          ],
+          origin: "local",
+        },
         { refs: [{ namespace, id: record.id }], origin: "remote" },
         { refs: [{ namespace, id: record.id }], origin: "local" },
       ]);
@@ -1894,11 +1905,16 @@ describe("independent shared texts", () => {
       const sentBefore = docUpdateFrames(socket).length;
       text.doc.transact(() => text.insert(0, "local "), binding);
       expect(docUpdateFrames(socket)).toHaveLength(sentBefore + 1);
-      for (const frame of docUpdateFrames(socket)) Y.applyUpdate(remote, decodeUpdate(frame.update));
+      for (const frame of docUpdateFrames(socket))
+        Y.applyUpdate(remote, decodeUpdate(frame.update));
       const peerText = sharedText(remote, namespace, "document");
       if (peerText === null) throw new Error("missing remote text");
       peerText.insert(peerText.length, " peer");
-      socket.receive({ type: "doc_update", update: encodeUpdate(Y.encodeStateAsUpdate(remote)), by: "peer" });
+      socket.receive({
+        type: "doc_update",
+        update: encodeUpdate(Y.encodeStateAsUpdate(remote)),
+        by: "peer",
+      });
       expect(docUpdateFrames(socket)).toHaveLength(sentBefore + 1);
       expect(text.toString()).toBe("local base peer");
 
@@ -1915,7 +1931,8 @@ describe("independent shared texts", () => {
       expect(client.elements.has("reference")).toBe(true);
       expect(text.toString()).toBe("local base peer");
       expect(origins).toEqual(["local", "remote", "undo", "undo"]);
-      for (const frame of docUpdateFrames(socket)) Y.applyUpdate(remote, decodeUpdate(frame.update));
+      for (const frame of docUpdateFrames(socket))
+        Y.applyUpdate(remote, decodeUpdate(frame.update));
       expect(peerText.toString()).toBe(text.toString());
     } finally {
       history?.destroy();
@@ -1957,7 +1974,7 @@ describe("independent shared texts", () => {
       const text = client.sharedText(namespace, "document");
       if (text === null) throw new Error("missing text");
       let resets = 0;
-      client.on("scene_reset", () => resets += 1);
+      client.on("scene_reset", () => (resets += 1));
       socket.readyState = 0;
       text.insert(0, "offline ");
       sharedText(seed, namespace, "document")?.insert(4, " peer");
@@ -1995,20 +2012,36 @@ describe("independent shared texts", () => {
     const peer = createSceneDoc();
     try {
       createSharedText(peer, { namespace, id: "document", text: "body" });
-      socket.receive({ type: "doc_update", update: encodeUpdate(Y.encodeStateAsUpdate(peer)), by: "peer" });
+      socket.receive({
+        type: "doc_update",
+        update: encodeUpdate(Y.encodeStateAsUpdate(peer)),
+        by: "peer",
+      });
       const records = client.sharedTexts(namespace);
       expect(records.get("document")?.text).toBe("body");
       const record = sharedTextsMap(peer).get(sharedTextKey(namespace, "document"));
       if (record === undefined) throw new Error("missing peer record");
       record.set("lastEditedAt", "not a timestamp");
-      socket.receive({ type: "doc_update", update: encodeUpdate(Y.encodeStateAsUpdate(peer)), by: "peer" });
+      socket.receive({
+        type: "doc_update",
+        update: encodeUpdate(Y.encodeStateAsUpdate(peer)),
+        by: "peer",
+      });
       expect(records.has("document")).toBe(false);
       expect(client.sharedText(namespace, "document")).toBeNull();
       record.delete("lastEditedAt");
-      socket.receive({ type: "doc_update", update: encodeUpdate(Y.encodeStateAsUpdate(peer)), by: "peer" });
+      socket.receive({
+        type: "doc_update",
+        update: encodeUpdate(Y.encodeStateAsUpdate(peer)),
+        by: "peer",
+      });
       expect(records.get("document")?.text).toBe("body");
       sharedText(peer, namespace, "document")?.insertEmbed(0, { image: "unsupported" });
-      socket.receive({ type: "doc_update", update: encodeUpdate(Y.encodeStateAsUpdate(peer)), by: "peer" });
+      socket.receive({
+        type: "doc_update",
+        update: encodeUpdate(Y.encodeStateAsUpdate(peer)),
+        by: "peer",
+      });
       expect(records.has("document")).toBe(false);
       expect(client.sharedText(namespace, "document")).toBeNull();
     } finally {

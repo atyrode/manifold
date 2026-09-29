@@ -1171,7 +1171,11 @@ try {
           : [...editor.querySelectorAll(".cm-line")].map((line) => line.textContent ?? "").join("\\n");
       })()`,
     );
-  const waitForNoteText = async (id: string, documentId: string, expected: string): Promise<void> => {
+  const waitForNoteText = async (
+    id: string,
+    documentId: string,
+    expected: string,
+  ): Promise<void> => {
     await until(
       async () =>
         sdk.sharedText(TEXT_NAMESPACE, documentId)?.toString() === expected &&
@@ -1219,7 +1223,9 @@ try {
   };
 
   const noteIdsBefore = new Set(
-    [...sdk.elements.values()].filter((element) => element.type === "canvas_note").map((el) => el.id),
+    [...sdk.elements.values()]
+      .filter((element) => element.type === "canvas_note")
+      .map((el) => el.id),
   );
   const bodyCountBefore = sdk.sharedTexts(TEXT_NAMESPACE).size;
   await round(
@@ -1231,8 +1237,7 @@ try {
       await until(
         () =>
           [...sdk.elements.values()].filter((element) => element.type === "canvas_note").length ===
-            noteIdsBefore.size + 1 &&
-          sdk.sharedTexts(TEXT_NAMESPACE).size === bodyCountBefore + 1,
+            noteIdsBefore.size + 1 && sdk.sharedTexts(TEXT_NAMESPACE).size === bodyCountBefore + 1,
         5_000,
         "one canvas note and one body from a double-click",
       );
@@ -1385,7 +1390,9 @@ try {
         throw new Error("scene undo changed the document's authority reference");
       }
       await waitForNoteText(textElement.id, document.documentId, "hello world");
-      console.log("PASS  F9 delete and undo restore both visual notes without deleting or rewinding the body");
+      console.log(
+        "PASS  F9 delete and undo restore both visual notes without deleting or rewinding the body",
+      );
     } catch (error) {
       failures.push("F9 delete and undo");
       console.log(
@@ -1548,7 +1555,9 @@ try {
   // Notes and ink keep the classic contract: no handles until the element is selected,
   // then the bounding box resizes it. Only terminals grab by their border.
   const textIdsBefore = new Set(
-    [...sdk.elements.values()].filter((element) => element.type === "canvas_note").map((el) => el.id),
+    [...sdk.elements.values()]
+      .filter((element) => element.type === "canvas_note")
+      .map((el) => el.id),
   );
   // Created through the canvas so the node is guaranteed inside the browser viewport:
   // an SDK-seeded element can land off-screen, where synthetic clicks hit nothing.
@@ -1683,6 +1692,82 @@ try {
           throw new Error("resizing a note changed its document reference");
         }
         await waitForNoteText(boxId, resizeDocument.documentId, "resize me");
+      },
+    );
+    await round(
+      "F11c a longer remote document scrolls inside its retained canvas frame",
+      { adds: 0, textChanges: [resizeDocument.documentId] },
+      async () => {
+        const before = sdk.elements.get(boxId);
+        if (before === undefined) throw new Error("the retained note disappeared");
+        const suffix = `${"\nremote document line".repeat(24)}\nend of remote document`;
+        sdk.transact((tx) => {
+          const body = tx.sharedText(TEXT_NAMESPACE, resizeDocument.documentId);
+          if (body === null) throw new Error("the retained document disappeared");
+          body.insert(body.length, suffix);
+        });
+        await until(
+          () =>
+            browserA.evaluate<boolean>(
+              `(() => {
+              const note = document.querySelector(${boxSelector})?.querySelector(".canvas-note");
+              return note !== null && note !== undefined && note.scrollHeight > note.clientHeight;
+            })()`,
+            ),
+          5_000,
+          "remote text overflows the retained note frame",
+        );
+        const target = await browserA.evaluate<{
+          readonly x: number;
+          readonly y: number;
+          readonly viewport: string;
+        }>(
+          `(() => {
+            const note = document.querySelector(${boxSelector}).querySelector(".canvas-note");
+            const rect = note.getBoundingClientRect();
+            return {
+              x: rect.left + rect.width / 2,
+              y: rect.top + rect.height / 2,
+              viewport: document.querySelector(".react-flow__viewport").style.transform,
+            };
+          })()`,
+        );
+        await browserA.send("Input.dispatchMouseEvent", {
+          type: "mouseMoved",
+          x: target.x,
+          y: target.y,
+        });
+        await browserA.send("Input.dispatchMouseEvent", {
+          type: "mouseWheel",
+          x: target.x,
+          y: target.y,
+          deltaX: 0,
+          deltaY: 2_000,
+        });
+        await until(
+          () =>
+            browserA.evaluate<boolean>(
+              `(() => {
+              const note = document.querySelector(${boxSelector}).querySelector(".canvas-note");
+              return note.scrollTop > 0 &&
+                note.scrollTop + note.clientHeight >= note.scrollHeight - 1 &&
+                note.textContent.includes("end of remote document");
+            })()`,
+            ),
+          5_000,
+          "the remote document's final line becomes reachable by scrolling",
+        );
+        const viewport = await browserA.evaluate<string>(
+          'document.querySelector(".react-flow__viewport").style.transform',
+        );
+        const after = sdk.elements.get(boxId);
+        if (
+          viewport !== target.viewport ||
+          after?.width !== before.width ||
+          after.height !== before.height
+        ) {
+          throw new Error("reading overflow moved the canvas or rewrote note geometry");
+        }
       },
     );
   }

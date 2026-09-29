@@ -31,6 +31,11 @@ interface SceneRow {
   hash: string;
   doc: Uint8Array;
 }
+interface SceneCapacityRow {
+  container_id: string;
+  epoch: string;
+  migration_bytes: number;
+}
 interface CheckRow {
   integrity_check: string;
 }
@@ -79,6 +84,18 @@ export function createPreviewSeed(sourcePath: string, destinationPath: string): 
         "SELECT container_id, epoch, rev, ts, hash, doc FROM scene_docs ORDER BY container_id, epoch, rev",
       )
       .all();
+    // This is document format metadata, not authority. Older source schemas have no credit.
+    const capacities =
+      Number(version.value) >= 49
+        ? destination
+            .query<SceneCapacityRow, []>(
+              `SELECT container_id, epoch, migration_bytes FROM scene_doc_capacity
+         WHERE EXISTS (SELECT 1 FROM scene_docs
+           WHERE scene_docs.container_id = scene_doc_capacity.container_id
+             AND scene_docs.epoch = scene_doc_capacity.epoch)`,
+            )
+            .all()
+        : [];
     const tables = destination
       .query<TableRow, []>(
         "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
@@ -117,6 +134,13 @@ export function createPreviewSeed(sourcePath: string, destinationPath: string): 
         );
       for (const row of scenes)
         insertScene.run(row.container_id, row.epoch, row.rev, row.ts, row.hash, row.doc);
+      if (capacities.length > 0) {
+        const insertCapacity = destination.query<void, [string, string, number]>(
+          "INSERT INTO scene_doc_capacity(container_id, epoch, migration_bytes) VALUES (?, ?, ?)",
+        );
+        for (const row of capacities)
+          insertCapacity.run(row.container_id, row.epoch, row.migration_bytes);
+      }
     })();
 
     const integrity = destination.query<CheckRow, []>("PRAGMA integrity_check").get();
@@ -141,5 +165,7 @@ if (import.meta.main) {
     throw new Error("usage: preview-seed.ts <source-database> <destination-database>");
   }
   createPreviewSeed(source, destination);
-  console.log("preview-seed: containers, container_folders and scene_docs only");
+  console.log(
+    "preview-seed: containers, container_folders, scene_docs and scene_doc_capacity only",
+  );
 }

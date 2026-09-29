@@ -1413,10 +1413,13 @@ describe("declared element representations", () => {
     manifest: manifest({
       id: "acme.documents",
       contributes: {
-        elements: [{
-          type: "document", title: "Document",
-          placement: { groups: ["tileable"], guards: [], homed: "on_claim" },
-        }],
+        elements: [
+          {
+            type: "document",
+            title: "Document",
+            placement: { groups: ["tileable"], guards: [], homed: "on_claim" },
+          },
+        ],
       },
     }),
     actions: [],
@@ -1426,10 +1429,14 @@ describe("declared element representations", () => {
       ...manifest({
         id: "acme.cards",
         contributes: {
-          elements: [{
-            type: "card", title: "Card", representationOf: "document",
-            placement: { groups: ["canvas_item"], guards: [], homed: "inline" },
-          }],
+          elements: [
+            {
+              type: "card",
+              title: "Card",
+              representationOf: "document",
+              placement: { groups: ["canvas_item"], guards: [], homed: "inline" },
+            },
+          ],
         },
       }),
       dependencies: { "acme.documents": { type: "required" } },
@@ -1456,11 +1463,13 @@ describe("declared element representations", () => {
         manifest: manifest({
           id: "vendor.hijack",
           contributes: {
-            elements: [{
-              type: "document",
-              title: "Conflicting document",
-              ...(representation ? { representationOf: "missing" } : {}),
-            }],
+            elements: [
+              {
+                type: "document",
+                title: "Conflicting document",
+                ...(representation ? { representationOf: "missing" } : {}),
+              },
+            ],
           },
         }),
         actions: [],
@@ -1468,7 +1477,10 @@ describe("declared element representations", () => {
       // Installed definitions are appended after the first-party definitions in production.
       const assembly = assembleRoster([coreBase, coreAlternate, installed], NONE, {
         problemPolicy: "hold",
-        elementOwners: new Map([["document", "core.documents"], ["card", "core.cards"]]),
+        elementOwners: new Map([
+          ["document", "core.documents"],
+          ["card", "core.cards"],
+        ]),
       });
       expect(assembly.enabled("core.documents")).toBe(true);
       expect(assembly.enabled("core.cards")).toBe(true);
@@ -1476,14 +1488,16 @@ describe("declared element representations", () => {
         enabled: false,
         held: { reason: expect.any(String) },
       });
-      expect(resolveCarriedPlacement(
-        {
-          ref: { kind: "element", containerId: "home", elementId: "opaque:id" },
-          item: { kind: "document", containerId: null },
-        },
-        { kind: "canvas", containerId: "surface", x: 0, y: 0 },
-        lookupWith(rosterElementTraits(assembly.roster)),
-      )).toMatchObject({ ok: true, op: "move_element", item: { kind: "card", containerId: null } });
+      expect(
+        resolveCarriedPlacement(
+          {
+            ref: { kind: "element", containerId: "home", elementId: "opaque:id" },
+            item: { kind: "document", containerId: null },
+          },
+          { kind: "canvas", containerId: "surface", x: 0, y: 0 },
+          lookupWith(rosterElementTraits(assembly.roster)),
+        ),
+      ).toMatchObject({ ok: true, op: "move_element", item: { kind: "card", containerId: null } });
     },
   );
 
@@ -1507,7 +1521,9 @@ describe("declared element representations", () => {
         ...alternate,
         manifest: {
           ...withoutEdge,
-          ...(edge === "optional" ? { dependencies: { "acme.documents": { type: "optional" as const } } } : {}),
+          ...(edge === "optional"
+            ? { dependencies: { "acme.documents": { type: "optional" as const } } }
+            : {}),
           ...(edge === "after" ? { after: ["acme.documents"] } : {}),
         },
       };
@@ -1547,9 +1563,12 @@ describe("declared element representations", () => {
     return {
       disciplineOf: () => "surface",
       discipline: () => ({
-        id: "surface", title: "Surface",
+        id: "surface",
+        title: "Surface",
         item: { groups: ["tileable", "canvas_item_as_portal"], guards: [], homed: "inline" },
-        accepts: ["canvas_item"], guards: [], destinations: ["canvas"],
+        accepts: ["canvas_item"],
+        guards: [],
+        destinations: ["canvas"],
       }),
       elementItem: () => null,
       terminalHome: () => null,
@@ -1565,7 +1584,10 @@ describe("declared element representations", () => {
         ...base.manifest,
         contributes: {
           ...base.manifest.contributes,
-          elements: [...base.manifest.contributes.elements, ...alternate.manifest.contributes.elements],
+          elements: [
+            ...base.manifest.contributes.elements,
+            ...alternate.manifest.contributes.elements,
+          ],
         },
       },
     };
@@ -1577,11 +1599,18 @@ describe("declared element representations", () => {
       ];
       for (const lookup of lookups) {
         const resolved = resolveCarriedPlacement(
-          { ref: { kind: "element", containerId: "home", elementId: "opaque:id" }, item: { kind: "document", containerId: null } },
+          {
+            ref: { kind: "element", containerId: "home", elementId: "opaque:id" },
+            item: { kind: "document", containerId: null },
+          },
           { kind: "canvas", containerId: "surface", x: 0, y: 0 },
           lookup,
         );
-        expect(resolved).toMatchObject({ ok: true, op: "move_element", item: { kind: "card", containerId: null } });
+        expect(resolved).toMatchObject({
+          ok: true,
+          op: "move_element",
+          item: { kind: "card", containerId: null },
+        });
       }
     }
   });
@@ -1594,32 +1623,46 @@ describe("declared element representations", () => {
         id: "acme.previews",
         contributes: {
           ...alternate.manifest.contributes,
-          elements: [{
-            ...alternate.manifest.contributes.elements[0]!,
-            type: "preview",
-            placement: { groups: ["canvas_item", "tileable"], guards: [], homed: "inline" },
-          }],
+          elements: [
+            {
+              ...alternate.manifest.contributes.elements[0]!,
+              type: "preview",
+              placement: { groups: ["canvas_item", "tileable"], guards: [], homed: "inline" },
+            },
+          ],
         },
       },
     };
-    for (const defs of [[base, alternate, second], [second, alternate, base]]) {
+    for (const defs of [
+      [base, alternate, second],
+      [second, alternate, base],
+    ]) {
       const traits = rosterElementTraits(assembleRoster(defs, NONE).roster);
       const lookup = lookupWith(traits);
-      const resolve = (kind: string, vocabulary = lookup) => resolveCarriedPlacement(
-        { ref: { kind: "element", containerId: "home", elementId: "id" }, item: { kind, containerId: null } },
-        { kind: "canvas", containerId: "surface", x: 0, y: 0 },
-        vocabulary,
-      );
+      const resolve = (kind: string, vocabulary = lookup) =>
+        resolveCarriedPlacement(
+          {
+            ref: { kind: "element", containerId: "home", elementId: "id" },
+            item: { kind, containerId: null },
+          },
+          { kind: "canvas", containerId: "surface", x: 0, y: 0 },
+          vocabulary,
+        );
       expect(resolve("card")).toMatchObject({ ok: true, item: { kind: "card" } });
       expect(resolve("document")).toMatchObject({ ok: false, denial: { rule: "not_accepted" } });
-      expect(resolve("card", {
-        ...lookup,
-        discipline: () => ({
-          id: "surface", title: "Surface",
-          item: { groups: [], guards: [], homed: "inline" },
-          accepts: ["tileable"], guards: [], destinations: ["canvas"],
+      expect(
+        resolve("card", {
+          ...lookup,
+          discipline: () => ({
+            id: "surface",
+            title: "Surface",
+            item: { groups: [], guards: [], homed: "inline" },
+            accepts: ["tileable"],
+            guards: [],
+            destinations: ["canvas"],
+          }),
         }),
-      })).toMatchObject({ ok: true, item: { kind: "document" } });
+      ).toMatchObject({ ok: true, item: { kind: "document" } });
     }
   });
 });

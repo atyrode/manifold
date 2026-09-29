@@ -265,7 +265,7 @@ describe("CI impact policy", () => {
 
   test.each([
     ["packages/web/src/styles.css", "packages/web"],
-    ["packages/plugins/notes/src/panel.tsx", "packages/plugins/notes"],
+    ["packages/plugins/text/src/web.tsx", "packages/plugins/text"],
   ] as const)("ordinary rendering change %s stays fast and focused", (path, unitPath) => {
     const selected = plan([{ status: "M", path }]);
     expect(selected.risk).toBe("standard");
