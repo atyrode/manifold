@@ -251,8 +251,24 @@ test("host approval bounds each guest projection, and withdrawal, expiry and rev
     await waitFor(() => canvas.elements.get("el-from-guest")?.id === "el-from-guest", 10_000, 20);
     remote.transact((tx) => tx.patch("el-from-host", { x: 125 }));
     canvas.transact((tx) => tx.patch("el-from-guest", { y: 75 }));
-    await waitFor(() => canvas.elements.get("el-from-host")?.x === 125, 10_000, 20);
-    await waitFor(() => remote.elements.get("el-from-guest")?.y === 75, 10_000, 20);
+    await waitFor(
+      () => {
+        const hostElement = canvas.elements.get("el-from-host");
+        const guestElement = remote.elements.get("el-from-guest");
+        return (
+          hostElement?.x === 125 &&
+          guestElement?.y === 75 &&
+          remote.self !== null &&
+          canvas.self !== null &&
+          hostElement.lastEditedBy === remote.self.id &&
+          guestElement.lastEditedBy === canvas.self.id &&
+          Bun.deepEquals(hostElement, remote.elements.get("el-from-host"), true) &&
+          Bun.deepEquals(guestElement, canvas.elements.get("el-from-guest"), true)
+        );
+      },
+      10_000,
+      20,
+    );
     expect(remote.elements.get("el-from-host")).toEqual(canvas.elements.get("el-from-host"));
     expect(canvas.elements.get("el-from-guest")).toEqual(remote.elements.get("el-from-guest"));
     // The portal the host authored onto the terminal's home is in the remote's scene too: a
