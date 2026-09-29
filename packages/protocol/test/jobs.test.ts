@@ -486,14 +486,14 @@ test("temporary locations are runtime output-lease scratch, and older owners nev
     anchor: "runtime",
     components: ["scratch"],
     revision: "r1",
-    kind: "directory",
-    temporary: true,
+    kind: "directory" as const,
+    temporary: true as const,
   };
   const retained = {
     anchor: "runtime",
     components: ["retained"],
     revision: "r1",
-    kind: "directory",
+    kind: "directory" as const,
   };
   // Omission keeps today's retained lifetime, byte for byte; nothing but the literal opts in.
   expect(MachineLocationSchema.parse(retained)).toEqual(retained);

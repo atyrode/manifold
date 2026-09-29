@@ -4285,7 +4285,8 @@ test.skipIf(!linux).each(["unreserved", "child-first", "spawn-refused", "collect
         write(leases) {
           writeFileSync(`${leases.material}/payload`, "linked");
           // Collection refuses a multiply linked file: none of this job's archives is kept.
-          if (mode === "collection") linkSync(`${leases.material}/payload`, `${leases.material}/alias`);
+          if (mode === "collection")
+            linkSync(`${leases.material}/payload`, `${leases.material}/alias`);
         },
         settle:
           mode === "spawn-refused"
@@ -4350,7 +4351,7 @@ test.skipIf(!linux)(
         });
         expect(f.refusal(jobId)).toBe("temporary_output_invocation_unsupported");
         expect(await f.settled(jobId)).toMatchObject({ state: "refused", outputs: [] });
-        expect(f.roots()).toEqual([parentRoot]);
+        expect(f.roots()).toEqual([parentRoot!]);
       }
       await f.owner.execute({ type: "cancel", jobId: "parent", reason: "requested" });
       expect(await f.settled("parent")).toMatchObject({ state: "cancelled" });
@@ -4409,7 +4410,7 @@ test.skipIf(!linux)(
       });
       expect(f.refusal("alias")).toBe("private_owner_source_overlap");
       expect(await f.settled("alias")).toMatchObject({ state: "refused" });
-      expect(f.roots()).toEqual([live]);
+      expect(f.roots()).toEqual([live!]);
       expect(
         readFileSync(join(f.scratchPath, live!, "shared", "material", "payload"), "utf8"),
       ).toBe("live raw bytes");
@@ -4451,9 +4452,13 @@ test.skipIf(!linux)(
       // The existing drain latch refuses new work while a workload may still be alive.
       await f.start("blocked");
       expect(f.refusal("blocked")).toBe("start_permit_refused");
-      expect(f.roots()).toEqual([kept]);
-      const cancelling = f.owner.execute({ type: "cancel", jobId: "unproven", reason: "requested" });
-      expect(f.roots()).toEqual([kept]);
+      expect(f.roots()).toEqual([kept!]);
+      const cancelling = f.owner.execute({
+        type: "cancel",
+        jobId: "unproven",
+        reason: "requested",
+      });
+      expect(f.roots()).toEqual([kept!]);
       contained.resolve();
       await cancelling;
       expect(f.events).toContainEqual(

@@ -131,15 +131,15 @@ names, arrival order, provider labels and other machines are never fallback choi
 
 ### Independent lifetimes and storage
 
-| Unit / path                                                 | Ownership                                                                                                                                                           |
-| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `manifold-server.service`                                   | Hub HTTP/WebSockets, SQLite, instance authority and local configuration preparation                                                                                 |
-| `manifold-owner.service`                                    | Retained terminal host plus native owner; no machine token or hub key in its environment                                                                            |
-| `manifold-transport.service`                                | Replaceable outbound machine channel; reads only its enrolled machine token file                                                                                    |
-| `/var/lib/manifold`                                         | Private 0700 hub/control storage; owner key, machine token, immutable `job-owner/config.json`, durable owner state/journal/artifacts/sealed outputs                 |
-| `/var/lib/manifold-workload/{home,data,state,cache,config}` | Persistent declared workload anchors, separate from protected control storage                                                                                       |
-| `/var/lib/manifold-output`                                  | Dedicated bounded tmpfs, the `runtime` anchor for named outputs, `job-inputs` extractions and `job-output-scratch` temporary roots; not durable owner state         |
-| `/run/manifold-anchors/<name>`                              | Only with `execution.operatorAnchors`: root-made read-only idmapped views of operator directories, re-created at boot                                               |
+| Unit / path                                                 | Ownership                                                                                                                                                   |
+| ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `manifold-server.service`                                   | Hub HTTP/WebSockets, SQLite, instance authority and local configuration preparation                                                                         |
+| `manifold-owner.service`                                    | Retained terminal host plus native owner; no machine token or hub key in its environment                                                                    |
+| `manifold-transport.service`                                | Replaceable outbound machine channel; reads only its enrolled machine token file                                                                            |
+| `/var/lib/manifold`                                         | Private 0700 hub/control storage; owner key, machine token, immutable `job-owner/config.json`, durable owner state/journal/artifacts/sealed outputs         |
+| `/var/lib/manifold-workload/{home,data,state,cache,config}` | Persistent declared workload anchors, separate from protected control storage                                                                               |
+| `/var/lib/manifold-output`                                  | Dedicated bounded tmpfs, the `runtime` anchor for named outputs, `job-inputs` extractions and `job-output-scratch` temporary roots; not durable owner state |
+| `/run/manifold-anchors/<name>`                              | Only with `execution.operatorAnchors`: root-made read-only idmapped views of operator directories, re-created at boot                                       |
 
 The owner has **no** `PartOf`, `BindsTo` or `Requires` relationship to the hub or transport.
 Detaching a child would leave it inside the hub cgroup; the module instead starts the owner

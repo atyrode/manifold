@@ -2457,9 +2457,7 @@ export class MachineJobOwner {
       if (
         request.outputs.some(({ locationId }) => {
           const location = inherited.get(locationId);
-          return location
-            ? location.temporary === true
-            : declared[locationId]?.temporary === true;
+          return location ? location.temporary === true : declared[locationId]?.temporary === true;
         })
       )
         throw new Error("temporary_output_invocation_unsupported");

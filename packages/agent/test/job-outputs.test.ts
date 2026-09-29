@@ -22,11 +22,7 @@ import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { HeldDirectory } from "../src/job-files.ts";
 import { resolveJobLocation } from "../src/job-locations.ts";
-import {
-  JobOutputScratchStore,
-  JobOutputStore,
-  type JobOutputLease,
-} from "../src/job-outputs.ts";
+import { JobOutputScratchStore, JobOutputStore, type JobOutputLease } from "../src/job-outputs.ts";
 
 const proof = { workloadEmpty: true, writersReleased: true } as const;
 function fixture(

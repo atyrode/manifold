@@ -219,7 +219,12 @@ describe.skipIf(process.platform !== "linux")("named location descriptor boundar
       for (const refused of [
         { ...declaration, anchor: "state" as const },
         { ...declaration, kind: "file" as const },
-        { anchor: "runtime" as const, components: ["runs"], revision: "one", temporary: true as const },
+        {
+          anchor: "runtime" as const,
+          components: ["runs"],
+          revision: "one",
+          temporary: true as const,
+        },
         { ...declaration, managed: true as const },
         { ...declaration, guestPath: "/home/job/scratch" },
       ])
@@ -232,7 +237,13 @@ describe.skipIf(process.platform !== "linux")("named location descriptor boundar
         ["create", true],
       ] as const)
         expect(() =>
-          resolveTemporaryJobLocation(provision, "fixture.scratch", declaration, access, outputOnly),
+          resolveTemporaryJobLocation(
+            provision,
+            "fixture.scratch",
+            declaration,
+            access,
+            outputOnly,
+          ),
         ).toThrow("temporary_location_requires_output_only");
       // Refused declarations and uses allocate nothing.
       expect(roots).toEqual([]);
@@ -240,11 +251,30 @@ describe.skipIf(process.platform !== "linux")("named location descriptor boundar
         "temporary_location_requires_native_store",
       );
       expect(() =>
-        resolveManagedJobLocation(anchor, "plugin", "fixture.scratch", declaration, "write", () => {}),
+        resolveManagedJobLocation(
+          anchor,
+          "plugin",
+          "fixture.scratch",
+          declaration,
+          "write",
+          () => {},
+        ),
       ).toThrow("invalid_managed_location");
-      const first = resolveTemporaryJobLocation(provision, "fixture.scratch", declaration, "write", true);
+      const first = resolveTemporaryJobLocation(
+        provision,
+        "fixture.scratch",
+        declaration,
+        "write",
+        true,
+      );
       opened.push(first);
-      const second = resolveTemporaryJobLocation(provision, "fixture.scratch", declaration, "write", true);
+      const second = resolveTemporaryJobLocation(
+        provision,
+        "fixture.scratch",
+        declaration,
+        "write",
+        true,
+      );
       opened.push(second);
       expect([first.temporary, second.temporary, first.writable]).toEqual([true, true, true]);
       // Two jobs with the same declaration and the same lease components never share a tree,
