@@ -450,8 +450,10 @@ const stateFields = {
   rev: z.number().int().nonnegative(),
   doc: z.base64(),
   self: PrincipalSchema,
-  /** The joining principal's granted capabilities; drives client-side affordances. */
+  /** The credential's raw capability ceiling, not a home-effective authorization decision. */
   selfCaps: z.array(CapSchema).min(1),
+  /** Evaluated scenes:write authority at this channel's home; spectators still cannot write. */
+  sceneWriteAllowed: z.boolean(),
   /**
    * Server-assigned identity for this CHANNEL; changes on every join. Two channels of
    * one tab are two room memberships, exactly as two sockets were before v12, so

@@ -5,6 +5,7 @@ import {
   DIAL_PING_INTERVAL_MS,
   MAX_SESSION_CHANNELS_PER_CONNECTION,
   PROTOCOL_VERSION,
+  formatManifoldUri,
   CreateRunCredentialResultSchema,
   type Container,
 } from "@manifold/protocol";
@@ -1560,6 +1561,102 @@ describe("SessionGateway spectator sockets", () => {
 });
 
 describe("SessionGateway scene writes", () => {
+  test("home grant changes publish evaluated authority without interrupting admitted rooms", async () => {
+    const fixture = await gatewayFixture();
+    try {
+      const other = fixture.secondContainer("unaffected home");
+      const root = fixture.auth.authenticate(fixture.ownerKey);
+      const grant = fixture.auth.mintToken(
+        {
+          principal: { name: "home authority editor", kind: "human" },
+          caps: ["containers:read", "scenes:write"],
+        },
+        root,
+      );
+      const owner = new FakeSocket();
+      fixture.gateway.open("owner", owner);
+      joinChannel(fixture, "owner", owner);
+      expect(owner.frames().find((frame) => frame.type === "init")).toMatchObject({
+        selfCaps: ["*"],
+        sceneWriteAllowed: true,
+      });
+      const socket = new FakeSocket();
+      fixture.gateway.open("editor", socket);
+      joinChannel(fixture, "editor", socket, { ch: "home", token: grant.token });
+      joinChannel(fixture, "editor", socket, {
+        ch: "other",
+        containerId: other.id,
+        token: grant.token,
+      });
+      expect(socket.frames().filter((frame) => frame.type === "init")).toEqual([
+        expect.objectContaining({ ch: "home", sceneWriteAllowed: true }),
+        expect.objectContaining({ ch: "other", sceneWriteAllowed: true }),
+      ]);
+      socket.clear();
+      owner.clear();
+      const deny = fixture.auth.grant(
+        {
+          principal: { kind: "principal", id: grant.principal.id },
+          node: formatManifoldUri({ kind: "container", containerId: fixture.container.id }),
+          caps: ["scenes:write"],
+          effect: "deny",
+          reach: "node",
+        },
+        root,
+      );
+      expect(socket.frames()).toEqual([
+        expect.objectContaining({
+          type: "resync",
+          ch: "home",
+          selfCaps: ["containers:read", "scenes:write"],
+          sceneWriteAllowed: false,
+        }),
+      ]);
+      expect(owner.frames()).toEqual([]);
+      expect(socket.closed).toBeNull();
+      socket.clear();
+      fixture.auth.grant(
+        {
+          principal: { kind: "principal", id: grant.principal.id },
+          node: formatManifoldUri({ kind: "container", containerId: fixture.container.id }),
+          caps: ["containers:write"],
+          effect: "deny",
+          reach: "node",
+        },
+        root,
+      );
+      expect(socket.frames()).toEqual([]);
+      send(fixture.gateway, "editor", "home", {
+        type: "doc_update",
+        update: docUpdateFor("refused-by-home"),
+      });
+      expect(fixture.rooms.get(fixture.container.id)?.element("refused-by-home")).toBeNull();
+      expect(socket.frames()).toEqual([
+        expect.objectContaining({ type: "error", ch: "home", code: "forbidden" }),
+        expect.objectContaining({ type: "resync", ch: "home", sceneWriteAllowed: false }),
+      ]);
+      socket.clear();
+      fixture.auth.revokeGrant(deny.id, root);
+      expect(socket.frames()).toEqual([
+        expect.objectContaining({ type: "resync", ch: "home", sceneWriteAllowed: true }),
+      ]);
+      send(fixture.gateway, "editor", "home", {
+        type: "doc_update",
+        update: docUpdateFor("restored-at-home"),
+      });
+      send(fixture.gateway, "editor", "other", {
+        type: "doc_update",
+        update: docUpdateFor("uninterrupted-other-home"),
+      });
+      expect(fixture.rooms.get(fixture.container.id)?.element("restored-at-home")).not.toBeNull();
+      expect(fixture.rooms.get(other.id)?.element("uninterrupted-other-home")).not.toBeNull();
+      expect(socket.closed).toBeNull();
+    } finally {
+      fixture.gateway.shutdown();
+      fixture.store.close();
+    }
+  });
+
   test("a reader in the room is refused both scene writes and nothing else it sends", async () => {
     /*
       `doc_update` and `gesture` are ONE authorization question — may this principal change what
@@ -1589,15 +1686,23 @@ describe("SessionGateway scene writes", () => {
       readerSocket.clear();
       writerSocket.clear();
       send(fixture.gateway, "reader", CH, write);
-      expect(readerSocket.messages()).toEqual([
-        { type: "error", code: "forbidden", message: "scenes:write capability required" },
-      ]);
+      const refusal = {
+        type: "error",
+        code: "forbidden",
+        message: "scenes:write capability required",
+      };
+      expect(readerSocket.messages()).toEqual(
+        write["type"] === "doc_update"
+          ? [refusal, expect.objectContaining({ type: "resync", sceneWriteAllowed: false })]
+          : [refusal],
+      );
       // Refused means refused: neither the update nor the gesture ever reached the room.
       expect(writerSocket.messages()).toEqual([]);
     }
 
     // A reader is not a spectator: recovery still answers, because a token that may READ the
     // scene must be able to catch up on it.
+    fixture.clock.advance(1_000);
     readerSocket.clear();
     send(fixture.gateway, "reader", CH, { type: "resync_request" });
     expect(readerSocket.messages().map((message) => message.type)).toEqual(["resync"]);

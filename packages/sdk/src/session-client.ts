@@ -190,6 +190,8 @@ export interface SessionEvents {
   status: (status: ConnectionStatus) => void;
   /** Scene document was replaced after an epoch change or full state adoption. */
   scene_reset: () => void;
+  /** The server's evaluated write authority at this home changed. */
+  scene_authority_changed: (allowed: boolean) => void;
   /** Validated element projections changed inside the Yjs document. */
   elements_changed: (ids: readonly string[], origin: "local" | "remote" | "undo") => void;
   /** Validated independent text records changed, including nested edits and removals. */
@@ -297,6 +299,7 @@ export class SessionClient {
   self: Principal | null = null;
   selfConnId: string | null = null;
   private selfCapsState: readonly Cap[] = [];
+  private sceneWriteAllowedState = false;
   status: ConnectionStatus = "idle";
   private connectionIdState: string | null = null;
 
@@ -338,6 +341,11 @@ export class SessionClient {
     return this.opts.spectator === true;
   }
 
+  /** Home-effective authority, not the credential's raw capability ceiling. */
+  get sceneWriteAllowed(): boolean {
+    return this.sceneWriteAllowedState;
+  }
+
   /**
    * The pooled connection carrying this room, or null before `connect()`. Two handles
    * reporting the same id ARE sharing one socket — the multiplex invariant, observable
@@ -363,10 +371,10 @@ export class SessionClient {
   }
 
   /**
-   * The joining principal's granted caps, as the last init/resync reported them — empty
-   * until the first one lands. A method rather than a field because it is an ANSWER a
-   * caller may hold across reconnects (a plugin gating its affordances asks again), and
-   * because the plugin engine's `SessionHandle` is a method-only ref.
+   * The credential's raw granted caps, as the last init/resync reported them — empty until
+   * admission. These are not an evaluated decision at this room or another target; native
+   * document editors use `sceneWriteAllowed`. Other target-specific doors still evaluate
+   * their own authority.
    */
   selfCaps(): readonly Cap[] {
     return this.selfCapsState;
@@ -438,6 +446,7 @@ export class SessionClient {
       collection.handles.clear();
     }
     this.currentDoc = createSceneDoc();
+    this.hasLocalEdits = false;
     this.installDoc(this.currentDoc);
   }
 
@@ -764,12 +773,31 @@ export class SessionClient {
       case "init":
       case "resync": {
         const previousSelfConnId = this.selfConnId;
+        const authorityChanged = this.sceneWriteAllowedState !== msg.sceneWriteAllowed;
         const lineageChanged = this.epoch !== "" && this.epoch !== msg.epoch;
-        if (lineageChanged) {
+        const checkOptimistic = !msg.sceneWriteAllowed && this.hasLocalEdits && !lineageChanged;
+        if (lineageChanged || !msg.sceneWriteAllowed) {
           this.outbox = this.outbox.filter((queued) => queued.type !== "doc_update");
-          this.replaceDoc();
         }
-        Y.applyUpdate(this.currentDoc, decodeUpdate(msg.doc), REMOTE_ORIGIN);
+        if (lineageChanged) this.replaceDoc();
+        this.sceneWriteAllowedState = msg.sceneWriteAllowed;
+        const update = decodeUpdate(msg.doc);
+        Y.applyUpdate(this.currentDoc, update, REMOTE_ORIGIN);
+        if (checkOptimistic) {
+          const canonical = createSceneDoc();
+          try {
+            Y.applyUpdate(canonical, update, REMOTE_ORIGIN);
+            // A revoked writer may hold unacknowledged inserts OR deletions. Snapshot
+            // equality checks both; already-accepted edits retain their live text/history.
+            if (!Y.equalSnapshots(Y.snapshot(this.currentDoc), Y.snapshot(canonical))) {
+              this.replaceDoc();
+              Y.applyUpdate(this.currentDoc, update, REMOTE_ORIGIN);
+            }
+          } finally {
+            canonical.destroy();
+          }
+        }
+        if (!msg.sceneWriteAllowed) this.hasLocalEdits = false;
         this.epoch = msg.epoch;
         this.rev = msg.rev;
         this.self = msg.self;
@@ -809,6 +837,7 @@ export class SessionClient {
           }
         }
         this.emit(msg.type, msg);
+        if (authorityChanged) this.emit("scene_authority_changed", msg.sceneWriteAllowed);
         this.emit("scene_reset");
         this.emit("attendance_changed");
         this.emit("terminals_changed");

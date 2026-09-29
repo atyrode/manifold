@@ -241,6 +241,7 @@ export class SessionGateway {
   private readonly connections = new Map<string, SessionConnection>();
   private readonly removeRevocationListener: () => void;
   private readonly removeRosterListener: () => void;
+  private readonly removeAuthorityListener: () => void;
 
   constructor(
     private readonly auth: AuthService,
@@ -266,6 +267,17 @@ export class SessionGateway {
     });
     this.removeRevocationListener = auth.onRevoked((principalId, containerId) => {
       this.revokePrincipal(principalId, containerId);
+    });
+    this.removeAuthorityListener = auth.onAuthorityChanged(() => {
+      for (const connection of this.connections.values()) {
+        if (connection.closed) continue;
+        for (const { peer, room } of connection.channels.values()) {
+          const allowed = auth.allows(peer.auth, "scenes:write", peer.containerId);
+          if (allowed === peer.sceneWriteAllowed) continue;
+          peer.sceneWriteAllowed = allowed;
+          room.sendResync(peer);
+        }
+      }
     });
     this.removeRosterListener = plugins.onRosterChange((roster, developerMode) => {
       const frame = JSON.stringify(
@@ -687,6 +699,7 @@ export class SessionGateway {
         this.retireChannel(connection, closing, code, reason, connectionClosed);
       },
     );
+    peer.sceneWriteAllowed = this.auth.allows(context, "scenes:write", message.containerId);
     const channel: ChannelState = {
       peer,
       room,
@@ -1013,7 +1026,12 @@ export class SessionGateway {
         this.releaseChannel(connection, message.ch);
         return;
       case "doc_update":
-        if (!this.mayWriteScene(peer)) return;
+        if (!this.mayWriteScene(peer)) {
+          // A stale native binding may already have applied the rejected edit locally.
+          // The bounded authoritative state retires that optimistic graph, not its socket.
+          this.sendResyncIfDue(connection, channel);
+          return;
+        }
         room.applyDocUpdate(peer, message.update);
         return;
       case "gesture":
@@ -1212,6 +1230,7 @@ export class SessionGateway {
   shutdown(): void {
     this.removeRevocationListener();
     this.removeRosterListener();
+    this.removeAuthorityListener();
     this.auth.setRunConnectionReader(() => []);
     this.plugins.streams.shutdown();
     for (const [id, connection] of [...this.connections]) {

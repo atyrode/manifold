@@ -78,6 +78,8 @@ export function serializeServerMessage(message: ChannelMessage): SerializedServe
  */
 export class SessionChannel {
   private closed = false;
+  /** Gateway-owned, fail-closed evaluated scene authority at this membership's home. */
+  sceneWriteAllowed = false;
   /** `{"ch":"<channel>",` — channel ids are tokens, so this needs no escaping. */
   private readonly prefix: string;
   private readonly prefixBytes: number;

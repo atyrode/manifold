@@ -103,6 +103,7 @@ class Socket {
         self: { id: "terminal-principal", kind: "agent", name: "terminal", color: "#112233" },
         selfConnId: "connection",
         selfCaps: ["containers:read", "terminals:spawn", "terminals:write"],
+        sceneWriteAllowed: false,
         attendance: [],
         terminals: [],
       });

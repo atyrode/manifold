@@ -683,7 +683,7 @@ export interface PortableSectionProps {
  *
  * Native panels borrow this same bounded port through `useDocumentAccess`; the host owns
  * admission and lifetime. It carries no bearer, connection constructor or lifecycle mutator.
- * `selfCaps()` reports home authority, while a spectator is always read-only.
+ * `sceneWriteAllowed` is evaluated at this home; raw `selfCaps()` is not that decision.
  */
 export interface ElementTx {
   patch(elementId: string, patch: ScenePatch): boolean;
@@ -694,6 +694,7 @@ export interface ElementTx {
 export interface ElementDocument {
   readonly containerId: string | null;
   readonly spectator: boolean;
+  readonly sceneWriteAllowed: boolean;
   readonly status: SessionStatus;
   readonly epoch: string;
   readonly connectionError: { readonly code: number; readonly reason: string } | null;
@@ -702,6 +703,7 @@ export interface ElementDocument {
   sharedTexts(namespace: string): ReadonlyMap<string, SharedTextRecord>;
   on(type: "status", listener: (status: SessionStatus) => void): () => void;
   on(type: "scene_reset", listener: () => void): () => void;
+  on(type: "scene_authority_changed", listener: (allowed: boolean) => void): () => void;
   on(
     type: "shared_texts_changed",
     listener: (refs: readonly SharedTextRef[], origin: "local" | "remote" | "undo") => void,

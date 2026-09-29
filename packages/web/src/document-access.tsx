@@ -17,6 +17,10 @@ const LOADING: DocumentAccessState = { state: "loading" };
 const LIMIT: DocumentAccessState = { state: "unavailable", reason: "limit" };
 type Mode = "spectator" | "occupant";
 const documentPorts = new WeakMap<ElementDocument, ElementDocument>();
+const suppliedAuthorities = new WeakMap<
+  ElementDocument,
+  { readonly url: string; readonly token: string }
+>();
 
 function unavailable(document: ElementDocument): DocumentAccessState {
   const code = document.connectionError?.code;
@@ -46,6 +50,9 @@ function documentPort(document: ElementDocument): ElementDocument {
     get spectator() {
       return document.spectator;
     },
+    get sceneWriteAllowed() {
+      return document.sceneWriteAllowed;
+    },
     get epoch() {
       return document.epoch;
     },
@@ -64,7 +71,7 @@ function documentPort(document: ElementDocument): ElementDocument {
       if (
         document.spectator ||
         document.status !== "open" ||
-        !document.selfCaps().includes("scenes:write")
+        !document.sceneWriteAllowed
       ) {
         throw new Error("document is read-only");
       }
@@ -85,7 +92,7 @@ function documentState(document: ElementDocument, revision: number): DocumentAcc
     canWrite:
       !document.spectator &&
       document.status === "open" &&
-      document.selfCaps().includes("scenes:write"),
+      document.sceneWriteAllowed,
     revision,
   };
 }
@@ -118,9 +125,16 @@ class DocumentEntry {
     this.off = [
       document.on("status", changed),
       document.on("scene_reset", changed),
+      document.on("scene_authority_changed", changed),
       document.on("shared_texts_changed", changed),
     ];
     changed();
+  }
+
+  borrow(document: ElementDocument): void {
+    this.stopClient();
+    this.mode = document.spectator ? "spectator" : "occupant";
+    this.observe(document);
   }
 
   open(url: string, token: string, home: string, mode: Mode): void {
@@ -136,6 +150,9 @@ class DocumentEntry {
       spectator: mode === "spectator",
     });
     this.client = client;
+    const authority = { url, token };
+    suppliedAuthorities.set(client, authority);
+    suppliedAuthorities.set(documentPort(client), authority);
     this.observe(client);
     void client.connect().catch(() => {
       // A released/promoted client's rejection belongs to its retired generation.
@@ -166,14 +183,28 @@ interface HeldDocument {
 }
 
 /** Bounded authority-home leases. No entry is downgraded while a consumer still holds it. */
-class NativeDocumentAccess implements DocumentAccessPort {
+export class NativeDocumentAccess implements DocumentAccessPort {
   private readonly homes = new Map<string, DocumentEntry>();
-  private readonly borrowed = new Set<DocumentEntry>();
 
   constructor(
     private readonly url: string,
     private readonly token: string,
   ) {}
+
+  private supplied(home: string, options: DocumentAccessOptions): ElementDocument | undefined {
+    const document = options.document;
+    if (document?.containerId !== home) return undefined;
+    const authority = suppliedAuthorities.get(document);
+    // A renderer may survive a provider identity change. Never borrow its old credential's
+    // document into the new authority scope; open a fresh host-owned lease instead.
+    if (
+      authority !== undefined &&
+      (authority.url !== this.url || authority.token !== this.token)
+    ) {
+      return undefined;
+    }
+    return document;
+  }
 
   private acquire(
     home: string,
@@ -181,31 +212,28 @@ class NativeDocumentAccess implements DocumentAccessPort {
     listener: () => void,
   ): HeldDocument | null {
     const mode = options.mode ?? "spectator";
-    const supplied = options.document;
-    if (supplied?.containerId === home && (mode === "spectator" || !supplied.spectator)) {
-      const entry = new DocumentEntry(mode);
-      this.borrowed.add(entry);
-      entry.observe(supplied);
-      entry.listeners.add(listener);
-      return {
-        entry,
-        release: () => {
-          entry.listeners.delete(listener);
-          this.borrowed.delete(entry);
-          // Only subscriptions belong to the host; never close a caller-owned document.
-          entry.retire();
-        },
-      };
+    const supplied = this.supplied(home, options);
+    if (supplied !== undefined) {
+      const authority = { url: this.url, token: this.token };
+      suppliedAuthorities.set(supplied, authority);
+      suppliedAuthorities.set(documentPort(supplied), authority);
     }
-
     let entry = this.homes.get(home);
     if (entry === undefined) {
       if (this.homes.size >= MAX_SESSION_CHANNELS_PER_CONNECTION) return null;
       entry = new DocumentEntry(mode);
       this.homes.set(home, entry);
-      entry.open(this.url, this.token, home, mode);
+      if (supplied !== undefined && (mode === "spectator" || !supplied.spectator)) {
+        entry.borrow(supplied);
+      } else {
+        entry.open(this.url, this.token, home, mode);
+      }
     } else if (mode === "occupant" && entry.mode === "spectator") {
-      entry.open(this.url, this.token, home, mode);
+      if (supplied !== undefined && !supplied.spectator) {
+        entry.borrow(supplied);
+      } else {
+        entry.open(this.url, this.token, home, mode);
+      }
     }
     entry.listeners.add(listener);
     const held = entry;
@@ -225,14 +253,15 @@ class NativeDocumentAccess implements DocumentAccessPort {
   }
 
   lease(home: string | null, options: DocumentAccessOptions): DocumentAccessLease {
-    const supplied = options.document;
+    const supplied = home === null ? undefined : this.supplied(home, options);
     const mode = options.mode ?? "spectator";
     const initial =
       home === null
         ? IDLE
-        : supplied?.containerId === home && (mode === "spectator" || !supplied.spectator)
-          ? documentState(supplied, 0)
-          : (this.homes.get(home)?.state ?? LOADING);
+        : (this.homes.get(home)?.state ??
+          (supplied !== undefined && (mode === "spectator" || !supplied.spectator)
+            ? documentState(supplied, 0)
+            : LOADING));
     // A role-only change must not briefly become loading and unmount a healthy editor.
     let state: DocumentAccessState =
       initial.state === "ready" && mode === "spectator" && initial.canWrite
@@ -268,9 +297,8 @@ class NativeDocumentAccess implements DocumentAccessPort {
   }
 
   retire(): void {
-    const entries = [...this.homes.values(), ...this.borrowed];
+    const entries = [...this.homes.values()];
     this.homes.clear();
-    this.borrowed.clear();
     for (const entry of entries) entry.retire();
   }
 }
