@@ -871,7 +871,9 @@ describe("Room Yjs document consistency", () => {
         Y.applyUpdate(resynced, decodeUpdate(resync.doc));
         const joiningSocket = new FakeSocket();
         expect(
-          room.join(new SessionChannel("joining", joiningSocket, peer.auth, container.id, "joining")),
+          room.join(
+            new SessionChannel("joining", joiningSocket, peer.auth, container.id, "joining"),
+          ),
         ).toBe(true);
         const init = joiningSocket.messages()[0];
         if (init?.type !== "init") throw new Error("missing init");

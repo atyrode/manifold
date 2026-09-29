@@ -39,6 +39,9 @@ test("preview seed projects representative data without durable authority", () =
       UPDATE containers SET future_authority = 'future-column-authority-sentinel';
       ALTER TABLE scene_doc_capacity ADD COLUMN future_authority TEXT;
       UPDATE scene_doc_capacity SET future_authority = 'future-capacity-authority-sentinel';
+      CREATE TRIGGER observe_container_creation AFTER INSERT ON containers BEGIN
+        INSERT INTO future_authority(secret) VALUES (NEW.id);
+      END;
     `);
     source.exec("PRAGMA wal_checkpoint(TRUNCATE)");
     source.close();
@@ -82,7 +85,7 @@ test("preview seed projects representative data without durable authority", () =
     expect(preview.query("SELECT future_authority FROM scene_doc_capacity").all()).toEqual([
       { future_authority: null },
     ]);
-    for (const table of ["principals", "tokens", "grants", "dials"])
+    for (const table of ["principals", "tokens", "grants", "dials", "machine_job_revisions"])
       expect(
         preview.query<{ total: number }, []>(`SELECT COUNT(*) AS total FROM ${table}`).get()?.total,
       ).toBe(0);
@@ -114,6 +117,20 @@ test("preview seed projects representative data without durable authority", () =
     expect(bytes.includes(Buffer.from("future-table-authority-sentinel"))).toBeFalse();
     expect(bytes.includes(Buffer.from("future-column-authority-sentinel"))).toBeFalse();
     expect(bytes.includes(Buffer.from("future-capacity-authority-sentinel"))).toBeFalse();
+    const continued = new Database(destinationPath, { strict: true });
+    try {
+      new ServerStore(continued).createContainer({
+        id: "fresh-preview-container",
+        name: "Fresh preview container",
+        createdAt: 5,
+        discipline: "canvas",
+      });
+      expect(continued.query("SELECT secret FROM future_authority").all()).toEqual([
+        { secret: "fresh-preview-container" },
+      ]);
+    } finally {
+      continued.close();
+    }
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
