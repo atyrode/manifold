@@ -10,8 +10,10 @@
  *
  * compared by version stamp AND geometry (stamp-only comparison cannot distinguish a
  * converged-but-truncated scene from a correct one). Every round also asserts its own
- * EFFECT — element-count delta and per-element stamp change — so a silently no-op
- * gesture fails the round instead of passing it vacuously.
+ * EFFECT — element-count delta, per-element stamp change or independently owned body
+ * change — so a silently no-op gesture fails the round instead of passing it vacuously.
+ * Text rounds also compare the home SDK's shared body with both rendered editors;
+ * an unchanged visual reference is not evidence that its document stopped converging.
  *
  * The canvas objects it drags are REAL terminals. A terminal lives in a solo composition
  * and a canvas references it as a `portal` onto that composition, which renders
@@ -43,6 +45,11 @@ import {
   elementString,
   type SceneElement,
 } from "../packages/protocol/src/index.ts";
+import {
+  decodeTextDocument,
+  TEXT_NAMESPACE,
+  type TextDocumentRef,
+} from "../packages/plugins/text/src/index.ts";
 import { resolveWebDist } from "./gate-dist.ts";
 import { Browser } from "./cdp.ts";
 import { ownerKeyOf, sleep, teardownServer, until } from "./gate-lib.ts";
@@ -388,6 +395,8 @@ try {
     readonly adds: number;
     /** Ids whose canonical stamp (version or geometry) must have advanced. */
     readonly changes?: readonly string[];
+    /** Bodies live independently of visual element payload/geometry stamps. */
+    readonly textChanges?: readonly string[];
   }
 
   /**
@@ -458,6 +467,9 @@ try {
    */
   async function round(name: string, effect: RoundEffect, act: () => Promise<void>): Promise<void> {
     const before = canonicalView();
+    const textBefore = new Map(
+      (effect.textChanges ?? []).map((id) => [id, sdk.sharedText(TEXT_NAMESPACE, id)?.toString()]),
+    );
     let lastDiff: string[] = [];
     try {
       await act();
@@ -490,6 +502,12 @@ try {
           for (const id of effect.changes ?? []) {
             if (canonicalNow.get(id) === before.get(id)) {
               lastDiff.push(`effect: ${id} canonical stamp did not advance`);
+            }
+          }
+          for (const id of effect.textChanges ?? []) {
+            const body = sdk.sharedText(TEXT_NAMESPACE, id);
+            if (body === null || body.toString() === textBefore.get(id)) {
+              lastDiff.push(`effect: document ${id} canonical body did not advance`);
             }
           }
           return lastDiff.length === 0;
@@ -1131,79 +1149,143 @@ try {
     if (!selectActive) throw new Error("draw completion did not restore the select tool");
   });
 
-  const textCountBefore = [...sdk.elements.values()].filter(
-    (element) => element.type === "text",
-  ).length;
+  const noteSelector = (id: string): string => `.react-flow__node[data-id="${id}"]`;
+  const noteDocument = (element: SceneElement): TextDocumentRef => {
+    const document = decodeTextDocument(elementString(element, "document"));
+    if (
+      element.type !== "canvas_note" ||
+      document === null ||
+      document.homeContainerId !== containerId ||
+      elementString(element, "text") !== null
+    ) {
+      throw new Error(`note ${element.id} does not reference an independent body in its home`);
+    }
+    return document;
+  };
+  const renderedNoteText = (browser: Browser, id: string): Promise<string | null> =>
+    browser.evaluate<string | null>(
+      `(() => {
+        const editor = document.querySelector(${JSON.stringify(noteSelector(id))})?.querySelector('.cm-content[role="textbox"]');
+        return editor === null || editor === undefined
+          ? null
+          : [...editor.querySelectorAll(".cm-line")].map((line) => line.textContent ?? "").join("\\n");
+      })()`,
+    );
+  const waitForNoteText = async (id: string, documentId: string, expected: string): Promise<void> => {
+    await until(
+      async () =>
+        sdk.sharedText(TEXT_NAMESPACE, documentId)?.toString() === expected &&
+        sdk.sharedTexts(TEXT_NAMESPACE).get(documentId)?.text === expected &&
+        (await renderedNoteText(browserA, id)) === expected &&
+        (await renderedNoteText(browserB, id)) === expected,
+      5_000,
+      `document ${documentId} body and both rendered notes equal ${JSON.stringify(expected)}`,
+    );
+  };
+  const focusNoteEditor = async (browser: Browser, id: string): Promise<void> => {
+    await until(
+      () =>
+        browser.evaluate<boolean>(
+          `(() => {
+            const editor = document.querySelector(${JSON.stringify(noteSelector(id))})?.querySelector('.cm-content[role="textbox"]');
+            if (!(editor instanceof HTMLElement) || !editor.isContentEditable || editor.getAttribute("aria-readonly") !== "false") return false;
+            editor.focus();
+            return document.activeElement === editor;
+          })()`,
+        ),
+      5_000,
+      `editable, focused document in note ${id}`,
+    );
+  };
+  const waitForNoteCaret = async (browser: Browser, id: string, prefix: string): Promise<void> => {
+    await until(
+      () =>
+        browser.evaluate<boolean>(
+          `(() => {
+            const editor = document.querySelector(${JSON.stringify(noteSelector(id))})?.querySelector(".cm-content");
+            const selection = window.getSelection();
+            if (!(editor instanceof HTMLElement) || document.activeElement !== editor ||
+                selection === null || !selection.isCollapsed || selection.anchorNode === null ||
+                !editor.contains(selection.anchorNode)) return false;
+            const beforeCaret = document.createRange();
+            beforeCaret.selectNodeContents(editor);
+            beforeCaret.setEnd(selection.anchorNode, selection.anchorOffset);
+            return beforeCaret.toString() === ${JSON.stringify(prefix)};
+          })()`,
+        ),
+      5_000,
+      `real DOM caret after ${JSON.stringify(prefix)} in note ${id}`,
+    );
+  };
+
+  const noteIdsBefore = new Set(
+    [...sdk.elements.values()].filter((element) => element.type === "canvas_note").map((el) => el.id),
+  );
+  const bodyCountBefore = sdk.sharedTexts(TEXT_NAMESPACE).size;
   await round(
-    "F8a double-click creates exactly one collaborative text node",
+    "F8a double-click creates exactly one canvas note and independent document",
     { adds: 1 },
     async () => {
       const point = await panePoint(browserA, 0.72, 0.24);
       await clickAt(browserA, point, 2);
       await until(
         () =>
-          [...sdk.elements.values()].filter((element) => element.type === "text").length ===
-          textCountBefore + 1,
+          [...sdk.elements.values()].filter((element) => element.type === "canvas_note").length ===
+            noteIdsBefore.size + 1 &&
+          sdk.sharedTexts(TEXT_NAMESPACE).size === bodyCountBefore + 1,
         5_000,
-        "one text element from a double-click",
+        "one canvas note and one body from a double-click",
       );
       // Canonical convergence lands before the canvas repaints; wait for the node,
       // then let the click settle so a second node from one double-click still fails.
-      const renderedTextNodes = `document.querySelectorAll(".react-flow__node-text").length`;
+      const renderedTextNodes = `document.querySelectorAll(".react-flow__node-canvas_note").length`;
       await until(
-        async () => (await browserA.evaluate<number>(renderedTextNodes)) === textCountBefore + 1,
+        async () => (await browserA.evaluate<number>(renderedTextNodes)) === noteIdsBefore.size + 1,
         5_000,
-        "exactly one rendered text node",
+        "exactly one rendered canvas note",
       );
       await sleep(300);
       const renderedCount = await browserA.evaluate<number>(renderedTextNodes);
-      if (renderedCount !== textCountBefore + 1) {
-        throw new Error(
-          `double-click rendered ${String(renderedCount - textCountBefore)} text nodes`,
-        );
+      if (
+        renderedCount !== noteIdsBefore.size + 1 ||
+        sdk.sharedTexts(TEXT_NAMESPACE).size !== bodyCountBefore + 1
+      ) {
+        throw new Error("double-click did not leave exactly one note and one document");
       }
-      await until(
-        () =>
-          browserA.evaluate<boolean>(
-            `document.querySelector(".canvas-text__editor") instanceof HTMLTextAreaElement`,
-          ),
-        5_000,
-        "browser A text editor",
+      const note = [...sdk.elements.values()].find(
+        (element) => element.type === "canvas_note" && !noteIdsBefore.has(element.id),
       );
+      if (note === undefined) throw new Error("double-click produced no canvas note");
+      const document = noteDocument(note);
+      if (document.documentId !== note.id) throw new Error("new note and body ids differ");
+      await waitForNoteText(note.id, document.documentId, "");
+      await focusNoteEditor(browserA, note.id);
     },
   );
 
-  const textElement = [...sdk.elements.values()].find((element) => element.type === "text");
-  if (textElement?.type !== "text") {
+  const textElement = [...sdk.elements.values()].find(
+    (element) => element.type === "canvas_note" && !noteIdsBefore.has(element.id),
+  );
+  if (textElement === undefined) {
     failures.push("F8 collaborative text typing");
-    console.log("FAIL  F8 collaborative text typing — text setup did not produce an element");
+    console.log("FAIL  F8 collaborative text typing — text setup did not produce a canvas note");
   } else {
+    const document = noteDocument(textElement);
     await round(
-      "F8 collaborative Y.Text typing is live and convergent",
-      { adds: 0, changes: [textElement.id] },
+      "F8 shared body typing, remote caret and editor-local undo converge",
+      { adds: 0, textChanges: [document.documentId] },
       async () => {
-        const focusedA = await browserA.evaluate<boolean>(
-          `(() => {
-            const editor = document.querySelector(".canvas-text__editor");
-            if (!(editor instanceof HTMLTextAreaElement)) return false;
-            editor.focus();
-            editor.setSelectionRange(editor.value.length, editor.value.length);
-            return true;
-          })()`,
-        );
-        if (!focusedA) throw new Error("browser A text editor lost focus");
+        await focusNoteEditor(browserA, textElement.id);
+        await pressKey(browserA, "End", "End", 2);
+        await waitForNoteCaret(browserA, textElement.id, "");
         await browserA.typeText("hello");
-        await until(
-          () =>
-            browserB.evaluate<boolean>(
-              `(() => {
-                const text = document.querySelector(".canvas-text");
-                return text instanceof HTMLElement && (text.textContent ?? "").includes("hello");
-              })()`,
-            ),
-          5_000,
-          "browser B live hello text",
-        );
+        await waitForNoteText(textElement.id, document.documentId, "hello");
+        // A real keyboard-positioned caret must survive B's remote edit, not just
+        // a CodeMirror model selection or a string standing in for DOM selection.
+        await pressKey(browserA, "Home", "Home", 2);
+        await pressKey(browserA, "ArrowRight", "ArrowRight");
+        await pressKey(browserA, "ArrowRight", "ArrowRight");
+        await waitForNoteCaret(browserA, textElement.id, "he");
         const textCenter = await browserB.evaluate<{ readonly x: number; readonly y: number }>(
           `(() => {
             const node = document.querySelector(${JSON.stringify(
@@ -1215,51 +1297,25 @@ try {
           })()`,
         );
         await clickAt(browserB, textCenter, 2);
-        await until(
-          () =>
-            browserB.evaluate<boolean>(
-              `document.querySelector(".canvas-text__editor") instanceof HTMLTextAreaElement`,
-            ),
-          5_000,
-          "browser B text editor",
-        );
-        await browserB.evaluate(
-          `(() => {
-            const editor = document.querySelector(".canvas-text__editor");
-            if (!(editor instanceof HTMLTextAreaElement)) return;
-            editor.focus();
-            editor.setSelectionRange(editor.value.length, editor.value.length);
-          })()`,
-        );
+        await focusNoteEditor(browserB, textElement.id);
+        await pressKey(browserB, "End", "End", 2);
+        await waitForNoteCaret(browserB, textElement.id, "hello");
         await browserB.typeText(" world");
-        await until(
-          () => {
-            const current = sdk.elements.get(textElement.id);
-            const text = current === undefined ? null : elementString(current, "text");
-            return text !== null && text.includes("hello") && text.includes(" world");
-          },
-          5_000,
-          "merged Y.Text content",
-        );
-        for (const browser of [browserA, browserB]) {
-          await until(
-            () =>
-              browser.evaluate<boolean>(
-                `(() => {
-                  const node = document.querySelector(${JSON.stringify(
-                    `.react-flow__node[data-id="${textElement.id}"]`,
-                  )});
-                  const value =
-                    node?.querySelector("textarea") instanceof HTMLTextAreaElement
-                      ? node.querySelector("textarea").value
-                      : node?.textContent ?? "";
-                  return value.includes("hello") && value.includes(" world");
-                })()`,
-              ),
-            5_000,
-            "live merged text in both browsers",
-          );
+        await waitForNoteText(textElement.id, document.documentId, "hello world");
+        await waitForNoteCaret(browserA, textElement.id, "he");
+        await waitForNoteCaret(browserB, textElement.id, "hello world");
+
+        // B owns only its local binding history. Undo must keep A's prose, and
+        // neither undo nor redo may remove the separately authored canvas reference.
+        await pressKey(browserB, "z", "KeyZ", 2);
+        await waitForNoteText(textElement.id, document.documentId, "hello");
+        await waitForNoteCaret(browserA, textElement.id, "he");
+        if (sdk.elements.get(textElement.id)?.type !== "canvas_note") {
+          throw new Error("editor undo removed the visual note");
         }
+        await pressKey(browserB, "Z", "KeyZ", 10);
+        await waitForNoteText(textElement.id, document.documentId, "hello world");
+        await waitForNoteCaret(browserA, textElement.id, "he");
         await pressKey(browserA, "Escape", "Escape");
         await pressKey(browserB, "Escape", "Escape");
       },
@@ -1285,7 +1341,7 @@ try {
             )})?.classList.contains("selected") === true`,
           ),
         5_000,
-        "text selection before delete",
+        "canvas note selection before delete",
       );
       await browserA.evaluate(`document.querySelector(".canvas")?.focus()`);
       await pressKey(browserA, "Delete", "Delete");
@@ -1299,13 +1355,19 @@ try {
             (element) => element.id === textElement.id,
           ),
         5_000,
-        "text deletion in both browsers",
+        "visual note deletion in both browsers",
       );
+      if (
+        sdk.sharedText(TEXT_NAMESPACE, document.documentId)?.toString() !== "hello world" ||
+        sdk.sharedTexts(TEXT_NAMESPACE).get(document.documentId)?.text !== "hello world"
+      ) {
+        throw new Error("removing the visual note lost its independently retained body");
+      }
       await browserA.evaluate(`document.querySelector(".canvas")?.focus()`);
       await pressKey(browserA, "z", "KeyZ", 2);
       await until(
         async () =>
-          sdk.elements.get(textElement.id)?.type === "text" &&
+          sdk.elements.get(textElement.id)?.type === "canvas_note" &&
           (await browserA.evaluate<readonly Snapshot[]>("window.__manifold.canvas()")).some(
             (element) => element.id === textElement.id,
           ) &&
@@ -1313,9 +1375,17 @@ try {
             (element) => element.id === textElement.id,
           ),
         8_000,
-        "text restoration after undo",
+        "canvas note restoration after scene undo",
       );
-      console.log("PASS  F9 delete and undo restore the text on both browsers");
+      const restored = sdk.elements.get(textElement.id);
+      if (
+        restored === undefined ||
+        elementString(restored, "document") !== elementString(textElement, "document")
+      ) {
+        throw new Error("scene undo changed the document's authority reference");
+      }
+      await waitForNoteText(textElement.id, document.documentId, "hello world");
+      console.log("PASS  F9 delete and undo restore both visual notes without deleting or rewinding the body");
     } catch (error) {
       failures.push("F9 delete and undo");
       console.log(
@@ -1475,53 +1545,40 @@ try {
     );
   }
 
-  // Text and ink keep the classic contract: no handles until the element is selected,
+  // Notes and ink keep the classic contract: no handles until the element is selected,
   // then the bounding box resizes it. Only terminals grab by their border.
   const textIdsBefore = new Set(
-    [...sdk.elements.values()].filter((element) => element.type === "text").map((el) => el.id),
+    [...sdk.elements.values()].filter((element) => element.type === "canvas_note").map((el) => el.id),
   );
   // Created through the canvas so the node is guaranteed inside the browser viewport:
   // an SDK-seeded element can land off-screen, where synthetic clicks hit nothing.
-  await round("F11a double-click seeds a text node on screen", { adds: 1 }, async () => {
+  await round("F11a double-click seeds a canvas note on screen", { adds: 1 }, async () => {
     await clickAt(browserA, await panePoint(browserA, 0.3, 0.62), 2);
     await until(
       () =>
         [...sdk.elements.values()].some(
-          (element) => element.type === "text" && !textIdsBefore.has(element.id),
+          (element) => element.type === "canvas_note" && !textIdsBefore.has(element.id),
         ),
       5_000,
-      "text element from the double-click",
+      "canvas note from the double-click",
     );
-    // Empty text is deleted on blur, so the editor must actually receive the keystrokes.
-    await until(
-      () =>
-        browserA.evaluate<boolean>(
-          `(() => {
-            const editor = document.querySelector(".canvas-text__editor");
-            if (!(editor instanceof HTMLTextAreaElement)) return false;
-            editor.focus();
-            return document.activeElement === editor;
-          })()`,
-        ),
-      5_000,
-      "focused text editor",
+    const note = [...sdk.elements.values()].find(
+      (element) => element.type === "canvas_note" && !textIdsBefore.has(element.id),
     );
+    if (note === undefined) throw new Error("resize setup produced no canvas note");
+    const document = noteDocument(note);
+    // Body retention is independent of blur; nevertheless this scenario requires
+    // real typed content in the shared editor, not just an empty visual fixture.
+    await focusNoteEditor(browserA, note.id);
     await browserA.typeText("resize me");
-    await until(
-      () =>
-        browserA.evaluate<boolean>(
-          `document.querySelector(".canvas-text__editor")?.value === "resize me"`,
-        ),
-      5_000,
-      "typed text in the editor",
-    );
+    await waitForNoteText(note.id, document.documentId, "resize me");
     await pressKey(browserA, "Escape", "Escape");
     await sleep(200);
   });
 
   const boxId =
     [...sdk.elements.values()].find(
-      (element) => element.type === "text" && !textIdsBefore.has(element.id),
+      (element) => element.type === "canvas_note" && !textIdsBefore.has(element.id),
     )?.id ?? "";
   const boxSelector = JSON.stringify(`.react-flow__node[data-id="${boxId}"]`);
   const handleSelector = JSON.stringify(
@@ -1533,6 +1590,7 @@ try {
     failures.push("F11 text bounding-box resize");
     console.log("FAIL  F11 text resizes from its selection box — seeded element missing");
   } else {
+    const resizeDocument = noteDocument(textTarget);
     await round(
       "F11 text resizes from its selection box after selection",
       { adds: 0, changes: [boxId] },
@@ -1615,13 +1673,21 @@ try {
             );
           },
           5_000,
-          "canonical text geometry after the handle drag",
+          "canonical canvas note geometry after the handle drag",
         );
+        const resized = sdk.elements.get(boxId);
+        if (
+          resized === undefined ||
+          elementString(resized, "document") !== elementString(textTarget, "document")
+        ) {
+          throw new Error("resizing a note changed its document reference");
+        }
+        await waitForNoteText(boxId, resizeDocument.documentId, "resize me");
       },
     );
   }
 
-  // Freehand ink shares the text contract, and its box carries a viewBox so resizing
+  // Freehand ink shares the note contract, and its box carries a viewBox so resizing
   // scales the stroke instead of growing an empty frame around it.
   const inkElement = [...sdk.elements.values()].find((element) => element.type === "draw");
   if (inkElement === undefined) {
