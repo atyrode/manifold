@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { AuthService } from "../src/auth.ts";
 import { openDatabase } from "../src/db.ts";
 import { ServerStore, sha256Hex } from "../src/stores.ts";
+import { seedHistoricalSceneTables } from "./migration-fixtures.ts";
 
 const revision = sha256Hex("current migration policy");
 const priorRevision = sha256Hex("previous migration policy");
@@ -16,6 +17,7 @@ const expiry = now + 180_000;
 function seedV36(path: string): void {
   const db = new Database(path, { create: true, strict: true });
   try {
+    seedHistoricalSceneTables(db);
     db.exec(`
 CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT);
 INSERT INTO meta VALUES ('schema_version','36'),('agent-runs:declarations-after-event-id','42');
