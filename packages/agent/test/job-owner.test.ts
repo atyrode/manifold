@@ -11,6 +11,7 @@ import {
   mkdtempSync,
   mkdirSync,
   readdirSync,
+  readlinkSync,
   renameSync,
   rmSync,
   symlinkSync,
@@ -3874,10 +3875,11 @@ test
   30_000,
 );
 
-/** What one synthetic workload does with the output leases it is handed, then how it ends. */
+/** What one synthetic workload does with the output leases it is handed, then how it ends:
+ * `lost` is an observation that fails while cancelling it still proves the tree empty. */
 interface ScratchWorkload {
   write?(leases: Readonly<Record<string, string>>, label: string): void;
-  settle?: { exitCode: number } | "cancel" | LinuxJobRefusal;
+  settle?: { exitCode: number } | "cancel" | "lost" | LinuxJobRefusal;
 }
 const SCRATCH_LOCATION = "fixture.scratch.run";
 const scratchOutputs = (locationId = SCRATCH_LOCATION): JobRequest["outputs"] => [
@@ -3959,9 +3961,11 @@ function temporaryOutputFixture() {
           oomKills: 0,
         },
       });
-    if (workload.settle !== "cancel") settle(workload.settle?.exitCode ?? 0, "exited");
+    const observed = workload.settle === "lost" ? Promise.withResolvers<LinuxJobResult>() : exited;
+    if (workload.settle === "lost") setImmediate(() => observed.reject(new Error("observer_lost")));
+    else if (workload.settle !== "cancel") settle(workload.settle?.exitCode ?? 0, "exited");
     return {
-      result: exited.promise,
+      result: observed.promise,
       childDelegation: spec.delegatedCgroup,
       ownsLoopbackListener: () => false,
       ownsLoopbackConnection: () => false,
@@ -4061,6 +4065,24 @@ function temporaryOutputFixture() {
     /** Every root in the temporary namespace, by name. */
     roots(): string[] {
       return readdirSync(scratchPath);
+    },
+    /**
+     * What this process still holds open anywhere in the temporary namespace, by the kernel's
+     * own name for it: a removed tree an open descriptor pins reads `<path> (deleted)`.
+     */
+    descriptors(): string[] {
+      const prefix = `${readlinkSync(namespace.procPath)}/`;
+      const held: string[] = [];
+      for (const fd of readdirSync("/proc/self/fd")) {
+        let target: string;
+        try {
+          target = readlinkSync(`/proc/self/fd/${fd}`);
+        } catch {
+          continue; // the listing's own descriptor, already closed
+        }
+        if (target.startsWith(prefix)) held.push(target.slice(prefix.length));
+      }
+      return held.sort();
     },
     async open(): Promise<MachineJobOwner> {
       const journal = new JobJournal(protectedRoot.openChild("journal", { create: true }));
@@ -4497,6 +4519,129 @@ test.skipIf(!linux)(
       expect(f.roots()).toEqual([]);
       // The recorded result is untouched by the later proof and the disposal it allowed.
       expect(await f.settled("unproven")).toMatchObject({ state: "interrupted" });
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+test.skipIf(!linux)(
+  "an interrupted job's handles on its temporary root close with the root, never before proof",
+  async () => {
+    const f = temporaryOutputFixture();
+    try {
+      await f.open();
+      await f.install();
+      const write: ScratchWorkload["write"] = (leases, label) => {
+        writeFileSync(`${leases.material}/payload`, label);
+      };
+      for (let run = 0; run < 3; run++) {
+        // A lost observation interrupts, and the cancel that interruption attempts proves empty.
+        const lost = `lost-${run}`;
+        f.workloads.set(lost, { write, settle: "lost" });
+        await f.start(lost);
+        expect(await f.settled(lost)).toMatchObject({
+          state: "interrupted",
+          reason: "workload_effects_unknown",
+        });
+        expect(f.roots()).toEqual([]);
+        // Nothing pins the removed tree: not the root's handle, a lease's, nor the job's own.
+        expect(f.descriptors()).toEqual([]);
+        await f.owner.execute({ type: "drain", draining: false });
+        // A refused start proves nothing, so every handle on its root stays until proof does.
+        const unproven = `unproven-${run}`;
+        const contained = Promise.withResolvers<void>();
+        f.workloads.set(unproven, {
+          write,
+          settle: new LinuxJobRefusal(
+            "sandbox-start-failed",
+            "sandbox-start-failed",
+            false,
+            () => contained.promise,
+          ),
+        });
+        await f.start(unproven);
+        expect(await f.settled(unproven)).toMatchObject({ state: "interrupted" });
+        const [kept, ...others] = f.roots();
+        expect(others).toEqual([]);
+        expect(f.descriptors()).toEqual([
+          kept!,
+          kept!,
+          `${kept}/shared`,
+          `${kept}/shared/material`,
+        ]);
+        contained.resolve();
+        await f.owner.execute({ type: "cancel", jobId: unproven, reason: "requested" });
+        expect(f.roots()).toEqual([]);
+        expect(f.descriptors()).toEqual([]);
+        await f.owner.execute({ type: "drain", draining: false });
+      }
+      // Repetition left nothing behind for the next job, which closes exactly as before.
+      f.workloads.set("next", { write });
+      await f.start("next");
+      expect(await f.settled("next")).toMatchObject({ state: "exited", exitCode: 0 });
+      expect(f.roots()).toEqual([]);
+      expect(f.descriptors()).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+test.skipIf(!linux)(
+  "an unrecorded refusal keeps its temporary root owned and admission closed until one is recorded",
+  async () => {
+    const f = temporaryOutputFixture();
+    try {
+      await f.open();
+      await f.install();
+      const append = spyOn(JobJournal.prototype, "append")
+        .mockImplementationOnce(() => {
+          throw new Error("reservation_unrecorded");
+        })
+        .mockImplementationOnce(() => {
+          throw Object.assign(new Error("rejection_unrecorded"), { code: "EIO" });
+        });
+      try {
+        await f.start("unrecorded");
+        expect(
+          append.mock.calls.map(([body]) =>
+            body && typeof body === "object" && "kind" in body ? body.kind : undefined,
+          ),
+        ).toEqual(["reservation", "rejection"]);
+      } finally {
+        append.mockRestore();
+      }
+      // The reservation's failure stays this start's answer; the refusal's is logged by code.
+      expect(f.refusal("unrecorded")).toBe("reservation_unrecorded");
+      expect(f.logs).toContainEqual({
+        level: "warn",
+        evt: "job_output_cleanup_failed",
+        phase: "release",
+        jobId: "unrecorded",
+        code: "EIO",
+      });
+      expect(
+        f.events.some((event) => event.type === "result" && event.result.jobId === "unrecorded"),
+      ).toBe(false);
+      // Nothing ran in it, but nothing durable closes it either: the root stays whole and held.
+      const [kept, ...others] = f.roots();
+      expect(others).toEqual([]);
+      expect(f.descriptors()).toEqual([kept!]);
+      // Admission is closed, so no later preparation allocates beside it.
+      for (const jobId of ["later-0", "later-1"]) {
+        await f.start(jobId);
+        expect(f.refusal(jobId)).toBe("start_permit_refused");
+        expect(await f.settled(jobId)).toMatchObject({ state: "refused" });
+      }
+      expect(f.roots()).toEqual([kept!]);
+      expect(f.descriptors()).toEqual([kept!]);
+      // A durable refusal of that identity is the record its root waited for.
+      await f.start("unrecorded");
+      expect(f.refusal("unrecorded")).toBe("start_permit_refused");
+      expect(await f.settled("unrecorded")).toMatchObject({ state: "refused", outputs: [] });
+      expect(f.roots()).toEqual([]);
+      expect(f.descriptors()).toEqual([]);
     } finally {
       await f.close();
     }
