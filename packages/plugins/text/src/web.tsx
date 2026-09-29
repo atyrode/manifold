@@ -165,11 +165,16 @@ function DocumentPage({
 function DocumentHome({
   host,
   homeContainerId,
+  client,
 }: {
   readonly host: HostServices;
   readonly homeContainerId: string;
+  readonly client?: ContainerRendererProps["client"];
 }): ReactElement {
-  const access = useDocumentAccess(homeContainerId, { mode: "occupant" });
+  const access = useDocumentAccess(homeContainerId, {
+    mode: client?.spectator === true ? "spectator" : "occupant",
+    ...(client === undefined ? {} : { document: client, binding: "mounted" as const }),
+  });
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
@@ -459,6 +464,7 @@ function TextHome(props: ContainerRendererProps): ReactElement {
           key={props.containerId}
           host={props.host}
           homeContainerId={props.containerId}
+          {...(props.client === undefined ? {} : { client: props.client })}
         />
       ) : (
         <p className="text-documents__message" role="status">
