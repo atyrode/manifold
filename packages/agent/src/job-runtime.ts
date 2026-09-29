@@ -4,7 +4,7 @@ import { JobOwnerConfigSchema, type JobOwnerConfig, type LogEvent } from "@manif
 import { fdMountReadOnly, HeldDirectory } from "./job-files.ts";
 import { JobJournal } from "./job-journal.ts";
 import { MachineJobOwner } from "./job-owner.ts";
-import { JobOutputStore } from "./job-outputs.ts";
+import { JobOutputScratchStore, JobOutputStore } from "./job-outputs.ts";
 import { JobBoundInputStore } from "./job-bound-inputs.ts";
 import { type LinuxJobBind } from "./job-linux.ts";
 import { DirectoryExclusions } from "./job-locations.ts";
@@ -69,12 +69,16 @@ export async function openConfiguredJobOwner(
   // derived bytes on the device the operator already sizes and the kernel already bounds. The
   // owner protects that one subdirectory, so no declared location can resolve into it.
   const boundInputRoot = anchors.runtime?.openChild("job-inputs", { create: true });
+  // Temporary output locations are backed there too, in a namespace of their own: one owner-
+  // private root per job, never a declared path, and equally protected from every location.
+  const outputScratchRoot = anchors.runtime?.openChild("job-output-scratch", { create: true });
   const protectedDirectories = [
     state,
     parent,
     HeldDirectory.openAbsolute(dirname(socketPath), { private: true }),
     HeldDirectory.openAbsolute(dirname(terminalSocketPath), { private: true }),
     ...(boundInputRoot ? [boundInputRoot] : []),
+    ...(outputScratchRoot ? [outputScratchRoot] : []),
     ...config.protectedDirectories.map((path) => HeldDirectory.openAbsolute(path)),
   ];
   const serviceCredentials = new Map<string, { fd: number; origins: readonly string[] }>();
@@ -123,6 +127,10 @@ export async function openConfiguredJobOwner(
   const cache = state.openChild("artifacts", { create: true });
   const outputs = JobOutputStore.open(state.openChild("outputs", { create: true }));
   const boundInputs = boundInputRoot ? JobBoundInputStore.open(boundInputRoot) : undefined;
+  // Held and checked here; cleared only by the owner, after it has recovered its workloads.
+  const outputScratch = outputScratchRoot
+    ? JobOutputScratchStore.open(outputScratchRoot)
+    : undefined;
   const delegatedCgroup = HeldDirectory.openAbsolute(config.delegatedCgroup);
   const bwrapParent = HeldDirectory.openAbsolute(dirname(config.bubblewrap));
   const bubblewrapFd = bwrapParent.openRuntimeFile(basename(config.bubblewrap));
@@ -167,6 +175,7 @@ export async function openConfiguredJobOwner(
     managedState: state.openChild("locations", { create: true }),
     outputs,
     ...(boundInputs ? { boundInputs } : {}),
+    ...(outputScratch ? { outputScratch } : {}),
     delegatedCgroup,
     bubblewrapFd,
     anchors,

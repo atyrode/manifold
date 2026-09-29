@@ -48,7 +48,7 @@ import type { JobJournal, RetainedJob } from "./job-journal.ts";
 import { jobDigest } from "./job-journal.ts";
 import { JobContext } from "./job-context.ts";
 import { JobProgressCoalescer, type ObservedProgress } from "./job-progress.ts";
-import type { JobOutputStore } from "./job-outputs.ts";
+import type { JobOutputScratchStore, JobOutputStore } from "./job-outputs.ts";
 import { type JobOutputLease, type JobOutputByteStream } from "./job-outputs.ts";
 import type { JobBoundInput, JobBoundInputStore } from "./job-bound-inputs.ts";
 import {
@@ -68,6 +68,7 @@ import {
   DirectoryExclusions,
   resolveJobLocation,
   resolveManagedJobLocation,
+  resolveTemporaryJobLocation,
   type JobLocation,
 } from "./job-locations.ts";
 import { JobResources } from "./job-resources.ts";
@@ -109,6 +110,13 @@ export interface JobOwnerOptions {
    * rather than extracting into the owner's own state.
    */
   boundInputs?: JobBoundInputStore | undefined;
+  /**
+   * Where temporary output locations are backed: one exclusive root per job and location in a
+   * protected runtime namespace, removed once that job's workload is proven empty and its final
+   * result is durable. Absent without a `runtime` anchor, and then a job that declares one
+   * refuses `temporary_output_storage_unavailable`.
+   */
+  outputScratch?: JobOutputScratchStore | undefined;
   delegatedCgroup: HeldDirectory;
   bubblewrapFd: number;
   anchors: Readonly<Record<string, HeldDirectory>>;
@@ -151,6 +159,9 @@ interface OwnedJob {
   inputFiles: LinuxJobBind[];
   boundInputs: JobBoundInput[];
   leases: JobOutputLease[];
+  /** Temporary output roots this job owns from preparation until its disposal, independent of
+   * its leases: a lease ends when it seals or aborts, a root only once the job is closed. */
+  outputScratch: HeldDirectory[];
   releaseWriters: Array<() => void>;
   inputSeq: number;
   inputBytes: number;
@@ -224,6 +235,19 @@ export class JobAdmissionError extends Error {
 const ACTIVE: Record<string, true> = { "start-committed": true, started: true };
 // Promise rejection identity preserves the first refusal's mode across retirement races.
 const SERVICE_RETIRED = new Error("service_retired");
+// What a failed temporary-output removal may report besides an errno name: never a path.
+const OUTPUT_CLEANUP_CODES: Record<string, true> = {
+  output_scratch_changed: true,
+  directory_tree_changed: true,
+  mount_escape: true,
+  unsafe_file_component: true,
+};
+function outputCleanupCode(error: unknown): string {
+  const code = (error as NodeJS.ErrnoException | null | undefined)?.code;
+  if (typeof code === "string" && /^E[A-Z0-9]{1,31}$/.test(code)) return code;
+  const message = error instanceof Error ? error.message : "";
+  return Object.hasOwn(OUTPUT_CLEANUP_CODES, message) ? message : "unknown";
+}
 
 /** Independently supervised machine authority. No workload is owned by the websocket transport. */
 export class MachineJobOwner {
@@ -314,6 +338,18 @@ export class MachineJobOwner {
             outputs: [],
           },
         });
+    }
+    // Only now is every earlier workload proven gone and every earlier job's result terminal, so
+    // nothing left in the temporary namespace can still be written, sealed or read. A namespace
+    // that cannot be cleared stays whole: it closes admission, never the owner's retained state.
+    try {
+      options.outputScratch?.recover();
+    } catch (error) {
+      owner.draining = true;
+      owner.log("warn", "job_output_cleanup_failed", {
+        phase: "recovery",
+        code: outputCleanupCode(error),
+      });
     }
     owner.ready = true;
     return owner;
@@ -2302,8 +2338,10 @@ export class MachineJobOwner {
       await this.pendingStarts.get(command.request.jobId);
     const pending = Promise.withResolvers<void>();
     this.pendingStarts.set(command.request.jobId, pending.promise);
+    // A preparation refused before its reservation is recorded only below, by rejection.
+    const unreserved: { job?: OwnedJob } = {};
     try {
-      await this.prepareStart(command, terminalLaunch);
+      await this.prepareStart(command, unreserved, terminalLaunch);
     } catch (error) {
       // Only a typed native refusal supplies a durable preparation diagnosis. Unknown
       // errors and after-the-fact absence still cannot invent an admission verdict.
@@ -2319,6 +2357,8 @@ export class MachineJobOwner {
             ? error.code
             : "start_not_admitted",
         );
+      // Nothing ran in its temporary roots; they go once that rejection is durable.
+      if (unreserved.job) this.disposeOutputScratch(unreserved.job);
       throw error;
     } finally {
       delete command.privateEnv;
@@ -2329,6 +2369,7 @@ export class MachineJobOwner {
 
   private async prepareStart(
     command: Extract<JobCommand, { type: "start" }>,
+    unreserved: { job?: OwnedJob },
     terminalLaunch?: (spec: LinuxJobSpec) => Promise<LinuxJobHandle>,
   ): Promise<void> {
     const { request, permit } = command;
@@ -2408,6 +2449,20 @@ export class MachineJobOwner {
     let parent: OwnedJob | undefined;
     if (request.parent) {
       parent = this.requireJob(request.parent.parentJobId);
+      // An invocation's output resolves in its parent's location of that id, else its own. A
+      // temporary root is one job's alone and is disposed with it, so an invocation writing one
+      // is unsupported: refused by name before anything is prepared, never silently rebacked.
+      const inherited = parent.locations;
+      const declared = installation.command.machine.locations;
+      if (
+        request.outputs.some(({ locationId }) => {
+          const location = inherited.get(locationId);
+          return location
+            ? location.temporary === true
+            : declared[locationId]?.temporary === true;
+        })
+      )
+        throw new Error("temporary_output_invocation_unsupported");
       const invocation = parent.context?.invocations.get(request.parent.invocationId);
       if (
         !ACTIVE[parent.result.state] ||
@@ -2428,6 +2483,7 @@ export class MachineJobOwner {
         throw new Error("parent_invocation_refused");
     }
     const job = this.newJob(request);
+    unreserved.job = job;
     job.depth = parent ? parent.depth + 1 : 0;
     job.serviceRuntime =
       parent && request.parent
@@ -2531,27 +2587,39 @@ export class MachineJobOwner {
       for (const declaration of operation.locations) {
         const resource = installation.command.machine.locations[declaration.locationId]!;
         const anchor = this.options.anchors[resource.anchor];
-        if ((!resource.managed && !anchor) || job.locations.has(declaration.locationId))
+        // Native stores back managed and temporary locations; neither resolves in its anchor.
+        if (
+          (!resource.managed && !resource.temporary && !anchor) ||
+          job.locations.has(declaration.locationId)
+        )
           throw new Error("location_anchor_unavailable_or_duplicate");
         const beforeCreate = (parentFd: number) =>
           this.options.outputs.assertCreateAllowed(parentFd, preparation);
-        const resolved = resource.managed
-          ? resolveManagedJobLocation(
-              this.options.managedState,
-              request.pluginId,
+        const resolved = resource.temporary
+          ? resolveTemporaryJobLocation(
+              () => this.provisionOutputScratch(job),
               declaration.locationId,
               resource,
               declaration.access,
-              beforeCreate,
+              declaration.outputOnly === true,
             )
-          : resolveJobLocation(
-              anchor!,
-              declaration.locationId,
-              resource,
-              declaration.access,
-              this.exclusions,
-              beforeCreate,
-            );
+          : resource.managed
+            ? resolveManagedJobLocation(
+                this.options.managedState,
+                request.pluginId,
+                declaration.locationId,
+                resource,
+                declaration.access,
+                beforeCreate,
+              )
+            : resolveJobLocation(
+                anchor!,
+                declaration.locationId,
+                resource,
+                declaration.access,
+                this.exclusions,
+                beforeCreate,
+              );
         job.locations.set(declaration.locationId, resolved);
         if (resolved.writable && !declaration.outputOnly)
           job.releaseWriters.push(
@@ -2567,7 +2635,10 @@ export class MachineJobOwner {
       const workingDirectory = operation.workingDirectory
         ? job.locations.get(operation.workingDirectory.locationId)
         : undefined;
-      if (operation.workingDirectory && !workingDirectory?.directory)
+      if (
+        operation.workingDirectory &&
+        (!workingDirectory?.directory || workingDirectory.temporary)
+      )
         throw new Error("working_directory_unavailable");
       for (const binding of request.outputs) {
         if (
@@ -2651,6 +2722,7 @@ export class MachineJobOwner {
         result: job.result,
       });
       this.jobs.set(request.jobId, job);
+      delete unreserved.job;
       if (parent && request.parent) {
         parent.context!.bind(request.parent.invocationId, request.jobId);
         parent.children.add(request.jobId);
@@ -2821,6 +2893,8 @@ export class MachineJobOwner {
         this.closeInputFiles(job);
         this.releaseBoundInputs(job);
         job.progress.close();
+        // Recorded here when reserved; an unreserved refusal is recorded, then disposed, by start.
+        this.disposeOutputScratch(job);
       }
       throw error;
     }
@@ -2940,6 +3014,8 @@ export class MachineJobOwner {
     job.progress.close();
     for (const location of job.locations.values()) location.close();
     job.locations.clear();
+    // Every archive sealed or was refused before that durable result: the raw tree is spent.
+    this.disposeOutputScratch(job);
   }
 
   private async interrupt(job: OwnedJob): Promise<void> {
@@ -2975,6 +3051,8 @@ export class MachineJobOwner {
     this.emit({ type: "result", result: job.result }, job);
     job.resolveFinalized();
     job.progress.close();
+    // Kept, like the admission latch above, whenever the cancel attempt proved nothing.
+    this.disposeOutputScratch(job);
   }
 
   private closeRetiredContext(job: OwnedJob): void {
@@ -3014,6 +3092,9 @@ export class MachineJobOwner {
       for (const release of job.releaseWriters) release();
       job.releaseWriters = [];
     } else if (!job.emptyObserved) throw new Error("workload_empty_unproven");
+    // An interrupted result was durable before its emptiness was proven; this proof completes
+    // it. A job still running is instead disposed by `finish`, after it seals.
+    this.disposeOutputScratch(job);
     this.emitEmpty(job);
   }
 
@@ -3080,6 +3161,7 @@ export class MachineJobOwner {
       inputFiles: [],
       boundInputs: [],
       leases: [],
+      outputScratch: [],
       releaseWriters: [],
       inputSeq: 0,
       inputBytes: 0,
@@ -3200,6 +3282,57 @@ export class MachineJobOwner {
   private releaseBoundInputs(job: OwnedJob): void {
     for (const input of job.boundInputs) this.options.boundInputs?.release(input);
     job.boundInputs = [];
+  }
+  /** One exclusive temporary root, the job's from the moment it exists. */
+  private provisionOutputScratch(job: OwnedJob): HeldDirectory {
+    const store = this.options.outputScratch;
+    if (!store) throw new Error("temporary_output_storage_unavailable");
+    const root = store.create();
+    job.outputScratch.push(root);
+    return root;
+  }
+  /**
+   * A temporary root holds raw bytes nothing reads again once its workload is proven empty and
+   * its final result is durable: every archive was sealed, or refused, before that record. Each
+   * closure path calls this once its own proof or record exists, and it acts only when both do;
+   * until then the roots stay. A failed removal never touches the recorded result or archives:
+   * it is logged by a bounded code and closes admission, and the next recovery clears it.
+   */
+  private disposeOutputScratch(job: OwnedJob): void {
+    const store = this.options.outputScratch;
+    if (!store || job.outputScratch.length === 0 || !job.emptyObserved) return;
+    const recorded = this.options.journal.job(job.request.jobId);
+    if (
+      !recorded ||
+      recorded.requestDigest !== job.request.requestDigest ||
+      ACTIVE[recorded.result.state]
+    )
+      return;
+    try {
+      // Empty proof ends every writer; no lease, sealed or abandoned, may outlive its tree.
+      for (const release of job.releaseWriters) release();
+      job.releaseWriters = [];
+      for (const lease of job.leases) this.options.outputs.abort(lease);
+      job.leases = [];
+    } catch (error) {
+      this.outputCleanupFailed(job.request.jobId, error);
+      return;
+    }
+    for (const root of job.outputScratch.splice(0)) {
+      try {
+        store.release(root);
+      } catch (error) {
+        this.outputCleanupFailed(job.request.jobId, error);
+      }
+    }
+  }
+  private outputCleanupFailed(jobId: string, error: unknown): void {
+    this.draining = true;
+    this.log("warn", "job_output_cleanup_failed", {
+      phase: "release",
+      jobId,
+      code: outputCleanupCode(error),
+    });
   }
   private runtimeAliases(command: Installation["command"]): Installation["runtimeAliases"] {
     const aliases: Installation["runtimeAliases"] = new Map();
