@@ -2500,7 +2500,8 @@ describe("representation placement retains independent authority homes", () => {
     const placed = PlaceResponseSchema.parse(added.result);
     if (placed.op !== "add_tile") throw new Error("note did not enter its tile");
     expect(retained.tileLayout()?.[placed.tileId]?.ref).toEqual({ kind: "element", elementId: id });
-    const { zIndex: _zIndex, ...preserved } = original;
+    const preserved: Partial<SceneElement> = { ...original };
+    delete preserved.zIndex;
     expect(retained.element(id)).toMatchObject({ ...preserved, type: "text" });
     expect(source.element(id)).toBeNull();
     expect(sharedText(retained.doc, "core.text", id)).toBe(body);
@@ -2561,7 +2562,8 @@ describe("representation placement retains independent authority homes", () => {
       expect(canvas.element(portalId)).toMatchObject({
         containerId: retained ? source.containerId : fixture.composition.id,
       });
-      const { zIndex: _zIndex, ...preserved } = original;
+      const preserved: Partial<SceneElement> = { ...original };
+      delete preserved.zIndex;
       expect(roomFor(fixture, fixture.composition.id).element(original.id)).toMatchObject(
         preserved,
       );
@@ -2600,7 +2602,8 @@ describe("representation placement retains independent authority homes", () => {
     expect(source.census().items).toEqual([]);
     expect(sharedText(source.doc, "core.text", "kept")).toBe(body);
     expect(fixture.store.getContainer(source.containerId)).not.toBeNull();
-    const { zIndex: _zIndex, ...preserved } = original;
+    const preserved: Partial<SceneElement> = { ...original };
+    delete preserved.zIndex;
     expect(roomFor(fixture, composed.result.containerId).element(original.id)).toMatchObject(
       preserved,
     );
