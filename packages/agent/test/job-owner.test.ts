@@ -1443,9 +1443,10 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
 const outputRoot = process.env.MANIFOLD_TEST_OUTPUT_ROOT;
 // Included by verify-jobs.ts's [real-linux] selector. verify-runtime.sh jobs supplies the
 // held tools, delegated cgroup and bounded tmpfs; CI uses verify-runtime.sh --system jobs.
-test.skipIf(!realBackend)(
-  "[real-linux] output-only locations isolate live producers and seal without backing-root writers",
-  async () => {
+test.skipIf(!realBackend).each(["retained", "temporary"] as const)(
+  "[real-linux] %s output-only locations isolate live producers and preserve sealed consumers",
+  async (lifetime) => {
+    const temporary = lifetime === "temporary";
     if (!outputRoot)
       throw new Error(
         "output-only proof requires bounded MANIFOLD_TEST_OUTPUT_ROOT from bash scripts/verify-runtime.sh jobs",
@@ -1516,10 +1517,11 @@ test.skipIf(!realBackend)(
         },
         locations: {
           [locationId]: {
-            anchor: "state",
+            ...(temporary
+              ? { anchor: "runtime", kind: "directory" as const, temporary: true as const }
+              : { anchor: "state", guestPath: "/home/job/backing" }),
             components: ["source"],
             revision: "one",
-            guestPath: "/home/job/backing",
           },
         },
         operations: {
@@ -1592,6 +1594,21 @@ test.skipIf(!realBackend)(
         protectedRoot,
         sourceAnchor,
       );
+      const scratchDirectory = sourceAnchor.openChild("scratch", { create: true });
+      held.push(scratchDirectory);
+      const scratch = temporary ? JobOutputScratchStore.open(scratchDirectory) : undefined;
+      const rawPayload = (jobId: string) => {
+        const candidates = temporary
+          ? scratchDirectory
+              .names()
+              .map((name) => join(scratchDirectory.procPath, name, "shared", "payload"))
+          : [join(sourceRoot, "source", jobId, "payload")];
+        const path = candidates.find(
+          (candidate) => existsSync(candidate) && readFileSync(candidate, "utf8") === `${jobId}\n`,
+        );
+        expect(path).toBeDefined();
+        return path!;
+      };
       const store = JobOutputStore.open(outputDirectory);
       outputs = store;
       owner = await MachineJobOwner.open({
@@ -1603,11 +1620,12 @@ test.skipIf(!realBackend)(
         cache,
         managedState,
         outputs: store,
+        ...(scratch ? { outputScratch: scratch } : {}),
         boundInputs: JobBoundInputStore.open(inputDirectory),
         delegatedCgroup,
         bubblewrapFd: bwrapFd,
-        anchors: { state: sourceAnchor },
-        protectedDirectories: [protectedRoot],
+        anchors: temporary ? { runtime: sourceAnchor } : { state: sourceAnchor },
+        protectedDirectories: [protectedRoot, scratchDirectory],
         runtimeTools: {
           busybox: [{ fd: busyboxFd, target: "/bin/busybox", writable: false }],
         },
@@ -1659,7 +1677,9 @@ test.skipIf(!realBackend)(
           artifactSha256: sha256,
           input: { mode: consume ? "consume" : "produce", label: jobId, peer },
           limits,
-          outputs: consume ? [] : [{ name: "material", locationId, components: [jobId] }],
+          outputs: consume
+            ? []
+            : [{ name: "material", locationId, components: [temporary ? "shared" : jobId] }],
           ...(consume
             ? { inputs: [{ name: "selected", from: { jobId: consume, output: "material" } }] }
             : {}),
@@ -1745,13 +1765,17 @@ test.skipIf(!realBackend)(
 
       await start("solo", "sibling");
       await observe("solo", "ready");
+      const soloRaw = rawPayload("solo");
       await input("solo", 0, "probe");
       await observe("solo", "isolated");
       await input("solo", 1, "finish");
       await sealed("solo");
       expect(readFileSync(sentinel, "utf8")).toBe("private sibling sentinel\n");
-      // A later consumer must see the sealed snapshot, not subsequent backing-tree mutation.
-      writeFileSync(join(sourceRoot, "source", "solo", "payload"), "changed after sealing\n");
+      // A later consumer sees the sealed snapshot after disposal or backing-tree mutation.
+      if (temporary) {
+        expect(existsSync(soloRaw)).toBe(false);
+        expect(scratchDirectory.names()).toEqual([]);
+      } else writeFileSync(soloRaw, "changed after sealing\n");
       await start("consumer", "sibling", "solo");
       expect(await settled("consumer")).toMatchObject({
         state: "exited",
@@ -1765,12 +1789,11 @@ test.skipIf(!realBackend)(
       await start("second", "first");
       await observe("first", "ready");
       await observe("second", "ready");
-      for (const jobId of ["first", "second"]) {
-        expect(readFileSync(join(sourceRoot, "source", jobId, "payload"), "utf8")).toBe(
-          `${jobId}\n`,
-        );
-        expect(results.has(jobId)).toBe(false);
-      }
+      const firstRaw = rawPayload("first");
+      const secondRaw = rawPayload("second");
+      expect(firstRaw).not.toBe(secondRaw);
+      expect(results.has("first")).toBe(false);
+      expect(results.has("second")).toBe(false);
       await input("first", 0, "probe");
       await input("second", 0, "probe");
       await observe("first", "isolated");
@@ -1780,19 +1803,26 @@ test.skipIf(!realBackend)(
       // prevent this result from sealing until that unrelated process exited.
       await sealed("first");
       expect(results.has("second")).toBe(false);
-      expect(readFileSync(join(sourceRoot, "source", "second", "payload"), "utf8")).toBe(
-        "second\n",
-      );
+      expect(readFileSync(secondRaw, "utf8")).toBe("second\n");
+      if (temporary) expect(existsSync(firstRaw)).toBe(false);
       await input("second", 1, "finish");
       await sealed("second");
-      expect(readFileSync(join(sourceRoot, "source", "first", "payload"), "utf8")).toBe("first\n");
+      if (temporary) {
+        expect(existsSync(secondRaw)).toBe(false);
+        expect(scratchDirectory.names()).toEqual([]);
+      } else expect(readFileSync(firstRaw, "utf8")).toBe("first\n");
       expect(readFileSync(sentinel, "utf8")).toBe("private sibling sentinel\n");
 
       await start("cancelled", "sibling");
       await observe("cancelled", "ready");
+      const cancelledRaw = rawPayload("cancelled");
       await owner.execute({ type: "cancel", jobId: "cancelled", reason: "fixture-cleanup" });
       expect(await settled("cancelled")).toMatchObject({ state: "cancelled", reason: "cancelled" });
       expect(inputDirectory.names()).toEqual([]);
+      if (temporary) {
+        expect(existsSync(cancelledRaw)).toBe(false);
+        expect(scratchDirectory.names()).toEqual([]);
+      }
       for (const result of results.values())
         for (const output of result.outputs) {
           store.release(result.jobId, output.outputId);
