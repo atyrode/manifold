@@ -2233,6 +2233,175 @@ test("native invocation replies distinguish admission checks and reservation cei
   }
 });
 
+/** One operation writing temporary scratch beside a retained lease, and one that writes neither. */
+function temporaryMachine() {
+  const prepare = `${pluginId}.prepare`;
+  const scratch = `${pluginId}.scratch`;
+  const retained = `${pluginId}.retained`;
+  const unused = `${pluginId}.unused`;
+  const declared = structuredClone(machine);
+  declared.locations = {
+    [scratch]: {
+      anchor: "runtime",
+      components: ["scratch"],
+      revision: "l1",
+      kind: "directory",
+      temporary: true,
+    },
+    [unused]: {
+      anchor: "runtime",
+      components: ["unused"],
+      revision: "l1",
+      kind: "directory",
+      temporary: true,
+    },
+    [retained]: { anchor: "runtime", components: ["retained"], revision: "l1", kind: "directory" },
+  };
+  declared.operations[operationId]!.outputs = ["material"];
+  declared.operations[prepare] = {
+    ...declared.operations[operationId]!,
+    locations: [
+      { locationId: scratch, access: "write", outputOnly: true },
+      { locationId: retained, access: "write", outputOnly: true },
+    ],
+  };
+  return { declared: MachineHalfSchema.parse(declared), prepare, scratch, retained };
+}
+
+test("an owner before temporary locations never receives one and refuses only the operation writing it (#933)", () => {
+  const { declared, prepare, retained } = temporaryMachine();
+  const f = fixture(":memory:", declared);
+  try {
+    f.owner.protocolVersion = 42;
+    prove(f);
+    const projected = f.commands.findLast((command) => command.type === "install");
+    if (projected?.type !== "install") throw new Error("projected install missing");
+    // Its strict parser would refuse the lifetime field, so even the unused declaration is omitted.
+    expect(Object.keys(projected.machine.operations)).toEqual([operationId]);
+    expect(Object.keys(projected.machine.locations)).toEqual([retained]);
+    const operations = f.service.describe(f.root, { machineId: f.machineId, pluginId }).operations!;
+    expect(operations[prepare]).toMatchObject({
+      ready: false,
+      reason: "temporary_locations_protocol_unsupported",
+    });
+    expect(operations[operationId]?.reason).not.toBe("temporary_locations_protocol_unsupported");
+    expect(() =>
+      f.service.execute(f.root, pluginId, "trace", {
+        jobId: "downgraded",
+        machineId: f.machineId,
+        operationId: prepare,
+        input: { value: "safe" },
+        outputs: [{ name: "material", locationId: retained, components: ["result"] }],
+      }),
+    ).toThrow("temporary_locations_protocol_unsupported");
+    expect(f.service.jobs.get("downgraded")).toBeNull();
+    // An upgraded owner receives the complete declaration, lifetime included.
+    f.owner.protocolVersion = JOB_OWNER_PROTOCOL_VERSION;
+    f.commands.length = 0;
+    prove(f);
+    const complete = f.commands.findLast((command) => command.type === "install");
+    if (complete?.type !== "install") throw new Error("complete install missing");
+    expect(complete.machine).toEqual(declared);
+  } finally {
+    f.store.close();
+  }
+});
+
+test("nested invocations never write temporary output scratch, at edge approval or admission (#933)", () => {
+  const { declared, prepare, scratch, retained } = temporaryMachine();
+  const f = fixture(":memory:", declared);
+  try {
+    const allow = (node: string, cap: Cap) =>
+      f.service.consent(f.root, {
+        machineId: f.machineId,
+        pluginId,
+        installationRevision: "r1",
+        artifactSha256: hash,
+        node,
+        cap,
+        enabled: true,
+      });
+    consent(f, "machines:run");
+    allow(
+      formatManifoldUri({ kind: "operation", machineId: f.machineId, operationId: prepare }),
+      "machines:run",
+    );
+    for (const locationId of [scratch, retained])
+      allow(
+        formatManifoldUri({ kind: "location", machineId: f.machineId, locationId }),
+        "locations:write",
+      );
+    prove(f);
+    const parent = f.service.execute(f.root, pluginId, "nested-temporary", {
+      jobId: "parent",
+      machineId: f.machineId,
+      operationId: prepare,
+      input: { value: "parent" },
+      outputs: [{ name: "material", locationId: scratch, components: ["own"] }],
+    });
+    expect(parent.state).toBe("start-committed");
+    f.service.jobs.state(parent.request.jobId, "started");
+    const edge = {
+      caller: {
+        machineId: f.machineId,
+        pluginId,
+        operationId: prepare,
+        installationRevision: "r1",
+        artifactSha256: hash,
+      },
+      callee: {
+        machineId: f.machineId,
+        pluginId,
+        operationId,
+        installationRevision: "r1",
+        artifactSha256: hash,
+      },
+      resources: [],
+      outputs: [
+        { name: "material", locationId: retained, components: ["child"], maxSuffixComponents: 0 },
+      ],
+      maxDepth: 1,
+      maxConcurrency: 1,
+      aggregate: limits,
+    };
+    expect(() =>
+      f.service.setInvocationEdge(f.root, {
+        edge: { ...edge, outputs: [{ ...edge.outputs[0]!, locationId: scratch }] },
+        enabled: true,
+      }),
+    ).toThrow("temporary_output_invocation_unsupported");
+    f.service.setInvocationEdge(f.root, { edge, enabled: true });
+    const invoke = (invocationId: string, locationId: string) => {
+      f.service.event(f.channel, {
+        type: "invocation",
+        parentJobId: parent.request.jobId,
+        invocationId,
+        operationId,
+        input: { value: "child" },
+        outputs: [{ name: "material", locationId, components: ["child"] }],
+      });
+      return JobCommandSchema.parse(f.commands.at(-1));
+    };
+    // Refused by name before any reservation, even though the parent's own lease is permitted.
+    expect(invoke("into-scratch", scratch)).toMatchObject({
+      type: "invocation_reply",
+      jobId: null,
+      reason: "temporary_output_invocation_unsupported",
+    });
+    expect(f.service.jobs.active().map((job) => job.request.jobId)).toEqual([parent.request.jobId]);
+    // Retained parent-owned output paths keep their existing nested semantics.
+    const admitted = invoke("into-retained", retained);
+    expect(admitted).toMatchObject({ type: "invocation_reply", reason: null });
+    if (admitted.type !== "invocation_reply" || admitted.jobId === null)
+      throw new Error("retained invocation reply missing its job");
+    expect(f.service.jobs.get(admitted.jobId)?.request.outputs).toEqual([
+      { name: "material", locationId: retained, components: ["child"] },
+    ]);
+  } finally {
+    f.store.close();
+  }
+});
+
 test("disabling a never-admitted service retires it before credential-revocation callbacks", async () => {
   const { f, policy } = await instanceFixture();
   try {

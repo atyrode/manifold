@@ -3069,12 +3069,14 @@ export class JobService {
             ]),
           ),
           outputNames: calleeOperation.outputs,
+          // A temporary location is private per-job scratch, never a child's output backing.
           outputLocations: Object.fromEntries(
             operation.locations
               .filter(
                 (resource) =>
                   resource.access !== "read" &&
-                  caller.machine.locations[resource.locationId]?.kind !== "file",
+                  caller.machine.locations[resource.locationId]?.kind !== "file" &&
+                  !caller.machine.locations[resource.locationId]?.temporary,
               )
               .map((resource) => [
                 resource.locationId,
@@ -3286,6 +3288,14 @@ export class JobService {
       )
     )
       fail("invalid_output_binding");
+    if (
+      outputs.some(
+        (output) =>
+          caller.machine.locations[output.locationId]?.temporary ||
+          callee.machine.locations[output.locationId]?.temporary,
+      )
+    )
+      fail("temporary_output_invocation_unsupported");
   }
 
   private invocationStopReason(parent: JobRecord, admitted: boolean): string | null {
@@ -4603,7 +4613,7 @@ export class JobService {
       fail("output_parent_changed");
     if (new Set(args.outputs.map((o) => o.name)).size !== args.outputs.length)
       fail("duplicate_output");
-    for (const output of args.outputs)
+    for (const output of args.outputs) {
       if (
         output.name === "stdout" ||
         output.name === "stderr" ||
@@ -4615,6 +4625,14 @@ export class JobService {
         )
       )
         fail("invalid_output_binding");
+      // Temporary scratch is private to one job; a child never writes its parent's (#933).
+      if (
+        outputParent &&
+        (outputInstall.machine.locations[output.locationId]?.temporary ||
+          install.machine.locations[output.locationId]?.temporary)
+      )
+        fail("temporary_output_invocation_unsupported");
+    }
     const originalTraceId = this.jobs.get(args.jobId)?.request.traceId ?? traceId;
     const unsigned = {
       jobId: args.jobId,
