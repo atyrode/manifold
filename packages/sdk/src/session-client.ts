@@ -329,8 +329,13 @@ export class SessionClient {
   private hasLocalEdits = false;
 
   constructor(opts: SessionClientOptions) {
-    this.opts = opts;
+    this.opts = { ...opts };
     this.installDoc(this.currentDoc);
+  }
+
+  /** Host-only identity check; credentials remain private and fixed for this client lifetime. */
+  matchesConnectionIdentity(url: string, token: string): boolean {
+    return this.opts.url === url && this.opts.token === token;
   }
 
   get containerId(): string | null {
