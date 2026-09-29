@@ -368,6 +368,7 @@ export class Room {
       doc: (this.encodedDoc ??= encodeUpdate(Y.encodeStateAsUpdate(this.doc))),
       self: peer.auth.principal,
       selfCaps: [...peer.auth.caps],
+      sceneWriteAllowed: peer.sceneWriteAllowed,
       selfConnId: peer.id,
       attendance: this.attendance(),
       terminals: [...this.terminals()],

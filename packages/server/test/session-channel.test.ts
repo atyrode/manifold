@@ -75,6 +75,7 @@ describe("SessionChannel authoritative queue collapse", () => {
           self: peer.auth.principal,
           selfConnId: peer.id,
           selfCaps: ["*"],
+          sceneWriteAllowed: true,
           attendance: [],
           terminals: [],
         }),
@@ -125,6 +126,7 @@ describe("SessionChannel channel scope", () => {
       self: abandoned.auth.principal,
       selfConnId: abandoned.id,
       selfCaps: ["*"],
+      sceneWriteAllowed: true,
       attendance: [],
       terminals: [],
     });

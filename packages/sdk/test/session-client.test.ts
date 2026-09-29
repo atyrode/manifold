@@ -186,6 +186,7 @@ const INIT: InitFrame = {
   self: { id: "me", kind: "human", name: "alex", color: "#112233" },
   selfConnId: "conn-me",
   selfCaps: ["*"],
+  sceneWriteAllowed: true,
   attendance: [],
   terminals: [],
 };
@@ -235,6 +236,122 @@ function connected(options: ClientHarnessOptions = {}): ClientHarness {
   harness.socket.receive(INIT);
   return harness;
 }
+
+describe("home-effective scene authority", () => {
+  test("uses the server decision rather than raw wildcard or literal capability membership", () => {
+    const { client, socket } = connected();
+    try {
+      expect(client.selfCaps()).toEqual(["*"]);
+      expect(client.sceneWriteAllowed).toBe(true);
+      const changes: boolean[] = [];
+      client.on("scene_authority_changed", (allowed) => changes.push(allowed));
+      socket.receive({
+        ...INIT,
+        type: "resync",
+        selfCaps: ["containers:read", "scenes:write"],
+        sceneWriteAllowed: false,
+      });
+      expect(client.selfCaps()).toContain("scenes:write");
+      expect(client.sceneWriteAllowed).toBe(false);
+      expect(client.status).toBe("open");
+      socket.receive({ ...INIT, type: "resync", sceneWriteAllowed: false });
+      expect(changes).toEqual([false]);
+      socket.receive({ ...INIT, type: "resync", sceneWriteAllowed: true });
+      expect(changes).toEqual([false, true]);
+    } finally {
+      client.close();
+    }
+  });
+
+  test("read-only admission discards optimistic offline updates instead of replaying them", () => {
+    const { client, socket } = dialing();
+    try {
+      client.transact((tx) =>
+        tx.createSharedText({ namespace: "core.text", id: "offline", text: "never admitted" }),
+      );
+      socket.open();
+      socket.receive({ ...INIT, sceneWriteAllowed: false });
+      expect(client.sharedText("core.text", "offline")).toBeNull();
+      expect(docUpdateFrames(socket)).toEqual([]);
+      socket.receive({ ...INIT, type: "resync", sceneWriteAllowed: true });
+      expect(client.sharedText("core.text", "offline")).toBeNull();
+      expect(docUpdateFrames(socket)).toEqual([]);
+    } finally {
+      client.close();
+    }
+  });
+
+  test("write revocation preserves already-accepted text identity and editor history", () => {
+    const canonical = createSceneDoc();
+    createSharedText(canonical, { namespace: "core.text", id: "body", text: "accepted" });
+    const { client, socket } = dialing();
+    let history: Y.UndoManager | undefined;
+    try {
+      socket.open();
+      socket.receive({ ...INIT, doc: encodeUpdate(Y.encodeStateAsUpdate(canonical)) });
+      const text = client.sharedText("core.text", "body");
+      if (text === null) throw new Error("body missing after admission");
+      history = new Y.UndoManager(text);
+      text.insert(text.length, " committed");
+      const sent = docUpdateFrames(socket);
+      const update = sent.at(-1);
+      if (update === undefined) throw new Error("local edit was not sent");
+      Y.applyUpdate(canonical, decodeUpdate(update.update));
+      socket.receive({
+        ...INIT,
+        type: "resync",
+        doc: encodeUpdate(Y.encodeStateAsUpdate(canonical)),
+        sceneWriteAllowed: false,
+      });
+      expect(client.sharedText("core.text", "body")).toBe(text);
+      expect(text.toString()).toBe("accepted committed");
+      expect(history.canUndo()).toBe(true);
+      expect(docUpdateFrames(socket)).toEqual(sent);
+    } finally {
+      history?.destroy();
+      client.close();
+      canonical.destroy();
+    }
+  });
+
+  test.each(["insert", "delete"] as const)(
+    "write revocation retires an unacknowledged %s without inventing an epoch",
+    (edit) => {
+      const canonical = createSceneDoc();
+      createSharedText(canonical, { namespace: "core.text", id: "body", text: "accepted" });
+      const frame = { ...INIT, doc: encodeUpdate(Y.encodeStateAsUpdate(canonical)) };
+      const { client, socket } = dialing();
+      try {
+        socket.open();
+        socket.receive(frame);
+        const oldText = client.sharedText("core.text", "body");
+        if (oldText === null) throw new Error("body missing after admission");
+        if (edit === "insert") oldText.insert(oldText.length, " optimistic");
+        else oldText.delete(0, oldText.length);
+        const sentBeforeRevocation = docUpdateFrames(socket).length;
+        const observed: { allowed: boolean; text: string | undefined }[] = [];
+        client.on("scene_authority_changed", (allowed) => {
+          observed.push({ allowed, text: client.sharedText("core.text", "body")?.toString() });
+        });
+        socket.receive({ ...frame, type: "resync", sceneWriteAllowed: false });
+        expect(client.epoch).toBe(frame.epoch);
+        expect(client.status).toBe("open");
+        expect(client.sharedText("core.text", "body")?.toString()).toBe("accepted");
+        expect(client.sharedText("core.text", "body")).not.toBe(oldText);
+        expect(docUpdateFrames(socket)).toHaveLength(sentBeforeRevocation);
+        expect(observed).toEqual([{ allowed: false, text: "accepted" }]);
+        const acceptedText = client.sharedText("core.text", "body");
+        socket.receive({ ...frame, type: "resync", sceneWriteAllowed: true });
+        expect(client.sharedText("core.text", "body")).toBe(acceptedText);
+        expect(client.sharedText("core.text", "body")?.toString()).toBe("accepted");
+        expect(docUpdateFrames(socket)).toHaveLength(sentBeforeRevocation);
+      } finally {
+        client.close();
+        canonical.destroy();
+      }
+    },
+  );
+});
 
 describe("handshake", () => {
   test("first frame is a valid join carrying the protocol version", () => {
