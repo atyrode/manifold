@@ -13,8 +13,10 @@ import type { AuthContext } from "./auth.ts";
 const CHANNEL_QUEUE_FRAMES = 256;
 const CHANNEL_QUEUE_BYTES = 1_048_576;
 
-/** Bun's transport ceiling for authoritative server state and inbound WebSocket frames. */
+/** Inbound WebSocket frames and ordinary outbound messages keep the existing ceiling. */
 export const SESSION_TRANSPORT_PAYLOAD_BYTES = 16 * 1_048_576;
+/** Full-state egress accounts for base64 separately from its bounded JSON/roster envelope. */
+export const SESSION_STATE_ENVELOPE_BYTES = 4 * 1_048_576;
 
 /** Minimal socket contract shared by Bun production sockets and deterministic fakes. */
 export interface RawSocket {
@@ -113,7 +115,7 @@ export class SessionChannel {
     this.sender = new SessionSender(
       socket,
       (body) => this.tag(body),
-      this.prefixBytes,
+      this.prefixBytes - 1,
       (code, reason) => this.close(code, reason),
       (code, reason) => this.closeConnection(code, reason),
     );
@@ -130,8 +132,16 @@ export class SessionChannel {
     return this.sendSerialized(serializeServerMessage(message), droppable);
   }
 
-  sendSerialized(frame: SerializedServerMessage, droppable = false): boolean {
-    return this.sender.sendSerialized(frame, droppable);
+  wireBytes(frame: SerializedServerMessage): number {
+    return frame.bytes + this.prefixBytes - 1;
+  }
+
+  sendSerialized(
+    frame: SerializedServerMessage,
+    droppable = false,
+    stateBytesLimit = SESSION_TRANSPORT_PAYLOAD_BYTES,
+  ): boolean {
+    return this.sender.sendSerialized(frame, droppable, undefined, undefined, stateBytesLimit);
   }
 
   drain(): void {
@@ -219,19 +229,21 @@ export class SessionSender {
 
   /**
    * Sends a payload already validated by the broadcaster. Init/resync are each one
-   * authoritative frame, so their bytes use the 16 MiB transport ceiling rather than the
-   * 1 MiB application flood queue.
+   * authoritative frame, bounded by the room's certified full-state egress budget
+   * rather than the 1 MiB application flood queue. Ordinary frames never borrow it.
    */
   sendSerialized(
     frame: SerializedServerMessage,
     droppable = false,
     authorized?: () => boolean,
     delivered?: () => void,
+    stateBytesLimit = SESSION_TRANSPORT_PAYLOAD_BYTES,
   ): boolean {
     if (authorized !== undefined && !authorized()) return false;
     if (this.closed) return false;
     const bytes = frame.bytes + this.prefixBytes;
-    if (bytes > SESSION_TRANSPORT_PAYLOAD_BYTES) {
+    const limit = frame.authoritative ? stateBytesLimit : SESSION_TRANSPORT_PAYLOAD_BYTES;
+    if (bytes > limit) {
       this.closeConnection(1009, "outbound frame exceeds transport limit");
       return false;
     }
