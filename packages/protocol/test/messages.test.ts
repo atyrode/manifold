@@ -324,6 +324,7 @@ describe("session channel schemas", () => {
       self: { id: "pr1", kind: "human", name: "alex", color: "#aabb00" },
       selfConnId: "conn-1",
       selfCaps: ["*"],
+      sceneWriteAllowed: true,
       attendance: [],
       terminals: [],
     };
@@ -335,6 +336,12 @@ describe("session channel schemas", () => {
     delete missingCaps["selfCaps"];
     expect(ServerMessageSchema.safeParse({ type: "init", ...missingCaps }).success).toBe(false);
     expect(ServerMessageSchema.safeParse({ type: "init", ...missingConnId }).success).toBe(false);
+    const missingAuthority = { ...state } as Record<string, unknown>;
+    delete missingAuthority["sceneWriteAllowed"];
+    expect(ServerMessageSchema.safeParse({ type: "init", ...missingAuthority }).success).toBe(false);
+    expect(
+      ServerMessageSchema.safeParse({ type: "resync", ...state, sceneWriteAllowed: false }).success,
+    ).toBe(true);
   });
 
   test("server cursor and presence require connId while client frames omit it", () => {
