@@ -11,6 +11,8 @@ export interface JobLocation {
   readonly guestPath: string;
   readonly access: "read" | "write" | "create";
   readonly writable: boolean;
+  /** Backed by one exclusive owner-private root of this job, never by the declared path. */
+  readonly temporary?: true;
   close(): void;
 }
 
@@ -32,6 +34,7 @@ function directoryLocation(
   directory: HeldDirectory,
   guestPath: string,
   access: JobLocation["access"],
+  temporary = false,
 ): JobLocation {
   return {
     fd: directory.fd,
@@ -39,10 +42,17 @@ function directoryLocation(
     guestPath,
     access,
     writable: access !== "read",
+    ...(temporary ? { temporary: true as const } : {}),
     close() {
       directory.close();
     },
   };
+}
+
+/** Native-owned storage roots are the owner's alone: its uid, and no group or other bits. */
+function ownerPrivate(root: HeldDirectory): boolean {
+  const stat = root.stat();
+  return stat.uid === process.getuid?.() && (stat.mode & 0o077) === 0;
 }
 
 /** This namespace is native-owned, never an ambient anchor or an adoption path. A
@@ -56,15 +66,14 @@ export function resolveManagedJobLocation(
   access: JobLocation["access"],
   beforeCreate: (parentFd: number) => void,
 ): JobLocation {
-  const stat = root.stat();
   if (
     !declaration.managed ||
+    declaration.temporary ||
     declaration.kind !== "directory" ||
     declaration.anchor !== "state" ||
     !declaration.components.length ||
     access === "create" ||
-    stat.uid !== process.getuid?.() ||
-    (stat.mode & 0o077) !== 0
+    !ownerPrivate(root)
   )
     throw new Error("invalid_managed_location");
   const guestPath = guestLocationPath(locationId, declaration);
@@ -83,6 +92,35 @@ export function resolveManagedJobLocation(
   }
 }
 
+/**
+ * A temporary location backs output leases only, and never with its declared path: `provision`
+ * returns this job's own exclusive root in the owner's private scratch namespace, and is called
+ * only once the declaration and its use are known to be exactly that. The location holds its
+ * own handle on the root, so closing it never disposes the root; only the scratch store does.
+ */
+export function resolveTemporaryJobLocation(
+  provision: () => HeldDirectory,
+  locationId: string,
+  declaration: MachineLocation,
+  access: JobLocation["access"],
+  outputOnly: boolean,
+): JobLocation {
+  if (
+    !declaration.temporary ||
+    declaration.managed ||
+    declaration.anchor !== "runtime" ||
+    declaration.kind !== "directory" ||
+    declaration.guestPath !== undefined
+  )
+    throw new Error("invalid_temporary_location");
+  // Never a working directory, context location or ordinary mount: a lease's backing only.
+  if (access !== "write" || !outputOnly) throw new Error("temporary_location_requires_output_only");
+  const root = provision();
+  if (!ownerPrivate(root)) throw new Error("invalid_temporary_location");
+  const directory = root.reopen();
+  return directoryLocation(directory, guestLocationPath(locationId, declaration), access, true);
+}
+
 /** Resolves only declared descendants of a held trusted anchor.
  * Runtime directory writes provision components; files never imply parent access.
  * An operator anchor is only read, and may be named whole through its own handle. */
@@ -96,6 +134,7 @@ export function resolveJobLocation(
 ): JobLocation {
   const guestPath = guestLocationPath(locationId, declaration);
   if (declaration.managed) throw new Error("managed_location_requires_native_store");
+  if (declaration.temporary) throw new Error("temporary_location_requires_native_store");
   const operator = isOperatorAnchor(declaration.anchor);
   // The declaration schema already refuses this; the owner never relies on that alone.
   if (operator && access !== "read") throw new Error("operator_anchor_read_only");

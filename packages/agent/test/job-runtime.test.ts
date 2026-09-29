@@ -7,6 +7,8 @@ import {
   linkSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
+  readFileSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -241,6 +243,74 @@ describe.skipIf(process.platform !== "linux")("native runtime source opening", (
       expect(openCredentialFixture({ hardlinks })).toEqual({ generation: 1 });
     },
   );
+});
+
+// What the owner leaves of the runtime anchor's temporary output namespace after opening.
+function openScratchFixture(namespaceMode: number) {
+  const root = mkdtempSync(join(tmpdir(), "job-runtime-scratch-"));
+  try {
+    for (const name of ["config", "state", "socket", "terminal", "cgroup", "runtime"])
+      mkdirSync(join(root, name), { mode: 0o700 });
+    const scratch = join(root, "runtime", "job-output-scratch");
+    mkdirSync(join(scratch, "stale", "tree"), { recursive: true, mode: 0o700 });
+    writeFileSync(join(scratch, "stale", "tree", "payload"), "an earlier generation's raw bytes");
+    mkdirSync(join(root, "runtime", "keep"), { mode: 0o700 });
+    writeFileSync(join(root, "runtime", "keep", "sentinel"), "kept");
+    symlinkSync(join(root, "runtime", "keep"), join(scratch, "stale", "escape"));
+    chmodSync(scratch, namespaceMode);
+    writeFileSync(
+      join(root, "config", "owner.json"),
+      JSON.stringify({
+        machineId: "temporary-output-fixture",
+        admissionPublicKey: generateKeyPairSync("ed25519")
+          .publicKey.export({ type: "spki", format: "pem" })
+          .toString(),
+        stateDirectory: join(root, "state"),
+        delegatedCgroup: join(root, "cgroup"),
+        bubblewrap: join(root, "bubblewrap"),
+        protectedDirectories: [],
+        anchors: { runtime: join(root, "runtime") },
+        runtimeTools: {},
+        artifactOrigins: ["https://artifacts.invalid"],
+      }),
+      { mode: 0o600 },
+    );
+    writeFileSync(join(root, "bubblewrap"), "synthetic-executable", { mode: 0o600 });
+    const child = Bun.spawnSync([process.execPath, "-e", openFixture, root, ""], {
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: 10_000,
+    });
+    expect(child.exitCode, child.stderr.toString()).toBe(0);
+    return {
+      result: JSON.parse(child.stdout.toString()) as { generation?: number; error?: string },
+      names: readdirSync(scratch),
+      mode: lstatSync(scratch).mode & 0o777,
+      sentinel: readFileSync(join(root, "runtime", "keep", "sentinel"), "utf8"),
+    };
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+describe.skipIf(process.platform !== "linux")("native temporary output namespace", () => {
+  test("the runtime anchor's scratch namespace is cleared only by the recovered owner", () => {
+    expect(openScratchFixture(0o700)).toEqual({
+      result: { generation: 1 },
+      names: [],
+      mode: 0o700,
+      sentinel: "kept",
+    });
+  });
+
+  test("a scratch namespace open to others refuses the owner and is left as found", () => {
+    expect(openScratchFixture(0o750)).toEqual({
+      result: { error: "output_scratch_not_private" },
+      names: ["stale"],
+      mode: 0o750,
+      sentinel: "kept",
+    });
+  });
 });
 
 // Reports what an opened owner advertises and what it logged about each operator anchor.
