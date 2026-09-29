@@ -4538,12 +4538,15 @@ policySha256, jobId }` or null), the expected revision, the resolved policy and 
   directory. Omission keeps the retained lifetime: every existing declaration, including
   state-backed and output-only locations, is unchanged. The owner does not back a temporary
   location with its declared shared path. Each job's use gets its own exclusive 0700 root
-  beneath the owner-private `job-output-scratch` directory of the `runtime` anchor, and the
-  requested components are logical output paths inside that root. Several outputs of one job,
+  beneath the owner's temporary namespace: an owner-private directory of the `runtime` anchor
+  that the owner itself created exclusively under a fresh random name
+  (`job-output-scratch-<uuid>`) and recorded, by that name and its exact device and inode, in
+  its protected state directory (`output-scratch`) before admitting any job. The requested
+  components are logical output paths inside that root. Several outputs of one job,
   including nested receipt/material paths, are all collected before disposal. No other job and
-  no ordinary location can observe or alias that root: a declared location resolving into
-  `job-output-scratch` refuses `private_owner_source_overlap`, and an owner without that
-  scratch store (no `runtime` anchor) refuses `temporary_output_storage_unavailable` rather
+  no ordinary location can observe or alias that root: a declared location resolving into the
+  recorded namespace, by any path, refuses `private_owner_source_overlap`, and an owner without
+  that scratch store (no `runtime` anchor) refuses `temporary_output_storage_unavailable` rather
   than falling back to any other storage. Once the workload tree is
   proven empty and the job's final result is published — exited with any status, cancelled,
   refused before spawn, or failed collection such as `output_collection_refused` — the owner
@@ -4556,12 +4559,19 @@ policySha256, jobId }` or null), the expected revision, the resolved policy and 
   result: the owner logs `job_output_cleanup_failed` with `{ phase: "release", jobId, code }`
   (or `{ phase: "recovery", code }` at startup), where `code` is an errno name,
   `output_scratch_changed`, `directory_tree_changed`, `mount_escape`, `unsafe_file_component`
-  or `unknown` and never a path or file name, and likewise closes admission. At startup it
-  clears only
-  `job-output-scratch`, and only after recovery has proven every prior-generation descendant
-  gone; legacy retained output paths are never swept. A failure there is logged the same way
-  and keeps admission closed rather than failing owner startup. Nested invocations cannot
-  write temporary scratch (below). Temporary locations require owner RPC 43.
+  or `unknown` and never a path or file name, and likewise closes admission. At startup, under
+  its owner lock, the owner reopens only the namespace its record names, and only while that
+  directory still has the recorded identity; if the recorded directory no longer exists (the
+  runtime tmpfs did not survive a reboot) it creates and records a fresh one. A malformed
+  record (`output_scratch_record_invalid`), another directory at the recorded name
+  (`output_scratch_changed`) or any other lookup failure refuses owner startup and changes
+  nothing. The owner never adopts, protects or sweeps a runtime path it did not record: a
+  `job-output-scratch` directory, legal retained storage before #933, is ordinary retained data
+  like any other. It clears only the recorded namespace, and only after recovery has proven
+  every prior-generation descendant gone; legacy retained output paths are never swept. A
+  failure there is logged the same way and keeps admission closed rather than failing owner
+  startup. Nested invocations cannot write temporary scratch (below). Temporary locations
+  require owner RPC 43.
 - **Nested invocations.** A separately approved edge binds exact caller/callee machine,
   plugin, operation, installation revision and artifact, exact revisioned resource rights,
   depth/concurrency and aggregate limits. Outputs are rules of exactly
