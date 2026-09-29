@@ -4,7 +4,8 @@ import { drawSelection, dropCursor, EditorView, keymap } from "@codemirror/view"
 import { MAX_TEXT_LENGTH } from "@manifold/protocol";
 import { Y } from "@manifold/scene";
 import { useId, useLayoutEffect, useRef, useState, type ReactElement } from "react";
-import { yCollab, ySyncAnnotation, yUndoManagerKeymap } from "y-codemirror.next";
+import { yCollab, ySyncAnnotation } from "y-codemirror.next";
+import { applyTextHistory, type TextHistoryDirection } from "./history.ts";
 
 const lengthRefusal = StateEffect.define<boolean>();
 const refusedLength = StateField.define<boolean>({
@@ -61,6 +62,11 @@ export function TextEditor(props: TextEditorProps): ReactElement {
     // Only this binding's origin is added by yCollab. Neither remote nor SDK edits enter it.
     const history = new Y.UndoManager(text, { trackedOrigins: new Set() });
     const configuration = new Compartment();
+    const performHistory = (direction: TextHistoryDirection, editor: EditorView): boolean => {
+      const outcome = applyTextHistory(text, history, direction, editor.state.readOnly);
+      if (outcome === "limit") editor.dispatch({ effects: lengthRefusal.of(true) });
+      return true;
+    };
     const view = new EditorView({
       parent,
       state: EditorState.create({
@@ -78,14 +84,9 @@ export function TextEditor(props: TextEditorProps): ReactElement {
           // Upstream native history events act directly on Yjs, so gate them before yCollab.
           Prec.highest(EditorView.domEventHandlers({
             beforeinput(event, editor) {
-              if (
-                editor.state.readOnly &&
-                (event.inputType === "historyUndo" || event.inputType === "historyRedo")
-              ) {
-                event.preventDefault();
-                return true;
-              }
-              return false;
+              if (event.inputType !== "historyUndo" && event.inputType !== "historyRedo") return false;
+              event.preventDefault();
+              return performHistory(event.inputType === "historyUndo" ? "undo" : "redo", editor);
             },
             focus() {
               callbacks.current.onBeginEditing?.();
@@ -105,10 +106,9 @@ export function TextEditor(props: TextEditorProps): ReactElement {
             },
           })),
           keymap.of([
-            ...yUndoManagerKeymap.map((entry) => ({
-              ...entry,
-              run: (editor: EditorView) => editor.state.readOnly || (entry.run?.(editor) ?? false),
-            })),
+            { key: "Mod-z", run: (editor) => performHistory("undo", editor), preventDefault: true },
+            { key: "Mod-y", mac: "Mod-Shift-z", run: (editor) => performHistory("redo", editor), preventDefault: true },
+            { key: "Mod-Shift-z", run: (editor) => performHistory("redo", editor), preventDefault: true },
             ...defaultKeymap,
           ]),
           yCollab(text, null, { undoManager: history }),
