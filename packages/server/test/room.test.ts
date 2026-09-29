@@ -1,6 +1,7 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import {
   MAX_DOC_UPDATE_BYTES,
+  MAX_TEXT_LENGTH,
   ROOT_TILE_ID,
   censusSolo,
   type Container,
@@ -14,18 +15,24 @@ import {
   LOCAL_ORIGIN,
   Y,
   createSceneDoc,
+  createSharedText,
   decodeUpdate,
   elementsMap,
   encodeUpdate,
   patchElement,
   readElement,
   readElements,
+  listSharedTexts,
+  readSharedText,
+  sharedText,
+  sharedTextKey,
+  sharedTextsMap,
   writeElement,
 } from "@manifold/scene";
 import type { AuthContext } from "../src/auth.ts";
 import { openDatabase } from "../src/db.ts";
 import { silentLogger } from "../src/log.ts";
-import { Room, RoomManager } from "../src/room.ts";
+import { DOC_BYTES_LIMIT, Room, RoomManager } from "../src/room.ts";
 import { SessionChannel } from "../src/session-channel.ts";
 import { ServerStore, type DocRecord } from "../src/stores.ts";
 import { FakeClock, FakeRuntime, FakeSocket, testStore, testTileTrees } from "./helpers.ts";
@@ -866,6 +873,214 @@ describe("Room Yjs document consistency", () => {
       message: "doc update rate limit exceeded",
     });
     fixture.store.close();
+  });
+});
+
+describe("Room independent shared text boundary", () => {
+  const namespace = "example.documents";
+
+  test("accepted bodies and metadata use authenticated authorship, survive visual removal and persist", () => {
+    const { room, peer, socket, store, runtime, container } = roomFixture();
+    const authored = createSceneDoc();
+    const received = createSceneDoc();
+    const restored = createSceneDoc();
+    try {
+      createSharedText(authored, {
+        namespace,
+        id: "opaque:雪",
+        text: "Hello 🌍",
+        lastEditedBy: "forged",
+        lastEditedAt: 999,
+      });
+      sharedText(authored, namespace, "opaque:雪")?.format(6, 2, { bold: true });
+      writeElement(authored, portal("visual-reference"), LOCAL_ORIGIN);
+      runtime.time = 42;
+      expect(room.applyDocUpdate(peer, encodeUpdate(Y.encodeStateAsUpdate(authored)))).toBe(true);
+      for (const message of socket.messages()) {
+        if (message.type === "doc_update") Y.applyUpdate(received, decodeUpdate(message.update));
+      }
+      const expected = {
+        namespace,
+        id: "opaque:雪",
+        text: "Hello 🌍",
+        lastEditedBy: peer.auth.principal.id,
+        lastEditedAt: 42,
+      };
+      expect(readSharedText(room.doc, namespace, "opaque:雪")).toEqual(expected);
+      expect(readSharedText(received, namespace, "opaque:雪")).toEqual(expected);
+      expect(readElement(received, "visual-reference")).toMatchObject({
+        lastEditedBy: peer.auth.principal.id,
+        lastEditedAt: 42,
+      });
+      expect(sharedText(received, namespace, "opaque:雪")?.toDelta()).toContainEqual({
+        insert: "🌍",
+        attributes: { bold: true },
+      });
+      Y.applyUpdate(authored, Y.encodeStateAsUpdate(room.doc));
+      const map = sharedTextsMap(authored).get(sharedTextKey(namespace, "opaque:雪"));
+      if (map === undefined) throw new Error("missing record");
+      map.set("lastEditedBy", "second-forgery");
+      runtime.time = 84;
+      room.applyDocUpdate(peer, encodeUpdate(Y.encodeStateAsUpdate(authored)));
+      expect(readSharedText(room.doc, namespace, "opaque:雪")).toEqual({
+        ...expected,
+        lastEditedAt: 84,
+      });
+      room.removeElementById("visual-reference");
+      expect(room.census().items).toEqual([]);
+      expect(room.hasRetainedContent()).toBe(true);
+      expect(room.flushSnapshot()).toBe(true);
+      const saved = store.latestDoc(container.id);
+      if (saved === null) throw new Error("missing durable document");
+      Y.applyUpdate(restored, saved.doc);
+      expect(readSharedText(restored, namespace, "opaque:雪")).toEqual({
+        ...expected,
+        lastEditedAt: 84,
+      });
+      expect(readElements(restored).size).toBe(0);
+      expect(sharedText(restored, namespace, "opaque:雪")?.toDelta()).toEqual(
+        sharedText(room.doc, namespace, "opaque:雪")?.toDelta(),
+      );
+    } finally {
+      room.closeAll(1000, "test complete");
+      authored.destroy();
+      received.destroy();
+      restored.destroy();
+      store.close();
+    }
+  });
+
+  test("malformed raw keys, mismatched records, embeds and over-bound bodies repair for every consumer", () => {
+    const { room, peer, socket, store } = roomFixture();
+    const authored = createSceneDoc();
+    const received = createSceneDoc();
+    try {
+      const root = authored.getMap<unknown>("texts");
+      const raw = (id: string, body: unknown = new Y.Text("body")) =>
+        new Y.Map<unknown>([["namespace", namespace], ["id", id], ["text", body]]);
+      const invalid: [string, unknown][] = [
+        ["invalid-key", raw("invalid-key")],
+        ["bad namespace:id", raw("id")],
+        [`${namespace}:`, raw("")],
+        [sharedTextKey(namespace, "not-map"), "body"],
+        [sharedTextKey(namespace, "mismatch"), raw("another-id")],
+        [sharedTextKey(namespace, "flat"), raw("flat", "body")],
+        [sharedTextKey(namespace, "array"), raw("array", new Y.Array())],
+        [sharedTextKey(namespace, "long"), raw("long", new Y.Text("x".repeat(MAX_TEXT_LENGTH + 1)))],
+      ];
+      for (const [id, field, value] of [
+        ["extra", "undeclared", true],
+        ["namespace", "namespace", "another.owner"],
+        ["actor", "lastEditedBy", ""],
+        ["time", "lastEditedAt", -1],
+      ] as const) {
+        const map = raw(id);
+        map.set(field, value);
+        invalid.push([sharedTextKey(namespace, id), map]);
+      }
+      for (const [key, value] of invalid) root.set(key, value);
+      const embedded = createSharedText(authored, { namespace, id: "embed", text: "body" });
+      embedded.insertEmbed(0, { image: "not prose" });
+      const preserved = {
+        namespace: "absent.owner",
+        id: "at-bound",
+        text: "🌍".repeat(MAX_TEXT_LENGTH / 2),
+      };
+      createSharedText(authored, preserved);
+      expect(room.applyDocUpdate(peer, encodeUpdate(Y.encodeStateAsUpdate(authored)))).toBe(true);
+      for (const message of socket.messages()) {
+        if (message.type === "doc_update") Y.applyUpdate(received, decodeUpdate(message.update));
+      }
+      for (const doc of [room.doc, received]) {
+        expect([...sharedTextsMap(doc).keys()]).toEqual([sharedTextKey(preserved.namespace, preserved.id)]);
+        expect(listSharedTexts(doc)).toEqual([{
+          ...preserved,
+          lastEditedBy: peer.auth.principal.id,
+          lastEditedAt: 0,
+        }]);
+      }
+      expect(room.hasRetainedContent()).toBe(true);
+    } finally {
+      room.closeAll(1000, "test complete");
+      authored.destroy();
+      received.destroy();
+      store.close();
+    }
+  });
+
+  test("concurrent individually valid edits whose merge exceeds the text bound repair rather than truncate", () => {
+    const { room, peer, socket, store } = roomFixture();
+    const first = createSceneDoc();
+    const second = createSceneDoc();
+    try {
+      createSharedText(first, { namespace, id: "shared", text: "x".repeat(MAX_TEXT_LENGTH - 2) });
+      room.applyDocUpdate(peer, encodeUpdate(Y.encodeStateAsUpdate(first)));
+      Y.applyUpdate(first, Y.encodeStateAsUpdate(room.doc));
+      Y.applyUpdate(second, Y.encodeStateAsUpdate(room.doc));
+      const left = sharedText(first, namespace, "shared");
+      const right = sharedText(second, namespace, "shared");
+      if (left === null || right === null) throw new Error("missing concurrent text");
+      left.insert(0, "LL");
+      right.insert(right.length, "RR");
+      expect(readSharedText(first, namespace, "shared")?.text).toBe(`LL${"x".repeat(MAX_TEXT_LENGTH - 2)}`);
+      expect(readSharedText(second, namespace, "shared")?.text).toBe(`${"x".repeat(MAX_TEXT_LENGTH - 2)}RR`);
+      room.applyDocUpdate(peer, encodeUpdate(Y.encodeStateAsUpdate(first)));
+      expect(readSharedText(room.doc, namespace, "shared")?.text).toBe(left.toString());
+      socket.clear();
+      room.applyDocUpdate(peer, encodeUpdate(Y.encodeStateAsUpdate(second)));
+      for (const message of socket.messages()) {
+        if (message.type !== "doc_update") continue;
+        Y.applyUpdate(first, decodeUpdate(message.update));
+        Y.applyUpdate(second, decodeUpdate(message.update));
+      }
+      expect(room.hasRetainedContent()).toBe(false);
+      for (const doc of [room.doc, first, second]) {
+        expect(sharedText(doc, namespace, "shared")).toBeNull();
+        expect(sharedTextsMap(doc).has(sharedTextKey(namespace, "shared"))).toBe(false);
+      }
+    } finally {
+      room.closeAll(1000, "test complete");
+      first.destroy();
+      second.destroy();
+      store.close();
+    }
+  });
+
+  test("independent text storage remains subject to update and full-document limits", () => {
+    const { room, peer, socket, store } = roomFixture();
+    const incoming = createSceneDoc();
+    try {
+      const text = "x".repeat(MAX_TEXT_LENGTH);
+      for (let index = 0; index < Math.ceil(MAX_DOC_UPDATE_BYTES / MAX_TEXT_LENGTH) + 1; index += 1) {
+        createSharedText(incoming, { namespace, id: `incoming-${index}`, text });
+      }
+      expect(room.applyDocUpdate(peer, encodeUpdate(Y.encodeStateAsUpdate(incoming)))).toBe(false);
+      expect(room.hasRetainedContent()).toBe(false);
+      expect(socket.messages()).toEqual([
+        { type: "error", code: "invalid", message: "doc update too large" },
+      ]);
+      for (let index = 0; index < Math.ceil(DOC_BYTES_LIMIT / MAX_TEXT_LENGTH) + 1; index += 1) {
+        createSharedText(room.doc, { namespace, id: `retained-${index}`, text });
+      }
+      room.flushSnapshot();
+      socket.clear();
+      const small = createSceneDoc();
+      try {
+        createSharedText(small, { namespace, id: "new", text: "small" });
+        expect(room.applyDocUpdate(peer, encodeUpdate(Y.encodeStateAsUpdate(small)))).toBe(false);
+        expect(sharedText(room.doc, namespace, "new")).toBeNull();
+        expect(socket.messages()).toEqual([
+          { type: "error", code: "invalid", message: "scene too large" },
+        ]);
+        expect(room.census().items).toEqual([]);
+      } finally {
+        small.destroy();
+      }
+    } finally {
+      room.closeAll(1000, "test complete");
+      incoming.destroy();
+      store.close();
+    }
   });
 });
 
