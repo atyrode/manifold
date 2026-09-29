@@ -757,6 +757,7 @@ describe("the placement algebra, executed", () => {
   test("placing an addressed reference again MOVES it instead of authoring a second one", async () => {
     const fixture = await placementFixture();
     const canvas = roomFor(fixture, fixture.canvas.id);
+    const beforeIds = new Set(readElements(canvas.doc).keys());
 
     const repositioned = fixture.placement.place({
       ref: { kind: "element", containerId: fixture.canvas.id, elementId: "el-portal-canvas" },
@@ -769,7 +770,7 @@ describe("the placement algebra, executed", () => {
     if (repositioned.status !== "placed") return;
     expect(repositioned.result).toEqual({ op: "portal", elementId: "el-portal-canvas" });
     expect(canvas.element("el-portal-canvas")).toMatchObject({ x: 12, y: 34 });
-    expect(readElements(canvas.doc).size).toBe(5);
+    expect(new Set(readElements(canvas.doc).keys())).toEqual(beforeIds);
 
     // Landing on a DIFFERENT canvas moves the element between documents, still keeping its
     // id, so no collaborator's reference to it breaks.
@@ -961,6 +962,8 @@ describe("center means this exact spot", () => {
       }),
       LOCAL_ORIGIN,
     );
+    const beforeIds = new Set(readElements(canvas.doc).keys());
+    const beforeContainers = fixture.store.listContainers();
 
     const outcome = fixture.placement.place({
       ref: { kind: "element", containerId: fixture.canvas.id, elementId: "el-portal-canvas" },
@@ -996,7 +999,8 @@ describe("center means this exact spot", () => {
       height: DEFAULT_TERMINAL_HEIGHT,
     });
     // No composition was born, and no element was authored or removed.
-    expect(readElements(canvas.doc).size).toBe(5);
+    expect(new Set(readElements(canvas.doc).keys())).toEqual(beforeIds);
+    expect(fixture.store.listContainers()).toEqual(beforeContainers);
   });
 
   test("a carry with no CANVAS seat of its own is refused by name, not coerced", async () => {
@@ -2182,6 +2186,7 @@ describe("core.space.place", () => {
 
   test("the whole ladder, in order: unknown, disabled, scope, caps, args, then the handler", async () => {
     const fixture = await placementFixture();
+    const beforeElements = readElements(roomFor(fixture, fixture.canvas.id).doc);
     const legal = {
       ref: { kind: "terminal", terminalId: fixture.loose },
       destination: { kind: "canvas", containerId: fixture.canvas.id, x: 0, y: 0 },
@@ -2237,7 +2242,7 @@ describe("core.space.place", () => {
     if (!retired.ok) expect(retired.denial.rule).toBe("invalid_args");
 
     // Nothing above the handler's rung wrote anything.
-    expect(readElements(roomFor(fixture, fixture.canvas.id).doc).size).toBe(5);
+    expect(readElements(roomFor(fixture, fixture.canvas.id).doc)).toEqual(beforeElements);
 
     /*
       And with the seat off, the door is gone rather than silent: a disabled plugin's action

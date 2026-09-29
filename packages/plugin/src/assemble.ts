@@ -1054,6 +1054,10 @@ function assembleDefinitions(
   }
 
   for (const [kind, canonical] of representationBases) {
+    // Duplicate claims are attributed below and may be quarantined. Neither side of an
+    // ownership edge can be judged from a last-writer-wins registry until that is settled.
+    if ((elementTypes.get(kind)?.length ?? 0) > 1 || (elementTypes.get(canonical)?.length ?? 0) > 1)
+      continue;
     const owner = elements.get(kind)?.plugin;
     if (owner === undefined) continue;
     const base = elements.get(canonical);
