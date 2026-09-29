@@ -832,3 +832,67 @@ export class JobOutputStore {
     }
   }
 }
+
+/**
+ * Owner-private backing for temporary output locations (#933). A temporary location never
+ * resolves to its declared path: each job gets one exclusive root here per such location, and
+ * that job's output leases for it are created only inside that root. The owner protects this
+ * namespace like its state, so no other job and no ordinary location alias reaches a root.
+ *
+ * Raw bytes here are disposable, never a record: whatever a job keeps was sealed into the
+ * private output store first. So this store decides no lifetime of its own. It removes one root
+ * when the owner hands it back with proof the job is over (`release`), and everything only when
+ * a recovering owner has proven that no earlier workload survives (`recover`). Opening it, and
+ * aborting or releasing sealed outputs elsewhere, removes nothing.
+ */
+export class JobOutputScratchStore {
+  private readonly roots = new Map<HeldDirectory, string>();
+  private recovered = false;
+  private constructor(private readonly directory: HeldDirectory) {}
+  /** Borrows and checks the namespace handle. It removes nothing: only `recover` may. */
+  static open(directory: HeldDirectory): JobOutputScratchStore {
+    const stat = directory.stat();
+    if (stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0)
+      throw new Error("output_scratch_not_private");
+    return new JobOutputScratchStore(directory);
+  }
+  /**
+   * Startup only, once the owner's cgroup recovery has proven every earlier workload gone:
+   * whatever an earlier generation left here belongs to jobs that can never write, seal or
+   * read it again. No root is created before this succeeds.
+   */
+  recover(): void {
+    if (this.roots.size) throw new Error("output_scratch_active");
+    for (const name of this.directory.names()) this.directory.removeTree(name);
+    this.directory.sync();
+    this.recovered = true;
+  }
+  /** One fresh 0700 root that is the caller's alone until it hands it to `release`. */
+  create(): HeldDirectory {
+    if (!this.recovered) throw new Error("output_scratch_unrecovered");
+    const name = randomUUID();
+    const root = this.directory.openChild(name, { create: true, exclusive: true });
+    this.roots.set(root, name);
+    return root;
+  }
+  /**
+   * Removes exactly the tree `create` returned, found by its held identity rather than trusted
+   * by name. The handle is closed and forgotten either way: a root that cannot be removed is
+   * left for the next `recover`, never retried here by a name that may no longer be its own.
+   */
+  release(root: HeldDirectory): void {
+    const name = this.roots.get(root);
+    if (name === undefined) throw new Error("unknown_output_scratch");
+    this.roots.delete(root);
+    let held: Stats;
+    try {
+      held = root.stat();
+    } finally {
+      root.close();
+    }
+    const named = lstatSync(`${this.directory.procPath}/${name}`);
+    if (named.dev !== held.dev || named.ino !== held.ino) throw new Error("output_scratch_changed");
+    this.directory.removeTree(name);
+    this.directory.sync();
+  }
+}
