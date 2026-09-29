@@ -568,7 +568,7 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
   const kind = target?.discipline ?? "";
   const roster = container.host.assembly.roster();
   const noun = itemNoun(kind, roster);
-  const tiled = roster.some(
+  const hasTileTree = roster.some(
     (entry) =>
       entry.held === undefined &&
       entry.manifest.contributes.disciplines?.some(
@@ -730,7 +730,7 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
    * that terminal: no portal name strip, the terminal's own titlebar carrying this
    * element's verbs. Other occupants wear composition chrome at the same native scale.
    */
-  const solo = !tiled || client === null || layout === null ? null : soloTerminal(layout);
+  const solo = !hasTileTree || client === null || layout === null ? null : soloTerminal(layout);
   const mono: PortalMonoChrome | null =
     solo === null
       ? null
@@ -913,17 +913,19 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
             onMinimize={() => container.unplaceElement(id)}
             minimizeLabel={`Put away ${noun} ${name ?? containerId}`}
             minimizeTooltip={
-              tiled
+              hasTileTree
                 ? `Remove this portal from the canvas (the ${noun} keeps running)`
                 : "Remove this portal from the canvas (its content is retained)"
             }
             onMaximize={enter}
             maximizeLabel={`Open ${noun} ${name ?? containerId}`}
-            maximizeTooltip={tiled ? `Open this ${noun}` : "Open this container"}
+            maximizeTooltip={hasTileTree ? `Open this ${noun}` : "Open this container"}
             onClose={() => container.onDeleteContainer(containerId, id)}
             closeLabel={`Delete ${noun} ${name ?? containerId}`}
             closeTooltip={
-              tiled ? `Delete this ${noun} for everyone` : "Delete this container for everyone"
+              hasTileTree
+                ? `Delete this ${noun} for everyone`
+                : "Delete this container for everyone"
             }
           />
         )}
@@ -931,7 +933,7 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
           {client !== null ? (
             <div className="portal__preview">
               <div className="tile-area" ref={areaRef}>
-                {tiled ? (
+                {hasTileTree ? (
                   <TileTree
                     layout={layout ?? {}}
                     classes={PORTAL_TREE_CLASSES}
@@ -941,7 +943,7 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
                   />
                 ) : (
                   <div
-                    className="portal__surface nodrag nowheel"
+                    className="portal__renderer nodrag nowheel"
                     onClickCapture={() => {
                       setEngagement({ containerId, tileId: id });
                       publishHere();
@@ -967,7 +969,7 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
                     />
                   </div>
                 )}
-                {tiled ? overlay : null}
+                {hasTileTree ? overlay : null}
               </div>
             </div>
           ) : (
@@ -984,7 +986,7 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
                   </span>
                 </Stack>
               </Cover>
-              {tiled ? overlay : null}
+              {hasTileTree ? overlay : null}
             </div>
           )}
         </div>

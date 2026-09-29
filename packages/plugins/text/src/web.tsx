@@ -494,7 +494,7 @@ function DocumentsSection({ host }: SectionProps): ReactElement {
 }
 
 export const textWeb = {
-  id: TEXT_NAMESPACE,
+  id: "core.text",
   elements: { text: TextElement },
   panels: { documents: DocumentsPanel },
   routes: { text: DocumentsRoute },

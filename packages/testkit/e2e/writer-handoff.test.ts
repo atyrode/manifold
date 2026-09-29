@@ -280,9 +280,7 @@ test("a fenced handoff keeps one writer, acknowledged writes, sessions and the P
       // A browser session resumes and its next edit is durable on the successor.
       const savedRev = canvas.rev + 1;
       const saved = nextMessage(canvas, "saved", 10_000, (message) => message.rev >= savedRev);
-      canvas.transact((tx) =>
-        tx.create(drawElement(`el-after-${direction}`, [0, 0, 40, 20])),
-      );
+      canvas.transact((tx) => tx.create(drawElement(`el-after-${direction}`, [0, 0, 40, 20])));
       await saved;
       const resynced = nextMessage(canvas, "resync", 10_000);
       canvas.requestResync();

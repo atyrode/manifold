@@ -22,9 +22,8 @@ export const TEXT_NAMESPACE = "core.text";
 export const TextDocumentBodySchema = SharedTextRecordSchema.extend({
   namespace: z.literal(TEXT_NAMESPACE),
 });
-
 export const textManifest: PluginManifest = {
-  id: TEXT_NAMESPACE,
+  id: "core.text",
   version: "1.0.0",
   title: "Text",
   description: "Independent collaborative documents, with one editor wherever they are shown.",
