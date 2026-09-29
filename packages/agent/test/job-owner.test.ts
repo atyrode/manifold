@@ -57,6 +57,9 @@ import { LinuxJobRefusal, startLinuxJob, type LinuxJobResult } from "../src/job-
 import * as nativeRuntime from "../src/job-linux.ts";
 import { createServiceTunnel } from "../src/job-service-tunnel.ts";
 import { HeldServiceCredentialRegistry } from "../src/job-credentials.ts";
+import { isolateGraphicsPlatform } from "./graphics-platform.ts";
+
+isolateGraphicsPlatform();
 
 function tarMember(name: string, contents: Buffer): Buffer {
   const header = Buffer.alloc(512);
