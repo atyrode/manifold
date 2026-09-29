@@ -319,14 +319,15 @@ function PortalContainerTile({
   readonly containerId: string;
 }): React.ReactElement {
   const container = useCanvas();
-  const name = useContainerName(container.host, containerId);
+  const record = usePortalContainer(container.host, containerId);
+  const kind = record?.discipline ?? "container";
   return (
     <Cover className="portal__container-card">
       <Stack gap="0.3rem" align="center">
         <span className="portal__card-glyph" aria-hidden="true">
-          <ItemIcon kind="canvas" size={22} />
+          <ItemIcon kind={kind} size={22} />
         </span>
-        <strong>{name ?? itemNoun("canvas", container.host.assembly.roster())}</strong>
+        <strong>{record?.name ?? itemNoun(kind, container.host.assembly.roster())}</strong>
         <button
           type="button"
           className="portal__enter"

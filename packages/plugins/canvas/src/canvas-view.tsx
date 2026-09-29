@@ -413,8 +413,7 @@ function CanvasViewImpl({
     embedded alike. A portal lends its already-connected spectator/occupant pipe instead.
   */
   const client = useMemo(
-    () =>
-      mountedClient ?? new SessionClient({ url: sessionUrl(), containerId, token: host.token }),
+    () => mountedClient ?? new SessionClient({ url: sessionUrl(), containerId, token: host.token }),
     [mountedClient, containerId, host.token],
   );
   const inheritedScope = useProjectionScope();
@@ -1849,15 +1848,17 @@ function CanvasViewImpl({
             }
           }}
           onKeyDown={(event) => {
-            if (isTypingTarget(event.target)) return;
+            if (event.defaultPrevented || isTypingTarget(event.target)) return;
             if (event.key === "Escape" && pendingPoint.current !== null) {
               event.preventDefault();
+              event.stopPropagation();
               cancelPoint();
               return;
             }
             const modifier = event.ctrlKey || event.metaKey;
             if (modifier && event.key.toLowerCase() === "z") {
               event.preventDefault();
+              event.stopPropagation();
               if (event.shiftKey) client.redo();
               else client.undo();
               return;
@@ -1871,14 +1872,16 @@ function CanvasViewImpl({
               );
               if (nextTool !== undefined) {
                 event.preventDefault();
+                event.stopPropagation();
                 chooseTool(nextTool.id);
                 return;
               }
             }
             if (event.key !== "Delete" && event.key !== "Backspace") return;
+            event.preventDefault();
+            event.stopPropagation();
             const selected = flowRef.current?.getNodes().filter((node) => node.selected) ?? [];
             if (selected.length === 0) return;
-            event.preventDefault();
             /*
             Delete removes the visual representation. A text document or a portal's home
             survives independently; inline strokes end with their representation. This
