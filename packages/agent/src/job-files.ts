@@ -2,12 +2,15 @@ import {
   constants,
   openSync,
   closeSync,
+  chmodSync,
   fstatSync,
   fchmodSync,
+  lstatSync,
   readFileSync,
   mkdirSync,
   readdirSync,
   renameSync,
+  rmdirSync,
   unlinkSync,
   fsyncSync,
   writeSync,
@@ -158,6 +161,11 @@ export function directoryAncestry(directoryFd: number): string[] {
   } finally {
     closeSync(current);
   }
+}
+
+function heldIdentity(fd: number): string {
+  const stat = fstatSync(fd, { bigint: true });
+  return `${stat.dev}:${stat.ino}`;
 }
 
 /** Owned Linux directory descriptor. All descendant opens use a single checked component. */
@@ -331,6 +339,93 @@ export class HeldDirectory {
     safeComponent(name);
     if (destination.mountId !== this.mountId) throw new Error("mount_escape");
     renameNoReplace(this, name, destination, name);
+  }
+  /**
+   * Removes the private tree at `name`, which a workload proven empty may have shaped at will:
+   * any depth, width, mode or byte name. Every step acts on a held descriptor of the directory
+   * being emptied, never follows a link or leaves this mount, and holds one descendant
+   * descriptor at a time whatever the depth. The owner restores only its own search and write
+   * bits on a directory the kernel lets it change; a tree that changes underneath refuses
+   * rather than redirecting a removal.
+   */
+  removeTree(name: string): void {
+    safeComponent(name);
+    if (!lstatSync(`${this.procPath}/${name}`).isDirectory()) {
+      this.unlink(name);
+      return;
+    }
+    // Per level: its name one level up, that directory's identity, and the subdirectories still
+    // to remove. Only directories wait; every other entry is unlinked as the level is entered.
+    const levels: Array<{ name: Buffer; parent: string; pending: Buffer[] }> = [];
+    let current = this.reopen();
+    let next: Buffer | undefined = Buffer.from(name);
+    try {
+      for (;;) {
+        if (next !== undefined) {
+          const parent = heldIdentity(current.fd);
+          const child = current.openEntryDirectory(next);
+          current.close();
+          current = child;
+          const pending: Buffer[] = [];
+          for (const entry of readdirSync(current.procPath, { encoding: "buffer" })) {
+            const path = current.entryPath(entry);
+            if (lstatSync(path).isDirectory()) pending.push(entry);
+            else unlinkSync(path);
+          }
+          levels.push({ name: next, parent, pending });
+        }
+        const level = levels.at(-1)!;
+        next = level.pending.pop();
+        if (next !== undefined) continue;
+        // Everything below is gone: climb to the directory this level was entered from and
+        // remove it there by the name it was entered through, if that still names it.
+        const emptied = fstatSync(current.fd, { bigint: true });
+        const fd = openSync(`${current.procPath}/..`, DIRECTORY_FLAGS);
+        let above: HeldDirectory;
+        try {
+          above = new HeldDirectory(fd);
+        } catch (error) {
+          closeSync(fd);
+          throw error;
+        }
+        current.close();
+        current = above;
+        const named = lstatSync(current.entryPath(level.name), { bigint: true });
+        if (
+          heldIdentity(current.fd) !== level.parent ||
+          named.dev !== emptied.dev ||
+          named.ino !== emptied.ino
+        )
+          throw new Error("directory_tree_changed");
+        rmdirSync(current.entryPath(level.name));
+        levels.pop();
+        if (levels.length === 0) return;
+      }
+    } finally {
+      current.close();
+    }
+  }
+  private entryPath(name: Buffer): Buffer {
+    return Buffer.concat([Buffer.from(`${this.procPath}/`), name]);
+  }
+  /** A byte-named subdirectory entry, never through a link or onto another mount. */
+  private openEntryDirectory(name: Buffer): HeldDirectory {
+    const path = this.entryPath(name);
+    const before = lstatSync(path, { bigint: true });
+    const fd = openSync(path, DIRECTORY_FLAGS);
+    try {
+      const child = new HeldDirectory(fd);
+      const held = fstatSync(fd, { bigint: true });
+      if (child.mountId !== this.mountId) throw new Error("mount_escape");
+      if (held.dev !== before.dev || held.ino !== before.ino)
+        throw new Error("directory_tree_changed");
+      // A workload may clear its own directory's bits; only their owner may restore them.
+      if ((Number(held.mode) & 0o700) !== 0o700) chmodSync(child.procPath, 0o700);
+      return child;
+    } catch (error) {
+      closeSync(fd);
+      throw error;
+    }
   }
   close(): void {
     if (!this.closed) {
