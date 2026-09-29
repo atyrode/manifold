@@ -9,9 +9,10 @@ import { migrateToSoloCompositions } from "./migrate-solo.ts";
 import { JOB_SCHEDULE_SCHEMA_STATEMENTS } from "./job-schedules.ts";
 import { migrateToDurableAgents } from "./migrate-agents.ts";
 import { executeMigrationStatements } from "./migration-statements.ts";
+import { migrateToOwnedText } from "./migrate-text.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 51;
+export const SCHEMA_VERSION = 52;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
@@ -1702,6 +1703,8 @@ INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','51');
 `,
     ],
   },
+  /** Independent text ownership (#263, ADR0056), including every retained CRDT revision. */
+  52: { backup: true, apply: migrateToOwnedText },
 };
 
 interface TableRow {
