@@ -3339,8 +3339,12 @@ depends on it.
   stores an opaque `document` string encoded by `core.text` as `[homeContainerId, documentId]`;
   its standalone route encodes that tuple in one path segment. `core.text.create` targets a
   structured `home` with `scenes:write` authority there, creates the body, and by default a text
-  reference; `reference: false` creates only the body. The canvas child uses that action, then
-  authors its own visual reference and geometry without decoding, copying or moving the body.
+  reference; `reference: false` creates only the body. Both forms use the room's synchronous
+  trusted-native `transactDoc` preflight against its document allowance, including fixed migration
+  credit. A capacity refusal changes neither body/reference nor history, attribution or snapshot
+  scheduling. Staging retains deleted structs conservatively so undo-retained history cannot be
+  omitted from the size check. The canvas child uses that action, then authors its own visual
+  reference and geometry without decoding, copying or moving the body.
   Resting notes retain their spatial frame and scroll overflow locally, including after edits
   from a standalone document; reading a longer body does not pan the canvas or rewrite geometry.
   Removing/moving a reference does not remove/move its body. The text panel/route discovers
@@ -3367,6 +3371,9 @@ depends on it.
   it; a new epoch cannot inherit it, and deleting the last retained row retires it. The ordinary
   12 MiB document bound remains, plus this certified allowance for a migrated lineage. Credit is
   finite but fungible: subsequent GC can free some of it for other content in the same epoch.
+  Pending writes count immediately, not only after snapshot flush. Socket updates retain their
+  existing accept-then-repair/authorship semantics and single-crossing-update behavior; once over
+  capacity, subsequent writes refuse. Native creation instead refuses before crossing the bound.
   `init`/`resync` egress separately bounds the base64 document to
   `4 * ceil((12 MiB + allowance) / 3)` bytes and its JSON/routing/attendance/terminal envelope to
   4 MiB. Ordinary frames and client ingress retain the 16 MiB transport ceiling. Conversion
