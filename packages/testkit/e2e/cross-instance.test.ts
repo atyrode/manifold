@@ -22,10 +22,10 @@ import {
 import {
   captureTerminal,
   closeClients,
+  drawElement,
   e2eFailure,
   openTerminalAt,
   stopProcesses,
-  textElement,
   waitForTerminalText,
   type TerminalCapture,
 } from "./helpers.ts";
@@ -157,13 +157,19 @@ test("a share projects a host container into a guest instance, and revoking it s
 
     // Both ways, through the one Yjs document the host already owned.
     canvas.transact((tx) => {
-      tx.create(textElement("el-from-host", "written on the host"));
+      tx.create(drawElement("el-from-host", [0, 0, 40, 20]));
     });
     await waitFor(() => remote.elements.get("el-from-host")?.id === "el-from-host", 10_000, 20);
     remote.transact((tx) => {
-      tx.create(textElement("el-from-guest", "written from the guest instance"));
+      tx.create(drawElement("el-from-guest", [5, 10, 30, 50]));
     });
     await waitFor(() => canvas.elements.get("el-from-guest")?.id === "el-from-guest", 10_000, 20);
+    remote.transact((tx) => tx.patch("el-from-host", { x: 125 }));
+    canvas.transact((tx) => tx.patch("el-from-guest", { y: 75 }));
+    await waitFor(() => canvas.elements.get("el-from-host")?.x === 125, 10_000, 20);
+    await waitFor(() => remote.elements.get("el-from-guest")?.y === 75, 10_000, 20);
+    expect(remote.elements.get("el-from-host")).toEqual(canvas.elements.get("el-from-host"));
+    expect(canvas.elements.get("el-from-guest")).toEqual(remote.elements.get("el-from-guest"));
     // The portal the host authored onto the terminal's home is in the remote's scene too: a
     // reference crosses the pipe as data, which is what makes the second share meaningful
     // rather than incidental.

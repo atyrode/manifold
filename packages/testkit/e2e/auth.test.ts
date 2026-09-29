@@ -44,7 +44,7 @@ async function closeRawSockets(
   if (failure?.status === "rejected") throw failure.reason;
 }
 
-test("auth closes invalid joins and enforces scope, capabilities, attenuation, and revocation", async () => {
+test("auth closes invalid credentials, isolates room refusals, and enforces attenuation and revocation", async () => {
   const servers: TestServer[] = [];
   const clients: SessionClient[] = [];
   const rawSockets: AdversarialSessionSocket[] = [];
@@ -72,18 +72,58 @@ test("auth closes invalid joins and enforces scope, capabilities, attenuation, a
       caps: ["containers:read", "scenes:write"],
       containerId: containerX.id,
     });
-    const wrongContainer = await rawSessionSocket(server);
-    rawSockets.push(wrongContainer);
-    wrongContainer.sendRaw(
-      sessionFrame({
-        type: "join",
-        containerId: containerY.id,
-        token: scoped.token,
-        protocolVersion: PROTOCOL_VERSION,
-      }),
+    const scopedSocket = await rawSessionSocket(server);
+    rawSockets.push(scopedSocket);
+    scopedSocket.sendRaw(
+      sessionFrame(
+        {
+          type: "join",
+          containerId: containerX.id,
+          token: scoped.token,
+          protocolVersion: PROTOCOL_VERSION,
+        },
+        "allowed",
+      ),
     );
-    const wrongContainerClose = await waitFor(() => wrongContainer.closeInfo, 5_000, 20);
-    expect(wrongContainerClose.code).toBe(4403);
+    const admitted = await waitFor(
+      () =>
+        scopedSocket.frames.find((message) => message.type === "init" && message.ch === "allowed"),
+      5_000,
+      20,
+    );
+    if (admitted.type !== "init") throw new Error("scoped room did not receive init");
+    scopedSocket.sendRaw(
+      sessionFrame(
+        {
+          type: "join",
+          containerId: containerY.id,
+          token: scoped.token,
+          protocolVersion: PROTOCOL_VERSION,
+        },
+        "denied",
+      ),
+    );
+    const refused = await waitFor(
+      () =>
+        scopedSocket.frames.find(
+          (message) => message.type === "channel_closed" && message.ch === "denied",
+        ),
+      5_000,
+      20,
+    );
+    expect(refused).toMatchObject({ type: "channel_closed", ch: "denied", code: 4403 });
+    expect(
+      scopedSocket.frames.some((message) => message.type === "init" && message.ch === "denied"),
+    ).toBe(false);
+    scopedSocket.sendRaw(sessionFrame({ type: "resync_request" }, "allowed"));
+    const retained = await waitFor(
+      () =>
+        scopedSocket.frames.find((message) => message.type === "resync" && message.ch === "allowed"),
+      5_000,
+      20,
+    );
+    expect(retained).toMatchObject({ selfConnId: admitted.selfConnId, sceneWriteAllowed: true });
+    expect(scopedSocket.closeInfo).toBeNull();
 
     const noTerminal = await connect(server, {
       containerId: containerX.id,

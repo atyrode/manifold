@@ -1051,6 +1051,7 @@ describe("connection lifecycle", () => {
     */
     vi.useFakeTimers();
     const stage = new EventTarget();
+    const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
     Object.defineProperty(globalThis, "window", { value: stage, configurable: true });
     try {
       const { client, socket } = connected({ reconnect: true, backoffCapMs: 60_000 });
@@ -1065,7 +1066,8 @@ describe("connection lifecycle", () => {
       stage.dispatchEvent(new Event("pagehide"));
       expect(FakeSocket.instances).toHaveLength(2);
     } finally {
-      Reflect.deleteProperty(globalThis, "window");
+      if (windowDescriptor === undefined) Reflect.deleteProperty(globalThis, "window");
+      else Object.defineProperty(globalThis, "window", windowDescriptor);
     }
   });
 
@@ -1144,38 +1146,83 @@ describe("scene flow", () => {
     expect(changed).toContainEqual({ ids: ["peer"], origin: "remote" });
   });
 
-  test("new-epoch resync replaces local history", () => {
+  test.each(["undo", "redo"] as const)(
+    "new-epoch resync retires offline writes and the previous %s history",
+    (history) => {
+      const { client, socket } = connected();
+      const canonical = createSceneDoc();
+      try {
+        socket.readyState = 0;
+        client.transact((tx) => tx.create(element("mine")));
+        if (history === "redo") client.undo();
+        expect(client.outboxSize()).toBeGreaterThan(0);
+        writeElement(canonical, element("replacement"), LOCAL_ORIGIN);
+        const updatesBeforeResync = docUpdateFrames(socket).length;
+        socket.readyState = 1;
+        socket.receive({
+          ...INIT,
+          type: "resync",
+          epoch: "e2",
+          rev: 1,
+          doc: encodeUpdate(Y.encodeStateAsUpdate(canonical)),
+        });
+
+        expect(client.epoch).toBe("e2");
+        expect([...client.elements.values()]).toEqual([element("replacement")]);
+        expect(client.outboxSize()).toBe(0);
+        client[history]();
+        expect([...client.elements.values()]).toEqual([element("replacement")]);
+        // Decode everything published after replacement: an old queued write must not
+        // contaminate the new server lineage, regardless of packet batching.
+        for (const frame of docUpdateFrames(socket).slice(updatesBeforeResync)) {
+          Y.applyUpdate(canonical, decodeUpdate(frame.update));
+        }
+        expect([...readElements(canonical).values()]).toEqual([element("replacement")]);
+
+        client.transact((tx) => tx.create(element("fresh")));
+        client.undo();
+        expect([...client.elements.values()]).toEqual([element("replacement")]);
+        client.redo();
+        expect(client.elements.get("fresh")).toEqual(element("fresh"));
+        for (const frame of docUpdateFrames(socket).slice(updatesBeforeResync)) {
+          Y.applyUpdate(canonical, decodeUpdate(frame.update));
+        }
+        expect(readElements(canonical)).toEqual(client.elements);
+      } finally {
+        canonical.destroy();
+        client.close();
+      }
+    },
+  );
+
+  test("same-epoch resync converges offline edits with the server's intervening writes", () => {
     const { client, socket } = connected();
-    client.transact((tx) => tx.create(element("mine")));
-    const updatesBeforeResync = docUpdateFrames(socket).length;
+    const canonical = createSceneDoc();
+    try {
+      Y.applyUpdate(canonical, decodeUpdate(INIT.doc));
+      socket.readyState = 0;
+      client.transact((tx) => tx.create(element("mine")));
+      expect(client.outboxSize()).toBe(1);
+      writeElement(canonical, element("peer"), LOCAL_ORIGIN);
+      socket.readyState = 1;
 
-    socket.receive({
-      ...INIT,
-      type: "resync",
-      epoch: "e2",
-      rev: 1,
-      doc: encodedDoc(element("replacement")),
-    });
-
-    expect(client.epoch).toBe("e2");
-    expect(client.elements.has("mine")).toBe(false);
-    expect(client.elements.has("replacement")).toBe(true);
-    expect(docUpdateFrames(socket)).toHaveLength(updatesBeforeResync + 1);
-  });
-
-  test("same-epoch resync replays an offline local edit", () => {
-    const { client, socket } = connected();
-    socket.readyState = 0;
-    client.transact((tx) => tx.create(element("mine")));
-    expect(client.outboxSize()).toBe(1);
-    socket.readyState = 1;
-
-    const updatesBeforeResync = docUpdateFrames(socket).length;
-    socket.receive({ ...INIT, type: "resync", rev: 6 });
-
-    expect(docUpdateFrames(socket)).toHaveLength(updatesBeforeResync + 2);
-    expect(client.elements.has("mine")).toBe(true);
-    expect(client.outboxSize()).toBe(0);
+      const updatesBeforeResync = docUpdateFrames(socket).length;
+      socket.receive({
+        ...INIT,
+        type: "resync",
+        rev: 6,
+        doc: encodeUpdate(Y.encodeStateAsUpdate(canonical)),
+      });
+      for (const frame of docUpdateFrames(socket).slice(updatesBeforeResync)) {
+        Y.applyUpdate(canonical, decodeUpdate(frame.update));
+      }
+      expect([...client.elements.keys()].sort()).toEqual(["mine", "peer", "srv"]);
+      expect(readElements(canonical)).toEqual(client.elements);
+      expect(client.outboxSize()).toBe(0);
+    } finally {
+      canonical.destroy();
+      client.close();
+    }
   });
 
   test("undo and redo track local edits without tracking remote state", () => {
@@ -1203,7 +1250,7 @@ describe("scene flow", () => {
       tx.create(
         {
           id: "note",
-          type: "text",
+          type: "example.note",
           text: "hello",
           x: 0,
           y: 0,

@@ -12,6 +12,9 @@ import {
 import { TerminalGraphicsMirror } from "../src/terminal-graphics.ts";
 import { TerminalParserContinuation } from "../src/terminal-parser-continuation.ts";
 import { PtyTerminal } from "../src/terminal.ts";
+import { isolateGraphicsPlatform } from "./graphics-platform.ts";
+
+isolateGraphicsPlatform();
 
 const RED = '\x1bPq"1;1;7;14#1;2;100;0;0#1!7~-!7~-!7B\x1b\\';
 const resources: { dispose(): void }[] = [];
