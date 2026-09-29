@@ -3,9 +3,14 @@ import { Database } from "bun:sqlite";
 import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Y, ELEMENTS_KEY, LAYOUT_KEY } from "@manifold/scene";
+import { Y, ELEMENTS_KEY, LAYOUT_KEY, readElement, tileLeaf, readTileLayout, encodeUpdate, LOCAL_ORIGIN, writeElement } from "@manifold/scene";
+import { ServicePolicySchema } from "@manifold/protocol";
 import { openDatabase } from "../src/db.ts";
 import { ServerStore, sha256Hex } from "../src/stores.ts";
+import { Room, DOC_BYTES_LIMIT } from "../src/room.ts";
+import { SessionChannel, SESSION_TRANSPORT_PAYLOAD_BYTES } from "../src/session-channel.ts";
+import { silentLogger } from "../src/log.ts";
+import { FakeClock, FakeRuntime, FakeSocket } from "./helpers.ts";
 
 const HOME = "home:/終";
 const ID = "note:/α:終";
@@ -17,7 +22,7 @@ function fixture(): { dir: string; path: string; db: Database } {
   const path = join(dir, "manifold.db");
   const db = openDatabase(path);
   db.query("UPDATE meta SET value = '48' WHERE key = 'schema_version'").run();
-  db.query("INSERT INTO containers(id, name, created_at, discipline) VALUES (?, 'Historical home', 17, 'canvas')").run(HOME);
+  db.query("INSERT INTO containers(id, name, created_at, sort_order, discipline) VALUES (?, 'Historical home', 17, 0, 'canvas')").run(HOME);
   db.query("INSERT INTO plugin_kv VALUES ('core.notes', '$version', '1.7')").run();
   db.query("INSERT INTO plugin_kv VALUES ('core.notes', '$migration:old-move', '123')").run();
   db.query("INSERT INTO plugin_kv VALUES ('core.notes', 'opaque', ?)").run('{"by":"core.notes","bytes":"\\u0000"}');
@@ -30,13 +35,11 @@ function legacy(body: string | Y.Text = new Y.Text("α🙂é\u0000終")): Y.Doc
   const doc = new Y.Doc();
   doc.clientID = 0; // synthetic clients must skip even low retained author IDs
   const element = new Y.Map<unknown>();
-  for (const [key, value] of Object.entries({ id: ID, type: "text", x: 12, y: 34, width: 320, height: 180, z: 5,
+  for (const [key, value] of Object.entries({ id: ID, type: "text", x: 12, y: 34, width: 320, height: 180, zIndex: 5,
     fontSize: 18, color: "#123456", lastEditedBy: "author-original", lastEditedAt: 111 })) element.set(key, value);
   element.set("text", body);
   doc.getMap(ELEMENTS_KEY).set(ID, element);
-  const leaf = new Y.Map<unknown>();
-  leaf.set("kind", "leaf");
-  leaf.set("ref", { kind: "element", elementId: ID });
+  const leaf = new Y.Map<unknown>(Object.entries(tileLeaf("root", { kind: "element", elementId: ID })));
   doc.getMap(LAYOUT_KEY).set("root", leaf);
   doc.getMap("unrelated").set("opaque", { owner: "core.notes", text: "unchanged" });
   return doc;
@@ -110,6 +113,9 @@ describe("migration 49: retained text ownership", () => {
         const newElement = migrated.getMap<Y.Map<unknown>>(ELEMENTS_KEY).get(ID)!;
         const { text: _text, ...presentation } = oldElement.toJSON();
         expect(newElement.toJSON()).toEqual({ ...presentation, type: "canvas_note", document: JSON.stringify([HOME, ID]) });
+        expect(readElement(original, ID)?.type).toBe("text");
+        expect(readElement(migrated, ID)).toEqual(newElement.toJSON());
+        expect(readTileLayout(migrated, HOME)?.root?.ref).toEqual({ kind: "element", elementId: ID });
         const record = migrated.getMap<Y.Map<unknown>>("texts").get(`core.text:${ID}`)!;
         expect(record.get("lastEditedBy")).toBe(oldElement.get("lastEditedBy"));
         expect(record.get("lastEditedAt")).toBe(oldElement.get("lastEditedAt"));
@@ -137,15 +143,24 @@ describe("migration 49: retained text ownership", () => {
     const source = legacy("");
     try {
       save(db, source, 1);
-      source.getMap<Y.Map<unknown>>(ELEMENTS_KEY).get(ID)?.set("text", "🙂\u0000α");
-      save(db, source, 2);
+      const element = source.getMap<Y.Map<unknown>>(ELEMENTS_KEY).get(ID)!;
+      for (const [index, value] of ["one", "two", "🙂\u0000α"].entries()) {
+        element.set("text", value);
+        if (index === 2) {
+          for (const by of ["first", "second", "third"]) element.set("lastEditedBy", by);
+          for (const at of [1, 2, 3]) element.set("lastEditedAt", at);
+        }
+        save(db, source, index + 2);
+      }
       db.close(); db = openDatabase(f.path);
       const converted = rows(db);
       const first = decode(converted[0]!.doc);
-      const second = decode(converted[1]!.doc);
+      const second = decode(converted.at(-1)!.doc);
       expect(body(first).toString()).toBe("");
       expect(body(second).toString()).toBe("🙂\u0000α");
-      Y.applyUpdate(first, converted[1]!.doc);
+      expect(second.getMap<Y.Map<unknown>>("texts").get(`core.text:${ID}`)?.get("lastEditedBy")).toBe("third");
+      expect(second.getMap<Y.Map<unknown>>("texts").get(`core.text:${ID}`)?.get("lastEditedAt")).toBe(3);
+      Y.applyUpdate(first, converted.at(-1)!.doc);
       Y.applyUpdate(second, converted[0]!.doc);
       expect(body(first).toString()).toBe("🙂\u0000α");
       expect(body(second).toString()).toBe("🙂\u0000α");
@@ -154,6 +169,154 @@ describe("migration 49: retained text ownership", () => {
       expect(body(second).toString()).toBe("editable 🙂\u0000α");
       first.destroy(); second.destroy();
     } finally { source.destroy(); db.close(); rmSync(f.dir, { recursive: true, force: true }); }
+  });
+
+  test("converted scene envelopes join a Room and remain editable through its document boundary", () => {
+    const f = fixture(); let db = f.db; const source = legacy();
+    let room: Room | undefined;
+    try {
+      expect(readElement(source, ID)?.zIndex).toBe(5);
+      save(db, source, 1);
+      db.close(); db = openDatabase(f.path);
+      const store = new ServerStore(db);
+      const runtime = new FakeRuntime();
+      runtime.time = 2000;
+      room = new Room(HOME, "canvas", store, runtime, new FakeClock(runtime), silentLogger,
+        () => [], () => {}, () => null, () => {}, false, () => 1);
+      const peer = new SessionChannel("migration-reader", new FakeSocket(), {
+        principal: { id: "reader", kind: "human", name: "Reader", color: "#123456" },
+        caps: ["*"], containerScope: HOME, tokenId: null, grantId: null,
+      }, HOME, "migration-channel");
+      expect(room.join(peer)).toBeTrue();
+      expect(readElement(room.doc, ID)).toMatchObject({
+        id: ID, type: "canvas_note", zIndex: 5, document: JSON.stringify([HOME, ID]),
+      });
+      const client = decode(Y.encodeStateAsUpdate(room.doc));
+      const state = Y.encodeStateVector(client);
+      body(client).insert(0, "room edit ");
+      expect(room.applyDocUpdate(peer, encodeUpdate(Y.encodeStateAsUpdate(client, state)))).toBeTrue();
+      expect(body(room.doc).toString()).toBe("room edit α🙂é\u0000終");
+      room.flushSnapshot();
+      const persisted = decode(store.latestDoc(HOME)!.doc);
+      expect(body(persisted).toString()).toBe("room edit α🙂é\u0000終");
+      persisted.destroy(); client.destroy();
+    } finally {
+      room?.closeAll(1001, "fixture complete"); room?.doc.destroy();
+      source.destroy(); db.close(); rmSync(f.dir, { recursive: true, force: true });
+    }
+  });
+
+  test("near-capacity history stays joinable and editable without lending migration credit to another epoch", () => {
+    const f = fixture(); let db = f.db; const source = legacy();
+    let room: Room | undefined;
+    const runtime = new FakeRuntime();
+    runtime.time = 2000;
+    const clock = new FakeClock(runtime);
+    const socket = new FakeSocket();
+    const peer = new SessionChannel("capacity-reader", socket, {
+      principal: { id: "reader", kind: "human", name: "Reader", color: "#123456" },
+      caps: ["*"], containerScope: HOME, tokenId: null, grantId: null,
+    }, HOME, "capacity-channel");
+    try {
+      for (let index = 0; index < 100; index++) {
+        writeElement(source, { id: `note-${index}`, type: "text", x: 0, y: 0,
+          width: 320, height: 180, zIndex: 5, text: "", fontSize: 18, color: "#123456",
+          lastEditedBy: "author", lastEditedAt: 1 }, LOCAL_ORIGIN, ["text"]);
+      }
+      save(db, source, 1);
+      source.getMap("unrelated").set("padding",
+        new Uint8Array(DOC_BYTES_LIMIT - Y.encodeStateAsUpdate(source).byteLength - 2048));
+      const before = save(db, source, 2);
+      expect(before.byteLength).toBeLessThan(DOC_BYTES_LIMIT);
+      db.close(); db = openDatabase(f.path);
+      const store = new ServerStore(db);
+      const converted = store.latestDoc(HOME)!;
+      expect(converted.doc.byteLength).toBeGreaterThan(DOC_BYTES_LIMIT);
+      const credit = store.docMigrationBytes(HOME, EPOCH);
+      expect(credit).toBeGreaterThanOrEqual(converted.doc.byteLength - before.byteLength);
+      room = new Room(HOME, "canvas", store, runtime, clock, silentLogger,
+        () => [], () => {}, () => null, () => {}, false, () => 1);
+      expect(room.join(peer)).toBeTrue();
+      expect(Buffer.byteLength(socket.sent[0]!)).toBeGreaterThan(SESSION_TRANSPORT_PAYLOAD_BYTES);
+      expect(socket.messages()[0]?.type).toBe("init");
+      socket.clear();
+      const client = decode(Y.encodeStateAsUpdate(room.doc));
+      const state = Y.encodeStateVector(client);
+      body(client).insert(0, "admitted ");
+      const update = encodeUpdate(Y.encodeStateAsUpdate(client, state));
+      expect(room.applyDocUpdate(peer, update)).toBeTrue();
+      room.flushSnapshot();
+      expect(body(room.doc).toString()).toBe("admitted α🙂é\u0000終");
+      expect(store.docMigrationBytes(HOME, EPOCH)).toBe(credit);
+      const saved = store.latestDoc(HOME)!;
+      // Replacing the same durable revision must not transiently retire its lineage.
+      store.saveDoc(HOME, EPOCH, saved.rev, saved.ts, saved.doc);
+      expect(store.docMigrationBytes(HOME, EPOCH)).toBe(credit);
+      room.closeAll(1001, "restart"); room.doc.destroy();
+      room = new Room(HOME, "canvas", store, runtime, clock, silentLogger,
+        () => [], () => {}, () => null, () => {}, false, () => 1);
+      const rejoined = new SessionChannel("restarted", new FakeSocket(), peer.auth, HOME, "restarted");
+      expect(body(room.doc).toString()).toBe("admitted α🙂é\u0000終");
+      expect(room.join(rejoined)).toBeTrue();
+      expect(room.applyDocUpdate(rejoined, update)).toBeTrue();
+      room.closeAll(1001, "epoch replaced"); room.doc.destroy();
+      store.saveDoc(HOME, "different-epoch", 100, saved.ts + 1, saved.doc);
+      room = new Room(HOME, "canvas", store, runtime, clock, silentLogger,
+        () => [], () => {}, () => null, () => {}, false, () => 1);
+      expect(room.epoch).toBe("different-epoch");
+      expect(room.applyDocUpdate(rejoined, update)).toBeFalse();
+      expect(store.docMigrationBytes(HOME, "different-epoch")).toBe(0);
+      client.destroy();
+    } finally {
+      room?.closeAll(1001, "fixture complete"); room?.doc.destroy();
+      source.destroy(); db.close(); rmSync(f.dir, { recursive: true, force: true });
+    }
+  });
+
+  test("capacity survives retained history but retires on pruning, reset and home deletion", () => {
+    const f = fixture(); let db = f.db; const source = legacy();
+    try {
+      save(db, source, 1);
+      db.close(); db = openDatabase(f.path);
+      const store = new ServerStore(db);
+      expect(store.docMigrationBytes(HOME, EPOCH)).toBeGreaterThan(0);
+      const empty = new Y.Doc();
+      const bytes = Y.encodeStateAsUpdate(empty); empty.destroy();
+      for (let rev = 1; rev <= 29; rev++) store.saveDoc(HOME, "replacement", rev, 10_000 + rev, bytes);
+      expect(store.docMigrationBytes(HOME, EPOCH)).toBeGreaterThan(0);
+      store.saveDoc(HOME, "replacement", 30, 10_030, bytes);
+      expect(store.docMigrationBytes(HOME, EPOCH)).toBe(0);
+      store.saveDoc(HOME, EPOCH, 1, 20_000, bytes);
+      expect(store.docMigrationBytes(HOME, EPOCH)).toBe(0);
+      // Direct reset of retained rows must also remove credit, not just the store's
+      // pruning door. Recreate a migrated lineage through the actual migration.
+      db.query("DELETE FROM scene_docs").run();
+      db.query("UPDATE meta SET value = '48' WHERE key = 'schema_version'").run();
+      db.query("DELETE FROM meta WHERE key LIKE 'plugins:%'").run();
+      db.query("DELETE FROM plugin_kv").run();
+      save(db, source, 1);
+      db.close(); db = openDatabase(f.path);
+      const reopened = new ServerStore(db);
+      expect(reopened.docMigrationBytes(HOME, EPOCH)).toBeGreaterThan(0);
+      expect(reopened.deleteContainer(HOME)).toBeTrue();
+      expect(reopened.docMigrationBytes(HOME, EPOCH)).toBe(0);
+    } finally { source.destroy(); db.close(); rmSync(f.dir, { recursive: true, force: true }); }
+  });
+
+  test("a full legacy disabled set grows without re-enabling any administratively disabled owner", () => {
+    const f = fixture(); let db = f.db;
+    const retained = Array.from({ length: 255 }, (_, index) => `vendor.disabled-${index}`);
+    try {
+      db.query("INSERT INTO meta VALUES ('plugins:disabled', ?)").run(JSON.stringify(["core.notes", ...retained]));
+      db.close(); db = openDatabase(f.path);
+      const store = new ServerStore(db);
+      expect([...store.disabledPlugins()].sort()).toEqual([...retained, "core.text", "core.canvas.note"].sort());
+      store.setPluginEnabled("vendor.next", false, "administrator", 123);
+      expect([...store.disabledPlugins()].sort()).toEqual([...retained, "core.text", "core.canvas.note", "vendor.next"].sort());
+      db.close(); db = openDatabase(f.path);
+      expect(new ServerStore(db).disabledPlugins().has("vendor.disabled-254")).toBeTrue();
+      expect(new ServerStore(db).disabledPlugins().has("core.canvas.note")).toBeTrue();
+    } finally { db.close(); rmSync(f.dir, { recursive: true, force: true }); }
   });
 
   test.each([[false, false], [false, true], [true, false], [true, true]])(
@@ -292,6 +455,39 @@ describe("migration 49: retained text ownership", () => {
     } finally { undo.destroy(); source.destroy(); db.close(); rmSync(f.dir, { recursive: true, force: true }); }
   });
 
+  test("text and unrelated portal generations sharing an id preserve their own historical projections", () => {
+    const f = fixture(); let db = f.db; const source = legacy();
+    const geometry = { id: ID, x: 12, y: 34, width: 320, height: 180, zIndex: 5 };
+    try {
+      save(db, source, 1);
+      const portal = { ...geometry, type: "portal", containerId: "other-home" };
+      writeElement(source, portal, LOCAL_ORIGIN);
+      expect(readElement(source, ID)).toEqual(portal);
+      save(db, source, 2);
+      writeElement(source, { ...geometry, type: "text", text: "reborn", fontSize: 18, color: "#123456" },
+        LOCAL_ORIGIN, ["text"]);
+      const originalBodyId = body(source, false)._item?.id;
+      save(db, source, 3);
+      db.close(); db = openDatabase(f.path);
+      const converted = rows(db);
+      const middle = decode(converted[1]!.doc);
+      expect(readElement(middle, ID)).toEqual(portal);
+      expect(middle.getMap("texts").has(`core.text:${ID}`)).toBeFalse();
+      Y.applyUpdate(middle, converted[0]!.doc);
+      expect(readElement(middle, ID)).toEqual(portal);
+      expect(middle.getMap("texts").has(`core.text:${ID}`)).toBeFalse();
+      for (const order of [[0, 1, 2], [2, 0, 1]]) {
+        const merged = new Y.Doc();
+        for (const index of order) Y.applyUpdate(merged, converted[index]!.doc);
+        expect(readElement(merged, ID)?.type).toBe("canvas_note");
+        expect(body(merged).toString()).toBe("reborn");
+        expect(body(merged)._item?.id).toEqual(originalBodyId);
+        merged.destroy();
+      }
+      middle.destroy();
+    } finally { source.destroy(); db.close(); rmSync(f.dir, { recursive: true, force: true }); }
+  });
+
   test.each(["metadata", "generation"] as const)(
     "concurrent %s histories retain the legacy map winner in either merge order", (change) => {
       const f = fixture(); let db = f.db; const source = legacy();
@@ -332,7 +528,7 @@ describe("migration 49: retained text ownership", () => {
     },
   );
 
-  test.each(["target-kv", "target-state", "target-attribution", "reservation", "legacy-reservation", "namespace", "document", "embed", "kind-changed", "scalar-id-reuse", "late-write-failure"])(
+  test.each(["target-kv", "target-state", "target-attribution", "reservation", "legacy-reservation", "namespace", "document", "embed", "native-service", "scalar-id-reuse", "late-write-failure"])(
     "%s refuses without partial scene, authority, administration or ledger publication", (collision) => {
       const f = fixture(); let db = f.db;
       const source = collision === "scalar-id-reuse" ? legacy("one") : legacy();
@@ -343,10 +539,23 @@ describe("migration 49: retained text ownership", () => {
         if (collision === "target-attribution") db.query("INSERT INTO meta VALUES ('plugins:attribution', '{\"core.text\":{\"by\":\"owner\",\"at\":7}}')").run();
         if (collision === "reservation") db.query("UPDATE meta SET value = '{\"text\":\"core.notes\",\"canvas_note\":\"vendor.owner\"}' WHERE key = 'plugins:element-owners'").run();
         if (collision === "legacy-reservation") db.query("INSERT INTO plugin_kv VALUES ('engine.plugins', '$owner:canvas_note', 'vendor.owner')").run();
+        if (collision === "native-service") {
+          const policy = ServicePolicySchema.parse({
+            serviceId: "core.text.worker", revision: "policy-1", maxConcurrent: 1,
+            runtime: { scope: "instance", pluginId: "core.text", operationId: "core.text.serve",
+              installationRevision: "install-1", artifactSha256: "a".repeat(64),
+              resourceBindingDigest: "b".repeat(64), input: {} },
+            operations: { inspect: { kind: "http-proxy", method: "GET", path: "/",
+              request: { kind: "none" }, response: { kind: "stream", disclosure: "full",
+                contentTypes: ["application/json"], headers: [] },
+              timeoutMs: 1000, maxRequestBytes: 1024, maxResponseBytes: 4096 } },
+          });
+          db.query("INSERT INTO native_instance_services VALUES (?, 'revision-1', 'machine', 'core.text', ?, NULL, NULL, 'administrator', 7)")
+            .run(policy.serviceId, JSON.stringify({ policy, enabled: false, traceId: "configuration-only" }));
+        }
         if (collision === "namespace") source.getMap("texts").set(`core.text:${ID}`, new Y.Map());
         if (collision === "document") source.getMap<Y.Map<unknown>>(ELEMENTS_KEY).get(ID)?.set("document", "occupied");
         if (collision === "embed") body(source, false).insertEmbed(0, { image: "unsupported" });
-        if (collision === "kind-changed") source.getMap<Y.Map<unknown>>(ELEMENTS_KEY).get(ID)?.set("type", "other");
         if (collision === "late-write-failure") db.exec("CREATE TRIGGER refuse_text_version BEFORE INSERT ON meta WHEN NEW.key = 'schema_version' AND NEW.value = '49' BEGIN SELECT RAISE(ABORT, 'fixture final ledger failure'); END");
         if (collision === "scalar-id-reuse") {
           const conflicting = legacy("two");

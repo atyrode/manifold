@@ -17,21 +17,15 @@ interface SceneRow {
   hash: string;
   doc: Uint8Array;
 }
-interface Revision {
-  row: SceneRow;
-  doc: Y.Doc;
-}
 interface ElementIdentity {
   id: string;
   root: Y.ID;
-  origin: Y.ID | null;
-  rightOrigin: Y.ID | null;
 }
 interface Lineage {
   home: string;
   epoch: string;
   canvas: boolean;
-  revisions: Revision[];
+  authors: Set<number>;
   elements: Map<string, ElementIdentity>;
 }
 
@@ -52,6 +46,7 @@ function object(value: unknown): value is Record<string, unknown> {
 class SyntheticClients {
   private readonly allocated = new Map<string, number>();
   private readonly facts = new Map<string, string>();
+  private readonly generated = new Set<number>();
   // Yjs 13.6.32 generates uint32 authors, but its V1 client codec accepts safe integers.
   // Keep synthetic writers outside that range, including offline authors not in a snapshot.
   private next = 0x1_0000_0000;
@@ -63,22 +58,41 @@ class SyntheticClients {
     if (!Number.isSafeInteger(this.next)) refuse("codec", "synthetic client namespace exhausted");
     const candidate = this.next++;
     this.used.add(candidate);
+    this.generated.add(candidate);
     this.allocated.set(key, candidate);
     return candidate;
   }
   remember(key: string, fact: string): void {
+    // Retain fixed-size identity evidence, not every historical scalar body.
+    fact = createHash("sha256").update(fact).digest("hex");
     const previous = this.facts.get(key);
     if (previous !== undefined && previous !== fact) {
       refuse("codec", `inconsistent retained CRDT identity ${key}`);
     }
     this.facts.set(key, fact);
   }
+  finish(doc: Y.Doc): void {
+    for (const [client, structs] of doc.store.clients) {
+      if (!this.generated.has(client)) continue;
+      structs.sort((left, right) => left.id.clock - right.id.clock);
+      const complete: (Y.Item | Y.GC)[] = [];
+      let clock = 0;
+      for (const item of structs) {
+        if (item.id.clock < clock) refuse("codec", "overlapping synthetic clock ranges");
+        if (item.id.clock > clock) complete.push(new Y.GC(Y.createID(client, clock), item.id.clock - clock));
+        complete.push(item);
+        clock = item.id.clock + item.length;
+      }
+      doc.store.clients.set(client, complete);
+    }
+  }
 }
 
 function chain(map: Y.Map<unknown>, key: string): Y.Item[] {
   const result: Y.Item[] = [];
   for (let item: Y.Item | null | undefined = map._map.get(key); item !== undefined && item !== null; item = item.left) {
-    if (item.parent !== map || item.parentSub !== key || item.length !== 1) {
+    if (item.parent !== map || item.parentSub !== key ||
+        (item.length !== 1 && !(item.deleted && item.content instanceof Y.ContentDeleted))) {
       refuse(key, "unsupported map history");
     }
     result.push(item);
@@ -103,7 +117,6 @@ function readLineages(db: Database, clients: Set<number>): Lineage[] {
       .all().map((row) => [row.id, row.discipline]),
   );
   const lineages = new Map<string, Lineage>();
-  try {
     for (const row of db.query<SceneRow, []>(
       "SELECT container_id, epoch, rev, ts, hash, doc FROM scene_docs ORDER BY container_id, epoch, rev",
     ).iterate()) {
@@ -120,15 +133,18 @@ function readLineages(db: Database, clients: Set<number>): Lineage[] {
       let lineage = lineages.get(key);
       if (lineage === undefined) {
         lineage = { home: row.container_id, epoch: row.epoch,
-          canvas: homes.get(row.container_id) === "canvas", revisions: [], elements: new Map() };
+          canvas: homes.get(row.container_id) === "canvas", authors: new Set(), elements: new Map() };
         lineages.set(key, lineage);
       }
-      lineage.revisions.push({ row, doc });
+      try {
       if (!homes.has(row.container_id)) refuse(key, "scene has no authority home");
       if (doc.store.pendingStructs !== null || doc.store.pendingDs !== null) {
         refuse(key, "retained update is not a closed snapshot");
       }
-      for (const client of doc.store.clients.keys()) clients.add(client);
+      for (const client of doc.store.clients.keys()) {
+        clients.add(client);
+        lineage.authors.add(client);
+      }
       const texts = doc.getMap<unknown>(TEXTS);
       if (texts._start !== null) refuse(key, "texts root is not a map");
       for (const recordKey of texts._map.keys()) {
@@ -148,48 +164,15 @@ function readLineages(db: Database, clients: Set<number>): Lineage[] {
           ...(value.has("lastEditedAt") ? { lastEditedAt: value.get("lastEditedAt") } : {}),
         });
         if (!parsed.success) refuse(`${key}/${id}`, "invalid body bounds or attribution");
-        lineage.elements.set(idKey(value._item.id), {
-          id, root: value._item.id, origin: value._item.origin, rightOrigin: value._item.rightOrigin,
-        });
+        const previous = lineage.elements.get(idKey(value._item.id));
+        if (previous !== undefined && previous.id !== id) refuse(key, "inconsistent retained element-root identity");
+        lineage.elements.set(idKey(value._item.id), { id, root: value._item.id });
       }
-    }
-    // Undo/redo and ordinary re-authoring create new element-map generations. Mirror their
-    // original root chain (including collected tombstones) rather than rejecting that history
-    // or giving two generations the same record Item. Kind changes remain explicit refusals.
-    for (const lineage of lineages.values()) {
-      const ids = new Set([...lineage.elements.values()].map((identity) => identity.id));
-      for (const { doc } of lineage.revisions) {
-        const elements = doc.getMap<unknown>(ELEMENTS_KEY);
-        for (const id of ids) {
-          const value = elements.get(id);
-          if (value !== undefined && (!(value instanceof Y.Map) || value.get("type") !== "text")) {
-            refuse(`${lineage.home}/${id}`, "element kind changes within an epoch");
-          }
-          for (const root of chain(elements, id)) {
-            if (!(root.content instanceof Y.ContentDeleted) &&
-                (!(root.content instanceof Y.ContentType) || !(root.content.type instanceof Y.Map))) {
-              refuse(`${lineage.home}/${id}`, "unsupported historical element root");
-            }
-            if (root.content instanceof Y.ContentType && root.content.type instanceof Y.Map) {
-              for (const item of chain(root.content.type, "type")) {
-                if (!(item.content instanceof Y.ContentDeleted) &&
-                    (!(item.content instanceof Y.ContentAny) || item.content.arr[0] !== "text")) {
-                  refuse(`${lineage.home}/${id}`, "historical element kind changes within an epoch");
-                }
-              }
-            }
-            lineage.elements.set(idKey(root.id), {
-              id, root: root.id, origin: root.origin, rightOrigin: root.rightOrigin,
-            });
-          }
-        }
+      } finally {
+        doc.destroy();
       }
     }
     return [...lineages.values()];
-  } catch (error) {
-    for (const lineage of lineages.values()) for (const revision of lineage.revisions) revision.doc.destroy();
-    throw error;
-  }
 }
 
 function append(doc: Y.Doc, item: Y.Item, clients: SyntheticClients): void {
@@ -211,16 +194,8 @@ function append(doc: Y.Doc, item: Y.Item, clients: SyntheticClients): void {
     clients.remember(`${key}/content`, JSON.stringify([item.content.getRef(), value]));
   }
   const structs = doc.store.clients.get(item.id.client);
-  if (structs === undefined) {
-    if (item.id.clock !== 0) refuse("codec", "nonzero synthetic initial clock");
-    doc.store.clients.set(item.id.client, [item]);
-  } else {
-    const last = structs.at(-1);
-    if (last === undefined || last.id.clock + last.length !== item.id.clock) {
-      refuse("codec", "noncontiguous synthetic clocks");
-    }
-    structs.push(item);
-  }
+  if (structs === undefined) doc.store.clients.set(item.id.client, [item]);
+  else structs.push(item);
 }
 
 /**
@@ -230,82 +205,85 @@ function append(doc: Y.Doc, item: Y.Item, clients: SyntheticClients): void {
  * We serialize immediately and reopen with the ordinary Yjs decoder; no live caches,
  * transactions, observers, or alternative sync implementation use the temporary graph.
  */
-function convert(lineage: Lineage, revision: Revision, clients: SyntheticClients): Uint8Array {
-  const doc = revision.doc;
+function convert(lineage: Lineage, doc: Y.Doc, clients: SyntheticClients): Uint8Array {
   const prefix = JSON.stringify(["schema49", lineage.home, lineage.epoch]);
-  for (const identity of lineage.elements.values()) {
-    if (Y.getState(doc.store, identity.root.client) <= identity.root.clock) continue;
-    const source = Y.getItem(doc.store, identity.root);
-    if (!(source instanceof Y.Item) || source.parentSub !== identity.id ||
-        !Y.compareIDs(source.origin, identity.origin) || !Y.compareIDs(source.rightOrigin, identity.rightOrigin)) {
-      refuse(lineage.home, "inconsistent retained element-root identity");
-    }
-    const deleted = source.deleted;
-    const element = source instanceof Y.Item && source.content instanceof Y.ContentType
-      ? source.content.type : null;
-    if (!deleted && !(element instanceof Y.Map)) refuse(lineage.home, "lost element map identity");
-    const token = `${prefix}/record/${idKey(identity.root)}`;
-    const client = clients.get(token);
-    const record = new Y.Map<unknown>();
-    const recordId = (id: Y.ID): Y.ID => Y.createID(clients.get(`${prefix}/record/${idKey(id)}`), 0);
-    const recordItem = new Y.Item(Y.createID(client, 0), null,
-      identity.origin === null ? null : recordId(identity.origin), null,
-      identity.rightOrigin === null ? null : recordId(identity.rightOrigin),
-      doc.getMap(TEXTS), `${TEXT_OWNER}:${identity.id}`, new Y.ContentType(record));
-    record._item = recordItem;
-    const constants = [recordItem,
-      new Y.Item(Y.createID(client, 1), null, null, null, null, record, "namespace", new Y.ContentAny([TEXT_OWNER])),
-      new Y.Item(Y.createID(client, 2), null, null, null, null, record, "id", new Y.ContentAny([identity.id])),
-      new Y.Item(Y.createID(client, 3), null, null, null, null, identity.root, "document",
-        new Y.ContentAny([JSON.stringify([lineage.home, identity.id])])),
-    ];
-    for (const item of constants) {
-      if (deleted) item.markDeleted();
-      append(doc, item, clients);
-    }
-    if (deleted || !(element instanceof Y.Map)) continue;
-    for (const item of chain(element, "text")) {
-      item.parent = record;
-      if (item.content instanceof Y.ContentAny) {
-        const value: unknown = item.content.arr[0];
-        if (typeof value !== "string") refuse(token, "historical inline body is not text");
-        clients.remember(`${prefix}/body/${idKey(item.id)}`, JSON.stringify(["string", value]));
-        // A legacy scalar retains its original map Item identity. Its immutable value gets
-        // a distinct synthetic character stream; changed scalar Items never share clocks.
-        const body = new Y.Text();
-        body._item = item;
-        item.content = new Y.ContentType(body);
-        if (value.length !== 0) {
-          const chars = new Y.Item(Y.createID(clients.get(`${prefix}/string/${idKey(item.id)}`), 0),
-            null, null, null, null, body, null, new Y.ContentString(value));
-          if (item.deleted) chars.markDeleted();
-          append(doc, chars, clients);
+  const mappedId = (kind: string, id: Y.ID): Y.ID =>
+    Y.createID(clients.get(`${prefix}/${kind}/${id.client}`), id.clock);
+  const elements = doc.getMap<unknown>(ELEMENTS_KEY);
+  const ids = new Set([...lineage.elements.values()].map((identity) => identity.id));
+  for (const id of ids) {
+    // Mirror every generation at this key, but only original text roots own live records.
+    // Non-text roots are deleted ordering markers; the original elements remain untouched.
+    // Coalesced tombstones keep their whole original clock range, never one fake clock.
+    for (const source of chain(elements, id)) {
+      const identity = lineage.elements.get(idKey(source.id));
+      if (identity !== undefined && identity.id !== id) refuse(lineage.home, "inconsistent retained element-root identity");
+      clients.remember(`${prefix}/root/${idKey(source.id)}`, JSON.stringify([id, source.origin, source.rightOrigin]));
+      const live = !source.deleted && identity !== undefined;
+      const record = new Y.Map<unknown>();
+      const recordItem = new Y.Item(mappedId("roots", source.id), null,
+        source.origin === null ? null : mappedId("roots", source.origin), null,
+        source.rightOrigin === null ? null : mappedId("roots", source.rightOrigin),
+        doc.getMap(TEXTS), `${TEXT_OWNER}:${id}`,
+        live ? new Y.ContentType(record) : new Y.ContentDeleted(source.length));
+      if (!live) recordItem.markDeleted();
+      record._item = recordItem;
+      append(doc, recordItem, clients);
+      if (!live) continue;
+      const element = source.content instanceof Y.ContentType ? source.content.type : null;
+      if (!(element instanceof Y.Map)) refuse(lineage.home, "lost element map identity");
+      const token = `${prefix}/constants/${idKey(source.id)}`;
+      const client = clients.get(token);
+      append(doc, new Y.Item(Y.createID(client, 0), null, null, null, null, record, "namespace", new Y.ContentAny([TEXT_OWNER])), clients);
+      append(doc, new Y.Item(Y.createID(client, 1), null, null, null, null, record, "id", new Y.ContentAny([id])), clients);
+      append(doc, new Y.Item(Y.createID(client, 2), null, null, null, null, source.id, "document",
+        new Y.ContentAny([JSON.stringify([lineage.home, id])])), clients);
+      for (const item of chain(element, "text")) {
+        item.parent = record;
+        if (item.content instanceof Y.ContentAny) {
+          const value: unknown = item.content.arr[0];
+          if (typeof value !== "string") refuse(token, "historical inline body is not text");
+          clients.remember(`${prefix}/body/${idKey(item.id)}`, JSON.stringify(["string", value]));
+          // Keep the scalar's map Item; only its immutable character stream is synthesized.
+          const body = new Y.Text();
+          body._item = item;
+          item.content = new Y.ContentType(body);
+          if (value.length !== 0) {
+            const chars = new Y.Item(Y.createID(clients.get(`${prefix}/string/${idKey(item.id)}`), 0),
+              null, null, null, null, body, null, new Y.ContentString(value));
+            if (item.deleted) chars.markDeleted();
+            append(doc, chars, clients);
+          }
+        } else if (item.content instanceof Y.ContentType) {
+          validateBody(item.content.type, token);
+          clients.remember(`${prefix}/body/${idKey(item.id)}`, "Y.Text");
+        } else if (!(item.content instanceof Y.ContentDeleted)) {
+          refuse(token, "unsupported historical body content");
         }
-      } else if (item.content instanceof Y.ContentType) {
-        validateBody(item.content.type, token);
-        clients.remember(`${prefix}/body/${idKey(item.id)}`, "Y.Text");
-      } else if (!(item.content instanceof Y.ContentDeleted)) {
-        refuse(token, "unsupported historical body content");
       }
-    }
-    if (lineage.canvas) {
-      for (const item of chain(element, "type")) {
-        if (item.content instanceof Y.ContentAny) item.content = new Y.ContentAny(["canvas_note"]);
+      if (lineage.canvas) {
+        for (const item of chain(element, "type")) {
+          if (item.content instanceof Y.ContentAny && item.content.arr[0] === "text") {
+            item.content = new Y.ContentAny(["canvas_note"]);
+          }
+        }
       }
-    }
-    for (const field of AUTHORSHIP) {
-      const items = chain(element, field);
-      const metadataId = (id: Y.ID): Y.ID => Y.createID(clients.get(`${prefix}/${field}/${idKey(id)}`), 0);
-      for (const sourceItem of items) {
-        const copy = new Y.Item(metadataId(sourceItem.id), null,
-          sourceItem.origin === null ? null : metadataId(sourceItem.origin), null,
-          sourceItem.rightOrigin === null ? null : metadataId(sourceItem.rightOrigin),
-          record, field, sourceItem.content.copy());
-        if (sourceItem.deleted) copy.markDeleted();
-        append(doc, copy, clients);
+      for (const field of AUTHORSHIP) {
+        for (const sourceItem of chain(element, field)) {
+          if (!(sourceItem.content instanceof Y.ContentAny) && !(sourceItem.content instanceof Y.ContentDeleted)) {
+            refuse(`${lineage.home}/${id}`, "unsupported historical attribution");
+          }
+          const copy = new Y.Item(mappedId(field, sourceItem.id), null,
+            sourceItem.origin === null ? null : mappedId(field, sourceItem.origin), null,
+            sourceItem.rightOrigin === null ? null : mappedId(field, sourceItem.rightOrigin),
+            record, field, sourceItem.content.copy());
+          if (sourceItem.deleted) copy.markDeleted();
+          append(doc, copy, clients);
+        }
       }
     }
   }
+  clients.finish(doc);
   const bytes = Y.encodeStateAsUpdate(doc);
   const probe = new Y.Doc({ gc: false });
   try {
@@ -315,7 +293,7 @@ function convert(lineage: Lineage, revision: Revision, clients: SyntheticClients
     }
     for (const identity of lineage.elements.values()) {
       const element = probe.getMap<unknown>(ELEMENTS_KEY).get(identity.id);
-      if (!(element instanceof Y.Map)) continue;
+      if (!(element instanceof Y.Map) || element._item === null || !Y.compareIDs(element._item.id, identity.root)) continue;
       const record = probe.getMap<unknown>(TEXTS).get(`${TEXT_OWNER}:${identity.id}`);
       if (!(record instanceof Y.Map) || !(record.get("text") instanceof Y.Text) || element.has("text")) {
         refuse(lineage.home, "transformed body identity is unreachable");
@@ -378,7 +356,7 @@ function metadataPlan(db: Database, hasText: boolean): MetadataPlan {
   const tables = db.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type = 'table'").all();
   for (const { name } of tables) {
     if (name !== "plugin_installs" && name !== "plugin_database_journal" &&
-        name !== "machine_job_installs" && name !== "instance_services") continue;
+        name !== "machine_job_installs" && name !== "native_instance_services") continue;
     if (db.query(`SELECT 1 FROM "${name.replaceAll('"', '""')}" WHERE plugin_id IN (?, ?, ?) LIMIT 1`)
       .get(OLD_OWNER, TEXT_OWNER, NOTE_OWNER) !== null) {
       refuse(name, "native text identity occupies an executable artifact or prepared database image");
@@ -412,43 +390,55 @@ function metadataPlan(db: Database, hasText: boolean): MetadataPlan {
 export function migrateToOwnedText(db: Database, _path: string): void {
   const clients = new Set<number>();
   const lineages = readLineages(db, clients);
-  try {
     const plan = metadataPlan(db, lineages.some((lineage) => lineage.elements.size !== 0));
+    // A server-owned capacity fact, never a client-writable CRDT field. Updates cannot
+    // mint credit, and another epoch cannot inherit it.
+    db.exec(`CREATE TABLE IF NOT EXISTS scene_doc_capacity(
+      container_id TEXT NOT NULL REFERENCES containers(id) ON DELETE CASCADE,
+      epoch TEXT NOT NULL,
+      migration_bytes INTEGER NOT NULL CHECK(migration_bytes >= 0),
+      PRIMARY KEY(container_id, epoch)
+    )`);
+    db.exec(`CREATE TRIGGER IF NOT EXISTS scene_doc_capacity_retire
+      AFTER DELETE ON scene_docs
+      WHEN NOT EXISTS (SELECT 1 FROM scene_docs
+        WHERE container_id = OLD.container_id AND epoch = OLD.epoch)
+      BEGIN
+        DELETE FROM scene_doc_capacity WHERE container_id = OLD.container_id AND epoch = OLD.epoch;
+      END`);
     const allocator = new SyntheticClients(clients);
-    // Synthetic metadata preserves the source client ordering used to resolve concurrent
-    // map writes. Allocate its clients before constants, independent of revision order.
     for (const lineage of lineages) {
       const prefix = JSON.stringify(["schema49", lineage.home, lineage.epoch]);
-      for (const identity of [...lineage.elements.values()].sort((a, b) =>
-        a.root.client - b.root.client || a.root.clock - b.root.clock)) {
-        allocator.get(`${prefix}/record/${idKey(identity.root)}`);
+      for (const client of [...lineage.authors].sort((left, right) => left - right)) {
+        for (const kind of ["roots", ...AUTHORSHIP]) allocator.get(`${prefix}/${kind}/${client}`);
       }
-      for (const field of AUTHORSHIP) {
-        const ids = new Map<string, Y.ID>();
-        for (const { doc } of lineage.revisions) {
-          for (const identity of lineage.elements.values()) {
-            const element = doc.getMap<unknown>(ELEMENTS_KEY).get(identity.id);
-            if (!(element instanceof Y.Map)) continue;
-            for (const item of chain(element, field)) {
-              if (!(item.content instanceof Y.ContentAny) && !(item.content instanceof Y.ContentDeleted)) {
-                refuse(`${lineage.home}/${identity.id}`, "unsupported historical attribution");
-              }
-              ids.set(idKey(item.id), item.id);
-            }
-          }
-        }
-        for (const id of [...ids.values()].sort((a, b) => a.client - b.client || a.clock - b.clock)) {
-          allocator.get(`${prefix}/${field}/${idKey(id)}`);
-        }
-      }
-    }
-    const converted: { row: SceneRow; bytes: Uint8Array }[] = [];
-    for (const lineage of lineages) {
-      if (lineage.elements.size === 0) continue;
-      for (const revision of lineage.revisions) converted.push({ row: revision.row, bytes: convert(lineage, revision, allocator) });
     }
     const write = db.query("UPDATE scene_docs SET doc = ?, hash = ? WHERE container_id = ? AND epoch = ? AND rev = ?");
-    for (const { row, bytes } of converted) write.run(bytes, hash(bytes), row.container_id, row.epoch, row.rev);
+    const revisions = db.query<SceneRow, [string, string]>(
+      "SELECT container_id, epoch, rev, ts, hash, doc FROM scene_docs WHERE container_id = ? AND epoch = ? ORDER BY rev",
+    );
+    // Two passes retain identity indexes, but only one source graph plus its validation
+    // probe and encoded blobs at a time. The enclosing transaction is the staging area.
+    for (const lineage of lineages) {
+      if (lineage.elements.size === 0) continue;
+      let overhead = 0;
+      for (const row of revisions.iterate(lineage.home, lineage.epoch)) {
+        if (hash(row.doc) !== row.hash) continue;
+        const doc = new Y.Doc({ gc: false });
+        try {
+          try { Y.applyUpdate(doc, row.doc); } catch { continue; }
+          const bytes = convert(lineage, doc, allocator);
+          overhead = Math.max(overhead, bytes.byteLength - row.doc.byteLength);
+          write.run(bytes, hash(bytes), row.container_id, row.epoch, row.rev);
+        } finally {
+          doc.destroy();
+        }
+      }
+      if (overhead > 0) {
+        db.query("INSERT INTO scene_doc_capacity(container_id, epoch, migration_bytes) VALUES (?, ?, ?)")
+          .run(lineage.home, lineage.epoch, overhead);
+      }
+    }
     db.query("UPDATE plugin_kv SET plugin_id = ? WHERE plugin_id = ?").run(TEXT_OWNER, OLD_OWNER);
     db.query("UPDATE plugin_kv SET value = ? WHERE plugin_id GLOB 'engine.*' AND key GLOB '$owner:*' AND value = ?")
       .run(TEXT_OWNER, OLD_OWNER);
@@ -472,7 +462,4 @@ export function migrateToOwnedText(db: Database, _path: string): void {
       }
     }
     db.query("INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '49')").run();
-  } finally {
-    for (const lineage of lineages) for (const revision of lineage.revisions) revision.doc.destroy();
-  }
 }
