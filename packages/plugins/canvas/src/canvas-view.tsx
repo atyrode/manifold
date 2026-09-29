@@ -16,6 +16,7 @@ import {
   getViewportForBounds,
   NodeResizer,
   ReactFlow,
+  ReactFlowProvider,
   ViewportPortal,
   useNodesState,
   type Node,
@@ -375,11 +376,22 @@ interface RemoteSelectionRect {
  * (`routed`, absent ≡ depth 1). That is what lets one component be the routed canvas, a
  * workspace container leaf beside it, and a tile leaf's embedded one.
  */
-export function CanvasView({
+export function CanvasView(props: ContainerRendererProps) {
+  // A canvas inside a portal must not reuse its parent canvas's React Flow store.
+  return (
+    <ReactFlowProvider>
+      <CanvasViewImpl {...props} />
+    </ReactFlowProvider>
+  );
+}
+
+function CanvasViewImpl({
   host,
   containerId,
   navigate,
   containers,
+  presence,
+  client: mountedClient,
   soloOccupants = NO_SOLO_OCCUPANTS,
   depth = 1,
   routed = depth === 1,
@@ -395,10 +407,12 @@ export function CanvasView({
     THIS ROOM'S OCCUPANT PIPE (A4): the canvas dials the room it renders with the host's grant.
     Its terminals are born on this channel and typed into through it, so it is also what a
     panel's `host.client` terminal verbs ride once it is published (issue #196), routed or
-    embedded alike — an embedded canvas is the occupant of ITS room.
+    embedded alike. A portal lends its already-connected spectator/occupant pipe instead.
   */
-  const [client] = useState(
-    () => new SessionClient({ url: sessionUrl(), containerId, token: host.token }),
+  const client = useMemo(
+    () =>
+      mountedClient ?? new SessionClient({ url: sessionUrl(), containerId, token: host.token }),
+    [mountedClient, containerId, host.token],
   );
   const inheritedScope = useProjectionScope();
   const scope = useMemo<ProjectionScope | null>(
@@ -446,13 +460,13 @@ export function CanvasView({
   };
   const registerRoomPipe = useRoomPipeRegistration();
   useEffect(() => registerRoomPipe(containerId, client), [registerRoomPipe, containerId, client]);
-  const [gestureStream] = useState(() => {
+  const gestureStream = useMemo(() => {
     const intervalMs = gestureSendIntervalOverride();
     return createGestureStream({
       ...(intervalMs === null ? {} : { intervalMs }),
       send: (gesture) => client.sendGesture(gesture),
     });
-  });
+  }, [client]);
   /**
    * Peers' live geometry AND their carries: one override map, because a carry of an
    * element in this room IS that element's live geometry — the source container mutates
@@ -496,7 +510,7 @@ export function CanvasView({
       }
     },
   });
-  const [status, setStatus] = useState<ConnectionStatus>("idle");
+  const [status, setStatus] = useState<ConnectionStatus>(() => client.status);
   const [sceneRevision, setSceneRevision] = useState(0);
   const [machines, setMachines] = useState<readonly MachineSummary[] | null>(null);
   /** Bumped on every presence frame; the invalidation key for anything derived from the roster. */
@@ -675,12 +689,12 @@ export function CanvasView({
         key: "canvas-connect",
       });
     });
-    void client.connect().catch(() => undefined);
+    if (mountedClient === undefined) void client.connect().catch(() => undefined);
     return () => {
       offStatus();
-      client.close();
+      if (mountedClient === undefined) client.close();
     };
-  }, [client, notify]);
+  }, [client, mountedClient, notify]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1659,6 +1673,8 @@ export function CanvasView({
       navigate,
       notify,
       containerId,
+      containers,
+      presence,
       dropStore,
       // The index the sidebar fetched, as a lookup: a portal naming a canvas or a
       // composition nested in its own tree reads the same names this canvas does, which
@@ -1681,6 +1697,7 @@ export function CanvasView({
       dropStore,
       containerId,
       containers,
+      presence,
       depth,
       editingId,
       handleResize,
