@@ -138,7 +138,7 @@ names, arrival order, provider labels and other machines are never fallback choi
 | `manifold-transport.service`                                | Replaceable outbound machine channel; reads only its enrolled machine token file                                                                                    |
 | `/var/lib/manifold`                                         | Private 0700 hub/control storage; owner key, machine token, immutable `job-owner/config.json`, durable owner state/journal/artifacts/sealed outputs                 |
 | `/var/lib/manifold-workload/{home,data,state,cache,config}` | Persistent declared workload anchors, separate from protected control storage                                                                                       |
-| `/var/lib/manifold-output`                                  | Dedicated bounded tmpfs, the `runtime` anchor for named-output locations and for `job-inputs`, where bound inputs are extracted; temporary, not durable owner state |
+| `/var/lib/manifold-output`                                  | Dedicated bounded tmpfs, the `runtime` anchor for named outputs, `job-inputs` extractions and `job-output-scratch` temporary roots; not durable owner state         |
 | `/run/manifold-anchors/<name>`                              | Only with `execution.operatorAnchors`: root-made read-only idmapped views of operator directories, re-created at boot                                               |
 
 The owner has **no** `PartOf`, `BindsTo` or `Requires` relationship to the hub or transport.
@@ -237,6 +237,32 @@ Because the owner protects `job-inputs`, a declared location that resolves into 
 `private_owner_source_overlap`; do not point a workload location at that name. Extractions
 are derived, never durable — the owner deletes every one it finds at startup, because a tree
 that outlived its generation belongs to a job that will never run again.
+
+The same anchor hosts **temporary output locations** (#933) in a second owner-private,
+protected subdirectory, `job-output-scratch`. A location a plugin declares `temporary: true`
+never resolves to its declared path: each job gets its own exclusive 0700 root there, and the
+owner removes that root once the workload is proven empty and the job's result is published,
+including failed collection, nonzero exits, cancellations and refused starts. Sealed outputs in
+the owner's private output store are unaffected. A declared ordinary location resolving into
+`job-output-scratch` fails with `private_owner_source_overlap`, and without a `runtime` anchor
+such an operation refuses `temporary_output_storage_unavailable`. If the owner lacks proof
+that a workload is gone, it keeps the root and stops admitting new jobs
+(`start_permit_refused`) through the same drain latch an unproven interruption sets. If
+removal fails, the result stands, the owner logs
+`job_output_cleanup_failed` (`phase`, `jobId` for per-job disposal, and a bounded `code`: an
+errno name, `output_scratch_changed`, `mount_escape`, `unsafe_file_component` or `unknown`;
+never a path), and likewise stops admitting. At startup the owner clears `job-output-scratch`
+only after recovering its previous generation and proving that generation's processes gone;
+a clearing failure is logged the same way and leaves admission closed instead of failing the
+start. Diagnose the logged code before reopening admission; restarting the owner through the
+drained maintenance path retries that startup clearing. Temporary roots share the finite
+`runtime` backing and its budget with named outputs and extractions, but no longer accumulate
+after their jobs close. The owner never sweeps any other runtime path: raw trees written at a
+location's declared path before it became temporary, or by any retained location, stay until
+an operator reclaims them deliberately with its own ownership proof. Temporary locations need
+owner RPC 43: follow the drained owner upgrade in
+[Maintenance and disposable-owner acceptance](#maintenance-and-disposable-owner-acceptance).
+An older owner omits operations using them rather than retaining their scratch.
 
 `execution.runtimeTools` maps the manifest's tool names to reviewed
 `{ source, target, kind }` bindings. Choose explicit executable targets such as
