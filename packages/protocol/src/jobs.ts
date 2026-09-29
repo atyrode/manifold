@@ -22,8 +22,10 @@ import {
 
 /** Feature floor after v41 agent tools; v38 and v39 stay reserved by drafts. */
 const ISOLATED_JOB_PROTOCOL_VERSION = 42;
+/** Disposable per-job output scratch; older owners would retain its raw bytes. */
+const TEMPORARY_LOCATIONS_PROTOCOL_VERSION = 43;
 /** Native owner RPC changes independently of hub, session, and transport releases. */
-export const JOB_OWNER_PROTOCOL_VERSION = ISOLATED_JOB_PROTOCOL_VERSION;
+export const JOB_OWNER_PROTOCOL_VERSION = TEMPORARY_LOCATIONS_PROTOCOL_VERSION;
 
 /**
  * Native owners outlive hub deploys. An unchanged or strictly additive-optional RPC change
@@ -40,10 +42,13 @@ export const JOB_OWNER_PROTOCOL_VERSION = ISOLATED_JOB_PROTOCOL_VERSION;
  * Run identity/expiry and ephemeral tool relay; only explicitly bound jobs use it, and both
  * machine v43 and owner v41 are required. v42 adds optional signed instance service
  * references and output-only lease backing locations; both require their capability, and
- * ordinary requests retain their accepted older owners. v38 and v39 were reserved by drafts
- * and are never accepted: capability checks compare revisions, so a later change must not
- * reuse them. Revision-pinned policies and ordinary admissions remain unchanged; contextual
- * policies are sent only to owners and machine transports that parse that mode.
+ * ordinary requests retain their accepted older owners. v43 adds the optional machine location
+ * `temporary` lifetime: an older strict owner never receives such a declaration, used or not,
+ * and every operation using one is omitted from its install projection rather than retained.
+ * v38 and v39 were reserved by drafts and are never accepted: capability checks compare
+ * revisions, so a later change must not reuse them. Revision-pinned policies and ordinary
+ * admissions remain unchanged; contextual policies are sent only to owners and machine
+ * transports that parse that mode.
  */
 export const JOB_OWNER_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
   34,
@@ -53,6 +58,7 @@ export const JOB_OWNER_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
   40,
   41,
   ISOLATED_JOB_PROTOCOL_VERSION,
+  TEMPORARY_LOCATIONS_PROTOCOL_VERSION,
 ]);
 
 export type JobOwnerCapability =
@@ -63,7 +69,8 @@ export type JobOwnerCapability =
   | "operatorAnchors"
   | "agentTools"
   | "serviceBindings"
-  | "outputOnlyLocations";
+  | "outputOnlyLocations"
+  | "temporaryLocations";
 const jobOwnerCapabilityVersions: Readonly<Record<JobOwnerCapability, number>> = {
   privateEnv: 35,
   launchBinding: 35,
@@ -73,6 +80,7 @@ const jobOwnerCapabilityVersions: Readonly<Record<JobOwnerCapability, number>> =
   agentTools: 41,
   serviceBindings: ISOLATED_JOB_PROTOCOL_VERSION,
   outputOnlyLocations: ISOLATED_JOB_PROTOCOL_VERSION,
+  temporaryLocations: TEMPORARY_LOCATIONS_PROTOCOL_VERSION,
 };
 
 /** Capability support never grants execution authority to an owner outside the accepted set. */
@@ -234,6 +242,12 @@ export const MachineLocationSchema = z
     kind: z.enum(["file", "directory"]).optional(),
     /** Native retained storage is namespaced by plugin beneath the private owner store. */
     managed: z.literal(true).optional(),
+    /**
+     * Disposable output scratch: each job receives its own owner-private root beneath the
+     * `runtime` anchor, and its raw bytes are discarded once the job is closed and its result
+     * published. Sealed outputs are retained as usual. Omission keeps retained storage.
+     */
+    temporary: z.literal(true).optional(),
     guestPath: z
       .string()
       .max(4096)
@@ -247,6 +261,17 @@ export const MachineLocationSchema = z
       !location.managed || (location.anchor === "state" && location.kind === "directory"),
     {
       message: "Managed storage requires a state directory",
+    },
+  )
+  .refine(
+    (location) =>
+      !location.temporary ||
+      (location.anchor === "runtime" &&
+        location.kind === "directory" &&
+        !location.managed &&
+        location.guestPath === undefined),
+    {
+      message: "Temporary storage requires an unmanaged runtime directory without a guest path",
     },
   )
   .refine(
@@ -505,6 +530,19 @@ export const MachineHalfSchema = z
     {
       message: "Output-only backing locations must name declared directories",
     },
+  )
+  .refine(
+    (machine) =>
+      Object.values(machine.operations).every((operation) =>
+        operation.locations.every(
+          (location) =>
+            !machine.locations[location.locationId]?.temporary ||
+            (location.access === "write" && location.outputOnly === true),
+        ),
+      ),
+    {
+      message: "Temporary locations back output leases only: write access and outputOnly",
+    },
   );
 export type MachineHalf = z.infer<typeof MachineHalfSchema>;
 export type MachineArtifact = z.infer<typeof MachineArtifactSchema>;
@@ -535,6 +573,11 @@ export function jobOwnerOperationRefusal(
     operation.locations.some((location) => location.outputOnly)
   )
     return "output_only_locations_protocol_unsupported";
+  if (
+    !jobOwnerSupports(protocolVersion, "temporaryLocations") &&
+    operation.locations.some(({ locationId }) => machine.locations[locationId]?.temporary)
+  )
+    return "temporary_locations_protocol_unsupported";
   return null;
 }
 
@@ -543,7 +586,8 @@ export function jobOwnerMachine(protocolVersion: number, machine: MachineHalf): 
   if (!JOB_OWNER_PROTOCOL_COMPAT_VERSIONS.has(protocolVersion)) return null;
   if (
     jobOwnerSupports(protocolVersion, "operatorAnchors") &&
-    jobOwnerSupports(protocolVersion, "outputOnlyLocations")
+    jobOwnerSupports(protocolVersion, "outputOnlyLocations") &&
+    jobOwnerSupports(protocolVersion, "temporaryLocations")
   )
     return machine;
   let operations: MachineHalf["operations"] | undefined;
@@ -552,14 +596,18 @@ export function jobOwnerMachine(protocolVersion: number, machine: MachineHalf): 
     operations ??= { ...machine.operations };
     delete operations[id];
   }
-  // An older strict parser refuses the anchor name itself, and no retained operation reads it.
+  // A strict older parser refuses an operator anchor or temporary lifetime even when unused, and
+  // no retained operation uses one, so omitting the declaration weakens nothing.
   let locations: MachineHalf["locations"] | undefined;
-  if (!jobOwnerSupports(protocolVersion, "operatorAnchors"))
-    for (const [id, location] of Object.entries(machine.locations)) {
-      if (!isOperatorAnchor(location.anchor)) continue;
-      locations ??= { ...machine.locations };
-      delete locations[id];
-    }
+  for (const [id, location] of Object.entries(machine.locations)) {
+    const anchorRefused =
+      isOperatorAnchor(location.anchor) && !jobOwnerSupports(protocolVersion, "operatorAnchors");
+    const lifetimeRefused =
+      location.temporary === true && !jobOwnerSupports(protocolVersion, "temporaryLocations");
+    if (!anchorRefused && !lifetimeRefused) continue;
+    locations ??= { ...machine.locations };
+    delete locations[id];
+  }
   if (!operations && !locations) return machine;
   operations ??= machine.operations;
   return Object.keys(operations).length
