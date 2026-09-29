@@ -7,6 +7,7 @@ import {
   DESTINATION_KINDS,
   ITEM_KINDS,
   PlaceResponseSchema,
+  PluginManifestSchema,
   ServerToAgentMessageSchema,
   SceneElementSchema,
   censusSolo,
@@ -30,12 +31,14 @@ import {
   type ServerToAgentMessage,
   type TileRef,
 } from "@manifold/protocol";
-import { rosterElementTraits } from "@manifold/plugin";
+import { assembleRoster, rosterElementTraits, type PluginDef } from "@manifold/plugin";
 import {
   DEFAULT_TERMINAL_HEIGHT,
   DEFAULT_TERMINAL_WIDTH,
   LOCAL_ORIGIN,
-  elementText,
+  createSharedText,
+  readSharedText,
+  sharedText,
   readElements,
   tileIdForRef,
   tileLeafIds,
@@ -112,6 +115,7 @@ interface PlacementFixture {
   other: Container;
   /** A second embeddable canvas, so both compositions can be MULTI without more terminals. */
   spare: Container;
+  textHome: Container;
   /** MULTI composition used as the `tile` destination; holds `occupant` and `spare`. */
   composition: Container;
   /**
@@ -142,8 +146,14 @@ function element(
   if (overrides.type === "portal") {
     return { ...base, ...overrides, type: "portal", containerId: overrides.containerId ?? "" };
   }
-  if (overrides.type === "text") {
-    return { ...base, ...overrides, type: "text", text: "note", fontSize: 16, color: "#ffffff" };
+  if (overrides.type === "text" || overrides.type === "canvas_note") {
+    return {
+      ...base,
+      fontSize: 16,
+      color: "#ffffff",
+      document: JSON.stringify(["home", overrides.id]),
+      ...overrides,
+    };
   }
   return {
     ...base,
@@ -185,6 +195,7 @@ async function placementFixture(): Promise<PlacementFixture> {
   const canvas = newContainer("canvas", "canvas");
   const other = newContainer("other", "canvas");
   const spare = newContainer("spare", "canvas");
+  const textHome = newContainer("documents", "text");
   const composition = newContainer("composition", "composition");
   const otherComposition = newContainer("other composition", "composition");
   const rooms = new RoomManager(store, runtime, clock, silentLogger, testTileTrees);
@@ -203,7 +214,7 @@ async function placementFixture(): Promise<PlacementFixture> {
   /*
     The assembly first, because the executor resolves CONTRIBUTED element traits against
     it (ADR 0013 §12): `text` and `draw` have no rows in `ITEM_KINDS` any more, so a fixture
-    that skipped this would judge a note by the engine's default instead of core.notes'
+    that skipped this would judge a document by the engine's default instead of its owner's
     declaration. The roster arrives as a thunk, exactly as production wires it.
    */
   const plugins = await testPluginHost(store, auth, rooms, broker, runtime);
@@ -244,6 +255,7 @@ async function placementFixture(): Promise<PlacementFixture> {
     canvas,
     other,
     spare,
+    textHome,
     composition,
     otherComposition,
   };
@@ -261,7 +273,12 @@ async function placementFixture(): Promise<PlacementFixture> {
   fill(partial, otherComposition.id, spare.id);
 
   const canvasDoc = roomFor(partial, canvas.id).doc;
-  writeElement(canvasDoc, element({ id: "el-text", type: "text" }), LOCAL_ORIGIN);
+  for (const [id, type] of [["el-text", "text"], ["el-canvas-note", "canvas_note"]] as const) {
+    createSharedText(canvasDoc, { namespace: "core.text", id, text: "note" });
+    writeElement(canvasDoc, element({
+      id, type, document: JSON.stringify([canvas.id, id]),
+    }), LOCAL_ORIGIN);
+  }
   writeElement(canvasDoc, element({ id: "el-draw", type: "draw" }), LOCAL_ORIGIN);
   writeElement(
     canvasDoc,
@@ -432,6 +449,8 @@ function refs(fixture: PlacementFixture): Readonly<Record<string, PlacementRef>>
     canvas: { kind: "container", containerId: fixture.other.id },
     composition: { kind: "container", containerId: fixture.otherComposition.id },
     text: { kind: "element", containerId: fixture.canvas.id, elementId: "el-text" },
+    canvas_note: { kind: "element", containerId: fixture.canvas.id, elementId: "el-canvas-note" },
+    "text-home": { kind: "container", containerId: fixture.textHome.id },
     draw: { kind: "element", containerId: fixture.canvas.id, elementId: "el-draw" },
     tile: {
       kind: "tile",
@@ -529,6 +548,14 @@ describe("the placement algebra, executed", () => {
     ["text", "tile", "add_tile"],
     ["text", "compose", "compose"],
     ["text", "unplaced", "denied:not_accepted"],
+    ["canvas_note", "canvas", "move_element"],
+    ["canvas_note", "tile", "add_tile"],
+    ["canvas_note", "compose", "compose"],
+    ["canvas_note", "unplaced", "denied:not_accepted"],
+    ["text-home", "canvas", "portal"],
+    ["text-home", "tile", "add_tile"],
+    ["text-home", "compose", "compose"],
+    ["text-home", "unplaced", "unplace"],
     ["draw", "canvas", "move_element"],
     ["draw", "tile", "add_tile"],
     ["draw", "compose", "compose"],
@@ -583,7 +610,9 @@ describe("the placement algebra, executed", () => {
       the assertion, not an accommodation — if `core.canvas` stopped declaring `canvas`, the
       eight golden rows above would no longer match and this test would say so.
     */
-    const disciplines = [...rosterDisciplines(composed).keys()];
+    const disciplines = [...rosterDisciplines(composed).keys()].map(
+      (id) => contributed.includes(id) ? `${id}-home` : id,
+    );
     const itemKinds = [...Object.keys(ITEM_KINDS), ...disciplines, ...contributed];
     const destinationKinds = Object.keys(DESTINATION_KINDS) as DestinationKind[];
     // The declarations decide the inventory, not this file. Compare sorted pairs so roster
@@ -1112,11 +1141,14 @@ describe("center means this exact spot", () => {
         createdAt: fixture.runtime.now(),
       });
       const canvas = roomFor(fixture, fixture.canvas.id);
-      writeElement(canvas.doc, element({ id: "el-text", type: "text" }), LOCAL_ORIGIN, ["text"]);
+      writeElement(canvas.doc, element({
+        id: "el-text", type: "text", document: JSON.stringify([soloId, "el-text"]),
+      }), LOCAL_ORIGIN);
       const tileId = noteLeafId(fixture, soloId);
       const home = roomFor(fixture, soloId);
-      const text = elementText(home.doc, "el-text");
-      if (text === null) throw new Error("the note must start with collaborative text");
+      const text = createSharedText(home.doc, {
+        namespace: "core.text", id: "el-text", text: "note",
+      });
       text.insert(text.length, " from a collaborator");
       const before = home.element("el-text");
       const beforeLayout = home.tileLayout();
@@ -1141,17 +1173,26 @@ describe("center means this exact spot", () => {
       expect(roomFor(fixture, soloId)).toBe(home);
       expect(home.tileLayout()).toEqual(beforeLayout);
       expect(home.element("el-text")).toEqual(before);
-      expect(elementText(home.doc, "el-text")).toBe(text);
+      expect(sharedText(home.doc, "core.text", "el-text")).toBe(text);
       text.insert(text.length, " still editable");
-      expect(home.element("el-text")?.text).toBe("note from a collaborator still editable");
+      expect(readSharedText(home.doc, "core.text", "el-text")?.text).toBe(
+        "note from a collaborator still editable",
+      );
       expect(canvas.element(portalId)).toMatchObject({ containerId: soloId });
     },
   );
 
-  test("a distinct unseated element in the target home composes with collaborative fields intact", async () => {
+  test("a distinct unseated document reference composes without absorbing its body home", async () => {
     const fixture = await placementFixture();
     const home = roomFor(fixture, fixture.residentHome);
-    writeElement(home.doc, element({ id: "unseated", type: "text" }), LOCAL_ORIGIN, ["text"]);
+    home.join(new SessionChannel(
+      fixture.runtime.newId(), new FakeSocket(), fixture.root, fixture.residentHome, "c1",
+    ));
+    const document = JSON.stringify([fixture.residentHome, "unseated"]);
+    const text = createSharedText(home.doc, {
+      namespace: "core.text", id: "unseated", text: "note",
+    });
+    writeElement(home.doc, element({ id: "unseated", type: "text", document }), LOCAL_ORIGIN);
     const composed = fixture.placement.place({
       ref: { kind: "element", containerId: fixture.residentHome, elementId: "unseated" },
       destination: {
@@ -1166,12 +1207,14 @@ describe("center means this exact spot", () => {
     }
     const merged = roomFor(fixture, composed.result.containerId);
     expect(homeOf(fixture, fixture.resident)).toBe(composed.result.containerId);
-    expect(merged.element("unseated")).toMatchObject({ type: "text", text: "note" });
-    const text = elementText(merged.doc, "unseated");
-    if (text === null) throw new Error("the unseated note lost its collaborative text");
+    expect(merged.element("unseated")).toMatchObject({ type: "text", document });
+    expect(sharedText(home.doc, "core.text", "unseated")).toBe(text);
     text.insert(text.length, " survives");
-    expect(merged.element("unseated")?.text).toBe("note survives");
-    expect(fixture.store.getContainer(fixture.residentHome)).toBeNull();
+    expect(readSharedText(home.doc, "core.text", "unseated")?.text).toBe("note survives");
+    expect(fixture.store.getContainer(fixture.residentHome)).not.toBeNull();
+    expect(roomFor(fixture, fixture.canvas.id).element("el-portal-solo")).toMatchObject({
+      containerId: fixture.residentHome,
+    });
   });
 
   test("a same-id scene element cannot hijack a terminal tile drag or kill its PTY", async () => {
@@ -2240,71 +2283,6 @@ describe("placement rules read the DECLARATION, never the kind's name", () => {
     homed: "on_claim",
   };
 
-  /** One executor over the fixture's own world, speaking a vocabulary the case dictates. */
-  function executorWith(
-    fixture: PlacementFixture,
-    traits: PlacementTraits,
-    noun: string,
-  ): PlaceExecutor {
-    return new PlaceExecutor(
-      fixture.store,
-      fixture.rooms,
-      fixture.broker,
-      fixture.runtime,
-      {
-        itemTraits: (kind) => (kind === "text" ? traits : null),
-        /*
-          The disciplines still come from the real assembly: this fixture overrides the
-          ELEMENT half of the vocabulary to drive one rule, and a container that could not
-          be resolved would refuse before that rule was ever reached (#110).
-        */
-        discipline: (id) => rosterDisciplines(fixture.plugins.roster()).get(id) ?? null,
-      },
-      (kind) => (kind === "text" ? noun : "item"),
-    );
-  }
-
-  /** Merges the canvas note onto the solo portal and answers the newborn's name. */
-  function composedName(fixture: PlacementFixture, executor: PlaceExecutor): string {
-    const outcome = executor.place({
-      ref: { kind: "element", containerId: fixture.canvas.id, elementId: "el-text" },
-      destination: {
-        kind: "compose",
-        containerId: fixture.canvas.id,
-        targetElementId: "el-portal-solo",
-        edge: "right",
-      },
-    });
-    if (outcome.status !== "placed" || outcome.result.op !== "compose") {
-      throw new Error(`the note did not compose: ${ruleOrStatus(outcome)}`);
-    }
-    return fixture.store.getContainer(outcome.result.containerId)?.name ?? "";
-  }
-
-  test("the shipped assembly names a composed note after core.notes' own title", async () => {
-    const fixture = await placementFixture();
-    // The behavior the deleted literal produced, preserved exactly — reached now through
-    // `homed: "on_claim"` and `itemNoun`, so this is the regression guard for the rewrite.
-    expect(composedName(fixture, fixture.placement)).toContain(" + note");
-  });
-
-  test("a second on_claim kind is named by ITS declaration, through the same branch", async () => {
-    const fixture = await placementFixture();
-    // Same element, same drop, same rule: the only thing that differs from the case above is
-    // the vocabulary the assembly published. A kind the executor has never heard of takes its
-    // own word, which is the whole point of the noun table being a table.
-    expect(composedName(fixture, executorWith(fixture, ON_CLAIM, "memo"))).toContain(" + memo");
-  });
-
-  test("declaring that kind `inline` withdraws it from the rule entirely", async () => {
-    const fixture = await placementFixture();
-    // The proof the literal is gone rather than merely moved: identical element, identical
-    // gesture, and the one field changed is `homed`. An `inline` item is at home wherever it
-    // already is, so the merge has no species to borrow a name from and says so instead of
-    // quietly calling it a note.
-    const inline: PlacementTraits = { ...ON_CLAIM, homed: "inline" };
-    expect(composedName(fixture, executorWith(fixture, inline, "memo"))).toContain(" + ref");
-  });
 
   test("a contributed on_claim payload moves canvas to tile and back without losing fields", async () => {
     const fixture = await placementFixture();
@@ -2416,5 +2394,207 @@ describe("placement rules read the DECLARATION, never the kind's name", () => {
     ).toEqual({ status: "failed", failure: "not_found" });
     expect(composition.tileLayout()).toEqual(before);
     expect(canvas.elements()).toEqual(beforeElements);
+  });
+});
+
+describe("representation placement retains independent authority homes", () => {
+  function home(fixture: PlacementFixture): Room {
+    const id = fixture.runtime.newId();
+    fixture.store.createContainer({
+      id, name: "document home", discipline: "composition", createdAt: fixture.runtime.now(),
+    });
+    const room = roomFor(fixture, id);
+    room.join(new SessionChannel(fixture.runtime.newId(), new FakeSocket(), fixture.root, id, "c1"));
+    return room;
+  }
+
+  test("canvas note to tile and back preserves the reference, body identity, grants and retained home portal", async () => {
+    const fixture = await placementFixture();
+    const source = roomFor(fixture, fixture.canvas.id);
+    const retained = home(fixture);
+    const id = "opaque:/document:雪";
+    const document = JSON.stringify([retained.containerId, id]);
+    const body = createSharedText(retained.doc, {
+      namespace: "core.text", id, text: "shared prose", lastEditedBy: "author", lastEditedAt: 42,
+    });
+    const original = element({
+      id, type: "canvas_note", document, x: 13, y: 27, width: 234, height: 123,
+      zIndex: 4, fontSize: 19, color: "#123456", lastEditedBy: "author", lastEditedAt: 42,
+    });
+    writeElement(source.doc, original, LOCAL_ORIGIN);
+    const portalId = source.placePortalElement(retained.containerId, 400, 500);
+    const token = fixture.auth.mintToken({
+      principal: { name: "home editor", kind: "human" },
+      caps: ["containers:read", "scenes:write"], containerId: retained.containerId,
+    }, fixture.root).token;
+    const authority = fixture.auth.authenticate(token);
+    const grants = fixture.store.listGrants({ principalId: authority.principal.id });
+    const request = {
+      ref: { kind: "element" as const, containerId: source.containerId, elementId: id },
+      destination: { kind: "tile" as const, containerId: retained.containerId, targetTileId: null, edge: null },
+    };
+    const refused = ActionOutcomeSchema.parse(
+      (await call(fixture, "POST", "/api/actions/core.space.place", token, request)).payload,
+    );
+    expect(refused).toMatchObject({ ok: false, denial: { rule: "forbidden" } });
+    expect(source.element(id)).toEqual(original);
+    const added = ActionOutcomeSchema.parse(
+      (await call(fixture, "POST", "/api/actions/core.space.place", OWNER_KEY, request)).payload,
+    );
+    if (!added.ok) throw new Error("note did not enter its tile");
+    const placed = PlaceResponseSchema.parse(added.result);
+    if (placed.op !== "add_tile") throw new Error("note did not enter its tile");
+    expect(retained.tileLayout()?.[placed.tileId]?.ref).toEqual({ kind: "element", elementId: id });
+    const { zIndex: _zIndex, ...preserved } = original;
+    expect(retained.element(id)).toMatchObject({ ...preserved, type: "text" });
+    expect(source.element(id)).toBeNull();
+    expect(sharedText(retained.doc, "core.text", id)).toBe(body);
+
+    const extracted = ActionOutcomeSchema.parse(
+      (await call(fixture, "POST", "/api/actions/core.space.place", OWNER_KEY, {
+        ref: { kind: "tile", containerId: retained.containerId, tileId: placed.tileId },
+        destination: { kind: "canvas", containerId: fixture.other.id, x: 91, y: 82 },
+      })).payload,
+    );
+    expect(extracted).toMatchObject({ ok: true, result: { op: "extract", elementId: id } });
+    const destination = roomFor(fixture, fixture.other.id);
+    expect(destination.element(id)).toMatchObject({ ...preserved, x: 91, y: 82 });
+    expect(sharedText(destination.doc, "core.text", id)).toBeNull();
+    expect(retained.census().items).toEqual([]);
+    expect(fixture.store.getContainer(retained.containerId)).not.toBeNull();
+    expect(source.element(portalId)).toMatchObject({ containerId: retained.containerId });
+    expect(sharedText(retained.doc, "core.text", id)).toBe(body);
+    body.insert(body.length, " still editable at home");
+    expect(readSharedText(retained.doc, "core.text", id)?.text).toBe("shared prose still editable at home");
+    expect(fixture.store.listGrants({ principalId: authority.principal.id })).toEqual(grants);
+    expect(fixture.auth.allows(authority, "scenes:write", retained.containerId)).toBe(true);
+    expect(fixture.auth.allows(authority, "scenes:write", fixture.other.id)).toBe(false);
+  });
+
+  test.each([false, true])("leaf departure retires only an unretained home (retained=%s)", async (retained) => {
+    const fixture = await placementFixture();
+    const source = home(fixture);
+    const canvas = roomFor(fixture, fixture.canvas.id);
+    if (retained) createSharedText(source.doc, { namespace: "acme.documents", id: "body", text: "retained" });
+    const original = element({ id: "reference", type: "text", document: JSON.stringify([fixture.canvas.id, "el-text"]) });
+    writeElement(source.doc, original, LOCAL_ORIGIN);
+    const tileId = source.placeTile({ kind: "element", elementId: original.id }, null, null);
+    if (tileId === null) throw new Error("missing source leaf");
+    const portalId = canvas.placePortalElement(source.containerId, 40, 50);
+    const moved = fixture.placement.place({
+      ref: { kind: "tile", containerId: source.containerId, tileId },
+      destination: { kind: "tile", containerId: fixture.composition.id, targetTileId: null, edge: null },
+    });
+    expect(moved.status).toBe("placed");
+    expect(fixture.store.getContainer(source.containerId) !== null).toBe(retained);
+    expect(canvas.element(portalId)).toMatchObject({
+      containerId: retained ? source.containerId : fixture.composition.id,
+    });
+    const { zIndex: _zIndex, ...preserved } = original;
+    expect(roomFor(fixture, fixture.composition.id).element(original.id)).toMatchObject(preserved);
+  });
+
+  test("composing onto a retained nonterminal home never retargets its existing portal", async () => {
+    const fixture = await placementFixture();
+    const source = home(fixture);
+    const body = createSharedText(source.doc, { namespace: "core.text", id: "kept", text: "body" });
+    const original = element({ id: "kept", type: "text", document: JSON.stringify([source.containerId, "kept"]) });
+    writeElement(source.doc, original, LOCAL_ORIGIN);
+    source.placeTile({ kind: "element", elementId: original.id }, null, null);
+    const canvas = roomFor(fixture, fixture.canvas.id);
+    const portalId = canvas.placePortalElement(source.containerId, 20, 30);
+    const composed = fixture.placement.place({
+      ref: { kind: "element", containerId: fixture.canvas.id, elementId: "el-draw" },
+      destination: { kind: "compose", containerId: fixture.canvas.id, targetElementId: portalId, edge: "right" },
+    });
+    if (composed.status !== "placed" || composed.result.op !== "compose")
+      throw new Error(`document home did not compose: ${ruleOrStatus(composed)}`);
+    expect(canvas.element(portalId)).toMatchObject({ containerId: source.containerId, x: 20, y: 30 });
+    expect(source.census().items).toEqual([]);
+    expect(sharedText(source.doc, "core.text", "kept")).toBe(body);
+    expect(fixture.store.getContainer(source.containerId)).not.toBeNull();
+    const { zIndex: _zIndex, ...preserved } = original;
+    expect(roomFor(fixture, composed.result.containerId).element(original.id)).toMatchObject(preserved);
+  });
+
+  test("terminal absorption and retirement retain bodies; explicit home deletion still deletes", async () => {
+    const fixture = await placementFixture();
+    const source = roomFor(fixture, fixture.residentHome);
+    createSharedText(source.doc, { namespace: "acme.documents", id: "body", text: "retained" });
+    const moved = fixture.placement.place({
+      ref: { kind: "terminal", terminalId: fixture.resident },
+      destination: { kind: "tile", containerId: fixture.composition.id, targetTileId: null, edge: null },
+    });
+    expect(moved.status).toBe("placed");
+    fixture.placement.retireHome(fixture.residentHome);
+    expect(fixture.store.getContainer(fixture.residentHome)).not.toBeNull();
+    expect(roomFor(fixture, fixture.canvas.id).element("el-portal-solo")).toMatchObject({
+      containerId: fixture.residentHome,
+    });
+    expect(readSharedText(roomFor(fixture, fixture.residentHome).doc, "acme.documents", "body")?.text).toBe("retained");
+    fixture.placement.deleteContainer(fixture.residentHome);
+    expect(fixture.store.getContainer(fixture.residentHome)).toBeNull();
+    expect(fixture.rooms.get(fixture.residentHome)).toBeNull();
+  });
+
+  test("removing the last visual reference preserves independent content without changing visual solo classification", async () => {
+    const fixture = await placementFixture();
+    const source = home(fixture);
+    createSharedText(source.doc, { namespace: "acme.documents", id: "body", text: "independent" });
+    const original = element({ id: "reference", type: "text" });
+    writeElement(source.doc, original, LOCAL_ORIGIN);
+    const tileId = source.placeTile({ kind: "element", elementId: original.id }, null, null);
+    if (tileId === null) throw new Error("missing source leaf");
+    expect(censusSolo(source.census())?.kind).toBe("text");
+    expect(fixture.placement.removeTile(source.containerId, tileId)).toBe("ok");
+    expect(source.census().items).toEqual([]);
+    expect(source.element(original.id)).toBeNull();
+    expect(readSharedText(source.doc, "acme.documents", "body")?.text).toBe("independent");
+    expect(fixture.store.getContainer(source.containerId)).not.toBeNull();
+  });
+
+  test("ambiguous extraction refuses before changing either document or its references", async () => {
+    const fixture = await placementFixture();
+    const source = home(fixture);
+    const defs: PluginDef[] = ["memo", "card", "preview"].map((type) => ({
+      manifest: PluginManifestSchema.parse({
+        id: `acme.${type}`, version: "0.1.0", title: type, description: "", capabilities: [],
+        ...(type === "memo" ? {} : { dependencies: { "acme.memo": { type: "required" } } }),
+        contributes: { panels: [], sections: [], tools: [], events: [], elements: [{
+          type, title: type,
+          ...(type === "memo" ? {} : { representationOf: "memo" }),
+          placement: { groups: [type === "memo" ? "tileable" : "canvas_item"], guards: [], homed: "inline" },
+        }] },
+      }),
+      actions: [],
+    }));
+    const traits = rosterElementTraits(assembleRoster(defs, new Set()).roster);
+    const vocabulary = assemblyPlacementVocabulary(() => fixture.plugins.roster());
+    const executor = new PlaceExecutor(
+      fixture.store, fixture.rooms, fixture.broker, fixture.runtime,
+      { ...vocabulary, itemTraits: (kind) => traits.get(kind) ?? vocabulary.itemTraits(kind) },
+      () => "document",
+    );
+    const original = SceneElementSchema.parse({
+      id: "ambiguous", type: "memo", x: 1, y: 2, width: 100, height: 80, zIndex: 0,
+      document: JSON.stringify([source.containerId, "body"]),
+    });
+    const body = createSharedText(source.doc, { namespace: "acme.memo", id: "body", text: "not moved" });
+    writeElement(source.doc, original, LOCAL_ORIGIN);
+    const tileId = source.placeTile({ kind: "element", elementId: original.id }, null, null);
+    if (tileId === null) throw new Error("missing source leaf");
+    const canvas = roomFor(fixture, fixture.canvas.id);
+    const portalId = canvas.placePortalElement(source.containerId, 30, 40);
+    const before = canvas.elements();
+    const layout = source.tileLayout();
+    expect(executor.place({
+      ref: { kind: "tile", containerId: source.containerId, tileId },
+      destination: { kind: "canvas", containerId: fixture.canvas.id, x: 200, y: 300 },
+    })).toMatchObject({ status: "denied", denial: { rule: "not_accepted" } });
+    expect(source.element(original.id)).toEqual(original);
+    expect(source.tileLayout()).toEqual(layout);
+    expect(canvas.elements()).toEqual(before);
+    expect(canvas.element(portalId)).toMatchObject({ containerId: source.containerId });
+    expect(sharedText(source.doc, "acme.memo", "body")).toBe(body);
   });
 });

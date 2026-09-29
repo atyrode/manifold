@@ -112,9 +112,9 @@ export type ContainerGuard = GuardsWithSite<"container">;
 
 /**
  * An item kind's PLACEMENT TRAITS: everything the algebra knows about a kind, stated as
- * data. The three fields are the whole vocabulary — the groups a container matches
- * against, the guards that cannot be expressed as containment, and how the kind acquires
- * a home — so a kind IS its traits and `ITEM_KINDS` below is a table of them.
+ * data. A declaration gives the groups a container matches against, the guards that
+ * cannot be expressed as containment, and how the kind acquires a home. Assembly also
+ * derives element representation families from the separately declared ownership edges.
  *
  * That completeness is the point (G1): a plugin contributing an element kind declares
  * these same traits in its manifest, `assembleRoster` resolves them onto the element
@@ -131,6 +131,11 @@ export interface PlacementTraits {
    * document, so it never acquires a home and none of the three modes describes it.
    */
   readonly homed: HomingMode | null;
+  /** Assembly-derived family, not a second manifest placement declaration. */
+  readonly representations?: {
+    readonly canonical: string;
+    readonly alternates: readonly string[];
+  };
 }
 
 /**
@@ -914,6 +919,7 @@ export type PlacementResolution =
   | {
       readonly ok: true;
       readonly op: PlacementOp;
+      /** The accepted destination kind, possibly converted within a declared element family. */
       readonly item: PlacementItem;
       readonly container: PlacementContainer;
     }
@@ -996,8 +1002,9 @@ export function placementItemFor(ref: PlacementRef, lookup: PlacementLookup): Pl
  * exist, its discipline must be one the roster declares, and that discipline must admit
  * this destination form (`unknown_container`, `unknown_discipline`, `discipline`); the ref
  * must resolve to a declared kind, and to a READABLE one if it is a container
- * (`unknown_ref`, `unknown_discipline`); the container must accept one of its groups
- * (`not_accepted`); and finally the item-site guards run (`self_embed`, `not_solo`).
+ * (`unknown_ref`, `unknown_discipline`); the container must accept the current kind or an
+ * unambiguous declared representation (`not_accepted`); finally the selected kind's
+ * item-site guards run (`self_embed`, `not_solo`).
  *
  * It answers about KINDS, never about the contents of a document, which is why a center
  * placement resolves to `add_tile` or `compose` here whatever occupies the target: the
@@ -1082,7 +1089,7 @@ function resolveClassified(
   const containerDeclaration: ContainerDeclaration =
     form.declaration ?? entered ?? DESTINATION_KINDS.unplaced.declaration;
 
-  const item = itemOf();
+  let item = itemOf();
   if (item === null) return deny("unknown_ref");
   /*
     THE ITEM SIDE OF THE SAME QUESTION. A container's item kind IS its discipline, so an
@@ -1100,11 +1107,35 @@ function resolveClassified(
     return deny("unknown_discipline");
   }
 
-  const itemDeclaration = itemTraitsFor(item.kind, lookup);
-  const accepted = itemDeclaration.groups.some((group) =>
-    containerDeclaration.accepts.includes(group),
-  );
-  if (!accepted) return deny("not_accepted");
+  // Elements and container disciplines may use the same name. Only an item that IS a
+  // container takes discipline traits; a document reference takes its element owner's.
+  const traitsFor = (candidate: PlacementItem): PlacementTraits =>
+    candidate.containerId === null && !Object.hasOwn(ITEM_KINDS, candidate.kind)
+      ? (lookup.itemTraits(candidate.kind) ?? DEFAULT_ELEMENT_PLACEMENT_TRAITS)
+      : itemTraitsFor(candidate.kind, lookup);
+  let itemDeclaration = traitsFor(item);
+  const accepts = (traits: PlacementTraits): boolean =>
+    traits.groups.some((group) => containerDeclaration.accepts.includes(group));
+  if (!accepts(itemDeclaration)) {
+    const family = item.containerId === null ? itemDeclaration.representations : undefined;
+    if (family === undefined) return deny("not_accepted");
+    const canonical = lookup.itemTraits(family.canonical);
+    let selected: string | null = null;
+    if (canonical !== null && accepts(canonical)) {
+      selected = family.canonical;
+    } else {
+      for (const alternate of family.alternates) {
+        const traits = lookup.itemTraits(alternate);
+        if (traits === null || !accepts(traits)) continue;
+        // Registration order is not a placement policy.
+        if (selected !== null) return deny("not_accepted");
+        selected = alternate;
+      }
+    }
+    if (selected === null) return deny("not_accepted");
+    item = { ...item, kind: selected };
+    itemDeclaration = traitsFor(item);
+  }
 
   const itemGuards: readonly PlacementGuard[] = itemDeclaration.guards;
   if (
@@ -1131,7 +1162,9 @@ function resolveClassified(
 
   const op =
     destination.kind === "canvas"
-      ? canvasOpFor(item.kind, lookup)
+      ? item.containerId === null && !Object.hasOwn(ITEM_KINDS, item.kind)
+        ? "move_element"
+        : canvasOpFor(item.kind, lookup)
       : DESTINATION_OPS[destination.kind];
   return { ok: true, op, item, container };
 }

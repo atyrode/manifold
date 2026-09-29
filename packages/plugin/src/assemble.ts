@@ -427,13 +427,29 @@ export function reportDuplicates(claims: Claims, noun: string, problems: string[
  * un-unplaceable at once, which is a canvas nobody can tidy.
  */
 export function rosterElementTraits(roster: PluginRoster): ReadonlyMap<string, PlacementTraits> {
+  return declaredElementTraits(
+    roster.filter((entry) => entry.held === undefined).map((entry) => entry.manifest),
+  );
+}
+
+/** One derivation for live assembly and published browser/server roster readers. */
+function declaredElementTraits(manifests: Iterable<PluginManifest>): Map<string, PlacementTraits> {
   const traits = new Map<string, PlacementTraits>();
-  for (const entry of roster) {
-    if (entry.held !== undefined) continue;
-    for (const element of entry.manifest.contributes.elements) {
-      // Absence resolves to the default HERE too, so a reader of this table never has to
-      // know the rule — the same reason `assembleRoster` resolves it into its own registry.
+  const alternates = new Map<string, string[]>();
+  for (const manifest of manifests) {
+    for (const element of manifest.contributes.elements) {
       traits.set(element.type, element.placement ?? DEFAULT_ELEMENT_PLACEMENT_TRAITS);
+      if (element.representationOf === undefined) continue;
+      const family = alternates.get(element.representationOf) ?? [];
+      family.push(element.type);
+      alternates.set(element.representationOf, family);
+    }
+  }
+  for (const [canonical, kinds] of alternates) {
+    const representations = { canonical, alternates: kinds.sort() };
+    for (const kind of [canonical, ...kinds]) {
+      const placement = traits.get(kind);
+      if (placement !== undefined) traits.set(kind, { ...placement, representations });
     }
   }
   return traits;
@@ -690,6 +706,7 @@ function assembleDefinitions(
   const panels = new Map<string, AssemblyPanel>();
   const sections: AssemblySection[] = [];
   const elements = new Map<string, AssemblyElement>();
+  const representationBases = new Map<string, string>();
   const disciplines = new Map<string, AssemblyDiscipline>();
   const settings = new Map<string, AssemblySetting>();
   const tools: AssemblyTool[] = [];
@@ -925,6 +942,8 @@ function assembleDefinitions(
     }
     for (const element of manifest.contributes.elements) {
       claim(elementTypes, element.type, manifest.id);
+      if (element.representationOf !== undefined)
+        representationBases.set(element.type, element.representationOf);
       elements.set(element.type, {
         plugin: manifest.id,
         title: element.title,
@@ -1034,6 +1053,24 @@ function assembleDefinitions(
     for (const reason of problems) attributed.push({ reason, plugins: [manifest.id] });
   }
 
+  for (const [kind, canonical] of representationBases) {
+    const owner = elements.get(kind)?.plugin;
+    if (owner === undefined) continue;
+    const base = elements.get(canonical);
+    let reason: string | null = null;
+    if (base === undefined) {
+      reason = `element "${kind}" represents missing base "${canonical}"`;
+    } else if (representationBases.has(canonical)) {
+      reason = `element "${kind}" must represent a canonical base, not representation "${canonical}"`;
+    } else if (
+      base.plugin !== owner &&
+      manifests.get(owner)?.dependencies?.[base.plugin]?.type !== "required"
+    ) {
+      reason = `element "${kind}" represents "${canonical}" without a required dependency on its owner "${base.plugin}"`;
+    }
+    if (reason !== null) attributed.push({ reason, plugins: [owner] });
+  }
+
   const duplicates = (claims: Claims, noun: string): void => {
     for (const [name, plugins] of claims) {
       if (plugins.length < 2) continue;
@@ -1105,6 +1142,11 @@ function assembleDefinitions(
       attributed.map((problem) => problem.reason),
       attributed,
     );
+
+  for (const [kind, placement] of declaredElementTraits(manifests.values())) {
+    const element = elements.get(kind);
+    if (element !== undefined) elements.set(kind, { ...element, placement });
+  }
 
   sections.sort((left, right) => left.order - right.order);
   // Sorted, not registration-ordered: this index is published vocabulary, and a diff of two

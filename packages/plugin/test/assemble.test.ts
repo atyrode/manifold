@@ -2,6 +2,9 @@ import {
   DEFAULT_ELEMENT_PLACEMENT_TRAITS,
   actionResultProjectionDigest,
   JsonProjectionError,
+  resolveCarriedPlacement,
+  type PlacementLookup,
+  type PlacementTraits,
   projectJson,
   type ActionResultProjection,
   type Cap,
@@ -10,7 +13,13 @@ import {
 } from "@manifold/protocol";
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
-import { AssemblyError, assembleRoster, defineAction, type PluginDef } from "../src/index.ts";
+import {
+  AssemblyError,
+  assembleRoster,
+  defineAction,
+  rosterElementTraits,
+  type PluginDef,
+} from "../src/index.ts";
 
 const NONE = new Set<string>();
 
@@ -1396,5 +1405,159 @@ describe("assembleRoster quarantine", () => {
         hold,
       ),
     ).toThrow(AssemblyError);
+  });
+});
+
+describe("declared element representations", () => {
+  const base: PluginDef = {
+    manifest: manifest({
+      id: "acme.documents",
+      contributes: {
+        elements: [{
+          type: "document", title: "Document",
+          placement: { groups: ["tileable"], guards: [], homed: "on_claim" },
+        }],
+      },
+    }),
+    actions: [],
+  };
+  const alternate: PluginDef = {
+    manifest: {
+      ...manifest({
+        id: "acme.cards",
+        contributes: {
+          elements: [{
+            type: "card", title: "Card", representationOf: "document",
+            placement: { groups: ["canvas_item"], guards: [], homed: "inline" },
+          }],
+        },
+      }),
+      dependencies: { "acme.documents": { type: "required" } },
+    },
+    actions: [],
+  };
+
+  test.each(["missing", "optional", "after"] as const)(
+    "a %s peer edge cannot reinterpret another owner's payload",
+    (edge) => {
+      const { dependencies: _dependencies, ...withoutEdge } = alternate.manifest;
+      const invalid: PluginDef = {
+        ...alternate,
+        manifest: {
+          ...withoutEdge,
+          ...(edge === "optional" ? { dependencies: { "acme.documents": { type: "optional" as const } } } : {}),
+          ...(edge === "after" ? { after: ["acme.documents"] } : {}),
+        },
+      };
+      expect(() => assembleRoster([base, invalid], NONE)).toThrow(AssemblyError);
+    },
+  );
+
+  test("missing bases, self-representations, chains and cycles cannot assemble", () => {
+    const withBase = (kind: string, representationOf: string): PluginDef => ({
+      manifest: manifest({
+        id: "acme.documents",
+        contributes: { elements: [{ type: kind, title: kind, representationOf }] },
+      }),
+      actions: [],
+    });
+    expect(() => assembleRoster([withBase("card", "missing")], NONE)).toThrow(AssemblyError);
+    expect(() => assembleRoster([withBase("card", "card")], NONE)).toThrow(AssemblyError);
+    for (const finalBase of ["document", "card"]) {
+      const invalid: PluginDef = {
+        manifest: manifest({
+          id: "acme.documents",
+          contributes: {
+            elements: [
+              { type: "document", title: "Document" },
+              { type: "card", title: "Card", representationOf: "preview" },
+              { type: "preview", title: "Preview", representationOf: finalBase },
+            ],
+          },
+        }),
+        actions: [],
+      };
+      expect(() => assembleRoster([invalid], NONE)).toThrow(AssemblyError);
+    }
+  });
+
+  function lookupWith(traits: ReadonlyMap<string, PlacementTraits>): PlacementLookup {
+    return {
+      disciplineOf: () => "surface",
+      discipline: () => ({
+        id: "surface", title: "Surface",
+        item: { groups: ["tileable", "canvas_item_as_portal"], guards: [], homed: "inline" },
+        accepts: ["canvas_item"], guards: [], destinations: ["canvas"],
+      }),
+      elementItem: () => null,
+      terminalHome: () => null,
+      soloOccupant: () => null,
+      itemTraits: (kind) => traits.get(kind) ?? null,
+    };
+  }
+
+  test("same-owner and required-peer representations resolve identically in assembly and published rosters", () => {
+    const sameOwner: PluginDef = {
+      ...base,
+      manifest: {
+        ...base.manifest,
+        contributes: {
+          ...base.manifest.contributes,
+          elements: [...base.manifest.contributes.elements, ...alternate.manifest.contributes.elements],
+        },
+      },
+    };
+    for (const defs of [[base, alternate], [sameOwner]]) {
+      const assembly = assembleRoster(defs, new Set(["acme.cards"]));
+      const lookups = [
+        lookupWith(rosterElementTraits(assembly.roster)),
+        lookupWith(new Map([...assembly.elements].map(([kind, entry]) => [kind, entry.placement]))),
+      ];
+      for (const lookup of lookups) {
+        const resolved = resolveCarriedPlacement(
+          { ref: { kind: "element", containerId: "home", elementId: "opaque:id" }, item: { kind: "document", containerId: null } },
+          { kind: "canvas", containerId: "surface", x: 0, y: 0 },
+          lookup,
+        );
+        expect(resolved).toMatchObject({ ok: true, op: "move_element", item: { kind: "card", containerId: null } });
+      }
+    }
+  });
+
+  test("accepted current kinds win, canonical wins over alternates, ambiguity refuses in either registration order", () => {
+    const second: PluginDef = {
+      ...alternate,
+      manifest: {
+        ...alternate.manifest,
+        id: "acme.previews",
+        contributes: {
+          ...alternate.manifest.contributes,
+          elements: [{
+            ...alternate.manifest.contributes.elements[0]!,
+            type: "preview",
+            placement: { groups: ["canvas_item", "tileable"], guards: [], homed: "inline" },
+          }],
+        },
+      },
+    };
+    for (const defs of [[base, alternate, second], [second, alternate, base]]) {
+      const traits = rosterElementTraits(assembleRoster(defs, NONE).roster);
+      const lookup = lookupWith(traits);
+      const resolve = (kind: string, vocabulary = lookup) => resolveCarriedPlacement(
+        { ref: { kind: "element", containerId: "home", elementId: "id" }, item: { kind, containerId: null } },
+        { kind: "canvas", containerId: "surface", x: 0, y: 0 },
+        vocabulary,
+      );
+      expect(resolve("card")).toMatchObject({ ok: true, item: { kind: "card" } });
+      expect(resolve("document")).toMatchObject({ ok: false, denial: { rule: "not_accepted" } });
+      expect(resolve("card", {
+        ...lookup,
+        discipline: () => ({
+          id: "surface", title: "Surface",
+          item: { groups: [], guards: [], homed: "inline" },
+          accepts: ["tileable"], guards: [], destinations: ["canvas"],
+        }),
+      })).toMatchObject({ ok: true, item: { kind: "document" } });
+    }
   });
 });
