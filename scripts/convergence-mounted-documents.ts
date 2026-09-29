@@ -119,7 +119,7 @@ export async function verifyMountedCanvasDocuments(
         editor.getAttribute("aria-readonly") === ${JSON.stringify(String(readOnly))};
     })()`);
   try {
-    await browser.send("Network.enable");
+    await browser.send("Network.enable", {});
     const outer = await createContainer("F13 outer canvas", "canvas");
     const inner = await createContainer("F13 notes canvas", "canvas");
     const documentId = "nested-note";
