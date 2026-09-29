@@ -9,18 +9,16 @@ import {
 } from "@manifold/plugin/hooks";
 import { CHANNEL_LIMIT_CLOSE_CODE, MAX_SESSION_CHANNELS_PER_CONNECTION } from "@manifold/protocol";
 import { SessionClient } from "@manifold/sdk";
-import { useLayoutEffect, useMemo, type ReactElement, type ReactNode } from "react";
+import { useLayoutEffect, useMemo, useRef, type ReactElement, type ReactNode } from "react";
 import type { StoredIdentity } from "./api.ts";
 
 const IDLE: DocumentAccessState = { state: "idle" };
 const LOADING: DocumentAccessState = { state: "loading" };
 const LIMIT: DocumentAccessState = { state: "unavailable", reason: "limit" };
+const RELEASED: DocumentAccessState = { state: "unavailable", reason: "released" };
 type Mode = "spectator" | "occupant";
-const documentPorts = new WeakMap<ElementDocument, ElementDocument>();
-const suppliedAuthorities = new WeakMap<
-  ElementDocument,
-  { readonly url: string; readonly token: string }
->();
+const documentPorts = new WeakMap<SessionClient, ElementDocument>();
+const documentSources = new WeakMap<ElementDocument, SessionClient>();
 
 function unavailable(document: ElementDocument): DocumentAccessState {
   const code = document.connectionError?.code;
@@ -40,7 +38,7 @@ function unavailable(document: ElementDocument): DocumentAccessState {
 }
 
 /** Only the document port crosses into plugin code, never the SDK transport/action surface. */
-function documentPort(document: ElementDocument): ElementDocument {
+function documentPort(document: SessionClient): ElementDocument {
   const existing = documentPorts.get(document);
   if (existing !== undefined) return existing;
   const port: ElementDocument = {
@@ -80,10 +78,11 @@ function documentPort(document: ElementDocument): ElementDocument {
     on: document.on.bind(document),
   };
   documentPorts.set(document, port);
+  documentSources.set(port, document);
   return port;
 }
 
-function documentState(document: ElementDocument, revision: number): DocumentAccessState {
+function documentState(document: SessionClient, revision: number): DocumentAccessState {
   if (document.status === "closed") return unavailable(document);
   if (document.epoch === "") return LOADING;
   return {
@@ -107,7 +106,10 @@ class DocumentEntry {
   private client: SessionClient | null = null;
   private generation = 0;
 
-  constructor(mode: Mode) {
+  constructor(
+    mode: Mode,
+    private readonly onBorrowedRetired: (entry: DocumentEntry) => void,
+  ) {
     this.mode = mode;
   }
 
@@ -116,11 +118,32 @@ class DocumentEntry {
     for (const listener of this.listeners) listener();
   }
 
-  observe(document: ElementDocument): void {
+  private observe(document: SessionClient): void {
+    const generation = this.generation;
+    let observedActive = false;
     const changed = (): void => {
       this.revision += 1;
-      this.publish(documentState(document, this.revision));
-      if (document.status === "closed" && this.client !== null) this.stopClient();
+      if (document.status !== "closed") observedActive = true;
+      if (
+        this.client === null &&
+        observedActive &&
+        document.status === "closed" &&
+        document.connectionError === null
+      ) {
+        this.publish(LOADING);
+        queueMicrotask(() => {
+          if (
+            generation === this.generation &&
+            document.status === "closed" &&
+            document.connectionError === null
+          ) {
+            this.onBorrowedRetired(this);
+          }
+        });
+      } else {
+        this.publish(documentState(document, this.revision));
+        if (document.status === "closed" && this.client !== null) this.stopClient();
+      }
     };
     this.off = [
       document.on("status", changed),
@@ -131,7 +154,7 @@ class DocumentEntry {
     changed();
   }
 
-  borrow(document: ElementDocument): void {
+  borrow(document: SessionClient): void {
     this.stopClient();
     this.mode = document.spectator ? "spectator" : "occupant";
     this.observe(document);
@@ -150,9 +173,6 @@ class DocumentEntry {
       spectator: mode === "spectator",
     });
     this.client = client;
-    const authority = { url, token };
-    suppliedAuthorities.set(client, authority);
-    suppliedAuthorities.set(documentPort(client), authority);
     this.observe(client);
     void client.connect().catch(() => {
       // A released/promoted client's rejection belongs to its retired generation.
@@ -173,7 +193,7 @@ class DocumentEntry {
 
   retire(): void {
     this.stopClient();
-    this.publish({ state: "unavailable", reason: "released" });
+    this.publish(RELEASED);
   }
 }
 
@@ -185,25 +205,20 @@ interface HeldDocument {
 /** Bounded authority-home leases. No entry is downgraded while a consumer still holds it. */
 export class NativeDocumentAccess implements DocumentAccessPort {
   private readonly homes = new Map<string, DocumentEntry>();
+  private retired = false;
 
   constructor(
     private readonly url: string,
     private readonly token: string,
   ) {}
 
-  private supplied(home: string, options: DocumentAccessOptions): ElementDocument | undefined {
+  private supplied(home: string, options: DocumentAccessOptions): SessionClient | undefined {
     const document = options.document;
-    if (document?.containerId !== home) return undefined;
-    const authority = suppliedAuthorities.get(document);
-    // A renderer may survive a provider identity change. Never borrow its old credential's
-    // document into the new authority scope; open a fresh host-owned lease instead.
-    if (
-      authority !== undefined &&
-      (authority.url !== this.url || authority.token !== this.token)
-    ) {
-      return undefined;
-    }
-    return document;
+    if (document === undefined) return undefined;
+    const source = document instanceof SessionClient ? document : documentSources.get(document);
+    return source?.containerId === home && source.matchesConnectionIdentity(this.url, this.token)
+      ? source
+      : undefined;
   }
 
   private acquire(
@@ -211,24 +226,34 @@ export class NativeDocumentAccess implements DocumentAccessPort {
     options: DocumentAccessOptions,
     listener: () => void,
   ): HeldDocument | null {
+    if (this.retired) return null;
     const mode = options.mode ?? "spectator";
     const supplied = this.supplied(home, options);
-    if (supplied !== undefined) {
-      const authority = { url: this.url, token: this.token };
-      suppliedAuthorities.set(supplied, authority);
-      suppliedAuthorities.set(documentPort(supplied), authority);
-    }
     let entry = this.homes.get(home);
     if (entry === undefined) {
       if (this.homes.size >= MAX_SESSION_CHANNELS_PER_CONNECTION) return null;
-      entry = new DocumentEntry(mode);
+      entry = new DocumentEntry(mode, (retiring) => {
+        // A caller-owned canvas may retire in the same commit that its standalone reader
+        // remains mounted. Transfer only a normally closed, still-held logical home.
+        if (
+          !this.retired &&
+          this.homes.get(home) === retiring &&
+          retiring.listeners.size > 0
+        ) {
+          retiring.open(this.url, this.token, home, retiring.mode);
+        }
+      });
       this.homes.set(home, entry);
       if (supplied !== undefined && (mode === "spectator" || !supplied.spectator)) {
         entry.borrow(supplied);
       } else {
         entry.open(this.url, this.token, home, mode);
       }
-    } else if (mode === "occupant" && entry.mode === "spectator") {
+    } else if (
+      mode === "occupant" &&
+      entry.mode === "spectator" &&
+      entry.state.state !== "unavailable"
+    ) {
       if (supplied !== undefined && !supplied.spectator) {
         entry.borrow(supplied);
       } else {
@@ -258,10 +283,12 @@ export class NativeDocumentAccess implements DocumentAccessPort {
     const initial =
       home === null
         ? IDLE
-        : (this.homes.get(home)?.state ??
-          (supplied !== undefined && (mode === "spectator" || !supplied.spectator)
-            ? documentState(supplied, 0)
-            : LOADING));
+        : this.retired
+          ? RELEASED
+          : (this.homes.get(home)?.state ??
+            (supplied !== undefined && (mode === "spectator" || !supplied.spectator)
+              ? documentState(supplied, 0)
+              : LOADING));
     // A role-only change must not briefly become loading and unmount a healthy editor.
     let state: DocumentAccessState =
       initial.state === "ready" && mode === "spectator" && initial.canWrite
@@ -270,7 +297,7 @@ export class NativeDocumentAccess implements DocumentAccessPort {
     let held: HeldDocument | null = null;
     const listeners = new Set<() => void>();
     const changed = (): void => {
-      const next = held?.entry.state ?? (home === null ? IDLE : LIMIT);
+      const next = this.retired ? RELEASED : (held?.entry.state ?? (home === null ? IDLE : LIMIT));
       state =
         next.state === "ready" && options.mode !== "occupant" && next.canWrite
           ? { ...next, canWrite: false }
@@ -278,7 +305,7 @@ export class NativeDocumentAccess implements DocumentAccessPort {
       for (const listener of listeners) listener();
     };
     return {
-      getSnapshot: () => state,
+      getSnapshot: () => (home !== null && this.retired ? RELEASED : state),
       subscribe: (listener) => {
         listeners.add(listener);
         if (listeners.size === 1 && home !== null) {
@@ -297,6 +324,8 @@ export class NativeDocumentAccess implements DocumentAccessPort {
   }
 
   retire(): void {
+    if (this.retired) return;
+    this.retired = true;
     const entries = [...this.homes.values()];
     this.homes.clear();
     for (const entry of entries) entry.retire();
@@ -313,6 +342,19 @@ export function NativeDocumentAccessProvider({
 }): ReactElement {
   const url = sessionUrl();
   const access = useMemo(() => new NativeDocumentAccess(url, identity.token), [url, identity.token]);
-  useLayoutEffect(() => () => access.retire(), [access]);
+  const lifetime = useRef<{ access: NativeDocumentAccess; generation: object } | null>(null);
+  useLayoutEffect(() => {
+    const generation = {};
+    lifetime.current = { access, generation };
+    return () => {
+      // StrictMode replays effect setup on the same controller in this commit. A real
+      // unmount or authority replacement retires it terminally at the checkpoint.
+      queueMicrotask(() => {
+        if (lifetime.current?.access !== access || lifetime.current.generation === generation) {
+          access.retire();
+        }
+      });
+    };
+  }, [access]);
   return <DocumentAccessProvider value={access}>{children}</DocumentAccessProvider>;
 }

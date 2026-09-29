@@ -237,6 +237,22 @@ function connected(options: ClientHarnessOptions = {}): ClientHarness {
   return harness;
 }
 
+test("connection identity cannot be relabeled by later caller option mutations", () => {
+  const options = { url: "ws://first/ws/session", containerId: "home", token: "first-token" };
+  const client = new SessionClient(options);
+  try {
+    expect(client.matchesConnectionIdentity(options.url, options.token)).toBe(true);
+    expect(client.matchesConnectionIdentity("ws://other/ws/session", options.token)).toBe(false);
+    expect(client.matchesConnectionIdentity(options.url, "other-token")).toBe(false);
+    options.url = "ws://other/ws/session";
+    options.token = "other-token";
+    expect(client.matchesConnectionIdentity("ws://first/ws/session", "first-token")).toBe(true);
+    expect(client.matchesConnectionIdentity(options.url, options.token)).toBe(false);
+  } finally {
+    client.close();
+  }
+});
+
 describe("home-effective scene authority", () => {
   test("uses the server decision rather than raw wildcard or literal capability membership", () => {
     const { client, socket } = connected();
