@@ -221,6 +221,7 @@ export class Room {
   private readonly updateBuckets = new Map<string, { tokens: number; at: number }>();
   private readonly recipientDeliveries = new Map<SessionChannel, RecipientDelivery>();
   private encodedDoc: string | null = null;
+  private docState: Uint8Array | null = null;
   private beforeUpdateCheckpoint: Uint8Array | null = null;
   private recoveryDelta: {
     checkpoint: Uint8Array;
@@ -232,7 +233,8 @@ export class Room {
   private collectingIds: Set<string> | null = null;
   private collectingTextKeys: Set<string> | null = null;
   private docBytes = 0;
-  private overLimit = false;
+  /** Snapshot plus every subsequent delta: a cheap conservative bound between encodings. */
+  private docBytesUpperBound = 0;
   private readonly docBytesLimit: number;
 
   constructor(
@@ -284,8 +286,7 @@ export class Room {
     this.docBytesLimit = DOC_BYTES_LIMIT + store.docMigrationBytes(containerId, this.epoch);
     this.rev = record?.rev ?? 0;
     if (record !== null) Y.applyUpdate(this.doc, record.doc);
-    this.docBytes = Y.encodeStateAsUpdate(this.doc).byteLength;
-    this.overLimit = this.docBytes > this.docBytesLimit;
+    this.docBytes = this.snapshotDoc().byteLength;
 
     elementsMap(this.doc).observeDeep((events) => {
       if (this.collectingIds === null) return;
@@ -302,6 +303,8 @@ export class Room {
     this.doc.on("update", (update, origin) => {
       this.rev += 1;
       this.encodedDoc = null;
+      this.docState = null;
+      this.docBytesUpperBound += update.byteLength;
       this.beforeUpdateCheckpoint = null;
       this.recoveryDelta = null;
       this.broadcast({
@@ -359,7 +362,7 @@ export class Room {
       protocolVersion: PROTOCOL_VERSION,
       epoch: this.epoch,
       rev: this.rev,
-      doc: (this.encodedDoc ??= encodeUpdate(Y.encodeStateAsUpdate(this.doc))),
+      doc: (this.encodedDoc ??= encodeUpdate(this.snapshotDoc())),
       self: peer.auth.principal,
       selfCaps: [...peer.auth.caps],
       sceneWriteAllowed: peer.sceneWriteAllowed,
@@ -530,6 +533,45 @@ export class Room {
     return true;
   }
 
+  private snapshotDoc(): Uint8Array {
+    if (this.docState === null) {
+      this.docState = Y.encodeStateAsUpdate(this.doc);
+      this.docBytesUpperBound = this.docState.byteLength;
+    }
+    return this.docState;
+  }
+
+  private isDocOverLimit(): boolean {
+    // Most live edits need no full encoding. Near capacity, measure instead of refusing
+    // because repeated/replaced content made the accumulated bound conservative.
+    return (
+      this.docBytesUpperBound > this.docBytesLimit &&
+      this.snapshotDoc().byteLength > this.docBytesLimit
+    );
+  }
+
+  /**
+   * Stages a synchronous native write before committing one atomic delta. A refused write
+   * never touches canonical state, observers, authorship, undo history or snapshot timers.
+   * Unlike socket accept-then-repair, native writes must fit before either half is visible.
+   */
+  transactDoc(write: (doc: Y.Doc) => void, origin: unknown): boolean {
+    if (this.isDocOverLimit()) return false;
+    const staged = createSceneDoc();
+    // Keep deleted structs during preflight: canonical undo observers may retain them too.
+    staged.gc = false;
+    try {
+      Y.applyUpdate(staged, this.snapshotDoc());
+      const before = Y.encodeStateVector(staged);
+      staged.transact(() => write(staged), origin);
+      if (Y.encodeStateAsUpdate(staged).byteLength > this.docBytesLimit) return false;
+      Y.applyUpdate(this.doc, Y.encodeStateAsUpdate(staged, before), origin);
+      return true;
+    } finally {
+      staged.destroy();
+    }
+  }
+
   /** Applies one bounded update, then repairs schema-invalid element and text records. */
   applyDocUpdate(peer: SessionChannel, encoded: DocUpdate["update"]): boolean {
     let update: Uint8Array;
@@ -547,7 +589,7 @@ export class Room {
       peer.send({ type: "error", code: "rate_limited", message: "doc update rate limit exceeded" });
       return false;
     }
-    if (this.overLimit) {
+    if (this.isDocOverLimit()) {
       peer.send({ type: "error", code: "invalid", message: "scene too large" });
       return false;
     }
@@ -1003,10 +1045,9 @@ export class Room {
   flushSnapshot(): boolean {
     if (!this.dirty) return false;
     const at = this.runtime.now();
-    const doc = Y.encodeStateAsUpdate(this.doc);
+    const doc = this.snapshotDoc();
     this.docBytes = doc.byteLength;
-    this.overLimit = this.docBytes > this.docBytesLimit;
-    if (this.overLimit) {
+    if (this.docBytes > this.docBytesLimit) {
       this.logger.warn("scene_doc_over_limit", {
         containerId: this.containerId,
         bytes: this.docBytes,

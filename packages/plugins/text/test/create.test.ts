@@ -13,7 +13,18 @@ import { textHandlers } from "../src/server.ts";
 
 function context(doc: Y.Doc, scope = "home") {
   return {
-    rooms: { get: (id: string) => (id === "home" ? { doc } : null) },
+    rooms: {
+      get: (id: string) =>
+        id === "home"
+          ? {
+              doc,
+              transactDoc(write: (doc: Y.Doc) => void, origin: unknown): boolean {
+                doc.transact(() => write(doc), origin);
+                return true;
+              },
+            }
+          : null,
+    },
     principal: { id: "authenticated-author" },
     now: () => 42,
     newId: () => "doc",
