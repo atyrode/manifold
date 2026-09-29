@@ -167,6 +167,14 @@ No new runtime dependency without a dated entry in `docs/decisions/` justifying 
 "boring, small, pinned". The converse duty to evaluate a named library before hand-rolling a
 non-manifold-specific pattern remains owned by [AXIOMS.md §Change control](../AXIOMS.md#change-control).
 
+The `core.text` collaborative editor uses CodeMirror 6 bound to the existing authorized
+`Y.Text`, with one editor implementation shared by standalone documents and canvas notes.
+Its direct pins are `@codemirror/state` 6.7.6, `@codemirror/view` 6.43.13,
+`@codemirror/commands` 6.11.1 and `y-codemirror.next` 0.3.6, sharing the scene engine's
+Yjs 13.6.32. No second synchronization provider or canonical text store is introduced by
+the editor binding. [ADR 0055](decisions/0055-codemirror-editor.md) records the dependency
+evaluation; the text ownership and persisted-data migration remain separate obligations.
+
 Bun remains the server, agent and tooling runtime. The minimum is **1.4.2**, and current
 Docker and CI/release pins use that exact version: borrowed numeric descriptors passed
 through extended `stdio` must remain owned by the caller after child cleanup.
