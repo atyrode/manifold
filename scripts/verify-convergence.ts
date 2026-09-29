@@ -2105,7 +2105,7 @@ try {
     for (const key of channels.keys()) if (key.startsWith(prefix)) channels.delete(key);
   });
   try {
-    await browserA.send("Network.enable");
+    await browserA.send("Network.enable", {});
     const action = async (name: string, args: unknown): Promise<unknown> => {
       const response = await fetch(`${origin}/api/actions/${name}`, {
         method: "POST",
