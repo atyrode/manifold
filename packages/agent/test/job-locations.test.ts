@@ -18,9 +18,10 @@ import {
   DirectoryExclusions,
   resolveJobLocation,
   resolveManagedJobLocation,
+  resolveTemporaryJobLocation,
   type JobLocation,
 } from "../src/job-locations.ts";
-import { JobOutputStore } from "../src/job-outputs.ts";
+import { JobOutputScratchStore, JobOutputStore } from "../src/job-outputs.ts";
 
 describe.skipIf(process.platform !== "linux")("named location descriptor boundaries", () => {
   test("managed state persists across concurrent opens and recovery without adopting another plugin's files", () => {
@@ -188,6 +189,135 @@ describe.skipIf(process.platform !== "linux")("named location descriptor boundar
       }
       expect(() => resolveJobLocation(anchor, "fixture.outputs", declaration, "create")).toThrow();
     } finally {
+      anchor.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("temporary locations back leases in an exclusive scratch root, never their declared path or an alias", () => {
+    const root = mkdtempSync(join(tmpdir(), "job-temporary-location-"));
+    const anchor = HeldDirectory.openAbsolute(root);
+    // As the runtime wires it: a protected, owner-private child of the runtime anchor.
+    const namespace = anchor.openChild("job-output-scratch", { create: true });
+    const store = JobOutputScratchStore.open(namespace);
+    store.recover();
+    const declaration: MachineLocation = {
+      anchor: "runtime",
+      components: ["plugin", "runs"],
+      revision: "one",
+      kind: "directory",
+      temporary: true,
+    };
+    const roots: HeldDirectory[] = [];
+    const provision = () => {
+      const created = store.create();
+      roots.push(created);
+      return created;
+    };
+    const opened: JobLocation[] = [];
+    try {
+      for (const refused of [
+        { ...declaration, anchor: "state" as const },
+        { ...declaration, kind: "file" as const },
+        {
+          anchor: "runtime" as const,
+          components: ["runs"],
+          revision: "one",
+          temporary: true as const,
+        },
+        { ...declaration, managed: true as const },
+        { ...declaration, guestPath: "/home/job/scratch" },
+      ])
+        expect(() =>
+          resolveTemporaryJobLocation(provision, "fixture.scratch", refused, "write", true),
+        ).toThrow("invalid_temporary_location");
+      for (const [access, outputOnly] of [
+        ["write", false],
+        ["read", true],
+        ["create", true],
+      ] as const)
+        expect(() =>
+          resolveTemporaryJobLocation(
+            provision,
+            "fixture.scratch",
+            declaration,
+            access,
+            outputOnly,
+          ),
+        ).toThrow("temporary_location_requires_output_only");
+      // Refused declarations and uses allocate nothing.
+      expect(roots).toEqual([]);
+      expect(() => resolveJobLocation(anchor, "fixture.scratch", declaration, "write")).toThrow(
+        "temporary_location_requires_native_store",
+      );
+      expect(() =>
+        resolveManagedJobLocation(
+          anchor,
+          "plugin",
+          "fixture.scratch",
+          declaration,
+          "write",
+          () => {},
+        ),
+      ).toThrow("invalid_managed_location");
+      const first = resolveTemporaryJobLocation(
+        provision,
+        "fixture.scratch",
+        declaration,
+        "write",
+        true,
+      );
+      opened.push(first);
+      const second = resolveTemporaryJobLocation(
+        provision,
+        "fixture.scratch",
+        declaration,
+        "write",
+        true,
+      );
+      opened.push(second);
+      expect([first.temporary, second.temporary, first.writable]).toEqual([true, true, true]);
+      // Two jobs with the same declaration and the same lease components never share a tree,
+      // and neither ever touches the path the declaration names.
+      writeFileSync(`${first.directory!.procPath}/payload`, "first");
+      writeFileSync(`${second.directory!.procPath}/payload`, "second");
+      expect(readFileSync(`${first.directory!.procPath}/payload`, "utf8")).toBe("first");
+      expect(existsSync(join(root, "plugin"))).toBe(false);
+      expect(namespace.names()).toHaveLength(2);
+      // The location's handle is its own: closing it leaves the root for its store to remove.
+      first.close();
+      expect(namespace.names()).toHaveLength(2);
+      store.release(roots[0]!);
+      expect(readFileSync(`${second.directory!.procPath}/payload`, "utf8")).toBe("second");
+      // An ordinary location naming the namespace, a root in it or a link to either is refused.
+      const exclusions = new DirectoryExclusions([namespace]);
+      const [live] = namespace.names();
+      symlinkSync(join(root, "job-output-scratch", live!), join(root, "alias"));
+      for (const components of [["job-output-scratch"], ["job-output-scratch", live!]])
+        expect(() =>
+          resolveJobLocation(
+            anchor,
+            "fixture.alias",
+            { anchor: "runtime", components, revision: "one" },
+            "write",
+            exclusions,
+          ),
+        ).toThrow("private_owner_source_overlap");
+      expect(() =>
+        resolveJobLocation(
+          anchor,
+          "fixture.alias",
+          { anchor: "runtime", components: ["alias", "nested"], revision: "one" },
+          "write",
+          exclusions,
+        ),
+      ).toThrow();
+      expect(readFileSync(`${second.directory!.procPath}/payload`, "utf8")).toBe("second");
+      expect(existsSync(join(root, "job-output-scratch", live!, "nested"))).toBe(false);
+    } finally {
+      for (const location of opened) location.close();
+      for (const created of roots.slice(1)) store.release(created);
+      namespace.close();
       anchor.close();
       rmSync(root, { recursive: true, force: true });
     }

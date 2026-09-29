@@ -3894,8 +3894,8 @@ separate native owner proof and admitted resource/runtime bindings.
 
 ### Native job owner RPC
 
-Native owner RPC has its own `JOB_OWNER_PROTOCOL_VERSION`, currently 42, and
-`JOB_OWNER_PROTOCOL_COMPAT_VERSIONS = {34, 35, 36, 37, 40, 41, 42}`. It is independent of machine and session
+Native owner RPC has its own `JOB_OWNER_PROTOCOL_VERSION`, currently 43, and
+`JOB_OWNER_PROTOCOL_COMPAT_VERSIONS = {34, 35, 36, 37, 40, 41, 42, 43}`. It is independent of machine and session
 protocols. An additive-optional change **adds** its new version to the acceptance set; a
 breaking change **resets** the set and requires a coordinated drained owner upgrade.
 Compatibility never substitutes for owner proof, current execution consent or resource
@@ -3912,23 +3912,29 @@ The additive 37 → 40 change adds operator anchors: `operator.<name>` locations
 construction, and the owner inventory's `anchorDefinitions` (#839, ADR 0049). The additive
 40 → 41 change adds the optional, signed Run binding and its ephemeral tool
 request/cancel/result relay (#769); existing unbound jobs remain unchanged. The additive 41 → 42
-change adds signed request `serviceBindings` and operation location `outputOnly`. Versions 38
+change adds signed request `serviceBindings` and operation location `outputOnly`. The additive
+42 → 43 change adds the machine location lifetime `temporary` (#933). Versions 38
 and 39 were reserved by drafts and are never accepted; because capability checks compare
-revisions, a later capability takes a version above 42 rather than reusing them.
+revisions, a later capability takes a version above 43 rather than reusing them.
 These are optional operations, not permission to orphan every already-running job or instance service.
 
 The hub sends only fields the negotiated owner parses. Private launch and `launchBinding`
 require 35; bound inputs require 36; self-provider service runtimes require 37; operator
 anchors require 40; Run-bound tools require 41 and machine protocol 43; explicit instance
 references (`serviceBindings`) and output-only backing locations (`outputOnlyLocations`)
-require 42. An older accepted owner keeps serving its compatible jobs and instance services;
+require 42; temporary locations (`temporaryLocations`) require 43. An older accepted owner
+keeps serving its compatible jobs and instance services;
 only the newer use is refused by name (`run_launch_protocol_unsupported`,
 `bound_inputs_protocol_unsupported`, `service_runtime_unsupported`,
 `operator_anchors_protocol_unsupported`, `agent_tools_protocol_unsupported`,
-`service_bindings_protocol_unsupported` or `output_only_locations_protocol_unsupported`).
+`service_bindings_protocol_unsupported`, `output_only_locations_protocol_unsupported` or
+`temporary_locations_protocol_unsupported`).
 Unsupported
 operation declarations are omitted from that owner's install projection rather than
-weakening them, and signed admissions are never rewritten. Upgrading an owner may restore
+weakening them, and signed admissions are never rewritten. A location declaration an older
+strict parser cannot read — an operator anchor before 40, any `temporary` location before
+43 — is omitted even when no operation uses it, so an older owner never retains disposable
+scratch as ordinary storage. Upgrading an owner may restore
 the complete installation only when its retained command exactly matches the deterministic
 older projection of the authenticated full install; existing operations, artifacts and
 resource authority remain immutable.
@@ -4525,6 +4531,47 @@ policySha256, jobId }` or null), the expected revision, the resolved policy and 
   the directory is removed when the job settles, is interrupted, or refuses to start.
   Extractions are derived state: the owner deletes every one it finds at startup, because a
   tree that outlived its generation belongs to a job that will never run again.
+- **Temporary output locations.** A machine location may declare `temporary: true` (#933):
+  disposable output scratch. It is valid only on an unmanaged `runtime` directory
+  (`kind: "directory"`, no `managed`, no `guestPath`), and every operation use must be
+  `{ access: "write", outputOnly: true }` — never a mount, read, creation or working
+  directory. Omission keeps the retained lifetime: every existing declaration, including
+  state-backed and output-only locations, is unchanged. The owner does not back a temporary
+  location with its declared shared path. Each job's use gets its own exclusive 0700 root
+  beneath the owner's temporary namespace: an owner-private directory of the `runtime` anchor
+  that the owner itself created exclusively under a fresh random name
+  (`job-output-scratch-<uuid>`) and recorded, by that name and its exact device and inode, in
+  its protected state directory (`output-scratch`) before admitting any job. The requested
+  components are logical output paths inside that root. Several outputs of one job,
+  including nested receipt/material paths, are all collected before disposal. No other job and
+  no ordinary location can observe or alias that root: a declared location resolving into the
+  recorded namespace, by any path, refuses `private_owner_source_overlap`, and an owner without
+  that scratch store (no `runtime` anchor) refuses `temporary_output_storage_unavailable` rather
+  than falling back to any other storage. Once the workload tree is
+  proven empty and the job's final result is published — exited with any status, cancelled,
+  refused before spawn, or failed collection such as `output_collection_refused` — the owner
+  disposes of that job's roots only, through held descriptors. Sealed outputs stay in the
+  private output store and are read, bound and released exactly as before; disposal never
+  touches them, another job's root or a retained location. Without empty-workload proof the
+  root is kept, never deleted, and the owner closes new admission (`start_permit_refused`)
+  through the same drain latch an unproven interruption sets; like that latch, a hub
+  `drain: false` reopens it. A disposal failure never rewrites or rolls back the committed
+  result: the owner logs `job_output_cleanup_failed` with `{ phase: "release", jobId, code }`
+  (or `{ phase: "recovery", code }` at startup), where `code` is an errno name,
+  `output_scratch_changed`, `directory_tree_changed`, `mount_escape`, `unsafe_file_component`
+  or `unknown` and never a path or file name, and likewise closes admission. At startup, under
+  its owner lock, the owner reopens only the namespace its record names, and only while that
+  directory still has the recorded identity; if the recorded directory no longer exists (the
+  runtime tmpfs did not survive a reboot) it creates and records a fresh one. A malformed
+  record (`output_scratch_record_invalid`), another directory at the recorded name
+  (`output_scratch_changed`) or any other lookup failure refuses owner startup and changes
+  nothing. The owner never adopts, protects or sweeps a runtime path it did not record: a
+  `job-output-scratch` directory, legal retained storage before #933, is ordinary retained data
+  like any other. It clears only the recorded namespace, and only after recovery has proven
+  every prior-generation descendant gone; legacy retained output paths are never swept. A
+  failure there is logged the same way and keeps admission closed rather than failing owner
+  startup. Nested invocations cannot write temporary scratch (below). Temporary locations
+  require owner RPC 43.
 - **Nested invocations.** A separately approved edge binds exact caller/callee machine,
   plugin, operation, installation revision and artifact, exact revisioned resource rights,
   depth/concurrency and aggregate limits. Outputs are rules of exactly
@@ -4535,7 +4582,11 @@ policySha256, jobId }` or null), the expected revision, the resolved policy and 
   The admitted child still carries exact `{ name, locationId, components }` bindings:
   they are immutable request content, never replaced by the broader rule. The host binds
   parent, invocation ID and original credential, reserves before enqueue, and reauthorizes
-  both parent and child. Resource possession is not invocation authority.
+  both parent and child. Resource possession is not invocation authority. A child's output
+  binding never targets a temporary location, whether the parent's or the callee's own
+  declaration of that ID: edge approval and admission refuse
+  `temporary_output_invocation_unsupported` before reservation or spawn, and the native owner
+  refuses the same start independently. Retained parent-owned output paths are unchanged.
 - **Owner recovery and dedupe.** The supervised job owner is independent of the terminal
   host and transport. Its durable signing identity, generation, nonce proof and journal
   fence ownership. Request ID and canonical digest bind immutable content; exact replay

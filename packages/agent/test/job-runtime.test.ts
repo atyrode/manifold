@@ -3,16 +3,25 @@ import { generateKeyPairSync } from "node:crypto";
 import {
   chmodSync,
   chownSync,
+  closeSync,
+  constants,
+  existsSync,
   lstatSync,
   linkSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { lockExclusive } from "../src/job-files.ts";
 
 // Each opening runs in a subprocess so refused startup descriptors and module
 // spies cannot leak into another test. Only cgroup recovery is replaced; the
@@ -241,6 +250,240 @@ describe.skipIf(process.platform !== "linux")("native runtime source opening", (
       expect(openCredentialFixture({ hardlinks })).toEqual({ generation: 1 });
     },
   );
+});
+
+// One machine's owner configuration and runtime anchor, kept across several owner starts.
+function writeScratchConfig(root: string, toolDirectory?: string): void {
+  writeFileSync(
+    join(root, "config", "owner.json"),
+    JSON.stringify({
+      machineId: "temporary-output-fixture",
+      admissionPublicKey: generateKeyPairSync("ed25519")
+        .publicKey.export({ type: "spki", format: "pem" })
+        .toString(),
+      stateDirectory: join(root, "state"),
+      delegatedCgroup: join(root, "cgroup"),
+      bubblewrap: join(root, "bubblewrap"),
+      protectedDirectories: [],
+      anchors: { runtime: join(root, "runtime") },
+      runtimeTools: toolDirectory
+        ? { fixture: [{ source: toolDirectory, target: "/runtime/fixture", kind: "directory" }] }
+        : {},
+      artifactOrigins: ["https://artifacts.invalid"],
+    }),
+    { mode: 0o600 },
+  );
+}
+function withScratchRoot(body: (root: string) => void): void {
+  const root = mkdtempSync(join(tmpdir(), "job-runtime-scratch-"));
+  try {
+    for (const name of ["config", "state", "socket", "terminal", "cgroup", "runtime"])
+      mkdirSync(join(root, name), { mode: 0o700 });
+    mkdirSync(join(root, "runtime", "keep"), { mode: 0o700 });
+    writeFileSync(join(root, "runtime", "keep", "sentinel"), "kept");
+    writeFileSync(join(root, "bubblewrap"), "synthetic-executable", { mode: 0o600 });
+    writeScratchConfig(root);
+    body(root);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+function startOwner(root: string): { generation?: number; error?: string; code?: string } {
+  const child = Bun.spawnSync([process.execPath, "-e", openFixture, root, ""], {
+    stdout: "pipe",
+    stderr: "pipe",
+    timeout: 10_000,
+  });
+  expect(child.exitCode, child.stderr.toString()).toBe(0);
+  return JSON.parse(child.stdout.toString());
+}
+// The namespace the owner's protected state records, checked against the directory it names.
+function recordedNamespace(root: string): { name: string; path: string; bytes: string } {
+  const bytes = readFileSync(join(root, "state", "output-scratch"), "utf8");
+  const record = JSON.parse(bytes) as { name: string; dev: string; ino: string };
+  expect(Object.keys(record).sort()).toEqual(["dev", "ino", "name"]);
+  expect(record.name).toMatch(/^job-output-scratch-[0-9a-f-]{36}$/);
+  const path = join(root, "runtime", record.name);
+  const stat = lstatSync(path, { bigint: true });
+  expect([record.dev, record.ino]).toEqual([String(stat.dev), String(stat.ino)]);
+  expect(Number(stat.mode & 0o777n)).toBe(0o700);
+  return { name: record.name, path, bytes };
+}
+// Every entry beneath a directory with its identity, mode and content; links are not followed.
+function tree(path: string, prefix = ""): string[] {
+  return readdirSync(path)
+    .sort()
+    .flatMap((name) => {
+      const entry = join(path, name);
+      const stat = lstatSync(entry);
+      const id = `${prefix}${name}:${stat.ino}:${(stat.mode & 0o777).toString(8)}`;
+      if (stat.isDirectory()) return [id, ...tree(entry, `${prefix}${name}/`)];
+      if (stat.isSymbolicLink()) return [`${id}->${readlinkSync(entry)}`];
+      return [`${id}=${readFileSync(entry, "utf8")}`];
+    });
+}
+// What a location declared before #933 could legally keep at the fixed name, with a link out.
+function legacyScratch(root: string): void {
+  const legacy = join(root, "runtime", "job-output-scratch");
+  mkdirSync(join(legacy, "stale", "tree"), { recursive: true, mode: 0o700 });
+  writeFileSync(join(legacy, "stale", "tree", "payload"), "retained output");
+  symlinkSync(join(root, "runtime", "keep"), join(legacy, "stale", "escape"));
+}
+
+describe.skipIf(process.platform !== "linux")("native temporary output namespace", () => {
+  test("a first start records a fresh namespace of its own and never adopts the fixed legacy name", () => {
+    withScratchRoot((root) => {
+      legacyScratch(root);
+      const found = tree(join(root, "runtime"));
+      expect(startOwner(root)).toEqual({ generation: 1 });
+      const namespace = recordedNamespace(root);
+      expect(lstatSync(join(root, "state", "output-scratch")).mode & 0o777).toBe(0o600);
+      expect(readdirSync(namespace.path)).toEqual([]);
+      // Everything already in runtime storage is exactly as found; the owner only added its own.
+      const added = ["job-inputs", namespace.name];
+      expect(
+        tree(join(root, "runtime")).filter((entry) => !added.includes(entry.split(":")[0]!)),
+      ).toEqual(found);
+    });
+  });
+
+  test("only the recorded namespace is protected; the fixed legacy name is an ordinary source", () => {
+    withScratchRoot((root) => {
+      legacyScratch(root);
+      expect(startOwner(root)).toEqual({ generation: 1 });
+      const namespace = recordedNamespace(root);
+      writeScratchConfig(root, join(root, "runtime", "job-output-scratch"));
+      expect(startOwner(root)).toEqual({ generation: 2 });
+      writeScratchConfig(root, namespace.path);
+      expect(startOwner(root)).toEqual({ error: "private_owner_source_overlap" });
+      expect(recordedNamespace(root).bytes).toBe(namespace.bytes);
+      const legacy = join(root, "runtime", "job-output-scratch", "stale", "tree", "payload");
+      expect(readFileSync(legacy, "utf8")).toBe("retained output");
+    });
+  }, 30_000);
+
+  test("a restarted owner reopens its recorded namespace and clears only what it held there", () => {
+    withScratchRoot((root) => {
+      legacyScratch(root);
+      expect(startOwner(root)).toEqual({ generation: 1 });
+      const namespace = recordedNamespace(root);
+      mkdirSync(join(namespace.path, "stale", "tree"), { recursive: true, mode: 0o700 });
+      writeFileSync(
+        join(namespace.path, "stale", "tree", "payload"),
+        "an earlier generation's bytes",
+      );
+      symlinkSync(join(root, "runtime", "keep"), join(namespace.path, "stale", "escape"));
+      const found = tree(join(root, "runtime")).filter(
+        (entry) => !entry.startsWith(namespace.name),
+      );
+      expect(startOwner(root)).toEqual({ generation: 2 });
+      expect(recordedNamespace(root).bytes).toBe(namespace.bytes);
+      expect(readdirSync(namespace.path)).toEqual([]);
+      expect(
+        tree(join(root, "runtime")).filter((entry) => !entry.startsWith(namespace.name)),
+      ).toEqual(found);
+    });
+  }, 30_000);
+
+  test("a recorded namespace lost with the runtime tmpfs is replaced by a fresh recorded one", () => {
+    withScratchRoot((root) => {
+      expect(startOwner(root)).toEqual({ generation: 1 });
+      const lost = recordedNamespace(root);
+      rmSync(lost.path, { recursive: true });
+      expect(startOwner(root)).toEqual({ generation: 2 });
+      const fresh = recordedNamespace(root);
+      expect(fresh.name).not.toBe(lost.name);
+      expect(readdirSync(join(root, "runtime")).sort()).toEqual(
+        ["job-inputs", fresh.name, "keep"].sort(),
+      );
+    });
+  }, 30_000);
+
+  test.each([
+    [
+      "replaced by another directory",
+      (root: string, path: string) => {
+        mkdirSync(join(root, "runtime", "replacement"), { mode: 0o700 });
+        writeFileSync(join(root, "runtime", "replacement", "payload"), "not the owner's");
+        renameSync(path, join(root, "runtime", "moved"));
+        renameSync(join(root, "runtime", "replacement"), path);
+      },
+      { error: "output_scratch_changed" },
+    ],
+    [
+      "replaced by a link",
+      (root: string, path: string) => {
+        renameSync(path, join(root, "runtime", "moved"));
+        symlinkSync(join(root, "runtime", "moved"), path);
+      },
+      { code: "ENOTDIR" },
+    ],
+    [
+      "opened to others",
+      (_root: string, path: string) => chmodSync(path, 0o750),
+      { error: "output_scratch_not_private" },
+    ],
+    [
+      "recorded under the fixed legacy name",
+      (root: string) =>
+        writeFileSync(
+          join(root, "state", "output-scratch"),
+          JSON.stringify({ name: "job-output-scratch", dev: "1", ino: "1" }),
+        ),
+      { error: "output_scratch_record_invalid" },
+    ],
+  ] as const)(
+    "a namespace %s refuses the start and every byte is left as found",
+    (_case, change, refusal) => {
+      withScratchRoot((root) => {
+        legacyScratch(root);
+        expect(startOwner(root)).toEqual({ generation: 1 });
+        const namespace = recordedNamespace(root);
+        writeFileSync(join(namespace.path, "retained"), "an earlier generation's bytes");
+        change(root, namespace.path);
+        const record = readFileSync(join(root, "state", "output-scratch"), "utf8");
+        const found = tree(join(root, "runtime"));
+        expect(startOwner(root)).toMatchObject(refusal);
+        expect(readFileSync(join(root, "state", "output-scratch"), "utf8")).toBe(record);
+        expect(tree(join(root, "runtime"))).toEqual(found);
+      });
+    },
+    30_000,
+  );
+
+  test("a start while another owner holds the lock neither creates nor replaces a record", () => {
+    withScratchRoot((root) => {
+      const record = join(root, "state", "output-scratch");
+      const whileLocked = (check: () => void) => {
+        mkdirSync(join(root, "state", "journal"), { recursive: true, mode: 0o700 });
+        const fd = openSync(
+          join(root, "state", "journal", "owner.lock"),
+          constants.O_RDWR | constants.O_CREAT,
+          0o600,
+        );
+        try {
+          lockExclusive(fd);
+          check();
+        } finally {
+          closeSync(fd);
+        }
+      };
+      whileLocked(() => {
+        expect(startOwner(root)).toEqual({ error: "job_owner_already_locked" });
+        expect(existsSync(record)).toBe(false);
+        expect(readdirSync(join(root, "runtime"))).toEqual(["keep"]);
+      });
+      expect(startOwner(root)).toEqual({ generation: 1 });
+      const active = recordedNamespace(root);
+      // Even a namespace that looks lost is only the lock holder's to replace.
+      rmSync(active.path, { recursive: true });
+      whileLocked(() => {
+        expect(startOwner(root)).toEqual({ error: "job_owner_already_locked" });
+        expect(readFileSync(record, "utf8")).toBe(active.bytes);
+        expect(readdirSync(join(root, "runtime")).sort()).toEqual(["job-inputs", "keep"]);
+      });
+    });
+  }, 30_000);
 });
 
 // Reports what an opened owner advertises and what it logged about each operator anchor.

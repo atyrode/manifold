@@ -5,11 +5,16 @@ import {
   chmodSync,
   existsSync,
   closeSync,
+  linkSync,
   lstatSync,
   statfsSync,
   mkdtempSync,
   mkdirSync,
+  readdirSync,
+  readlinkSync,
+  renameSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
   readFileSync,
   unlinkSync,
@@ -32,7 +37,7 @@ import { TerminalHost } from "../src/terminal-host.ts";
 import { HeldDirectory } from "../src/job-files.ts";
 import { JobJournal, jobDigest } from "../src/job-journal.ts";
 import { MachineJobOwner, type JobOwnerOptions } from "../src/job-owner.ts";
-import { JobOutputStore } from "../src/job-outputs.ts";
+import { JobOutputScratchStore, JobOutputStore } from "../src/job-outputs.ts";
 import { JobResources } from "../src/job-resources.ts";
 import { JobBoundInputStore } from "../src/job-bound-inputs.ts";
 import { artifactCacheKey } from "../src/job-artifacts.ts";
@@ -1439,9 +1444,10 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
 const outputRoot = process.env.MANIFOLD_TEST_OUTPUT_ROOT;
 // Included by verify-jobs.ts's [real-linux] selector. verify-runtime.sh jobs supplies the
 // held tools, delegated cgroup and bounded tmpfs; CI uses verify-runtime.sh --system jobs.
-test.skipIf(!realBackend)(
-  "[real-linux] output-only locations isolate live producers and seal without backing-root writers",
-  async () => {
+test.skipIf(!realBackend).each(["retained", "temporary"] as const)(
+  "[real-linux] %s output-only locations isolate live producers and preserve sealed consumers",
+  async (lifetime) => {
+    const temporary = lifetime === "temporary";
     if (!outputRoot)
       throw new Error(
         "output-only proof requires bounded MANIFOLD_TEST_OUTPUT_ROOT from bash scripts/verify-runtime.sh jobs",
@@ -1512,10 +1518,11 @@ test.skipIf(!realBackend)(
         },
         locations: {
           [locationId]: {
-            anchor: "state",
+            ...(temporary
+              ? { anchor: "runtime", kind: "directory" as const, temporary: true as const }
+              : { anchor: "state", guestPath: "/home/job/backing" }),
             components: ["source"],
             revision: "one",
-            guestPath: "/home/job/backing",
           },
         },
         operations: {
@@ -1588,6 +1595,21 @@ test.skipIf(!realBackend)(
         protectedRoot,
         sourceAnchor,
       );
+      const scratchDirectory = sourceAnchor.openChild("scratch", { create: true });
+      held.push(scratchDirectory);
+      const scratch = temporary ? JobOutputScratchStore.open(scratchDirectory) : undefined;
+      const rawPayload = (jobId: string) => {
+        const candidates = temporary
+          ? scratchDirectory
+              .names()
+              .map((name) => join(scratchDirectory.procPath, name, "shared", "payload"))
+          : [join(sourceRoot, "source", jobId, "payload")];
+        const path = candidates.find(
+          (candidate) => existsSync(candidate) && readFileSync(candidate, "utf8") === `${jobId}\n`,
+        );
+        expect(path).toBeDefined();
+        return path!;
+      };
       const store = JobOutputStore.open(outputDirectory);
       outputs = store;
       owner = await MachineJobOwner.open({
@@ -1599,11 +1621,12 @@ test.skipIf(!realBackend)(
         cache,
         managedState,
         outputs: store,
+        ...(scratch ? { outputScratch: scratch } : {}),
         boundInputs: JobBoundInputStore.open(inputDirectory),
         delegatedCgroup,
         bubblewrapFd: bwrapFd,
-        anchors: { state: sourceAnchor },
-        protectedDirectories: [protectedRoot],
+        anchors: temporary ? { runtime: sourceAnchor } : { state: sourceAnchor },
+        protectedDirectories: [protectedRoot, scratchDirectory],
         runtimeTools: {
           busybox: [{ fd: busyboxFd, target: "/bin/busybox", writable: false }],
         },
@@ -1655,7 +1678,9 @@ test.skipIf(!realBackend)(
           artifactSha256: sha256,
           input: { mode: consume ? "consume" : "produce", label: jobId, peer },
           limits,
-          outputs: consume ? [] : [{ name: "material", locationId, components: [jobId] }],
+          outputs: consume
+            ? []
+            : [{ name: "material", locationId, components: [temporary ? "shared" : jobId] }],
           ...(consume
             ? { inputs: [{ name: "selected", from: { jobId: consume, output: "material" } }] }
             : {}),
@@ -1741,13 +1766,17 @@ test.skipIf(!realBackend)(
 
       await start("solo", "sibling");
       await observe("solo", "ready");
+      const soloRaw = rawPayload("solo");
       await input("solo", 0, "probe");
       await observe("solo", "isolated");
       await input("solo", 1, "finish");
       await sealed("solo");
       expect(readFileSync(sentinel, "utf8")).toBe("private sibling sentinel\n");
-      // A later consumer must see the sealed snapshot, not subsequent backing-tree mutation.
-      writeFileSync(join(sourceRoot, "source", "solo", "payload"), "changed after sealing\n");
+      // A later consumer sees the sealed snapshot after disposal or backing-tree mutation.
+      if (temporary) {
+        expect(existsSync(soloRaw)).toBe(false);
+        expect(scratchDirectory.names()).toEqual([]);
+      } else writeFileSync(soloRaw, "changed after sealing\n");
       await start("consumer", "sibling", "solo");
       expect(await settled("consumer")).toMatchObject({
         state: "exited",
@@ -1761,12 +1790,11 @@ test.skipIf(!realBackend)(
       await start("second", "first");
       await observe("first", "ready");
       await observe("second", "ready");
-      for (const jobId of ["first", "second"]) {
-        expect(readFileSync(join(sourceRoot, "source", jobId, "payload"), "utf8")).toBe(
-          `${jobId}\n`,
-        );
-        expect(results.has(jobId)).toBe(false);
-      }
+      const firstRaw = rawPayload("first");
+      const secondRaw = rawPayload("second");
+      expect(firstRaw).not.toBe(secondRaw);
+      expect(results.has("first")).toBe(false);
+      expect(results.has("second")).toBe(false);
       await input("first", 0, "probe");
       await input("second", 0, "probe");
       await observe("first", "isolated");
@@ -1776,19 +1804,26 @@ test.skipIf(!realBackend)(
       // prevent this result from sealing until that unrelated process exited.
       await sealed("first");
       expect(results.has("second")).toBe(false);
-      expect(readFileSync(join(sourceRoot, "source", "second", "payload"), "utf8")).toBe(
-        "second\n",
-      );
+      expect(readFileSync(secondRaw, "utf8")).toBe("second\n");
+      if (temporary) expect(existsSync(firstRaw)).toBe(false);
       await input("second", 1, "finish");
       await sealed("second");
-      expect(readFileSync(join(sourceRoot, "source", "first", "payload"), "utf8")).toBe("first\n");
+      if (temporary) {
+        expect(existsSync(secondRaw)).toBe(false);
+        expect(scratchDirectory.names()).toEqual([]);
+      } else expect(readFileSync(firstRaw, "utf8")).toBe("first\n");
       expect(readFileSync(sentinel, "utf8")).toBe("private sibling sentinel\n");
 
       await start("cancelled", "sibling");
       await observe("cancelled", "ready");
+      const cancelledRaw = rawPayload("cancelled");
       await owner.execute({ type: "cancel", jobId: "cancelled", reason: "fixture-cleanup" });
       expect(await settled("cancelled")).toMatchObject({ state: "cancelled", reason: "cancelled" });
       expect(inputDirectory.names()).toEqual([]);
+      if (temporary) {
+        expect(existsSync(cancelledRaw)).toBe(false);
+        expect(scratchDirectory.names()).toEqual([]);
+      }
       for (const result of results.values())
         for (const output of result.outputs) {
           store.release(result.jobId, output.outputId);
@@ -3838,4 +3873,853 @@ test
     }
   },
   30_000,
+);
+
+/** What one synthetic workload does with the output leases it is handed, then how it ends:
+ * `lost` is an observation that fails while cancelling it still proves the tree empty. */
+interface ScratchWorkload {
+  write?(leases: Readonly<Record<string, string>>, label: string): void;
+  settle?: { exitCode: number } | "cancel" | "lost" | LinuxJobRefusal;
+}
+const SCRATCH_LOCATION = "fixture.scratch.run";
+const scratchOutputs = (locationId = SCRATCH_LOCATION): JobRequest["outputs"] => [
+  // Same-job nesting, parent first: the material lease lives inside the receipt lease.
+  { name: "receipt", locationId, components: ["shared"] },
+  { name: "material", locationId, components: ["shared", "material"] },
+];
+
+/**
+ * A real owner, journal, output store and temporary scratch namespace whose kernel boundary
+ * alone is replaced (#933). A launch is a synthetic workload writing into exactly the output
+ * leases it was handed, which then exits, waits for cancellation, or refuses its start with or
+ * without empty proof, as its script says. No sandbox is spawned.
+ */
+function temporaryOutputFixture() {
+  const root = mkdtempSync(join(tmpdir(), "owner-temporary-output-"));
+  const runtimePath = mkdtempSync(join(tmpdir(), "owner-temporary-runtime-"));
+  const scratchPath = join(runtimePath, "job-output-scratch");
+  const keys = generateKeyPairSync("ed25519");
+  const protectedRoot = HeldDirectory.openAbsolute(root, { private: true });
+  const cache = protectedRoot.openChild("cache", { create: true });
+  const outputDirectory = protectedRoot.openChild("outputs", { create: true });
+  const managedState = protectedRoot.openChild("locations", { create: true });
+  // Never delegated to: no workload is launched.
+  const delegatedCgroup = protectedRoot.openChild("cgroup", { create: true });
+  const runtime = HeldDirectory.openAbsolute(runtimePath);
+  // As the runtime wires it: an owner-private child of the runtime anchor, itself protected.
+  const namespace = runtime.openChild("job-output-scratch", { create: true });
+  const held = [
+    protectedRoot,
+    cache,
+    outputDirectory,
+    managedState,
+    delegatedCgroup,
+    runtime,
+    namespace,
+  ];
+  const outputs = JobOutputStore.open(outputDirectory);
+  const workloads = new Map<string, ScratchWorkload>();
+  const events: JobEvent[] = [];
+  const logs: Array<Record<string, unknown>> = [];
+  let changed = Promise.withResolvers<void>();
+  const recover = spyOn(nativeRuntime, "recoverLinuxJobs").mockResolvedValue(undefined);
+  const preflight = spyOn(nativeRuntime, "preflightLinuxJob").mockReturnValue(0);
+  // The bounded tmpfs this inspects is the operator's; the lifecycle under test is the owner's.
+  const storage = spyOn(nativeRuntime, "inspectJobOutputStorage").mockReturnValue(
+    statfsSync(runtimePath, { bigint: true }),
+  );
+  const launch = spyOn(nativeRuntime, "startLinuxJob").mockImplementation(async (spec) => {
+    const label = spec.argv[0]!;
+    const workload = workloads.get(label) ?? {};
+    workload.write?.(
+      Object.fromEntries(
+        spec.outputs.map((bind) => [
+          bind.target.slice("/outputs/".length),
+          `/proc/self/fd/${bind.fd}`,
+        ]),
+      ),
+      label,
+    );
+    if (workload.settle instanceof LinuxJobRefusal) throw workload.settle;
+    const startedAt = Date.now();
+    const exited = Promise.withResolvers<LinuxJobResult>();
+    const settle = (exitCode: number | null, reason: LinuxJobResult["reason"]) =>
+      exited.resolve({
+        exitCode,
+        signal: null,
+        reason,
+        startedAt,
+        finishedAt: Date.now(),
+        empty: true,
+        boundary: "linux-bubblewrap-cgroup-v2",
+        usage: {
+          wallMs: 0,
+          cpuUsec: 0,
+          memoryPeakBytes: 0,
+          processesPeak: 0,
+          outputBytes: 0,
+          oomKills: 0,
+        },
+      });
+    const observed = workload.settle === "lost" ? Promise.withResolvers<LinuxJobResult>() : exited;
+    if (workload.settle === "lost") setImmediate(() => observed.reject(new Error("observer_lost")));
+    else if (workload.settle !== "cancel") settle(workload.settle?.exitCode ?? 0, "exited");
+    return {
+      result: observed.promise,
+      childDelegation: spec.delegatedCgroup,
+      ownsLoopbackListener: () => false,
+      ownsLoopbackConnection: () => false,
+      input: async () => {},
+      endInput() {},
+      release() {},
+      async cancel() {
+        settle(null, "cancelled");
+        return exited.promise;
+      },
+    };
+  });
+  const bytes = Buffer.from("#!/bin/sh\nexit 0\n");
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  const limits = { timeoutMs: 60_000, memoryBytes: 1048576, processes: 1, outputBytes: 65536 };
+  const operation = (locationId: string) => ({
+    argv: [{ input: "label" }],
+    input: { label: { type: "string" as const, required: true, maxLength: 64 } },
+    runtimeTools: [],
+    locations: [{ locationId, access: "write" as const, outputOnly: true as const }],
+    outputs: ["receipt", "material"],
+    network: "none" as const,
+    limits,
+    stdin: false,
+  });
+  const install: Extract<JobCommand, { type: "install" }> = {
+    type: "install",
+    pluginId: "fixture.scratch",
+    installationRevision: "r1",
+    artifactSha256: sha256,
+    artifact: { bundleFile: "worker", data: bytes.toString("base64") },
+    machine: {
+      artifacts: {
+        [`linux-${process.arch}`]: {
+          bundleFile: "worker",
+          sha256,
+          format: "raw",
+          entry: ["worker"],
+          entrySha256: sha256,
+          maxBytes: bytes.length,
+          maxExpandedBytes: bytes.length,
+          maxMembers: 1,
+        },
+      },
+      locations: {
+        [SCRATCH_LOCATION]: {
+          anchor: "runtime",
+          components: ["run"],
+          revision: "one",
+          kind: "directory",
+          temporary: true,
+        },
+        "fixture.scratch.child": {
+          anchor: "runtime",
+          components: ["child"],
+          revision: "one",
+          kind: "directory",
+          temporary: true,
+        },
+        // An ordinary, retained location that names the protected namespace itself.
+        "fixture.scratch.alias": {
+          anchor: "runtime",
+          components: ["job-output-scratch"],
+          revision: "one",
+          kind: "directory",
+        },
+        // The same declaration without `temporary`: today's retained runtime backing.
+        "fixture.scratch.retained": {
+          anchor: "runtime",
+          components: ["retained"],
+          revision: "one",
+          kind: "directory",
+        },
+      },
+      operations: {
+        [SCRATCH_LOCATION]: operation(SCRATCH_LOCATION),
+        "fixture.scratch.child": operation("fixture.scratch.child"),
+        "fixture.scratch.alias": operation("fixture.scratch.alias"),
+        "fixture.scratch.retained": operation("fixture.scratch.retained"),
+      },
+    },
+  };
+  let owner: MachineJobOwner | undefined;
+  let detach: (() => void) | undefined;
+  const fixture = {
+    scratchPath,
+    runtimePath,
+    outputs,
+    events,
+    logs,
+    workloads,
+    recover,
+    get owner(): MachineJobOwner {
+      if (!owner) throw new Error("fixture_owner_closed");
+      return owner;
+    },
+    /** Every root in the temporary namespace, by name. */
+    roots(): string[] {
+      return readdirSync(scratchPath);
+    },
+    /**
+     * What this process still holds open anywhere in the temporary namespace, by the kernel's
+     * own name for it: a removed tree an open descriptor pins reads `<path> (deleted)`.
+     */
+    descriptors(): string[] {
+      const prefix = `${readlinkSync(namespace.procPath)}/`;
+      const held: string[] = [];
+      for (const fd of readdirSync("/proc/self/fd")) {
+        let target: string;
+        try {
+          target = readlinkSync(`/proc/self/fd/${fd}`);
+        } catch {
+          continue; // the listing's own descriptor, already closed
+        }
+        if (target.startsWith(prefix)) held.push(target.slice(prefix.length));
+      }
+      return held.sort();
+    },
+    async open(): Promise<MachineJobOwner> {
+      const journal = new JobJournal(protectedRoot.openChild("journal", { create: true }));
+      try {
+        owner = await MachineJobOwner.open({
+          machineId: "machine",
+          admissionPublicKey: keys.publicKey.export({ type: "spki", format: "pem" }).toString(),
+          journal,
+          cache,
+          managedState,
+          outputs,
+          outputScratch: JobOutputScratchStore.open(namespace),
+          delegatedCgroup,
+          protectedDirectories: [protectedRoot, namespace],
+          bubblewrapFd: -1,
+          anchors: { runtime },
+          runtimeTools: {},
+          artifactAuthority: { origins: [], maxRedirects: 0, timeoutMs: 1000 },
+          log: (level, evt, fields) => logs.push({ level, evt, ...fields }),
+        });
+      } catch (error) {
+        journal.close();
+        throw error;
+      }
+      detach = owner.attach((raw) => {
+        events.push(JobEventSchema.parse(raw));
+        changed.resolve();
+        changed = Promise.withResolvers<void>();
+        return true;
+      });
+      return owner;
+    },
+    async install(): Promise<void> {
+      await fixture.owner.execute(install);
+    },
+    async start(
+      jobId: string,
+      options: {
+        operationId?: string;
+        outputs?: JobRequest["outputs"];
+        parent?: JobRequest["parent"];
+      } = {},
+    ): Promise<void> {
+      const body: Omit<JobRequest, "requestDigest"> = {
+        jobId,
+        machineId: "machine",
+        pluginId: install.pluginId,
+        operationId: options.operationId ?? SCRATCH_LOCATION,
+        installationRevision: install.installationRevision,
+        artifactSha256: sha256,
+        input: { label: jobId },
+        outputs: options.outputs ?? scratchOutputs(),
+        limits,
+        credential: {
+          principalId: "root",
+          tokenId: null,
+          grantId: null,
+          containerScope: null,
+          caps: ["machines:run"],
+        },
+        parent: options.parent ?? null,
+        traceId: "temporary-outputs",
+      };
+      const request = { ...body, requestDigest: jobDigest(body) };
+      const issuedAt = Date.now();
+      const permit = {
+        permitId: `${jobId}-permit`,
+        jobId,
+        requestDigest: request.requestDigest,
+        ownerId: fixture.owner.identity.ownerId,
+        ownerGeneration: fixture.owner.identity.generation,
+        decisionId: "decision",
+        policyRevision: "revision",
+        issuedAt,
+        expiresAt: issuedAt + 30_000,
+      };
+      await fixture.owner.execute({
+        type: "start",
+        request,
+        permit: {
+          ...permit,
+          signature: sign(null, Buffer.from(canonicalJobJson(permit)), keys.privateKey).toString(
+            "base64",
+          ),
+        },
+      });
+    },
+    /** The job's terminal result, once the owner has published it. */
+    async settled(jobId: string): Promise<JobResult> {
+      for (;;) {
+        const found = events.findLast(
+          (event) =>
+            event.type === "result" &&
+            event.result.jobId === jobId &&
+            ["exited", "cancelled", "interrupted", "refused"].includes(event.result.state),
+        );
+        if (found?.type === "result") return found.result;
+        await changed.promise;
+      }
+    },
+    refusal(jobId: string): string | undefined {
+      const found = events.findLast((event) => event.type === "refusal" && event.jobId === jobId);
+      return found?.type === "refusal" ? found.reason : undefined;
+    },
+    /** One sealed archive, extracted into a fresh directory, as a later consumer binds it. */
+    extract(jobId: string, name: string): string {
+      const path = mkdtempSync(join(tmpdir(), "owner-temporary-extracted-"));
+      const destination = HeldDirectory.openAbsolute(path);
+      try {
+        outputs.extract(jobId, name, destination, 65536);
+      } finally {
+        destination.close();
+      }
+      return path;
+    },
+    async shutdown(): Promise<void> {
+      detach?.();
+      detach = undefined;
+      await owner?.shutdown();
+      owner = undefined;
+    },
+    async close(): Promise<void> {
+      try {
+        await fixture.shutdown();
+      } finally {
+        outputs.close();
+        for (const directory of held.reverse()) directory.close();
+        launch.mockRestore();
+        storage.mockRestore();
+        preflight.mockRestore();
+        recover.mockRestore();
+        rmSync(root, { recursive: true, force: true });
+        rmSync(runtimePath, { recursive: true, force: true });
+      }
+    },
+  };
+  return fixture;
+}
+
+test.skipIf(!linux).each(["succeeded", "failed", "cancelled"] as const)(
+  "a %s job seals every nested temporary output before its raw root goes",
+  async (mode) => {
+    const f = temporaryOutputFixture();
+    try {
+      await f.open();
+      await f.install();
+      f.workloads.set("producer", {
+        write(leases) {
+          writeFileSync(`${leases.receipt}/receipt.json`, '{"ok":true}');
+          writeFileSync(`${leases.material}/payload`, "producer material");
+        },
+        settle: mode === "cancelled" ? "cancel" : { exitCode: mode === "failed" ? 3 : 0 },
+      });
+      await f.start("producer");
+      if (mode === "cancelled") {
+        // A live workload's root stays whole until its closure is proven.
+        expect(f.roots()).toHaveLength(1);
+        await f.owner.execute({ type: "cancel", jobId: "producer", reason: "requested" });
+      }
+      const result = await f.settled("producer");
+      expect(result).toMatchObject(
+        mode === "cancelled"
+          ? { state: "cancelled", reason: "cancelled" }
+          : { state: "exited", exitCode: mode === "failed" ? 3 : 0, reason: null },
+      );
+      expect(result.outputs.map((output) => output.name).sort()).toEqual([
+        "material",
+        "receipt",
+        "stderr",
+        "stdout",
+      ]);
+      expect(f.roots()).toEqual([]);
+      // The declared path is never the backing, so nothing ever appeared there either.
+      expect(existsSync(join(f.runtimePath, "run"))).toBe(false);
+      // The sealed archives outlive the raw tree: read by digest and bound by a consumer.
+      const material = result.outputs.find((output) => output.name === "material")!;
+      const archive = f.outputs.read("producer", material.outputId, 0, 65536).data;
+      expect(createHash("sha256").update(archive).digest("hex")).toBe(material.sha256);
+      const extracted = f.extract("producer", "material");
+      const receipt = f.extract("producer", "receipt");
+      try {
+        expect(readFileSync(join(extracted, "payload"), "utf8")).toBe("producer material");
+        expect(readFileSync(join(receipt, "receipt.json"), "utf8")).toBe('{"ok":true}');
+        expect(readFileSync(join(receipt, "material", "payload"), "utf8")).toBe(
+          "producer material",
+        );
+      } finally {
+        rmSync(extracted, { recursive: true, force: true });
+        rmSync(receipt, { recursive: true, force: true });
+      }
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+test.skipIf(!linux)(
+  "identical temporary output paths are reused repeatedly and concurrently without sharing a root",
+  async () => {
+    const f = temporaryOutputFixture();
+    try {
+      await f.open();
+      await f.install();
+      const write: ScratchWorkload["write"] = (leases, label) => {
+        // Each workload sees only its own lease: nothing another job wrote is there.
+        expect(readdirSync(leases.material!)).toEqual([]);
+        writeFileSync(`${leases.material}/payload`, label);
+      };
+      for (let run = 0; run < 4; run++) {
+        const jobId = `again-${run}`;
+        f.workloads.set(jobId, { write, settle: { exitCode: 0 } });
+        await f.start(jobId);
+        expect(await f.settled(jobId)).toMatchObject({ state: "exited", exitCode: 0 });
+        // Bounded: repeated preparations leave nothing behind in the runtime backing.
+        expect(f.roots()).toEqual([]);
+      }
+      for (const jobId of ["left", "right"]) {
+        f.workloads.set(jobId, { write, settle: "cancel" });
+        await f.start(jobId);
+      }
+      expect(f.roots()).toHaveLength(2);
+      await f.owner.execute({ type: "cancel", jobId: "left", reason: "requested" });
+      await f.settled("left");
+      // Closing one job removes its own root, never the live neighbour's.
+      expect(f.roots()).toHaveLength(1);
+      await f.owner.execute({ type: "cancel", jobId: "right", reason: "requested" });
+      await f.settled("right");
+      expect(f.roots()).toEqual([]);
+      for (const jobId of ["again-3", "left", "right"]) {
+        const extracted = f.extract(jobId, "material");
+        try {
+          expect(readdirSync(extracted)).toEqual(["payload"]);
+          expect(readFileSync(join(extracted, "payload"), "utf8")).toBe(jobId);
+        } finally {
+          rmSync(extracted, { recursive: true, force: true });
+        }
+      }
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+test.skipIf(!linux).each(["unreserved", "child-first", "spawn-refused", "collection"] as const)(
+  "a %s refusal disposes its temporary root only once that refusal is durable",
+  async (mode) => {
+    const f = temporaryOutputFixture();
+    try {
+      await f.open();
+      await f.install();
+      f.workloads.set("refused", {
+        write(leases) {
+          writeFileSync(`${leases.material}/payload`, "linked");
+          // Collection refuses a multiply linked file: none of this job's archives is kept.
+          if (mode === "collection")
+            linkSync(`${leases.material}/payload`, `${leases.material}/alias`);
+        },
+        settle:
+          mode === "spawn-refused"
+            ? new LinuxJobRefusal("sandbox-start-failed", "sandbox-start-failed", true)
+            : { exitCode: 0 },
+      });
+      const [receipt, material] = scratchOutputs();
+      await f.start("refused", {
+        outputs:
+          mode === "unreserved"
+            ? [receipt!, { ...material!, name: "undeclared" }]
+            : mode === "child-first"
+              ? // A nested lease declared before its parent has no parent directory yet.
+                [material!, receipt!]
+              : scratchOutputs(),
+      });
+      const result = await f.settled("refused");
+      expect(result).toMatchObject(
+        mode === "collection"
+          ? { state: "exited", reason: "output_collection_refused", outputs: [] }
+          : {
+              state: "refused",
+              reason: mode === "spawn-refused" ? "sandbox-start-failed" : "start_not_admitted",
+              outputs: [],
+            },
+      );
+      if (mode === "unreserved") expect(f.refusal("refused")).toBe("undeclared_output");
+      expect(f.outputs.recovered("refused")).toEqual([]);
+      expect(f.roots()).toEqual([]);
+      expect(f.logs.filter((log) => log.evt === "job_output_cleanup_failed")).toEqual([]);
+      // Disposal is not a failure: admission stays open for the next job.
+      await f.start("next");
+      expect(await f.settled("next")).toMatchObject({ state: "exited", exitCode: 0 });
+      expect(f.roots()).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+test.skipIf(!linux)(
+  "an invocation writing any temporary output location is refused before anything is prepared",
+  async () => {
+    const f = temporaryOutputFixture();
+    try {
+      await f.open();
+      await f.install();
+      f.workloads.set("parent", { settle: "cancel" });
+      await f.start("parent");
+      const [parentRoot, ...others] = f.roots();
+      expect(others).toEqual([]);
+      // The parent's own temporary location, then a child's own: both would share or split a
+      // root across jobs, and neither silently becomes another backing.
+      for (const [jobId, operationId, locationId] of [
+        ["inherits", SCRATCH_LOCATION, SCRATCH_LOCATION],
+        ["declares", "fixture.scratch.child", "fixture.scratch.child"],
+      ] as const) {
+        await f.start(jobId, {
+          operationId,
+          outputs: scratchOutputs(locationId),
+          parent: { parentJobId: "parent", invocationId: `${jobId}-invocation` },
+        });
+        expect(f.refusal(jobId)).toBe("temporary_output_invocation_unsupported");
+        expect(await f.settled(jobId)).toMatchObject({ state: "refused", outputs: [] });
+        expect(f.roots()).toEqual([parentRoot!]);
+      }
+      await f.owner.execute({ type: "cancel", jobId: "parent", reason: "requested" });
+      expect(await f.settled("parent")).toMatchObject({ state: "cancelled" });
+      expect(f.roots()).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+test.skipIf(!linux)(
+  "an ordinary output-only location keeps its raw tree after sealing, exactly as before",
+  async () => {
+    const f = temporaryOutputFixture();
+    try {
+      await f.open();
+      await f.install();
+      f.workloads.set("retained", {
+        write(leases) {
+          writeFileSync(`${leases.material}/payload`, "retained raw bytes");
+        },
+      });
+      await f.start("retained", {
+        operationId: "fixture.scratch.retained",
+        outputs: scratchOutputs("fixture.scratch.retained"),
+      });
+      expect(await f.settled("retained")).toMatchObject({ state: "exited", exitCode: 0 });
+      expect(
+        readFileSync(join(f.runtimePath, "retained", "shared", "material", "payload"), "utf8"),
+      ).toBe("retained raw bytes");
+      expect(f.roots()).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+test.skipIf(!linux)(
+  "an ordinary location naming the temporary namespace is refused and leaves live roots alone",
+  async () => {
+    const f = temporaryOutputFixture();
+    try {
+      await f.open();
+      await f.install();
+      f.workloads.set("live", {
+        write(leases) {
+          writeFileSync(`${leases.material}/payload`, "live raw bytes");
+        },
+        settle: "cancel",
+      });
+      await f.start("live");
+      const [live] = f.roots();
+      await f.start("alias", {
+        operationId: "fixture.scratch.alias",
+        outputs: [{ name: "receipt", locationId: "fixture.scratch.alias", components: [live!] }],
+      });
+      expect(f.refusal("alias")).toBe("private_owner_source_overlap");
+      expect(await f.settled("alias")).toMatchObject({ state: "refused" });
+      expect(f.roots()).toEqual([live!]);
+      expect(
+        readFileSync(join(f.scratchPath, live!, "shared", "material", "payload"), "utf8"),
+      ).toBe("live raw bytes");
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+test.skipIf(!linux)(
+  "unproven emptiness keeps the raw root and closes admission until its proof arrives",
+  async () => {
+    const f = temporaryOutputFixture();
+    try {
+      await f.open();
+      await f.install();
+      const contained = Promise.withResolvers<void>();
+      f.workloads.set("unproven", {
+        write(leases) {
+          writeFileSync(`${leases.material}/payload`, "possibly still written");
+        },
+        settle: new LinuxJobRefusal(
+          "sandbox-start-failed",
+          "sandbox-start-failed",
+          false,
+          () => contained.promise,
+        ),
+      });
+      await f.start("unproven");
+      expect(await f.settled("unproven")).toMatchObject({
+        state: "interrupted",
+        reason: "workload_effects_unknown",
+      });
+      const [kept, ...others] = f.roots();
+      expect(others).toEqual([]);
+      expect(
+        readFileSync(join(f.scratchPath, kept!, "shared", "material", "payload"), "utf8"),
+      ).toBe("possibly still written");
+      // The existing drain latch refuses new work while a workload may still be alive.
+      await f.start("blocked");
+      expect(f.refusal("blocked")).toBe("start_permit_refused");
+      expect(f.roots()).toEqual([kept!]);
+      const cancelling = f.owner.execute({
+        type: "cancel",
+        jobId: "unproven",
+        reason: "requested",
+      });
+      expect(f.roots()).toEqual([kept!]);
+      contained.resolve();
+      await cancelling;
+      expect(f.events).toContainEqual(
+        expect.objectContaining({ type: "workload_empty", jobId: "unproven" }),
+      );
+      expect(f.roots()).toEqual([]);
+      // The recorded result is untouched by the later proof and the disposal it allowed.
+      expect(await f.settled("unproven")).toMatchObject({ state: "interrupted" });
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+test.skipIf(!linux)(
+  "an interrupted job's handles on its temporary root close with the root, never before proof",
+  async () => {
+    const f = temporaryOutputFixture();
+    try {
+      await f.open();
+      await f.install();
+      const write: ScratchWorkload["write"] = (leases, label) => {
+        writeFileSync(`${leases.material}/payload`, label);
+      };
+      for (let run = 0; run < 3; run++) {
+        // A lost observation interrupts, and the cancel that interruption attempts proves empty.
+        const lost = `lost-${run}`;
+        f.workloads.set(lost, { write, settle: "lost" });
+        await f.start(lost);
+        expect(await f.settled(lost)).toMatchObject({
+          state: "interrupted",
+          reason: "workload_effects_unknown",
+        });
+        expect(f.roots()).toEqual([]);
+        // Nothing pins the removed tree: not the root's handle, a lease's, nor the job's own.
+        expect(f.descriptors()).toEqual([]);
+        await f.owner.execute({ type: "drain", draining: false });
+        // A refused start proves nothing, so its raw bytes stay readable until proof does.
+        const unproven = `unproven-${run}`;
+        const contained = Promise.withResolvers<void>();
+        f.workloads.set(unproven, {
+          write,
+          settle: new LinuxJobRefusal(
+            "sandbox-start-failed",
+            "sandbox-start-failed",
+            false,
+            () => contained.promise,
+          ),
+        });
+        await f.start(unproven);
+        expect(await f.settled(unproven)).toMatchObject({ state: "interrupted" });
+        const [kept, ...others] = f.roots();
+        expect(others).toEqual([]);
+        expect(
+          readFileSync(join(f.scratchPath, kept!, "shared", "material", "payload"), "utf8"),
+        ).toBe(unproven);
+        contained.resolve();
+        await f.owner.execute({ type: "cancel", jobId: unproven, reason: "requested" });
+        expect(f.roots()).toEqual([]);
+        expect(f.descriptors()).toEqual([]);
+        await f.owner.execute({ type: "drain", draining: false });
+      }
+      // Repetition left nothing behind for the next job, which closes exactly as before.
+      f.workloads.set("next", { write });
+      await f.start("next");
+      expect(await f.settled("next")).toMatchObject({ state: "exited", exitCode: 0 });
+      expect(f.roots()).toEqual([]);
+      expect(f.descriptors()).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+test.skipIf(!linux)(
+  "an unrecorded refusal keeps its temporary root owned and admission closed until one is recorded",
+  async () => {
+    const f = temporaryOutputFixture();
+    try {
+      await f.open();
+      await f.install();
+      const append = spyOn(JobJournal.prototype, "append")
+        .mockImplementationOnce(() => {
+          throw new Error("reservation_unrecorded");
+        })
+        .mockImplementationOnce(() => {
+          throw Object.assign(new Error("rejection_unrecorded"), { code: "EIO" });
+        });
+      try {
+        await f.start("unrecorded");
+      } finally {
+        append.mockRestore();
+      }
+      // The reservation's failure stays this start's answer; the refusal's is logged by code.
+      expect(f.refusal("unrecorded")).toBe("reservation_unrecorded");
+      expect(f.logs).toContainEqual({
+        level: "warn",
+        evt: "job_output_cleanup_failed",
+        phase: "release",
+        jobId: "unrecorded",
+        code: "EIO",
+      });
+      expect(
+        f.events.some((event) => event.type === "result" && event.result.jobId === "unrecorded"),
+      ).toBe(false);
+      // Nothing ran in it, but nothing durable closes it either: the root stays whole and held.
+      const [kept, ...others] = f.roots();
+      expect(others).toEqual([]);
+      expect(kept).toBeDefined();
+      // Admission is closed, so no later preparation allocates beside it.
+      for (const jobId of ["later-0", "later-1"]) {
+        await f.start(jobId);
+        expect(f.refusal(jobId)).toBe("start_permit_refused");
+        expect(await f.settled(jobId)).toMatchObject({ state: "refused" });
+      }
+      expect(f.roots()).toEqual([kept!]);
+      // A durable refusal of that identity is the record its root waited for.
+      await f.start("unrecorded");
+      expect(f.refusal("unrecorded")).toBe("start_permit_refused");
+      expect(await f.settled("unrecorded")).toMatchObject({ state: "refused", outputs: [] });
+      expect(f.roots()).toEqual([]);
+      expect(f.descriptors()).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+test.skipIf(!linux)(
+  "a failed raw removal keeps the committed result and archives and closes admission",
+  async () => {
+    const f = temporaryOutputFixture();
+    try {
+      await f.open();
+      await f.install();
+      f.workloads.set("committed", {
+        write(leases) {
+          writeFileSync(`${leases.material}/payload`, "sealed before removal");
+          // Substitute the root's name, as anything but the owner never could: its disposal
+          // must refuse by identity rather than remove whatever the name now holds.
+          const [name] = readdirSync(f.scratchPath);
+          renameSync(join(f.scratchPath, name!), join(f.scratchPath, "moved"));
+          mkdirSync(join(f.scratchPath, name!), { mode: 0o700 });
+          writeFileSync(join(f.scratchPath, name!, "substitute"), "not this job's");
+        },
+        settle: { exitCode: 0 },
+      });
+      await f.start("committed");
+      const result = await f.settled("committed");
+      expect(result).toMatchObject({ state: "exited", exitCode: 0, reason: null });
+      expect(f.logs).toContainEqual({
+        level: "warn",
+        evt: "job_output_cleanup_failed",
+        phase: "release",
+        jobId: "committed",
+        code: "output_scratch_changed",
+      });
+      expect(f.roots()).toContain("moved");
+      expect(f.roots()).toHaveLength(2);
+      const extracted = f.extract("committed", "material");
+      try {
+        expect(readFileSync(join(extracted, "payload"), "utf8")).toBe("sealed before removal");
+      } finally {
+        rmSync(extracted, { recursive: true, force: true });
+      }
+      await f.start("blocked");
+      expect(f.refusal("blocked")).toBe("start_permit_refused");
+      // The next generation reports the same committed result and clears the namespace.
+      await f.shutdown();
+      await f.open();
+      f.events.length = 0;
+      await f.owner.execute({ type: "status", jobId: "committed" });
+      expect(await f.settled("committed")).toEqual(result);
+      expect(f.roots()).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+test.skipIf(!linux)(
+  "restart clears the temporary namespace only after workload recovery proves earlier jobs gone",
+  async () => {
+    const f = temporaryOutputFixture();
+    try {
+      mkdirSync(join(f.runtimePath, "keep"), { mode: 0o700 });
+      writeFileSync(join(f.runtimePath, "keep", "sentinel"), "kept");
+      const stale = join(f.scratchPath, "stale");
+      mkdirSync(join(stale, "shared", "material"), { recursive: true, mode: 0o700 });
+      writeFileSync(join(stale, "shared", "material", "payload"), "an earlier generation's");
+      symlinkSync(join(f.runtimePath, "keep"), join(stale, "escape"));
+      // Unproven recovery opens no owner and removes nothing.
+      f.recover.mockRejectedValueOnce(new Error("cgroup-v2-required"));
+      await expect(f.open()).rejects.toThrow("cgroup-v2-required");
+      expect(f.roots()).toEqual(["stale"]);
+      const recovered = Promise.withResolvers<void>();
+      f.recover.mockImplementationOnce(() => recovered.promise);
+      const opening = f.open();
+      const turn = Promise.withResolvers<void>();
+      setImmediate(turn.resolve);
+      await turn.promise;
+      expect(f.roots()).toEqual(["stale"]);
+      recovered.resolve();
+      await opening;
+      expect(f.roots()).toEqual([]);
+      expect(readFileSync(join(f.runtimePath, "keep", "sentinel"), "utf8")).toBe("kept");
+      expect(f.logs).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  },
 );

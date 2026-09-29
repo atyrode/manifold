@@ -22,7 +22,7 @@ import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { HeldDirectory } from "../src/job-files.ts";
 import { resolveJobLocation } from "../src/job-locations.ts";
-import { JobOutputStore, type JobOutputLease } from "../src/job-outputs.ts";
+import { JobOutputScratchStore, JobOutputStore, type JobOutputLease } from "../src/job-outputs.ts";
 
 const proof = { workloadEmpty: true, writersReleased: true } as const;
 function fixture(
@@ -669,3 +669,117 @@ linuxTest(
     });
   },
 );
+
+function scratchFixture(
+  run: (context: { root: string; path: string; namespace: HeldDirectory }) => void,
+): void {
+  const root = mkdtempSync(join(tmpdir(), "job-output-scratch-"));
+  const path = join(root, "scratch");
+  mkdirSync(path, { mode: 0o700 });
+  mkdirSync(join(root, "neighbour", "directory"), { recursive: true, mode: 0o700 });
+  writeFileSync(join(root, "neighbour", "sentinel"), "kept");
+  writeFileSync(join(root, "neighbour", "directory", "inner"), "kept too");
+  const namespace = HeldDirectory.openAbsolute(path, { private: true });
+  try {
+    run({ root, path, namespace });
+    // Nothing a root pointed at, by symbolic or hard link, is touched by its removal.
+    expect(readFileSync(join(root, "neighbour", "sentinel"), "utf8")).toBe("kept");
+    expect(lstatSync(join(root, "neighbour", "sentinel")).nlink).toBe(1);
+    expect(readFileSync(join(root, "neighbour", "directory", "inner"), "utf8")).toBe("kept too");
+  } finally {
+    namespace.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+linuxTest("temporary output scratch opens without purging and recovery clears only itself", () => {
+  scratchFixture(({ root, path, namespace }) => {
+    mkdirSync(join(path, "stale", "tree"), { recursive: true, mode: 0o700 });
+    writeFileSync(join(path, "stale", "tree", "payload"), "an earlier generation's raw bytes");
+    symlinkSync(join(root, "neighbour"), join(path, "stale", "escape"));
+    symlinkSync(join(root, "neighbour", "sentinel"), join(path, "loose-link"));
+    const store = JobOutputScratchStore.open(namespace);
+    // Opening proves nothing about earlier workloads, so it removes nothing and lends nothing.
+    expect(namespace.names().sort()).toEqual(["loose-link", "stale"]);
+    expect(() => store.create()).toThrow("output_scratch_unrecovered");
+    store.recover();
+    expect(namespace.names()).toEqual([]);
+    const first = store.create();
+    const second = store.create();
+    expect(first.stat().mode & 0o777).toBe(0o700);
+    expect(namespace.names()).toHaveLength(2);
+    // A live root is its job's: recovery refuses rather than removing it underneath.
+    expect(() => store.recover()).toThrow("output_scratch_active");
+    store.release(first);
+    store.release(second);
+    expect(namespace.names()).toEqual([]);
+    expect(() => store.release(first)).toThrow("unknown_output_scratch");
+    chmodSync(path, 0o750);
+    expect(() => JobOutputScratchStore.open(namespace)).toThrow("output_scratch_not_private");
+  });
+});
+
+linuxTest("releasing a scratch root removes any shape left in it and nothing it points at", () => {
+  scratchFixture(({ root, path, namespace }) => {
+    const store = JobOutputScratchStore.open(namespace);
+    store.recover();
+    const disposable = store.create();
+    const retained = store.create();
+    writeFileSync(`${retained.procPath}/payload`, "another job's raw bytes");
+    const at = (directory: HeldDirectory, name: string) => `${directory.procPath}/${name}`;
+    // Deeper and wider than sealing ever walks, and never more than one held level at once.
+    let current = disposable.openChild("deep", { create: true });
+    for (let depth = 0; depth < 300; depth++) {
+      writeFileSync(at(current, "file"), String(depth));
+      const next = current.openChild("d", { create: true });
+      current.close();
+      current = next;
+    }
+    current.close();
+    const wide = disposable.openChild("wide", { create: true });
+    for (let index = 0; index < 200; index++) mkdirSync(at(wide, `child-${index}`));
+    wide.close();
+    // Names that are not UTF-8, links pointing out, and modes a workload may leave behind.
+    writeFileSync(
+      Buffer.concat([Buffer.from(`${disposable.procPath}/`), Buffer.from([0x66, 0xff, 0xfe])]),
+      "opaque name",
+    );
+    symlinkSync(join(root, "neighbour", "sentinel"), at(disposable, "file-link"));
+    symlinkSync(join(root, "neighbour", "directory"), at(disposable, "directory-link"));
+    linkSync(join(root, "neighbour", "sentinel"), at(disposable, "hard-link"));
+    const locked = disposable.openChild("locked", { create: true });
+    const sealed = locked.openChild("sealed", { create: true });
+    writeFileSync(at(sealed, "payload"), "unreadable", { mode: 0o000 });
+    chmodSync(sealed.procPath, 0o000);
+    chmodSync(locked.procPath, 0o500);
+    sealed.close();
+    locked.close();
+    const identity = retained.stat();
+    store.release(disposable);
+    const [survivor, ...others] = namespace.names();
+    expect(others).toEqual([]);
+    expect(lstatSync(join(path, survivor!)).ino).toBe(identity.ino);
+    expect(readFileSync(join(path, survivor!, "payload"), "utf8")).toBe("another job's raw bytes");
+    store.release(retained);
+    expect(namespace.names()).toEqual([]);
+  });
+});
+
+linuxTest("a scratch root whose name was substituted is refused, and the substitute kept", () => {
+  scratchFixture(({ path, namespace }) => {
+    const store = JobOutputScratchStore.open(namespace);
+    store.recover();
+    const root = store.create();
+    const [name] = namespace.names();
+    renameSync(join(path, name!), join(path, "moved"));
+    mkdirSync(join(path, name!), { mode: 0o700 });
+    writeFileSync(join(path, name!, "substitute"), "not this job's");
+    expect(() => store.release(root)).toThrow("output_scratch_changed");
+    expect(readFileSync(join(path, name!, "substitute"), "utf8")).toBe("not this job's");
+    expect(existsSync(join(path, "moved"))).toBe(true);
+    // Forgotten rather than retried by a name that is no longer its own: recovery clears both.
+    expect(() => store.release(root)).toThrow("unknown_output_scratch");
+    store.recover();
+    expect(namespace.names()).toEqual([]);
+  });
+});
