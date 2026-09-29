@@ -8,9 +8,10 @@ import { migrateToCanonLexicon, migrateToElementRefs } from "./migrate-lexicon.t
 import { migrateToSoloCompositions } from "./migrate-solo.ts";
 import { JOB_SCHEDULE_SCHEMA_SQL } from "./job-schedules.ts";
 import { migrateToDurableAgents } from "./migrate-agents.ts";
+import { migrateToOwnedText } from "./migrate-text.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 48;
+export const SCHEMA_VERSION = 49;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
@@ -1059,6 +1060,8 @@ CREATE UNIQUE INDEX machine_job_deployment_pending
  WHERE phase NOT IN ('needs_review','cancelled') AND phase<>final_phase;
 INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','48');
 `,
+  /** Independent text ownership (#263, ADR0056), including every retained CRDT revision. */
+  49: { backup: true, apply: migrateToOwnedText },
 };
 
 interface TableRow {

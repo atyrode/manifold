@@ -574,12 +574,18 @@ describe("migration 9: solo compositions", () => {
       expect(rawTypes(canvas)).toEqual({
         "el-terminal": "portal",
         "el-mirror": "portal",
-        "el-note": "text",
+        "el-note": "canvas_note",
       });
       // An element naming a session with no row has nothing to reference, so it goes.
       expect(readElement(canvas, "el-stale")).toBeNull();
-      // Furniture is not touched at all: same fields, same text, same z-order.
-      expect(readElement(canvas, NOTE_ELEMENT.id)).toEqual(NOTE_ELEMENT);
+      // The later text ownership migration keeps presentation and body in this same home.
+      const { text: noteText, ...notePresentation } = NOTE_ELEMENT;
+      expect(readElement(canvas, NOTE_ELEMENT.id)).toEqual({
+        ...notePresentation,
+        type: "canvas_note",
+        document: JSON.stringify([CANVAS_CONTAINER, NOTE_ELEMENT.id]),
+      });
+      expect(canvas.getMap<Y.Map<unknown>>("texts").get(`core.text:${NOTE_ELEMENT.id}`)?.get("text")?.toString()).toBe(noteText);
 
       // A new revision on the SAME epoch: a client resuming from a pre-migration revision
       // resyncs against this instead of silently disagreeing with the server.
@@ -1183,6 +1189,7 @@ describe("pre-migration snapshot retention", () => {
         "manifold.db.pre-v23.bak",
         "manifold.db.pre-v24.bak",
         "manifold.db.pre-v37.bak",
+        "manifold.db.pre-v49.bak",
         "manifold.db.pre-v9.bak",
       ]);
 
@@ -1243,6 +1250,7 @@ describe("pre-migration snapshot retention", () => {
         "manifold.db.pre-v23.bak",
         "manifold.db.pre-v24.bak",
         "manifold.db.pre-v37.bak",
+        "manifold.db.pre-v49.bak",
         "manifold.db.pre-v9.bak",
       ]);
       // And the survivor is the RETRY's image, not the failed attempt's — the stray table the
@@ -1283,6 +1291,13 @@ function seedPostV16Authority(db: Database, path: string): void {
     .get();
   if (version === null) throw new Error("fixture lacks its historical schema version");
   db.exec(`
+CREATE TABLE IF NOT EXISTS containers(id TEXT PRIMARY KEY, name TEXT, created_at INTEGER,
+  sort_order INTEGER, folder_id TEXT, discipline TEXT NOT NULL DEFAULT 'canvas');
+CREATE TABLE IF NOT EXISTS scene_docs(container_id TEXT NOT NULL, epoch TEXT NOT NULL,
+  rev INTEGER NOT NULL, ts INTEGER NOT NULL, hash TEXT NOT NULL, doc BLOB NOT NULL,
+  PRIMARY KEY(container_id, epoch, rev));
+CREATE TABLE IF NOT EXISTS dials(id TEXT PRIMARY KEY, origin TEXT NOT NULL, secret TEXT NOT NULL,
+  ref TEXT, caps TEXT NOT NULL, title TEXT, dialed_at INTEGER NOT NULL, revoked_at INTEGER);
 CREATE TABLE tokens(id TEXT PRIMARY KEY, hash TEXT UNIQUE, principal_id TEXT, caps TEXT,
   container_id TEXT, created_at INTEGER, revoked_at INTEGER, minted_by TEXT);
 CREATE TABLE shares(id TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, container_id TEXT NOT NULL,
@@ -1447,6 +1462,10 @@ CREATE TABLE terminals(id TEXT PRIMARY KEY, machine_id TEXT, container_id TEXT,
 INSERT INTO meta(key, value) VALUES ('schema_version', '18');
 `);
   seedPostV16Authority(db, path);
+  db.query("INSERT INTO containers(id, name, created_at, discipline) VALUES (?, ?, 0, ?)")
+    .run("composition-16", "Composition", "composition");
+  db.query("INSERT INTO containers(id, name, created_at, discipline) VALUES (?, ?, 0, ?)")
+    .run("canvas-16", "Canvas", "canvas");
   const doc = createSceneDoc();
   doc.clientID = 1601;
   const refs = [
@@ -1594,9 +1613,12 @@ describe("migration 19: contributed element refs", () => {
         expected["leaf-0"].ref = { kind: "element", elementId: "el-note" };
         expected["leaf-1"].ref = { kind: "element", elementId: "el-draw" };
         expect(readTileLayout(migrated, before.container_id)).toEqual(expected);
-        expect(migrated.getMap(ELEMENTS_KEY).toJSON()).toEqual(
-          original.getMap(ELEMENTS_KEY).toJSON(),
-        );
+        const originalElements = original.getMap<Y.Map<unknown>>(ELEMENTS_KEY).toJSON();
+        const { text: _text, ...notePresentation } = originalElements["el-note"];
+        expect(migrated.getMap(ELEMENTS_KEY).toJSON()).toEqual({
+          ...originalElements,
+          "el-note": { ...notePresentation, document: JSON.stringify([before.container_id, "el-note"]) },
+        });
         expect(migrated.getMap("plugin-state").toJSON()).toEqual(
           original.getMap("plugin-state").toJSON(),
         );
@@ -1607,7 +1629,9 @@ describe("migration 19: contributed element refs", () => {
         const noteAfter = migrated.getMap<Y.Map<unknown>>(ELEMENTS_KEY).get("el-note");
         for (const field of ["text", "caption"]) {
           const textBefore = noteBefore?.get(field);
-          const textAfter = noteAfter?.get(field);
+          const textAfter = field === "text"
+            ? migrated.getMap<Y.Map<unknown>>("texts").get("core.text:el-note")?.get("text")
+            : noteAfter?.get(field);
           if (!(textBefore instanceof Y.Text) || !(textAfter instanceof Y.Text)) {
             throw new Error("migration replaced collaborative text");
           }
