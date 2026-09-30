@@ -537,7 +537,8 @@ export const MACHINE_NATIVE_TRANSFERS_PROTOCOL_VERSION = 53;
  * instance compatibility resets to protocol 27. v28 through v48 and v51–v53 leave that wire unchanged.
  */
 export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52, 53,
+  27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52,
+  53,
 ]);
 
 /**
