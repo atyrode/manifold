@@ -100,11 +100,94 @@
 /* Normal-flow chrome reserves its actual height, including narrow wrapped content. */
 .terminal-titlebar {
   position: relative;
+  display: flex;
+  flex-wrap: wrap;
   grid-area: 1 / 1;
   z-index: 3;
   min-width: 0;
+  padding-block: 0.2rem;
   pointer-events: auto;
   user-select: none;
+}
+
+/* Labels yield space and controls wrap instead of escaping the frame's clipping edge. */
+.terminal-titlebar .node-titlebar__title {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: calc(100% - 1.2rem);
+}
+
+.terminal-titlebar .node-titlebar__title-input {
+  flex: 0 1 8rem;
+  min-width: 0;
+}
+
+.terminal-titlebar .node-titlebar__middle {
+  flex: 0 1 auto;
+  max-width: 100%;
+}
+
+.terminal-titlebar .node-titlebar__actions {
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  min-width: 0;
+  max-width: 100%;
+  margin-inline-start: auto;
+}
+
+.terminal-titlebar .node-titlebar__actions > * {
+  flex: none;
+}
+
+.terminal-sizing-control {
+  width: auto;
+  min-width: 2.5rem;
+  height: 1.5rem;
+  padding-inline: 0.3rem;
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.terminal-sizing-control:focus-visible {
+  outline: 2px solid #74c0fc;
+  outline-offset: 1px;
+}
+
+.terminal-sizing-description {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.terminal-sizing-popover {
+  max-width: min(24rem, calc(100vw - 2rem));
+  font-size: 0.78rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.terminal-sizing-details {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.terminal-sizing-details p,
+.terminal-sizing-details dl {
+  margin: 0;
+}
+
+.terminal-sizing-details dt {
+  color: #adb5bd;
+}
+
+.terminal-sizing-details dd {
+  margin: 0 0 0.4rem;
 }
 
 .terminal-cwd {

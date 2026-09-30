@@ -14,7 +14,11 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { settingValue } from "@manifold/plugin";
-import { trackTerminalPrivateMode } from "@manifold/protocol";
+import {
+  TERMINAL_VIEWPORT_REFRESH_MS,
+  trackTerminalPrivateMode,
+  type TerminalSizing,
+} from "@manifold/protocol";
 import { base64ToBytes } from "@manifold/sdk";
 import {
   TitlebarOutlet,
@@ -26,6 +30,7 @@ import {
 import {
   useCallback,
   useEffect,
+  useId,
   useReducer,
   useRef,
   useState,
@@ -41,6 +46,7 @@ import {
   Cover,
   ItemIcon,
   NodeTitleBar,
+  Popover,
   Stack,
   TITLEBAR_ACTIONS_CLASS,
 } from "@manifold/ui";
@@ -102,6 +108,9 @@ export function TerminalView({
     gesturePreferencesRef.current = { copyOnSelect, pasteOnRightClick };
   }, [copyOnSelect, pasteOnRightClick]);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const [viewportId] = useState(() => crypto.randomUUID());
+  const sizingDescriptionId = useId();
+  const [sizingOpen, setSizingOpen] = useState(false);
   const terminalRef = useRef<Terminal | null>(null);
   const clipboardRef = useRef<TerminalClipboard | null>(null);
   const graphicsRef = useRef<TerminalGraphics | null>(null);
@@ -110,7 +119,9 @@ export function TerminalView({
   const activeRef = useRef(active);
   const [clipboardCopy, setClipboardCopy] = useState<TerminalClipboardCopy | null>(null);
   const resizeFrameRef = useRef<number | null>(null);
-  const scheduleResizeRef = useRef<(() => void) | null>(null);
+  const scheduleResizeRef = useRef<((refresh?: boolean) => void) | null>(null);
+  const syncViewportRef = useRef<(() => void) | null>(null);
+  const withdrawViewportRef = useRef<(() => void) | null>(null);
   /**
    * True once a snapshot has been painted into the LIVE terminal. It outlives socket
    * swaps on purpose: the next snapshot must replace what is on screen instead of
@@ -177,13 +188,14 @@ export function TerminalView({
         (terminal.status === "exited" || terminal.controllerId === host.principal.id)));
   /** Non-null exactly when this terminal's machine is known and NOT online. */
   const offlineMachine = machine !== null && !machine.online ? machine : null;
+  const machineOnlineRef = useRef(offlineMachine === null);
+  useEffect(() => {
+    machineOnlineRef.current = offlineMachine === null;
+    syncViewportRef.current?.();
+    scheduleResizeRef.current?.();
+  }, [offlineMachine]);
   const selfId = client.self?.id ?? null;
   const isController = selfId !== null && terminal?.controllerId === selfId;
-  const isControllerRef = useRef(false);
-
-  useEffect(() => {
-    isControllerRef.current = isController;
-  }, [isController]);
 
   /**
    * Preview bodies use a SPECTATOR socket, so PTY input, resize and focus traffic
@@ -195,6 +207,8 @@ export function TerminalView({
   const readOnlyRef = useRef(readOnly);
   useEffect(() => {
     readOnlyRef.current = readOnly;
+    syncViewportRef.current?.();
+    scheduleResizeRef.current?.();
   }, [readOnly]);
   useEffect(() => {
     if (!active || readOnly || !isController) {
@@ -248,9 +262,14 @@ export function TerminalView({
   }, [active, fontReady, terminalReady]);
 
   useEffect(() => {
-    const refreshTerminal = (): void => rerender();
-    const offTerminals = client.on("terminals_changed", refreshTerminal);
-    const offAttendance = client.on("attendance_changed", rerender);
+    const refreshViewport = (): void => {
+      syncViewportRef.current?.();
+      scheduleResizeRef.current?.();
+      rerender();
+    };
+    const offTerminals = client.on("terminals_changed", refreshViewport);
+    const offAttendance = client.on("attendance_changed", refreshViewport);
+    const offStatus = client.on("status", refreshViewport);
     const offError = client.on("error", (message) => {
       if (message.code === "forbidden" && message.ref === terminalId) {
         pendingTakeRef.current = null;
@@ -261,6 +280,7 @@ export function TerminalView({
       offTerminals();
       offAttendance();
       offError();
+      offStatus();
     };
   }, [client, terminalId]);
 
@@ -272,6 +292,8 @@ export function TerminalView({
   const clientRef = useRef(client);
   useEffect(() => {
     clientRef.current = client;
+    syncViewportRef.current?.();
+    scheduleResizeRef.current?.();
   }, [client]);
 
   /**
@@ -361,44 +383,118 @@ export function TerminalView({
 
     paintedRef.current = false;
 
-    let lastSentGeometry: { cols: number; rows: number } | null = null;
+    let hasBeenBorn = initialTerminal !== undefined;
+    let intersecting = false;
+    let pageVisible = true;
+    let refreshPending = false;
+    let published: {
+      client: TerminalRendererProps["client"];
+      connId: string;
+      cols: number;
+      rows: number;
+    } | null = null;
+
+    const withdrawViewport = (): void => {
+      if (published !== null) {
+        published.client.releaseTerminalViewport(terminalId, viewportId);
+        published = null;
+      }
+      refreshPending = false;
+      if (resizeFrameRef.current !== null) {
+        window.cancelAnimationFrame(resizeFrameRef.current);
+        resizeFrameRef.current = null;
+      }
+    };
+    withdrawViewportRef.current = withdrawViewport;
+
+    const canPublishViewport = (): boolean => {
+      const current = clientRef.current;
+      const info = current.terminals.get(terminalId);
+      if (info !== undefined) hasBeenBorn = true;
+      const self = current.self;
+      const connId = current.selfConnId;
+      const caps = current.selfCaps();
+      const rect = container.getBoundingClientRect();
+      return (
+        !readOnlyRef.current &&
+        machineOnlineRef.current &&
+        pageVisible &&
+        document.visibilityState === "visible" &&
+        intersecting &&
+        rect.width > 0 &&
+        rect.height > 0 &&
+        rect.right > 0 &&
+        rect.bottom > 0 &&
+        rect.left < window.innerWidth &&
+        rect.top < window.innerHeight &&
+        getComputedStyle(container).visibility === "visible" &&
+        current.status === "open" &&
+        self !== null &&
+        connId !== null &&
+        current.attendance.get(self.id)?.connIds.includes(connId) === true &&
+        (caps.includes("*") || caps.includes("terminals:write")) &&
+        (info === undefined
+          ? !hasBeenBorn
+          : info.status === "running" &&
+            info.controllerId === self.id &&
+            paintedRef.current &&
+            clipboardLiveRef.current)
+      );
+    };
+
+    const syncViewport = (): void => {
+      if (
+        !canPublishViewport() ||
+        (published !== null &&
+          (published.client !== clientRef.current ||
+            published.connId !== clientRef.current.selfConnId))
+      ) {
+        withdrawViewport();
+      }
+    };
+    syncViewportRef.current = syncViewport;
 
     const sendCurrentGeometry = (): void => {
       resizeFrameRef.current = null;
-      // Measure a viewport without changing its interpretation of shared PTY bytes.
-      // Before birth, the first writable viewer publishes the PTY's initial grid. Once
-      // running, only the controller publishes a desired size; every viewer adopts the
-      // authoritative resize event.
+      syncViewport();
+      if (!canPublishViewport()) return;
       const current = clientRef.current;
-      const awaitingBirth = current.terminals.get(terminalId) === undefined;
-      if (readOnlyRef.current || (!awaitingBirth && !isControllerRef.current)) return;
-      const geometry = fitAddon.proposeDimensions();
-      if (geometry === undefined) return;
+      const connId = current.selfConnId;
+      if (connId === null) return;
+      // Desired geometry always comes from the host, never from the applied shared grid.
+      // Only the unpainted birth placeholder is resized locally; LIVE viewers all adopt
+      // authoritative resize events without feeding their applied size back to the broker.
+      const proposal = fitAddon.proposeDimensions();
       if (
-        lastSentGeometry !== null &&
-        lastSentGeometry.cols === geometry.cols &&
-        lastSentGeometry.rows === geometry.rows
+        proposal === undefined ||
+        !Number.isInteger(proposal.cols) ||
+        !Number.isInteger(proposal.rows) ||
+        proposal.cols <= 0 ||
+        proposal.rows <= 0
       ) {
+        withdrawViewport();
         return;
       }
-      lastSentGeometry = geometry;
-      if (awaitingBirth) terminal.resize(geometry.cols, geometry.rows);
-      current.resizeTerminal(terminalId, geometry.cols, geometry.rows);
+      const cols = Math.min(1000, proposal.cols);
+      const rows = Math.min(1000, proposal.rows);
+      const refresh = refreshPending;
+      refreshPending = false;
+      if (!refresh && published !== null && published.cols === cols && published.rows === rows) {
+        return;
+      }
+      if (!current.terminals.has(terminalId)) terminal.resize(cols, rows);
+      current.resizeTerminal(terminalId, cols, rows, viewportId);
+      published = { client: current, connId, cols, rows };
     };
 
-    const scheduleResize = (): void => {
+    const scheduleResize = (refresh = false): void => {
+      syncViewport();
+      if (!canPublishViewport()) return;
+      refreshPending ||= refresh;
       if (resizeFrameRef.current !== null) return;
       resizeFrameRef.current = window.requestAnimationFrame(sendCurrentGeometry);
     };
     scheduleResizeRef.current = scheduleResize;
-
-    const scheduleMeasuredResize = (): void => {
-      // A pending tile has no snapshot yet: its measured grid is what permits PTY birth.
-      // Afterwards a snapshot and subsequent cursor updates must use the same PTY grid.
-      // A smaller spectator viewport scrolls that grid; it must never reflow it.
-      if (!paintedRef.current && clientRef.current.terminals.has(terminalId)) return;
-      scheduleResize();
-    };
     let settleFrame: number | null = null;
     let settleFollowupFrame: number | null = null;
     const settleAfterReplay = (): void => {
@@ -420,20 +516,52 @@ export function TerminalView({
     };
     settleRef.current = settleAfterReplay;
 
-    const observer = new ResizeObserver(scheduleMeasuredResize);
+    const observer = new ResizeObserver(() => scheduleResize());
     observer.observe(container);
-    const initialFitFrame = window.requestAnimationFrame(scheduleMeasuredResize);
+    const intersectionObserver = new IntersectionObserver(([entry]) => {
+      intersecting =
+        entry !== undefined &&
+        entry.isIntersecting &&
+        entry.intersectionRect.width > 0 &&
+        entry.intersectionRect.height > 0;
+      scheduleResize();
+    });
+    intersectionObserver.observe(container);
+    const onVisibilityChange = (): void => {
+      scheduleResize();
+      if (document.visibilityState === "visible") settleAfterReplay();
+    };
+    const onPageHide = (): void => {
+      pageVisible = false;
+      withdrawViewport();
+    };
+    const onPageShow = (): void => {
+      pageVisible = true;
+      settleAfterReplay();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("pagehide", onPageHide);
+    window.addEventListener("pageshow", onPageShow);
+    document.fonts.addEventListener("loadingdone", settleAfterReplay);
+    const refreshInterval = window.setInterval(
+      () => scheduleResize(true),
+      TERMINAL_VIEWPORT_REFRESH_MS,
+    );
 
     return () => {
+      withdrawViewport();
       observer.disconnect();
-      window.cancelAnimationFrame(initialFitFrame);
+      intersectionObserver.disconnect();
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("pagehide", onPageHide);
+      window.removeEventListener("pageshow", onPageShow);
+      document.fonts.removeEventListener("loadingdone", settleAfterReplay);
+      window.clearInterval(refreshInterval);
       if (settleFrame !== null) window.cancelAnimationFrame(settleFrame);
       if (settleFollowupFrame !== null) window.cancelAnimationFrame(settleFollowupFrame);
-      if (resizeFrameRef.current !== null) {
-        window.cancelAnimationFrame(resizeFrameRef.current);
-        resizeFrameRef.current = null;
-      }
       scheduleResizeRef.current = null;
+      syncViewportRef.current = null;
+      withdrawViewportRef.current = null;
       settleRef.current = null;
       disposeGestures();
       clipboard.dispose();
@@ -447,7 +575,7 @@ export function TerminalView({
       terminalRef.current = null;
       paintedRef.current = false;
     };
-  }, [terminalId, fontReady]);
+  }, [terminalId, fontReady, viewportId]);
 
   useEffect(() => {
     const instance = terminalRef.current;
@@ -470,6 +598,8 @@ export function TerminalView({
       terminal.write("", () => {
         if (terminalRef.current === terminal) settleRef.current?.();
       });
+    } else {
+      scheduleResizeRef.current?.();
     }
   }, [fontSize, fontReady, terminalReady]);
 
@@ -492,6 +622,7 @@ export function TerminalView({
 
     let subscribed = true;
     clipboardLiveRef.current = false;
+    syncViewportRef.current?.();
     let snapshotSeq: number | null = null;
     let lastWrittenSeq = 0;
     let streamGeneration = 0;
@@ -508,6 +639,7 @@ export function TerminalView({
       const settled = (): void => settle(generation);
       clipboardRef.current?.reset();
       clipboardLiveRef.current = false;
+      syncViewportRef.current?.();
       pasteModeRef.current?.reset();
       // Whatever is on screen — painted by this socket or by the one it replaced — is
       // REPLACED by the snapshot, never appended to.
@@ -547,6 +679,7 @@ export function TerminalView({
         streamGeneration++;
         clipboardRef.current?.reset();
         clipboardLiveRef.current = false;
+        syncViewportRef.current?.();
         pasteModeRef.current?.reset();
         snapshotSeq = null;
         lastWrittenSeq = 0;
@@ -565,6 +698,7 @@ export function TerminalView({
         streamGeneration++;
         clipboardRef.current?.reset();
         clipboardLiveRef.current = false;
+        syncViewportRef.current?.();
         setRestartArmed(false);
       }
       if (message.kind === "resized" && message.cols !== undefined && message.rows !== undefined) {
@@ -601,6 +735,7 @@ export function TerminalView({
       subscribed = false;
       clipboardRef.current?.reset();
       clipboardLiveRef.current = false;
+      withdrawViewportRef.current?.();
       pasteModeRef.current?.reset();
       offSnapshot();
       offOutput();
@@ -610,11 +745,6 @@ export function TerminalView({
       client.detachTerminal(terminalId);
     };
   }, [client, terminalId, terminalReady, fontReady]);
-
-  useEffect(() => {
-    if (!isController || !paintedRef.current) return;
-    scheduleResizeRef.current?.();
-  }, [isController]);
 
   const caps = client.selfCaps();
   const canTake =
@@ -758,6 +888,41 @@ export function TerminalView({
     .filter(Boolean)
     .join(" ");
 
+  const sizing = client.terminalSizing.get(terminalId);
+  const describeLimitingViews = (refs: TerminalSizing["columns"]): string => {
+    const labels = new Map<string, number>();
+    for (const ref of refs) {
+      let label = "Another active view";
+      if (ref.connId === client.selfConnId && ref.viewportId === viewportId) {
+        label = "This view";
+      } else {
+        for (const attendance of client.attendance.values()) {
+          if (attendance.connIds.includes(ref.connId)) {
+            label = `${attendance.principal.name}’s view`;
+            break;
+          }
+        }
+      }
+      labels.set(label, (labels.get(label) ?? 0) + 1);
+    }
+    const names = [...labels].map(([label, count]) =>
+      count === 1 ? label : `${label} (${count} views)`,
+    );
+    return `${names.join(", ")}${refs.length > 1 ? " — tied" : ""}`;
+  };
+  const columnLimits = sizing?.mode === "smallest" ? describeLimitingViews(sizing.columns) : "";
+  const rowLimits = sizing?.mode === "smallest" ? describeLimitingViews(sizing.rows) : "";
+  const sizingSummary =
+    sizing === undefined
+      ? "The shared terminal grid is shown; sizing attribution is unavailable."
+      : sizing.mode === "retained"
+        ? "No active eligible view. Retaining the last shared terminal grid."
+        : "Foreground, on-screen writable views of the controller set the smallest grid, regardless of keyboard focus. Columns and rows are limited independently.";
+  const sizingDescription =
+    sizing?.mode === "smallest"
+      ? `${sizingSummary} Columns limited by: ${columnLimits}. Rows limited by: ${rowLimits}.`
+      : sizingSummary;
+
   return (
     <div
       className={frameClass}
@@ -822,6 +987,53 @@ export function TerminalView({
         closeClassName="terminal-ctl--close"
         extraActions={
           <>
+            {terminal === undefined ? null : (
+              <>
+                <Popover
+                  open={sizingOpen}
+                  onOpenChange={setSizingOpen}
+                  side="bottom"
+                  align="end"
+                  contentClassName="terminal-sizing-popover"
+                  trigger={
+                    <button
+                      type="button"
+                      className="node-titlebar__ctl terminal-sizing-control"
+                      aria-label={`Terminal size ${terminal.cols} columns by ${terminal.rows} rows; sizing details`}
+                      aria-describedby={sizingDescriptionId}
+                      title={`${terminal.cols}×${terminal.rows}. ${sizingDescription}`}
+                      onPointerDown={(event) => event.stopPropagation()}
+                    >
+                      {terminal.cols}×{terminal.rows}
+                    </button>
+                  }
+                >
+                  <div
+                    className="terminal-sizing-details"
+                    role="region"
+                    aria-label="Terminal sizing details"
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onDoubleClick={(event) => event.stopPropagation()}
+                  >
+                    <strong>
+                      Shared terminal grid: {terminal.cols} columns × {terminal.rows} rows
+                    </strong>
+                    <p>{sizingSummary}</p>
+                    {sizing?.mode === "smallest" ? (
+                      <dl>
+                        <dt>Columns limited by</dt>
+                        <dd>{columnLimits}</dd>
+                        <dt>Rows limited by</dt>
+                        <dd>{rowLimits}</dd>
+                      </dl>
+                    ) : null}
+                  </div>
+                </Popover>
+                <span className="terminal-sizing-description" id={sizingDescriptionId}>
+                  {sizingDescription}
+                </span>
+              </>
+            )}
             {terminal === undefined ? null : (
               <button
                 type="button"
