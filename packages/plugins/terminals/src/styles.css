@@ -156,16 +156,6 @@
   outline-offset: 1px;
 }
 
-.terminal-sizing-description {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  margin: -1px;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
-}
-
 .terminal-sizing-popover {
   max-width: min(24rem, calc(100vw - 2rem));
   font-size: 0.78rem;

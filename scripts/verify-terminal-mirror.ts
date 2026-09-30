@@ -411,6 +411,26 @@ try {
     20_000,
     "focused occupant terminal before marker input",
   );
+  const sizingAt = await pointIn(browser, ".terminal-sizing-control", 0.5, 0.5);
+  if (sizingAt === null) throw new Error("the engaged terminal offers no sizing disclosure");
+  await clickAt(browser, sizingAt);
+  await until(
+    () => browser!.evaluate<boolean>("document.querySelector('.terminal-sizing-details') !== null"),
+    8_000,
+    "sizing disclosure opened through the real pointer",
+  );
+  const disclosureAt = await pointIn(browser, ".terminal-sizing-details", 0.5, 0.5);
+  if (disclosureAt === null) throw new Error("the sizing disclosure has no pointer target");
+  await clickAt(browser, disclosureAt);
+  check(
+    "pressing the engaged terminal's portaled sizing disclosure preserves occupancy",
+    await browser.evaluate<boolean>(
+      "document.querySelector('.terminal-frame')?.closest('.portal')?.classList.contains('portal--engaged') === true",
+    ),
+    "the document's capture-phase outside press keeps the disclosure's owning portal engaged",
+  );
+  await clickAt(browser, sizingAt);
+  await clickAt(browser, c0);
   await browser.typeText("clear; echo PRE_CLONE_STATE");
   await browser.typeText("\r");
   await until(

@@ -3847,8 +3847,9 @@ env? }` → server targets `machineId` when given (error `no_machine` if it is u
   “Another active view” when presence does not disclose a matching connection. No private
   name/path/device lookup or resizing authority follows from attribution.
   The indicator reserves a geometry-independent width for the bounded size label so applied
-  dimensions cannot change its own measurement area. Opening its portaled disclosure never
-  engages a spectator terminal or changes viewport participation.
+  dimensions cannot change its own measurement area. Interacting with its portaled disclosure
+  neither engages a spectator terminal nor disengages its own active portal. A genuine outside
+  press still ends portal occupancy.
   Session clients migrate together at wire51; the native machine, owner, terminal-host and
   instance wires are unchanged. The public three-argument SDK `resizeTerminal` remains one
   virtual `sdk` viewport; explicit mounted ids and `releaseTerminalViewport` support multiple

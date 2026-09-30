@@ -734,7 +734,6 @@ describe("TerminalBroker viewport arbitration", () => {
       } else {
         fixture.store.revokeToken(actor.tokenId!, fixture.runtime.now());
       }
-      measureViewport(fixture, sibling, "sibling", 110, 36);
       if (cause === "home-deny") {
         expect(fixture.machine.sent).toEqual([]);
         expect(fixture.broker.listForContainer(fixture.container.id)).toMatchObject([
@@ -746,12 +745,10 @@ describe("TerminalBroker viewport arbitration", () => {
           sizing: { mode: "retained" as const, columns: [], rows: [] },
         };
         expect(fixture.socket.messages()).toEqual([retained]);
-        expect(siblingSocket.messages()).toEqual([
-          retained,
-          { type: "error", code: "forbidden", ref: fixture.create.terminalId },
-        ]);
+        expect(siblingSocket.messages()).toEqual([retained]);
         expect(fixture.clock.pendingJobs).toBe(0);
       } else {
+        measureViewport(fixture, sibling, "sibling", 110, 36);
         expect(fixture.machine.sent).toEqual([
           { type: "resize", terminalId: fixture.create.terminalId, cols: 110, rows: 36 },
         ]);

@@ -328,6 +328,9 @@ export class TerminalBroker implements TerminalPlacementPort {
       }
       for (const terminal of this.terminals.values()) this.arbitrateViewports(terminal);
     });
+    this.auth.onAuthorityChanged(() => {
+      for (const terminal of this.terminals.values()) this.arbitrateViewports(terminal);
+    });
     for (const machine of store.listMachines()) {
       if (machine.draining) this.draining.add(machine.id);
     }

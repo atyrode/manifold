@@ -1029,7 +1029,7 @@ export function TerminalView({
                     ) : null}
                   </div>
                 </Popover>
-                <span className="terminal-sizing-description" id={sizingDescriptionId}>
+                <span id={sizingDescriptionId} hidden>
                   {sizingDescription}
                 </span>
               </>
