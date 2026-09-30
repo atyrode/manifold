@@ -266,11 +266,7 @@ describe("buildIsolateDef", () => {
       pendingNativeTransfersWhenIdle: async () => [],
     };
     expect(() =>
-      buildIsolateDef(
-        manifest,
-        { ...loaded([]), pendingNativeTransfers: true },
-        transport,
-      ),
+      buildIsolateDef(manifest, { ...loaded([]), pendingNativeTransfers: true }, transport),
     ).toThrow(IsolateLoadError);
     expect(() =>
       buildIsolateDef(

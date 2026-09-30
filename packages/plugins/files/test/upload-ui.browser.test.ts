@@ -269,9 +269,9 @@ test("late publication cannot enter a replacement selection or a different home"
       expect(
         await browser.evaluate<unknown[]>("upload.log.filter(row => row[0] === 'release')"),
       ).toEqual([["release", await browser.evaluate<string>("upload.firstHandle")]]);
-      expect(
-        await browser.evaluate<boolean>("upload.log.some(row => row[1] === 'inspect')"),
-      ).toBe(false);
+      expect(await browser.evaluate<boolean>("upload.log.some(row => row[1] === 'inspect')")).toBe(
+        false,
+      );
       if (retire !== "close")
         expect(await browser.evaluate<string>("document.body.innerText")).toContain(
           "Locally pending",
@@ -296,7 +296,9 @@ test("refused and unacknowledged begin allow local discard without a cancellatio
       await click(browser, "Discard local selection and choose another");
       await browser.evaluate("upload.replace()");
       expect(await browser.evaluate<string>("document.body.innerText")).toContain("next.png");
-      expect(await browser.evaluate<string>("document.body.innerText")).toContain("Locally pending");
+      expect(await browser.evaluate<string>("document.body.innerText")).toContain(
+        "Locally pending",
+      );
       expect(
         await browser.evaluate<unknown[]>("upload.log.filter(row => row[0] === 'action')"),
       ).toEqual([["action", "beginUpload"]]);

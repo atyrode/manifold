@@ -2022,21 +2022,35 @@ export class PluginHost {
     const def = this.defs.find((candidate) => candidate.manifest.id === pluginId);
     const probe = def?.pendingNativeTransfersWhenIdle ?? def?.pendingNativeTransfers;
     if (
-      this.closed || this.replacing.has(pluginId) || !def?.reconcileNativeTransfers || !probe ||
+      this.closed ||
+      this.replacing.has(pluginId) ||
+      !def?.reconcileNativeTransfers ||
+      !probe ||
       this.nativePendingProbes.has(pluginId) ||
       (this.activeDispatches.get(pluginId)?.size ?? 0) !== 0
-    ) return false;
+    )
+      return false;
     const settled = Promise.withResolvers<void>();
     let open = true;
     this.nativePendingProbes.set(pluginId, settled.promise);
     try {
-      return await this.referenceDataCall(pluginId, async (ctx) => {
-        const snapshot = await probe(ctx);
-        if (!open || snapshot === null || this.closed || this.replacing.has(pluginId) ||
-          this.defs.find((candidate) => candidate.manifest.id === pluginId) !== def) return false;
-        accept(snapshot);
-        return true;
-      }, true);
+      return await this.referenceDataCall(
+        pluginId,
+        async (ctx) => {
+          const snapshot = await probe(ctx);
+          if (
+            !open ||
+            snapshot === null ||
+            this.closed ||
+            this.replacing.has(pluginId) ||
+            this.defs.find((candidate) => candidate.manifest.id === pluginId) !== def
+          )
+            return false;
+          accept(snapshot);
+          return true;
+        },
+        true,
+      );
     } finally {
       open = false;
       this.nativePendingProbes.delete(pluginId);
@@ -2232,8 +2246,12 @@ export class PluginHost {
     let open = true;
     const waitForNativePendingProbe = async (): Promise<void> => {
       while (this.nativePendingProbes.has(pluginId)) await this.nativePendingProbes.get(pluginId);
-      if (!open || this.closed || this.harnessDefinition(id) !== def ||
-        !this.authService.restoreCredential(this.authService.credentialReference(actor)))
+      if (
+        !open ||
+        this.closed ||
+        this.harnessDefinition(id) !== def ||
+        !this.authService.restoreCredential(this.authService.credentialReference(actor))
+      )
         throw new ServiceError("forbidden", "harness caller unavailable");
     };
     try {
@@ -2406,13 +2424,21 @@ export class PluginHost {
       return true;
     });
     for (const def of this.defs)
-      if ((def.pendingNativeTransfers || def.pendingNativeTransfersWhenIdle) && !def.reconcileNativeTransfers)
+      if (
+        (def.pendingNativeTransfers || def.pendingNativeTransfersWhenIdle) &&
+        !def.reconcileNativeTransfers
+      )
         throw new Error(`${def.manifest.id}: pending native transfers require reconciliation`);
     jobs.nativeTransfers.setPendingAdmissionSource({
-      owners: () => this.defs.filter((def) =>
-        def.manifest.machine?.transferPolicy !== undefined &&
-        (def.pendingNativeTransfers !== undefined || def.pendingNativeTransfersWhenIdle !== undefined),
-      ).map((def) => def.manifest.id),
+      owners: () =>
+        this.defs
+          .filter(
+            (def) =>
+              def.manifest.machine?.transferPolicy !== undefined &&
+              (def.pendingNativeTransfers !== undefined ||
+                def.pendingNativeTransfersWhenIdle !== undefined),
+          )
+          .map((def) => def.manifest.id),
       probe: (pluginId, accept) => this.pendingNativeAdmissions(pluginId, accept),
     });
     void jobs.nativeTransfers.reconcile();
@@ -6114,31 +6140,50 @@ export class PluginHost {
           waited = true;
           await this.nativePendingProbes.get(pluginId);
         }
-        if (!machineBridgeOpen || this.closed || this.replacing.has(pluginId) ||
+        if (
+          !machineBridgeOpen ||
+          this.closed ||
+          this.replacing.has(pluginId) ||
           this.assembled.actions.get(fullName) !== entry ||
           this.installationGeneration(pluginId) !== nativeTransferGeneration ||
-          (!this.assembled.enabled(pluginId) && entry.def.cleanup !== true))
+          (!this.assembled.enabled(pluginId) && entry.def.cleanup !== true)
+        )
           throw new ActionAdmissionDenial("unavailable", "action unavailable");
         if (waited) {
           const current = this.authService.restoreCredential(nativeTransferCredential);
-          if (!current) throw new ActionAdmissionDenial("forbidden", "caller authority unavailable");
+          if (!current)
+            throw new ActionAdmissionDenial("forbidden", "caller authority unavailable");
           auth = current;
           const installed = this.installed.get(pluginId);
-          if (installed && nativeCaps.some((cap) =>
-            !GOVERNED_CAPS.includes(cap) && !withinCeiling(cap, installed.row.grantedCaps)))
+          if (
+            installed &&
+            nativeCaps.some(
+              (cap) =>
+                !GOVERNED_CAPS.includes(cap) && !withinCeiling(cap, installed.row.grantedCaps),
+            )
+          )
             throw new ActionAdmissionDenial("forbidden", "plugin authority unavailable");
           if (entry.def.requirements === undefined) {
-            const currentCarried = scope === "container"
-              ? this.authService.carriedScope(auth, entry.def.caps) : null;
-            const stillCarried = carriedContainer !== null &&
-              currentCarried?.length === 1 && currentCarried[0] === carriedContainer;
+            const currentCarried =
+              scope === "container" ? this.authService.carriedScope(auth, entry.def.caps) : null;
+            const stillCarried =
+              carriedContainer !== null &&
+              currentCarried?.length === 1 &&
+              currentCarried[0] === carriedContainer;
             for (const cap of entry.def.caps) {
-              if (cap === "agents:delegate" && (
-                fullName === "core.access.createRun" || fullName === "core.access.createChildRun" ||
-                fullName === "core.access.renewAgentRun"
-              )) continue;
-              if (!(cap === "*" ? this.authService.holdsRoot(auth) :
-                this.authService.allows(auth, cap) || (isContainerGrantCap(cap) && stillCarried)))
+              if (
+                cap === "agents:delegate" &&
+                (fullName === "core.access.createRun" ||
+                  fullName === "core.access.createChildRun" ||
+                  fullName === "core.access.renewAgentRun")
+              )
+                continue;
+              if (
+                !(cap === "*"
+                  ? this.authService.holdsRoot(auth)
+                  : this.authService.allows(auth, cap) ||
+                    (isContainerGrantCap(cap) && stillCarried))
+              )
                 throw new ActionAdmissionDenial("forbidden", "caller authority unavailable");
             }
           }

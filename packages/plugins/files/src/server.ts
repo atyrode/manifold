@@ -15,13 +15,13 @@ import {
   type ReferenceTerminalReceipt,
 } from "@manifold/protocol";
 import type { z } from "zod";
+import type { OpenFileReadInputSchema } from "./contract.ts";
 import {
-  type BeginFileUploadInputSchema,
+  BeginFileUploadInputSchema,
   type FileReadRequestSchema,
   type FileRequestSchema,
   type FileUploadRequestSchema,
   type ListFilesInputSchema,
-  OpenFileReadInputSchema,
   FILE_CHUNK_BYTES,
   FILE_COLLECTION,
   FILE_LIFETIME_MS,

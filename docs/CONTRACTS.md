@@ -3150,6 +3150,8 @@ Client, credential, principal, container and mount retirement fence selection cu
 completion. Restoring an earlier host identity does not revive a retired intake. Results cannot
 repeat after owner recomposition or reach a later intake. A descendant layout-effect completion
 reaches the current committed callback; replacing that callback alone is not mount retirement.
+Ordinary layout, viewport or assembly metadata recomposition preserves the portable session
+client identity and the current intake. Retired queued image projections do not open new reads.
 
 Picker, drop and explicit clipboard Save use the same owner workflow. Save and Attach/Deliver
 are separate choices. Cancelling after Save or failing to attach preserves the saved file and
@@ -3197,6 +3199,30 @@ restarts; it shares the existing 1,000-record metadata bound, and unacknowledged
 not age away. A durable explicitly unsent admission can retire without issuing native commands.
 Once dispatch intent is recorded, a missing reply or an original owner's unknown ID is not
 absence proof: uncertainty and purge blocking remain until authoritative terminal evidence.
+
+Files exposes `receiptNative({ requestId })` for both delivery and download. It returns only
+`{ requestId, state }` for the exact original actor and credential, including when the begin
+reply never supplied a transfer ID or the source has since been deleted. It does not reread
+source content or grant a new native effect.
+A later refusal describes that later call; it cannot erase uncertainty about a prior native
+effect or discard its request identity. An authoritative receipt or continuation must reconcile it.
+
+Caller-independent recovery uses a paired private pending-admission probe and evidence
+callback. An idle-exclusive owner turn covers the bounded snapshot and synchronous absence
+fence, including in-realm owners. Only an exact intent absent from host admission metadata
+can be fenced; existing admissions and uncertain dispatches remain intact. This path needs
+neither the original credential nor an online native owner and never restores caller authority.
+Busy or unavailable sources and failed private acknowledgements remain pending for bounded
+idle/authority transitions and the existing one-second job maintenance pass.
+Probe waits consume existing caller deadlines and cancellation, not a fresh post-wait budget.
+Retained refusal evidence is delivered independently of a later snapshot entry's capacity or
+validation failure; a provably fenced reservation can retire while another remains unresolved.
+
+Each pass considers at most 32 source owners and each source returns at most 32 entries.
+Private insertion is limited to 32 retained refusal fences per owner, counting acknowledged
+and public-origin fences as well as unacknowledged ones, within the shared 1,000-record cap.
+Acknowledgement does not replenish that allowance before retention pruning; producer timestamps
+cannot shorten host-created retention, and unacknowledged evidence is never pruned for age.
 
 Downloads name a bounded relative file under a reviewed read root and produce an immutable
 snapshot. They do not retain a library file unless separately saved. Terminal-local MIME

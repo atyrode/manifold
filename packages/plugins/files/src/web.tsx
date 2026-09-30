@@ -50,28 +50,30 @@ function FilesLibrary({ host }: PortableSectionProps): ReactElement {
   const generation = useRef(0);
 
   const readPage = useCallback(
-    async (after?: PluginOwnedRef, history: (PluginOwnedRef | undefined)[] = []): Promise<void> => {
+    (after?: PluginOwnedRef, history: (PluginOwnedRef | undefined)[] = []): Promise<void> => {
       const current = generation.current;
-      try {
-        const value = await fileAction(
-          host,
-          "list",
-          { ...(after ? { after } : {}), limit: 32 },
-          ListFilesResultSchema,
-        );
-        if (generation.current === current) {
-          setPage(value);
-          setCursor(after);
-          setPrevious(history);
-        }
-      } catch (error) {
-        if (generation.current === current) setFailure(fileFailure(error));
-      } finally {
-        if (generation.current === current) {
-          pending.current = false;
-          setBusy(false);
-        }
-      }
+      return fileAction(
+        host,
+        "list",
+        { ...(after ? { after } : {}), limit: 32 },
+        ListFilesResultSchema,
+      )
+        .then((value) => {
+          if (generation.current === current) {
+            setPage(value);
+            setCursor(after);
+            setPrevious(history);
+          }
+        })
+        .catch((error: unknown) => {
+          if (generation.current === current) setFailure(fileFailure(error));
+        })
+        .finally(() => {
+          if (generation.current === current) {
+            pending.current = false;
+            setBusy(false);
+          }
+        });
     },
     [host],
   );

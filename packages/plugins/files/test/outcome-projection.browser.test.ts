@@ -107,7 +107,9 @@ test("authoritative active recovery replaces an unknown receipt without enabling
     expect(terminal.unknown).toBe(false);
     expect(terminal.reset).toBe(true);
     expect(
-      await browser.evaluate<number>('fixture.log.filter(row => row[0] === "commitDelivery").length'),
+      await browser.evaluate<number>(
+        'fixture.log.filter(row => row[0] === "commitDelivery").length',
+      ),
     ).toBe(1);
   });
 }, 60_000);

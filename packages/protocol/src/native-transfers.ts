@@ -251,9 +251,7 @@ export const NativeTransferAdmissionRecoverySchema = z.discriminatedUnion("kind"
   z.strictObject({ kind: z.literal("admitted"), transferId: id }),
   z.strictObject({ kind: z.literal("not-admitted"), reason: NativeTransferReasonSchema }),
 ]);
-export type NativeTransferAdmissionRecovery = z.infer<
-  typeof NativeTransferAdmissionRecoverySchema
->;
+export type NativeTransferAdmissionRecovery = z.infer<typeof NativeTransferAdmissionRecoverySchema>;
 
 /** Only the floor constructs this identity; no public argument accepts an override. */
 export const NativeTransferBindingSchema = z

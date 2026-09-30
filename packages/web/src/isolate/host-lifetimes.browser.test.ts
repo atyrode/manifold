@@ -20,7 +20,7 @@ async function press(browser: Browser, label: string): Promise<void> {
 }
 
 interface Counts {
-  readonly results: readonly { readonly state: string }[];
+  readonly results: readonly { readonly state: string; readonly callbackVersion?: number }[];
   readonly pending: number;
   readonly owners: readonly string[];
 }
@@ -36,7 +36,10 @@ test("committed page and Worker intakes fence selection and results across retir
     for (const mode of ["page", "worker"]) {
       await browser.evaluate(`window.fixture.mount(${JSON.stringify(mode)})`);
       await press(browser, "Read selection");
-      await until(browser, 'document.querySelector(\'[data-testid="read"]\')?.textContent === "private selection"');
+      await until(
+        browser,
+        'document.querySelector(\'[data-testid="read"]\')?.textContent === "private selection"',
+      );
       await press(browser, "Hold completion");
       await until(browser, "window.fixture.counts().pending === 1");
       await browser.evaluate("window.fixture.recompose()");
@@ -51,7 +54,10 @@ test("committed page and Worker intakes fence selection and results across retir
       for (const field of ["token", "container", "principal", "client", "input", "unmount"]) {
         await browser.evaluate(`window.fixture.mount(${JSON.stringify(mode)})`);
         await press(browser, "Read selection");
-        await until(browser, 'document.querySelector(\'[data-testid="read"]\')?.textContent === "private selection"');
+        await until(
+          browser,
+          'document.querySelector(\'[data-testid="read"]\')?.textContent === "private selection"',
+        );
         await press(browser, "Hold completion");
         await until(browser, "window.fixture.counts().pending === 1");
         await browser.evaluate(
@@ -93,9 +99,13 @@ test("borrowed subtrees share four committed slots and reject cycles in both own
       await browser.evaluate(`window.fixture.mount(${JSON.stringify(mode)}, "budget")`);
       await until(browser, "window.fixture.counts().owners.length === 4");
       expect((await browser.evaluate<Counts>("window.fixture.counts()")).owners).toEqual([
-        "a", "b", "c", "sibling",
+        "a",
+        "b",
+        "c",
+        "sibling",
       ]);
-      const completions = 'Array.from(document.querySelectorAll("button")).filter(button => button.textContent === "Complete intake")';
+      const completions =
+        'Array.from(document.querySelectorAll("button")).filter(button => button.textContent === "Complete intake")';
       await browser.evaluate(`${completions}[2].click()`);
       await until(browser, "window.fixture.counts().results.length === 1");
       await browser.evaluate("window.fixture.recompose()");
@@ -111,7 +121,10 @@ test("borrowed subtrees share four committed slots and reject cycles in both own
       await browser.evaluate("window.fixture.branch(true)");
       await until(browser, "window.fixture.counts().owners.length === 4");
       expect((await browser.evaluate<Counts>("window.fixture.counts()")).owners).toEqual([
-        "a", "b", "c", "sibling",
+        "a",
+        "b",
+        "c",
+        "sibling",
       ]);
       await browser.evaluate(`window.fixture.mount(${JSON.stringify(mode)}, "cycle")`);
       await until(browser, 'document.body.textContent.includes("recursive borrowing")');
@@ -210,7 +223,7 @@ test("portable Files keeps its selection and exact Save through host recompositi
       await until(browser, "window.fixture.counts().pending === 1");
       const started = await browser.evaluate<FilesState>("window.fixture.files()");
       expect(started.controllers).toEqual([
-        { ...initial.controllers[0], phase: "uploading", busy: true },
+        { ...initial.controllers[0]!, phase: "uploading", busy: true },
       ]);
       expect(started.requests).toHaveLength(1);
       expect(started.requests[0]!.args.requestId).toBe(initial.controllers[0]!.requestId);
@@ -222,12 +235,16 @@ test("portable Files keeps its selection and exact Save through host recompositi
       await browser.evaluate("window.fixture.abandonClient()");
       await browser.evaluate("window.fixture.recompose()");
       expect(await browser.evaluate<FilesState>("window.fixture.files()")).toEqual(started);
-      expect(await browser.evaluate<string>("document.querySelector('[role=\"status\"]').textContent"))
-        .toContain("uploading");
+      expect(
+        await browser.evaluate<string>("document.querySelector('[role=\"status\"]').textContent"),
+      ).toContain("uploading");
       expect(await browser.evaluate<string[]>("window.fixture.custody()")).toEqual(custody);
 
       await browser.evaluate("window.fixture.failPending()");
-      await until(browser, "window.fixture.files().controllers[0].phase === 'outcome_unknown' && !window.fixture.files().controllers[0].busy");
+      await until(
+        browser,
+        "window.fixture.files().controllers[0].phase === 'outcome_unknown' && !window.fixture.files().controllers[0].busy",
+      );
       await browser.evaluate("window.fixture.recompose()");
       await press(browser, "Retry exact Save request");
       await until(browser, "window.fixture.counts().pending === 1");
@@ -263,12 +280,14 @@ test("portable Files retires genuine session authority changes without reviving 
         await browser.evaluate(`window.fixture.change(${JSON.stringify(field)})`);
         await browser.evaluate("window.fixture.restoreHost(); window.fixture.failPending()");
         await until(browser, "!window.fixture.files().controllers[0].busy");
-        expect(await browser.evaluate<string>("document.body.textContent")).toContain("Intake retired");
+        expect(await browser.evaluate<string>("document.body.textContent")).toContain(
+          "Intake retired",
+        );
         const retired = await browser.evaluate<FilesState>("window.fixture.files()");
         expect(retired.requests).toEqual(started.requests);
         expect(retired.handles).toEqual(started.handles);
         expect(retired.controllers).toEqual([
-          { ...started.controllers[0], phase: "outcome_unknown", busy: false },
+          { ...started.controllers[0]!, phase: "outcome_unknown", busy: false },
         ]);
         expect(await browser.evaluate<string[]>("window.fixture.custody()")).toEqual(
           started.handles.map(() => "unavailable"),

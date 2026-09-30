@@ -188,9 +188,11 @@ describe("reference data callbacks", () => {
         data = ctx;
         expect("principal" in ctx || "nativeTransfers" in ctx || "actions" in ctx).toBe(false);
         const actor = await retained.promise;
-        await expect(actor.nativeTransfers.recoverAdmission(recoveryRequest)).rejects.toMatchObject({
-          reason: "native_transfer_unavailable",
-        });
+        await expect(actor.nativeTransfers.recoverAdmission(recoveryRequest)).rejects.toMatchObject(
+          {
+            reason: "native_transfer_unavailable",
+          },
+        );
         await expect(
           actor.nativeTransfers.beginRead({
             requestId: "replayed",
@@ -229,34 +231,37 @@ describe("reference data callbacks", () => {
     });
   });
 
-  test.each(["credential", "oversized"])("pending admission replies reject %s metadata", async (mode) => {
-    const row = {
-      actorId: principal.id,
-      credentialBinding: "a".repeat(64),
-      request: recoveryRequest,
-      createdAt: 1,
-    };
-    const fake = host({
-      manifest,
-      actions: [],
-      handlers: {},
-      reconcileNativeTransfers: async () => {},
-      pendingNativeTransfers: async () =>
-        mode === "credential"
-          ? [{ ...row, credential: "secret" }]
-          : Array.from({ length: 33 }, (_, index) => ({
-              ...row,
-              request: { ...row.request, requestId: `pending-${index}` },
-            })),
-    });
-    load(fake);
-    await fake.next();
-    fake.send({ t: "pending_native_transfers", id: "pending", now: 20 });
-    expect(await fake.next()).toMatchObject({
-      t: "pending_native_transfers_result",
-      outcome: { ok: false },
-    });
-  });
+  test.each(["credential", "oversized"])(
+    "pending admission replies reject %s metadata",
+    async (mode) => {
+      const row = {
+        actorId: principal.id,
+        credentialBinding: "a".repeat(64),
+        request: recoveryRequest,
+        createdAt: 1,
+      };
+      const fake = host({
+        manifest,
+        actions: [],
+        handlers: {},
+        reconcileNativeTransfers: async () => {},
+        pendingNativeTransfers: async () =>
+          mode === "credential"
+            ? [{ ...row, credential: "secret" }]
+            : Array.from({ length: 33 }, (_, index) => ({
+                ...row,
+                request: { ...row.request, requestId: `pending-${index}` },
+              })),
+      });
+      load(fake);
+      await fake.next();
+      fake.send({ t: "pending_native_transfers", id: "pending", now: 20 });
+      expect(await fake.next()).toMatchObject({
+        t: "pending_native_transfers_result",
+        outcome: { ok: false },
+      });
+    },
+  );
 
   test("native evidence callbacks cannot borrow live publication authority or retain their data lease", async () => {
     const retained = Promise.withResolvers<GuestCtx>();
@@ -287,9 +292,9 @@ describe("reference data callbacks", () => {
             maxBytes: 1,
           }),
         ).rejects.toMatchObject({ reason: "native_transfer_unavailable" });
-        await expect(
-          actor.nativeTransfers.recoverAdmission(recoveryRequest),
-        ).rejects.toMatchObject({ reason: "native_transfer_unavailable" });
+        await expect(actor.nativeTransfers.recoverAdmission(recoveryRequest)).rejects.toMatchObject(
+          { reason: "native_transfer_unavailable" },
+        );
         await ctx.storage.delete(`reservation:${receipt.transferId}`);
       },
     });

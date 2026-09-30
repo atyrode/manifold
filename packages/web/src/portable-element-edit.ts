@@ -84,7 +84,16 @@ export function usePortableElementEdit(
   const epoch = client?.epoch;
   const lifetime = useMemo(
     () =>
-      new ElementEditLifetime({ client, owner, token, principal, containerId, id, expected, epoch }),
+      new ElementEditLifetime({
+        client,
+        owner,
+        token,
+        principal,
+        containerId,
+        id,
+        expected,
+        epoch,
+      }),
     [client, owner, token, principal, containerId, id, expected, epoch],
   );
   useLayoutEffect(() => lifetime.mount(), [lifetime]);

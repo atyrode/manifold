@@ -1282,6 +1282,29 @@ elapsed time. A recorded unsent admission may terminate locally, but a durable d
 stays unknown without authoritative terminal evidence. An owner's unknown ID alone is not proof
 that no effect occurred.
 
+Owners with durable pre-admission reservations declare paired server callbacks
+`pendingNativeTransfers(ctx)` and `reconcileNativeTransfers(ctx, evidence)`. The pending callback
+returns at most 32 strict records `{ actorId, credentialBinding, request, createdAt }`;
+`request` is the complete immutable `NativeTransferRecoverAdmissionArgs`, including its mode.
+`ReferenceProbeCtx` provides only bounded private storage/database access and a clock, never
+an actor or native-effect context. The hardened host supplies the idle-only bridge; do not
+substitute an empty snapshot when that owner is busy or unavailable.
+
+The host keeps the owner idle through snapshot validation and synchronous absence fencing.
+It then delivers durable private evidence without replaying a native effect or impersonating
+the old caller. Existing admissions and unknown dispatch intent are not absence evidence.
+Failed probes or acknowledgements remain debt for existing idle/authority notifications and
+the one-second job maintenance pass, not a new polling loop.
+Waiting behind a private probe still consumes the caller's original deadline and cancellation.
+Delivery of already-durable refusal evidence does not depend on every new snapshot entry fitting
+the metadata budget; capacity failure is not permission to forget earlier unacknowledged evidence.
+
+A pass visits at most 32 owners. Private insertion permits at most 32 retained refusal fences
+per owner, including acknowledged and public-origin fences, within the shared 1,000-record
+metadata bound. Repeated exact requests reuse their fence. Acknowledgement does not immediately
+free that allowance or refresh its seven-day host-created retention; unacknowledged evidence
+does not expire. Keep a caller-known request identity: Files' public `receiptNative({ requestId })`
+returns only its matching `{ requestId, state }`, without needing a lost begin response.
 
 ### Element types are reserved while you are away
 
@@ -4081,6 +4104,8 @@ contains only `{ value?, files: LocalFileDescriptor[] }`, in both page and Worke
 another mount's custody. Capture and shared-slot admission happen only at commit. Changing the
 client, credential, principal or container retires an existing intake rather than handing an old
 selection to the new viewer; restoring the previous identity does not revive that intake.
+Ordinary layout, viewport and assembly metadata updates preserve the portable client facade.
+Do not treat those updates as a new credential or use them to replace a pending request.
 
 `input.value` obeys the existing 4 KiB JSON-record argument bound but is never persisted as `arg`.
 `onResult` accepts one JSON record, at most 64 KiB UTF-8 and 32 container levels deep. It is fenced to the

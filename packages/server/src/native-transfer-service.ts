@@ -168,7 +168,6 @@ export class NativeTransferService {
     this.evidenceSink = sink;
   }
 
-
   setPendingAdmissionSource(source: NativeTransferPendingSource): void {
     this.pendingSource = source;
     for (const pluginId of source.owners()) this.pendingOwners.add(pluginId);
@@ -186,9 +185,12 @@ export class NativeTransferService {
     const owners = pendingOnly
       ? source.owners().filter((id) => this.pendingOwners.has(id))
       : source.owners();
-    const selected = pluginId === undefined
-      ? owners.slice(this.probeOffset, this.probeOffset + 32)
-      : owners.includes(pluginId) ? [pluginId] : [];
+    const selected =
+      pluginId === undefined
+        ? owners.slice(this.probeOffset, this.probeOffset + 32)
+        : owners.includes(pluginId)
+          ? [pluginId]
+          : [];
     if (pluginId === undefined)
       this.probeOffset = this.probeOffset + 32 >= owners.length ? 0 : this.probeOffset + 32;
     for (const id of selected) {
@@ -216,7 +218,10 @@ export class NativeTransferService {
     }
   }
 
-  private async probePendingOwner(source: NativeTransferPendingSource, pluginId: string): Promise<void> {
+  private async probePendingOwner(
+    source: NativeTransferPendingSource,
+    pluginId: string,
+  ): Promise<void> {
     let complete = false;
     try {
       let accepted = false;
@@ -224,9 +229,16 @@ export class NativeTransferService {
         if (accepted) throw new ServiceError("conflict", "native_transfer_cleanup_unknown");
         const entries = NativeTransferPendingAdmissionsSchema.parse(snapshot);
         for (const entry of entries) {
-          this.fenceAdmission({
-            pluginId, actorId: entry.actorId, credentialBinding: entry.credentialBinding,
-          }, entry.request, "transfer_unavailable", true);
+          this.fenceAdmission(
+            {
+              pluginId,
+              actorId: entry.actorId,
+              credentialBinding: entry.credentialBinding,
+            },
+            entry.request,
+            "transfer_unavailable",
+            true,
+          );
         }
         accepted = true;
       });
@@ -240,15 +252,21 @@ export class NativeTransferService {
     this.pendingOwners.delete(pluginId);
     try {
       await this.deliverEvidence();
-      const unacknowledgedRefusal = this.store.db.query<{ record: string }, [string]>(
-        "SELECT record FROM native_admission_refusals WHERE plugin_id=? LIMIT 1000",
-      ).all(pluginId).some((row) => !refusalRecordSchema.parse(JSON.parse(row.record)).evidenceDelivered);
-      const unacknowledgedTerminal = this.store.db.query<{ record: string }, [string]>(
-        "SELECT record FROM native_transfers WHERE plugin_id=? LIMIT 1000",
-      ).all(pluginId).some((row) => {
-        const record = recordSchema.parse(JSON.parse(row.record));
-        return !ACTIVE[record.status.state] && !record.evidenceDelivered;
-      });
+      const unacknowledgedRefusal = this.store.db
+        .query<{ record: string }, [string]>(
+          "SELECT record FROM native_admission_refusals WHERE plugin_id=? LIMIT 1000",
+        )
+        .all(pluginId)
+        .some((row) => !refusalRecordSchema.parse(JSON.parse(row.record)).evidenceDelivered);
+      const unacknowledgedTerminal = this.store.db
+        .query<{ record: string }, [string]>(
+          "SELECT record FROM native_transfers WHERE plugin_id=? LIMIT 1000",
+        )
+        .all(pluginId)
+        .some((row) => {
+          const record = recordSchema.parse(JSON.parse(row.record));
+          return !ACTIVE[record.status.state] && !record.evidenceDelivered;
+        });
       if (!complete || unacknowledgedRefusal || unacknowledgedTerminal)
         this.pendingOwners.add(pluginId);
     } catch {
@@ -453,9 +471,11 @@ export class NativeTransferService {
       }
     }
     const refusals = new Map<string, RefusalRecord[]>();
-    for (const row of this.store.db.query<{ record: string }, []>(
-      "SELECT record FROM native_admission_refusals ORDER BY plugin_id,actor_id,credential_binding,request_id LIMIT 1000",
-    ).all()) {
+    for (const row of this.store.db
+      .query<{ record: string }, []>(
+        "SELECT record FROM native_admission_refusals ORDER BY plugin_id,actor_id,credential_binding,request_id LIMIT 1000",
+      )
+      .all()) {
       const record = refusalRecordSchema.parse(JSON.parse(row.record));
       if (record.evidenceDelivered) continue;
       const group = refusals.get(record.pluginId) ?? [];
@@ -466,17 +486,29 @@ export class NativeTransferService {
       for (let offset = 0; offset < records.length; offset += 64) {
         const batch = records.slice(offset, offset + 64);
         const evidence = batch.map((record): NativeTransferTerminalEvidence => ({
-          kind: "admission-refused", requestId: record.requestId, actorId: record.actorId,
-          credentialBinding: record.credentialBinding, mode: record.mode,
-          attemptedAt: record.attemptedAt, reason: record.reason,
+          kind: "admission-refused",
+          requestId: record.requestId,
+          actorId: record.actorId,
+          credentialBinding: record.credentialBinding,
+          mode: record.mode,
+          attemptedAt: record.attemptedAt,
+          reason: record.reason,
         }));
         try {
-          if (!await sink(pluginId, evidence)) continue;
+          if (!(await sink(pluginId, evidence))) continue;
           for (const record of batch) {
             record.evidenceDelivered = true;
-            this.store.db.query(
-              "UPDATE native_admission_refusals SET record=? WHERE plugin_id=? AND actor_id=? AND credential_binding=? AND request_id=?",
-            ).run(canonicalJobJson(record), record.pluginId, record.actorId, record.credentialBinding, record.requestId);
+            this.store.db
+              .query(
+                "UPDATE native_admission_refusals SET record=? WHERE plugin_id=? AND actor_id=? AND credential_binding=? AND request_id=?",
+              )
+              .run(
+                canonicalJobJson(record),
+                record.pluginId,
+                record.actorId,
+                record.credentialBinding,
+                record.requestId,
+              );
           }
         } catch {
           // A failed private callback cannot erase a durable non-admission fence.
@@ -522,9 +554,11 @@ export class NativeTransferService {
     }
     if (active) throw new ServiceError("conflict", "active_native_transfers");
     if (this.evidenceSink) {
-      for (const row of this.store.db.query<{ record: string }, [string]>(
-        "SELECT record FROM native_admission_refusals WHERE plugin_id=?",
-      ).all(pluginId)) {
+      for (const row of this.store.db
+        .query<{ record: string }, [string]>(
+          "SELECT record FROM native_admission_refusals WHERE plugin_id=?",
+        )
+        .all(pluginId)) {
         if (!refusalRecordSchema.parse(JSON.parse(row.record)).evidenceDelivered)
           throw new ServiceError("conflict", "native_transfer_cleanup_unknown");
       }
@@ -543,8 +577,11 @@ export class NativeTransferService {
     return this.auth.credentialBinding(auth);
   }
   private admissionIdentity(caller: Caller): AdmissionIdentity {
-    return { pluginId: caller.pluginId, actorId: caller.auth.principal.id,
-      credentialBinding: this.credentialBinding(caller.auth) };
+    return {
+      pluginId: caller.pluginId,
+      actorId: caller.auth.principal.id,
+      credentialBinding: this.credentialBinding(caller.auth),
+    };
   }
   private load(caller: Caller, transferId: string): TransferRecord {
     // Match original host lineage before checking live authority. A revoked matching caller
@@ -572,20 +609,31 @@ export class NativeTransferService {
       .run(canonicalJobJson(record), this.now(), record.binding.transferId);
   }
 
-  private admittedRequest(identity: AdmissionIdentity, request: NativeTransferRecoverAdmissionArgs): TransferRecord | null {
-    const row = this.store.db.query<{ record: string }, [string, string, string, string]>(
-      "SELECT record FROM native_transfers WHERE plugin_id=? AND actor_id=? AND credential_binding=? AND request_id=?",
-    ).get(identity.pluginId, identity.actorId, identity.credentialBinding, request.requestId);
+  private admittedRequest(
+    identity: AdmissionIdentity,
+    request: NativeTransferRecoverAdmissionArgs,
+  ): TransferRecord | null {
+    const row = this.store.db
+      .query<{ record: string }, [string, string, string, string]>(
+        "SELECT record FROM native_transfers WHERE plugin_id=? AND actor_id=? AND credential_binding=? AND request_id=?",
+      )
+      .get(identity.pluginId, identity.actorId, identity.credentialBinding, request.requestId);
     if (!row) return null;
     const record = recordSchema.parse(JSON.parse(row.record));
-    if (digest(record.binding.request) !== digest(request)) return refused("transfer_request_conflict");
+    if (digest(record.binding.request) !== digest(request))
+      return refused("transfer_request_conflict");
     return record;
   }
 
-  private admissionRefusal(identity: AdmissionIdentity, request: NativeTransferRecoverAdmissionArgs): RefusalRecord | null {
-    const row = this.store.db.query<{ record: string }, [string, string, string, string]>(
-      "SELECT record FROM native_admission_refusals WHERE plugin_id=? AND actor_id=? AND credential_binding=? AND request_id=?",
-    ).get(identity.pluginId, identity.actorId, identity.credentialBinding, request.requestId);
+  private admissionRefusal(
+    identity: AdmissionIdentity,
+    request: NativeTransferRecoverAdmissionArgs,
+  ): RefusalRecord | null {
+    const row = this.store.db
+      .query<{ record: string }, [string, string, string, string]>(
+        "SELECT record FROM native_admission_refusals WHERE plugin_id=? AND actor_id=? AND credential_binding=? AND request_id=?",
+      )
+      .get(identity.pluginId, identity.actorId, identity.credentialBinding, request.requestId);
     if (!row) return null;
     const record = refusalRecordSchema.parse(JSON.parse(row.record));
     if (record.requestDigest !== digest(request) || record.mode !== request.mode)
@@ -594,14 +642,20 @@ export class NativeTransferService {
   }
 
   private assertMetadataCapacity(): void {
-    const row = this.store.db.query<{ count: number }, []>(
-      "SELECT (SELECT count(*) FROM native_transfers)+(SELECT count(*) FROM native_admission_refusals) AS count",
-    ).get()!;
+    const row = this.store.db
+      .query<{ count: number }, []>(
+        "SELECT (SELECT count(*) FROM native_transfers)+(SELECT count(*) FROM native_admission_refusals) AS count",
+      )
+      .get()!;
     if (row.count >= 1000) return refused("transfer_receipt_limit");
   }
 
-  private fenceAdmission(identity: AdmissionIdentity, request: NativeTransferRecoverAdmissionArgs,
-    reason: NativeTransferReason, privateProbe = false):
+  private fenceAdmission(
+    identity: AdmissionIdentity,
+    request: NativeTransferRecoverAdmissionArgs,
+    reason: NativeTransferReason,
+    privateProbe = false,
+  ):
     { kind: "admitted"; record: TransferRecord } | { kind: "not-admitted"; record: RefusalRecord } {
     return this.store.transaction(() => {
       const admitted = this.admittedRequest(identity, request);
@@ -612,29 +666,50 @@ export class NativeTransferService {
       if (privateProbe) {
         // Private metadata is not caller authority. ACKing invented batches must not let one
         // owner consume the shared journal; count all retained fences, not only unACKed ones.
-        const row = this.store.db.query<{ count: number }, [string]>(
-          "SELECT count(*) AS count FROM native_admission_refusals WHERE plugin_id=?",
-        ).get(identity.pluginId)!;
+        const row = this.store.db
+          .query<{ count: number }, [string]>(
+            "SELECT count(*) AS count FROM native_admission_refusals WHERE plugin_id=?",
+          )
+          .get(identity.pluginId)!;
         if (row.count >= 32) return refused("transfer_receipt_limit");
       }
       this.assertMetadataCapacity();
       const record: RefusalRecord = {
-        ...identity, requestId: request.requestId,
-        requestDigest: digest(request), mode: request.mode, reason,
-        attemptedAt: this.now(), evidenceDelivered: false,
+        ...identity,
+        requestId: request.requestId,
+        requestDigest: digest(request),
+        mode: request.mode,
+        reason,
+        attemptedAt: this.now(),
+        evidenceDelivered: false,
       };
-      this.store.db.query(
-        "INSERT INTO native_admission_refusals(plugin_id,actor_id,credential_binding,request_id,record,updated_at) VALUES (?,?,?,?,?,?)",
-      ).run(record.pluginId, record.actorId, record.credentialBinding, record.requestId,
-        canonicalJobJson(record), record.attemptedAt);
+      this.store.db
+        .query(
+          "INSERT INTO native_admission_refusals(plugin_id,actor_id,credential_binding,request_id,record,updated_at) VALUES (?,?,?,?,?,?)",
+        )
+        .run(
+          record.pluginId,
+          record.actorId,
+          record.credentialBinding,
+          record.requestId,
+          canonicalJobJson(record),
+          record.attemptedAt,
+        );
       return { kind: "not-admitted" as const, record };
     });
   }
 
   /** Lifecycle reconciliation: atomically fences absence against a later awaited admission. */
-  async recoverAdmission(caller: Caller, request: NativeTransferRecoverAdmissionArgs): Promise<NativeTransferAdmissionRecovery> {
+  async recoverAdmission(
+    caller: Caller,
+    request: NativeTransferRecoverAdmissionArgs,
+  ): Promise<NativeTransferAdmissionRecovery> {
     this.current(caller);
-    const recovery = this.fenceAdmission(this.admissionIdentity(caller), request, "transfer_unavailable");
+    const recovery = this.fenceAdmission(
+      this.admissionIdentity(caller),
+      request,
+      "transfer_unavailable",
+    );
     if (recovery.kind === "admitted")
       return { kind: "admitted", transferId: recovery.record.binding.transferId };
     await this.deliverEvidence(false);
@@ -642,10 +717,18 @@ export class NativeTransferService {
     return { kind: "not-admitted", reason: recovery.record.reason };
   }
 
-  private retireUnsent(record: TransferRecord, reason: NativeTransferReason = "transfer_action_unavailable"): boolean {
+  private retireUnsent(
+    record: TransferRecord,
+    reason: NativeTransferReason = "transfer_action_unavailable",
+  ): boolean {
     if (record.beginDispatch !== "unsent" || !ACTIVE[record.status.state]) return false;
-    record.status = { transferId: record.binding.transferId, mode: record.binding.request.mode,
-      state: "refused", bytes: 0, reason };
+    record.status = {
+      transferId: record.binding.transferId,
+      mode: record.binding.request.mode,
+      state: "refused",
+      bytes: 0,
+      reason,
+    };
     record.evidenceDelivered = false;
     this.save(record);
     return true;
@@ -819,11 +902,16 @@ export class NativeTransferService {
     try {
       return await this.admit(caller, request);
     } catch (error) {
-      const reason = NativeTransferReasonSchema.safeParse(error instanceof ServiceError ? error.message : "");
+      const reason = NativeTransferReasonSchema.safeParse(
+        error instanceof ServiceError ? error.message : "",
+      );
       // Persist the no-admission fence before trying the private callback. An in-flight
       // source probe must recheck this exact fence before inserting its admission record.
-      const recovery = this.fenceAdmission(this.admissionIdentity(caller), request,
-        reason.success ? reason.data : "native_transfer_unavailable");
+      const recovery = this.fenceAdmission(
+        this.admissionIdentity(caller),
+        request,
+        reason.success ? reason.data : "native_transfer_unavailable",
+      );
       if (recovery.kind === "not-admitted" && this.evidenceSink) {
         await this.deliverEvidence(false);
         if (!this.admissionRefusal(this.admissionIdentity(caller), request)?.evidenceDelivered)
@@ -1023,19 +1111,22 @@ export class NativeTransferService {
   ): Promise<Extract<NativeTransferResult, { ok: true }>> {
     const transferId = record.binding.transferId;
     let acquired = false;
-    const admission = raw.method === "beginPut" || raw.method === "beginRead" ? {
-      attempted: false,
-      prepare: () => {
-        this.store.transaction(() => {
-          const current = this.retained(transferId);
-          if (!current || current.beginDispatch !== "unsent" || !ACTIVE[current.status.state])
-            return refused("transfer_unavailable");
-          current.beginDispatch = "intended";
-          this.save(current);
-          record.beginDispatch = "intended";
-        });
-      },
-    } : undefined;
+    const admission =
+      raw.method === "beginPut" || raw.method === "beginRead"
+        ? {
+            attempted: false,
+            prepare: () => {
+              this.store.transaction(() => {
+                const current = this.retained(transferId);
+                if (!current || current.beginDispatch !== "unsent" || !ACTIVE[current.status.state])
+                  return refused("transfer_unavailable");
+                current.beginDispatch = "intended";
+                this.save(current);
+                record.beginDispatch = "intended";
+              });
+            },
+          }
+        : undefined;
     try {
       const request = NativeTransferRequestSchema.parse(raw);
       if (this.busy.has(transferId) || this.pending.size >= 4)
@@ -1151,10 +1242,14 @@ export class NativeTransferService {
         if (current && ACTIVE[current.status.state]) {
           // This process still knows channel.send was never entered. A crash after the
           // persisted intent does NOT have this proof and remains unknown on restart.
-          const reason = NativeTransferReasonSchema.safeParse(error instanceof ServiceError ? error.message : "");
+          const reason = NativeTransferReasonSchema.safeParse(
+            error instanceof ServiceError ? error.message : "",
+          );
           current.beginDispatch = "unsent";
           this.retireUnsent(current, reason.success ? reason.data : "native_transfer_unavailable");
-          void this.deliverEvidence(false).catch(() => { this.reconciliationFailed = true; });
+          void this.deliverEvidence(false).catch(() => {
+            this.reconciliationFailed = true;
+          });
         }
       }
       // Include loading/current-authority failures in retries and reconciliation, and a
@@ -1306,9 +1401,11 @@ export class NativeTransferService {
         ACTIVE[record.status.state] &&
         record.status.state !== "outcome_unknown" &&
         record.commitDecision === undefined &&
-        ((record.beginDispatch === "intended" && record.status.state === "queued" &&
+        ((record.beginDispatch === "intended" &&
+          record.status.state === "queued" &&
           !this.busy.has(record.binding.transferId)) ||
-          this.now() >= record.binding.expiresAt || this.now() - record.touchedAt >= 60_000)
+          this.now() >= record.binding.expiresAt ||
+          this.now() - record.touchedAt >= 60_000)
       ) {
         // Elapsed hub time cannot prove the owner removed private staging/snapshots.
         // Retain charges until that exact owner establishes terminal cleanup.
@@ -1328,14 +1425,21 @@ export class NativeTransferService {
       )
         this.store.db.query("DELETE FROM native_transfers WHERE id=?").run(row.id);
     }
-    for (const row of this.store.db.query<{ record: string; updated_at: number }, []>(
-      "SELECT record,updated_at FROM native_admission_refusals",
-    ).all()) {
+    for (const row of this.store.db
+      .query<{ record: string; updated_at: number }, []>(
+        "SELECT record,updated_at FROM native_admission_refusals",
+      )
+      .all()) {
       const record = refusalRecordSchema.parse(JSON.parse(row.record));
-      if ((!this.evidenceSink || record.evidenceDelivered) && this.now() - row.updated_at > RECEIPT_MS)
-        this.store.db.query(
-          "DELETE FROM native_admission_refusals WHERE plugin_id=? AND actor_id=? AND credential_binding=? AND request_id=?",
-        ).run(record.pluginId, record.actorId, record.credentialBinding, record.requestId);
+      if (
+        (!this.evidenceSink || record.evidenceDelivered) &&
+        this.now() - row.updated_at > RECEIPT_MS
+      )
+        this.store.db
+          .query(
+            "DELETE FROM native_admission_refusals WHERE plugin_id=? AND actor_id=? AND credential_binding=? AND request_id=?",
+          )
+          .run(record.pluginId, record.actorId, record.credentialBinding, record.requestId);
     }
   }
 }

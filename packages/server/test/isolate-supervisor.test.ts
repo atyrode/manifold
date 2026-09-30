@@ -521,7 +521,12 @@ describe("IsolateSupervisor", () => {
       ordinary = invoke(
         f.def,
         "echo",
-        { ...f.ctx, admitPrepared: () => { admitted = true; } },
+        {
+          ...f.ctx,
+          admitPrepared: () => {
+            admitted = true;
+          },
+        },
         { text: "after snapshot" },
       );
       expect(await probe({ storage: f.storage, now: () => f.runtime.now() })).toBeNull();
@@ -690,11 +695,16 @@ describe("IsolateSupervisor", () => {
       hardenedContract: 12,
       manifest: {
         ...manifest,
-        capabilities: ["scenes:read"],
+        capabilities: ["containers:read"],
         contributes: {
           ...manifest.contributes,
           byteCarriers: [
-            { id: "bytes", direction: "outgoing", capability: "scenes:read", refKinds: ["file"] },
+            {
+              id: "bytes",
+              direction: "outgoing",
+              capability: "containers:read",
+              refKinds: ["file"],
+            },
           ],
         },
       },

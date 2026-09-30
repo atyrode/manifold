@@ -264,9 +264,7 @@ function ContributionBody({
 }): ReactElement {
   const bound = useMemo(
     () =>
-      portable
-        ? portableHost(host, resources)
-        : { ...host, localFiles: resources.localFiles },
+      portable ? portableHost(host, resources) : { ...host, localFiles: resources.localFiles },
     [host, portable, resources],
   );
   return (

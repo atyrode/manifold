@@ -725,11 +725,7 @@ export class IsolateSupervisor implements IsolateRunner {
       : Number.POSITIVE_INFINITY;
     const expiresAt = now + Math.min(duration, inheritedBudget);
     if (served?.kind === "dispatch" && served.ctx.waitForNativePendingProbe !== undefined)
-      await this.waitForAdmissionGate(
-        isolate,
-        served.ctx.waitForNativePendingProbe,
-        expiresAt,
-      );
+      await this.waitForAdmissionGate(isolate, served.ctx.waitForNativePendingProbe, expiresAt);
     const turn = await this.acquireOwnerTurn(isolate, served, idleOnly, expiresAt);
     let startupDeadline: Timer | undefined;
     try {

@@ -471,11 +471,7 @@ export function NativeFileTransfer({
           </Button>
         ) : null}
         {intent ? (
-          <Button
-            disabled={busy}
-            data-action="core.files.receiptNative"
-            onClick={reconcileReceipt}
-          >
+          <Button disabled={busy} data-action="core.files.receiptNative" onClick={reconcileReceipt}>
             Reconcile terminal evidence only
           </Button>
         ) : null}

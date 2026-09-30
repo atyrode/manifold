@@ -263,8 +263,7 @@ export function TerminalView({
     setSelectingClipboardFile(false);
   }
   const fileLifetimeRef = useRef<object | null>(null);
-  const selectionCurrent =
-    fileSelection?.lifetime === fileLifetime && filesEnabled && !readOnly;
+  const selectionCurrent = fileSelection?.lifetime === fileLifetime && filesEnabled && !readOnly;
   useLayoutEffect(() => {
     if (selectionCurrent) fileReviewRef.current?.focus();
   }, [selectionCurrent, fileSelection]);

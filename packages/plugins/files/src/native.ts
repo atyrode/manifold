@@ -12,13 +12,15 @@ import {
   type NativeTransferPendingAdmission,
 } from "@manifold/protocol";
 import { z } from "zod";
+import type {
+  FileDeliveryRequestSchema,
+  FileDownloadRequestSchema,
+  DescribeFileMachineSchema,
+} from "./contract.ts";
 import {
   BeginFileDeliverySchema,
   BeginFileDownloadSchema,
-  FileDeliveryRequestSchema,
-  FileDownloadRequestSchema,
   type FileNativeReceiptRequestSchema,
-  DescribeFileMachineSchema,
   FILE_CHUNK_BYTES,
   FILE_LIFETIME_MS,
   type FileTransfer,
@@ -237,7 +239,10 @@ async function beginDelivery(ctx: FilesContext, args: Delivery) {
     filename: args.filename,
     source: { ref: file.ref, sha256: file.sha256, bytes: file.bytes },
   };
-  const request = SavedDeliveryRequestSchema.parse({ args, native: { mode: "put", ...nativeArgs } });
+  const request = SavedDeliveryRequestSchema.parse({
+    args,
+    native: { mode: "put", ...nativeArgs },
+  });
   const id = await ctx.newId();
   const row = await reserve(ctx, {
     id,
@@ -273,7 +278,10 @@ async function beginDownload(ctx: FilesContext, args: Download) {
     locationRevision: args.locationRevision,
     relativePath: args.relativePath,
   };
-  const request = SavedDownloadRequestSchema.parse({ args, native: { mode: "read", ...nativeArgs } });
+  const request = SavedDownloadRequestSchema.parse({
+    args,
+    native: { mode: "read", ...nativeArgs },
+  });
   const id = await ctx.newId();
   const row = await reserve(ctx, {
     id,

@@ -160,9 +160,11 @@ function BorrowedPanelInstance({ panelId, input, onResult }: BorrowedPanelProps)
 }
 
 /** Remounting a resource store must not repeat a result or hand an old selection to a new viewer. */
-export function PanelIntakeGate(props: PanelProps & {
-  readonly children: (onResult: PanelProps["onResult"]) => ReactNode;
-}): ReactElement {
+export function PanelIntakeGate(
+  props: PanelProps & {
+    readonly children: (onResult: PanelProps["onResult"]) => ReactNode;
+  },
+): ReactElement {
   return props.input === undefined && props.onResult === undefined ? (
     <>{props.children(undefined)}</>
   ) : (
@@ -170,9 +172,11 @@ export function PanelIntakeGate(props: PanelProps & {
   );
 }
 
-function IntakeIdentity(props: PanelProps & {
-  readonly children: (onResult: PanelProps["onResult"]) => ReactNode;
-}): ReactElement | null {
+function IntakeIdentity(
+  props: PanelProps & {
+    readonly children: (onResult: PanelProps["onResult"]) => ReactNode;
+  },
+): ReactElement | null {
   const { host, input } = props;
   const [owner, setOwner] = useState({
     input,
@@ -210,33 +214,45 @@ function IntakeIdentity(props: PanelProps & {
   return <IntakeLifetime key={owner.generation} {...props} />;
 }
 
+/** Imperative result ownership belongs to one committed intake, never to a render. */
+class IntakeResultLease {
+  private delivered = false;
+  private live = false;
+  private callback: PanelProps["onResult"];
+
+  setCallback(callback: PanelProps["onResult"]): void {
+    this.callback = callback;
+  }
+
+  mount(): () => void {
+    this.live = true;
+    return () => {
+      this.live = false;
+    };
+  }
+
+  readonly deliver: NonNullable<PanelProps["onResult"]> = (value) => {
+    if (!this.live || this.delivered) return;
+    const parsed = PanelResultSchema.parse(value);
+    this.delivered = true;
+    this.callback?.(parsed);
+  };
+}
+
 function IntakeLifetime({
   onResult,
   children,
 }: {
-  readonly onResult: PanelProps["onResult"];
+  readonly onResult?: PanelProps["onResult"];
   readonly children: (onResult: PanelProps["onResult"]) => ReactNode;
 }): ReactElement {
-  const delivered = useRef(false);
-  const live = useRef(false);
-  const callback = useRef(onResult);
+  const [lease] = useState(() => new IntakeResultLease());
   // Descendant layout effects may complete immediately; install this commit's callback first.
   useInsertionEffect(() => {
-    callback.current = onResult;
-  }, [onResult]);
-  useInsertionEffect(() => {
-    live.current = true;
-    return () => {
-      live.current = false;
-    };
-  }, []);
-  const result = useCallback<NonNullable<PanelProps["onResult"]>>((value) => {
-    if (!live.current || delivered.current) return;
-    const parsed = PanelResultSchema.parse(value);
-    delivered.current = true;
-    callback.current?.(parsed);
-  }, []);
-  return <>{children(onResult === undefined ? undefined : result)}</>;
+    lease.setCallback(onResult);
+  }, [lease, onResult]);
+  useInsertionEffect(() => lease.mount(), [lease]);
+  return <>{children(onResult === undefined ? undefined : lease.deliver)}</>;
 }
 
 /** Capture native Files only in the receiving owner's store; workers receive its descriptors. */
@@ -257,6 +273,7 @@ class InputLease {
   private captured: readonly LocalFileDescriptor[] = [];
   private snapshot: CapturedInput | null = null;
   private readonly listeners = new Set<() => void>();
+  private callback: PanelProps["onResult"];
 
   constructor(
     private readonly resources: MountedByteResources,
@@ -271,6 +288,17 @@ class InputLease {
 
   isCurrent(snapshot: CapturedInput): boolean {
     return this.snapshot === snapshot && this.resources.isLive;
+  }
+
+  setCallback(callback: PanelProps["onResult"]): void {
+    this.callback = callback;
+  }
+
+  deliver(
+    snapshot: CapturedInput | null,
+    value: Parameters<NonNullable<PanelProps["onResult"]>>[0],
+  ): void {
+    if (snapshot !== null && this.isCurrent(snapshot)) this.callback?.(value);
   }
 
   mount(): () => void {
@@ -316,13 +344,12 @@ function InputCustody({
   const lease = useMemo(() => new InputLease(resources, input), [resources, input]);
   useLayoutEffect(() => lease.mount(), [lease]);
   const mounted = useSyncExternalStore(lease.subscribe, lease.getSnapshot, lease.getSnapshot);
-  const callback = useRef(onResult);
-  useLayoutEffect(() => {
-    callback.current = onResult;
-  }, [onResult]);
+  useInsertionEffect(() => {
+    lease.setCallback(onResult);
+  }, [lease, onResult]);
   const result = useCallback<NonNullable<PanelProps["onResult"]>>(
     (value) => {
-      if (mounted !== null && lease.isCurrent(mounted)) callback.current?.(value);
+      lease.deliver(mounted, value);
     },
     [lease, mounted],
   );

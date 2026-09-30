@@ -75,6 +75,9 @@ Callback liveness follows the committed mount, not the requester's callback iden
 installs the current callback before descendant layout effects so ordinary mounts and StrictMode
 replay preserve the same once-only result. Pristine local upload custody can survive same-commit
 effect replay, while cleanup immediately fences action entry and terminally retires started work.
+The narrow portable client facade belongs to that same session identity lifetime, independently
+of changing layout/viewport metadata. Retired image effects must check their lifetime before
+acquiring a queued read, not only before displaying its result.
 
 The parent's `/contract` owns shared DTO schemas. S18 narrowly admits the already-adopted
 `zod` schema DSL there, alongside platform-free floor entries; it still excludes React, DOM,
@@ -330,6 +333,26 @@ product action before the host was reached, even after source deletion, without 
 Failed evidence delivery is retried after restart. Refusals share the existing 1,000-record
 metadata cap; unacknowledged fences do not expire, and acknowledgement does not refresh the
 original seven-day retention timestamp.
+
+A transfer-ID-only receipt cannot recover a begin reply that never reached its caller.
+The public Files receipt therefore uses the original caller-known request ID, for both native
+modes, and returns only that ID and state under the exact actor/credential binding. It does not
+depend on a still-readable source. Public recovery alone is insufficient after credential
+revocation, Run expiry or abandonment, so the product also exposes bounded private pending
+metadata rather than lending the maintenance path an actor.
+
+The paired pending-admission and evidence callbacks reuse `ReferenceProbeCtx`. An idle-exclusive
+owner turn spans the snapshot and synchronous host absence fence; ordinary in-realm and hardened
+work cannot cross admission through that gap. Existing admitted or intended work is preserved.
+Each pass covers at most 32 owners with at most 32 entries each. Private insertion also counts
+all retained refusal fences against a per-owner limit of 32, including acknowledged/public-origin
+rows, so one owner cannot bypass its private insertion bound through repeated batches. Only the host
+chooses retention timestamps. Busy/unavailable sources and failed acknowledgements retain debt
+for existing idle/authority signals and the existing one-second job maintenance pass. A probe's
+own completion must not create an immediate retry loop.
+Waiting for this turn consumes the caller's original execution/private-data/carrier budget and
+cancellation. A later snapshot entry's refusal cannot starve delivery of already-durable evidence:
+retire the exact fenced reservation while retaining any still-unfenced or uncertain one.
 
 The host journals whether begin is still explicitly unsent or has a durable dispatch intent.
 Known-unsent budget, cancellation and restart paths can terminate without a native command.
