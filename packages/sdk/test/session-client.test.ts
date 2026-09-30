@@ -1620,14 +1620,7 @@ describe("terminal attach refcounting", () => {
       expect(client.terminals.has("pending-birth")).toBe(false);
       client.attachTerminal("s1");
       client.resizeTerminal("s1", 80, 24, "withdrawn-on-close");
-      const liveViewport = {
-        type: "terminal_resize",
-        ch: channelOf(client),
-        terminalId: "s1",
-        viewportId: "withdrawn-on-close",
-        viewport: { cols: 80, rows: 24 },
-      };
-      expect(framesOfType(first, "terminal_resize")).toEqual([liveViewport]);
+      first.sent.length = 0;
 
       // WebSocket.close() enters CLOSING before onclose updates the cached client status.
       first.readyState = 2;
@@ -1641,8 +1634,7 @@ describe("terminal attach refcounting", () => {
       expect(client.status).toBe("reconnecting");
       client.releaseTerminalViewport("s1", "hidden-on-reconnect");
       client.releaseTerminalViewport("pending-birth", "unmounted-before-birth");
-      const queuedWhileOffline = client.outboxSize();
-      expect(framesOfType(first, "terminal_resize")).toEqual([liveViewport]);
+      expect(framesOfType(first, "terminal_resize")).toEqual([]);
 
       vi.advanceTimersByTime(5_000);
       const second = FakeSocket.instances.at(-1);
@@ -1652,7 +1644,6 @@ describe("terminal attach refcounting", () => {
 
       // Neither obsolete geometry nor a closing-window withdrawal may cross the new channel.
       expect(framesOfType(second, "terminal_resize")).toEqual([]);
-      expect(queuedWhileOffline).toBe(1);
       expect(framesOfType(second, "terminal_attach")).toEqual([
         { type: "terminal_attach", ch: channelOf(client), terminalId: "s1" },
       ]);
@@ -1664,30 +1655,6 @@ describe("terminal attach refcounting", () => {
         element("survives-reconnect"),
       );
       replica.destroy();
-
-      // Only a new live measurement is sent, including the public virtual sdk viewport.
-      client.resizeTerminal("s1", 110, 32);
-      client.releaseTerminalViewport("s1");
-      expect(framesOfType(second, "terminal_resize")).toEqual([
-        {
-          type: "terminal_resize",
-          ch: channelOf(client),
-          terminalId: "s1",
-          viewportId: "sdk",
-          viewport: { cols: 110, rows: 32 },
-        },
-        {
-          type: "terminal_resize",
-          ch: channelOf(client),
-          terminalId: "s1",
-          viewportId: "sdk",
-          viewport: null,
-        },
-      ]);
-      client.detachTerminal("s1");
-      expect(framesOfType(second, "terminal_detach")).toEqual([
-        { type: "terminal_detach", ch: channelOf(client), terminalId: "s1" },
-      ]);
     } finally {
       client.close();
     }

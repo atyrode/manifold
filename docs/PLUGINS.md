@@ -2712,7 +2712,8 @@ interface SessionHandle {
   attachTerminal(terminalId: string): void; // snapshot + gap-free outputs; refcounted
   detachTerminal(terminalId: string): void;
   sendTerminalInput(terminalId: string, data: string | Uint8Array): void; // controller only
-  resizeTerminal(terminalId: string, cols: number, rows: number): void; // controller only
+  resizeTerminal(terminalId: string, cols: number, rows: number, viewportId?: string): void; // eligible LIVE desired viewport
+  releaseTerminalViewport(terminalId: string, viewportId?: string): void;
   takeTerminal(terminalId: string): void; // core.terminals.take decides
   killTerminal(terminalId: string): void; // core.terminals.kill decides
   on(event: "terminals_changed", fn: () => void): () => void;
@@ -2729,7 +2730,7 @@ spectator, so the renderer stays the one occupant avatar), and the server refuse
 mutation on a spectator. So the host routes each MUTATION through the occupant pipe of the
 container it concerns — the pipe the mounted container renderer dialed with `host.token` and
 published: `openTerminal` is born in `host.containerId`, the container the viewer is looking at,
-and a terminal-keyed verb (`sendTerminalInput`, `resizeTerminal`, `takeTerminal`, `killTerminal`)
+and a terminal-keyed verb (`sendTerminalInput`, `resizeTerminal`, `releaseTerminalViewport`, `takeTerminal`, `killTerminal`)
 rides the pipe of the room whose table holds the terminal. When no such view is mounted the
 call throws an `Error` naming what is missing (`no occupant view of container <id> is mounted`,
 `no occupant view holds terminal <id>`, `no container is open` at the workspace root) instead
@@ -2746,6 +2747,13 @@ const born = await host.client.openTerminal({
 });
 host.client.sendTerminalInput(born.id, "code launch --selection ...\n");
 ```
+
+Geometry uses desired viewport intent, not applied PTY dimensions. A panel's read attachment
+acquires a paired occupant viewer on its first measurement, and the intent contributes after
+that viewer's ordered snapshot handoff. A fresh measurement rebinds a replaced occupant pipe;
+the final paired detach withdraws the panel's measurements and releases its acquired viewer,
+even if that pipe has already left the registry. Read-only attachments remain on the watching
+channel and do not acquire geometry participation.
 
 A plugin-supplied `runtime` is a reviewed native descriptor, not a portable operation recipe. It
 includes the destination `machineId`; `openTerminal` must name that same machine, and native

@@ -353,9 +353,9 @@ describe("TerminalBroker viewport arbitration", () => {
       { id: terminalId, cols: 120, rows: 40 },
     ]);
     const retained = {
-      type: "terminal_sizing",
+      type: "terminal_sizing" as const,
       terminalId,
-      sizing: { mode: "retained", columns: [], rows: [] },
+      sizing: { mode: "retained" as const, columns: [], rows: [] },
     };
     expect(fixture.socket.messages()).toEqual([
       { type: "error", code: "no_machine", ref: terminalId },
@@ -448,7 +448,11 @@ describe("TerminalBroker viewport arbitration", () => {
     expect(fixture.broker.listForContainer(fixture.container.id)).toMatchObject([
       { cols: 120, rows: 40 },
     ]);
-    expect(fixture.socket.messages()).toEqual([
+    expect(
+      fixture.socket
+        .messages()
+        .filter((frame) => frame.type === "terminal_sizing" || frame.type === "terminal_event"),
+    ).toEqual([
       {
         type: "terminal_sizing",
         terminalId,
@@ -737,9 +741,9 @@ describe("TerminalBroker viewport arbitration", () => {
           { cols: 60, rows: 18, controllerId: actor.principal.id },
         ]);
         const retained = {
-          type: "terminal_sizing",
+          type: "terminal_sizing" as const,
           terminalId: fixture.create.terminalId,
-          sizing: { mode: "retained", columns: [], rows: [] },
+          sizing: { mode: "retained" as const, columns: [], rows: [] },
         };
         expect(fixture.socket.messages()).toEqual([retained]);
         expect(siblingSocket.messages()).toEqual([

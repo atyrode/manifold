@@ -140,9 +140,10 @@
   flex: none;
 }
 
+/* Applied geometry is output: reserve its largest 1000×1000 label to avoid refit feedback. */
 .terminal-sizing-control {
-  width: auto;
-  min-width: 2.5rem;
+  width: 5.2rem;
+  min-width: 5.2rem;
   height: 1.5rem;
   padding-inline: 0.3rem;
   font-size: 0.68rem;

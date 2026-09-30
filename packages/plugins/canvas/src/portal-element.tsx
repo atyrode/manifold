@@ -253,6 +253,8 @@ function PortalTerminalTile({
   const machineId = client.terminals.get(terminalId)?.machineId;
   const publishHere = usePublishLocation(projectionScope);
   const engage = (event: React.SyntheticEvent<HTMLDivElement>): void => {
+    // React bubbles portaled disclosures through this tile; only its own DOM may engage it.
+    if (!(event.target instanceof Node) || !event.currentTarget.contains(event.target)) return;
     publishHere();
     if (event.target instanceof Element && event.target.closest(".node-titlebar") !== null) return;
     onEngage(tileId);

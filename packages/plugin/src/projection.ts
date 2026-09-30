@@ -487,6 +487,8 @@ export type RoomPipe = Pick<
   SessionHandle,
   | "terminals"
   | "openTerminal"
+  | "attachTerminal"
+  | "detachTerminal"
   | "sendTerminalInput"
   | "resizeTerminal"
   | "releaseTerminalViewport"

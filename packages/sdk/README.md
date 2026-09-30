@@ -98,6 +98,9 @@ With no eligible view, the server retains the last applied grid. `terminalSizing
 `terminals` and `resized` events remain the authoritative applied geometry. Attribution
 references are not authority or private identity; name them only through already-visible
 attendance. This session-only revision does not require a native owner or fleet restart.
+Native resize admission failure also retires sizing intent and retains the last successful grid;
+only a fresh eligible measurement can enter again. Do not describe an unapplied desired size
+as the shared grid.
 
 ## Trusted launcher
 

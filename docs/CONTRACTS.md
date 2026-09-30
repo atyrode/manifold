@@ -3832,6 +3832,9 @@ env? }` → server targets `machineId` when given (error `no_machine` if it is u
   all tied limiting references for each dimension. The applied PTY grid is never a desired
   measurement. With no eligible active view, retain the last successfully requested grid
   (including the birth grid); do not collapse, refit to defaults or end the PTY.
+  If the native owner refuses a changed grid, retire the current sizing intents and their
+  expiry timer, retain the last successful grid and publish retained/empty attribution.
+  A fresh measurement must re-enter admission; desired geometry never explains an unapplied grid.
   Changed grids send the existing machine resize and home-room
   `terminal_event { kind:"resized", cols, rows }`; unchanged grids send no duplicate native
   resize. Attribution changes still publish `terminal_sizing { terminalId, sizing }`,
@@ -3843,6 +3846,9 @@ env? }` → server targets `machineId` when given (error `no_machine` if it is u
   recipient's attendance, identifies its own mount as “This view”, and uses a generic
   “Another active view” when presence does not disclose a matching connection. No private
   name/path/device lookup or resizing authority follows from attribution.
+  The indicator reserves a geometry-independent width for the bounded size label so applied
+  dimensions cannot change its own measurement area. Opening its portaled disclosure never
+  engages a spectator terminal or changes viewport participation.
   Session clients migrate together at wire51; the native machine, owner, terminal-host and
   instance wires are unchanged. The public three-argument SDK `resizeTerminal` remains one
   virtual `sdk` viewport; explicit mounted ids and `releaseTerminalViewport` support multiple
