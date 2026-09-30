@@ -133,6 +133,36 @@ export type ShareGrant = z.infer<typeof ShareGrantSchema>;
 export const RevokeShareRequestSchema = z.strictObject({ shareId: ShareIdSchema });
 export type RevokeShareRequest = z.infer<typeof RevokeShareRequestSchema>;
 
+/** The host's durable admission for one principal in the share's guest namespace. */
+export const ShareRecipientSchema = z.strictObject({
+  shareId: ShareIdSchema,
+  origin: InstanceOriginSchema,
+  guestPrincipal: PrincipalSchema,
+  requestedCaps: z.array(CapSchema).min(1),
+  caps: z.array(CapSchema),
+  requestedAt: z.number().int().nonnegative(),
+  approvedAt: z.number().int().nonnegative().nullable(),
+  approvedBy: z.string().min(1).nullable(),
+  removedAt: z.number().int().nonnegative().nullable(),
+});
+export type ShareRecipient = z.infer<typeof ShareRecipientSchema>;
+
+export const ListShareRecipientsRequestSchema = z.strictObject({ shareId: ShareIdSchema });
+export type ListShareRecipientsRequest = z.infer<typeof ListShareRecipientsRequestSchema>;
+
+export const ApproveShareRecipientRequestSchema = z.strictObject({
+  shareId: ShareIdSchema,
+  guestPrincipalId: z.string().min(1).max(64),
+  caps: z.array(CapSchema).min(1),
+});
+export type ApproveShareRecipientRequest = z.infer<typeof ApproveShareRecipientRequestSchema>;
+
+export const RemoveShareRecipientRequestSchema = z.strictObject({
+  shareId: ShareIdSchema,
+  guestPrincipalId: z.string().min(1).max(64),
+});
+export type RemoveShareRecipientRequest = z.infer<typeof RemoveShareRecipientRequestSchema>;
+
 /** Accepting a share: the host to dial, and the secret it minted. */
 export const DialShareRequestSchema = z.strictObject({
   origin: InstanceOriginSchema,
@@ -140,7 +170,11 @@ export const DialShareRequestSchema = z.strictObject({
 });
 export type DialShareRequest = z.infer<typeof DialShareRequestSchema>;
 
-export const OpenDialRequestSchema = z.strictObject({ dialId: z.string().min(1).max(64) });
+export const OpenDialRequestSchema = z.strictObject({
+  dialId: z.string().min(1).max(64),
+  /** Omission asks for the host-approved subset, never ambient full-share authority. */
+  caps: z.array(CapSchema).min(1).optional(),
+});
 export type OpenDialRequest = z.infer<typeof OpenDialRequestSchema>;
 
 /**
@@ -153,6 +187,7 @@ export const DialTicketSchema = z.strictObject({
   ref: ManifoldRefSchema,
   caps: z.array(CapSchema).min(1),
   token: z.string().min(1),
+  expiresAt: z.number().int().positive(),
 });
 export type DialTicket = z.infer<typeof DialTicketSchema>;
 
@@ -168,11 +203,16 @@ export const MAX_ADVERTISED_TICKETS = 256;
 const requestId = z.string().min(1).max(64);
 
 /**
- * Why the host will not issue a ticket. A closed set, because a refusal a guest cannot classify
- * is a refusal it can only log: `share_revoked` stops the guest from asking again,
- * `invalid_principal` is a bug on the guest's side, and `unavailable` is worth retrying.
+ * Admission refusals require a host decision, not a transport retry. A revoked share
+ * permanently ends the dial; malformed principal data and temporary availability remain distinct.
  */
-export const TICKET_REFUSALS = ["share_revoked", "invalid_principal", "unavailable"] as const;
+export const TICKET_REFUSALS = [
+  "share_revoked",
+  "recipient_unapproved",
+  "recipient_caps_refused",
+  "invalid_principal",
+  "unavailable",
+] as const;
 export const TicketRefusalSchema = z.enum(TICKET_REFUSALS);
 export type TicketRefusal = z.infer<typeof TicketRefusalSchema>;
 
@@ -207,6 +247,7 @@ const GUEST_BODIES = {
     type: z.literal("ticket_request"),
     requestId,
     principal: PrincipalSchema,
+    caps: z.array(CapSchema).min(1).optional(),
   }),
 } as const;
 
@@ -242,6 +283,8 @@ const HOST_BODIES = {
     requestId,
     token: z.string().min(1),
     principal: PrincipalSchema,
+    caps: z.array(CapSchema).min(1),
+    expiresAt: z.number().int().positive(),
   }),
   ticket_error: z.strictObject({
     type: z.literal("ticket_error"),
