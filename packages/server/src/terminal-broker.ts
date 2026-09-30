@@ -3,6 +3,8 @@ import {
   MachinePathSchema,
   canonicalJobJson,
   TERMINAL_RESTART_PROTOCOL_VERSION,
+  MAX_TERMINAL_VIEWPORTS,
+  TERMINAL_VIEWPORT_LEASE_MS,
   type LaunchRunRequest,
   type LaunchRunResult,
   type AgentRun,
@@ -20,6 +22,7 @@ import {
   type TerminalReadiness,
   type TerminalExecution,
   type TerminalExitReason,
+  type TerminalSizing,
 } from "@manifold/protocol";
 import {
   ServiceError,
@@ -98,6 +101,8 @@ interface Viewer {
   cancelSnapshotDeadline: (() => void) | null;
   snapshotGeneration: number;
   lastDeliveredSeq: number;
+  credential: CredentialReference;
+  viewports: Map<string, { cols: number; rows: number; expiresAt: number }>;
 }
 
 interface RuntimeTerminal {
@@ -106,6 +111,11 @@ interface RuntimeTerminal {
   lastReceivedOutputSeq: number;
   snapshotGeneration: number;
   snapshotRequestOutstanding: boolean;
+  sizing: TerminalSizing;
+  viewportExpiryAt: number | null;
+  cancelViewportExpiry: (() => void) | null;
+  arbitratingViewports: boolean;
+  viewportArbitrationPending: boolean;
 }
 type TerminalCreateOutcome =
   | { readonly ok: true; readonly terminal: TerminalInfo }
@@ -316,6 +326,7 @@ export class TerminalBroker implements TerminalPlacementPort {
         binding.cancelExpiry();
         this.runLaunches.delete(id);
       }
+      for (const terminal of this.terminals.values()) this.arbitrateViewports(terminal);
     });
     for (const machine of store.listMachines()) {
       if (machine.draining) this.draining.add(machine.id);
@@ -343,6 +354,11 @@ export class TerminalBroker implements TerminalPlacementPort {
         lastReceivedOutputSeq: 0,
         snapshotGeneration: 0,
         snapshotRequestOutstanding: false,
+        sizing: { mode: "retained", columns: [], rows: [] },
+        viewportExpiryAt: null,
+        cancelViewportExpiry: null,
+        arbitratingViewports: false,
+        viewportArbitrationPending: false,
       });
     }
   }
@@ -601,17 +617,168 @@ export class TerminalBroker implements TerminalPlacementPort {
     return false;
   }
 
+  private viewportAuthority(
+    channel: SessionChannel,
+    homeId: string,
+    credential: CredentialReference,
+  ): boolean {
+    if (channel.isClosed || channel.spectator || channel.containerId !== homeId) return false;
+    const current = this.auth.restoreCredential(credential);
+    return current !== null && this.auth.allows(current, "terminals:write", homeId);
+  }
+
+  /** Retire stale authority as well as expired measurements before deriving a shared grid. */
+  private pruneViewports(terminal: RuntimeTerminal): { count: number; expiresAt: number | null } {
+    const now = this.runtime.now();
+    let count = 0;
+    let expiresAt: number | null = null;
+    for (const [channel, viewer] of terminal.viewers) {
+      if (viewer.viewports.size === 0) continue;
+      if (
+        terminal.info.status !== "running" ||
+        terminal.info.controllerId !== channel.auth.principal.id ||
+        !this.viewportAuthority(channel, terminal.info.containerId, viewer.credential)
+      ) {
+        viewer.viewports.clear();
+        continue;
+      }
+      for (const [viewportId, viewport] of viewer.viewports) {
+        if (viewport.expiresAt <= now) {
+          viewer.viewports.delete(viewportId);
+          continue;
+        }
+        count += 1;
+        expiresAt = expiresAt === null ? viewport.expiresAt : Math.min(expiresAt, viewport.expiresAt);
+      }
+    }
+    return { count, expiresAt };
+  }
+
+  private arbitrateViewports(terminal: RuntimeTerminal, requester?: SessionChannel): void {
+    // Reliable sends can synchronously close a room channel and retire its measurements.
+    if (terminal.arbitratingViewports) {
+      terminal.viewportArbitrationPending = true;
+      return;
+    }
+    terminal.arbitratingViewports = true;
+    try {
+      do {
+        terminal.viewportArbitrationPending = false;
+        this.applyViewportArbitration(terminal, requester);
+      } while (terminal.viewportArbitrationPending);
+    } finally {
+      terminal.arbitratingViewports = false;
+    }
+  }
+
+  private applyViewportArbitration(terminal: RuntimeTerminal, requester?: SessionChannel): void {
+    const { expiresAt } = this.pruneViewports(terminal);
+    if (terminal.viewportExpiryAt !== expiresAt) {
+      terminal.cancelViewportExpiry?.();
+      terminal.cancelViewportExpiry = null;
+      terminal.viewportExpiryAt = expiresAt;
+      if (expiresAt !== null) {
+        terminal.cancelViewportExpiry = this.timers.schedule(() => {
+          terminal.cancelViewportExpiry = null;
+          terminal.viewportExpiryAt = null;
+          if (this.terminals.get(terminal.info.id) === terminal) this.arbitrateViewports(terminal);
+        }, expiresAt - this.runtime.now());
+      }
+    }
+    let cols: number | null = null;
+    let rows: number | null = null;
+    const columns: TerminalSizing["columns"] = [];
+    const rowLimiters: TerminalSizing["rows"] = [];
+    for (const [channel, viewer] of terminal.viewers) {
+      if (viewer.state !== "LIVE") continue;
+      for (const [viewportId, viewport] of viewer.viewports) {
+        if (cols === null || viewport.cols < cols) {
+          cols = viewport.cols;
+          columns.length = 0;
+        }
+        if (viewport.cols === cols) columns.push({ connId: channel.id, viewportId });
+        if (rows === null || viewport.rows < rows) {
+          rows = viewport.rows;
+          rowLimiters.length = 0;
+        }
+        if (viewport.rows === rows) rowLimiters.push({ connId: channel.id, viewportId });
+      }
+    }
+    if (cols !== null && rows !== null && (cols !== terminal.info.cols || rows !== terminal.info.rows)) {
+      const machine = this.machines.get(terminal.info.machineId);
+      if (machine?.send({ type: "resize", terminalId: terminal.info.id, cols, rows })) {
+        terminal.info = { ...terminal.info, cols, rows };
+        this.rooms.live(terminal.info.containerId)?.broadcast({
+          type: "terminal_event",
+          terminalId: terminal.info.id,
+          kind: "resized",
+          cols,
+          rows,
+        });
+      } else {
+        requester?.send({ type: "error", code: "no_machine", ref: terminal.info.id });
+      }
+    }
+    if (terminal.viewportArbitrationPending) return;
+    const sizing: TerminalSizing = {
+      mode: cols === null ? "retained" : "smallest",
+      columns,
+      rows: rowLimiters,
+    };
+    const sameReferences = (left: TerminalSizing["columns"], right: TerminalSizing["columns"]) => {
+      if (left.length !== right.length) return false;
+      return left.every(
+        (ref, index) =>
+          ref.connId === right[index]?.connId && ref.viewportId === right[index]?.viewportId,
+      );
+    };
+    if (
+      terminal.sizing.mode === sizing.mode &&
+      sameReferences(terminal.sizing.columns, sizing.columns) &&
+      sameReferences(terminal.sizing.rows, sizing.rows)
+    )
+      return;
+    terminal.sizing = sizing;
+    this.rooms.live(terminal.info.containerId)?.broadcast({
+      type: "terminal_sizing",
+      terminalId: terminal.info.id,
+      sizing,
+    });
+  }
+
+  private removeViewer(terminal: RuntimeTerminal, channel: SessionChannel, arbitrate = true): void {
+    const viewer = terminal.viewers.get(channel);
+    if (viewer === undefined) return;
+    viewer.cancelSnapshotDeadline?.();
+    viewer.cancelSnapshotDeadline = null;
+    viewer.viewports.clear();
+    terminal.viewers.delete(channel);
+    if (arbitrate) this.arbitrateViewports(terminal);
+  }
+
+  private clearViewportIntents(terminal: RuntimeTerminal): void {
+    terminal.cancelViewportExpiry?.();
+    terminal.cancelViewportExpiry = null;
+    terminal.viewportExpiryAt = null;
+    for (const viewer of terminal.viewers.values()) viewer.viewports.clear();
+  }
+
+  private clearViewers(terminal: RuntimeTerminal): void {
+    this.clearViewportIntents(terminal);
+    for (const viewer of terminal.viewers.values()) viewer.cancelSnapshotDeadline?.();
+    terminal.viewers.clear();
+  }
+
   private failViewer(
     terminal: RuntimeTerminal,
     channel: SessionChannel,
     viewer: Viewer,
     code: "conflict" | "no_machine",
     message: string,
+    arbitrate = true,
   ): void {
-    viewer.cancelSnapshotDeadline?.();
-    viewer.cancelSnapshotDeadline = null;
     if (terminal.viewers.get(channel) !== viewer) return;
-    terminal.viewers.delete(channel);
+    this.removeViewer(terminal, channel, arbitrate);
     channel.send({ type: "error", code, message, ref: terminal.info.id });
   }
 
@@ -626,7 +793,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       if (terminal.viewers.get(channel) !== viewer || viewer.state !== "PENDING") return;
       const requestTimedOut = terminal.snapshotRequestOutstanding;
       if (requestTimedOut) terminal.snapshotRequestOutstanding = false;
-      terminal.viewers.delete(channel);
+      this.removeViewer(terminal, channel);
       channel.send({
         type: "error",
         code: "conflict",
@@ -707,6 +874,11 @@ export class TerminalBroker implements TerminalPlacementPort {
         lastReceivedOutputSeq: 0,
         snapshotGeneration: 0,
         snapshotRequestOutstanding: false,
+        sizing: { mode: "retained", columns: [], rows: [] },
+        arbitratingViewports: false,
+        viewportArbitrationPending: false,
+        viewportExpiryAt: null,
+        cancelViewportExpiry: null,
       };
       this.terminals.set(stored.id, terminal);
     }
@@ -718,6 +890,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       return false;
     }
     if (stored.status !== "running") return false;
+    this.clearViewportIntents(terminal);
     terminal.info = {
       ...terminal.info,
       status: "running",
@@ -757,6 +930,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       }
       this.requestSnapshotForPending(terminal);
     }
+    this.arbitrateViewports(terminal);
     return true;
   }
 
@@ -1160,6 +1334,11 @@ export class TerminalBroker implements TerminalPlacementPort {
       lastReceivedOutputSeq: 0,
       snapshotGeneration: 0,
       snapshotRequestOutstanding: false,
+      sizing: { mode: "retained", columns: [], rows: [] },
+      viewportExpiryAt: null,
+      cancelViewportExpiry: null,
+      arbitratingViewports: false,
+      viewportArbitrationPending: false,
     });
     /*
       The reply carries the home LEAF for a composition opener and the opener's own ref for a
@@ -1257,8 +1436,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       });
       return;
     }
-    const previous = terminal.viewers.get(channel);
-    previous?.cancelSnapshotDeadline?.();
+    this.removeViewer(terminal, channel, false);
     const viewer: Viewer = {
       state: "PENDING",
       queue: [],
@@ -1266,24 +1444,29 @@ export class TerminalBroker implements TerminalPlacementPort {
       cancelSnapshotDeadline: null,
       snapshotGeneration: terminal.snapshotGeneration + 1,
       lastDeliveredSeq: 0,
+      credential: this.auth.credentialReference(channel.auth),
+      viewports: new Map(),
     };
     terminal.viewers.set(channel, viewer);
+    this.arbitrateViewports(terminal);
+    if (!channel.send({ type: "terminal_sizing", terminalId: terminal.info.id, sizing: terminal.sizing })) {
+      this.removeViewer(terminal, channel);
+      return;
+    }
     this.armSnapshotDeadline(terminal, channel, viewer);
     this.requestSnapshotForPending(terminal);
   }
 
   /** Stops routing one terminal's bytes to a viewer. */
   detach(channel: SessionChannel, message: TerminalDetach): void {
-    const viewer = this.terminals.get(message.terminalId)?.viewers.get(channel);
-    viewer?.cancelSnapshotDeadline?.();
-    this.terminals.get(message.terminalId)?.viewers.delete(channel);
+    const terminal = this.terminals.get(message.terminalId);
+    if (terminal !== undefined) this.removeViewer(terminal, channel);
   }
 
   /** Removes a closing socket from every terminal's viewer registry. */
   detachAll(channel: SessionChannel): void {
     for (const terminal of this.terminals.values()) {
-      terminal.viewers.get(channel)?.cancelSnapshotDeadline?.();
-      terminal.viewers.delete(channel);
+      this.removeViewer(terminal, channel);
     }
   }
 
@@ -1300,6 +1483,7 @@ export class TerminalBroker implements TerminalPlacementPort {
     if (output.seq <= terminal.lastReceivedOutputSeq) return;
     terminal.lastReceivedOutputSeq = output.seq;
     let serialized: SerializedServerMessage | null = null;
+    let retiredViewer = false;
     for (const [channel, viewer] of terminal.viewers) {
       if (viewer.state === "LIVE") {
         if (output.seq <= viewer.lastDeliveredSeq) continue;
@@ -1310,8 +1494,8 @@ export class TerminalBroker implements TerminalPlacementPort {
           data: output.data,
         });
         if (!channel.sendSerialized(serialized)) {
-          viewer.cancelSnapshotDeadline?.();
-          terminal.viewers.delete(channel);
+          this.removeViewer(terminal, channel, false);
+          retiredViewer = true;
           continue;
         }
         viewer.lastDeliveredSeq = output.seq;
@@ -1322,12 +1506,14 @@ export class TerminalBroker implements TerminalPlacementPort {
         viewer.queue.length >= PENDING_OUTPUT_FRAMES ||
         viewer.queuedBytes + bytes > PENDING_OUTPUT_BYTES
       ) {
-        this.failViewer(terminal, channel, viewer, "conflict", "terminal attach queue overflow");
+        this.failViewer(terminal, channel, viewer, "conflict", "terminal attach queue overflow", false);
+        retiredViewer = true;
         continue;
       }
       viewer.queue.push(output);
       viewer.queuedBytes += bytes;
     }
+    if (retiredViewer) this.arbitrateViewports(terminal);
   }
 
   /** Completes PENDING attach as snapshot(S) followed exactly by unique queued seq > S. */
@@ -1350,7 +1536,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       viewer.cancelSnapshotDeadline?.();
       viewer.cancelSnapshotDeadline = null;
       if (!channel.sendSerialized(snapshotFrame)) {
-        terminal.viewers.delete(channel);
+        this.removeViewer(terminal, channel, false);
         continue;
       }
       viewer.queue.sort((left, right) => left.seq - right.seq);
@@ -1375,7 +1561,7 @@ export class TerminalBroker implements TerminalPlacementPort {
         lastSeq = output.seq;
       }
       if (!live) {
-        terminal.viewers.delete(channel);
+        this.removeViewer(terminal, channel, false);
         continue;
       }
       viewer.queue = [];
@@ -1384,6 +1570,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       viewer.state = "LIVE";
     }
     this.requestSnapshotForPending(terminal);
+    this.arbitrateViewports(terminal);
   }
 
   private controllerTerminal(channel: SessionChannel, terminalId: string): RuntimeTerminal | null {
@@ -1437,8 +1624,8 @@ export class TerminalBroker implements TerminalPlacementPort {
   }
 
   /**
-   * Uses the first measured resize to birth a pending tiled PTY. Once running, resize
-   * returns to the controller-owned shared-grid contract.
+   * The first writable home viewport births a tiled PTY. Attached views then lease their
+   * independent measurements; only LIVE views under current controller authority contribute.
    */
   resize(channel: SessionChannel, message: TerminalResize): void {
     const pending = this.pendingOpens.get(message.terminalId);
@@ -1447,35 +1634,64 @@ export class TerminalBroker implements TerminalPlacementPort {
       pending.placement === "tile" &&
       pending.homeId === channel.containerId
     ) {
-      if (!pending.dispatched) this.dispatchOpen(pending, message.cols, message.rows);
+      if (message.viewport === null) return;
+      if (!this.viewportAuthority(channel, pending.homeId, this.auth.credentialReference(channel.auth))) {
+        channel.send({ type: "error", code: "forbidden", ref: message.terminalId });
+        return;
+      }
+      if (!pending.dispatched) this.dispatchOpen(pending, message.viewport.cols, message.viewport.rows);
       return;
     }
-    const terminal = this.controllerTerminal(channel, message.terminalId);
+    if (message.viewport === null) {
+      const terminal = this.terminalFor(channel, message.terminalId);
+      if (terminal === null) return;
+      terminal.viewers.get(channel)?.viewports.delete(message.viewportId);
+      this.arbitrateViewports(terminal);
+      return;
+    }
+    const terminal = this.terminalFor(channel, message.terminalId);
     if (terminal === null) return;
-    const machine = this.machines.get(terminal.info.machineId);
-    if (machine === undefined) {
-      channel.send({ type: "error", code: "no_machine", ref: message.terminalId });
+    if (terminal.info.status !== "running" || terminal.info.controllerId !== channel.auth.principal.id) {
+      this.arbitrateViewports(terminal);
+      channel.send({
+        type: "error",
+        code: terminal.info.status !== "running" ? "conflict" : "not_controller",
+        ref: message.terminalId,
+      });
       return;
     }
-    if (
-      !machine.send({
-        type: "resize",
-        terminalId: message.terminalId,
-        cols: message.cols,
-        rows: message.rows,
-      })
-    ) {
-      channel.send({ type: "error", code: "no_machine", ref: message.terminalId });
+    const viewer = terminal.viewers.get(channel);
+    const credential = viewer?.credential ?? this.auth.credentialReference(channel.auth);
+    if (!this.viewportAuthority(channel, terminal.info.containerId, credential)) {
+      this.arbitrateViewports(terminal);
+      channel.send({ type: "error", code: "forbidden", ref: message.terminalId });
       return;
     }
-    terminal.info = { ...terminal.info, cols: message.cols, rows: message.rows };
-    this.rooms.live(channel.containerId)?.broadcast({
-      type: "terminal_event",
-      terminalId: message.terminalId,
-      kind: "resized",
-      cols: message.cols,
-      rows: message.rows,
+    if (viewer === undefined) {
+      channel.send({
+        type: "error",
+        code: "conflict",
+        message: "terminal viewport requires an attached viewer",
+        ref: message.terminalId,
+      });
+      return;
+    }
+    const { count } = this.pruneViewports(terminal);
+    if (!viewer.viewports.has(message.viewportId) && count >= MAX_TERMINAL_VIEWPORTS) {
+      this.arbitrateViewports(terminal);
+      channel.send({
+        type: "error",
+        code: "conflict",
+        message: "terminal viewport registration limit reached",
+        ref: message.terminalId,
+      });
+      return;
+    }
+    viewer.viewports.set(message.viewportId, {
+      ...message.viewport,
+      expiresAt: this.runtime.now() + TERMINAL_VIEWPORT_LEASE_MS,
     });
+    this.arbitrateViewports(terminal, channel);
   }
 
   /**
@@ -1508,6 +1724,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       kind: "controller_changed",
       controllerId: channel.auth.principal.id,
     });
+    this.arbitrateViewports(terminal);
   }
 
   /**
@@ -1758,6 +1975,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       pending.agentPrincipalId ?? stored?.agentPrincipalId ?? null,
     );
     if (message.cwd !== undefined) this.store.updateTerminalCwd(message.terminalId, message.cwd);
+    this.clearViewportIntents(terminal);
     terminal.info = {
       ...terminal.info,
       status: "running",
@@ -1793,6 +2011,7 @@ export class TerminalBroker implements TerminalPlacementPort {
     });
     this.finishRestart(message.terminalId, "ok");
     this.requestSnapshotForPending(terminal);
+    this.arbitrateViewports(terminal);
   }
 
   /**
@@ -1870,8 +2089,7 @@ export class TerminalBroker implements TerminalPlacementPort {
     const terminal = this.terminals.get(terminalId);
     if (terminal === undefined || terminal.info.machineId !== machineId) return;
     if (terminal.info.status === "exited") return;
-    for (const viewer of terminal.viewers.values()) viewer.cancelSnapshotDeadline?.();
-    terminal.viewers.clear();
+    this.clearViewers(terminal);
     terminal.info = {
       ...terminal.info,
       status: "exited",
@@ -1879,6 +2097,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       exitReason,
       controllerId: null,
     };
+    this.arbitrateViewports(terminal);
     this.store.markTerminalExited(terminalId, exitCode, exitReason);
     // The exit is announced in the terminal's HOME, the room every viewer of it is joined
     // to. Missing-owner evidence stays visible until somebody deliberately dismisses it.
@@ -1969,8 +2188,8 @@ export class TerminalBroker implements TerminalPlacementPort {
     this.store.updateTerminalContainer(terminalId, toContainerId);
     // Viewers attached through the old room can no longer reach the terminal: every terminal
     // message is gated on the channel's own container.
-    for (const viewer of terminal.viewers.values()) viewer.cancelSnapshotDeadline?.();
-    terminal.viewers.clear();
+    this.clearViewers(terminal);
+    this.arbitrateViewports(terminal);
     this.rooms
       .live(fromContainerId)
       ?.broadcast({ type: "terminal_event", terminalId, kind: "parked" });
@@ -2016,8 +2235,7 @@ export class TerminalBroker implements TerminalPlacementPort {
     if (terminal === undefined) return;
     this.finishRestart(terminalId, "not_found");
     if (terminal.info.status === "running") this.sendPtyStop(terminal);
-    for (const viewer of terminal.viewers.values()) viewer.cancelSnapshotDeadline?.();
-    terminal.viewers.clear();
+    this.clearViewers(terminal);
     this.terminals.delete(terminalId);
     this.rooms
       .live(terminal.info.containerId)
@@ -2068,8 +2286,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       ) {
         continue;
       }
-      for (const viewer of terminal.viewers.values()) viewer.cancelSnapshotDeadline?.();
-      terminal.viewers.clear();
+      this.clearViewers(terminal);
       this.terminals.delete(terminalId);
       this.store.deleteTerminal(terminalId);
       this.placement?.retireHome(containerId);
@@ -2108,7 +2325,7 @@ export class TerminalBroker implements TerminalPlacementPort {
           .get(terminal.info.machineId)
           ?.send({ type: "kill", terminalId: terminal.info.id });
       }
-      for (const viewer of terminal.viewers.values()) viewer.cancelSnapshotDeadline?.();
+      this.clearViewers(terminal);
       const stored = this.store.getTerminal(terminalId);
       if (stored !== null && stored.agentPrincipalId !== null) {
         this.auth.revokeIssuedPrincipal(stored.agentPrincipalId, terminal.info.createdBy);
