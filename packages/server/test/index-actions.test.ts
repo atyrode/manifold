@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import {
   ContainerResponseSchema,
   IndexResponseSchema,
@@ -14,14 +14,12 @@ import { OUTSIDE_SCOPE_REFUSAL, type PluginHost } from "../src/plugin-host.ts";
 import { RoomManager } from "../src/room.ts";
 import type { ServerStore } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
-import {
-  FakeClock,
-  FakeRuntime,
-  hostWithSeatOff,
-  testPluginHost,
-  testStore,
-  testTileTrees,
-} from "./helpers.ts";
+import { closeTestStore, FakeClock,
+FakeRuntime,
+hostWithSeatOff,
+testPluginHost,
+testStore,
+testTileTrees, } from "./helpers.ts";
 
 /**
  * THE WORKSPACE INDEX'S DOORS. Nine of them replaced four bespoke route families, and the
@@ -44,6 +42,10 @@ import {
  */
 
 const OWNER_KEY = "d".repeat(64);
+const stores: ServerStore[] = [];
+afterEach(() => {
+  for (const store of stores.splice(0)) closeTestStore(store);
+});
 
 interface IndexFixture {
   readonly runtime: FakeRuntime;
@@ -59,6 +61,7 @@ async function fixture(): Promise<IndexFixture> {
   const runtime = new FakeRuntime();
   const clock = new FakeClock(runtime);
   const store = testStore();
+  stores.push(store);
   const auth = new AuthService(store, OWNER_KEY, runtime);
   const owner = auth.authenticate(OWNER_KEY);
   const rooms = new RoomManager(store, runtime, clock, silentLogger, testTileTrees);

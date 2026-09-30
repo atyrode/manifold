@@ -38,6 +38,7 @@ import { SessionChannel } from "../src/session-channel.ts";
 import type { ServerStore } from "../src/stores.ts";
 import { TerminalBroker, type MachineChannel } from "../src/terminal-broker.ts";
 import {
+  closeTestStore,
   composeOnCanvas,
   extractTile,
   FakeClock,
@@ -77,6 +78,7 @@ import {
 const OWNER_KEY = "c".repeat(64);
 const MACHINE_NAME = "lifecycle machine";
 const temporaryDirectories: string[] = [];
+const stores: ServerStore[] = [];
 
 class FakeMachine implements MachineChannel {
   readonly terminalExecution: MachineChannel["terminalExecution"] = "unconfined";
@@ -160,6 +162,7 @@ async function lifecycleFixture(): Promise<LifecycleFixture> {
   const runtime = new FakeRuntime();
   const clock = new FakeClock(runtime);
   const store = testStore();
+  stores.push(store);
   const auth = new AuthService(store, OWNER_KEY, runtime);
   const root = auth.authenticate(OWNER_KEY);
   const canvas: Container = {
@@ -459,6 +462,7 @@ async function indexRows(fixture: LifecycleFixture): Promise<readonly TerminalSu
 }
 
 afterEach(() => {
+  for (const store of stores.splice(0)) closeTestStore(store);
   for (const path of temporaryDirectories.splice(0)) {
     rmSync(path, { recursive: true, force: true });
   }

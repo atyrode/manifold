@@ -25,7 +25,7 @@ import type { ActionCtx, PluginHost, ServerPluginDef } from "../src/plugin-host.
 import { RoomManager } from "../src/room.ts";
 import type { ServerStore } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
-import { FakeClock, FakeRuntime, testPluginHost, testStore, testTileTrees } from "./helpers.ts";
+import { closeTestStore, FakeClock, FakeRuntime, testPluginHost, testStore, testTileTrees } from "./helpers.ts";
 
 /**
  * A GOVERNED DOOR HANDS ONE NAMED CONTAINER'S AUTHORITY TO THE WORK IT STARTS (ADR 0051, #883).
@@ -591,7 +591,7 @@ test("a governed door discharges a container target against its caller, and refu
     expect(f.service.jobs.get("element")).toBeNull();
     expect(f.service.jobs.get("reader")).toBeNull();
   } finally {
-    f.store.close();
+    closeTestStore(f.store);
   }
 });
 
@@ -659,7 +659,7 @@ test("the wake of a job from that dispatch holds the container's authority there
       { containerId: HOME, caps: ["containers:write"] },
     ]);
   } finally {
-    f.store.close();
+    closeTestStore(f.store);
   }
 });
 
@@ -684,7 +684,7 @@ test("a confined wake still answers machine questions from its flat caps: OMP's 
       { ok: false, refusal: `refused: ${DRAIN} -> ${CODE}.observe (scope_refused)` },
     ]);
   } finally {
-    f.store.close();
+    closeTestStore(f.store);
   }
 });
 
@@ -724,7 +724,7 @@ test("every occurrence of a schedule the dispatch registers carries the same bou
       { ok: false, refusal: `refused: ${DRAIN} -> ${CODE}.runSession (scope_refused)` },
     ]);
   } finally {
-    f.store.close();
+    closeTestStore(f.store);
   }
 });
 
@@ -743,7 +743,7 @@ test("a door that names no container target lends no container authority", async
       { ok: false, refusal: `refused: ${DRAIN} -> ${CODE}.runSession (scope_refused)` },
     ]);
   } finally {
-    f.store.close();
+    closeTestStore(f.store);
   }
 });
 
@@ -806,7 +806,7 @@ test("the carried authority follows the presser's lineage: a later deny or a rev
     await after.promise;
     expect(woken).toEqual(["after"]);
   } finally {
-    f.store.close();
+    closeTestStore(f.store);
   }
 });
 
@@ -881,7 +881,7 @@ test("restoring never widens: a credential without grants restores as it always 
       false,
     );
   } finally {
-    f.store.close();
+    closeTestStore(f.store);
   }
 });
 
@@ -916,7 +916,7 @@ test("a door naming no container, opened by confined work, lends its run no cont
     ]);
     expect(f.store.listContainers().map((entry) => entry.name)).not.toContain("escape");
   } finally {
-    f.store.close();
+    closeTestStore(f.store);
   }
 });
 
@@ -937,7 +937,7 @@ test("a refresh keeps the confinement: a root-only native read refuses work the 
       { ok: true, result: { read: false, isRoot: false } },
     ]);
   } finally {
-    f.store.close();
+    closeTestStore(f.store);
   }
 });
 
@@ -975,6 +975,6 @@ test("a carried read scopes the dispatch it opens: the index lists and reads the
     });
     expect(inside?.ok).toBe(true);
   } finally {
-    f.store.close();
+    closeTestStore(f.store);
   }
 });

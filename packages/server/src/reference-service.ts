@@ -182,6 +182,7 @@ export class ReferenceService {
           await this.acknowledgePublication(row, owner, true);
       }
     } catch {
+      if (this.closed) return;
       for (const pluginId of new Set(this.store.referenceKindOwners().values()))
         this.cleanupFailure(pluginId);
     } finally {
@@ -200,6 +201,8 @@ export class ReferenceService {
       const proof = await (idle
         ? owner.probeWhenIdle(this.probeRequest(row))
         : owner.probe(this.probeRequest(row)));
+      // Shutdown leaves the durable acknowledgement for the next service incarnation.
+      if (this.closed) return;
       this.sameOwner(owner);
       const current = this.preparation(row.preparation_id);
       if (current?.state !== "published" || current.publication_id !== row.publication_id) return;
@@ -220,7 +223,7 @@ export class ReferenceService {
         .run(row.publication_id, row.ready_digest);
     } catch {
       // Publication already committed. Only the durable owner acknowledgement remains pending.
-      this.cleanupFailure(owner.pluginId);
+      if (!this.closed) this.cleanupFailure(owner.pluginId);
     }
   }
   close(): void {
@@ -1037,7 +1040,7 @@ export class ReferenceService {
 
   /** One bounded private batch. Failed reclaim never turns a committed delete into a failed delete. */
   async reclaim(pluginId: string): Promise<void> {
-    if (this.reclaiming.has(pluginId)) return;
+    if (this.closed || this.reclaiming.has(pluginId)) return;
     this.reclaiming.add(pluginId);
     try {
       // At most 1,000 retained rows: sixteen bounded private batches drain the complete journal.
@@ -1052,6 +1055,8 @@ export class ReferenceService {
         const owner = this.owner(this.ref(rows[0]!).kind);
         if (owner === null || owner.pluginId !== pluginId) return;
         await owner.reclaim(rows.map((row) => this.terminal(row)));
+        // The private owner may finish after shutdown; retain its receipt until restart.
+        if (this.closed) return;
         this.sameOwner(owner);
         this.store.transaction(() => {
           for (const row of rows)
@@ -1064,7 +1069,7 @@ export class ReferenceService {
         });
       }
     } catch {
-      this.cleanupFailure(pluginId);
+      if (!this.closed) this.cleanupFailure(pluginId);
     } finally {
       this.reclaiming.delete(pluginId);
     }
@@ -1072,6 +1077,7 @@ export class ReferenceService {
 
   /** Reconcile deadlines and published identities; never publish or insert grants during recovery. */
   async reconcile(): Promise<void> {
+    if (this.closed) return;
     this.expire();
     for (const kind of PluginOwnedRefKindSchema.options) {
       const owner = this.owner(kind);
@@ -1079,8 +1085,10 @@ export class ReferenceService {
         try {
           await this.expireOwnerPreparations(owner);
         } catch {
+          if (this.closed) return;
           this.cleanupFailure(owner.pluginId);
         }
+        if (this.closed) return;
       }
     }
     const rows = this.store.db
@@ -1093,9 +1101,12 @@ export class ReferenceService {
       const owner = this.owner(ref.kind);
       if (owner === null || owner.pluginId !== row.owner_plugin) continue;
       await this.acknowledgePublication(row, owner, true);
+      if (this.closed) return;
     }
-    for (const pluginId of new Set(this.store.referenceKindOwners().values()))
+    for (const pluginId of new Set(this.store.referenceKindOwners().values())) {
       await this.reclaim(pluginId);
+      if (this.closed) return;
+    }
     this.scheduleRecovery();
   }
 }

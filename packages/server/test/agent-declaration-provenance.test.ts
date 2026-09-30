@@ -13,7 +13,7 @@ import { silentLogger } from "../src/log.ts";
 import { RoomManager } from "../src/room.ts";
 import { ServerStore } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
-import { FakeClock, FakeRuntime, testPluginHost, testTileTrees } from "./helpers.ts";
+import { closeTestStore, FakeClock, FakeRuntime, testPluginHost, testTileTrees } from "./helpers.ts";
 import { createExternalRun } from "./agent-fixtures.ts";
 import { dropFilesSchema } from "./migration-fixtures.ts";
 
@@ -163,7 +163,7 @@ describe("agent declaration provenance cutover", () => {
       // The retained maximum must protect the boundary even if the sequence was lowered.
       f.store.db.exec("UPDATE sqlite_sequence SET seq=2 WHERE name='events'");
       restorePreCutoverSchema(f);
-      f.store.close();
+      closeTestStore(f.store);
       f = fixture(path, f.runtime);
       expect(f.store.getMeta(CUTOVER)).toBe(forged);
       expect(inspect(f, run.created.run.id, { traceId: forged }).traces[0]).not.toHaveProperty(
@@ -208,7 +208,7 @@ describe("agent declaration provenance cutover", () => {
       expect(JSON.stringify(traces)).not.toContain("fixture raw input");
       expect(JSON.stringify(traces)).not.toContain("Forged approval");
 
-      f.store.close();
+      closeTestStore(f.store);
       f = fixture(path, f.runtime);
       expect(f.store.getMeta(CUTOVER)).toBe(forged);
       expect(inspect(f, run.created.run.id, { traceId: forged }).traces[0]).not.toHaveProperty(
@@ -218,7 +218,7 @@ describe("agent declaration provenance cutover", () => {
         "Read only the approved workspace.",
       );
     } finally {
-      f.store.close();
+      closeTestStore(f.store);
       rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -233,7 +233,7 @@ describe("agent declaration provenance cutover", () => {
       const pruned = seedTrace(f, run.actor, "Untrusted pruned claim", "9007199254740995");
       f.store.db.query("DELETE FROM events WHERE id=?").run(pruned);
       restorePreCutoverSchema(f);
-      f.store.close();
+      closeTestStore(f.store);
       f = fixture(path, f.runtime);
       expect(f.store.getMeta(CUTOVER)).toBe(pruned);
       const first = seedTrace(f, run.actor, "First post-cutover claim");
@@ -258,14 +258,14 @@ describe("agent declaration provenance cutover", () => {
       expect(inspect(f, run.created.run.id, { traceId: pruned }).requestedTrace).toBe(
         "unavailable",
       );
-      f.store.close();
+      closeTestStore(f.store);
       f = fixture(path, f.runtime);
       expect(f.store.getMeta(CUTOVER)).toBe(pruned);
       expect(inspect(f, run.created.run.id, { traceId: second }).traces[0]?.agentDeclaration).toBe(
         "Second post-cutover claim",
       );
     } finally {
-      f.store.close();
+      closeTestStore(f.store);
       rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -309,7 +309,7 @@ describe("agent declaration provenance cutover", () => {
         "agentDeclaration",
       );
     } finally {
-      f.store.close();
+      closeTestStore(f.store);
       rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -331,7 +331,7 @@ describe("agent declaration provenance cutover", () => {
         expect(inspect(f, run.created.run.id, { traceId }).traces[0]).not.toHaveProperty(
           "agentDeclaration",
         );
-        f.store.close();
+        closeTestStore(f.store);
         f = fixture(path, f.runtime);
         expect(f.store.getMeta(CUTOVER)).toBe(corrupt);
         expect(inspect(f, run.created.run.id, { traceId }).traces[0]).not.toHaveProperty(
@@ -342,7 +342,7 @@ describe("agent declaration provenance cutover", () => {
           "agentDeclaration",
         );
       } finally {
-        f.store.close();
+        closeTestStore(f.store);
         rmSync(dir, { recursive: true, force: true });
       }
     },

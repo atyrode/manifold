@@ -25,7 +25,7 @@ import type { PluginHost, ServerPluginDef } from "../src/plugin-host.ts";
 import { RoomManager } from "../src/room.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
 import type { ServerStore } from "../src/stores.ts";
-import { FakeClock, FakeRuntime, testPluginHost, testStore, testTileTrees } from "./helpers.ts";
+import { closeTestStore, FakeClock, FakeRuntime, testPluginHost, testStore, testTileTrees } from "./helpers.ts";
 
 /**
  * `onJobSettled` — THE ONE WAKE A SERVER HALF HAS FOR ITS OWN FINISHED WORK.
@@ -286,7 +286,7 @@ test("a settled job wakes the half that started it, with its node and its own au
     ]);
     expect(journalled).toEqual([1]);
   } finally {
-    f.store.close();
+    closeTestStore(f.store);
   }
 });
 
@@ -308,7 +308,7 @@ test("a half that declared no hook is left alone, and the settle after it still 
     expect(woken).toEqual([{ plugin: "sample.alpha", jobId: "job-alpha" }]);
     expect(f.service.jobs.get("job-quiet")?.result?.state).toBe("exited");
   } finally {
-    f.store.close();
+    closeTestStore(f.store);
   }
 });
 
@@ -346,7 +346,7 @@ test("the wake carries the plugin's own storage, and that authority ends with th
     expect(seen[1]).not.toBe(retained);
     await expect(retained.get("last-settled")).rejects.toThrow();
   } finally {
-    f.store.close();
+    closeTestStore(f.store);
   }
 });
 /** A real sibling door: refused late calls must not reach its handler. */

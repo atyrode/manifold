@@ -14,7 +14,7 @@ import { RoomManager } from "../src/room.ts";
 import type { ServerStore } from "../src/stores.ts";
 import { sha256Hex } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
-import { FakeClock, FakeRuntime, testPluginHost, testStore, testTileTrees } from "./helpers.ts";
+import { closeTestStore, FakeClock, FakeRuntime, testPluginHost, testStore, testTileTrees } from "./helpers.ts";
 import { createExternalRun } from "./agent-fixtures.ts";
 
 /**
@@ -131,7 +131,7 @@ describe("session expiry (ADR 0019 §2)", () => {
       code: "forbidden",
       message: "expired",
     });
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("revocation outranks expiry, so a revoked-and-expired credential still reads `revoked`", async () => {
@@ -143,7 +143,7 @@ describe("session expiry (ADR 0019 §2)", () => {
     // The rung order is the answer a holder can act on: revoked means stop, and an expiry
     // notice would invite a retry that can never succeed.
     expect(refusal(() => fix.auth.authenticate(granted.token)).message).toBe("revoked");
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("a machine's credential outlives the interactive bound by a long way", async () => {
@@ -158,7 +158,7 @@ describe("session expiry (ADR 0019 §2)", () => {
     // The exemption is in the DATA as well as in the code path: nothing wrote a bound to
     // enforce, so no later change to `authenticateMachine` can start enforcing one.
     expect(fix.store.getToken(enrolled.machine.tokenId)?.expiresAt).toBeNull();
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("an agent run publishes the exact last-valid and first-expired boundary", async () => {
@@ -190,7 +190,7 @@ describe("session expiry (ADR 0019 §2)", () => {
       message: "expired",
     });
     expect(fix.store.getAgentRun(created.run.id)?.state).toBe("expired");
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("legacy bootstrap rejects autonomous identities at the published door", async () => {
@@ -205,7 +205,7 @@ describe("session expiry (ADR 0019 §2)", () => {
       denial: { rule: "invalid_args" },
     });
     expect(fix.auth.holdsRoot(fix.auth.authenticate(OWNER_KEY))).toBe(true);
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("federated admission expires agent tickets without shortening human tickets", async () => {
@@ -252,7 +252,7 @@ describe("session expiry (ADR 0019 §2)", () => {
     expect(fix.auth.authenticate(human.token).principal.id).toBe(human.principal.id);
     fix.runtime.time += 1;
     expect(refusal(() => fix.auth.authenticate(human.token)).message).toBe("expired");
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("a terminal-lifecycle identity cannot escape through the generic token door", async () => {
@@ -286,7 +286,7 @@ describe("session expiry (ADR 0019 §2)", () => {
     expect(fix.auth.authenticate(terminal.token).principal.id).toBe(terminal.principal.id);
     fix.auth.revokeIssuedPrincipal(terminal.principal.id, fix.owner.principal.id);
     expect(refusal(() => fix.auth.authenticate(terminal.token)).message).toBe("revoked");
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("the owner key never expires: break-glass that can lock you out is not break-glass", async () => {
@@ -297,7 +297,7 @@ describe("session expiry (ADR 0019 §2)", () => {
     const context = fix.auth.authenticate(OWNER_KEY);
     expect(fix.auth.holdsRoot(context)).toBe(true);
     expect(context.tokenId).toBeNull();
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 });
 
@@ -316,7 +316,7 @@ describe("bootstrap audit (ADR 0019 §4)", () => {
 
     // A new window is a new row, and the second call inside it is still the same session.
     expect(fix.store.listEvents({ type: "owner_authenticated", limit: 500 })).toHaveLength(2);
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("the audit row carries the de-duplication rule and no fragment of the key", async () => {
@@ -330,7 +330,7 @@ describe("bootstrap audit (ADR 0019 §4)", () => {
     const serialized = JSON.stringify(row);
     expect(serialized.includes(OWNER_KEY)).toBe(false);
     expect(serialized.includes(OWNER_KEY.slice(0, 8))).toBe(false);
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("a bootstrap through the owner key records the act, not only the credential", async () => {
@@ -351,7 +351,7 @@ describe("bootstrap audit (ADR 0019 §4)", () => {
     // `token_minted` still records the credential. Two rows, two facts: `mintToken` also
     // mints and is not a bootstrap.
     expect(fix.store.listEvents({ type: "token_minted", limit: 10 })).toHaveLength(1);
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("the audit is an EVENT row: ADR 0018's trace writer is untouched", async () => {
@@ -365,7 +365,7 @@ describe("bootstrap audit (ADR 0019 §4)", () => {
     expect(audits.length).toBe(1);
     expect(traces.length).toBe(0);
     expect(audits[0]?.door).toBeNull();
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 });
 
@@ -393,7 +393,7 @@ describe("the machine revocation door (ADR 0019 §3)", () => {
     expect(trace?.door).toBe("core.machines.revoke");
     expect(trace?.outcome).toBe("ok");
     expect(trace?.targets).toEqual([`manifold://machine/${enrolled.machine.id}`]);
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("the roster reports a withdrawn machine, and omits the field for a live one", async () => {
@@ -409,7 +409,7 @@ describe("the machine revocation door (ADR 0019 §3)", () => {
     // Absent rather than `false`, which is what keeps a pre-v20 reader's parse exact.
     expect(listed.machines.find((row) => row.id === live.machine.id)?.revoked).toBeUndefined();
     expect(listed.machines.find((row) => row.id === cut.machine.id)?.revoked).toBe(true);
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("withdrawing twice answers zero, which is a success and not a refusal", async () => {
@@ -421,7 +421,7 @@ describe("the machine revocation door (ADR 0019 §3)", () => {
     const again = await fix.host.dispatch(fix.owner, "core.machines.revoke", { machineId });
 
     expect(result(again)).toEqual({ revoked: 0 });
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("`machines:mint` is the ladder, and a container-scoped holder of it reaches nothing", async () => {
@@ -437,7 +437,7 @@ describe("the machine revocation door (ADR 0019 §3)", () => {
     // who may not open this door does not discover its schema by knocking.
     expect(denial(outcome).rule).toBe("forbidden");
     expect(fix.store.revokedMachineIds().has(enrolled.machine.id)).toBe(false);
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("an unknown machine is not_found rather than a silent zero", async () => {
@@ -447,7 +447,7 @@ describe("the machine revocation door (ADR 0019 §3)", () => {
       code: "not_found",
       message: "machine not found",
     });
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 });
 
@@ -473,7 +473,7 @@ describe("the credential list (ADR 0019 §3)", () => {
     const serialized = JSON.stringify(listed);
     expect(serialized.includes(granted.token)).toBe(false);
     expect(serialized.includes("hash")).toBe(false);
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("a dead credential leaves the list: expired and revoked rows are not sessions", async () => {
@@ -494,7 +494,7 @@ describe("the credential list (ADR 0019 §3)", () => {
       expect(row).toBeDefined();
       expect(row?.sessions).toHaveLength(0);
     }
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("non-root inventory exposes only live credentials issued by that actor", async () => {
@@ -554,7 +554,7 @@ describe("the credential list (ADR 0019 §3)", () => {
       afterWithdrawal.principals.some((entry) => entry.principal.id === delegate.principal.id),
     ).toBe(false);
     expect(fix.auth.authenticate(foreign.token).principal.id).toBe(delegate.principal.id);
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("a plain reader without revocable identities or sponsored runs cannot enumerate credentials", async () => {
@@ -564,6 +564,6 @@ describe("the credential list (ADR 0019 §3)", () => {
     expect(denial(await fix.host.dispatch(reader, "core.access.listCredentials", {})).rule).toBe(
       "forbidden",
     );
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 });

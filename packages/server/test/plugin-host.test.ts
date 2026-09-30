@@ -100,12 +100,14 @@ import { TRACE_ROW_TYPE, sha256Hex, ServerStore } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
 import type { PluginDatabase, PluginStorage, StreamProducer } from "@manifold/plugin";
 import {
+  closeTestStore,
   FakeClock,
   FakeRuntime,
   testEventHub,
   testPluginHost,
   testStore,
   testTileTrees,
+  trackTestPluginHost,
 } from "./helpers.ts";
 
 /**
@@ -380,7 +382,7 @@ describe("PluginHost bounded result publication", () => {
         outcome: "forbidden",
       });
     } finally {
-      fixture.store.close();
+      closeTestStore(fixture.store);
     }
   });
 
@@ -411,7 +413,7 @@ describe("PluginHost bounded result publication", () => {
       });
       expect(effects()).toBe(2);
     } finally {
-      fixture.store.close();
+      closeTestStore(fixture.store);
     }
   });
 
@@ -458,7 +460,7 @@ describe("PluginHost bounded result publication", () => {
       ).toEqual(ordinaryInvalid);
       expect(effects()).toBe(0);
     } finally {
-      fixture.store.close();
+      closeTestStore(fixture.store);
     }
   });
 
@@ -498,7 +500,7 @@ describe("PluginHost bounded result publication", () => {
         });
         expect(fixture.store.listEvents({ type: "read", limit: 10 })).toHaveLength(1);
       } finally {
-        fixture.store.close();
+        closeTestStore(fixture.store);
       }
     },
   );
@@ -524,7 +526,7 @@ describe("PluginHost bounded result publication", () => {
         outcome: "failed",
       });
     } finally {
-      fixture.store.close();
+      closeTestStore(fixture.store);
     }
   });
 
@@ -569,7 +571,7 @@ describe("PluginHost bounded result publication", () => {
       ).toBe("invalid_args");
       expect(effects).toBe(0);
     } finally {
-      fixture.store.close();
+      closeTestStore(fixture.store);
     }
   });
 });
@@ -584,7 +586,7 @@ describe("PluginHost denial ladder", () => {
       rule: "unknown_action",
       message: 'unknown action "core.nope.doIt"',
     });
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("a disabled plugin's action is disabled, not unknown", async () => {
@@ -602,7 +604,7 @@ describe("PluginHost denial ladder", () => {
       rule: "plugin_disabled",
       message: 'plugin "core.terminals" is disabled',
     });
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("a cleanup action survives its plugin's disable (D12): kill works, rename does not", async () => {
@@ -618,7 +620,7 @@ describe("PluginHost denial ladder", () => {
     // The kill still walks the REST of the ladder: here it reaches the handler, which
     // refuses on state (no such terminal) rather than on the disable.
     expect(denial(outcome).rule).toBe("refused");
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("a container-scoped token is refused for its scope even when it holds the capability", async () => {
@@ -647,7 +649,7 @@ describe("PluginHost denial ladder", () => {
       message: "scoped tokens cannot invoke workspace actions",
     });
     expect([...fixture.store.disabledPlugins()]).toEqual([]);
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("a missing declared capability is forbidden before arguments are looked at", async () => {
@@ -665,7 +667,7 @@ describe("PluginHost denial ladder", () => {
       // are parsed, which is the whole point of the ordering.
       message: "terminals:write capability required",
     });
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("arguments that do not fit the published schema are invalid_args", async () => {
@@ -677,7 +679,7 @@ describe("PluginHost denial ladder", () => {
 
     expect(denial(outcome).rule).toBe("invalid_args");
     expect(denial(outcome).message).toContain("name");
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("a handler's own refusal is the last rung and carries its message", async () => {
@@ -689,7 +691,7 @@ describe("PluginHost denial ladder", () => {
     });
 
     expect(denial(outcome)).toEqual({ rule: "refused", message: "terminal not found" });
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("an unparseable name refuses before an all-whitespace one, both as refusals", async () => {
@@ -703,7 +705,7 @@ describe("PluginHost denial ladder", () => {
     // The route this replaced answered 400 for a blank name and 404 for a missing terminal;
     // both are now refusals, and the blank name is caught before the terminal is looked up.
     expect(denial(blank)).toEqual({ rule: "refused", message: "name is empty" });
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 });
 
@@ -731,7 +733,7 @@ describe("PluginHost enablement", () => {
     expect([...fixture.store.disabledPlugins()]).toEqual([]);
     expect(seen).toHaveLength(2);
     remove();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("a no-op toggle publishes NOTHING, so a socket is not woken for a non-change", async () => {
@@ -754,7 +756,7 @@ describe("PluginHost enablement", () => {
     expect(await fixture.host.setEnabled("core.terminals", false, "admin")).toEqual({ ok: true });
     expect(seen).toHaveLength(1);
     remove();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("a removed listener stops hearing rosters, and does not disturb the others", async () => {
@@ -776,7 +778,7 @@ describe("PluginHost enablement", () => {
     remove();
     expect(await fixture.host.setEnabled("core.canvas.draw", true, "admin")).toEqual({ ok: true });
     expect([staying, leaving].map((seen) => seen.length)).toEqual([2, 1]);
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("the assembly is REPLACED on a toggle, so a held reference is a stale snapshot", async () => {
@@ -794,7 +796,7 @@ describe("PluginHost enablement", () => {
     expect([...fixture.host.assembly().actions.keys()].sort()).toEqual(
       [...before.actions.keys()].sort(),
     );
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("an essential plugin refuses to be disabled, and an unknown id refuses too", async () => {
@@ -810,7 +812,7 @@ describe("PluginHost enablement", () => {
     // Nothing was written and nothing went dark: the refusal is total.
     expect([...fixture.store.disabledPlugins()]).toEqual([]);
     expect(fixture.host.assembly().enabled("core.shell")).toBe(true);
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("the engine's builtin door refuses to be switched off, through its own door", async () => {
@@ -837,7 +839,7 @@ describe("PluginHost enablement", () => {
     expect(denial(outcome)).toEqual({ rule: "refused", message: `builtin: ${ENGINE_PLUGINS_ID}` });
     expect([...fixture.store.disabledPlugins()]).toEqual([]);
     expect(fixture.host.assembly().enabled(ENGINE_PLUGINS_ID)).toBe(true);
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("the manager's SEAT is essential while the door stays outside the assembly", async () => {
@@ -878,7 +880,7 @@ describe("PluginHost enablement", () => {
     ).toEqual({ ok: true, result: {} });
     expect([...fixture.store.disabledPlugins()]).toEqual(["core.canvas.draw"]);
     expect(fixture.host.assembly().enabled("core.plugins")).toBe(true);
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("the roster records WHO changed a plugin and WHEN", async () => {
@@ -892,7 +894,7 @@ describe("PluginHost enablement", () => {
     // vanished" must be answerable by every principal, not only by whoever reads the logs.
     expect(entry?.changedBy).toBe("principal-7");
     expect(entry?.changedAt).toBe(1_700_000_000_000);
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("setEnabled needs plugins:manage, which the roster publishes as the action's cap", async () => {
@@ -909,7 +911,7 @@ describe("PluginHost enablement", () => {
       message: "plugins:manage capability required",
     });
     expect([...fixture.store.disabledPlugins()]).toEqual([]);
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 });
 
@@ -926,7 +928,7 @@ describe("core.space.setLayout", () => {
     expect(fixture.store.workspaceLayout(fixture.owner.principal.id)).toEqual(DEFAULT_LAYOUT);
     // Layout writes are self-targeted by construction: the action takes no principal id.
     expect(fixture.store.workspaceLayout(other.principal.id)).toBeNull();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("an unknown or disabled panel id is ACCEPTED, so a disable can never brick a layout", async () => {
@@ -941,7 +943,7 @@ describe("core.space.setLayout", () => {
     // plugin off could lock a principal out of rearranging their own workspace.
     expect(outcome).toEqual({ ok: true, result: {} });
     expect(fixture.store.workspaceLayout(fixture.owner.principal.id)).toEqual(layout);
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("a split of two VACANT leaves is stored as written: that is the palette's drop", async () => {
@@ -971,7 +973,7 @@ describe("core.space.setLayout", () => {
 
     expect(outcome).toEqual({ ok: true, result: {} });
     expect(fixture.store.workspaceLayout(fixture.owner.principal.id)).toEqual(layout);
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("an item leaf is refused: the workspace shows panels and containers, not terminals", async () => {
@@ -987,7 +989,7 @@ describe("core.space.setLayout", () => {
     expect(refused.rule).toBe("refused");
     expect(refused.message).toContain('"terminal"');
     expect(fixture.store.workspaceLayout(fixture.owner.principal.id)).toBeNull();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   /** A plugin panel beside an inline container: the one-view shape issue #201 asks for. */
@@ -1031,7 +1033,7 @@ describe("core.space.setLayout", () => {
 
     expect(outcome).toEqual({ ok: true, result: {} });
     expect(fixture.store.workspaceLayout(reader.principal.id)).toEqual(layout);
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("a container leaf naming an unknown or unreadable container is refused by id", async () => {
@@ -1070,7 +1072,7 @@ describe("core.space.setLayout", () => {
       unknown.message.replace("no-such-container", ""),
     );
     expect(fixture.store.workspaceLayout(reader.principal.id)).toBeNull();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("a seated container that is later deleted never bricks the caller's layout writes", async () => {
@@ -1092,7 +1094,7 @@ describe("core.space.setLayout", () => {
 
     expect(outcome).toEqual({ ok: true, result: {} });
     expect(fixture.store.workspaceLayout(reader.principal.id)).toEqual(dragged);
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("a panel leaf's argument rides the door, and an unbounded one is refused", async () => {
@@ -1125,7 +1127,7 @@ describe("core.space.setLayout", () => {
       message: "layout is not a valid tile tree",
     });
     expect(fixture.store.workspaceLayout(fixture.owner.principal.id)).toEqual(opened);
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("a tree that is not a tree is refused", async () => {
@@ -1141,7 +1143,7 @@ describe("core.space.setLayout", () => {
       rule: "refused",
       message: "layout is not a valid tile tree",
     });
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("a container-scoped token cannot write a workspace layout at all", async () => {
@@ -1166,7 +1168,7 @@ describe("core.space.setLayout", () => {
       message: "scoped tokens cannot invoke workspace actions",
     });
     expect(fixture.store.workspaceLayout(scoped.principal.id)).toBeNull();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 });
 
@@ -1224,7 +1226,7 @@ describe("PluginHost contract failures", () => {
     // Were this a `refused`, a caller would retry forever against a door that can never
     // succeed, and the published JSON Schema would be a lie nobody notices.
     await expect(host.dispatch(fixture.owner, "test.doors.liar", {})).rejects.toThrow();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("a composed action with no handler THROWS: that is a wiring bug, not a refusal", async () => {
@@ -1247,7 +1249,7 @@ describe("PluginHost contract failures", () => {
       door: "test.doors.orphan",
       outcome: "failed",
     });
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("the ladder still runs FIRST: a caller's own error is a denial even at a broken door", async () => {
@@ -1258,7 +1260,7 @@ describe("PluginHost contract failures", () => {
     // because the handler behind it would have failed too.
     const outcome = await host.dispatch(fixture.owner, "test.doors.liar", { surplus: 1 });
     expect(denial(outcome).rule).toBe("invalid_args");
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 });
 
@@ -1347,6 +1349,7 @@ async function customHost(
     events,
     options,
   );
+  trackTestPluginHost(fixture.store, host);
   return host;
 }
 
@@ -1372,7 +1375,7 @@ describe("PluginHost core namespace", () => {
     await customHost(fixture, [recorder("vendor.impostor", log)], {
       distribution: SHIPPED_PLUGIN_IDS,
     });
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("the distribution's own seats compose through the real wiring", async () => {
@@ -1384,7 +1387,7 @@ describe("PluginHost core namespace", () => {
     for (const id of ids.filter((candidate) => candidate.startsWith("core."))) {
       expect(SHIPPED_PLUGIN_IDS.has(id)).toBe(true);
     }
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 });
 
@@ -1402,7 +1405,7 @@ describe("PluginHost lifecycle", () => {
     expect(log.calls).toEqual(["disable:test.alpha"]);
     await host.setEnabled("test.alpha", true, "admin");
     expect(log.calls).toEqual(["disable:test.alpha", "enable:test.alpha"]);
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("held definitions cannot run migrations or lifecycle hooks during live changes", async () => {
@@ -1459,7 +1462,7 @@ describe("PluginHost lifecycle", () => {
     expect(await fixture.store.pluginStorage("test.bad").get("migrated")).toBeNull();
     await host.purge("test.bad", "admin");
     expect(log.calls).toEqual(["disable:test.good", "enable:test.good"]);
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("survivors hear onAssemblyChanged once, in assembly order, with the delta", async () => {
@@ -1484,7 +1487,7 @@ describe("PluginHost lifecycle", () => {
       "changed:test.alpha(+-test.mike)",
       "changed:test.zulu(+-test.mike)",
     ]);
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("a hook that throws is NAMED on the roster and does not undo the transition", async () => {
@@ -1509,7 +1512,7 @@ describe("PluginHost lifecycle", () => {
     expect([...fixture.store.disabledPlugins()]).toEqual(["test.alpha"]);
     const entry = host.roster().find((row) => row.manifest.id === "test.alpha");
     expect(entry?.lifecycle).toBe("disable_failed");
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("a hook that never settles cannot hold the workspace hostage", async () => {
@@ -1534,7 +1537,7 @@ describe("PluginHost lifecycle", () => {
     expect(host.roster().find((row) => row.manifest.id === "test.alpha")?.lifecycle).toBe(
       "enable_failed",
     );
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("a recovered hook clears the failure state on the next transition", async () => {
@@ -1574,7 +1577,7 @@ describe("PluginHost lifecycle", () => {
     expect(
       host.roster().find((row) => row.manifest.id === "test.flaky")?.lifecycle,
     ).toBeUndefined();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 });
 
@@ -1606,7 +1609,7 @@ describe("PluginHost dependencies", () => {
     expect(outcome).toEqual({ refused: "missing_dependency: test.leaf" });
     expect(host.assembly().enabled("test.base")).toBe(true);
     expect([...fixture.store.disabledPlugins()]).toEqual(["test.rival"]);
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("a dependency freed of its dependents can then be disabled", async () => {
@@ -1622,7 +1625,7 @@ describe("PluginHost dependencies", () => {
       refused: "dependency_disabled: test.base",
     });
     expect(host.assembly().enabled("test.leaf")).toBe(false);
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("an incompatible peer refuses the enable, in whichever direction it was declared", async () => {
@@ -1643,7 +1646,7 @@ describe("PluginHost dependencies", () => {
     expect(await host.setEnabled("test.leaf", true, "admin")).toEqual({
       refused: "incompatible_dependency: test.rival",
     });
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 });
 
@@ -1719,7 +1722,7 @@ describe("PluginHost storage, migrations and purge", () => {
       expect(await storage.get("row")).toBe("retained+migrated");
     } finally {
       host?.close();
-      fixture.store.close();
+      closeTestStore(fixture.store);
     }
   });
 
@@ -1744,7 +1747,7 @@ describe("PluginHost storage, migrations and purge", () => {
     expect(await mine.dataVersion()).toEqual({ major: 3, minor: 1 });
     // ...and the stamp is not part of the key set the plugin iterates.
     expect(await mine.keys()).toEqual(["shared-key"]);
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("a refused key or value REJECTS the promise; nothing throws before it exists", async () => {
@@ -1762,7 +1765,7 @@ describe("PluginHost storage, migrations and purge", () => {
     await expect(badKey).rejects.toBeInstanceOf(PluginStorageError);
     await expect(oversize).rejects.toThrow(/over the .*-byte limit/);
     expect(await mine.keys()).toEqual([]);
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("a pending migration runs once, is ledgered by name, and stamps the version", async () => {
@@ -1782,7 +1785,7 @@ describe("PluginHost storage, migrations and purge", () => {
     // migration at-most-once, so the data must not be transformed twice.
     await customHost(fixture, versioned({ major: 2, minor: 0, withMigration: true }));
     expect(await storage.get("row")).toBe("original+migrated");
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("unreadable stored data holds non-core at boot and refuses enable", async () => {
@@ -1808,7 +1811,7 @@ describe("PluginHost storage, migrations and purge", () => {
     const outcome = await host.setEnabled(VERSIONED_ID, true, "admin");
     expect("refused" in outcome && outcome.refused.startsWith("data_downgrade")).toBe(true);
     expect(host.assembly().enabled(VERSIONED_ID)).toBe(false);
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("a major bump with no migration is held while minor changes remain readable", async () => {
@@ -1824,7 +1827,7 @@ describe("PluginHost storage, migrations and purge", () => {
     // data at 1.4 composes cleanly against code declaring 1.9 — and against 1.0.
     await customHost(fixture, versioned({ major: 1, minor: 9, withMigration: false }));
     await customHost(fixture, versioned({ major: 1, minor: 0, withMigration: false }));
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("purge is refused while the plugin is enabled, and for a builtin door", async () => {
@@ -1840,7 +1843,7 @@ describe("PluginHost storage, migrations and purge", () => {
     expect(await host.purge("test.ghost", "admin")).toEqual({
       refused: "unknown_plugin: test.ghost",
     });
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("purge erases the disabled plugin's data, releases its element type, and reports both", async () => {
@@ -1878,7 +1881,7 @@ describe("PluginHost storage, migrations and purge", () => {
     // The reservation is released, so a replacement may now claim the type DELIBERATELY —
     // which is exactly the squat that assembly refuses while the reservation stands.
     expect(fixture.store.elementOwners().has("versioned-thing")).toBe(false);
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("purge is reachable through the engine door, with plugins:manage", async () => {
@@ -1903,7 +1906,7 @@ describe("PluginHost storage, migrations and purge", () => {
         databaseBytes: 0,
       },
     });
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 });
 
@@ -2035,7 +2038,7 @@ describe("PluginHost database", () => {
       expect(existsSync(pluginDatabasePath(dataDir, KEYS_ID))).toBe(false);
     } finally {
       host.close();
-      fixture.store.close();
+      closeTestStore(fixture.store);
       rmSync(dataDir, { recursive: true, force: true });
     }
   });
@@ -2071,7 +2074,7 @@ describe("PluginHost database", () => {
       });
     } finally {
       host.close();
-      fixture.store.close();
+      closeTestStore(fixture.store);
       rmSync(dataDir, { recursive: true, force: true });
     }
   });
@@ -2122,7 +2125,7 @@ describe("PluginHost database", () => {
     } finally {
       disabled.resolve();
       host.close();
-      fixture.store.close();
+      closeTestStore(fixture.store);
       rmSync(dataDir, { recursive: true, force: true });
     }
   });
@@ -2277,7 +2280,7 @@ describe("PluginHost database", () => {
       await Promise.allSettled([inFlight]);
       successor?.close();
       host.close();
-      fixture.store.close();
+      closeTestStore(fixture.store);
       rmSync(dataDir, { recursive: true, force: true });
     }
   });
@@ -2338,7 +2341,7 @@ describe("PluginHost database", () => {
       await Promise.allSettled([enabling]);
       successor?.close();
       host.close();
-      fixture.store.close();
+      closeTestStore(fixture.store);
       rmSync(dataDir, { recursive: true, force: true });
     }
   });
@@ -2388,7 +2391,7 @@ describe("PluginHost database", () => {
       if (point === "committed-cleaned") rmSync(`${livePath}.backup`);
       if (point.endsWith("unknown")) writeFileSync(livePath, "operator-owned evidence");
       // Close/reopen the durable metadata DB, deliberately leaving the journal unfinished.
-      store.close();
+      closeTestStore(store);
       store = new ServerStore(openDatabase(metadataPath));
       if (point.endsWith("unknown")) {
         await expect(customHost({ ...fixture, store }, [], { dataDir })).rejects.toThrow(
@@ -2419,8 +2422,8 @@ describe("PluginHost database", () => {
       expect(existsSync(`${livePath}.stage`)).toBe(false);
       expect(existsSync(`${livePath}.backup`)).toBe(false);
     } finally {
-      store.close();
-      fixture.store.close();
+      closeTestStore(store);
+      closeTestStore(fixture.store);
       rmSync(dataDir, { recursive: true, force: true });
     }
   });
@@ -2522,7 +2525,7 @@ describe("PluginHost action scope", () => {
     // learn a door's schema by knocking on one it may not open.
     expect(outcome).toEqual({ ok: true, result: { containerScope: container } });
     expect(seen.containerScope).toBe(container);
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("the same token is still refused every action that did not declare itself confined", async () => {
@@ -2538,7 +2541,7 @@ describe("PluginHost action scope", () => {
       message: "scoped tokens cannot invoke workspace actions",
     });
     expect(seen.containerScope).toBeUndefined();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("a workspace-grade caller reaches the container-scoped action with no scope at all", async () => {
@@ -2551,7 +2554,7 @@ describe("PluginHost action scope", () => {
     // way it always did (for terminals, the terminal row's own container).
     expect(outcome).toEqual({ ok: true, result: { containerScope: null } });
     expect(seen.containerScope).toBeNull();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("the cap rung still runs for a scoped caller, and runs AT its container", async () => {
@@ -2581,7 +2584,7 @@ describe("PluginHost action scope", () => {
       ok: true,
       result: { containerScope: other },
     });
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("the ladder order is unchanged: scope refuses before arguments are looked at", async () => {
@@ -2594,7 +2597,7 @@ describe("PluginHost action scope", () => {
     const outcome = await host.dispatch(scoped, `${SCOPED_ID}.sweep`, { surplus: true });
 
     expect(denial(outcome).rule).toBe("forbidden");
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 });
 
@@ -2678,7 +2681,7 @@ describe("ctx.outsideScope", () => {
       ok: true,
       result: { touched: theirs },
     });
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("an unresolvable container is refused for a scoped caller and allowed for a workspace one", async () => {
@@ -2703,7 +2706,7 @@ describe("ctx.outsideScope", () => {
       ok: true,
       result: { touched: "" },
     });
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 });
 
@@ -3079,7 +3082,7 @@ describe("installed guest data migrations", () => {
         await f.store.pluginStorage(SAMPLE_ID).set("release", "yes");
         await Promise.allSettled(inFlight);
         await runner.close();
-        f.store.close();
+        closeTestStore(f.store);
         rmSync(f.dataDir, { recursive: true, force: true });
       }
     },
@@ -3189,7 +3192,7 @@ describe("installed guest data migrations", () => {
         host.close();
       } finally {
         await runner.close();
-        f.store.close();
+        closeTestStore(f.store);
         rmSync(f.dataDir, { recursive: true, force: true });
       }
     },
@@ -3258,7 +3261,7 @@ describe("installed guest data migrations", () => {
       } finally {
         host?.close();
         await runner.close();
-        f.store.close();
+        closeTestStore(f.store);
         rmSync(f.dataDir, { recursive: true, force: true });
       }
     },
@@ -3292,7 +3295,7 @@ describe("installed guest data migrations", () => {
     } finally {
       host?.close();
       await runner.close();
-      f.store.close();
+      closeTestStore(f.store);
       rmSync(f.dataDir, { recursive: true, force: true });
     }
   });
@@ -3328,7 +3331,7 @@ describe("installed guest data migrations", () => {
     } finally {
       host?.close();
       await runner.close();
-      f.store.close();
+      closeTestStore(f.store);
       rmSync(f.dataDir, { recursive: true, force: true });
     }
   });
@@ -3391,7 +3394,7 @@ describe("PluginHost install doors", () => {
     expect(denial(await host.dispatch(fixture.owner, `${SAMPLE_ID}.ping`, {})).rule).toBe(
       "unknown_action",
     );
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("install lands a plugin row carrying the installer's consent, high-risk caps withheld", async () => {
@@ -3454,7 +3457,7 @@ describe("PluginHost install doors", () => {
       sha256,
       bytes: Buffer.from("export const web = 1;"),
     });
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("grant widens the default explicitly, restricted to the manifest's own ceiling", async () => {
@@ -3471,7 +3474,7 @@ describe("PluginHost install doors", () => {
       ok: true,
       result: { id: SAMPLE_ID, version: "1.2.3", grantedCaps: ["containers:read", "tokens:mint"] },
     });
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("native delegates remain bounded by the installer's grant even for root callers", async () => {
@@ -3512,7 +3515,7 @@ describe("PluginHost install doors", () => {
         result: {},
       });
     } finally {
-      fixture.store.close();
+      closeTestStore(fixture.store);
     }
   });
 
@@ -3586,7 +3589,7 @@ describe("PluginHost install doors", () => {
         message: "machines:read not granted to plugin vendor.ungranted",
       });
     } finally {
-      fixture.store.close();
+      closeTestStore(fixture.store);
     }
   });
 
@@ -3651,7 +3654,7 @@ describe("PluginHost install doors", () => {
         }),
       ).toEqual({ ok: true, result: { answer: "machine_unknown" } });
     } finally {
-      fixture.store.close();
+      closeTestStore(fixture.store);
     }
   });
 
@@ -3676,7 +3679,7 @@ describe("PluginHost install doors", () => {
     const trace = fixture.store.listEvents({ type: TRACE_ROW_TYPE, limit: 1 })[0];
     expect(trace?.door).toBe(`${SAMPLE_ID}.mint`);
     expect(trace?.outcome).toBe("forbidden");
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("uninstall refuses a running row, then a row with data; purge: true purges first and removes everything", async () => {
@@ -3727,7 +3730,7 @@ describe("PluginHost install doors", () => {
       denial(await host.dispatch(fixture.owner, ENGINE_UNINSTALL_ACTION, { id: SAMPLE_ID }))
         .message,
     ).toMatch(/^not_installed: /);
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("a row whose data is ROWS is refused a silent uninstall exactly as one holding keys is", async () => {
@@ -3782,7 +3785,7 @@ describe("PluginHost install doors", () => {
       expect(existsSync(pluginDatabasePath(fixture.dataDir, SAMPLE_ID))).toBe(false);
     } finally {
       host.close();
-      fixture.store.close();
+      closeTestStore(fixture.store);
     }
   });
   test("uninstall forgets the switch: a reinstall of the same id is on, like a first install", async () => {
@@ -3823,7 +3826,7 @@ describe("PluginHost install doors", () => {
       ok: true,
       result: { pong: true },
     });
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("a bundle claiming engine. or core. is refused by namespace and writes nothing", async () => {
@@ -3838,7 +3841,7 @@ describe("PluginHost install doors", () => {
     expect(fixture.runner.loads).toEqual([]);
     expect(fixture.store.pluginInstalls()).toEqual([]);
     expect(existsSync(join(fixture.dataDir, "plugins"))).toBe(false);
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("a bundle whose sheet reaches past its root class is refused stylesheet_unscoped and writes nothing; a rooted one is served at the pin (#258)", async () => {
@@ -3912,7 +3915,7 @@ describe("PluginHost install doors", () => {
         .ok,
     ).toBe(true);
     expect(host.stylesheet(SAMPLE_ID)).toBeNull();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("a second install needs replace and an intentionally disabled replacement stays off", async () => {
@@ -3946,7 +3949,7 @@ describe("PluginHost install doors", () => {
     expect(existsSync(firstRow?.bundlePath ?? "")).toBe(false);
     expect(fixture.runner.unloads).toEqual([SAMPLE_ID]);
     expect(fixture.runner.loads).toEqual([SAMPLE_ID, SAMPLE_ID]);
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   /*
@@ -4010,7 +4013,7 @@ describe("PluginHost install doors", () => {
       await Promise.allSettled([replacing]);
       successor?.close();
       host.close();
-      fixture.store.close();
+      closeTestStore(fixture.store);
     }
   });
 
@@ -4065,7 +4068,7 @@ describe("PluginHost install doors", () => {
       await Promise.allSettled([installing]);
       successor?.close();
       host.close();
-      fixture.store.close();
+      closeTestStore(fixture.store);
     }
   });
 
@@ -4118,7 +4121,7 @@ describe("PluginHost install doors", () => {
       await Promise.allSettled([removing]);
       successor?.close();
       host.close();
-      fixture.store.close();
+      closeTestStore(fixture.store);
     }
   });
 
@@ -4142,7 +4145,7 @@ describe("PluginHost install doors", () => {
     const rows = host.roster().filter((entry) => entry.manifest.id === SAMPLE_ID);
     expect(rows).toHaveLength(1);
     expect(rows[0]?.install).toBeUndefined();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("a child that fails to load rolls back and answers artifact_invalid with its reason", async () => {
@@ -4159,7 +4162,7 @@ describe("PluginHost install doors", () => {
     expect(denial(outcome).message).toBe("artifact_invalid: server.js threw at import");
     expect(fixture.store.pluginInstalls()).toEqual([]);
     expect(host.roster().some((entry) => entry.manifest.id === SAMPLE_ID)).toBe(false);
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("boot re-verifies every stored bundle and refuses a tampered one by name, never loading it", async () => {
@@ -4225,7 +4228,7 @@ describe("PluginHost install doors", () => {
     expect(await second.setEnabled(SAMPLE_ID, false, "admin")).toEqual({ ok: true });
     expect(await second.uninstall(SAMPLE_ID, "admin", false)).toEqual({ ok: true });
     expect(fixture.store.pluginInstalls()).toEqual([]);
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("a denial the child or supervisor grades is settled as that rung, traced, never a failure", async () => {
@@ -4257,7 +4260,7 @@ describe("PluginHost install doors", () => {
       expect(trace?.door).toBe(`${SAMPLE_ID}.ping`);
       expect(trace?.outcome).toBe(rule);
     }
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("the runner's state is a roster lifecycle every principal sees, and it is pushed", async () => {
@@ -4301,7 +4304,7 @@ describe("PluginHost install doors", () => {
     // A disabled row's module is nobody's to fetch.
     expect(await host.setEnabled(SAMPLE_ID, false, "admin")).toEqual({ ok: true });
     expect(host.webModule(SAMPLE_ID)).toBeNull();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 });
 
@@ -4586,12 +4589,12 @@ async function retainedServiceFixture(dataVersion?: PluginManifest["dataVersion"
       close: () => {
         http.stop(true);
         jobs.offline(channel);
-        fixture.store.close();
+        closeTestStore(fixture.store);
         rmSync(fixture.dataDir, { recursive: true, force: true });
       },
     };
   } catch (error) {
-    fixture.store.close();
+    closeTestStore(fixture.store);
     rmSync(fixture.dataDir, { recursive: true, force: true });
     throw error;
   }
@@ -5523,7 +5526,7 @@ describe("PluginHost unpacked plugins", () => {
     expect(hookLog()).toEqual(["enable:1.0.0", "disable:1.0.0", "enable:2.0.0"]);
     expect(existsSync(firstBundlePath)).toBe(false);
     expect(host.webModule(UNPACKED_ID)?.sha256).toBe(edited.sha256);
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("an edit the assembly refuses rolls back to the previous row and wakes it again", async () => {
@@ -5589,7 +5592,7 @@ describe("PluginHost unpacked plugins", () => {
     expect(impostor).toEqual({
       refused: `artifact_invalid: manifest id "vendor.other" is not the directory it was authored in, "${UNPACKED_ID}"`,
     });
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("an authored sheet that reaches past the root is refused stylesheet_unscoped with the row standing; rooted, it is served at the pin (#258)", async () => {
@@ -5644,7 +5647,7 @@ describe("PluginHost unpacked plugins", () => {
       sha256: rooted.sha256,
       bytes: Buffer.from(sheet),
     });
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("developer mode off disables every unpacked row first, then refuses enable and author by name", async () => {
@@ -5709,7 +5712,7 @@ describe("PluginHost unpacked plugins", () => {
     expect(back.refusal).toBeUndefined();
     expect(await host.setEnabled(UNPACKED_ID, true, "admin")).toEqual({ ok: true });
     expect(hookLog()).toEqual(["enable:1.0.0", "disable:1.0.0", "enable:1.0.0"]);
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("setDeveloperMode and author are root only", async () => {
@@ -5748,7 +5751,7 @@ describe("PluginHost unpacked plugins", () => {
         sha256: installedRow(host, UNPACKED_ID).install?.sha256,
       });
     }
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 });
 
@@ -5801,7 +5804,7 @@ describe("registered native service doors", () => {
         expect(JSON.stringify(trace)).not.toContain("private-service");
       }
     } finally {
-      fixture.store.close();
+      closeTestStore(fixture.store);
     }
   });
 
@@ -5829,7 +5832,7 @@ describe("registered native service doors", () => {
         }),
       ).toBe(false);
     } finally {
-      fixture.store.close();
+      closeTestStore(fixture.store);
     }
   });
 });
@@ -5854,7 +5857,7 @@ describe("registered governed job doors", () => {
       expect(JSON.stringify(trace)).not.toContain("never-persist");
       expect(JSON.stringify(trace)).not.toContain("private-job");
     } finally {
-      fixture.store.close();
+      closeTestStore(fixture.store);
     }
   });
 
@@ -5878,7 +5881,7 @@ describe("registered governed job doors", () => {
         }),
       ).toBe(false);
     } finally {
-      fixture.store.close();
+      closeTestStore(fixture.store);
     }
   });
 });
@@ -5957,7 +5960,7 @@ test("stream close attribution retains the original URI after handler-owned node
     ).toEqual([["manifold://plugin/sample.streams"], ["manifold://plugin/sample.streams"]]);
   } finally {
     producer?.close();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   }
 });
 
@@ -6019,7 +6022,7 @@ test("a declared read action cannot acquire invocation authority from a root cal
       result: {},
     });
   } finally {
-    fixture.store.close();
+    closeTestStore(fixture.store);
   }
 });
 
@@ -6166,7 +6169,7 @@ describe("reviewed family updates through the one installer", () => {
         result: { pong: true },
       });
     } finally {
-      fixture.store.close();
+      closeTestStore(fixture.store);
     }
   });
 
@@ -6224,7 +6227,7 @@ describe("reviewed family updates through the one installer", () => {
       expect(published.flat().some((entry) => entry.manifest.version === "2.0.0")).toBe(false);
       expect(installedRow(host, SUITE_ID).manifest.version).toBe("1.0.0");
     } finally {
-      fixture.store.close();
+      closeTestStore(fixture.store);
     }
   });
 
@@ -6312,7 +6315,7 @@ describe("reviewed family updates through the one installer", () => {
       expect(fixture.store.pluginDatabaseJournals()).toEqual([]);
     } finally {
       host.close();
-      fixture.store.close();
+      closeTestStore(fixture.store);
     }
   });
 
@@ -6339,7 +6342,7 @@ describe("reviewed family updates through the one installer", () => {
         result: { pong: true },
       });
     } finally {
-      fixture.store.close();
+      closeTestStore(fixture.store);
     }
   });
 
@@ -6413,7 +6416,7 @@ describe("reviewed family updates through the one installer", () => {
     } finally {
       host?.close();
       await runner.close();
-      fixture.store.close();
+      closeTestStore(fixture.store);
       rmSync(fixture.dataDir, { recursive: true, force: true });
     }
   });
@@ -6515,7 +6518,7 @@ describe("reviewed family updates through the one installer", () => {
         expect(globals[Symbol.for(ranKey)]).toBeUndefined();
       } finally {
         delete globals[Symbol.for(ranKey)];
-        fixture.store.close();
+        closeTestStore(fixture.store);
       }
     },
   );
@@ -6741,7 +6744,7 @@ test("reference attachment is idempotent without overwriting a consumer document
   } finally {
     await f.host.close();
     f.rooms.drop(f.input.target.containerId);
-    f.store.close();
+    closeTestStore(f.store);
   }
 });
 
@@ -6788,7 +6791,7 @@ test.each(["file", "scene"] as const)(
       release.resolve();
       await f.host.close();
       f.rooms.drop(f.input.target.containerId);
-      f.store.close();
+      closeTestStore(f.store);
     }
   },
 );

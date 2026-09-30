@@ -43,7 +43,15 @@ import { PlaceExecutor, assemblyItemNouns, assemblyPlacementVocabulary } from ".
 import { RoomManager } from "../src/room.ts";
 import { sha256Hex } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
-import { FakeClock, FakeRuntime, testEventHub, testStore, testTileTrees } from "./helpers.ts";
+import {
+  closeTestStore,
+  FakeClock,
+  FakeRuntime,
+  testEventHub,
+  testStore,
+  testTileTrees,
+  trackTestPluginHost,
+} from "./helpers.ts";
 
 /*
   THE ENABLE THAT CAN START A CADENCE (#514).
@@ -238,6 +246,7 @@ async function fixture(
           : { lifecycleTimeoutMs: options.lifecycleTimeoutMs }),
       },
     );
+    trackTestPluginHost(store, host);
     return host;
   };
   const service = new JobService(store, auth, runtime);
@@ -327,7 +336,7 @@ async function fixture(
     online,
     request: { source, sha256: sha256Hex(bytes), hardened: true as const },
     close: () => {
-      store.close();
+      closeTestStore(store);
       rmSync(dataDir, { recursive: true, force: true });
     },
   };

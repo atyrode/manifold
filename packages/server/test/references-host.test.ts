@@ -1,4 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { z } from "zod";
 import { defineAction } from "@manifold/plugin";
 import {
@@ -22,6 +25,7 @@ import { InstanceDialer } from "../src/instance-dialer.ts";
 import { silentLogger } from "../src/log.ts";
 import { PlaceExecutor, assemblyItemNouns, assemblyPlacementVocabulary } from "../src/placement.ts";
 import { PluginHost, type ActionCtx, type ServerPluginDef } from "../src/plugin-host.ts";
+import { ReferenceService, type ReferenceOwner } from "../src/reference-service.ts";
 import { RoomManager } from "../src/room.ts";
 import { ServerStore } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
@@ -48,10 +52,10 @@ const declaration: OwnedReferenceDeclaration = {
   },
 };
 
-async function fixture() {
+async function fixture(path = ":memory:") {
   const runtime = new FakeRuntime();
   const clock = new FakeClock(runtime);
-  const store = new ServerStore(openDatabase(":memory:"));
+  const store = new ServerStore(openDatabase(path));
   closed.push(() => store.close());
   const auth = new AuthService(store, "a".repeat(64), runtime);
   const root = auth.authenticate("a".repeat(64));
@@ -673,4 +677,127 @@ test("the library filter removes an earlier candidate revoked while a later read
     release.resolve();
   }
   expect(await result).toMatchObject({ ok: true, result: [second] });
+});
+
+test.each(["acknowledgement", "reclaim"] as const)(
+  "closing during %s preserves durable maintenance for the next host",
+  async (phase) => {
+    const directory = mkdtempSync(join(tmpdir(), "manifold-reference-shutdown-"));
+    closed.push(() => rmSync(directory, { recursive: true, force: true }));
+    const path = join(directory, "store.db");
+    const f = await fixture(path);
+    const published = await f.create();
+    if (phase === "reclaim") {
+      expect(
+        await f.host.dispatch(f.root, "vendor.vault.delete", { ref: published.ref }),
+      ).toMatchObject({ ok: true });
+    }
+    f.host.close();
+    f.store.db.query("UPDATE reference_publications SET cleanup_pending=1").run();
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const failures: string[] = [];
+    const proof = {
+      preparationId: published.preparationId,
+      readyDigest: published.readyDigest,
+      expiresAt: f.runtime.now() + 60_000,
+    };
+    const owner: ReferenceOwner = {
+      pluginId: "vendor.vault",
+      declaration,
+      generation: {},
+      generationDigest: "shutdown-fixture",
+      probe: async () => proof,
+      probeWhenIdle: async () => {
+        entered.resolve();
+        await release.promise;
+        return proof;
+      },
+      reclaim: async () => {
+        entered.resolve();
+        await release.promise;
+      },
+    };
+    const service = new ReferenceService(
+      f.store,
+      f.auth,
+      f.runtime,
+      () => owner,
+      () => {},
+      (pluginId) => failures.push(pluginId),
+    );
+    closed.push(() => service.close());
+    const maintenance = service.reconcile();
+    await entered.promise;
+    service.close();
+    f.store.close();
+    release.resolve();
+    await maintenance;
+    expect(failures).toEqual([]);
+
+    const reopened = new ServerStore(openDatabase(path));
+    closed.push(() => reopened.close());
+    const journal = reopened.db.query(
+      "SELECT state,cleanup_pending FROM reference_publications WHERE preparation_id=?",
+    );
+    const state = phase === "acknowledgement" ? "published" : "deleted";
+    expect(journal.get(published.preparationId)).toEqual({ state, cleanup_pending: 1 });
+    const restarted = new ReferenceService(
+      reopened,
+      new AuthService(reopened, "a".repeat(64), f.runtime),
+      f.runtime,
+      () => owner,
+      () => {},
+      (pluginId) => failures.push(pluginId),
+    );
+    closed.push(() => restarted.close());
+    restarted.restart();
+    await restarted.reconcile();
+    expect(journal.get(published.preparationId)).toEqual({ state, cleanup_pending: 0 });
+    expect(failures).toEqual([]);
+  },
+);
+
+test("live acknowledgement failures remain visible and durable until a successful retry", async () => {
+  const f = await fixture();
+  const published = await f.create();
+  f.host.close();
+  f.store.db.query("UPDATE reference_publications SET cleanup_pending=1").run();
+  const failures: string[] = [];
+  let fail = true;
+  const owner: ReferenceOwner = {
+    pluginId: "vendor.vault",
+    declaration,
+    generation: {},
+    generationDigest: "retry-fixture",
+    probe: async () => null,
+    probeWhenIdle: async () => {
+      if (fail) throw new Error("owner unavailable");
+      return {
+        preparationId: published.preparationId,
+        readyDigest: published.readyDigest,
+        expiresAt: f.runtime.now() + 60_000,
+      };
+    },
+    reclaim: async () => {},
+  };
+  const service = new ReferenceService(
+    f.store,
+    f.auth,
+    f.runtime,
+    () => owner,
+    () => {},
+    (pluginId) => failures.push(pluginId),
+  );
+  closed.push(() => service.close());
+  const journal = f.store.db.query(
+    "SELECT state,cleanup_pending FROM reference_publications WHERE preparation_id=?",
+  );
+  await service.reconcile();
+  expect(failures).toEqual(["vendor.vault"]);
+  expect(journal.get(published.preparationId)).toEqual({ state: "published", cleanup_pending: 1 });
+  fail = false;
+  await service.reconcile();
+  expect(journal.get(published.preparationId)).toEqual({ state: "published", cleanup_pending: 0 });
+  expect(failures).toEqual(["vendor.vault"]);
 });

@@ -329,6 +329,22 @@ export function testEventHub(
   );
 }
 
+const testHosts = new WeakMap<ServerStore, Set<PluginHost>>();
+
+/** Register only a successfully booted host, including custom assemblies over the same store. */
+export function trackTestPluginHost(store: ServerStore, host: PluginHost): void {
+  const hosts = testHosts.get(store) ?? new Set<PluginHost>();
+  hosts.add(host);
+  testHosts.set(store, hosts);
+}
+
+/** Stop every host over this fixture's store before closing its database. */
+export function closeTestStore(store: ServerStore): void {
+  for (const host of testHosts.get(store) ?? []) host.close();
+  testHosts.delete(store);
+  store.close();
+}
+
 /**
  * The real assembly, in a test. Tests assemble the SAME defs production does — a fixture
  * with a hand-written plugin list would let the action door pass here and refuse in the
@@ -424,6 +440,7 @@ export async function testPluginHost(
     */
     { ...options, distribution: SHIPPED_PLUGIN_IDS },
   );
+  trackTestPluginHost(store, host);
   if (options.events === undefined) {
     broker.setEvents(events);
     rooms.setEvents(events);

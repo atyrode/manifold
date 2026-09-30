@@ -28,15 +28,13 @@ import { RoomManager } from "../src/room.ts";
 import { SessionGateway } from "../src/session-ws.ts";
 import type { ServerStore } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
-import {
-  FakeClock,
-  FakeRuntime,
-  FakeSocket,
-  testEventHub,
-  testPluginHost,
-  testStore,
-  testTileTrees,
-} from "./helpers.ts";
+import { closeTestStore, FakeClock,
+FakeRuntime,
+FakeSocket,
+testEventHub,
+testPluginHost,
+testStore,
+testTileTrees, } from "./helpers.ts";
 import type { EventHub } from "../src/event-hub.ts";
 
 /**
@@ -307,7 +305,7 @@ describe("governed event disclosure", () => {
       expect(eventsOn(strangerSocket)).toEqual([]);
     } finally {
       fixture.gateway.shutdown();
-      fixture.store.close();
+      closeTestStore(fixture.store);
     }
   });
 
@@ -355,7 +353,7 @@ describe("governed event disclosure", () => {
       expect(fixture.logs.some((line) => line.evt === "event_undeclared")).toBe(false);
     } finally {
       fixture.gateway.shutdown();
-      fixture.store.close();
+      closeTestStore(fixture.store);
     }
   });
 });
@@ -378,7 +376,7 @@ describe("event plane subscription authority", () => {
     expect(heard[0]?.topic).toEqual({ kind: "container", containerId: fixture.container.id });
     expect(heard[0]?.actor).toBe(fixture.owner.principal.id);
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("leaf removal announces on the container that held it, once, at the commit", async () => {
@@ -422,7 +420,7 @@ describe("event plane subscription authority", () => {
     // frame above is only evidence once nothing was refused on the way out.
     expect(fixture.logs.some((line) => line.evt === "event_undeclared")).toBe(false);
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("a container-scoped token is CONFINED: its own container yes, another no, a collection no", async () => {
@@ -446,7 +444,7 @@ describe("event plane subscription authority", () => {
     // the plane an oracle for "does this node exist and may I read it".
     expect(fixture.logs.some((line) => line.evt === "session_subscribe_forbidden")).toBe(true);
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("a token without containers:read subscribes to nothing at all", async () => {
@@ -460,7 +458,7 @@ describe("event plane subscription authority", () => {
 
     expect(fixture.events.held("writer")).toBe(0);
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("a subscribe before either handshake is refused by the gateway, not by the hub", async () => {
@@ -474,7 +472,7 @@ describe("event plane subscription authority", () => {
     expect(socket.closed).toEqual({ code: 4002, reason: "first frame must be join or observe" });
     expect(fixture.events.held("cold")).toBe(0);
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 });
 
@@ -505,7 +503,7 @@ describe("event plane matching", () => {
       { kind: "element", containerId: fixture.container.id, elementId: "el-1" },
     ]);
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("the fan-out index and `topicMatches` agree over every address form", () => {
@@ -558,7 +556,7 @@ describe("event plane matching", () => {
       ),
     ).toBe(false);
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 });
 
@@ -619,7 +617,7 @@ describe("event plane fan-out", () => {
       expect(fixture.store.listEvents({ type: "run_changed", limit: 10 })).toHaveLength(2);
     } finally {
       fixture.gateway.shutdown();
-      fixture.store.close();
+      closeTestStore(fixture.store);
     }
   });
 
@@ -668,7 +666,7 @@ describe("event plane fan-out", () => {
       expect(slow.closed).toBeNull();
     } finally {
       fixture.gateway.shutdown();
-      fixture.store.close();
+      closeTestStore(fixture.store);
     }
   });
 
@@ -707,7 +705,7 @@ describe("event plane fan-out", () => {
       expect(socket.closed).toBeNull();
     } finally {
       fixture.gateway.shutdown();
-      fixture.store.close();
+      closeTestStore(fixture.store);
     }
   });
 
@@ -728,7 +726,7 @@ describe("event plane fan-out", () => {
       expect(socket.closed).toBeNull();
     } finally {
       fixture.gateway.shutdown();
-      fixture.store.close();
+      closeTestStore(fixture.store);
     }
   });
 
@@ -746,7 +744,7 @@ describe("event plane fan-out", () => {
     expect(eventsOn(first).map((event) => event.kind)).toEqual(["container_created"]);
     expect(eventsOn(second).map((event) => event.kind)).toEqual(["container_created"]);
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("one socket holding two matching subscriptions still hears one frame", async () => {
@@ -769,7 +767,7 @@ describe("event plane fan-out", () => {
     // subscriptions — so the fan-out cannot multiply one fact by how closely a client watches.
     expect(eventsOn(socket)).toHaveLength(1);
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("a node-addressed commit also reaches its door's COLLECTION, once and with one row", async () => {
@@ -807,7 +805,7 @@ describe("event plane fan-out", () => {
     // A second audience is not a second event: the trail records the fact, not its reach.
     expect(fixture.store.listEvents({ type: "item_placed", limit: 10 })).toHaveLength(1);
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("holding a node AND its door's collection is still one frame, at the node", async () => {
@@ -830,7 +828,7 @@ describe("event plane fan-out", () => {
       { kind: "container", containerId: fixture.container.id },
     ]);
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("a refused action publishes NOTHING, however much its handler staged", async () => {
@@ -851,7 +849,7 @@ describe("event plane fan-out", () => {
     // other side: history and fan-out are one call.
     expect(fixture.store.listEvents({ type: "container_renamed", limit: 10 })).toEqual([]);
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("ONE COMMIT, ONE EVENT: a drag that commits once produces exactly one row and one frame", async () => {
@@ -873,7 +871,7 @@ describe("event plane fan-out", () => {
     expect(eventsOn(socket)).toHaveLength(1);
     expect(fixture.store.listEvents({ type: "item_placed", limit: 10 })).toHaveLength(1);
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("an emission whose kind its emitter never declared is refused, loudly and totally", async () => {
@@ -887,7 +885,7 @@ describe("event plane fan-out", () => {
     expect(fixture.store.listEvents({ type: "container_invented", limit: 10 })).toEqual([]);
     expect(fixture.logs.some((line) => line.evt === "event_undeclared")).toBe(true);
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("another plugin's declared kind cannot be emitted as the local plugin's kind", async () => {
@@ -903,7 +901,7 @@ describe("event plane fan-out", () => {
       expect(fixture.logs.some((line) => line.evt === "event_undeclared")).toBe(true);
     } finally {
       fixture.gateway.shutdown();
-      fixture.store.close();
+      closeTestStore(fixture.store);
     }
   });
 
@@ -1050,7 +1048,7 @@ describe("event plane fan-out", () => {
     } finally {
       fixture.gateway.shutdown();
       fixture.host.close();
-      fixture.store.close();
+      closeTestStore(fixture.store);
     }
   });
 
@@ -1071,7 +1069,7 @@ describe("event plane fan-out", () => {
     expect(eventsOn(socket)).toEqual([]);
     expect(fixture.logs.some((line) => line.evt === "event_undeclared")).toBe(true);
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 });
 
@@ -1088,7 +1086,7 @@ describe("event plane lifetime", () => {
     expect(eventsOn(socket)).toEqual([]);
     expect(socket.closed).toBeNull();
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("unsubscribing from a topic never held is a no-op, not an error", async () => {
@@ -1102,7 +1100,7 @@ describe("event plane lifetime", () => {
     expect(socket.closed).toBeNull();
     expect(fixture.events.held("tab")).toBe(0);
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("SOCKET DEATH takes every subscription with it: nothing is persisted, nothing resumes", async () => {
@@ -1120,7 +1118,7 @@ describe("event plane lifetime", () => {
     // so a dead socket's topics cannot come back to life on a new one.
     expect(eventsOn(socket)).toEqual([]);
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("past the per-connection bound the excess is dropped and named, and the socket lives", async () => {
@@ -1143,7 +1141,7 @@ describe("event plane lifetime", () => {
     // exists to remove.
     expect(socket.closed).toBeNull();
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 });
 
@@ -1169,7 +1167,7 @@ describe("event frame shape", () => {
     expect(parsed.actor).toBe(fixture.owner.principal.id);
     expect(typeof parsed.payload["containerId"]).toBe("string");
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 });
 
@@ -1192,7 +1190,7 @@ describe("floor doors emit at their commit points", () => {
     expect(heard.map((event) => event.kind)).toEqual(["principal_joined"]);
     expect(heard[0]?.payload["containerId"]).toBe(fixture.container.id);
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("machines: an online transition fires once, and a superseded socket is not a new arrival", async () => {
@@ -1223,7 +1221,7 @@ describe("floor doors emit at their commit points", () => {
       "machine_offline",
     ]);
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("terminal lifecycle keeps its audit trail scoped to the container it happened in", async () => {
@@ -1265,7 +1263,7 @@ describe("floor doors emit at their commit points", () => {
     });
     expect(trail).toHaveLength(1);
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("plugin enablement announces on the engine's own ledger node", async () => {
@@ -1285,6 +1283,6 @@ describe("floor doors emit at their commit points", () => {
     // another plugin's emission, and enablement is the engine's ledger about it.
     expect(heard[0]?.payload["plugin"]).toBe("core.canvas.draw");
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 });

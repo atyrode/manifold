@@ -18,7 +18,7 @@ import type { PluginHost } from "../src/plugin-host.ts";
 import { RoomManager } from "../src/room.ts";
 import type { ServerStore } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
-import { FakeClock, FakeRuntime, testPluginHost, testStore, testTileTrees } from "./helpers.ts";
+import { closeTestStore, FakeClock, FakeRuntime, testPluginHost, testStore, testTileTrees } from "./helpers.ts";
 import { createExternalRun } from "./agent-fixtures.ts";
 
 const OWNER_KEY = "r".repeat(64);
@@ -156,7 +156,7 @@ describe("sponsor-bound agent runs", () => {
     expect(fix.store.getAgentRun(childCreated.run.id)?.state).toBe("revoked");
     expect(() => fix.auth.authenticate(created.credential.token)).toThrow("revoked");
     expect(() => fix.auth.authenticate(childCreated.credential.token)).toThrow("revoked");
-    fix.store.close();
+    closeTestStore(fix.store);
   });
   test("a child remains bounded by the sponsor waterfall at every descendant node", async () => {
     const fix = await fixture();
@@ -208,7 +208,7 @@ describe("sponsor-bound agent runs", () => {
     const child = fix.auth.authenticate(childCreated.credential.token);
     await acknowledge(fix, child);
     expect(fix.auth.effectiveCaps(child, containerNode).has("containers:read")).toBe(false);
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("generic revocation is transitive and scoped credentials cannot clean up elsewhere", async () => {
@@ -286,7 +286,7 @@ describe("sponsor-bound agent runs", () => {
         }),
       ).rule,
     ).toBe("refused");
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("expiry withdraws a hot run subtree before teardown can claim success", async () => {
@@ -330,7 +330,7 @@ describe("sponsor-bound agent runs", () => {
     ).toMatchObject({ rule: "forbidden" });
     expect(fix.store.getAgentRun(parentCreated.run.id)?.state).toBe("expired");
     expect(fix.store.getAgentRun(childCreated.run.id)?.state).toBe("revoked");
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("renewal replaces the credential without extending the run silently", async () => {
@@ -364,7 +364,7 @@ describe("sponsor-bound agent runs", () => {
     expect(() => fix.auth.authenticate(created.credential.token)).toThrow("revoked");
     const replacement = fix.auth.authenticate(renewed.credential.token);
     expect((await fix.host.dispatch(replacement, "core.machines.list", {})).ok).toBe(true);
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("each ancestor enforces its own descendant budget", async () => {
@@ -433,7 +433,7 @@ describe("sponsor-bound agent runs", () => {
         ),
       ),
     ).toEqual({ rule: "refused", message: "delegation_exceeds_grant" });
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("a trusted policy reload suspends active runs until exact re-acknowledgement", async () => {
@@ -496,7 +496,7 @@ describe("sponsor-bound agent runs", () => {
       expect(reissued.acknowledgedAt).toBeUndefined();
       expect((await acknowledge(fix, actor)).run.state).toBe("active");
     } finally {
-      fix.store.close();
+      closeTestStore(fix.store);
       rmSync(directory, { recursive: true, force: true });
     }
   });
