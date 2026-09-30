@@ -2911,6 +2911,7 @@ export class JobService {
 
   tick(): void {
     this.reconcileAuthority();
+    this.nativeTransfers.retryPendingAdmissions();
     this.jobSchedules.tick(this.runtime.now(), {
       reauthorize: (request) => this.reauthorizeDeferred(request),
       isOnline: (machineId) => this.channels.get(machineId)?.proved === true,

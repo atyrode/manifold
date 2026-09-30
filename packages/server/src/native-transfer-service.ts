@@ -150,7 +150,7 @@ export class NativeTransferService {
   private pendingSource: NativeTransferPendingSource | undefined;
   private readonly pendingOwners = new Set<string>();
   private readonly probingOwners = new Map<string, Promise<void>>();
-  private readonly queuedProbes = new Set<string>();
+  private readonly queuedProbes = new Map<string, Promise<void>>();
   private probeOffset = 0;
   constructor(
     private readonly store: ServerStore,
@@ -174,16 +174,18 @@ export class NativeTransferService {
     for (const pluginId of source.owners()) this.pendingOwners.add(pluginId);
   }
 
-  retryPendingAdmissions(pluginId: string): void {
-    if (this.pendingOwners.has(pluginId))
-      void this.reconcilePendingAdmissions(pluginId);
+  retryPendingAdmissions(pluginId?: string): void {
+    if (pluginId === undefined ? this.pendingOwners.size !== 0 : this.pendingOwners.has(pluginId))
+      void this.reconcilePendingAdmissions(pluginId, true);
   }
 
   /** Startup, idle transitions and existing maintenance each do one bounded pass. */
-  async reconcilePendingAdmissions(pluginId?: string): Promise<void> {
+  async reconcilePendingAdmissions(pluginId?: string, pendingOnly = false): Promise<void> {
     const source = this.pendingSource;
     if (!source) return;
-    const owners = source.owners();
+    const owners = pendingOnly
+      ? source.owners().filter((id) => this.pendingOwners.has(id))
+      : source.owners();
     const selected = pluginId === undefined
       ? owners.slice(this.probeOffset, this.probeOffset + 32)
       : owners.includes(pluginId) ? [pluginId] : [];
@@ -192,7 +194,15 @@ export class NativeTransferService {
     for (const id of selected) {
       const existing = this.probingOwners.get(id);
       if (existing) {
-        this.queuedProbes.add(id);
+        let queued = this.queuedProbes.get(id);
+        if (!queued) {
+          queued = existing.then(() => {
+            this.queuedProbes.delete(id);
+            return this.reconcilePendingAdmissions(id);
+          });
+          this.queuedProbes.set(id, queued);
+        }
+        await queued;
         continue;
       }
       this.pendingOwners.add(id);
@@ -202,7 +212,6 @@ export class NativeTransferService {
         await work;
       } finally {
         this.probingOwners.delete(id);
-        if (this.queuedProbes.delete(id)) void this.reconcilePendingAdmissions(id);
       }
     }
   }
@@ -220,8 +229,21 @@ export class NativeTransferService {
         }
         accepted = true;
       });
-      if (available && accepted) this.pendingOwners.delete(pluginId);
+      if (!available || !accepted) return;
+      // Do not let our own evidence callback's idle notification schedule another probe.
+      // Restore debt below if that callback did not durably acknowledge every terminal row.
+      this.pendingOwners.delete(pluginId);
       await this.deliverEvidence();
+      const unacknowledgedRefusal = this.store.db.query<{ record: string }, [string]>(
+        "SELECT record FROM native_admission_refusals WHERE plugin_id=? LIMIT 1000",
+      ).all(pluginId).some((row) => !refusalRecordSchema.parse(JSON.parse(row.record)).evidenceDelivered);
+      const unacknowledgedTerminal = this.store.db.query<{ record: string }, [string]>(
+        "SELECT record FROM native_transfers WHERE plugin_id=? LIMIT 1000",
+      ).all(pluginId).some((row) => {
+        const record = recordSchema.parse(JSON.parse(row.record));
+        return !ACTIVE[record.status.state] && !record.evidenceDelivered;
+      });
+      if (unacknowledgedRefusal || unacknowledgedTerminal) this.pendingOwners.add(pluginId);
     } catch {
       // Busy, malformed and unavailable owners remain purge-blocking until a later seam.
       this.pendingOwners.add(pluginId);

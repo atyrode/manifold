@@ -1614,6 +1614,7 @@ async function readActionFixture(options: {
   }
   const jobs: JobService = new FixtureJobs(f.store, f.auth, f.runtime);
   if (!options.lateJobs) host.setJobs(jobs);
+  else jobs.setManifestResolver((pluginId) => pluginId === plugin.manifest.id ? plugin.manifest.machine ?? null : null);
   const commands: JobCommand[] = [];
   const channel = {
     machineId: f.request.machineId,
@@ -1698,6 +1699,7 @@ async function readActionFixture(options: {
     delivered,
     revoke,
     registerJobs: () => host.setJobs(jobs),
+    tick: () => jobs.tick(),
     nativeActor: actor,
     readRequest: { ...pins, mode: "read" as const, relativePath: ["source.bin"] },
     dispatch: () => host.dispatch(actor, "sample.transfer.read", { source, location }),
@@ -1741,6 +1743,7 @@ for (const abandoned of [false, true]) {
     if (abandoned) {
       expect(await outcome).toBeInstanceOf(Error);
       await reclaimed.promise;
+      await f.service.reconcilePendingAdmissions();
       expect(pending).toEqual([]);
       expect(evidence).toEqual([expect.objectContaining({
         kind: "admission-refused", mode: "read", reason: "transfer_unavailable",
@@ -1759,6 +1762,52 @@ for (const abandoned of [false, true]) {
     }
   });
 }
+
+test("existing job maintenance retries unavailable pending owners and failed ACKs without another actor", async () => {
+  let unavailable = true;
+  let acknowledge = false;
+  let pending: NativeTransferPendingAdmission[] = [];
+  const attempted = Promise.withResolvers<void>();
+  const retired = Promise.withResolvers<void>();
+  const f = await readActionFixture({
+    beforeBegin: async (ctx, request) => {
+      pending = [{ actorId: ctx.auth.principal.id, credentialBinding: ctx.credentialBinding,
+        request, createdAt: ctx.now() }];
+      throw new Error("reservation abandoned");
+    },
+    pending: async () => {
+      if (unavailable) throw new Error("private owner temporarily unavailable");
+      return pending;
+    },
+    reconcile: async (_ctx, receipts) => {
+      attempted.resolve();
+      if (!acknowledge) throw new Error("private ACK temporarily unavailable");
+      pending = pending.filter((entry) => !receipts.some((receipt) =>
+        receipt.actorId === entry.actorId && receipt.credentialBinding === entry.credentialBinding &&
+        receipt.requestId === entry.request.requestId));
+      retired.resolve();
+    },
+  });
+  await expect(f.dispatch()).rejects.toThrow("reservation abandoned");
+  f.auth.revokePrincipal(f.nativeActor.principal.id, f.actor);
+  f.controls.ownerAvailable = false;
+  await f.service.reconcilePendingAdmissions();
+  expect(() => f.service.assertPurgeable(f.caller.pluginId)).toThrow("native_transfer_cleanup_unknown");
+  unavailable = false;
+  f.tick();
+  await attempted.promise;
+  // Drain the failed ACK before simulating the next production maintenance tick.
+  await f.service.reconcilePendingAdmissions();
+  expect(pending).toHaveLength(1);
+  expect(() => f.service.assertPurgeable(f.caller.pluginId)).toThrow("native_transfer_cleanup_unknown");
+  acknowledge = true;
+  f.tick();
+  await retired.promise;
+  await f.service.reconcilePendingAdmissions();
+  expect(pending).toEqual([]);
+  f.service.assertPurgeable(f.caller.pluginId);
+  expect(f.commands).toEqual([]);
+});
 
 test("an idle pending snapshot excludes a new action until its metadata fence commits", async () => {
   const entered = Promise.withResolvers<void>();
@@ -1794,9 +1843,9 @@ test("an idle pending snapshot excludes a new action until its metadata fence co
   hold = false;
   release.resolve();
   await probe;
-  expect(await action).toEqual({
-    ok: false, denial: { rule: "refused", message: "transfer_unavailable" },
-  });
+  expect((await action).ok).toBe(false);
+  await f.service.reconcile();
+  f.service.assertPurgeable(f.caller.pluginId);
   expect(actionEntered).toBe(true);
   expect(f.commands).toEqual([]);
 });
