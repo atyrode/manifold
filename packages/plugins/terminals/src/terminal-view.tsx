@@ -222,9 +222,8 @@ export function TerminalView({
    * Real-terminal feel: activation (one click-release anywhere on the embed)
    * wakes the cursor immediately. Edge-triggered on inactive→active. The focus
    * is re-asserted frame-by-frame for a short window because browser focus can
-   * land after ours; it stops as soon as focus settles inside the terminal,
-   * yields to deliberate focus on an editable element elsewhere, and dies with
-   * deactivation.
+   * land after ours; it yields to deliberate focus on another input, titlebar
+   * control or floating disclosure and dies with deactivation.
    */
   const wasActiveRef = useRef(false);
   useEffect(() => {
@@ -241,14 +240,14 @@ export function TerminalView({
       if (host === null || terminal === null) return;
       const focused = document.activeElement;
       const settled = focused !== null && host.contains(focused);
-      const editableElsewhere =
+      const interactiveElsewhere =
         !settled &&
         focused instanceof HTMLElement &&
         (focused.tagName === "INPUT" ||
           focused.tagName === "TEXTAREA" ||
           focused.isContentEditable ||
-          focused.closest(".node-titlebar") !== null);
-      if (editableElsewhere) return; // user chose another input: stop wrestling
+          focused.closest(".node-titlebar, .popover__content") !== null);
+      if (interactiveElsewhere) return; // user chose another control: stop wrestling
       if (!settled) terminal.focus();
       // Keep watching through the whole activation transition: browser refocus
       // can land after our first success.
