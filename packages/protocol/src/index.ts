@@ -879,6 +879,17 @@ export {
   type ManifoldRef,
 } from "./uri.ts";
 export {
+  AuthorityScopeEntrySchema,
+  AuthorityScopeSchema,
+  MAX_AUTHORITY_SCOPE_ENTRIES,
+  MAX_AUTHORITY_SCOPE_CAPS,
+  canonicalizeAuthorityScope,
+  scopeAdmits,
+  scopeWithin,
+  intersectAuthorityScopes,
+  type AuthorityScopeEntry,
+  type AuthorityScope,
+  type GrantNode,
   CreateGrantRequestSchema,
   GRANT_EFFECTS,
   GRANT_REACHES,

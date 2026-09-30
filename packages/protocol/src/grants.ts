@@ -1,6 +1,7 @@
 import { z } from "zod";
-import { AuthoredCapSchema } from "./plugin.ts";
+import { AskableCapSchema, AuthoredCapSchema } from "./plugin.ts";
 import { InstanceOriginSchema } from "./origin.ts";
+import type { AskableCap } from "./capabilities.ts";
 import { MANIFOLD_URI_SCHEME, containmentPath } from "./uri.ts";
 
 /**
@@ -83,6 +84,124 @@ export const GrantNodeSchema = z
   .refine((value) => containmentPath(value) !== null, {
     message: "node must be a manifold:// URI this workspace can address",
   });
+export type GrantNode = z.infer<typeof GrantNodeSchema>;
+
+export const MAX_AUTHORITY_SCOPE_ENTRIES = 64;
+export const MAX_AUTHORITY_SCOPE_CAPS = 128;
+export const AuthorityScopeEntrySchema = z.strictObject({
+  target: GrantNodeSchema,
+  reach: GrantReachSchema,
+  caps: z
+    .array(z.lazy(() => AskableCapSchema))
+    .min(1)
+    .max(MAX_AUTHORITY_SCOPE_CAPS),
+});
+export type AuthorityScopeEntry = z.infer<typeof AuthorityScopeEntrySchema>;
+export type AuthorityScope = AuthorityScopeEntry[];
+export const AuthorityScopeSchema = z
+  .array(AuthorityScopeEntrySchema)
+  .max(MAX_AUTHORITY_SCOPE_ENTRIES)
+  .superRefine((scope, ctx) => {
+    const groups = new Map<string, Set<AskableCap>>();
+    for (const entry of scope) {
+      const key = `${entry.target}\n${entry.reach}`;
+      let caps = groups.get(key);
+      if (caps === undefined) {
+        caps = new Set();
+        groups.set(key, caps);
+      }
+      for (const cap of entry.caps) caps.add(cap);
+      if (caps.size > MAX_AUTHORITY_SCOPE_CAPS)
+        ctx.addIssue({ code: "custom", message: "merged authority scope cap limit exceeded" });
+    }
+  });
+
+/** Canonical storage/wire representation; an empty list means no ordinary authority. */
+export function canonicalizeAuthorityScope(scope: readonly AuthorityScopeEntry[]): AuthorityScope {
+  const parsed = AuthorityScopeSchema.parse(scope);
+  const groups = new Map<string, AuthorityScopeEntry>();
+  for (const entry of parsed) {
+    const key = `${entry.target}\n${entry.reach}`;
+    const existing = groups.get(key);
+    if (existing === undefined) groups.set(key, entry);
+    else existing.caps.push(...entry.caps);
+  }
+  const result = [...groups.values()];
+  for (const entry of result) entry.caps = [...new Set(entry.caps)].sort();
+  return result.sort((left, right) =>
+    left.target < right.target
+      ? -1
+      : left.target > right.target
+        ? 1
+        : left.reach < right.reach
+          ? -1
+          : left.reach > right.reach
+            ? 1
+            : 0,
+  );
+}
+
+/** Whether a scope covers this entire requested node/reach, not merely one descendant. */
+export function scopeAdmits(
+  scope: readonly AuthorityScopeEntry[],
+  node: GrantNode,
+  cap: AskableCap,
+  reach: GrantReach = "node",
+): boolean {
+  const path = containmentPath(node);
+  if (path === null) return false;
+  return scope.some(
+    (entry) =>
+      entry.caps.includes(cap) &&
+      (entry.target === node
+        ? reach === "node" || entry.reach === "subtree"
+        : entry.reach === "subtree" && path.includes(entry.target)),
+  );
+}
+
+export function scopeWithin(
+  requested: readonly AuthorityScopeEntry[],
+  ceiling: readonly AuthorityScopeEntry[],
+): boolean {
+  return requested.every((entry) =>
+    entry.caps.every((cap) => scopeAdmits(ceiling, entry.target, cap, entry.reach)),
+  );
+}
+
+/** Intersect correlated entries without manufacturing a caps-by-targets product. */
+export function intersectAuthorityScopes(
+  left: readonly AuthorityScopeEntry[],
+  right: readonly AuthorityScopeEntry[],
+): AuthorityScope {
+  const result = new Map<string, AuthorityScopeEntry>();
+  for (const a of left) {
+    const aPath = containmentPath(a.target);
+    if (aPath === null) continue;
+    for (const b of right) {
+      let target: GrantNode;
+      let reach: GrantReach;
+      if (a.target === b.target) {
+        target = a.target;
+        reach = a.reach === "node" || b.reach === "node" ? "node" : "subtree";
+      } else if (b.reach === "subtree" && aPath.includes(b.target)) {
+        target = a.target;
+        reach = a.reach;
+      } else if (a.reach === "subtree" && containmentPath(b.target)?.includes(a.target)) {
+        target = b.target;
+        reach = b.reach;
+      } else continue;
+      const caps = a.caps.filter((cap) => b.caps.includes(cap));
+      if (caps.length === 0) continue;
+      const key = `${target}\n${reach}`;
+      const existing = result.get(key);
+      if (existing === undefined) result.set(key, { target, reach, caps });
+      else existing.caps.push(...caps);
+    }
+  }
+  return canonicalizeAuthorityScope(
+    [...result.values()].map((entry) => ({ ...entry, caps: [...new Set(entry.caps)] })),
+  );
+}
 
 /**
  * A grant id's room. Wider than the 128 every other id in this protocol gets, and deliberately:
