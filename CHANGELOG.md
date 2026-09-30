@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.29.1] - 2026-09-30
+
+### Fixed
+
+- Terminal sizing details stay open when selected immediately after activating a terminal. The bounded input-focus recovery now respects titlebar controls and floating disclosures instead of stealing their focus and dismissing them. (#963, #964)
+
 ## [0.29.0] - 2026-09-30
 
 ### Changed
