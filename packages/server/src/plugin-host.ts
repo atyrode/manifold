@@ -779,6 +779,7 @@ class InstallAuthorityLost extends Error {
 export interface MachineAdmission {
   isOnline(machineId: string): boolean;
   getTerminalExecution(machineId: string): TerminalExecution | null;
+  getPhysicalCoreCount(machineId: string): number | undefined;
   drain(machineId: string, draining: boolean): Promise<DrainOutcome>;
   /**
    * What the enrolled agent says one absolute path on its host is: the resolved git common
@@ -4748,15 +4749,22 @@ export class PluginHost {
             // One read of the withdrawn set for the whole roster, never a question per row.
             const withdrawn = this.store.revokedMachineIds();
             return {
-              machines: this.store.listMachines().map((machine) => ({
-                id: machine.id,
-                name: machine.name,
-                online: this.machines.isOnline(machine.id),
-                revoked: withdrawn.has(machine.id),
-                draining: machine.draining,
-                terminalExecution: this.machines.getTerminalExecution(machine.id),
-                lastRefusal: machine.lastRefusal,
-              })),
+              machines: this.store.listMachines().map((machine) => {
+                const online = this.machines.isOnline(machine.id);
+                const revoked = withdrawn.has(machine.id);
+                const physicalCoreCount =
+                  online && !revoked ? this.machines.getPhysicalCoreCount(machine.id) : undefined;
+                return {
+                  id: machine.id,
+                  name: machine.name,
+                  online,
+                  revoked,
+                  draining: machine.draining,
+                  terminalExecution: this.machines.getTerminalExecution(machine.id),
+                  lastRefusal: machine.lastRefusal,
+                  ...(physicalCoreCount === undefined ? {} : { physicalCoreCount }),
+                };
+              }),
             };
           }),
         drain: async (machineId, draining) => {

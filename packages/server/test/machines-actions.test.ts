@@ -42,6 +42,7 @@ function liveness(online: ReadonlySet<string>): MachineAdmission {
   return {
     isOnline: (machineId) => online.has(machineId),
     getTerminalExecution: () => null,
+    getPhysicalCoreCount: () => undefined,
     drain: (machineId, draining) =>
       Promise.resolve(
         online.has(machineId)

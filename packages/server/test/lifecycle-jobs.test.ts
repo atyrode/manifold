@@ -183,6 +183,7 @@ async function fixture(onEnable: (ctx: LifecycleCtx) => void | Promise<void>) {
       {
         isOnline: () => false,
         getTerminalExecution: () => null,
+        getPhysicalCoreCount: () => undefined,
         drain: () => Promise.resolve({ ok: false, reason: "machine is offline" }),
         repository: () =>
           Promise.resolve({ ok: false, reason: "machine is offline: it cannot be asked" }),

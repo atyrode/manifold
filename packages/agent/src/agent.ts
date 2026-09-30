@@ -21,6 +21,7 @@ import type { TerminalHostDialer, TerminalHostLink } from "./terminal-host-link.
 import type { JobOwnerDialer, JobOwnerLink } from "./job-owner-link.ts";
 import { RepositoryObserver } from "./repository.ts";
 import type { JobEvent } from "@manifold/protocol";
+import { readPhysicalCoreCount, type MachineTopologyOptions } from "./machine-topology.ts";
 
 /**
  * The manifold-agent's single machine-channel client — the TRANSPORT half of a machine
@@ -73,6 +74,8 @@ export interface AgentOptions {
   readonly createSocket?: (url: string) => WebSocket;
   /** The host's repository observer; injected so a test can answer without spawning git. */
   readonly repositories?: RepositoryObserver;
+  /** Native topology observations, read afresh for every hello; injectable filesystem seam. */
+  readonly topology?: MachineTopologyOptions;
 }
 
 /** Frame classification outcome (mirrors the SDK's terminal-channel classifier). */
@@ -179,6 +182,7 @@ export class Agent {
    * probes per question (issue #529).
    */
   private readonly repositories: RepositoryObserver;
+  private readonly topology: MachineTopologyOptions;
 
   constructor(opts: AgentOptions) {
     this.machineToken = opts.machineToken;
@@ -193,6 +197,7 @@ export class Agent {
     this.dialJobOwner = opts.dialJobOwner;
     this.createSocket = opts.createSocket ?? ((url: string) => new WebSocket(url));
     this.repositories = opts.repositories ?? new RepositoryObserver({ runtime: this.runtime });
+    this.topology = opts.topology ?? {};
   }
 
   /** Machine id learned from `welcome` (null until the first successful handshake). */
@@ -566,6 +571,7 @@ export class Agent {
     for (const terminal of status.terminals) {
       if (!terminal.alive) this.advertisedDeadTerminalIds.push(terminal.terminalId);
     }
+    const physicalCoreCount = readPhysicalCoreCount(this.topology);
     this.send(socket, {
       type: "hello",
       token: this.machineToken,
@@ -579,6 +585,7 @@ export class Agent {
         : { terminalExecution: status.terminalExecution }),
       ...(status.terminalRestart !== undefined ? { terminalRestart: status.terminalRestart } : {}),
       ...(this.jobOwnerLink ? { jobOwner: this.jobOwnerLink.identity } : {}),
+      ...(physicalCoreCount === undefined ? {} : { physicalCoreCount }),
     });
     this.helloSent = socket;
     this.log("info", "hello", {

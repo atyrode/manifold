@@ -46,12 +46,14 @@ export type MachineIdentity = z.infer<typeof MachineIdentitySchema>;
 /**
  * One inventory row: the persisted public facts plus what the socket registry knows live.
  * Presentation (the identity color, which optional wire fields are omitted) stays the
- * consuming plugin's policy; this is the data it is computed from, with every member present.
+ * consuming plugin's policy. Optional live observations are absent when unknown or offline.
  */
 export const MachineInventoryEntrySchema = z.strictObject({
   id: z.string().min(1),
   name: z.string().min(1),
   online: z.boolean(),
+  /** Distinct online OS-visible package/core identities from the current admitted hello. */
+  physicalCoreCount: z.number().int().positive().optional(),
   revoked: z.boolean(),
   draining: z.boolean(),
   terminalExecution: TerminalExecutionSchema.nullable(),

@@ -215,6 +215,8 @@ export const AgentMessageSchema = z.discriminatedUnion("type", [
     /** Older retained owners omit this even when their transport speaks the current wire. */
     terminalRestart: z.boolean().optional(),
     jobOwner: JobOwnerSchema.optional(),
+    /** Online OS-visible package/core identities; absent means unknown, never logical CPUs. */
+    physicalCoreCount: z.number().int().positive().optional(),
   }),
   z.strictObject({ type: z.literal("created"), terminalId }),
   z.strictObject({ type: z.literal("create_error"), terminalId, message: z.string() }),

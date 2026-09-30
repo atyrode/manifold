@@ -1,5 +1,5 @@
 /** Wire revision; session joins require the current version (close 4409 otherwise). */
-export const PROTOCOL_VERSION = 47;
+export const PROTOCOL_VERSION = 48;
 
 /**
  * Machine-channel acceptance set. Agents are long-lived (they hold PTYs and
@@ -437,9 +437,17 @@ export const PROTOCOL_VERSION = 47;
  * session/HTTP vocabulary. Hardened contract 9 adds bounded React UI, mounted contexts,
  * event invalidations and narrow machine bridges. No machine, owner, terminal-host or
  * instance frame changes; existing transports remain admitted without a fleet restart.
+ *
+ * v48: LIVE PHYSICAL CORE INVENTORY (issue #939). Hello, the fleet bridge and machine
+ * summaries gain optional `physicalCoreCount`: distinct online OS-visible package/core
+ * identities, unknown when absent. Only the current admitted channel retains the fact.
+ * Older transports omit it and remain admitted; machine acceptance adds 48. Upgrade the
+ * hub before transports because older hubs parse hello strictly. Instance frames are
+ * unchanged and add 48. Hardened contract 10 carries the optional inventory field;
+ * hosts omit it for older guests whose inventory parser cannot understand it.
  */
 export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47,
+  30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48,
 ]);
 
 /**
@@ -490,10 +498,10 @@ export const MACHINE_AGENT_TOOLS_PROTOCOL_VERSION = 43;
  * never receives a machine ref, so the instance wire is unchanged.
  * v26: image-aware terminal viewers; instance frames remain unchanged.
  * v27: governed jobs expand the closed share resource/capability vocabularies (ADR 0033);
- * instance compatibility resets to protocol 27. v28 through v47 leave that wire unchanged.
+ * instance compatibility resets to protocol 27. v28 through v48 leave that wire unchanged.
  */
 export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47,
+  27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48,
 ]);
 
 /**

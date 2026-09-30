@@ -399,6 +399,47 @@ function scriptedHub(
   };
 }
 
+test("each reconnect re-observes physical cores and omits a newly unavailable topology", async () => {
+  const sockets: ScriptedSocket[] = [];
+  const host = new TerminalHost();
+  let online: string | undefined = "0-3";
+  let helloSeen = Promise.withResolvers<Extract<AgentMessage, { type: "hello" }>>();
+  const agent = new Agent({
+    serverUrl: "http://fake.invalid",
+    machineToken: "machine-token",
+    machineName: "topology-machine",
+    dialTerminalHost: inMemoryDialer(host),
+    backoff: { baseMs: 5, capMs: 5 },
+    topology: {
+      platform: "linux",
+      read: (path) => {
+        if (path.endsWith("/online")) return online;
+        if (path.endsWith("/physical_package_id")) return "0";
+        const cpu = path.match(/\/cpu(\d+)\/topology\/core_id$/)?.[1];
+        return cpu === undefined ? undefined : String(Math.floor(Number(cpu) / 2));
+      },
+    },
+    createSocket: scriptedHub(sockets, (_socket, message) => {
+      if (message.type === "hello") helloSeen.resolve(message);
+    }),
+  });
+  try {
+    await agent.connect();
+    expect((await helloSeen.promise).physicalCoreCount).toBe(2);
+    helloSeen = Promise.withResolvers<Extract<AgentMessage, { type: "hello" }>>();
+    online = "0-1";
+    sockets[0]!.serverClose(1001, "reconnect");
+    expect((await helloSeen.promise).physicalCoreCount).toBe(1);
+    helloSeen = Promise.withResolvers<Extract<AgentMessage, { type: "hello" }>>();
+    online = undefined;
+    sockets[1]!.serverClose(1001, "reconnect");
+    expect(Object.hasOwn(await helloSeen.promise, "physicalCoreCount")).toBe(false);
+  } finally {
+    await agent.shutdown();
+    await host.shutdown();
+  }
+});
+
 test("agent tools keep exact job correlation, report disconnect uncertainty and never replay on reconnect", async () => {
   const sockets: ScriptedSocket[] = [];
   const reconnected = Promise.withResolvers<void>();
