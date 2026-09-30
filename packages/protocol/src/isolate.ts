@@ -980,10 +980,12 @@ export const PLUGIN_BUNDLE_FORMAT = 1;
  * 8 -> 9: Real React frame roots, section contributions and mounted host context; portable
  *    web.worker.js artifacts, event invalidations, authoring and narrow machine bridges.
  *    Legacy web guests keep their original init/mount shapes and existing control frames.
+ * 9 -> 10: Optional live `physicalCoreCount` in machine inventory (#939). Hosts omit it
+ *    for older admitted guests, whose strict inventory parser predates the field.
  */
-export const HARDENED_CONTRACT_VERSION = 9;
+export const HARDENED_CONTRACT_VERSION = 10;
 export const HARDENED_CONTRACT_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  1, 2, 3, 4, 5, 6, 7, 8, 9,
+  1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
 ]);
 export const HARDENED_CONTRACT_MINIMUM = Math.min(...HARDENED_CONTRACT_COMPAT_VERSIONS);
 

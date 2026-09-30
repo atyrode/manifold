@@ -452,6 +452,8 @@ export const MachineSummarySchema = z.strictObject({
   id: z.string().min(1),
   name: z.string().min(1),
   online: z.boolean(),
+  /** Current admitted hello's OS-visible physical cores. Omitted offline or when unknown. */
+  physicalCoreCount: z.number().int().positive().optional(),
   color: z.string().regex(HEX_COLOR).optional(),
   /**
    * Whether this machine's credential has been WITHDRAWN (`core.machines.revoke`,

@@ -301,6 +301,7 @@ async function probeHost(base: Fixture): Promise<PluginHost> {
     {
       isOnline: () => false,
       getTerminalExecution: () => null,
+      getPhysicalCoreCount: () => undefined,
       drain: () => Promise.resolve({ ok: false, reason: "fixture has no terminal owner" }),
       repository: () => Promise.resolve({ ok: false, reason: "fixture has no machine agent" }),
     },

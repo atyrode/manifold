@@ -405,6 +405,7 @@ export async function testPluginHost(
     options.machines ?? {
       isOnline: () => false,
       getTerminalExecution: () => null,
+      getPhysicalCoreCount: () => undefined,
       drain: () =>
         Promise.resolve({ ok: false, reason: "machine is offline: its terminals are unknown" }),
       repository: () =>

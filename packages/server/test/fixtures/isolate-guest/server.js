@@ -47,6 +47,7 @@ function onFrame(receive) {
 }
 
 let calls = 0;
+let hardenedContract = 1;
 const waiting = new Map();
 const admissions = new Map();
 
@@ -63,7 +64,7 @@ const schema = { type: "object", properties: { text: { type: "string" } }, requi
 const action = (name, input = schema) => ({
   name: `test.guest.${name}`,
   title: name,
-  caps: [],
+  caps: name === "inventory" ? ["containers:read"] : [],
   scope: "workspace",
   input,
   result: { type: "object" },
@@ -91,6 +92,28 @@ const handlers = {
       },
       emits: [],
     };
+  },
+  async inventory(id) {
+    const inventory = await call(id, "machines.inventory", []);
+    if (!inventory.ok) return { ok: false, rule: "refused", message: inventory.message };
+    // Frozen contract-9 strict row vocabulary. A newer field is a real guest failure,
+    // not silently discarded metadata; contract 10's reader knows the one addition.
+    const keys = [
+      "id",
+      "name",
+      "online",
+      "revoked",
+      "draining",
+      "terminalExecution",
+      "lastRefusal",
+    ];
+    if (hardenedContract >= 10) keys.push("physicalCoreCount");
+    for (const machine of inventory.value.machines) {
+      if (Object.keys(machine).some((key) => !keys.includes(key))) {
+        return { ok: false, rule: "refused", message: "unknown inventory field" };
+      }
+    }
+    return { ok: true, result: inventory.value, emits: [] };
   },
   boom() {
     process.exit(1);
@@ -144,9 +167,12 @@ const handlers = {
 onFrame(async (frame) => {
   switch (frame.t) {
     case "load":
+      hardenedContract = frame.hardenedContract ?? 1;
       send({
         t: "loaded",
-        actions: Object.keys(handlers).map((name) => action(name)),
+        actions: Object.keys(handlers)
+          .filter((name) => name !== "inventory" || hardenedContract >= 9)
+          .map((name) => action(name)),
         hooks: {
           onEnable: true,
           onDisable: false,

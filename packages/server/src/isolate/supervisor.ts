@@ -16,6 +16,7 @@ import {
   ISOLATE_MIGRATION_DEADLINE_MS,
   MAX_MIGRATION_STORAGE_OPERATIONS,
   ManifoldRefSchema,
+  MachineBridgeResultSchemas,
   isMachineBridgeMethod,
   IsolateHarnessRequestSchema,
   IsolateHarnessResultSchemas,
@@ -992,6 +993,14 @@ export class IsolateSupervisor implements IsolateRunner {
         if (isMachineBridgeMethod(frame.method) && (isolate.ref.hardenedContract ?? 1) < 9)
           throw new Error(`slice_unavailable: ${frame.method}`);
         result = await serveCtxCall(frame.method, frame.args, pending.served);
+        if (frame.method === "machines.inventory" && (isolate.ref.hardenedContract ?? 1) < 10) {
+          // Contract-9 packed guests strictly parse the pre-topology inventory shape.
+          const inventory = MachineBridgeResultSchemas["machines.inventory"].parse(result);
+          if (inventory.ok) {
+            for (const machine of inventory.value.machines) delete machine.physicalCoreCount;
+          }
+          result = inventory;
+        }
       }
       reply = { t: "reply", id: frame.id, ok: true, result: result ?? null };
     } catch (error) {

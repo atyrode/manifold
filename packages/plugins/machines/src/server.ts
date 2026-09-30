@@ -65,6 +65,7 @@ interface MachineDot {
 
 interface MachineSummary extends MachineDot {
   readonly online: boolean;
+  readonly physicalCoreCount?: number;
   /**
    * OMITTED when the credential is live, which is the wire's rule rather than this file's
    * (`MachineSummarySchema`): absent reproduces the pre-v20 row exactly, so a v19 reader
@@ -126,6 +127,9 @@ export const machinesHandlers = {
       machines: inventory.value.machines.map((machine): MachineSummary => ({
         ...dot(machine),
         online: machine.online,
+        ...(machine.physicalCoreCount === undefined
+          ? {}
+          : { physicalCoreCount: machine.physicalCoreCount }),
         ...(machine.terminalExecution === null
           ? {}
           : { terminalExecution: machine.terminalExecution }),

@@ -39,6 +39,7 @@ const OPTIONAL = "test.opt";
 const OFFLINE_MACHINES: MachineAdmission = {
   isOnline: () => false,
   getTerminalExecution: () => null,
+  getPhysicalCoreCount: () => undefined,
   drain: () => Promise.resolve({ ok: false, reason: "machine is offline" }),
   repository: () => Promise.resolve({ ok: false, reason: "machine is offline" }),
 };

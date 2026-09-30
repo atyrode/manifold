@@ -70,6 +70,7 @@ async function fixture(answer?: MachineRepositoryOutcome): Promise<Fixture> {
   const machines: MachineAdmission = {
     isOnline: () => true,
     getTerminalExecution: () => null,
+    getPhysicalCoreCount: () => undefined,
     drain: () => Promise.resolve({ ok: false, reason: "fixture has no terminal owner" }),
     repository: (_machineId, path) => {
       asked.push(path);

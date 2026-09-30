@@ -9,6 +9,8 @@ import {
   MAX_GESTURE_POINT_VALUES,
   MAX_SESSION_BASE64_CHARS,
   MintTokenRequestSchema,
+  MachineInventoryEntrySchema,
+  MachineSummarySchema,
   PROTOCOL_VERSION,
   PresencePayloadSchema,
   LocationPathSchema,
@@ -539,6 +541,38 @@ describe("session channel schemas", () => {
 });
 
 describe("machine channel schemas", () => {
+  test("physical core facts are optional positive integers at every machine boundary", () => {
+    const hello = {
+      type: "hello" as const,
+      token: "mt",
+      name: "devbox",
+      agentVersion: "test",
+      protocolVersion: 47,
+      terminals: [],
+    };
+    const summary = { id: "machine", name: "devbox", online: true };
+    const inventory = {
+      ...summary,
+      revoked: false,
+      draining: false,
+      terminalExecution: null,
+      lastRefusal: null,
+    };
+    for (const [schema, row] of [
+      [AgentMessageSchema, hello],
+      [MachineSummarySchema, summary],
+      [MachineInventoryEntrySchema, inventory],
+    ] as const) {
+      expect(schema.parse(row)).toEqual(row);
+      expect(schema.parse({ ...row, physicalCoreCount: 1 })).toMatchObject({
+        physicalCoreCount: 1,
+      });
+      for (const physicalCoreCount of [0, -1, 1.5, Infinity, NaN, "8", null]) {
+        expect(schema.safeParse({ ...row, physicalCoreCount }).success).toBe(false);
+      }
+    }
+  });
+
   test("hello advertises surviving terminals with seq watermarks", () => {
     const msg = AgentMessageSchema.parse({
       type: "hello",

@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RepositoryObserver } from "@manifold/agent";
@@ -8,9 +8,11 @@ import { compilePlugin } from "@manifold/plugin-kit/pack";
 import {
   MachineBridgeResultSchemas,
   MachineEnrollResponseSchema,
+  MachineInventorySchema,
   MachineRepositoryFactSchema,
   MachinesResponseSchema,
   PLUGIN_BUNDLE_WEB_WORKER_FILE,
+  PROTOCOL_VERSION,
   identityColorFor,
   type ActionOutcome,
   type Cap,
@@ -26,6 +28,7 @@ import {
 } from "../src/first-party-builds.ts";
 import { IsolateSupervisor } from "../src/isolate/supervisor.ts";
 import { silentLogger, type Logger } from "../src/log.ts";
+import { MachineGateway } from "../src/machine-ws.ts";
 import type {
   ActionCtx,
   MachineAdmission,
@@ -36,7 +39,14 @@ import { parseBundle, PLUGIN_UPLOADS_DIR } from "../src/plugin-installs.ts";
 import { RoomManager } from "../src/room.ts";
 import type { ServerStore } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
-import { FakeClock, FakeRuntime, testPluginHost, testStore, testTileTrees } from "./helpers.ts";
+import {
+  FakeClock,
+  FakeRuntime,
+  FakeSocket,
+  testPluginHost,
+  testStore,
+  testTileTrees,
+} from "./helpers.ts";
 import { portableFleetProbe } from "./fixtures/portable-fleet.ts";
 
 /**
@@ -58,6 +68,7 @@ interface Fixture {
   readonly runtime: FakeRuntime;
   readonly dataDir: string;
   readonly runner: IsolateSupervisor;
+  readonly gateway: MachineGateway;
 }
 
 const openFixtures = new Set<Fixture>();
@@ -154,6 +165,15 @@ async function fixture(
     () => "http://localhost:7777",
     testTileTrees,
   );
+  const gateway = new MachineGateway(
+    auth,
+    store,
+    broker,
+    clock,
+    silentLogger,
+    "test-epoch",
+    runtime,
+  );
   const dataDir = mkdtempSync(join(tmpdir(), "manifold-machine-bridge-"));
   const runner = new IsolateSupervisor({
     logger: options.logger ?? silentLogger,
@@ -167,7 +187,7 @@ async function fixture(
     const host = await testPluginHost(store, auth, rooms, broker, runtime, {
       settingsPlugins: [probe, ...(options.plugins ?? [])],
       isolates: { runner, dataDir },
-      ...(options.machines === undefined ? {} : { machines: options.machines }),
+      machines: options.machines ?? gateway,
       ...(options.trusted === undefined ? {} : { trusted: options.trusted }),
       ...(options.logger === undefined ? {} : { logger: options.logger }),
     });
@@ -179,11 +199,13 @@ async function fixture(
       runtime,
       dataDir,
       runner,
+      gateway,
     };
     openFixtures.add(created);
     return created;
   } catch (error) {
     await runner.close();
+    gateway.shutdown();
     store.close();
     rmSync(dataDir, { recursive: true, force: true });
     throw error;
@@ -195,6 +217,7 @@ async function close(fix: Fixture): Promise<void> {
   try {
     await fix.runner.close();
   } finally {
+    fix.gateway.shutdown();
     fix.host.close();
     fix.store.close();
     rmSync(fix.dataDir, { recursive: true, force: true });
@@ -227,6 +250,84 @@ function result(outcome: ActionOutcome): unknown {
 }
 
 describe("the fleet bridge's authority", () => {
+  test("a packed contract-9 strict inventory reader still works without hiding cores from current readers", async () => {
+    const fix = await fixture();
+    const enrolled = fix.auth.enrollMachine("physical", fix.owner);
+    const socket = new FakeSocket();
+    fix.gateway.open("physical", socket);
+    fix.gateway.message(
+      "physical",
+      JSON.stringify({
+        type: "hello",
+        token: enrolled.machineToken,
+        name: "physical",
+        agentVersion: "test",
+        protocolVersion: PROTOCOL_VERSION,
+        terminals: [],
+        physicalCoreCount: 6,
+      }),
+    );
+    expect(socket.closed).toBeNull();
+
+    // A self-contained older wire guest, not today's kit with a forged version stamp.
+    const bytes = Buffer.from(
+      JSON.stringify({
+        format: 1,
+        hardenedContract: 9,
+        manifest: {
+          id: "test.guest",
+          version: "1.0.0",
+          title: "Legacy fleet reader",
+          description: "Frozen strict contract-9 inventory consumer",
+          capabilities: ["containers:read"],
+          contributes: {
+            panels: [],
+            sections: [],
+            elements: [],
+            tools: [],
+            events: [{ id: "echoed", title: "Echoed" }],
+          },
+          entry: { server: true },
+        },
+        files: {
+          "server.js": readFileSync(
+            join(import.meta.dir, "fixtures/isolate-guest/server.js"),
+          ).toString("base64"),
+        },
+      }),
+    );
+    mkdirSync(join(fix.dataDir, PLUGIN_UPLOADS_DIR), { recursive: true });
+    const source = join(fix.dataDir, PLUGIN_UPLOADS_DIR, "legacy-fleet.manifold-plugin.json");
+    writeFileSync(source, bytes);
+    result(
+      await fix.host.dispatch(fix.owner, ENGINE_INSTALL_ACTION, {
+        source,
+        sha256: new Bun.CryptoHasher("sha256").update(bytes).digest("hex"),
+        hardened: true,
+        grant: ["containers:read"],
+      }),
+    );
+    const legacy = MachineInventorySchema.parse(
+      result(await fix.host.dispatch(fix.owner, "test.guest.inventory", { text: "read" })),
+    );
+    expect(legacy.machines).toEqual([
+      {
+        id: enrolled.machine.id,
+        name: "physical",
+        online: true,
+        revoked: false,
+        draining: false,
+        terminalExecution: null,
+        lastRefusal: null,
+      },
+    ]);
+    const current = MachinesResponseSchema.parse(
+      result(await fix.host.dispatch(fix.owner, "core.machines.list", {})),
+    );
+    expect(current.machines[0]?.physicalCoreCount).toBe(6);
+    await close(fix);
+  }, 60_000);
+
   test("a door that declares no fleet capability mints nothing, even for the owner", async () => {
     const fix = await fixture();
     const answer = await fix.host.dispatch(fix.owner, `${PROBE}.bare`, { name: "sneak" });
@@ -374,6 +475,97 @@ describe("core.machines hardened by the trusted bootstrap", () => {
   });
 
   for (const mode of ["native", "hardened"] as const) {
+    test(`${mode} roster retains physical cores only on the current admitted live channel`, async () => {
+      const fix = await fixture({ trusted: mode === "hardened" ? builds : [] });
+      const enrolled = fix.auth.enrollMachine("topology", fix.owner);
+      const machineId = enrolled.machine.id;
+      const containerId = fix.runtime.newId();
+      fix.store.createContainer({
+        id: containerId,
+        name: "scoped",
+        createdAt: fix.runtime.now(),
+        discipline: "canvas",
+      });
+      const scoped = caller(fix, ["containers:read"], containerId);
+      const list = async (actor = scoped) =>
+        MachinesResponseSchema.parse(
+          result(await fix.host.dispatch(actor, "core.machines.list", {})),
+        ).machines;
+      const dial = (
+        connectionId: string,
+        physicalCoreCount?: number,
+        protocolVersion = PROTOCOL_VERSION,
+      ) => {
+        const socket = new FakeSocket();
+        fix.gateway.open(connectionId, socket);
+        fix.gateway.message(
+          connectionId,
+          JSON.stringify({
+            type: "hello",
+            token: enrolled.machineToken,
+            name: "topology",
+            agentVersion: "test",
+            protocolVersion,
+            terminalHostId: "owner",
+            terminals: [],
+            ...(physicalCoreCount === undefined ? {} : { physicalCoreCount }),
+          }),
+        );
+        return socket;
+      };
+
+      const offline = {
+        id: machineId,
+        name: "topology",
+        online: false,
+        color: identityColorFor(machineId),
+      };
+      expect(await list()).toEqual([offline]);
+      const first = dial("first", 8);
+      expect(first.closed).toBeNull();
+      expect(await list()).toEqual([{ ...offline, online: true, physicalCoreCount: 8 }]);
+      expect(await list(fix.owner)).toEqual(await list());
+      const unreadable = await fix.host.dispatch(
+        caller(fix, ["machines:read"]),
+        "core.machines.list",
+        {},
+      );
+      expect(unreadable.ok ? null : unreadable.denial.rule).toBe("forbidden");
+
+      // A malformed claimant cannot replace the incumbent's observation.
+      expect(dial("malformed", 0).closed?.code).toBe(4002);
+      expect((await list())[0]?.physicalCoreCount).toBe(8);
+      const replacement = dial("replacement", 4);
+      expect(replacement.closed).toBeNull();
+      expect(first.closed?.code).toBe(4001);
+      fix.gateway.close("first"); // a delayed close of the superseded socket is not the new one
+      expect(await list()).toEqual([{ ...offline, online: true, physicalCoreCount: 4 }]);
+
+      fix.gateway.close("replacement");
+      expect(await list()).toEqual([offline]);
+      expect(dial("incompatible", 32, PROTOCOL_VERSION + 1).closed?.code).toBe(4409);
+      expect((await list())[0]).toMatchObject({ online: false, lastRefusal: { code: 4409 } });
+      expect(Object.hasOwn((await list())[0]!, "physicalCoreCount")).toBe(false);
+
+      // Pre-topology agents stay compatible and must not inherit the previous count.
+      expect(dial("legacy", undefined, 47).closed).toBeNull();
+      expect(await list()).toEqual([{ ...offline, online: true }]);
+      fix.gateway.close("legacy");
+      expect(dial("latest", 2).closed).toBeNull();
+      expect((await list())[0]?.physicalCoreCount).toBe(2);
+      result(await fix.host.dispatch(fix.owner, "core.machines.revoke", { machineId }));
+      expect(fix.gateway.getPhysicalCoreCount(machineId)).toBeUndefined();
+      expect(await list()).toEqual([{ ...offline, revoked: true }]);
+      expect(dial("revoked", 64).closed?.code).toBe(4403);
+      expect((await list())[0]).toMatchObject({
+        online: false,
+        revoked: true,
+        lastRefusal: { code: 4403 },
+      });
+      expect(Object.hasOwn((await list())[0]!, "physicalCoreCount")).toBe(false);
+      await close(fix);
+    }, 60_000);
+
     test(`live administered grants authorize ${mode} fleet effects without re-authentication`, async () => {
       const fix = await fixture({ trusted: mode === "hardened" ? builds : [] });
       const actor = caller(fix, ["containers:write"]);
@@ -599,6 +791,7 @@ describe("authored child permission and retained trusted lifetime", () => {
     const machines: MachineAdmission = {
       isOnline: () => true,
       getTerminalExecution: () => null,
+      getPhysicalCoreCount: () => undefined,
       drain: () => Promise.resolve({ ok: false, reason: "no terminal owner" }),
       repository: async (machineId, path) => {
         asked.push({ machineId, path });

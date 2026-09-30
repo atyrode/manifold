@@ -2009,6 +2009,15 @@ because `GET /api/machines` answered any authenticated token including a scoped 
 viewer still has to paint the machine badge on the terminal in front of it); its containment
 obligation is vacuous, since nothing in a fleet-wide answer is addressed by container.
 
+Roster rows may carry `physicalCoreCount`, a positive integer from the current admitted live
+machine hello (#939). It counts distinct OS-visible physical package/core identities among
+online Linux CPUs, not logical processors, cgroup quota or bare-metal attestation. Unknown,
+offline and revoked machines omit it; durable identity and `lastSeen` never supply a cached
+count. The same authorized fleet inventory supplies in-realm and current hardened handlers,
+including container-scoped readers. No new capability, endpoint or persistent field is added;
+enrollment does not claim a topology observation. Native observation and freshness semantics
+are owned by the [machine handshake](#ws-wsmachine--machine-channel-json-data-fields-base64).
+
 `core.machines.drain { machineId, draining }` carries `machines:mint` at workspace scope.
 Its successful result is `{ terminalHostId, draining, terminalIds }`: the named terminal
 host's acknowledgement and its live terminal ids, not a hub estimate. It never kills a
@@ -2597,8 +2606,8 @@ not a network-policy exemption. This is server-side retrieval admission, not a r
 the kit client's own inspection fetch or a claim that arbitrary plugin code is network-confined.
 
 **Executable bundle compatibility (#602).** Every pack stamps `hardenedContract` independently
-of `format` and the machine/session protocols. `HARDENED_CONTRACT_VERSION` is 8; the hub accepts
-`HARDENED_CONTRACT_COMPAT_VERSIONS = {1, 2, 3, 4, 5, 6, 7, 8}`, with minimum 1. Add an
+of `format` and the machine/session protocols. `HARDENED_CONTRACT_VERSION` is 10; the hub accepts
+`HARDENED_CONTRACT_COMPAT_VERSIONS = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}`, with minimum 1. Add an
 additive-optional contract to that set; reset it for a genuine break. An unstamped or outside-set
 installed artifact is held at assembly with `repack_required` and the minimum, never imported
 or spawned, even if the administrator had it disabled. Fresh incompatible installs are refused
@@ -2612,8 +2621,12 @@ guests, whose strict old parser and ordinary dispatch remain supported; contract
 check it against their packed runtime. Contract 3 adds optional action result projections;
 contract 4 adds metadata-only `jobs.inspectInputs`; contract 5 adds optional exact selected
 `textFields` within result declarations. Contract 6 adds authenticated Run provenance, 7
-adds harness calls, and 8 adds host-owned `callerPlugin` to the dispatch context. Older admitted
-guests omit newer metadata and preserve their normalized declarations and digests. Host-to-guest
+adds harness calls, and 8 adds host-owned `callerPlugin` to the dispatch context. Contract 9
+adds portable React Worker entries and the bounded fleet bridge. Contract 10 adds optional
+`physicalCoreCount` in `machines.inventory`; the host omits it for older admitted packed
+guests, whose strict inventory parser predates it. Current in-realm and hardened readers
+receive the same live facts. Older admitted guests omit newer metadata and preserve their
+normalized declarations and digests. Host-to-guest
 optional fields are gated by the admitted contract, never sent speculatively.
 “Isolate answered out of protocol” denotes an internal
 protocol violation, not an SDK-upgrade remedy exposed after version drift.
@@ -3841,7 +3854,7 @@ env? }` → server targets `machineId` when given (error `no_machine` if it is u
 ## WS /ws/machine — machine channel (JSON; `data` fields base64)
 
 Handshake: agent sends `hello { token, name, agentVersion, protocolVersion, terminals,
-terminalHostId?, terminalExecution?, terminalRestart?, jobOwner? }`, where `terminals` advertises retained PTYs
+terminalHostId?, terminalExecution?, terminalRestart?, jobOwner?, physicalCoreCount? }`, where `terminals` advertises retained PTYs
 `{ terminalId, cols, rows, alive, seq, exitCode?, cwd?, readiness? }` (server-restart adoption).
 `terminalHostId` identifies the terminal host PROCESS, stable across transport replacements
 and fresh on host restart; it is not the machine token or a durable terminal checkpoint. An
@@ -3855,13 +3868,37 @@ incumbent continuity mismatch, or `supersession damped`). A name conflict is dec
 same atomic write that would admit the hello; it sends no welcome, changes neither machine row,
 and leaves an incumbent connection untouched. Version acceptance uses
 `MACHINE_PROTOCOL_COMPAT_VERSIONS`, currently
-`{30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47}`; session/browser joins remain strictly
-current at protocol 47. An unchanged machine
+`{30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48}`; session/browser joins remain strictly
+current at protocol 48. An unchanged machine
 wire may add a version to the set. A strictly additive-optional change may also add it only
 when old frames still parse and absent fields preserve the old semantics. Other changes
 reset the set and require a coordinated hub/transport upgrade. An admission bound applied
 identically at every accepted version, leaving compliant frames byte-identical, changes
 neither the version nor the set.
+
+**Live physical topology (#939, protocol 48).** The transport observes `physicalCoreCount`
+afresh while constructing each hello, including every reconnect. On Linux it reads
+`/sys/devices/system/cpu/online` and each listed CPU's `topology/physical_package_id` and
+`topology/core_id`, counting distinct pairs so SMT siblings collapse and packages remain
+distinct. Offline CPUs contribute nothing. This is what the enrolled OS reports: VM topology
+is not an attestation of the host's silicon. Unsupported, unreadable, missing, negative,
+malformed or inconsistent topology is unknown and omitted, never replaced by logical CPUs,
+`nproc`, affinity, cpusets, cgroup quotas or operation concurrency limits.
+
+The dependency-free observation is finite: at most 8,192 online CPU ids in 0–65,535, a
+65,536-byte online list, and 32 bytes per topology id. Two complete identity passes and
+three matching online-list observations are required, without retries; over-bound or
+changing observations are unknown rather than partial capacity. This brackets detectable
+hotplug, not an atomic kernel topology snapshot.
+
+The hub retains the positive integer only on the currently admitted channel, not in SQLite.
+The machine bridge and `core.machines.list` expose it only while that machine is online and
+not revoked. Disconnect/revocation removes it; an admitted replacement supplies its own fresh
+value or unknown, and a late close from a superseded socket cannot erase the replacement.
+A refused hello never publishes its observation or replaces an admitted incumbent's fact.
+Compatible pre-48 agents omit the field and remain admitted with unknown topology. Upgrade
+the hub before transports: an older hub cannot parse a newer strict hello. This observation
+grants no execution authority and does not change terminal or governed-job admission.
 
 **Hello inventory bound (#403).** One hello advertises at most **1,024 distinct terminal
 ids**: retained PTYs plus unacknowledged exits. A 1,025th entry or any duplicate id refuses
@@ -3954,7 +3991,7 @@ machine transport. An owner outside the acceptance set that does not qualify for
 receives no native authority, while machine presence, retained terminal continuity and the
 named drain/maintenance path remain available for the coordinated upgrade.
 
-The independent federation set is `{27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46}`; these session/machine changes leave its
+The independent federation set is `{27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48}`; these session/machine changes leave its
 frames and resource vocabularies unchanged. The earlier per-program and per-job transport
 version gates are retired: every accepted transport understands those frames, while
 authority comes from explicit declarations and live owner proof.

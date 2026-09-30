@@ -116,6 +116,7 @@ const OWNER_KEY = "a".repeat(64);
 const OFFLINE_MACHINES: MachineAdmission = {
   isOnline: () => false,
   getTerminalExecution: () => null,
+  getPhysicalCoreCount: () => undefined,
   drain: () =>
     Promise.resolve({ ok: false, reason: "machine is offline: its terminals are unknown" }),
   repository: () =>

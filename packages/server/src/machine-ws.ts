@@ -85,6 +85,8 @@ export class LiveMachineChannel implements MachineChannel {
      */
     readonly protocolVersion: number,
     readonly terminalRestart = false,
+    /** Ephemeral OS-visible topology from this channel's admitted hello, never durable. */
+    readonly physicalCoreCount?: number,
   ) {}
 
   send(message: ServerToAgentMessage): boolean {
@@ -373,6 +375,7 @@ export class MachineGateway {
       message.terminalExecution ?? null,
       message.protocolVersion,
       message.terminalRestart === true,
+      message.physicalCoreCount,
     );
     const older = this.activeByMachine.get(authenticated.id) ?? null;
     const advertised = new Set<string>();
@@ -575,6 +578,11 @@ export class MachineGateway {
 
   getTerminalExecution(machineId: string): TerminalExecution | null {
     return this.activeByMachine.get(machineId)?.terminalExecution ?? null;
+  }
+
+  /** Unknown after disconnect/revocation; a superseded connection cannot supply this fact. */
+  getPhysicalCoreCount(machineId: string): number | undefined {
+    return this.activeByMachine.get(machineId)?.physicalCoreCount;
   }
 
   /**
