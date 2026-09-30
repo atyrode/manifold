@@ -648,7 +648,8 @@ export class TerminalBroker implements TerminalPlacementPort {
           continue;
         }
         count += 1;
-        expiresAt = expiresAt === null ? viewport.expiresAt : Math.min(expiresAt, viewport.expiresAt);
+        expiresAt =
+          expiresAt === null ? viewport.expiresAt : Math.min(expiresAt, viewport.expiresAt);
       }
     }
     return { count, expiresAt };
@@ -704,7 +705,11 @@ export class TerminalBroker implements TerminalPlacementPort {
         if (viewport.rows === rows) rowLimiters.push({ connId: channel.id, viewportId });
       }
     }
-    if (cols !== null && rows !== null && (cols !== terminal.info.cols || rows !== terminal.info.rows)) {
+    if (
+      cols !== null &&
+      rows !== null &&
+      (cols !== terminal.info.cols || rows !== terminal.info.rows)
+    ) {
       const machine = this.machines.get(terminal.info.machineId);
       if (machine?.send({ type: "resize", terminalId: terminal.info.id, cols, rows })) {
         terminal.info = { ...terminal.info, cols, rows };
@@ -1449,7 +1454,13 @@ export class TerminalBroker implements TerminalPlacementPort {
     };
     terminal.viewers.set(channel, viewer);
     this.arbitrateViewports(terminal);
-    if (!channel.send({ type: "terminal_sizing", terminalId: terminal.info.id, sizing: terminal.sizing })) {
+    if (
+      !channel.send({
+        type: "terminal_sizing",
+        terminalId: terminal.info.id,
+        sizing: terminal.sizing,
+      })
+    ) {
       this.removeViewer(terminal, channel);
       return;
     }
@@ -1506,7 +1517,14 @@ export class TerminalBroker implements TerminalPlacementPort {
         viewer.queue.length >= PENDING_OUTPUT_FRAMES ||
         viewer.queuedBytes + bytes > PENDING_OUTPUT_BYTES
       ) {
-        this.failViewer(terminal, channel, viewer, "conflict", "terminal attach queue overflow", false);
+        this.failViewer(
+          terminal,
+          channel,
+          viewer,
+          "conflict",
+          "terminal attach queue overflow",
+          false,
+        );
         retiredViewer = true;
         continue;
       }
@@ -1635,11 +1653,18 @@ export class TerminalBroker implements TerminalPlacementPort {
       pending.homeId === channel.containerId
     ) {
       if (message.viewport === null) return;
-      if (!this.viewportAuthority(channel, pending.homeId, this.auth.credentialReference(channel.auth))) {
+      if (
+        !this.viewportAuthority(
+          channel,
+          pending.homeId,
+          this.auth.credentialReference(channel.auth),
+        )
+      ) {
         channel.send({ type: "error", code: "forbidden", ref: message.terminalId });
         return;
       }
-      if (!pending.dispatched) this.dispatchOpen(pending, message.viewport.cols, message.viewport.rows);
+      if (!pending.dispatched)
+        this.dispatchOpen(pending, message.viewport.cols, message.viewport.rows);
       return;
     }
     if (message.viewport === null) {
@@ -1651,7 +1676,10 @@ export class TerminalBroker implements TerminalPlacementPort {
     }
     const terminal = this.terminalFor(channel, message.terminalId);
     if (terminal === null) return;
-    if (terminal.info.status !== "running" || terminal.info.controllerId !== channel.auth.principal.id) {
+    if (
+      terminal.info.status !== "running" ||
+      terminal.info.controllerId !== channel.auth.principal.id
+    ) {
       this.arbitrateViewports(terminal);
       channel.send({
         type: "error",

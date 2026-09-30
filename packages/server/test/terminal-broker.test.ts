@@ -710,9 +710,11 @@ describe("TerminalBroker viewport arbitration", () => {
       data: encoded("replacement"),
     });
     expect(
-      fixture.socket.messages().filter(
-        (message) => message.type === "terminal_snapshot" || message.type === "terminal_output",
-      ),
+      fixture.socket
+        .messages()
+        .filter(
+          (message) => message.type === "terminal_snapshot" || message.type === "terminal_output",
+        ),
     ).toEqual([
       { type: "terminal_snapshot", terminalId, seq: 0, data: encoded("replacement") },
       { type: "terminal_output", terminalId, seq: 1, data: encoded("between-mounts") },
@@ -722,7 +724,12 @@ describe("TerminalBroker viewport arbitration", () => {
       { cols: 60, rows: 18 },
     ]);
     measureViewport(fixture, fixture.opener, "new-mount", 100, 30);
-    expect(fixture.machine.sent).toContainEqual({ type: "resize", terminalId, cols: 100, rows: 30 });
+    expect(fixture.machine.sent).toContainEqual({
+      type: "resize",
+      terminalId,
+      cols: 100,
+      rows: 30,
+    });
     fixture.store.close();
   });
 
@@ -761,8 +768,11 @@ describe("TerminalBroker viewport arbitration", () => {
       }
       measureViewport(fixture, channel, "removed", 60, 18);
       socket.dropType =
-        failure === "snapshot" ? "terminal_snapshot" :
-        failure === "resize-broadcast" ? "terminal_event" : "terminal_output";
+        failure === "snapshot"
+          ? "terminal_snapshot"
+          : failure === "resize-broadcast"
+            ? "terminal_event"
+            : "terminal_output";
       if (failure === "resize-broadcast") {
         measureViewport(fixture, channel, "removed", 50, 12);
       } else {
@@ -788,7 +798,10 @@ describe("TerminalBroker viewport arbitration", () => {
         { cols: 120, rows: 40 },
       ]);
       expect(
-        fixture.socket.messages().filter((message) => message.type === "terminal_sizing").at(-1),
+        fixture.socket
+          .messages()
+          .filter((message) => message.type === "terminal_sizing")
+          .at(-1),
       ).toMatchObject({
         type: "terminal_sizing",
         sizing: {
@@ -1752,7 +1765,10 @@ describe("TerminalBroker first-viewer tile fit", () => {
       },
       setup.root,
     );
-    for (const [index, context] of [setup.auth.authenticate(readonly.token), setup.root].entries()) {
+    for (const [index, context] of [
+      setup.auth.authenticate(readonly.token),
+      setup.root,
+    ].entries()) {
       const socket = new FakeSocket();
       const channel = new SessionChannel(
         setup.runtime.newId(),

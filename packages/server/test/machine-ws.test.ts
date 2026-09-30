@@ -1021,7 +1021,8 @@ describe("machine admission and terminal continuity", () => {
         expect(fix.gateway.isOnline(fix.machineId)).toBe(false);
         expect(fix.status("t1")).toBe("running");
         expect(
-          jobs.describe(fix.root, { machineId: fix.machineId, pluginId: "sample.worker" }).connected,
+          jobs.describe(fix.root, { machineId: fix.machineId, pluginId: "sample.worker" })
+            .connected,
         ).toBe(false);
       } finally {
         fix.gateway.shutdown();

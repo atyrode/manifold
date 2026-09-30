@@ -1609,8 +1609,7 @@ describe("terminal attach refcounting", () => {
     socket.receive({ type: "terminal_sizing", terminalId: "s1", sizing: SIZING });
     const visibleSizing: (TerminalSizing | undefined)[] = [];
     client.on("terminal_event", (event) => {
-      if (event.kind === "parked")
-        visibleSizing.push(client.terminalSizing.get(event.terminalId));
+      if (event.kind === "parked") visibleSizing.push(client.terminalSizing.get(event.terminalId));
     });
 
     socket.receive({ type: "terminal_event", terminalId: "s1", kind: "parked" });
