@@ -2,6 +2,7 @@ import {
   formatManifoldUri,
   normalizeInstanceOrigin,
   parseManifoldUri,
+  type Cap,
   type Dial,
   type EventKind,
   type DialShareRequest,
@@ -239,15 +240,11 @@ export class InstanceDialer {
   }
 
   /**
-   * THIS instance's own door onto a share its host addressed to the instance as a whole.
-   *
-   * The guest decides HERE whether a given local principal may use the grant, which is what
-   * makes the projection that follows "opening a shared node through your own instance"
-   * rather than passing a credential around. What crosses to the caller is a ticket minted
-   * by the HOST for a host-side principal carrying this instance's origin; the share secret
-   * itself never leaves this process.
+   * THIS instance checks local door admission; the HOST separately approves this immutable
+   * guest-origin/principal relationship and the remote subset. Local capabilities are not
+   * remote consent. The share secret never leaves this process.
    */
-  async open(dialId: string, principal: Principal): Promise<DialTicket> {
+  async open(dialId: string, principal: Principal, caps?: readonly Cap[]): Promise<DialTicket> {
     const record = this.store.getDial(dialId);
     if (record === null) throw new ServiceError("not_found", "dial not found");
     if (record.revokedAt !== null) throw new ServiceError("forbidden", "revoked");
@@ -255,11 +252,18 @@ export class InstanceDialer {
     if (dial === undefined || dial.status !== "live") {
       throw new ServiceError("conflict", "dial is offline");
     }
-    const issued = await dial.requestTicket(principal);
+    const issued = await dial.requestTicket(principal, caps);
     if (!issued.ok) {
       if (issued.reason === "share_revoked") {
         this.sever(dialId, record.origin);
         throw new ServiceError("forbidden", "revoked");
+      }
+      if (
+        issued.reason === "recipient_unapproved" ||
+        issued.reason === "recipient_caps_refused" ||
+        issued.reason === "invalid_principal"
+      ) {
+        throw new ServiceError("forbidden", issued.reason);
       }
       throw new ServiceError("conflict", issued.reason);
     }
@@ -269,7 +273,13 @@ export class InstanceDialer {
       throw new ServiceError("conflict", "dial names no container");
     }
     this.logger.info("dial_opened", { dialId, principalId: issued.principal.id });
-    return { origin: current.origin, ref, caps: [...current.caps], token: issued.token };
+    return {
+      origin: current.origin,
+      ref,
+      caps: [...issued.caps],
+      token: issued.token,
+      expiresAt: issued.expiresAt,
+    };
   }
 
   /**
