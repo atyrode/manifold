@@ -622,6 +622,56 @@ test("private owner budget counts ACKed fences and cannot be bypassed with produ
   expect(f.commands).toEqual([]);
 });
 
+test("partial private snapshots retry durable ACKs without releasing capacity-blocked reservations", async () => {
+  const f = fixture();
+  let snapshot = Array.from({ length: 31 }, (_, index) => pendingAdmission(f, {
+    request: { ...f.request, requestId: `retained-${index}` },
+  }));
+  let inProbe = false;
+  let probes = 0;
+  let allowAck = true;
+  const retired = new Set<string>();
+  f.service.setPendingAdmissionSource({
+    owners: () => [f.caller.pluginId],
+    probe: async (_id, accept) => {
+      inProbe = true;
+      probes += 1;
+      try {
+        accept(snapshot);
+        return true;
+      } finally {
+        inProbe = false;
+      }
+    },
+  });
+  f.service.setEvidenceSink(async (_id, receipts) => {
+    expect(inProbe).toBe(false);
+    if (!allowAck) return false;
+    for (const receipt of receipts) retired.add(receipt.requestId);
+    f.service.retryPendingAdmissions(f.caller.pluginId);
+    return true;
+  });
+  await f.service.reconcilePendingAdmissions();
+  snapshot = ["fenced", "capacity-blocked"].map((requestId) =>
+    pendingAdmission(f, { request: { ...f.request, requestId } }),
+  );
+  allowAck = false;
+  await f.service.reconcilePendingAdmissions();
+  expect(retired.has("fenced")).toBe(false);
+  allowAck = true;
+  const before = probes;
+  await f.service.reconcilePendingAdmissions(undefined, true);
+  await Promise.resolve();
+  expect(probes).toBe(before + 1);
+  expect(retired.has("fenced")).toBe(true);
+  expect(retired.has("capacity-blocked")).toBe(false);
+  snapshot = snapshot.filter((entry) => !retired.has(entry.request.requestId));
+  await f.service.reconcilePendingAdmissions(undefined, true);
+  expect(retired.has("capacity-blocked")).toBe(false);
+  expect(() => f.service.assertPurgeable(f.caller.pluginId)).toThrow("native_transfer_cleanup_unknown");
+  expect(f.commands).toEqual([]);
+});
+
 test("non-admission fence wins atomically against an already-awaited source probe", async () => {
   const f = fixture();
   const gate = Promise.withResolvers<string>();

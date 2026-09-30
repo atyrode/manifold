@@ -217,6 +217,7 @@ export class NativeTransferService {
   }
 
   private async probePendingOwner(source: NativeTransferPendingSource, pluginId: string): Promise<void> {
+    let complete = false;
     try {
       let accepted = false;
       const available = await source.probe(pluginId, (snapshot) => {
@@ -229,10 +230,15 @@ export class NativeTransferService {
         }
         accepted = true;
       });
-      if (!available || !accepted) return;
-      // Do not let our own evidence callback's idle notification schedule another probe.
-      // Restore debt below if that callback did not durably acknowledge every terminal row.
-      this.pendingOwners.delete(pluginId);
+      complete = available && accepted;
+    } catch {
+      // Earlier per-entry fences remain durable when a later entry cannot be admitted.
+    }
+    // Release the source's exclusive turn before ACKing any durable evidence, including
+    // fences committed by a partial snapshot. Suppress our callback's own idle retry;
+    // failed discovery and unacknowledged evidence restore bounded maintenance debt.
+    this.pendingOwners.delete(pluginId);
+    try {
       await this.deliverEvidence();
       const unacknowledgedRefusal = this.store.db.query<{ record: string }, [string]>(
         "SELECT record FROM native_admission_refusals WHERE plugin_id=? LIMIT 1000",
@@ -243,9 +249,10 @@ export class NativeTransferService {
         const record = recordSchema.parse(JSON.parse(row.record));
         return !ACTIVE[record.status.state] && !record.evidenceDelivered;
       });
-      if (unacknowledgedRefusal || unacknowledgedTerminal) this.pendingOwners.add(pluginId);
+      if (!complete || unacknowledgedRefusal || unacknowledgedTerminal)
+        this.pendingOwners.add(pluginId);
     } catch {
-      // Busy, malformed and unavailable owners remain purge-blocking until a later seam.
+      // A delivery/storage failure cannot clear discovery or evidence retry debt.
       this.pendingOwners.add(pluginId);
     }
   }
