@@ -251,7 +251,31 @@ function result(outcome: ActionOutcome): unknown {
 
 describe("the fleet bridge's authority", () => {
   test("a packed contract-9 strict inventory reader still works without hiding cores from current readers", async () => {
-    const fix = await fixture();
+    const relay: ServerPluginDef = {
+      manifest: {
+        id: "test.fleetrelay",
+        version: "1.0.0",
+        title: "Current fleet relay",
+        description: "Reads a machine list through a current source intermediary.",
+        capabilities: ["containers:read"],
+        dependencies: { "core.machines": { type: "required" } },
+        contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+      },
+      actions: [
+        {
+          name: "list",
+          title: "List",
+          caps: ["containers:read"],
+          input: z.strictObject({}),
+          result: MachinesResponseSchema,
+        },
+      ],
+      handlers: {
+        list: async (ctx: ActionCtx) =>
+          ctx.actions.call({ plugin: "core.machines", action: "list", input: {} }),
+      },
+    };
+    const fix = await fixture({ plugins: [relay] });
     const enrolled = fix.auth.enrollMachine("physical", fix.owner);
     const socket = new FakeSocket();
     fix.gateway.open("physical", socket);
@@ -280,6 +304,10 @@ describe("the fleet bridge's authority", () => {
           title: "Legacy fleet reader",
           description: "Frozen strict contract-9 inventory consumer",
           capabilities: ["containers:read"],
+          dependencies: {
+            "core.machines": { type: "required" },
+            [relay.manifest.id]: { type: "required" },
+          },
           contributes: {
             panels: [],
             sections: [],
@@ -321,10 +349,31 @@ describe("the fleet bridge's authority", () => {
         lastRefusal: null,
       },
     ]);
+    // Both the immediate callee and a deeper current intermediary must produce the
+    // vocabulary the packed caller can parse, without touching arbitrary action results.
+    for (const plugin of ["core.machines", relay.manifest.id]) {
+      const nested = MachinesResponseSchema.parse(
+        result(
+          await fix.host.dispatch(fix.owner, "test.guest.inventory", { text: `list:${plugin}` }),
+        ),
+      );
+      expect(nested.machines).toEqual([
+        {
+          id: enrolled.machine.id,
+          name: "physical",
+          online: true,
+          color: identityColorFor(enrolled.machine.id),
+        },
+      ]);
+    }
     const current = MachinesResponseSchema.parse(
       result(await fix.host.dispatch(fix.owner, "core.machines.list", {})),
     );
     expect(current.machines[0]?.physicalCoreCount).toBe(6);
+    const currentNested = MachinesResponseSchema.parse(
+      result(await fix.host.dispatch(fix.owner, `${relay.manifest.id}.list`, {})),
+    );
+    expect(currentNested.machines[0]?.physicalCoreCount).toBe(6);
     await close(fix);
   }, 60_000);
 

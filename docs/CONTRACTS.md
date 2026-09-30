@@ -2665,8 +2665,13 @@ contract 4 adds metadata-only `jobs.inspectInputs`; contract 5 adds optional exa
 adds harness calls, and 8 adds host-owned `callerPlugin` to the dispatch context. Contract 9
 adds portable React Worker entries and the bounded fleet bridge. Contract 10 adds optional
 `physicalCoreCount` in `machines.inventory`; the host omits it for older admitted packed
-guests, whose strict inventory parser predates it. Current in-realm and hardened readers
-receive the same live facts. Contract 11 adds optional `hook.metadata` for credential-bound
+guests, whose strict inventory parser predates it. A pre-10 consumer anywhere in the trusted
+plugin action chain constrains that chain's inventory projection, including a current
+intermediary's machine-list response. Independent current readers retain the live field.
+Portable Workers use the explicit accepted contract set with minimum 9, not equality with the
+latest contract. Pre-10 Workers receive the old shape from both `client.machines()` and the
+canonical machine-list action; refusals and unrelated action results remain unchanged.
+Contract 11 adds optional `hook.metadata` for credential-bound
 read-only lifecycle metadata. Older admitted guests omit newer metadata and preserve their
 normalized declarations and digests. Host-to-guest optional fields are gated by the admitted
 contract, never sent speculatively.

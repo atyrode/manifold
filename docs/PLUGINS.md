@@ -3895,12 +3895,15 @@ selection never falls back to native when packing, loading or runtime fails.
 `verify --hardened` exercises actual server doors, not browser rendering:
 exercise the panel in a browser too. The install door and grant remain §7.
 
-Current packs stamp contract 11; the hub admits stamped contracts 1–9 and 11 using
+Current packs stamp contract 11; the hub admits stamped contracts 1–11 using
 each artifact's own compatible frames. Contract 8 adds caller-plugin attribution;
 contract 9 adds React frame roots, mounted context/sections, generated portable
-Worker member, event invalidations, authoring and narrow machine bridges. Contract 11 adds
-credential-bound read-only lifecycle metadata. Older admitted artifacts keep their declared
-behavior rather than acquiring these facilities. Missing stamps require a genuine repack, not an assumed contract 1;
+Worker member, event invalidations, authoring and narrow machine bridges. Portable Workers
+require an accepted contract of at least 9, not the newest stamp. Contract 10 adds optional
+physical-core metadata; older strict consumers retain the old machine-list shape through
+nested server calls and both Worker machine-reading routes. Contract 11 adds credential-bound
+read-only lifecycle metadata. Older admitted artifacts keep their declared behavior rather
+than acquiring these facilities. Missing stamps require a genuine repack, not an assumed contract 1;
 `repack_required` holds incompatible incumbents before import or spawn.
 
 ### Developing against a hub
