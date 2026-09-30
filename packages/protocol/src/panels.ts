@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { LocalFileDescriptorSchema, MAX_LOCAL_FILES } from "./byte-ui.ts";
-import { PanelArgSchema, validPanelArg, validPanelData, type PanelArg } from "./layout.ts";
+import { PanelArgSchema, validPanelArg, validPanelData } from "./layout.ts";
 
 /** Transient owner-mounted input; never a persisted tile argument or a file-byte carrier. */
 export const PortablePanelInputSchema = z.strictObject({
@@ -12,7 +12,7 @@ export type PortablePanelInput = z.infer<typeof PortablePanelInputSchema>;
 /** A completed intake may include a bounded native receipt with a fully escaped path. */
 export const MAX_PANEL_RESULT_BYTES = 64 * 1024;
 const MAX_PANEL_RESULT_DEPTH = 32;
-export const PanelResultSchema = z.custom<PanelArg>(
+export const PanelResultSchema = PanelArgSchema.refine(
   (value) => validPanelData(value, MAX_PANEL_RESULT_BYTES, MAX_PANEL_RESULT_DEPTH),
   "panel result must be bounded JSON record data",
 );

@@ -3155,6 +3155,10 @@ opaque source reference and presentation geometry. Deleting one reference does n
 another or the source. Logical source deletion invalidates all projections. A share is with
 the named principal, not every present or future viewer of the canvas.
 
+Before an upload or saved file is acknowledged, a refused or unknown intake may instead be
+explicitly discarded locally. That releases selection custody, not server authority: it neither
+retries the old request nor claims remote cancellation; any unconfirmed preparation expires.
+
 Image intake fully decodes PNG, JPEG, WebP and static GIF with the bounded native decoder,
 preserving original bytes and their hash. The limits are 4,194,304 pixels and 8,192 per side;
 animated, malformed, mismatched or unsupported content is refused, not silently retained
