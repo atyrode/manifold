@@ -1,6 +1,8 @@
 export { PROTOCOL_VERSION } from "@manifold/protocol";
 export {
   HttpResponseError,
+  advanceServerTime,
+  approveShareRecipient,
   callAction,
   connect,
   createContainer,
@@ -11,6 +13,7 @@ export {
   instanceOrigin,
   isMachineOnline,
   listShares,
+  listShareRecipients,
   listTerminalsByContainer,
   listContainers,
   listTerminals,
@@ -19,6 +22,7 @@ export {
   openDial,
   ownerAction,
   ownerFetch,
+  removeShareRecipient,
   revokeShare,
   spawnInstancePair,
   startAgent,

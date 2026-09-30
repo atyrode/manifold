@@ -12,6 +12,7 @@ import {
   ContainerTerminalsResponseSchema,
   DialSchema,
   DialTicketSchema,
+  ShareRecipientSchema,
   RevokeResultSchema,
   ShareGrantSchema,
   ShareInventorySchema,
@@ -27,6 +28,7 @@ import {
   type ContainerTerminalSummary,
   type ShareGrant,
   type ShareInventory,
+  type ShareRecipient,
   type TerminalSummary,
   type TokenGrant,
 } from "@manifold/protocol";
@@ -46,7 +48,7 @@ const HTTP_TIMEOUT_MS = 15_000;
 const CONNECT_TIMEOUT_MS = 15_000;
 const OUTPUT_LINE_LIMIT = 200;
 
-type SpawnedProcess = Bun.Subprocess<"ignore", "pipe", "pipe">;
+type SpawnedProcess = Bun.Subprocess<"ignore" | "pipe", "pipe", "pipe">;
 type StopSignal = Parameters<SpawnedProcess["kill"]>[0];
 
 /** Captured child output is bounded so failed e2e assertions stay useful without leaking memory. */
@@ -66,6 +68,8 @@ export interface TestServer {
   readonly proc: SpawnedProcess;
   readonly output: ProcessOutput;
   stop(signal?: StopSignal): Promise<void>;
+  /** Present only on a test-clock producer; changes RuntimeDeps.now, never expiry callbacks. */
+  advanceTime?(now: number): Promise<number>;
 }
 
 /**
@@ -96,6 +100,8 @@ export interface StartServerOptions {
   readonly ownerKey?: string;
   readonly spawnAgent?: boolean;
   readonly env?: Readonly<Record<string, string>>;
+  /** Use the real server with a privately controlled RuntimeDeps clock in its child process. */
+  readonly controlledTime?: boolean;
   /** Sees every stdout line as it arrives, including before readiness (a successor's wait). */
   readonly onStdout?: (line: string) => void;
 }
@@ -314,6 +320,7 @@ function observeProcess(
   env: Record<string, string>,
   onStdoutLine?: (line: string) => void,
   into?: { readonly stdout: LineRing; readonly stderr: LineRing },
+  stdin: "ignore" | "pipe" = "ignore",
 ): ObservedProcess {
   const stdout = into?.stdout ?? new LineRing();
   const stderr = into?.stderr ?? new LineRing();
@@ -326,7 +333,7 @@ function observeProcess(
     proc = Bun.spawn(command, {
       cwd: REPO_ROOT,
       env,
-      stdin: "ignore",
+      stdin,
       stdout: "pipe",
       stderr: "pipe",
       // Bun may invoke this before spawn returns. Its error is a waitpid error,
@@ -485,20 +492,35 @@ export async function startServer(options: StartServerOptions = {}): Promise<Tes
 
   const { promise: ready, resolve, reject } = Promise.withResolvers<ReadyInfo>();
   let settled = false;
-  const observed = observeProcess(["bun", "packages/server/src/main.ts"], env, (line) => {
-    options.onStdout?.(line);
-    if (settled) return;
-    try {
-      const info = parseReadyLine(line);
-      if (info !== null) {
+  const clockAcks = new Map<number, number>();
+  let nextClockRequest = 0;
+  const observed = observeProcess(
+    [
+      "bun",
+      options.controlledTime
+        ? "packages/testkit/src/clocked-server.ts"
+        : "packages/server/src/main.ts",
+    ],
+    env,
+    (line) => {
+      options.onStdout?.(line);
+      const advanced = /^manifold test-clock advanced id=(\d+) now=(\d+)$/.exec(line);
+      if (advanced !== null) clockAcks.set(Number(advanced[1]), Number(advanced[2]));
+      if (settled) return;
+      try {
+        const info = parseReadyLine(line);
+        if (info !== null) {
+          settled = true;
+          resolve(info);
+        }
+      } catch (error) {
         settled = true;
-        resolve(info);
+        reject(error);
       }
-    } catch (error) {
-      settled = true;
-      reject(error);
-    }
-  });
+    },
+    undefined,
+    options.controlledTime ? "pipe" : "ignore",
+  );
   const { proc, stop, output } = observed;
   void proc.exited.then(
     (exitCode) => reject(new Error(`server exited before readiness with code ${exitCode}`)),
@@ -532,7 +554,37 @@ export async function startServer(options: StartServerOptions = {}): Promise<Tes
     proc,
     output,
     stop,
+    ...(options.controlledTime
+      ? {
+          async advanceTime(now: number): Promise<number> {
+            if (!Number.isSafeInteger(now) || now < 1) throw new Error("invalid test-clock time");
+            observed.assertRunning("server before clock advance");
+            const stdin = proc.stdin;
+            if (stdin === null || stdin === undefined) {
+              throw new Error("test-clock stdin is unavailable");
+            }
+            nextClockRequest += 1;
+            const id = nextClockRequest;
+            stdin.write(`${JSON.stringify({ id, now })}\n`);
+            await stdin.flush();
+            try {
+              return await waitFor(() => {
+                observed.assertRunning("server clock advance");
+                return clockAcks.get(id) ?? false;
+              }, READY_TIMEOUT_MS, 10);
+            } finally {
+              clockAcks.delete(id);
+            }
+          },
+        }
+      : {}),
   };
+}
+
+/** Advances only an explicitly clock-controlled disposable child, awaiting its applied runtime. */
+export async function advanceServerTime(server: TestServer, now: number): Promise<number> {
+  if (server.advanceTime === undefined) throw new Error("server has no controlled test clock");
+  return server.advanceTime(now);
 }
 
 /**
@@ -997,15 +1049,49 @@ export async function dialShare(
   );
 }
 
-/** The guest's own door: turns a dial into a host ticket THIS principal may project with. */
+/** Local admission asks the host for its approved subset, or an explicitly narrower remote subset. */
 export async function openDial(
   server: TestServer,
   token: string,
   dialId: string,
+  caps?: readonly Cap[],
 ): Promise<DialTicket> {
-  const outcome = await callAction(server, token, "core.access.openDial", { dialId });
+  const outcome = await callAction(server, token, "core.access.openDial", {
+    dialId,
+    ...(caps === undefined ? {} : { caps }),
+  });
   if (!outcome.ok) throw new Error(`openDial refused: ${outcome.denial.message}`);
   return DialTicketSchema.parse(outcome.result);
+}
+
+/** The host's ordinary discoverable action lists pending and approved recipients without secrets. */
+export async function listShareRecipients(host: TestServer, shareId: string): Promise<ShareRecipient[]> {
+  return ShareRecipientSchema.array().parse(
+    await ownerAction(host, "core.access.listShareRecipients", { shareId }),
+  );
+}
+
+/** Approves a pending guest identity through the same host action an operator discovers. */
+export async function approveShareRecipient(
+  host: TestServer,
+  shareId: string,
+  guestPrincipalId: string,
+  caps: readonly Cap[],
+): Promise<ShareRecipient> {
+  return ShareRecipientSchema.parse(
+    await ownerAction(host, "core.access.approveShareRecipient", { shareId, guestPrincipalId, caps }),
+  );
+}
+
+/** Withdraws host admission without revoking the whole share or tombstoning the guest identity. */
+export async function removeShareRecipient(
+  host: TestServer,
+  shareId: string,
+  guestPrincipalId: string,
+): Promise<ShareRecipient> {
+  return ShareRecipientSchema.parse(
+    await ownerAction(host, "core.access.removeShareRecipient", { shareId, guestPrincipalId }),
+  );
 }
 
 /** Every share this instance hands out and every dial it holds, in one answer. */
