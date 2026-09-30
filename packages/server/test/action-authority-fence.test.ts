@@ -385,7 +385,8 @@ test.each(["parser", "handler", "before admission"])(
         return {};
       },
     };
-    const { database: _database, ...storageManifest } = manifest;
+    const storageManifest: PluginManifest = { ...manifest };
+    delete storageManifest.database;
     const def: ServerPluginDef = {
       manifest: { ...storageManifest, id: "test.action-binding" },
       ...(binding === "before admission" ? { inputValidation: "guest" as const } : {}),

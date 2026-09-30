@@ -70,6 +70,7 @@ must never be taught one.
       "globs": [
         "packages/plugin/src/**",
         "packages/server/src/plugin-host.ts",
+        "packages/server/src/action-authority-fence.ts",
         "packages/server/src/plugin-installs.ts",
         "packages/server/src/plugin-releases.ts",
         "packages/server/src/plugin-updates.ts",
@@ -560,7 +561,7 @@ work list rather than a ledger of debt: every row lands in this change.
 | notes/text element renderer + its inline editor                          | `core.notes`                | moved; the text TOOL is canvas chrome (next row)                        |
 | canvas renderer, portal internals, canvas toolbar, viewport              | `core.canvas`               | moved; decomposed `core.shell.container-view`; absorbed stroke geometry |
 | composition-route internals, tile drop gestures, carry previews          | `core.compositions`         | decomposes `core.shell.container-view`                                  |
-| machine enrollment, admission administration + presentation helpers      | `core.machines`             | enrollment, inventory and drain are actions; color lives on the wire    |
+| machine enrollment, admission administration + presentation helpers      | `core.machines`             | enrollment, inventory, drain and atomic host-view metadata are actions  |
 | container/folder CRUD, index moves, and the index reads (bespoke routes) | `core.index` actions        | routes deleted, callers migrated (D13); reads keep container scope      |
 | terminal pool/park rows, the terminal index, terminal rows               | `core.terminals` completion | policy is the plugin's, bytes stay floor (ADR 0013 §14)                 |
 | token and principal administration routes                                | `core.access`               | identity mechanism stays floor; administration converts now             |

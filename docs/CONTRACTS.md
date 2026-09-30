@@ -1835,6 +1835,15 @@ recorded so none runs twice. Version rules: equal assembles; minor-only differen
 no migration; a major difference needs an unapplied migration or the plugin is refused; stored major
 greater than code major is refused as a downgrade.
 
+Action storage and database handles carry one hub-private live authority fence. Each use
+restores the original admitted credential, not attenuated native bridge hints, and rechecks
+its ordered contextual or exact-target requirements plus the current parser, handler,
+declarations and installation ceiling. An awaited read does not preserve withdrawn authority
+for a later CAS or database write. Preparation has no durable-data authority; settlement,
+deadline, disable, actual binding retirement and shutdown retire the handle. A pending
+replacement still drains already-admitted work against its unchanged old binding before
+retirement; it does not lend the replacement's authority to that work.
+
 **Workspace layout.** Each principal has a `TileLayout` of their own, stored under `meta` key
 `layout:<principalId>` and read at `GET /api/layout`. When unset the door answers a DEFAULT that
 is COMPOSED rather than authored: `composeDefaultLayout(roster)` in `@manifold/plugin` lays the
@@ -2042,6 +2051,25 @@ because `GET /api/machines` answered any authenticated token including a scoped 
 viewer still has to paint the machine badge on the terminal in front of it); its containment
 obligation is vacuous, since nothing in a fleet-wide answer is addressed by container.
 
+Host views are plugin-owned display metadata, not another machine or authority identity.
+`core.machines.listHostViews {}` returns `{ revision, hosts }` under the inventory's existing
+`containers:read`/container-scope audience. `setHostView { expectedRevision, host }` requires
+workspace `machines:mint` and `containers:read` for its caller-bound membership validation;
+`removeHostView { expectedRevision, hostId }` requires workspace `machines:mint`.
+Each host has a client-generated UUID, a trimmed nonempty name and 1–64 distinct
+`{ machineId, accountLabel }` members. Names and labels are at most 64 characters, at most
+128 views exist, and an endpoint belongs to at most one view.
+
+One JSON registry at plugin storage key `host-views` starts at revision zero. A mutation
+checks `expectedRevision` first, makes identical current content a no-op, and writes with
+one exact previously-read string/null CAS. Conflict is `host_views_changed`; excess
+64 KiB UTF-8 capacity is `host_view_capacity_exceeded`, never truncation.
+New or relabelled members must resolve through the existing authorized inventory or
+refuse as `machine_unavailable`. Unchanged revoked, offline or forgotten members remain
+metadata until explicitly removed and never rebind by name. Removal deletes metadata only.
+The manifest declares data version 1.0 and storage purging; successful CAS emits the
+revision-only `host_views_changed` at the machine plugin node.
+
 Roster rows may carry `physicalCoreCount`, a positive integer from the current admitted live
 machine hello (#939). It counts distinct OS-visible physical package/core identities among
 online Linux CPUs, not logical processors, cgroup quota or bare-metal attestation. Unknown,
@@ -2069,6 +2097,11 @@ latch after restart and sends it after every capable hello. The host latch survi
 transport replacement, not host replacement. `MachineSummary.draining?` publishes the
 hub state (absent means open). This action is not `cleanup: true`; a disabled machines
 plugin must be re-enabled to change the latch.
+
+The floor emits declared `machine_inventory_changed` at a changed latch's owning commit,
+before owner acknowledgement; a later refusal cannot suppress the committed inventory news.
+Successful revoke and forget handlers also emit it, including withdrawal of an already-offline
+endpoint. Payloads contain exact machine IDs/state, never credentials or host paths.
 
 An empty drain result is not authority to signal or replace a host: exited terminals may
 still be retained pending acknowledgement. Maintenance must use the host's atomic
