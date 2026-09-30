@@ -20,6 +20,7 @@ class FakeMachine implements MachineChannel {
   readonly sent: ServerToAgentMessage[] = [];
   readonly terminalRestart = true;
   readonly protocolVersion = PROTOCOL_VERSION;
+  acceptResize = true;
 
   constructor(
     readonly machineId: string,
@@ -29,7 +30,7 @@ class FakeMachine implements MachineChannel {
 
   send(message: ServerToAgentMessage): boolean {
     this.sent.push(ServerToAgentMessageSchema.parse(message));
-    return true;
+    return message.type !== "resize" || this.acceptResize;
   }
 
   clear(): void {
@@ -327,6 +328,144 @@ describe("TerminalBroker viewport arbitration", () => {
     fixture.store.close();
   });
 
+  test("native refusal retains geometry and retires intents until fresh measurement", () => {
+    const fixture = viewportFixture();
+    const terminalId = fixture.create.terminalId;
+    const siblingSocket = new FakeSocket();
+    const sibling = new SessionChannel(
+      fixture.runtime.newId(),
+      siblingSocket,
+      fixture.root,
+      fixture.container.id,
+      "native-sibling",
+    );
+    attachLive(fixture, sibling);
+    measureViewport(fixture, fixture.opener, "accepted", 120, 40);
+    measureViewport(fixture, sibling, "old-sibling", 140, 50);
+    fixture.machine.clear();
+    fixture.socket.clear();
+    siblingSocket.clear();
+    fixture.machine.acceptResize = false;
+
+    measureViewport(fixture, fixture.opener, "refused", 60, 18);
+    expect(fixture.machine.sent).toEqual([{ type: "resize", terminalId, cols: 60, rows: 18 }]);
+    expect(fixture.broker.listForContainer(fixture.container.id)).toMatchObject([
+      { id: terminalId, cols: 120, rows: 40 },
+    ]);
+    const retained = {
+      type: "terminal_sizing",
+      terminalId,
+      sizing: { mode: "retained", columns: [], rows: [] },
+    };
+    expect(fixture.socket.messages()).toEqual([
+      { type: "error", code: "no_machine", ref: terminalId },
+      retained,
+    ]);
+    expect(siblingSocket.messages()).toEqual([retained]);
+    expect(fixture.clock.pendingJobs).toBe(0);
+
+    fixture.machine.acceptResize = true;
+    fixture.machine.clear();
+    fixture.socket.clear();
+    siblingSocket.clear();
+    fixture.clock.advance(10_000);
+    withdrawViewport(fixture, fixture.opener, "refused");
+    expect(fixture.machine.sent).toEqual([]);
+    expect(fixture.socket.messages()).toEqual([]);
+    expect(siblingSocket.messages()).toEqual([]);
+    measureViewport(fixture, sibling, "fresh", 130, 45);
+    expect(fixture.machine.sent).toEqual([{ type: "resize", terminalId, cols: 130, rows: 45 }]);
+    expect(fixture.socket.messages()).toEqual([
+      { type: "terminal_event", terminalId, kind: "resized", cols: 130, rows: 45 },
+      {
+        type: "terminal_sizing",
+        terminalId,
+        sizing: {
+          mode: "smallest",
+          columns: [{ connId: sibling.id, viewportId: "fresh" }],
+          rows: [{ connId: sibling.id, viewportId: "fresh" }],
+        },
+      },
+    ]);
+    measureViewport(fixture, fixture.opener, "larger", 150, 55);
+    fixture.machine.acceptResize = false;
+    fixture.machine.clear();
+    fixture.socket.clear();
+    siblingSocket.clear();
+    withdrawViewport(fixture, sibling, "fresh");
+    expect(fixture.machine.sent).toEqual([{ type: "resize", terminalId, cols: 150, rows: 55 }]);
+    expect(fixture.socket.messages()).toEqual([retained]);
+    expect(siblingSocket.messages()).toEqual([retained]);
+    expect(fixture.broker.listForContainer(fixture.container.id)).toMatchObject([
+      { id: terminalId, cols: 130, rows: 45 },
+    ]);
+    expect(fixture.clock.pendingJobs).toBe(0);
+    fixture.machine.acceptResize = true;
+    fixture.machine.clear();
+    fixture.socket.clear();
+    fixture.clock.advance(TERMINAL_VIEWPORT_LEASE_MS);
+    withdrawViewport(fixture, fixture.opener, "larger");
+    expect(fixture.machine.sent).toEqual([]);
+    expect(fixture.socket.messages()).toEqual([]);
+    fixture.store.close();
+  });
+
+  test("native refusal clears intents before its error synchronously closes the requester", () => {
+    const fixture = viewportFixture();
+    const terminalId = fixture.create.terminalId;
+    class DroppingSocket extends FakeSocket {
+      dropError = false;
+
+      override send(data: string): number {
+        const frame = JSON.parse(data) as { type: string };
+        if (this.dropError && frame.type === "error") return 0;
+        return super.send(data);
+      }
+    }
+    const socket = new DroppingSocket();
+    const channel = new SessionChannel(
+      fixture.runtime.newId(),
+      socket,
+      fixture.root,
+      fixture.container.id,
+      "closing-requester",
+      false,
+      (closing) => {
+        fixture.broker.detachAll(closing);
+        fixture.rooms.get(fixture.container.id)?.leave(closing);
+      },
+    );
+    attachLive(fixture, channel);
+    measureViewport(fixture, fixture.opener, "old-observer", 120, 40);
+    fixture.socket.clear();
+    fixture.machine.clear();
+    fixture.machine.acceptResize = false;
+    socket.dropError = true;
+
+    measureViewport(fixture, channel, "refused", 60, 18);
+    expect(channel.isClosed).toBe(true);
+    expect(fixture.machine.sent).toEqual([{ type: "resize", terminalId, cols: 60, rows: 18 }]);
+    expect(fixture.broker.listForContainer(fixture.container.id)).toMatchObject([
+      { cols: 120, rows: 40 },
+    ]);
+    expect(fixture.socket.messages()).toEqual([
+      {
+        type: "terminal_sizing",
+        terminalId,
+        sizing: { mode: "retained", columns: [], rows: [] },
+      },
+    ]);
+    expect(fixture.clock.pendingJobs).toBe(0);
+    fixture.machine.acceptResize = true;
+    fixture.machine.clear();
+    fixture.clock.advance(10_000);
+    measureViewport(fixture, fixture.opener, "fresh", 130, 45);
+    expect(fixture.machine.sent).toEqual([{ type: "resize", terminalId, cols: 130, rows: 45 }]);
+    withdrawViewport(fixture, fixture.opener, "fresh");
+    expect(fixture.clock.pendingJobs).toBe(0);
+    fixture.store.close();
+  });
+
   test("PENDING measurements contribute only after their ordered snapshot and tail become LIVE", () => {
     const fixture = viewportFixture();
     const terminalId = fixture.create.terminalId;
@@ -527,11 +666,15 @@ describe("TerminalBroker viewport arbitration", () => {
   });
 
   for (const cause of ["home-deny", "credential-revoked"] as const) {
-    test(`arbitration retires an existing measurement after ${cause} under the same controller principal`, () => {
+    const description =
+      cause === "home-deny"
+        ? "principal-wide home deny retires every credential of a non-owner controller and retains its grid"
+        : "credential revocation retires only that credential under a non-owner controller";
+    test(description, () => {
       const fixture = viewportFixture();
       const grant = fixture.auth.mintToken(
         {
-          principalId: fixture.root.principal.id,
+          principal: { name: "revocable controller", kind: "human" },
           caps: ["containers:read", "terminals:write"],
           containerId: fixture.container.id,
         },
@@ -546,10 +689,33 @@ describe("TerminalBroker viewport arbitration", () => {
         fixture.container.id,
         "revocable",
       );
+      const siblingGrant = fixture.auth.mintToken(
+        {
+          principalId: actor.principal.id,
+          caps: ["containers:read", "terminals:write"],
+          containerId: fixture.container.id,
+        },
+        fixture.root,
+      );
+      const siblingSocket = new FakeSocket();
+      const sibling = new SessionChannel(
+        fixture.runtime.newId(),
+        siblingSocket,
+        fixture.auth.authenticate(siblingGrant.token),
+        fixture.container.id,
+        "independent-credential",
+      );
       attachLive(fixture, channel);
-      measureViewport(fixture, fixture.opener, "survivor", 110, 36);
+      attachLive(fixture, sibling);
+      fixture.broker.take(channel, {
+        type: "terminal_take",
+        terminalId: fixture.create.terminalId,
+      });
+      measureViewport(fixture, sibling, "sibling", 110, 36);
       measureViewport(fixture, channel, "retired", 60, 18);
       fixture.machine.clear();
+      fixture.socket.clear();
+      siblingSocket.clear();
       if (cause === "home-deny") {
         fixture.auth.grant(
           {
@@ -564,21 +730,44 @@ describe("TerminalBroker viewport arbitration", () => {
       } else {
         fixture.store.revokeToken(actor.tokenId!, fixture.runtime.now());
       }
-      measureViewport(fixture, fixture.opener, "survivor", 110, 36);
-      expect(fixture.machine.sent).toEqual([
-        { type: "resize", terminalId: fixture.create.terminalId, cols: 110, rows: 36 },
-      ]);
-      expect(fixture.socket.messages().at(-1)).toMatchObject({
-        type: "terminal_sizing",
-        sizing: {
-          columns: [{ connId: fixture.opener.id, viewportId: "survivor" }],
-          rows: [{ connId: fixture.opener.id, viewportId: "survivor" }],
-        },
-      });
+      measureViewport(fixture, sibling, "sibling", 110, 36);
+      if (cause === "home-deny") {
+        expect(fixture.machine.sent).toEqual([]);
+        expect(fixture.broker.listForContainer(fixture.container.id)).toMatchObject([
+          { cols: 60, rows: 18, controllerId: actor.principal.id },
+        ]);
+        const retained = {
+          type: "terminal_sizing",
+          terminalId: fixture.create.terminalId,
+          sizing: { mode: "retained", columns: [], rows: [] },
+        };
+        expect(fixture.socket.messages()).toEqual([retained]);
+        expect(siblingSocket.messages()).toEqual([
+          retained,
+          { type: "error", code: "forbidden", ref: fixture.create.terminalId },
+        ]);
+        expect(fixture.clock.pendingJobs).toBe(0);
+      } else {
+        expect(fixture.machine.sent).toEqual([
+          { type: "resize", terminalId: fixture.create.terminalId, cols: 110, rows: 36 },
+        ]);
+        expect(fixture.broker.listForContainer(fixture.container.id)).toMatchObject([
+          { cols: 110, rows: 36, controllerId: actor.principal.id },
+        ]);
+        expect(fixture.socket.messages().at(-1)).toEqual({
+          type: "terminal_sizing",
+          terminalId: fixture.create.terminalId,
+          sizing: {
+            mode: "smallest",
+            columns: [{ connId: sibling.id, viewportId: "sibling" }],
+            rows: [{ connId: sibling.id, viewportId: "sibling" }],
+          },
+        });
+      }
       socket.clear();
       measureViewport(fixture, channel, "retired", 60, 18);
       expect(socket.messages().at(-1)).toMatchObject({ type: "error", code: "forbidden" });
-      withdrawViewport(fixture, fixture.opener, "survivor");
+      withdrawViewport(fixture, sibling, "sibling");
       expect(fixture.clock.pendingJobs).toBe(0);
       fixture.store.close();
     });
