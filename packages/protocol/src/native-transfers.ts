@@ -151,7 +151,9 @@ export const NativeTransferPolicySchema = z.strictObject({
   format: z.literal("native-transfer-v1"),
   locations: z
     .record(id, access)
-    .refine((locations) => Object.keys(locations).length > 0 && Object.keys(locations).length <= 64),
+    .refine(
+      (locations) => Object.keys(locations).length > 0 && Object.keys(locations).length <= 64,
+    ),
 });
 export type NativeTransferPolicy = z.infer<typeof NativeTransferPolicySchema>;
 
@@ -211,17 +213,28 @@ export const NativeTransferDescriptionSchema = z.strictObject({
       }),
     )
     .max(64)
-    .refine((locations) => new Set(locations.map((row) => row.locationId)).size === locations.length),
+    .refine(
+      (locations) => new Set(locations.map((row) => row.locationId)).size === locations.length,
+    ),
 });
 export type NativeTransferDescription = z.infer<typeof NativeTransferDescriptionSchema>;
 
 const identity = {
-  pluginId: z.string().regex(/^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*){1,2}$/).max(64),
+  pluginId: z
+    .string()
+    .regex(/^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*){1,2}$/)
+    .max(64),
   actorId: id,
   credentialBinding: hash,
 };
-const putRequest = z.strictObject({ mode: z.literal("put"), ...NativeTransferBeginPutArgsSchema.shape });
-const readRequest = z.strictObject({ mode: z.literal("read"), ...NativeTransferBeginReadArgsSchema.shape });
+const putRequest = z.strictObject({
+  mode: z.literal("put"),
+  ...NativeTransferBeginPutArgsSchema.shape,
+});
+const readRequest = z.strictObject({
+  mode: z.literal("read"),
+  ...NativeTransferBeginReadArgsSchema.shape,
+});
 /** Only the floor constructs this identity; no public argument accepts an override. */
 export const NativeTransferBindingSchema = z
   .strictObject({
@@ -231,7 +244,10 @@ export const NativeTransferBindingSchema = z
     expiresAt: count,
     request: z.discriminatedUnion("mode", [putRequest, readRequest]),
   })
-  .refine(({ createdAt, expiresAt }) => expiresAt > createdAt && expiresAt - createdAt <= NATIVE_TRANSFER_MAX_LIFETIME_MS);
+  .refine(
+    ({ createdAt, expiresAt }) =>
+      expiresAt > createdAt && expiresAt - createdAt <= NATIVE_TRANSFER_MAX_LIFETIME_MS,
+  );
 export type NativeTransferBinding = z.infer<typeof NativeTransferBindingSchema>;
 
 export const NativeTransferReceiptSchema = z.strictObject({
@@ -241,7 +257,11 @@ export const NativeTransferReceiptSchema = z.strictObject({
   ...identity,
   ownerId: id,
   ownerGeneration: count,
-  path: z.string().min(1).max(4096).refine((value) => !value.includes("\0") && encoder.encode(value).byteLength <= 4096),
+  path: z
+    .string()
+    .min(1)
+    .max(4096)
+    .refine((value) => !value.includes("\0") && encoder.encode(value).byteLength <= 4096),
   bytes,
   sha256: hash,
   committedAt: count,
@@ -287,7 +307,13 @@ export const NativeTransferStatusSchema = z
 export type NativeTransferStatus = z.infer<typeof NativeTransferStatusSchema>;
 
 /** Non-sensitive receipt projection. Neither correlation nor this evidence grants authority. */
-export const NativeTransferTerminalStateSchema = z.enum(["committed", "cancelled", "refused", "failed", "expired"]);
+export const NativeTransferTerminalStateSchema = z.enum([
+  "committed",
+  "cancelled",
+  "refused",
+  "failed",
+  "expired",
+]);
 export const NativeTransferReceiptViewSchema = z.strictObject({
   transferId: id,
   state: z.union([NativeTransferTerminalStateSchema, z.literal("outcome_unknown")]),
@@ -317,13 +343,21 @@ export const NativeTransferTerminalEvidenceSchema = z.discriminatedUnion("kind",
   }),
 ]);
 export type NativeTransferTerminalEvidence = z.infer<typeof NativeTransferTerminalEvidenceSchema>;
-export const NativeTransferEvidenceBatchSchema = z.array(NativeTransferTerminalEvidenceSchema).min(1).max(64);
-export const NativeTransferReadChunkResultSchema = z.strictObject({
-  data: chunk,
-  offset: bytes,
-  eof: z.boolean(),
-  status: NativeTransferStatusSchema,
-}).refine((reply) => reply.status.mode === "read" && reply.offset + reply.data.byteLength <= reply.status.bytes);
+export const NativeTransferEvidenceBatchSchema = z
+  .array(NativeTransferTerminalEvidenceSchema)
+  .min(1)
+  .max(64);
+export const NativeTransferReadChunkResultSchema = z
+  .strictObject({
+    data: chunk,
+    offset: bytes,
+    eof: z.boolean(),
+    status: NativeTransferStatusSchema,
+  })
+  .refine(
+    (reply) =>
+      reply.status.mode === "read" && reply.offset + reply.data.byteLength <= reply.status.bytes,
+  );
 export type NativeTransferReadChunkResult = z.infer<typeof NativeTransferReadChunkResultSchema>;
 
 /** JSON carriers count decoded bytes, including the final base64 quantum. */
@@ -358,56 +392,73 @@ export const NativeTransferRequestSchema = z.discriminatedUnion("method", [
     method: z.literal("beginRead"),
     binding: NativeTransferBindingSchema.safeExtend({ request: readRequest }),
   }),
-  z.strictObject({
-    method: z.literal("putChunk"),
-    transferId: id,
-    seq: count,
-    offset: bytes,
-    data: NativeTransferChunkDataSchema.refine((data) => data.length > 0),
-  }).refine((request) => request.offset + decodedChunkBytes(request.data) <= NATIVE_TRANSFER_MAX_FILE_BYTES),
+  z
+    .strictObject({
+      method: z.literal("putChunk"),
+      transferId: id,
+      seq: count,
+      offset: bytes,
+      data: NativeTransferChunkDataSchema.refine((data) => data.length > 0),
+    })
+    .refine(
+      (request) =>
+        request.offset + decodedChunkBytes(request.data) <= NATIVE_TRANSFER_MAX_FILE_BYTES,
+    ),
   z.strictObject({ method: z.literal("preparePut"), transferId: id }),
   z.strictObject({ method: z.literal("commitPut"), transferId: id }),
   z.strictObject({ method: z.literal("readChunk"), ...NativeTransferReadChunkArgsSchema.shape }),
   z.strictObject({ method: z.literal("cancel"), transferId: id }),
   z.strictObject({ method: z.literal("status"), transferId: id }),
   // Host-only: exact original journal identity; never accepted by plugin effect methods.
-  z.strictObject({ method: z.literal("evidence"), transferId: id, bindingDigest: hash, ownerGeneration: count }),
+  z.strictObject({
+    method: z.literal("evidence"),
+    transferId: id,
+    bindingDigest: hash,
+    ownerGeneration: count,
+  }),
 ]);
 export type NativeTransferRequest = z.infer<typeof NativeTransferRequestSchema>;
 
 /** Every command, including status, is signed over its complete canonical request digest. */
 export const NativeTransferPermitSchema = z.strictObject({
-  body: z.strictObject({
-    permitId: id,
-    commandDigest: hash,
-    transferId: id,
-    ...identity,
-    machineId: id,
-    ownerId: id,
-    ownerGeneration: count,
-    /** The proved attachment challenge; reconnecting the same owner fences old permits. */
-    seatNonce: id,
-    issuedAt: count,
-    expiresAt: count,
-  }).refine(({ issuedAt, expiresAt }) => expiresAt > issuedAt && expiresAt - issuedAt <= NATIVE_TRANSFER_PERMIT_MS),
+  body: z
+    .strictObject({
+      permitId: id,
+      commandDigest: hash,
+      transferId: id,
+      ...identity,
+      machineId: id,
+      ownerId: id,
+      ownerGeneration: count,
+      /** The proved attachment challenge; reconnecting the same owner fences old permits. */
+      seatNonce: id,
+      issuedAt: count,
+      expiresAt: count,
+    })
+    .refine(
+      ({ issuedAt, expiresAt }) =>
+        expiresAt > issuedAt && expiresAt - issuedAt <= NATIVE_TRANSFER_PERMIT_MS,
+    ),
   signature: z.base64().length(88),
 });
 export type NativeTransferPermit = z.infer<typeof NativeTransferPermitSchema>;
 export const NativeTransferResultSchema = z.discriminatedUnion("ok", [
-  z.strictObject({
-    ok: z.literal(true),
-    status: NativeTransferStatusSchema,
-    data: NativeTransferChunkDataSchema.optional(),
-    offset: bytes.optional(),
-    eof: z.boolean().optional(),
-  }).refine((result) =>
-    result.data === undefined
-      ? result.offset === undefined && result.eof === undefined
-      : result.offset !== undefined &&
-        result.eof !== undefined &&
-        result.status.mode === "read" &&
-        result.offset + decodedChunkBytes(result.data) <= result.status.bytes,
-  ),
+  z
+    .strictObject({
+      ok: z.literal(true),
+      status: NativeTransferStatusSchema,
+      data: NativeTransferChunkDataSchema.optional(),
+      offset: bytes.optional(),
+      eof: z.boolean().optional(),
+    })
+    .refine((result) =>
+      result.data === undefined
+        ? result.offset === undefined && result.eof === undefined
+        : result.offset !== undefined &&
+          result.eof !== undefined &&
+          result.status.mode === "read" &&
+          result.offset + decodedChunkBytes(result.data) <= result.status.bytes,
+    ),
   z.strictObject({
     ok: z.literal(false),
     reason: NativeTransferReasonSchema,

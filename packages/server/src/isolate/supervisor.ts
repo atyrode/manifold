@@ -113,7 +113,17 @@ const ROOT_FENCE_EXEMPT: Partial<Record<IsolateCtxMethod, true>> = {
 type LoadedFrame = Extract<IsolateChildFrame, { t: "loaded" }>;
 type AnsweredFrame = Extract<
   IsolateChildFrame,
-  { t: "dispatched" | "harnessed" | "hooked" | "migrated" | "probed_ready" | "reclaimed_references" | "reconciled_native_transfers" | "byte_answered" }
+  {
+    t:
+      | "dispatched"
+      | "harnessed"
+      | "hooked"
+      | "migrated"
+      | "probed_ready"
+      | "reclaimed_references"
+      | "reconciled_native_transfers"
+      | "byte_answered";
+  }
 >;
 
 // Every request/answer pair passes the same pending-request fence. New data-only
@@ -276,7 +286,8 @@ export class IsolateSupervisor implements IsolateRunner {
       byteRequest: (request, ctx) => this.byteRequest(isolate, request, ctx),
       probeReady: (ctx, input, idleOnly) => this.probeReady(isolate, ctx, input, idleOnly),
       reclaimReferences: (ctx, receipts) => this.reclaimReferences(isolate, ctx, receipts),
-      reconcileNativeTransfers: (ctx, receipts) => this.reconcileNativeTransfers(isolate, ctx, receipts),
+      reconcileNativeTransfers: (ctx, receipts) =>
+        this.reconcileNativeTransfers(isolate, ctx, receipts),
       hook: (hook, ctx, delta) => this.hook(pluginId, hook, ctx, delta),
       settled: (ctx, job) => this.settled(pluginId, ctx, job),
       migrate: (migration, storage, database) =>
@@ -312,11 +323,14 @@ export class IsolateSupervisor implements IsolateRunner {
     if (call === undefined) return Number.POSITIVE_INFINITY;
     const request = call.pending.request;
     if (
-      !call.active || this.closed ||
+      !call.active ||
+      this.closed ||
       this.isolates.get(call.isolate.ref.pluginId) !== call.isolate ||
       call.isolate.child !== call.child ||
-      !("id" in request) || call.isolate.pending.get(request.id) !== call.pending
-    ) return 0;
+      !("id" in request) ||
+      call.isolate.pending.get(request.id) !== call.pending
+    )
+      return 0;
     return Math.max(0, call.pending.expiresAt - performance.now());
   }
 
@@ -439,7 +453,11 @@ export class IsolateSupervisor implements IsolateRunner {
           t: "byte_request",
           id,
           request,
-          ctx: { principal: ctx.principal, credentialBinding: ctx.credentialBinding, now: ctx.now() },
+          ctx: {
+            principal: ctx.principal,
+            credentialBinding: ctx.credentialBinding,
+            now: ctx.now(),
+          },
         }),
         { kind: "byte", ctx },
       );
@@ -504,17 +522,27 @@ export class IsolateSupervisor implements IsolateRunner {
   }
 
   private async reconcileNativeTransfers(
-    isolate: Isolate, ctx: ReferenceProbeCtx, receipts: readonly NativeTransferTerminalEvidence[],
+    isolate: Isolate,
+    ctx: ReferenceProbeCtx,
+    receipts: readonly NativeTransferTerminalEvidence[],
   ): Promise<void> {
-    if (this.isolates.get(isolate.ref.pluginId) !== isolate ||
-        (isolate.ref.hardenedContract ?? 1) < 12 || isolate.loaded?.reconcileNativeTransfers !== true)
+    if (
+      this.isolates.get(isolate.ref.pluginId) !== isolate ||
+      (isolate.ref.hardenedContract ?? 1) < 12 ||
+      isolate.loaded?.reconcileNativeTransfers !== true
+    )
       throw new IsolateDenial("unavailable", "native evidence reconciliation unavailable");
     const request = NativeTransferEvidenceBatchSchema.parse(receipts);
-    const frame = await this.request(isolate.ref.pluginId,
+    const frame = await this.request(
+      isolate.ref.pluginId,
       (id) => ({ t: "reconcile_native_transfers", id, receipts: request, now: ctx.now() }),
-      { kind: "probe", ctx });
+      { kind: "probe", ctx },
+    );
     if (frame.t !== "reconciled_native_transfers")
-      throw new IsolateDenial("unavailable", "native evidence reconciliation answered out of protocol");
+      throw new IsolateDenial(
+        "unavailable",
+        "native evidence reconciliation answered out of protocol",
+      );
     if (!frame.outcome.ok) throw new Error(frame.outcome.error);
   }
 
@@ -626,15 +654,16 @@ export class IsolateSupervisor implements IsolateRunner {
     if (isolate === undefined) throw new IsolateDenial("unavailable", "isolate is not loaded");
     const settledTimeoutMs =
       served?.kind === "settled" ? this.jobSettledTimeouts.get(pluginId) : undefined;
-    const duration = served?.kind === "migration"
-      ? this.migrationDeadlineMs
-      : served?.kind === "probe"
-        ? this.referenceProbeDeadlineMs
-        : served?.kind === "byte"
-          ? Math.min(this.dispatchDeadlineMs, BYTE_REQUEST_TIMEOUT_MS)
-          : settledTimeoutMs === undefined
-            ? this.dispatchDeadlineMs
-            : settledTimeoutMs + SETTLED_FLUSH_GRACE_MS;
+    const duration =
+      served?.kind === "migration"
+        ? this.migrationDeadlineMs
+        : served?.kind === "probe"
+          ? this.referenceProbeDeadlineMs
+          : served?.kind === "byte"
+            ? Math.min(this.dispatchDeadlineMs, BYTE_REQUEST_TIMEOUT_MS)
+            : settledTimeoutMs === undefined
+              ? this.dispatchDeadlineMs
+              : settledTimeoutMs + SETTLED_FLUSH_GRACE_MS;
     const now = performance.now();
     // Awaited re-entry cannot acquire a fresh budget beyond its still-serving parent.
     const inheritedBudget = this.hostCall.getStore()?.active
@@ -652,7 +681,10 @@ export class IsolateSupervisor implements IsolateRunner {
             this.ensureRunning(isolate),
             new Promise<never>((_, reject) => {
               startupDeadline = setTimeout(
-                () => reject(new IsolateDenial("unavailable", "isolate deadline expired before admission")),
+                () =>
+                  reject(
+                    new IsolateDenial("unavailable", "isolate deadline expired before admission"),
+                  ),
                 Math.max(0, expiresAt - performance.now()),
               );
             }),
@@ -674,7 +706,10 @@ export class IsolateSupervisor implements IsolateRunner {
       if (expiresAt <= performance.now())
         throw new IsolateDenial("unavailable", "isolate deadline expired before admission");
       if (isolate.validation !== null)
-        throw new IsolateDenial("unavailable", "profile validation requires exclusive guest access");
+        throw new IsolateDenial(
+          "unavailable",
+          "profile validation requires exclusive guest access",
+        );
       if (isolate.probe !== null)
         throw new IsolateDenial("unavailable", "reference data callback is active");
       if (isolate.pending.size >= 256)
@@ -743,18 +778,26 @@ export class IsolateSupervisor implements IsolateRunner {
   ): Promise<OwnerTurn | null> {
     if (
       (isolate.ref.hardenedContract ?? 1) < 12 ||
-      !(isolate.loaded?.probeReady || isolate.loaded?.reclaimReferences || isolate.loaded?.reconcileNativeTransfers)
-    ) return null;
+      !(
+        isolate.loaded?.probeReady ||
+        isolate.loaded?.reclaimReferences ||
+        isolate.loaded?.reconcileNativeTransfers
+      )
+    )
+      return null;
     const origin = this.hostCall.getStore();
     // This lineage exists only while the host is serving this owner's exact current call.
     // A guest-provided request id, or a detached continuation after that call, grants nothing.
     if (
-      served?.kind === "probe" && origin?.active &&
-      origin.isolate === isolate && origin.child === isolate.child &&
+      served?.kind === "probe" &&
+      origin?.active &&
+      origin.isolate === isolate &&
+      origin.child === isolate.child &&
       isolate.ownerTurn?.pending === origin.pending &&
       "id" in origin.pending.request &&
       isolate.pending.get(origin.pending.request.id) === origin.pending
-    ) return null;
+    )
+      return null;
     if (idleOnly && (isolate.ownerTurn !== null || isolate.waitingOwnerTurns.size !== 0))
       throw new IsolateDenial("unavailable", "exclusive request requires a drained guest");
     if (isolate.waitingOwnerTurns.size + isolate.pending.size >= 256)
@@ -780,7 +823,8 @@ export class IsolateSupervisor implements IsolateRunner {
     };
     isolate.waitingOwnerTurns.add(waiting);
     const deadline = setTimeout(
-      () => waiting.fail(new IsolateDenial("unavailable", "isolate deadline expired before admission")),
+      () =>
+        waiting.fail(new IsolateDenial("unavailable", "isolate deadline expired before admission")),
       Math.max(0, expiresAt - performance.now()),
     );
     const cancel = (): void => waiting.fail(new ByteTransferError("cancelled"));
@@ -1183,7 +1227,8 @@ export class IsolateSupervisor implements IsolateRunner {
         if (probe !== null) {
           if (
             pending?.served?.kind !== "probe" ||
-            (pending.request.t !== "probe_ready" && pending.request.t !== "reclaim_references" &&
+            (pending.request.t !== "probe_ready" &&
+              pending.request.t !== "reclaim_references" &&
               pending.request.t !== "reconcile_native_transfers") ||
             pending.request.id !== probe.id ||
             !(frame.method.startsWith("storage.") || frame.method.startsWith("database.")) ||
@@ -1295,24 +1340,25 @@ export class IsolateSupervisor implements IsolateRunner {
       if (
         frame.method.startsWith("references.") &&
         ((isolate.ref.hardenedContract ?? 1) < 12 ||
-          !(pending?.served?.kind === "dispatch" ||
-            (pending?.served?.kind === "byte" && frame.method === "references.requirePublished")) ||
+          !(
+            pending?.served?.kind === "dispatch" ||
+            (pending?.served?.kind === "byte" && frame.method === "references.requirePublished")
+          ) ||
           !pending?.admitted)
       )
         throw new Error(`slice_unavailable: ${frame.method}`);
-      if (
-        frame.method.startsWith("nativeTransfers.") &&
-        (isolate.ref.hardenedContract ?? 1) < 12
-      )
+      if (frame.method.startsWith("nativeTransfers.") && (isolate.ref.hardenedContract ?? 1) < 12)
         throw new Error(`slice_unavailable: ${frame.method}`);
       if (pending?.served?.kind === "byte") {
         if (
           pending.request.t !== "byte_request" ||
           isolate.pending.get(pending.request.id) !== pending ||
-          !(frame.method.startsWith("database.") ||
+          !(
+            frame.method.startsWith("database.") ||
             frame.method === "references.requirePublished" ||
             frame.method === "nativeTransfers.readChunk" ||
-            frame.method === "nativeTransfers.status")
+            frame.method === "nativeTransfers.status"
+          )
         )
           throw new ByteTransferError("unavailable");
         pending.served.ctx.assertCurrent();
@@ -1452,7 +1498,9 @@ export class IsolateSupervisor implements IsolateRunner {
           const origin: HostCall = { isolate, child, pending, active: true };
           const served = pending.served;
           try {
-            result = await this.hostCall.run(origin, () => serveCtxCall(frame.method, frame.args, served));
+            result = await this.hostCall.run(origin, () =>
+              serveCtxCall(frame.method, frame.args, served),
+            );
           } finally {
             origin.active = false;
           }

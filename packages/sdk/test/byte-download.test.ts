@@ -1,9 +1,17 @@
 import { afterEach, beforeEach, expect, spyOn, test, vi } from "bun:test";
 import {
-  ByteTransferError, MAX_BYTE_CHUNK_BYTES,
-  type ByteCarrierRequest, type ByteDownloadSource, type ByteDownloadStatus, type ByteReadChunk,
+  ByteTransferError,
+  MAX_BYTE_CHUNK_BYTES,
+  type ByteCarrierRequest,
+  type ByteDownloadSource,
+  type ByteDownloadStatus,
+  type ByteReadChunk,
 } from "@manifold/protocol";
-import { createByteDownloadHandle, sanitizeDownloadFilename, type ByteDownloadHandle } from "../src/byte-download.ts";
+import {
+  createByteDownloadHandle,
+  sanitizeDownloadFilename,
+  type ByteDownloadHandle,
+} from "../src/byte-download.ts";
 import type { ByteReadClient } from "../src/byte-read.ts";
 
 const handles: ByteDownloadHandle[] = [];
@@ -16,17 +24,23 @@ afterEach(() => {
 });
 async function source(bytes: Uint8Array<ArrayBuffer>): Promise<ByteDownloadSource> {
   return {
-    pluginId: "example.bytes", carrierId: "read", transferId: "transfer-one",
-    ref: { kind: "file", fileId: "file-one" }, bytes: bytes.length,
+    pluginId: "example.bytes",
+    carrierId: "read",
+    transferId: "transfer-one",
+    ref: { kind: "file", fileId: "file-one" },
+    bytes: bytes.length,
     sha256: Buffer.from(await crypto.subtle.digest("SHA-256", bytes)).toString("hex"),
   };
 }
 function clientFor(bytes: Uint8Array): ByteReadClient {
   return {
-    status: "open", on: () => () => {},
+    status: "open",
+    on: () => () => {},
     readByteChunk: async (_plugin, _carrier, request) => ({
-      data: bytes.slice(request.offset, request.offset + request.length), offset: request.offset,
-      eof: request.offset + request.length === bytes.length, leaseMs: 15_000,
+      data: bytes.slice(request.offset, request.offset + request.length),
+      offset: request.offset,
+      eof: request.offset + request.length === bytes.length,
+      leaseMs: 15_000,
     }),
   };
 }
@@ -35,9 +49,13 @@ function observe() {
   const statuses: ByteDownloadStatus[] = [];
   const handed: { url: string; filename: string }[] = [];
   return {
-    terminal: terminal.promise, statuses, handed,
+    terminal: terminal.promise,
+    statuses,
+    handed,
     observer: {
-      handoff: (url: string, filename: string) => { handed.push({ url, filename }); },
+      handoff: (url: string, filename: string) => {
+        handed.push({ url, filename });
+      },
       change: (status: ByteDownloadStatus) => {
         statuses.push(status);
         if (status.state !== "downloading") terminal.resolve(status);
@@ -50,12 +68,30 @@ test("empty content cannot become a download without authenticated carrier admis
   const bytes = new Uint8Array();
   const result = observe();
   const requests: ByteCarrierRequest[] = [];
-  handles.push(createByteDownloadHandle({ ...clientFor(bytes), readByteChunk: async (_plugin, _carrier, request) => {
-    requests.push(request);
-    throw new ByteTransferError("unavailable");
-  } }, await source(bytes), "empty.bin", result.observer));
+  handles.push(
+    createByteDownloadHandle(
+      {
+        ...clientFor(bytes),
+        readByteChunk: async (_plugin, _carrier, request) => {
+          requests.push(request);
+          throw new ByteTransferError("unavailable");
+        },
+      },
+      await source(bytes),
+      "empty.bin",
+      result.observer,
+    ),
+  );
   expect(await result.terminal).toEqual({ state: "unavailable", reason: "unavailable" });
-  expect(requests).toEqual([{ transferId: "transfer-one", ref: { kind: "file", fileId: "file-one" }, offset: 0, sequence: 0, length: 0 }]);
+  expect(requests).toEqual([
+    {
+      transferId: "transfer-one",
+      ref: { kind: "file", fileId: "file-one" },
+      offset: 0,
+      sequence: 0,
+      length: 0,
+    },
+  ]);
   expect(result.handed).toEqual([]);
 });
 
@@ -65,10 +101,18 @@ test("exact chunks and final current-authority continuation precede handoff of v
   const original = clientFor(bytes);
   const requests: ByteCarrierRequest[] = [];
   const result = observe();
-  const handle = createByteDownloadHandle({ ...original, readByteChunk: async (...args) => {
-    requests.push(args[2]);
-    return original.readByteChunk(...args);
-  } }, await source(bytes), "../payload.bin", result.observer);
+  const handle = createByteDownloadHandle(
+    {
+      ...original,
+      readByteChunk: async (...args) => {
+        requests.push(args[2]);
+        return original.readByteChunk(...args);
+      },
+    },
+    await source(bytes),
+    "../payload.bin",
+    result.observer,
+  );
   handles.push(handle);
   expect(await result.terminal).toEqual({ state: "complete" });
   expect(requests.map(({ offset, sequence, length }) => ({ offset, sequence, length }))).toEqual([
@@ -99,10 +143,23 @@ test("a digest mismatch or inconsistent EOF never dispatches browser bytes", asy
   for (const invalid of ["digest", "eof"] as const) {
     const result = observe();
     const client = clientFor(bytes);
-    if (invalid === "eof") client.readByteChunk = async (...args) => ({ ...await clientFor(bytes).readByteChunk(...args), eof: false });
-    handles.push(createByteDownloadHandle(client, invalid === "digest" ? { ...expected, sha256: "0".repeat(64) } : expected,
-      "data.bin", result.observer));
-    expect(await result.terminal).toEqual({ state: "unavailable", reason: invalid === "digest" ? "hash_mismatch" : "invalid" });
+    if (invalid === "eof")
+      client.readByteChunk = async (...args) => ({
+        ...(await clientFor(bytes).readByteChunk(...args)),
+        eof: false,
+      });
+    handles.push(
+      createByteDownloadHandle(
+        client,
+        invalid === "digest" ? { ...expected, sha256: "0".repeat(64) } : expected,
+        "data.bin",
+        result.observer,
+      ),
+    );
+    expect(await result.terminal).toEqual({
+      state: "unavailable",
+      reason: invalid === "digest" ? "hash_mismatch" : "invalid",
+    });
     expect(result.handed).toEqual([]);
   }
 });
@@ -112,10 +169,20 @@ test("revocation after acquisition but before handoff refuses, including an empt
     const result = observe();
     const client = clientFor(bytes);
     let reads = 0;
-    handles.push(createByteDownloadHandle({ ...client, readByteChunk: async (...args) => {
-      if (++reads === 2) throw new ByteTransferError("unavailable");
-      return client.readByteChunk(...args);
-    } }, await source(bytes), "data.bin", result.observer));
+    handles.push(
+      createByteDownloadHandle(
+        {
+          ...client,
+          readByteChunk: async (...args) => {
+            if (++reads === 2) throw new ByteTransferError("unavailable");
+            return client.readByteChunk(...args);
+          },
+        },
+        await source(bytes),
+        "data.bin",
+        result.observer,
+      ),
+    );
     expect(await result.terminal).toEqual({ state: "unavailable", reason: "unavailable" });
     expect(result.handed).toEqual([]);
   }
@@ -128,10 +195,18 @@ test("cancel and lifecycle disposal fence an uncooperative late carrier result",
     const result = observe();
     const started = Promise.withResolvers<AbortSignal>();
     const read = Promise.withResolvers<ByteReadChunk>();
-    const handle = createByteDownloadHandle({ ...clientFor(bytes), readByteChunk: (_plugin, _carrier, _request, signal) => {
-      started.resolve(signal!);
-      return read.promise;
-    } }, expected, "data.bin", result.observer);
+    const handle = createByteDownloadHandle(
+      {
+        ...clientFor(bytes),
+        readByteChunk: (_plugin, _carrier, _request, signal) => {
+          started.resolve(signal!);
+          return read.promise;
+        },
+      },
+      expected,
+      "data.bin",
+      result.observer,
+    );
     handles.push(handle);
     const signal = await started.promise;
     handle[method]();
@@ -153,10 +228,20 @@ test("a delayed response cannot mint a fresh lease even before its timer runs", 
   const expected = await source(bytes);
   const clock = Date.now();
   const result = observe();
-  handles.push(createByteDownloadHandle({ ...clientFor(bytes), readByteChunk: async () => {
-    spyOn(Date, "now").mockReturnValue(clock + 5001);
-    return { data: bytes, offset: 0, eof: true, leaseMs: 5000 };
-  } }, expected, "data.bin", result.observer));
+  handles.push(
+    createByteDownloadHandle(
+      {
+        ...clientFor(bytes),
+        readByteChunk: async () => {
+          spyOn(Date, "now").mockReturnValue(clock + 5001);
+          return { data: bytes, offset: 0, eof: true, leaseMs: 5000 };
+        },
+      },
+      expected,
+      "data.bin",
+      result.observer,
+    ),
+  );
   expect(await result.terminal).toEqual({ state: "unavailable", reason: "expired" });
   expect(result.handed).toEqual([]);
 });
@@ -164,10 +249,20 @@ test("a delayed response cannot mint a fresh lease even before its timer runs", 
 test("browser handoff failure revokes its URL and never announces completion", async () => {
   const result = observe();
   let attempted = "";
-  handles.push(createByteDownloadHandle(clientFor(new Uint8Array()), await source(new Uint8Array()), "data.bin", {
-    ...result.observer,
-    handoff: (url) => { attempted = url; throw new Error("browser unavailable"); },
-  }));
+  handles.push(
+    createByteDownloadHandle(
+      clientFor(new Uint8Array()),
+      await source(new Uint8Array()),
+      "data.bin",
+      {
+        ...result.observer,
+        handoff: (url) => {
+          attempted = url;
+          throw new Error("browser unavailable");
+        },
+      },
+    ),
+  );
   expect(await result.terminal).toEqual({ state: "unavailable", reason: "download_failed" });
   await expect(fetch(attempted)).rejects.toThrow();
 });
@@ -178,10 +273,14 @@ test("aggregate active readers refuse excess admission and release on cancellati
   const client = { ...clientFor(bytes), readByteChunk: () => new Promise<ByteReadChunk>(() => {}) };
   for (let count = 0; count < 4; count += 1)
     handles.push(createByteDownloadHandle(client, expected, "empty.bin", observe().observer));
-  expect(() => createByteDownloadHandle(client, expected, "empty.bin", observe().observer)).toThrow("busy");
+  expect(() => createByteDownloadHandle(client, expected, "empty.bin", observe().observer)).toThrow(
+    "busy",
+  );
   handles[0]!.cancel();
   const admitted = observe();
-  handles.push(createByteDownloadHandle(clientFor(bytes), expected, "empty.bin", admitted.observer));
+  handles.push(
+    createByteDownloadHandle(clientFor(bytes), expected, "empty.bin", admitted.observer),
+  );
   expect(await admitted.terminal).toEqual({ state: "complete" });
 });
 

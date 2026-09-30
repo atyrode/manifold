@@ -66,7 +66,13 @@ export function VocabularyRenderer({
 }: VocabularyRendererProps): ReactElement {
   return (
     <div
-      className={kind === "section" ? "mf-vocab is-section" : kind === "element" ? "mf-vocab is-element" : "mf-vocab"}
+      className={
+        kind === "section"
+          ? "mf-vocab is-section"
+          : kind === "element"
+            ? "mf-vocab is-element"
+            : "mf-vocab"
+      }
       data-tone={tone}
       role={tone === "danger" ? "alert" : undefined}
       tabIndex={kind === "element" ? 0 : undefined}
@@ -192,18 +198,48 @@ function Node({ node, onEvent }: NodeProps): ReactElement {
         />
       );
     case "fileInput":
-      return <FileInput label={node.label} accept={node.accept} multiple={node.multiple}
-        clipboard={node.clipboard} disabled={node.disabled} {...metaOf(node)}
-        onChange={(files) => onEvent(node.event, files)} />;
+      return (
+        <FileInput
+          label={node.label}
+          accept={node.accept}
+          multiple={node.multiple}
+          clipboard={node.clipboard}
+          disabled={node.disabled}
+          {...metaOf(node)}
+          onChange={(files) => onEvent(node.event, files)}
+        />
+      );
     case "byteImage":
-      return <ByteImage label={node.label} source={node.source} crop={node.crop} fit={node.fit} {...metaOf(node)}
-        onChange={node.event === undefined ? undefined : (state) => onEvent(node.event!, state)} />;
+      return (
+        <ByteImage
+          label={node.label}
+          source={node.source}
+          crop={node.crop}
+          fit={node.fit}
+          {...metaOf(node)}
+          onChange={node.event === undefined ? undefined : (state) => onEvent(node.event!, state)}
+        />
+      );
     case "byteDownload":
-      return <ByteDownload label={node.label} filename={node.filename} source={node.source} disabled={node.disabled} {...metaOf(node)}
-        onChange={node.event === undefined ? undefined : (state) => onEvent(node.event!, state)} />;
+      return (
+        <ByteDownload
+          label={node.label}
+          filename={node.filename}
+          source={node.source}
+          disabled={node.disabled}
+          {...metaOf(node)}
+          onChange={node.event === undefined ? undefined : (state) => onEvent(node.event!, state)}
+        />
+      );
     case "borrowedPanel":
-      return <BorrowedPanel panelId={node.panelId} input={node.input} {...metaOf(node)}
-        onResult={(result) => onEvent(node.event, result)} />;
+      return (
+        <BorrowedPanel
+          panelId={node.panelId}
+          input={node.input}
+          {...metaOf(node)}
+          onResult={(result) => onEvent(node.event, result)}
+        />
+      );
     case "list":
       return (
         <List

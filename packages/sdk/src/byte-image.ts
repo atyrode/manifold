@@ -1,5 +1,8 @@
 import {
-  ByteImageSourceSchema, ByteTransferError, type ByteImageReason, type ByteImageSource,
+  ByteImageSourceSchema,
+  ByteTransferError,
+  type ByteImageReason,
+  type ByteImageSource,
 } from "@manifold/protocol";
 import { inspectStaticRaster } from "./raster.ts";
 import { ByteReadLease, reserveByteRead, type ByteReadClient } from "./byte-read.ts";
@@ -52,8 +55,12 @@ export function createByteImageReadHandle(
     dispose();
     observer.unavailable(reason);
   };
-  try { lease = new ByteReadLease(client, source, fail); }
-  catch (error) { release(); throw error; }
+  try {
+    lease = new ByteReadLease(client, source, fail);
+  } catch (error) {
+    release();
+    throw error;
+  }
   let renewal: ReturnType<typeof setTimeout> | undefined;
   const reasonOf = (error: unknown): ByteImageReason =>
     error instanceof ByteTransferError ? error.reason : "invalid";
@@ -69,22 +76,40 @@ export function createByteImageReadHandle(
   let recheckAfterLoad = false;
   const recheck = (): void => {
     if (!live || checking) return;
-    if (blob === null) { recheckAfterLoad = true; return; }
+    if (blob === null) {
+      recheckAfterLoad = true;
+      return;
+    }
     clearTimeout(renewal);
     clearProjection();
     checking = true;
     // Completion's retained receipt permits this exact zero-payload continuation. It does
     // not reopen a read, refresh progress or silently replay its audited lifecycle action.
-    void lease.read(0).then(() => { if (live) project(); }).catch((error: unknown) => {
-      fail(reasonOf(error));
-    }).finally(() => { checking = false; });
+    void lease
+      .read(0)
+      .then(() => {
+        if (live) project();
+      })
+      .catch((error: unknown) => {
+        fail(reasonOf(error));
+      })
+      .finally(() => {
+        checking = false;
+      });
   };
   const load = async (): Promise<void> => {
     observer.loading();
     const bytes = await lease.acquire();
-    if (bytes === null) { fail("hash_mismatch"); return; }
-    try { inspectStaticRaster(bytes, source.mediaType); }
-    catch { fail("unsupported_image"); return; }
+    if (bytes === null) {
+      fail("hash_mismatch");
+      return;
+    }
+    try {
+      inspectStaticRaster(bytes, source.mediaType);
+    } catch {
+      fail("unsupported_image");
+      return;
+    }
     lease.current();
     if (recheckAfterLoad) await lease.read(0);
     lease.current();
@@ -92,10 +117,14 @@ export function createByteImageReadHandle(
     lease.finishAcquisition();
     project();
   };
-  queueMicrotask(() => { if (live) void load().catch((error: unknown) => fail(reasonOf(error))); });
+  queueMicrotask(() => {
+    if (live) void load().catch((error: unknown) => fail(reasonOf(error)));
+  });
   return {
     recheck,
-    close() { if (live) dispose(); },
+    close() {
+      if (live) dispose();
+    },
     refuse: fail,
   };
 }

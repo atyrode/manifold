@@ -19,7 +19,11 @@ import type { ActionHttpOptions } from "./action-http.ts";
 
 export type ByteHttpOptions = Pick<ActionHttpOptions, "origin" | "token" | "signal" | "timeoutMs">;
 
-async function boundedBody(response: Response, limit: number, signal: AbortSignal): Promise<Uint8Array> {
+async function boundedBody(
+  response: Response,
+  limit: number,
+  signal: AbortSignal,
+): Promise<Uint8Array> {
   const declared = response.headers.get("content-length");
   if (declared !== null && (!/^\d+$/.test(declared) || Number(declared) > limit))
     throw new ByteTransferError("invalid");
@@ -37,7 +41,8 @@ async function boundedBody(response: Response, limit: number, signal: AbortSigna
         done = true;
         break;
       }
-      if (part.value.byteLength > result.byteLength - length) throw new ByteTransferError("invalid");
+      if (part.value.byteLength > result.byteLength - length)
+        throw new ByteTransferError("invalid");
       result.set(part.value, length);
       length += part.value.byteLength;
     }
@@ -94,7 +99,8 @@ async function exchange<T>(
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > BYTE_REQUEST_TIMEOUT_MS)
     throw new ByteTransferError("invalid");
   const timeout = AbortSignal.timeout(timeoutMs);
-  const signal = options.signal === undefined ? timeout : AbortSignal.any([timeout, options.signal]);
+  const signal =
+    options.signal === undefined ? timeout : AbortSignal.any([timeout, options.signal]);
   const headers = new Headers({ authorization: `Bearer ${options.token}` });
   if (data !== undefined) headers.set("content-type", "application/octet-stream");
   try {
@@ -120,7 +126,9 @@ async function exchange<T>(
         throw new ByteTransferError(
           failure.success
             ? failure.data.error
-            : data === undefined ? "unavailable" : "outcome_unknown",
+            : data === undefined
+              ? "unavailable"
+              : "outcome_unknown",
         );
       }
       if (response.headers.get("cache-control") !== "no-store")
@@ -174,29 +182,36 @@ export function readByteChunk(
   carrierId: string,
   input: ByteCarrierRequest,
 ): Promise<ByteReadChunk> {
-  return exchange(options, pluginId, carrierId, input, undefined, async (response, signal, request) => {
-    const rawOffset = response.headers.get(BYTE_OFFSET_HEADER);
-    const rawLease = response.headers.get(BYTE_LEASE_HEADER);
-    const rawEof = response.headers.get(BYTE_EOF_HEADER);
-    if (
-      rawOffset === null ||
-      !/^\d+$/.test(rawOffset) ||
-      rawLease === null ||
-      !/^\d+$/.test(rawLease) ||
-      (rawEof !== "true" && rawEof !== "false") ||
-      response.headers.get("content-type") !== "application/octet-stream"
-    )
-      throw new ByteTransferError("invalid");
-    const receipt = ByteReadReceiptSchema.safeParse({
-      offset: Number(rawOffset),
-      eof: rawEof === "true",
-      leaseMs: Number(rawLease),
-    });
-    if (!receipt.success || receipt.data.offset !== request.offset)
-      throw new ByteTransferError("invalid");
-    const data = await boundedBody(response, request.length, signal);
-    if (data.byteLength === 0 && request.length !== 0 && !receipt.data.eof)
-      throw new ByteTransferError("invalid");
-    return { ...receipt.data, data };
-  });
+  return exchange(
+    options,
+    pluginId,
+    carrierId,
+    input,
+    undefined,
+    async (response, signal, request) => {
+      const rawOffset = response.headers.get(BYTE_OFFSET_HEADER);
+      const rawLease = response.headers.get(BYTE_LEASE_HEADER);
+      const rawEof = response.headers.get(BYTE_EOF_HEADER);
+      if (
+        rawOffset === null ||
+        !/^\d+$/.test(rawOffset) ||
+        rawLease === null ||
+        !/^\d+$/.test(rawLease) ||
+        (rawEof !== "true" && rawEof !== "false") ||
+        response.headers.get("content-type") !== "application/octet-stream"
+      )
+        throw new ByteTransferError("invalid");
+      const receipt = ByteReadReceiptSchema.safeParse({
+        offset: Number(rawOffset),
+        eof: rawEof === "true",
+        leaseMs: Number(rawLease),
+      });
+      if (!receipt.success || receipt.data.offset !== request.offset)
+        throw new ByteTransferError("invalid");
+      const data = await boundedBody(response, request.length, signal);
+      if (data.byteLength === 0 && request.length !== 0 && !receipt.data.eof)
+        throw new ByteTransferError("invalid");
+      return { ...receipt.data, data };
+    },
+  );
 }

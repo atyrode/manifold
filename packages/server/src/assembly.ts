@@ -12,10 +12,19 @@ import { eventsHandlers } from "@manifold-plugin/events/server";
 import { filesActions, filesManifest } from "@manifold-plugin/files";
 import { filesServerBuild } from "@manifold-plugin/files/build";
 import {
-  filesByteCarriers, filesHandlers, filesLifecycle, filesMigrations,
-  filesProbeReady, filesReclaimReferences, filesReconcileNativeTransfers,
+  filesByteCarriers,
+  filesHandlers,
+  filesLifecycle,
+  filesMigrations,
+  filesProbeReady,
+  filesReclaimReferences,
+  filesReconcileNativeTransfers,
 } from "@manifold-plugin/files/server";
-import { filesImagesActions, filesImagesElements, filesImagesManifest } from "@manifold-plugin/files/images";
+import {
+  filesImagesActions,
+  filesImagesElements,
+  filesImagesManifest,
+} from "@manifold-plugin/files/images";
 import { filesImagesHandlers } from "@manifold-plugin/files/images/server";
 import { keysActions, keysManifest } from "@manifold-plugin/keys";
 import { keysHandlers } from "@manifold-plugin/keys/server";
@@ -129,13 +138,20 @@ export const SERVER_PLUGIN_DEFS: readonly ServerPluginDef[] = [
   { manifest: machinesManifest, actions: machinesActions, handlers: machinesHandlers },
   { manifest: textManifest, actions: textActions, handlers: textHandlers, elements: textElements },
   {
-    manifest: filesManifest, actions: filesActions, handlers: filesHandlers,
-    lifecycle: filesLifecycle, migrations: filesMigrations, byteCarriers: filesByteCarriers,
-    probeReady: filesProbeReady, reclaimReferences: filesReclaimReferences,
+    manifest: filesManifest,
+    actions: filesActions,
+    handlers: filesHandlers,
+    lifecycle: filesLifecycle,
+    migrations: filesMigrations,
+    byteCarriers: filesByteCarriers,
+    probeReady: filesProbeReady,
+    reclaimReferences: filesReclaimReferences,
     reconcileNativeTransfers: filesReconcileNativeTransfers,
   },
   {
-    manifest: filesImagesManifest, actions: filesImagesActions, handlers: filesImagesHandlers,
+    manifest: filesImagesManifest,
+    actions: filesImagesActions,
+    handlers: filesImagesHandlers,
     elements: filesImagesElements,
   },
   /*

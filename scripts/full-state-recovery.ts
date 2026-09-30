@@ -21,10 +21,16 @@ import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import {
-  MAX_CHECKPOINT_BYTES, MAX_CHECKPOINT_FILES,
-  retainedRecoveryFiles, inspectRecoveryCapacity, closedRecoveryImages,
+  MAX_CHECKPOINT_BYTES,
+  MAX_CHECKPOINT_FILES,
+  retainedRecoveryFiles,
+  inspectRecoveryCapacity,
+  closedRecoveryImages,
 } from "../packages/server/src/recovery-budget.ts";
-import { waitForRecoveryCapture, withRecoveryCaptureFence } from "../packages/server/src/recovery-gate.ts";
+import {
+  waitForRecoveryCapture,
+  withRecoveryCaptureFence,
+} from "../packages/server/src/recovery-gate.ts";
 
 const ARCHIVE_MAGIC = Buffer.from("MFRDATA1");
 const ENVELOPE_MAGIC = Buffer.from("MFRSEAL1");
@@ -151,8 +157,10 @@ function recoveryKey(checkpointId: string, salt: Uint8Array): Buffer {
 function assertDatabase(path: string): void {
   // Only freshly copied/extracted, closed images reach this verifier. Ordinary readonly
   // WAL opens create sidecars, which would invalidate the migration recovery contract.
-  const database = new Database(`${pathToFileURL(path).href}?immutable=1`,
-    sqliteConstants.SQLITE_OPEN_READONLY | sqliteConstants.SQLITE_OPEN_URI);
+  const database = new Database(
+    `${pathToFileURL(path).href}?immutable=1`,
+    sqliteConstants.SQLITE_OPEN_READONLY | sqliteConstants.SQLITE_OPEN_URI,
+  );
   try {
     const rows = database.query("PRAGMA integrity_check").all() as Record<string, unknown>[];
     if (rows.length !== 1 || Object.values(rows[0] ?? {})[0] !== "ok")
@@ -203,7 +211,11 @@ function copyDatabase(source: string, destination: string, limit: number): Buffe
   return readBoundedFile(destination, limit);
 }
 
-function capturedFiles(root: string, staging: string, closedImages: ReadonlySet<string>): CapturedFile[] {
+function capturedFiles(
+  root: string,
+  staging: string,
+  closedImages: ReadonlySet<string>,
+): CapturedFile[] {
   mkdirSync(staging, { mode: 0o700 });
   const files: CapturedFile[] = [];
   let total = 0;
@@ -225,15 +237,21 @@ function capturedFiles(root: string, staging: string, closedImages: ReadonlySet<
         : readBoundedFile(absolute, MAX_CHECKPOINT_BYTES - total);
       if (!snapshot) {
         const after = statSync(absolute);
-        if (before.dev !== after.dev || before.ino !== after.ino ||
-            before.size !== after.size || before.mtimeMs !== after.mtimeMs)
+        if (
+          before.dev !== after.dev ||
+          before.ino !== after.ino ||
+          before.size !== after.size ||
+          before.mtimeMs !== after.mtimeMs
+        )
           fail(`state entry changed during capture: ${relativePath}`);
       }
       total += data.byteLength;
       if (total > MAX_CHECKPOINT_BYTES) fail("checkpoint exceeds the 256 MiB bound");
       files.push({ path: relativePath, bytes: data.byteLength, sha256: sha256(data), data });
     }
-  } finally { rmSync(staging, { recursive: true, force: true }); }
+  } finally {
+    rmSync(staging, { recursive: true, force: true });
+  }
   if (files[0]?.path !== "manifold.db") fail("checkpoint has no manifold.db");
   return files;
 }
@@ -250,22 +268,37 @@ async function captureImage(checkpointId: string, output: string): Promise<void>
       const admission = inspectRecoveryCapacity(root, main, { scratchDir: output });
       if (!admission.ok) fail(`${admission.reason}: checkpoint admission refused`);
       closedImages = closedRecoveryImages(main);
-    } finally { main.close(); }
+    } finally {
+      main.close();
+    }
     const files = capturedFiles(root, join(output, "copies"), closedImages);
-    try { return archive(checkpointId, sourceBuild, files); }
-    finally { for (const file of files) file.data.fill(0); }
+    try {
+      return archive(checkpointId, sourceBuild, files);
+    } finally {
+      for (const file of files) file.data.fill(0);
+    }
   });
   try {
-    const header = JSON.parse(plaintext.subarray(
-      ARCHIVE_MAGIC.byteLength + HEADER_BYTES,
-      ARCHIVE_MAGIC.byteLength + HEADER_BYTES + plaintext.readUInt32BE(ARCHIVE_MAGIC.byteLength),
-    ).toString("utf8")) as ArchiveHeader;
+    const header = JSON.parse(
+      plaintext
+        .subarray(
+          ARCHIVE_MAGIC.byteLength + HEADER_BYTES,
+          ARCHIVE_MAGIC.byteLength +
+            HEADER_BYTES +
+            plaintext.readUInt32BE(ARCHIVE_MAGIC.byteLength),
+        )
+        .toString("utf8"),
+    ) as ArchiveHeader;
     const sealed = sealCheckpoint(checkpointId, sourceBuild, plaintext);
     try {
       writeFileSync(join(output, "checkpoint"), sealed, { mode: 0o600, flag: "wx" });
       writeFileSync(join(output, "captured-at"), header.capturedAt, { mode: 0o600, flag: "wx" });
-    } finally { sealed.fill(0); }
-  } finally { plaintext.fill(0); }
+    } finally {
+      sealed.fill(0);
+    }
+  } finally {
+    plaintext.fill(0);
+  }
 }
 
 /** Parent watchdog can kill VACUUM even while the child's JS event loop is blocked. */
@@ -276,15 +309,22 @@ export async function captureCheckpointImage(
   let child: Subprocess<"ignore", "ignore", "pipe"> | undefined;
   try {
     const command = Bun.main.startsWith("/$bunfs/")
-      ? [process.execPath] : [process.execPath, import.meta.path];
+      ? [process.execPath]
+      : [process.execPath, import.meta.path];
     child = Bun.spawn([...command, "capture-image", checkpointId, staging], {
-      env: process.env, stdin: "ignore", stdout: "ignore", stderr: "pipe",
+      env: process.env,
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "pipe",
     });
     await waitForRecoveryCapture(child);
     const capturedAt = readBoundedFile(join(staging, "captured-at"), 32).toString("utf8");
     if (!/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(capturedAt))
       fail("invalid capture process metadata");
-    return { sealed: readBoundedFile(join(staging, "checkpoint"), MAX_CHECKPOINT_BYTES), capturedAt };
+    return {
+      sealed: readBoundedFile(join(staging, "checkpoint"), MAX_CHECKPOINT_BYTES),
+      capturedAt,
+    };
   } finally {
     if (child !== undefined && child.exitCode === null && child.signalCode === null) {
       child.kill("SIGKILL");
@@ -381,7 +421,8 @@ function parseHeader(value: unknown): ArchiveHeader {
     typeof row.checkpointId !== "string" ||
     typeof row.sourceBuild !== "string" ||
     typeof row.capturedAt !== "string" ||
-    !Array.isArray(row.files) || row.files.length > MAX_CHECKPOINT_FILES
+    !Array.isArray(row.files) ||
+    row.files.length > MAX_CHECKPOINT_FILES
   )
     fail("checkpoint header is invalid");
   const files = row.files.map((candidate): ArchiveFile => {
@@ -599,7 +640,12 @@ async function restore(
 
 async function main(): Promise<void> {
   const [command, checkpointId, digest, ...rest] = process.argv.slice(2);
-  if (command === "capture-image" && checkpointId !== undefined && digest !== undefined && rest.length === 0)
+  if (
+    command === "capture-image" &&
+    checkpointId !== undefined &&
+    digest !== undefined &&
+    rest.length === 0
+  )
     return captureImage(checkpointId, digest);
   if (rest.length !== 0 || checkpointId === undefined)
     fail("usage: full-state-recovery <capture ID | verify ID SHA256 | restore ID SHA256>");

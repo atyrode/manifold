@@ -1695,14 +1695,16 @@ describe("owned reference assembly", () => {
         capabilities: [`${id}:read`, `${id}:create`, `${id}:delete`, `${id}:share`],
         contributes: { references: [declaration] },
       }),
-      actions: [defineAction({
-        name: "resolve",
-        title: "Resolve",
-        caps: [`${id}:read`],
-        requirements: [{ cap: `${id}:read`, target: ["ref"] }],
-        input: z.strictObject({ ref: PluginOwnedRefSchema }),
-        result: z.strictObject({ title: z.string().max(128) }),
-      })],
+      actions: [
+        defineAction({
+          name: "resolve",
+          title: "Resolve",
+          caps: [`${id}:read`],
+          requirements: [{ cap: `${id}:read`, target: ["ref"] }],
+          input: z.strictObject({ ref: PluginOwnedRefSchema }),
+          result: z.strictObject({ title: z.string().max(128) }),
+        }),
+      ],
     };
   }
 
@@ -1711,18 +1713,26 @@ describe("owned reference assembly", () => {
     def.manifest.contributes.references![0]!.receiptAction = "receipt";
     return {
       ...def,
-      actions: [...def.actions, defineAction({
-        name: "receipt",
-        title: "Terminal receipt",
-        caps: [],
-        input: ReferenceReceiptRequestSchema,
-        result: ReferenceTerminalReceiptSchema,
-      })],
+      actions: [
+        ...def.actions,
+        defineAction({
+          name: "receipt",
+          title: "Terminal receipt",
+          caps: [],
+          input: ReferenceReceiptRequestSchema,
+          result: ReferenceTerminalReceiptSchema,
+        }),
+      ],
     };
   }
 
   test("incomplete creator grants prevent an owner from entering the assembly", () => {
-    for (const missing of ["vendor.owner:read", "vendor.owner:delete", "vendor.owner:share", "vendor.owner:approve"]) {
+    for (const missing of [
+      "vendor.owner:read",
+      "vendor.owner:delete",
+      "vendor.owner:share",
+      "vendor.owner:approve",
+    ]) {
       const def = owner();
       def.manifest.capabilities.push("vendor.owner:approve");
       const declaration = def.manifest.contributes.references![0]!;
@@ -1751,7 +1761,10 @@ describe("owned reference assembly", () => {
       [resolve],
       [resolve, { ...receipt, scope: "container" as const }],
       [resolve, { ...receipt, caps: ["vendor.owner:delete" as const] }],
-      [resolve, { ...receipt, requirements: [{ cap: "vendor.owner:read" as const, target: ["ref"] }] }],
+      [
+        resolve,
+        { ...receipt, requirements: [{ cap: "vendor.owner:read" as const, target: ["ref"] }] },
+      ],
     ]) {
       expect(() => assembleRoster([{ ...def, actions }], NONE)).toThrow(AssemblyError);
     }
@@ -1770,8 +1783,9 @@ describe("owned reference assembly", () => {
       z.strictObject({ ref: PluginOwnedRefSchema, access: z.string().optional() }),
       ReferenceReceiptRequestSchema.transform(() => ({ ref: { kind: "file", fileId: "other" } })),
     ]) {
-      expect(() => assembleRoster([{ ...def, actions: [def.actions[0]!, { ...receipt, input }] }], NONE))
-        .toThrow(AssemblyError);
+      expect(() =>
+        assembleRoster([{ ...def, actions: [def.actions[0]!, { ...receipt, input }] }], NONE),
+      ).toThrow(AssemblyError);
     }
   });
 
@@ -1782,23 +1796,33 @@ describe("owned reference assembly", () => {
       ReferenceTerminalReceiptSchema.extend({ ref: ManifoldRefSchema }),
       ReferenceTerminalReceiptSchema.extend({ preparationId: z.string() }),
       ReferenceTerminalReceiptSchema.extend({ preparationId: z.string().min(1).max(129) }),
-      ReferenceTerminalReceiptSchema.extend({ preparationId: z.string().min(1).max(128).optional() }),
+      ReferenceTerminalReceiptSchema.extend({
+        preparationId: z.string().min(1).max(128).optional(),
+      }),
       ReferenceTerminalReceiptSchema.extend({ state: z.enum(["aborted", "deleted", "published"]) }),
       ReferenceTerminalReceiptSchema.extend({ title: z.string().max(128).optional() }),
       z.looseObject(ReferenceTerminalReceiptSchema.shape),
     ]) {
-      expect(() => assembleRoster([{ ...def, actions: [def.actions[0]!, { ...receipt, result }] }], NONE))
-        .toThrow(AssemblyError);
+      expect(() =>
+        assembleRoster([{ ...def, actions: [def.actions[0]!, { ...receipt, result }] }], NONE),
+      ).toThrow(AssemblyError);
     }
     const reordered = z.strictObject({
       state: z.enum(["deleted", "aborted"]),
       preparationId: z.string().min(1).max(128).describe("Terminal preparation"),
       ref: z.strictObject({ fileId: z.string().min(1).max(128), kind: z.literal("file") }),
     });
-    expect(assembleRoster([{
-      ...def,
-      actions: [def.actions[0]!, { ...receipt, result: reordered }],
-    }], NONE).referenceKinds.get("file")?.declaration.receiptAction).toBe("receipt");
+    expect(
+      assembleRoster(
+        [
+          {
+            ...def,
+            actions: [def.actions[0]!, { ...receipt, result: reordered }],
+          },
+        ],
+        NONE,
+      ).referenceKinds.get("file")?.declaration.receiptAction,
+    ).toBe("receipt");
   });
 
   test("disabled owners retain their interpreter claim and runtime enablement stays explicit", () => {
@@ -1807,9 +1831,14 @@ describe("owned reference assembly", () => {
     expect(assembly.referenceKinds.get("file")?.plugin).toBe(def.manifest.id);
     expect(assembly.enabled(def.manifest.id)).toBe(false);
     const other = owner("vendor.other");
-    for (const defs of [[def, other], [other, def]]) {
+    for (const defs of [
+      [def, other],
+      [other, def],
+    ]) {
       expect(() => assembleRoster(defs, new Set([def.manifest.id]))).toThrow(AssemblyError);
-      expect(() => assembleRoster(defs, new Set(defs.map((candidate) => candidate.manifest.id)))).toThrow(AssemblyError);
+      expect(() =>
+        assembleRoster(defs, new Set(defs.map((candidate) => candidate.manifest.id))),
+      ).toThrow(AssemblyError);
     }
   });
 
@@ -1819,7 +1848,9 @@ describe("owned reference assembly", () => {
     for (const disabled of [NONE, new Set([squatter.manifest.id])]) {
       expect(() => assembleRoster([squatter], disabled, env)).toThrow(AssemblyError);
     }
-    expect(assembleRoster([owner()], NONE, env).referenceKinds.get("file")?.plugin).toBe("vendor.owner");
+    expect(assembleRoster([owner()], NONE, env).referenceKinds.get("file")?.plugin).toBe(
+      "vendor.owner",
+    );
   });
 
   test("a resolver must exist and spend declared read at its workspace-grade canonical target", () => {
@@ -1849,15 +1880,23 @@ describe("owned reference assembly", () => {
       z.strictObject({ ref: ManifoldRefSchema }),
       z.strictObject({ ref: PluginOwnedRefSchema, extra: z.string().optional() }),
       z.strictObject({ ref: PluginOwnedRefSchema, title: z.string().optional() }),
-      z.strictObject({ ref: PluginOwnedRefSchema }).transform(() => ({ ref: { kind: "file", fileId: "other" } })),
+      z
+        .strictObject({ ref: PluginOwnedRefSchema })
+        .transform(() => ({ ref: { kind: "file", fileId: "other" } })),
     ]) {
-      expect(() => assembleRoster([{ ...def, actions: [{ ...resolve, input }] }], NONE)).toThrow(AssemblyError);
+      expect(() => assembleRoster([{ ...def, actions: [{ ...resolve, input }] }], NONE)).toThrow(
+        AssemblyError,
+      );
     }
     const reordered = z.strictObject({
       ref: z.strictObject({ fileId: z.string().min(1).max(128), kind: z.literal("file") }),
     });
-    expect(assembleRoster([{ ...def, actions: [{ ...resolve, input: reordered }] }], NONE)
-      .referenceKinds.get("file")?.plugin).toBe(def.manifest.id);
+    expect(
+      assembleRoster(
+        [{ ...def, actions: [{ ...resolve, input: reordered }] }],
+        NONE,
+      ).referenceKinds.get("file")?.plugin,
+    ).toBe(def.manifest.id);
   });
   test("resolver results require a bounded title, with explicit existence for nullable titles", () => {
     const def = owner();
@@ -1870,10 +1909,15 @@ describe("owned reference assembly", () => {
       z.strictObject({ title: z.string().max(128).nullable() }),
       z.strictObject({ exists: z.boolean() }),
     ]) {
-      expect(() => assembleRoster([{ ...def, actions: [{ ...resolve, result }] }], NONE)).toThrow(AssemblyError);
+      expect(() => assembleRoster([{ ...def, actions: [{ ...resolve, result }] }], NONE)).toThrow(
+        AssemblyError,
+      );
     }
     const result = z.strictObject({ exists: z.boolean(), title: z.string().max(512).nullable() });
-    expect(assembleRoster([{ ...def, actions: [{ ...resolve, result }] }], NONE)
-      .referenceKinds.get("file")?.plugin).toBe(def.manifest.id);
+    expect(
+      assembleRoster([{ ...def, actions: [{ ...resolve, result }] }], NONE).referenceKinds.get(
+        "file",
+      )?.plugin,
+    ).toBe(def.manifest.id);
   });
 });

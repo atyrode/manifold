@@ -1,4 +1,9 @@
-import { PluginManifestSchema, PluginOwnedRefSchema, type ManifoldRef, type PluginManifest } from "@manifold/protocol";
+import {
+  PluginManifestSchema,
+  PluginOwnedRefSchema,
+  type ManifoldRef,
+  type PluginManifest,
+} from "@manifold/protocol";
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 import {
@@ -147,28 +152,45 @@ describe("emission is refused unless it was declared", () => {
   test("a declared vocabulary cannot impersonate the owner of a file topic", () => {
     const files: PluginDef = {
       manifest: PluginManifestSchema.parse({
-        id: "vendor.files", version: "1.0.0", title: "Files", description: "",
-        capabilities: ["vendor.files:create", "vendor.files:read", "vendor.files:delete", "vendor.files:share"],
+        id: "vendor.files",
+        version: "1.0.0",
+        title: "Files",
+        description: "",
+        capabilities: [
+          "vendor.files:create",
+          "vendor.files:read",
+          "vendor.files:delete",
+          "vendor.files:share",
+        ],
         contributes: {
           events: [{ id: "file_changed", title: "File changed" }],
-          references: [{
-            kind: "file", resolveAction: "resolve", readCapability: "vendor.files:read",
-            createCapability: "vendor.files:create", deleteCapability: "vendor.files:delete",
-            creatorCaps: ["vendor.files:read", "vendor.files:delete", "vendor.files:share"],
-            sharing: {
-              grantorCapability: "vendor.files:share",
-              prerequisites: ["vendor.files:read", "vendor.files:share"],
-              grantableCaps: ["vendor.files:read"],
+          references: [
+            {
+              kind: "file",
+              resolveAction: "resolve",
+              readCapability: "vendor.files:read",
+              createCapability: "vendor.files:create",
+              deleteCapability: "vendor.files:delete",
+              creatorCaps: ["vendor.files:read", "vendor.files:delete", "vendor.files:share"],
+              sharing: {
+                grantorCapability: "vendor.files:share",
+                prerequisites: ["vendor.files:read", "vendor.files:share"],
+                grantableCaps: ["vendor.files:read"],
+              },
             },
-          }],
+          ],
         },
       }),
-      actions: [defineAction({
-        name: "resolve", title: "Resolve", caps: ["vendor.files:read"],
-        requirements: [{ cap: "vendor.files:read", target: ["ref"] }],
-        input: z.strictObject({ ref: PluginOwnedRefSchema }),
-        result: z.strictObject({ title: z.string().max(128) }),
-      })],
+      actions: [
+        defineAction({
+          name: "resolve",
+          title: "Resolve",
+          caps: ["vendor.files:read"],
+          requirements: [{ cap: "vendor.files:read", target: ["ref"] }],
+          input: z.strictObject({ ref: PluginOwnedRefSchema }),
+          result: z.strictObject({ title: z.string().max(128) }),
+        }),
+      ],
     };
     const foreign: PluginDef = {
       manifest: manifest({
@@ -182,8 +204,9 @@ describe("emission is refused unless it was declared", () => {
     expect(live.enabled("vendor.foreign")).toBe(true);
     expect(emitterMayEmit(live, "vendor.files", file, "file_changed")).toBe(true);
     expect(emitterMayEmit(live, "vendor.foreign", file, "file_changed")).toBe(false);
-    expect(emitterMayEmit(assembleRoster([foreign], NONE), "vendor.foreign", file, "file_changed"))
-      .toBe(false);
+    expect(
+      emitterMayEmit(assembleRoster([foreign], NONE), "vendor.foreign", file, "file_changed"),
+    ).toBe(false);
   });
 
   test("an assembly that declares nothing refuses every emission", () => {

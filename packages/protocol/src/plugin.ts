@@ -160,7 +160,8 @@ export const OwnedReferenceDeclarationSchema = z
     }),
   })
   .check((ctx) => {
-    const { sharing, creatorCaps, readCapability, deleteCapability, resolveAction, receiptAction } = ctx.value;
+    const { sharing, creatorCaps, readCapability, deleteCapability, resolveAction, receiptAction } =
+      ctx.value;
     if (
       !creatorCaps.includes(readCapability) ||
       !creatorCaps.includes(deleteCapability) ||
@@ -735,7 +736,12 @@ export const DatabaseRecoveryAdmissionSchema = z.discriminatedUnion("ok", [
   z.strictObject({ ok: z.literal(true) }),
   z.strictObject({
     ok: z.literal(false),
-    reason: z.enum(["recovery_unavailable", "backup_capacity", "storage_capacity", "database_busy"]),
+    reason: z.enum([
+      "recovery_unavailable",
+      "backup_capacity",
+      "storage_capacity",
+      "database_busy",
+    ]),
   }),
 ]);
 export type DatabaseRecoveryAdmission = z.infer<typeof DatabaseRecoveryAdmissionSchema>;
@@ -904,10 +910,8 @@ export const PluginManifestSchema = z
         ...declaration.sharing.grantableCaps,
       ];
       for (const cap of new Set(caps)) {
-        if (
-          pluginCapNamespace(cap) === ctx.value.id &&
-          ctx.value.capabilities.includes(cap)
-        ) continue;
+        if (pluginCapNamespace(cap) === ctx.value.id && ctx.value.capabilities.includes(cap))
+          continue;
         ctx.issues.push({
           code: "custom",
           input: cap,

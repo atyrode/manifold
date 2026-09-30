@@ -4071,26 +4071,26 @@ result, without importing the Files upload/delivery workflow or sending Enter.
 The following `UiNode` kinds are emitted by the portable `@manifold/ui` components
 (`UiNodeSchema` and `GET /api/protocol` publish the wire):
 
-| Wire kind | Portable JSX              | Accepted meaning                                                                                       |
-| --------- | ------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `box`     | `Stack`, `Cluster`        | column / wrapping row; `align`, `justify`, `grow`, `wrap`; adaptive default gap or explicit `0`–`4rem` |
-| `heading` | `Heading`                 | text, heading level 1–3 (default 2)                                                                    |
-| `text`    | `Text`                    | text, tone, `mono`, `wrap`, `strong`, `grow`                                                           |
-| `code`    | `Code`                    | preformatted text (up to 64 KiB)                                                                       |
-| `badge`   | `Badge`                   | text and tone                                                                                          |
-| `icon`    | `ControlIcon`, `ItemIcon` | named control/item glyph and optional size                                                             |
-| `divider` | `Divider`                 | horizontal separator                                                                                   |
-| `spinner` | `Spinner`                 | optional progress label                                                                                |
-| `button`  | `Button`                  | label, tone, disabled, optional icon; `onClick`, `onBlur`, public `data-action`                        |
-| `select`  | `Select`                  | controlled string/null, bounded `{ value, label }` options, scalar `onChange`, `onBlur`                |
-| `input`   | `Input`                   | text, label, placeholder, `mono`, disabled; scalar `onChange`, `onBlur`                                |
-| `toggle`  | `Toggle`                  | boolean, label, disabled; scalar `onChange`, `onBlur`                                                  |
-| `fileInput` | `FileInput` | explicit bounded file/clipboard selection; owner-local descriptors, never paths or raw files |
-| `byteImage` | `ByteImage` | authenticated, bounded raster projection with crop/fit presentation and status |
-| `byteDownload` | `ByteDownload` | explicit authenticated browser download, cancellation and truthful status |
-| `borrowedPanel` | `BorrowedPanel` | registered owner intake; bounded JSON input and one result, no sibling implementation import |
-| `list`    | `List`                    | keyed rows with primary/secondary text and optional `onClick`                                          |
-| `empty`   | `Empty`                   | empty-state text                                                                                       |
+| Wire kind       | Portable JSX              | Accepted meaning                                                                                       |
+| --------------- | ------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `box`           | `Stack`, `Cluster`        | column / wrapping row; `align`, `justify`, `grow`, `wrap`; adaptive default gap or explicit `0`–`4rem` |
+| `heading`       | `Heading`                 | text, heading level 1–3 (default 2)                                                                    |
+| `text`          | `Text`                    | text, tone, `mono`, `wrap`, `strong`, `grow`                                                           |
+| `code`          | `Code`                    | preformatted text (up to 64 KiB)                                                                       |
+| `badge`         | `Badge`                   | text and tone                                                                                          |
+| `icon`          | `ControlIcon`, `ItemIcon` | named control/item glyph and optional size                                                             |
+| `divider`       | `Divider`                 | horizontal separator                                                                                   |
+| `spinner`       | `Spinner`                 | optional progress label                                                                                |
+| `button`        | `Button`                  | label, tone, disabled, optional icon; `onClick`, `onBlur`, public `data-action`                        |
+| `select`        | `Select`                  | controlled string/null, bounded `{ value, label }` options, scalar `onChange`, `onBlur`                |
+| `input`         | `Input`                   | text, label, placeholder, `mono`, disabled; scalar `onChange`, `onBlur`                                |
+| `toggle`        | `Toggle`                  | boolean, label, disabled; scalar `onChange`, `onBlur`                                                  |
+| `fileInput`     | `FileInput`               | explicit bounded file/clipboard selection; owner-local descriptors, never paths or raw files           |
+| `byteImage`     | `ByteImage`               | authenticated, bounded raster projection with crop/fit presentation and status                         |
+| `byteDownload`  | `ByteDownload`            | explicit authenticated browser download, cancellation and truthful status                              |
+| `borrowedPanel` | `BorrowedPanel`           | registered owner intake; bounded JSON input and one result, no sibling implementation import           |
+| `list`          | `List`                    | keyed rows with primary/secondary text and optional `onClick`                                          |
+| `empty`         | `Empty`                   | empty-state text                                                                                       |
 
 Five tones mean `neutral`, `accent`, `muted`, `danger`, `success`, never arbitrary
 colours. Text-bearing components take text, not nested markup. Control callbacks

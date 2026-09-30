@@ -132,7 +132,11 @@ describe("terminal clipboard consent and MIME transport", () => {
       expect(f.sent).toEqual([]);
       expect(f.pasted).toEqual([]);
       f.clipboard.setPasteMode(true);
-      expect(f.clipboard.pasteFile(new File(["opaque"], "file.bin", { type: "application/octet-stream" }))).toBe(false);
+      expect(
+        f.clipboard.pasteFile(
+          new File(["opaque"], "file.bin", { type: "application/octet-stream" }),
+        ),
+      ).toBe(false);
       expect(f.sent).toEqual([]);
       expect(f.clipboard.pasteFile(file)).toBe(true);
       const token = f.token();
@@ -143,7 +147,9 @@ describe("terminal clipboard consent and MIME transport", () => {
       f.sent.length = 0;
       f.osc(5522, request(token, "image/png"));
       expect(f.sent).toEqual([]);
-    } finally { f.clipboard.dispose(); }
+    } finally {
+      f.clipboard.dispose();
+    }
   });
 
   test("lists actual Blob formats and negotiates available types, preserving binary and split UTF-8 bytes", async () => {

@@ -41,11 +41,13 @@ export interface PackOptions {
 
 export interface CompileOptions extends PackOptions {
   /** Trusted build-time adapters and flat resources for a self-contained server half. */
-  readonly serverBuild?: {
-    readonly plugins?: readonly BunPlugin[];
-    readonly external?: readonly string[];
-    readonly files?: ReadonlyMap<string, Uint8Array>;
-  } | undefined;
+  readonly serverBuild?:
+    | {
+        readonly plugins?: readonly BunPlugin[];
+        readonly external?: readonly string[];
+        readonly files?: ReadonlyMap<string, Uint8Array>;
+      }
+    | undefined;
   /** Replace root manifest imports and supply every declared bundled machine member in memory. */
   readonly generated?: {
     readonly manifest: PluginManifest;
@@ -276,7 +278,9 @@ async function build(
   if (onlyEntry && result.outputs.length !== 1) {
     throw new Error(`bundling ${entrypoint} produced assets a browser entry cannot carry`);
   }
-  if (result.outputs.some((artifact) => artifact.kind !== "entry-point" && artifact.kind !== "asset"))
+  if (
+    result.outputs.some((artifact) => artifact.kind !== "entry-point" && artifact.kind !== "asset")
+  )
     throw new Error(`bundling ${entrypoint} produced an unsupported output`);
   return result.outputs;
 }
@@ -353,7 +357,10 @@ export async function compilePlugin(
     serverResourceBytes += 4 * Math.ceil(bytes.byteLength / 3);
     if (serverResourceBytes > ISOLATE_MAX_ARTIFACT_BYTES)
       throw new Error("server resources exceed the artifact byte budget");
-    serverFiles.set(name, Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64"));
+    serverFiles.set(
+      name,
+      Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64"),
+    );
   }
   const generated = options.generated;
   const generatedManifest =
@@ -514,7 +521,8 @@ export async function compilePlugin(
   };
   for (const [name, encoded] of serverFiles) addResource(name, encoded);
   const addBuild = async (entry: string, outputs: readonly BuildArtifact[]): Promise<void> => {
-    const encodedBytes = Object.values(files).reduce((total, data) => total + data.length, 0) +
+    const encodedBytes =
+      Object.values(files).reduce((total, data) => total + data.length, 0) +
       outputs.reduce((total, artifact) => total + 4 * Math.ceil(artifact.size / 3), 0);
     if (encodedBytes > ISOLATE_MAX_ARTIFACT_BYTES)
       throw new Error("compiled members exceed the artifact byte budget");
@@ -560,9 +568,10 @@ export async function compilePlugin(
       registered?.server === undefined
         ? `${pluginDir}/server.ts`
         : resolve(pluginDir, registered.server);
-    await addBuild(PLUGIN_BUNDLE_SERVER_FILE, await build(
-      entry, "bun", [...manifestPlugins, ...serverPlugins], false, serverExternal,
-    ));
+    await addBuild(
+      PLUGIN_BUNDLE_SERVER_FILE,
+      await build(entry, "bun", [...manifestPlugins, ...serverPlugins], false, serverExternal),
+    );
   }
   if (manifest.entry.web !== undefined) {
     const entry =

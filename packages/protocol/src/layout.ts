@@ -269,7 +269,12 @@ const UTF8 = new TextEncoder();
  * `path` holds the objects on the way down, so a value REACHED twice is legal (JSON copies
  * it) while a value containing itself is not.
  */
-function jsonData(value: unknown, path: Set<object>, budget: { remaining: number }, depth: number): boolean {
+function jsonData(
+  value: unknown,
+  path: Set<object>,
+  budget: { remaining: number },
+  depth: number,
+): boolean {
   if (--budget.remaining < 0) return false;
   if (value === null) return true;
   switch (typeof value) {
@@ -300,9 +305,11 @@ function jsonData(value: unknown, path: Set<object>, budget: { remaining: number
     for (const key in held) {
       if (!Object.hasOwn(held, key)) continue;
       budget.remaining -= key.length + 3; // Quoted property name and colon, before escaping.
-      if (budget.remaining < 0 || !jsonData(
-        (held as Record<string, unknown>)[key], path, budget, depth - 1,
-      )) return false;
+      if (
+        budget.remaining < 0 ||
+        !jsonData((held as Record<string, unknown>)[key], path, budget, depth - 1)
+      )
+        return false;
     }
   }
   path.delete(held);
@@ -310,9 +317,18 @@ function jsonData(value: unknown, path: Set<object>, budget: { remaining: number
 }
 
 /** Shared JSON-record validation for persisted arguments and bounded transient view data. */
-export function validPanelData(value: unknown, maxBytes: number, maxDepth: number): value is PanelArg {
-  if (value === null || typeof value !== "object" || Array.isArray(value) ||
-      !jsonData(value, new Set(), { remaining: maxBytes }, maxDepth)) return false;
+export function validPanelData(
+  value: unknown,
+  maxBytes: number,
+  maxDepth: number,
+): value is PanelArg {
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    !jsonData(value, new Set(), { remaining: maxBytes }, maxDepth)
+  )
+    return false;
   const json = JSON.stringify(value);
   return json.length <= maxBytes && UTF8.encode(json).length <= maxBytes;
 }

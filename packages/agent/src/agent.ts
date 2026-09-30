@@ -112,8 +112,11 @@ function classifyServerFrame(data: unknown): ClassifiedFrame {
   if (KNOWN_SERVER_TYPES[frameType] !== true) return { kind: "unknown_type", frameType };
   const parsed = ServerToAgentMessageSchema.safeParse(raw);
   if (!parsed.success) return { kind: "malformed", detail: `invalid ${frameType} frame` };
-  if (parsed.data.type === "job_command" && parsed.data.command.type === "native_transfer" &&
-      Buffer.byteLength(data) > MAX_NATIVE_TRANSFER_FRAME_BYTES)
+  if (
+    parsed.data.type === "job_command" &&
+    parsed.data.command.type === "native_transfer" &&
+    Buffer.byteLength(data) > MAX_NATIVE_TRANSFER_FRAME_BYTES
+  )
     return { kind: "malformed", detail: "native transfer frame exceeds byte limit" };
   return { kind: "message", message: parsed.data };
 }
@@ -160,7 +163,10 @@ export class Agent {
       owner: JobOwnerLink;
     }
   >();
-  private readonly nativeTransferCalls = new Map<string, { socket: WebSocket; owner: JobOwnerLink }>();
+  private readonly nativeTransferCalls = new Map<
+    string,
+    { socket: WebSocket; owner: JobOwnerLink }
+  >();
 
   private seat: Seat | null = null;
   /** The link whose `attach` is outstanding; becomes the seat on `attached`. */
@@ -455,8 +461,12 @@ export class Agent {
       const pending = this.nativeTransferCalls.get(event.rpcId);
       if (!pending || pending.socket !== socket || pending.owner !== this.jobOwnerLink) return;
       this.nativeTransferCalls.delete(event.rpcId);
-      if (socket === null || this.helloSent !== socket || socket.readyState !== WebSocket.OPEN) return;
-      if (socket.bufferedAmount + MAX_NATIVE_TRANSFER_FRAME_BYTES > MAX_NATIVE_TRANSFER_QUEUE_BYTES) {
+      if (socket === null || this.helloSent !== socket || socket.readyState !== WebSocket.OPEN)
+        return;
+      if (
+        socket.bufferedAmount + MAX_NATIVE_TRANSFER_FRAME_BYTES >
+        MAX_NATIVE_TRANSFER_QUEUE_BYTES
+      ) {
         socket.close(4009, "native transfer buffer exceeded");
         return;
       }
@@ -661,13 +671,26 @@ export class Agent {
       case "job_command":
         if (msg.command.type === "native_transfer") {
           const owner = this.jobOwnerLink;
-          if (!owner || this.nativeTransferCalls.size >= 4 || this.nativeTransferCalls.has(msg.command.rpcId)) {
-            this.send(socket, { type: "job_event", event: {
-              type: "native_transfer_result", rpcId: msg.command.rpcId,
-              ownerId: msg.command.permit.body.ownerId,
-              ownerGeneration: msg.command.permit.body.ownerGeneration,
-              result: { ok: false, reason: owner ? "native_transfer_queue_limit" : "native_transfer_owner_unavailable" },
-            } });
+          if (
+            !owner ||
+            this.nativeTransferCalls.size >= 4 ||
+            this.nativeTransferCalls.has(msg.command.rpcId)
+          ) {
+            this.send(socket, {
+              type: "job_event",
+              event: {
+                type: "native_transfer_result",
+                rpcId: msg.command.rpcId,
+                ownerId: msg.command.permit.body.ownerId,
+                ownerGeneration: msg.command.permit.body.ownerGeneration,
+                result: {
+                  ok: false,
+                  reason: owner
+                    ? "native_transfer_queue_limit"
+                    : "native_transfer_owner_unavailable",
+                },
+              },
+            });
             return;
           }
           this.nativeTransferCalls.set(msg.command.rpcId, { socket, owner });

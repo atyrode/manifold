@@ -131,19 +131,26 @@ describe("owned reference declarations", () => {
         elements: [],
         tools: [],
         events: [],
-        references: [{
-          kind: "file",
-          resolveAction: "resolve",
-          readCapability: "vendor.files:read",
-          createCapability: "vendor.files:create",
-          deleteCapability: "vendor.files:delete",
-          creatorCaps: ["vendor.files:read", "vendor.files:delete", "vendor.files:share", "vendor.files:approve"],
-          sharing: {
-            grantorCapability: "vendor.files:share",
-            prerequisites: ["vendor.files:read", "vendor.files:share", "vendor.files:approve"],
-            grantableCaps: ["vendor.files:read"],
+        references: [
+          {
+            kind: "file",
+            resolveAction: "resolve",
+            readCapability: "vendor.files:read",
+            createCapability: "vendor.files:create",
+            deleteCapability: "vendor.files:delete",
+            creatorCaps: [
+              "vendor.files:read",
+              "vendor.files:delete",
+              "vendor.files:share",
+              "vendor.files:approve",
+            ],
+            sharing: {
+              grantorCapability: "vendor.files:share",
+              prerequisites: ["vendor.files:read", "vendor.files:share", "vendor.files:approve"],
+              grantableCaps: ["vendor.files:read"],
+            },
           },
-        }],
+        ],
       },
     });
   }
@@ -846,21 +853,40 @@ describe("plugin data versioning", () => {
 
   test("bounded recovery requires an aligned explicit image cap without lowering general database caps", () => {
     for (const maxBytes of [4096, 64 * 1024 * 1024]) {
-      expect(PluginManifestSchema.safeParse(manifest({
-        database: { maxBytes, recovery: { profile: "bounded-wal-v1" } },
-      })).success).toBe(true);
+      expect(
+        PluginManifestSchema.safeParse(
+          manifest({
+            database: { maxBytes, recovery: { profile: "bounded-wal-v1" } },
+          }),
+        ).success,
+      ).toBe(true);
     }
     for (const maxBytes of [undefined, 4097, 64 * 1024 * 1024 + 4096]) {
-      expect(PluginManifestSchema.safeParse(manifest({
-        database: { ...(maxBytes === undefined ? {} : { maxBytes }), recovery: { profile: "bounded-wal-v1" } },
-      })).success).toBe(false);
+      expect(
+        PluginManifestSchema.safeParse(
+          manifest({
+            database: {
+              ...(maxBytes === undefined ? {} : { maxBytes }),
+              recovery: { profile: "bounded-wal-v1" },
+            },
+          }),
+        ).success,
+      ).toBe(false);
     }
-    expect(PluginManifestSchema.safeParse(manifest({
-      database: { maxBytes: CEILING_DATABASE_MAX_BYTES },
-    })).success).toBe(true);
-    expect(PluginManifestSchema.safeParse(manifest({
-      database: { maxBytes: 4096, recovery: { profile: "unknown" } },
-    } as never)).success).toBe(false);
+    expect(
+      PluginManifestSchema.safeParse(
+        manifest({
+          database: { maxBytes: CEILING_DATABASE_MAX_BYTES },
+        }),
+      ).success,
+    ).toBe(true);
+    expect(
+      PluginManifestSchema.safeParse(
+        manifest({
+          database: { maxBytes: 4096, recovery: { profile: "unknown" } },
+        } as never),
+      ).success,
+    ).toBe(false);
   });
 });
 

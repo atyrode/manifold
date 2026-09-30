@@ -51,14 +51,14 @@ choosing a registrant by order.
 
 The file-level findings are criterion-by-criterion, not temporary exceptions:
 
-| Existing pillar | Bootstrap circularity | Neutrality | Arbitration |
-| --- | --- | --- | --- |
-| Protocol | Inputs must be decoded before an owner or contribution can run. | Reference, byte, native-transfer and transient-panel envelopes name declared owners, not a privileged implementation. | One grammar and set of bounds decide what all producers may send. |
-| Identity/capabilities | An unpublished object has no pre-existing node on which its owner could authorize publication. | Declared capabilities and exact credential lineage are evaluated by the ordinary grant store. | `reference-service.ts` coordinates existence, provenance and current authority across owner callbacks without a second ACL. |
-| Persistence | Private database growth and whole-instance capture must be admitted before a plugin writes. | `recovery-budget.ts` and `recovery-gate.ts` account for physical images and writer lifetimes, not file-domain rows. | One reservation/fence arbitrates competing owners, WAL, migration stages and coherent checkpoint scratch. |
-| Transport | An isolated owner cannot open the authenticated HTTP/machine boundary or prove its own native installation. | Byte carriers and native contexts interpret declared templates, current caller and consent, never a core-file shortcut. | The shared services enforce bounded continuation, cancellation, owner generations and durable terminal evidence. |
-| Browser host/design system | A Worker cannot mount another owner's UI, capture DOM files or own a main-thread object URL. | Byte surfaces, portable element edits and borrowed panels resolve declared contributions and bounded data. | The host owns custody, whole-subtree admission, current mounted authority, resource cleanup and one result per intake. |
-| Assembly engine | Trusted guest code must be composed before its supervised owner exists. | Files and its image child use the same registered definitions and loader as other owners. | Only the two explicitly inventoried guest entry files join the existing exact composition-root import exceptions. |
+| Existing pillar            | Bootstrap circularity                                                                                       | Neutrality                                                                                                              | Arbitration                                                                                                                 |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| Protocol                   | Inputs must be decoded before an owner or contribution can run.                                             | Reference, byte, native-transfer and transient-panel envelopes name declared owners, not a privileged implementation.   | One grammar and set of bounds decide what all producers may send.                                                           |
+| Identity/capabilities      | An unpublished object has no pre-existing node on which its owner could authorize publication.              | Declared capabilities and exact credential lineage are evaluated by the ordinary grant store.                           | `reference-service.ts` coordinates existence, provenance and current authority across owner callbacks without a second ACL. |
+| Persistence                | Private database growth and whole-instance capture must be admitted before a plugin writes.                 | `recovery-budget.ts` and `recovery-gate.ts` account for physical images and writer lifetimes, not file-domain rows.     | One reservation/fence arbitrates competing owners, WAL, migration stages and coherent checkpoint scratch.                   |
+| Transport                  | An isolated owner cannot open the authenticated HTTP/machine boundary or prove its own native installation. | Byte carriers and native contexts interpret declared templates, current caller and consent, never a core-file shortcut. | The shared services enforce bounded continuation, cancellation, owner generations and durable terminal evidence.            |
+| Browser host/design system | A Worker cannot mount another owner's UI, capture DOM files or own a main-thread object URL.                | Byte surfaces, portable element edits and borrowed panels resolve declared contributions and bounded data.              | The host owns custody, whole-subtree admission, current mounted authority, resource cleanup and one result per intake.      |
+| Assembly engine            | Trusted guest code must be composed before its supervised owner exists.                                     | Files and its image child use the same registered definitions and loader as other owners.                               | Only the two explicitly inventoried guest entry files join the existing exact composition-root import exceptions.           |
 
 ### Compose the owner, not its implementation
 
@@ -79,7 +79,6 @@ child or promoting Files metadata into the neutral protocol would create a secon
 This is not permission for arbitrary contract dependencies. The pure `@manifold/plugin/action`
 entry exposes the existing action-definition mechanism to portable bundles without importing
 the broader engine barrel.
-
 
 ## Private publication and restricted sharing
 

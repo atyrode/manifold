@@ -446,9 +446,7 @@ export function attachWebGuest(def: ReactWebPluginDef, port: WebGuestPort): void
       if (signal?.aborted) cancel();
       const answer = await result;
       if (signal?.aborted) {
-        throw new ByteTransferError(
-          method === "writeByteChunk" ? "outcome_unknown" : "cancelled",
-        );
+        throw new ByteTransferError(method === "writeByteChunk" ? "outcome_unknown" : "cancelled");
       }
       return answer;
     } catch (reason) {
@@ -467,8 +465,14 @@ export function attachWebGuest(def: ReactWebPluginDef, port: WebGuestPort): void
   const localFilesFor = (mounted: Owner): LocalFilesHandle => ({
     async read(handle, offset, length, options) {
       const signal = options?.signal;
-      if (!LocalFileHandleSchema.safeParse(handle).success || !Number.isSafeInteger(offset) ||
-          offset < 0 || !Number.isSafeInteger(length) || length < 0 || length > MAX_BYTE_CHUNK_BYTES) {
+      if (
+        !LocalFileHandleSchema.safeParse(handle).success ||
+        !Number.isSafeInteger(offset) ||
+        offset < 0 ||
+        !Number.isSafeInteger(length) ||
+        length < 0 ||
+        length > MAX_BYTE_CHUNK_BYTES
+      ) {
         throw new ByteTransferError("invalid");
       }
       if (!mounted.live) throw new ByteTransferError("unavailable");
@@ -477,7 +481,10 @@ export function attachWebGuest(def: ReactWebPluginDef, port: WebGuestPort): void
       byteRequests += 1;
       const id = `b${String(++byteSeq)}`;
       const cancel = (): void => {
-        if (mounted.live) void send(mounted.id, mounted, "cancelByteRequest", [id]).catch(warnFailure("cancelLocalFile"));
+        if (mounted.live)
+          void send(mounted.id, mounted, "cancelByteRequest", [id]).catch(
+            warnFailure("cancelLocalFile"),
+          );
       };
       try {
         const pending = send(mounted.id, mounted, "readLocalFile", [id, handle, offset, length]);
@@ -486,9 +493,14 @@ export function attachWebGuest(def: ReactWebPluginDef, port: WebGuestPort): void
         const data = await pending;
         if (signal?.aborted) throw new ByteTransferError("cancelled");
         if (!mounted.live) throw new ByteTransferError("unavailable");
-        if (!(data instanceof Uint8Array) || data.byteLength !== length ||
-            !(data.buffer instanceof ArrayBuffer) || data.byteOffset !== 0 ||
-            data.buffer.byteLength !== length) throw new ByteTransferError("invalid");
+        if (
+          !(data instanceof Uint8Array) ||
+          data.byteLength !== length ||
+          !(data.buffer instanceof ArrayBuffer) ||
+          data.byteOffset !== 0 ||
+          data.buffer.byteLength !== length
+        )
+          throw new ByteTransferError("invalid");
         return data;
       } catch (error) {
         if (error instanceof ByteTransferError) throw error;
@@ -590,25 +602,42 @@ export function attachWebGuest(def: ReactWebPluginDef, port: WebGuestPort): void
     const key = hostKeyOf(mounted.context);
     if (key === mounted.hostKey) return;
     mounted.hostKey = key;
-    mounted.host = hostOf(mounted.context, mounted.client, mounted.navigate, mounted.authoring, mounted.localFiles);
+    mounted.host = hostOf(
+      mounted.context,
+      mounted.client,
+      mounted.navigate,
+      mounted.authoring,
+      mounted.localFiles,
+    );
   };
 
   const render = (mounted: Mounted): void => {
     const element = mounted.element;
-    const rendered = mounted.kind === "element"
-      ? createElement(mounted.component as ComponentType<PortableElementProps>, {
-          host: mounted.host, ...mounted.element!,
-          edit: {
-            writable: mounted.context.elementWritable === true,
-            patch: async (patch) => {
-              await send(mounted.id, mounted, "patchElement", [{ expected: element!.data, patch }]);
+    const rendered =
+      mounted.kind === "element"
+        ? createElement(mounted.component as ComponentType<PortableElementProps>, {
+            host: mounted.host,
+            ...mounted.element!,
+            edit: {
+              writable: mounted.context.elementWritable === true,
+              patch: async (patch) => {
+                await send(mounted.id, mounted, "patchElement", [
+                  { expected: element!.data, patch },
+                ]);
+              },
             },
-          },
-        })
-      : createElement(mounted.component as ComponentType<PortablePanelProps>,
-          mounted.kind === "panel"
-            ? { host: mounted.host, arg: mounted.arg, input: mounted.input, onResult: mounted.onResult }
-            : { host: mounted.host });
+          })
+        : createElement(
+            mounted.component as ComponentType<PortablePanelProps>,
+            mounted.kind === "panel"
+              ? {
+                  host: mounted.host,
+                  arg: mounted.arg,
+                  input: mounted.input,
+                  onResult: mounted.onResult,
+                }
+              : { host: mounted.host },
+          );
     mounted.root.render(createElement(FrameModeProvider, null, rendered));
   };
 
@@ -673,7 +702,8 @@ export function attachWebGuest(def: ReactWebPluginDef, port: WebGuestPort): void
     }
     const kind: Kind = frame.kind ?? "panel";
     const label = `${kind} "${frame.panel}"`;
-    const registry = kind === "panel" ? def.panels : kind === "section" ? def.sections : def.elements;
+    const registry =
+      kind === "panel" ? def.panels : kind === "section" ? def.sections : def.elements;
     const component =
       registry !== undefined && Object.hasOwn(registry, frame.panel)
         ? registry[frame.panel]
@@ -686,8 +716,13 @@ export function attachWebGuest(def: ReactWebPluginDef, port: WebGuestPort): void
       fault(frame.instance, `${label} was mounted without its host context`);
       return;
     }
-    if ((kind !== "panel" && (frame.arg !== undefined || frame.input !== undefined || frame.acceptsResult !== undefined)) ||
-        (kind === "element") !== (frame.element !== undefined)) {
+    if (
+      (kind !== "panel" &&
+        (frame.arg !== undefined ||
+          frame.input !== undefined ||
+          frame.acceptsResult !== undefined)) ||
+      (kind === "element") !== (frame.element !== undefined)
+    ) {
       fault(frame.instance, `${label} has incompatible mount data`);
       return;
     }
@@ -725,11 +760,14 @@ export function attachWebGuest(def: ReactWebPluginDef, port: WebGuestPort): void
       report: (error) => port.warn(`${label}: ${errorText(error)}`),
     });
     let resultDelivered = false;
-    const onResult = frame.acceptsResult === true ? (result: PanelArg): void => {
-      if (!owner.live || instances.get(instance) !== mounted || resultDelivered) return;
-      post({ t: "panel_result", instance, result });
-      resultDelivered = true;
-    } : undefined;
+    const onResult =
+      frame.acceptsResult === true
+        ? (result: PanelArg): void => {
+            if (!owner.live || instances.get(instance) !== mounted || resultDelivered) return;
+            post({ t: "panel_result", instance, result });
+            resultDelivered = true;
+          }
+        : undefined;
     const mounted: Mounted = Object.assign(owner, {
       component: component as Contribution,
       root,
@@ -758,9 +796,11 @@ export function attachWebGuest(def: ReactWebPluginDef, port: WebGuestPort): void
       }
       return;
     }
-    if ((mounted.kind !== "panel" && frame.arg !== undefined) ||
-        (mounted.kind === "element") !== (frame.element !== undefined) ||
-        (mounted.element !== undefined && mounted.element.id !== frame.element?.id)) {
+    if (
+      (mounted.kind !== "panel" && frame.arg !== undefined) ||
+      (mounted.kind === "element") !== (frame.element !== undefined) ||
+      (mounted.element !== undefined && mounted.element.id !== frame.element?.id)
+    ) {
       failMounted(mounted, new Error("mounted contribution identity or payload kind changed"));
       return;
     }

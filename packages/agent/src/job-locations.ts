@@ -101,9 +101,14 @@ export function resolveManagedTransferRoot(
   create = true,
 ): HeldDirectory {
   if (
-    !declaration.managed || declaration.temporary || declaration.kind !== "directory" ||
-    declaration.anchor !== "state" || !declaration.components.length || !ownerPrivate(root)
-  ) throw new Error("invalid_transfer_location");
+    !declaration.managed ||
+    declaration.temporary ||
+    declaration.kind !== "directory" ||
+    declaration.anchor !== "state" ||
+    !declaration.components.length ||
+    !ownerPrivate(root)
+  )
+    throw new Error("invalid_transfer_location");
   let current = root.reopen();
   try {
     for (const component of [pluginId, ...declaration.components]) {

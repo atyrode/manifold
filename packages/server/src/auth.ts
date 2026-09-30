@@ -1130,23 +1130,38 @@ export class AuthService {
   }
 
   private referenceScopeContains(context: AuthContext, node: string, seen: Set<string>): boolean {
-    if (!contextContainsNode(context, node) ||
+    if (
+      !contextContainsNode(context, node) ||
       (context.expiresAt !== undefined && context.expiresAt <= this.runtime.now()) ||
-      (context.principal.id !== this.ownerPrincipal.id && this.pausedPrincipals.has(context.principal.id)) ||
-      context.agentRunnerId !== undefined) return false;
+      (context.principal.id !== this.ownerPrincipal.id &&
+        this.pausedPrincipals.has(context.principal.id)) ||
+      context.agentRunnerId !== undefined
+    )
+      return false;
     if (context.agentRunId === undefined) return true;
     if (seen.has(context.agentRunId)) return false;
     const run = this.store.getAgentRun(context.agentRunId);
-    if (run === null || this.agentRunPolicyState(context) !== "active" || !runContainsNode(run, node))
+    if (
+      run === null ||
+      this.agentRunPolicyState(context) !== "active" ||
+      !runContainsNode(run, node)
+    )
       return false;
     const agent = this.store.getAgent(run.agentId);
-    if (agent === null || agent.status === "disabled" || agent.grant.expiresAt <= this.runtime.now() ||
-      !agent.grant.targets.some((target) => runContainsNode({ target, reach: agent.grant.reach }, node)))
+    if (
+      agent === null ||
+      agent.status === "disabled" ||
+      agent.grant.expiresAt <= this.runtime.now() ||
+      !agent.grant.targets.some((target) =>
+        runContainsNode({ target, reach: agent.grant.reach }, node),
+      )
+    )
       return false;
     seen.add(run.id);
     try {
       const standingSponsor = this.restoreAgentSponsor(agent);
-      if (standingSponsor === null || !this.referenceScopeContains(standingSponsor, node, seen)) return false;
+      if (standingSponsor === null || !this.referenceScopeContains(standingSponsor, node, seen))
+        return false;
       if (run.parentRunId === null) return true;
       const parent = this.restoreRunCredential(run.parentRunId);
       return parent !== null && this.referenceScopeContains(parent, node, seen);
@@ -3844,14 +3859,26 @@ export class AuthService {
     };
     this.store.transaction(() => {
       this.store.createGrant(row);
-      this.store.db.query(`INSERT INTO reference_grant_provenance
+      this.store.db
+        .query(
+          `INSERT INTO reference_grant_provenance
         (grant_id,publication_id,role,policy_digest,principal_id,caps_key,previous_grant_id)
-        VALUES (?,?,?,?,?,?,?)`).run(
-        row.id, input.publicationId, input.role, input.policyDigest,
-        input.principalId, JSON.stringify([...input.caps].sort()), input.previousGrantId,
-      );
+        VALUES (?,?,?,?,?,?,?)`,
+        )
+        .run(
+          row.id,
+          input.publicationId,
+          input.role,
+          input.policyDigest,
+          input.principalId,
+          JSON.stringify([...input.caps].sort()),
+          input.previousGrantId,
+        );
       this.store.addEvent(null, row.createdAt, actor.principal.id, "grant_created", {
-        grantId: row.id, node: row.node, caps: [...row.caps], parentTrace: traceId,
+        grantId: row.id,
+        node: row.node,
+        caps: [...row.caps],
+        parentTrace: traceId,
       });
       this.referenceAuthorityChanged();
     });
@@ -3867,23 +3894,39 @@ export class AuthService {
     traceId: number | null,
   ): boolean {
     return this.store.transaction(() => {
-      const provenance = this.store.db.query<{
-        principal_id: string; caps_key: string; node: string;
-      }, [string, string, string]>(
-        `SELECT p.principal_id,p.caps_key,r.node FROM reference_grant_provenance p
+      const provenance = this.store.db
+        .query<
+          {
+            principal_id: string;
+            caps_key: string;
+            node: string;
+          },
+          [string, string, string]
+        >(
+          `SELECT p.principal_id,p.caps_key,r.node FROM reference_grant_provenance p
          JOIN reference_publications r ON r.publication_id=p.publication_id
          WHERE p.publication_id=? AND p.grant_id=? AND p.role=? AND p.policy_digest=r.policy_digest`,
-      ).get(publicationId, grantId, role);
+        )
+        .get(publicationId, grantId, role);
       const existing = provenance === null ? null : this.store.getGrant(grantId);
-      if (provenance === null || existing === null || existing.tokenBound ||
-        existing.node !== provenance.node || existing.principal.kind !== "principal" ||
-        existing.principal.id !== provenance.principal_id || existing.effect !== "allow" ||
-        existing.reach !== "node" || JSON.stringify([...existing.caps].sort()) !== provenance.caps_key)
+      if (
+        provenance === null ||
+        existing === null ||
+        existing.tokenBound ||
+        existing.node !== provenance.node ||
+        existing.principal.kind !== "principal" ||
+        existing.principal.id !== provenance.principal_id ||
+        existing.effect !== "allow" ||
+        existing.reach !== "node" ||
+        JSON.stringify([...existing.caps].sort()) !== provenance.caps_key
+      )
         return false;
       const removed = this.store.deleteGrant(grantId);
       if (removed) {
         this.store.addEvent(null, this.runtime.now(), actorId, "grant_revoked", {
-          grantId, node: existing.node, parentTrace: traceId,
+          grantId,
+          node: existing.node,
+          parentTrace: traceId,
         });
         this.referenceAuthorityChanged();
       }

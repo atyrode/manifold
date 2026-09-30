@@ -41,8 +41,14 @@ export class LocalFileStore {
   ): Promise<Uint8Array> {
     const file = this.files.get(handle);
     if (this.closed || file === undefined) throw new ByteTransferError("unavailable");
-    if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(length) || offset < 0 ||
-        length < 0 || length > MAX_BYTE_CHUNK_BYTES || offset + length > file.size) {
+    if (
+      !Number.isSafeInteger(offset) ||
+      !Number.isSafeInteger(length) ||
+      offset < 0 ||
+      length < 0 ||
+      length > MAX_BYTE_CHUNK_BYTES ||
+      offset + length > file.size
+    ) {
       throw new ByteTransferError("invalid");
     }
     if (options?.signal?.aborted) throw new ByteTransferError("cancelled");
@@ -59,14 +65,18 @@ export class LocalFileStore {
     controller.signal.addEventListener("abort", abort, { once: true });
     try {
       const completion = Promise.withResolvers<ArrayBuffer>();
-      reader.onload = () => reader.result instanceof ArrayBuffer
-        ? completion.resolve(reader.result) : completion.reject(new ByteTransferError("unavailable"));
+      reader.onload = () =>
+        reader.result instanceof ArrayBuffer
+          ? completion.resolve(reader.result)
+          : completion.reject(new ByteTransferError("unavailable"));
       reader.onerror = () => completion.reject(new ByteTransferError("unavailable"));
       reader.onabort = () => completion.reject(new ByteTransferError("cancelled"));
       reader.readAsArrayBuffer(file.slice(offset, offset + length));
       const data = await completion.promise;
-      if (controller.signal.aborted || options?.signal?.aborted) throw new ByteTransferError("cancelled");
-      if (this.closed || this.files.get(handle) !== file) throw new ByteTransferError("unavailable");
+      if (controller.signal.aborted || options?.signal?.aborted)
+        throw new ByteTransferError("cancelled");
+      if (this.closed || this.files.get(handle) !== file)
+        throw new ByteTransferError("unavailable");
       if (data.byteLength !== length) throw new ByteTransferError("invalid");
       return new Uint8Array(data);
     } finally {

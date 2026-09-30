@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import { MAX_PANEL_RESULT_BYTES, PanelResultSchema, PortablePanelInputSchema } from "@manifold/protocol";
+import {
+  MAX_PANEL_RESULT_BYTES,
+  PanelResultSchema,
+  PortablePanelInputSchema,
+} from "@manifold/protocol";
 
 function nestedRecord(levels: number): Record<string, unknown> {
   let result: Record<string, unknown> = { value: true };

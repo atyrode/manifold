@@ -27,7 +27,12 @@ import {
   type RestrictedGrantView,
   type RuntimeDeps,
 } from "@manifold/protocol";
-import { ServiceError, type AuthContext, type AuthService, type CredentialReference } from "./auth.ts";
+import {
+  ServiceError,
+  type AuthContext,
+  type AuthService,
+  type CredentialReference,
+} from "./auth.ts";
 import { sha256Hex, type ServerStore } from "./stores.ts";
 
 const MAX_RECORDS = 1_000;
@@ -117,14 +122,21 @@ export class ReferenceService {
     clearTimeout(this.expiryTimer);
     this.expiryDeadline = null;
     this.store.transaction(() => {
-      this.store.db.query(`UPDATE reference_publications SET state='aborted',terminal_at=?,cleanup_pending=1,
+      this.store.db
+        .query(
+          `UPDATE reference_publications SET state='aborted',terminal_at=?,cleanup_pending=1,
         terminal_actor=actor_principal,terminal_credential_binding=credential_binding
-        WHERE state='prepared'`).run(this.runtime.now());
+        WHERE state='prepared'`,
+        )
+        .run(this.runtime.now());
       // Revalidate retained publications too, including receipts written before acknowledgement
       // bookkeeping existed. A temporarily absent owner must remain live-recoverable after boot.
-      this.store.db.query("UPDATE reference_publications SET cleanup_pending=1 WHERE state='published'").run();
+      this.store.db
+        .query("UPDATE reference_publications SET cleanup_pending=1 WHERE state='published'")
+        .run();
       for (const kind of this.store.referenceKindOwners().keys()) {
-        this.store.db.query("UPDATE reference_kind_owners SET allocation_state=? WHERE kind=?")
+        this.store.db
+          .query("UPDATE reference_kind_owners SET allocation_state=? WHERE kind=?")
           .run(JSON.stringify({ incarnation: randomUUID(), counter: 0 }), kind);
       }
     });
@@ -146,16 +158,20 @@ export class ReferenceService {
     let pending = true;
     this.recovering = true;
     try {
-      let rows = this.store.db.query<Publication, [string, number]>(
-        `SELECT * FROM reference_publications WHERE state='published' AND cleanup_pending=1
+      let rows = this.store.db
+        .query<Publication, [string, number]>(
+          `SELECT * FROM reference_publications WHERE state='published' AND cleanup_pending=1
          AND publication_id>? ORDER BY publication_id LIMIT ?`,
-      ).all(this.recoveryCursor, ACK_BATCH_SIZE);
+        )
+        .all(this.recoveryCursor, ACK_BATCH_SIZE);
       if (rows.length === 0) {
         this.recoveryCursor = "";
-        rows = this.store.db.query<Publication, [number]>(
-          `SELECT * FROM reference_publications WHERE state='published' AND cleanup_pending=1
+        rows = this.store.db
+          .query<Publication, [number]>(
+            `SELECT * FROM reference_publications WHERE state='published' AND cleanup_pending=1
            ORDER BY publication_id LIMIT ?`,
-        ).all(ACK_BATCH_SIZE);
+          )
+          .all(ACK_BATCH_SIZE);
       }
       pending = rows.length !== 0;
       for (const row of rows) {
@@ -174,20 +190,33 @@ export class ReferenceService {
     }
   }
 
-  private async acknowledgePublication(row: Publication, owner: ReferenceOwner, idle = false): Promise<void> {
+  private async acknowledgePublication(
+    row: Publication,
+    owner: ReferenceOwner,
+    idle = false,
+  ): Promise<void> {
     try {
       this.sameOwner(owner);
-      const proof = await (idle ? owner.probeWhenIdle(this.probeRequest(row)) : owner.probe(this.probeRequest(row)));
+      const proof = await (idle
+        ? owner.probeWhenIdle(this.probeRequest(row))
+        : owner.probe(this.probeRequest(row)));
       this.sameOwner(owner);
       const current = this.preparation(row.preparation_id);
       if (current?.state !== "published" || current.publication_id !== row.publication_id) return;
-      if (current.policy_digest !== this.policy(owner) || proof === null ||
-        proof.preparationId !== row.preparation_id || proof.readyDigest !== row.ready_digest) {
+      if (
+        current.policy_digest !== this.policy(owner) ||
+        proof === null ||
+        proof.preparationId !== row.preparation_id ||
+        proof.readyDigest !== row.ready_digest
+      ) {
         this.quarantine(current);
         return;
       }
-      this.store.db.query(`UPDATE reference_publications SET cleanup_pending=0
-        WHERE publication_id=? AND state='published' AND ready_digest=?`)
+      this.store.db
+        .query(
+          `UPDATE reference_publications SET cleanup_pending=0
+        WHERE publication_id=? AND state='published' AND ready_digest=?`,
+        )
         .run(row.publication_id, row.ready_digest);
     } catch {
       // Publication already committed. Only the durable owner acknowledgement remains pending.
@@ -204,36 +233,49 @@ export class ReferenceService {
     if (this.closed || (this.expiryDeadline !== null && this.expiryDeadline <= deadline)) return;
     clearTimeout(this.expiryTimer);
     this.expiryDeadline = deadline;
-    this.expiryTimer = setTimeout(() => {
-      this.expiryDeadline = null;
-      if (this.closed) return;
-      try {
-        this.store.transaction(() => this.expire());
-        const next = this.store.db.query<{ expires_at: number; owner_plugin: string }, []>(
-          "SELECT expires_at,owner_plugin FROM reference_publications WHERE state='prepared' ORDER BY expires_at LIMIT 1",
-        ).get();
-        if (next !== null) this.scheduleExpiry(next.expires_at, next.owner_plugin);
-        void this.reclaim(pluginId);
-      } catch {
-        this.cleanupFailure(pluginId);
-        // A busy/full image may refuse teardown. It remains unavailable until cleanup commits.
-        this.scheduleExpiry(this.runtime.now() + 60_000, pluginId);
-      }
-    }, Math.max(1, deadline - this.runtime.now()));
+    this.expiryTimer = setTimeout(
+      () => {
+        this.expiryDeadline = null;
+        if (this.closed) return;
+        try {
+          this.store.transaction(() => this.expire());
+          const next = this.store.db
+            .query<{ expires_at: number; owner_plugin: string }, []>(
+              "SELECT expires_at,owner_plugin FROM reference_publications WHERE state='prepared' ORDER BY expires_at LIMIT 1",
+            )
+            .get();
+          if (next !== null) this.scheduleExpiry(next.expires_at, next.owner_plugin);
+          void this.reclaim(pluginId);
+        } catch {
+          this.cleanupFailure(pluginId);
+          // A busy/full image may refuse teardown. It remains unavailable until cleanup commits.
+          this.scheduleExpiry(this.runtime.now() + 60_000, pluginId);
+        }
+      },
+      Math.max(1, deadline - this.runtime.now()),
+    );
     this.expiryTimer.unref();
   }
 
   /** Disabling destroys only unpublished intents; retained published nodes keep their grants. */
   abortOwnerPreparations(pluginId: string): void {
-    this.store.db.query(`UPDATE reference_publications SET state='aborted',terminal_at=?,cleanup_pending=1,
+    this.store.db
+      .query(
+        `UPDATE reference_publications SET state='aborted',terminal_at=?,cleanup_pending=1,
       terminal_actor=actor_principal,terminal_credential_binding=credential_binding
-      WHERE owner_plugin=? AND state='prepared'`).run(this.runtime.now(), pluginId);
+      WHERE owner_plugin=? AND state='prepared'`,
+      )
+      .run(this.runtime.now(), pluginId);
   }
 
   /** The maintenance owner has removed the entire private image after committing host deletion. */
   purged(pluginId: string): void {
-    this.store.db.query(`UPDATE reference_publications SET cleanup_pending=0
-      WHERE owner_plugin=? AND state IN ('aborted','deleted')`).run(pluginId);
+    this.store.db
+      .query(
+        `UPDATE reference_publications SET cleanup_pending=0
+      WHERE owner_plugin=? AND state IN ('aborted','deleted')`,
+      )
+      .run(pluginId);
   }
 
   private unavailable(): never {
@@ -241,15 +283,15 @@ export class ReferenceService {
   }
 
   private row(ref: PluginOwnedRef): Publication | null {
-    return this.store.db.query<Publication, [string]>(
-      "SELECT * FROM reference_publications WHERE node=?",
-    ).get(formatManifoldUri(ref));
+    return this.store.db
+      .query<Publication, [string]>("SELECT * FROM reference_publications WHERE node=?")
+      .get(formatManifoldUri(ref));
   }
 
   private preparation(id: string): Publication | null {
-    return this.store.db.query<Publication, [string]>(
-      "SELECT * FROM reference_publications WHERE preparation_id=?",
-    ).get(id);
+    return this.store.db
+      .query<Publication, [string]>("SELECT * FROM reference_publications WHERE preparation_id=?")
+      .get(id);
   }
 
   private ref(row: Publication): PluginOwnedRef {
@@ -261,8 +303,11 @@ export class ReferenceService {
   private probeRequest(row: Publication): ReferenceProbeRequest {
     if (row.state !== "prepared" && row.state !== "published") return this.unavailable();
     return {
-      ref: this.ref(row), preparationId: row.preparation_id, requestId: row.request_id,
-      bindingDigest: row.binding_digest, publication: row.state,
+      ref: this.ref(row),
+      preparationId: row.preparation_id,
+      requestId: row.request_id,
+      bindingDigest: row.binding_digest,
+      publication: row.state,
     };
   }
 
@@ -272,22 +317,31 @@ export class ReferenceService {
   }
 
   private async expireOwnerPreparations(owner: ReferenceOwner): Promise<void> {
-    const rows = this.store.db.query<Publication, [string]>(
-      "SELECT * FROM reference_publications WHERE owner_plugin=? AND state='prepared' ORDER BY created_at LIMIT 4",
-    ).all(owner.pluginId);
+    const rows = this.store.db
+      .query<Publication, [string]>(
+        "SELECT * FROM reference_publications WHERE owner_plugin=? AND state='prepared' ORDER BY created_at LIMIT 4",
+      )
+      .all(owner.pluginId);
     for (const row of rows) {
       const startedAt = this.runtime.now();
       const proof = await owner.probe(this.probeRequest(row));
       this.sameOwner(owner);
       // A deadline that elapsed only while the probe was in flight may have been refreshed
       // by accepted progress after its snapshot. Retire only already-expired preparations.
-      if (proof === null || proof.preparationId !== row.preparation_id ||
-          Math.min(row.expires_at, proof.expiresAt) > startedAt) continue;
+      if (
+        proof === null ||
+        proof.preparationId !== row.preparation_id ||
+        Math.min(row.expires_at, proof.expiresAt) > startedAt
+      )
+        continue;
       this.store.transaction(() => {
         this.sameOwner(owner);
-        this.store.db.query(`UPDATE reference_publications SET state='aborted',terminal_at=?,cleanup_pending=1,
+        this.store.db
+          .query(
+            `UPDATE reference_publications SET state='aborted',terminal_at=?,cleanup_pending=1,
           terminal_actor=actor_principal,terminal_credential_binding=credential_binding
-          WHERE publication_id=? AND owner_plugin=? AND preparation_id=? AND state='prepared'`)
+          WHERE publication_id=? AND owner_plugin=? AND preparation_id=? AND state='prepared'`,
+          )
           .run(this.runtime.now(), row.publication_id, owner.pluginId, row.preparation_id);
       });
     }
@@ -336,10 +390,15 @@ export class ReferenceService {
   }
 
   private bound(row: Publication, action: ReferenceActionAuthority): void {
-    if (row.owner_plugin !== action.pluginId ||
+    if (
+      row.owner_plugin !== action.pluginId ||
       row.actor_principal !== action.actor.principal.id ||
-      row.credential_binding !== this.auth.credentialBinding(action.actor)) return this.unavailable();
-    const original = this.auth.restoreCredential(JSON.parse(row.credential_json) as CredentialReference);
+      row.credential_binding !== this.auth.credentialBinding(action.actor)
+    )
+      return this.unavailable();
+    const original = this.auth.restoreCredential(
+      JSON.parse(row.credential_json) as CredentialReference,
+    );
     if (original === null || this.auth.credentialBinding(original) !== row.credential_binding)
       return this.unavailable();
   }
@@ -356,16 +415,27 @@ export class ReferenceService {
 
   private expire(): void {
     const now = this.runtime.now();
-    this.store.db.query(`UPDATE reference_publications SET state='aborted',terminal_at=?,cleanup_pending=1,
+    this.store.db
+      .query(
+        `UPDATE reference_publications SET state='aborted',terminal_at=?,cleanup_pending=1,
       terminal_actor=actor_principal,terminal_credential_binding=credential_binding
-      WHERE state='prepared' AND expires_at<=?`).run(now, now);
-    this.store.db.query(`DELETE FROM reference_publications WHERE state IN ('aborted','deleted')
-      AND cleanup_pending=0 AND terminal_at<?`).run(now - RECEIPT_LIFETIME_MS);
+      WHERE state='prepared' AND expires_at<=?`,
+      )
+      .run(now, now);
+    this.store.db
+      .query(
+        `DELETE FROM reference_publications WHERE state IN ('aborted','deleted')
+      AND cleanup_pending=0 AND terminal_at<?`,
+      )
+      .run(now - RECEIPT_LIFETIME_MS);
   }
 
   private quarantine(row: Publication): void {
     this.store.transaction(() => {
-      this.store.db.query("UPDATE reference_publications SET state='quarantined' WHERE publication_id=? AND state='published'")
+      this.store.db
+        .query(
+          "UPDATE reference_publications SET state='quarantined' WHERE publication_id=? AND state='published'",
+        )
         .run(row.publication_id);
       this.auth.referenceAuthorityChanged();
     });
@@ -376,13 +446,17 @@ export class ReferenceService {
       const owner = this.liveOwner(ref.kind);
       this.requireCaps(actor, owner, ref, [owner.declaration.readCapability]);
       const row = this.row(ref);
-      return row !== null && row.state === "published" && row.owner_plugin === owner.pluginId &&
-        row.policy_digest === this.policy(owner) && row.ready_digest !== null;
+      return (
+        row !== null &&
+        row.state === "published" &&
+        row.owner_plugin === owner.pluginId &&
+        row.policy_digest === this.policy(owner) &&
+        row.ready_digest !== null
+      );
     } catch {
       return false;
     }
   }
-
 
   /** Generic floor/carrier read check. Plugin methods additionally supply their active action fence. */
   async requirePublished(
@@ -392,9 +466,12 @@ export class ReferenceService {
     action?: ReferenceActionAuthority,
   ): Promise<PublishedReferenceIdentity> {
     const owner = this.liveOwner(ref.kind, action?.pluginId);
-    const caps = access === "read" ? [owner.declaration.readCapability]
-      : access === "delete" ? [owner.declaration.deleteCapability]
-      : owner.declaration.sharing.prerequisites;
+    const caps =
+      access === "read"
+        ? [owner.declaration.readCapability]
+        : access === "delete"
+          ? [owner.declaration.deleteCapability]
+          : owner.declaration.sharing.prerequisites;
     this.requireCaps(actor, owner, ref, caps, action);
     const before = this.row(ref);
     if (before === null || before.state !== "published" || before.owner_plugin !== owner.pluginId)
@@ -406,10 +483,18 @@ export class ReferenceService {
     const proof = await owner.probe(this.probeRequest(before));
     this.requireCaps(actor, owner, ref, caps, action);
     const after = this.row(ref);
-    if (after === null || after.state !== "published" || after.publication_id !== before.publication_id)
+    if (
+      after === null ||
+      after.state !== "published" ||
+      after.publication_id !== before.publication_id
+    )
       return this.unavailable();
-    if (proof === null || proof.preparationId !== before.preparation_id ||
-      proof.readyDigest !== before.ready_digest || after.ready_digest !== before.ready_digest) {
+    if (
+      proof === null ||
+      proof.preparationId !== before.preparation_id ||
+      proof.readyDigest !== before.ready_digest ||
+      after.ready_digest !== before.ready_digest
+    ) {
       this.quarantine(after);
       return this.unavailable();
     }
@@ -454,67 +539,119 @@ export class ReferenceService {
         // An earlier candidate may have been revoked/deleted while a later probe awaited.
         return readable.filter((identity) => {
           const row = this.row(identity.ref);
-          return row?.state === "published" &&
+          return (
+            row?.state === "published" &&
             row.owner_plugin === owner.pluginId &&
             row.preparation_id === identity.preparationId &&
             row.ready_digest === identity.readyDigest &&
             row.policy_digest === policy &&
-            this.auth.allowsRef(actor, owner.declaration.readCapability, identity.ref);
+            this.auth.allowsRef(actor, owner.declaration.readCapability, identity.ref)
+          );
         });
       },
       prepare: async (input) => {
         const args = ReferencePrepareRequestSchema.parse(input);
         const owner = this.liveOwner(args.kind, action.pluginId);
         const collection = { kind: "plugin" as const, pluginId: owner.pluginId };
-        const actor = this.requireCaps(action.actor, owner, collection, [owner.declaration.createCapability], action);
+        const actor = this.requireCaps(
+          action.actor,
+          owner,
+          collection,
+          [owner.declaration.createCapability],
+          action,
+        );
         await this.expireOwnerPreparations(owner);
         return this.store.transaction(() => {
           this.expire();
-          this.requireCaps(action.actor, owner, collection, [owner.declaration.createCapability], action);
+          this.requireCaps(
+            action.actor,
+            owner,
+            collection,
+            [owner.declaration.createCapability],
+            action,
+          );
           const binding = this.auth.credentialBinding(action.actor);
-          const existing = this.store.db.query<Publication, [string, string, string, string]>(
-            "SELECT * FROM reference_publications WHERE owner_plugin=? AND actor_principal=? AND credential_binding=? AND request_id=?",
-          ).get(owner.pluginId, actor.principal.id, binding, args.requestId);
+          const existing = this.store.db
+            .query<Publication, [string, string, string, string]>(
+              "SELECT * FROM reference_publications WHERE owner_plugin=? AND actor_principal=? AND credential_binding=? AND request_id=?",
+            )
+            .get(owner.pluginId, actor.principal.id, binding, args.requestId);
           if (existing !== null) {
             this.bound(existing, action);
-            if (existing.binding_digest !== args.bindingDigest || existing.policy_digest !== this.policy(owner) ||
-              (existing.state !== "prepared" && existing.state !== "published")) return this.unavailable();
-            if (existing.state === "published" &&
-              !this.auth.allowsRef(actor, owner.declaration.readCapability, this.ref(existing)))
+            if (
+              existing.binding_digest !== args.bindingDigest ||
+              existing.policy_digest !== this.policy(owner) ||
+              (existing.state !== "prepared" && existing.state !== "published")
+            )
               return this.unavailable();
-            return { ref: this.ref(existing), preparationId: existing.preparation_id,
-              bindingDigest: existing.binding_digest, expiresAt: existing.expires_at };
+            if (
+              existing.state === "published" &&
+              !this.auth.allowsRef(actor, owner.declaration.readCapability, this.ref(existing))
+            )
+              return this.unavailable();
+            return {
+              ref: this.ref(existing),
+              preparationId: existing.preparation_id,
+              bindingDigest: existing.binding_digest,
+              expiresAt: existing.expires_at,
+            };
           }
-          const counts = this.store.db.query<{ retained: number; active: number; personal: number }, [string, string]>(
-            `SELECT count(*) AS retained,coalesce(sum(state='prepared'),0) AS active,
+          const counts = this.store.db
+            .query<{ retained: number; active: number; personal: number }, [string, string]>(
+              `SELECT count(*) AS retained,coalesce(sum(state='prepared'),0) AS active,
              coalesce(sum(state='prepared' AND actor_principal=?),0) AS personal
              FROM reference_publications WHERE owner_plugin=?`,
-          ).get(actor.principal.id, owner.pluginId)!;
+            )
+            .get(actor.principal.id, owner.pluginId)!;
           if (counts.retained >= MAX_RECORDS || counts.active >= 4 || counts.personal >= 2)
             throw new ReferenceRefused("reference_capacity");
           this.capacity(MUTATION_RESERVATION_BYTES);
-          const allocation = this.store.db.query<{ allocation_state: string }, [string]>(
-            "SELECT allocation_state FROM reference_kind_owners WHERE kind=?",
-          ).get(args.kind);
+          const allocation = this.store.db
+            .query<{ allocation_state: string }, [string]>(
+              "SELECT allocation_state FROM reference_kind_owners WHERE kind=?",
+            )
+            .get(args.kind);
           if (allocation === null) return this.unavailable();
-          const state = JSON.parse(allocation.allocation_state) as { incarnation: string; counter: number };
+          const state = JSON.parse(allocation.allocation_state) as {
+            incarnation: string;
+            counter: number;
+          };
           if (!Number.isSafeInteger(state.counter) || state.counter >= Number.MAX_SAFE_INTEGER)
             throw new ReferenceRefused("reference_capacity");
           state.counter += 1;
-          const ref: PluginOwnedRef = { kind: "file", fileId: `${state.incarnation}-${state.counter}` };
+          const ref: PluginOwnedRef = {
+            kind: "file",
+            fileId: `${state.incarnation}-${state.counter}`,
+          };
           if (!this.auth.containsReferenceTarget(actor, ref)) return this.unavailable();
           const preparationId = randomUUID();
           const now = this.runtime.now();
           const expiresAt = now + PREPARATION_LIFETIME_MS;
-          this.store.db.query("UPDATE reference_kind_owners SET allocation_state=? WHERE kind=?")
+          this.store.db
+            .query("UPDATE reference_kind_owners SET allocation_state=? WHERE kind=?")
             .run(JSON.stringify(state), args.kind);
-          this.store.db.query(`INSERT INTO reference_publications(publication_id,node,owner_plugin,preparation_id,
+          this.store.db
+            .query(
+              `INSERT INTO reference_publications(publication_id,node,owner_plugin,preparation_id,
             request_id,actor_principal,credential_json,credential_binding,binding_digest,policy_digest,owner_generation,
-            state,created_at,expires_at,trace_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,'prepared',?,?,?)`).run(
-            randomUUID(), formatManifoldUri(ref), owner.pluginId, preparationId, args.requestId,
-            actor.principal.id, canonicalJobJson(this.auth.credentialReference(action.actor)), binding,
-            args.bindingDigest, this.policy(owner), owner.generationDigest, now, expiresAt, action.traceId,
-          );
+            state,created_at,expires_at,trace_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,'prepared',?,?,?)`,
+            )
+            .run(
+              randomUUID(),
+              formatManifoldUri(ref),
+              owner.pluginId,
+              preparationId,
+              args.requestId,
+              actor.principal.id,
+              canonicalJobJson(this.auth.credentialReference(action.actor)),
+              binding,
+              args.bindingDigest,
+              this.policy(owner),
+              owner.generationDigest,
+              now,
+              expiresAt,
+              action.traceId,
+            );
           this.capacity(0);
           this.store.afterCommit(() => this.scheduleExpiry(expiresAt, owner.pluginId));
           return { ref, preparationId, bindingDigest: args.bindingDigest, expiresAt };
@@ -539,8 +676,12 @@ export class ReferenceService {
           return identity;
         }
         const deadline = Math.min(before.expires_at, args.expiresAt ?? Number.POSITIVE_INFINITY);
-        if (before.state !== "prepared" || deadline <= this.runtime.now() ||
-          before.policy_digest !== this.policy(owner) || before.owner_generation !== owner.generationDigest)
+        if (
+          before.state !== "prepared" ||
+          deadline <= this.runtime.now() ||
+          before.policy_digest !== this.policy(owner) ||
+          before.owner_generation !== owner.generationDigest
+        )
           return this.unavailable();
         const proof = await owner.probe(this.probeRequest(before));
         const probeDeadline = Math.min(deadline, proof?.expiresAt ?? deadline);
@@ -549,31 +690,57 @@ export class ReferenceService {
           const current = this.preparation(args.preparationId);
           if (current === null) return this.unavailable();
           this.bound(current, action);
-          if (current.state !== "prepared" || Math.min(current.expires_at, probeDeadline) <= this.runtime.now() ||
-            current.policy_digest !== this.policy(owner) || current.owner_generation !== owner.generationDigest ||
-            !this.auth.containsReferenceTarget(actor, ref) || proof === null ||
-            proof.preparationId !== args.preparationId || proof.readyDigest !== args.readyDigest)
+          if (
+            current.state !== "prepared" ||
+            Math.min(current.expires_at, probeDeadline) <= this.runtime.now() ||
+            current.policy_digest !== this.policy(owner) ||
+            current.owner_generation !== owner.generationDigest ||
+            !this.auth.containsReferenceTarget(actor, ref) ||
+            proof === null ||
+            proof.preparationId !== args.preparationId ||
+            proof.readyDigest !== args.readyDigest
+          )
             return this.unavailable();
           this.capacity(MUTATION_RESERVATION_BYTES);
           this.requireCaps(action.actor, owner, collection, caps, action);
           if (probeDeadline <= this.runtime.now()) return this.unavailable();
-          this.store.db.query("UPDATE reference_publications SET state='published',ready_digest=?,cleanup_pending=1 WHERE publication_id=? AND state='prepared'")
+          this.store.db
+            .query(
+              "UPDATE reference_publications SET state='published',ready_digest=?,cleanup_pending=1 WHERE publication_id=? AND state='prepared'",
+            )
             .run(args.readyDigest, current.publication_id);
-          this.auth.createReferenceGrant({ publicationId: current.publication_id, policyDigest: current.policy_digest,
-            role: "creator", principalId: actor.principal.id, node: current.node,
-            caps: owner.declaration.creatorCaps, previousGrantId: null }, actor, action.traceId);
+          this.auth.createReferenceGrant(
+            {
+              publicationId: current.publication_id,
+              policyDigest: current.policy_digest,
+              role: "creator",
+              principalId: actor.principal.id,
+              node: current.node,
+              caps: owner.declaration.creatorCaps,
+              previousGrantId: null,
+            },
+            actor,
+            action.traceId,
+          );
           this.capacity(0);
           this.store.afterCommit(() => this.scheduleRecovery());
           return { ref, preparationId: args.preparationId, readyDigest: args.readyDigest };
         });
         // Await the ordinary acknowledgement while the initiating guest is suspended in this
         // reference call. A crash here leaves the same work durably queued for idle maintenance.
-        await this.acknowledgePublication({ ...before, state: "published", ready_digest: args.readyDigest }, owner);
+        await this.acknowledgePublication(
+          { ...before, state: "published", ready_digest: args.readyDigest },
+          owner,
+        );
         this.requireCaps(action.actor, owner, collection, caps, action);
         this.requireCaps(action.actor, owner, ref, [owner.declaration.readCapability]);
         const committed = this.preparation(args.preparationId);
-        if (committed?.state !== "published" || committed.ready_digest !== args.readyDigest ||
-          committed.policy_digest !== this.policy(owner)) return this.unavailable();
+        if (
+          committed?.state !== "published" ||
+          committed.ready_digest !== args.readyDigest ||
+          committed.policy_digest !== this.policy(owner)
+        )
+          return this.unavailable();
         this.bound(committed, action);
         return identity;
       },
@@ -584,12 +751,19 @@ export class ReferenceService {
           if (row === null) return this.unavailable();
           this.bound(row, action);
           const owner = this.liveOwner(this.ref(row).kind, action.pluginId);
-          action.check(owner.declaration.createCapability, { kind: "plugin", pluginId: owner.pluginId });
+          action.check(owner.declaration.createCapability, {
+            kind: "plugin",
+            pluginId: owner.pluginId,
+          });
           if (row.state === "aborted") return this.terminal(row);
           if (row.state !== "prepared") return this.unavailable();
-          this.store.db.query(`UPDATE reference_publications SET state='aborted',terminal_at=?,cleanup_pending=1,
+          this.store.db
+            .query(
+              `UPDATE reference_publications SET state='aborted',terminal_at=?,cleanup_pending=1,
             terminal_actor=actor_principal,terminal_credential_binding=credential_binding
-            WHERE preparation_id=? AND state='prepared'`).run(this.runtime.now(), preparationId);
+            WHERE preparation_id=? AND state='prepared'`,
+            )
+            .run(this.runtime.now(), preparationId);
           return this.terminal({ ...row, state: "aborted" });
         });
         await this.reclaim(action.pluginId);
@@ -612,7 +786,12 @@ export class ReferenceService {
           this.requireCaps(action.actor, owner, ref, [owner.declaration.deleteCapability], action);
           const row = this.row(ref);
           if (row === null || row.state !== "published") return this.unavailable();
-          this.retire(row, action.actor.principal.id, action.traceId, this.auth.credentialBinding(action.actor));
+          this.retire(
+            row,
+            action.actor.principal.id,
+            action.traceId,
+            this.auth.credentialBinding(action.actor),
+          );
           return this.terminal({ ...row, state: "deleted" });
         });
         await this.reclaim(action.pluginId);
@@ -626,10 +805,13 @@ export class ReferenceService {
         const current = this.current(action.actor);
         if (!this.auth.containsReferenceTarget(current, ref)) return this.unavailable();
         const row = this.row(ref);
-        if (row === null || row.owner_plugin !== owner.pluginId ||
+        if (
+          row === null ||
+          row.owner_plugin !== owner.pluginId ||
           (row.state !== "aborted" && row.state !== "deleted") ||
           row.terminal_actor !== current.principal.id ||
-          row.terminal_credential_binding !== this.auth.credentialBinding(current))
+          row.terminal_credential_binding !== this.auth.credentialBinding(current)
+        )
           return this.unavailable();
         // This answers only the caller's already-committed operation, not access to the resource.
         return this.terminal(row);
@@ -639,21 +821,40 @@ export class ReferenceService {
         await this.requirePublished(action.actor, args.ref, "share", action);
         const owner = this.liveOwner(args.ref.kind, action.pluginId);
         return this.store.transaction(() => {
-          const actor = this.requireCaps(action.actor, owner, args.ref, owner.declaration.sharing.prerequisites, action);
+          const actor = this.requireCaps(
+            action.actor,
+            owner,
+            args.ref,
+            owner.declaration.sharing.prerequisites,
+            action,
+          );
           const row = this.row(args.ref);
-          if (row === null || row.state !== "published" || this.store.getPrincipal(args.principalId) === null ||
-            args.caps.some((cap) => !owner.declaration.sharing.grantableCaps.includes(cap))) return this.unavailable();
+          if (
+            row === null ||
+            row.state !== "published" ||
+            this.store.getPrincipal(args.principalId) === null ||
+            args.caps.some((cap) => !owner.declaration.sharing.grantableCaps.includes(cap))
+          )
+            return this.unavailable();
           const caps = [...args.caps].sort();
-          const existing = this.store.db.query<
-            { grant_id: string; previous_grant_id: string | null }, [string, string, string]
-          >(
-            `SELECT grant_id,previous_grant_id FROM reference_grant_provenance
+          const existing = this.store.db
+            .query<
+              { grant_id: string; previous_grant_id: string | null },
+              [string, string, string]
+            >(
+              `SELECT grant_id,previous_grant_id FROM reference_grant_provenance
              WHERE publication_id=? AND role='share' AND principal_id=? AND caps_key=?`,
-          ).get(row.publication_id, args.principalId, JSON.stringify(caps));
+            )
+            .get(row.publication_id, args.principalId, JSON.stringify(caps));
           if (existing !== null) {
             const active = this.store.getGrant(existing.grant_id) !== null;
             if (existing.previous_grant_id === args.previousGrantId && active) {
-              return { grantId: existing.grant_id, principalId: args.principalId, caps, active: true };
+              return {
+                grantId: existing.grant_id,
+                principalId: args.principalId,
+                caps,
+                active: true,
+              };
             }
             // An old acknowledgement never heals a revoked decision. A new explicit choice
             // may replace only the exact retired decision the grantor reviewed.
@@ -664,12 +865,23 @@ export class ReferenceService {
           }
           this.capacity(MUTATION_RESERVATION_BYTES);
           if (existing !== null) {
-            this.store.db.query("DELETE FROM reference_grant_provenance WHERE grant_id=?")
+            this.store.db
+              .query("DELETE FROM reference_grant_provenance WHERE grant_id=?")
               .run(existing.grant_id);
           }
-          const grant = this.auth.createReferenceGrant({ publicationId: row.publication_id, policyDigest: row.policy_digest,
-            role: "share", principalId: args.principalId, node: row.node, caps,
-            previousGrantId: args.previousGrantId }, actor, action.traceId);
+          const grant = this.auth.createReferenceGrant(
+            {
+              publicationId: row.publication_id,
+              policyDigest: row.policy_digest,
+              role: "share",
+              principalId: args.principalId,
+              node: row.node,
+              caps,
+              previousGrantId: args.previousGrantId,
+            },
+            actor,
+            action.traceId,
+          );
           this.capacity(0);
           return { grantId: grant.id, principalId: args.principalId, caps, active: true };
         });
@@ -679,66 +891,125 @@ export class ReferenceService {
         await this.requirePublished(action.actor, args.ref, "share", action);
         const owner = this.liveOwner(args.ref.kind, action.pluginId);
         return this.store.transaction(() => {
-          const actor = this.requireCaps(action.actor, owner, args.ref, owner.declaration.sharing.prerequisites, action);
+          const actor = this.requireCaps(
+            action.actor,
+            owner,
+            args.ref,
+            owner.declaration.sharing.prerequisites,
+            action,
+          );
           const row = this.row(args.ref);
           if (row === null || row.state !== "published") return this.unavailable();
-          const share = this.store.db.query<{ principal_id: string; grant_id: string }, [string, string, string, string]>(
-            `SELECT principal_id,grant_id FROM reference_grant_provenance
+          const share = this.store.db
+            .query<{ principal_id: string; grant_id: string }, [string, string, string, string]>(
+              `SELECT principal_id,grant_id FROM reference_grant_provenance
              WHERE publication_id=? AND (grant_id=? OR previous_grant_id=?) AND role='share' AND policy_digest=?`,
-          ).get(row.publication_id, args.grantId, args.grantId, row.policy_digest);
+            )
+            .get(row.publication_id, args.grantId, args.grantId, row.policy_digest);
           // Unknown/older-than-retained decisions have no attributable audience. Refuse rather
           // than claim that nobody can read; the grantor must refresh the current audience.
           if (share === null) throw new ReferenceRefused("reference_conflict");
-          const changed = share.grant_id === args.grantId &&
-            this.auth.revokeReferenceGrant(row.publication_id, args.grantId, "share", actor.principal.id, action.traceId);
-          return { changed, principalReadAllowed: this.auth.referencePrincipalReadAllowed(share.principal_id,
-            owner.declaration.readCapability, row.node), credentialAccess: "not_evaluated" as const };
+          const changed =
+            share.grant_id === args.grantId &&
+            this.auth.revokeReferenceGrant(
+              row.publication_id,
+              args.grantId,
+              "share",
+              actor.principal.id,
+              action.traceId,
+            );
+          return {
+            changed,
+            principalReadAllowed: this.auth.referencePrincipalReadAllowed(
+              share.principal_id,
+              owner.declaration.readCapability,
+              row.node,
+            ),
+            credentialAccess: "not_evaluated" as const,
+          };
         });
       },
       audience: async (input) => {
         const args = ReferenceAudienceRequestSchema.parse(input);
         await this.requirePublished(action.actor, args.ref, "share", action);
         const owner = this.liveOwner(args.ref.kind, action.pluginId);
-        this.requireCaps(action.actor, owner, args.ref, owner.declaration.sharing.prerequisites, action);
+        this.requireCaps(
+          action.actor,
+          owner,
+          args.ref,
+          owner.declaration.sharing.prerequisites,
+          action,
+        );
         const row = this.row(args.ref);
         if (row === null || row.state !== "published") return this.unavailable();
         const limit = args.limit ?? 64;
-        const shares = this.store.db.query<
-          { grant_id: string; principal_id: string; caps_key: string; active: number },
-          [string, string, number]
-        >(
-          `SELECT p.grant_id,p.principal_id,p.caps_key,(g.id IS NOT NULL) AS active
+        const shares = this.store.db
+          .query<
+            { grant_id: string; principal_id: string; caps_key: string; active: number },
+            [string, string, number]
+          >(
+            `SELECT p.grant_id,p.principal_id,p.caps_key,(g.id IS NOT NULL) AS active
            FROM reference_grant_provenance p LEFT JOIN grants g ON g.id=p.grant_id
            WHERE p.publication_id=? AND p.role='share' AND p.grant_id>?
            ORDER BY p.grant_id LIMIT ?`,
-        ).all(row.publication_id, args.after ?? "", limit + 1);
+          )
+          .all(row.publication_id, args.after ?? "", limit + 1);
         const page: RestrictedGrantView[] = shares.slice(0, limit).map((share) => ({
-          grantId: share.grant_id, principalId: share.principal_id, caps: JSON.parse(share.caps_key) as PluginCap[],
+          grantId: share.grant_id,
+          principalId: share.principal_id,
+          caps: JSON.parse(share.caps_key) as PluginCap[],
           active: share.active === 1,
         }));
-        return { shares: page, next: shares.length > limit ? page[page.length - 1]!.grantId : null };
+        return {
+          shares: page,
+          next: shares.length > limit ? page[page.length - 1]!.grantId : null,
+        };
       },
     };
   }
 
-  private retire(row: Publication, actorId: string | null, traceId: number | null, credentialBinding: string | null = null): void {
-    this.store.db.query(`UPDATE reference_publications SET state='deleted',terminal_at=?,cleanup_pending=1,
-      terminal_actor=?,terminal_credential_binding=? WHERE publication_id=?`)
-      .run(this.runtime.now(), credentialBinding === null ? null : actorId, credentialBinding, row.publication_id);
+  private retire(
+    row: Publication,
+    actorId: string | null,
+    traceId: number | null,
+    credentialBinding: string | null = null,
+  ): void {
+    this.store.db
+      .query(
+        `UPDATE reference_publications SET state='deleted',terminal_at=?,cleanup_pending=1,
+      terminal_actor=?,terminal_credential_binding=? WHERE publication_id=?`,
+      )
+      .run(
+        this.runtime.now(),
+        credentialBinding === null ? null : actorId,
+        credentialBinding,
+        row.publication_id,
+      );
     for (;;) {
-      const grants = this.store.db.query<{ grant_id: string; role: "creator" | "share" }, [string]>(
-        `SELECT p.grant_id,p.role FROM reference_grant_provenance p
+      const grants = this.store.db
+        .query<{ grant_id: string; role: "creator" | "share" }, [string]>(
+          `SELECT p.grant_id,p.role FROM reference_grant_provenance p
          JOIN grants g ON g.id=p.grant_id WHERE p.publication_id=? LIMIT 64`,
-      ).all(row.publication_id);
+        )
+        .all(row.publication_id);
       if (grants.length === 0) break;
       for (const grant of grants)
-        if (!this.auth.revokeReferenceGrant(row.publication_id, grant.grant_id, grant.role, actorId, traceId))
+        if (
+          !this.auth.revokeReferenceGrant(
+            row.publication_id,
+            grant.grant_id,
+            grant.role,
+            actorId,
+            traceId,
+          )
+        )
           throw new Error("reference grant provenance is inconsistent");
     }
     // Main-store foreign keys are not enabled; retired receipt provenance is explicit.
     // Published share tombstones remain until this terminal transition, preventing ACK
     // reconciliation from silently recreating an administrator-revoked grant.
-    this.store.db.query("DELETE FROM reference_grant_provenance WHERE publication_id=?")
+    this.store.db
+      .query("DELETE FROM reference_grant_provenance WHERE publication_id=?")
       .run(row.publication_id);
     this.auth.referenceAuthorityChanged();
   }
@@ -746,13 +1017,18 @@ export class ReferenceService {
   /** Host-first purge retains kind reservations and receipts; it never reinterprets published data. */
   purge(pluginId: string, actorId: string, traceId: number | null = null): void {
     this.store.transaction(() => {
-      const rows = this.store.db.query<Publication, [string]>(
-        "SELECT * FROM reference_publications WHERE owner_plugin=? AND state IN ('prepared','published','quarantined')",
-      ).all(pluginId);
+      const rows = this.store.db
+        .query<Publication, [string]>(
+          "SELECT * FROM reference_publications WHERE owner_plugin=? AND state IN ('prepared','published','quarantined')",
+        )
+        .all(pluginId);
       for (const row of rows) {
         if (row.state === "prepared") {
-          this.store.db.query(`UPDATE reference_publications SET state='aborted',terminal_at=?,cleanup_pending=1,
-            terminal_actor=actor_principal,terminal_credential_binding=credential_binding WHERE publication_id=?`)
+          this.store.db
+            .query(
+              `UPDATE reference_publications SET state='aborted',terminal_at=?,cleanup_pending=1,
+            terminal_actor=actor_principal,terminal_credential_binding=credential_binding WHERE publication_id=?`,
+            )
             .run(this.runtime.now(), row.publication_id);
         } else this.retire(row, actorId, traceId);
       }
@@ -766,19 +1042,25 @@ export class ReferenceService {
     try {
       // At most 1,000 retained rows: sixteen bounded private batches drain the complete journal.
       for (let batch = 0; batch < Math.ceil(MAX_RECORDS / 64); batch += 1) {
-        const rows = this.store.db.query<Publication, [string]>(
-          `SELECT * FROM reference_publications WHERE owner_plugin=? AND cleanup_pending=1
+        const rows = this.store.db
+          .query<Publication, [string]>(
+            `SELECT * FROM reference_publications WHERE owner_plugin=? AND cleanup_pending=1
            AND state IN ('aborted','deleted') ORDER BY created_at LIMIT 64`,
-        ).all(pluginId);
+          )
+          .all(pluginId);
         if (rows.length === 0) return;
         const owner = this.owner(this.ref(rows[0]!).kind);
         if (owner === null || owner.pluginId !== pluginId) return;
         await owner.reclaim(rows.map((row) => this.terminal(row)));
         this.sameOwner(owner);
         this.store.transaction(() => {
-          for (const row of rows) this.store.db.query(`UPDATE reference_publications SET cleanup_pending=0
-            WHERE publication_id=? AND owner_plugin=? AND preparation_id=? AND state IN ('aborted','deleted')`)
-            .run(row.publication_id, pluginId, row.preparation_id);
+          for (const row of rows)
+            this.store.db
+              .query(
+                `UPDATE reference_publications SET cleanup_pending=0
+            WHERE publication_id=? AND owner_plugin=? AND preparation_id=? AND state IN ('aborted','deleted')`,
+              )
+              .run(row.publication_id, pluginId, row.preparation_id);
         });
       }
     } catch {
@@ -794,20 +1076,26 @@ export class ReferenceService {
     for (const kind of PluginOwnedRefKindSchema.options) {
       const owner = this.owner(kind);
       if (owner !== null) {
-        try { await this.expireOwnerPreparations(owner); }
-        catch { this.cleanupFailure(owner.pluginId); }
+        try {
+          await this.expireOwnerPreparations(owner);
+        } catch {
+          this.cleanupFailure(owner.pluginId);
+        }
       }
     }
-    const rows = this.store.db.query<Publication, []>(
-      "SELECT * FROM reference_publications WHERE state='published' ORDER BY created_at LIMIT 1000",
-    ).all();
+    const rows = this.store.db
+      .query<Publication, []>(
+        "SELECT * FROM reference_publications WHERE state='published' ORDER BY created_at LIMIT 1000",
+      )
+      .all();
     for (const row of rows) {
       const ref = this.ref(row);
       const owner = this.owner(ref.kind);
       if (owner === null || owner.pluginId !== row.owner_plugin) continue;
       await this.acknowledgePublication(row, owner, true);
     }
-    for (const pluginId of new Set(this.store.referenceKindOwners().values())) await this.reclaim(pluginId);
+    for (const pluginId of new Set(this.store.referenceKindOwners().values()))
+      await this.reclaim(pluginId);
     this.scheduleRecovery();
   }
 }

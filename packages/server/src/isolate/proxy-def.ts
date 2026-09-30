@@ -207,9 +207,11 @@ export function buildIsolateDef(
   if (
     declaredCarriers.length !== reportedCarriers.length ||
     declaredCarriers.some(
-      (declaration) => !reportedCarriers.some(
-        (reported) => reported.id === declaration.id && reported.direction === declaration.direction,
-      ),
+      (declaration) =>
+        !reportedCarriers.some(
+          (reported) =>
+            reported.id === declaration.id && reported.direction === declaration.direction,
+        ),
     ) ||
     (declaredCarriers.length !== 0 && transport.byteRequest === undefined)
   )
@@ -234,30 +236,36 @@ export function buildIsolateDef(
       if (reply.method !== "authorize") throw new ByteTransferError("unavailable");
       return reply.result;
     };
-    byteCarriers[carrierId] = declaration.direction === "incoming"
-      ? {
-          direction: "incoming",
-          authorize,
-          write: async (ctx, input, data) => {
-            const reply = await byteRequest({
-              method: "write",
-              carrierId,
-              input,
-              data: Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString("base64"),
-            }, ctx);
-            if (reply.method !== "write") throw new ByteTransferError("outcome_unknown");
-            return reply.result;
-          },
-        }
-      : {
-          direction: "outgoing",
-          authorize,
-          read: async (ctx, input) => {
-            const reply = await byteRequest({ method: "read", carrierId, input }, ctx);
-            if (reply.method !== "read") throw new ByteTransferError("unavailable");
-            return { ...reply.result, data: Buffer.from(reply.result.data, "base64") };
-          },
-        };
+    byteCarriers[carrierId] =
+      declaration.direction === "incoming"
+        ? {
+            direction: "incoming",
+            authorize,
+            write: async (ctx, input, data) => {
+              const reply = await byteRequest(
+                {
+                  method: "write",
+                  carrierId,
+                  input,
+                  data: Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString(
+                    "base64",
+                  ),
+                },
+                ctx,
+              );
+              if (reply.method !== "write") throw new ByteTransferError("outcome_unknown");
+              return reply.result;
+            },
+          }
+        : {
+            direction: "outgoing",
+            authorize,
+            read: async (ctx, input) => {
+              const reply = await byteRequest({ method: "read", carrierId, input }, ctx);
+              if (reply.method !== "read") throw new ByteTransferError("unavailable");
+              return { ...reply.result, data: Buffer.from(reply.result.data, "base64") };
+            },
+          };
   }
   const actions: AnyActionDef[] = [];
   const handlers: Record<string, ActionHandler> = {};
@@ -372,17 +380,34 @@ export function buildIsolateDef(
               receipts: readonly ReferenceTerminalReceipt[],
             ) => {
               if (transport.reclaimReferences === undefined)
-                throw new IsolateDenial("unavailable", "reference reclamation transport is unavailable");
-              await transport.reclaimReferences(ctx, IsolateReferenceReclaimRequestSchema.parse(receipts));
+                throw new IsolateDenial(
+                  "unavailable",
+                  "reference reclamation transport is unavailable",
+                );
+              await transport.reclaimReferences(
+                ctx,
+                IsolateReferenceReclaimRequestSchema.parse(receipts),
+              );
             },
           }),
-      ...(loaded.reconcileNativeTransfers !== true ? {} : {
-        reconcileNativeTransfers: async (ctx: ReferenceProbeCtx, receipts: readonly NativeTransferTerminalEvidence[]) => {
-          if (!transport.reconcileNativeTransfers)
-            throw new IsolateDenial("unavailable", "native evidence reconciliation transport is unavailable");
-          await transport.reconcileNativeTransfers(ctx, NativeTransferEvidenceBatchSchema.parse(receipts));
-        },
-      }),
+      ...(loaded.reconcileNativeTransfers !== true
+        ? {}
+        : {
+            reconcileNativeTransfers: async (
+              ctx: ReferenceProbeCtx,
+              receipts: readonly NativeTransferTerminalEvidence[],
+            ) => {
+              if (!transport.reconcileNativeTransfers)
+                throw new IsolateDenial(
+                  "unavailable",
+                  "native evidence reconciliation transport is unavailable",
+                );
+              await transport.reconcileNativeTransfers(
+                ctx,
+                NativeTransferEvidenceBatchSchema.parse(receipts),
+              );
+            },
+          }),
       ...(harness === undefined ? {} : { harness }),
       migrations: migrations.map((migration) => ({
         ...migration,
@@ -693,10 +718,16 @@ export async function serveCtxCall(
         case "nativeTransfers.status":
           return ctx.nativeTransfers.status(NativeTransferContinuationArgsSchema.parse(args[0]));
         case "nativeTransfers.readChunk": {
-          const result = await ctx.nativeTransfers.readChunk(NativeTransferReadChunkArgsSchema.parse(args[0]));
+          const result = await ctx.nativeTransfers.readChunk(
+            NativeTransferReadChunkArgsSchema.parse(args[0]),
+          );
           return {
             ...result,
-            data: Buffer.from(result.data.buffer, result.data.byteOffset, result.data.byteLength).toString("base64"),
+            data: Buffer.from(
+              result.data.buffer,
+              result.data.byteOffset,
+              result.data.byteLength,
+            ).toString("base64"),
           };
         }
         default:
@@ -857,7 +888,9 @@ export async function serveCtxCall(
     case "nativeTransfers.beginRead":
       return ctx.nativeTransfers.beginRead(NativeTransferBeginReadArgsSchema.parse(args[0]));
     case "nativeTransfers.putChunk": {
-      const wire = NativeTransferPutChunkArgsSchema.extend({ data: NativeTransferChunkDataSchema }).parse(args[0]);
+      const wire = NativeTransferPutChunkArgsSchema.extend({
+        data: NativeTransferChunkDataSchema,
+      }).parse(args[0]);
       return ctx.nativeTransfers.putChunk({ ...wire, data: Buffer.from(wire.data, "base64") });
     }
     case "nativeTransfers.commitPut":
@@ -867,10 +900,21 @@ export async function serveCtxCall(
     case "nativeTransfers.status":
       return ctx.nativeTransfers.status(NativeTransferContinuationArgsSchema.parse(args[0]));
     case "nativeTransfers.receipt":
-      return NativeTransferReceiptViewSchema.parse(await ctx.nativeTransfers.receipt(NativeTransferContinuationArgsSchema.parse(args[0])));
+      return NativeTransferReceiptViewSchema.parse(
+        await ctx.nativeTransfers.receipt(NativeTransferContinuationArgsSchema.parse(args[0])),
+      );
     case "nativeTransfers.readChunk": {
-      const result = await ctx.nativeTransfers.readChunk(NativeTransferReadChunkArgsSchema.parse(args[0]));
-      return { ...result, data: Buffer.from(result.data.buffer, result.data.byteOffset, result.data.byteLength).toString("base64") };
+      const result = await ctx.nativeTransfers.readChunk(
+        NativeTransferReadChunkArgsSchema.parse(args[0]),
+      );
+      return {
+        ...result,
+        data: Buffer.from(
+          result.data.buffer,
+          result.data.byteOffset,
+          result.data.byteLength,
+        ).toString("base64"),
+      };
     }
     case "references.attach":
       return ReferenceAttachmentResultSchema.parse(
@@ -890,7 +934,9 @@ export async function serveCtxCall(
       );
     case "references.requirePublished":
       return PublishedReferenceIdentitySchema.parse(
-        await ctx.references.requirePublished(ReferenceRequirePublishedRequestSchema.parse(args[0])),
+        await ctx.references.requirePublished(
+          ReferenceRequirePublishedRequestSchema.parse(args[0]),
+        ),
       );
     case "references.unpublish":
       return ReferenceTerminalReceiptSchema.parse(

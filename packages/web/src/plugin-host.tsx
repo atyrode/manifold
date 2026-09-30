@@ -136,8 +136,12 @@ import { FEED_TOPICS, SPACE_SET_LAYOUT_ACTION, WEB_PLUGIN_DEFS } from "./assembl
  */
 export interface WebPluginDef {
   readonly id: string;
-  readonly panels?: Readonly<Record<string, ComponentType<PanelProps> | ComponentType<PortablePanelProps>>>;
-  readonly sections?: Readonly<Record<string, ComponentType<SectionProps> | ComponentType<PortableSectionProps>>>;
+  readonly panels?: Readonly<
+    Record<string, ComponentType<PanelProps> | ComponentType<PortablePanelProps>>
+  >;
+  readonly sections?: Readonly<
+    Record<string, ComponentType<SectionProps> | ComponentType<PortableSectionProps>>
+  >;
   readonly elements?: Readonly<Record<string, ComponentType<never>>>;
   /** Native shortcuts and point authoring, keyed by manifest-declared tools. */
   readonly tools?: Readonly<Record<string, Pick<RegisteredTool, "shortcut" | "point">>>;
@@ -415,8 +419,10 @@ export function buildBrowserAssembly(
     for (const tool of manifest.contributes.tools) {
       const attachment = isolated ? undefined : def?.tools?.[tool.id];
       const toolbar = tool.toolbar ?? DEFAULT_TOOLBAR;
-      const Component = tool.panel === undefined ? null :
-        panels.get(`${manifest.id}.${tool.panel}`)?.Component ?? null;
+      const Component =
+        tool.panel === undefined
+          ? null
+          : (panels.get(`${manifest.id}.${tool.panel}`)?.Component ?? null);
       const claimant = `${manifest.id}.${tool.id}`;
       if (attachment?.shortcut !== undefined) {
         claim(toolShortcuts, `${toolbar}:${attachment.shortcut.toLowerCase()}`, claimant);
@@ -1666,12 +1672,15 @@ export function HostServicesGate({
       ]),
     );
     const panels = new Map<string, RegisteredRenderer<PanelProps>>(
-      [...assembly.panels].map(([id, panel]) => [id, {
-        plugin: panel.plugin,
-        title: assembly.pluginTitle(panel.plugin) ?? panel.plugin,
-        enabled: panel.enabled,
-        Component: panel.Component,
-      }]),
+      [...assembly.panels].map(([id, panel]) => [
+        id,
+        {
+          plugin: panel.plugin,
+          title: assembly.pluginTitle(panel.plugin) ?? panel.plugin,
+          enabled: panel.enabled,
+          Component: panel.Component,
+        },
+      ]),
     );
     return {
       revision: assembly.revision,

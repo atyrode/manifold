@@ -392,8 +392,11 @@ class Projection {
     const out: Record<string, unknown> = { type: node.kind, key: `n${String(node.id)}` };
     copyFields(node.props, META_PROPS, out);
     copyFields(node.props, DATA_PROPS[node.kind], out);
-    if (CALLBACK_PROPS[node.kind] !== undefined &&
-        ((node.kind !== "byteImage" && node.kind !== "byteDownload") || node.props["onChange"] !== undefined)) {
+    if (
+      CALLBACK_PROPS[node.kind] !== undefined &&
+      ((node.kind !== "byteImage" && node.kind !== "byteDownload") ||
+        node.props["onChange"] !== undefined)
+    ) {
       out["event"] = this.register(node, node.kind === "button" ? "click" : "change");
       if (node.props["onBlur"] !== undefined) out["blurEvent"] = this.register(node, "blur");
     }
@@ -469,7 +472,9 @@ function checkedValue(
     return payload === undefined ? { value: undefined } : "this control's event carries no payload";
   }
   if (node.kind === "fileInput" || node.kind === "byteImage") {
-    const result = (node.kind === "fileInput" ? LocalFileSelectionSchema : ByteImageStatusSchema).safeParse(payload);
+    const result = (
+      node.kind === "fileInput" ? LocalFileSelectionSchema : ByteImageStatusSchema
+    ).safeParse(payload);
     return result.success ? { value: result.data } : "invalid byte surface event";
   }
   if (node.kind === "byteDownload") {
@@ -500,8 +505,15 @@ function handlerFor(node: FrameNode, slot: Slot): unknown {
     const items = (node.props["items"] ?? []) as readonly ListItem[];
     return items.find((item) => item["key"] === slot.row)?.["onClick"];
   }
-  return node.props[slot === "click" ? "onClick" : slot === "blur" ? "onBlur" :
-    node.kind === "borrowedPanel" ? "onResult" : "onChange"];
+  return node.props[
+    slot === "click"
+      ? "onClick"
+      : slot === "blur"
+        ? "onBlur"
+        : node.kind === "borrowedPanel"
+          ? "onResult"
+          : "onChange"
+  ];
 }
 
 /**

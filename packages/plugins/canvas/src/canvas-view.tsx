@@ -582,7 +582,10 @@ function CanvasViewImpl({
   );
   const tool = selectedTool?.id ?? "select";
   const ToolPanel = selectedTool?.Component;
-  const [toolPoint, setToolPoint] = useState({ x: -initialViewport.x / initialViewport.zoom, y: -initialViewport.y / initialViewport.zoom });
+  const [toolPoint, setToolPoint] = useState({
+    x: -initialViewport.x / initialViewport.zoom,
+    y: -initialViewport.y / initialViewport.zoom,
+  });
   const toolHost = useMemo(() => ({ ...host, containerId }), [host, containerId]);
   const toolArg = useMemo(() => ({ point: toolPoint }), [toolPoint]);
   const cancelPoint = useCallback((): void => {
@@ -2048,12 +2051,36 @@ function CanvasViewImpl({
             </>
           ) : null}
           <CanvasToolbar tool={tool} onChange={chooseTool} />
-          {ToolPanel ? <div className="nodrag nopan" role="region" aria-label={selectedTool?.title}
-            style={{ position: "absolute", right: 12, top: 60, width: "min(360px, 90%)", maxHeight: "75%", overflow: "auto", zIndex: presenceZIndex + 1, padding: 12, border: "1px solid #343a40", borderRadius: "0.65rem", background: "rgb(24 27 32 / 94%)" }}
-            onPointerDown={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()}
-            onKeyDown={(event) => event.stopPropagation()} onWheel={(event) => event.stopPropagation()}>
-            <ToolPanel key={`${selectedTool?.plugin}:${selectedTool?.id}:${containerId}`} host={toolHost} arg={toolArg} />
-          </div> : null}
+          {ToolPanel ? (
+            <div
+              className="nodrag nopan"
+              role="region"
+              aria-label={selectedTool?.title}
+              style={{
+                position: "absolute",
+                right: 12,
+                top: 60,
+                width: "min(360px, 90%)",
+                maxHeight: "75%",
+                overflow: "auto",
+                zIndex: presenceZIndex + 1,
+                padding: 12,
+                border: "1px solid #343a40",
+                borderRadius: "0.65rem",
+                background: "rgb(24 27 32 / 94%)",
+              }}
+              onPointerDown={(event) => event.stopPropagation()}
+              onDoubleClick={(event) => event.stopPropagation()}
+              onKeyDown={(event) => event.stopPropagation()}
+              onWheel={(event) => event.stopPropagation()}
+            >
+              <ToolPanel
+                key={`${selectedTool?.plugin}:${selectedTool?.id}:${containerId}`}
+                host={toolHost}
+                arg={toolArg}
+              />
+            </div>
+          ) : null}
           <CanvasProviders value={context} gestures={remoteGestures}>
             {/* Laptop-native gestures (Excalidraw convention): two-finger scroll pans,
               pinch zooms (browsers report trackpad pinch as ctrl+wheel), and plain
@@ -2069,7 +2096,9 @@ function CanvasViewImpl({
               onPaneClick={(event) => {
                 publishHere();
                 if (ToolPanel !== undefined && flowRef.current !== null) {
-                  setToolPoint(flowRef.current.screenToFlowPosition({ x: event.clientX, y: event.clientY }));
+                  setToolPoint(
+                    flowRef.current.screenToFlowPosition({ x: event.clientX, y: event.clientY }),
+                  );
                 }
                 if (selectedTool?.point !== undefined) {
                   void createPointAt(selectedTool, event.clientX, event.clientY);

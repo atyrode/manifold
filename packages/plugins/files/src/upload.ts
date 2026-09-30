@@ -1,12 +1,34 @@
 import type { PortableHostServices } from "@manifold/plugin";
-import { ByteTransferError, type LocalFileDescriptor, type PluginOwnedRef } from "@manifold/protocol";
-import { BeginFileUploadInputSchema, createFileRequestId, FILE_CHUNK_BYTES, FILE_COLLECTION,
-FILES_ID, FileDescriptorSchema, FileRequestSchema, FileTransferSchema,
-type BeginFileUploadInput, type FileDescriptor, type FileTransfer, } from "./contract.ts";
+import {
+  ByteTransferError,
+  type LocalFileDescriptor,
+  type PluginOwnedRef,
+} from "@manifold/protocol";
+import {
+  BeginFileUploadInputSchema,
+  createFileRequestId,
+  FILE_CHUNK_BYTES,
+  FILE_COLLECTION,
+  FILES_ID,
+  FileDescriptorSchema,
+  FileRequestSchema,
+  FileTransferSchema,
+  type BeginFileUploadInput,
+  type FileDescriptor,
+  type FileTransfer,
+} from "./contract.ts";
 import { fileAction, fileFailure, FilesActionError } from "./browser-actions.ts";
 
 export interface UploadSnapshot {
-  readonly phase: "pending" | "uploading" | "publishing" | "paused" | "saved" | "refused" | "cancelled" | "outcome_unknown";
+  readonly phase:
+    | "pending"
+    | "uploading"
+    | "publishing"
+    | "paused"
+    | "saved"
+    | "refused"
+    | "cancelled"
+    | "outcome_unknown";
   readonly requestId: string;
   readonly selection: LocalFileDescriptor;
   readonly transfer: FileTransfer | null;
@@ -34,18 +56,31 @@ export class FileUploadController {
     purpose: "file" | "image",
   ) {
     this.input = BeginFileUploadInputSchema.parse({
-      collection: FILE_COLLECTION, requestId: createFileRequestId(),
-      name: selection.name || "file", declaredMediaType: selection.mediaType || null,
-      bytes: selection.bytes, purpose,
+      collection: FILE_COLLECTION,
+      requestId: createFileRequestId(),
+      name: selection.name || "file",
+      declaredMediaType: selection.mediaType || null,
+      bytes: selection.bytes,
+      purpose,
     });
-    this.snapshot = { phase: "pending", requestId: this.input.requestId, selection,
-      transfer: null, savedRef: null, file: null, reason: null, busy: false };
+    this.snapshot = {
+      phase: "pending",
+      requestId: this.input.requestId,
+      selection,
+      transfer: null,
+      savedRef: null,
+      file: null,
+      reason: null,
+      busy: false,
+    };
   }
 
   getSnapshot = (): UploadSnapshot => this.snapshot;
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener);
-    return () => { this.listeners.delete(listener); };
+    return () => {
+      this.listeners.delete(listener);
+    };
   };
 
   private update(patch: Partial<UploadSnapshot>): void {
@@ -55,7 +90,10 @@ export class FileUploadController {
 
   private check(): void {
     if (this.disposed || this.cancelRequested || this.aborter?.signal.aborted) {
-      throw new FilesActionError("Stopped locally; server cancellation is not yet confirmed.", true);
+      throw new FilesActionError(
+        "Stopped locally; server cancellation is not yet confirmed.",
+        true,
+      );
     }
   }
 
@@ -74,7 +112,8 @@ export class FileUploadController {
   }
 
   private recordFailure(error: unknown): void {
-    const uncertain = error instanceof FilesActionError ? error.uncertain : !(error instanceof ByteTransferError);
+    const uncertain =
+      error instanceof FilesActionError ? error.uncertain : !(error instanceof ByteTransferError);
     this.update({
       phase: this.snapshot.savedRef ? "saved" : uncertain ? "outcome_unknown" : "refused",
       reason: fileFailure(error),
@@ -84,17 +123,25 @@ export class FileUploadController {
   /** An explicit Save/Retry gesture. Never creates a replacement request or transfer. */
   save(): Promise<FileDescriptor | null> {
     if (this.running) return this.running;
-    if (this.disposed || this.cancelRequested || this.snapshot.busy || this.snapshot.phase === "cancelled") return Promise.resolve(null);
+    if (
+      this.disposed ||
+      this.cancelRequested ||
+      this.snapshot.busy ||
+      this.snapshot.phase === "cancelled"
+    )
+      return Promise.resolve(null);
     this.aborter = new AbortController();
     this.update({ busy: true, reason: null });
-    this.running = this.run().catch((error: unknown) => {
-      this.recordFailure(error);
-      return null;
-    }).finally(() => {
-      this.running = null;
-      this.aborter = null;
-      this.update({ busy: false });
-    });
+    this.running = this.run()
+      .catch((error: unknown) => {
+        this.recordFailure(error);
+        return null;
+      })
+      .finally(() => {
+        this.running = null;
+        this.aborter = null;
+        this.update({ busy: false });
+      });
     return this.running;
   }
 
@@ -104,41 +151,85 @@ export class FileUploadController {
     this.update({ phase: "uploading" });
     this.begun = true;
     let transfer = this.snapshot.transfer
-      ? await fileAction(this.host, "inspectUpload", { collection: FILE_COLLECTION, transferId: this.snapshot.transfer.transferId }, FileTransferSchema)
+      ? await fileAction(
+          this.host,
+          "inspectUpload",
+          { collection: FILE_COLLECTION, transferId: this.snapshot.transfer.transferId },
+          FileTransferSchema,
+        )
       : await fileAction(this.host, "beginUpload", this.input, FileTransferSchema);
     this.update({ transfer });
     this.check();
-    if (transfer.kind !== "upload" || transfer.bytes !== this.input.bytes) throw new FilesActionError("Invalid upload receipt.", true);
+    if (transfer.kind !== "upload" || transfer.bytes !== this.input.bytes)
+      throw new FilesActionError("Invalid upload receipt.", true);
     if (!["receiving", "verifying", "ready"].includes(transfer.state)) {
-      throw new FilesActionError(transfer.reason ?? `Upload is ${transfer.state}; it has not been published by this response.`);
+      throw new FilesActionError(
+        transfer.reason ??
+          `Upload is ${transfer.state}; it has not been published by this response.`,
+      );
     }
     while (transfer.state === "receiving" && transfer.offset < transfer.bytes) {
       this.check();
       if (Date.now() >= transfer.expiresAt) throw new FilesActionError("expired");
       const length = Math.min(FILE_CHUNK_BYTES, transfer.bytes - transfer.offset);
-      if (transfer.offset !== transfer.sequence * FILE_CHUNK_BYTES) throw new FilesActionError("Invalid upload geometry.", true);
-      const data = await this.host.localFiles.read(this.snapshot.selection.handle, transfer.offset, length, { signal: this.aborter!.signal });
+      if (transfer.offset !== transfer.sequence * FILE_CHUNK_BYTES)
+        throw new FilesActionError("Invalid upload geometry.", true);
+      const data = await this.host.localFiles.read(
+        this.snapshot.selection.handle,
+        transfer.offset,
+        length,
+        { signal: this.aborter!.signal },
+      );
       this.check();
-      if (data.byteLength !== length) throw new FilesActionError("Local file selection is unavailable or changed.");
-      const receipt = await this.host.client.writeByteChunk(FILES_ID, "upload", {
-        transferId: transfer.transferId, ref: FILE_COLLECTION,
-        offset: transfer.offset, sequence: transfer.sequence, length,
-      }, data, this.aborter!.signal);
-      if (receipt.offset !== transfer.offset + length || receipt.sequence !== transfer.sequence || receipt.acceptedBytes !== length) {
+      if (data.byteLength !== length)
+        throw new FilesActionError("Local file selection is unavailable or changed.");
+      const receipt = await this.host.client.writeByteChunk(
+        FILES_ID,
+        "upload",
+        {
+          transferId: transfer.transferId,
+          ref: FILE_COLLECTION,
+          offset: transfer.offset,
+          sequence: transfer.sequence,
+          length,
+        },
+        data,
+        this.aborter!.signal,
+      );
+      if (
+        receipt.offset !== transfer.offset + length ||
+        receipt.sequence !== transfer.sequence ||
+        receipt.acceptedBytes !== length
+      ) {
         throw new FilesActionError("Upload acknowledgement could not be verified.", true);
       }
       transfer = { ...transfer, offset: receipt.offset, sequence: transfer.sequence + 1 };
       this.update({ transfer });
       // Refresh the accepted-progress deadline from the authoritative row, not the local clock.
-      transfer = await fileAction(this.host, "inspectUpload", { collection: FILE_COLLECTION, transferId: transfer.transferId }, FileTransferSchema);
+      transfer = await fileAction(
+        this.host,
+        "inspectUpload",
+        { collection: FILE_COLLECTION, transferId: transfer.transferId },
+        FileTransferSchema,
+      );
       this.update({ transfer });
     }
     this.check();
-    if (transfer.offset !== transfer.bytes || !["receiving", "verifying", "ready"].includes(transfer.state)) {
-      throw new FilesActionError(transfer.reason ?? `Upload is ${transfer.state}; publication was not requested.`);
+    if (
+      transfer.offset !== transfer.bytes ||
+      !["receiving", "verifying", "ready"].includes(transfer.state)
+    ) {
+      throw new FilesActionError(
+        transfer.reason ?? `Upload is ${transfer.state}; publication was not requested.`,
+      );
     }
     this.update({ phase: "publishing" });
-    const { ref } = await fileAction(this.host, "completeUpload", { collection: FILE_COLLECTION, transferId: transfer.transferId }, FileRequestSchema);
+    const { ref } = await fileAction(
+      this.host,
+      "completeUpload",
+      { collection: FILE_COLLECTION, transferId: transfer.transferId },
+      FileRequestSchema,
+    );
     // Publication is confirmed even if a subsequent metadata read loses authority.
     this.update({ phase: "saved", savedRef: ref });
     await this.release();
@@ -153,15 +244,38 @@ export class FileUploadController {
     try {
       if (this.snapshot.savedRef) return await this.descriptor();
       if (!this.snapshot.transfer) {
-        this.update({ reason: "No transfer acknowledgement. Retry the exact save request to recover it; no new intent is generated." });
+        this.update({
+          reason:
+            "No transfer acknowledgement. Retry the exact save request to recover it; no new intent is generated.",
+        });
         return null;
       }
-      const transfer = await fileAction(this.host, "inspectUpload", { collection: FILE_COLLECTION, transferId: this.snapshot.transfer.transferId }, FileTransferSchema);
-      this.update({ transfer, phase: transfer.state === "cancelled" ? "cancelled" : ["failed", "expired", "deleted"].includes(transfer.state) ? "refused" : "paused",
-        reason: transfer.reason ?? (transfer.state === "ready" ? "Bytes are ready; publication is unconfirmed. Retry the exact Save to reconcile publication." : `Upload is ${transfer.state}.`) });
+      const transfer = await fileAction(
+        this.host,
+        "inspectUpload",
+        { collection: FILE_COLLECTION, transferId: this.snapshot.transfer.transferId },
+        FileTransferSchema,
+      );
+      this.update({
+        transfer,
+        phase:
+          transfer.state === "cancelled"
+            ? "cancelled"
+            : ["failed", "expired", "deleted"].includes(transfer.state)
+              ? "refused"
+              : "paused",
+        reason:
+          transfer.reason ??
+          (transfer.state === "ready"
+            ? "Bytes are ready; publication is unconfirmed. Retry the exact Save to reconcile publication."
+            : `Upload is ${transfer.state}.`),
+      });
       if (["cancelled", "expired", "deleted"].includes(transfer.state)) await this.release();
-    } catch (error) { this.recordFailure(error); }
-    finally { this.update({ busy: false }); }
+    } catch (error) {
+      this.recordFailure(error);
+    } finally {
+      this.update({ busy: false });
+    }
     return null;
   }
 
@@ -179,15 +293,39 @@ export class FileUploadController {
         this.update({ transfer });
       }
       if (this.snapshot.savedRef) {
-        this.update({ phase: "saved", reason: "Already saved. Cancellation cannot delete a published file; use the separate logical deletion control." });
+        this.update({
+          phase: "saved",
+          reason:
+            "Already saved. Cancellation cannot delete a published file; use the separate logical deletion control.",
+        });
       } else if (this.snapshot.transfer) {
-        const transfer = await fileAction(this.host, "cancelUpload", { collection: FILE_COLLECTION, transferId: this.snapshot.transfer.transferId }, FileTransferSchema);
-        this.update({ transfer, phase: ["cancelled", "failed", "expired", "deleted"].includes(transfer.state) ? "cancelled" : "outcome_unknown",
-          reason: ["cancelled", "failed", "expired", "deleted"].includes(transfer.state) ? "Incomplete upload closed; no logical file deletion requested." : "Cancellation is unconfirmed. Reconcile the original transfer." });
-      } else this.update({ phase: "cancelled", reason: "Local selection discarded; nothing was uploaded." });
+        const transfer = await fileAction(
+          this.host,
+          "cancelUpload",
+          { collection: FILE_COLLECTION, transferId: this.snapshot.transfer.transferId },
+          FileTransferSchema,
+        );
+        this.update({
+          transfer,
+          phase: ["cancelled", "failed", "expired", "deleted"].includes(transfer.state)
+            ? "cancelled"
+            : "outcome_unknown",
+          reason: ["cancelled", "failed", "expired", "deleted"].includes(transfer.state)
+            ? "Incomplete upload closed; no logical file deletion requested."
+            : "Cancellation is unconfirmed. Reconcile the original transfer.",
+        });
+      } else
+        this.update({
+          phase: "cancelled",
+          reason: "Local selection discarded; nothing was uploaded.",
+        });
       if (this.snapshot.phase === "cancelled" || this.snapshot.savedRef) await this.release();
-    } catch (error) { this.recordFailure(error); }
-    finally { this.cancelRequested = false; this.update({ busy: false }); }
+    } catch (error) {
+      this.recordFailure(error);
+    } finally {
+      this.cancelRequested = false;
+      this.update({ busy: false });
+    }
   }
 
   /** Unmount closes local custody only; it never silently publishes or deletes a server file. */
@@ -195,6 +333,8 @@ export class FileUploadController {
     this.disposed = true;
     this.aborter?.abort();
     this.listeners.clear();
-    void this.release().catch(() => { /* The host also closes all mount-owned handles on teardown. */ });
+    void this.release().catch(() => {
+      /* The host also closes all mount-owned handles on teardown. */
+    });
   }
 }

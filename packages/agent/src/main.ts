@@ -171,7 +171,12 @@ function transportMain(): void {
 
 function main(): void {
   const args = process.argv.slice(2);
-  if (args.some((arg) => arg === "--native-transfer-snapshot" || arg.startsWith("--native-transfer-snapshot="))) {
+  if (
+    args.some(
+      (arg) =>
+        arg === "--native-transfer-snapshot" || arg.startsWith("--native-transfer-snapshot="),
+    )
+  ) {
     if (args.length !== 2 || args[0] !== "--native-transfer-snapshot") process.exit(4);
     runNativeTransferSnapshotHelper(args[1]);
   }

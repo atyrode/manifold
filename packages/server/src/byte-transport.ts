@@ -199,9 +199,14 @@ export async function serveByteCarrier(options: {
     context.assertCurrent();
     // This carrier is an exact-offset protocol, never a cache/range/conditional oracle.
     if (
-      ["range", "if-range", "if-match", "if-none-match", "if-modified-since", "if-unmodified-since"].some(
-        (header) => request.headers.has(header),
-      )
+      [
+        "range",
+        "if-range",
+        "if-match",
+        "if-none-match",
+        "if-modified-since",
+        "if-unmodified-since",
+      ].some((header) => request.headers.has(header))
     )
       throw new ByteTransferError("invalid");
     if (handler.direction === "incoming") {

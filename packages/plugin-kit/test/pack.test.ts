@@ -656,26 +656,40 @@ describe("self-contained server assets", () => {
     try {
       const bytes = new Uint8Array(17 * 1024 * 1024).fill(73);
       const sha256 = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
-      await Bun.write(`${source}/manifest.json`, JSON.stringify({
-        ...bundle.manifest, entry: { server: true },
-      }));
+      await Bun.write(
+        `${source}/manifest.json`,
+        JSON.stringify({
+          ...bundle.manifest,
+          entry: { server: true },
+        }),
+      );
       await Bun.write(`${source}/payload.bin`, bytes);
-      await Bun.write(`${source}/server.ts`, `
+      await Bun.write(
+        `${source}/server.ts`,
+        `
         import asset from "./payload.bin" with { type: "file" };
         const bytes = await Bun.file(new URL(asset, import.meta.url)).bytes();
         console.log(JSON.stringify({ bytes: bytes.byteLength,
           sha256: new Bun.CryptoHasher("sha256").update(bytes).digest("hex") }));
-      `);
+      `,
+      );
       const compiled = await compilePlugin(source);
-      const artifact = PluginBundleSchema.parse(JSON.parse(new TextDecoder().decode(compiled.bytes)));
+      const artifact = PluginBundleSchema.parse(
+        JSON.parse(new TextDecoder().decode(compiled.bytes)),
+      );
       for (const [name, encoded] of Object.entries(artifact.files))
         await Bun.write(`${runtime}/${name}`, Buffer.from(encoded, "base64"));
       rmSync(source, { recursive: true });
       const child = Bun.spawn([process.execPath, "--no-install", `${runtime}/server.js`], {
-        cwd: runtime, env: { PATH: "", NODE_PATH: "" }, stdout: "pipe", stderr: "pipe",
+        cwd: runtime,
+        env: { PATH: "", NODE_PATH: "" },
+        stdout: "pipe",
+        stderr: "pipe",
       });
       const [code, stdout, stderr] = await Promise.all([
-        child.exited, new Response(child.stdout).text(), new Response(child.stderr).text(),
+        child.exited,
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
       ]);
       expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
       expect(JSON.parse(stdout)).toEqual({ bytes: bytes.byteLength, sha256 });
@@ -687,9 +701,11 @@ describe("self-contained server assets", () => {
   test.each(["server.js", "web.worker.js", "styles.css", "../outside", ".env"])(
     "refuses trusted resources that replace executable entries or escape extraction: %s",
     async (name) => {
-      await expect(compilePlugin(SAMPLE, {
-        serverBuild: { files: new Map([[name, new Uint8Array([1, 2, 3])]]) },
-      })).rejects.toThrow();
+      await expect(
+        compilePlugin(SAMPLE, {
+          serverBuild: { files: new Map([[name, new Uint8Array([1, 2, 3])]]) },
+        }),
+      ).rejects.toThrow();
     },
   );
 });

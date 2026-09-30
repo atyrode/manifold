@@ -34,7 +34,10 @@ export const terminalsManifest: PluginManifest = {
   description: "Owns terminal creation policy, naming, restart, killing, and the terminal indexes.",
   capabilities: ["containers:read", "terminals:spawn", "terminals:write"],
   dependencies: {
-    "core.files": { type: "optional", reason: "Explicit file saving and managed machine delivery." },
+    "core.files": {
+      type: "optional",
+      reason: "Explicit file saving and managed machine delivery.",
+    },
   },
   contributes: {
     panels: [],

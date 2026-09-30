@@ -1130,7 +1130,9 @@ export class SessionClient {
     input: ByteCarrierRequest,
     signal?: AbortSignal,
   ): Promise<ByteReadChunk> {
-    return this.byteRequest(signal, (options) => readByteChunk(options, pluginId, carrierId, input));
+    return this.byteRequest(signal, (options) =>
+      readByteChunk(options, pluginId, carrierId, input),
+    );
   }
 
   writeByteChunk(
@@ -1140,7 +1142,9 @@ export class SessionClient {
     data: Uint8Array,
     signal?: AbortSignal,
   ): Promise<ByteWriteReceipt> {
-    return this.byteRequest(signal, (options) => writeByteChunk(options, pluginId, carrierId, input, data));
+    return this.byteRequest(signal, (options) =>
+      writeByteChunk(options, pluginId, carrierId, input, data),
+    );
   }
 
   private async byteRequest<T>(

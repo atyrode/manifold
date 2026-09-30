@@ -88,8 +88,11 @@ export async function listenJobOwner(
             if (transfer) {
               state.pendingTransfers++;
               state.pendingTransferBytes += count;
-              if (count > MAX_TRANSFER_FRAME || state.pendingTransfers > 4 ||
-                  state.pendingTransferBytes > MAX_TRANSFER_QUEUE)
+              if (
+                count > MAX_TRANSFER_FRAME ||
+                state.pendingTransfers > 4 ||
+                state.pendingTransferBytes > MAX_TRANSFER_QUEUE
+              )
                 throw new Error("owner_transfer_queue_limit");
             }
             state.pending += count;
@@ -177,10 +180,11 @@ export function unixJobOwnerDialer(socketPath: string): JobOwnerDialer {
                       return identity;
                     },
                     send(command) {
-                      if (!closed) writer?.send(
-                        command,
-                        command.type === "native_transfer" ? MAX_TRANSFER_QUEUE : MAX_QUEUE,
-                      );
+                      if (!closed)
+                        writer?.send(
+                          command,
+                          command.type === "native_transfer" ? MAX_TRANSFER_QUEUE : MAX_QUEUE,
+                        );
                     },
                     close() {
                       sock.end();
@@ -188,7 +192,10 @@ export function unixJobOwnerDialer(socketPath: string): JobOwnerDialer {
                   });
                 } else if (Reflect.get(raw, "type") === "event" && identity) {
                   const event = JobEventSchema.parse(Reflect.get(raw, "event"));
-                  if (event.type === "native_transfer_result" && Buffer.byteLength(line) > MAX_TRANSFER_FRAME)
+                  if (
+                    event.type === "native_transfer_result" &&
+                    Buffer.byteLength(line) > MAX_TRANSFER_FRAME
+                  )
                     throw new Error("owner_transfer_frame_limit");
                   handlers.onEvent(event);
                 } else throw new Error("invalid_owner_frame");

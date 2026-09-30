@@ -650,10 +650,12 @@ export interface PanelProps {
    */
   readonly arg?: PanelArg | undefined;
   /** Ephemeral intake custody. Files are captured by this panel's own mounted resource store. */
-  readonly input?: {
-    readonly value?: PanelArg | undefined;
-    readonly files?: readonly File[] | undefined;
-  } | undefined;
+  readonly input?:
+    | {
+        readonly value?: PanelArg | undefined;
+        readonly files?: readonly File[] | undefined;
+      }
+    | undefined;
   /** At most one bounded result, fenced to this intake mount and credential lifetime. */
   readonly onResult?: ((result: PanelArg) => void) | undefined;
 }

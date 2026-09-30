@@ -4,20 +4,26 @@ import { PluginOwnedRefKindSchema, PluginOwnedRefSchema } from "./uri.ts";
 import { isElementEnvelopeKey, SceneElementSchema } from "./elements.ts";
 
 const ReferenceIdSchema = z.string().min(1).max(128);
-const ReferenceDigestSchema = z.string().length(64).regex(/^[a-f0-9]{64}$/);
+const ReferenceDigestSchema = z
+  .string()
+  .length(64)
+  .regex(/^[a-f0-9]{64}$/);
 const RestrictedCapsSchema = PluginCapSchema.array()
   .min(1)
   .max(MAX_MANIFEST_CAPABILITIES)
   .refine((caps) => new Set(caps).size === caps.length, "duplicate reference capability");
 export const MAX_REFERENCE_AUDIENCE_PAGE = 64;
 export const MAX_REFERENCE_READ_FILTER = 64;
-export const ReferenceReadFilterRequestSchema = z.strictObject({
-  kind: PluginOwnedRefKindSchema,
-  refs: PluginOwnedRefSchema.array().max(MAX_REFERENCE_READ_FILTER),
-}).refine((request) =>
-  request.refs.every((ref) => ref.kind === request.kind) &&
-  new Set(request.refs.map((ref) => JSON.stringify(ref))).size === request.refs.length,
-);
+export const ReferenceReadFilterRequestSchema = z
+  .strictObject({
+    kind: PluginOwnedRefKindSchema,
+    refs: PluginOwnedRefSchema.array().max(MAX_REFERENCE_READ_FILTER),
+  })
+  .refine(
+    (request) =>
+      request.refs.every((ref) => ref.kind === request.kind) &&
+      new Set(request.refs.map((ref) => JSON.stringify(ref))).size === request.refs.length,
+  );
 export type ReferenceReadFilterRequest = z.infer<typeof ReferenceReadFilterRequestSchema>;
 
 /** A consumer-owned document reference, not a copy or grant of the referent's content. */
@@ -26,14 +32,21 @@ export const ReferenceAttachmentRequestSchema = z.strictObject({
   target: z.strictObject({ kind: z.literal("container"), containerId: ReferenceIdSchema }),
   discipline: z.string().min(1).max(64),
   element: SceneElementSchema,
-  referenceProperty: z.string().min(1).max(64).refine((key) =>
-    !isElementEnvelopeKey(key) && !["__proto__", "constructor", "prototype"].includes(key),
-  ),
+  referenceProperty: z
+    .string()
+    .min(1)
+    .max(64)
+    .refine(
+      (key) =>
+        !isElementEnvelopeKey(key) && !["__proto__", "constructor", "prototype"].includes(key),
+    ),
 });
 export type ReferenceAttachmentRequest = z.infer<typeof ReferenceAttachmentRequestSchema>;
 export const ReferenceAttachmentResultSchema = z.strictObject({
   ref: z.strictObject({
-    kind: z.literal("element"), containerId: ReferenceIdSchema, elementId: ReferenceIdSchema,
+    kind: z.literal("element"),
+    containerId: ReferenceIdSchema,
+    elementId: ReferenceIdSchema,
   }),
   created: z.boolean(),
 });
@@ -103,12 +116,14 @@ export const ReferenceProbeRequestSchema = z.strictObject({
   publication: z.enum(["prepared", "published"]),
 });
 export type ReferenceProbeRequest = z.infer<typeof ReferenceProbeRequestSchema>;
-export const ReferenceProbeResultSchema = z.strictObject({
-  preparationId: ReferenceIdSchema,
-  readyDigest: ReferenceDigestSchema.nullable(),
-  /** Pending preparation deadline only; it never expires an already published file. */
-  expiresAt: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
-}).nullable();
+export const ReferenceProbeResultSchema = z
+  .strictObject({
+    preparationId: ReferenceIdSchema,
+    readyDigest: ReferenceDigestSchema.nullable(),
+    /** Pending preparation deadline only; it never expires an already published file. */
+    expiresAt: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  })
+  .nullable();
 export type ReferenceProbeResult = z.infer<typeof ReferenceProbeResultSchema>;
 export const PublishedReferenceIdentitySchema = z.strictObject({
   ref: PluginOwnedRefSchema,

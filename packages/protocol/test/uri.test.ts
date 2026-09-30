@@ -71,7 +71,8 @@ describe("manifold:// addressing", () => {
       "manifold://image/f",
       "manifold://file/%zz",
       `manifold://file/${"f".repeat(129)}`,
-    ]) expect(parseManifoldUri(invalid)).toBeNull();
+    ])
+      expect(parseManifoldUri(invalid)).toBeNull();
     expect(ManifoldRefSchema.safeParse({ ...ref, containerId: "c" }).success).toBe(false);
     expect(ManifoldRefSchema.safeParse({ kind: "file", fileId: "" }).success).toBe(false);
   });

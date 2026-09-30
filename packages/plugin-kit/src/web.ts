@@ -1,4 +1,8 @@
-import type { PortableElementProps, PortablePanelProps, PortableSectionProps } from "@manifold/plugin";
+import type {
+  PortableElementProps,
+  PortablePanelProps,
+  PortableSectionProps,
+} from "@manifold/plugin";
 import type { ComponentType } from "react";
 
 /**

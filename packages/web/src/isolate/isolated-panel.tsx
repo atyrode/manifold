@@ -5,7 +5,12 @@ import {
   type SectionProps,
   type PortableElementEdit,
 } from "@manifold/plugin";
-import type { PanelArg, PortablePanelInput, PortableElementProjection, UiNode } from "@manifold/protocol";
+import type {
+  PanelArg,
+  PortablePanelInput,
+  PortableElementProjection,
+  UiNode,
+} from "@manifold/protocol";
 import { useProjectionScope } from "@manifold/plugin/hooks";
 import {
   useCallback,
@@ -19,7 +24,11 @@ import {
 } from "react";
 import { VocabularyRenderer } from "./vocabulary.tsx";
 import { WorkerRegistry, type WorkerLease } from "./worker-host.ts";
-import { MountedByteResources, MountedByteSurface, portableElementProjection } from "../byte-surface.tsx";
+import {
+  MountedByteResources,
+  MountedByteSurface,
+  portableElementProjection,
+} from "../byte-surface.tsx";
 import { usePortableElementEdit } from "../portable-element-edit.ts";
 import { MountedPanelInput, PanelIntakeGate } from "../borrowed-panels.tsx";
 
@@ -89,8 +98,14 @@ function IsolatedInstance({
   const propsAtMount = useEffectEvent(() => ({ host, arg, element, edit, input, onResult }));
 
   useEffect(() => {
-    const { host: currentHost, arg: currentArg, element: currentElement, edit: currentEdit,
-      input: currentInput, onResult: currentResult } = propsAtMount();
+    const {
+      host: currentHost,
+      arg: currentArg,
+      element: currentElement,
+      edit: currentEdit,
+      input: currentInput,
+      onResult: currentResult,
+    } = propsAtMount();
     const held = WORKERS.acquire(pluginId, currentHost, portableWorker);
     lease.current = held;
     const unmount = held.worker.mount(
@@ -98,8 +113,16 @@ function IsolatedInstance({
       panelId,
       (tree) => setState({ kind: "tree", tree, token: currentHost.token }),
       (error) => setState({ kind: "fault", error, token: currentHost.token }),
-      { kind, host: currentHost, arg: currentArg, element: currentElement, edit: currentEdit,
-        input: currentInput, onResult: currentResult, resources },
+      {
+        kind,
+        host: currentHost,
+        arg: currentArg,
+        element: currentElement,
+        edit: currentEdit,
+        input: currentInput,
+        onResult: currentResult,
+        resources,
+      },
     );
     return () => {
       unmount();
@@ -172,22 +195,28 @@ function isolatedContribution(
   if (cached !== undefined) return cached;
   const IsolatedPanel = ({ host, arg, input, onResult }: PanelProps): ReactElement => (
     <PanelIntakeGate host={host} input={input} onResult={onResult}>
-      {(result) => <MountedByteSurface host={host}>
-        {(resources) => <MountedPanelInput resources={resources} input={input} onResult={result}>
-          {(captured, deliver) => <IsolatedInstance
-            key={host.containerId ?? ""}
-            pluginId={pluginId}
-            panelId={panelId}
-            kind={kind}
-            portableWorker={portableWorker}
-            arg={arg}
-            input={captured}
-            onResult={deliver}
-            host={host}
-            resources={resources}
-          />}
-        </MountedPanelInput>}
-      </MountedByteSurface>}
+      {(result) => (
+        <MountedByteSurface host={host}>
+          {(resources) => (
+            <MountedPanelInput resources={resources} input={input} onResult={result}>
+              {(captured, deliver) => (
+                <IsolatedInstance
+                  key={host.containerId ?? ""}
+                  pluginId={pluginId}
+                  panelId={panelId}
+                  kind={kind}
+                  portableWorker={portableWorker}
+                  arg={arg}
+                  input={captured}
+                  onResult={deliver}
+                  host={host}
+                  resources={resources}
+                />
+              )}
+            </MountedPanelInput>
+          )}
+        </MountedByteSurface>
+      )}
     </PanelIntakeGate>
   );
   IsolatedPanel.displayName = `IsolatedPanel(${id})`;
@@ -214,21 +243,46 @@ export function isolatedSection(
 const ELEMENT_COMPONENTS = new Map<string, ComponentType<never>>();
 
 /** A hardened element is still a vocabulary mount, never its page renderer as a fallback. */
-export function isolatedElement(pluginId: string, type: string, portableWorker = false): ComponentType<never> {
+export function isolatedElement(
+  pluginId: string,
+  type: string,
+  portableWorker = false,
+): ComponentType<never> {
   const key = `${pluginId}:${type}:${portableWorker ? "react" : "legacy"}`;
   const cached = ELEMENT_COMPONENTS.get(key);
   if (cached !== undefined) return cached;
   const IsolatedElement = (props: Readonly<Record<string, unknown>>): ReactElement => {
     const scope = useProjectionScope();
-    const element = useMemo(() => portableElementProjection(props["id"], props["data"]), [props["id"], props["data"]]);
+    const element = useMemo(
+      () => portableElementProjection(props["id"], props["data"]),
+      [props["id"], props["data"]],
+    );
     const edit = usePortableElementEdit(element);
-    if (scope === null || element === null) return <VocabularyRenderer kind="element"
-      tree={{ type: "empty", text: "Element projection unavailable." }} onEvent={ignoreEvent} />;
-    return <MountedByteSurface host={scope.host}>
-      {(resources) => <IsolatedInstance key={`${scope.host.containerId ?? ""}:${element.id}`}
-        pluginId={pluginId} panelId={type} kind="element" portableWorker={portableWorker}
-        host={scope.host} element={element} edit={edit} resources={resources} />}
-    </MountedByteSurface>;
+    if (scope === null || element === null)
+      return (
+        <VocabularyRenderer
+          kind="element"
+          tree={{ type: "empty", text: "Element projection unavailable." }}
+          onEvent={ignoreEvent}
+        />
+      );
+    return (
+      <MountedByteSurface host={scope.host}>
+        {(resources) => (
+          <IsolatedInstance
+            key={`${scope.host.containerId ?? ""}:${element.id}`}
+            pluginId={pluginId}
+            panelId={type}
+            kind="element"
+            portableWorker={portableWorker}
+            host={scope.host}
+            element={element}
+            edit={edit}
+            resources={resources}
+          />
+        )}
+      </MountedByteSurface>
+    );
   };
   ELEMENT_COMPONENTS.set(key, IsolatedElement);
   return IsolatedElement;

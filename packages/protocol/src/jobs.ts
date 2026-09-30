@@ -499,9 +499,7 @@ export const MachineHalfSchema = z
       .record(component, platformArtifacts)
       .refine((tools) => Object.keys(tools).length <= 8)
       .optional(),
-    operations: z
-      .record(id, MachineOperationSchema)
-      .refine((v) => Object.keys(v).length <= 64),
+    operations: z.record(id, MachineOperationSchema).refine((v) => Object.keys(v).length <= 64),
     locations: z.record(id, MachineLocationSchema).refine((v) => Object.keys(v).length <= 64),
     transferPolicy: NativeTransferPolicySchema.optional(),
     requiresResourceBindings: z.boolean().optional(),
@@ -521,11 +519,17 @@ export const MachineHalfSchema = z
         const location = Object.hasOwn(machine.locations, locationId)
           ? machine.locations[locationId]
           : undefined;
-        return location?.kind === "directory" &&
+        return (
+          location?.kind === "directory" &&
           !location.temporary &&
-          (!rights.includes("create-child") || (location.managed === true && location.anchor === "state"));
+          (!rights.includes("create-child") ||
+            (location.managed === true && location.anchor === "state"))
+        );
       }),
-    { message: "Transfer rights require exact retained directories; create-child requires managed state" },
+    {
+      message:
+        "Transfer rights require exact retained directories; create-child requires managed state",
+    },
   )
   .refine(
     (machine) =>

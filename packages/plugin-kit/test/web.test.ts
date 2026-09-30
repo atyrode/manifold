@@ -671,17 +671,26 @@ test("replacing a download source retires queued completion events for the old s
   const completed: string[] = [];
   const Download = (): ReactElement => {
     const [transferId, setTransferId] = useState("first");
-    return frame("box", {},
+    return frame(
+      "box",
+      {},
       createElement(ByteDownload, {
-        label: "Download", filename: "data.bin",
+        label: "Download",
+        filename: "data.bin",
         source: {
-          pluginId: "example.bytes", carrierId: "read", transferId,
-          ref: { kind: "file", fileId: "file-one" }, bytes: 0,
+          pluginId: "example.bytes",
+          carrierId: "read",
+          transferId,
+          ref: { kind: "file", fileId: "file-one" },
+          bytes: 0,
           sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         },
-        onChange: (status) => { if (status.state === "complete") completed.push(transferId); },
+        onChange: (status) => {
+          if (status.state === "complete") completed.push(transferId);
+        },
       }),
-      frame("button", { label: "Replace", onClick: () => setTransferId("second") }));
+      frame("button", { label: "Replace", onClick: () => setTransferId("second") }),
+    );
   };
   const { fake, tree } = await mounted({ id: "example.bytes", panels: { main: Download } });
   const previous = eventOf(tree, "Download");
@@ -689,7 +698,12 @@ test("replacing a download source retires queued completion events for the old s
   const replacement = await rendered(fake);
   fake.send({ t: "event", instance: "i1", event: previous, payload: { state: "complete" } });
   expect(completed).toEqual([]);
-  fake.send({ t: "event", instance: "i1", event: eventOf(replacement, "Download"), payload: { state: "complete" } });
+  fake.send({
+    t: "event",
+    instance: "i1",
+    event: eventOf(replacement, "Download"),
+    payload: { state: "complete" },
+  });
   expect(completed).toEqual(["second"]);
   fake.send({ t: "unmount", instance: "i1" });
 });

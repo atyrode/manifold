@@ -1,12 +1,21 @@
 import { describe, expect, test } from "bun:test";
-import { closeSync, fstatSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  fstatSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createPrivateByteFile, isSealedByteFile } from "../src/job-files.ts";
 import { stableNativeSnapshot } from "../src/native-transfer-snapshot.ts";
 
-const supported = process.platform === "linux" && (process.arch === "x64" || process.arch === "arm64");
+const supported =
+  process.platform === "linux" && (process.arch === "x64" || process.arch === "arm64");
 const entry = fileURLToPath(new URL("../src/main.ts", import.meta.url));
 
 describe.skipIf(!supported)("native snapshot reservation boundary", () => {
@@ -24,13 +33,19 @@ describe.skipIf(!supported)("native snapshot reservation boundary", () => {
         // this newer revision must not grant bytes that were absent from the reservation.
         writeFileSync(path, Buffer.alloc(256 * 1024 + 1, 7));
         output = createPrivateByteFile();
-        const child = Bun.spawn([process.execPath, entry, "--native-transfer-snapshot", String(reservation)], {
-          cwd: "/", env: {}, stdio: ["ignore", "ignore", "ignore", source, output],
-        });
+        const child = Bun.spawn(
+          [process.execPath, entry, "--native-transfer-snapshot", String(reservation)],
+          {
+            cwd: "/",
+            env: {},
+            stdio: ["ignore", "ignore", "ignore", source, output],
+          },
+        );
         expect(await child.exited).toBe(4);
         expect(fstatSync(output).size).toBe(0);
-        await expect(stableNativeSnapshot(source, reservation, new AbortController().signal))
-          .rejects.toThrow("native_source_changed");
+        await expect(
+          stableNativeSnapshot(source, reservation, new AbortController().signal),
+        ).rejects.toThrow("native_source_changed");
       } finally {
         if (source >= 0) closeSync(source);
         if (output >= 0) closeSync(output);

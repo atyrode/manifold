@@ -277,7 +277,9 @@ export function installTerminalClipboard(
     if (!mode || !SUPPORTED_TYPES.has(file.type)) return false;
     const operation = begin();
     if (!operation) {
-      options.notice("Native MIME paste requires current terminal control and no pending clipboard exchange.");
+      options.notice(
+        "Native MIME paste requires current terminal control and no pending clipboard exchange.",
+      );
       return true;
     }
     try {
@@ -285,7 +287,9 @@ export function installTerminalClipboard(
       operation.release = () => snapshot.clear();
       add(snapshot, file.type, file);
       void publish(operation, snapshot).catch((error: unknown) => failedPaste(operation, error));
-    } catch (error) { failedPaste(operation, error); }
+    } catch (error) {
+      failedPaste(operation, error);
+    }
     return true;
   };
   const paste = (event: ClipboardEvent): void => {

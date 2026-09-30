@@ -173,14 +173,23 @@ class JournalState {
             canonicalJobJson(previous.commitPermit) !== canonicalJobJson(transfer.commitPermit))
         )
           throw new Error("invalid_native_transfer_record");
-        return () => { this.nativeTransfers.set(id, transfer); };
+        return () => {
+          this.nativeTransfers.set(id, transfer);
+        };
       }
       case "native_transfer_forget": {
         const id = z.string().parse(Reflect.get(body, "transferId"));
         const transfer = this.nativeTransfers.get(id);
-        if (!transfer || !["committed", "cancelled", "refused", "failed", "expired"].includes(transfer.status.state))
+        if (
+          !transfer ||
+          !["committed", "cancelled", "refused", "failed", "expired"].includes(
+            transfer.status.state,
+          )
+        )
           throw new Error("invalid_native_transfer_forget");
-        return () => { this.nativeTransfers.delete(id); };
+        return () => {
+          this.nativeTransfers.delete(id);
+        };
       }
       case "invocation":
         return () => {};

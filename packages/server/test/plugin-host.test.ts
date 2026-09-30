@@ -27,8 +27,10 @@ import {
   PluginUpdateReviewResultSchema,
 } from "@manifold/protocol";
 import {
-  PluginOwnedRefSchema, PublishedReferenceSchema,
-  ReferenceAttachmentRequestSchema, ReferenceAttachmentResultSchema,
+  PluginOwnedRefSchema,
+  PublishedReferenceSchema,
+  ReferenceAttachmentRequestSchema,
+  ReferenceAttachmentResultSchema,
   type PluginOwnedRef,
 } from "@manifold/protocol";
 import { readElement } from "@manifold/scene";
@@ -1699,7 +1701,8 @@ describe("PluginHost storage, migrations and purge", () => {
     await storage.set("row", "retained");
     await storage.stampDataVersion({ major: 1, minor: 0 });
     const defs = versioned({ major: 2, minor: 0, withMigration: true }).map((def) => ({
-      ...def, manifest: { ...def.manifest, defaultEnabled: false },
+      ...def,
+      manifest: { ...def.manifest, defaultEnabled: false },
     }));
     let host: PluginHost | undefined;
     try {
@@ -6521,107 +6524,191 @@ describe("reviewed family updates through the one installer", () => {
 async function referenceAttachmentFixture() {
   const fixture = await hostFixture();
   await fixture.host.close();
-  const ready = new Map<string, { preparationId: string; readyDigest: string; expiresAt: number }>();
+  const ready = new Map<
+    string,
+    { preparationId: string; readyDigest: string; expiresAt: number }
+  >();
   const state = { probe: null as (() => Promise<void>) | null };
   const collection = { kind: "plugin", pluginId: "vendor.vault" } as const;
   const create = defineAction({
-    name: "create", title: "Create", caps: ["vendor.vault:create"],
-    scope: "workspace", trace: "opaque",
+    name: "create",
+    title: "Create",
+    caps: ["vendor.vault:create"],
+    scope: "workspace",
+    trace: "opaque",
     requirements: [{ cap: "vendor.vault:create", target: ["collection"] }],
     input: z.strictObject({
-      collection: z.strictObject({ kind: z.literal("plugin"), pluginId: z.literal("vendor.vault") }),
+      collection: z.strictObject({
+        kind: z.literal("plugin"),
+        pluginId: z.literal("vendor.vault"),
+      }),
     }),
     result: PublishedReferenceSchema,
   });
   const resolve = defineAction({
-    name: "resolve", title: "Resolve", caps: ["vendor.vault:read"],
-    scope: "workspace", trace: "opaque",
+    name: "resolve",
+    title: "Resolve",
+    caps: ["vendor.vault:read"],
+    scope: "workspace",
+    trace: "opaque",
     requirements: [{ cap: "vendor.vault:read", target: ["ref"] }],
     input: z.strictObject({ ref: PluginOwnedRefSchema }),
     result: z.strictObject({ title: z.string().max(512) }),
   });
-  const owner = recorder("vendor.vault", { calls: [] }, {
-    actions: [create, resolve],
-    handlers: {
-      create: async (ctx) => {
-        const preparation = await ctx.references.prepare({
-          kind: "file", requestId: ctx.newId(), bindingDigest: "1".repeat(64),
-        });
-        ready.set(preparation.preparationId, {
-          preparationId: preparation.preparationId, readyDigest: "2".repeat(64), expiresAt: preparation.expiresAt,
-        });
-        return ctx.references.publish({
-          preparationId: preparation.preparationId, readyDigest: "2".repeat(64),
-        });
-      },
-      resolve: async (ctx, input) => {
-        await ctx.references.requirePublished({ ref: resolve.input.parse(input).ref, access: "read" });
-        return { title: "Published reference" };
-      },
-    },
-    probeReady: async (_ctx, input) => {
-      await state.probe?.();
-      return ready.get(input.preparationId) ?? null;
-    },
-    reclaimReferences: async (_ctx, receipts) => {
-      for (const receipt of receipts) ready.delete(receipt.preparationId);
-    },
-  }, {
-    capabilities: ["vendor.vault:create", "vendor.vault:read", "vendor.vault:delete", "vendor.vault:share"],
-    contributes: {
-      panels: [], sections: [], elements: [], tools: [], events: [],
-      references: [{
-        kind: "file", resolveAction: "resolve", createCapability: "vendor.vault:create",
-        readCapability: "vendor.vault:read", deleteCapability: "vendor.vault:delete",
-        creatorCaps: ["vendor.vault:read", "vendor.vault:delete", "vendor.vault:share"],
-        sharing: {
-          grantorCapability: "vendor.vault:share",
-          prerequisites: ["vendor.vault:read", "vendor.vault:share"],
-          grantableCaps: ["vendor.vault:read"],
+  const owner = recorder(
+    "vendor.vault",
+    { calls: [] },
+    {
+      actions: [create, resolve],
+      handlers: {
+        create: async (ctx) => {
+          const preparation = await ctx.references.prepare({
+            kind: "file",
+            requestId: ctx.newId(),
+            bindingDigest: "1".repeat(64),
+          });
+          ready.set(preparation.preparationId, {
+            preparationId: preparation.preparationId,
+            readyDigest: "2".repeat(64),
+            expiresAt: preparation.expiresAt,
+          });
+          return ctx.references.publish({
+            preparationId: preparation.preparationId,
+            readyDigest: "2".repeat(64),
+          });
         },
-      }],
+        resolve: async (ctx, input) => {
+          await ctx.references.requirePublished({
+            ref: resolve.input.parse(input).ref,
+            access: "read",
+          });
+          return { title: "Published reference" };
+        },
+      },
+      probeReady: async (_ctx, input) => {
+        await state.probe?.();
+        return ready.get(input.preparationId) ?? null;
+      },
+      reclaimReferences: async (_ctx, receipts) => {
+        for (const receipt of receipts) ready.delete(receipt.preparationId);
+      },
     },
-  });
+    {
+      capabilities: [
+        "vendor.vault:create",
+        "vendor.vault:read",
+        "vendor.vault:delete",
+        "vendor.vault:share",
+      ],
+      contributes: {
+        panels: [],
+        sections: [],
+        elements: [],
+        tools: [],
+        events: [],
+        references: [
+          {
+            kind: "file",
+            resolveAction: "resolve",
+            createCapability: "vendor.vault:create",
+            readCapability: "vendor.vault:read",
+            deleteCapability: "vendor.vault:delete",
+            creatorCaps: ["vendor.vault:read", "vendor.vault:delete", "vendor.vault:share"],
+            sharing: {
+              grantorCapability: "vendor.vault:share",
+              prerequisites: ["vendor.vault:read", "vendor.vault:share"],
+              grantableCaps: ["vendor.vault:read"],
+            },
+          },
+        ],
+      },
+    },
+  );
   const attach = defineAction({
-    name: "attach", title: "Attach", caps: ["scenes:write"], scope: "workspace", trace: "opaque",
+    name: "attach",
+    title: "Attach",
+    caps: ["scenes:write"],
+    scope: "workspace",
+    trace: "opaque",
     requirements: [{ cap: "scenes:write", target: ["target"] }],
-    input: ReferenceAttachmentRequestSchema, result: ReferenceAttachmentResultSchema,
+    input: ReferenceAttachmentRequestSchema,
+    result: ReferenceAttachmentResultSchema,
   });
-  const consumer = recorder("vendor.viewer", { calls: [] }, {
-    actions: [attach],
-    handlers: { attach: (ctx, input) => ctx.references.attach(attach.input.parse(input)) },
-    elements: { reference_card: z.strictObject({ file: z.string() }) },
-  }, {
-    capabilities: ["scenes:write"],
-    dependencies: { "vendor.vault": { type: "required", reason: "read a published reference" } },
-    contributes: {
-      panels: [], sections: [], tools: [], events: [],
-      elements: [{ type: "reference_card", title: "Reference" }],
+  const consumer = recorder(
+    "vendor.viewer",
+    { calls: [] },
+    {
+      actions: [attach],
+      handlers: { attach: (ctx, input) => ctx.references.attach(attach.input.parse(input)) },
+      elements: { reference_card: z.strictObject({ file: z.string() }) },
     },
-  });
+    {
+      capabilities: ["scenes:write"],
+      dependencies: { "vendor.vault": { type: "required", reason: "read a published reference" } },
+      contributes: {
+        panels: [],
+        sections: [],
+        tools: [],
+        events: [],
+        elements: [{ type: "reference_card", title: "Reference" }],
+      },
+    },
+  );
   const host = await customHost(fixture, [owner, consumer]);
-  fixture.auth.grant({
-    principal: { kind: "principal", id: fixture.owner.principal.id }, node: formatManifoldUri(collection),
-    caps: ["vendor.vault:create"], effect: "allow", reach: "node",
-  }, fixture.owner);
+  fixture.auth.grant(
+    {
+      principal: { kind: "principal", id: fixture.owner.principal.id },
+      node: formatManifoldUri(collection),
+      caps: ["vendor.vault:create"],
+      effect: "allow",
+      reach: "node",
+    },
+    fixture.owner,
+  );
   const created = await host.dispatch(fixture.owner, "vendor.vault.create", { collection });
-  if (!created.ok) throw new Error(JSON.stringify({
-    denial: created.denial,
-    holds: host.roster().filter((row) => row.manifest.id.startsWith("vendor.")).map((row) => row.held),
-  }));
+  if (!created.ok)
+    throw new Error(
+      JSON.stringify({
+        denial: created.denial,
+        holds: host
+          .roster()
+          .filter((row) => row.manifest.id.startsWith("vendor."))
+          .map((row) => row.held),
+      }),
+    );
   const { ref } = PublishedReferenceSchema.parse(created.result);
   const target = { kind: "container", containerId: fixture.runtime.newId() } as const;
   fixture.store.createContainer({
-    id: target.containerId, name: "destination", createdAt: fixture.runtime.now(), discipline: "canvas",
+    id: target.containerId,
+    name: "destination",
+    createdAt: fixture.runtime.now(),
+    discipline: "canvas",
   });
   const editor = context(fixture, ["containers:read", "scenes:write"]);
-  const readGrant = fixture.auth.grant({
-    principal: { kind: "principal", id: editor.principal.id }, node: formatManifoldUri(ref),
-    caps: ["vendor.vault:read"], effect: "allow", reach: "node",
-  }, fixture.owner);
+  const readGrant = fixture.auth.grant(
+    {
+      principal: { kind: "principal", id: editor.principal.id },
+      node: formatManifoldUri(ref),
+      caps: ["vendor.vault:read"],
+      effect: "allow",
+      reach: "node",
+    },
+    fixture.owner,
+  );
   const input = {
-    ref, target, discipline: "canvas", referenceProperty: "file",
-    element: { id: "attached", type: "reference_card", x: 1, y: 2, width: 100, height: 100, zIndex: 0 },
+    ref,
+    target,
+    discipline: "canvas",
+    referenceProperty: "file",
+    element: {
+      id: "attached",
+      type: "reference_card",
+      x: 1,
+      y: 2,
+      width: 100,
+      height: 100,
+      zIndex: 0,
+    },
   };
   return { ...fixture, host, editor, readGrant, input, state };
 }
@@ -6631,7 +6718,8 @@ test("reference attachment is idempotent without overwriting a consumer document
   try {
     const created = await f.host.dispatch(f.editor, "vendor.viewer.attach", f.input);
     expect(created).toEqual({
-      ok: true, result: {
+      ok: true,
+      result: {
         ref: { kind: "element", containerId: f.input.target.containerId, elementId: "attached" },
         created: true,
       },
@@ -6639,12 +6727,14 @@ test("reference attachment is idempotent without overwriting a consumer document
     const room = f.rooms.get(f.input.target.containerId)!;
     expect(readElement(room.doc, "attached")?.file).toBe(formatManifoldUri(f.input.ref));
     const retry = await f.host.dispatch(f.editor, "vendor.viewer.attach", {
-      ...f.input, element: { ...f.input.element, x: 999 },
+      ...f.input,
+      element: { ...f.input.element, x: 999 },
     });
     expect(retry.ok && ReferenceAttachmentResultSchema.parse(retry.result).created).toBe(false);
     expect(readElement(room.doc, "attached")?.x).toBe(1);
     const wrongType = await f.host.dispatch(f.editor, "vendor.viewer.attach", {
-      ...f.input, element: { ...f.input.element, id: "foreign", type: "foreign_type" },
+      ...f.input,
+      element: { ...f.input.element, id: "foreign", type: "foreign_type" },
     });
     expect(wrongType.ok).toBe(false);
     expect(readElement(room.doc, "foreign")).toBeNull();
@@ -6655,32 +6745,50 @@ test("reference attachment is idempotent without overwriting a consumer document
   }
 });
 
-test.each(["file", "scene"] as const)("reference attachment fences %s revocation during readiness", async (authority) => {
-  const f = await referenceAttachmentFixture();
-  const release = Promise.withResolvers<void>();
-  try {
-    const entered = Promise.withResolvers<void>();
-    f.state.probe = async () => { entered.resolve(); await release.promise; };
-    const pending = f.host.dispatch(f.editor, "vendor.viewer.attach", f.input);
-    await Promise.race([
-      entered.promise,
-      pending.then((outcome) => { throw new Error(`attachment settled before readiness: ${JSON.stringify(outcome)}`); }),
-    ]);
-    if (authority === "file") f.auth.revokeGrant(f.readGrant.id, f.owner);
-    else f.auth.grant({
-      principal: { kind: "principal", id: f.editor.principal.id },
-      node: formatManifoldUri(f.input.target), caps: ["scenes:write"], effect: "deny", reach: "node",
-    }, f.owner);
-    release.resolve();
-    expect(await pending).toEqual({
-      ok: false, denial: { rule: "refused", message: "reference_unavailable" },
-    });
-    expect(readElement(f.rooms.get(f.input.target.containerId)!.doc, "attached")).toBeNull();
-    expect(f.auth.allowsRef(f.owner, "vendor.vault:read", f.input.ref as PluginOwnedRef)).toBe(true);
-  } finally {
-    release.resolve();
-    await f.host.close();
-    f.rooms.drop(f.input.target.containerId);
-    f.store.close();
-  }
-});
+test.each(["file", "scene"] as const)(
+  "reference attachment fences %s revocation during readiness",
+  async (authority) => {
+    const f = await referenceAttachmentFixture();
+    const release = Promise.withResolvers<void>();
+    try {
+      const entered = Promise.withResolvers<void>();
+      f.state.probe = async () => {
+        entered.resolve();
+        await release.promise;
+      };
+      const pending = f.host.dispatch(f.editor, "vendor.viewer.attach", f.input);
+      await Promise.race([
+        entered.promise,
+        pending.then((outcome) => {
+          throw new Error(`attachment settled before readiness: ${JSON.stringify(outcome)}`);
+        }),
+      ]);
+      if (authority === "file") f.auth.revokeGrant(f.readGrant.id, f.owner);
+      else
+        f.auth.grant(
+          {
+            principal: { kind: "principal", id: f.editor.principal.id },
+            node: formatManifoldUri(f.input.target),
+            caps: ["scenes:write"],
+            effect: "deny",
+            reach: "node",
+          },
+          f.owner,
+        );
+      release.resolve();
+      expect(await pending).toEqual({
+        ok: false,
+        denial: { rule: "refused", message: "reference_unavailable" },
+      });
+      expect(readElement(f.rooms.get(f.input.target.containerId)!.doc, "attached")).toBeNull();
+      expect(f.auth.allowsRef(f.owner, "vendor.vault:read", f.input.ref as PluginOwnedRef)).toBe(
+        true,
+      );
+    } finally {
+      release.resolve();
+      await f.host.close();
+      f.rooms.drop(f.input.target.containerId);
+      f.store.close();
+    }
+  },
+);

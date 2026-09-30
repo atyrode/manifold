@@ -2911,18 +2911,18 @@ Log events: `isolate_spawned`, `isolate_exited`, `isolate_crashed`,
 **Web isolate — page ↔ Worker (`WebIsolateHostFrameSchema` /
 `WebIsolateWorkerFrameSchema`).** `postMessage` frames are discriminated on `t`:
 
-| Direction   | `t`                      | Carries                                                                 |
-| ----------- | ------------------------ | ----------------------------------------------------------------------- |
-| page→worker | `init`                   | `pluginId`, `principal`, `caps`, `containerId`: viewer data, not bearer |
+| Direction   | `t`                      | Carries                                                                                                                                         |
+| ----------- | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| page→worker | `init`                   | `pluginId`, `principal`, `caps`, `containerId`: viewer data, not bearer                                                                         |
 | page→worker | `mount`                  | instance/local contribution id and kind, mounted context, optional panel `arg`; contract 12 element data or panel-local `input`/`acceptsResult` |
-| page→worker | `context`                | fresh mounted host context and optional panel argument                  |
-| page→worker | `notification`, `stream` | bounded event invalidation / stream delivery                            |
-| page→worker | `event`                  | `instance`, current control's event and scalar payload                  |
-| page→worker | `unmount`, `reply`       | instance retirement / correlated host reply                             |
-| worker→page | `ready`                  | local panel/section ids, optional contract stamp                        |
-| worker→page | `render`                 | `instance`, whole validated `UiNode` tree                               |
-| worker→page | `panel_result`           | contract 12, one bounded data result for the current intake mount         |
-| worker→page | `call`, `fault`          | correlated bounded host method / per-view failure                       |
+| page→worker | `context`                | fresh mounted host context and optional panel argument                                                                                          |
+| page→worker | `notification`, `stream` | bounded event invalidation / stream delivery                                                                                                    |
+| page→worker | `event`                  | `instance`, current control's event and scalar payload                                                                                          |
+| page→worker | `unmount`, `reply`       | instance retirement / correlated host reply                                                                                                     |
+| worker→page | `ready`                  | local panel/section ids, optional contract stamp                                                                                                |
+| worker→page | `render`                 | `instance`, whole validated `UiNode` tree                                                                                                       |
+| worker→page | `panel_result`           | contract 12, one bounded data result for the current intake mount                                                                               |
+| worker→page | `call`, `fault`          | correlated bounded host method / per-view failure                                                                                               |
 
 `WEB_HOST_METHODS` include `action`, `place`, `selfCaps`, `machines`,
 `resolve`, `navigate`, terminal read/input/open/create, streams and event

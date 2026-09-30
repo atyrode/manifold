@@ -1127,8 +1127,8 @@ export function RuntimePreparation({
                       : "4. Approve and prepare installation with exact permissions"}
             </button>
             <small>
-              No transfer or operation will run. Installation and current owner acknowledgement
-              are tracked separately below.
+              No transfer or operation will run. Installation and current owner acknowledgement are
+              tracked separately below.
             </small>
           </div>
           <div

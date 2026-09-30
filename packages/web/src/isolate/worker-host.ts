@@ -1,4 +1,9 @@
-import type { HostServices, PortableElementEdit, SessionHandle, StreamHandle } from "@manifold/plugin";
+import type {
+  HostServices,
+  PortableElementEdit,
+  SessionHandle,
+  StreamHandle,
+} from "@manifold/plugin";
 import { MACHINES_RESOURCE } from "@manifold/plugin/portable-hooks";
 import { requestResponse } from "../http.ts";
 import { MountedByteResources } from "../byte-surface.tsx";
@@ -328,12 +333,22 @@ export class WorkerHost {
       return () => {};
     }
     if (this.mounted.has(instance)) throw new Error("duplicate mounted instance");
-    const projection = options.element === undefined ? undefined : PortableElementProjectionSchema.safeParse(options.element);
-    const input = options.input === undefined ? undefined : PortablePanelInputSchema.safeParse(options.input);
-    if ((options.kind === "element") !== (projection !== undefined) || projection?.success === false ||
-        input?.success === false ||
-        (options.kind !== undefined && options.kind !== "panel" &&
-          (options.arg !== undefined || options.input !== undefined || options.onResult !== undefined))) {
+    const projection =
+      options.element === undefined
+        ? undefined
+        : PortableElementProjectionSchema.safeParse(options.element);
+    const input =
+      options.input === undefined ? undefined : PortablePanelInputSchema.safeParse(options.input);
+    if (
+      (options.kind === "element") !== (projection !== undefined) ||
+      projection?.success === false ||
+      input?.success === false ||
+      (options.kind !== undefined &&
+        options.kind !== "panel" &&
+        (options.arg !== undefined ||
+          options.input !== undefined ||
+          options.onResult !== undefined))
+    ) {
       onFault("contribution mount data is unavailable");
       return () => {};
     }
@@ -367,19 +382,33 @@ export class WorkerHost {
   }
 
   /** Update one mount's presentation and live authority without resetting its React state. */
-  update(instance: string, host: HostServices, arg?: PanelArg, element?: PortableElementProjection, edit?: PortableElementEdit): void {
+  update(
+    instance: string,
+    host: HostServices,
+    arg?: PanelArg,
+    element?: PortableElementProjection,
+    edit?: PortableElementEdit,
+  ): void {
     const entry = this.mounted.get(instance);
     if (entry === undefined || entry.faulted) return;
-    const projection = element === undefined ? undefined : PortableElementProjectionSchema.safeParse(element);
-    if ((entry.kind === "element") !== (projection !== undefined) || projection?.success === false ||
-        (entry.element !== undefined && entry.element.id !== projection?.data?.id) ||
-        (entry.kind !== "panel" && arg !== undefined)) {
+    const projection =
+      element === undefined ? undefined : PortableElementProjectionSchema.safeParse(element);
+    if (
+      (entry.kind === "element") !== (projection !== undefined) ||
+      projection?.success === false ||
+      (entry.element !== undefined && entry.element.id !== projection?.data?.id) ||
+      (entry.kind !== "panel" && arg !== undefined)
+    ) {
       this.faultInstance(instance, entry, "mounted contribution identity or payload kind changed");
       return;
     }
     const changedClient = entry.host.client !== host.client;
-    if ((entry.input !== undefined || entry.onResult !== undefined) &&
-        (changedClient || entry.host.token !== host.token || entry.host.containerId !== host.containerId)) {
+    if (
+      (entry.input !== undefined || entry.onResult !== undefined) &&
+      (changedClient ||
+        entry.host.token !== host.token ||
+        entry.host.containerId !== host.containerId)
+    ) {
       this.faultInstance(instance, entry, "intake retired: its host identity changed");
       return;
     }
@@ -449,8 +478,12 @@ export class WorkerHost {
 
   private announce(instance: string, entry: Mounted): void {
     if (this.panels === null) return;
-    const contributions = entry.kind === "element" ? this.elements
-      : entry.kind === "section" ? this.sections : this.panels;
+    const contributions =
+      entry.kind === "element"
+        ? this.elements
+        : entry.kind === "section"
+          ? this.sections
+          : this.panels;
     if (!contributions.has(entry.panel)) {
       this.faultInstance(
         instance,
@@ -528,7 +561,11 @@ export class WorkerHost {
     });
   }
 
-  private releaseInstance(instance: string, entry: Mounted, closeResources = entry.ownsResources): void {
+  private releaseInstance(
+    instance: string,
+    entry: Mounted,
+    closeResources = entry.ownsResources,
+  ): void {
     if (closeResources) entry.resources.close();
     this.cancelInstanceBytes(instance);
     entry.offStatus?.();
@@ -596,8 +633,13 @@ export class WorkerHost {
       case "panel_result": {
         const entry = this.mounted.get(frame.instance);
         if (entry === undefined || !entry.announced || entry.faulted) return;
-        if (this.contract < 12 || entry.kind !== "panel" || entry.onResult === undefined ||
-            entry.resultDelivered || !entry.resources.isLive) {
+        if (
+          this.contract < 12 ||
+          entry.kind !== "panel" ||
+          entry.onResult === undefined ||
+          entry.resultDelivered ||
+          !entry.resources.isLive
+        ) {
           this.faultInstance(frame.instance, entry, "panel result has no live intake receiver");
           return;
         }
@@ -631,7 +673,10 @@ export class WorkerHost {
     const scoped = this.contract >= 9 || this.deps.portableWorker === true;
     const owner = frame.instance === undefined ? undefined : this.mounted.get(frame.instance);
     const currentHost = owner?.host;
-    const isByteCall = frame.method === "readByteChunk" || frame.method === "writeByteChunk" || frame.method === "readLocalFile";
+    const isByteCall =
+      frame.method === "readByteChunk" ||
+      frame.method === "writeByteChunk" ||
+      frame.method === "readLocalFile";
     if (scoped && (owner === undefined || !owner.announced || owner.faulted)) {
       this.reply(refusalFrame(frame.id, "call owner is not mounted"));
       return;
@@ -655,8 +700,12 @@ export class WorkerHost {
         if (!(result instanceof Uint8Array) || result.byteLength > MAX_BYTE_CHUNK_BYTES) {
           throw new ByteTransferError("invalid");
         }
-        const data = result.buffer instanceof ArrayBuffer && result.byteOffset === 0 &&
-          result.byteLength === result.buffer.byteLength ? result as Uint8Array<ArrayBuffer> : new Uint8Array(result);
+        const data =
+          result.buffer instanceof ArrayBuffer &&
+          result.byteOffset === 0 &&
+          result.byteLength === result.buffer.byteLength
+            ? (result as Uint8Array<ArrayBuffer>)
+            : new Uint8Array(result);
         result = data;
         transfer = [data.buffer];
       }
@@ -684,7 +733,9 @@ export class WorkerHost {
     ) {
       reply = refusalFrame(
         frame.id,
-        new ByteTransferError(frame.method === "writeByteChunk" ? "outcome_unknown" : "unavailable"),
+        new ByteTransferError(
+          frame.method === "writeByteChunk" ? "outcome_unknown" : "unavailable",
+        ),
       );
       transfer = undefined;
     }
@@ -900,22 +951,38 @@ export class WorkerHost {
     }
   }
 
-  private async readLocalFile(args: readonly unknown[], instance: string | undefined): Promise<Uint8Array> {
+  private async readLocalFile(
+    args: readonly unknown[],
+    instance: string | undefined,
+  ): Promise<Uint8Array> {
     const [id, handle, offset, length] = args;
-    if (args.length !== 4 || typeof id !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(id) ||
-        !LocalFileHandleSchema.safeParse(handle).success ||
-        typeof offset !== "number" || typeof length !== "number") {
+    if (
+      args.length !== 4 ||
+      typeof id !== "string" ||
+      !/^[a-zA-Z0-9_-]{1,128}$/.test(id) ||
+      !LocalFileHandleSchema.safeParse(handle).success ||
+      typeof offset !== "number" ||
+      typeof length !== "number"
+    ) {
       throw new ByteTransferError("invalid");
     }
-    if (this.byteRequests.has(id) || this.byteRequests.size >= MAX_BYTE_REQUESTS) throw new ByteTransferError("busy");
+    if (this.byteRequests.has(id) || this.byteRequests.size >= MAX_BYTE_REQUESTS)
+      throw new ByteTransferError("busy");
     const entry = this.mountedOwner(instance);
     const resources = entry.resources;
     const controller = new AbortController();
     this.byteRequests.set(id, { instance: instance!, controller });
     try {
-      const data = await resources.localFiles.read(handle as string, offset, length, { signal: controller.signal });
+      const data = await resources.localFiles.read(handle as string, offset, length, {
+        signal: controller.signal,
+      });
       if (controller.signal.aborted) throw new ByteTransferError("cancelled");
-      if (entry.faulted || this.stopped || this.mounted.get(instance!) !== entry || entry.resources !== resources) {
+      if (
+        entry.faulted ||
+        this.stopped ||
+        this.mounted.get(instance!) !== entry ||
+        entry.resources !== resources
+      ) {
         throw new ByteTransferError("unavailable");
       }
       return data;
@@ -954,8 +1021,12 @@ export class WorkerHost {
       case "patchElement": {
         const owner = this.mountedOwner(instance);
         const request = PortableElementPatchSchema.parse(args.length === 1 ? args[0] : null);
-        if (owner.kind !== "element" || !owner.element || !owner.edit?.writable ||
-            canonicalJobJson(request.expected) !== canonicalJobJson(owner.element.data)) {
+        if (
+          owner.kind !== "element" ||
+          !owner.element ||
+          !owner.edit?.writable ||
+          canonicalJobJson(request.expected) !== canonicalJobJson(owner.element.data)
+        ) {
           throw new Error("Element edit context changed");
         }
         return owner.edit.patch(request.patch);

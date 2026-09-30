@@ -220,12 +220,15 @@ export class IsolateChild {
     if (interpreter === null) {
       throw new IsolateLoadError("no bun on PATH to run isolates under this compiled server");
     }
-    const spawned = Bun.spawn([interpreter, "--no-install", "--smol", `${dir}/${PLUGIN_BUNDLE_SERVER_FILE}`], {
-      stdio: ["ignore", "pipe", "pipe", "socket-fd"],
-      cwd: dir,
-      env: childEnvironment(pluginId),
-      maxBuffer: ISOLATE_MAX_FRAME_BYTES,
-    });
+    const spawned = Bun.spawn(
+      [interpreter, "--no-install", "--smol", `${dir}/${PLUGIN_BUNDLE_SERVER_FILE}`],
+      {
+        stdio: ["ignore", "pipe", "pipe", "socket-fd"],
+        cwd: dir,
+        env: childEnvironment(pluginId),
+        maxBuffer: ISOLATE_MAX_FRAME_BYTES,
+      },
+    );
     const protocolFd = spawned.stdio[3];
     if (protocolFd === null || protocolFd === undefined) {
       spawned.kill();

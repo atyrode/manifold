@@ -909,34 +909,54 @@ describe("event plane fan-out", () => {
 
   test("foreign file producers never persist or reach file and plugin-collection subscribers", async () => {
     const emit = defineAction({
-      name: "emit", title: "Emit file change", caps: [],
+      name: "emit",
+      title: "Emit file change",
+      caps: [],
       input: z.strictObject({ ref: PluginOwnedRefSchema }),
       result: z.null(),
     });
     const files: ServerPluginDef = {
       manifest: PluginManifestSchema.parse({
-        id: "vendor.files", version: "1.0.0", title: "Files", description: "",
-        capabilities: ["vendor.files:create", "vendor.files:read", "vendor.files:delete", "vendor.files:share"],
+        id: "vendor.files",
+        version: "1.0.0",
+        title: "Files",
+        description: "",
+        capabilities: [
+          "vendor.files:create",
+          "vendor.files:read",
+          "vendor.files:delete",
+          "vendor.files:share",
+        ],
         contributes: {
           events: [{ id: "file_changed", title: "File changed" }],
-          references: [{
-            kind: "file", resolveAction: "resolve", readCapability: "vendor.files:read",
-            createCapability: "vendor.files:create", deleteCapability: "vendor.files:delete",
-            creatorCaps: ["vendor.files:read", "vendor.files:delete", "vendor.files:share"],
-            sharing: {
-              grantorCapability: "vendor.files:share",
-              prerequisites: ["vendor.files:read", "vendor.files:share"],
-              grantableCaps: ["vendor.files:read"],
+          references: [
+            {
+              kind: "file",
+              resolveAction: "resolve",
+              readCapability: "vendor.files:read",
+              createCapability: "vendor.files:create",
+              deleteCapability: "vendor.files:delete",
+              creatorCaps: ["vendor.files:read", "vendor.files:delete", "vendor.files:share"],
+              sharing: {
+                grantorCapability: "vendor.files:share",
+                prerequisites: ["vendor.files:read", "vendor.files:share"],
+                grantableCaps: ["vendor.files:read"],
+              },
             },
-          }],
+          ],
         },
       }),
-      actions: [emit, defineAction({
-        name: "resolve", title: "Resolve", caps: ["vendor.files:read"],
-        requirements: [{ cap: "vendor.files:read", target: ["ref"] }],
-        input: z.strictObject({ ref: PluginOwnedRefSchema }),
-        result: z.strictObject({ title: z.string().max(128) }),
-      })],
+      actions: [
+        emit,
+        defineAction({
+          name: "resolve",
+          title: "Resolve",
+          caps: ["vendor.files:read"],
+          requirements: [{ cap: "vendor.files:read", target: ["ref"] }],
+          input: z.strictObject({ ref: PluginOwnedRefSchema }),
+          result: z.strictObject({ title: z.string().max(128) }),
+        }),
+      ],
       handlers: {
         async emit(ctx, input: { ref: PluginOwnedRef }) {
           ctx.emit(input.ref, "file_changed", { change: "committed" });
@@ -950,7 +970,10 @@ describe("event plane fan-out", () => {
     };
     const foreign: ServerPluginDef = {
       manifest: PluginManifestSchema.parse({
-        id: "vendor.foreign", version: "1.0.0", title: "Foreign", description: "",
+        id: "vendor.foreign",
+        version: "1.0.0",
+        title: "Foreign",
+        description: "",
         capabilities: [],
         contributes: { events: [{ id: "file_changed", title: "File changed" }] },
       }),
@@ -972,11 +995,16 @@ describe("event plane fan-out", () => {
       const foreignCollection: ManifoldRef = { kind: "plugin", pluginId: "vendor.foreign" };
       const token = context(fixture, ["containers:read"]);
       const reader = fixture.auth.authenticate(token);
-      const grant = fixture.auth.grant({
-        principal: { kind: "principal", id: reader.principal.id },
-        node: formatManifoldUri(file),
-        caps: ["vendor.files:read"], effect: "allow", reach: "node",
-      }, fixture.owner);
+      const grant = fixture.auth.grant(
+        {
+          principal: { kind: "principal", id: reader.principal.id },
+          node: formatManifoldUri(file),
+          caps: ["vendor.files:read"],
+          effect: "allow",
+          reach: "node",
+        },
+        fixture.owner,
+      );
       const direct = connect(fixture, "file-direct", { token });
       const collections = connect(fixture, "file-collections", { token });
       subscribe(fixture, "file-direct", [file]);
@@ -986,24 +1014,32 @@ describe("event plane fan-out", () => {
       expect(fixture.host.assembly().enabled("vendor.foreign")).toBe(true);
       expect(fixture.host.assembly().referenceKinds.get("file")?.plugin).toBe("vendor.files");
 
-      expect(await fixture.host.dispatch(fixture.owner, "vendor.foreign.emit", { ref: file }))
-        .toMatchObject({ ok: true });
+      expect(
+        await fixture.host.dispatch(fixture.owner, "vendor.foreign.emit", { ref: file }),
+      ).toMatchObject({ ok: true });
       expect(eventsOn(direct)).toEqual([]);
       expect(eventsOn(collections)).toEqual([]);
       expect(fixture.store.listEvents({ type: "file_changed", limit: 10 })).toEqual([]);
       expect(fixture.logs.some((line) => line.evt === "event_undeclared")).toBe(true);
 
-      expect(await fixture.host.dispatch(fixture.owner, "vendor.files.emit", { ref: file }))
-        .toMatchObject({ ok: true });
+      expect(
+        await fixture.host.dispatch(fixture.owner, "vendor.files.emit", { ref: file }),
+      ).toMatchObject({ ok: true });
       const event = {
-        type: "event" as const, plugin: "vendor.files", kind: "file_changed",
-        at: fixture.runtime.now(), actor: fixture.owner.principal.id,
+        type: "event" as const,
+        plugin: "vendor.files",
+        kind: "file_changed",
+        at: fixture.runtime.now(),
+        actor: fixture.owner.principal.id,
         payload: { change: "committed" },
       };
       expect(eventsOn(direct)).toEqual([{ ...event, topic: file }]);
       expect(eventsOn(collections)).toEqual([{ ...event, topic: ownerCollection }]);
-      expect(fixture.store.listEvents({ type: "file_changed", limit: 10 }).map((row) => JSON.parse(row.payload)))
-        .toEqual([{ change: "committed" }]);
+      expect(
+        fixture.store
+          .listEvents({ type: "file_changed", limit: 10 })
+          .map((row) => JSON.parse(row.payload)),
+      ).toEqual([{ change: "committed" }]);
 
       direct.clear();
       collections.clear();

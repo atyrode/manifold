@@ -3,7 +3,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { compilePlugin } from "@manifold/plugin-kit/pack";
-import { PLUGIN_BUNDLE_WEB_WORKER_FILE, PluginBundleSchema, PluginManifestSchema } from "@manifold/protocol";
+import {
+  PLUGIN_BUNDLE_WEB_WORKER_FILE,
+  PluginBundleSchema,
+  PluginManifestSchema,
+} from "@manifold/protocol";
 import { Browser } from "../../../../scripts/cdp.ts";
 
 /** Runs actual DOM controls, FileReader, worker transfers and browser raster decoding. */
@@ -37,21 +41,34 @@ test("byte surfaces keep page/worker custody, static decode and revocation seman
   `;
   try {
     const author = join(scratch, "web.js");
-    await Bun.write(author, `import {createElement,useState} from "react";
+    await Bun.write(
+      author,
+      `import {createElement,useState} from "react";
       import {Stack,Text,Button,FileInput,ByteImage} from "@manifold/ui";
       ${component}
-      export default {id:"example.bytes",panels:{main:Intake}};`);
-    const compiled = await compilePlugin(scratch, { source: {
-      manifest: PluginManifestSchema.parse({ id: "example.bytes", title: "Byte custody",
-        version: "1.0.0", description: "Byte resource boundary fixture", capabilities: [],
-        contributes: { panels: [{ id: "main", title: "Intake" }] }, entry: { web: "web.js", worker: true } }),
-      web: author,
-    } });
+      export default {id:"example.bytes",panels:{main:Intake}};`,
+    );
+    const compiled = await compilePlugin(scratch, {
+      source: {
+        manifest: PluginManifestSchema.parse({
+          id: "example.bytes",
+          title: "Byte custody",
+          version: "1.0.0",
+          description: "Byte resource boundary fixture",
+          capabilities: [],
+          contributes: { panels: [{ id: "main", title: "Intake" }] },
+          entry: { web: "web.js", worker: true },
+        }),
+        web: author,
+      },
+    });
     const bundle = PluginBundleSchema.parse(JSON.parse(new TextDecoder().decode(compiled.bytes)));
     const workerSource = Buffer.from(bundle.files[PLUGIN_BUNDLE_WEB_WORKER_FILE]!, "base64");
     const entry = join(scratch, "fixture.js");
     const output = join(scratch, "dist");
-    await Bun.write(entry, `
+    await Bun.write(
+      entry,
+      `
       import {createElement,useState} from ${JSON.stringify(Bun.resolveSync("react", import.meta.dir))};
       import {createRoot} from ${JSON.stringify(Bun.resolveSync("react-dom/client", import.meta.dir))};
       import {flushSync} from ${JSON.stringify(Bun.resolveSync("react-dom", import.meta.dir))};
@@ -151,51 +168,98 @@ test("byte surfaces keep page/worker custody, static decode and revocation seman
           } finally { one.close(); two.close(); }
         },
       };
-    `);
+    `,
+    );
     const build = await Bun.build({ entrypoints: [entry], target: "browser", outdir: output });
     if (!build.success) throw new Error(build.logs.map(String).join("\n"));
-    server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
-      const path = new URL(request.url).pathname;
-      if (path === "/worker.js") return new Response(workerSource, { headers: { "Content-Type": "text/javascript" } });
-      if (path === "/fixture.js" || path === "/fixture.css") return new Response(Bun.file(join(output, path.slice(1))), {
-        headers: { "Content-Type": path.endsWith(".css") ? "text/css" : "text/javascript" },
-      });
-      return new Response('<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="/fixture.css"><div id="root"></div><script type="module" src="/fixture.js"></script>', {
-        headers: { "Content-Type": "text/html" },
-      });
-    } });
+    server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch(request) {
+        const path = new URL(request.url).pathname;
+        if (path === "/worker.js")
+          return new Response(workerSource, { headers: { "Content-Type": "text/javascript" } });
+        if (path === "/fixture.js" || path === "/fixture.css")
+          return new Response(Bun.file(join(output, path.slice(1))), {
+            headers: { "Content-Type": path.endsWith(".css") ? "text/css" : "text/javascript" },
+          });
+        return new Response(
+          '<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="/fixture.css"><div id="root"></div><script type="module" src="/fixture.js"></script>',
+          {
+            headers: { "Content-Type": "text/html" },
+          },
+        );
+      },
+    });
     await browser.launch({ incognito: true });
     await browser.goto(`http://127.0.0.1:${String(server.port)}/`);
-    expect(await browser.evaluate<{
-      foreign: string; oversized: string; cancelled: string; retired: string; capacity: string;
-    }>("window.fixture.custody()")).toEqual({
-      foreign: "unavailable", oversized: "invalid", cancelled: "cancelled",
-      retired: "unavailable", capacity: "busy",
+    expect(
+      await browser.evaluate<{
+        foreign: string;
+        oversized: string;
+        cancelled: string;
+        retired: string;
+        capacity: string;
+      }>("window.fixture.custody()"),
+    ).toEqual({
+      foreign: "unavailable",
+      oversized: "invalid",
+      cancelled: "cancelled",
+      retired: "unavailable",
+      capacity: "busy",
     });
-    const hash = Buffer.from(await crypto.subtle.digest("SHA-256", new Uint8Array([1, 2, 3]))).toString("hex");
+    const hash = Buffer.from(
+      await crypto.subtle.digest("SHA-256", new Uint8Array([1, 2, 3])),
+    ).toString("hex");
     const selectedPath = join(scratch, "selected.bin");
     await Bun.write(selectedPath, new Uint8Array([1, 2, 3]));
     for (const mode of ["page", "worker"]) {
       for (const mediaType of ["image/png", "image/jpeg", "image/webp", "image/gif"]) {
-        expect(await browser.evaluate<{ width: number; height: number }>(`window.fixture.mount(${JSON.stringify(mode)},${JSON.stringify(mediaType)})`))
-          .toEqual(mediaType === "image/gif" ? { width: 1, height: 1 } : { width: 3, height: 2 });
+        expect(
+          await browser.evaluate<{ width: number; height: number }>(
+            `window.fixture.mount(${JSON.stringify(mode)},${JSON.stringify(mediaType)})`,
+          ),
+        ).toEqual(mediaType === "image/gif" ? { width: 1, height: 1 } : { width: 3, height: 2 });
         if (mediaType === "image/png") {
-          const selected = await browser.send("Runtime.evaluate", { expression: 'document.querySelector("input[type=file]")' });
-          const objectId = (selected.result?.["result"] as { objectId?: string } | undefined)?.objectId;
+          const selected = await browser.send("Runtime.evaluate", {
+            expression: 'document.querySelector("input[type=file]")',
+          });
+          const objectId = (selected.result?.["result"] as { objectId?: string } | undefined)
+            ?.objectId;
           if (objectId === undefined) throw new Error("file picker did not mount");
-          const chosen = await browser.send("DOM.setFileInputFiles", { objectId, files: [selectedPath] });
+          const chosen = await browser.send("DOM.setFileInputFiles", {
+            objectId,
+            files: [selectedPath],
+          });
           if (chosen.error !== undefined) throw new Error(chosen.error.message);
           await browser.evaluate("window.fixture.selectionReady()");
         } else await browser.evaluate("window.fixture.drop()");
-        expect(await browser.evaluate<string>(`window.fixture.press("Read selected",${JSON.stringify(hash)})`)).toBe(hash);
-        expect(await browser.evaluate<string>('window.fixture.press("Cancel read","cancelled")')).toBe("cancelled");
+        expect(
+          await browser.evaluate<string>(
+            `window.fixture.press("Read selected",${JSON.stringify(hash)})`,
+          ),
+        ).toBe(hash);
+        expect(
+          await browser.evaluate<string>('window.fixture.press("Cancel read","cancelled")'),
+        ).toBe("cancelled");
         await browser.evaluate('window.fixture.press("Release selected","released")');
-        expect(await browser.evaluate<string>('window.fixture.press("Read selected","unavailable")')).toBe("unavailable");
-        expect(await browser.evaluate<{ removedSynchronously: boolean; revoked: boolean; images: number }>("window.fixture.revoke()"))
-          .toEqual({ removedSynchronously: true, revoked: true, images: 0 });
+        expect(
+          await browser.evaluate<string>('window.fixture.press("Read selected","unavailable")'),
+        ).toBe("unavailable");
+        expect(
+          await browser.evaluate<{
+            removedSynchronously: boolean;
+            revoked: boolean;
+            images: number;
+          }>("window.fixture.revoke()"),
+        ).toEqual({ removedSynchronously: true, revoked: true, images: 0 });
       }
       await browser.evaluate(`window.fixture.mount(${JSON.stringify(mode)},"image/png")`);
-      expect(await browser.evaluate<{ removed: boolean; revoked: boolean }>("window.fixture.closeReady()")).toEqual({ removed: true, revoked: true });
+      expect(
+        await browser.evaluate<{ removed: boolean; revoked: boolean }>(
+          "window.fixture.closeReady()",
+        ),
+      ).toEqual({ removed: true, revoked: true });
     }
     await browser.evaluate("window.fixture.close()");
   } finally {

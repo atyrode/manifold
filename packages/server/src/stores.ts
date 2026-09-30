@@ -1196,7 +1196,8 @@ export class ServerStore {
         manifest.defaultEnabled === false &&
         !initialized.has(manifest.id) &&
         !attribution.has(manifest.id)
-      ) disabled.add(manifest.id);
+      )
+        disabled.add(manifest.id);
     }
     return disabled;
   }
@@ -1285,22 +1286,35 @@ export class ServerStore {
   }
 
   referenceKindOwners(): ReadonlyMap<PluginOwnedRefKind, string> {
-    return new Map(this.db.query<{
-      kind: PluginOwnedRefKind;
-      plugin_id: string;
-    }, []>("SELECT kind,plugin_id FROM reference_kind_owners").all().map((row) => [row.kind, row.plugin_id]));
+    return new Map(
+      this.db
+        .query<
+          {
+            kind: PluginOwnedRefKind;
+            plugin_id: string;
+          },
+          []
+        >("SELECT kind,plugin_id FROM reference_kind_owners")
+        .all()
+        .map((row) => [row.kind, row.plugin_id]),
+    );
   }
 
   /** Reservations outlive disable, missing builds and purge: surviving URIs never change owner. */
   claimReferenceKinds(pluginId: string, kinds: readonly PluginOwnedRefKind[]): void {
     this.transaction(() => {
       for (const kind of kinds) {
-        const owner = this.db.query<{ plugin_id: string }, [string]>(
-          "SELECT plugin_id FROM reference_kind_owners WHERE kind=?",
-        ).get(kind);
+        const owner = this.db
+          .query<{ plugin_id: string }, [string]>(
+            "SELECT plugin_id FROM reference_kind_owners WHERE kind=?",
+          )
+          .get(kind);
         if (owner !== null && owner.plugin_id !== pluginId)
           throw new Error("reference_kind_conflict");
-        this.db.query("INSERT OR IGNORE INTO reference_kind_owners(kind,plugin_id,allocation_state) VALUES(?,?,?)")
+        this.db
+          .query(
+            "INSERT OR IGNORE INTO reference_kind_owners(kind,plugin_id,allocation_state) VALUES(?,?,?)",
+          )
           .run(kind, pluginId, JSON.stringify({ incarnation: crypto.randomUUID(), counter: 0 }));
       }
     });

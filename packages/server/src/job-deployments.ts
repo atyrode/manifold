@@ -661,7 +661,7 @@ export class JobDeployments {
         const pinnedOwner = this.service.jobs.owner(machineId);
         const candidates: (keyof typeof machine.artifacts)[] = machine.transferPolicy
           ? ["linux-x64", "linux-arm64"]
-          : Object.keys(machine.artifacts) as (keyof typeof machine.artifacts)[];
+          : (Object.keys(machine.artifacts) as (keyof typeof machine.artifacts)[]);
         const platform =
           selected ??
           candidates.find((value) => owner?.platforms.includes(value)) ??
@@ -671,7 +671,7 @@ export class JobDeployments {
           ? null
           : machine.transferPolicy
             ? createHash("sha256").update(canonicalNativeTransferPolicy(machine)).digest("hex")
-            : machine.artifacts[platform]?.sha256 ?? null;
+            : (machine.artifacts[platform]?.sha256 ?? null);
         let reason: string | null =
           !destination ||
           !token ||
@@ -741,7 +741,10 @@ export class JobDeployments {
         }
         for (const locationId of Object.keys(machine.transferPolicy?.locations ?? {})) {
           const location = machine.locations[locationId]!;
-          if (location.managed || resources.some((row) => row.group === "anchors" && row.name === location.anchor))
+          if (
+            location.managed ||
+            resources.some((row) => row.group === "anchors" && row.name === location.anchor)
+          )
             continue;
           const name = location.anchor;
           const sha256 = known?.anchors[name] ?? null;

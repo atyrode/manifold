@@ -1,12 +1,25 @@
 import {
-  BYTE_READ_LEASE_MS, BYTE_REQUEST_TIMEOUT_MS, ByteReadChunkSchema, ByteTransferError,
-  MAX_BYTE_CHUNK_BYTES, MAX_LOCAL_FILE_BYTES, MAX_LOCAL_FILES,
-  type ByteCarrierRequest, type ByteDownloadSource, type ByteReadChunk, type ByteRefusal,
+  BYTE_READ_LEASE_MS,
+  BYTE_REQUEST_TIMEOUT_MS,
+  ByteReadChunkSchema,
+  ByteTransferError,
+  MAX_BYTE_CHUNK_BYTES,
+  MAX_LOCAL_FILE_BYTES,
+  MAX_LOCAL_FILES,
+  type ByteCarrierRequest,
+  type ByteDownloadSource,
+  type ByteReadChunk,
+  type ByteRefusal,
 } from "@manifold/protocol";
 
 /** Structural session slice: never constructs another client or captures a bearer. */
 export interface ByteReadClient {
-  readByteChunk(pluginId: string, carrierId: string, request: ByteCarrierRequest, signal?: AbortSignal): Promise<ByteReadChunk>;
+  readByteChunk(
+    pluginId: string,
+    carrierId: string,
+    request: ByteCarrierRequest,
+    signal?: AbortSignal,
+  ): Promise<ByteReadChunk>;
   readonly status: "idle" | "connecting" | "open" | "reconnecting" | "closed";
   on(event: "status", listener: (status: ByteReadClient["status"]) => void): () => void;
 }
@@ -52,7 +65,9 @@ export class ByteReadLease {
     this.armExpiry();
   }
 
-  get deadline(): number { return Math.min(this.leaseDeadline || Infinity, this.acquisitionDeadline); }
+  get deadline(): number {
+    return Math.min(this.leaseDeadline || Infinity, this.acquisitionDeadline);
+  }
 
   current(): void {
     if (!this.live || this.client.status !== "open") throw new ByteTransferError("unavailable");
@@ -91,31 +106,59 @@ export class ByteReadLease {
     const abort = (): void => stopped.reject(signal.reason);
     if (signal.aborted) abort();
     else signal.addEventListener("abort", abort, { once: true });
-    try { return await Promise.race([promise, stopped.promise]); }
-    finally { signal.removeEventListener("abort", abort); }
+    try {
+      return await Promise.race([promise, stopped.promise]);
+    } finally {
+      signal.removeEventListener("abort", abort);
+    }
   }
 
   async read(length: number): Promise<Uint8Array> {
     this.current();
-    if (this.request !== null || !Number.isInteger(length) || length < 0 || length > MAX_BYTE_CHUNK_BYTES ||
-        length > this.source.bytes - this.offset || (length === 0 && this.offset !== this.source.bytes))
+    if (
+      this.request !== null ||
+      !Number.isInteger(length) ||
+      length < 0 ||
+      length > MAX_BYTE_CHUNK_BYTES ||
+      length > this.source.bytes - this.offset ||
+      (length === 0 && this.offset !== this.source.bytes)
+    )
       throw new ByteTransferError("invalid");
     const controller = new AbortController();
     this.request = controller;
     const started = Date.now();
     const requestDeadline = started + BYTE_REQUEST_TIMEOUT_MS;
-    const timeout = setTimeout(() => controller.abort(new ByteTransferError("request_timeout")), BYTE_REQUEST_TIMEOUT_MS);
+    const timeout = setTimeout(
+      () => controller.abort(new ByteTransferError("request_timeout")),
+      BYTE_REQUEST_TIMEOUT_MS,
+    );
     try {
-      const response = ByteReadChunkSchema.parse(await this.bounded(this.client.readByteChunk(
-        this.source.pluginId, this.source.carrierId,
-        { transferId: this.source.transferId, ref: this.source.ref, offset: this.offset, sequence: this.sequence, length },
-        controller.signal,
-      ), controller.signal));
+      const response = ByteReadChunkSchema.parse(
+        await this.bounded(
+          this.client.readByteChunk(
+            this.source.pluginId,
+            this.source.carrierId,
+            {
+              transferId: this.source.transferId,
+              ref: this.source.ref,
+              offset: this.offset,
+              sequence: this.sequence,
+              length,
+            },
+            controller.signal,
+          ),
+          controller.signal,
+        ),
+      );
       this.current();
       if (controller.signal.aborted) throw new ByteTransferError("cancelled");
       if (Date.now() >= requestDeadline) throw new ByteTransferError("request_timeout");
-      if (response.offset !== this.offset || response.data.byteLength !== length ||
-          response.eof !== (this.offset + length === this.source.bytes)) throw new ByteTransferError("invalid");
+      if (
+        response.offset !== this.offset ||
+        response.data.byteLength !== length ||
+        response.eof !== (this.offset + length === this.source.bytes)
+      )
+        throw new ByteTransferError("invalid");
       // Transit and queued delivery consume the lease too; late timers cannot extend it.
       this.leaseDeadline = started + Math.min(response.leaseMs, BYTE_READ_LEASE_MS);
       this.current();
@@ -130,7 +173,9 @@ export class ByteReadLease {
   }
 
   /** null means a digest mismatch. Empty content still requires an authenticated read. */
-  async acquire(progress?: (received: number, total: number) => void): Promise<Uint8Array<ArrayBuffer> | null> {
+  async acquire(
+    progress?: (received: number, total: number) => void,
+  ): Promise<Uint8Array<ArrayBuffer> | null> {
     this.current();
     const bytes = new Uint8Array(this.source.bytes);
     progress?.(0, this.source.bytes);
@@ -143,7 +188,9 @@ export class ByteReadLease {
       progress?.(this.offset, bytes.length);
     }
     this.current();
-    const digest = new Uint8Array(await this.bounded(crypto.subtle.digest("SHA-256", bytes), this.lifetime.signal));
+    const digest = new Uint8Array(
+      await this.bounded(crypto.subtle.digest("SHA-256", bytes), this.lifetime.signal),
+    );
     this.current();
     const sha256 = Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
     return sha256 === this.source.sha256 ? bytes : null;

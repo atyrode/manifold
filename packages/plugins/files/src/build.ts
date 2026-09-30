@@ -27,9 +27,13 @@ export function filesServerBuild() {
   const nativeRoot = dirname(sharpRequire.resolve(`${nativePackage}/package`));
   const libraryRoot = dirname(sharpRequire.resolve(`${libraryPackage}/package`));
   const upstreamLoader = readFileSync(nativeEntry, "utf8");
-  const metadata = dependencyMetadata.parse(JSON.parse(readFileSync(join(sharpRoot, "package.json"), "utf8")) as unknown);
+  const metadata = dependencyMetadata.parse(
+    JSON.parse(readFileSync(join(sharpRoot, "package.json"), "utf8")) as unknown,
+  );
   const external = Object.keys(metadata.optionalDependencies)
-    .filter((name) => name.startsWith("@img/sharp-") && name !== nativePackage && name !== libraryPackage)
+    .filter(
+      (name) => name.startsWith("@img/sharp-") && name !== nativePackage && name !== libraryPackage,
+    )
     .map((name) => `${name}/*`);
 
   const plugin: BunPlugin = {

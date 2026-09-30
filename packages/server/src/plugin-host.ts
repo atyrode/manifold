@@ -100,7 +100,10 @@ import {
   ListHarnessesResultSchema,
 } from "@manifold/protocol";
 import { nativeTransferContext } from "./native-transfer-context.ts";
-import { NativeTransferReasonSchema, type NativeTransferTerminalEvidence } from "@manifold/protocol";
+import {
+  NativeTransferReasonSchema,
+  type NativeTransferTerminalEvidence,
+} from "@manifold/protocol";
 import type {
   ActionCallRefusal,
   ActionDenialRule,
@@ -656,7 +659,11 @@ export interface HostControl {
     enabled: boolean,
     changedBy: string,
   ): Promise<ActionRefused | { ok: true }>;
-  purge(id: string, purgedBy: string, traceId?: number | null): Promise<ActionRefused | PluginPurgeResult>;
+  purge(
+    id: string,
+    purgedBy: string,
+    traceId?: number | null,
+  ): Promise<ActionRefused | PluginPurgeResult>;
   /**
    * `installer` is the credential the ROW will act under at a lifecycle hook (#514), kept
    * beside the principal id the roster publishes because a principal alone can never
@@ -668,7 +675,12 @@ export interface HostControl {
     installedBy: string,
     installer: CredentialReference | null,
   ): Promise<ActionRefused | PluginInstallResult>;
-  uninstall(id: string, removedBy: string, purge: boolean, traceId?: number | null): Promise<ActionRefused | { ok: true }>;
+  uninstall(
+    id: string,
+    removedBy: string,
+    purge: boolean,
+    traceId?: number | null,
+  ): Promise<ActionRefused | { ok: true }>;
   listInstalled(): Promise<InstalledPluginStates>;
   exportInstalled(): Promise<InstalledPluginsSnapshot>;
   setDeveloperMode(on: boolean, changedBy: string): Promise<ActionRefused | { ok: true }>;
@@ -1158,7 +1170,12 @@ const ENGINE_BUILTIN_DEFS: readonly ServerPluginDef[] = [
         ctx: EngineDoorCtx,
         args: { id: string; purge?: boolean },
       ): Promise<ActionRefused | Record<string, never>> {
-        const outcome = await ctx.host.uninstall(args.id, ctx.principal.id, args.purge === true, ctx.traceId);
+        const outcome = await ctx.host.uninstall(
+          args.id,
+          ctx.principal.id,
+          args.purge === true,
+          ctx.traceId,
+        );
         if ("refused" in outcome) return outcome;
         return {};
       },
@@ -1697,10 +1714,13 @@ export class PluginHost {
   private readonly distribution: ReadonlySet<string> | undefined;
   private readonly referenceKindReservations: ReadonlyMap<PluginOwnedRefKind, string>;
   private readonly referenceService: ReferenceService;
-  private readonly installationGenerations = new Map<string, {
-    definition: ServerPluginDef | undefined;
-    generation: object;
-  }>();
+  private readonly installationGenerations = new Map<
+    string,
+    {
+      definition: ServerPluginDef | undefined;
+      generation: object;
+    }
+  >();
   /**
    * The outcome of the last lifecycle fan-out per plugin. In MEMORY, deliberately: it
    * describes this process's attempt to tell a plugin about a transition, not a durable
@@ -1844,8 +1864,7 @@ export class PluginHost {
       request.signal.addEventListener("abort", requestAborted, { once: true });
       this.lifetime.signal.addEventListener("abort", hostAborted, { once: true });
       restrictDeadline(deadlineAt, "request_timeout");
-      if (credential.expiresAt !== undefined)
-        restrictDeadline(credential.expiresAt, "unavailable");
+      if (credential.expiresAt !== undefined) restrictDeadline(credential.expiresAt, "unavailable");
       const requireCapability = (cap: AuthoredCap, ref: ManifoldRef): void => {
         assertCurrent();
         if (cap !== declaration.capability || formatManifoldUri(ref) !== target)
@@ -1876,10 +1895,14 @@ export class PluginHost {
           pluginId,
           {
             assertCurrent,
-            remainingMs: () => Math.max(0, Math.min(
-              deadlineAt - this.runtime.now(),
-              this.isolates?.runner.remainingHostCallMs() ?? Number.POSITIVE_INFINITY,
-            )),
+            remainingMs: () =>
+              Math.max(
+                0,
+                Math.min(
+                  deadlineAt - this.runtime.now(),
+                  this.isolates?.runner.remainingHostCallMs() ?? Number.POSITIVE_INFINITY,
+                ),
+              ),
             signal: controller.signal,
             require: requireCapability,
             requireSource: async () => {
@@ -1929,8 +1952,13 @@ export class PluginHost {
 
   private referenceOwner(kind: PluginOwnedRefKind): ReferenceOwner | null {
     const registered = this.assembled?.referenceKinds.get(kind);
-    if (registered === undefined || !this.assembled.enabled(registered.plugin) ||
-      this.closed || this.replacing.has(registered.plugin)) return null;
+    if (
+      registered === undefined ||
+      !this.assembled.enabled(registered.plugin) ||
+      this.closed ||
+      this.replacing.has(registered.plugin)
+    )
+      return null;
     const def = this.defs.find((candidate) => candidate.manifest.id === registered.plugin);
     if (def?.probeReady === undefined || def.reclaimReferences === undefined) return null;
     const probeReady = def.probeReady;
@@ -1940,13 +1968,14 @@ export class PluginHost {
       pluginId,
       declaration: registered.declaration,
       generation: this.installationGeneration(pluginId),
-      generationDigest: sha256Hex(canonicalJobJson({
-        manifest: def.manifest,
-        artifact: this.installed.get(pluginId)?.row.sha256 ?? null,
-      })),
+      generationDigest: sha256Hex(
+        canonicalJobJson({
+          manifest: def.manifest,
+          artifact: this.installed.get(pluginId)?.row.sha256 ?? null,
+        }),
+      ),
       probe: async (input) => {
-        const result = await this.referenceDataCall(pluginId,
-          (ctx) => probeReady(ctx, input));
+        const result = await this.referenceDataCall(pluginId, (ctx) => probeReady(ctx, input));
         return ReferenceProbeResultSchema.parse(result);
       },
       probeWhenIdle: async (input) => {
@@ -1957,8 +1986,8 @@ export class PluginHost {
         const result = await this.referenceDataCall(pluginId, (ctx) => idleProbe(ctx, input));
         return ReferenceProbeResultSchema.parse(result);
       },
-      reclaim: (receipts) => this.referenceDataCall(pluginId,
-        (ctx) => reclaimReferences(ctx, receipts)),
+      reclaim: (receipts) =>
+        this.referenceDataCall(pluginId, (ctx) => reclaimReferences(ctx, receipts)),
     };
   }
 
@@ -1967,7 +1996,12 @@ export class PluginHost {
     pluginId: string,
     invoke: (ctx: ReferenceProbeCtx) => Promise<T>,
   ): Promise<T> {
-    const lease = this.dataLease(pluginId, this.storage(pluginId), this.databaseSlice(pluginId) ?? null, 256);
+    const lease = this.dataLease(
+      pluginId,
+      this.storage(pluginId),
+      this.databaseSlice(pluginId) ?? null,
+      256,
+    );
     const settled = Promise.withResolvers<void>();
     let active = this.activeDispatches.get(pluginId);
     if (active === undefined) this.activeDispatches.set(pluginId, (active = new Set()));
@@ -1981,8 +2015,11 @@ export class PluginHost {
         }, 2_000);
       });
       return await Promise.race([
-        invoke({ storage: lease.storage, ...(lease.database ? { database: lease.database } : {}),
-          now: () => this.runtime.now() }),
+        invoke({
+          storage: lease.storage,
+          ...(lease.database ? { database: lease.database } : {}),
+          now: () => this.runtime.now(),
+        }),
         deadline,
       ]);
     } finally {
@@ -1994,7 +2031,10 @@ export class PluginHost {
     }
   }
 
-  requirePublishedReference(actor: AuthContext, ref: PluginOwnedRef): Promise<PublishedReferenceIdentity> {
+  requirePublishedReference(
+    actor: AuthContext,
+    ref: PluginOwnedRef,
+  ): Promise<PublishedReferenceIdentity> {
     return this.referenceService.requirePublished(actor, ref);
   }
 
@@ -2011,13 +2051,21 @@ export class PluginHost {
       const owner = this.referenceOwner(ref.kind);
       if (owner === null) return unavailable;
       const before = await this.referenceService.requirePublished(actor, ref);
-      const result = await this.dispatch(actor,
-        `${owner.pluginId}.${owner.declaration.resolveAction}`, { ref });
+      const result = await this.dispatch(
+        actor,
+        `${owner.pluginId}.${owner.declaration.resolveAction}`,
+        { ref },
+      );
       const after = await this.referenceService.requirePublished(actor, ref);
-      if (!result.ok || before.preparationId !== after.preparationId ||
+      if (
+        !result.ok ||
+        before.preparationId !== after.preparationId ||
         before.readyDigest !== after.readyDigest ||
         this.referenceOwner(ref.kind)?.generation !== owner.generation ||
-        result.result === null || typeof result.result !== "object") return unavailable;
+        result.result === null ||
+        typeof result.result !== "object"
+      )
+        return unavailable;
       const title: unknown = Reflect.get(result.result, "title");
       const exists: unknown = Reflect.get(result.result, "exists");
       if (exists === false) return unavailable;
@@ -2131,9 +2179,15 @@ export class PluginHost {
             pluginId,
             actor: current,
             traceId: base.traceId,
-            check: () => { throw new ReferenceRefused(); },
-            checkReceipt: () => { throw new ReferenceRefused(); },
-            checkReadable: () => { throw new ReferenceRefused(); },
+            check: () => {
+              throw new ReferenceRefused();
+            },
+            checkReceipt: () => {
+              throw new ReferenceRefused();
+            },
+            checkReadable: () => {
+              throw new ReferenceRefused();
+            },
           }),
           jobs: jobContext(service, nativeAuth, pluginId, base.traceId),
           get nativeTransfers(): PluginNativeTransferContext {
@@ -2520,7 +2574,9 @@ export class PluginHost {
     for (const [kind, pluginId] of this.referenceKindReservations)
       store.claimReferenceKinds(pluginId, [kind]);
     this.referenceService = new ReferenceService(
-      store, authService, runtime,
+      store,
+      authService,
+      runtime,
       (kind) => this.referenceOwner(kind),
       (additionalBytes) => {
         if (this.dataDir === null) return; // In-memory hosts have no recoverable filesystem image.
@@ -2715,8 +2771,11 @@ export class PluginHost {
     if (this.isolates === null || trusted === undefined) throw new Error(`${id}: no trusted build`);
     const loaded = await this.isolates.runner.load(trusted.ref);
     const def: ServerPluginDef = {
-      ...loaded.def, lifecycle: loaded.lifecycle,
-      ...(trusted.registered.elements === undefined ? {} : { elements: trusted.registered.elements }),
+      ...loaded.def,
+      lifecycle: loaded.lifecycle,
+      ...(trusted.registered.elements === undefined
+        ? {}
+        : { elements: trusted.registered.elements }),
     };
     try {
       assertLoadedBinding(trusted.registered, def);
@@ -3071,8 +3130,10 @@ export class PluginHost {
     }
     for (const entry of assembly.roster) {
       if (entry.held !== undefined) continue;
-      this.store.claimReferenceKinds(entry.manifest.id,
-        (entry.manifest.contributes.references ?? []).map((declaration) => declaration.kind));
+      this.store.claimReferenceKinds(
+        entry.manifest.id,
+        (entry.manifest.contributes.references ?? []).map((declaration) => declaration.kind),
+      );
     }
     return assembly;
   }
@@ -3274,11 +3335,15 @@ export class PluginHost {
     const declared = this.defs.find((def) => def.manifest.id === pluginId)?.manifest.database;
     const recoveryBudget = new RecoveryBudget(this.dataDir, this.store.db);
     const allocated = recoveryBudget.allocation(pluginId);
-    const recovery = declared?.recovery ?? (allocated === null ? undefined : { profile: "bounded-wal-v1" as const });
+    const recovery =
+      declared?.recovery ??
+      (allocated === null ? undefined : { profile: "bounded-wal-v1" as const });
     const created = openPluginDatabase({
       dataDir: this.dataDir,
       pluginId,
-      ...((declared?.maxBytes ?? allocated) == null ? {} : { maxBytes: declared?.maxBytes ?? allocated! }),
+      ...((declared?.maxBytes ?? allocated) == null
+        ? {}
+        : { maxBytes: declared?.maxBytes ?? allocated! }),
       ...(recovery === undefined ? {} : { recovery }),
       recoveryBudget,
       now: () => this.runtime.now(),
@@ -3367,8 +3432,9 @@ export class PluginHost {
           pluginId,
           ...(maxBytes === null ? {} : { maxBytes }),
           ...(manifest.database.recovery === undefined
-            ? (allocated === null
-              ? {} : { recovery: { profile: "bounded-wal-v1" as const } })
+            ? allocated === null
+              ? {}
+              : { recovery: { profile: "bounded-wal-v1" as const } }
             : { recovery: manifest.database.recovery }),
           recoveryBudget,
           now: () => this.runtime.now(),
@@ -3550,9 +3616,8 @@ export class PluginHost {
     try {
       // Queued behind a shutdown, a change never starts; outliving one, it never answers.
       this.assertOpen();
-      const result = this.dataDir === null
-        ? await change()
-        : await withRecoveryGate(this.dataDir, change);
+      const result =
+        this.dataDir === null ? await change() : await withRecoveryGate(this.dataDir, change);
       this.assertOpen();
       return result;
     } finally {
@@ -3775,11 +3840,19 @@ export class PluginHost {
    * rendering as named placeholders — the purge released the reservation, so a replacement may
    * now claim the type deliberately.
    */
-  async purge(id: string, purgedBy: string, traceId: number | null = null): Promise<ActionRefused | PluginPurgeResult> {
+  async purge(
+    id: string,
+    purgedBy: string,
+    traceId: number | null = null,
+  ): Promise<ActionRefused | PluginPurgeResult> {
     return this.changeAssembly(() => this.purgeNow(id, purgedBy, traceId));
   }
 
-  private async purgeNow(id: string, purgedBy: string, traceId: number | null = null): Promise<ActionRefused | PluginPurgeResult> {
+  private async purgeNow(
+    id: string,
+    purgedBy: string,
+    traceId: number | null = null,
+  ): Promise<ActionRefused | PluginPurgeResult> {
     const entry = this.assembled.roster.find((candidate) => candidate.manifest.id === id);
     if (entry === undefined) return refused("unknown_plugin", [id]);
     if (this.assembled.builtin(id)) return refused("builtin", [id]);
@@ -3787,8 +3860,10 @@ export class PluginHost {
     try {
       this.jobs?.purgePlugin(id);
     } catch (error) {
-      if (error instanceof ServiceError &&
-          (error.message === "outcome_unknown" || error.message === "active_native_transfers"))
+      if (
+        error instanceof ServiceError &&
+        (error.message === "outcome_unknown" || error.message === "active_native_transfers")
+      )
         return { refused: error.message };
       if (error instanceof ServiceError) return { refused: `${error.code}: job purge refused` };
       throw error;
@@ -4367,15 +4442,19 @@ export class PluginHost {
     const prospective = [...this.firstParty, ...defs.values()];
     const dataState = new Map(env.dataState);
     for (const heldId of this.heldUnloaded) if (!candidates.has(heldId)) dataState.delete(heldId);
-    const assembly = assembleRoster(prospective, this.store.disabledPlugins(prospective.map((def) => def.manifest)), {
-      ...env,
-      dataState,
-      problemPolicy: "hold",
-      problems: [
-        ...this.bundleProblems(new Set(candidates.keys())),
-        ...this.harnessProblems(prospective),
-      ],
-    });
+    const assembly = assembleRoster(
+      prospective,
+      this.store.disabledPlugins(prospective.map((def) => def.manifest)),
+      {
+        ...env,
+        dataState,
+        problemPolicy: "hold",
+        problems: [
+          ...this.bundleProblems(new Set(candidates.keys())),
+          ...this.harnessProblems(prospective),
+        ],
+      },
+    );
     // Existing, unrelated holds cannot make a compatible repair impossible. Every candidate
     // and every previously admitted definition must nevertheless pass strict admission.
     const previouslyHeld = new Set(
@@ -5853,10 +5932,15 @@ export class PluginHost {
     const nativeTransferGeneration = this.installationGeneration(pluginId);
     const referenceGeneration = this.installationGeneration(pluginId);
     const referenceDispatchCurrent = (): void => {
-      if (!machineBridgeOpen || this.closed || this.replacing.has(pluginId) ||
+      if (
+        !machineBridgeOpen ||
+        this.closed ||
+        this.replacing.has(pluginId) ||
         this.assembled.actions.get(fullName)?.def !== entry.def ||
         this.installationGeneration(pluginId) !== referenceGeneration ||
-        !this.assembled.enabled(pluginId) || (guestInput && !guestAdmitted))
+        !this.assembled.enabled(pluginId) ||
+        (guestInput && !guestAdmitted)
+      )
         throw new ReferenceRefused();
     };
     const nativeTransferCredential = this.authService.credentialReference(auth);
@@ -5919,104 +6003,139 @@ export class PluginHost {
             })(),
       credential: this.authService.credentialReference(auth),
       credentialBinding: this.authService.credentialBinding(auth),
-      references: this.referenceService.context({
-        pluginId,
-        actor: auth,
-        traceId,
-        check: (cap, ref) => {
-          referenceDispatchCurrent();
-          if (!referenceRequirements.some((required) =>
-            required.cap === cap && formatManifoldUri(required.ref) === formatManifoldUri(ref)))
-            throw new ReferenceRefused();
-        },
-        checkReceipt: (ref) => {
-          referenceDispatchCurrent();
-          const owner = this.assembled.referenceKinds.get(ref.kind);
-          if (owner?.plugin !== pluginId || owner.declaration.receiptAction === undefined ||
-            fullName !== `${pluginId}.${owner.declaration.receiptAction}`)
-            throw new ReferenceRefused();
-        },
-        checkReadable: (kind) => {
-          referenceDispatchCurrent();
-          const owner = this.assembled.referenceKinds.get(kind);
-          const grant = this.installed.get(pluginId)?.row.grantedCaps;
-          if (
-            owner?.plugin !== pluginId ||
-            owner.declaration.listAction === undefined ||
-            fullName !== `${pluginId}.${owner.declaration.listAction}` ||
-            (grant !== undefined && !withinCeiling(owner.declaration.readCapability, grant))
-          ) {
-            throw new ReferenceRefused();
-          }
-        },
-      }, async (input) => {
-        const referenceOwner = this.assembled.referenceKinds.get(input.ref.kind);
-        const elementOwner = this.assembled.elements.get(input.element.type);
-        const assertAttachmentAuthority = (): AuthContext => {
-          referenceDispatchCurrent();
-          enforceDeclaration();
-          const current = this.authService.restoreCredential(nativeTransferCredential);
-          if (
-            current === null ||
-            entry.def.trace !== "opaque" ||
-            !referenceRequirements.some((required) => required.cap === "scenes:write" &&
-              formatManifoldUri(required.ref) === formatManifoldUri(input.target)) ||
-            !this.authService.allowsRef(current, "scenes:write", input.target) ||
-            (install !== undefined &&
-              !withinCeiling("scenes:write", this.installed.get(pluginId)?.row.grantedCaps ?? [])) ||
-            referenceOwner === undefined ||
-            (referenceOwner.plugin !== pluginId &&
-              entry.plugin.dependencies?.[referenceOwner.plugin] === undefined) ||
-            this.assembled.referenceKinds.get(input.ref.kind)?.plugin !== referenceOwner.plugin ||
-            elementOwner?.plugin !== pluginId ||
-            this.assembled.elements.get(input.element.type)?.plugin !== pluginId ||
-            this.store.getContainer(input.target.containerId)?.discipline !== input.discipline
-          ) throw new ReferenceRefused();
-          return current;
-        };
-        const actor = assertAttachmentAuthority();
-        await this.referenceService.requirePublished(actor, input.ref);
-        const current = assertAttachmentAuthority();
-        if (!this.referenceService.canReadPublished(current, input.ref)) throw new ReferenceRefused();
-        const reference = formatManifoldUri(input.ref);
-        const element = SceneElementSchema.parse({
-          ...input.element,
-          [input.referenceProperty]: reference,
-          lastEditedBy: current.principal.id,
-          lastEditedAt: this.runtime.now(),
-        });
-        const payload = this.assembled.elements.get(element.type)?.payload;
-        if (payload === undefined || payload === null || !payload.safeParse(elementPayload(element)).success)
-          throw new ReferenceRefused("reference_conflict");
-        const room = this.rooms.get(input.target.containerId);
-        if (room === null) throw new ReferenceRefused();
-        const existing = readElement(room.doc, element.id);
-        if (existing !== null) {
-          if (existing.type !== element.type || existing[input.referenceProperty] !== reference)
-            throw new ReferenceRefused("reference_conflict");
-          return {
-            ref: { kind: "element" as const, containerId: input.target.containerId, elementId: element.id },
-            created: false,
-          };
-        }
-        if (elementsMap(room.doc).has(element.id)) throw new ReferenceRefused("reference_conflict");
-        // Capacity staging may consume time; fence authority at the actual canonical commit.
-        if (!room.transactDoc(
-          (doc) => writeElement(doc, element, SERVER_PLACE_ORIGIN),
-          SERVER_PLACE_ORIGIN,
-          () => {
-            const committing = assertAttachmentAuthority();
-            if (!this.referenceService.canReadPublished(committing, input.ref))
+      references: this.referenceService.context(
+        {
+          pluginId,
+          actor: auth,
+          traceId,
+          check: (cap, ref) => {
+            referenceDispatchCurrent();
+            if (
+              !referenceRequirements.some(
+                (required) =>
+                  required.cap === cap &&
+                  formatManifoldUri(required.ref) === formatManifoldUri(ref),
+              )
+            )
               throw new ReferenceRefused();
-            if (elementsMap(room.doc).has(element.id)) throw new ReferenceRefused("reference_conflict");
           },
-        ))
-          throw new ReferenceRefused("reference_capacity");
-        return {
-          ref: { kind: "element" as const, containerId: input.target.containerId, elementId: element.id },
-          created: true,
-        };
-      }),
+          checkReceipt: (ref) => {
+            referenceDispatchCurrent();
+            const owner = this.assembled.referenceKinds.get(ref.kind);
+            if (
+              owner?.plugin !== pluginId ||
+              owner.declaration.receiptAction === undefined ||
+              fullName !== `${pluginId}.${owner.declaration.receiptAction}`
+            )
+              throw new ReferenceRefused();
+          },
+          checkReadable: (kind) => {
+            referenceDispatchCurrent();
+            const owner = this.assembled.referenceKinds.get(kind);
+            const grant = this.installed.get(pluginId)?.row.grantedCaps;
+            if (
+              owner?.plugin !== pluginId ||
+              owner.declaration.listAction === undefined ||
+              fullName !== `${pluginId}.${owner.declaration.listAction}` ||
+              (grant !== undefined && !withinCeiling(owner.declaration.readCapability, grant))
+            ) {
+              throw new ReferenceRefused();
+            }
+          },
+        },
+        async (input) => {
+          const referenceOwner = this.assembled.referenceKinds.get(input.ref.kind);
+          const elementOwner = this.assembled.elements.get(input.element.type);
+          const assertAttachmentAuthority = (): AuthContext => {
+            referenceDispatchCurrent();
+            enforceDeclaration();
+            const current = this.authService.restoreCredential(nativeTransferCredential);
+            if (
+              current === null ||
+              entry.def.trace !== "opaque" ||
+              !referenceRequirements.some(
+                (required) =>
+                  required.cap === "scenes:write" &&
+                  formatManifoldUri(required.ref) === formatManifoldUri(input.target),
+              ) ||
+              !this.authService.allowsRef(current, "scenes:write", input.target) ||
+              (install !== undefined &&
+                !withinCeiling(
+                  "scenes:write",
+                  this.installed.get(pluginId)?.row.grantedCaps ?? [],
+                )) ||
+              referenceOwner === undefined ||
+              (referenceOwner.plugin !== pluginId &&
+                entry.plugin.dependencies?.[referenceOwner.plugin] === undefined) ||
+              this.assembled.referenceKinds.get(input.ref.kind)?.plugin !== referenceOwner.plugin ||
+              elementOwner?.plugin !== pluginId ||
+              this.assembled.elements.get(input.element.type)?.plugin !== pluginId ||
+              this.store.getContainer(input.target.containerId)?.discipline !== input.discipline
+            )
+              throw new ReferenceRefused();
+            return current;
+          };
+          const actor = assertAttachmentAuthority();
+          await this.referenceService.requirePublished(actor, input.ref);
+          const current = assertAttachmentAuthority();
+          if (!this.referenceService.canReadPublished(current, input.ref))
+            throw new ReferenceRefused();
+          const reference = formatManifoldUri(input.ref);
+          const element = SceneElementSchema.parse({
+            ...input.element,
+            [input.referenceProperty]: reference,
+            lastEditedBy: current.principal.id,
+            lastEditedAt: this.runtime.now(),
+          });
+          const payload = this.assembled.elements.get(element.type)?.payload;
+          if (
+            payload === undefined ||
+            payload === null ||
+            !payload.safeParse(elementPayload(element)).success
+          )
+            throw new ReferenceRefused("reference_conflict");
+          const room = this.rooms.get(input.target.containerId);
+          if (room === null) throw new ReferenceRefused();
+          const existing = readElement(room.doc, element.id);
+          if (existing !== null) {
+            if (existing.type !== element.type || existing[input.referenceProperty] !== reference)
+              throw new ReferenceRefused("reference_conflict");
+            return {
+              ref: {
+                kind: "element" as const,
+                containerId: input.target.containerId,
+                elementId: element.id,
+              },
+              created: false,
+            };
+          }
+          if (elementsMap(room.doc).has(element.id))
+            throw new ReferenceRefused("reference_conflict");
+          // Capacity staging may consume time; fence authority at the actual canonical commit.
+          if (
+            !room.transactDoc(
+              (doc) => writeElement(doc, element, SERVER_PLACE_ORIGIN),
+              SERVER_PLACE_ORIGIN,
+              () => {
+                const committing = assertAttachmentAuthority();
+                if (!this.referenceService.canReadPublished(committing, input.ref))
+                  throw new ReferenceRefused();
+                if (elementsMap(room.doc).has(element.id))
+                  throw new ReferenceRefused("reference_conflict");
+              },
+            )
+          )
+            throw new ReferenceRefused("reference_capacity");
+          return {
+            ref: {
+              kind: "element" as const,
+              containerId: input.target.containerId,
+              elementId: element.id,
+            },
+            created: true,
+          };
+        },
+      ),
       get admission() {
         return admission;
       },
@@ -6045,19 +6164,25 @@ export class PluginHost {
       ),
       nativeTransfers: nativeTransferContext(
         () => {
-          if (this.jobs === null) throw new ServiceError("forbidden", "native_transfer_unavailable");
+          if (this.jobs === null)
+            throw new ServiceError("forbidden", "native_transfer_unavailable");
           return this.jobs.nativeTransfers;
         },
         auth,
         pluginId,
         {
-          remainingMs: () => this.isolates?.runner.remainingHostCallMs() ?? Number.POSITIVE_INFINITY,
+          remainingMs: () =>
+            this.isolates?.runner.remainingHostCallMs() ?? Number.POSITIVE_INFINITY,
           assertCurrent: () => {
-            if (!machineBridgeOpen || this.closed || this.replacing.has(pluginId) ||
-                this.assembled.actions.get(fullName)?.def !== entry.def ||
-                this.installationGeneration(pluginId) !== nativeTransferGeneration ||
-                !this.assembled.enabled(pluginId) ||
-                (guestInput && !guestAdmitted))
+            if (
+              !machineBridgeOpen ||
+              this.closed ||
+              this.replacing.has(pluginId) ||
+              this.assembled.actions.get(fullName)?.def !== entry.def ||
+              this.installationGeneration(pluginId) !== nativeTransferGeneration ||
+              !this.assembled.enabled(pluginId) ||
+              (guestInput && !guestAdmitted)
+            )
               throw new ServiceError("forbidden", "transfer_action_unavailable");
             enforceDeclaration();
             const current = this.authService.restoreCredential(nativeTransferCredential);
@@ -6065,20 +6190,31 @@ export class PluginHost {
               throw new ServiceError("forbidden", "credential_revoked_or_expired");
             const grant = this.installed.get(pluginId)?.row.grantedCaps;
             for (const { cap, ref } of transferRequirements) {
-              if ((grant !== undefined && !(isEngineCap(cap) && GOVERNED_CAPS.includes(cap)) &&
-                  !withinCeiling(cap, grant)) || !this.authService.allowsRef(current, cap, ref))
+              if (
+                (grant !== undefined &&
+                  !(isEngineCap(cap) && GOVERNED_CAPS.includes(cap)) &&
+                  !withinCeiling(cap, grant)) ||
+                !this.authService.allowsRef(current, cap, ref)
+              )
                 throw new ServiceError("forbidden", "transfer_authority_refused");
             }
           },
           require: (cap, ref) => {
-            if (cap === "*")
-              throw new ServiceError("forbidden", "transfer_authority_refused");
-            if (!transferRequirements.some((requirement) => requirement.cap === cap &&
-                formatManifoldUri(requirement.ref) === formatManifoldUri(ref)))
+            if (cap === "*") throw new ServiceError("forbidden", "transfer_authority_refused");
+            if (
+              !transferRequirements.some(
+                (requirement) =>
+                  requirement.cap === cap &&
+                  formatManifoldUri(requirement.ref) === formatManifoldUri(ref),
+              )
+            )
               throw new ServiceError("forbidden", "transfer_requirement_undeclared");
             const grant = this.installed.get(pluginId)?.row.grantedCaps;
-            if (grant !== undefined && !(isEngineCap(cap) && GOVERNED_CAPS.includes(cap)) &&
-                !withinCeiling(cap, grant))
+            if (
+              grant !== undefined &&
+              !(isEngineCap(cap) && GOVERNED_CAPS.includes(cap)) &&
+              !withinCeiling(cap, grant)
+            )
               throw new ServiceError("forbidden", "transfer_authority_refused");
             const current = this.authService.restoreCredential(nativeTransferCredential);
             if (!current || !this.authService.allowsRef(current, cap, ref))
@@ -6397,8 +6533,13 @@ export class PluginHost {
       if (error instanceof NativeTransferError) {
         this.store.settleTrace(traceId, "refused", traceTargets(targets));
         const reason = NativeTransferReasonSchema.safeParse(error.reason);
-        return { ok: false, denial: { rule: "refused",
-          message: reason.success ? reason.data : "native_transfer_unavailable" } };
+        return {
+          ok: false,
+          denial: {
+            rule: "refused",
+            message: reason.success ? reason.data : "native_transfer_unavailable",
+          },
+        };
       }
       if (error instanceof ActionCallRefused) {
         /*

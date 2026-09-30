@@ -144,100 +144,168 @@ describe("reference data callbacks", () => {
     const release = Promise.withResolvers<void>();
     let data: GuestReferenceProbeCtx | undefined;
     const fake = host({
-      manifest, actions: [echo],
-      handlers: { echo: async (ctx) => { retained.resolve(ctx); await release.promise; return { text: "done" }; } },
+      manifest,
+      actions: [echo],
+      handlers: {
+        echo: async (ctx) => {
+          retained.resolve(ctx);
+          await release.promise;
+          return { text: "done" };
+        },
+      },
       reconcileNativeTransfers: async (ctx, receipts) => {
         data = ctx;
         const receipt = receipts[0]!;
         if (receipt.kind !== "terminal") throw new Error("expected terminal evidence");
         const actor = await retained.promise;
-        await expect(actor.nativeTransfers.commitPut({ transferId: receipt.transferId }))
-          .rejects.toMatchObject({ reason: "native_transfer_unavailable" });
-        await expect(actor.nativeTransfers.readChunk({ transferId: receipt.transferId, offset: 0, maxBytes: 1 }))
-          .rejects.toMatchObject({ reason: "native_transfer_unavailable" });
+        await expect(
+          actor.nativeTransfers.commitPut({ transferId: receipt.transferId }),
+        ).rejects.toMatchObject({ reason: "native_transfer_unavailable" });
+        await expect(
+          actor.nativeTransfers.readChunk({
+            transferId: receipt.transferId,
+            offset: 0,
+            maxBytes: 1,
+          }),
+        ).rejects.toMatchObject({ reason: "native_transfer_unavailable" });
         await ctx.storage.delete(`reservation:${receipt.transferId}`);
       },
     });
-    load(fake); await fake.next();
+    load(fake);
+    await fake.next();
     fake.send({ t: "dispatch", id: "actor", action: "echo", args: { text: "held" }, ctx: ctxOf() });
     await retained.promise;
-    fake.send({ t: "reconcile_native_transfers", id: "evidence", now: 1234, receipts: [{
-      kind: "terminal",
-      transferId: "transfer", requestId: "request", actorId: principal.id, credentialBinding: "a".repeat(64),
-      mode: "put", state: "committed",
-    }] });
+    fake.send({
+      t: "reconcile_native_transfers",
+      id: "evidence",
+      now: 1234,
+      receipts: [
+        {
+          kind: "terminal",
+          transferId: "transfer",
+          requestId: "request",
+          actorId: principal.id,
+          credentialBinding: "a".repeat(64),
+          mode: "put",
+          state: "committed",
+        },
+      ],
+    });
     await serve(fake, null);
-    expect(await fake.next()).toEqual({ t: "reconciled_native_transfers", id: "evidence", outcome: { ok: true } });
+    expect(await fake.next()).toEqual({
+      t: "reconciled_native_transfers",
+      id: "evidence",
+      outcome: { ok: true },
+    });
     if (!data) throw new Error("missing private callback");
     await expect(data.storage.delete("reservation:unrelated")).rejects.toThrow("already answered");
     release.resolve();
-    expect(await fake.next()).toMatchObject({ t: "dispatched", outcome: { ok: true, result: { text: "done" } } });
+    expect(await fake.next()).toMatchObject({
+      t: "dispatched",
+      outcome: { ok: true, result: { text: "done" } },
+    });
   });
 
   test("restricted native receipts reject a host reply carrying destination metadata", async () => {
     const fake = host({
-      manifest, actions: [echo], handlers: { echo: async (ctx) => {
-        try {
-          await ctx.nativeTransfers.receipt({ transferId: "transfer" });
-          return { text: "unexpected receipt" };
-        } catch (error) {
-          if (!(error instanceof NativeTransferError)) throw error;
-          return { text: error.reason };
-        }
-      } },
+      manifest,
+      actions: [echo],
+      handlers: {
+        echo: async (ctx) => {
+          try {
+            await ctx.nativeTransfers.receipt({ transferId: "transfer" });
+            return { text: "unexpected receipt" };
+          } catch (error) {
+            if (!(error instanceof NativeTransferError)) throw error;
+            return { text: error.reason };
+          }
+        },
+      },
     });
-    load(fake); await fake.next();
-    fake.send({ t: "dispatch", id: "actor", action: "echo", args: { text: "receipt" }, ctx: ctxOf() });
+    load(fake);
+    await fake.next();
+    fake.send({
+      t: "dispatch",
+      id: "actor",
+      action: "echo",
+      args: { text: "receipt" },
+      ctx: ctxOf(),
+    });
     await serve(fake, { transferId: "transfer", state: "committed", path: "/private/destination" });
-    expect(await fake.next()).toMatchObject({ t: "dispatched", outcome: {
-      ok: true, result: { text: "transfer_reply_invalid" },
-    } });
+    expect(await fake.next()).toMatchObject({
+      t: "dispatched",
+      outcome: {
+        ok: true,
+        result: { text: "transfer_reply_invalid" },
+      },
+    });
   });
 
   test("negative admission during a probe neither invokes the handler nor emits a completion", async () => {
     let invoked = 0;
-    const fake = host({
-      manifest,
-      actions: [echo],
-      handlers: {
-        echo: async () => {
-          invoked += 1;
-          return { text: "admitted" };
+    const fake = host(
+      {
+        manifest,
+        actions: [echo],
+        handlers: {
+          echo: async () => {
+            invoked += 1;
+            return { text: "admitted" };
+          },
+        },
+        probeReady: async (ctx) => {
+          await ctx.storage.get("ready");
+          return null;
         },
       },
-      probeReady: async (ctx) => {
-        await ctx.storage.get("ready");
-        return null;
-      },
-    }, false);
+      false,
+    );
     load(fake);
     await fake.next();
     fake.send({
-      t: "dispatch", id: "denied", action: "echo", args: { text: "racing" }, ctx: ctxOf(),
+      t: "dispatch",
+      id: "denied",
+      action: "echo",
+      args: { text: "racing" },
+      ctx: ctxOf(),
     });
     expect(await fake.next()).toEqual({ t: "prepared", id: "denied", targets: [] });
     fake.send({
-      t: "probe_ready", id: "probe", now: 1234,
-      request: { ref: { kind: "file", fileId: "owned" }, preparationId: "p",
-        requestId: "request", bindingDigest: "b".repeat(64), publication: "prepared" },
+      t: "probe_ready",
+      id: "probe",
+      now: 1234,
+      request: {
+        ref: { kind: "file", fileId: "owned" },
+        preparationId: "p",
+        requestId: "request",
+        bindingDigest: "b".repeat(64),
+        publication: "prepared",
+      },
     });
     const reading = await fake.next();
     if (reading.t !== "call") throw new Error("expected probe data call");
     fake.send({ t: "admitted", id: "denied", allowed: false });
     fake.send({ t: "reply", id: reading.id, ok: true, result: null });
     expect(await fake.next()).toEqual({
-      t: "probed_ready", id: "probe", outcome: { ok: true, result: null },
+      t: "probed_ready",
+      id: "probe",
+      outcome: { ok: true, result: null },
     });
     expect(invoked).toBe(0);
     fake.send({
-      t: "dispatch", id: "accepted", action: "echo", args: { text: "after probe" }, ctx: ctxOf(),
+      t: "dispatch",
+      id: "accepted",
+      action: "echo",
+      args: { text: "after probe" },
+      ctx: ctxOf(),
     });
     expect(await fake.next()).toEqual({ t: "prepared", id: "accepted", targets: [] });
     fake.send({ t: "admitted", id: "accepted", allowed: true });
     const completed = await fake.next();
     if (completed.t !== "dispatched") throw new Error("expected completed admitted action");
     expect(completed).toEqual({
-      t: "dispatched", id: "accepted",
+      t: "dispatched",
+      id: "accepted",
       outcome: { ok: true, result: { text: "admitted" }, emits: [] },
     });
     expect(invoked).toBe(1);
@@ -266,14 +334,23 @@ describe("reference data callbacks", () => {
         expect("identity" in ctx).toBe(false);
         expect("references" in ctx).toBe(false);
         const active = await retained.promise;
-        await expect(active.references.publish({
-          preparationId: "p", readyDigest: "a".repeat(64),
-        })).rejects.toThrow("only its own data context");
-        await expect(active.references.receipt({
-          ref: { kind: "file", fileId: "owned" },
-        })).rejects.toThrow("only its own data context");
-        await expect(active.identity.revokeMachine("m1")).rejects.toThrow("only its own data context");
-        expect(() => active.emit({ kind: "file", fileId: "owned" }, "thing_happened", {})).toThrow("cannot emit");
+        await expect(
+          active.references.publish({
+            preparationId: "p",
+            readyDigest: "a".repeat(64),
+          }),
+        ).rejects.toThrow("only its own data context");
+        await expect(
+          active.references.receipt({
+            ref: { kind: "file", fileId: "owned" },
+          }),
+        ).rejects.toThrow("only its own data context");
+        await expect(active.identity.revokeMachine("m1")).rejects.toThrow(
+          "only its own data context",
+        );
+        expect(() => active.emit({ kind: "file", fileId: "owned" }, "thing_happened", {})).toThrow(
+          "cannot emit",
+        );
         lateAuthority = later.promise.then(() => active.identity.revokeMachine("m1"));
         const readyDigest = await ctx.storage.get("ready");
         if (readyDigest === null) return null;
@@ -283,19 +360,33 @@ describe("reference data callbacks", () => {
     load(fake);
     await fake.next();
     fake.send({
-      t: "dispatch", id: "action", action: "echo", args: { text: "held" },
+      t: "dispatch",
+      id: "action",
+      action: "echo",
+      args: { text: "held" },
       ctx: ctxOf({ credentialBinding: "b".repeat(64) }),
     });
     await retained.promise;
     fake.send({
-      t: "probe_ready", id: "probe", now: 1234,
-      request: { ref: { kind: "file", fileId: "owned" }, preparationId: "p",
-        requestId: "request", bindingDigest: "b".repeat(64), publication: "prepared" },
+      t: "probe_ready",
+      id: "probe",
+      now: 1234,
+      request: {
+        ref: { kind: "file", fileId: "owned" },
+        preparationId: "p",
+        requestId: "request",
+        bindingDigest: "b".repeat(64),
+        publication: "prepared",
+      },
     });
     expect((await serve(fake, "a".repeat(64))).method).toBe("storage.get");
     expect(await fake.next()).toEqual({
-      t: "probed_ready", id: "probe",
-      outcome: { ok: true, result: { preparationId: "p", readyDigest: "a".repeat(64), expiresAt: 60_000 } },
+      t: "probed_ready",
+      id: "probe",
+      outcome: {
+        ok: true,
+        result: { preparationId: "p", readyDigest: "a".repeat(64), expiresAt: 60_000 },
+      },
     });
     if (probeCtx === undefined || lateAuthority === undefined) throw new Error("probe did not run");
     later.resolve();
@@ -303,7 +394,8 @@ describe("reference data callbacks", () => {
     await expect(probeCtx.storage.get("ready")).rejects.toThrow("already answered");
     release.resolve();
     expect(await fake.next()).toMatchObject({
-      t: "dispatched", outcome: { ok: true, result: { text: "b".repeat(64) } },
+      t: "dispatched",
+      outcome: { ok: true, result: { text: "b".repeat(64) } },
     });
   });
 
@@ -318,7 +410,8 @@ describe("reference data callbacks", () => {
         echo: async (ctx, args) => {
           if (echo.input.parse(args).text === "publish") {
             const published = await ctx.references.publish({
-              preparationId: "p", readyDigest: "a".repeat(64),
+              preparationId: "p",
+              readyDigest: "a".repeat(64),
             });
             return { text: published.preparationId };
           }
@@ -329,44 +422,72 @@ describe("reference data callbacks", () => {
       },
       probeReady: async (ctx, input) => {
         const readyDigest = await ctx.storage.get("ready");
-        return readyDigest === null ? null : { preparationId: input.preparationId, readyDigest, expiresAt: 60_000 };
+        return readyDigest === null
+          ? null
+          : { preparationId: input.preparationId, readyDigest, expiresAt: 60_000 };
       },
     });
     load(fake);
     await fake.next();
     fake.send({
-      t: "dispatch", id: "existing", action: "echo", args: { text: "held" }, ctx: ctxOf(),
+      t: "dispatch",
+      id: "existing",
+      action: "echo",
+      args: { text: "held" },
+      ctx: ctxOf(),
     });
     const existing = await retained.promise;
     fake.send({
-      t: "dispatch", id: "publisher", action: "echo", args: { text: "publish" }, ctx: ctxOf(),
+      t: "dispatch",
+      id: "publisher",
+      action: "echo",
+      args: { text: "publish" },
+      ctx: ctxOf(),
     });
     const publishing = await fake.next();
     if (publishing.t !== "call") throw new Error("expected publication call");
     fake.send({
-      t: "probe_ready", id: "probe", now: 1234,
-      request: { ref, preparationId: "p", requestId: "request", bindingDigest: "b".repeat(64), publication: "prepared" },
+      t: "probe_ready",
+      id: "probe",
+      now: 1234,
+      request: {
+        ref,
+        preparationId: "p",
+        requestId: "request",
+        bindingDigest: "b".repeat(64),
+        publication: "prepared",
+      },
     });
     const reading = await fake.next();
     if (reading.t !== "call") throw new Error("expected probe data call");
-    await expect(existing.identity.revokeMachine("m1")).rejects.toThrow("only its own data context");
+    await expect(existing.identity.revokeMachine("m1")).rejects.toThrow(
+      "only its own data context",
+    );
     await expect(existing.references.receipt({ ref })).rejects.toThrow("only its own data context");
     release.resolve();
     expect(await fake.next()).toEqual({
-      t: "dispatched", id: "existing",
+      t: "dispatched",
+      id: "existing",
       outcome: { ok: true, result: { text: "completed" }, emits: [] },
     });
     fake.send({ t: "reply", id: reading.id, ok: true, result: "a".repeat(64) });
     expect(await fake.next()).toEqual({
-      t: "probed_ready", id: "probe",
-      outcome: { ok: true, result: { preparationId: "p", readyDigest: "a".repeat(64), expiresAt: 60_000 } },
+      t: "probed_ready",
+      id: "probe",
+      outcome: {
+        ok: true,
+        result: { preparationId: "p", readyDigest: "a".repeat(64), expiresAt: 60_000 },
+      },
     });
     fake.send({
-      t: "reply", id: publishing.id, ok: true,
+      t: "reply",
+      id: publishing.id,
+      ok: true,
       result: { ref, preparationId: "p", readyDigest: "a".repeat(64) },
     });
     expect(await fake.next()).toEqual({
-      t: "dispatched", id: "publisher",
+      t: "dispatched",
+      id: "publisher",
       outcome: { ok: true, result: { text: "p" }, emits: [] },
     });
     await expect(existing.references.receipt({ ref })).rejects.toThrow("already answered");
@@ -376,10 +497,13 @@ describe("reference data callbacks", () => {
     "receipt reconciliation admits only terminal outcomes: %s",
     async (state) => {
       const fake = host({
-        manifest, actions: [echo],
+        manifest,
+        actions: [echo],
         handlers: {
           echo: async (ctx) => {
-            const receipt = await ctx.references.receipt({ ref: { kind: "file", fileId: "owned" } });
+            const receipt = await ctx.references.receipt({
+              ref: { kind: "file", fileId: "owned" },
+            });
             return { text: receipt.state };
           },
         },
@@ -387,7 +511,11 @@ describe("reference data callbacks", () => {
       load(fake);
       await fake.next();
       fake.send({
-        t: "dispatch", id: "action", action: "echo", args: { text: "receipt" }, ctx: ctxOf(),
+        t: "dispatch",
+        id: "action",
+        action: "echo",
+        args: { text: "receipt" },
+        ctx: ctxOf(),
       });
       await serve(fake, { ref: { kind: "file", fileId: "owned" }, preparationId: "p", state });
       const result = await fake.next();
@@ -395,7 +523,9 @@ describe("reference data callbacks", () => {
         expect(result).toMatchObject({ t: "dispatched", outcome: { ok: false, rule: "refused" } });
       } else {
         expect(result).toEqual({
-          t: "dispatched", id: "action", outcome: { ok: true, result: { text: state }, emits: [] },
+          t: "dispatched",
+          id: "action",
+          outcome: { ok: true, result: { text: state }, emits: [] },
         });
       }
     },
@@ -403,11 +533,14 @@ describe("reference data callbacks", () => {
 
   test("receipt input cannot select an identity or grant before crossing the host boundary", async () => {
     const fake = host({
-      manifest, actions: [echo],
+      manifest,
+      actions: [echo],
       handlers: {
         echo: async (ctx) => {
           await ctx.references.receipt({
-            ref: { kind: "file", fileId: "owned" }, principalId: "other", grantId: "borrowed",
+            ref: { kind: "file", fileId: "owned" },
+            principalId: "other",
+            grantId: "borrowed",
           } as never);
           return { text: "unreachable" };
         },
@@ -416,37 +549,54 @@ describe("reference data callbacks", () => {
     load(fake);
     await fake.next();
     fake.send({
-      t: "dispatch", id: "action", action: "echo", args: { text: "receipt" }, ctx: ctxOf(),
+      t: "dispatch",
+      id: "action",
+      action: "echo",
+      args: { text: "receipt" },
+      ctx: ctxOf(),
     });
     expect(await fake.next()).toMatchObject({
-      t: "dispatched", id: "action", outcome: { ok: false, rule: "refused" },
+      t: "dispatched",
+      id: "action",
+      outcome: { ok: false, rule: "refused" },
     });
     expect(fake.sent.some((frame) => frame.t === "call")).toBe(false);
   });
 
-  test.each(["publish", "receipt"])("reference %s refusals retain their name without an RPC method prefix", async (method) => {
-    const fake = host({
-      manifest, actions: [echo],
-      handlers: {
-        echo: async (ctx) => {
-          if (method === "publish")
-            await ctx.references.publish({ preparationId: "p", readyDigest: "a".repeat(64) });
-          else await ctx.references.receipt({ ref: { kind: "file", fileId: "owned" } });
-          return { text: "unreachable" };
+  test.each(["publish", "receipt"])(
+    "reference %s refusals retain their name without an RPC method prefix",
+    async (method) => {
+      const fake = host({
+        manifest,
+        actions: [echo],
+        handlers: {
+          echo: async (ctx) => {
+            if (method === "publish")
+              await ctx.references.publish({ preparationId: "p", readyDigest: "a".repeat(64) });
+            else await ctx.references.receipt({ ref: { kind: "file", fileId: "owned" } });
+            return { text: "unreachable" };
+          },
         },
-      },
-    });
-    load(fake);
-    await fake.next();
-    fake.send({ t: "dispatch", id: "action", action: "echo", args: { text: "publish" }, ctx: ctxOf() });
-    const call = await fake.next();
-    if (call.t !== "call") throw new Error("expected host call");
-    fake.send({ t: "reply", id: call.id, ok: false, error: "authority_lost" });
-    expect(await fake.next()).toEqual({
-      t: "dispatched", id: "action",
-      outcome: { ok: false, rule: "refused", message: "authority_lost" },
-    });
-  });
+      });
+      load(fake);
+      await fake.next();
+      fake.send({
+        t: "dispatch",
+        id: "action",
+        action: "echo",
+        args: { text: "publish" },
+        ctx: ctxOf(),
+      });
+      const call = await fake.next();
+      if (call.t !== "call") throw new Error("expected host call");
+      fake.send({ t: "reply", id: call.id, ok: false, error: "authority_lost" });
+      expect(await fake.next()).toEqual({
+        t: "dispatched",
+        id: "action",
+        outcome: { ok: false, rule: "refused", message: "authority_lost" },
+      });
+    },
+  );
 });
 
 describe("isolated harness", () => {
@@ -1362,7 +1512,12 @@ describe("dispatch", () => {
       handlers: {
         async echo(ctx: GuestCtx) {
           try {
-            await ctx.nativeTransfers.putChunk({ transferId: "transfer1", seq: 0, offset: 0, data: new Uint8Array(262145) });
+            await ctx.nativeTransfers.putChunk({
+              transferId: "transfer1",
+              seq: 0,
+              offset: 0,
+              data: new Uint8Array(262145),
+            });
             throw new Error("oversized chunk accepted");
           } catch (error) {
             if (!(error instanceof NativeTransferError)) throw error;
@@ -1373,7 +1528,13 @@ describe("dispatch", () => {
     });
     load(fake);
     await fake.next();
-    fake.send({ t: "dispatch", id: "native-invalid", action: "echo", args: { text: "x" }, ctx: ctxOf() });
+    fake.send({
+      t: "dispatch",
+      id: "native-invalid",
+      action: "echo",
+      args: { text: "x" },
+      ctx: ctxOf(),
+    });
     expect(await fake.next()).toMatchObject({
       t: "dispatched",
       outcome: { ok: true, result: { text: "transfer_invalid_request:transfer_invalid_request" } },
@@ -1399,12 +1560,26 @@ describe("dispatch", () => {
     });
     load(fake);
     await fake.next();
-    fake.send({ t: "dispatch", id: "native-private", action: "echo", args: { text: "x" }, ctx: ctxOf() });
+    fake.send({
+      t: "dispatch",
+      id: "native-private",
+      action: "echo",
+      args: { text: "x" },
+      ctx: ctxOf(),
+    });
     const call = await fake.next();
     if (call.t !== "call") throw new Error("expected pending native request");
-    fake.send({ t: "reply", id: call.id, ok: false, error: "EIO at /private/machine/owner-secret" });
+    fake.send({
+      t: "reply",
+      id: call.id,
+      ok: false,
+      error: "EIO at /private/machine/owner-secret",
+    });
     expect(await fake.next()).toMatchObject({
-      outcome: { ok: true, result: { text: "native_transfer_unavailable:native_transfer_unavailable" } },
+      outcome: {
+        ok: true,
+        result: { text: "native_transfer_unavailable:native_transfer_unavailable" },
+      },
     });
   });
 

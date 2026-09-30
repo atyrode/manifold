@@ -48,7 +48,7 @@ function pngChunk(type: string, data: Buffer = Buffer.alloc(0)): Buffer {
 
 function pngChunks(input: Buffer): { type: string; data: Buffer }[] {
   const chunks: { type: string; data: Buffer }[] = [];
-  for (let offset = 8; offset < input.length; ) {
+  for (let offset = 8; offset < input.length;) {
     const length = input.readUInt32BE(offset);
     chunks.push({
       type: input.toString("latin1", offset + 4, offset + 8),
@@ -101,7 +101,9 @@ async function apngFixture(): Promise<Buffer> {
     pngChunk("IHDR", header.data),
     pngChunk("acTL", control),
     frameControl(0),
-    ...firstChunks.filter((chunk) => chunk.type === "IDAT").map((chunk) => pngChunk("IDAT", chunk.data)),
+    ...firstChunks
+      .filter((chunk) => chunk.type === "IDAT")
+      .map((chunk) => pngChunk("IDAT", chunk.data)),
     frameControl(1),
     pngChunk("fdAT", Buffer.concat([sequence, secondData])),
     pngChunk("IEND"),
@@ -134,7 +136,9 @@ describe("private image validation with real codecs", () => {
       const bytes = await fixture(format);
       const original = Buffer.from(bytes);
       const digest = createHash("sha256").update(bytes).digest("hex");
-      expect(await validateFileImage(bytes, `image/${format}`, new AbortController().signal)).toEqual({
+      expect(
+        await validateFileImage(bytes, `image/${format}`, new AbortController().signal),
+      ).toEqual({
         mediaType: `image/${format}`,
         width: 7,
         height: 5,
@@ -146,7 +150,11 @@ describe("private image validation with real codecs", () => {
     test(`${format}: truncated encoded input is refused`, async () => {
       const bytes = await fixture(format);
       await expectReason(
-        validateFileImage(bytes.subarray(0, Math.floor(bytes.length / 2)), null, new AbortController().signal),
+        validateFileImage(
+          bytes.subarray(0, Math.floor(bytes.length / 2)),
+          null,
+          new AbortController().signal,
+        ),
         "invalid_image",
       );
     });
@@ -154,7 +162,11 @@ describe("private image validation with real codecs", () => {
 
   test("only the supplied Uint8Array view is decoded", async () => {
     const bytes = await fixture("png");
-    const backing = Buffer.concat([Buffer.from("private-prefix"), bytes, Buffer.from("private-suffix")]);
+    const backing = Buffer.concat([
+      Buffer.from("private-prefix"),
+      bytes,
+      Buffer.from("private-suffix"),
+    ]);
     const view = new Uint8Array(backing.buffer, backing.byteOffset + 14, bytes.length);
     expect(await validateFileImage(view, null, new AbortController().signal)).toEqual({
       mediaType: "image/png",
@@ -174,14 +186,22 @@ describe("private image validation with real codecs", () => {
 
   test("MIME essence is case-insensitive and parameters do not change the format claim", async () => {
     const bytes = await fixture("png");
-    for (const declared of [null, "", " \tIMAGE/PNG ; note=\"contains;a;semicolon\"\t"]) {
+    for (const declared of [null, "", ' \tIMAGE/PNG ; note="contains;a;semicolon"\t']) {
       expect(await validateFileImage(bytes, declared, new AbortController().signal)).toEqual({
         mediaType: "image/png",
         width: 7,
         height: 5,
       });
     }
-    for (const declared of ["image/jpeg", "image/x-png", "text/html", "image", "image/png, image/png", "image/png\r\nX: private", " \t"]) {
+    for (const declared of [
+      "image/jpeg",
+      "image/x-png",
+      "text/html",
+      "image",
+      "image/png, image/png",
+      "image/png\r\nX: private",
+      " \t",
+    ]) {
       await expectReason(
         validateFileImage(bytes, declared, new AbortController().signal),
         "media_type_mismatch",
@@ -218,7 +238,11 @@ describe("private image validation with real codecs", () => {
     const bytes = await fixture("png");
     const padding = Buffer.alloc(16 * 1024 * 1024 - bytes.length - 12);
     padding.write("acTLfcTLfdAT");
-    const padded = Buffer.concat([bytes.subarray(0, -12), pngChunk("ruSt", padding), bytes.subarray(-12)]);
+    const padded = Buffer.concat([
+      bytes.subarray(0, -12),
+      pngChunk("ruSt", padding),
+      bytes.subarray(-12),
+    ]);
     expect(padded.length).toBe(16 * 1024 * 1024);
     expect(await validateFileImage(padded, null, new AbortController().signal)).toEqual({
       mediaType: "image/png",
@@ -229,7 +253,10 @@ describe("private image validation with real codecs", () => {
 
   for (let orientation = 1; orientation <= 8; orientation++) {
     test(`EXIF ${orientation}: report oriented dimensions without stripping metadata`, async () => {
-      const bytes = await sharp(await fixture("jpeg")).withMetadata({ orientation }).jpeg().toBuffer();
+      const bytes = await sharp(await fixture("jpeg"))
+        .withMetadata({ orientation })
+        .jpeg()
+        .toBuffer();
       expect((await sharp(bytes).metadata()).orientation).toBe(orientation);
       const original = Buffer.from(bytes);
       expect(await validateFileImage(bytes, null, new AbortController().signal)).toEqual({
@@ -277,14 +304,24 @@ describe("private image validation with real codecs", () => {
     expect(metadata.width).toBe(7);
     expect(metadata.height).toBe(5);
     expect(metadata.pages ?? 1).toBe(1);
-    await expectReason(validateFileImage(bytes, null, new AbortController().signal), "animated_image");
+    await expectReason(
+      validateFileImage(bytes, null, new AbortController().signal),
+      "animated_image",
+    );
   });
 
   test("orphan APNG frame chunks cannot bypass the animation refusal", async () => {
     const bytes = await fixture("png");
     for (const type of ["fcTL", "fdAT"]) {
-      const input = Buffer.concat([bytes.subarray(0, -12), pngChunk(type, Buffer.alloc(26)), bytes.subarray(-12)]);
-      await expectReason(validateFileImage(input, null, new AbortController().signal), "animated_image");
+      const input = Buffer.concat([
+        bytes.subarray(0, -12),
+        pngChunk(type, Buffer.alloc(26)),
+        bytes.subarray(-12),
+      ]);
+      await expectReason(
+        validateFileImage(input, null, new AbortController().signal),
+        "animated_image",
+      );
     }
   });
 
@@ -292,7 +329,10 @@ describe("private image validation with real codecs", () => {
     const bytes = await fixture("png");
     const chunks = pngChunks(bytes);
     const ihdr = pngChunk("IHDR", chunks.find((chunk) => chunk.type === "IHDR")!.data);
-    const idat = pngChunk("IDAT", Buffer.concat(chunks.filter((chunk) => chunk.type === "IDAT").map((chunk) => chunk.data)));
+    const idat = pngChunk(
+      "IDAT",
+      Buffer.concat(chunks.filter((chunk) => chunk.type === "IDAT").map((chunk) => chunk.data)),
+    );
     const prefix = bytes.subarray(0, 8);
     const badCrc = Buffer.from(bytes);
     badCrc[29] = badCrc[29]! ^ 1;
@@ -314,7 +354,10 @@ describe("private image validation with real codecs", () => {
       Buffer.concat([prefix, ihdr, idat, pngChunk("IEND", Buffer.from([0]))]),
     ];
     for (const input of cases) {
-      await expectReason(validateFileImage(input, null, new AbortController().signal), "invalid_image");
+      await expectReason(
+        validateFileImage(input, null, new AbortController().signal),
+        "invalid_image",
+      );
     }
   });
 
@@ -328,7 +371,10 @@ describe("private image validation with real codecs", () => {
       pngChunk("IEND"),
     ]);
     expect((await sharp(corrupt).metadata()).width).toBe(7);
-    await expectReason(validateFileImage(corrupt, null, new AbortController().signal), "invalid_image");
+    await expectReason(
+      validateFileImage(corrupt, null, new AbortController().signal),
+      "invalid_image",
+    );
   });
 
   for (const [width, height, accepted] of [
@@ -361,12 +407,13 @@ describe("private image validation with real codecs", () => {
       await expectReason(busy, "busy");
       // Rejection microtasks run before the queued native callback. Abandoning a
       // caller must not make the seat available to a cancellation flood.
-      await expectReason(
-        validateFileImage(bytes, null, new AbortController().signal),
-        "busy",
-      );
+      await expectReason(validateFileImage(bytes, null, new AbortController().signal), "busy");
     } finally {
-      expect(await waitForAdmission(bytes)).toEqual({ mediaType: "image/png", width: 7, height: 5 });
+      expect(await waitForAdmission(bytes)).toEqual({
+        mediaType: "image/png",
+        width: 7,
+        height: 5,
+      });
     }
   });
 

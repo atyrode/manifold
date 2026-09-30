@@ -94,7 +94,8 @@ export class LiveMachineChannel implements MachineChannel {
   send(message: ServerToAgentMessage): boolean {
     const payload = JSON.stringify(ServerToAgentMessageSchema.parse(message));
     const install = message.type === "job_command" && message.command.type === "install";
-    const nativeTransfer = message.type === "job_command" && message.command.type === "native_transfer";
+    const nativeTransfer =
+      message.type === "job_command" && message.command.type === "native_transfer";
     const agentResult =
       message.type === "job_command" && message.command.type === "agent_run_result";
     if (this.socket.bufferedAmount === 0) this.outboundQueueLimit = MAX_SESSION_FRAME_BYTES;
@@ -107,9 +108,13 @@ export class LiveMachineChannel implements MachineChannel {
       this.outboundQueueLimit = Math.max(this.outboundQueueLimit, 2 * frameLimit);
     const bytes = Buffer.byteLength(payload);
     const transferFrameLimit = Math.ceil(NATIVE_TRANSFER_MAX_CHUNK_BYTES / 3) * 4 + 64 * 1024;
-    if ((nativeTransfer && (bytes > transferFrameLimit ||
+    if (
+      (nativeTransfer &&
+        (bytes > transferFrameLimit ||
           this.socket.bufferedAmount + bytes > NATIVE_TRANSFER_MAX_ACTIVE * transferFrameLimit)) ||
-        bytes > frameLimit || this.socket.bufferedAmount + bytes > this.outboundQueueLimit) {
+      bytes > frameLimit ||
+      this.socket.bufferedAmount + bytes > this.outboundQueueLimit
+    ) {
       this.socket.close(1013, "machine outbound queue overflow");
       return false;
     }

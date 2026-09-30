@@ -21,7 +21,11 @@ import { TerminalRuntimeSchema } from "./jobs.ts";
 import { PanelArgSchema, validPanelArg } from "./layout.ts";
 import { PanelResultSchema, PortablePanelInputSchema } from "./panels.ts";
 import { SceneElementPayloadSchema } from "./elements.ts";
-import { ReferenceProbeRequestSchema, ReferenceProbeResultSchema, ReferenceTerminalReceiptSchema } from "./references.ts";
+import {
+  ReferenceProbeRequestSchema,
+  ReferenceProbeResultSchema,
+  ReferenceTerminalReceiptSchema,
+} from "./references.ts";
 import { NativeTransferEvidenceBatchSchema } from "./native-transfers.ts";
 import {
   IsolateByteCtxSchema,
@@ -441,7 +445,10 @@ const uiNode: z.ZodType<UiNode> = z.lazy(() =>
       ...uiNodeMeta,
       type: z.literal("borrowedPanel"),
       panelId: z.string().min(1).max(160),
-      input: PanelArgSchema.refine(validPanelArg, "panel input must be bounded JSON data").optional(),
+      input: PanelArgSchema.refine(
+        validPanelArg,
+        "panel input must be bounded JSON data",
+      ).optional(),
       event: uiEventName,
     }),
     z.strictObject({
@@ -712,7 +719,11 @@ export type AssemblyDelta = z.infer<typeof AssemblyDeltaSchema>;
 export const IsolateDispatchCtxSchema = z.strictObject({
   traceId: z.number().int().positive(),
   /** Contract 12+: equality key for the host's credential lineage, never a bearer. */
-  credentialBinding: z.string().length(64).regex(/^[a-f0-9]{64}$/).optional(),
+  credentialBinding: z
+    .string()
+    .length(64)
+    .regex(/^[a-f0-9]{64}$/)
+    .optional(),
   /** Host-derived immediate plugin caller for contract 8+; omitted entirely for older guests. */
   callerPlugin: PluginIdSchema.nullable().optional(),
   principal: PrincipalSchema,
@@ -1087,33 +1098,41 @@ export const WebIsolateHostFrameSchema = z.discriminatedUnion("t", [
     caps: CapSchema.array(),
     containerId: z.string().min(1).nullable(),
   }),
-  z.strictObject({
-    t: z.literal("mount"),
-    instance: instanceId,
-    // Historical field name; element mounts carry their manifest-declared wire type here.
-    panel: z.string().min(1).max(32),
-    kind: z.enum(["panel", "section", "element"]).optional(),
-    context: WebHostContextSchema.optional(),
-    arg: PanelArgSchema.refine(
-      validPanelArg,
-      "panel argument must be bounded JSON data",
-    ).optional(),
-    input: PortablePanelInputSchema.optional(),
-    acceptsResult: z.literal(true).optional(),
-    element: PortableElementProjectionSchema.optional(),
-  }).refine(
-    (frame) => frame.kind === "element" || LocalNameSchema.safeParse(frame.panel).success,
-    { message: "panel and section names must be local names", path: ["panel"] },
-  ).refine(
-    (frame) => (frame.kind === "element") === (frame.element !== undefined),
-    { message: "element data belongs only to an element mount", path: ["element"] },
-  ).refine(
-    (frame) => frame.arg === undefined || frame.kind === undefined || frame.kind === "panel",
-    { message: "only a panel takes an argument", path: ["arg"] },
-  ).refine(
-    (frame) => (frame.input === undefined && frame.acceptsResult === undefined) || frame.kind === undefined || frame.kind === "panel",
-    { message: "only a panel takes transient input or returns a result", path: ["input"] },
-  ),
+  z
+    .strictObject({
+      t: z.literal("mount"),
+      instance: instanceId,
+      // Historical field name; element mounts carry their manifest-declared wire type here.
+      panel: z.string().min(1).max(32),
+      kind: z.enum(["panel", "section", "element"]).optional(),
+      context: WebHostContextSchema.optional(),
+      arg: PanelArgSchema.refine(
+        validPanelArg,
+        "panel argument must be bounded JSON data",
+      ).optional(),
+      input: PortablePanelInputSchema.optional(),
+      acceptsResult: z.literal(true).optional(),
+      element: PortableElementProjectionSchema.optional(),
+    })
+    .refine((frame) => frame.kind === "element" || LocalNameSchema.safeParse(frame.panel).success, {
+      message: "panel and section names must be local names",
+      path: ["panel"],
+    })
+    .refine((frame) => (frame.kind === "element") === (frame.element !== undefined), {
+      message: "element data belongs only to an element mount",
+      path: ["element"],
+    })
+    .refine(
+      (frame) => frame.arg === undefined || frame.kind === undefined || frame.kind === "panel",
+      { message: "only a panel takes an argument", path: ["arg"] },
+    )
+    .refine(
+      (frame) =>
+        (frame.input === undefined && frame.acceptsResult === undefined) ||
+        frame.kind === undefined ||
+        frame.kind === "panel",
+      { message: "only a panel takes transient input or returns a result", path: ["input"] },
+    ),
   z.strictObject({
     t: z.literal("context"),
     instance: instanceId,

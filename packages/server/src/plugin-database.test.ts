@@ -291,11 +291,18 @@ describe("bounded recovery database transactions", () => {
     const db = openPluginDatabase({ dataDir, pluginId: "test.returning" });
     try {
       await db.run("CREATE TABLE t(v INTEGER)");
-      await expect(db.query("INSERT INTO t VALUES (1) RETURNING zeroblob(4194304)")).rejects.toThrow(/result.*limit/);
+      await expect(
+        db.query("INSERT INTO t VALUES (1) RETURNING zeroblob(4194304)"),
+      ).rejects.toThrow(/result.*limit/);
       expect(await db.query("SELECT count(*) AS count FROM t")).toEqual([{ count: 0n }]);
-      await expect(db.query("INSERT INTO t VALUES (2) RETURNING 1e999")).rejects.toThrow(/non-finite/);
+      await expect(db.query("INSERT INTO t VALUES (2) RETURNING 1e999")).rejects.toThrow(
+        /non-finite/,
+      );
       expect(await db.query("SELECT count(*) AS count FROM t")).toEqual([{ count: 0n }]);
-    } finally { db.close(); done(); }
+    } finally {
+      db.close();
+      done();
+    }
   });
 
   test("a pinned WAL reader refuses every subsequent transaction without appending frames", async () => {
@@ -305,28 +312,40 @@ describe("bounded recovery database transactions", () => {
     const path = pluginDatabasePath(dataDir, pluginId);
     const maxBytes = 4 * 1024 * 1024;
     const db = openPluginDatabase({
-      dataDir, pluginId, maxBytes, recovery: { profile: "bounded-wal-v1" },
+      dataDir,
+      pluginId,
+      maxBytes,
+      recovery: { profile: "bounded-wal-v1" },
       recoveryBudget: new RecoveryBudget(dataDir, store.db),
     });
     let reader: Database | undefined;
     try {
       await db.run("CREATE TABLE t(v BLOB)");
       await db.run("INSERT INTO t VALUES (zeroblob(524288))");
-      await db.batch(Array.from({ length: 32 }, () => ({ sql: "UPDATE t SET v = randomblob(524288)" })));
+      await db.batch(
+        Array.from({ length: 32 }, () => ({ sql: "UPDATE t SET v = randomblob(524288)" })),
+      );
       const walBytes = statSync(`${path}-wal`).size;
       expect(walBytes).toBeLessThanOrEqual(boundedWalFamily(maxBytes).wal);
       reader = new Database(path, { readonly: true });
       reader.exec("BEGIN");
       expect(reader.query("SELECT length(v) AS bytes FROM t").get()).toEqual({ bytes: 524288 });
       for (let index = 0; index < 8; index++) {
-        await expect(db.run("INSERT INTO t VALUES (zeroblob(524288))")).rejects.toThrow(/database_busy/);
+        await expect(db.run("INSERT INTO t VALUES (zeroblob(524288))")).rejects.toThrow(
+          /database_busy/,
+        );
         expect(statSync(`${path}-wal`).size).toBe(walBytes);
       }
       reader.exec("ROLLBACK");
       reader.close();
       reader = undefined;
       expect(await db.query("SELECT count(*) AS count FROM t")).toEqual([{ count: 1n }]);
-    } finally { reader?.close(); db.close(); store.close(); done(); }
+    } finally {
+      reader?.close();
+      db.close();
+      store.close();
+      done();
+    }
   });
 
   test("lost COMMIT acknowledgement freezes the handle and durable state is reconciled on reopen", async () => {
@@ -337,7 +356,10 @@ describe("bounded recovery database transactions", () => {
     let fault: { mockRestore(): void } | undefined;
     try {
       await db.run("CREATE TABLE t(id TEXT PRIMARY KEY)");
-      fault = spyOn(Database.prototype, "exec").mockImplementation(function(this: Database, sql: string) {
+      fault = spyOn(Database.prototype, "exec").mockImplementation(function (
+        this: Database,
+        sql: string,
+      ) {
         const result = exec.call(this, sql);
         if (sql === "COMMIT") throw new Error("lost durable commit acknowledgement");
         return result;
@@ -350,7 +372,13 @@ describe("bounded recovery database transactions", () => {
       const reopened = new Database(pluginDatabasePath(dataDir, pluginId), { readonly: true });
       try {
         expect(reopened.query("SELECT id FROM t").all()).toEqual([{ id: "operation-identity" }]);
-      } finally { reopened.close(); }
-    } finally { fault?.mockRestore(); db.close(); done(); }
+      } finally {
+        reopened.close();
+      }
+    } finally {
+      fault?.mockRestore();
+      db.close();
+      done();
+    }
   });
 });

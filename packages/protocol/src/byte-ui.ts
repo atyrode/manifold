@@ -20,13 +20,25 @@ export const LocalFileDescriptorSchema = z.strictObject({
 export type LocalFileDescriptor = z.infer<typeof LocalFileDescriptorSchema>;
 export const LocalFileSelectionSchema = z.array(LocalFileDescriptorSchema).max(MAX_LOCAL_FILES);
 /** A normalized, nonempty rectangle within the original authenticated raster. */
-export const ByteImageCropSchema = z.strictObject({
-  x: z.number().finite().min(0).max(1),
-  y: z.number().finite().min(0).max(1),
-  width: z.number().finite().min(1 / MAX_RASTER_SIDE).max(1),
-  height: z.number().finite().min(1 / MAX_RASTER_SIDE).max(1),
-}).refine((crop) => crop.x + crop.width <= 1 && crop.y + crop.height <= 1,
-  "crop must stay within the original image");
+export const ByteImageCropSchema = z
+  .strictObject({
+    x: z.number().finite().min(0).max(1),
+    y: z.number().finite().min(0).max(1),
+    width: z
+      .number()
+      .finite()
+      .min(1 / MAX_RASTER_SIDE)
+      .max(1),
+    height: z
+      .number()
+      .finite()
+      .min(1 / MAX_RASTER_SIDE)
+      .max(1),
+  })
+  .refine(
+    (crop) => crop.x + crop.width <= 1 && crop.y + crop.height <= 1,
+    "crop must stay within the original image",
+  );
 export type ByteImageCrop = z.infer<typeof ByteImageCropSchema>;
 export const ByteImageSourceSchema = z.strictObject({
   pluginId: PluginIdSchema,
@@ -60,11 +72,13 @@ export const ByteDownloadReasonSchema = z.union([
 ]);
 export type ByteDownloadReason = z.infer<typeof ByteDownloadReasonSchema>;
 export const ByteDownloadStatusSchema = z.discriminatedUnion("state", [
-  z.strictObject({
-    state: z.literal("downloading"),
-    received: z.number().int().min(0).max(MAX_LOCAL_FILE_BYTES),
-    total: z.number().int().min(0).max(MAX_LOCAL_FILE_BYTES),
-  }).refine((status) => status.received <= status.total),
+  z
+    .strictObject({
+      state: z.literal("downloading"),
+      received: z.number().int().min(0).max(MAX_LOCAL_FILE_BYTES),
+      total: z.number().int().min(0).max(MAX_LOCAL_FILE_BYTES),
+    })
+    .refine((status) => status.received <= status.total),
   // Handoff to the browser, not evidence that the user persisted a file.
   z.strictObject({ state: z.literal("complete") }),
   z.strictObject({ state: z.literal("unavailable"), reason: ByteDownloadReasonSchema }),

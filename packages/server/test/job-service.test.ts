@@ -9929,12 +9929,31 @@ describe("reviewed native transfer policy installations", () => {
       artifacts: {},
       operations: {},
       locations: {
-        [`${transferPlugin}.received`]: { anchor: "state", components: ["received"], revision: "destination-r1", kind: "directory", managed: true },
-        [`${transferPlugin}.source`]: { anchor: "operator.shared", components: ["approved"], revision: "source-r1", kind: "directory" },
+        [`${transferPlugin}.received`]: {
+          anchor: "state",
+          components: ["received"],
+          revision: "destination-r1",
+          kind: "directory",
+          managed: true,
+        },
+        [`${transferPlugin}.source`]: {
+          anchor: "operator.shared",
+          components: ["approved"],
+          revision: "source-r1",
+          kind: "directory",
+        },
       },
-      transferPolicy: { format: "native-transfer-v1", locations: { [`${transferPlugin}.received`]: ["create-child"], [`${transferPlugin}.source`]: ["read"] } },
+      transferPolicy: {
+        format: "native-transfer-v1",
+        locations: {
+          [`${transferPlugin}.received`]: ["create-child"],
+          [`${transferPlugin}.source`]: ["read"],
+        },
+      },
     };
-    f.service.setManifestResolver((id) => id === transferPlugin ? native : id === pluginId ? machine : null);
+    f.service.setManifestResolver((id) =>
+      id === transferPlugin ? native : id === pluginId ? machine : null,
+    );
     f.channel.protocolVersion = PROTOCOL_VERSION;
     f.owner.resources = {
       tools: {},
@@ -9959,27 +9978,73 @@ describe("reviewed native transfer policy installations", () => {
       const review = f.service.reviewDeployment(f.root, value);
       const target = review.targets[0]!;
       expect(target.approvable).toBe(true);
-      expect(target.artifactSha256).toBe(createHash("sha256").update(canonicalNativeTransferPolicy(native)).digest("hex"));
+      expect(target.artifactSha256).toBe(
+        createHash("sha256").update(canonicalNativeTransferPolicy(native)).digest("hex"),
+      );
       expect(review.machine).toEqual(native);
       expect(target.consents.map(({ node, cap }) => ({ node, cap }))).toEqual([
-        { node: formatManifoldUri({ kind: "location", machineId: f.machineId, locationId: `${transferPlugin}.received` }), cap: "locations:create-child" },
-        { node: formatManifoldUri({ kind: "location", machineId: f.machineId, locationId: `${transferPlugin}.source` }), cap: "locations:read" },
+        {
+          node: formatManifoldUri({
+            kind: "location",
+            machineId: f.machineId,
+            locationId: `${transferPlugin}.received`,
+          }),
+          cap: "locations:create-child",
+        },
+        {
+          node: formatManifoldUri({
+            kind: "location",
+            machineId: f.machineId,
+            locationId: `${transferPlugin}.source`,
+          }),
+          cap: "locations:read",
+        },
       ]);
-      expect(target.resources).toEqual([{ group: "anchors", name: "operator.shared", sha256: "d".repeat(64), source: "/srv/reviewed" }]);
+      expect(target.resources).toEqual([
+        {
+          group: "anchors",
+          name: "operator.shared",
+          sha256: "d".repeat(64),
+          source: "/srv/reviewed",
+        },
+      ]);
       expect(target.resourceBindings?.anchors).toEqual({ "operator.shared": "d".repeat(64) });
       expect(target.invocationEdges).toEqual([]);
       f.commands.length = 0;
-      const deployment = f.service.applyDeployment(f.root, { request: value, reviewDigest: review.reviewDigest }, "native-review");
+      const deployment = f.service.applyDeployment(
+        f.root,
+        { request: value, reviewDigest: review.reviewDigest },
+        "native-review",
+      );
       expect(deployment.targets[0]!.state).toBe("installing");
-      const installed = f.commands.find((command) => command.type === "install" && command.pluginId === transferPlugin);
-      expect(installed).toMatchObject({ type: "install", machine: native, artifactSha256: target.artifactSha256 });
+      const installed = f.commands.find(
+        (command) => command.type === "install" && command.pluginId === transferPlugin,
+      );
+      expect(installed).toMatchObject({
+        type: "install",
+        machine: native,
+        artifactSha256: target.artifactSha256,
+      });
       if (installed?.type !== "install") throw new Error("transfer installation missing");
       expect(installed.artifact).toBeUndefined();
       expect(installed.toolArtifacts).toBeUndefined();
-      f.service.event(f.channel, { type: "installed", pluginId: transferPlugin, installationRevision: installed.installationRevision, artifactSha256: installed.artifactSha256 });
-      expect(f.service.readDeployment(f.root, { deploymentId: value.deploymentId }).targets[0]!.state).toBe("ready");
-      const consents = f.service.describe(f.root, { machineId: f.machineId, pluginId: transferPlugin }).consents;
-      expect(consents.map(({ cap }) => cap).sort()).toEqual(["locations:create-child", "locations:read"]);
+      f.service.event(f.channel, {
+        type: "installed",
+        pluginId: transferPlugin,
+        installationRevision: installed.installationRevision,
+        artifactSha256: installed.artifactSha256,
+      });
+      expect(
+        f.service.readDeployment(f.root, { deploymentId: value.deploymentId }).targets[0]!.state,
+      ).toBe("ready");
+      const consents = f.service.describe(f.root, {
+        machineId: f.machineId,
+        pluginId: transferPlugin,
+      }).consents;
+      expect(consents.map(({ cap }) => cap).sort()).toEqual([
+        "locations:create-child",
+        "locations:read",
+      ]);
       f.service.consent(f.root, {
         machineId: f.machineId,
         pluginId: transferPlugin,
@@ -9989,8 +10054,16 @@ describe("reviewed native transfer policy installations", () => {
         cap: "locations:create-child",
         enabled: false,
       });
-      f.service.applyDeployment(f.root, { request: value, reviewDigest: review.reviewDigest }, "replay");
-      expect(f.service.describe(f.root, { machineId: f.machineId, pluginId: transferPlugin }).consents.find(({ cap }) => cap === "locations:create-child")?.enabled).toBe(false);
+      f.service.applyDeployment(
+        f.root,
+        { request: value, reviewDigest: review.reviewDigest },
+        "replay",
+      );
+      expect(
+        f.service
+          .describe(f.root, { machineId: f.machineId, pluginId: transferPlugin })
+          .consents.find(({ cap }) => cap === "locations:create-child")?.enabled,
+      ).toBe(false);
     } finally {
       f.store.close();
     }
@@ -10004,8 +10077,17 @@ describe("reviewed native transfer policy installations", () => {
       prove(f);
       f.commands.length = 0;
       const review = f.service.reviewDeployment(f.root, value);
-      expect(review.targets[0]).toMatchObject({ approvable: false, reason: "native_transfer_protocol_unsupported" });
-      expect(() => f.service.applyDeployment(f.root, { request: value, reviewDigest: review.reviewDigest }, "old-owner")).toThrow("deployment_unapprovable");
+      expect(review.targets[0]).toMatchObject({
+        approvable: false,
+        reason: "native_transfer_protocol_unsupported",
+      });
+      expect(() =>
+        f.service.applyDeployment(
+          f.root,
+          { request: value, reviewDigest: review.reviewDigest },
+          "old-owner",
+        ),
+      ).toThrow("deployment_unapprovable");
       expect(f.service.jobs.installation(f.machineId, transferPlugin)).toBeNull();
       expect(f.commands.filter((command) => command.type === "install")).toEqual([]);
     } finally {
@@ -10018,7 +10100,8 @@ describe("reviewed native transfer policy installations", () => {
       const { f, native, value } = transferFixture();
       try {
         const review = f.service.reviewDeployment(f.root, value);
-        if (changed === "location") native.locations[`${transferPlugin}.source`]!.revision = "source-r2";
+        if (changed === "location")
+          native.locations[`${transferPlugin}.source`]!.revision = "source-r2";
         else {
           f.service.offline(f.channel);
           f.owner.resources!.anchors["operator.shared"] = "e".repeat(64);
@@ -10026,12 +10109,27 @@ describe("reviewed native transfer policy installations", () => {
           prove(f);
         }
         f.commands.length = 0;
-        expect(() => f.service.applyDeployment(f.root, { request: value, reviewDigest: review.reviewDigest }, "changed-root")).toThrow("deployment_review_stale");
+        expect(() =>
+          f.service.applyDeployment(
+            f.root,
+            { request: value, reviewDigest: review.reviewDigest },
+            "changed-root",
+          ),
+        ).toThrow("deployment_review_stale");
         expect(f.service.jobs.installation(f.machineId, transferPlugin)).toBeNull();
         expect(f.commands.filter((command) => command.type === "install")).toEqual([]);
         const current = f.service.reviewDeployment(f.root, value);
-        if (changed === "location") expect(current.targets[0]!.artifactSha256).not.toBe(review.targets[0]!.artifactSha256);
-        else expect(current.targets[0]!.resources).toEqual([{ group: "anchors", name: "operator.shared", sha256: "e".repeat(64), source: "/srv/replacement" }]);
+        if (changed === "location")
+          expect(current.targets[0]!.artifactSha256).not.toBe(review.targets[0]!.artifactSha256);
+        else
+          expect(current.targets[0]!.resources).toEqual([
+            {
+              group: "anchors",
+              name: "operator.shared",
+              sha256: "e".repeat(64),
+              source: "/srv/replacement",
+            },
+          ]);
       } finally {
         f.store.close();
       }
@@ -10045,7 +10143,10 @@ describe("reviewed native transfer policy installations", () => {
       delete f.owner.resources!.anchorDefinitions;
       prove(f);
       const review = f.service.reviewDeployment(f.root, value);
-      expect(review.targets[0]).toMatchObject({ approvable: false, reason: "resource_evidence_unknown" });
+      expect(review.targets[0]).toMatchObject({
+        approvable: false,
+        reason: "resource_evidence_unknown",
+      });
       expect(f.service.jobs.installation(f.machineId, transferPlugin)).toBeNull();
     } finally {
       f.store.close();

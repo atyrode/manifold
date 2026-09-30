@@ -517,8 +517,9 @@ function matchesCanonicalReferenceSchema(value: unknown, canonical: unknown): bo
   );
   return (
     keys.length === Object.keys(expected).length &&
-    keys.every((key) =>
-      Object.hasOwn(expected, key) && matchesCanonicalReferenceSchema(actual[key], expected[key]),
+    keys.every(
+      (key) =>
+        Object.hasOwn(expected, key) && matchesCanonicalReferenceSchema(actual[key], expected[key]),
     )
   );
 }
@@ -957,15 +958,27 @@ function assembleDefinitions(
         continue;
       }
       for (const io of ["input", "output"] as const) {
-        const input = publishSchema(resolver.input, io, `reference resolver "${name}" input`, problems);
+        const input = publishSchema(
+          resolver.input,
+          io,
+          `reference resolver "${name}" input`,
+          problems,
+        );
         if (!matchesCanonicalReferenceSchema(input, referenceResolverInput)) {
           problems.push(`reference resolver "${name}" must accept only canonical {ref} input`);
           break;
         }
       }
-      const result = publishSchema(resolver.result, "output", `reference resolver "${name}" result`, problems);
+      const result = publishSchema(
+        resolver.result,
+        "output",
+        `reference resolver "${name}" result`,
+        problems,
+      );
       if (!ReferenceResolverResultSchema.safeParse(result).success) {
-        problems.push(`reference resolver "${name}" must return a required title bounded to 512 characters`);
+        problems.push(
+          `reference resolver "${name}" must return a required title bounded to 512 characters`,
+        );
       }
       if (declaration.listAction !== undefined) {
         const listing = def.actions.find((action) => action.name === declaration.listAction);
@@ -997,15 +1010,29 @@ function assembleDefinitions(
         continue;
       }
       for (const io of ["input", "output"] as const) {
-        const input = publishSchema(receipt.input, io, `reference receipt "${receiptName}" input`, problems);
+        const input = publishSchema(
+          receipt.input,
+          io,
+          `reference receipt "${receiptName}" input`,
+          problems,
+        );
         if (!matchesCanonicalReferenceSchema(input, referenceReceiptInput)) {
-          problems.push(`reference receipt "${receiptName}" must accept only canonical {ref} input`);
+          problems.push(
+            `reference receipt "${receiptName}" must accept only canonical {ref} input`,
+          );
           break;
         }
       }
-      const receiptResult = publishSchema(receipt.result, "output", `reference receipt "${receiptName}" result`, problems);
+      const receiptResult = publishSchema(
+        receipt.result,
+        "output",
+        `reference receipt "${receiptName}" result`,
+        problems,
+      );
       if (!matchesCanonicalReferenceSchema(receiptResult, referenceReceiptResult)) {
-        problems.push(`reference receipt "${receiptName}" must return only the canonical terminal receipt`);
+        problems.push(
+          `reference receipt "${receiptName}" must return only the canonical terminal receipt`,
+        );
       }
     }
 
@@ -1133,8 +1160,13 @@ function assembleDefinitions(
       disciplines.set(discipline.id, { plugin: manifest.id, declaration: discipline });
     }
     for (const tool of manifest.contributes.tools) {
-      if (tool.panel !== undefined && !manifest.contributes.panels.some((panel) => panel.id === tool.panel)) {
-        problems.push(`plugin "${manifest.id}" tool "${tool.id}" names undeclared panel "${tool.panel}"`);
+      if (
+        tool.panel !== undefined &&
+        !manifest.contributes.panels.some((panel) => panel.id === tool.panel)
+      ) {
+        problems.push(
+          `plugin "${manifest.id}" tool "${tool.id}" names undeclared panel "${tool.panel}"`,
+        );
       }
       claim(toolIds, tool.id, manifest.id);
       tools.push({ id: tool.id, plugin: manifest.id, title: tool.title });

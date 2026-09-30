@@ -1,5 +1,14 @@
 import { Database } from "bun:sqlite";
-import { closeSync, existsSync, fsyncSync, lstatSync, openSync, readdirSync, statfsSync, statSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  lstatSync,
+  openSync,
+  readdirSync,
+  statfsSync,
+  statSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import type { DatabaseRecoveryAdmission } from "@manifold/protocol";
@@ -10,8 +19,13 @@ export const MAX_CHECKPOINT_FILES = 10_000;
 export const CHECKPOINT_SAFETY_BYTES = 8 * 1024 * 1024;
 export const STORAGE_HEADROOM_BYTES = 16 * 1024 * 1024;
 export const RECOVERY_TRANSIENT_PATHS: Readonly<Record<string, true>> = {
-  "agent.lock": true, "agent.pid": true, "manifold.writer": true, "manifold.replica-writer": true,
-  "terminal-host.pid": true, "terminal-host/host.sock": true, [RECOVERY_GATE_FILE]: true,
+  "agent.lock": true,
+  "agent.pid": true,
+  "manifold.writer": true,
+  "manifold.replica-writer": true,
+  "terminal-host.pid": true,
+  "terminal-host/host.sock": true,
+  [RECOVERY_GATE_FILE]: true,
   [`${RECOVERY_GATE_FILE}-journal`]: true,
   [`${RECOVERY_GATE_FILE}-wal`]: true,
   [`${RECOVERY_GATE_FILE}-shm`]: true,
@@ -21,8 +35,15 @@ const MAX_IMAGE_BYTES = 64 * 1024 * 1024;
 const GRANULE = 65_536;
 const LOCAL_FILESYSTEMS = new Set([0xef53, 0x58465342, 0x9123683e, 0x794c7630, 0x01021994]);
 
-interface Allocation { plugin_id: string; profile: string; max_image_bytes: number }
-export interface RecoveryInventoryFile { readonly path: string; readonly bytes: number }
+interface Allocation {
+  plugin_id: string;
+  profile: string;
+  max_image_bytes: number;
+}
+export interface RecoveryInventoryFile {
+  readonly path: string;
+  readonly bytes: number;
+}
 interface Inventory {
   readonly files: Map<string, number>;
   readonly allocations: readonly Allocation[];
@@ -35,17 +56,24 @@ class CapacityRefusal extends Error {
 }
 
 export function boundedWalFamily(maxImageBytes: number): {
-  readonly wal: number; readonly shm: number; readonly physical: number;
+  readonly wal: number;
+  readonly shm: number;
+  readonly physical: number;
 } {
-  if (!Number.isSafeInteger(maxImageBytes) || maxImageBytes <= 0 ||
-      maxImageBytes > MAX_IMAGE_BYTES || maxImageBytes % 4096 !== 0)
+  if (
+    !Number.isSafeInteger(maxImageBytes) ||
+    maxImageBytes <= 0 ||
+    maxImageBytes > MAX_IMAGE_BYTES ||
+    maxImageBytes % 4096 !== 0
+  )
     throw new CapacityRefusal("recovery_unavailable");
   const frames = maxImageBytes / 4096 + 16;
   const wal = 32 + frames * 4120;
   const shm = 32768 * Math.ceil((frames + 34) / 4096);
   // Round each file independently on every supported allocation granule (<=64 KiB).
   const physical = [maxImageBytes, wal, shm].reduce(
-    (sum, bytes) => sum + Math.ceil(bytes / GRANULE) * GRANULE, 0,
+    (sum, bytes) => sum + Math.ceil(bytes / GRANULE) * GRANULE,
+    0,
   );
   return { wal, shm, physical };
 }
@@ -59,9 +87,16 @@ function imageRelative(pluginId: string): string {
 /** Journaled migration images are closed byte identities; opening WAL-mode images creates sidecars. */
 export function closedRecoveryImages(main: Database): ReadonlySet<string> {
   const paths = new Set<string>();
-  if (main.query("SELECT name FROM sqlite_master WHERE type='table' AND name='plugin_database_journal'").get()) {
-    for (const row of main.query<{ plugin_id: string }, []>("SELECT plugin_id FROM plugin_database_journal").all())
-      for (const suffix of ["", ".stage", ".backup"]) paths.add(imageRelative(row.plugin_id) + suffix);
+  if (
+    main
+      .query("SELECT name FROM sqlite_master WHERE type='table' AND name='plugin_database_journal'")
+      .get()
+  ) {
+    for (const row of main
+      .query<{ plugin_id: string }, []>("SELECT plugin_id FROM plugin_database_journal")
+      .all())
+      for (const suffix of ["", ".stage", ".backup"])
+        paths.add(imageRelative(row.plugin_id) + suffix);
   }
   return paths;
 }
@@ -80,7 +115,10 @@ export function retainedRecoveryFiles(root: string): string[] {
       if (/[\\\u0000-\u001f\u007f]/.test(path)) throw new CapacityRefusal("backup_capacity");
       const absolute = join(root, path);
       const info = lstatSync(absolute);
-      if (info.isDirectory()) { visit(absolute, path); continue; }
+      if (info.isDirectory()) {
+        visit(absolute, path);
+        continue;
+      }
       if (!info.isFile() || info.nlink !== 1) throw new CapacityRefusal("backup_capacity");
       if (/\.(?:db|db\.stage|db\.backup)-(?:wal|shm|journal)$/.test(path)) continue;
       if (files.length === MAX_CHECKPOINT_FILES) throw new CapacityRefusal("backup_capacity");
@@ -92,7 +130,9 @@ export function retainedRecoveryFiles(root: string): string[] {
   };
   visit(root, "");
   // The authorization/grant snapshot must precede every immutable plugin payload snapshot.
-  return files.sort((a, b) => a === "manifold.db" ? -1 : b === "manifold.db" ? 1 : a.localeCompare(b));
+  return files.sort((a, b) =>
+    a === "manifold.db" ? -1 : b === "manifold.db" ? 1 : a.localeCompare(b),
+  );
 }
 
 function imageBytes(path: string, main?: Database): number {
@@ -103,7 +143,9 @@ function imageBytes(path: string, main?: Database): number {
     const bytes = Number(pages) * Number(size);
     if (!Number.isSafeInteger(bytes) || bytes < 0) throw new CapacityRefusal("backup_capacity");
     return bytes;
-  } finally { if (main === undefined) db.close(); }
+  } finally {
+    if (main === undefined) db.close();
+  }
 }
 
 function inventory(root: string, main: Database): Inventory {
@@ -117,24 +159,40 @@ function inventory(root: string, main: Database): Inventory {
       for (const suffix of ["-wal", "-shm", "-journal"])
         if (existsSync(`${absolute}${suffix}`)) throw new CapacityRefusal("recovery_unavailable");
     }
-    const bytes = !closed && /\.db(?:\.stage|\.backup)?$/.test(path)
-      ? imageBytes(absolute, path === "manifold.db" ? main : undefined) : before.size;
+    const bytes =
+      !closed && /\.db(?:\.stage|\.backup)?$/.test(path)
+        ? imageBytes(absolute, path === "manifold.db" ? main : undefined)
+        : before.size;
     const after = lstatSync(absolute);
-    if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size ||
-        before.mtimeMs !== after.mtimeMs) throw new CapacityRefusal("backup_capacity");
+    if (
+      before.dev !== after.dev ||
+      before.ino !== after.ino ||
+      before.size !== after.size ||
+      before.mtimeMs !== after.mtimeMs
+    )
+      throw new CapacityRefusal("backup_capacity");
     files.set(path, bytes);
   }
   if (!files.has("manifold.db")) throw new CapacityRefusal("recovery_unavailable");
   // Older recovery images predate this optional ledger. A partial schema is invalid.
-  const ledgers = main.query<{ name: string }, []>(
-    "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('plugin_recovery_allocations','plugin_recovery_stages')",
-  ).all();
+  const ledgers = main
+    .query<{ name: string }, []>(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('plugin_recovery_allocations','plugin_recovery_stages')",
+    )
+    .all();
   if (ledgers.length === 1) throw new CapacityRefusal("recovery_unavailable");
-  const allocations = ledgers.length === 0 ? [] :
-    main.query<Allocation, []>("SELECT * FROM plugin_recovery_allocations").all();
-  const stages = ledgers.length === 0 ? [] :
-    main.query<Allocation, []>("SELECT * FROM plugin_recovery_stages").all();
-  for (const [rows, suffix] of [[allocations, ""], [stages, ".stage"]] as const) {
+  const allocations =
+    ledgers.length === 0
+      ? []
+      : main.query<Allocation, []>("SELECT * FROM plugin_recovery_allocations").all();
+  const stages =
+    ledgers.length === 0
+      ? []
+      : main.query<Allocation, []>("SELECT * FROM plugin_recovery_stages").all();
+  for (const [rows, suffix] of [
+    [allocations, ""],
+    [stages, ".stage"],
+  ] as const) {
     for (const row of rows) {
       if (row.profile !== PROFILE) throw new CapacityRefusal("recovery_unavailable");
       boundedWalFamily(row.max_image_bytes);
@@ -154,12 +212,29 @@ export function recoveryArchiveBytes(files: readonly RecoveryInventoryFile[]): n
     capturedAt: "9999-12-31T23:59:59.999Z",
     files: files.map(({ path, bytes }) => ({ path, bytes, sha256: "f".repeat(64) })),
   };
-  return 8 + 4 + Buffer.byteLength(JSON.stringify(header)) + 8 + 32 + 12 + 16 +
-    files.reduce((sum, file) => sum + file.bytes, 0);
+  return (
+    8 +
+    4 +
+    Buffer.byteLength(JSON.stringify(header)) +
+    8 +
+    32 +
+    12 +
+    16 +
+    files.reduce((sum, file) => sum + file.bytes, 0)
+  );
 }
 
-interface FilesystemBudget { path: string; remaining: number; inodes: number }
-function physicalCapacity(root: string, state: Inventory, scratchDir: string, additionalBytes: number): void {
+interface FilesystemBudget {
+  path: string;
+  remaining: number;
+  inodes: number;
+}
+function physicalCapacity(
+  root: string,
+  state: Inventory,
+  scratchDir: string,
+  additionalBytes: number,
+): void {
   if (process.platform !== "linux") throw new CapacityRefusal("recovery_unavailable");
   const filesystems = new Map<number, FilesystemBudget>();
   const claim = (path: string, remaining: number, inodes: number): void => {
@@ -175,7 +250,10 @@ function physicalCapacity(root: string, state: Inventory, scratchDir: string, ad
     inodes += Math.max(0, missingComponents - 1);
     const previous = filesystems.get(stat.dev);
     if (previous === undefined) filesystems.set(stat.dev, { path: existing, remaining, inodes });
-    else { previous.remaining += remaining; previous.inodes += inodes; }
+    else {
+      previous.remaining += remaining;
+      previous.inodes += inodes;
+    }
   };
   claim(root, 0, 0);
   for (const path of state.files.keys()) claim(join(root, path), 0, 0);
@@ -191,7 +269,11 @@ function physicalCapacity(root: string, state: Inventory, scratchDir: string, ad
       allocated += info.blocks * 512;
       present++;
     }
-    claim(path, Math.max(0, boundedWalFamily(row.max_image_bytes).physical - allocated), 3 - present);
+    claim(
+      path,
+      Math.max(0, boundedWalFamily(row.max_image_bytes).physical - allocated),
+      3 - present,
+    );
   }
   for (const row of state.stages) {
     const path = join(root, imageRelative(row.plugin_id));
@@ -205,48 +287,74 @@ function physicalCapacity(root: string, state: Inventory, scratchDir: string, ad
     const fs = statfsSync(budget.path);
     if (!LOCAL_FILESYSTEMS.has(fs.type >>> 0) || fs.bsize <= 0 || fs.bsize > GRANULE)
       throw new CapacityRefusal("recovery_unavailable");
-    if (fs.bavail * fs.bsize < budget.remaining + STORAGE_HEADROOM_BYTES ||
-        fs.ffree < budget.inodes + 16) throw new CapacityRefusal("storage_capacity");
+    if (
+      fs.bavail * fs.bsize < budget.remaining + STORAGE_HEADROOM_BYTES ||
+      fs.ffree < budget.inodes + 16
+    )
+      throw new CapacityRefusal("storage_capacity");
   }
 }
 
 function refusal(error: unknown): DatabaseRecoveryAdmission {
   if (error instanceof CapacityRefusal) return { ok: false, reason: error.reason };
   if (sqliteBusy(error)) return { ok: false, reason: "database_busy" };
-  if (error instanceof Error && "code" in error &&
-      (error.code === "ENOSPC" || error.code === "EDQUOT"))
+  if (
+    error instanceof Error &&
+    "code" in error &&
+    (error.code === "ENOSPC" || error.code === "EDQUOT")
+  )
     return { ok: false, reason: "storage_capacity" };
   return { ok: false, reason: "backup_capacity" };
 }
 
 export function inspectRecoveryCapacity(
-  dataDir: string, main: Database,
-  options: { readonly additionalBytes?: number; readonly additionalFiles?: number; readonly scratchDir?: string } = {},
+  dataDir: string,
+  main: Database,
+  options: {
+    readonly additionalBytes?: number;
+    readonly additionalFiles?: number;
+    readonly scratchDir?: string;
+  } = {},
 ): DatabaseRecoveryAdmission {
   try {
     const state = inventory(resolve(dataDir), main);
     const entries = [...state.files].map(([path, bytes]) => ({ path, bytes }));
     const extraBytes = options.additionalBytes ?? 0;
     const extraFiles = options.additionalFiles ?? 0;
-    if (!Number.isSafeInteger(extraBytes) || extraBytes < 0 || !Number.isSafeInteger(extraFiles) || extraFiles < 0)
+    if (
+      !Number.isSafeInteger(extraBytes) ||
+      extraBytes < 0 ||
+      !Number.isSafeInteger(extraFiles) ||
+      extraFiles < 0
+    )
       throw new CapacityRefusal("backup_capacity");
     // Unknown future names conservatively reserve the maximum admissible encoded path metadata.
-    if (entries.length + extraFiles > MAX_CHECKPOINT_FILES ||
-        recoveryArchiveBytes(entries) + extraBytes + extraFiles * 25_000 + CHECKPOINT_SAFETY_BYTES > MAX_CHECKPOINT_BYTES)
+    if (
+      entries.length + extraFiles > MAX_CHECKPOINT_FILES ||
+      recoveryArchiveBytes(entries) + extraBytes + extraFiles * 25_000 + CHECKPOINT_SAFETY_BYTES >
+        MAX_CHECKPOINT_BYTES
+    )
       throw new CapacityRefusal("backup_capacity");
     physicalCapacity(resolve(dataDir), state, options.scratchDir ?? tmpdir(), extraBytes);
     return { ok: true };
-  } catch (error) { return refusal(error); }
+  } catch (error) {
+    return refusal(error);
+  }
 }
 
 /** Floor-only ledger: a missing/disabled image remains charged until durable purge. */
 export class RecoveryBudget {
-  constructor(readonly dataDir: string, private readonly main: Database) {}
+  constructor(
+    readonly dataDir: string,
+    private readonly main: Database,
+  ) {}
 
   allocation(pluginId: string): number | null {
-    return this.main.query<Allocation, [string]>(
-      "SELECT * FROM plugin_recovery_allocations WHERE plugin_id=?",
-    ).get(pluginId)?.max_image_bytes ?? null;
+    return (
+      this.main
+        .query<Allocation, [string]>("SELECT * FROM plugin_recovery_allocations WHERE plugin_id=?")
+        .get(pluginId)?.max_image_bytes ?? null
+    );
   }
 
   ensureAllocation(pluginId: string, maxImageBytes: number): DatabaseRecoveryAdmission {
@@ -257,16 +365,24 @@ export class RecoveryBudget {
       if (existing !== null && existing >= maxImageBytes) return { ok: true };
       // A nested savepoint is not durable allocation; never create a file before the outer commit.
       if (this.main.inTransaction) return { ok: false, reason: "database_busy" };
-      return withRecoveryGateSync(this.dataDir, () => this.main.transaction(() => {
-        this.main.query(
-          `INSERT INTO plugin_recovery_allocations(plugin_id,profile,max_image_bytes) VALUES (?,?,?)
+      return withRecoveryGateSync(this.dataDir, () =>
+        this.main
+          .transaction(() => {
+            this.main
+              .query(
+                `INSERT INTO plugin_recovery_allocations(plugin_id,profile,max_image_bytes) VALUES (?,?,?)
            ON CONFLICT(plugin_id) DO UPDATE SET max_image_bytes=MAX(max_image_bytes,excluded.max_image_bytes)`,
-        ).run(pluginId, PROFILE, maxImageBytes);
-        const result = inspectRecoveryCapacity(this.dataDir, this.main);
-        if (!result.ok) throw new CapacityRefusal(result.reason);
-        return result;
-      }).immediate());
-    } catch (error) { return refusal(error); }
+              )
+              .run(pluginId, PROFILE, maxImageBytes);
+            const result = inspectRecoveryCapacity(this.dataDir, this.main);
+            if (!result.ok) throw new CapacityRefusal(result.reason);
+            return result;
+          })
+          .immediate(),
+      );
+    } catch (error) {
+      return refusal(error);
+    }
   }
 
   admit(pluginId: string): DatabaseRecoveryAdmission {
@@ -278,24 +394,35 @@ export class RecoveryBudget {
     const allocation = this.ensureAllocation(pluginId, maxImageBytes);
     if (!allocation.ok) throw new Error(`${allocation.reason}: recovery allocation refused`);
     if (this.main.inTransaction) throw new CapacityRefusal("database_busy");
-    withRecoveryGateSync(this.dataDir, () => this.main.transaction(() => {
-      this.main.query(
-        "INSERT INTO plugin_recovery_stages(plugin_id,profile,max_image_bytes) VALUES (?,?,?)",
-      ).run(pluginId, PROFILE, maxImageBytes);
-      const result = inspectRecoveryCapacity(this.dataDir, this.main);
-      if (!result.ok) throw new CapacityRefusal(result.reason);
-    }).immediate());
+    withRecoveryGateSync(this.dataDir, () =>
+      this.main
+        .transaction(() => {
+          this.main
+            .query(
+              "INSERT INTO plugin_recovery_stages(plugin_id,profile,max_image_bytes) VALUES (?,?,?)",
+            )
+            .run(pluginId, PROFILE, maxImageBytes);
+          const result = inspectRecoveryCapacity(this.dataDir, this.main);
+          if (!result.ok) throw new CapacityRefusal(result.reason);
+        })
+        .immediate(),
+    );
   }
 
   releaseStageAfterCleanup(pluginId: string): void {
     const path = join(this.dataDir, imageRelative(pluginId));
     for (const image of [".stage", ".backup"])
       for (const suffix of ["", "-wal", "-shm", "-journal"])
-        if (existsSync(`${path}${image}${suffix}`)) throw new Error("recovery stage is still retained");
+        if (existsSync(`${path}${image}${suffix}`))
+          throw new Error("recovery stage is still retained");
     const directory = dirname(path);
     if (existsSync(directory)) {
       const fd = openSync(directory, "r");
-      try { fsyncSync(fd); } finally { closeSync(fd); }
+      try {
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
+      }
     }
     this.main.query("DELETE FROM plugin_recovery_stages WHERE plugin_id=?").run(pluginId);
   }

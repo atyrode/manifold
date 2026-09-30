@@ -44,7 +44,10 @@ import {
   type InstanceServicesDescription,
   type ServiceTunnelFrame,
 } from "@manifold/protocol";
-import { canonicalNativeTransferPolicy, MACHINE_NATIVE_TRANSFERS_PROTOCOL_VERSION } from "@manifold/protocol";
+import {
+  canonicalNativeTransferPolicy,
+  MACHINE_NATIVE_TRANSFERS_PROTOCOL_VERSION,
+} from "@manifold/protocol";
 import { NativeTransferService } from "./native-transfer-service.ts";
 import {
   canonicalJobJson,
@@ -1498,9 +1501,9 @@ export class JobService {
   }
   private platform(install: JobInstallation): keyof MachineHalf["artifacts"] {
     if (install.machine.transferPolicy) {
-      const platform = this.channels.get(install.machineId)?.owner.platforms.find(
-        (value) => value === "linux-x64" || value === "linux-arm64",
-      );
+      const platform = this.channels
+        .get(install.machineId)
+        ?.owner.platforms.find((value) => value === "linux-x64" || value === "linux-arm64");
       if (!platform) fail("installation_platform_unavailable");
       return platform as keyof MachineHalf["artifacts"];
     }
@@ -3464,7 +3467,8 @@ export class JobService {
     platforms?: readonly string[],
   ): Pick<Extract<JobCommand, { type: "install" }>, "artifact" | "toolArtifacts"> | null {
     if (machine.transferPolicy)
-      return createHash("sha256").update(canonicalNativeTransferPolicy(machine)).digest("hex") === sha256
+      return createHash("sha256").update(canonicalNativeTransferPolicy(machine)).digest("hex") ===
+        sha256
         ? {}
         : null;
     const candidates = Object.entries(machine.artifacts).filter(
@@ -3734,7 +3738,8 @@ export class JobService {
         return live?.proved ? live.owner : null;
       },
       artifactAvailable: (install, platform) =>
-        (install.machine.transferPolicy !== undefined || install.machine.artifacts[platform]?.sha256 === install.artifact) &&
+        (install.machine.transferPolicy !== undefined ||
+          install.machine.artifacts[platform]?.sha256 === install.artifact) &&
         this.artifactDelivery(
           install.pluginId,
           install.machine,
@@ -3912,18 +3917,26 @@ export class JobService {
     });
     this.signingKey = keys.privateKey;
     this.admissionPublicKey = keys.publicKey;
-    this.nativeTransfers = new NativeTransferService(store, auth, {
-      owner: (machineId) => {
-        const live = this.channels.get(machineId);
-        return live?.proved && (live.channel.protocolVersion ?? 0) >= MACHINE_NATIVE_TRANSFERS_PROTOCOL_VERSION
-          ? { owner: live.owner, channel: live.channel, seatNonce: live.nonce }
-          : null;
+    this.nativeTransfers = new NativeTransferService(
+      store,
+      auth,
+      {
+        owner: (machineId) => {
+          const live = this.channels.get(machineId);
+          return live?.proved &&
+            (live.channel.protocolVersion ?? 0) >= MACHINE_NATIVE_TRANSFERS_PROTOCOL_VERSION
+            ? { owner: live.owner, channel: live.channel, seatNonce: live.nonce }
+            : null;
+        },
+        installation: (machineId, pluginId) => this.jobs.installation(machineId, pluginId),
+        held: (pluginId) => this.heldPlugins.has(pluginId),
+        consent: (installation, ref, cap) =>
+          this.consentFor(installation, ref, cap)?.revision ?? null,
+        sign: (body) =>
+          sign(null, Buffer.from(canonicalJobJson(body)), this.signingKey).toString("base64"),
       },
-      installation: (machineId, pluginId) => this.jobs.installation(machineId, pluginId),
-      held: (pluginId) => this.heldPlugins.has(pluginId),
-      consent: (installation, ref, cap) => this.consentFor(installation, ref, cap)?.revision ?? null,
-      sign: (body) => sign(null, Buffer.from(canonicalJobJson(body)), this.signingKey).toString("base64"),
-    }, () => this.runtime.now());
+      () => this.runtime.now(),
+    );
     auth.onAuthorityChanged(() => {
       this.reconcileAuthority();
       this.accessChanged();
@@ -4251,14 +4264,18 @@ export class JobService {
     if (
       !this.store.getMachine(args.machineId) ||
       !(machine.transferPolicy
-        ? createHash("sha256").update(canonicalNativeTransferPolicy(machine)).digest("hex") === args.artifactSha256
+        ? createHash("sha256").update(canonicalNativeTransferPolicy(machine)).digest("hex") ===
+          args.artifactSha256
         : Object.values(machine.artifacts).some((a) => a.sha256 === args.artifactSha256))
     )
       fail();
     if (machine.transferPolicy) {
       const live = this.channels.get(args.machineId);
-      if (!live?.proved || !jobOwnerSupports(live.owner.protocolVersion, "nativeTransfers") ||
-          (live.channel.protocolVersion ?? 0) < MACHINE_NATIVE_TRANSFERS_PROTOCOL_VERSION)
+      if (
+        !live?.proved ||
+        !jobOwnerSupports(live.owner.protocolVersion, "nativeTransfers") ||
+        (live.channel.protocolVersion ?? 0) < MACHINE_NATIVE_TRANSFERS_PROTOCOL_VERSION
+      )
         fail("native_transfer_unsupported");
     }
     const declared = this.declaredMachine(args.pluginId);
@@ -4410,9 +4427,11 @@ export class JobService {
           : node.kind !== "job" && node.kind !== "output")
     )
       fail();
-    if (args.cap === "locations:create-child" &&
-        (node.kind !== "location" ||
-          !install.machine.transferPolicy?.locations[node.locationId]?.includes("create-child")))
+    if (
+      args.cap === "locations:create-child" &&
+      (node.kind !== "location" ||
+        !install.machine.transferPolicy?.locations[node.locationId]?.includes("create-child"))
+    )
       fail("native_transfer_consent_undeclared");
     const consentNode =
       node.kind === "job" || node.kind === "output"
@@ -5337,8 +5356,11 @@ export class JobService {
   private sendInstall(install: JobInstallation): void {
     const live = this.channels.get(install.machineId);
     if (!live?.proved) return;
-    if (install.machine.transferPolicy &&
-        (live.channel.protocolVersion ?? 0) < MACHINE_NATIVE_TRANSFERS_PROTOCOL_VERSION) return;
+    if (
+      install.machine.transferPolicy &&
+      (live.channel.protocolVersion ?? 0) < MACHINE_NATIVE_TRANSFERS_PROTOCOL_VERSION
+    )
+      return;
     const machine = jobOwnerMachine(live.owner.protocolVersion, install.machine);
     if (!machine) return;
     const enabled = install.enabled && !this.heldPlugins.has(install.pluginId);

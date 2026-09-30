@@ -512,7 +512,8 @@ describe("ServerStore plugin enablement", () => {
       ]);
       expect([...store.disabledPlugins()]).toEqual([]);
       expect(store.pluginAttribution().get("vendor.optional")).toEqual({
-        by: "administrator", at: 10,
+        by: "administrator",
+        at: 10,
       });
       store.setPluginEnabled("vendor.optional", false, "administrator", 20);
       store.initializePluginEnablement([{ id: "vendor.optional", defaultEnabled: true }]);

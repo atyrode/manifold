@@ -194,7 +194,11 @@ export const WEB_PLUGIN_DEFS: readonly WebPluginDef[] = [
   },
   { id: "core.index", sections: { index: IndexSection, "new-folder": NewFolderRow } },
   { id: "core.machines", sections: { machines: MachinesSection } },
-  { id: "core.files", panels: { library: FilesPanel, intake: FileIntakePanel }, sections: { library: FilesSection } },
+  {
+    id: "core.files",
+    panels: { library: FilesPanel, intake: FileIntakePanel },
+    sections: { library: FilesSection },
+  },
   filesImagesWeb,
   /*
     Durable profiles and their runs belong to Agents; Sessions remains the identity and

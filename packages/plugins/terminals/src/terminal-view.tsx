@@ -235,12 +235,20 @@ export function TerminalView({
   }, [active, readOnly, isController]);
 
   const filesEnabled = host.assembly.enabled("core.files");
-  const fileLifetime = useMemo(() => ({}), [host.client, host.principal.id, client, terminalId, filesEnabled, readOnly]);
+  const fileLifetime = useMemo(
+    () => ({}),
+    [host.client, host.principal.id, client, terminalId, filesEnabled, readOnly],
+  );
   const fileLifetimeRef = useRef<object | null>(fileLifetime);
   fileLifetimeRef.current = fileLifetime;
-  const selectionCurrent = fileSelection !== null && fileSelection.hostClient === host.client &&
-    fileSelection.client === client && fileSelection.principal === host.principal.id &&
-    fileSelection.terminalId === terminalId && filesEnabled && !readOnly;
+  const selectionCurrent =
+    fileSelection !== null &&
+    fileSelection.hostClient === host.client &&
+    fileSelection.client === client &&
+    fileSelection.principal === host.principal.id &&
+    fileSelection.terminalId === terminalId &&
+    filesEnabled &&
+    !readOnly;
   useLayoutEffect(() => {
     if (selectionCurrent) fileReviewRef.current?.focus();
   }, [selectionCurrent, fileSelection]);
@@ -255,7 +263,9 @@ export function TerminalView({
   }, [fileLifetime]);
   fileOfferRef.current = (file) => {
     if (!filesEnabled || readOnly) {
-      notifyRef.current("Save and delivery require the optional Files plugin and a live terminal view.");
+      notifyRef.current(
+        "Save and delivery require the optional Files plugin and a live terminal view.",
+      );
       return;
     }
     if (fileOfferedRef.current || filePendingRef.current) {
@@ -263,7 +273,13 @@ export function TerminalView({
       return;
     }
     fileOfferedRef.current = true;
-    setFileSelection({ file, hostClient: host.client, client, principal: host.principal.id, terminalId });
+    setFileSelection({
+      file,
+      hostClient: host.client,
+      client,
+      principal: host.principal.id,
+      terminalId,
+    });
   };
   const selectClipboardFile = async (): Promise<void> => {
     if (!filesEnabled || readOnly || fileSelection || filePendingRef.current) return;
@@ -275,15 +291,20 @@ export function TerminalView({
       if (lifetime !== fileLifetimeRef.current) return;
       if (items.length !== 1) throw new Error("Select one clipboard item at a time.");
       const item = items[0]!;
-      const type = item.types.find((value) => value.startsWith("image/")) ??
-        item.types.find((value) => value === "text/plain") ?? item.types[0];
+      const type =
+        item.types.find((value) => value.startsWith("image/")) ??
+        item.types.find((value) => value === "text/plain") ??
+        item.types[0];
       if (!type) throw new Error("No clipboard file representation is available.");
       const blob = await item.getType(type);
       if (lifetime !== fileLifetimeRef.current) return;
       filePendingRef.current = false;
       fileOfferRef.current(new File([blob], "clipboard-file", { type }));
     } catch {
-      if (lifetime === fileLifetimeRef.current) notifyRef.current("Clipboard file selection unavailable. Allow clipboard access and select a single item, or drop a file. Nothing was saved.");
+      if (lifetime === fileLifetimeRef.current)
+        notifyRef.current(
+          "Clipboard file selection unavailable. Allow clipboard access and select a single item, or drop a file. Nothing was saved.",
+        );
     } finally {
       if (lifetime === fileLifetimeRef.current) {
         filePendingRef.current = false;
@@ -432,7 +453,9 @@ export function TerminalView({
     };
     const clipboard = installTerminalClipboard(terminal, container, {
       canWrite,
-      send: (data) => { inputRef.current?.(data); },
+      send: (data) => {
+        inputRef.current?.(data);
+      },
       notice: (message) => notifyRef.current(message, { key: `terminal-clipboard:${terminalId}` }),
       offerFile: (file) => fileOfferRef.current(file),
       offerCopy: (request) => {
@@ -1190,11 +1213,15 @@ export function TerminalView({
             <button
               type="button"
               className="node-titlebar__ctl terminal-file-save"
-              disabled={!filesEnabled || readOnly || fileSelection !== null || selectingClipboardFile}
+              disabled={
+                !filesEnabled || readOnly || fileSelection !== null || selectingClipboardFile
+              }
               aria-label="Select clipboard file for explicit Save"
               title="Save clipboard file separately; native MIME paste stays one-use"
               onPointerDown={(event) => event.stopPropagation()}
-              onClick={() => { void selectClipboardFile(); }}
+              onClick={() => {
+                void selectClipboardFile();
+              }}
             >
               Save file…
             </button>
@@ -1266,14 +1293,32 @@ export function TerminalView({
         className={`terminal-idle-veil${active ? "" : " terminal-idle-veil--on"}`}
         aria-hidden="true"
       />
-      {selectionCurrent && fileSelection ? <Cover className="terminal-file-intake" role="dialog" aria-label="Terminal file Save and delivery"
-        onKeyDown={(event) => event.stopPropagation()}>
-        <div className="mf-vocab" tabIndex={-1} ref={fileReviewRef}>
-          <TerminalFileIntake host={host} file={fileSelection.file} suggestedMachineId={machine?.id}
-            send={(text) => active && fileLifetimeRef.current === fileLifetime && selectionCurrent && inputRef.current?.(text) === true}
-            onClose={() => { fileOfferedRef.current = false; setFileSelection(null); }} />
-        </div>
-      </Cover> : null}
+      {selectionCurrent && fileSelection ? (
+        <Cover
+          className="terminal-file-intake"
+          role="dialog"
+          aria-label="Terminal file Save and delivery"
+          onKeyDown={(event) => event.stopPropagation()}
+        >
+          <div className="mf-vocab" tabIndex={-1} ref={fileReviewRef}>
+            <TerminalFileIntake
+              host={host}
+              file={fileSelection.file}
+              suggestedMachineId={machine?.id}
+              send={(text) =>
+                active &&
+                fileLifetimeRef.current === fileLifetime &&
+                selectionCurrent &&
+                inputRef.current?.(text) === true
+              }
+              onClose={() => {
+                fileOfferedRef.current = false;
+                setFileSelection(null);
+              }}
+            />
+          </div>
+        </Cover>
+      ) : null}
       {clipboardCopy === null ? null : (
         <Cover
           className="terminal-clipboard-request"

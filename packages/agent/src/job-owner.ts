@@ -335,7 +335,7 @@ export class MachineJobOwner {
         this.resources.refresh({ tools: [], anchors: [anchor], services: [] });
         return this.resources.snapshot().anchors[anchor];
       },
-      seat: () => this.sink ? this.seatController.signal : null,
+      seat: () => (this.sink ? this.seatController.signal : null),
       seatNonce: () => this.nativeTransferSeatNonce,
       draining: () => this.draining,
       assertRootAvailable: (fd) => {
@@ -2265,10 +2265,15 @@ export class MachineJobOwner {
       throw new Error("native_transfer_outcome_unknown");
     this.options.journal.append({ kind: "install", command });
     if (command.action === "purge") this.installs.delete(key);
-    else this.installs.set(key, {
-      command: normalized, enabled: command.action !== "disable", artifact: null,
-      tools: new Map(), toolFailures: new Map(), runtimeAliases: new Map(),
-    });
+    else
+      this.installs.set(key, {
+        command: normalized,
+        enabled: command.action !== "disable",
+        artifact: null,
+        tools: new Map(),
+        toolFailures: new Map(),
+        runtimeAliases: new Map(),
+      });
     this.publishInstallationChange(command);
   }
 
@@ -3577,7 +3582,8 @@ export class MachineJobOwner {
     // Admission and the pre-spawn check refresh their required resource fingerprints.
     const inventory = installation ? this.resources.snapshot() : undefined;
     return {
-      artifactAvailable: installation?.command.machine.transferPolicy !== undefined ||
+      artifactAvailable:
+        installation?.command.machine.transferPolicy !== undefined ||
         (installation?.artifact !== null && installation?.artifact !== undefined),
       tools: installation
         ? [

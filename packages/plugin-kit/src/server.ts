@@ -551,7 +551,10 @@ export interface GuestReferenceProbeCtx {
   now(): number;
 }
 
-export interface GuestByteCarrierCtx extends Omit<ByteCarrierContext, "database" | "nativeTransfers"> {
+export interface GuestByteCarrierCtx extends Omit<
+  ByteCarrierContext,
+  "database" | "nativeTransfers"
+> {
   readonly database?: GuestDatabase;
   readonly nativeTransfers: Pick<GuestNativeTransfers, "readChunk" | "status">;
 }
@@ -560,7 +563,11 @@ export type GuestByteCarrierHandler =
   | {
       readonly direction: "incoming";
       authorize(ctx: GuestByteCarrierCtx, request: ByteCarrierRequest): Promise<ByteAdmission>;
-      write(ctx: GuestByteCarrierCtx, request: ByteCarrierRequest, data: Uint8Array): Promise<ByteWriteReceipt>;
+      write(
+        ctx: GuestByteCarrierCtx,
+        request: ByteCarrierRequest,
+        data: Uint8Array,
+      ): Promise<ByteWriteReceipt>;
     }
   | {
       readonly direction: "outgoing";
@@ -1154,7 +1161,9 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       args: readonly unknown[],
     ): Promise<unknown> => {
       if (outcomeUnknown)
-        throw new PluginDatabaseError("outcome_unknown: reopen and reconcile durable operation identity");
+        throw new PluginDatabaseError(
+          "outcome_unknown: reopen and reconcile durable operation identity",
+        );
       try {
         return await call(method, args);
       } catch (error) {
@@ -1244,8 +1253,11 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
   });
 
   const nativeTransfersFor = (call: Call): GuestNativeTransfers => {
-    const checked = <T>(schema: z.ZodType<T>, value: unknown,
-      reason: "transfer_invalid_request" | "transfer_reply_invalid" = "transfer_invalid_request"): T => {
+    const checked = <T>(
+      schema: z.ZodType<T>,
+      value: unknown,
+      reason: "transfer_invalid_request" | "transfer_reply_invalid" = "transfer_invalid_request",
+    ): T => {
       const result = schema.safeParse(value);
       if (!result.success) throw new NativeTransferError(reason);
       return result.data;
@@ -1254,46 +1266,92 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
     const ask = async (method: IsolateCtxMethod, args: unknown): Promise<unknown> => {
       if (pending >= 4) throw new NativeTransferError("transfer_backpressure");
       pending++;
-      try { return await call(method, [args]); }
-      catch (error) {
-        const reason = error instanceof HostCallError ? NativeTransferReasonSchema.safeParse(error.detail) : null;
-        throw new NativeTransferError(reason?.success ? reason.data : "native_transfer_unavailable");
+      try {
+        return await call(method, [args]);
+      } catch (error) {
+        const reason =
+          error instanceof HostCallError
+            ? NativeTransferReasonSchema.safeParse(error.detail)
+            : null;
+        throw new NativeTransferError(
+          reason?.success ? reason.data : "native_transfer_unavailable",
+        );
+      } finally {
+        pending--;
       }
-      finally { pending--; }
     };
     return {
-      describe: async (args) => checked(NativeTransferDescriptionSchema,
-        await ask("nativeTransfers.describe", checked(NativeTransferDescribeArgsSchema, args)), "transfer_reply_invalid",
-      ),
-      beginPut: async (args) => checked(NativeTransferStatusSchema,
-        await ask("nativeTransfers.beginPut", checked(NativeTransferBeginPutArgsSchema, args)), "transfer_reply_invalid",
-      ),
-      beginRead: async (args) => checked(NativeTransferStatusSchema,
-        await ask("nativeTransfers.beginRead", checked(NativeTransferBeginReadArgsSchema, args)), "transfer_reply_invalid",
-      ),
+      describe: async (args) =>
+        checked(
+          NativeTransferDescriptionSchema,
+          await ask("nativeTransfers.describe", checked(NativeTransferDescribeArgsSchema, args)),
+          "transfer_reply_invalid",
+        ),
+      beginPut: async (args) =>
+        checked(
+          NativeTransferStatusSchema,
+          await ask("nativeTransfers.beginPut", checked(NativeTransferBeginPutArgsSchema, args)),
+          "transfer_reply_invalid",
+        ),
+      beginRead: async (args) =>
+        checked(
+          NativeTransferStatusSchema,
+          await ask("nativeTransfers.beginRead", checked(NativeTransferBeginReadArgsSchema, args)),
+          "transfer_reply_invalid",
+        ),
       putChunk: async (args) => {
         const parsed = checked(NativeTransferPutChunkArgsSchema, args);
-        return checked(NativeTransferStatusSchema, await ask("nativeTransfers.putChunk", {
-          ...parsed,
-          data: Buffer.from(parsed.data.buffer, parsed.data.byteOffset, parsed.data.byteLength).toString("base64"),
-        }), "transfer_reply_invalid");
+        return checked(
+          NativeTransferStatusSchema,
+          await ask("nativeTransfers.putChunk", {
+            ...parsed,
+            data: Buffer.from(
+              parsed.data.buffer,
+              parsed.data.byteOffset,
+              parsed.data.byteLength,
+            ).toString("base64"),
+          }),
+          "transfer_reply_invalid",
+        );
       },
-      commitPut: async (args) => checked(NativeTransferStatusSchema,
-        await ask("nativeTransfers.commitPut", checked(NativeTransferContinuationArgsSchema, args)), "transfer_reply_invalid",
-      ),
-      cancel: async (args) => checked(NativeTransferStatusSchema,
-        await ask("nativeTransfers.cancel", checked(NativeTransferContinuationArgsSchema, args)), "transfer_reply_invalid",
-      ),
-      status: async (args) => checked(NativeTransferStatusSchema,
-        await ask("nativeTransfers.status", checked(NativeTransferContinuationArgsSchema, args)), "transfer_reply_invalid",
-      ),
-      receipt: async (args) => checked(NativeTransferReceiptViewSchema,
-        await ask("nativeTransfers.receipt", checked(NativeTransferContinuationArgsSchema, args)), "transfer_reply_invalid",
-      ),
+      commitPut: async (args) =>
+        checked(
+          NativeTransferStatusSchema,
+          await ask(
+            "nativeTransfers.commitPut",
+            checked(NativeTransferContinuationArgsSchema, args),
+          ),
+          "transfer_reply_invalid",
+        ),
+      cancel: async (args) =>
+        checked(
+          NativeTransferStatusSchema,
+          await ask("nativeTransfers.cancel", checked(NativeTransferContinuationArgsSchema, args)),
+          "transfer_reply_invalid",
+        ),
+      status: async (args) =>
+        checked(
+          NativeTransferStatusSchema,
+          await ask("nativeTransfers.status", checked(NativeTransferContinuationArgsSchema, args)),
+          "transfer_reply_invalid",
+        ),
+      receipt: async (args) =>
+        checked(
+          NativeTransferReceiptViewSchema,
+          await ask("nativeTransfers.receipt", checked(NativeTransferContinuationArgsSchema, args)),
+          "transfer_reply_invalid",
+        ),
       readChunk: async (args) => {
-        const result = checked(NativeTransferReadChunkWireResultSchema,
-          await ask("nativeTransfers.readChunk", checked(NativeTransferReadChunkArgsSchema, args)), "transfer_reply_invalid");
-        return checked(NativeTransferReadChunkResultSchema, { ...result, data: Buffer.from(result.data, "base64") }, "transfer_reply_invalid");
+        const result = checked(
+          NativeTransferReadChunkWireResultSchema,
+          await ask("nativeTransfers.readChunk", checked(NativeTransferReadChunkArgsSchema, args)),
+          "transfer_reply_invalid",
+        );
+        return checked(
+          NativeTransferReadChunkResultSchema,
+          { ...result, data: Buffer.from(result.data, "base64") },
+          "transfer_reply_invalid",
+        );
       },
     };
   };
@@ -1371,19 +1429,25 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
         attach: async (input) =>
           ReferenceAttachmentResultSchema.parse(
             await callReference(
-              call, "references.attach", ReferenceAttachmentRequestSchema.parse(input),
+              call,
+              "references.attach",
+              ReferenceAttachmentRequestSchema.parse(input),
             ),
           ),
         prepare: async (input) =>
           ReferencePreparationSchema.parse(
             await callReference(
-              call, "references.prepare", ReferencePrepareRequestSchema.parse(input),
+              call,
+              "references.prepare",
+              ReferencePrepareRequestSchema.parse(input),
             ),
           ),
         publish: async (input) =>
           PublishedReferenceSchema.parse(
             await callReference(
-              call, "references.publish", ReferencePublishRequestSchema.parse(input),
+              call,
+              "references.publish",
+              ReferencePublishRequestSchema.parse(input),
             ),
           ),
         abort: async (input) =>
@@ -1393,25 +1457,33 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
         requirePublished: async (input) =>
           PublishedReferenceIdentitySchema.parse(
             await callReference(
-              call, "references.requirePublished", ReferenceRequirePublishedRequestSchema.parse(input),
+              call,
+              "references.requirePublished",
+              ReferenceRequirePublishedRequestSchema.parse(input),
             ),
           ),
         unpublish: async (input) =>
           ReferenceTerminalReceiptSchema.parse(
             await callReference(
-              call, "references.unpublish", ReferenceUnpublishRequestSchema.parse(input),
+              call,
+              "references.unpublish",
+              ReferenceUnpublishRequestSchema.parse(input),
             ),
           ),
         receipt: async (input) =>
           ReferenceTerminalReceiptSchema.parse(
             await callReference(
-              call, "references.receipt", ReferenceReceiptRequestSchema.parse(input),
+              call,
+              "references.receipt",
+              ReferenceReceiptRequestSchema.parse(input),
             ),
           ),
         readable: async (input) =>
           ReferenceReadFilterResultSchema.parse(
             await callReference(
-              call, "references.readable", ReferenceReadFilterRequestSchema.parse(input),
+              call,
+              "references.readable",
+              ReferenceReadFilterRequestSchema.parse(input),
             ),
           ),
         grant: async (input) =>
@@ -1420,12 +1492,18 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
           ),
         revoke: async (input) =>
           RestrictedGrantResultSchema.parse(
-            await callReference(call, "references.revoke", ReferenceRevokeRequestSchema.parse(input)),
+            await callReference(
+              call,
+              "references.revoke",
+              ReferenceRevokeRequestSchema.parse(input),
+            ),
           ),
         audience: async (input) =>
           RestrictedAudiencePageSchema.parse(
             await callReference(
-              call, "references.audience", ReferenceAudienceRequestSchema.parse(input),
+              call,
+              "references.audience",
+              ReferenceAudienceRequestSchema.parse(input),
             ),
           ),
       },
@@ -1737,18 +1815,24 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       )
         throw new Error("reference owner has no readiness probe");
       byteCarriers = IsolateByteDeclarationsSchema.parse(
-        Object.entries(def.byteCarriers ?? {}).map(([id, handler]) => ({ id, direction: handler.direction })),
+        Object.entries(def.byteCarriers ?? {}).map(([id, handler]) => ({
+          id,
+          direction: handler.direction,
+        })),
       );
       const declarations = frame.manifest.contributes?.byteCarriers ?? [];
       if (
         declarations.length !== byteCarriers.length ||
         declarations.some((declaration) => {
           const handler = def.byteCarriers?.[declaration.id];
-          return handler === undefined || handler.direction !== declaration.direction ||
+          return (
+            handler === undefined ||
+            handler.direction !== declaration.direction ||
             typeof handler.authorize !== "function" ||
             (handler.direction === "incoming"
               ? typeof handler.write !== "function"
-              : typeof handler.read !== "function");
+              : typeof handler.read !== "function")
+          );
         })
       )
         throw new Error("byte carrier implementation does not match its declaration");
@@ -1953,9 +2037,11 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
         requirePublished: async (ref) => {
           assertCurrent();
           try {
-            const result = PublishedReferenceIdentitySchema.parse(await requests.call(
-              "references.requirePublished", [ReferenceRequirePublishedRequestSchema.parse({ ref, access: "read" })],
-            ));
+            const result = PublishedReferenceIdentitySchema.parse(
+              await requests.call("references.requirePublished", [
+                ReferenceRequirePublishedRequestSchema.parse({ ref, access: "read" }),
+              ]),
+            );
             assertCurrent();
             return result;
           } catch {
@@ -1966,12 +2052,16 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       let reply: IsolateByteReply;
       switch (frame.request.method) {
         case "authorize":
-          reply = { method: "authorize", result: await handler.authorize(ctx, frame.request.input) };
+          reply = {
+            method: "authorize",
+            result: await handler.authorize(ctx, frame.request.input),
+          };
           break;
         case "write": {
           if (handler.direction !== "incoming") throw new ByteTransferError("unavailable");
           const data = Buffer.from(frame.request.data, "base64");
-          if (data.byteLength !== frame.request.input.length) throw new ByteTransferError("invalid");
+          if (data.byteLength !== frame.request.input.length)
+            throw new ByteTransferError("invalid");
           writing = true;
           reply = { method: "write", result: await handler.write(ctx, frame.request.input, data) };
           break;
@@ -1980,8 +2070,10 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
           if (handler.direction !== "outgoing") throw new ByteTransferError("unavailable");
           const result = await handler.read(ctx, frame.request.input);
           assertCurrent();
-          if (!(result.data instanceof Uint8Array) ||
-              result.data.byteLength > Math.min(MAX_BYTE_CHUNK_BYTES, frame.request.input.length))
+          if (
+            !(result.data instanceof Uint8Array) ||
+            result.data.byteLength > Math.min(MAX_BYTE_CHUNK_BYTES, frame.request.input.length)
+          )
             throw new ByteTransferError("invalid");
           reply = {
             method: "read",
@@ -1989,7 +2081,11 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
               offset: result.offset,
               eof: result.eof,
               leaseMs: result.leaseMs,
-              data: Buffer.from(result.data.buffer, result.data.byteOffset, result.data.byteLength).toString("base64"),
+              data: Buffer.from(
+                result.data.buffer,
+                result.data.byteOffset,
+                result.data.byteLength,
+              ).toString("base64"),
             },
           };
           break;
@@ -2005,13 +2101,18 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       post({ t: "byte_answered", id: frame.id, outcome: { ok: true, reply: result } });
     } catch (error) {
       const reason = ByteRefusalSchema.safeParse(
-        error instanceof ByteTransferError || error instanceof NativeTransferError ? error.reason : null,
+        error instanceof ByteTransferError || error instanceof NativeTransferError
+          ? error.reason
+          : null,
       );
       requests.close();
       post({
         t: "byte_answered",
         id: frame.id,
-        outcome: { ok: false, reason: reason.success ? reason.data : writing ? "outcome_unknown" : "unavailable" },
+        outcome: {
+          ok: false,
+          reason: reason.success ? reason.data : writing ? "outcome_unknown" : "unavailable",
+        },
       });
     } finally {
       open = false;
@@ -2022,7 +2123,10 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
   };
 
   const onReferenceData = async (
-    frame: Extract<IsolateHostFrame, { t: "probe_ready" | "reclaim_references" | "reconcile_native_transfers" }>,
+    frame: Extract<
+      IsolateHostFrame,
+      { t: "probe_ready" | "reclaim_references" | "reconcile_native_transfers" }
+    >,
   ): Promise<void> => {
     const requests = callsFor(frame.id);
     try {
@@ -2061,8 +2165,12 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
     } catch (error) {
       requests.close();
       post({
-        t: frame.t === "probe_ready" ? "probed_ready" :
-          frame.t === "reconcile_native_transfers" ? "reconciled_native_transfers" : "reclaimed_references",
+        t:
+          frame.t === "probe_ready"
+            ? "probed_ready"
+            : frame.t === "reconcile_native_transfers"
+              ? "reconciled_native_transfers"
+              : "reclaimed_references",
         id: frame.id,
         outcome: { ok: false, error: errorText(error).slice(0, 2048) },
       });
@@ -2201,7 +2309,8 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
         producerClosures.get(host.id)?.();
         return;
       case "shutdown":
-        for (const controller of byteRequests.values()) controller.abort(new ByteTransferError("unavailable"));
+        for (const controller of byteRequests.values())
+          controller.abort(new ByteTransferError("unavailable"));
         byteRequests.clear();
         for (const notify of producerClosures.values()) notify();
         producerClosures.clear();

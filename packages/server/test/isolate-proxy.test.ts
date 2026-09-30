@@ -389,9 +389,12 @@ describe("serveCtxCall", () => {
         await expect(serveCtxCall(method, [{}], { kind: "probe", ctx: data })).rejects.toThrow(
           `slice_unavailable: ${method}`,
         );
-        await expect(serveCtxCall(method, [{}], {
-          kind: "hook", ctx: { ...data, pluginId: manifest.id, emit: () => {} },
-        })).rejects.toThrow(`slice_unavailable: ${method}`);
+        await expect(
+          serveCtxCall(method, [{}], {
+            kind: "hook",
+            ctx: { ...data, pluginId: manifest.id, emit: () => {} },
+          }),
+        ).rejects.toThrow(`slice_unavailable: ${method}`);
       } finally {
         store.close();
       }
@@ -468,7 +471,10 @@ describe("serveCtxCall", () => {
       const seen: (readonly unknown[] | undefined)[] = [];
       const database = {
         pluginId: manifest.id,
-        admitRecovery: async () => ({ ok: false as const, reason: "recovery_unavailable" as const }),
+        admitRecovery: async () => ({
+          ok: false as const,
+          reason: "recovery_unavailable" as const,
+        }),
         query: async (_sql: string, params?: readonly unknown[]) => {
           seen.push(params);
           return [{ integer: 9223372036854775807n, bytes: new Uint8Array([0, 127, 255]) }];
@@ -736,8 +742,11 @@ describe("serveCtxCall", () => {
     const dataDir = mkdtempSync(join(tmpdir(), "manifold-proxy-db-"));
     const store = new ServerStore(openDatabase(join(dataDir, "manifold.db")));
     const database = openPluginDatabase({
-      dataDir, pluginId: manifest.id, maxBytes: 4 * 1024 * 1024,
-      recovery: { profile: "bounded-wal-v1" }, recoveryBudget: new RecoveryBudget(dataDir, store.db),
+      dataDir,
+      pluginId: manifest.id,
+      maxBytes: 4 * 1024 * 1024,
+      recovery: { profile: "bounded-wal-v1" },
+      recoveryBudget: new RecoveryBudget(dataDir, store.db),
     });
     const storage = store.pluginStorage(manifest.id);
     /*
@@ -753,9 +762,13 @@ describe("serveCtxCall", () => {
     const seen: unknown[] = [];
     let receive: (frame: unknown) => void = () => {};
     const completed = Promise.withResolvers<Extract<IsolateChildFrame, { t: "hooked" }>>();
-    const dbManifest = { ...manifest, database: {
-      maxBytes: 4 * 1024 * 1024, recovery: { profile: "bounded-wal-v1" as const },
-    } };
+    const dbManifest = {
+      ...manifest,
+      database: {
+        maxBytes: 4 * 1024 * 1024,
+        recovery: { profile: "bounded-wal-v1" as const },
+      },
+    };
     attachServerGuest(
       {
         manifest: dbManifest,
@@ -820,8 +833,12 @@ describe("serveCtxCall", () => {
       receive({ t: "hook", id: "rows", hook: "onEnable" });
       expect(await completed.promise).toMatchObject({ ok: true });
       expect(seen).toEqual([
-        { ok: true }, 1, [{ body: "first" }], "PluginDatabaseError",
-        { ok: false, reason: "backup_capacity" }, [{ body: "first" }],
+        { ok: true },
+        1,
+        [{ body: "first" }],
+        "PluginDatabaseError",
+        { ok: false, reason: "backup_capacity" },
+        [{ body: "first" }],
       ]);
     } finally {
       database.close();

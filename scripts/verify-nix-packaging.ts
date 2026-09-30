@@ -116,7 +116,9 @@ const deps = await build("bun-deps");
 if ((await build("bun-deps", true)) !== deps) {
   throw new Error("Nix dependency rebuild returned a different output path");
 }
-console.log(`Nix packaging: native dependency NAR ${await command([nix, "hash", "path", deps], 30_000)}`);
+console.log(
+  `Nix packaging: native dependency NAR ${await command([nix, "hash", "path", deps], 30_000)}`,
+);
 const agentOutput = await build("manifold-agent");
 const serverOutput = await build("manifold-server");
 const clientOutput = await build("manifold");
@@ -150,7 +152,14 @@ const SET_ENABLED = `${ENGINE_PLUGINS}.setEnabled`;
 const WORKER_ROUTE = `/api/plugins/${MACHINES}/web.worker.js`;
 const FILES = "core.files";
 const COLLECTION = { kind: "plugin", pluginId: FILES };
-const FILE_DOORS = ["beginUpload", "completeUpload", "inspectUpload", "inspect", "openRead", "list"];
+const FILE_DOORS = [
+  "beginUpload",
+  "completeUpload",
+  "inspectUpload",
+  "inspect",
+  "openRead",
+  "list",
+];
 /** Above the isolate dispatch deadline (10s): a hung child answers `unavailable`, not a timeout. */
 const REQUEST_DEADLINE_MS = 15_000;
 /** Beyond any installed web asset or plugin member; nothing a hub answers buffers unbounded. */
@@ -187,53 +196,91 @@ async function coldSandbox(): Promise<readonly string[]> {
   writeFileSync(join(root, "bunfig.toml"), '[install]\nauto = "disable"\n', { mode: 0o600 });
   if (process.platform === "darwin") {
     const profile = join(root, "cold.sb");
-    writeFileSync(profile, [
-      "(version 1)",
-      "(allow default)",
-      `(deny file-read* (subpath ${JSON.stringify(realpathSync(repoRoot))})`,
-      `  (subpath ${JSON.stringify(deps)}) (subpath "/build")`,
-      '  (regex #"(^|/)node_modules(/|$)") (regex #"^/nix/store/[^/]+-source(/|$)"))',
-      "(deny network-outbound)",
-      '(allow network-outbound (remote ip "localhost:*"))',
-    ].join("\n"), { mode: 0o600 });
+    writeFileSync(
+      profile,
+      [
+        "(version 1)",
+        "(allow default)",
+        `(deny file-read* (subpath ${JSON.stringify(realpathSync(repoRoot))})`,
+        `  (subpath ${JSON.stringify(deps)}) (subpath "/build")`,
+        '  (regex #"(^|/)node_modules(/|$)") (regex #"^/nix/store/[^/]+-source(/|$)"))',
+        "(deny network-outbound)",
+        '(allow network-outbound (remote ip "localhost:*"))',
+      ].join("\n"),
+      { mode: 0o600 },
+    );
     return ["/usr/bin/sandbox-exec", "-f", profile];
   }
-  const bwrap = await command([
-    nix!, "build", "--no-link", "--print-out-paths", "--inputs-from", ".",
-    `nixpkgs#legacyPackages.${system}.bubblewrap`,
-  ], 10 * 60_000);
+  const bwrap = await command(
+    [
+      nix!,
+      "build",
+      "--no-link",
+      "--print-out-paths",
+      "--inputs-from",
+      ".",
+      `nixpkgs#legacyPackages.${system}.bubblewrap`,
+    ],
+    10 * 60_000,
+  );
   if (!isAbsolute(bwrap) || bwrap.includes("\n"))
     throw new Error("Nix did not report one bubblewrap output");
-  const closure = (await command([
-    nix!, "path-info", "--recursive", agentOutput, serverOutput, clientOutput, bunOutput,
-  ], 30_000)).split("\n");
-  if (closure.some((path) => !/^\/nix\/store\/[^/]+$/.test(path) ||
-    path === deps || path.endsWith("-source")))
+  const closure = (
+    await command(
+      [nix!, "path-info", "--recursive", agentOutput, serverOutput, clientOutput, bunOutput],
+      30_000,
+    )
+  ).split("\n");
+  if (
+    closure.some(
+      (path) => !/^\/nix\/store\/[^/]+$/.test(path) || path === deps || path.endsWith("-source"),
+    )
+  )
     throw new Error("Packaged runtime closure includes a source or dependency fallback");
   return [
-    join(bwrap, "bin/bwrap"), "--die-with-parent", "--new-session",
-    "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
+    join(bwrap, "bin/bwrap"),
+    "--die-with-parent",
+    "--new-session",
+    "--proc",
+    "/proc",
+    "--dev",
+    "/dev",
+    "--tmpfs",
+    "/tmp",
     ...closure.flatMap((path) => ["--ro-bind", path, path]),
-    "--bind", root, root, "--chdir", cwd, "--",
+    "--bind",
+    root,
+    root,
+    "--chdir",
+    cwd,
+    "--",
   ];
 }
 
 /** The same denial must hold for the interpreter used by packaged hardened children. */
 async function sourceFallbackAbsent(): Promise<void> {
-  const inputs = [
-    join(repoRoot, "package.json"),
-    join(deps, "node_modules/sharp/package.json"),
-  ];
+  const inputs = [join(repoRoot, "package.json"), join(deps, "node_modules/sharp/package.json")];
   if (inputs.some((path) => !existsSync(path)))
     throw new Error("Cold package denial probe does not name actual build inputs");
-  await command([...sandbox, join(bunOutput, "bin/bun"), "--no-install", "--eval", `
+  await command(
+    [
+      ...sandbox,
+      join(bunOutput, "bin/bun"),
+      "--no-install",
+      "--eval",
+      `
     const { readFileSync } = require("node:fs");
     for (const path of ${JSON.stringify(inputs)}) {
       let readable = false;
       try { readFileSync(path); readable = true; } catch {}
       if (readable) throw new Error("Cold package can read a source/dependency fallback");
     }
-  `], 30_000, cwd, env);
+  `,
+    ],
+    30_000,
+    cwd,
+    env,
+  );
 }
 
 /** One disposable loopback hub from the package, and the isolate children its own log named. */
@@ -515,7 +562,8 @@ async function exchange(
   const target = new URL(pathname, origin);
   if (target.origin !== origin)
     throw new Error(`Packaged server path ${pathname} leaves its loopback origin`);
-  const body = options.bytes ??
+  const body =
+    options.bytes ??
     (options.json === undefined ? undefined : Buffer.from(JSON.stringify(options.json)));
   const { promise, resolve: resolveAnswer, reject } = Promise.withResolvers<Answer>();
   const req = httpRequest(
@@ -528,9 +576,10 @@ async function exchange(
         ...(body === undefined
           ? {}
           : {
-            "content-type": options.bytes === undefined ? "application/json" : "application/octet-stream",
-            "content-length": body.length,
-          }),
+              "content-type":
+                options.bytes === undefined ? "application/json" : "application/octet-stream",
+              "content-length": body.length,
+            }),
       },
       signal: AbortSignal.any([
         interrupted.signal,
@@ -733,8 +782,7 @@ async function workerAbsent(at: Fixture, why: string): Promise<void> {
 /** The package's own build-time artifact for the selection; absent is a packaging defect. */
 function shippedArtifact(plugin = MACHINES): Shipped {
   const file = join(serverOutput, "share/manifold/first-party", `${plugin}.manifold-plugin.json`);
-  if (!existsSync(file))
-    throw new Error(`Packaged server ships no ${plugin} first-party artifact`);
+  if (!existsSync(file)) throw new Error(`Packaged server ships no ${plugin} first-party artifact`);
   const bytes = readFileSync(file);
   if (bytes.length > 64 * 1024 * 1024)
     throw new Error(`Packaged ${plugin} artifact exceeds the signed-code ceiling`);
@@ -746,9 +794,13 @@ function shippedArtifact(plugin = MACHINES): Shipped {
   if (
     member(declared, "id") !== plugin ||
     member(member(declared, "entry"), "worker") !== true ||
-    typeof files !== "object" || files === null || Array.isArray(files) ||
-    typeof server !== "string" || server === "" ||
-    typeof worker !== "string" || worker === ""
+    typeof files !== "object" ||
+    files === null ||
+    Array.isArray(files) ||
+    typeof server !== "string" ||
+    server === "" ||
+    typeof worker !== "string" ||
+    worker === ""
   )
     throw new Error(`Packaged ${plugin} artifact carries no server half and portable Worker`);
   const members = new Map<string, Buffer>();
@@ -762,7 +814,9 @@ function shippedArtifact(plugin = MACHINES): Shipped {
       throw new Error(`Packaged ${plugin} artifact exceeds the extraction ceiling`);
     members.set(name, content);
   }
-  console.log(`Nix packaging: ${plugin} artifact ${bytes.length} bytes, extracted ${extractedBytes} bytes`);
+  console.log(
+    `Nix packaging: ${plugin} artifact ${bytes.length} bytes, extracted ${extractedBytes} bytes`,
+  );
   return {
     pin: createHash("sha256").update(bytes).digest("hex"),
     server: Buffer.from(server, "base64"),
@@ -889,26 +943,41 @@ function imageFixture(width = 7, height = 5, corrupt = false): Buffer {
 
 function bytePath(carrier: string, transferId: string, ref: string, bytes: number): string {
   const query = new URLSearchParams({
-    transferId, ref, offset: "0", sequence: "0", length: String(bytes),
+    transferId,
+    ref,
+    offset: "0",
+    sequence: "0",
+    length: String(bytes),
   });
   return `/api/bytes/${FILES}/${carrier}?${query}`;
 }
 
 async function uploadImage(at: Fixture, bytes: Buffer): Promise<string> {
   const started = await granted(at, `${FILES}.beginUpload`, {
-    collection: COLLECTION, requestId: `${Date.now()}_${randomUUID()}`, name: "cold-image.png",
-    declaredMediaType: "image/png", bytes: bytes.length,
-    expectedSha256: createHash("sha256").update(bytes).digest("hex"), purpose: "image",
+    collection: COLLECTION,
+    requestId: `${Date.now()}_${randomUUID()}`,
+    name: "cold-image.png",
+    declaredMediaType: "image/png",
+    bytes: bytes.length,
+    expectedSha256: createHash("sha256").update(bytes).digest("hex"),
+    purpose: "image",
   });
   const id = member(started, "transferId");
   if (typeof id !== "string" || member(started, "state") !== "receiving")
     throw new Error("Packaged Files did not reserve an image upload");
-  const answer = await exchange(at.origin,
-    bytePath("upload", id, `manifold://plugin/${FILES}`, bytes.length), { key: at.key, bytes });
+  const answer = await exchange(
+    at.origin,
+    bytePath("upload", id, `manifold://plugin/${FILES}`, bytes.length),
+    { key: at.key, bytes },
+  );
   const receipt = parsed(answer.body, "Packaged Files byte receipt");
-  if (answer.status !== 200 || answer.headers["cache-control"] !== "no-store" ||
-    member(receipt, "offset") !== bytes.length || member(receipt, "sequence") !== 0 ||
-    member(receipt, "acceptedBytes") !== bytes.length)
+  if (
+    answer.status !== 200 ||
+    answer.headers["cache-control"] !== "no-store" ||
+    member(receipt, "offset") !== bytes.length ||
+    member(receipt, "sequence") !== 0 ||
+    member(receipt, "acceptedBytes") !== bytes.length
+  )
     throw new Error("Packaged Files did not acknowledge its actual image bytes");
   return id;
 }
@@ -921,12 +990,16 @@ async function filesSmoke(hub: Hub, origin: string, shipped?: Shipped): Promise<
   const row = rows.get(FILES);
   const hardened = shipped !== undefined;
   const selected = [...rows].filter(([, entry]) => member(entry, "hardened") === true);
-  if (member(row, "enabled") !== true || (member(row, "hardened") === true) !== hardened ||
-    member(row, "held") !== undefined || member(row, "install") !== undefined ||
+  if (
+    member(row, "enabled") !== true ||
+    (member(row, "hardened") === true) !== hardened ||
+    member(row, "held") !== undefined ||
+    member(row, "install") !== undefined ||
     FILE_DOORS.some((door) => !doors(row).includes(`${FILES}.${door}`)) ||
     selected.length !== (hardened ? 1 : 0) ||
     hub.children.some(({ plugin }) => plugin !== FILES) ||
-    (hub.children.length > 0) !== hardened)
+    hub.children.length > 0 !== hardened
+  )
     throw new Error("Packaged Files did not publish the selected execution and doors");
   if (shipped !== undefined) {
     const extracted = join(hub.dataDir, "first-party", FILES, shipped.pin);
@@ -938,11 +1011,15 @@ async function filesSmoke(hub: Hub, origin: string, shipped?: Shipped): Promise<
     }
     await workerServed(owner, shipped, FILES);
   }
-  if (["core.access.mint", "core.access.grant"].some((name) =>
-    !doors(rows.get("core.access")).includes(name)))
+  if (
+    ["core.access.mint", "core.access.grant"].some(
+      (name) => !doors(rows.get("core.access")).includes(name),
+    )
+  )
     throw new Error("Packaged server did not publish the fixture's access doors");
   const uploader = await granted(owner, "core.access.mint", {
-    principal: { name: "Cold package image uploader" }, caps: ["containers:read"],
+    principal: { name: "Cold package image uploader" },
+    caps: ["containers:read"],
   });
   const principalId = member(member(uploader, "principal"), "id");
   const token = member(uploader, "token");
@@ -950,31 +1027,49 @@ async function filesSmoke(hub: Hub, origin: string, shipped?: Shipped): Promise<
     throw new Error("Packaged server did not mint the fixture's uploader");
   await granted(owner, "core.access.grant", {
     principal: { kind: "principal", id: principalId },
-    node: `manifold://plugin/${FILES}`, caps: [`${FILES}:create`], effect: "allow", reach: "node",
+    node: `manifold://plugin/${FILES}`,
+    caps: [`${FILES}:create`],
+    effect: "allow",
+    reach: "node",
   });
   const at: Fixture = { origin, key: token };
   const bytes = imageFixture();
   const transferId = await uploadImage(at, bytes);
-  const published = await granted(at, `${FILES}.completeUpload`, { collection: COLLECTION, transferId });
+  const published = await granted(at, `${FILES}.completeUpload`, {
+    collection: COLLECTION,
+    transferId,
+  });
   const ref = member(published, "ref");
   const fileId = member(ref, "fileId");
   if (member(ref, "kind") !== "file" || typeof fileId !== "string")
     throw new Error("Packaged Files did not publish the decoded image");
   const descriptor = await granted(at, `${FILES}.inspect`, { ref });
   const image = member(descriptor, "image");
-  if (member(image, "width") !== 7 || member(image, "height") !== 5 ||
-    member(image, "mediaType") !== "image/png" || member(descriptor, "bytes") !== bytes.length ||
-    member(descriptor, "sha256") !== createHash("sha256").update(bytes).digest("hex"))
+  if (
+    member(image, "width") !== 7 ||
+    member(image, "height") !== 5 ||
+    member(image, "mediaType") !== "image/png" ||
+    member(descriptor, "bytes") !== bytes.length ||
+    member(descriptor, "sha256") !== createHash("sha256").update(bytes).digest("hex")
+  )
     throw new Error("Packaged Files did not validate the complete image raster");
   const opened = await granted(at, `${FILES}.openRead`, {
-    ref, requestId: `${Date.now()}_${randomUUID()}`,
+    ref,
+    requestId: `${Date.now()}_${randomUUID()}`,
   });
   const readId = member(member(opened, "transfer"), "transferId");
-  if (typeof readId !== "string") throw new Error("Packaged Files did not open the published bytes");
-  const received = await exchange(origin,
-    bytePath("read", readId, `manifold://file/${fileId}`, bytes.length), { key: at.key });
-  if (received.status !== 200 || received.headers["cache-control"] !== "no-store" ||
-    !received.body.equals(bytes))
+  if (typeof readId !== "string")
+    throw new Error("Packaged Files did not open the published bytes");
+  const received = await exchange(
+    origin,
+    bytePath("read", readId, `manifold://file/${fileId}`, bytes.length),
+    { key: at.key },
+  );
+  if (
+    received.status !== 200 ||
+    received.headers["cache-control"] !== "no-store" ||
+    !received.body.equals(bytes)
+  )
     throw new Error("Packaged Files did not preserve the original uploaded image bytes");
 
   for (const [input, reason] of [
@@ -983,20 +1078,32 @@ async function filesSmoke(hub: Hub, origin: string, shipped?: Shipped): Promise<
     [imageFixture(2049, 2048), "image_too_large"],
   ] as const) {
     const rejectedId = await uploadImage(at, input);
-    await denied(at, `${FILES}.completeUpload`, {
-      collection: COLLECTION, transferId: rejectedId,
-    }, "refused");
+    await denied(
+      at,
+      `${FILES}.completeUpload`,
+      {
+        collection: COLLECTION,
+        transferId: rejectedId,
+      },
+      "refused",
+    );
     const receipt = await granted(at, `${FILES}.inspectUpload`, {
-      collection: COLLECTION, transferId: rejectedId,
+      collection: COLLECTION,
+      transferId: rejectedId,
     });
     if (member(receipt, "state") !== "failed" || member(receipt, "reason") !== reason)
       throw new Error(`Packaged Files did not durably refuse ${reason}`);
   }
   const listed = member(await granted(at, `${FILES}.list`, {}), "files");
-  if (!Array.isArray(listed) || listed.length !== 1 ||
-    member(member(listed[0], "ref"), "fileId") !== fileId)
+  if (
+    !Array.isArray(listed) ||
+    listed.length !== 1 ||
+    member(member(listed[0], "ref"), "fileId") !== fileId
+  )
     throw new Error("Packaged Files published a rejected image or lost the valid publication");
-  console.log(`Nix packaging: cold ${hardened ? "hardened" : "compiled"} Files decoded, published and read ${bytes.length} original bytes; corrupt pixels, dimension and pixel bounds refused`);
+  console.log(
+    `Nix packaging: cold ${hardened ? "hardened" : "compiled"} Files decoded, published and read ${bytes.length} original bytes; corrupt pixels, dimension and pixel bounds refused`,
+  );
 }
 
 try {

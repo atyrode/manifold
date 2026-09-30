@@ -168,53 +168,57 @@ function openDatabaseImage(options: PluginDatabaseOptions, path: string): Plugin
 
   const open = (): Database => {
     if (outcomeUnknown)
-      throw new PluginDatabaseError("outcome_unknown: reopen and reconcile durable operation identity");
+      throw new PluginDatabaseError(
+        "outcome_unknown: reopen and reconcile durable operation identity",
+      );
     if (handle !== null) return handle;
     return withRecoveryGateSync(options.dataDir, () => {
-    let admittedPages = maxPages;
-    if (profiled) {
-      const retainedBytes = options.recoveryBudget?.allocation(pluginId) ?? null;
-      const allocation = options.recoveryBudget?.ensureAllocation(pluginId, options.maxBytes!);
-      if (allocation === undefined || !allocation.ok) {
-        if (retainedBytes === null)
-          throw new PluginDatabaseError(`${allocation?.reason ?? "recovery_unavailable"}: recovery allocation refused`);
-        // Expansion admission cannot strand retained data. Keep SQLite's old physical cap;
-        // growth beyond it remains impossible until admitRecovery durably expands the ledger.
-        admittedPages = Math.min(maxPages, retainedBytes / DATABASE_PAGE_BYTES);
-      }
-    }
-    mkdirSync(pluginDatabaseDir(options.dataDir, pluginId), { recursive: true });
-    const db = new Database(path, { create: true, strict: true, safeIntegers: true });
-    try {
-      db.exec(`PRAGMA page_size = ${String(DATABASE_PAGE_BYTES)}`);
-      db.exec("PRAGMA journal_mode = WAL");
-      db.exec("PRAGMA synchronous = FULL");
-      db.exec("PRAGMA trusted_schema = OFF");
-      db.exec("PRAGMA temp_store = MEMORY");
-      db.exec("PRAGMA cache_size = -2048");
-      db.exec("PRAGMA mmap_size = 0");
-      db.exec("PRAGMA journal_size_limit = 0");
-      db.exec(`PRAGMA wal_autocheckpoint = ${profiled ? "0" : "256"}`);
+      let admittedPages = maxPages;
       if (profiled) {
-        db.exec("PRAGMA cache_spill = OFF");
-        db.exec("PRAGMA busy_timeout = 0");
+        const retainedBytes = options.recoveryBudget?.allocation(pluginId) ?? null;
+        const allocation = options.recoveryBudget?.ensureAllocation(pluginId, options.maxBytes!);
+        if (allocation === undefined || !allocation.ok) {
+          if (retainedBytes === null)
+            throw new PluginDatabaseError(
+              `${allocation?.reason ?? "recovery_unavailable"}: recovery allocation refused`,
+            );
+          // Expansion admission cannot strand retained data. Keep SQLite's old physical cap;
+          // growth beyond it remains impossible until admitRecovery durably expands the ledger.
+          admittedPages = Math.min(maxPages, retainedBytes / DATABASE_PAGE_BYTES);
+        }
       }
-      const size = db.query<{ page_size: bigint }, []>("PRAGMA page_size").get();
-      const pages = db.query<{ page_count: bigint }, []>("PRAGMA page_count").get();
-      if (
-        size?.page_size !== BigInt(DATABASE_PAGE_BYTES) ||
-        (pages?.page_count ?? 0n) > BigInt(admittedPages)
-      )
-        throw new PluginDatabaseError("database exceeds the candidate manifest page budget");
-      db.exec(`PRAGMA max_page_count = ${String(admittedPages)}`);
-    } catch (error) {
-      db.close();
-      throw error;
-    }
-    db.exec(`PRAGMA foreign_keys = ON`);
-    handle = db;
-    activeMaxPages = admittedPages;
-    return db;
+      mkdirSync(pluginDatabaseDir(options.dataDir, pluginId), { recursive: true });
+      const db = new Database(path, { create: true, strict: true, safeIntegers: true });
+      try {
+        db.exec(`PRAGMA page_size = ${String(DATABASE_PAGE_BYTES)}`);
+        db.exec("PRAGMA journal_mode = WAL");
+        db.exec("PRAGMA synchronous = FULL");
+        db.exec("PRAGMA trusted_schema = OFF");
+        db.exec("PRAGMA temp_store = MEMORY");
+        db.exec("PRAGMA cache_size = -2048");
+        db.exec("PRAGMA mmap_size = 0");
+        db.exec("PRAGMA journal_size_limit = 0");
+        db.exec(`PRAGMA wal_autocheckpoint = ${profiled ? "0" : "256"}`);
+        if (profiled) {
+          db.exec("PRAGMA cache_spill = OFF");
+          db.exec("PRAGMA busy_timeout = 0");
+        }
+        const size = db.query<{ page_size: bigint }, []>("PRAGMA page_size").get();
+        const pages = db.query<{ page_count: bigint }, []>("PRAGMA page_count").get();
+        if (
+          size?.page_size !== BigInt(DATABASE_PAGE_BYTES) ||
+          (pages?.page_count ?? 0n) > BigInt(admittedPages)
+        )
+          throw new PluginDatabaseError("database exceeds the candidate manifest page budget");
+        db.exec(`PRAGMA max_page_count = ${String(admittedPages)}`);
+      } catch (error) {
+        db.close();
+        throw error;
+      }
+      db.exec(`PRAGMA foreign_keys = ON`);
+      handle = db;
+      activeMaxPages = admittedPages;
+      return db;
     });
   };
 
@@ -275,7 +279,10 @@ function openDatabaseImage(options: PluginDatabaseOptions, path: string): Plugin
     const db = open();
     if (profiled) {
       const checkpoint = db.query<{ busy: bigint }, []>("PRAGMA wal_checkpoint(TRUNCATE)").get();
-      if (checkpoint?.busy !== 0n || (existsSync(`${path}-wal`) && statSync(`${path}-wal`).size !== 0))
+      if (
+        checkpoint?.busy !== 0n ||
+        (existsSync(`${path}-wal`) && statSync(`${path}-wal`).size !== 0)
+      )
         throw new PluginDatabaseError("database_busy: bounded WAL cannot be truncated");
     }
     const started = now();
@@ -284,7 +291,9 @@ function openDatabaseImage(options: PluginDatabaseOptions, path: string): Plugin
     try {
       const result = work(db, started);
       if (now() - started > SQL_DEADLINE_MS)
-        throw new PluginDatabaseError("the database call exceeded its deadline and was rolled back");
+        throw new PluginDatabaseError(
+          "the database call exceeded its deadline and was rolled back",
+        );
       committing = true;
       db.exec("COMMIT");
       // Nothing fallible may run here: a committed DML result is always success.
@@ -294,11 +303,17 @@ function openDatabaseImage(options: PluginDatabaseOptions, path: string): Plugin
       const uncertainCommit = committing && !sqliteBusy(error) && code !== "SQLITE_FULL";
       let rollbackFailed = false;
       if (db.inTransaction) {
-        try { db.exec("ROLLBACK"); } catch { rollbackFailed = true; }
+        try {
+          db.exec("ROLLBACK");
+        } catch {
+          rollbackFailed = true;
+        }
       }
       if (uncertainCommit || rollbackFailed) {
         outcomeUnknown = true;
-        throw new PluginDatabaseError("outcome_unknown: database commit requires durable reconciliation");
+        throw new PluginDatabaseError(
+          "outcome_unknown: database commit requires durable reconciliation",
+        );
       }
       throw error;
     }
@@ -333,7 +348,9 @@ function openDatabaseImage(options: PluginDatabaseOptions, path: string): Plugin
           activeMaxPages = maxPages;
         } catch (error) {
           if (sqliteBusy(error)) return { ok: false, reason: "database_busy" };
-          return attempt(() => { throw error; });
+          return attempt(() => {
+            throw error;
+          });
         }
       }
       return admission;
@@ -341,7 +358,9 @@ function openDatabaseImage(options: PluginDatabaseOptions, path: string): Plugin
     query: async <Row extends SqlRow = SqlRow>(sql: string, params?: readonly SqlParam[]) => {
       assertSqlStatement(sql);
       assertSqlParams(params);
-      return attempt(() => transaction((db) => rows(db, sql, params, { rows: 0, bytes: 0 }) as readonly Row[]));
+      return attempt(() =>
+        transaction((db) => rows(db, sql, params, { rows: 0, bytes: 0 }) as readonly Row[]),
+      );
     },
     run: async (sql, params) => {
       assertSqlStatement(sql);
@@ -350,17 +369,19 @@ function openDatabaseImage(options: PluginDatabaseOptions, path: string): Plugin
     },
     batch: async (statements: readonly SqlStatement[]) => {
       assertSqlBatch(statements);
-      return attempt(() => transaction((db, started) => {
-        const budget = { rows: 0, bytes: 2 };
-        const results: (readonly SqlRow[])[] = [];
-        for (const statement of statements) {
-          if (now() - started > SQL_DEADLINE_MS)
-            throw new PluginDatabaseError("the batch exceeded its deadline and was rolled back");
-          claimResultBytes(budget, 1);
-          results.push(rows(db, statement.sql, statement.params, budget));
-        }
-        return results;
-      }));
+      return attempt(() =>
+        transaction((db, started) => {
+          const budget = { rows: 0, bytes: 2 };
+          const results: (readonly SqlRow[])[] = [];
+          for (const statement of statements) {
+            if (now() - started > SQL_DEADLINE_MS)
+              throw new PluginDatabaseError("the batch exceeded its deadline and was rolled back");
+            claimResultBytes(budget, 1);
+            results.push(rows(db, statement.sql, statement.params, budget));
+          }
+          return results;
+        }),
+      );
     },
     pageCount: async () => {
       if (!existsSync(path)) return 0;
@@ -376,24 +397,25 @@ function openDatabaseImage(options: PluginDatabaseOptions, path: string): Plugin
       }
       return total;
     },
-    clear: async () => withRecoveryGateSync(options.dataDir, () => {
-      let removed = 0;
-      if (handle !== null) {
-        handle.close();
-        handle = null;
-      }
-      for (const image of ["", ".stage", ".backup"]) {
-        for (const suffix of ["", "-wal", "-shm", "-journal"]) {
-          const candidate = `${path}${image}${suffix}`;
-          if (existsSync(candidate)) removed += statSync(candidate).size;
+    clear: async () =>
+      withRecoveryGateSync(options.dataDir, () => {
+        let removed = 0;
+        if (handle !== null) {
+          handle.close();
+          handle = null;
         }
-        removeImage(`${path}${image}`);
-      }
-      const dir = pluginDatabaseDir(options.dataDir, pluginId);
-      if (existsSync(dir)) syncPath(dir);
-      options.recoveryBudget?.releaseAfterPurge(pluginId);
-      return removed;
-    }),
+        for (const image of ["", ".stage", ".backup"]) {
+          for (const suffix of ["", "-wal", "-shm", "-journal"]) {
+            const candidate = `${path}${image}${suffix}`;
+            if (existsSync(candidate)) removed += statSync(candidate).size;
+          }
+          removeImage(`${path}${image}`);
+        }
+        const dir = pluginDatabaseDir(options.dataDir, pluginId);
+        if (existsSync(dir)) syncPath(dir);
+        options.recoveryBudget?.releaseAfterPurge(pluginId);
+        return removed;
+      }),
     close: () => {
       if (handle !== null) {
         const closing = handle;
@@ -464,65 +486,66 @@ export function recoverPluginDatabase(
   journal: PluginDatabaseJournal,
 ): void {
   return withRecoveryGateSync(dataDir, () => {
-  const live = pluginDatabasePath(dataDir, journal.plugin_id);
-  const stage = `${live}.stage`;
-  const backup = `${live}.backup`;
-  for (const path of [live, stage, backup]) assertClosedImage(path);
-  const current = fingerprint(live);
-  const staged = fingerprint(stage);
-  const saved = fingerprint(backup);
-  const { previous, next } = journal;
-  if (
-    (current !== null && current !== previous && current !== next) ||
-    (staged !== null && staged !== next) ||
-    (saved !== null && saved !== previous)
-  )
-    throw new Error(`unknown database image for ${journal.plugin_id}; recovery refused`);
+    const live = pluginDatabasePath(dataDir, journal.plugin_id);
+    const stage = `${live}.stage`;
+    const backup = `${live}.backup`;
+    for (const path of [live, stage, backup]) assertClosedImage(path);
+    const current = fingerprint(live);
+    const staged = fingerprint(stage);
+    const saved = fingerprint(backup);
+    const { previous, next } = journal;
+    if (
+      (current !== null && current !== previous && current !== next) ||
+      (staged !== null && staged !== next) ||
+      (saved !== null && saved !== previous)
+    )
+      throw new Error(`unknown database image for ${journal.plugin_id}; recovery refused`);
 
-  if (journal.phase === "prepared") {
-    if (previous !== null && current !== previous && saved !== previous)
-      throw new Error(`missing previous database image for ${journal.plugin_id}`);
-    if (previous === null) {
-      rmSync(live, { force: true });
-    } else if (current !== previous) {
-      renameSync(backup, live);
+    if (journal.phase === "prepared") {
+      if (previous !== null && current !== previous && saved !== previous)
+        throw new Error(`missing previous database image for ${journal.plugin_id}`);
+      if (previous === null) {
+        rmSync(live, { force: true });
+      } else if (current !== previous) {
+        renameSync(backup, live);
+      }
+    } else {
+      if (next !== null && current !== next && staged !== next)
+        throw new Error(`missing committed database image for ${journal.plugin_id}`);
+      if (next === null) rmSync(live, { force: true });
+      else if (current !== next) renameSync(stage, live);
     }
-  } else {
-    if (next !== null && current !== next && staged !== next)
-      throw new Error(`missing committed database image for ${journal.plugin_id}`);
-    if (next === null) rmSync(live, { force: true });
-    else if (current !== next) renameSync(stage, live);
-  }
-  if (existsSync(live)) syncPath(live);
-  // Persist the recovered canonical name before removing its last alternate image.
-  syncPath(pluginDatabaseDir(dataDir, journal.plugin_id));
-  rmSync(stage, { force: true });
-  rmSync(backup, { force: true });
-  syncPath(pluginDatabaseDir(dataDir, journal.plugin_id));
-  store.forgetPluginDatabase(journal.plugin_id);
-  new RecoveryBudget(dataDir, store.db).releaseStageAfterCleanup(journal.plugin_id);
+    if (existsSync(live)) syncPath(live);
+    // Persist the recovered canonical name before removing its last alternate image.
+    syncPath(pluginDatabaseDir(dataDir, journal.plugin_id));
+    rmSync(stage, { force: true });
+    rmSync(backup, { force: true });
+    syncPath(pluginDatabaseDir(dataDir, journal.plugin_id));
+    store.forgetPluginDatabase(journal.plugin_id);
+    new RecoveryBudget(dataDir, store.db).releaseStageAfterCleanup(journal.plugin_id);
   });
 }
 
 /** Must precede module loading, migration planning, and any plugin database open at boot. */
 export function recoverPluginDatabases(dataDir: string, store: ServerStore): void {
   return withRecoveryGateSync(dataDir, () => {
-  for (const journal of store.pluginDatabaseJournals())
-    recoverPluginDatabase(dataDir, store, journal);
-  const root = join(dataDir, "plugins");
-  if (existsSync(root)) {
-  for (const entry of readdirSync(root, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    const live = pluginDatabasePath(dataDir, entry.name);
-    removeImage(`${live}.stage`);
-    removeImage(`${live}.backup`);
-    syncPath(pluginDatabaseDir(dataDir, entry.name));
-  }
-  }
-  const budget = new RecoveryBudget(dataDir, store.db);
-  for (const row of store.db.query<{ plugin_id: string }, []>(
-    "SELECT plugin_id FROM plugin_recovery_stages",
-  ).all()) budget.releaseStageAfterCleanup(row.plugin_id);
+    for (const journal of store.pluginDatabaseJournals())
+      recoverPluginDatabase(dataDir, store, journal);
+    const root = join(dataDir, "plugins");
+    if (existsSync(root)) {
+      for (const entry of readdirSync(root, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const live = pluginDatabasePath(dataDir, entry.name);
+        removeImage(`${live}.stage`);
+        removeImage(`${live}.backup`);
+        syncPath(pluginDatabaseDir(dataDir, entry.name));
+      }
+    }
+    const budget = new RecoveryBudget(dataDir, store.db);
+    for (const row of store.db
+      .query<{ plugin_id: string }, []>("SELECT plugin_id FROM plugin_recovery_stages")
+      .all())
+      budget.releaseStageAfterCleanup(row.plugin_id);
   });
 }
 
@@ -540,133 +563,139 @@ export function stagePluginDatabase(
   store: ServerStore,
 ): PluginDatabaseStage {
   return withRecoveryGateSync(options.dataDir, () => {
-  const { dataDir, pluginId } = options;
-  const live = pluginDatabasePath(dataDir, pluginId);
-  const stage = `${live}.stage`;
-  const backup = `${live}.backup`;
-  const dir = pluginDatabaseDir(dataDir, pluginId);
-  mkdirSync(dir, { recursive: true });
-  // Persist newly created directory entries as well as the eventual image rename.
-  syncPath(join(dataDir, "plugins"));
-  syncPath(dataDir);
-  for (const path of [stage, backup]) assertClosedImage(path);
-  if (existsSync(stage) || existsSync(backup) || store.pluginDatabaseJournal(pluginId) !== null)
-    throw new Error("plugin database staging requires recovery");
-  if (options.recovery !== undefined) {
-    if (options.recoveryBudget === undefined)
-      throw new PluginDatabaseError("recovery_unavailable: no recovery ledger");
-    options.recoveryBudget.reserveStage(pluginId, options.maxBytes!);
-  }
-  let previous: string | null;
-  let database: PluginDatabaseAdmin;
-  try {
-  if (existsSync(live)) {
-    if (!lstatSync(live).isFile()) throw new Error("not a regular plugin database");
-    // After a process crash there may be a WAL but no cached host admin to close.
-    const db = new Database(live, { strict: true });
+    const { dataDir, pluginId } = options;
+    const live = pluginDatabasePath(dataDir, pluginId);
+    const stage = `${live}.stage`;
+    const backup = `${live}.backup`;
+    const dir = pluginDatabaseDir(dataDir, pluginId);
+    mkdirSync(dir, { recursive: true });
+    // Persist newly created directory entries as well as the eventual image rename.
+    syncPath(join(dataDir, "plugins"));
+    syncPath(dataDir);
+    for (const path of [stage, backup]) assertClosedImage(path);
+    if (existsSync(stage) || existsSync(backup) || store.pluginDatabaseJournal(pluginId) !== null)
+      throw new Error("plugin database staging requires recovery");
+    if (options.recovery !== undefined) {
+      if (options.recoveryBudget === undefined)
+        throw new PluginDatabaseError("recovery_unavailable: no recovery ledger");
+      options.recoveryBudget.reserveStage(pluginId, options.maxBytes!);
+    }
+    let previous: string | null;
+    let database: PluginDatabaseAdmin;
     try {
-      db.exec("PRAGMA trusted_schema = OFF");
-      db.exec("PRAGMA cache_size = -2048");
-      const checkpoint = db.query<{ busy: number }, []>("PRAGMA wal_checkpoint(TRUNCATE)").get();
-      if (checkpoint?.busy !== 0) throw new Error("plugin database checkpoint is busy");
-    } finally {
-      db.close();
-    }
-    if (statSync(live).size > grantedDatabaseMaxBytes(options.maxBytes))
-      throw new PluginDatabaseError("database exceeds the candidate manifest page budget");
-  }
-  assertClosedImage(live);
-    previous = fingerprint(live);
-    if (previous !== null) copyFileSync(live, stage);
-    database = openDatabaseImage(options, stage);
-  } catch (error) {
-    removeImage(stage);
-    syncPath(dir);
-    options.recoveryBudget?.releaseStageAfterCleanup(pluginId);
-    throw error;
-  }
-  let journal: PluginDatabaseJournal | undefined;
-  let closed = false;
-  let operations = 0;
-  const check = (): void => {
-    if (closed) throw new PluginDatabaseError("plugin database migration is closed");
-    if (++operations > MAX_MIGRATION_STORAGE_OPERATIONS) {
-      closed = true;
-      throw new PluginDatabaseError("plugin database migration exceeded its operation budget");
-    }
-  };
-  return {
-    database: {
-      pluginId,
-      admitRecovery: async () => {
-        check();
-        return database.admitRecovery();
-      },
-      query: async <Row extends SqlRow>(sql: string, params?: readonly SqlParam[]) => {
-        check();
-        return database.query<Row>(sql, params);
-      },
-      run: async (sql, params) => {
-        check();
-        return database.run(sql, params);
-      },
-      batch: async (statements) => {
-        check();
-        return database.batch(statements);
-      },
-    },
-    activate: () => withRecoveryGateSync(dataDir, () => {
-      if (closed) throw new Error("plugin database staging is closed");
-      closed = true;
-      database.close();
+      if (existsSync(live)) {
+        if (!lstatSync(live).isFile()) throw new Error("not a regular plugin database");
+        // After a process crash there may be a WAL but no cached host admin to close.
+        const db = new Database(live, { strict: true });
+        try {
+          db.exec("PRAGMA trusted_schema = OFF");
+          db.exec("PRAGMA cache_size = -2048");
+          const checkpoint = db
+            .query<{ busy: number }, []>("PRAGMA wal_checkpoint(TRUNCATE)")
+            .get();
+          if (checkpoint?.busy !== 0) throw new Error("plugin database checkpoint is busy");
+        } finally {
+          db.close();
+        }
+        if (statSync(live).size > grantedDatabaseMaxBytes(options.maxBytes))
+          throw new PluginDatabaseError("database exceeds the candidate manifest page budget");
+      }
       assertClosedImage(live);
-      assertClosedImage(stage);
-      assertClosedImage(backup);
-      if (existsSync(backup))
-        throw new Error("unexpected plugin database backup; activation refused");
-      if (fingerprint(live) !== previous)
-        throw new Error("plugin database changed while migration was staged");
-      const next = fingerprint(stage);
-      if (next !== null) syncPath(stage);
-      if (previous !== null) syncPath(live);
+      previous = fingerprint(live);
+      if (previous !== null) copyFileSync(live, stage);
+      database = openDatabaseImage(options, stage);
+    } catch (error) {
+      removeImage(stage);
       syncPath(dir);
-      store.preparePluginDatabase({ plugin_id: pluginId, previous, next });
-      journal = { plugin_id: pluginId, previous, next, phase: "prepared" };
-      if (previous !== null) {
-        renameSync(live, backup);
-        syncPath(dir);
+      options.recoveryBudget?.releaseStageAfterCleanup(pluginId);
+      throw error;
+    }
+    let journal: PluginDatabaseJournal | undefined;
+    let closed = false;
+    let operations = 0;
+    const check = (): void => {
+      if (closed) throw new PluginDatabaseError("plugin database migration is closed");
+      if (++operations > MAX_MIGRATION_STORAGE_OPERATIONS) {
+        closed = true;
+        throw new PluginDatabaseError("plugin database migration exceeded its operation budget");
       }
-      if (next !== null) renameSync(stage, live);
-      syncPath(dir);
-    }),
-    committed: () => {
-      if (journal === undefined) throw new Error("plugin database is not prepared");
-      store.commitPluginDatabase(pluginId);
-    },
-    finish: () => {
-      if (journal === undefined) throw new Error("plugin database is not prepared");
-      recoverPluginDatabase(dataDir, store, { ...journal, phase: "committed" });
-      journal = undefined;
-    },
-    discard: () => withRecoveryGateSync(dataDir, () => {
-      closed = true;
-      database.close();
-      if (journal !== undefined) {
-        // A lost metadata COMMIT acknowledgement is not proof that publication rolled back.
-        // Reconcile the actual journal rather than blindly applying this object's old phase.
-        if (store.db.inTransaction)
-          throw new PluginDatabaseError("outcome_unknown: migration metadata requires recovery");
-        const durable = store.pluginDatabaseJournal(pluginId);
-        if (durable === null)
-          throw new PluginDatabaseError("outcome_unknown: migration journal requires recovery");
-        recoverPluginDatabase(dataDir, store, durable);
+    };
+    return {
+      database: {
+        pluginId,
+        admitRecovery: async () => {
+          check();
+          return database.admitRecovery();
+        },
+        query: async <Row extends SqlRow>(sql: string, params?: readonly SqlParam[]) => {
+          check();
+          return database.query<Row>(sql, params);
+        },
+        run: async (sql, params) => {
+          check();
+          return database.run(sql, params);
+        },
+        batch: async (statements) => {
+          check();
+          return database.batch(statements);
+        },
+      },
+      activate: () =>
+        withRecoveryGateSync(dataDir, () => {
+          if (closed) throw new Error("plugin database staging is closed");
+          closed = true;
+          database.close();
+          assertClosedImage(live);
+          assertClosedImage(stage);
+          assertClosedImage(backup);
+          if (existsSync(backup))
+            throw new Error("unexpected plugin database backup; activation refused");
+          if (fingerprint(live) !== previous)
+            throw new Error("plugin database changed while migration was staged");
+          const next = fingerprint(stage);
+          if (next !== null) syncPath(stage);
+          if (previous !== null) syncPath(live);
+          syncPath(dir);
+          store.preparePluginDatabase({ plugin_id: pluginId, previous, next });
+          journal = { plugin_id: pluginId, previous, next, phase: "prepared" };
+          if (previous !== null) {
+            renameSync(live, backup);
+            syncPath(dir);
+          }
+          if (next !== null) renameSync(stage, live);
+          syncPath(dir);
+        }),
+      committed: () => {
+        if (journal === undefined) throw new Error("plugin database is not prepared");
+        store.commitPluginDatabase(pluginId);
+      },
+      finish: () => {
+        if (journal === undefined) throw new Error("plugin database is not prepared");
+        recoverPluginDatabase(dataDir, store, { ...journal, phase: "committed" });
         journal = undefined;
-      } else {
-        removeImage(stage);
-        syncPath(dir);
-        options.recoveryBudget?.releaseStageAfterCleanup(pluginId);
-      }
-    }),
-  };
+      },
+      discard: () =>
+        withRecoveryGateSync(dataDir, () => {
+          closed = true;
+          database.close();
+          if (journal !== undefined) {
+            // A lost metadata COMMIT acknowledgement is not proof that publication rolled back.
+            // Reconcile the actual journal rather than blindly applying this object's old phase.
+            if (store.db.inTransaction)
+              throw new PluginDatabaseError(
+                "outcome_unknown: migration metadata requires recovery",
+              );
+            const durable = store.pluginDatabaseJournal(pluginId);
+            if (durable === null)
+              throw new PluginDatabaseError("outcome_unknown: migration journal requires recovery");
+            recoverPluginDatabase(dataDir, store, durable);
+            journal = undefined;
+          } else {
+            removeImage(stage);
+            syncPath(dir);
+            options.recoveryBudget?.releaseStageAfterCleanup(pluginId);
+          }
+        }),
+    };
   });
 }
