@@ -30,6 +30,8 @@ import { toolFlags, toolForKey } from "./canvas-tool.ts";
 import type { CanvasTool } from "./contract.ts";
 import {
   ContainerOverlayOutlet,
+  FALLBACK_POLL_MS,
+  MACHINES_RESOURCE,
   ProjectionScopeProvider,
   TitlebarOutlet,
   extendProjectionScope,
@@ -60,6 +62,7 @@ import {
   useItemDrop,
   useContainerRoute,
   useProjection,
+  usePolledResource,
   useRemoteCursors,
   useRemoteGestures,
   useRoomPipeRegistration,
@@ -490,7 +493,23 @@ export function CanvasView({
   });
   const [status, setStatus] = useState<ConnectionStatus>("idle");
   const [sceneRevision, setSceneRevision] = useState(0);
-  const [machines, setMachines] = useState<readonly MachineSummary[] | null>(null);
+  const fetchMachines = useCallback(() => host.client.machines(), [host.client]);
+  const { value: machines } = usePolledResource<readonly MachineSummary[] | null>(
+    fetchMachines,
+    FALLBACK_POLL_MS,
+    {
+      key: MACHINES_RESOURCE,
+      initial: null,
+      topics: host.topics.machines,
+      events: host.client,
+      requiresWorkspaceEvents: true,
+      onError: (reason) =>
+        notify(reason instanceof Error ? reason.message : "Could not load machines", {
+          lifetime: "sticky",
+          key: "machines",
+        }),
+    },
+  );
   /** Bumped on every presence frame; the invalidation key for anything derived from the roster. */
   const [attendanceRevision, setAttendanceRevision] = useState(0);
   const [savedAt, setSavedAt] = useState<number | null>(null);
@@ -644,26 +663,6 @@ export function CanvasView({
       client.close();
     };
   }, [client, notify]);
-
-  useEffect(() => {
-    let cancelled = false;
-    void host.client
-      .machines()
-      .then((fetched) => {
-        if (!cancelled) setMachines(fetched);
-      })
-      .catch((reason: unknown) => {
-        if (!cancelled) {
-          notify(reason instanceof Error ? reason.message : "Could not load machines", {
-            lifetime: "sticky",
-            key: "machines",
-          });
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [host.client, notify]);
 
   const emitCursor = useCallback(
     (clientX: number, clientY: number): void => {
