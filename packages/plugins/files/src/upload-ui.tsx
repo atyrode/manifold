@@ -89,7 +89,7 @@ function FileUploadIntake({
   const [controller, setController] = useState(initial.controller);
   const [opaque, setOpaque] = useState(false);
   const [failure, setFailure] = useState<string | null>(initial.failure);
-  useLayoutEffect(() => () => controller?.dispose(), [controller]);
+  useLayoutEffect(() => controller?.mount(), [controller]);
 
   const choose = (files: readonly LocalFileDescriptor[]): void => {
     // A late picker event must not replace an in-flight immutable intent.

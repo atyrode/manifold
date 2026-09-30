@@ -17,28 +17,39 @@ async function withUpload(run: (browser: Browser) => Promise<void>): Promise<voi
       `
       import { createRoot } from ${JSON.stringify(Bun.resolveSync("react-dom/client", resolve(import.meta.dir, "../../../web")))};
       import { flushSync } from ${JSON.stringify(Bun.resolveSync("react-dom", resolve(import.meta.dir, "../../../web")))};
-      import { Suspense, startTransition } from ${JSON.stringify(Bun.resolveSync("react", resolve(import.meta.dir, "../../../web")))};
+      import { StrictMode, Suspense, startTransition, useLayoutEffect } from ${JSON.stringify(Bun.resolveSync("react", resolve(import.meta.dir, "../../../web")))};
       import { FileUpload } from ${JSON.stringify(resolve(import.meta.dir, "../src/upload-ui.tsx"))};
+      import { LocalFileStore } from ${JSON.stringify(resolve(import.meta.dir, "../../../web/src/local-files.ts"))};
+      import { FileUploadController } from ${JSON.stringify(resolve(import.meta.dir, "../src/upload.ts"))};
       const root = createRoot(document.getElementById("root"));
       const log = [];
       const waits = new Map();
+      let mounts = 0;
+      const custody = new LocalFileStore();
+      function select(name) {
+        return custody.capture([new File([new Uint8Array([42])], name, { type: "image/png" })])[0];
+      }
       let held = "completeUpload";
       let mode = "ok";
       let callback = 0;
       let blocked = false;
       const suspended = Promise.withResolvers();
-      let selection = { handle: "first", name: "first.png", mediaType: "image/png", bytes: 1 };
+      let selection = select("first.png");
+      const firstHandle = selection.handle;
       const containerId = "first-home";
       const ref = { kind: "file", fileId: "saved-file" };
       const file = { ref, home: { kind: "root" }, ownerId: "owner", name: "first.png",
         declaredMediaType: "image/png", mediaType: "image/png", bytes: 1,
         sha256: "a".repeat(64), createdAt: 1, image: null };
       const transfer = { transferId: "upload", ref: { kind: "plugin", pluginId: "core.files" },
-        kind: "upload", state: "receiving", bytes: 1, offset: 1, sequence: 1,
+        kind: "upload", state: "receiving", bytes: 1, offset: 0, sequence: 0,
         chunkBytes: 262144, createdAt: 1, expiresAt: Date.now() + 60000, reason: null };
       const host = {
         principal: { id: "owner" }, containerId,
-        localFiles: { read: async () => new Uint8Array([42]), release: async handle => log.push(["release", handle]) },
+        localFiles: {
+          read: (...args) => custody.read(...args),
+          release: async handle => { await custody.release(handle); log.push(["release", handle]); },
+        },
         client: { action: async (door) => {
           const name = door.split(".").at(-1);
           log.push(["action", name]);
@@ -53,11 +64,21 @@ async function withUpload(run: (browser: Browser) => Promise<void>): Promise<voi
             if (mode === "refused") return { ok: false, denial: { rule: "forbidden", message: "refused" } };
             return { ok: true, result: transfer };
           }
+          if (name === "inspectUpload") return { ok: true, result: transfer };
           if (name === "completeUpload") return { ok: true, result: { ref } };
           if (name === "inspect") return { ok: true, result: file };
           throw new Error("Unexpected action " + name);
+        }, writeByteChunk: async (_plugin, _carrier, request, data) => {
+          log.push(["chunk", Array.from(data)]);
+          transfer.offset += data.length;
+          transfer.sequence++;
+          return { offset: transfer.offset, sequence: request.sequence, acceptedBytes: data.length };
         } },
       };
+      function StrictProbe() {
+        useLayoutEffect(() => { mounts++; }, []);
+        return null;
+      }
       function Block() {
         if (blocked) {
           log.push(["suspended", callback]);
@@ -67,25 +88,43 @@ async function withUpload(run: (browser: Browser) => Promise<void>): Promise<voi
       }
       function render(speculative = false) {
         const version = callback;
-        const commit = () => root.render(<Suspense fallback="Waiting for speculative render">
+        const commit = () => root.render(<StrictMode><StrictProbe /><Suspense fallback="Waiting for speculative render">
           <FileUpload host={host} initialSelection={selection}
             onPublished={ref => log.push(["published", version, ref.fileId])}
             onSaved={file => log.push(["saved", version, file.ref.fileId])} />
           <Block />
-        </Suspense>);
+        </Suspense></StrictMode>);
         if (speculative) startTransition(commit);
         else flushSync(commit);
       }
       window.upload = {
-        log, render,
+        log, render, firstHandle,
+        get mounts() { return mounts; },
+        async readable(handle = firstHandle) {
+          try { return Array.from(await custody.read(handle, 0, 1)); }
+          catch { return null; }
+        },
+        async retiredEntryPoints() {
+          const descriptor = select("retired.png");
+          const controller = new FileUploadController(host, descriptor, "file");
+          const offset = log.length;
+          controller.mount()();
+          await Promise.all([controller.save(), controller.reconcile(), controller.cancel()]);
+          const release = controller.mount();
+          await Promise.all([controller.save(), controller.reconcile(), controller.cancel()]);
+          release();
+          return { handle: descriptor.handle, events: log.slice(offset),
+            readable: await this.readable(descriptor.handle) };
+        },
         callback() { blocked = false; callback++; render(); },
         speculative() { blocked = true; callback++; render(true); },
         hold(name) { held = name; },
         release(name) { held = null; waits.get(name)?.(); waits.delete(name); },
-        replace() { selection = { ...selection, handle: "next", name: "next.png" }; render(); },
+        replace() { selection = select("next.png"); render(); },
         home() { host.containerId = "next-home"; render(); },
         mode(value) { mode = value; held = null; },
         close() { flushSync(() => root.unmount()); },
+        cleanup() { flushSync(() => root.unmount()); custody.close(); },
       };
       render();
       window.firstPaint = document.body.innerText;
@@ -94,6 +133,7 @@ async function withUpload(run: (browser: Browser) => Promise<void>): Promise<voi
     const build = await Bun.build({
       entrypoints: [entry],
       target: "browser",
+      define: { "process.env.NODE_ENV": JSON.stringify("development") },
       outdir: join(scratch, "dist"),
       // The generated entry lives outside the workspace, but uses its one React runtime.
       plugins: [
@@ -130,6 +170,7 @@ async function withUpload(run: (browser: Browser) => Promise<void>): Promise<voi
       "upload fixture",
     );
     await run(browser);
+    await browser.evaluate("upload.cleanup()");
     expect(browser.drainMessages().filter((message) => message.kind === "exception")).toEqual([]);
   } finally {
     try {
@@ -162,11 +203,16 @@ async function waiting(browser: Browser, door: string): Promise<void> {
 
 test("initial intake publishes before inspect, once, to the latest committed callbacks", async () => {
   await withUpload(async (browser) => {
+    expect(await browser.evaluate<number>("upload.mounts")).toBe(2);
     expect(await browser.evaluate<string>("window.firstPaint")).toContain("first.png");
     expect(await browser.evaluate<string>("window.firstPaint")).toContain("Locally pending");
     expect(await browser.evaluate<unknown[]>("upload.log")).toEqual([]);
+    expect(await browser.evaluate<number[]>("upload.readable()")).toEqual([42]);
     await click(browser, "Save file");
     await waiting(browser, "completeUpload");
+    expect(
+      await browser.evaluate<unknown[]>("upload.log.filter(row => row[0] === 'chunk')"),
+    ).toEqual([["chunk", [42]]]);
     await browser.evaluate("upload.callback(); upload.speculative()");
     await until(
       () => browser.evaluate<boolean>("upload.log.some(row => row[0] === 'suspended')"),
@@ -222,7 +268,7 @@ test("late publication cannot enter a replacement selection or a different home"
       ).toEqual([]);
       expect(
         await browser.evaluate<unknown[]>("upload.log.filter(row => row[0] === 'release')"),
-      ).toEqual([["release", "first"]]);
+      ).toEqual([["release", await browser.evaluate<string>("upload.firstHandle")]]);
       expect(
         await browser.evaluate<boolean>("upload.log.some(row => row[1] === 'inspect')"),
       ).toBe(false);
@@ -256,7 +302,45 @@ test("refused and unacknowledged begin allow local discard without a cancellatio
       ).toEqual([["action", "beginUpload"]]);
       expect(
         await browser.evaluate<unknown[]>("upload.log.filter(row => row[0] === 'release')"),
-      ).toEqual([["release", "first"]]);
+      ).toEqual([["release", await browser.evaluate<string>("upload.firstHandle")]]);
     });
   }
+}, 60_000);
+
+test("mount cleanup stops action entry points before the custody checkpoint and cannot revive them", async () => {
+  await withUpload(async (browser) => {
+    const result = await browser.evaluate<{
+      handle: string;
+      events: unknown[];
+      readable: number[] | null;
+    }>("upload.retiredEntryPoints()");
+    expect(result.events).toEqual([["release", result.handle]]);
+    expect(result.readable).toBeNull();
+  });
+}, 60_000);
+
+test("retiring a held begin under StrictMode cannot continue with local bytes or publication", async () => {
+  await withUpload(async (browser) => {
+    await browser.evaluate('upload.hold("beginUpload")');
+    await click(browser, "Save file");
+    await waiting(browser, "beginUpload");
+    await browser.evaluate('upload.close(); upload.release("beginUpload")');
+    expect(await browser.evaluate<number[] | null>("upload.readable()")).toBeNull();
+    await browser.evaluate(`(() => {
+      const frame = Promise.withResolvers();
+      requestAnimationFrame(frame.resolve);
+      return frame.promise;
+    })()`);
+    expect(
+      await browser.evaluate<unknown[]>("upload.log.filter(row => row[0] === 'action')"),
+    ).toEqual([["action", "beginUpload"]]);
+    expect(
+      await browser.evaluate<unknown[]>("upload.log.filter(row => row[0] === 'chunk')"),
+    ).toEqual([]);
+    expect(
+      await browser.evaluate<unknown[]>(
+        "upload.log.filter(row => row[0] === 'published' || row[0] === 'saved')",
+      ),
+    ).toEqual([]);
+  });
 }, 60_000);

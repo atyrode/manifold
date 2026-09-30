@@ -47,6 +47,8 @@ export class FileUploadController {
   private aborter: AbortController | null = null;
   private cancelRequested = false;
   private disposed = false;
+  private suspended = false;
+  private mountGeneration = 0;
   private released = false;
   private begun = false;
 
@@ -83,13 +85,39 @@ export class FileUploadController {
     };
   };
 
+  /** Acquire this controller for one committed React mount. */
+  mount(): () => void {
+    const generation = ++this.mountGeneration;
+    this.suspended = false;
+    return () => {
+      if (this.mountGeneration !== generation) return;
+      // Stop entry points and notifications in cleanup, before any promise can settle.
+      this.suspended = true;
+      this.aborter?.abort();
+      if (
+        this.begun ||
+        this.snapshot.busy ||
+        this.cancelRequested ||
+        this.snapshot.phase !== "pending"
+      ) {
+        this.dispose();
+        return;
+      }
+      // Only pristine custody can survive same-commit StrictMode effect replay.
+      // Work that has started is never resurrected, even if React reacquires the mount.
+      queueMicrotask(() => {
+        if (this.mountGeneration === generation) this.dispose();
+      });
+    };
+  }
+
   private update(patch: Partial<UploadSnapshot>): void {
     this.snapshot = { ...this.snapshot, ...patch };
-    if (!this.disposed) for (const listener of this.listeners) listener();
+    if (!this.disposed && !this.suspended) for (const listener of this.listeners) listener();
   }
 
   private check(): void {
-    if (this.disposed || this.cancelRequested || this.aborter?.signal.aborted) {
+    if (this.disposed || this.suspended || this.cancelRequested || this.aborter?.signal.aborted) {
       throw new FilesActionError(
         "Stopped locally; server cancellation is not yet confirmed.",
         true,
@@ -125,6 +153,7 @@ export class FileUploadController {
     if (this.running) return this.running;
     if (
       this.disposed ||
+      this.suspended ||
       this.cancelRequested ||
       this.snapshot.busy ||
       this.snapshot.phase === "cancelled"
@@ -233,13 +262,13 @@ export class FileUploadController {
     // Publication is confirmed even if a subsequent metadata read loses authority.
     this.update({ phase: "saved", savedRef: ref });
     await this.release();
-    if (this.disposed) return null;
+    if (this.disposed || this.suspended) return null;
     return this.descriptor();
   }
 
   /** Read-only reconciliation. A ready private payload is not a publication acknowledgement. */
   async reconcile(): Promise<FileDescriptor | null> {
-    if (this.running || this.snapshot.busy || this.disposed) return null;
+    if (this.running || this.snapshot.busy || this.disposed || this.suspended) return null;
     this.update({ busy: true, reason: null });
     try {
       if (this.snapshot.savedRef) return await this.descriptor();
@@ -281,7 +310,7 @@ export class FileUploadController {
 
   /** Stops local work immediately, then asks the original server operation to cancel. */
   async cancel(): Promise<void> {
-    if (this.cancelRequested || this.disposed) return;
+    if (this.cancelRequested || this.disposed || this.suspended) return;
     this.cancelRequested = true;
     this.aborter?.abort();
     await this.running;
@@ -330,6 +359,7 @@ export class FileUploadController {
 
   /** Unmount closes local custody only; it never silently publishes or deletes a server file. */
   dispose(): void {
+    if (this.disposed) return;
     this.disposed = true;
     this.aborter?.abort();
     this.listeners.clear();
