@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import type { ActionOutcome, Cap } from "@manifold/protocol";
 import { AuthService, type AuthContext } from "../../../server/src/auth.ts";
 import { silentLogger } from "../../../server/src/log.ts";
@@ -7,6 +7,7 @@ import type { ServerStore } from "../../../server/src/stores.ts";
 import { TerminalBroker } from "../../../server/src/terminal-broker.ts";
 import type { PluginHost } from "../../../server/src/plugin-host.ts";
 import {
+  closeTestStore,
   FakeClock,
   FakeRuntime,
   testPluginHost,
@@ -33,6 +34,10 @@ import { EVENTS_LIST_MAX, EventsListResponseSchema } from "../src/index.ts";
  */
 
 const OWNER_KEY = "a".repeat(64);
+const stores: ServerStore[] = [];
+afterEach(() => {
+  for (const store of stores.splice(0)) closeTestStore(store);
+});
 
 interface Fixture {
   readonly store: ServerStore;
@@ -46,6 +51,7 @@ async function fixture(): Promise<Fixture> {
   const runtime = new FakeRuntime();
   const clock = new FakeClock(runtime);
   const store = testStore();
+  stores.push(store);
   const auth = new AuthService(store, OWNER_KEY, runtime);
   const rooms = new RoomManager(store, runtime, clock, silentLogger, testTileTrees);
   const broker = new TerminalBroker(
@@ -138,7 +144,6 @@ describe("core.events.list authority", () => {
       it back.
     */
     expect(denial(outcome)).toEqual({ rule: "forbidden", message: "* capability required" });
-    where.store.close();
   });
 
   test("a container-scoped token is refused for its SCOPE, above the cap rung", async () => {
@@ -167,7 +172,6 @@ describe("core.events.list authority", () => {
       rule: "forbidden",
       message: "scoped tokens cannot invoke workspace actions",
     });
-    where.store.close();
   });
 
   test("root reads it", async () => {
@@ -177,7 +181,6 @@ describe("core.events.list authority", () => {
     const rows = await list(where, where.owner, {});
 
     expect(rows.length).toBe(4);
-    where.store.close();
   });
 });
 
@@ -201,7 +204,6 @@ describe("core.events.list arguments", () => {
     // nobody could tell from the schema.
     const atMax = await list(where, where.owner, { limit: EVENTS_LIST_MAX });
     expect(atMax.length).toBe(4);
-    where.store.close();
   });
 
   test("an unknown argument is invalid_args, because the input is strict", async () => {
@@ -212,7 +214,6 @@ describe("core.events.list arguments", () => {
     // `type` is the ROW's word, never the filter's — and a strict input is what turns that
     // distinction into an error a caller can read instead of a filter silently ignored.
     expect(denial(outcome).rule).toBe("invalid_args");
-    where.store.close();
   });
 });
 
@@ -224,7 +225,6 @@ describe("core.events.list rows", () => {
     const rows = await list(where, where.owner, {});
 
     expect(rows.map((row) => row.ts)).toEqual([4_000, 3_000, 2_000, 1_000]);
-    where.store.close();
   });
 
   test("the kind filter selects on the event's own type", async () => {
@@ -235,7 +235,6 @@ describe("core.events.list rows", () => {
 
     expect(rows.map((row) => row.ts)).toEqual([4_000, 1_000]);
     expect(rows.every((row) => row.type === "terminal_opened")).toBe(true);
-    where.store.close();
   });
 
   test("the containerId filter narrows to one container and drops the container-less rows", async () => {
@@ -248,7 +247,6 @@ describe("core.events.list rows", () => {
     // than treating "belongs to nothing" as "belongs to everything".
     expect(rows.map((row) => row.ts)).toEqual([2_000, 1_000]);
     expect(rows.every((row) => row.containerId === "c-alpha")).toBe(true);
-    where.store.close();
   });
 
   test("both filters compose", async () => {
@@ -261,7 +259,6 @@ describe("core.events.list rows", () => {
     });
 
     expect(rows.map((row) => row.ts)).toEqual([1_000]);
-    where.store.close();
   });
 
   test("limit truncates from the NEWEST end, and truncates after filtering", async () => {
@@ -275,7 +272,6 @@ describe("core.events.list rows", () => {
     // for a workspace whose two newest records happen to be something else.
     const filtered = await list(where, where.owner, { kind: "terminal_opened", limit: 1 });
     expect(filtered.map((row) => row.ts)).toEqual([4_000]);
-    where.store.close();
   });
 
   test("the payload arrives as the stored TEXT, not a parsed object", async () => {
@@ -293,7 +289,6 @@ describe("core.events.list rows", () => {
       and a malformed row stays readable as a row instead of poisoning the page.
     */
     expect(event?.payload).toBe('{"count":2}');
-    where.store.close();
   });
 
   test("an empty trail is an empty list, not a refusal", async () => {
@@ -304,7 +299,6 @@ describe("core.events.list rows", () => {
     // "Nothing happened yet" is an answer. A read that refused when it found nothing would make
     // a fresh workspace indistinguishable from one the caller may not see.
     expect(rows).toEqual([]);
-    where.store.close();
   });
 
   test("ONE door reads both families: the ledger comes back through this action", async () => {
@@ -327,6 +321,5 @@ describe("core.events.list rows", () => {
     expect(own?.authority).toBe("root");
     expect(own?.outcome).toBeNull();
     expect(rows.every((row) => row.type === "trace")).toBe(true);
-    where.store.close();
   });
 });

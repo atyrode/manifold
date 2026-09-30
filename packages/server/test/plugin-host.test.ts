@@ -4935,12 +4935,13 @@ describe("enabled bundle replacement retains native execution", () => {
       const policy = f.jobs.readInstanceServiceConfiguration(f.fixture.owner, {
         serviceId: f.policy.serviceId,
       }).policy;
+      const disabledBefore = f.fixture.store.disabledPlugins();
       for (const version of ["2.0.0", "2.0.1", "2.0.2"]) {
         const updated = f.fixture.drop({ ...f.manifest, version });
         expect((await installBundle({ ...updated, hub: f.hub })).outcome).toBe("replaced");
         expect((await installBundle({ ...updated, hub: f.hub })).outcome).toBe("unchanged");
         expect(f.host.enabled(childId)).toBe(true);
-        expect(f.fixture.store.disabledPlugins().size).toBe(0);
+        expect(f.fixture.store.disabledPlugins()).toEqual(disabledBefore);
         expect(await f.host.dispatch(f.fixture.owner, `${SAMPLE_ID}.ping`, {})).toEqual({
           ok: true,
           result: { version },
