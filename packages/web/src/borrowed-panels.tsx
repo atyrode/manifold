@@ -11,11 +11,13 @@ import {
 import { BorrowedPanelProvider, Empty, type BorrowedPanelProps } from "@manifold/ui";
 import {
   createContext,
+  useCallback,
   useContext,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactElement,
   type ReactNode,
 } from "react";
@@ -62,12 +64,54 @@ function BorrowedPanelMount(props: BorrowedPanelProps): ReactElement {
   return <BorrowedPanelInstance key={JSON.stringify([props.panelId, props.input])} {...props} />;
 }
 
+/** An uncommitted render owns no slot in the shared subtree budget. */
+class BorrowLease {
+  private admission: { readonly isLive: () => boolean } | null = null;
+  private readonly listeners = new Set<() => void>();
+
+  constructor(
+    private readonly scope: BorrowScope | null,
+    private readonly panelId: string,
+  ) {}
+
+  readonly getSnapshot = (): typeof this.admission => this.admission;
+  readonly subscribe = (listener: () => void): (() => void) => {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  };
+
+  mount(): (() => void) | undefined {
+    const scope = this.scope;
+    if (
+      scope === null ||
+      !scope.live() ||
+      scope.ancestors.includes(this.panelId) ||
+      scope.ancestors.length >= MAX_BORROWED_PANELS ||
+      scope.budget.size >= MAX_BORROWED_PANELS
+    )
+      return;
+    const token = Symbol();
+    let live = true;
+    scope.budget.add(token);
+    this.admission = { isLive: () => live && scope.live() };
+    for (const listener of this.listeners) listener();
+    return () => {
+      live = false;
+      scope.budget.delete(token);
+      this.admission = null;
+      for (const listener of this.listeners) listener();
+    };
+  }
+}
+
 function BorrowedPanelInstance({ panelId, input, onResult }: BorrowedPanelProps): ReactElement {
   const scope = useContext(Scope);
   const host = useContext(Host);
   const registry = useProjection();
   const panel = registry.panel(panelId);
-  const [lease, setLease] = useState<{ live: boolean } | null>(null);
+  const lease = useMemo(() => new BorrowLease(scope, panelId), [scope, panelId]);
+  useLayoutEffect(() => lease.mount(), [lease]);
+  const admission = useSyncExternalStore(lease.subscribe, lease.getSnapshot, lease.getSnapshot);
   const [mountedInput] = useState(() => ({ value: input }));
   const delivered = useRef(false);
   const nested = useMemo<BorrowScope | null>(
@@ -77,33 +121,15 @@ function BorrowedPanelInstance({ panelId, input, onResult }: BorrowedPanelProps)
         : {
             ...scope,
             ancestors: [...scope.ancestors, panelId],
-            live: () => lease?.live === true && scope.live(),
+            live: () => admission?.isLive() === true,
           },
-    [scope, panelId, lease],
+    [scope, panelId, admission],
   );
-  useLayoutEffect(() => {
-    if (
-      scope === null ||
-      !scope.live() ||
-      scope.ancestors.includes(panelId) ||
-      scope.ancestors.length >= MAX_BORROWED_PANELS ||
-      scope.budget.size >= MAX_BORROWED_PANELS
-    )
-      return;
-    const token = Symbol();
-    const current = { live: true };
-    scope.budget.add(token);
-    setLease(current);
-    return () => {
-      current.live = false;
-      scope.budget.delete(token);
-    };
-  }, [scope, panelId]);
   if (scope === null || host === null || nested === null)
     return <Empty>Panel host unavailable.</Empty>;
   if (scope.ancestors.includes(panelId))
     return <Empty>Panel unavailable: recursive borrowing.</Empty>;
-  if (lease?.live !== true) return <Empty>Panel unavailable: intake limit reached.</Empty>;
+  if (admission === null) return <Empty>Panel unavailable: intake limit reached.</Empty>;
   if (panel === null || !panel.enabled || panel.Component === null) {
     const Placeholder = registry.Placeholder;
     return (
@@ -133,70 +159,80 @@ function BorrowedPanelInstance({ panelId, input, onResult }: BorrowedPanelProps)
 }
 
 /** Remounting a resource store must not repeat a result or hand an old selection to a new viewer. */
-export function PanelIntakeGate(props: Parameters<typeof IntakeLifetime>[0]): ReactElement {
+export function PanelIntakeGate(props: PanelProps & {
+  readonly children: (onResult: PanelProps["onResult"]) => ReactNode;
+}): ReactElement {
   return props.input === undefined && props.onResult === undefined ? (
     <>{props.children(undefined)}</>
   ) : (
-    <IntakeLifetime {...props} />
+    <IntakeIdentity {...props} />
   );
 }
 
-function IntakeLifetime({
-  host,
-  input,
-  onResult,
-  children,
-}: PanelProps & {
+function IntakeIdentity(props: PanelProps & {
   readonly children: (onResult: PanelProps["onResult"]) => ReactNode;
-}): ReactElement {
-  const identity = useRef({
+}): ReactElement | null {
+  const { host, input } = props;
+  const [owner, setOwner] = useState({
     input,
     client: host.client,
     token: host.token,
+    principal: host.principal.id,
     containerId: host.containerId,
-    delivered: false,
+    retired: false,
+    generation: 0,
   });
-  if (identity.current.input !== input) {
-    identity.current = {
+  if (owner.input !== input) {
+    setOwner({
       input,
       client: host.client,
       token: host.token,
+      principal: host.principal.id,
       containerId: host.containerId,
-      delivered: false,
-    };
+      retired: false,
+      generation: owner.generation + 1,
+    });
+    return null;
   }
-  const current = identity.current;
-  const latest = useRef({ host, input, onResult });
-  latest.current = { host, input, onResult };
+  if (
+    !owner.retired &&
+    (owner.client !== host.client ||
+      owner.token !== host.token ||
+      owner.principal !== host.principal.id ||
+      owner.containerId !== host.containerId)
+  ) {
+    setOwner({ ...owner, retired: true });
+    return null;
+  }
+  if (owner.retired)
+    return <Empty>Intake retired: its host identity changed. Start a new intake.</Empty>;
+  return <IntakeLifetime key={owner.generation} {...props} />;
+}
+
+function IntakeLifetime({
+  onResult,
+  children,
+}: {
+  readonly onResult: PanelProps["onResult"];
+  readonly children: (onResult: PanelProps["onResult"]) => ReactNode;
+}): ReactElement {
+  const delivered = useRef(false);
   const live = useRef(false);
+  const callback = useRef(onResult);
   useLayoutEffect(() => {
+    callback.current = onResult;
     live.current = true;
     return () => {
       live.current = false;
     };
+  }, [onResult]);
+  const result = useCallback<NonNullable<PanelProps["onResult"]>>((value) => {
+    if (!live.current || delivered.current) return;
+    const parsed = PanelResultSchema.parse(value);
+    delivered.current = true;
+    callback.current?.(parsed);
   }, []);
-  const sameHost = (): boolean =>
-    current.client === latest.current.host.client &&
-    current.token === latest.current.host.token &&
-    current.containerId === latest.current.host.containerId;
-  if ((input !== undefined || onResult !== undefined) && !sameHost()) {
-    return <Empty>Intake retired: its host identity changed. Start a new intake.</Empty>;
-  }
-  return (
-    <>
-      {children(
-        onResult === undefined
-          ? undefined
-          : (result) => {
-              if (!live.current || identity.current !== current || !sameHost() || current.delivered)
-                return;
-              const parsed = PanelResultSchema.parse(result);
-              current.delivered = true;
-              latest.current.onResult?.(parsed);
-            },
-      )}
-    </>
-  );
+  return <>{children(onResult === undefined ? undefined : result)}</>;
 }
 
 /** Capture native Files only in the receiving owner's store; workers receive its descriptors. */
@@ -206,6 +242,57 @@ export function MountedPanelInput(props: Parameters<typeof InputCustody>[0]): Re
   ) : (
     <InputCustody {...props} />
   );
+}
+
+interface CapturedInput {
+  readonly input: PortablePanelInput | undefined;
+  readonly error: boolean;
+}
+
+class InputLease {
+  private captured: readonly LocalFileDescriptor[] = [];
+  private snapshot: CapturedInput | null = null;
+  private readonly listeners = new Set<() => void>();
+
+  constructor(
+    private readonly resources: MountedByteResources,
+    private readonly input: PanelProps["input"],
+  ) {}
+
+  readonly getSnapshot = (): CapturedInput | null => this.snapshot;
+  readonly subscribe = (listener: () => void): (() => void) => {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  };
+
+  isCurrent(snapshot: CapturedInput): boolean {
+    return this.snapshot === snapshot && this.resources.isLive;
+  }
+
+  mount(): () => void {
+    let input: PortablePanelInput | undefined;
+    let error = false;
+    try {
+      if (this.input !== undefined) {
+        if (this.input.value !== undefined && !validPanelArg(this.input.value))
+          throw new Error("invalid panel input");
+        this.captured = this.input.files?.length
+          ? this.resources.services.capture(this.input.files)
+          : [];
+        input = PortablePanelInputSchema.parse({ value: this.input.value, files: this.captured });
+      }
+    } catch {
+      error = true;
+    }
+    this.snapshot = { input, error };
+    for (const listener of this.listeners) listener();
+    return () => {
+      this.snapshot = null;
+      for (const file of this.captured) void this.resources.localFiles.release(file.handle);
+      this.captured = [];
+      for (const listener of this.listeners) listener();
+    };
+  }
 }
 
 function InputCustody({
@@ -222,56 +309,21 @@ function InputCustody({
     onResult: PanelProps["onResult"],
   ) => ReactNode;
 }): ReactElement | null {
+  const lease = useMemo(() => new InputLease(resources, input), [resources, input]);
+  useLayoutEffect(() => lease.mount(), [lease]);
+  const mounted = useSyncExternalStore(lease.subscribe, lease.getSnapshot, lease.getSnapshot);
   const callback = useRef(onResult);
-  callback.current = onResult;
-  const currentInput = useRef(input);
-  currentInput.current = input;
-  const [mounted, setMounted] = useState<{
-    source: PanelProps["input"];
-    resources: MountedByteResources;
-    input: PortablePanelInput | undefined;
-    live: boolean;
-    error: boolean;
-  } | null>(null);
   useLayoutEffect(() => {
-    const held = {
-      source: input,
-      resources,
-      input: undefined as PortablePanelInput | undefined,
-      captured: [] as readonly LocalFileDescriptor[],
-      live: true,
-      error: false,
-    };
-    try {
-      if (input !== undefined) {
-        if (input.value !== undefined && !validPanelArg(input.value))
-          throw new Error("invalid panel input");
-        held.captured = input.files?.length ? resources.services.capture(input.files) : [];
-        held.input = PortablePanelInputSchema.parse({ value: input.value, files: held.captured });
-      }
-    } catch {
-      held.error = true;
-    }
-    setMounted(held);
-    return () => {
-      held.live = false;
-      for (const file of held.captured) void resources.localFiles.release(file.handle);
-    };
-  }, [resources, input]);
-  if (mounted === null || mounted.source !== input || mounted.resources !== resources) return null;
+    callback.current = onResult;
+  }, [onResult]);
+  const result = useCallback<NonNullable<PanelProps["onResult"]>>(
+    (value) => {
+      if (mounted !== null && lease.isCurrent(mounted)) callback.current?.(value);
+    },
+    [lease, mounted],
+  );
+  if (mounted === null) return null;
   if (mounted.error)
     return <Empty>Panel input unavailable: invalid or over its custody limit.</Empty>;
-  return (
-    <>
-      {children(
-        mounted.input,
-        onResult === undefined
-          ? undefined
-          : (result) => {
-              if (mounted.live && resources.isLive && currentInput.current === mounted.source)
-                callback.current?.(result);
-            },
-      )}
-    </>
-  );
+  return <>{children(mounted.input, onResult === undefined ? undefined : result)}</>;
 }

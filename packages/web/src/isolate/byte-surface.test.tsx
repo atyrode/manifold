@@ -77,7 +77,7 @@ test("byte surfaces keep page/worker custody, static decode and revocation seman
       import {WorkerHost} from ${JSON.stringify(resolve(import.meta.dir, "worker-host.ts"))};
       import {VocabularyRenderer} from ${JSON.stringify(resolve(import.meta.dir, "vocabulary.tsx"))};
       import {MountedByteResources,byteContribution} from ${JSON.stringify(resolve(import.meta.dir, "../byte-surface.tsx"))};
-      import {LocalFileStore} from ${JSON.stringify(Bun.resolveSync("@manifold/sdk", import.meta.dir))};
+      import {LocalFileStore} from ${JSON.stringify(resolve(import.meta.dir, "../local-files.ts"))};
       ${component}
       let root, worker, resources, refused = false;
       const principal = {id:"viewer",kind:"human",name:"Viewer",color:"#ffffff"};

@@ -1,5 +1,5 @@
 import type { PortableElementEdit } from "@manifold/plugin";
-import { useProjectionScope } from "@manifold/plugin/hooks";
+import { useProjectionScope, type ProjectionScope } from "@manifold/plugin/hooks";
 import {
   canonicalJobJson,
   elementPayload,
@@ -9,24 +9,54 @@ import {
 } from "@manifold/protocol";
 import { useLayoutEffect, useMemo, useSyncExternalStore } from "react";
 
+class ElementEditLifetime {
+  private live = false;
+  private elementType: string | undefined;
+
+  constructor(
+    readonly binding: {
+      readonly client: ProjectionScope["client"] | undefined;
+      readonly owner: ProjectionScope["host"]["client"] | undefined;
+      readonly token: string | undefined;
+      readonly principal: string | undefined;
+      readonly containerId: string | null | undefined;
+      readonly id: string | undefined;
+      readonly expected: string | null;
+      readonly epoch: ProjectionScope["client"]["epoch"] | undefined;
+    },
+  ) {}
+
+  mount(): () => void {
+    this.elementType =
+      this.binding.id === undefined
+        ? undefined
+        : this.binding.client?.elements.get(this.binding.id)?.type;
+    this.live = true;
+    return () => {
+      this.live = false;
+    };
+  }
+
+  get isLive(): boolean {
+    return this.live;
+  }
+
+  get type(): string | undefined {
+    return this.elementType;
+  }
+}
+
 /** A mount-owned document port, shared by page React and the Worker supervisor. */
 export function usePortableElementEdit(
   element: PortableElementProjection | null,
 ): PortableElementEdit {
   const scope = useProjectionScope();
   const client = scope?.client;
+  const owner = scope?.host.client;
   const token = scope?.host.token;
+  const principal = scope?.host.principal.id;
+  const containerId = scope?.host.containerId;
   const id = element?.id;
-  const lifetime = useMemo(
-    () => ({ live: false, type: id === undefined ? undefined : client?.elements.get(id)?.type }),
-    [client, token, id],
-  );
-  useLayoutEffect(() => {
-    lifetime.live = true;
-    return () => {
-      lifetime.live = false;
-    };
-  }, [lifetime]);
   const subscribe = useMemo(
     () =>
       (notify: () => void): (() => void) => {
@@ -50,19 +80,25 @@ export function usePortableElementEdit(
         : `${client.epoch}:${client.status}:${client.sceneWriteAllowed}:${client.spectator}`,
     () => "",
   );
+  const expected = element === null ? null : canonicalJobJson(element.data);
+  const epoch = client?.epoch;
+  const lifetime = useMemo(
+    () =>
+      new ElementEditLifetime({ client, owner, token, principal, containerId, id, expected, epoch }),
+    [client, owner, token, principal, containerId, id, expected, epoch],
+  );
+  useLayoutEffect(() => lifetime.mount(), [lifetime]);
   const writable =
     client !== undefined &&
     !client.spectator &&
     client.status === "open" &&
     client.sceneWriteAllowed;
-  const expected = element === null ? null : canonicalJobJson(element.data);
-  const epoch = client?.epoch;
   return useMemo<PortableElementEdit>(
     () => ({
       writable: writable && element !== null,
       async patch(data): Promise<void> {
         if (
-          !lifetime.live ||
+          !lifetime.isLive ||
           !client ||
           !element ||
           client.epoch !== epoch ||

@@ -27,6 +27,7 @@ import {
   useLayoutEffect,
   useMemo,
   useState,
+  useSyncExternalStore,
   type ComponentType,
   type ReactElement,
   type ReactNode,
@@ -126,6 +127,31 @@ export class MountedByteResources {
   }
 }
 
+/** Construction is inert; only the committed layout owns native byte resources. */
+class ByteResourceLease {
+  private resources: MountedByteResources | null = null;
+  private readonly listeners = new Set<() => void>();
+
+  constructor(private readonly client: SessionHandle) {}
+
+  readonly getSnapshot = (): MountedByteResources | null => this.resources;
+  readonly subscribe = (listener: () => void): (() => void) => {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  };
+
+  mount(): () => void {
+    const resources = new MountedByteResources(this.client);
+    this.resources = resources;
+    for (const listener of this.listeners) listener();
+    return () => {
+      resources.close();
+      this.resources = null;
+      for (const listener of this.listeners) listener();
+    };
+  }
+}
+
 export function MountedByteSurface({
   host,
   children,
@@ -133,33 +159,50 @@ export function MountedByteSurface({
   readonly host: HostServices;
   readonly children: (resources: MountedByteResources) => ReactNode;
 }): ReactElement | null {
-  const [mounted, setMounted] = useState<{
-    client: SessionHandle;
-    token: string;
-    containerId: string | null;
-    resources: MountedByteResources;
-  } | null>(null);
-  useLayoutEffect(() => {
-    const resources = new MountedByteResources(host.client);
-    setMounted({
+  const [owner, setOwner] = useState({
+    client: host.client,
+    token: host.token,
+    principal: host.principal.id,
+    containerId: host.containerId,
+    generation: 0,
+  });
+  if (
+    owner.client !== host.client ||
+    owner.token !== host.token ||
+    owner.principal !== host.principal.id ||
+    owner.containerId !== host.containerId
+  ) {
+    setOwner({
       client: host.client,
       token: host.token,
+      principal: host.principal.id,
       containerId: host.containerId,
-      resources,
+      generation: owner.generation + 1,
     });
-    return () => resources.close();
-  }, [host.client, host.token, host.containerId]);
-  if (
-    mounted === null ||
-    mounted.client !== host.client ||
-    mounted.token !== host.token ||
-    mounted.containerId !== host.containerId
-  )
     return null;
+  }
   return (
-    <ByteSurfaceProvider services={mounted.resources.services}>
-      <BorrowedPanelHost host={host} resources={mounted.resources}>
-        {children(mounted.resources)}
+    <ByteSurfaceLifetime key={owner.generation} host={host}>
+      {children}
+    </ByteSurfaceLifetime>
+  );
+}
+
+function ByteSurfaceLifetime({
+  host,
+  children,
+}: {
+  readonly host: HostServices;
+  readonly children: (resources: MountedByteResources) => ReactNode;
+}): ReactElement | null {
+  const [lease] = useState(() => new ByteResourceLease(host.client));
+  useLayoutEffect(() => lease.mount(), [lease]);
+  const resources = useSyncExternalStore(lease.subscribe, lease.getSnapshot, lease.getSnapshot);
+  if (resources === null) return null;
+  return (
+    <ByteSurfaceProvider services={resources.services}>
+      <BorrowedPanelHost host={host} resources={resources}>
+        {children(resources)}
       </BorrowedPanelHost>
     </ByteSurfaceProvider>
   );
@@ -328,9 +371,10 @@ export function byteElement(
   if (existing !== undefined) return existing;
   const Adapted = (props: Readonly<Record<string, unknown>>): ReactElement => {
     const scope = useProjectionScope();
+    const { id, data } = props;
     const element = useMemo(
-      () => (portable ? portableElementProjection(props["id"], props["data"]) : null),
-      [portable, props["id"], props["data"]],
+      () => (portable ? portableElementProjection(id, data) : null),
+      [id, data],
     );
     if (portable) {
       if (scope === null || element === null) return <Empty>Element projection unavailable.</Empty>;

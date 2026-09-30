@@ -25,7 +25,7 @@ import {
 import { VocabularyRenderer } from "./vocabulary.tsx";
 import { WorkerRegistry, type WorkerLease } from "./worker-host.ts";
 import {
-  MountedByteResources,
+  type MountedByteResources,
   MountedByteSurface,
   portableElementProjection,
 } from "../byte-surface.tsx";
@@ -253,10 +253,8 @@ export function isolatedElement(
   if (cached !== undefined) return cached;
   const IsolatedElement = (props: Readonly<Record<string, unknown>>): ReactElement => {
     const scope = useProjectionScope();
-    const element = useMemo(
-      () => portableElementProjection(props["id"], props["data"]),
-      [props["id"], props["data"]],
-    );
+    const { id, data } = props;
+    const element = useMemo(() => portableElementProjection(id, data), [id, data]);
     const edit = usePortableElementEdit(element);
     if (scope === null || element === null)
       return (
