@@ -18,12 +18,23 @@
         "scope": "workspace"
       }
     ],
-    "panels": [{ "id": "counter", "title": "Example counter" }],
+    "panels": [
+      { "id": "counter", "title": "Example counter" },
+      { "id": "raster", "title": "Reference raster" }
+    ],
     "seats": [{ "panel": "counter", "order": 500, "ratio": 0.25 }],
     "sections": [],
     "elements": [],
     "tools": [],
-    "events": [{ "id": "counter_bumped", "title": "Counter bumped" }]
+    "events": [{ "id": "counter_bumped", "title": "Counter bumped" }],
+    "byteCarriers": [
+      {
+        "id": "raster",
+        "direction": "outgoing",
+        "capability": "containers:read",
+        "refKinds": ["plugin"]
+      }
+    ]
   },
   "entry": { "server": true, "web": "web.js", "worker": true },
   "links": { "repository": "https://github.com/atyrode/manifold" }

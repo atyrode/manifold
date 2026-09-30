@@ -38,11 +38,11 @@ export {
 export {
   FileInput,
   ByteImage,
-  ByteSurfaceProvider,
+  ByteRendererProvider,
   type FileInputProps,
   type ByteImageProps,
-  type ByteSurfaceServices,
-} from "./byte-surface.tsx";
+  type ByteRendererServices,
+} from "./byte-renderer.tsx";
 export { ByteDownload, type ByteDownloadProps, type ByteDownloadStatus } from "./byte-download.tsx";
 import "./styles.css";
 export {

@@ -21,7 +21,7 @@ import {
   type ByteDownloadHandle,
   type ByteImageReadHandle,
 } from "@manifold/sdk";
-import { ByteSurfaceProvider, Empty, type ByteSurfaceServices } from "@manifold/ui";
+import { ByteRendererProvider, Empty, type ByteRendererServices } from "@manifold/ui";
 import {
   createElement,
   useLayoutEffect,
@@ -44,7 +44,7 @@ export class MountedByteResources {
     release: (handle) => this.files.release(handle),
   };
   readonly portableClient: PortableHostServices["client"];
-  readonly services: ByteSurfaceServices;
+  readonly services: ByteRendererServices;
   private readonly projections = new Set<ByteImageReadHandle>();
   private readonly downloads = new Set<ByteDownloadHandle>();
   private live = true;
@@ -154,7 +154,7 @@ class ByteResourceLease {
   }
 }
 
-export function MountedByteSurface({
+export function MountedByteRenderer({
   host,
   children,
 }: {
@@ -184,13 +184,13 @@ export function MountedByteSurface({
     return null;
   }
   return (
-    <ByteSurfaceLifetime key={owner.generation} host={host}>
+    <ByteRendererLifetime key={owner.generation} host={host}>
       {children}
-    </ByteSurfaceLifetime>
+    </ByteRendererLifetime>
   );
 }
 
-function ByteSurfaceLifetime({
+function ByteRendererLifetime({
   host,
   children,
 }: {
@@ -202,11 +202,11 @@ function ByteSurfaceLifetime({
   const resources = useSyncExternalStore(lease.subscribe, lease.getSnapshot, lease.getSnapshot);
   if (resources === null) return null;
   return (
-    <ByteSurfaceProvider services={resources.services}>
+    <ByteRendererProvider services={resources.services}>
       <BorrowedPanelHost host={host} resources={resources}>
         {children(resources)}
       </BorrowedPanelHost>
-    </ByteSurfaceProvider>
+    </ByteRendererProvider>
   );
 }
 
@@ -306,7 +306,7 @@ export function byteContribution(
   const Adapted = ({ host, arg, input, onResult }: PanelProps): ReactElement => (
     <PanelIntakeGate host={host} input={input} onResult={onResult}>
       {(result) => (
-        <MountedByteSurface host={host}>
+        <MountedByteRenderer host={host}>
           {(resources) => (
             <ContributionBody
               Component={Component}
@@ -318,7 +318,7 @@ export function byteContribution(
               resources={resources}
             />
           )}
-        </MountedByteSurface>
+        </MountedByteRenderer>
       )}
     </PanelIntakeGate>
   );
@@ -383,7 +383,7 @@ export function byteElement(
     if (portable) {
       if (scope === null || element === null) return <Empty>Element projection unavailable.</Empty>;
       return (
-        <MountedByteSurface host={scope.host}>
+        <MountedByteRenderer host={scope.host}>
           {(resources) => (
             <PortableElementBody
               Component={Component}
@@ -392,7 +392,7 @@ export function byteElement(
               resources={resources}
             />
           )}
-        </MountedByteSurface>
+        </MountedByteRenderer>
       );
     }
     const child = createElement(
@@ -402,7 +402,7 @@ export function byteElement(
     return scope === null ? (
       child
     ) : (
-      <MountedByteSurface host={scope.host}>{() => child}</MountedByteSurface>
+      <MountedByteRenderer host={scope.host}>{() => child}</MountedByteRenderer>
     );
   };
   cache.set(Component, Adapted);

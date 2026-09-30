@@ -5,7 +5,7 @@ import {
   type ByteDownloadStatus,
 } from "@manifold/protocol";
 import { useLayoutEffect, useRef, useState, type ReactElement } from "react";
-import { useByteSurfaceServices, type ByteSurfaceDownload } from "./byte-surface.tsx";
+import { useByteRendererServices, type ByteRendererDownload } from "./byte-renderer.tsx";
 import { frameElement, frameMeta, useFrameMode } from "./frame-mode.tsx";
 import type { VocabularyMeta } from "./vocabulary.tsx";
 
@@ -63,10 +63,10 @@ function BrowserDownload({
   onChange,
   ...meta
 }: ByteDownloadProps): ReactElement {
-  const services = useByteSurfaceServices();
+  const services = useByteRendererServices();
   const callback = useRef(onChange);
   callback.current = onChange;
-  const current = useRef<ByteSurfaceDownload | null>(null);
+  const current = useRef<ByteRendererDownload | null>(null);
   const generation = useRef(0);
   const active = useRef(false);
   const [status, setStatus] = useState<ByteDownloadStatus | null>(null);
@@ -103,7 +103,7 @@ function BrowserDownload({
   };
   const downloading = status?.state === "downloading";
   return (
-    <fieldset className="mf-vocab-file" {...meta}>
+    <fieldset className="mf-vocab-file mf-vocab-byteDownload" {...meta}>
       <legend>{label}</legend>
       <button
         type="button"

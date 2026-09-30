@@ -2,11 +2,12 @@ import { defineServerAction, defineServerPlugin, type GuestCtx } from "@manifold
 import { PluginManifestSchema } from "@manifold/protocol";
 import { z } from "zod";
 import manifestJson from "./manifest.json";
+import { closeRasterReaders, rasterActions, rasterCarrier, rasterHandlers } from "./raster.ts";
 
 /*
-  THE REFERENCE ISOLATED PLUGIN, server half. One door, `example.counter.bump`: reads its own
-  storage, refuses on domain grounds, writes, emits. Every engine-touching call is awaited —
-  each one crosses the process boundary as a `call` frame the host answers.
+  THE REFERENCE ISOLATED PLUGIN, server half. The counter door reads its own storage, refuses
+  on domain grounds, writes and emits. The raster example opens bounded credential-bound reads.
+  Every engine-touching call is awaited across the process boundary.
  */
 
 const COUNT_KEY = "count";
@@ -35,11 +36,13 @@ export const handlers = {
 
 defineServerPlugin({
   manifest: PluginManifestSchema.parse(manifestJson),
-  actions: [bump],
-  handlers,
+  actions: [bump, ...rasterActions],
+  handlers: { ...handlers, ...rasterHandlers },
+  byteCarriers: { raster: rasterCarrier },
   lifecycle: {
     async onEnable(ctx) {
       if ((await ctx.storage.get(COUNT_KEY)) === null) await ctx.storage.set(COUNT_KEY, "0");
     },
+    onDisable: closeRasterReaders,
   },
 });

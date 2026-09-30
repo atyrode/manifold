@@ -80,7 +80,7 @@ export async function serveHostLifetimes(): Promise<{
       import {flushSync} from ${JSON.stringify(Bun.resolveSync("react-dom", import.meta.dir))};
       import {Stack,Text,Button,BorrowedPanel} from ${JSON.stringify(Bun.resolveSync("@manifold/ui", import.meta.dir))};
       import {ProjectionProvider,ProjectionScopeProvider} from ${JSON.stringify(Bun.resolveSync("@manifold/plugin/hooks", import.meta.dir))};
-      import {MountedByteSurface,byteContribution} from ${JSON.stringify(resolve(import.meta.dir, "../byte-surface.tsx"))};
+      import {MountedByteRenderer,byteContribution} from ${JSON.stringify(resolve(import.meta.dir, "../byte-renderer.tsx"))};
       import {isolatedPanel} from ${JSON.stringify(resolve(import.meta.dir, "isolated-panel.tsx"))};
       import {LocalFileStore} from ${JSON.stringify(resolve(import.meta.dir, "../local-files.ts"))};
       import {usePortableElementEdit} from ${JSON.stringify(resolve(import.meta.dir, "../portable-element-edit.ts"))};
@@ -155,7 +155,7 @@ export async function serveHostLifetimes(): Promise<{
             onResult:result=>results.push({...result,callbackVersion}),
           });
         }
-        else child = createElement(MountedByteSurface,{host},()=>createElement(Stack,null,
+        else child = createElement(MountedByteRenderer,{host},()=>createElement(Stack,null,
           branch && createElement(BorrowedPanel,{key:"chain",panelId:"example.lifetime.a",input:{label:"a",next:scenario === "cycle" ? ["a"] : ["b","c","d","e"]},onResult:result=>results.push(result)}),
           scenario === "budget" && createElement(BorrowedPanel,{key:"sibling",panelId:"example.lifetime.e",input:{label:"sibling"},onResult:result=>results.push(result)})));
         child = createElement(Suspense,{fallback:createElement(Text,null,"Suspended")},child,suspended && createElement(Suspender));

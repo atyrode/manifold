@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { Browser } from "../../../../scripts/cdp.ts";
 import { until } from "../../../../scripts/gate-lib.ts";
 
-/** Actual React components; only the host action/byte-surface responses are controlled. */
+/** Actual React components; only the host action/byte-renderer responses are controlled. */
 export async function withOutcomeProjection(
   run: (browser: Browser) => Promise<void>,
 ): Promise<void> {
@@ -19,7 +19,7 @@ export async function withOutcomeProjection(
       import { createRoot } from ${JSON.stringify(Bun.resolveSync("react-dom/client", resolve(import.meta.dir, "../../../web")))};
       import { flushSync } from ${JSON.stringify(Bun.resolveSync("react-dom", resolve(import.meta.dir, "../../../web")))};
       import { StrictMode, useLayoutEffect } from ${JSON.stringify(Bun.resolveSync("react", resolve(import.meta.dir, "../../../web")))};
-      import { ByteSurfaceProvider } from ${JSON.stringify(resolve(import.meta.dir, "../../../ui/src/index.ts"))};
+      import { ByteRendererProvider } from ${JSON.stringify(resolve(import.meta.dir, "../../../ui/src/index.ts"))};
       import { NativeFileTransfer } from ${JSON.stringify(resolve(import.meta.dir, "../src/native-ui.tsx"))};
       import { FileImage } from ${JSON.stringify(resolve(import.meta.dir, "../images/src/web.tsx"))};
       import { formatManifoldUri } from ${JSON.stringify(resolve(import.meta.dir, "../../../protocol/src/index.ts"))};
@@ -101,9 +101,9 @@ export async function withOutcomeProjection(
       function render() {
         const child = shown ? <><Probe />{view === "native"
           ? <NativeFileTransfer host={host} file={file} />
-          : <ByteSurfaceProvider services={services}><div style={{ width: 200, height: 200 }}>
+          : <ByteRendererProvider services={services}><div style={{ width: 200, height: 200 }}>
               <FileImage host={host} data={{ file: formatManifoldUri(ref), cropX: 0, cropY: 0, cropWidth: 1, cropHeight: 1 }} edit={{ writable: false }} />
-            </div></ByteSurfaceProvider>}</> : null;
+            </div></ByteRendererProvider>}</> : null;
         flushSync(() => root.render(strict ? <StrictMode>{child}</StrictMode> : child));
       }
       window.fixture = {

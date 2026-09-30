@@ -11,8 +11,8 @@ import {
 import { Browser } from "../../../../scripts/cdp.ts";
 
 /** Runs actual DOM controls, FileReader, worker transfers and browser raster decoding. */
-test("byte surfaces keep page/worker custody, static decode and revocation semantics identical", async () => {
-  const scratch = mkdtempSync(join(tmpdir(), "manifold-byte-surface-"));
+test("byte renderers keep page/worker custody, static decode and revocation semantics identical", async () => {
+  const scratch = mkdtempSync(join(tmpdir(), "manifold-byte-renderer-"));
   const browser = new Browser();
   let server: Bun.Server<undefined> | undefined;
   const component = `
@@ -72,11 +72,11 @@ test("byte surfaces keep page/worker custody, static decode and revocation seman
       import {createElement,useState} from ${JSON.stringify(Bun.resolveSync("react", import.meta.dir))};
       import {createRoot} from ${JSON.stringify(Bun.resolveSync("react-dom/client", import.meta.dir))};
       import {flushSync} from ${JSON.stringify(Bun.resolveSync("react-dom", import.meta.dir))};
-      import {Stack,Text,Button,FileInput,ByteImage,ByteSurfaceProvider} from ${JSON.stringify(Bun.resolveSync("@manifold/ui", import.meta.dir))};
+      import {Stack,Text,Button,FileInput,ByteImage,ByteRendererProvider} from ${JSON.stringify(Bun.resolveSync("@manifold/ui", import.meta.dir))};
       import {ByteTransferError} from ${JSON.stringify(Bun.resolveSync("@manifold/protocol", import.meta.dir))};
       import {WorkerHost} from ${JSON.stringify(resolve(import.meta.dir, "worker-host.ts"))};
       import {VocabularyRenderer} from ${JSON.stringify(resolve(import.meta.dir, "vocabulary.tsx"))};
-      import {MountedByteResources,byteContribution} from ${JSON.stringify(resolve(import.meta.dir, "../byte-surface.tsx"))};
+      import {MountedByteResources,byteContribution} from ${JSON.stringify(resolve(import.meta.dir, "../byte-renderer.tsx"))};
       import {LocalFileStore} from ${JSON.stringify(resolve(import.meta.dir, "../local-files.ts"))};
       ${component}
       let root, worker, resources, refused = false;
@@ -113,7 +113,7 @@ test("byte surfaces keep page/worker custody, static decode and revocation seman
         } else {
           resources = new MountedByteResources(client);
           worker = new WorkerHost({pluginId:"example.bytes",principal,caps:[],containerId:null,host,portableWorker:true,workerFactory:()=>new Worker("/worker.js",{type:"module"})});
-          worker.mount("one","main",tree=>flushSync(()=>root.render(createElement(ByteSurfaceProvider,{services:resources.services},createElement(VocabularyRenderer,{tree,onEvent:(event,payload)=>worker.event("one",event,payload)})))),error=>{document.getElementById("root").textContent=error},{host,arg:{source},resources});
+          worker.mount("one","main",tree=>flushSync(()=>root.render(createElement(ByteRendererProvider,{services:resources.services},createElement(VocabularyRenderer,{tree,onEvent:(event,payload)=>worker.event("one",event,payload)})))),error=>{document.getElementById("root").textContent=error},{host,arg:{source},resources});
           worker.start();
         }
         await until(()=>document.querySelector("img") !== null);

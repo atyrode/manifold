@@ -22,7 +22,7 @@ import {
   type ReactElement,
   type ReactNode,
 } from "react";
-import type { MountedByteResources } from "./byte-surface.tsx";
+import type { MountedByteResources } from "./byte-renderer.tsx";
 
 interface BorrowScope {
   readonly ancestors: readonly string[];

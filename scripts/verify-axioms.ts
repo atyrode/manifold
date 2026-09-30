@@ -463,6 +463,50 @@ interface WebRegistration {
   readonly source: string;
 }
 
+/** Resolve literal ids through their declarations, including imported contract constants. */
+function declaredString(
+  file: ts.SourceFile,
+  expression: ts.Expression,
+  seen = new Set<string>(),
+): string | null {
+  if (ts.isStringLiteralLike(expression)) return expression.text;
+  if (
+    ts.isAsExpression(expression) ||
+    ts.isSatisfiesExpression(expression) ||
+    ts.isParenthesizedExpression(expression)
+  )
+    return declaredString(file, expression.expression, seen);
+  if (!ts.isIdentifier(expression)) return null;
+  const key = `${file.fileName}:${expression.text}`;
+  if (seen.has(key)) return null;
+  seen.add(key);
+  for (const statement of file.statements) {
+    if (ts.isVariableStatement(statement)) {
+      for (const declaration of statement.declarationList.declarations) {
+        if (
+          ts.isIdentifier(declaration.name) &&
+          declaration.name.text === expression.text &&
+          declaration.initializer !== undefined
+        )
+          return declaredString(file, declaration.initializer, seen);
+      }
+    }
+    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier))
+      continue;
+    const bindings = statement.importClause?.namedBindings;
+    if (bindings === undefined || !ts.isNamedImports(bindings)) continue;
+    const binding = bindings.elements.find((entry) => entry.name.text === expression.text);
+    if (binding === undefined) continue;
+    const specifier = statement.moduleSpecifier.text;
+    const path = specifier.startsWith(".")
+      ? join(dirname(file.fileName), specifier)
+      : resolvePackageEntry(specifier);
+    if (path === null) return null;
+    return declaredString(parsed(path), binding.propertyName ?? binding.name, seen);
+  }
+  return null;
+}
+
 function registrationFromObject(
   literal: ts.ObjectLiteralExpression,
   source: string,
@@ -477,8 +521,8 @@ function registrationFromObject(
       : ts.isStringLiteral(property.name)
         ? property.name.text
         : null;
-    if (name === "id" && ts.isStringLiteral(property.initializer)) {
-      id = property.initializer.text;
+    if (name === "id") {
+      id = declaredString(literal.getSourceFile(), property.initializer);
       continue;
     }
     if (name !== "panels" && name !== "sections") continue;
@@ -500,13 +544,17 @@ function registrationFromObject(
 
 /** Follows `drawWebPlugin` back to `@manifold-plugin/canvas/draw/web` and reads the object there. */
 function resolveExportedRegistration(file: ts.SourceFile, name: string): WebRegistration | null {
+  let importedName = name;
   let specifier: string | null = null;
   walk(file, (node) => {
     if (!ts.isImportDeclaration(node) || !ts.isStringLiteral(node.moduleSpecifier)) return;
     const bindings = node.importClause?.namedBindings;
     if (bindings === undefined || !ts.isNamedImports(bindings)) return;
     for (const element of bindings.elements) {
-      if (element.name.text === name) specifier = node.moduleSpecifier.text;
+      if (element.name.text === name) {
+        specifier = node.moduleSpecifier.text;
+        importedName = element.propertyName?.text ?? element.name.text;
+      }
     }
   });
   if (specifier === null) return null;
@@ -517,7 +565,7 @@ function resolveExportedRegistration(file: ts.SourceFile, name: string): WebRegi
   walk(target, (node) => {
     if (found !== null) return;
     if (!ts.isVariableDeclaration(node) || !ts.isIdentifier(node.name)) return;
-    if (node.name.text !== name || node.initializer === undefined) return;
+    if (node.name.text !== importedName || node.initializer === undefined) return;
     if (ts.isObjectLiteralExpression(node.initializer)) {
       found = registrationFromObject(node.initializer, path);
     }
@@ -763,28 +811,52 @@ for (const row of registries.floor) {
   const DRAWINGS = "lucide-react";
   const offenders: string[] = [];
   const directionOffenders: string[] = [];
-  const domFile = ts.createSourceFile(
-    "lib.dom.d.ts",
-    readFileSync(join(dirname(ts.getDefaultLibFilePath({})), "lib.dom.d.ts"), "utf8"),
-    ts.ScriptTarget.ESNext,
-    true,
-  );
-  const domNames = new Set<string>(["React", "JSX"]);
-  for (const statement of domFile.statements) {
-    if (
-      (ts.isInterfaceDeclaration(statement) ||
-        ts.isTypeAliasDeclaration(statement) ||
-        ts.isFunctionDeclaration(statement)) &&
-      statement.name !== undefined
-    ) {
-      domNames.add(statement.name.text);
-    }
-    if (ts.isVariableStatement(statement)) {
-      for (const declaration of statement.declarationList.declarations) {
-        if (ts.isIdentifier(declaration.name)) domNames.add(declaration.name.text);
+  const libDir = dirname(ts.getDefaultLibFilePath({}));
+  const globalNames = (library: string): Set<string> => {
+    const file = ts.createSourceFile(
+      library,
+      readFileSync(join(libDir, library), "utf8"),
+      ts.ScriptTarget.ESNext,
+      true,
+    );
+    const names = new Set<string>(["React", "JSX"]);
+    for (const statement of file.statements) {
+      if (
+        (ts.isInterfaceDeclaration(statement) ||
+          ts.isTypeAliasDeclaration(statement) ||
+          ts.isFunctionDeclaration(statement)) &&
+        statement.name !== undefined
+      )
+        names.add(statement.name.text);
+      if (ts.isVariableStatement(statement)) {
+        for (const declaration of statement.declarationList.declarations) {
+          if (ts.isIdentifier(declaration.name)) names.add(declaration.name.text);
+        }
       }
     }
-  }
+    return names;
+  };
+  // Names alone cannot distinguish schema keys or locals from browser globals.
+  // Globals also declared by the server runtime (for example crypto) are portable;
+  // identifiers whose declarations belong only to the DOM/React are not.
+  const domNames = globalNames("lib.dom.d.ts");
+  const contracts = ts.createProgram(
+    PLUGIN_PACKAGES.flatMap((owner) =>
+      owner.exports["./contract"] === undefined
+        ? []
+        : [join(repoRoot, owner.dir, owner.exports["./contract"])],
+    ),
+    {
+      target: ts.ScriptTarget.ESNext,
+      module: ts.ModuleKind.Preserve,
+      moduleResolution: ts.ModuleResolutionKind.Bundler,
+      allowImportingTsExtensions: true,
+      lib: ["lib.esnext.d.ts", "lib.dom.d.ts"],
+      skipLibCheck: true,
+      noEmit: true,
+    },
+  );
+  const contractTypes = contracts.getTypeChecker();
   let scanned = 0;
   for (const owner of PLUGIN_PACKAGES) {
     for (const path of sourcesMatching(`${owner.dir}/**`)) {
@@ -793,9 +865,19 @@ for (const row of registries.floor) {
       const contractEntry = owner.exports["./contract"];
       const isContract = contractEntry !== undefined && path === join(owner.dir, contractEntry);
       if (isContract) {
-        const file = parsed(path);
+        const file = contracts.getSourceFile(join(repoRoot, path));
+        if (file === undefined) throw new Error(`Unreadable contract: ${path}`);
         walk(file, (node) => {
-          if (ts.isIdentifier(node) && domNames.has(node.text)) {
+          if (
+            ts.isIdentifier(node) &&
+            domNames.has(node.text) &&
+            contractTypes
+              .getSymbolAtLocation(node)
+              ?.declarations?.every((declaration) => {
+                const source = declaration.getSourceFile().fileName;
+                return source === join(libDir, "lib.dom.d.ts") || /\/@types\/react\//.test(source);
+              })
+          ) {
             directionOffenders.push(
               `${path}:${String(lineOf(file, node))} contract names ${node.text}`,
             );
@@ -1010,7 +1092,10 @@ for (const row of registries.floor) {
         for (const property of node.initializer.properties) {
           if (!ts.isPropertyAssignment(property)) continue;
           if (property.name.getText(file) !== "id") continue;
-          if (ts.isStringLiteral(property.initializer)) declared.push(property.initializer.text);
+          const id = declaredString(file, property.initializer);
+          if (id === null)
+            problems.push(`${path}:${String(lineOf(file, property))} has an unreadable manifest id`);
+          else declared.push(id);
         }
       });
     }
@@ -1065,6 +1150,8 @@ const ROUTE_ALLOWLIST: readonly string[] = [
   "/api/introspect",
   "/api/layout",
   "/api/bindings",
+  // Authenticated bounded carrier traffic; open/close authority stays at the action door.
+  "/api/bytes/:id/:id",
   "/api/settings",
   "/api/attendance",
   "/api/plugins",
@@ -5975,7 +6062,7 @@ try {
           const seen = new Set();
           for (const node of leaf.querySelectorAll('[class^="mf-vocab-"], [class*=" mf-vocab-"]')) {
             for (const name of node.classList) {
-              const kind = /^mf-vocab-([a-z]+)$/.exec(name);
+              const kind = /^mf-vocab-([a-zA-Z]+)$/.exec(name);
               if (kind !== null) seen.add(kind[1]);
             }
           }
@@ -5987,6 +6074,21 @@ try {
       browser!.evaluate<string | null>(`${vocabIn(".mf-vocab-badge")}?.textContent ?? null`);
 
     const painted = await settles(async () => (await headingText()) === "Counter", 20_000);
+    const rasterReady = await settles(
+      () =>
+        browser!.evaluate<boolean>(
+          `(() => { const image = ${vocabIn(".mf-vocab-byteImage img")};
+            return image instanceof HTMLImageElement && image.naturalWidth === 48 && image.naturalHeight === 24; })()`,
+        ),
+      10_000,
+    );
+    check(
+      "R11 a borrowed Worker panel decodes its authenticated raster",
+      rasterReady,
+      rasterReady
+        ? "the borrowed reader painted the 48 × 24 raster from its credential-bound byte carrier"
+        : "the borrowed reader never decoded the reference raster",
+    );
     const viewerName = await browser.evaluate<string>(
       `JSON.parse(localStorage.getItem('manifold.identity')).principal.name`,
     );
@@ -6041,10 +6143,58 @@ try {
         : `never painted: ${list(kindsMissing)}`,
     );
 
+    const downloadPressed = await browser.evaluate<boolean>(
+      `(() => { const button = ${vocabIn(".mf-vocab-byteDownload button")};
+        if (!(button instanceof HTMLButtonElement) || button.disabled) return false;
+        button.click(); return true; })()`,
+    );
+    const downloaded =
+      downloadPressed &&
+      (await settles(
+        () =>
+          browser!.evaluate<boolean>(
+            `${vocabIn(".mf-vocab-byteDownload [role=status]")}?.textContent?.startsWith("Handed to the browser.") === true`,
+          ),
+        10_000,
+      ));
+    check(
+      "R11 the Worker's byte download reaches browser handoff",
+      downloaded,
+      downloaded
+        ? "authenticated raster bytes handed to the browser"
+        : "byte download did not complete",
+    );
+
     const shot = await browser.send("Page.captureScreenshot", { format: "png" });
     const shotPath = join(tmpdir(), "manifold-axi-r11-isolated-plugin.png");
     writeFileSync(shotPath, Buffer.from(String(shot.result?.["data"] ?? ""), "base64"));
     console.log(`INFO  R11 screenshot: ${shotPath}`);
+
+    const cancelsBefore = actionLog.filter(
+      (entry) => entry.name === `${STRANGER_PLUGIN_ID}.cancelRaster`,
+    ).length;
+    const closePressed = await browser.evaluate<boolean>(
+      `(() => { const panel = ${vocabIn(".mf-vocab-borrowedPanel")};
+        const button = [...(panel?.querySelectorAll('button') ?? [])].find(node => node.textContent === "Close raster reader");
+        if (!(button instanceof HTMLButtonElement)) return false;
+        button.click(); return true; })()`,
+    );
+    const closed =
+      closePressed &&
+      (await settles(
+        async () =>
+          (await browser!.evaluate<boolean>(`${vocabIn(".mf-vocab-byteImage")} === null`)) &&
+          actionLog.filter((entry) => entry.name === `${STRANGER_PLUGIN_ID}.cancelRaster`).length ===
+            cancelsBefore + 1,
+        10_000,
+      ));
+    check(
+      "R11 a borrowed result retires the raster reader",
+      closed,
+      closed
+        ? "one result unmounted the image and cancelled its read"
+        : "the borrowed reader did not retire",
+    );
 
     /*
       Put the workspace back: the viewer's tree as it was, and the stranger's code gone — the

@@ -40,7 +40,7 @@ export function BorrowedPanel({
   const meta = frameMeta("BorrowedPanel", rest);
   if (framed) return frameElement("borrowedPanel", { panelId, input, onResult, ...meta });
   return (
-    <Stack gap="0" {...rest}>
+    <Stack gap="0" className="mf-vocab-borrowedPanel" {...rest}>
       {Component === null ? (
         <span role="status">Panel unavailable: no mounted host.</span>
       ) : (

@@ -85,7 +85,7 @@ import { createRoomPipeRegistry, panelSessionHandle } from "./room-pipes.ts";
 import { ContainerErrorBoundary } from "./error-boundary.tsx";
 import { isolatedElement, isolatedPanel, isolatedSection } from "./isolate/index.ts";
 import { webModulePath } from "./isolate/worker-host.ts";
-import { byteContribution, byteElement } from "./byte-surface.tsx";
+import { byteContribution, byteElement } from "./byte-renderer.tsx";
 import { FEED_TOPICS, SPACE_SET_LAYOUT_ACTION, WEB_PLUGIN_DEFS } from "./assembly.ts";
 
 /**

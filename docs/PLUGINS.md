@@ -4022,6 +4022,12 @@ The same React definition runs in-realm and in the Worker. This example is the
 [`example.counter` fixture](../packages/plugin-kit/test/fixtures/sample/web.tsx)
 reduced to its action and state path; its manifest declares
 `"entry": { "server": true, "web": "web.js", "worker": true }` and panel `counter`.
+The full fixture also borrows its registered `raster` panel, opens a credential-bound,
+one-minute read through `openRaster`, and renders real `ByteImage` and `ByteDownload`
+controls over its declared byte carrier. `cancelRaster` retires the read before the panel
+returns its one-shot result; unmount also attempts cancellation, the absolute deadline bounds
+an interrupted cleanup, and disable clears every remaining reader. Its `FileInput` displays
+selection metadata and releases the local handles without uploading bytes.
 
 ```tsx
 import type { PortablePanelProps } from "@manifold/plugin";
@@ -4275,7 +4281,7 @@ made public, because `@manifold/testkit` is private and an author repository can
 
 ```sh
 bun run --cwd packages/plugin-kit verify <bundle>... --hardened
-# {"bundle":"dist/example.counter.manifold-plugin.json","id":"example.counter","sha256":"8b8a…","doors":{"example.counter.bump":"ok"}}
+# {"bundle":"dist/example.counter.manifold-plugin.json","id":"example.counter","sha256":"8b8a…","doors":{"example.counter.bump":"ok","example.counter.openRaster":"ok","example.counter.cancelRaster":"invalid_args"}}
 ```
 
 It spawns this checkout's server (a temporary data dir, a fixed throwaway owner key, a free port,

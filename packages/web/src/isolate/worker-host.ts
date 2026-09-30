@@ -6,7 +6,7 @@ import type {
 } from "@manifold/plugin";
 import { MACHINES_RESOURCE } from "@manifold/plugin/portable-hooks";
 import { requestResponse } from "../http.ts";
-import { MountedByteResources } from "../byte-surface.tsx";
+import { MountedByteResources } from "../byte-renderer.tsx";
 import {
   ActionOutcomeSchema,
   ByteCarrierRequestSchema,

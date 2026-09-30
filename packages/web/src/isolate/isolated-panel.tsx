@@ -26,9 +26,9 @@ import { VocabularyRenderer } from "./vocabulary.tsx";
 import { WorkerRegistry, type WorkerLease } from "./worker-host.ts";
 import {
   type MountedByteResources,
-  MountedByteSurface,
+  MountedByteRenderer,
   portableElementProjection,
-} from "../byte-surface.tsx";
+} from "../byte-renderer.tsx";
 import { usePortableElementEdit } from "../portable-element-edit.ts";
 import { MountedPanelInput, PanelIntakeGate } from "../borrowed-panels.tsx";
 
@@ -196,7 +196,7 @@ function isolatedContribution(
   const IsolatedPanel = ({ host, arg, input, onResult }: PanelProps): ReactElement => (
     <PanelIntakeGate host={host} input={input} onResult={onResult}>
       {(result) => (
-        <MountedByteSurface host={host}>
+        <MountedByteRenderer host={host}>
           {(resources) => (
             <MountedPanelInput resources={resources} input={input} onResult={result}>
               {(captured, deliver) => (
@@ -215,7 +215,7 @@ function isolatedContribution(
               )}
             </MountedPanelInput>
           )}
-        </MountedByteSurface>
+        </MountedByteRenderer>
       )}
     </PanelIntakeGate>
   );
@@ -265,7 +265,7 @@ export function isolatedElement(
         />
       );
     return (
-      <MountedByteSurface host={scope.host}>
+      <MountedByteRenderer host={scope.host}>
         {(resources) => (
           <IsolatedInstance
             key={`${scope.host.containerId ?? ""}:${element.id}`}
@@ -279,7 +279,7 @@ export function isolatedElement(
             resources={resources}
           />
         )}
-      </MountedByteSurface>
+      </MountedByteRenderer>
     );
   };
   ELEMENT_COMPONENTS.set(key, IsolatedElement);

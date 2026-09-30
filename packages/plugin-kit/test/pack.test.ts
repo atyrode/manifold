@@ -920,8 +920,17 @@ describe("the packed server half, as a real isolate", () => {
       const loaded = await next();
       expect(loaded).toMatchObject({
         t: "loaded",
-        actions: [{ name: "example.counter.bump", caps: ["containers:read"], scope: "workspace" }],
-        hooks: { onEnable: true, onDisable: false, onAssemblyChanged: false },
+        actions: [
+          { name: "example.counter.bump", caps: ["containers:read"], scope: "workspace" },
+          { name: "example.counter.openRaster", caps: ["containers:read"], scope: "workspace" },
+          {
+            name: "example.counter.cancelRaster",
+            caps: ["containers:read"],
+            scope: "workspace",
+            cleanup: true,
+          },
+        ],
+        hooks: { onEnable: true, onDisable: true, onAssemblyChanged: false },
       });
 
       await send({

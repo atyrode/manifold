@@ -68,8 +68,12 @@ test.skipIf(!canSpawnServer())(
         bundle,
         id: PLUGIN_ID,
         sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
-        // `{}` is a legal bump (the step defaults), so the door answered a result.
-        doors: { [`${PLUGIN_ID}.bump`]: "ok" },
+        // The counter and raster-open doors accept `{}`; cancellation requires a read id.
+        doors: {
+          [`${PLUGIN_ID}.bump`]: "ok",
+          [`${PLUGIN_ID}.openRaster`]: "ok",
+          [`${PLUGIN_ID}.cancelRaster`]: "invalid_args",
+        },
       },
     ]);
   },
@@ -124,7 +128,14 @@ test.skipIf(!canSpawnServer())(
     // so returning successfully also proves the verifier's reverse uninstall traversal.
     const reports = await verifyBundles([client, part, bundle], undefined, { hardened: true });
     expect(reports.map((report) => ({ id: report.id, doors: report.doors }))).toEqual([
-      { id: PLUGIN_ID, doors: { [`${PLUGIN_ID}.bump`]: "ok" } },
+      {
+        id: PLUGIN_ID,
+        doors: {
+          [`${PLUGIN_ID}.bump`]: "ok",
+          [`${PLUGIN_ID}.openRaster`]: "ok",
+          [`${PLUGIN_ID}.cancelRaster`]: "invalid_args",
+        },
+      },
       { id: PART_ID, doors: { [`${PART_ID}.snapshot`]: "ok" } },
       { id: CLIENT_ID, doors: { [`${CLIENT_ID}.check`]: "ok" } },
     ]);

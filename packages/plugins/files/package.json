@@ -17,7 +17,6 @@
   },
   "dependencies": {
     "@manifold/plugin": "workspace:*",
-    "@manifold/plugin-kit": "workspace:*",
     "@manifold/protocol": "workspace:*",
     "@manifold/scene": "workspace:*",
     "@manifold/ui": "workspace:*",

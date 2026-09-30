@@ -1,12 +1,22 @@
 import type { PortablePanelProps } from "@manifold/plugin";
 import { defineWebPlugin } from "@manifold/plugin-kit/web";
 import {
+  ByteDownloadSourceSchema,
+  ByteImageSourceSchema,
+  type ByteImageSource,
+  type LocalFileDescriptor,
+} from "@manifold/protocol";
+import {
   Badge,
+  BorrowedPanel,
+  ByteDownload,
+  ByteImage,
   Button,
   Code,
   ControlIcon,
   Divider,
   Empty,
+  FileInput,
   Heading,
   Input,
   List,
@@ -16,7 +26,7 @@ import {
   Text,
   Toggle,
 } from "@manifold/ui";
-import { useEffect, useState, type ReactElement } from "react";
+import { useEffect, useRef, useState, type ReactElement } from "react";
 import { z } from "zod";
 
 /*
@@ -41,6 +51,8 @@ function Counter({ host }: PortablePanelProps): ReactElement {
   const [loud, setLoud] = useState(false);
   const [denial, setDenial] = useState<string | null>(null);
   const [ticks, setTicks] = useState(0);
+  const [selection, setSelection] = useState("No local files inspected.");
+  const [rasterClosed, setRasterClosed] = useState(false);
 
   useEffect(() => {
     const timer = setInterval(() => setTicks((value) => value + 1), 60_000);
@@ -55,6 +67,15 @@ function Counter({ host }: PortablePanelProps): ReactElement {
     }
     setCount(BumpResult.parse(outcome.result).count);
     setDenial(null);
+  };
+
+  const inspectFiles = async (files: readonly LocalFileDescriptor[]): Promise<void> => {
+    setSelection(files.map((file) => `${file.name}: ${file.bytes} bytes`).join(", "));
+    try {
+      await Promise.all(files.map((file) => host.localFiles.release(file.handle)));
+    } catch (error) {
+      setDenial(`Could not release the local selection: ${String(error)}`);
+    }
   };
 
   return (
@@ -77,8 +98,120 @@ function Counter({ host }: PortablePanelProps): ReactElement {
       <Code>{JSON.stringify({ ticks }, null, 2)}</Code>
       <List items={[{ key: "ticks", primary: "Ticks", secondary: String(ticks) }]} />
       <ControlIcon kind="add" size={14} />
+      <FileInput
+        label="Inspect local files"
+        multiple
+        onChange={(files) => void inspectFiles(files)}
+      />
+      <Text>{selection}</Text>
+      {rasterClosed ? (
+        <Text>The borrowed raster reader was closed.</Text>
+      ) : (
+        <BorrowedPanel
+          panelId="example.counter.raster"
+          input={{ title: "Reference raster" }}
+          onResult={() => setRasterClosed(true)}
+        />
+      )}
     </Stack>
   );
 }
 
-export default defineWebPlugin({ id: "example.counter", panels: { counter: Counter } });
+/** The host mounts this second Worker panel and owns its one-shot result and byte custody. */
+function Raster({ host, input, onResult }: PortablePanelProps): ReactElement {
+  const [source, setSource] = useState<ByteImageSource | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
+  const closing = useRef(false);
+  const cancelled = useRef<string | null>(null);
+  const title = z.object({ title: z.string() }).safeParse(input?.value);
+  useEffect(() => {
+    let active = true;
+    let opened: ByteImageSource | null = null;
+    const close = async (value: ByteImageSource): Promise<void> => {
+      try {
+        const result = await host.client.action("example.counter.cancelRaster", {
+          transferId: value.transferId,
+        });
+        if (!result.ok) console.warn(`Raster close refused: ${result.denial.message}`);
+      } catch (error) {
+        console.warn(`Raster close failed: ${String(error)}`);
+      }
+    };
+    void host.client.action("example.counter.openRaster", {}).then(
+      (outcome) => {
+        if (!outcome.ok) {
+          if (active) setFailure(outcome.denial.message);
+          return;
+        }
+        const parsed = ByteImageSourceSchema.safeParse(outcome.result);
+        if (!parsed.success) {
+          if (active) setFailure("Invalid raster read descriptor.");
+          return;
+        }
+        opened = parsed.data;
+        if (active) setSource(opened);
+        else void close(opened);
+      },
+      (error: unknown) => {
+        if (active) setFailure(String(error));
+      },
+    );
+    return () => {
+      active = false;
+      if (opened !== null && cancelled.current !== opened.transferId) void close(opened);
+    };
+  }, [host.client]);
+  const finish = async (): Promise<void> => {
+    if (source === null || closing.current) return;
+    closing.current = true;
+    try {
+      // Complete the authority-bearing close before the result retires this Worker's mount.
+      const outcome = await host.client.action("example.counter.cancelRaster", {
+        transferId: source.transferId,
+      });
+      if (!outcome.ok) {
+        setFailure(outcome.denial.message);
+        return;
+      }
+      cancelled.current = source.transferId;
+      onResult?.({ closed: true });
+    } catch (error) {
+      setFailure(`Could not close the raster reader: ${String(error)}`);
+    } finally {
+      closing.current = false;
+    }
+  };
+  return (
+    <Stack gap="0.5rem">
+      <Text>{title.success ? title.data.title : "Reference raster"}</Text>
+      {failure !== null ? <Text tone="danger">{failure}</Text> : null}
+      {source === null ? (
+        <Text>Opening authenticated raster bytes.</Text>
+      ) : (
+        <>
+          <ByteImage label="Reference checkerboard" source={source} />
+          <ByteDownload
+            label="Download reference raster"
+            filename="reference-raster.png"
+            source={ByteDownloadSourceSchema.parse({
+              pluginId: source.pluginId,
+              carrierId: source.carrierId,
+              transferId: source.transferId,
+              ref: source.ref,
+              bytes: source.bytes,
+              sha256: source.sha256,
+            })}
+          />
+        </>
+      )}
+      <Button disabled={source === null} onClick={() => void finish()}>
+        Close raster reader
+      </Button>
+    </Stack>
+  );
+}
+
+export default defineWebPlugin({
+  id: "example.counter",
+  panels: { counter: Counter, raster: Raster },
+});

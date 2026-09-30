@@ -24,19 +24,19 @@ import {
 import { frameElement, frameMeta, useFrameMode } from "./frame-mode.tsx";
 import type { VocabularyMeta } from "./vocabulary.tsx";
 
-export interface ByteSurfaceProjection {
+export interface ByteRendererProjection {
   close(): void;
   recheck(): void;
   refuse(reason: ByteImageReason): void;
 }
 
-export interface ByteSurfaceDownload {
+export interface ByteRendererDownload {
   close(): void;
   cancel(): void;
 }
 
 /** Host-only binding. Never serialized into a guest's tree or passed as plugin props. */
-export interface ByteSurfaceServices {
+export interface ByteRendererServices {
   capture(files: readonly File[]): readonly LocalFileDescriptor[];
   project(
     source: ByteImageSource,
@@ -45,27 +45,27 @@ export interface ByteSurfaceServices {
       ready(url: string, expiresAt: number): void;
       unavailable(reason: ByteImageReason): void;
     },
-  ): ByteSurfaceProjection;
+  ): ByteRendererProjection;
   download(
     source: ByteDownloadSource,
     filename: string,
     change: (status: ByteDownloadStatus) => void,
-  ): ByteSurfaceDownload;
+  ): ByteRendererDownload;
 }
-const ByteSurface = createContext<ByteSurfaceServices | null>(null);
-export function ByteSurfaceProvider({
+const ByteRenderer = createContext<ByteRendererServices | null>(null);
+export function ByteRendererProvider({
   services,
   children,
 }: {
-  readonly services: ByteSurfaceServices;
+  readonly services: ByteRendererServices;
   readonly children?: ReactNode;
 }): ReactElement {
-  return <ByteSurface value={services}>{children}</ByteSurface>;
+  return <ByteRenderer value={services}>{children}</ByteRenderer>;
 }
 
 /** Host binding used only by the page vocabulary implementation, never guest props. */
-export function useByteSurfaceServices(): ByteSurfaceServices | null {
-  return useContext(ByteSurface);
+export function useByteRendererServices(): ByteRendererServices | null {
+  return useContext(ByteRenderer);
 }
 
 export interface FileInputProps extends VocabularyMeta {
@@ -118,7 +118,7 @@ function LocalFileInput({
   onChange,
   ...meta
 }: FileInputProps): ReactElement {
-  const services = useContext(ByteSurface);
+  const services = useContext(ByteRenderer);
   const [status, setStatus] = useState("Choose or drop files. Nothing is saved until you confirm.");
   const [reading, setReading] = useState(false);
   const generation = useRef(0);
@@ -189,7 +189,7 @@ function LocalFileInput({
   };
   return (
     <fieldset
-      className="mf-vocab-file"
+      className="mf-vocab-file mf-vocab-fileInput"
       disabled={unavailable || reading}
       onDragOver={(event) => {
         if (!unavailable) event.preventDefault();
@@ -292,8 +292,8 @@ function RasterProjection({
   onChange,
   ...meta
 }: ByteImageProps): ReactElement {
-  const services = useContext(ByteSurface);
-  const surface = useRef<HTMLDivElement>(null);
+  const services = useContext(ByteRenderer);
+  const renderer = useRef<HTMLDivElement>(null);
   const frame = useRef<HTMLDivElement>(null);
   const fitRef = useRef(fit);
   fitRef.current = fit;
@@ -304,7 +304,7 @@ function RasterProjection({
   const cropRef = useRef(crop);
   cropRef.current = crop;
   const present = (): void => {
-    const container = surface.current;
+    const container = renderer.current;
     const image = container?.querySelector("img");
     if (!container || !image) return;
     const value = cropRef.current ?? { x: 0, y: 0, width: 1, height: 1 };
@@ -349,7 +349,7 @@ function RasterProjection({
     return () => observer.disconnect();
   }, [fit]);
   useLayoutEffect(() => {
-    const container = surface.current;
+    const container = renderer.current;
     if (container === null) return;
     let active = true;
     let generation = 0;
@@ -370,7 +370,7 @@ function RasterProjection({
       }
       container.replaceChildren();
     };
-    let handle: ByteSurfaceProjection | undefined;
+    let handle: ByteRendererProjection | undefined;
     try {
       if (services === null) throw new ByteTransferError("unavailable");
       const checked = ByteImageSourceSchema.parse(JSON.parse(sourceKey));
@@ -435,7 +435,7 @@ function RasterProjection({
   return (
     <div
       ref={frame}
-      className="mf-vocab-image__projection"
+      className="mf-vocab-image__projection mf-vocab-byteImage"
       style={
         fit === "frame"
           ? { position: "relative", flex: "1 1 0", minHeight: 64, width: "100%" }
@@ -443,7 +443,7 @@ function RasterProjection({
       }
       {...meta}
     >
-      <div ref={surface} style={{ position: "relative", overflow: "hidden", width: "100%" }} />
+      <div ref={renderer} style={{ position: "relative", overflow: "hidden", width: "100%" }} />
       {state.state === "ready" ? null : (
         <span className="mf-vocab-text" role="status">
           {state.state === "loading"

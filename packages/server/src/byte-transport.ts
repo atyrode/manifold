@@ -16,6 +16,7 @@ import {
 } from "@manifold/protocol";
 import type { ByteCarrierContext, ByteCarrierHandler } from "@manifold/plugin";
 import { NativeTransferError } from "@manifold/plugin";
+import type { Logger } from "./log.ts";
 
 /** No waiting queue: admission itself is bounded, including rejected/slow request bodies. */
 export class ByteRequestPool {
@@ -53,8 +54,6 @@ export class ByteRequestPool {
   }
 }
 
-export type ByteTransportFailure = "byte_handler_failed" | "byte_body_cancel_failed";
-
 export function byteFailure(reason: ByteRefusal): Response {
   const status =
     reason === "unavailable"
@@ -78,7 +77,7 @@ async function receiveBytes(
   request: Request,
   expected: number,
   context: ByteCarrierContext,
-  report: (failure: ByteTransportFailure) => void,
+  logger: Pick<Logger, "error">,
 ): Promise<Uint8Array> {
   const declared = request.headers.get("content-length");
   if (declared !== null && (!/^\d+$/.test(declared) || Number(declared) !== expected))
@@ -95,7 +94,7 @@ async function receiveBytes(
   let finished = false;
   let cancellation: Promise<void> | undefined;
   const cancel = (): Promise<void> => {
-    cancellation ??= reader.cancel().catch(() => report("byte_body_cancel_failed"));
+    cancellation ??= reader.cancel().catch(() => logger.error("byte_body_cancel_failed"));
     return cancellation;
   };
   const onAbort = (): void => {
@@ -185,11 +184,11 @@ export async function serveByteCarrier(options: {
   readonly context: ByteCarrierContext;
   readonly handler: ByteCarrierHandler;
   readonly release: () => void;
-  readonly report: (failure: ByteTransportFailure) => void;
+  readonly logger: Pick<Logger, "error">;
   readonly restrictDeadline: (expiresAt: number) => void;
   readonly admitIncoming?: () => Promise<DatabaseRecoveryAdmission>;
 }): Promise<Response> {
-  const { request, input, context, handler, release, report } = options;
+  const { request, input, context, handler, release, logger } = options;
   let writeStarted = false;
   try {
     context.assertCurrent();
@@ -210,7 +209,7 @@ export async function serveByteCarrier(options: {
     )
       throw new ByteTransferError("invalid");
     if (handler.direction === "incoming") {
-      const data = await receiveBytes(request, input.length, context, report);
+      const data = await receiveBytes(request, input.length, context, logger);
       context.assertCurrent();
       const admission = await options.admitIncoming?.();
       context.assertCurrent();
@@ -269,7 +268,7 @@ export async function serveByteCarrier(options: {
     release();
     if (error instanceof ByteTransferError) return byteFailure(error.reason);
     if (error instanceof NativeTransferError) return byteFailure(error.reason);
-    report("byte_handler_failed");
+    logger.error("byte_handler_failed");
     return byteFailure(writeStarted ? "outcome_unknown" : "unavailable");
   }
 }
