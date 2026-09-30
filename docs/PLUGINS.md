@@ -4435,8 +4435,8 @@ import (`zod` above) is inlined into your member, which is why your directory ne
 floor resolves from your directory first and from the checkout the kit runs in otherwise. The
 bundle records the version of each shared package and the protocol wire version it was built
 against (`builtAgainst`, copied to `install.builtAgainst` on your row). On every boot and
-admission the hub checks the explicit `PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS` set (47, 48 and 49
-on protocol 49) and the React major; session joins still require the exact current protocol.
+admission the hub checks the explicit `PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS` set (47, 48, 51 and 52
+on protocol 52) and the React major; session joins still require the exact current protocol.
 A known incompatibility holds the row before code loads, and the manager names the
 built/current versions. Hardened-contract and digest checks are not relaxed. Legacy missing
 metadata remains visibly unknown. Outside the shell and hub the registry does not exist, and

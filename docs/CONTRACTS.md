@@ -80,10 +80,11 @@ Session revision 34 adds the required event-frame `plugin` origin (#601, ADR 004
 kind must qualify it by its declaring origin. Topics and machine/instance frames are unchanged;
 their compatibility sets only add the shared revision, retaining previously admitted versions.
 
-Session revision **48** carries independently retained named collaborative texts and requires
-`sceneWriteAllowed` on room full-state frames. It fences clients that could replay legacy
-inline note bodies; `selfCaps` remains the raw credential ceiling, not effective authority at
-a home. Machine and instance wires are unchanged and their compatibility sets add 48.
+Session revision **52**, after integrated viewport revision 51, carries independently retained
+named collaborative texts and requires `sceneWriteAllowed` on room full-state frames. It fences
+clients that could replay legacy inline note bodies; `selfCaps` remains the raw credential
+ceiling, not effective authority at a home. Machine and instance wires are unchanged and their
+compatibility sets add 52 while retaining integrated 51; former held candidates 49/50 are not admitted.
 
 ### Producer-neutral behavior
 
@@ -2553,8 +2554,8 @@ dependency. The bundle's optional `builtAgainst` version map is recorded as
 shared builds also record React/package versions. Admission and boot check that stamp against
 the explicit `PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS` set and compare React by major. The
 bundle set is independent of session, machine and instance negotiation: sessions still require
-the current wire version. Protocol 49 admits bundle stamps 47, 48 and 49: its session document
-cutover retains the plugin ABI and the older hardened machine-inventory projection. A prior stamp
+the current wire version. Protocol 52 admits bundle stamps 47, 48, 51 and 52: its session document
+cutover retains the viewport/plugin ABI and the older hardened machine-inventory projection. A prior stamp
 may remain only with proof from unchanged released artifacts through candidate assembly and
 loading; an incompatible plugin ABI change resets the set. No numeric range, future version
 or deployment bypass is implied. Known incompatibility refuses fresh admission or holds an
@@ -3375,7 +3376,7 @@ depends on it.
   Corrupt rows remain corrupt rather than being laundered; target collisions or unsupported
   legacy shapes refuse the transaction. Notes state/storage and ownership reservations are
   explicitly reconciled, including all disabled combinations without fabricated attribution.
-  Protocol 49 fences the old inline-body session format; machine/instance compatibility remains
+  Protocol 52 fences the old inline-body session format; machine/instance compatibility remains
   additive. Rollback uses the complete pre-version image with a compatible old binary, not an
   old binary pointed at the migrated database. Disposable proof does not claim live activation.
   Migration records the maximum positive encoding growth across retained revisions as a fixed
@@ -4103,8 +4104,8 @@ incumbent continuity mismatch, or `supersession damped`). A name conflict is dec
 same atomic write that would admit the hello; it sends no welcome, changes neither machine row,
 and leaves an incumbent connection untouched. Version acceptance uses
 `MACHINE_PROTOCOL_COMPAT_VERSIONS`, currently
-`{30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49}`; session/browser joins remain strictly
-current at protocol 49. An unchanged machine
+`{30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52}`; session/browser joins remain strictly
+current at protocol 52. An unchanged machine
 wire may add a version to the set. A strictly additive-optional change may also add it only
 when old frames still parse and absent fields preserve the old semantics. Other changes
 reset the set and require a coordinated hub/transport upgrade. An admission bound applied
