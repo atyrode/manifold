@@ -154,6 +154,10 @@ import type {
   UNTRACED_DENIAL_RULE,
 } from "@manifold/protocol";
 import { isContainerGrantCap, ServiceError } from "./auth.ts";
+import {
+  ActionAuthorityFence,
+  type ActionAuthorityRequirement,
+} from "./action-authority-fence.ts";
 import type {
   AuthContext,
   AuthService,
@@ -1589,6 +1593,8 @@ export class PluginHost {
    */
   private readonly replacing = new Set<string>();
   private readonly activeDispatches = new Map<string, Set<Promise<void>>>();
+  /** Durable action bindings retire at disable/handle retirement, not a pending replacement. */
+  private readonly actionEpochs = new Map<string, number>();
   private readonly isolates: IsolateDeps | null;
   /**
    * The unpacked directory's hands (ADR 0025 §4): present exactly when this host admits
@@ -2844,8 +2850,13 @@ export class PluginHost {
     this.settlementEpochs.set(pluginId, (this.settlementEpochs.get(pluginId) ?? 0) + 1);
   }
 
+  private revokeActionAuthority(pluginId: string): void {
+    this.actionEpochs.set(pluginId, (this.actionEpochs.get(pluginId) ?? 0) + 1);
+  }
+
   private retireDatabase(pluginId: string): void {
     this.revokeSettlements(pluginId);
+    this.revokeActionAuthority(pluginId);
     const database = this.databases.get(pluginId);
     this.databases.delete(pluginId);
     database?.close();
@@ -3242,7 +3253,10 @@ export class PluginHost {
       this.assembled.roster.filter((row) => row.enabled).map((row) => row.manifest.id),
     );
     this.store.setPluginEnabled(id, enabled, changedBy, this.runtime.now());
-    if (!enabled) this.revokeSettlements(id);
+    if (!enabled) {
+      this.revokeSettlements(id);
+      this.revokeActionAuthority(id);
+    }
     if (!enabled) this.jobs?.disablePlugin(id);
     // COMMIT FIRST, then tell people. A lifecycle hook has no vote (ADR 0013 §2): the roster
     // every client will render is already the truth by the time any plugin hears about it.
@@ -5123,6 +5137,7 @@ export class PluginHost {
       none has no carried container here.
     */
     let carriedContainer: string | null = null;
+    let actionRequirements: ActionAuthorityRequirement[] = [];
     if (entry.def.requirements === undefined) {
       const carriedScope =
         scope === "container" ? this.authService.carriedScope(auth, entry.def.caps) : null;
@@ -5146,6 +5161,7 @@ export class PluginHost {
             : this.authService.allows(auth, cap) ||
               (isContainerGrantCap(cap) && carriedContainer !== null);
         if (!held) return refuse("forbidden", `${cap} capability required`);
+        actionRequirements.push({ cap });
       }
     }
     // What the handler reads as its container scope: the token's own, or the carried one.
@@ -5161,6 +5177,7 @@ export class PluginHost {
     const governed = entry.def.caps.some((cap) => GOVERNED_CAPS.includes(cap));
     // What this dispatch's admission discharged at containers, for its native bridge (ADR 0051).
     let carried: readonly ContainerGrant[] | undefined;
+    let admittedNativeRequirements: readonly AuthorityRequirement[] = [];
     const admitInput = (
       args: unknown,
       preparedTargets?: readonly unknown[],
@@ -5213,6 +5230,7 @@ export class PluginHost {
       if (preparedTargets !== undefined && preparedTargets.length !== declaredRequirements.length)
         return new ActionAdmissionDenial("invalid_args", "invalid authority targets");
       const requirements: AuthorityRequirement[] = [];
+      const fixedRequirements: ActionAuthorityRequirement[] = [];
       const carrying: { readonly containerId: string; readonly caps: ContainerGrantCap[] }[] = [];
       for (const [index, declared] of declaredRequirements.entries()) {
         let value: unknown = args;
@@ -5250,6 +5268,7 @@ export class PluginHost {
             "forbidden",
             `${declared.cap} capability required at target`,
           );
+        fixedRequirements.push({ cap: declared.cap, ref: ref.data });
         // Only engine capabilities have native revision-bound admission evidence.
         if (isEngineCap(declared.cap)) requirements.push({ cap: declared.cap, ref: ref.data });
       }
@@ -5259,7 +5278,58 @@ export class PluginHost {
           return new ActionAdmissionDenial("forbidden", "explicit version-bound consent required");
         if (carrying.length > 0) carried = carrying;
       }
+      if (entry.def.requirements !== undefined) actionRequirements = fixedRequirements;
+      admittedNativeRequirements = requirements;
       return null;
+    };
+    const handler = this.handlers.get(pluginId)?.[entry.def.name];
+    const epoch = this.actionEpochs.get(pluginId) ?? 0;
+    const input = entry.def.input;
+    const resultSchema = entry.def.result;
+    const declaredCaps = entry.def.caps;
+    const declaredDelegates = entry.def.delegates;
+    const declaredRequirements = entry.def.requirements;
+    const authorityFence = new ActionAuthorityFence(
+      this.authService,
+      auth,
+      () =>
+        !this.closed &&
+        (this.actionEpochs.get(pluginId) ?? 0) === epoch &&
+        this.assembled.actions.get(fullName)?.def === entry.def &&
+        entry.def.input === input &&
+        entry.def.result === resultSchema &&
+        entry.def.caps === declaredCaps &&
+        entry.def.delegates === declaredDelegates &&
+        entry.def.requirements === declaredRequirements &&
+        this.assembled.actions.get(fullName)?.plugin === entry.plugin &&
+        this.handlers.get(pluginId)?.[entry.def.name] === handler &&
+        this.installed.get(pluginId) === install &&
+        (this.assembled.enabled(pluginId) || entry.def.cleanup === true) &&
+        (install === undefined ||
+          nativeCaps.every(
+            (cap) => GOVERNED_CAPS.includes(cap) || withinCeiling(cap, install.row.grantedCaps),
+          )),
+      handlerScope,
+    );
+    const checkActionAuthority = (): AuthContext => {
+      try {
+        options.beforeAdmission?.();
+        const current = authorityFence.checkCurrent();
+        if (options.admissionFence && options.admissionFence() === null)
+          throw new ServiceError("forbidden", "admission unavailable");
+        if (
+          governed &&
+          !this.authService.admitGoverned(current, pluginId, fullName, admittedNativeRequirements)
+            .allowed
+        )
+          throw new ServiceError("forbidden", "explicit version-bound consent required");
+        return current;
+      } catch (error) {
+        authorityFence.close();
+        if (error instanceof ServiceError)
+          throw new ActionAdmissionDenial("forbidden", error.message);
+        throw error;
+      }
     };
     const projection =
       options.resultProjectionDigest === undefined ? undefined : entry.resultProjection;
@@ -5306,7 +5376,6 @@ export class PluginHost {
      */
     const traceId = this.store.appendTrace({ ...attribution, outcome: null, targets: [] });
     options.onTrace?.(traceId);
-    const handler = this.handlers.get(pluginId)?.[entry.def.name];
     if (handler === undefined) {
       // An assembled door is accountable even when its handler is broken or absent.
       this.store.settleTrace(traceId, "failed", []);
@@ -5349,7 +5418,7 @@ export class PluginHost {
           };
     let lease: PluginDataLease;
     try {
-      lease = this.dataLease(pluginId);
+      lease = this.dataLease(pluginId, undefined, undefined, checkActionAuthority);
     } catch (error) {
       this.store.settleTrace(traceId, "failed", []);
       throw error;
@@ -5371,25 +5440,26 @@ export class PluginHost {
       `ctx.auth.allows` answers the caller's question alone and is NOT that ceiling, so a handler
       whose door declares nothing reaches no machine however much its caller holds.
     */
-    let machineBridgeOpen = true;
     const machineAuthority = (
       cap: "containers:read" | "machines:mint" | "machines:read",
       workspace: boolean,
       node?: ManifoldRef,
     ): AuthContext => {
-      if (
-        !machineBridgeOpen ||
-        this.closed ||
-        this.assembled.actions.get(fullName)?.def !== entry.def ||
-        this.replacing.has(pluginId) ||
-        (!this.assembled.enabled(pluginId) && entry.def.cleanup !== true)
-      )
+      // Fleet calls retain their existing early replacement refusal; durable data drains
+      // against the still-current admitted binding until it is actually retired.
+      if (this.replacing.has(pluginId))
         throw new ServiceError("forbidden", "plugin authority unavailable");
+      let live: AuthContext;
+      try {
+        live = checkActionAuthority();
+      } catch (error) {
+        if (error instanceof ActionAdmissionDenial)
+          throw new ServiceError("forbidden", error.message);
+        throw error;
+      }
       const grant = this.installed.get(pluginId)?.row.grantedCaps;
-      const live =
-        withinCeiling(cap, nativeCaps) && (grant === undefined || withinCeiling(cap, grant))
-          ? this.authService.restoreCredential(this.authService.credentialReference(nativeAuth))
-          : null;
+      if (!withinCeiling(cap, nativeCaps) || (grant !== undefined && !withinCeiling(cap, grant)))
+        throw new ServiceError("forbidden", "plugin authority unavailable");
       // Graded where `ctx.auth.allows` grades a dispatch admitted on carried authority.
       const graded =
         live !== null && carriedContainer !== null && isContainerGrantCap(cap)
@@ -5441,6 +5511,8 @@ export class PluginHost {
               if (denial !== null) throw denial;
               enforceDeclaration();
               if (projectionDenial !== null) throw projectionDenial;
+              authorityFence.admit(actionRequirements);
+              checkActionAuthority();
               guestAdmitted = true;
               options.onAdmitted?.();
             },
@@ -5709,14 +5781,14 @@ export class PluginHost {
     let produced: unknown;
     const admitted = async (): Promise<unknown> => {
       try {
-        const handler = this.handlers.get(pluginId)?.[entry.def.name];
-        if (handler === undefined) throw new Error(`action "${fullName}" has no server handler`);
         const invoke = handler as (ctx: ActionCtx, args: unknown) => Promise<unknown>;
         if (!guestInput) {
           if (options.admissionFence) {
             const denial = admitInput(parsed.data);
             if (denial !== null) throw denial;
           }
+          authorityFence.admit(actionRequirements);
+          checkActionAuthority();
           options.onAdmitted?.();
         }
         const answer = await invoke(ctx, parsed.data);
@@ -5727,7 +5799,7 @@ export class PluginHost {
         return answer;
       } finally {
         lease.close();
-        machineBridgeOpen = false;
+        authorityFence.close();
       }
     };
     try {
