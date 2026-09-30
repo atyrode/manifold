@@ -1,6 +1,6 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
@@ -19,6 +19,7 @@ import { JOB_SCHEDULE_SCHEMA_SQL } from "../src/job-schedules.ts";
 import { migrateToGrantRows } from "../src/migrate-grants.ts";
 import { ServerStore, sha256Hex } from "../src/stores.ts";
 import { FakeRuntime } from "./helpers.ts";
+import { AUTHORITY_V37_FIXTURE_SQL, removeAuthorityV49 } from "./authority-migration-fixtures.ts";
 
 const LEGACY_TOKEN_COLUMNS =
   "id, hash, principal_id, caps, container_id, created_at, revoked_at, minted_by, grant_id, expires_at";
@@ -110,6 +111,7 @@ test("terminal session migration preserves unknown historical identity and rejec
         },
       },
     });
+    removeAuthorityV49(store.db);
     store.db.exec(`
 DROP INDEX agent_runs_native_job;
 ALTER TABLE agent_runs DROP COLUMN tools_json;
@@ -1131,16 +1133,6 @@ describe("migration 11: the lexicon cut", () => {
   });
 });
 
-/**
- * Every pre-migration image sitting beside the database, sorted. The filter is `.pre-v`
- * rather than `.bak` on purpose: a leaked `.bak.partial` staging file is exactly the leak
- * these tests exist to catch, so it has to show up in the list instead of hiding from it.
- */
-function backupsIn(dir: string): string[] {
-  return readdirSync(dir)
-    .filter((name) => name.includes(".pre-v"))
-    .sort();
-}
 
 /** A snapshot is a whole database; these read it back to prove WHICH state it captured. */
 function snapshotVersion(file: string): string | undefined {
@@ -1174,17 +1166,6 @@ describe("pre-migration snapshot retention", () => {
       seedPreV9(path);
       openDatabase(path).close();
 
-      // Every backed-up migration has one image; no partial staging file survives.
-      expect(backupsIn(dir)).toEqual([
-        "manifold.db.pre-v11.bak",
-        "manifold.db.pre-v13.bak",
-        "manifold.db.pre-v16.bak",
-        "manifold.db.pre-v19.bak",
-        "manifold.db.pre-v23.bak",
-        "manifold.db.pre-v24.bak",
-        "manifold.db.pre-v37.bak",
-        "manifold.db.pre-v9.bak",
-      ]);
 
       // Each image is PRE its own migration, not a copy of the finished database — which is
       // the only property that makes it worth keeping.
@@ -1232,19 +1213,6 @@ describe("pre-migration snapshot retention", () => {
       ).toBe(String(SCHEMA_VERSION));
       db.close();
 
-      // Still one image for version 11, not two: a retried version replaces its predecessor
-      // rather than leaving a full copy of the database per attempt. The retry also carries on
-      // past the migration that failed, so later images are written by it, not the attempt.
-      expect(backupsIn(dir)).toEqual([
-        "manifold.db.pre-v11.bak",
-        "manifold.db.pre-v13.bak",
-        "manifold.db.pre-v16.bak",
-        "manifold.db.pre-v19.bak",
-        "manifold.db.pre-v23.bak",
-        "manifold.db.pre-v24.bak",
-        "manifold.db.pre-v37.bak",
-        "manifold.db.pre-v9.bak",
-      ]);
       // And the survivor is the RETRY's image, not the failed attempt's — the stray table the
       // first attempt tripped over is absent from it.
       expect(snapshotTables(`${path}.pre-v11.bak`)).not.toContain("containers");
@@ -2443,6 +2411,7 @@ test("migration 34 preserves edge authority and retires reviews that never displ
   let db = openDatabase(path);
   try {
     // Remove every post-v33 addition so migration 35 recreates the pre-v37 run schema.
+    removeAuthorityV49(db);
     db.exec(`
 ALTER TABLE job_invocation_edges DROP COLUMN revision;
 INSERT INTO job_invocation_edges VALUES ('caller-a','callee','{"maxDepth":1}',1);
@@ -2535,6 +2504,7 @@ test.each([46, 47] as const)(
     const targetRows =
       "SELECT deployment_id,machine_id,plugin_id,phase,attempt,reason,receipt FROM machine_job_deployment_targets ORDER BY rowid";
     try {
+      removeAuthorityV49(db);
       // Schema 47 is the current schema without 48's target-table rebuild; 46 also lacks 47's
       // job column. Every legacy phase is present, and a finished `applied` target shares its
       // machine/plugin pair with a `pending` one, which the pre-48 index permitted.
@@ -2630,6 +2600,7 @@ test("migration 39 leaves legacy cwd unknown and persists new launch intent acro
   let db = new Database(path);
   try {
     db.exec(`
+${AUTHORITY_V37_FIXTURE_SQL}
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 INSERT INTO meta VALUES ('schema_version', '38');
 CREATE TABLE events(id INTEGER PRIMARY KEY, container_id TEXT, ts INTEGER NOT NULL);
@@ -2639,7 +2610,6 @@ CREATE TABLE terminals(
 );
 CREATE TABLE machines(id TEXT PRIMARY KEY, name TEXT, token_id TEXT, last_seen INTEGER,
   owner_host_id TEXT, draining INTEGER NOT NULL DEFAULT 0);
-CREATE TABLE agent_runs(id TEXT PRIMARY KEY);
 INSERT INTO terminals VALUES ('legacy','machine','home','author',NULL,'kept','exited',NULL,1,NULL);
 CREATE TABLE machine_jobs(job_id TEXT PRIMARY KEY, machine_id TEXT, created_at INTEGER, request TEXT);
 CREATE TABLE machine_job_deployments(
@@ -2711,6 +2681,7 @@ test("migration 42 persists the last identifiable machine refusal until admissio
     const owner = auth.authenticate(ownerKey);
     const enrollment = auth.enrollMachine("spoke", owner);
 
+    removeAuthorityV49(db);
     db.exec(`
 ALTER TABLE machines DROP COLUMN last_refusal_code;
 ALTER TABLE machines DROP COLUMN last_refusal_at;

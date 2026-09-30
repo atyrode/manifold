@@ -1,5 +1,22 @@
 import { defineAction } from "@manifold/plugin";
 import {
+  MintTokenV2RequestSchema,
+  TokenGrantV2Schema,
+  RegisterAgentV2RequestSchema,
+  RegisterAgentV2ResultSchema,
+  GetAgentV2ResultSchema,
+  ListAgentsV2ResultSchema,
+  UpdateAgentV2RequestSchema,
+  CreateRunV2RequestSchema,
+  CreateChildRunV2RequestSchema,
+  CreateRunV2ResultSchema,
+  InspectRunV2ResultSchema,
+  ListRunsV2ResultSchema,
+  ReportRunActivityV2ResultSchema,
+  AcknowledgeAgentPolicyV2ResultSchema,
+  RenewAgentRunV2ResultSchema,
+  FinishAgentRunV2ResultSchema,
+  CredentialsResponseV2Schema,
   AcknowledgeAgentPolicyRequestSchema,
   AcknowledgeAgentPolicyResultSchema,
   AgentPolicyChallengeSchema,
@@ -210,6 +227,23 @@ export const ACCESS_RESOLVE_HARNESS_SESSION_ACTION = `${accessManifest.id}.resol
 export const ACCESS_FINISH_AGENT_RUN_ACTION = `${accessManifest.id}.finishAgentRun`;
 export const ACCESS_SEND_RUN_INPUT_ACTION = `${accessManifest.id}.sendRunInput`;
 export const ACCESS_REPORT_RUN_ACTIVITY_ACTION = `${accessManifest.id}.reportRunActivity`;
+export const ACCESS_MINT_TOKEN_V2_ACTION = `${accessManifest.id}.mintTokenV2`;
+export const ACCESS_LIST_CREDENTIALS_V2_ACTION = `${accessManifest.id}.listCredentialsV2`;
+export const ACCESS_REGISTER_AGENT_V2_ACTION = `${accessManifest.id}.registerAgentV2`;
+export const ACCESS_LIST_AGENTS_V2_ACTION = `${accessManifest.id}.listAgentsV2`;
+export const ACCESS_GET_AGENT_V2_ACTION = `${accessManifest.id}.getAgentV2`;
+export const ACCESS_UPDATE_AGENT_V2_ACTION = `${accessManifest.id}.updateAgentV2`;
+export const ACCESS_DISABLE_AGENT_V2_ACTION = `${accessManifest.id}.disableAgentV2`;
+export const ACCESS_ENABLE_AGENT_V2_ACTION = `${accessManifest.id}.enableAgentV2`;
+export const ACCESS_RETIRE_AGENT_V2_ACTION = `${accessManifest.id}.retireAgentV2`;
+export const ACCESS_CREATE_RUN_V2_ACTION = `${accessManifest.id}.createRunV2`;
+export const ACCESS_CREATE_CHILD_RUN_V2_ACTION = `${accessManifest.id}.createChildRunV2`;
+export const ACCESS_LIST_RUNS_V2_ACTION = `${accessManifest.id}.listRunsV2`;
+export const ACCESS_INSPECT_RUN_V2_ACTION = `${accessManifest.id}.inspectRunV2`;
+export const ACCESS_FINISH_AGENT_RUN_V2_ACTION = `${accessManifest.id}.finishAgentRunV2`;
+export const ACCESS_RENEW_AGENT_RUN_V2_ACTION = `${accessManifest.id}.renewAgentRunV2`;
+export const ACCESS_REPORT_RUN_ACTIVITY_V2_ACTION = `${accessManifest.id}.reportRunActivityV2`;
+export const ACCESS_ACKNOWLEDGE_AGENT_POLICY_V2_ACTION = `${accessManifest.id}.acknowledgeAgentPolicyV2`;
 
 /**
  * Authority mirrors the deleted routes exactly, rung for rung.
@@ -251,6 +285,151 @@ export const accessActions = [
     scope: "container",
     input: MintTokenRequestSchema,
     result: TokenGrantSchema,
+  }),
+  defineAction({
+    name: "mintTokenV2",
+    title: "Mint a correlated scoped credential",
+    caps: ["tokens:mint"],
+    scope: "container",
+    trace: "opaque",
+    input: MintTokenV2RequestSchema,
+    result: TokenGrantV2Schema,
+  }),
+  defineAction({
+    name: "listCredentialsV2",
+    title: "List faithful live credential authority",
+    caps: ["tokens:mint"],
+    scope: "workspace",
+    input: z.strictObject({}),
+    result: CredentialsResponseV2Schema,
+  }),
+  defineAction({
+    name: "registerAgentV2",
+    title: "Register an Agent with correlated authority",
+    caps: [],
+    runAccess: "delegate",
+    trace: "opaque",
+    input: RegisterAgentV2RequestSchema,
+    result: RegisterAgentV2ResultSchema,
+  }),
+  defineAction({
+    name: "getAgentV2",
+    title: "Get an Agent's faithful authority",
+    caps: [],
+    runAccess: "inspect",
+    trace: "opaque",
+    input: AgentRequestSchema,
+    result: GetAgentV2ResultSchema,
+  }),
+  defineAction({
+    name: "listAgentsV2",
+    title: "List Agents with correlated authority",
+    caps: [],
+    runAccess: "inspect",
+    trace: "opaque",
+    input: ListAgentsRequestSchema,
+    result: ListAgentsV2ResultSchema,
+  }),
+  defineAction({
+    name: "updateAgentV2",
+    title: "Update an Agent's scoped grant or context",
+    caps: [],
+    runAccess: "delegate",
+    trace: "opaque",
+    input: UpdateAgentV2RequestSchema,
+    result: GetAgentV2ResultSchema,
+  }),
+  defineAction({
+    name: "disableAgentV2",
+    title: "Disable an Agent and withdraw its active Runs",
+    caps: [],
+    runAccess: "delegate",
+    input: AgentRequestSchema,
+    result: GetAgentV2ResultSchema,
+  }),
+  defineAction({
+    name: "enableAgentV2",
+    title: "Enable a disabled Agent",
+    caps: [],
+    runAccess: "delegate",
+    input: AgentRequestSchema,
+    result: GetAgentV2ResultSchema,
+  }),
+  defineAction({
+    name: "retireAgentV2",
+    title: "Retire an Agent from future Run admission",
+    caps: [],
+    runAccess: "delegate",
+    input: AgentRequestSchema,
+    result: GetAgentV2ResultSchema,
+  }),
+  defineAction({
+    name: "createRunV2",
+    title: "Create a Run within correlated authority",
+    caps: [],
+    runAccess: "runner",
+    input: CreateRunV2RequestSchema,
+    result: CreateRunV2ResultSchema,
+  }),
+  defineAction({
+    name: "createChildRunV2",
+    title: "Delegate a scope-attenuated child Run",
+    caps: ["agents:delegate"],
+    runAccess: "delegate",
+    agentJustification: "required",
+    input: CreateChildRunV2RequestSchema,
+    result: CreateRunV2ResultSchema,
+  }),
+  defineAction({
+    name: "inspectRunV2",
+    title: "Inspect a Run's faithful scoped authority",
+    caps: [],
+    runAccess: "inspect",
+    trace: "opaque",
+    input: InspectRunRequestSchema,
+    result: InspectRunV2ResultSchema,
+  }),
+  defineAction({
+    name: "listRunsV2",
+    title: "List safely inspectable scoped Runs",
+    caps: [],
+    runAccess: "inspect",
+    trace: "opaque",
+    input: ListRunsRequestSchema,
+    result: ListRunsV2ResultSchema,
+  }),
+  defineAction({
+    name: "reportRunActivityV2",
+    title: "Report harness-observed Run activity",
+    caps: [],
+    runAccess: "runner",
+    input: ReportRunActivityRequestSchema,
+    result: ReportRunActivityV2ResultSchema,
+  }),
+  defineAction({
+    name: "acknowledgeAgentPolicyV2",
+    title: "Acknowledge the exact policy for this scoped Run",
+    caps: [],
+    runAccess: "policy",
+    input: AcknowledgeAgentPolicyRequestSchema,
+    result: AcknowledgeAgentPolicyV2ResultSchema,
+  }),
+  defineAction({
+    name: "renewAgentRunV2",
+    title: "Renew a Run within its correlated live grant",
+    caps: [],
+    runAccess: "runner",
+    agentJustification: "required",
+    input: RenewAgentRunRequestSchema,
+    result: RenewAgentRunV2ResultSchema,
+  }),
+  defineAction({
+    name: "finishAgentRunV2",
+    title: "Finish a scoped Run and its descendants",
+    caps: [],
+    runAccess: "teardown",
+    input: FinishAgentRunRequestSchema,
+    result: FinishAgentRunV2ResultSchema,
   }),
   defineAction({
     name: "registerAgent",

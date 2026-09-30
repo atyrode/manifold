@@ -1,4 +1,21 @@
 import type {
+  MintTokenV2Request,
+  TokenGrantV2,
+  RegisterAgentV2Request,
+  RegisterAgentV2Result,
+  GetAgentV2Result,
+  ListAgentsV2Result,
+  UpdateAgentV2Request,
+  CreateRunV2Request,
+  CreateChildRunV2Request,
+  CreateRunV2Result,
+  InspectRunV2Result,
+  ListRunsV2Result,
+  ReportRunActivityV2Result,
+  AcknowledgeAgentPolicyV2Result,
+  RenewAgentRunV2Result,
+  FinishAgentRunV2Result,
+  PrincipalCredentialsV2,
   AcknowledgeAgentPolicyRequest,
   AcknowledgeAgentPolicyResult,
   AgentPolicyChallenge,
@@ -65,6 +82,7 @@ import type {
 type IdentityAnswer<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly code: string; readonly message: string };
+type AwaitableIdentity<T> = IdentityAnswer<T> | Promise<IdentityAnswer<T>>;
 
 /**
  * The slice of the host this plugin touches, declared locally (D1): identity lifecycle calls
@@ -77,6 +95,23 @@ interface AccessCtx {
   readonly identity: {
     createPrincipal(input: BootstrapPrincipalRequest): IdentityAnswer<TokenGrant>;
     mintToken(input: MintTokenRequest): IdentityAnswer<TokenGrant>;
+    mintTokenV2(input: MintTokenV2Request): AwaitableIdentity<TokenGrantV2>;
+    listCredentialsV2(): AwaitableIdentity<readonly PrincipalCredentialsV2[]>;
+    registerAgentV2(input: RegisterAgentV2Request): Promise<IdentityAnswer<RegisterAgentV2Result>>;
+    getAgentV2(input: AgentRequest): AwaitableIdentity<GetAgentV2Result>;
+    listAgentsV2(): AwaitableIdentity<ListAgentsV2Result>;
+    updateAgentV2(input: UpdateAgentV2Request): Promise<IdentityAnswer<GetAgentV2Result>>;
+    disableAgentV2(input: AgentRequest): AwaitableIdentity<GetAgentV2Result>;
+    enableAgentV2(input: AgentRequest): AwaitableIdentity<GetAgentV2Result>;
+    retireAgentV2(input: AgentRequest): AwaitableIdentity<GetAgentV2Result>;
+    createRunV2(input: CreateRunV2Request): AwaitableIdentity<CreateRunV2Result>;
+    createChildRunV2(input: CreateChildRunV2Request): AwaitableIdentity<CreateRunV2Result>;
+    inspectRunV2(input: InspectRunRequest): AwaitableIdentity<InspectRunV2Result>;
+    listRunsV2(input: ListRunsRequest): AwaitableIdentity<ListRunsV2Result>;
+    reportRunActivityV2(input: ReportRunActivityRequest): AwaitableIdentity<ReportRunActivityV2Result>;
+    acknowledgeAgentPolicyV2(input: AcknowledgeAgentPolicyRequest): AwaitableIdentity<AcknowledgeAgentPolicyV2Result>;
+    renewAgentRunV2(input: RenewAgentRunRequest): AwaitableIdentity<RenewAgentRunV2Result>;
+    finishAgentRunV2(input: FinishAgentRunRequest): AwaitableIdentity<FinishAgentRunV2Result>;
     registerAgent(input: RegisterAgentRequest): Promise<IdentityAnswer<RegisterAgentResult>>;
     listAgents(): IdentityAnswer<ListAgentsResult>;
     getAgent(input: AgentRequest): IdentityAnswer<GetAgentResult>;
@@ -165,6 +200,74 @@ type Outcome<T> = { refused: string } | T;
  * action traces, and these handlers never log arguments or results.
  */
 export const accessHandlers = {
+  async mintTokenV2(ctx: AccessCtx, args: MintTokenV2Request): Promise<Outcome<TokenGrantV2>> {
+    const result = await ctx.identity.mintTokenV2(args);
+    return result.ok ? result.value : { refused: result.message };
+  },
+  async listCredentialsV2(ctx: AccessCtx, _args: Record<string, never>): Promise<Outcome<{ principals: readonly PrincipalCredentialsV2[] }>> {
+    const result = await ctx.identity.listCredentialsV2();
+    return result.ok ? { principals: result.value } : { refused: result.message };
+  },
+  async registerAgentV2(ctx: AccessCtx, args: RegisterAgentV2Request): Promise<Outcome<RegisterAgentV2Result>> {
+    const result = await ctx.identity.registerAgentV2(args);
+    return result.ok ? result.value : { refused: result.message };
+  },
+  async getAgentV2(ctx: AccessCtx, args: AgentRequest): Promise<Outcome<GetAgentV2Result>> {
+    const result = await ctx.identity.getAgentV2(args);
+    return result.ok ? result.value : { refused: result.message };
+  },
+  async listAgentsV2(ctx: AccessCtx, _args: Record<string, never>): Promise<Outcome<ListAgentsV2Result>> {
+    const result = await ctx.identity.listAgentsV2();
+    return result.ok ? result.value : { refused: result.message };
+  },
+  async updateAgentV2(ctx: AccessCtx, args: UpdateAgentV2Request): Promise<Outcome<GetAgentV2Result>> {
+    const result = await ctx.identity.updateAgentV2(args);
+    return result.ok ? result.value : { refused: result.message };
+  },
+  async disableAgentV2(ctx: AccessCtx, args: AgentRequest): Promise<Outcome<GetAgentV2Result>> {
+    const result = await ctx.identity.disableAgentV2(args);
+    return result.ok ? result.value : { refused: result.message };
+  },
+  async enableAgentV2(ctx: AccessCtx, args: AgentRequest): Promise<Outcome<GetAgentV2Result>> {
+    const result = await ctx.identity.enableAgentV2(args);
+    return result.ok ? result.value : { refused: result.message };
+  },
+  async retireAgentV2(ctx: AccessCtx, args: AgentRequest): Promise<Outcome<GetAgentV2Result>> {
+    const result = await ctx.identity.retireAgentV2(args);
+    return result.ok ? result.value : { refused: result.message };
+  },
+  async createRunV2(ctx: AccessCtx, args: CreateRunV2Request): Promise<Outcome<CreateRunV2Result>> {
+    const result = await ctx.identity.createRunV2(args);
+    return result.ok ? result.value : { refused: result.message };
+  },
+  async createChildRunV2(ctx: AccessCtx, args: CreateChildRunV2Request): Promise<Outcome<CreateRunV2Result>> {
+    const result = await ctx.identity.createChildRunV2(args);
+    return result.ok ? result.value : { refused: result.message };
+  },
+  async inspectRunV2(ctx: AccessCtx, args: InspectRunRequest): Promise<Outcome<InspectRunV2Result>> {
+    const result = await ctx.identity.inspectRunV2(args);
+    return result.ok ? result.value : { refused: result.message };
+  },
+  async listRunsV2(ctx: AccessCtx, args: ListRunsRequest): Promise<Outcome<ListRunsV2Result>> {
+    const result = await ctx.identity.listRunsV2(args);
+    return result.ok ? result.value : { refused: result.message };
+  },
+  async reportRunActivityV2(ctx: AccessCtx, args: ReportRunActivityRequest): Promise<Outcome<ReportRunActivityV2Result>> {
+    const result = await ctx.identity.reportRunActivityV2(args);
+    return result.ok ? result.value : { refused: result.message };
+  },
+  async acknowledgeAgentPolicyV2(ctx: AccessCtx, args: AcknowledgeAgentPolicyRequest): Promise<Outcome<AcknowledgeAgentPolicyV2Result>> {
+    const result = await ctx.identity.acknowledgeAgentPolicyV2(args);
+    return result.ok ? result.value : { refused: result.message };
+  },
+  async renewAgentRunV2(ctx: AccessCtx, args: RenewAgentRunRequest): Promise<Outcome<RenewAgentRunV2Result>> {
+    const result = await ctx.identity.renewAgentRunV2(args);
+    return result.ok ? result.value : { refused: result.message };
+  },
+  async finishAgentRunV2(ctx: AccessCtx, args: FinishAgentRunRequest): Promise<Outcome<FinishAgentRunV2Result>> {
+    const result = await ctx.identity.finishAgentRunV2(args);
+    return result.ok ? result.value : { refused: result.message };
+  },
   async createPrincipal(
     ctx: AccessCtx,
     args: BootstrapPrincipalRequest,

@@ -1,9 +1,12 @@
 import { z } from "zod";
 import { CapSchema } from "./capabilities.ts";
-import { GrantNodeSchema, GrantReachSchema } from "./grants.ts";
+import { AuthorityScopeSchema, GrantNodeSchema, GrantReachSchema } from "./grants.ts";
+import { LegacyCapSchema } from "./legacy-authority.ts";
 import {
   AgentIdSchema,
   AgentRunCapsSchema,
+  AgentRunAuthorityCapsSchema,
+  AgentAuthorityScopeSchema,
   AgentCredentialSchema,
   AgentDelegationSchema,
   HarnessTargetSchema,
@@ -70,11 +73,18 @@ export type AgentRunAuthorizationPath = z.infer<typeof AgentRunAuthorizationPath
 export const AgentRunAuthorizationCredentialSchema = z.strictObject({
   tokenId: z.string().min(1).max(128).nullable(),
   grantId: z.string().min(1).max(128).nullable(),
-  caps: z.array(CapSchema).max(128),
+  caps: z.array(LegacyCapSchema).max(128),
   containerScope: z.string().min(1).max(128).nullable(),
   expiresAt: z.number().int().nonnegative().optional(),
 });
 export type AgentRunAuthorizationCredential = z.infer<typeof AgentRunAuthorizationCredentialSchema>;
+export const AgentRunAuthorizationCredentialAuthoritySchema =
+  AgentRunAuthorizationCredentialSchema.extend({
+    caps: z.array(CapSchema).max(128),
+    authorityScope: AuthorityScopeSchema.optional(),
+  });
+export type AgentRunAuthorizationCredentialAuthority =
+  z.infer<typeof AgentRunAuthorizationCredentialAuthoritySchema>;
 
 export const AgentRunCleanupSchema = z.strictObject({
   revokedCredentials: z.number().int().nonnegative(),
@@ -84,8 +94,19 @@ export const AgentRunCleanupSchema = z.strictObject({
 });
 export type AgentRunCleanup = z.infer<typeof AgentRunCleanupSchema>;
 
-export const AgentRunSchema = z
-  .strictObject({
+function validateRun(
+  run: { principal: { kind: string }; parentRunId: string | null; depth: number },
+  ctx: z.RefinementCtx,
+): void {
+  if (run.principal.kind !== "agent")
+    ctx.addIssue({ code: "custom", message: "an agent run principal must have kind agent", path: ["principal", "kind"] });
+  if (run.parentRunId === null && run.depth !== 0)
+    ctx.addIssue({ code: "custom", message: "a root run has depth zero", path: ["depth"] });
+  if (run.parentRunId !== null && run.depth === 0)
+    ctx.addIssue({ code: "custom", message: "a child run has positive depth", path: ["depth"] });
+}
+
+const AgentRunFieldsSchema = z.strictObject({
     id: AgentRunIdSchema,
     agentId: AgentIdSchema,
     session: SessionRefSchema.nullable(),
@@ -114,20 +135,24 @@ export const AgentRunSchema = z
     policyRevision: PolicyDigestSchema,
     acknowledgedPolicyRevision: PolicyDigestSchema.optional(),
     cleanup: AgentRunCleanupSchema,
-  })
-  .refine((run) => run.principal.kind === "agent", {
-    message: "an agent run principal must have kind agent",
-    path: ["principal", "kind"],
-  })
-  .refine((run) => run.parentRunId !== null || run.depth === 0, {
-    message: "a root run has depth zero",
-    path: ["depth"],
-  })
-  .refine((run) => run.parentRunId === null || run.depth > 0, {
-    message: "a child run has positive depth",
-    path: ["depth"],
   });
+export const AgentRunSchema = AgentRunFieldsSchema.superRefine(validateRun);
 export type AgentRun = z.infer<typeof AgentRunSchema>;
+export const AgentRunAuthoritySchema = AgentRunFieldsSchema.extend({
+  caps: AgentRunAuthorityCapsSchema,
+  authorityScope: AgentAuthorityScopeSchema.optional(),
+  authorizationCredential: AgentRunAuthorizationCredentialAuthoritySchema,
+}).superRefine(validateRun).refine(
+  (run) => run.authorityScope !== undefined || run.caps.length > 0,
+  { message: "legacy run authority requires at least one capability", path: ["caps"] },
+);
+export type AgentRunAuthority = z.infer<typeof AgentRunAuthoritySchema>;
+export const AgentRunV2Schema = AgentRunFieldsSchema.extend({
+  caps: AgentRunAuthorityCapsSchema,
+  scope: AgentAuthorityScopeSchema,
+  authorizationCredential: AgentRunAuthorizationCredentialAuthoritySchema,
+}).superRefine(validateRun);
+export type AgentRunV2 = z.infer<typeof AgentRunV2Schema>;
 
 export const CreateRunRequestSchema = z.strictObject({
   agentId: AgentIdSchema,
@@ -389,3 +414,34 @@ export const AgentToolReplySchema = z
     }
   });
 export type AgentToolReply = z.infer<typeof AgentToolReplySchema>;
+
+/** V2 narrowing names correlated scope; omission inherits the immutable baseline. */
+export const CreateRunV2RequestSchema = CreateRunRequestSchema.omit({ caps: true }).extend({
+  scope: AgentAuthorityScopeSchema.optional(),
+});
+export type CreateRunV2Request = z.infer<typeof CreateRunV2RequestSchema>;
+export const CreateChildRunV2RequestSchema = CreateRunV2RequestSchema.omit({ agentId: true }).extend({
+  runId: AgentRunIdSchema,
+  agentId: AgentIdSchema.optional(),
+});
+export type CreateChildRunV2Request = z.infer<typeof CreateChildRunV2RequestSchema>;
+export const CreateRunV2ResultSchema = CreateRunResultSchema.extend({ run: AgentRunV2Schema });
+export type CreateRunV2Result = z.infer<typeof CreateRunV2ResultSchema>;
+export const CreateRunV2CredentialResultSchema = CreateRunV2ResultSchema.required({ credential: true });
+export type CreateRunV2CredentialResult = z.infer<typeof CreateRunV2CredentialResultSchema>;
+export const CreateChildRunV2ResultSchema = CreateRunV2ResultSchema;
+export type CreateChildRunV2Result = z.infer<typeof CreateChildRunV2ResultSchema>;
+export const ReportRunActivityV2ResultSchema = ReportRunActivityResultSchema.extend({ run: AgentRunV2Schema });
+export type ReportRunActivityV2Result = z.infer<typeof ReportRunActivityV2ResultSchema>;
+export const AcknowledgeAgentPolicyV2RequestSchema = AcknowledgeAgentPolicyRequestSchema;
+export type AcknowledgeAgentPolicyV2Request = z.infer<typeof AcknowledgeAgentPolicyV2RequestSchema>;
+export const AcknowledgeAgentPolicyV2ResultSchema = AcknowledgeAgentPolicyResultSchema.extend({ run: AgentRunV2Schema });
+export type AcknowledgeAgentPolicyV2Result = z.infer<typeof AcknowledgeAgentPolicyV2ResultSchema>;
+export const RenewAgentRunV2RequestSchema = RenewAgentRunRequestSchema;
+export type RenewAgentRunV2Request = z.infer<typeof RenewAgentRunV2RequestSchema>;
+export const RenewAgentRunV2ResultSchema = RenewAgentRunResultSchema.extend({ run: AgentRunV2Schema });
+export type RenewAgentRunV2Result = z.infer<typeof RenewAgentRunV2ResultSchema>;
+export const FinishAgentRunV2RequestSchema = FinishAgentRunRequestSchema;
+export type FinishAgentRunV2Request = z.infer<typeof FinishAgentRunV2RequestSchema>;
+export const FinishAgentRunV2ResultSchema = FinishAgentRunResultSchema.extend({ run: AgentRunV2Schema });
+export type FinishAgentRunV2Result = z.infer<typeof FinishAgentRunV2ResultSchema>;

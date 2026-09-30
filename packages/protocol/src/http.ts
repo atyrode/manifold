@@ -1,5 +1,7 @@
 import { z } from "zod";
-import { CapSchema } from "./capabilities.ts";
+import { CapSchema, isEngineCap } from "./capabilities.ts";
+import { AuthorityScopeSchema } from "./grants.ts";
+import { LegacyCapSchema } from "./legacy-authority.ts";
 import { HEX_COLOR } from "./elements.ts";
 import { ContainerDisciplineSchema, TileLayoutSchema } from "./layout.ts";
 import { BindingOverridesSchema, PluginRosterSchema, PluginSettingValuesSchema } from "./plugin.ts";
@@ -110,7 +112,7 @@ export const MintTokenRequestSchema = z
     /** Either reuse an existing principal or create one inline. */
     principalId: z.string().min(1).optional(),
     principal: BootstrapPrincipalRequestSchema.optional(),
-    caps: z.array(CapSchema).min(1),
+    caps: z.array(LegacyCapSchema).min(1),
     containerId: z.string().min(1).optional(),
   })
   .refine((v) => (v.principalId === undefined) !== (v.principal === undefined), {
@@ -121,7 +123,7 @@ export type MintTokenRequest = z.infer<typeof MintTokenRequestSchema>;
 export const TokenGrantSchema = z.strictObject({
   token: z.string().min(1),
   principal: PrincipalSchema,
-  caps: z.array(CapSchema).min(1),
+  caps: z.array(LegacyCapSchema).min(1),
   containerId: z.string().nullable(),
   /**
    * When this credential stops authenticating (ADR 0019 §2). ABSENT means never, which is
@@ -132,6 +134,32 @@ export const TokenGrantSchema = z.strictObject({
   expiresAt: z.number().int().positive().optional(),
 });
 export type TokenGrant = z.infer<typeof TokenGrantSchema>;
+
+export const MintTokenV2RequestSchema = z.strictObject({
+  principalId: z.string().min(1).optional(),
+  principal: BootstrapPrincipalRequestSchema.optional(),
+  scope: AuthorityScopeSchema,
+  /** A context anchor, not a product with the capability summary. */
+  containerId: z.string().min(1).optional(),
+  expiresAt: z.number().int().positive(),
+}).refine((value) => (value.principalId === undefined) !== (value.principal === undefined), {
+  message: "exactly one of principalId | principal is required",
+});
+export type MintTokenV2Request = z.infer<typeof MintTokenV2RequestSchema>;
+export const TokenGrantV2Schema = z.strictObject({
+  token: z.string().min(1),
+  principal: PrincipalSchema,
+  scope: AuthorityScopeSchema,
+  caps: z.array(CapSchema.exclude(["*"])).max(128),
+  containerId: z.string().nullable(),
+  expiresAt: z.number().int().positive(),
+}).refine((grant) => {
+  const expected = new Set(grant.scope.flatMap((entry) => entry.caps.filter(isEngineCap)));
+  return grant.caps.length === expected.size && grant.caps.every((cap) => expected.has(cap));
+}, { message: "token capability summary must match its scope", path: ["caps"] });
+export type TokenGrantV2 = z.infer<typeof TokenGrantV2Schema>;
+export const MintTokenV2ResultSchema = TokenGrantV2Schema;
+export type MintTokenV2Result = z.infer<typeof MintTokenV2ResultSchema>;
 
 /**
  * A short-lived, audience-bound statement from one manifold instance that another may exchange
@@ -148,7 +176,7 @@ export const PreviewIdentityClaimsSchema = z.strictObject({
   expiresAt: z.number().int().positive(),
   nonce: PreviewIdentityNonceSchema,
   principal: PrincipalSchema,
-  caps: z.array(CapSchema).min(1),
+  caps: z.array(LegacyCapSchema).min(1),
   containerId: z.null(),
 });
 export type PreviewIdentityClaims = z.infer<typeof PreviewIdentityClaimsSchema>;
@@ -224,7 +252,7 @@ export const CredentialSchema = z.strictObject({
   mintedBy: z.string().min(1).optional(),
   /** The container this credential is confined to; absent for a workspace-grade one. */
   containerId: z.string().min(1).optional(),
-  caps: z.array(CapSchema),
+  caps: z.array(LegacyCapSchema),
   /** When it stops authenticating; absent means never, exactly as on {@link TokenGrantSchema}. */
   expiresAt: z.number().int().positive().optional(),
 });
@@ -259,6 +287,25 @@ export const CredentialsResponseSchema = z.strictObject({
   principals: z.array(PrincipalCredentialsSchema),
 });
 export type CredentialsResponse = z.infer<typeof CredentialsResponseSchema>;
+
+/** Faithful credential evidence, including explicit empty scope; absence preserves legacy meaning. */
+export const CredentialV2Schema = CredentialSchema.extend({
+  caps: z.array(CapSchema).max(128),
+  authorityScope: AuthorityScopeSchema.optional(),
+});
+export type CredentialV2 = z.infer<typeof CredentialV2Schema>;
+export const PrincipalCredentialsV2Schema = PrincipalCredentialsSchema.extend({
+  sessions: z.array(CredentialV2Schema),
+});
+export type PrincipalCredentialsV2 = z.infer<typeof PrincipalCredentialsV2Schema>;
+export const CredentialsResponseV2Schema = CredentialsResponseSchema.extend({
+  principals: z.array(PrincipalCredentialsV2Schema),
+});
+export type CredentialsResponseV2 = z.infer<typeof CredentialsResponseV2Schema>;
+export const ListCredentialsV2RequestSchema = z.strictObject({});
+export type ListCredentialsV2Request = z.infer<typeof ListCredentialsV2RequestSchema>;
+export const ListCredentialsV2ResultSchema = CredentialsResponseV2Schema;
+export type ListCredentialsV2Result = z.infer<typeof ListCredentialsV2ResultSchema>;
 /** One principal whose credential exercise is being paused or resumed. */
 export const PrincipalAccessPauseRequestSchema = z.strictObject({
   principalId: z.string().min(1),

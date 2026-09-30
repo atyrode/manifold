@@ -1,8 +1,45 @@
 import { timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import {
-  AgentSchema,
-  AgentGrantSchema,
+  AgentAuthoritySchema,
+  AgentGrantAuthoritySchema,
+  AgentRunAuthoritySchema,
+  AuthorityScopeSchema,
+  canonicalizeAuthorityScope,
+  scopeAdmits,
+  scopeWithin,
+  projectLegacyAgent,
+  projectLegacyRun,
+  projectAgentV2,
+  projectRunV2,
+  MintTokenV2RequestSchema,
+  RegisterAgentV2RequestSchema,
+  UpdateAgentV2RequestSchema,
+  CreateRunV2RequestSchema,
+  CreateChildRunV2RequestSchema,
+  type AuthorityScope,
+  type GrantNode,
+  type MintTokenV2Request,
+  type TokenGrantV2,
+  type RegisterAgentV2Request,
+  type RegisterAgentV2Result,
+  type UpdateAgentV2Request,
+  type GetAgentV2Result,
+  type ListAgentsV2Result,
+  type CreateRunV2Request,
+  type CreateChildRunV2Request,
+  type CreateRunV2Result,
+  type RenewAgentRunV2Result,
+  type FinishAgentRunV2Result,
+  type ReportRunActivityV2Result,
+  type AcknowledgeAgentPolicyV2Result,
+  type PrincipalCredentialsV2,
+  type InspectRunV2Result,
+  type ListRunsV2Result,
+  type ReportRunActivityResult,
+  AgentRunInspectionV2Schema,
+  AgentRunInventorySchema,
+  projectLegacyCredential,
   RegisterAgentRequestSchema,
   UpdateAgentRequestSchema,
   CreateRunRequestSchema,
@@ -11,8 +48,10 @@ import {
   InspectRunRequestSchema,
   type InspectRunRequest,
   type InspectRunResult,
-  type Agent,
-  type AgentGrant,
+  type AgentAuthority as Agent,
+  type AgentGrantAuthority as AgentGrant,
+  type Agent as LegacyAgent,
+  type AgentRun as LegacyRun,
   type AgentRequest,
   type RegisterAgentRequest,
   type RegisterAgentResult,
@@ -29,12 +68,10 @@ import {
   type HarnessTarget,
   type ActionResultApproval,
   AcknowledgeAgentPolicyRequestSchema,
-  AgentRunSchema,
   AgentRunInspectionSchema,
   FinishAgentRunRequestSchema,
   RenewAgentRunRequestSchema,
   type AgentRunInspection,
-  type AgentRunInventory,
   AGENT_RUN_MAX_RENEWALS,
   BootstrapPrincipalRequestSchema,
   CAPS,
@@ -55,8 +92,8 @@ import {
   type AcknowledgeAgentPolicyRequest,
   type AcknowledgeAgentPolicyResult,
   type AgentPolicyChallenge,
-  type AgentRun,
-  type AgentRunCap,
+  type AgentRunAuthority as AgentRun,
+  type AgentRunAuthorityCap as AgentRunCap,
   type AgentRunState,
   type FinishAgentRunRequest,
   type FinishAgentRunResult,
@@ -100,6 +137,43 @@ import type {
 import { sha256Hex } from "./stores.ts";
 import { loadAgentPolicy, type AgentPolicySet } from "./agent-runs.ts";
 import { normalizeAgentDeclaration } from "./log.ts";
+
+type AgentAuthorityResult = { agent: Agent; canManage: boolean };
+type RegisterAgentAuthorityResult = { agent: Agent; created: boolean; credential?: { token: string; expiresAt: number } };
+type CreateRunAuthorityResult = { run: AgentRun; credential?: { token: string; expiresAt: number } };
+type FinishRunAuthorityResult = { run: AgentRun; finishedRuns: number; revokedCredentials: number; revokedGrants: number };
+type RenewRunAuthorityResult = { run: AgentRun; credential: { token: string; expiresAt: number }; revokedCredentials: number };
+type RegisterAgentAuthorityInput = Omit<RegisterAgentRequest, "grant"> & { grant: AgentGrant };
+type UpdateAgentAuthorityInput = Omit<UpdateAgentRequest, "grant"> & { grant?: AgentGrant };
+type CreateRunAuthorityInput = Omit<CreateRunRequest, "caps"> & {
+  caps?: readonly AgentRunCap[];
+  authorityScope?: AuthorityScope;
+  scopedApi?: boolean;
+};
+
+function standingScope(grant: AgentGrant): AuthorityScope {
+  return grant.authorityScope ?? grant.targets.map((target) => ({
+    target, reach: grant.reach, caps: [...grant.caps],
+  }));
+}
+
+function runScope(run: Pick<AgentRunRecord, "authorityScope" | "caps" | "target" | "reach">): AuthorityScope {
+  return run.authorityScope ?? [{ target: run.target, reach: run.reach, caps: [...run.caps] }];
+}
+
+function internalGrant(grant: RegisterAgentV2Request["grant"]): AgentGrant {
+  const authorityScope = canonicalizeAuthorityScope(grant.scope);
+  return {
+    caps: [...new Set(authorityScope.flatMap((entry) => entry.caps))] as AgentGrant["caps"],
+    targets: [...new Set(authorityScope.map((entry) => entry.target))],
+    reach: "subtree",
+    authorityScope,
+    maxRunLifetimeMs: grant.maxRunLifetimeMs,
+    delegation: grant.delegation,
+    expiresAt: grant.expiresAt,
+    ...(grant.tools === undefined ? {} : { tools: grant.tools }),
+  };
+}
 
 const OWNER_PRINCIPAL_META = "owner_principal_id";
 const COLORS = ["#2563eb", "#16a34a", "#9333ea", "#ea580c", "#0891b2", "#db2777"] as const;
@@ -242,6 +316,8 @@ export interface AuthContext {
    * and `restoreCredential` reads it back, so no refresh can shed it.
    */
   containerGrants?: readonly ContainerGrant[] | undefined;
+  /** Immutable correlated credential ceiling; only absence retains legacy authority. */
+  authorityScope?: AuthorityScope | undefined;
 }
 
 /**
@@ -289,6 +365,10 @@ export interface NativeRunAuthority {
 }
 
 function contextContainsNode(context: AuthContext, node: string): boolean {
+  if (context.authorityScope !== undefined)
+    return context.authorityScope.some(({ target, reach }) =>
+      target === node || (reach === "subtree" && containmentPath(node)?.includes(target)),
+    );
   if (context.containerScope === null) return true;
   const path = containmentPath(node);
   return (
@@ -309,7 +389,7 @@ function contextContainsNode(context: AuthContext, node: string): boolean {
 export type CredentialReference = Readonly<
   Pick<
     AuthContext,
-    "tokenId" | "grantId" | "caps" | "containerScope" | "expiresAt" | "containerGrants"
+    "tokenId" | "grantId" | "caps" | "containerScope" | "expiresAt" | "containerGrants" | "authorityScope"
   > & {
     principalId: string;
   }
@@ -768,6 +848,7 @@ export class AuthService {
       containerScope: token.containerId,
       tokenId: token.id,
       grantId: token.grantId,
+      ...(token.authorityScope === undefined ? {} : { authorityScope: token.authorityScope }),
       ...(token.expiresAt === null ? {} : { expiresAt: token.expiresAt }),
       ...(agentRun === null ? {} : { agentRunId: agentRun.id }),
       ...(runner === null ? {} : { agentRunnerId: runner.agentId }),
@@ -841,7 +922,7 @@ export class AuthService {
       scope === null
         ? MANIFOLD_ROOT_URI
         : formatManifoldUri({ kind: "container", containerId: scope });
-    return this.effectiveCaps(context, node).has(cap);
+    return this.allowsNode(context, cap, node);
   }
 
   /**
@@ -873,6 +954,7 @@ export class AuthService {
     // Work whose lineage carries container authority was bounded to containers; root is the
     // workspace, so neither the owner key nor a `*` token lends root through it (ADR 0051).
     if (context.containerGrants !== undefined) return false;
+    if (context.authorityScope !== undefined) return false;
     if (context.tokenId === null) return this.isOwnerKey(context);
     const cached = this.authorityFor(context);
     cached.root ??= this.wildcardUnattenuated(context);
@@ -1016,13 +1098,19 @@ export class AuthService {
     }
     if (context.expiresAt !== undefined && context.expiresAt <= this.runtime.now())
       return new Set();
+    if (!contextContainsNode(context, node)) return new Set();
+    if (context.tokenId !== null) {
+      const token = this.store.getToken(context.tokenId);
+      if (token === null || token.revokedAt !== null ||
+          (token.expiresAt !== null && token.expiresAt <= this.runtime.now())) return new Set();
+    }
     const run =
       context.agentRunId === undefined ? null : this.store.getAgentRun(context.agentRunId);
     if (
       context.agentRunId !== undefined &&
       (run === null ||
         this.agentRunPolicyState(context) !== "active" ||
-        !runContainsNode(run, node))
+        (run.authorityScope === undefined && !runContainsNode(run, node)))
     )
       return new Set();
     const sponsorCaps = run === null ? null : this.agentRunSponsorCaps(run, node);
@@ -1043,10 +1131,13 @@ export class AuthService {
       path === null
         ? new Set<AskableCap>()
         : effectiveCapsFrom(this.applicableRows(context, path), path, context.principal);
+    const scoped = context.authorityScope === undefined
+      ? evaluated
+      : new Set([...evaluated].filter((cap) => scopeAdmits(context.authorityScope!, node, cap)));
     let answer: ReadonlySet<AskableCap> =
       run === null
-        ? evaluated
-        : new Set([...evaluated].filter((cap) => run.caps.includes(cap as AgentRunCap)));
+        ? scoped
+        : new Set([...scoped].filter((cap) => scopeAdmits(runScope(run), node, cap)));
     if (sponsorCaps !== null) {
       answer = new Set([...answer].filter((cap) => sponsorCaps.has(cap)));
     }
@@ -1064,8 +1155,8 @@ export class AuthService {
       agent === null ||
       agent.status === "disabled" ||
       agent.grant.expiresAt <= this.runtime.now() ||
-      !agent.grant.targets.some((target) =>
-        runContainsNode({ target, reach: agent.grant.reach }, node),
+      !standingScope(agent.grant).some(({ target, reach }) =>
+        runContainsNode({ target, reach }, node),
       )
     )
       return new Set();
@@ -1077,7 +1168,10 @@ export class AuthService {
     if (sponsor === null || !contextContainsNode(sponsor, node)) return new Set();
     const sponsorCaps =
       sponsor === standingSponsor ? standingCaps : this.effectiveCaps(sponsor, node);
-    return new Set(agent.grant.caps.filter((cap) => standingCaps.has(cap) && sponsorCaps.has(cap)));
+    return new Set(agent.grant.caps.filter((cap) =>
+      scopeAdmits(standingScope(agent.grant), node, cap) &&
+      standingCaps.has(cap) && sponsorCaps.has(cap),
+    ));
   }
 
   private restoreAgentSponsor(agent: AgentRecord): AuthContext | null {
@@ -1107,16 +1201,50 @@ export class AuthService {
    * machine's rows answer.
    */
   allowsRef(context: AuthContext, cap: AskableCap, ref: ManifoldRef): boolean {
-    if (!ManifoldRefSchema.safeParse(ref).success) return false;
-    const node = formatManifoldUri(ref);
-    if (
-      context.containerScope !== null &&
-      !containmentPath(node)?.includes(
-        formatManifoldUri({ kind: "container", containerId: context.containerScope }),
-      )
-    )
+    return ManifoldRefSchema.safeParse(ref).success &&
+      this.allowsNode(context, cap, formatManifoldUri(ref));
+  }
+
+  /** Exact live authority; a node-only permission never proves a whole subtree. */
+  allowsNode(context: AuthContext, cap: AskableCap, node: GrantNode, reach: GrantReach = "node"): boolean {
+    const path = containmentPath(node);
+    if (path === null || !contextContainsNode(context, node) ||
+        !this.effectiveCaps(context, node).has(cap)) return false;
+    if (reach === "node") return true;
+    if (!canContain(node)) return false;
+    if (context.authorityScope !== undefined &&
+        !scopeAdmits(context.authorityScope, node, cap, "subtree")) return false;
+    if (!effectiveCapsFrom(this.applicableRows(context, path), [...path, BENEATH_ANY_NODE], context.principal).has(cap))
       return false;
-    return this.effectiveCaps(context, node).has(cap);
+    if (context.containerGrants !== undefined && isContainerGrantCap(cap) &&
+        !context.containerGrants.some((grant) => grant.caps.includes(cap) && withinContainer(node, grant.containerId)))
+      return false;
+    if (context.agentRunId !== undefined) {
+      const run = this.store.getAgentRun(context.agentRunId);
+      const agent = run === null ? null : this.store.getAgent(run.agentId);
+      const standing = agent === null ? null : this.restoreAgentSponsor(agent);
+      const parent = run?.parentRunId == null ? standing : this.restoreRunCredential(run.parentRunId);
+      if (run === null || agent === null || standing === null || parent === null ||
+          !scopeAdmits(runScope(run), node, cap, "subtree") ||
+          !scopeAdmits(standingScope(agent.grant), node, cap, "subtree") ||
+          !this.allowsNode(standing, cap, node, "subtree") ||
+          (parent !== standing && !this.allowsNode(parent, cap, node, "subtree"))) return false;
+    }
+    return true;
+  }
+  /** A new human credential cannot delegate a subtree its issuer already denies. */
+  private issuanceAdmits(context: AuthContext, cap: AskableCap, node: GrantNode, reach: GrantReach): boolean {
+    if (!this.allowsNode(context, cap, node, reach)) return false;
+    if (reach === "node") return true;
+    for (const deny of this.store.denyGrantsFor(context.principal)) {
+      if (!containmentPath(deny.node)?.includes(node)) continue;
+      const at = containmentPath(deny.node)!;
+      const rows = this.applicableRows(context, at);
+      if (!effectiveCapsFrom(rows, at, context.principal).has(cap)) return false;
+      if (deny.reach === "subtree" && canContain(deny.node) &&
+          !effectiveCapsFrom(rows, [...at, BENEATH_ANY_NODE], context.principal).has(cap)) return false;
+    }
+    return true;
   }
 
   /**
@@ -1126,12 +1254,13 @@ export class AuthService {
    * what the grant rows say at that node is the evaluator's question, asked separately.
    */
   ceilingAdmits(context: AuthContext, cap: AskableCap, ref: ManifoldRef): boolean {
-    const grants = context.containerGrants;
-    if (grants === undefined || !isContainerGrantCap(cap)) return hasCap(context.caps, cap);
     const node = formatManifoldUri(ref);
-    return grants.some(
-      (grant) => grant.caps.includes(cap) && withinContainer(node, grant.containerId),
-    );
+    if (context.authorityScope !== undefined && !scopeAdmits(context.authorityScope, node, cap))
+      return false;
+    const grants = context.containerGrants;
+    if (grants === undefined || !isContainerGrantCap(cap))
+      return context.authorityScope === undefined ? hasCap(context.caps, cap) : true;
+    return grants.some((grant) => grant.caps.includes(cap) && withinContainer(node, grant.containerId));
   }
 
   /**
@@ -1141,9 +1270,11 @@ export class AuthService {
    * carried cap the answer is its container alone.
    */
   ceilingCaps(context: AuthContext): readonly Cap[] {
+    const ceiling = context.authorityScope === undefined ? context.caps :
+      [...new Set(context.authorityScope.flatMap((entry) => entry.caps).filter(isEngineCap))];
     const grants = context.containerGrants;
-    if (grants === undefined) return context.caps;
-    const caps: Cap[] = context.caps.filter((cap) => !isContainerGrantCap(cap));
+    if (grants === undefined) return ceiling;
+    const caps: Cap[] = ceiling.filter((cap) => !isContainerGrantCap(cap));
     for (const cap of CONTAINER_GRANT_CAPS)
       if (grants.some((grant) => grant.caps.includes(cap))) caps.push(cap);
     return caps;
@@ -1177,6 +1308,7 @@ export class AuthService {
       grantId: context.grantId,
       caps: [...context.caps],
       containerScope: context.containerScope,
+      ...(context.authorityScope === undefined ? {} : { authorityScope: canonicalizeAuthorityScope(context.authorityScope) }),
       ...(context.expiresAt === undefined ? {} : { expiresAt: context.expiresAt }),
       ...(context.containerGrants === undefined
         ? {}
@@ -1200,6 +1332,8 @@ export class AuthService {
         ? undefined
         : ContainerGrantsSchema.safeParse(reference.containerGrants);
     if (grants?.success === false) return null;
+    const scope = reference.authorityScope === undefined ? undefined : AuthorityScopeSchema.safeParse(reference.authorityScope);
+    if (scope?.success === false) return null;
     const carried = grants?.data.flatMap((grant) => grant.caps) ?? [];
     if (carried.some((cap) => hasCap(reference.caps, cap))) return null;
     const principal = this.store.getPrincipal(reference.principalId);
@@ -1215,7 +1349,9 @@ export class AuthService {
         token.containerId !== reference.containerScope ||
         (token.expiresAt !== null && token.expiresAt <= this.runtime.now()) ||
         reference.caps.some((c) => !token.caps.includes(c) && !token.caps.includes("*")) ||
-        carried.some((c) => !token.caps.includes(c) && !token.caps.includes("*"))
+        carried.some((c) => !token.caps.includes(c) && !token.caps.includes("*")) ||
+        (token.authorityScope === undefined ? reference.authorityScope !== undefined :
+          reference.authorityScope === undefined || !scopeWithin(reference.authorityScope, token.authorityScope))
       )
         return null;
     } else if (reference.principalId !== this.ownerPrincipal.id) return null;
@@ -1225,6 +1361,7 @@ export class AuthService {
       containerScope: reference.containerScope,
       tokenId: reference.tokenId,
       grantId: reference.grantId,
+      ...(scope === undefined ? {} : { authorityScope: canonicalizeAuthorityScope(scope.data) }),
       ...(reference.expiresAt === undefined ? {} : { expiresAt: reference.expiresAt }),
       ...(grants === undefined ? {} : { containerGrants: grants.data }),
       ...(reference.tokenId === null || principal.kind !== "agent"
@@ -1469,7 +1606,8 @@ export class AuthService {
     const stored = this.store.grantsFor(context.principal, path);
     const mine = stored.filter(
       (row: GrantRecord) =>
-        (!row.tokenBound || row.id === context.grantId) && !(ownerKey && row.effect === "deny"),
+        (!row.tokenBound || (context.tokenId !== null && this.store.tokenOwnsGrant(context.tokenId, row.id))) &&
+        !(ownerKey && row.effect === "deny"),
     );
     if (!ownerKey) return mine;
     return [
@@ -1552,6 +1690,7 @@ export class AuthService {
     actorId: string | null,
     expiry: TokenExpiry,
     runGrant?: { readonly node: string; readonly reach: GrantReach; readonly expiresAt: number },
+    authorityScope?: AuthorityScope,
   ): { raw: string; record: TokenRecord } {
     const raw = randomSecret();
     const createdAt = this.runtime.now();
@@ -1562,23 +1701,22 @@ export class AuthService {
         ? null
         : createdAt + (expiry === "automated" ? AUTOMATED_TOKEN_TTL_MS : INTERACTIVE_TOKEN_TTL_MS));
     const tokenCaps = caps.filter(isEngineCap);
-    const grant: Grant | null =
-      caps.length === 0
-        ? null
-        : {
-            id: this.runtime.newId(),
-            principal: { kind: "principal", id: principalId },
-            node:
-              runGrant?.node ??
-              (containerId === null
-                ? MANIFOLD_ROOT_URI
-                : formatManifoldUri({ kind: "container", containerId })),
-            caps: [...caps],
-            effect: "allow",
-            reach: runGrant?.reach ?? "subtree",
-            createdBy: actorId ?? principalId,
-            createdAt,
-          };
+    const scope = authorityScope === undefined ? undefined : canonicalizeAuthorityScope(authorityScope);
+    const anchor = runGrant?.node ?? (containerId === null ? MANIFOLD_ROOT_URI :
+      formatManifoldUri({ kind: "container", containerId }));
+    const entries = scope ?? (caps.length === 0 ? [] : [{
+      target: anchor, reach: runGrant?.reach ?? "subtree", caps,
+    }]);
+    const grants: Grant[] = entries.map((entry) => ({
+      id: this.runtime.newId(),
+      principal: { kind: "principal", id: principalId },
+      node: entry.target,
+      caps: [...entry.caps],
+      effect: "allow",
+      reach: entry.reach,
+      createdBy: actorId ?? principalId,
+      createdAt,
+    }));
     const record: TokenRecord = {
       id: tokenId,
       hash: sha256Hex(raw),
@@ -1588,12 +1726,14 @@ export class AuthService {
       containerId,
       createdAt,
       revokedAt: null,
-      grantId: grant?.id ?? null,
+      grantId: grants.find((grant) => grant.node === anchor)?.id ?? grants[0]?.id ?? null,
       expiresAt,
+      ...(scope === undefined ? {} : { authorityScope: scope }),
     };
     return this.store.transaction(() => {
-      if (grant !== null) this.store.createGrant(grant);
+      for (const grant of grants) this.store.createGrant(grant);
       this.store.createToken(record);
+      for (const grant of grants) this.store.bindTokenGrant(record.id, grant.id);
       this.store.addEvent(containerId, this.runtime.now(), actorId, "token_minted", {
         tokenId: record.id,
         subjectPrincipalId: principalId,
@@ -1696,6 +1836,8 @@ export class AuthService {
       if (!root && !minter.caps.includes(cap)) {
         throw new ServiceError("forbidden", `cannot mint capability ${cap}`);
       }
+      if (minter.authorityScope !== undefined)
+        throw new ServiceError("forbidden", "scoped_authority_requires_v2");
     }
     if (
       minter.containerScope !== null &&
@@ -1711,33 +1853,11 @@ export class AuthService {
     if (containerId !== null && this.store.getContainer(containerId) === null) {
       throw new ServiceError("not_found", "container not found");
     }
+    const target = containerId === null ? MANIFOLD_ROOT_URI : formatManifoldUri({ kind: "container", containerId });
+    if (parsed.caps.some((cap) => cap !== "*" && !this.issuanceAdmits(minter, cap, target, "subtree")))
+      throw new ServiceError("forbidden", "credential_authority_exceeds_issuer");
 
-    let principal: Principal;
-    if (parsed.principalId !== undefined) {
-      const existing = this.store.getPrincipal(parsed.principalId);
-      if (existing === null) throw new ServiceError("not_found", "principal not found");
-      if (existing.kind === "agent") {
-        throw new ServiceError("forbidden", "agent credentials require renewAgentRun");
-      }
-      this.refuseManagedServicePrincipal(existing.id);
-      principal = existing;
-      if (
-        !this.holdsRoot(minter) &&
-        existing.id !== minter.principal.id &&
-        !this.store.hasIssuedToken(
-          existing.id,
-          minter.principal.id,
-          minter.containerScope,
-          this.runtime.now(),
-        )
-      ) {
-        throw new ServiceError("forbidden", "cannot mint for another principal");
-      }
-    } else if (parsed.principal !== undefined) {
-      principal = this.createPrincipal(parsed.principal);
-    } else {
-      throw new ServiceError("conflict", "token principal is missing");
-    }
+    const principal = this.tokenPrincipal(parsed, minter);
 
     const minted = this.persistToken(
       principal.id,
@@ -1753,6 +1873,58 @@ export class AuthService {
       containerId,
       ...(minted.record.expiresAt === null ? {} : { expiresAt: minted.record.expiresAt }),
     };
+  }
+
+  mintTokenV2(input: MintTokenV2Request, actor: AuthContext): TokenGrantV2 {
+    const parsed = MintTokenV2RequestSchema.parse(input);
+    const minter = this.requireCurrentActor(actor);
+    if (!this.allows(minter, "tokens:mint"))
+      throw new ServiceError("forbidden", "tokens:mint capability required");
+    this.delegatingRoot(minter);
+    const scope = canonicalizeAuthorityScope(parsed.scope);
+    if (parsed.expiresAt <= this.runtime.now() ||
+        (minter.expiresAt !== undefined && parsed.expiresAt > minter.expiresAt))
+      throw new ServiceError("forbidden", "credential_expiry_exceeds_issuer");
+    for (const entry of scope) {
+      if (!this.issuanceAdmits(minter, "tokens:mint", entry.target, entry.reach) ||
+          entry.caps.some((cap) => !this.issuanceAdmits(minter, cap, entry.target, entry.reach)))
+        throw new ServiceError("forbidden", "scoped_authority_exceeds_issuer");
+    }
+    const containerId = parsed.containerId ?? minter.containerScope;
+    if (containerId !== null && this.store.getContainer(containerId) === null)
+      throw new ServiceError("not_found", "container not found");
+    if (minter.containerScope !== null && containerId !== minter.containerScope)
+      throw new ServiceError("forbidden", "cannot widen container context");
+    const caps = [...new Set(scope.flatMap((entry) => entry.caps).filter(isEngineCap))];
+    return this.store.transaction(() => {
+      const principal = this.tokenPrincipal(parsed, minter);
+      const minted = this.persistToken(principal.id, caps, containerId, minter.principal.id,
+        expiryFor(principal.kind), {
+          node: containerId === null ? MANIFOLD_ROOT_URI : formatManifoldUri({ kind: "container", containerId }),
+          reach: "subtree", expiresAt: parsed.expiresAt,
+        }, scope);
+      return { token: minted.raw, principal, scope, caps, containerId, expiresAt: parsed.expiresAt };
+    });
+  }
+
+  /** Identity selection is shared by both issuer versions; provenance is not principal ownership. */
+  private tokenPrincipal(
+    parsed: Pick<MintTokenRequest, "principalId" | "principal">,
+    minter: AuthContext,
+  ): Principal {
+    if (parsed.principalId !== undefined) {
+      const existing = this.store.getPrincipal(parsed.principalId);
+      if (existing === null) throw new ServiceError("not_found", "principal not found");
+      if (existing.kind === "agent")
+        throw new ServiceError("forbidden", "agent credentials require renewAgentRun");
+      this.refuseManagedServicePrincipal(existing.id);
+      if (!this.holdsRoot(minter) && existing.id !== minter.principal.id &&
+          !this.store.hasIssuedToken(existing.id, minter.principal.id, minter.containerScope, this.runtime.now()))
+        throw new ServiceError("forbidden", "cannot mint for another principal");
+      return existing;
+    }
+    if (parsed.principal !== undefined) return this.createPrincipal(parsed.principal);
+    throw new ServiceError("conflict", "token principal is missing");
   }
 
   /** Walk verified sponsorship edges, never merely a shared root id or a minted-by token. */
@@ -1800,13 +1972,13 @@ export class AuthService {
   }
 
   /** Bounded discovery through the inspection authority, not credential administration. */
-  listRuns(input: ListRunsRequest, actor: AuthContext): ListRunsResult {
+  private listRunsAuthority(input: ListRunsRequest, actor: AuthContext, legacy = false): ListRunsV2Result {
     const current = this.restoreCredential(this.credentialReference(actor));
     if (current === null) throw new ServiceError("forbidden", "agent run inspection unavailable");
     const observedAt = this.runtime.now();
-    const runs: AgentRunInventory["runs"] = [];
+    const runs: ListRunsV2Result["runs"] = [];
     let truncated = false;
-    if (input.agentId !== undefined) this.getAgent({ agentId: input.agentId }, current);
+    if (input.agentId !== undefined) this.getAgentAuthority({ agentId: input.agentId }, current);
     for (const run of this.store.agentRunInspectionCandidates(
       current.principal.id,
       this.holdsRoot(current),
@@ -1818,6 +1990,7 @@ export class AuthService {
         !this.inspectionAncestors(run).chain.some((ancestor) => ancestor.agentId === input.agentId)
       )
         continue;
+      if (legacy) this.legacyRunResult({ run: this.presentAgentRun(run) });
       if (runs.length === 100) {
         truncated = true;
         break;
@@ -1842,12 +2015,39 @@ export class AuthService {
             : run.state,
         createdAt: run.createdAt,
         expiresAt: run.expiresAt,
+        scope: runScope(run),
       });
     }
     return { observedAt, runs, truncated };
   }
 
+  listRunsV2(input: ListRunsRequest, actor: AuthContext): ListRunsV2Result {
+    return this.listRunsAuthority(input, actor);
+  }
+
+  listRuns(input: ListRunsRequest, actor: AuthContext): ListRunsResult {
+    const result = this.listRunsAuthority(input, actor, true);
+    return AgentRunInventorySchema.parse({ ...result, runs: result.runs.map(({ scope: _scope, ...run }) => run) });
+  }
+
   inspectRun(input: InspectRunRequest, actor: AuthContext): InspectRunResult {
+    const result = this.inspectRunV2(input, actor);
+    const record = this.store.getAgentRun(input.runId)!;
+    const legacy = this.legacyRunResult({ run: this.presentAgentRun(record) }).run;
+    const { scope: _scope, ...run } = result.run;
+    return AgentRunInspectionSchema.parse({
+      ...result,
+      run: { ...run, caps: legacy.caps },
+      credentials: result.credentials.map(({ authorityScope: _authorityScope, ...credential }) => ({
+        ...credential,
+        grant: credential.grant === null ? null : {
+          ...credential.grant, caps: credential.grant.caps.filter((cap) => cap !== "machines:shell"),
+        },
+      })),
+    });
+  }
+
+  inspectRunV2(input: InspectRunRequest, actor: AuthContext): InspectRunV2Result {
     const parsed = InspectRunRequestSchema.parse(input);
     const current = this.restoreCredential(this.credentialReference(actor));
     const unavailable = (): never => {
@@ -1879,7 +2079,7 @@ export class AuthService {
       .filter((entry) => this.mayInspectAgentRun(current, entry))
       .map(summarize);
     const policy = this.store.getAgentPolicySnapshot(run.id, run.policyRevision);
-    return AgentRunInspectionSchema.parse({
+    return AgentRunInspectionV2Schema.parse({
       availability: "available",
       observedAt: now,
       run: {
@@ -1893,6 +2093,7 @@ export class AuthService {
         target: safeText(run.target),
         reach: run.reach,
         caps: [...run.caps],
+        scope: runScope(run),
         createdAt: run.createdAt,
         expiresAt: run.expiresAt,
         renewals: run.renewals,
@@ -1921,11 +2122,20 @@ export class AuthService {
     });
   }
 
-  async registerAgent(
-    input: RegisterAgentRequest,
+  async registerAgent(input: RegisterAgentRequest, actor: AuthContext): Promise<RegisterAgentResult> {
+    return this.legacyAgentResult(await this.registerAgentAuthority(RegisterAgentRequestSchema.parse(input), actor));
+  }
+
+  async registerAgentV2(input: RegisterAgentV2Request, actor: AuthContext): Promise<RegisterAgentV2Result> {
+    const parsed = RegisterAgentV2RequestSchema.parse(input);
+    const result = await this.registerAgentAuthority({ ...parsed, grant: internalGrant(parsed.grant) }, actor);
+    return { ...result, agent: projectAgentV2(result.agent) };
+  }
+
+  private async registerAgentAuthority(
+    parsed: RegisterAgentAuthorityInput,
     actor: AuthContext,
-  ): Promise<RegisterAgentResult> {
-    const parsed = RegisterAgentRequestSchema.parse(input);
+  ): Promise<RegisterAgentAuthorityResult> {
     let current = this.requireCurrentActor(actor);
     if (!this.mayRegisterAgent(current))
       throw new ServiceError("forbidden", "agent_registration_requires_human");
@@ -2005,6 +2215,7 @@ export class AuthService {
       grantId: credential.grantId,
       caps: [...credential.caps],
       containerScope: credential.containerScope,
+      ...(credential.authorityScope === undefined ? {} : { authorityScope: credential.authorityScope }),
       ...(credential.expiresAt === undefined ? {} : { expiresAt: credential.expiresAt }),
     };
   }
@@ -2016,17 +2227,13 @@ export class AuthService {
   }
 
   private validateStandingGrant(grant: AgentGrant, actor: AuthContext): void {
-    AgentGrantSchema.parse(grant);
+    AgentGrantAuthoritySchema.parse(grant);
     if (grant.expiresAt <= this.runtime.now()) throw new ServiceError("forbidden", "grant_expired");
     if (actor.expiresAt !== undefined && grant.expiresAt > actor.expiresAt)
       throw new ServiceError("forbidden", "sponsor_authority_unavailable");
-    for (const target of grant.targets) {
-      const caps = this.effectiveCaps(actor, target);
-      if (
-        !contextContainsNode(actor, target) ||
-        !caps.has("agents:delegate") ||
-        grant.caps.some((cap) => !caps.has(cap))
-      )
+    for (const { target, reach, caps } of standingScope(grant)) {
+      if (!this.allowsNode(actor, "agents:delegate", target, reach) ||
+          caps.some((cap) => !this.allowsNode(actor, cap, target, reach)))
         throw new ServiceError("forbidden", "sponsor_authority_unavailable");
     }
   }
@@ -2073,7 +2280,7 @@ export class AuthService {
       ).length;
     const grant = { ...record.grant };
     if (grant.tools?.length === 0) delete grant.tools;
-    return AgentSchema.parse({
+    return AgentAuthoritySchema.parse({
       agentId: record.agentId,
       principalId: record.principalId,
       sponsorPrincipalId: record.sponsorPrincipalId,
@@ -2092,7 +2299,7 @@ export class AuthService {
     });
   }
 
-  listAgents(actor: AuthContext): ListAgentsResult {
+  private listAgentsAuthority(actor: AuthContext): { agents: Agent[]; truncated: boolean; canRegister: boolean } {
     const current = this.requireCurrentActor(actor);
     const visible = this.store.listAgents().filter((agent) => this.mayViewAgent(current, agent));
     const canRegister =
@@ -2112,7 +2319,44 @@ export class AuthService {
     };
   }
 
+  listAgents(actor: AuthContext): ListAgentsResult {
+    const result = this.listAgentsAuthority(actor);
+    return { ...result, agents: result.agents.map((agent) => this.legacyAgentResult({ agent }).agent) };
+  }
+
+  listAgentsV2(actor: AuthContext): ListAgentsV2Result {
+    const result = this.listAgentsAuthority(actor);
+    return { ...result, agents: result.agents.map(projectAgentV2) };
+  }
+
   getAgent(input: AgentRequest, actor: AuthContext): GetAgentResult {
+    return this.legacyAgentResult(this.getAgentAuthority(input, actor));
+  }
+
+  getAgentV2(input: AgentRequest, actor: AuthContext): GetAgentV2Result {
+    const result = this.getAgentAuthority(input, actor);
+    return { ...result, agent: projectAgentV2(result.agent) };
+  }
+
+  private legacyAgentResult<T extends { agent: Agent }>(result: T): Omit<T, "agent"> & { agent: LegacyAgent } {
+    try { return { ...result, agent: projectLegacyAgent(result.agent) }; }
+    catch (error) {
+      if (error instanceof Error && error.message === "scoped_authority_requires_v2")
+        throw new ServiceError("forbidden", error.message);
+      throw error;
+    }
+  }
+
+  private legacyRunResult<T extends { run: AgentRun }>(result: T): Omit<T, "run"> & { run: LegacyRun } {
+    try { return { ...result, run: projectLegacyRun(result.run) }; }
+    catch (error) {
+      if (error instanceof Error && error.message === "scoped_authority_requires_v2")
+        throw new ServiceError("forbidden", error.message);
+      throw error;
+    }
+  }
+
+  private getAgentAuthority(input: AgentRequest, actor: AuthContext): AgentAuthorityResult {
     const current = this.requireCurrentActor(actor);
     const agent = this.store.getAgent(input.agentId);
     if (agent === null || !this.mayViewAgent(current, agent))
@@ -2125,6 +2369,26 @@ export class AuthService {
 
   async updateAgent(input: UpdateAgentRequest, actor: AuthContext): Promise<GetAgentResult> {
     const parsed = UpdateAgentRequestSchema.parse(input);
+    this.getAgentAuthority(parsed, actor);
+    const record = this.store.getAgent(parsed.agentId);
+    if (parsed.grant !== undefined && record?.grant.authorityScope !== undefined)
+      throw new ServiceError("forbidden", "scoped_authority_requires_v2");
+    this.getAgent(parsed, actor);
+    return this.legacyAgentResult(await this.updateAgentAuthority(parsed, actor, true));
+  }
+
+  async updateAgentV2(input: UpdateAgentV2Request, actor: AuthContext): Promise<GetAgentV2Result> {
+    const parsed = UpdateAgentV2RequestSchema.parse(input);
+    const result = await this.updateAgentAuthority({
+      agentId: parsed.agentId,
+      ...(parsed.purpose === undefined ? {} : { purpose: parsed.purpose }),
+      ...(parsed.context === undefined ? {} : { context: parsed.context }),
+      ...(parsed.grant === undefined ? {} : { grant: internalGrant(parsed.grant) }),
+    }, actor);
+    return { ...result, agent: projectAgentV2(result.agent) };
+  }
+
+  private async updateAgentAuthority(parsed: UpdateAgentAuthorityInput, actor: AuthContext, legacy = false): Promise<AgentAuthorityResult> {
     let current = this.requireCurrentActor(actor);
     let agent = this.store.getAgent(parsed.agentId);
     if (agent === null || !this.mayManageAgent(current, agent))
@@ -2146,6 +2410,8 @@ export class AuthService {
       if (sponsor === null) throw new ServiceError("forbidden", "sponsor_authority_unavailable");
       this.validateStandingGrant(parsed.grant ?? agent.grant, sponsor);
     }
+    if (legacy && parsed.grant !== undefined && agent.grant.authorityScope !== undefined)
+      throw new ServiceError("forbidden", "scoped_authority_requires_v2");
     const next: AgentRecord = {
       ...agent,
       ...(parsed.purpose === undefined ? {} : { purpose: parsed.purpose }),
@@ -2165,6 +2431,7 @@ export class AuthService {
       ...(parsed.context === undefined ? {} : { context: parsed.context }),
       updatedAt: this.runtime.now(),
     };
+    if (legacy) this.legacyAgentResult({ agent: this.presentAgent(next, current) });
     this.store.updateAgent(next);
     this.authorityChanged();
     this.agentChanged(agent.agentId);
@@ -2175,7 +2442,7 @@ export class AuthService {
     input: AgentRequest,
     actor: AuthContext,
     status: AgentRecord["status"],
-  ): GetAgentResult {
+  ): AgentAuthorityResult {
     const current = this.requireCurrentActor(actor);
     const agent = this.store.getAgent(input.agentId);
     if (agent === null || !this.mayManageAgent(current, agent))
@@ -2216,13 +2483,29 @@ export class AuthService {
   }
 
   disableAgent(input: AgentRequest, actor: AuthContext): GetAgentResult {
-    return this.setAgentStatus(input, actor, "disabled");
+    this.getAgent(input, actor);
+    return this.legacyAgentResult(this.setAgentStatus(input, actor, "disabled"));
   }
   enableAgent(input: AgentRequest, actor: AuthContext): GetAgentResult {
-    return this.setAgentStatus(input, actor, "enabled");
+    this.getAgent(input, actor);
+    return this.legacyAgentResult(this.setAgentStatus(input, actor, "enabled"));
   }
   retireAgent(input: AgentRequest, actor: AuthContext): GetAgentResult {
-    return this.setAgentStatus(input, actor, "retired");
+    this.getAgent(input, actor);
+    return this.legacyAgentResult(this.setAgentStatus(input, actor, "retired"));
+  }
+
+  disableAgentV2(input: AgentRequest, actor: AuthContext): GetAgentV2Result {
+    const result = this.setAgentStatus(input, actor, "disabled");
+    return { ...result, agent: projectAgentV2(result.agent) };
+  }
+  enableAgentV2(input: AgentRequest, actor: AuthContext): GetAgentV2Result {
+    const result = this.setAgentStatus(input, actor, "enabled");
+    return { ...result, agent: projectAgentV2(result.agent) };
+  }
+  retireAgentV2(input: AgentRequest, actor: AuthContext): GetAgentV2Result {
+    const result = this.setAgentStatus(input, actor, "retired");
+    return { ...result, agent: projectAgentV2(result.agent) };
   }
 
   createRun(
@@ -2234,7 +2517,17 @@ export class AuthService {
     const current = this.requireCurrentActor(actor);
     if (current.agentRunId !== undefined)
       throw new ServiceError("forbidden", "use_create_child_run");
-    return this.admitRun(parsed, current, null, beforeEffect);
+    return this.legacyRunResult(this.admitRun(parsed, current, null, beforeEffect));
+  }
+
+  createRunV2(input: CreateRunV2Request, actor: AuthContext, beforeEffect?: () => void): CreateRunV2Result {
+    const { scope, ...parsed } = CreateRunV2RequestSchema.parse(input);
+    const current = this.requireCurrentActor(actor);
+    if (current.agentRunId !== undefined) throw new ServiceError("forbidden", "use_create_child_run");
+    const result = this.admitRun({ ...parsed, scopedApi: true,
+      ...(scope === undefined ? {} : { authorityScope: canonicalizeAuthorityScope(scope) }),
+    }, current, null, beforeEffect);
+    return { ...result, run: projectRunV2(result.run) };
   }
 
   createChildRun(
@@ -2242,7 +2535,22 @@ export class AuthService {
     actor: AuthContext,
     beforeEffect?: () => void,
   ): CreateRunResult {
-    const parsed = CreateChildRunRequestSchema.parse(input);
+    return this.legacyRunResult(this.createChildRunAuthority(CreateChildRunRequestSchema.parse(input), actor, beforeEffect));
+  }
+
+  createChildRunV2(input: CreateChildRunV2Request, actor: AuthContext, beforeEffect?: () => void): CreateRunV2Result {
+    const { scope, ...parsed } = CreateChildRunV2RequestSchema.parse(input);
+    const result = this.createChildRunAuthority({ ...parsed, scopedApi: true,
+      ...(scope === undefined ? {} : { authorityScope: canonicalizeAuthorityScope(scope) }),
+    }, actor, beforeEffect);
+    return { ...result, run: projectRunV2(result.run) };
+  }
+
+  private createChildRunAuthority(
+    parsed: Omit<CreateRunAuthorityInput, "agentId"> & { runId: string; agentId?: string },
+    actor: AuthContext,
+    beforeEffect?: () => void,
+  ): CreateRunAuthorityResult {
     const { runId, ...narrowing } = parsed;
     const current = this.requireCurrentActor(actor);
     const parent = this.store.getAgentRun(runId);
@@ -2264,11 +2572,11 @@ export class AuthService {
   }
 
   private admitRun(
-    parsed: CreateRunRequest,
+    parsed: CreateRunAuthorityInput,
     actor: AuthContext,
     parent: AgentRunRecord | null,
     beforeEffect?: () => void,
-  ): CreateRunResult {
+  ): CreateRunAuthorityResult {
     const agent = this.store.getAgent(parsed.agentId);
     const runner = actor.agentRunnerId === parsed.agentId;
     if (agent === null || (!runner && parent === null && !this.mayManageAgent(actor, agent)))
@@ -2277,11 +2585,22 @@ export class AuthService {
     if (agent.status === "retired") throw new ServiceError("forbidden", "agent_retired");
     const now = this.runtime.now();
     if (agent.grant.expiresAt <= now) throw new ServiceError("forbidden", "grant_expired");
+    if (!parsed.scopedApi) {
+      this.legacyAgentResult({ agent: this.presentAgent(agent, actor) });
+      if (parsed.caps !== undefined && (agent.grant.authorityScope !== undefined || parent?.authorityScope !== undefined))
+        throw new ServiceError("forbidden", "scoped_authority_requires_v2");
+    }
     const target =
       typeof parsed.target === "object"
-        ? formatManifoldUri({ kind: "machine", machineId: parsed.target.machineId })
-        : (parsed.target ?? parent?.target ?? agent.grant.targets[0]!);
-    const caps = parsed.caps ?? parent?.caps ?? agent.grant.caps;
+        ? (parsed.scopedApi && parsed.target.containerId !== undefined
+          ? formatManifoldUri({ kind: "container", containerId: parsed.target.containerId })
+          : formatManifoldUri({ kind: "machine", machineId: parsed.target.machineId }))
+        : (parsed.target ?? parent?.target ?? agent.grant.targets[0] ?? MANIFOLD_ROOT_URI);
+    const authorityScope = parsed.authorityScope ?? parent?.authorityScope ??
+      agent.grant.authorityScope ?? (parsed.scopedApi ? standingScope(agent.grant) : undefined);
+    const caps = authorityScope === undefined
+      ? parsed.caps ?? parent?.caps ?? agent.grant.caps
+      : [...new Set(authorityScope.flatMap((entry) => entry.caps))] as AgentRunCap[];
     const tools: ActionResultApproval[] = (parsed.tools ?? []).map((door) => {
       const approval = agent.grant.tools?.find((entry) => entry.door === door);
       const inherited = parent?.tools?.find((entry) => entry.door === door);
@@ -2315,14 +2634,14 @@ export class AuthService {
       );
     if (caps.some((cap) => !agent.grant.caps.includes(cap)))
       throw new ServiceError("forbidden", "cap_exceeds_grant");
-    if (
-      !agent.grant.targets.some((anchor) =>
-        runContainsNode({ target: anchor, reach: agent.grant.reach }, target),
-      )
-    )
-      throw new ServiceError("forbidden", "target_exceeds_grant");
-    if (agent.grant.reach === "node" && reach !== "node")
-      throw new ServiceError("forbidden", "reach_exceeds_grant");
+    if (authorityScope === undefined) {
+      if (!agent.grant.targets.some((anchor) =>
+          runContainsNode({ target: anchor, reach: agent.grant.reach }, target)))
+        throw new ServiceError("forbidden", "target_exceeds_grant");
+      if (agent.grant.reach === "node" && reach !== "node")
+        throw new ServiceError("forbidden", "reach_exceeds_grant");
+    } else if (!scopeWithin(authorityScope, standingScope(agent.grant)))
+      throw new ServiceError("forbidden", "scope_exceeds_grant");
     if (
       lifetimeMs < 60_000 ||
       lifetimeMs > agent.grant.maxRunLifetimeMs ||
@@ -2341,14 +2660,9 @@ export class AuthService {
     if (parsed.taskRef !== undefined && agent.harness !== "external")
       throw new ServiceError("forbidden", "session_binding_untrusted");
     const sponsor = this.restoreAgentSponsor(agent);
-    const sponsorCaps = sponsor === null ? null : this.effectiveCaps(sponsor, target);
-    if (
-      sponsor === null ||
-      !contextContainsNode(sponsor, target) ||
-      sponsorCaps === null ||
-      !sponsorCaps.has("agents:delegate") ||
-      caps.some((cap) => !sponsorCaps.has(cap))
-    )
+    const requirements = authorityScope ?? [{ target, reach, caps: [...caps] }];
+    if (sponsor === null || !this.scopeAuthorized(sponsor, requirements) ||
+        (!runner && parent === null && !this.scopeAuthorized(actor, requirements)))
       throw new ServiceError("forbidden", "sponsor_authority_unavailable");
     if (parent !== null) {
       if (
@@ -2360,10 +2674,8 @@ export class AuthService {
         throw new ServiceError("forbidden", "sponsor_authority_unavailable");
       if (caps.some((cap) => !parent.caps.includes(cap)))
         throw new ServiceError("forbidden", "cap_exceeds_grant");
-      if (!runContainsNode(parent, target))
-        throw new ServiceError("forbidden", "target_exceeds_grant");
-      if (parent.reach === "node" && reach !== "node")
-        throw new ServiceError("forbidden", "reach_exceeds_grant");
+      if (!scopeWithin(requirements, runScope(parent)))
+        throw new ServiceError("forbidden", "scope_exceeds_grant");
       if (now + lifetimeMs > parent.expiresAt)
         throw new ServiceError("forbidden", "lifetime_exceeds_grant");
       if (
@@ -2373,12 +2685,7 @@ export class AuthService {
       )
         throw new ServiceError("forbidden", "delegation_exceeds_grant");
       const parentActor = this.restoreRunCredential(parent.id);
-      const parentCaps = parentActor === null ? null : this.effectiveCaps(parentActor, target);
-      if (
-        parentCaps === null ||
-        !parentCaps.has("agents:delegate") ||
-        caps.some((cap) => !parentCaps.has(cap))
-      )
+      if (parentActor === null || !this.scopeAuthorized(parentActor, requirements))
         throw new ServiceError("forbidden", "sponsor_authority_unavailable");
       const tree = this.store.listAgentRunTree(parent.rootRunId);
       for (const ancestor of this.inspectionAncestors(parent).chain) {
@@ -2387,6 +2694,17 @@ export class AuthService {
       }
     }
     beforeEffect?.();
+    const liveAgent = this.store.getAgent(agent.agentId);
+    const liveSponsor = liveAgent === null ? null : this.restoreAgentSponsor(liveAgent);
+    const liveParent = parent === null ? null : this.restoreRunCredential(parent.id);
+    const liveActor = this.requireCurrentActor(actor);
+    if (liveAgent === null || liveAgent.status !== "enabled" ||
+        liveAgent.grant.expiresAt < now + lifetimeMs ||
+        !scopeWithin(requirements, standingScope(liveAgent.grant)) ||
+        liveSponsor === null || !this.scopeAuthorized(liveSponsor, requirements) ||
+        (parent !== null && (liveParent === null || !this.scopeAuthorized(liveParent, requirements))) ||
+        (!runner && parent === null && !this.scopeAuthorized(liveActor, requirements)))
+      throw new ServiceError("forbidden", "sponsor_authority_unavailable");
     const runId = this.runtime.newId();
     const expiresAt = now + lifetimeMs;
     const record: AgentRunRecord = {
@@ -2404,6 +2722,7 @@ export class AuthService {
       target,
       reach,
       caps: [...caps],
+      ...(authorityScope === undefined ? {} : { authorityScope: canonicalizeAuthorityScope(authorityScope) }),
       ...(tools.length === 0 ? {} : { tools }),
       ...(typeof parsed.target === "object" ? { launchTarget: parsed.target } : {}),
       createdAt: now,
@@ -2421,6 +2740,7 @@ export class AuthService {
       cleanupRevokedCredentials: 0,
       cleanupRevokedGrants: 0,
     };
+    if (!parsed.scopedApi) this.legacyRunResult({ run: this.presentAgentRun(record) });
     const minted = this.store.transaction(() => {
       this.store.createAgentRun(record, {
         runId,
@@ -2435,6 +2755,7 @@ export class AuthService {
         record.authorizedByPrincipalId,
         "automated",
         { node: target, reach, expiresAt },
+        authorityScope,
       );
       this.store.bindAgentRunCredential(runId, credential.record.id);
       this.store.addEvent(null, now, actor.principal.id, "agent_run_created", {
@@ -2461,6 +2782,28 @@ export class AuthService {
       ...(typeof parsed.target === "object" ? { target: parsed.target } : {}),
     });
     return { run: this.presentAgentRun(record) };
+  }
+
+  private scopeAuthorized(actor: AuthContext, scope: AuthorityScope): boolean {
+    return scope.every(({ target, reach, caps }) =>
+      this.allowsNode(actor, "agents:delegate", target, reach) &&
+      caps.every((cap) => this.allowsNode(actor, cap, target, reach)),
+    );
+  }
+
+  private runAuthorityCurrent(run: AgentRunRecord): boolean {
+    const agent = this.store.getAgent(run.agentId);
+    const sponsor = agent === null ? null : this.restoreAgentSponsor(agent);
+    const parent = run.parentRunId === null ? null : this.store.getAgentRun(run.parentRunId);
+    if (agent === null || agent.status === "disabled" || agent.grant.expiresAt <= this.runtime.now() ||
+        sponsor === null || !scopeWithin(runScope(run), standingScope(agent.grant)) ||
+        !this.scopeAuthorized(sponsor, runScope(run))) return false;
+    if (run.parentRunId === null) return true;
+    const parentActor = parent === null ? null : this.restoreRunCredential(parent.id);
+    return parent !== null && parent.state === "active" &&
+      parent.expiresAt > this.runtime.now() && parent.acknowledgedPolicyRevision === this.agentPolicy.revision &&
+      parentActor !== null && scopeWithin(runScope(run), runScope(parent)) &&
+      this.scopeAuthorized(parentActor, runScope(run));
   }
 
   authorizeRunInput(runId: string, actor: AuthContext): { run: AgentRun; agent: Agent } {
@@ -2500,6 +2843,7 @@ export class AuthService {
           tokenId: token.id,
           grantId: token.grantId,
           caps: token.caps,
+          ...(token.authorityScope === undefined ? {} : { authorityScope: token.authorityScope }),
           containerScope: token.containerId,
           ...(token.expiresAt === null ? {} : { expiresAt: token.expiresAt }),
         });
@@ -2519,14 +2863,13 @@ export class AuthService {
     const record = this.store.getAgentRun(runId)!;
     const credential = this.restoreRunCredential(runId);
     const ref = parseManifoldUri(record.target);
-    const sponsorCaps = this.agentRunSponsorCaps(record, record.target);
     if (
       record.nativeJob !== undefined ||
       record.session !== null ||
       this.store.getTerminalForRun(runId) !== null ||
       authorized.agent.state === "retired" ||
       credential === null ||
-      record.caps.some((cap) => !sponsorCaps.has(cap)) ||
+      !this.runAuthorityCurrent(record) ||
       (record.target !== MANIFOLD_ROOT_URI && ref === null) ||
       (ref !== null && "machineId" in ref && ref.machineId !== target.machineId) ||
       (ref?.kind === "container" && ref.containerId !== target.containerId) ||
@@ -2566,12 +2909,11 @@ export class AuthService {
       throw new ServiceError("forbidden", "agent_run_unavailable");
     this.requireOwnAgentRun(actor);
     const agent = this.store.getAgent(record.agentId);
-    const sponsorCaps = this.agentRunSponsorCaps(record, record.target);
     if (
       agent === null ||
       agent.status === "disabled" ||
       this.pausedPrincipals.has(actor.principal.id) ||
-      record.caps.some((cap) => !sponsorCaps.has(cap))
+      !this.runAuthorityCurrent(record)
     )
       throw new ServiceError("forbidden", "agent_run_unavailable");
     return {
@@ -2642,11 +2984,10 @@ export class AuthService {
     const record = this.store.getAgentRun(runId)!;
     if (record.nativeJob !== undefined)
       throw new ServiceError("forbidden", "run_launch_unavailable");
-    const sponsorCaps = this.agentRunSponsorCaps(record, record.target);
     if (
       authorized.agent.state === "retired" ||
       this.restoreRunCredential(runId) === null ||
-      record.caps.some((cap) => !sponsorCaps.has(cap))
+      !this.runAuthorityCurrent(record)
     )
       throw new ServiceError("forbidden", "run_launch_unavailable");
     const pending = this.pendingRunLaunches.get(runId);
@@ -2697,6 +3038,7 @@ export class AuthService {
         record.authorizedByPrincipalId,
         "automated",
         { node: record.target, reach: record.reach, expiresAt: record.expiresAt },
+        record.authorityScope,
       );
       this.store.bindAgentRunCredential(runId, credential.record.id);
       return credential.raw;
@@ -2707,7 +3049,6 @@ export class AuthService {
     const credential = this.store.getTokenByHash(sha256Hex(token));
     const run = credential === null ? null : this.store.getAgentRunByToken(credential.id);
     const agent = run === null ? null : this.store.getAgent(run.agentId);
-    const sponsorCaps = run === null ? null : this.agentRunSponsorCaps(run, run.target);
     return (
       credential !== null &&
       credential.revokedAt === null &&
@@ -2719,11 +3060,21 @@ export class AuthService {
       agent !== null &&
       agent.status === "enabled" &&
       agent.grant.expiresAt > this.runtime.now() &&
-      run.caps.every((cap) => sponsorCaps!.has(cap))
+      this.runAuthorityCurrent(run)
     );
   }
 
-  reportRunActivity(input: ReportRunActivityRequest, actor: AuthContext): { run: AgentRun } {
+  reportRunActivity(input: ReportRunActivityRequest, actor: AuthContext): ReportRunActivityResult {
+    this.legacyRunResult(this.authorizeRunInput(input.runId, actor));
+    return this.legacyRunResult(this.reportRunActivityAuthority(input, actor));
+  }
+
+  reportRunActivityV2(input: ReportRunActivityRequest, actor: AuthContext): ReportRunActivityV2Result {
+    const result = this.reportRunActivityAuthority(input, actor);
+    return { run: projectRunV2(result.run) };
+  }
+
+  private reportRunActivityAuthority(input: ReportRunActivityRequest, actor: AuthContext): { run: AgentRun } {
     const parsed = ReportRunActivityRequestSchema.parse(input);
     const current = this.requireCurrentActor(actor);
     const run = this.store.getAgentRun(parsed.runId);
@@ -2748,10 +3099,20 @@ export class AuthService {
     };
   }
 
-  acknowledgeAgentPolicy(
+  acknowledgeAgentPolicy(input: AcknowledgeAgentPolicyRequest, actor: AuthContext): AcknowledgeAgentPolicyResult {
+    this.legacyRunResult({ run: this.presentAgentRun(this.requireOwnAgentRun(actor)) });
+    return this.legacyRunResult(this.acknowledgeAgentPolicyAuthority(input, actor));
+  }
+
+  acknowledgeAgentPolicyV2(input: AcknowledgeAgentPolicyRequest, actor: AuthContext): AcknowledgeAgentPolicyV2Result {
+    const result = this.acknowledgeAgentPolicyAuthority(input, actor);
+    return { run: projectRunV2(result.run) };
+  }
+
+  private acknowledgeAgentPolicyAuthority(
     input: AcknowledgeAgentPolicyRequest,
     actor: AuthContext,
-  ): AcknowledgeAgentPolicyResult {
+  ): { run: AgentRun } {
     const parsed = AcknowledgeAgentPolicyRequestSchema.parse(input);
     const run = this.requireOwnAgentRun(actor);
     if (run.expiresAt <= this.runtime.now()) {
@@ -2800,11 +3161,21 @@ export class AuthService {
     return { run: this.presentAgentRun(acknowledged) };
   }
 
-  renewAgentRun(
+  renewAgentRun(input: RenewAgentRunRequest, actor: AuthContext, beforeEffect?: () => void): RenewAgentRunResult {
+    this.legacyRunResult(this.authorizeRunInput(input.runId, actor));
+    return this.legacyRunResult(this.renewAgentRunAuthority(input, actor, beforeEffect));
+  }
+
+  renewAgentRunV2(input: RenewAgentRunRequest, actor: AuthContext, beforeEffect?: () => void): RenewAgentRunV2Result {
+    const result = this.renewAgentRunAuthority(input, actor, beforeEffect);
+    return { ...result, run: projectRunV2(result.run) };
+  }
+
+  private renewAgentRunAuthority(
     input: RenewAgentRunRequest,
     actor: AuthContext,
     beforeEffect?: () => void,
-  ): RenewAgentRunResult {
+  ): RenewRunAuthorityResult {
     const parsed = RenewAgentRunRequestSchema.parse(input);
     const currentActor = this.requireCurrentActor(actor);
     if (currentActor.agentRunId === undefined && currentActor.agentRunnerId === undefined)
@@ -2831,8 +3202,7 @@ export class AuthService {
       throw new ServiceError("forbidden", "only an active policy-current run may be renewed");
     if (initial.renewals >= AGENT_RUN_MAX_RENEWALS)
       throw new ServiceError("conflict", "agent run renewal budget exhausted");
-    const sponsorCaps = this.agentRunSponsorCaps(initial, initial.target);
-    if (initial.caps.some((cap) => !sponsorCaps.has(cap)))
+    if (!this.runAuthorityCurrent(initial))
       throw new ServiceError("forbidden", "sponsor_authority_unavailable");
     let expiresAt = Math.min(this.runtime.now() + parsed.lifetimeMs, agent.grant.expiresAt);
     if (initial.parentRunId !== null) {
@@ -2850,6 +3220,9 @@ export class AuthService {
       throw new ServiceError("conflict", "agent run renewal must extend its expiry");
     const at = this.runtime.now();
     beforeEffect?.();
+    this.requireCurrentActor(actor);
+    if (!this.runAuthorityCurrent(initial))
+      throw new ServiceError("forbidden", "sponsor_authority_unavailable");
     const result = this.store.transaction(() => {
       const revoked = this.store.revokeTokensByAgentRun(initial.id, at);
       if (!this.store.renewAgentRun(initial.id, expiresAt, initial.authorizationCredential))
@@ -2861,6 +3234,7 @@ export class AuthService {
         initial.authorizedByPrincipalId,
         "automated",
         { node: initial.target, reach: initial.reach, expiresAt },
+        initial.authorityScope,
       );
       this.store.bindAgentRunCredential(initial.id, minted.record.id);
       this.store.addEvent(null, at, currentActor.principal.id, "agent_run_renewed", {
@@ -2884,6 +3258,15 @@ export class AuthService {
   }
 
   finishAgentRun(input: FinishAgentRunRequest, actor: AuthContext): FinishAgentRunResult {
+    return this.legacyRunResult(this.finishAgentRunAuthority(input, actor, true));
+  }
+
+  finishAgentRunV2(input: FinishAgentRunRequest, actor: AuthContext): FinishAgentRunV2Result {
+    const result = this.finishAgentRunAuthority(input, actor);
+    return { ...result, run: projectRunV2(result.run) };
+  }
+
+  private finishAgentRunAuthority(input: FinishAgentRunRequest, actor: AuthContext, legacy = false): FinishRunAuthorityResult {
     const parsed = FinishAgentRunRequestSchema.parse(input);
     const current = this.requireCurrentActor(actor);
     const run = this.store.getAgentRun(parsed.runId);
@@ -2898,10 +3281,11 @@ export class AuthService {
         !this.mayManageAgent(current, agent))
     )
       throw new ServiceError("forbidden", "agent_unavailable");
-    if (!contextContainsNode(current, run.target))
+    if (current.authorityScope === undefined && !contextContainsNode(current, run.target))
       throw new ServiceError("forbidden", "cannot widen container scope");
     if (TERMINAL_AGENT_RUN_STATES.has(run.state))
       throw new ServiceError("conflict", "agent run is already finished");
+    if (legacy) this.legacyRunResult({ run: this.presentAgentRun(run) });
     return this.settleAgentRunSubtree(
       run,
       run.expiresAt <= this.runtime.now() ? "expired" : parsed.outcome,
@@ -2921,7 +3305,7 @@ export class AuthService {
   private presentAgentRun(record: AgentRunRecord): AgentRun {
     const principal = this.store.getPrincipal(record.principalId);
     if (principal === null) throw new ServiceError("conflict", "agent run principal is missing");
-    return AgentRunSchema.parse({
+    return AgentRunAuthoritySchema.parse({
       id: record.id,
       agentId: record.agentId,
       session: record.session,
@@ -2938,6 +3322,7 @@ export class AuthService {
       target: record.target,
       reach: record.reach,
       caps: [...record.caps],
+      ...(record.authorityScope === undefined ? {} : { authorityScope: record.authorityScope }),
       ...(record.tools?.length ? { tools: record.tools } : {}),
       createdAt: record.createdAt,
       expiresAt: record.expiresAt,
@@ -3007,7 +3392,7 @@ export class AuthService {
     actorId: string | null,
     reason?: string,
     notify = true,
-  ): FinishAgentRunResult {
+  ): FinishRunAuthorityResult {
     const selected = this.agentRunSubtree(target);
     if (selected.length === 0) throw new ServiceError("conflict", "agent run is already finished");
     const at = this.runtime.now();
@@ -3108,7 +3493,7 @@ export class AuthService {
    * terminal exit or kill revokes this identity instead of a wall-clock deadline interrupting
    * its PTY. External mints for the same principal still receive the ordinary agent bound.
    */
-  mintSessionAgentToken(terminalId: string, containerId: string, actorId: string): TokenGrant {
+  mintTerminalLifecycleToken(terminalId: string, containerId: string, actorId: string): TokenGrant {
     const id = this.runtime.newId();
     const principal: Principal = {
       id,
@@ -3117,7 +3502,7 @@ export class AuthService {
       color: stableColor(id),
     };
     this.store.createPrincipal(principal, this.runtime.now());
-    const caps: Cap[] = ["containers:read", "scenes:write", "terminals:spawn", "terminals:write"];
+    const caps: Cap[] = ["containers:read", "scenes:write", "terminals:write"];
     const minted = this.persistToken(principal.id, caps, containerId, actorId, "never");
     return { token: minted.raw, principal, caps, containerId };
   }
@@ -3312,7 +3697,7 @@ export class AuthService {
    * non-root minter sees itself plus only live credentials it issued. Inspection-only viewers
    * use listRuns, whose bounded summaries contain no credential references or raw labels.
    */
-  listCredentials(actor: AuthContext): PrincipalCredentials[] {
+  listCredentialsV2(actor: AuthContext): PrincipalCredentialsV2[] {
     // HTTP authentication precedes the awaited body read; restore again at point of use.
     const current = this.restoreCredential(this.credentialReference(actor));
     if (current === null)
@@ -3321,7 +3706,7 @@ export class AuthService {
       throw new ServiceError("forbidden", "tokens:mint capability required");
     }
     const now = this.runtime.now();
-    const rows: PrincipalCredentials[] = [];
+    const rows: PrincipalCredentialsV2[] = [];
     for (const { principal, createdAt } of this.store.listPrincipalsWithCreation()) {
       const wholePrincipal =
         this.holdsRoot(current) ||
@@ -3351,6 +3736,7 @@ export class AuthService {
         ...(token.mintedBy === null ? {} : { mintedBy: token.mintedBy }),
         ...(token.containerId === null ? {} : { containerId: token.containerId }),
         ...(token.expiresAt === null ? {} : { expiresAt: token.expiresAt }),
+        ...(token.authorityScope === undefined ? {} : { authorityScope: token.authorityScope }),
       }));
       const service =
         principal.kind === "service" ? this.store.getNativeServiceIdentity(principal.id) : null;
@@ -3364,6 +3750,18 @@ export class AuthService {
       });
     }
     return rows;
+  }
+
+  listCredentials(actor: AuthContext): PrincipalCredentials[] {
+    try {
+      return this.listCredentialsV2(actor).map((row) => ({
+        ...row, sessions: row.sessions.map(projectLegacyCredential),
+      }));
+    } catch (error) {
+      if (error instanceof Error && error.message === "scoped_authority_requires_v2")
+        throw new ServiceError("forbidden", error.message);
+      throw error;
+    }
   }
   private accessPauseAdministrator(actor: AuthContext): AuthContext {
     const current = this.restoreCredential(this.credentialReference(actor));

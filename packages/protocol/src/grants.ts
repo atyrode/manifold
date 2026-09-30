@@ -104,7 +104,8 @@ export const AuthorityScopeSchema = z
   .superRefine((scope, ctx) => {
     const groups = new Map<string, Set<AskableCap>>();
     for (const entry of scope) {
-      const key = `${entry.target}\n${entry.reach}`;
+      const target = containmentPath(entry.target)?.at(-1) ?? entry.target;
+      const key = `${target}\n${entry.reach}`;
       let caps = groups.get(key);
       if (caps === undefined) {
         caps = new Set();
@@ -121,6 +122,8 @@ export function canonicalizeAuthorityScope(scope: readonly AuthorityScopeEntry[]
   const parsed = AuthorityScopeSchema.parse(scope);
   const groups = new Map<string, AuthorityScopeEntry>();
   for (const entry of parsed) {
+    const path = containmentPath(entry.target)!;
+    entry.target = path[path.length - 1]!;
     const key = `${entry.target}\n${entry.reach}`;
     const existing = groups.get(key);
     if (existing === undefined) groups.set(key, entry);
@@ -150,13 +153,16 @@ export function scopeAdmits(
 ): boolean {
   const path = containmentPath(node);
   if (path === null) return false;
-  return scope.some(
-    (entry) =>
-      entry.caps.includes(cap) &&
-      (entry.target === node
-        ? reach === "node" || entry.reach === "subtree"
-        : entry.reach === "subtree" && path.includes(entry.target)),
-  );
+  const target = path[path.length - 1]!;
+  return scope.some((entry) => {
+    if (!entry.caps.includes(cap)) return false;
+    const entryPath = containmentPath(entry.target);
+    if (entryPath === null) return false;
+    const entryTarget = entryPath[entryPath.length - 1]!;
+    return entryTarget === target
+      ? reach === "node" || entry.reach === "subtree"
+      : entry.reach === "subtree" && path.includes(entryTarget);
+  });
 }
 
 export function scopeWithin(
@@ -174,10 +180,10 @@ export function intersectAuthorityScopes(
   right: readonly AuthorityScopeEntry[],
 ): AuthorityScope {
   const result = new Map<string, AuthorityScopeEntry>();
-  for (const a of left) {
-    const aPath = containmentPath(a.target);
-    if (aPath === null) continue;
-    for (const b of right) {
+  const canonicalRight = canonicalizeAuthorityScope(right);
+  for (const a of canonicalizeAuthorityScope(left)) {
+    const aPath = containmentPath(a.target)!;
+    for (const b of canonicalRight) {
       let target: GrantNode;
       let reach: GrantReach;
       if (a.target === b.target) {

@@ -264,7 +264,7 @@ describe("session expiry (ADR 0019 §2)", () => {
       discipline: "composition",
       createdAt: fix.runtime.time,
     });
-    const terminal = fix.auth.mintSessionAgentToken(
+    const terminal = fix.auth.mintTerminalLifecycleToken(
       "terminal-1",
       containerId,
       fix.owner.principal.id,

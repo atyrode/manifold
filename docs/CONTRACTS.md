@@ -888,13 +888,13 @@ remain root-only; this rule does not decide deny attenuation or create a new gra
 audience. A token-bound grant is never independently revocable: credential withdrawal is its
 sole retirement path and deletes it atomically only with the targeted token.
 
-**Tokens reference grants; they do not carry authority.** `TokenRecord.grant_id` and
-`ShareRecord.grant_id` point at the row the credential was minted from — the referrer holds the
-reference, so `authenticate()` gains no query and the published `Cap[]` on a `TokenGrant` is
-unchanged. Migration 13 turned every existing token's flat caps into exactly one referenced row
-(root `manifold://` for an unscoped token, `manifold://container/<id>` for a scoped one, both
-`reach: "subtree"`, both `effect: "allow"`), which is why **every pre-migration token answers
-every authority question identically after it** — parity is a fixture, not a claim.
+**Tokens own their grant rows.** `token_grants` binds each credential to its canonical rows;
+another credential of the same principal cannot borrow them. `TokenRecord.grant_id` remains the
+released placement/context anchor, and `ShareRecord.grant_id` retains its single-row meaning.
+Migration 13 converted flat ceilings to one root/container subtree row; migration 49 backfills
+that membership before introducing scoped credentials. Credential withdrawal removes every
+membership and exclusively owned row atomically, retaining a row still owned by another live
+credential. Authentication restores the stored credential scope, never principal-wide rows.
 
 **Evaluation.** `AuthService.effectiveCaps(context, node)` walks `containmentPath(node)` —
 `manifold://` → `manifold://container/<id>` → `…/element/<id>` or `…/tile/<id>` — collecting the
@@ -909,9 +909,10 @@ plugin action's declared `requirements: [{ cap, target }]`, evaluated with `allo
 or the credential's anchor and never sees a machine row. Engine fleet doors are unchanged:
 `core.machines.revoke` still requires workspace `machines:mint` and names the machine as its
 trace target, because its argument is a bare machine id — grading those doors at their machine
-is owed to #156/#190. A container-scoped credential is refused at a machine node whatever the
-rows say. Sharing remains container-only (ADR 0014): a machine reference is a valid address,
-not permission to mint a machine share.
+is owed to #156/#190. A legacy container-scoped credential is refused at a machine node whatever
+the rows say. An explicit V2 scope can authorize an exact machine independently of its unchanged
+container context anchor. Sharing remains container-only (ADR 0014): a machine reference is a
+valid address, not permission to mint a machine share.
 
 **The capability vocabulary is closed for the engine and open for a plugin (ADR 0035).** `CAPS`
 stays the engine's enum. A manifest may also declare capabilities in its OWN namespace,
@@ -922,9 +923,10 @@ because a row is written by a principal rather than by a plugin and must survive
 an uninstall; what makes an undeclared name inert is the door. **`*` never expands into a
 plugin's namespace** — the open half has no roster-independent enumeration — so a root
 credential and the owner key hold a plugin's capability only where a row names it. A plugin
-capability is never minted into a credential (`mintToken` refuses it by schema), never governed
-and never a `delegate`; an install's `grantedCaps` may carry one and grants it by default,
-since it confers authority over nothing but the declaring plugin's own doors.
+capability cannot enter a released V1 credential (`mintToken` refuses it by schema), is never
+governed and is never a `delegate`. A V2 scope may name declared plugin capabilities explicitly;
+its engine-cap union remains only a discovery hint. An install's `grantedCaps` may carry one
+and grants it by default, since it confers authority over only the declaring plugin's doors.
 
 | #   | Rule                        | Reading                                                                                             |
 | --- | --------------------------- | --------------------------------------------------------------------------------------------------- |
@@ -938,14 +940,12 @@ plus a principal allow, and a `deny` that outranked specificity would make that 
 expands to the concrete cap set before comparison, so a deny at depth bites through a wildcard
 allow at the root.
 
-**The ceiling rule** (implementation deviation, recorded in ADR 0011's landed addendum): a row
-REFERENCED by a token applies only to the credential that references it; an UNREFERENCED row —
-everything `core.access.grant` writes, plus a share's row — applies to every credential of the
-matching principal or class. Without it, a principal holding both a broad and a narrow token
-would see the narrow one inherit the broad one's row: a parity break and a live attenuation hole.
-With it, a node-scoped grant genuinely widens or narrows a LIVE credential — observable through
-ordinary dispatch, with no re-authentication, because authority is a per-request question and
-never cached into a session.
+**The ceiling rule** (ADR 0011's landed addendum): a token-bound row applies only to credentials
+whose `token_grants` membership names it. An unbound row — everything `core.access.grant` writes,
+plus a share's row — applies to the matching principal/class, subject to the credential's scope.
+Without membership isolation, a narrow token of a broad principal could inherit another token's
+row. Administered denies remain independently live. Credential scopes, sponsor/parent ceilings,
+expiry, current policy and installed action ceilings are intersected, never substituted for rows.
 
 **The owner key is synthesized, never stored.** The raw owner-key context (no token, no grant
 row, the owner principal) is evaluated against a synthesized root grant (`manifold://`, `["*"]`,
@@ -959,6 +959,59 @@ refuses only a principal-specific `deny` naming the owner (`cannot deny the work
 rather than refusing every row that could match the owner principal. This is ADR 0011 §5's
 split as amended on 2026-09-22, implemented by `AuthService.applicableRows` and
 `AuthService.grant` in `packages/server/src/auth.ts`.
+
+**Correlated V2 authority (core fleet terminals, Stage 2).** `AuthorityScope` is at most 64
+canonical `{target, reach, caps}` entries with at most 128 caps per entry; identical target/reach
+pairs merge and sorted entries/caps deduplicate. Rights are correlated, not a cap × target
+product. `[]` means no ordinary authority; absence preserves the released single-scope meaning.
+`scopeAdmits`, `scopeWithin` and scope intersection govern exact-node and subtree checks. A
+root-node grant does not establish subtree authority, and the exact descendant is still checked
+for denies. An explicit scope is never root-class merely because its principal or cap summary
+is broad. Deferred restoration retains the exact scope and credential membership; dropping or
+expanding a stored scope refuses rather than recovering broad principal authority.
+
+`core.access.mintTokenV2` requires finite expiry, `tokens:mint` and the issuer's actual live
+authority at every scoped resource. It preserves an explicit C placement anchor alongside M
+entries, never clears C to obtain machine authority. V2 Agent registration/updates and Run
+admission/lifecycle/inspection use faithful scope-bearing contracts and require `agents:delegate`
+plus every requested right at each resource, within standing/parent lifetime and budget bounds.
+The existing Agent exclusions remain (`*`, `tokens:mint`, `machines:mint`, `plugins:manage`,
+`agents:run`); `machines:shell` is ordinary working authority, not administration.
+
+Released V1 DTOs retain their strict vocabulary and are explicitly constructed. V1 may preserve
+scope on context/purpose/lifecycle changes but cannot replace it through legacy caps/targets.
+A conservative projection is returned only when the supported rights fit the actual V1 anchor
+and cap/target product. Empty-minimum or unrepresentable results refuse as
+`scoped_authority_requires_v2`, including whole authorized lists; no omitted rows or sentinel
+caps. Legacy coarse hints omit `machines:shell`; these hints never restore authority. The
+coordinated current session protocol requires a matching SDK; V1 payload preservation does not
+make an old SDK binary compatible.
+
+**Ordinary account-shell creation is separate from placement and control.** An ordinary create
+requires `terminals:spawn` at C and `machines:shell` at exact enrolled M. Ordinary restart also
+requires the existing home write/control authority and current spawn at H plus shell at stored
+M. Governed launches keep their native machine/operation/resource consent and never require
+ordinary `machines:shell`. Existing attach/input/resize/read/take/rename/kill rules are unchanged:
+a broad terminal-control grant may interact with an existing PTY on another machine even when
+shell creation is confined to M1. This is not OS root, blanket machine isolation or recall of
+filesystem/process effects outside the tracked lifecycle.
+
+Canvas creation allocates an independent composition H, so it first requires the five working
+caps (`containers:read`, `containers:write`, `scenes:write`, `terminals:spawn`, `terminals:write`)
+at workspace-root subtree before any effect, then checks exact H again before send and commit.
+A C-only scope supports that composition's tile path, not independent canvas-home creation;
+portal placement lends no automatic H grant. `mintTerminalLifecycleToken` retains terminal-local
+read/scene/control only, with neither spawn, machine-shell nor Agent bootstrap authority.
+
+Migration 49 is a one-time, durable cutover, not a spawn alias. Pre-cutover explicit
+root/subtree `terminals:spawn` allow and deny rows gain `machines:shell` in place with their
+identity, binding, provenance and expiry. Only genuinely global, admitted, unconfined associated
+token/Agent/Run/sponsor ceilings are translated. C-only, carried-container, root-node,
+machine/operation/native-bound and container-targeted ceilings are not widened. New placement
+issuance never implies shell permission. Existing PTYs and retained signed governed jobs remain
+unchanged; new hub-only authority snapshots preserve full scope while governed wire credentials
+keep their released closed vocabulary.
+
 
 **Root-class authority is asked live, and any effective deny withdraws it (#411).** A declared
 `*` door, and every root-only service verb, asks `AuthService.holdsRoot(context)` at the moment

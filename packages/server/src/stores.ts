@@ -17,22 +17,25 @@ import {
   HarnessTargetSchema,
   type ActionResultApproval,
   type HarnessTarget,
-  AgentRunCapSchema,
+  AgentRunAuthoritySchema,
   AgentRunAuthorizationPathSchema,
   AgentRunStateSchema,
   TRACED_DENIAL_RULES,
-  AgentSchema,
-  AgentRunAuthorizationCredentialSchema,
+  AgentAuthoritySchema,
+  AgentRunAuthorizationCredentialAuthoritySchema,
+  AuthorityScopeSchema,
   SessionRefSchema,
   RunModelSchema,
   RunActivitySchema,
-  type Agent,
+  type AgentAuthority,
+  type AuthorityScope,
   type SessionRef,
   type RunModel,
   type RunActivity,
   ActionSummarySchema,
   AgentRunTraceSummarySchema,
   type AgentRunInspection,
+  type AgentRunInspectionV2,
   type InspectRunRequest,
   AuthoredCapSchema,
   MAX_MIGRATION_STORAGE_OPERATIONS,
@@ -43,7 +46,6 @@ import {
   ContainerDisciplineSchema,
   ContainerSchema,
   GrantSchema,
-  JobCredentialSchema,
   IndexEntrySchema,
   PluginSettingValuesSchema,
   PrincipalSchema,
@@ -56,10 +58,10 @@ import {
   validateTileLayout,
   type ActionSummary,
   type AgentPolicyBundle,
-  type AgentRunCap,
+  type AgentRunAuthorityCap,
   type AgentRunState,
   type AgentRunAuthorizationPath,
-  type AgentRunAuthorizationCredential,
+  type AgentRunAuthorizationCredentialAuthority,
   type GrantReach,
   type BindingOverrides,
   type AuthoredCap,
@@ -79,6 +81,7 @@ import {
 import { Y } from "@manifold/scene";
 import { z } from "zod";
 import type { CredentialReference } from "./auth.ts";
+import { CredentialReferenceSchema } from "./authority-snapshot.ts";
 import { normalizeAgentDeclaration } from "./log.ts";
 
 export const EVENTS_RETENTION_DAYS = 30;
@@ -198,6 +201,7 @@ interface TokenRow {
   revoked_at: number | null;
   grant_id: string | null;
   expires_at: number | null;
+  authority_scope: string | null;
 }
 
 interface AgentRow {
@@ -217,10 +221,10 @@ interface AgentRow {
   updated_at: number;
 }
 
-export interface AgentRecord extends Omit<Agent, "state" | "activeRuns"> {
+export interface AgentRecord extends Omit<AgentAuthority, "state" | "activeRuns"> {
   readonly status: "enabled" | "disabled" | "retired";
   readonly authorizationPath: AgentRunAuthorizationPath;
-  readonly authorizationCredential: AgentRunAuthorizationCredential;
+  readonly authorizationCredential: AgentRunAuthorizationCredentialAuthority;
 }
 
 interface AgentRunRow {
@@ -241,11 +245,13 @@ interface AgentRunRow {
   authorizer_caps: string;
   authorizer_container_scope: string | null;
   authorizer_expires_at: number | null;
+  authorizer_authority_scope: string | null;
   purpose: string;
   task_ref: string | null;
   target: string;
   reach: string;
   caps: string;
+  authority_scope: string | null;
   tools_json: string | null;
   launch_target_json: string | null;
   native_job_id: string | null;
@@ -285,12 +291,13 @@ export interface AgentRunRecord {
   readonly parentRunId: string | null;
   readonly authorizedByPrincipalId: string;
   readonly authorizationPath: AgentRunAuthorizationPath;
-  readonly authorizationCredential: AgentRunAuthorizationCredential;
+  readonly authorizationCredential: AgentRunAuthorizationCredentialAuthority;
   readonly purpose: string;
   readonly taskRef?: string;
   readonly target: string;
   readonly reach: GrantReach;
-  readonly caps: readonly AgentRunCap[];
+  readonly caps: readonly AgentRunAuthorityCap[];
+  readonly authorityScope?: AuthorityScope;
   readonly tools?: readonly ActionResultApproval[];
   readonly launchTarget?: HarnessTarget;
   readonly nativeJob?: { readonly jobId: string; readonly credential: CredentialReference };
@@ -428,6 +435,7 @@ export interface TokenRecord {
   mintedBy: string | null;
   caps: readonly Cap[];
   containerId: string | null;
+  authorityScope?: AuthorityScope;
   createdAt: number;
   revokedAt: number | null;
   grantId: string | null;
@@ -747,6 +755,9 @@ function toToken(row: TokenRow): TokenRecord {
     mintedBy: row.minted_by,
     caps,
     containerId: row.container_id,
+    ...(row.authority_scope === null
+      ? {}
+      : { authorityScope: AuthorityScopeSchema.parse(JSON.parse(row.authority_scope)) }),
     createdAt: row.created_at,
     revokedAt: row.revoked_at,
     grantId: row.grant_id,
@@ -762,13 +773,14 @@ const AGENT_RUN_SELECT = `SELECT id,principal_id,agent_id,
   session_harness,session_id,session_machine_id,model,activity,
   root_run_id,parent_run_id,authorized_by_principal_id,
   authorization_path,authorizer_token_id,authorizer_grant_id,authorizer_caps,
-  authorizer_container_scope,authorizer_expires_at,purpose,task_ref,target,reach,caps,
+  authorizer_container_scope,authorizer_expires_at,authorizer_authority_scope,
+  purpose,task_ref,target,reach,caps,authority_scope,
   tools_json,launch_target_json,native_job_id,native_credential_json,
   created_at,expires_at,renewals,max_depth,max_descendants,depth,
   cleanup_owner_principal_id,state,policy_revision,acknowledged_policy_revision,
   cleanup_revoked_credentials,cleanup_revoked_grants,finished_at,cleanup_failure FROM agent_runs`;
 
-const StoredAgentSchema = AgentSchema.omit({ state: true, activeRuns: true });
+const StoredAgentSchema = AgentAuthoritySchema.omit({ state: true, activeRuns: true });
 
 function toAgent(row: AgentRow): AgentRecord {
   const agent = StoredAgentSchema.parse({
@@ -790,7 +802,7 @@ function toAgent(row: AgentRow): AgentRecord {
     ...agent,
     status: row.status,
     authorizationPath: AgentRunAuthorizationPathSchema.parse(row.authorization_path),
-    authorizationCredential: AgentRunAuthorizationCredentialSchema.parse(
+    authorizationCredential: AgentRunAuthorizationCredentialAuthoritySchema.parse(
       JSON.parse(row.authorization_credential),
     ),
   };
@@ -815,18 +827,24 @@ function toAgentRun(row: AgentRunRow): AgentRunRecord {
     parentRunId: row.parent_run_id,
     authorizedByPrincipalId: row.authorized_by_principal_id,
     authorizationPath: AgentRunAuthorizationPathSchema.parse(row.authorization_path),
-    authorizationCredential: {
+    authorizationCredential: AgentRunAuthorizationCredentialAuthoritySchema.parse({
       tokenId: row.authorizer_token_id,
       grantId: row.authorizer_grant_id,
-      caps: CapSchema.array().parse(JSON.parse(row.authorizer_caps)),
+      caps: JSON.parse(row.authorizer_caps),
       containerScope: row.authorizer_container_scope,
       ...(row.authorizer_expires_at === null ? {} : { expiresAt: row.authorizer_expires_at }),
-    },
+      ...(row.authorizer_authority_scope === null
+        ? {}
+        : { authorityScope: JSON.parse(row.authorizer_authority_scope) }),
+    }),
     purpose: row.purpose,
     ...(row.task_ref === null ? {} : { taskRef: row.task_ref }),
     target: GrantNodeSchema.parse(row.target),
     reach: GrantReachSchema.parse(row.reach),
-    caps: AgentRunCapSchema.array().parse(JSON.parse(row.caps)),
+    caps: AgentRunAuthoritySchema.shape.caps.parse(JSON.parse(row.caps)),
+    ...(row.authority_scope === null
+      ? {}
+      : { authorityScope: AgentRunAuthoritySchema.shape.authorityScope.unwrap().parse(JSON.parse(row.authority_scope)) }),
     ...(row.tools_json === null
       ? {}
       : { tools: ActionResultApprovalsSchema.parse(JSON.parse(row.tools_json)) }),
@@ -838,7 +856,7 @@ function toAgentRun(row: AgentRunRow): AgentRunRecord {
       : {
           nativeJob: {
             jobId: row.native_job_id,
-            credential: JobCredentialSchema.parse(JSON.parse(row.native_credential_json!)),
+            credential: CredentialReferenceSchema.parse(JSON.parse(row.native_credential_json!)),
           },
         }),
     createdAt: row.created_at,
@@ -954,7 +972,7 @@ function toGrant(row: GrantRow): GrantRecord {
  */
 const GRANT_SELECT = `SELECT g.id, g.principal_kind, g.principal_id, g.node, g.caps, g.effect,
           g.reach, g.created_by, g.created_at,
-          EXISTS(SELECT 1 FROM tokens t WHERE t.grant_id = g.id) AS bound
+          EXISTS(SELECT 1 FROM token_grants tg WHERE tg.grant_id = g.id) AS bound
    FROM grants g`;
 
 /**
@@ -2359,12 +2377,13 @@ export class ServerStore {
         `INSERT INTO agent_runs(
            id,principal_id,root_run_id,parent_run_id,authorized_by_principal_id,
            authorization_path,authorizer_token_id,authorizer_grant_id,authorizer_caps,
-           authorizer_container_scope,authorizer_expires_at,purpose,task_ref,target,reach,caps,
+           authorizer_container_scope,authorizer_expires_at,authorizer_authority_scope,
+           purpose,task_ref,target,reach,caps,authority_scope,
            created_at,expires_at,renewals,max_depth,max_descendants,depth,
            cleanup_owner_principal_id,state,policy_revision,acknowledged_policy_revision,
            cleanup_revoked_credentials,cleanup_revoked_grants,finished_at,cleanup_failure,
            agent_id,session_harness,session_id,session_machine_id,model,activity,tools_json,launch_target_json
-         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         record.id,
@@ -2378,11 +2397,15 @@ export class ServerStore {
         JSON.stringify(record.authorizationCredential.caps),
         record.authorizationCredential.containerScope,
         record.authorizationCredential.expiresAt ?? null,
+        record.authorizationCredential.authorityScope === undefined
+          ? null
+          : JSON.stringify(record.authorizationCredential.authorityScope),
         record.purpose,
         record.taskRef ?? null,
         record.target,
         record.reach,
         JSON.stringify(record.caps),
+        record.authorityScope === undefined ? null : JSON.stringify(record.authorityScope),
         record.createdAt,
         record.expiresAt,
         record.renewals,
@@ -2556,17 +2579,18 @@ export class ServerStore {
   renewAgentRun(
     runId: string,
     expiresAt: number,
-    authorizationCredential: AgentRunAuthorizationCredential,
+    authorizationCredential: AgentRunAuthorizationCredentialAuthority,
   ): boolean {
     return (
       this.db
         .query<
           void,
-          [number, string | null, string | null, string, string | null, number | null, string]
+          [number, string | null, string | null, string, string | null, number | null, string | null, string]
         >(
           `UPDATE agent_runs
            SET expires_at=?,renewals=renewals+1,authorizer_token_id=?,authorizer_grant_id=?,
-               authorizer_caps=?,authorizer_container_scope=?,authorizer_expires_at=?
+               authorizer_caps=?,authorizer_container_scope=?,authorizer_expires_at=?,
+               authorizer_authority_scope=?
            WHERE id=? AND state='active'`,
         )
         .run(
@@ -2576,6 +2600,9 @@ export class ServerStore {
           JSON.stringify(authorizationCredential.caps),
           authorizationCredential.containerScope,
           authorizationCredential.expiresAt ?? null,
+          authorizationCredential.authorityScope === undefined
+            ? null
+            : JSON.stringify(authorizationCredential.authorityScope),
           runId,
         ).changes === 1
     );
@@ -2600,46 +2627,60 @@ export class ServerStore {
   }
 
   createToken(record: TokenRecord): void {
-    this.db
-      .query<
-        void,
-        [
-          string,
-          string,
-          string,
-          string | null,
-          string,
-          string | null,
-          number,
-          number | null,
-          string | null,
-          number | null,
-        ]
-      >(
-        `INSERT INTO tokens(
-           id, hash, principal_id, minted_by, caps, container_id, created_at, revoked_at,
-           grant_id, expires_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    this.transaction(() => {
+      this.db
+        .query(
+          `INSERT INTO tokens(
+             id, hash, principal_id, minted_by, caps, container_id, created_at, revoked_at,
+             grant_id, expires_at, authority_scope
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          record.id,
+          record.hash,
+          record.principalId,
+          record.mintedBy,
+          JSON.stringify(record.caps),
+          record.containerId,
+          record.createdAt,
+          record.revokedAt,
+          record.grantId,
+          record.expiresAt,
+          record.authorityScope === undefined ? null : JSON.stringify(record.authorityScope),
+        );
+      if (record.grantId !== null) this.bindTokenGrant(record.id, record.grantId);
+    });
+  }
+
+  /** Adds a row to this credential's authority without replacing its legacy anchor. */
+  bindTokenGrant(tokenId: string, grantId: string): void {
+    const bound = this.db
+      .query<{ grant_id: string }, [string, string]>(
+        `INSERT INTO token_grants(token_id,grant_id)
+         SELECT t.id,g.id FROM tokens t JOIN grants g ON g.id=?
+         WHERE t.id=?
+         ON CONFLICT(token_id,grant_id) DO UPDATE SET grant_id=excluded.grant_id
+         RETURNING grant_id`,
       )
-      .run(
-        record.id,
-        record.hash,
-        record.principalId,
-        record.mintedBy,
-        JSON.stringify(record.caps),
-        record.containerId,
-        record.createdAt,
-        record.revokedAt,
-        record.grantId,
-        record.expiresAt,
-      );
+      .get(grantId, tokenId);
+    if (bound === null) throw new Error("token grant binding failed");
+  }
+
+  tokenOwnsGrant(tokenId: string, grantId: string): boolean {
+    return (
+      this.db
+        .query<{ found: number }, [string, string]>(
+          "SELECT 1 AS found FROM token_grants WHERE token_id=? AND grant_id=?",
+        )
+        .get(tokenId, grantId) !== null
+    );
   }
 
   getTokenByHash(hash: string): TokenRecord | null {
     const row = this.db
       .query<TokenRow, [string]>(
         `SELECT id, hash, principal_id, minted_by, caps, container_id, created_at, revoked_at,
-                grant_id, expires_at
+                grant_id, expires_at, authority_scope
          FROM tokens WHERE hash = ?`,
       )
       .get(hash);
@@ -2650,7 +2691,7 @@ export class ServerStore {
     const row = this.db
       .query<TokenRow, [string]>(
         `SELECT id, hash, principal_id, minted_by, caps, container_id, created_at, revoked_at,
-                grant_id, expires_at
+                grant_id, expires_at, authority_scope
          FROM tokens WHERE id = ?`,
       )
       .get(id);
@@ -2672,7 +2713,7 @@ export class ServerStore {
     return this.db
       .query<TokenRow, [string]>(
         `SELECT id, hash, principal_id, minted_by, caps, container_id, created_at, revoked_at,
-                grant_id, expires_at
+                grant_id, expires_at, authority_scope
          FROM tokens WHERE principal_id = ? ORDER BY created_at, id`,
       )
       .all(principalId)
@@ -2683,7 +2724,7 @@ export class ServerStore {
     return this.db
       .query<TokenRow, [string]>(
         `SELECT id,hash,principal_id,minted_by,caps,
-      container_id,created_at,revoked_at,grant_id,expires_at
+      container_id,created_at,revoked_at,grant_id,expires_at,authority_scope
       FROM tokens WHERE run_id=? ORDER BY created_at,id`,
       )
       .all(runId)
@@ -2748,9 +2789,9 @@ export class ServerStore {
   }
 
   /**
-   * Marks every live token the predicate names revoked, and retires the grant row each one
-   * references — one transaction, so no instant shows a dead credential standing on live
-   * authority or the reverse.
+   * Marks every live token the predicate names revoked, and retires all its grant memberships
+   * and rows — one transaction, so no instant shows a dead credential standing on live
+   * authority or the reverse. The legacy grant_id anchor is cleared with the credential.
    *
    * A TOKEN'S ROW DIES WITH THE TOKEN. The row is that one credential's synthesized authority
    * and reaches no other (`tokenBound`), so once the token is refused at authentication the row
@@ -2780,12 +2821,23 @@ export class ServerStore {
       this.db
         .query<void, string[]>(
           `DELETE FROM grants WHERE id IN (
-             SELECT grant_id FROM tokens
-             WHERE ${where} AND revoked_at IS NULL AND grant_id IS NOT NULL
+             SELECT tg.grant_id FROM token_grants tg JOIN tokens t ON t.id=tg.token_id
+             WHERE t.id IN (SELECT id FROM tokens WHERE ${where} AND revoked_at IS NULL)
+           ) AND NOT EXISTS (
+             SELECT 1 FROM token_grants other JOIN tokens owner ON owner.id=other.token_id
+             WHERE other.grant_id=grants.id AND owner.revoked_at IS NULL
+               AND owner.id NOT IN (SELECT id FROM tokens WHERE ${where} AND revoked_at IS NULL)
+           )`,
+        )
+        .run(...params, ...params);
+      const grants = changes.get()?.count ?? 0;
+      this.db
+        .query<void, string[]>(
+          `DELETE FROM token_grants WHERE token_id IN (
+             SELECT id FROM tokens WHERE ${where} AND revoked_at IS NULL
            )`,
         )
         .run(...params);
-      const grants = changes.get()?.count ?? 0;
       this.db
         .query<void, [number, ...string[]]>(
           `UPDATE tokens SET revoked_at = ?, grant_id = NULL
@@ -2853,6 +2905,7 @@ export class ServerStore {
   deleteGrant(id: string): boolean {
     return this.transaction(() => {
       this.db.query<void, [string]>("UPDATE shares SET grant_id = NULL WHERE grant_id = ?").run(id);
+      this.db.query<void, [string]>("UPDATE tokens SET grant_id = NULL WHERE grant_id = ?").run(id);
       return this.db.query<void, [string]>("DELETE FROM grants WHERE id = ?").run(id).changes > 0;
     });
   }
@@ -3350,7 +3403,7 @@ export class ServerStore {
     now: number,
     liveConnectionIds: readonly string[],
   ): Pick<
-    AgentRunInspection,
+    AgentRunInspectionV2,
     | "credentials"
     | "connections"
     | "traces"
@@ -3428,6 +3481,7 @@ export class ServerStore {
           createdAt: number;
           expiresAt: number | null;
           revokedAt: number | null;
+          authorityScope: string | null;
           node: string | null;
           caps: string | null;
           reach: GrantReach | null;
@@ -3436,14 +3490,18 @@ export class ServerStore {
         [string]
       >(
         `SELECT t.created_at AS createdAt,t.expires_at AS expiresAt,t.revoked_at AS revokedAt,
-        g.node,g.caps,g.reach,g.effect FROM tokens t LEFT JOIN grants g ON g.id=t.grant_id
+        t.authority_scope AS authorityScope,g.node,g.caps,g.reach,g.effect
+        FROM tokens t LEFT JOIN grants g ON g.id=t.grant_id
        WHERE t.run_id=? ORDER BY t.created_at DESC,t.id DESC LIMIT 100`,
       )
       .all(runId)
-      .map((row): AgentRunInspection["credentials"][number] => ({
+      .map((row): AgentRunInspectionV2["credentials"][number] => ({
         createdAt: row.createdAt,
         expiresAt: row.expiresAt,
         revokedAt: row.revokedAt,
+        ...(row.authorityScope === null
+          ? {}
+          : { authorityScope: AuthorityScopeSchema.parse(JSON.parse(row.authorityScope)) }),
         state:
           row.revokedAt !== null
             ? "revoked"

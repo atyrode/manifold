@@ -3,6 +3,8 @@ import {
   CONNECTION_BODIES,
   MAX_SUBSCRIPTIONS_PER_CONNECTION,
   formatManifoldUri,
+  MANIFOLD_ROOT_URI,
+  scopeAdmits,
   topicMatches,
   type EventKind,
   type EventPayload,
@@ -41,6 +43,7 @@ import type { Logger } from "./log.ts";
  */
 export interface EventAuthority {
   allows(context: AuthContext, cap: "containers:read", containerId?: string): boolean;
+  allowsNode(context: AuthContext, cap: "containers:read", node: string): boolean;
   canReadAgentNode(
     context: AuthContext,
     ref: Extract<ManifoldRef, { kind: "agent" | "run" }>,
@@ -221,6 +224,9 @@ export class EventHub {
 
   /** The caller's coarse workspace-event hint, shared with connection authority snapshots. */
   workspaceEventsAvailable(auth: AuthContext): boolean {
+    if (auth.authorityScope !== undefined)
+      return scopeAdmits(auth.authorityScope, MANIFOLD_ROOT_URI, "containers:read", "subtree") &&
+        this.authority.allowsNode(auth, "containers:read", MANIFOLD_ROOT_URI);
     return auth.containerScope === null && this.authority.allows(auth, "containers:read");
   }
 

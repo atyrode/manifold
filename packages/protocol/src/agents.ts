@@ -1,6 +1,8 @@
 import { z } from "zod";
-import { ActionResultApprovalsSchema, AuthoredCapSchema } from "./plugin.ts";
-import { GrantNodeSchema, GrantReachSchema } from "./grants.ts";
+import { ActionResultApprovalsSchema, PluginCapSchema } from "./plugin.ts";
+import { CapSchema } from "./capabilities.ts";
+import { AuthorityScopeSchema, GrantNodeSchema, GrantReachSchema } from "./grants.ts";
+import { LegacyAuthoredCapSchema } from "./legacy-authority.ts";
 import { HarnessIdSchema, SessionRefSchema } from "./session-ref.ts";
 
 export const AgentIdSchema = z.string().min(1).max(128);
@@ -24,7 +26,7 @@ export const AGENT_RUN_MAX_POLICY_BODY_BYTES = 65_536;
 
 /** Runner admission is not ordinary run authority and cannot reproduce a standing grant. */
 export const AgentRunCapSchema = z
-  .lazy(() => AuthoredCapSchema)
+  .lazy(() => LegacyAuthoredCapSchema)
   .refine(
     (cap) =>
       cap !== "*" &&
@@ -40,6 +42,23 @@ export const AgentRunCapsSchema = z
   .min(1)
   .max(64)
   .refine((caps) => new Set(caps).size === caps.length, "duplicate agent run capability");
+
+/** Internal and V2 authority includes ordinary account shells, but never Agent administration. */
+export const AgentRunAuthorityCapSchema = z.union([
+  CapSchema.exclude(["*", "tokens:mint", "machines:mint", "plugins:manage", "agents:run"]),
+  z.lazy(() => PluginCapSchema),
+]);
+export type AgentRunAuthorityCap = z.infer<typeof AgentRunAuthorityCapSchema>;
+export const AgentRunAuthorityCapsSchema = z
+  .array(AgentRunAuthorityCapSchema)
+  .max(128)
+  .refine((caps) => new Set(caps).size === caps.length, "duplicate agent run capability");
+export const AgentAuthorityScopeSchema = z
+  .lazy(() => AuthorityScopeSchema)
+  .refine(
+    (scope) => scope.every((entry) => entry.caps.every((cap) => AgentRunAuthorityCapSchema.safeParse(cap).success)),
+    "agent scope cannot grant runner, wildcard, legacy token, fleet, or plugin administration",
+  );
 export const AgentDelegationSchema = z.strictObject({
   maxDepth: z.number().int().min(0).max(AGENT_RUN_MAX_DEPTH),
   maxDescendants: z.number().int().min(0).max(AGENT_RUN_MAX_DESCENDANTS),
@@ -58,6 +77,21 @@ export const AgentGrantSchema = z.strictObject({
   expiresAt: z.number().int().positive(),
 });
 export type AgentGrant = z.infer<typeof AgentGrantSchema>;
+
+export const AgentGrantAuthoritySchema = AgentGrantSchema.extend({
+  caps: AgentRunAuthorityCapsSchema,
+  targets: z.array(z.lazy(() => GrantNodeSchema)).max(64),
+  authorityScope: AgentAuthorityScopeSchema.optional(),
+}).refine((grant) => grant.authorityScope !== undefined || (grant.caps.length > 0 && grant.targets.length > 0), {
+  message: "legacy agent authority requires capabilities and targets",
+});
+export type AgentGrantAuthority = z.infer<typeof AgentGrantAuthoritySchema>;
+export const AgentGrantV2Schema = AgentGrantSchema.omit({
+  caps: true,
+  targets: true,
+  reach: true,
+}).extend({ scope: AgentAuthorityScopeSchema });
+export type AgentGrantV2 = z.infer<typeof AgentGrantV2Schema>;
 export const AgentContextSchema = z.strictObject({
   instructions: z.string().max(65_536).optional(),
   profile: z.unknown(),
@@ -83,6 +117,10 @@ export const AgentSchema = z.strictObject({
   updatedAt: z.number().int().nonnegative(),
 });
 export type Agent = z.infer<typeof AgentSchema>;
+export const AgentAuthoritySchema = AgentSchema.extend({ grant: AgentGrantAuthoritySchema });
+export type AgentAuthority = z.infer<typeof AgentAuthoritySchema>;
+export const AgentV2Schema = AgentSchema.extend({ grant: AgentGrantV2Schema });
+export type AgentV2 = z.infer<typeof AgentV2Schema>;
 export const RegisterAgentRequestSchema = AgentSchema.pick({
   name: true,
   purpose: true,
@@ -123,6 +161,47 @@ export const ReportRunActivityRequestSchema = z.strictObject({
   activity: RunActivitySchema,
 });
 export type ReportRunActivityRequest = z.infer<typeof ReportRunActivityRequestSchema>;
+
+export const RegisterAgentV2RequestSchema = AgentV2Schema.pick({
+  name: true,
+  purpose: true,
+  harness: true,
+  grant: true,
+  context: true,
+});
+export type RegisterAgentV2Request = z.infer<typeof RegisterAgentV2RequestSchema>;
+export const RegisterAgentV2ResultSchema = RegisterAgentResultSchema.extend({ agent: AgentV2Schema });
+export type RegisterAgentV2Result = z.infer<typeof RegisterAgentV2ResultSchema>;
+export const GetAgentV2RequestSchema = AgentRequestSchema;
+export type GetAgentV2Request = z.infer<typeof GetAgentV2RequestSchema>;
+export const GetAgentV2ResultSchema = GetAgentResultSchema.extend({ agent: AgentV2Schema });
+export type GetAgentV2Result = z.infer<typeof GetAgentV2ResultSchema>;
+export const ListAgentsV2RequestSchema = ListAgentsRequestSchema;
+export type ListAgentsV2Request = z.infer<typeof ListAgentsV2RequestSchema>;
+export const ListAgentsV2ResultSchema = ListAgentsResultSchema.extend({
+  agents: z.array(AgentV2Schema).max(100),
+});
+export type ListAgentsV2Result = z.infer<typeof ListAgentsV2ResultSchema>;
+export const UpdateAgentV2RequestSchema = UpdateAgentRequestSchema.extend({
+  grant: AgentGrantV2Schema.optional(),
+});
+export type UpdateAgentV2Request = z.infer<typeof UpdateAgentV2RequestSchema>;
+export const UpdateAgentV2ResultSchema = GetAgentV2ResultSchema;
+export type UpdateAgentV2Result = z.infer<typeof UpdateAgentV2ResultSchema>;
+export const ReportRunActivityV2RequestSchema = ReportRunActivityRequestSchema;
+export type ReportRunActivityV2Request = z.infer<typeof ReportRunActivityV2RequestSchema>;
+export const DisableAgentV2RequestSchema = AgentRequestSchema;
+export type DisableAgentV2Request = z.infer<typeof DisableAgentV2RequestSchema>;
+export const DisableAgentV2ResultSchema = GetAgentV2ResultSchema;
+export type DisableAgentV2Result = z.infer<typeof DisableAgentV2ResultSchema>;
+export const EnableAgentV2RequestSchema = AgentRequestSchema;
+export type EnableAgentV2Request = z.infer<typeof EnableAgentV2RequestSchema>;
+export const EnableAgentV2ResultSchema = GetAgentV2ResultSchema;
+export type EnableAgentV2Result = z.infer<typeof EnableAgentV2ResultSchema>;
+export const RetireAgentV2RequestSchema = AgentRequestSchema;
+export type RetireAgentV2Request = z.infer<typeof RetireAgentV2RequestSchema>;
+export const RetireAgentV2ResultSchema = GetAgentV2ResultSchema;
+export type RetireAgentV2Result = z.infer<typeof RetireAgentV2ResultSchema>;
 
 /** JSON Schema is published as data; the harness supplies the matching runtime validator. */
 export const HarnessDefinitionSchema = z.strictObject({

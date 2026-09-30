@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { PrincipalCredentialsSchema } from "@manifold/protocol";
 import { openDatabase } from "../src/db.ts";
 import { ServerStore, sha256Hex } from "../src/stores.ts";
+import { AUTHORITY_V37_FIXTURE_SQL } from "./authority-migration-fixtures.ts";
 
 /** The v37 authority and terminal tables needed by later migrations. */
 function seedV37(path: string): void {
@@ -14,12 +15,7 @@ function seedV37(path: string): void {
     db.exec(`
 CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT);
 INSERT INTO meta VALUES ('schema_version','37');
-CREATE TABLE principals(id TEXT PRIMARY KEY,kind TEXT,name TEXT,color TEXT,created_at INTEGER,origin TEXT);
-CREATE TABLE tokens(id TEXT PRIMARY KEY,hash TEXT UNIQUE,principal_id TEXT,caps TEXT,
-  container_id TEXT,created_at INTEGER,revoked_at INTEGER,minted_by TEXT,grant_id TEXT,
-  expires_at INTEGER,run_id TEXT,runner_agent_id TEXT);
-CREATE TABLE grants(id TEXT PRIMARY KEY,principal_kind TEXT,principal_id TEXT,node TEXT,caps TEXT,
-  effect TEXT,reach TEXT,created_by TEXT,created_at INTEGER);
+${AUTHORITY_V37_FIXTURE_SQL}
 CREATE TABLE native_instance_services(
   service_id TEXT PRIMARY KEY,revision TEXT NOT NULL,machine_id TEXT NOT NULL,
   plugin_id TEXT NOT NULL,configuration TEXT NOT NULL,credential TEXT,job_id TEXT,
@@ -31,7 +27,6 @@ CREATE TABLE machine_job_revisions(kind TEXT NOT NULL,identity TEXT NOT NULL,rev
   digest TEXT NOT NULL,PRIMARY KEY(kind,identity));
 CREATE TABLE terminals(id TEXT PRIMARY KEY,machine_id TEXT,container_id TEXT,run_id TEXT);
 CREATE TABLE machine_jobs(job_id TEXT PRIMARY KEY,machine_id TEXT,created_at INTEGER,request TEXT);
-CREATE TABLE agent_runs(id TEXT PRIMARY KEY);
 CREATE TABLE machine_job_deployments(
   deployment_id TEXT PRIMARY KEY,plugin_id TEXT NOT NULL,revision INTEGER NOT NULL,
   approved_at INTEGER NOT NULL,cancelled INTEGER NOT NULL DEFAULT 0 CHECK(cancelled IN (0,1)),approval TEXT NOT NULL);
