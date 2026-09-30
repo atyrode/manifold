@@ -5268,8 +5268,7 @@ export class PluginHost {
         async () => {
           try {
             while (this.nativePendingProbes.has(id)) await this.nativePendingProbes.get(id);
-            if (!open || this.closed)
-              throw new Error("settled job admission unavailable");
+            if (!open || this.closed) throw new Error("settled job admission unavailable");
             lease.check();
             const result = invoke(ctx, delivery.settled);
             if (result === undefined) {

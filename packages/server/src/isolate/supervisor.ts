@@ -786,7 +786,10 @@ export class IsolateSupervisor implements IsolateRunner {
         child.send({ t: "byte_cancel", id });
       };
       this.clearIdle(isolate);
-      const deadline = setTimeout(() => this.expire(isolate, id, duration), expiresAt - performance.now());
+      const deadline = setTimeout(
+        () => this.expire(isolate, id, duration),
+        expiresAt - performance.now(),
+      );
       try {
         const { promise, resolve, reject } = Promise.withResolvers<AnsweredFrame>();
         const request = build(id);

@@ -3176,7 +3176,7 @@ choice is required to retain unsupported bytes.
 
 ### Native effects and recovery
 
-Native transfers require machine protocol 50, owner RPC 44, a proved enrolled owner and
+Native transfers require machine protocol 53, owner RPC 44, a proved enrolled owner and
 deliberate installation/consent for the exact transfer policy and location revisions. They
 use the existing owner channel, not a shell or terminal fallback. `create-child` means one
 exclusive regular file beneath a reviewed managed root, not overwrite or arbitrary-path

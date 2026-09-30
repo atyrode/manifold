@@ -286,7 +286,7 @@ use the same capture/restore protocol; a checkout is not a runtime prerequisite.
 
 ## Native policy artifacts and create-only effects
 
-Use the existing transport and proved private owner, with machine protocol 50 and owner RPC 44
+Use the existing transport and proved private owner, with machine protocol 53 and owner RPC 44
 required for native byte frames. Older transports retain ordinary workloads but refuse this
 feature and transfer-only installation. There is no compatibility path through a shell or PTY.
 
