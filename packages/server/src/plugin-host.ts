@@ -886,6 +886,8 @@ export interface ActionCtx {
   readonly admission: GovernedAdmissionDecision | null;
   /** Host-only continuation after the isolate's real input parse; not a guest ctx slice. */
   readonly admitPrepared?: (targets: readonly unknown[]) => void;
+  /** Host-only idle exclusion, awaited inside the runner's original dispatch budget. */
+  readonly waitForNativePendingProbe?: () => Promise<void>;
   readonly streams: PluginStreamContext;
   readonly jobs: JobContext;
   readonly nativeTransfers: PluginNativeTransferContext;
@@ -1754,7 +1756,6 @@ export class PluginHost {
     input: ByteCarrierRequest,
     request: Request,
   ): Promise<Response> {
-    while (this.nativePendingProbes.has(pluginId)) await this.nativePendingProbes.get(pluginId);
     const definition = this.byteDefinitions.get(pluginId);
     const declaration = definition?.manifest.contributes.byteCarriers?.find(
       (candidate) => candidate.id === carrierId,
@@ -1861,7 +1862,6 @@ export class PluginHost {
       const requests = this.byteRequests.get(pluginId) ?? new Set<() => void>();
       requests.add(hostAborted);
       this.byteRequests.set(pluginId, requests);
-      lease = this.dataLease(pluginId, undefined, undefined, 256, assertCurrent);
       const authorityChanged = (): void => {
         try {
           assertCurrent();
@@ -1877,6 +1877,12 @@ export class PluginHost {
       this.lifetime.signal.addEventListener("abort", hostAborted, { once: true });
       restrictDeadline(deadlineAt, "request_timeout");
       if (credential.expiresAt !== undefined) restrictDeadline(credential.expiresAt, "unavailable");
+      while (this.nativePendingProbes.has(pluginId)) {
+        await Promise.race([this.nativePendingProbes.get(pluginId), failed.promise]);
+        assertCurrent();
+      }
+      assertCurrent();
+      lease = this.dataLease(pluginId, undefined, undefined, 256, assertCurrent);
       const requireCapability = (cap: AuthoredCap, ref: ManifoldRef): void => {
         assertCurrent();
         if (cap !== declaration.capability || formatManifoldUri(ref) !== target)
@@ -2044,8 +2050,6 @@ export class PluginHost {
     invoke: (ctx: ReferenceProbeCtx) => Promise<T>,
     pendingProbe = false,
   ): Promise<T> {
-    if (!pendingProbe)
-      while (this.nativePendingProbes.has(pluginId)) await this.nativePendingProbes.get(pluginId);
     const lease = this.dataLease(
       pluginId,
       this.storage(pluginId),
@@ -2057,22 +2061,31 @@ export class PluginHost {
     if (active === undefined) this.activeDispatches.set(pluginId, (active = new Set()));
     active.add(settled.promise);
     let timer: NodeJS.Timeout | undefined;
+    let open = true;
     try {
       const deadline = new Promise<never>((_, reject) => {
         timer = setTimeout(() => {
+          open = false;
           lease.close();
           reject(new ReferenceRefused());
         }, 2_000);
       });
       return await Promise.race([
-        invoke({
-          storage: lease.storage,
-          ...(lease.database ? { database: lease.database } : {}),
-          now: () => this.runtime.now(),
-        }),
+        (async () => {
+          if (!pendingProbe)
+            while (this.nativePendingProbes.has(pluginId))
+              await this.nativePendingProbes.get(pluginId);
+          if (!open || this.closed) throw new ReferenceRefused();
+          return invoke({
+            storage: lease.storage,
+            ...(lease.database ? { database: lease.database } : {}),
+            now: () => this.runtime.now(),
+          });
+        })(),
         deadline,
       ]);
     } finally {
+      open = false;
       clearTimeout(timer);
       lease.close();
       settled.resolve();
@@ -2193,7 +2206,6 @@ export class PluginHost {
   ): Promise<T> {
     const def = this.harnessDefinition(id);
     const pluginId = def.manifest.id;
-    while (this.nativePendingProbes.has(pluginId)) await this.nativePendingProbes.get(pluginId);
     const install = this.installed.get(pluginId);
     const current = this.authService.restoreCredential(this.authService.credentialReference(actor));
     if (!current) throw new ServiceError("forbidden", "harness caller unavailable");
@@ -2217,12 +2229,21 @@ export class PluginHost {
     };
     const shared = { ...base };
     delete shared.database;
+    let open = true;
+    const waitForNativePendingProbe = async (): Promise<void> => {
+      while (this.nativePendingProbes.has(pluginId)) await this.nativePendingProbes.get(pluginId);
+      if (!open || this.closed || this.harnessDefinition(id) !== def ||
+        !this.authService.restoreCredential(this.authService.credentialReference(actor)))
+        throw new ServiceError("forbidden", "harness caller unavailable");
+    };
     try {
+      if (!this.guestInputPlugins.has(pluginId)) await waitForNativePendingProbe();
       return await invoke(
         def.harness,
         {
           ...shared,
           pluginId,
+          waitForNativePendingProbe,
           // The host invokes a harness; the door's own caller did not call this plugin.
           callerPlugin: null,
           actions: this.actionCalls(pluginId, current, session, base.traceId, [...stack, pluginId]),
@@ -2259,6 +2280,7 @@ export class PluginHost {
         pluginId,
       );
     } finally {
+      open = false;
       lease.close();
       settled.resolve();
       active.delete(settled.promise);
@@ -5049,14 +5071,16 @@ export class PluginHost {
     pluginId: string,
     invoke: (ctx: LifecycleCtx) => void | Promise<void>,
   ): Promise<HookOutcome> {
-    while (this.nativePendingProbes.has(pluginId)) await this.nativePendingProbes.get(pluginId);
     const settled = Promise.withResolvers<void>();
     let dispatches = this.activeDispatches.get(pluginId);
     if (!dispatches) this.activeDispatches.set(pluginId, (dispatches = new Set()));
     dispatches.add(settled.promise);
     let active: PluginDataLease | undefined;
+    let open = true;
     try {
       return await runHook(async () => {
+        while (this.nativePendingProbes.has(pluginId)) await this.nativePendingProbes.get(pluginId);
+        if (!open || this.closed) throw new Error("plugin lifecycle admission unavailable");
         const lease = this.dataLease(pluginId);
         active = lease;
         try {
@@ -5067,6 +5091,7 @@ export class PluginHost {
         }
       }, this.lifecycleTimeoutMs);
     } finally {
+      open = false;
       // `runHook` stops waiting at the deadline; the callback may still be live.
       active?.close();
       settled.resolve();
@@ -5149,7 +5174,6 @@ export class PluginHost {
     if (this.closed || !this.assembled.enabled(id) || this.store.disabledPlugins().has(id)) return;
     const invoke = this.defs.find((def) => def.manifest.id === id)?.lifecycle?.onJobSettled;
     if (invoke === undefined) return;
-    while (this.nativePendingProbes.has(id)) await this.nativePendingProbes.get(id);
     const settled = Promise.withResolvers<void>();
     let dispatches = this.activeDispatches.get(id);
     if (!dispatches) this.activeDispatches.set(id, (dispatches = new Set()));
@@ -5204,18 +5228,23 @@ export class PluginHost {
       actions: this.actionCalls(id, auth, null, delivery.traceId, [id], lease.check),
     };
     let outcome: HookOutcome;
+    let open = true;
     dispatches.add(settled.promise);
     try {
       outcome = await runHook(
-        () => {
+        async () => {
           try {
+            while (this.nativePendingProbes.has(id)) await this.nativePendingProbes.get(id);
+            if (!open || this.closed)
+              throw new Error("settled job admission unavailable");
+            lease.check();
             const result = invoke(ctx, delivery.settled);
             if (result === undefined) {
               lease.close();
               return;
             }
             // Close at the hook's own completion, not a later Promise.race continuation.
-            return Promise.resolve(result).finally(lease.close);
+            return await Promise.resolve(result).finally(lease.close);
           } catch (error) {
             lease.close();
             throw error;
@@ -5224,6 +5253,7 @@ export class PluginHost {
         this.jobSettledTimeouts.get(id) ?? this.lifecycleTimeoutMs,
       );
     } finally {
+      open = false;
       lease.close();
       settled.resolve();
       dispatches.delete(settled.promise);
@@ -5433,8 +5463,6 @@ export class PluginHost {
     options: DispatchOptions = {},
   ): Promise<ActionOutcome> {
     const pluginId = this.assembled.actions.get(fullName)?.plugin.id;
-    if (pluginId !== undefined)
-      while (this.nativePendingProbes.has(pluginId)) await this.nativePendingProbes.get(pluginId);
     const settled = Promise.withResolvers<void>();
     let active: Set<Promise<void>> | undefined;
     if (pluginId !== undefined) {
@@ -6080,6 +6108,47 @@ export class PluginHost {
     );
     const authService = this.authService;
     const ctx: ActionCtx = {
+      waitForNativePendingProbe: async () => {
+        let waited = false;
+        while (this.nativePendingProbes.has(pluginId)) {
+          waited = true;
+          await this.nativePendingProbes.get(pluginId);
+        }
+        if (!machineBridgeOpen || this.closed || this.replacing.has(pluginId) ||
+          this.assembled.actions.get(fullName) !== entry ||
+          this.installationGeneration(pluginId) !== nativeTransferGeneration ||
+          (!this.assembled.enabled(pluginId) && entry.def.cleanup !== true))
+          throw new ActionAdmissionDenial("unavailable", "action unavailable");
+        if (waited) {
+          const current = this.authService.restoreCredential(nativeTransferCredential);
+          if (!current) throw new ActionAdmissionDenial("forbidden", "caller authority unavailable");
+          auth = current;
+          const installed = this.installed.get(pluginId);
+          if (installed && nativeCaps.some((cap) =>
+            !GOVERNED_CAPS.includes(cap) && !withinCeiling(cap, installed.row.grantedCaps)))
+            throw new ActionAdmissionDenial("forbidden", "plugin authority unavailable");
+          if (entry.def.requirements === undefined) {
+            const currentCarried = scope === "container"
+              ? this.authService.carriedScope(auth, entry.def.caps) : null;
+            const stillCarried = carriedContainer !== null &&
+              currentCarried?.length === 1 && currentCarried[0] === carriedContainer;
+            for (const cap of entry.def.caps) {
+              if (cap === "agents:delegate" && (
+                fullName === "core.access.createRun" || fullName === "core.access.createChildRun" ||
+                fullName === "core.access.renewAgentRun"
+              )) continue;
+              if (!(cap === "*" ? this.authService.holdsRoot(auth) :
+                this.authService.allows(auth, cap) || (isContainerGrantCap(cap) && stillCarried)))
+                throw new ActionAdmissionDenial("forbidden", "caller authority unavailable");
+            }
+          }
+        }
+        // Preparation cleanup belongs to this same admission wait, never an extra pre-budget turn.
+        for (const declaration of entry.plugin.contributes.references ?? []) {
+          if (entry.def.caps.includes(declaration.createCapability))
+            await this.referenceService.reclaimExpiredPreparations(declaration.kind, pluginId);
+        }
+      },
       traceId,
       pluginId,
       get callerPlugin() {
@@ -6579,20 +6648,13 @@ export class PluginHost {
     let produced: unknown;
     const admitted = async (): Promise<unknown> => {
       try {
-        // A private ready row can still be an unpublished reservation. Reclaim only from
-        // host terminal evidence, before the owner's own capacity check can block prepare.
-        for (const declaration of entry.plugin.contributes.references ?? []) {
-          if (entry.def.caps.includes(declaration.createCapability))
-            await this.referenceService.reclaimExpiredPreparations(declaration.kind, pluginId);
-        }
+        if (!guestInput) await ctx.waitForNativePendingProbe!();
         const handler = this.handlers.get(pluginId)?.[entry.def.name];
         if (handler === undefined) throw new Error(`action "${fullName}" has no server handler`);
         const invoke = handler as (ctx: ActionCtx, args: unknown) => Promise<unknown>;
         if (!guestInput) {
-          if (options.admissionFence) {
-            const denial = admitInput(parsed.data);
-            if (denial !== null) throw denial;
-          }
+          const denial = admitInput(parsed.data);
+          if (denial !== null) throw denial;
           options.onAdmitted?.();
         }
         const answer = await invoke(ctx, parsed.data);
