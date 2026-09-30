@@ -358,6 +358,11 @@ production promotion, fleet/native-owner activation, credential changes, provide
 integration of a separately held implementation. A source-only/no-release or no-deployment hold
 still requires its own resolution; publication must not be used to cross it.
 
+Release admission refreshes tracked `origin/main` alongside the exact commit objects after the
+checked rebase merge and before ordinary tag publication. The tag still selects the recorded
+release merge and checked tree, not a possibly later main tip; newly introduced local history
+remains subject to the unchanged pre-push policy.
+
 Choose the version from the entire integrated unpublished change set, not the issue label or
 number of commits. Compatible fix-only sets increment patch. Under the existing pre-1.0 policy,
 additions or breaking changes increment minor; from 1.0, additions increment minor and breaking

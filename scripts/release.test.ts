@@ -275,7 +275,7 @@ function fixture(interruption: Interruption = "commit") {
     if (err.includes("Unexpected fixture command:")) throw new Error(err);
     return { code, out, err };
   };
-  return { state, git, invoke, directory, remote };
+  return { state, git, invoke, directory, remote, env };
 }
 
 // Kept as a standalone positive regression so it can also be replayed against pre-fix source.
@@ -292,6 +292,44 @@ test("resume publishes the retained release commit without regenerating its vers
   expect(f.state.pulls.map((p) => p.number)).toEqual([77]);
   expect(f.state.created).toBe(1);
   expect(f.state.merges).toBe(1);
+}, 20_000);
+
+test("resume refreshes reviewed main before tag push without admitting new local history", async () => {
+  const f = fixture("pull");
+  // The gate mirrors the installed policy's remote-history exclusion. The
+  // candidate branch is already reviewed; only the server-created merge is new
+  // to the stale tracking refs when publication resumes.
+  writeFileSync(
+    join(f.directory, ".git/hooks/pre-push"),
+    `#!/bin/sh
+set -eu
+while read -r local_ref local_oid remote_ref remote_oid; do
+  if [ -n "$(git rev-list "$local_oid" --not --remotes)" ]; then
+    echo "Rejected newly introduced unreviewed history" >&2
+    exit 1
+  fi
+done
+`,
+    { mode: 0o700 },
+  );
+  expect(f.git("rev-parse", "refs/remotes/origin/main")).toBe(f.state.parent);
+  const result = await f.invoke();
+  expect(result.code, result.err).toBe(0);
+  expect(f.git("--git-dir", f.remote, "rev-parse", "refs/tags/v1.2.4")).toBe(f.state.merged);
+  expect(f.git("rev-parse", "refs/remotes/origin/main")).toBe(f.state.merged);
+  writeFileSync(join(f.directory, "unapproved.txt"), "new unpublished history\n");
+  f.git("add", "unapproved.txt");
+  f.git("commit", "-m", "unapproved local history");
+  const rejected = Bun.spawnSync(["git", "push", "origin", "HEAD:refs/tags/unapproved"], {
+    cwd: f.directory,
+    env: f.env,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  expect(rejected.exitCode).not.toBe(0);
+  expect(
+    f.git("--git-dir", f.remote, "for-each-ref", "--format=%(refname)", "refs/tags/unapproved"),
+  ).toBe("");
 }, 20_000);
 
 for (const interruption of ["branch", "pull", "merged", "local-tag", "remote-tag"] as const) {
