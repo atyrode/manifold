@@ -518,7 +518,7 @@ test("mounted panels open beside their caller, focus an existing record, and ref
         };
         return h(ComposedAssemblyProvider, { value: assembly },
           h(HostServicesProvider, { value: host },
-            h("main", { id: "tiles", style: { display: "flex", gap: "24px" } },
+            h("main", { id: "tiles", "data-tile-tree-root": "", style: { display: "flex", gap: "24px" } },
               layout[ROOT_TILE_ID].children.map(id =>
                 h("section", { key: id, "data-tile-id": id },
                   h(PanelOutlet, { panelId: layout[id].ref.panelId, tileId: id, arg: layout[id].arg }))))));

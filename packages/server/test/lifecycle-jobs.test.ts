@@ -930,6 +930,9 @@ test("settled metadata uses the job credential instead of an owner or absent ins
       },
       {
         capabilities: scenario === "attenuated-install" ? ["*"] : METADATA_CAPS,
+        // Replacement drains this callback before changing its grant. Bound that deliberate
+        // suspension so the late reads exercise the retired lease, not a circular fixture wait.
+        ...(scenario === "attenuated-install" ? { lifecycleTimeoutMs: 1_000 } : {}),
         onJobSettled: async (ctx) => {
           seen.push(await metadataFailure(() => ctx.host!.enabled(PLUGIN_ID)));
           seen.push(ctx.services!.listInstances({}));

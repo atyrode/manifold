@@ -4375,10 +4375,13 @@ async function retainedServiceFixture(dataVersion?: PluginManifest["dataVersion"
     const first = fixture.drop(manifest);
     expect((await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, first)).ok).toBe(true);
     const commands: JobCommand[] = [];
+    type ReadCommand = Extract<JobCommand, { type: "service_read" }>;
+    let onServiceRead: ((command: ReadCommand) => void) | null = null;
     const channel = {
       machineId,
       send: ({ command }: { type: "job_command"; command: JobCommand }) => {
         commands.push(command);
+        if (command.type === "service_read") onServiceRead?.(command);
         return true;
       },
     };
@@ -4512,14 +4515,21 @@ async function retainedServiceFixture(dataVersion?: PluginManifest["dataVersion"
       service: start.request.service,
     });
     const readService = async () => {
+      const admitted = Promise.withResolvers<ReadCommand>();
+      onServiceRead = admitted.resolve;
       const pending = host.dispatch(fixture.owner, "engine.services.readInstance", {
         serviceId: policy.serviceId,
         expectedRevision: configured.configuration!.revision,
         operationId: "inspect",
         input: {},
       });
-      const command = commands.findLast((command) => command.type === "service_read");
-      if (command?.type !== "service_read") throw new Error("native read was not admitted");
+      const command = await Promise.race([
+        admitted.promise,
+        pending.then((outcome) => {
+          throw new Error(`native read ended before admission: ${JSON.stringify(outcome)}`);
+        }),
+      ]);
+      onServiceRead = null;
       jobs.event(channel, {
         type: "service_authorize",
         subject: { kind: "read", requestId: command.requestId },

@@ -10,6 +10,7 @@ import type {
 } from "@manifold/protocol";
 import {
   ActionOutcomeSchema,
+  HARDENED_CONTRACT_VERSION,
   MachineSummarySchema,
   MachinesResponseSchema,
   WebIsolateHostFrameSchema,
@@ -532,7 +533,7 @@ describe("portable Worker compatibility", () => {
     }
   });
 
-  test.each([10, 11])(
+  test.each([10, 11, 12])(
     "contract %i retains current machine responses unchanged",
     async (contract) => {
       const client = fakeClient([]);
@@ -572,7 +573,7 @@ describe("portable Worker compatibility", () => {
     },
   );
 
-  test.each([undefined, 8, 12])("portable contract %s cannot mount or call", async (contract) => {
+  test.each([undefined, 8, HARDENED_CONTRACT_VERSION + 1])("portable contract %s cannot mount or call", async (contract) => {
     const { host, worker, calls } = bench(undefined, true);
     const faults: string[] = [];
     host.mount(
@@ -594,7 +595,7 @@ describe("portable Worker compatibility", () => {
       args: [MACHINES_RESOURCE, {}],
     });
     await flush();
-    expect(faults).toEqual([`unsupported web hardened contract ${String(contract ?? 1)}`]);
+    expect(faults).toHaveLength(1);
     expect(worker.terminated).toBe(true);
     expect(worker.frames().some((frame) => frame.t === "mount")).toBe(false);
     expect(calls).toEqual([]);

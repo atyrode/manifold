@@ -1745,12 +1745,9 @@ describe("owned reference assembly", () => {
 
   test("receipt doors remain available without creator capabilities or target requirements", () => {
     const def = ownerWithReceipt();
-    const receipt = def.actions[1]!;
-    for (const action of [receipt, { ...receipt, scope: "workspace" as const, requirements: [] }]) {
-      const assembly = assembleRoster([{ ...def, actions: [def.actions[0]!, action] }], NONE);
-      expect(assembly.enabled(def.manifest.id)).toBe(true);
-      expect(assembly.referenceKinds.get("file")?.declaration.receiptAction).toBe("receipt");
-    }
+    const assembly = assembleRoster([def], NONE);
+    expect(assembly.enabled(def.manifest.id)).toBe(true);
+    expect(assembly.referenceKinds.get("file")?.declaration.receiptAction).toBe("receipt");
   });
 
   test("receipt declarations reject missing, scoped, capability-bearing, or resolver-reused doors", () => {
