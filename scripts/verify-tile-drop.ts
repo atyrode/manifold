@@ -1062,9 +1062,22 @@ try {
   viewer = new Browser();
   await viewer.launch();
   await viewer.goto(`${origin}/#key=${ownerKey}`);
-  if (await viewer.evaluate<boolean>("document.querySelector('input') !== null")) {
-    await viewer.typeInto("input", "tile-drop-viewer");
+  await until(
+    () =>
+      viewer!.evaluate<boolean>(
+        "document.querySelector('#identity-name') !== null || document.querySelector('.workspace') !== null",
+      ),
+    10_000,
+    "viewer admission rendered",
+  );
+  if (await viewer.evaluate<boolean>("document.querySelector('#identity-name') !== null")) {
+    await viewer.typeInto("#identity-name", "tile-drop-viewer");
     await viewer.clickTestId("identity-enter");
+    await until(
+      () => viewer!.evaluate<boolean>("document.querySelector('.workspace') !== null"),
+      10_000,
+      "viewer admission completed",
+    );
   }
   await viewer.goto(`${origin}/p/${containerId}`);
   await until(

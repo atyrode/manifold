@@ -1,0 +1,15 @@
+{
+  "id": "example.counter",
+  "version": "2.0.0",
+  "title": "Manifest mismatch source",
+  "description": "This source cannot replace the unrelated installed v1 counter.",
+  "capabilities": [],
+  "contributes": {
+    "panels": [{ "id": "counter", "title": "Manifest mismatch" }],
+    "sections": [],
+    "elements": [],
+    "tools": [],
+    "events": []
+  },
+  "entry": { "web": "web.js", "styles": true }
+}

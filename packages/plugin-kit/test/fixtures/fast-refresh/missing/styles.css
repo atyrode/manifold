@@ -1,0 +1,4 @@
+.plugin-example_not-installed {
+  color: rgb(199, 11, 99);
+  --fast-refresh-ineligible: missing;
+}

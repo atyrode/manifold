@@ -153,6 +153,8 @@ must never be taught one.
         "packages/web/src/main.tsx",
         "packages/web/src/app.tsx",
         "packages/web/src/plugin-host.tsx",
+        "packages/web/src/plugin-development.ts",
+        "packages/web/src/plugin-development-module.d.ts",
         "packages/web/src/shared-registry.ts",
         "packages/web/src/room-pipes.ts",
         "packages/web/src/assembly.ts",
@@ -422,6 +424,14 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     {
       "glob": "packages/web/src/plugin-host.tsx",
       "why": "the registry, web half: AssemblyProvider, the metadata-readiness RosterGate, PanelOutlet and its placeholder, HostServices"
+    },
+    {
+      "glob": "packages/web/src/plugin-development.ts",
+      "why": "the development-only installed-module source selector (2026-09-30-external-plugin-fast-refresh): bootstrap because source contributions cannot load their own host, neutral because every installed id uses the same manifest/pin/claim checks, and arbitration because the admitted packed baseline and execution mode remain authoritative throughout a source lease"
+    },
+    {
+      "glob": "packages/web/src/plugin-development-module.d.ts",
+      "why": "the closed type declaration for the Vite-only source registry consumed by the web-plugin-host pillar; no production source authority, filesystem path or credential crosses it"
     },
     {
       "glob": "packages/web/src/shared-registry.ts",
@@ -2370,17 +2380,18 @@ asserts is the same defect as an undeclared door, one register further in.
 The law is `AXIOMS.md` §Foundation law, "Every runtime-joined namespace has a registry". These
 are its instances, each written after the join it guards had already broken once:
 
-| Runtime-joined namespace                             | Registry                    | Check            |
-| ---------------------------------------------------- | --------------------------- | ---------------- |
-| device-local storage keys                            | the `deviceLocal` register  | S3               |
-| `data-action` markers ↔ published actions            | the live assembly           | S4               |
-| `/api/…` route literals ↔ the doors that exist       | the script's allowlist      | S7               |
-| every word for a concept, across every plane         | §Lexicon rows               | S11              |
-| item kind → display noun                             | `ITEM_NOUNS`, the ONE table | S12              |
-| CSS selector families ↔ their owning package         | §Lexicon `cssFamilies`      | S13              |
-| `evt=` log names ↔ the gates that match them         | `LOG_EVENTS`                | S14              |
-| `data-testid` attributes ↔ the gates that click them | §Gate-contracts rows        | S15              |
-| §Budgets rows ↔ the browser's feed vocabulary        | each row's `feed` field     | `verify:budgets` |
+| Runtime-joined namespace                                         | Registry                                                                                                       | Check                                              |
+| ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| device-local storage keys                                        | the `deviceLocal` register                                                                                     | S3                                                 |
+| `data-action` markers ↔ published actions                        | the live assembly                                                                                              | S4                                                 |
+| `/api/…` route literals ↔ the doors that exist                   | the script's allowlist                                                                                         | S7                                                 |
+| every word for a concept, across every plane                     | §Lexicon rows                                                                                                  | S11                                                |
+| item kind → display noun                                         | `ITEM_NOUNS`, the ONE table                                                                                    | S12                                                |
+| CSS selector families ↔ their owning package                     | §Lexicon `cssFamilies`                                                                                         | S13                                                |
+| `evt=` log names ↔ the gates that match them                     | `LOG_EVENTS`                                                                                                   | S14                                                |
+| `data-testid` attributes ↔ the gates that click them             | §Gate-contracts rows                                                                                           | S15                                                |
+| §Budgets rows ↔ the browser's feed vocabulary                    | each row's `feed` field                                                                                        | `verify:budgets`                                   |
+| source-development liveness/cancellation ↔ browser source leases | `PLUGIN_REFRESH_READY_EVENT` and `PLUGIN_REFRESH_CANCEL_EVENT` in `packages/plugin-kit/src/refresh-runtime.ts` | `packages/testkit/e2e/plugin-fast-refresh.test.ts` |
 
 ## Gates
 

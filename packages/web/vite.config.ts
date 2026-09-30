@@ -2,8 +2,10 @@ import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, relative, resolve, sep } from "node:path";
-import { defineConfig, loadEnv, type Plugin } from "vite";
+import { defineConfig, loadEnv } from "vite";
+import type { Plugin } from "vite";
 import react from "@vitejs/plugin-react";
+import { pluginDevelopment } from "@manifold/plugin-kit/refresh-vite";
 import { resolveBuildIdentity } from "../../scripts/build-identity.ts";
 
 const packageRoot = dirname(fileURLToPath(import.meta.url));
@@ -191,7 +193,7 @@ export default defineConfig(({ mode }) => {
   return {
     // These files are templates for shellIdentity, not a second set of unbranded public URLs.
     publicDir: false,
-    plugins: [react(), shellIdentity(env, title), shellWorker()],
+    plugins: [react(), pluginDevelopment(), shellIdentity(env, title), shellWorker()],
     define: {
       "import.meta.env.VITE_MANIFOLD_WEB_VERSION": JSON.stringify(identity.version),
       "import.meta.env.VITE_MANIFOLD_WEB_BUILD": JSON.stringify(identity.build),
@@ -212,6 +214,8 @@ export default defineConfig(({ mode }) => {
         : {}),
       proxy: {
         "/api": { target, changeOrigin: false },
+        "/healthz": { target, changeOrigin: false },
+        "/auth": { target, changeOrigin: false },
         "/ws": { target, changeOrigin: true, ws: true },
       },
     },

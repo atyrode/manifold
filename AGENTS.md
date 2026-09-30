@@ -129,6 +129,12 @@ Use [`package.json`](package.json) for targeted check/test/browser commands and
 [`scripts/gate.ts`](scripts/gate.ts) for gate composition. Plugin development commands live
 in [`docs/PLUGINS.md`](docs/PLUGINS.md); deployment and release commands are routed below.
 
+For external plugin UI iteration, read
+[`docs/PLUGINS.md` → Fast Refresh](docs/PLUGINS.md#fast-refresh) and inspect
+`bun run --cwd packages/plugin-kit dev --describe` before starting a development session.
+Source development is opt-in and browser-only; installation, native provisioning and release
+publication remain separate authorized operations.
+
 ## CI performance contract
 
 - [`docs/TRIAGE.md` §CI evidence and performance](docs/TRIAGE.md#ci-evidence-and-performance)

@@ -24,6 +24,10 @@ The roster is authoritative. If this document and `GET /api/plugins` disagree ab
 exists, the endpoint is right and this document has a bug — report it. Prose never lists the
 core plugins; `packages/plugins/*` and the roster do.
 
+For rapid UI iteration, use [Fast Refresh](#fast-refresh): its `--help` and `--describe`
+commands disclose the opt-in source workflow without credentials. This is the existing
+development lens, not a plugin-specific host; normal artifact installation remains separate.
+
 Everything above the foundation floor is a plugin. The floor is a machine-readable registry in
 `REGISTRY.md` (fenced JSON, checked in both directions by `bun run verify:axioms`), not a
 judgement call: identity and auth, protocol schemas, the plane transports, persistence, and
@@ -4427,9 +4431,58 @@ above found the row already at the same bytes; cycle 2 is one edit to `server.ts
 switched the row off, installed over it, switched it on, and the next dispatch answered with the
 new sentence and `"calls":2`: **storage survives a replace** exactly as it survives a disable
 (§4). In the browser the replaced web half is dropped and the new one imported, so the panel
-REMOUNTS and its component state is gone — save the state you care about through `ctx.storage`
-or the document, not `useState`. Hot module replacement that keeps component state is not
-shipped and not promised.
+remounts and its component state is gone. This installed-bundle loop is not React Fast Refresh.
+Use the explicit source-development session below for frontend iteration.
+
+### Fast Refresh
+
+External React plugins can use the same Vite development frontend and React runtime as the
+host, rather than a separate demo application or a replace-installed bundle on every save:
+
+Run these commands from a Manifold source checkout with its dependencies installed. The
+source frontend is not bundled into the standalone published kit; `NODE_ENV=production`
+refuses source development rather than silently starting without Refresh.
+
+```sh
+# Discover the command without credentials, a running hub or a source directory.
+bun run --cwd packages/plugin-kit dev --help
+bun run --cwd packages/plugin-kit dev --describe
+
+# The plugin is already installed and enabled on the target hub.
+bun run --cwd packages/plugin-kit dev /path/to/plugin-sources --fast-refresh --hub http://127.0.0.1:7777
+```
+
+The command emits `plugin-refresh-ready` with `url`, `hub`, discovered `plugins`, and
+`state: "listening"`. This is frontend readiness, not a claim that every source is admitted.
+Open that URL, use normal Manifold admission for the target instance, and mount the plugin's
+existing panel. Source registration is not action authority: only an enabled installed in-realm
+row with a matching manifest can use its source graph. The command reads no owner key,
+installs no bundle, changes no global developer-mode setting and never converts a hardened row
+to in-realm execution. There is no persistent production configuration toggle.
+
+The target hub's browser admission must admit this frontend origin. Source development does
+not transfer an operator's browser session, mint credentials or add an audience to a
+production-authenticated preview. Use a development hub that admits the returned loopback
+frontend; the hub's normal identity and preview-audience rules still apply.
+
+CSS changes update without remounting the panel; compatible component edits use React Fast
+Refresh and normally retain unsaved local input and state. Component-only modules with named
+PascalCase exports are the standard refresh boundary. Hook-signature, component-key or
+descriptor/contribution changes can remount; state preservation is not promised for every edit.
+Syntax errors are visible in the development overlay and a corrected edit resumes the source
+loop. Keep durable data in the normal document/storage APIs.
+Source styles use plain `.css`, scoped by the normal plugin-root rule. CSS Modules,
+stylesheet preprocessors and CSS filesystem `url()`/`image-set()` stay on the ordinary
+artifact path, as do authored source maps and `import.meta.glob` filesystem enumeration.
+JavaScript filesystem asset URLs must be static, relative and inside the approved graph.
+
+The approved local source graph and its stylesheet lifetime belong to this process. Stopping
+or losing that development session removes its source override and returns to the admitted
+packed definition and stylesheet, without installing those source edits. Manifest, backend,
+capability, dependency and native-resource changes still require the ordinary pack, verify and
+install/review path. After accepting frontend changes, stop source development, validate the
+normal artifacts and publish through the existing release workflow; a development URL is not
+a release.
 
 ### Unpacked plugins: the hub holds the kit
 
