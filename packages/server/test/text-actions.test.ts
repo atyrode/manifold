@@ -14,6 +14,7 @@ import { DOC_BYTES_LIMIT, RoomManager } from "../src/room.ts";
 import { SessionChannel } from "../src/session-channel.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
 import {
+  closeTestStore,
   FakeClock,
   FakeRuntime,
   FakeSocket,
@@ -164,7 +165,7 @@ describe("native Text creation capacity", () => {
       undo.destroy();
       room.closeAll(1000, "test complete");
       room.doc.destroy();
-      store.close();
+      closeTestStore(store);
     }
   });
 });

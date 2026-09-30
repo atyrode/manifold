@@ -23,13 +23,17 @@ export type {
   JobFollow,
   PluginActionContext,
   PluginJobContext,
+  PluginNativeTransferContext,
   PluginServiceContext,
+  PluginReferenceContext,
+  ReferenceProbeCtx,
   ServiceDescription,
   ServiceConfigurationRead,
   ConfigureServiceConfigurationArgs,
   StreamProducer,
   PluginStreamContext,
 } from "./runtime.ts";
+export { NativeTransferError } from "./runtime.ts";
 export {
   KEYSTROKE_MOD,
   bindingRebindRefusal,
@@ -91,6 +95,7 @@ export {
   type AssemblyAction,
   type AssemblyEvent,
   type AssemblyStream,
+  type AssemblyReferenceKind,
   type AssemblyElement,
   type AssemblyEnv,
   type AssemblyPanel,
@@ -164,6 +169,7 @@ export {
   MAX_SQL_STATEMENT_BYTES,
   PluginDatabaseError,
   SQL_DEADLINE_MS,
+  type DatabaseRecoveryAdmission,
   type PluginDatabase,
   type PluginDatabaseAdmin,
   type SqlParam,
@@ -229,6 +235,9 @@ export {
   type OpenPanelRefusal,
   type OpenPanelRequest,
   type PanelProps,
+  type LocalFilesHandle,
+  type PortableElementProps,
+  type PortableElementEdit,
   type PortableHostServices,
   type PortablePanelProps,
   type PortableSectionProps,
@@ -239,3 +248,4 @@ export {
   type StreamHandle,
   type SessionStatus,
 } from "./host.ts";
+export type { ByteCarrierContext, ByteCarrierHandler } from "./bytes.ts";

@@ -15,6 +15,7 @@
     "@manifold-plugin/compositions": "workspace:*",
     "@manifold-plugin/debug": "workspace:*",
     "@manifold-plugin/events": "workspace:*",
+    "@manifold-plugin/files": "workspace:*",
     "@manifold-plugin/keys": "workspace:*",
     "@manifold-plugin/machines": "workspace:*",
     "@manifold-plugin/plugin-manager": "workspace:*",

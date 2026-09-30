@@ -9,6 +9,24 @@ import { compositionsManifest } from "@manifold-plugin/compositions";
 import { drawElements, drawManifest } from "@manifold-plugin/canvas/draw";
 import { eventsActions, eventsManifest } from "@manifold-plugin/events";
 import { eventsHandlers } from "@manifold-plugin/events/server";
+import { filesActions, filesManifest } from "@manifold-plugin/files";
+import { filesServerBuild } from "@manifold-plugin/files/build";
+import {
+  filesByteCarriers,
+  filesHandlers,
+  filesLifecycle,
+  filesMigrations,
+  filesProbeReady,
+  filesReclaimReferences,
+  filesReconcileNativeTransfers,
+  filesPendingNativeTransfers,
+} from "@manifold-plugin/files/server";
+import {
+  filesImagesActions,
+  filesImagesElements,
+  filesImagesManifest,
+} from "@manifold-plugin/files/images";
+import { filesImagesHandlers } from "@manifold-plugin/files/images/server";
 import { keysActions, keysManifest } from "@manifold-plugin/keys";
 import { keysHandlers } from "@manifold-plugin/keys/server";
 import { machinesActions, machinesManifest } from "@manifold-plugin/machines";
@@ -26,6 +44,7 @@ import { uriManifest } from "@manifold-plugin/uri";
 import { debugManifest } from "@manifold-plugin/debug";
 import { indexActions, indexManifest } from "@manifold-plugin/index";
 import { indexHandlers } from "@manifold-plugin/index/server";
+import type { PluginOwnedRefKind } from "@manifold/protocol";
 import { fileURLToPath } from "node:url";
 import type { FloorEventOwners } from "./event-hub.ts";
 import type { HardenedSourceRecipe } from "./first-party-builds.ts";
@@ -119,6 +138,24 @@ export const SERVER_PLUGIN_DEFS: readonly ServerPluginDef[] = [
   // inventory and enroll into it.
   { manifest: machinesManifest, actions: machinesActions, handlers: machinesHandlers },
   { manifest: textManifest, actions: textActions, handlers: textHandlers, elements: textElements },
+  {
+    manifest: filesManifest,
+    actions: filesActions,
+    handlers: filesHandlers,
+    lifecycle: filesLifecycle,
+    migrations: filesMigrations,
+    byteCarriers: filesByteCarriers,
+    probeReady: filesProbeReady,
+    reclaimReferences: filesReclaimReferences,
+    reconcileNativeTransfers: filesReconcileNativeTransfers,
+    pendingNativeTransfers: filesPendingNativeTransfers,
+  },
+  {
+    manifest: filesImagesManifest,
+    actions: filesImagesActions,
+    handlers: filesImagesHandlers,
+    elements: filesImagesElements,
+  },
   /*
     Browser-only plugins, registered here all the same: the ROSTER is what publishes a
     plugin's existence, its title and its contributions, and what an administrator toggles.
@@ -183,6 +220,23 @@ export const SHIPPED_PLUGIN_IDS: ReadonlySet<string> = new Set(
   SERVER_PLUGIN_DEFS.map((def) => def.manifest.id),
 );
 
+/** Distribution claims reserve interpreters even before an opt-in owner is enabled. */
+export const SHIPPED_REFERENCE_KIND_OWNERS: ReadonlyMap<PluginOwnedRefKind, string> = (() => {
+  const owners = new Map<PluginOwnedRefKind, string>();
+  for (const { manifest } of SERVER_PLUGIN_DEFS) {
+    for (const declaration of manifest.contributes.references ?? []) {
+      const owner = owners.get(declaration.kind);
+      if (owner !== undefined && owner !== manifest.id) {
+        throw new Error(
+          `reference kind "${declaration.kind}" claimed by both "${owner}" and "${manifest.id}"`,
+        );
+      }
+      owners.set(declaration.kind, manifest.id);
+    }
+  }
+  return owners;
+})();
+
 /**
  * WHERE A FIRST-PARTY PLUGIN'S OWN SOURCE IS, for the trusted bootstrap that may run it hardened
  * (`MANIFOLD_HARDENED_PLUGINS`, ADR 0053 §7). Named here because this is the only server file
@@ -203,6 +257,23 @@ export const HARDENED_SOURCE_RECIPES: ReadonlyMap<string, () => HardenedSourceRe
       pluginDir: fileURLToPath(new URL("..", import.meta.resolve("@manifold-plugin/machines"))),
       server: fileURLToPath(new URL("./first-party/machines.server.ts", import.meta.url)),
       web: fileURLToPath(import.meta.resolve("@manifold-plugin/machines/portable")),
+    }),
+  ],
+  [
+    filesManifest.id,
+    () => ({
+      pluginDir: fileURLToPath(new URL("..", import.meta.resolve("@manifold-plugin/files"))),
+      server: fileURLToPath(new URL("./first-party/files.server.ts", import.meta.url)),
+      web: fileURLToPath(import.meta.resolve("@manifold-plugin/files/portable")),
+      serverBuild: filesServerBuild(),
+    }),
+  ],
+  [
+    filesImagesManifest.id,
+    () => ({
+      pluginDir: fileURLToPath(new URL("..", import.meta.resolve("@manifold-plugin/files"))),
+      server: fileURLToPath(new URL("./first-party/files-images.server.ts", import.meta.url)),
+      web: fileURLToPath(import.meta.resolve("@manifold-plugin/files/images/portable")),
     }),
   ],
 ]);

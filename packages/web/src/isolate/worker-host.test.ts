@@ -10,6 +10,7 @@ import type {
 } from "@manifold/protocol";
 import {
   ActionOutcomeSchema,
+  HARDENED_CONTRACT_VERSION,
   MachineSummarySchema,
   MachinesResponseSchema,
   WebIsolateHostFrameSchema,
@@ -532,7 +533,7 @@ describe("portable Worker compatibility", () => {
     }
   });
 
-  test.each([10, 11])(
+  test.each([10, 11, 12])(
     "contract %i retains current machine responses unchanged",
     async (contract) => {
       const client = fakeClient([]);
@@ -572,33 +573,36 @@ describe("portable Worker compatibility", () => {
     },
   );
 
-  test.each([undefined, 8, 12])("portable contract %s cannot mount or call", async (contract) => {
-    const { host, worker, calls } = bench(undefined, true);
-    const faults: string[] = [];
-    host.mount(
-      "i1",
-      "main",
-      () => {},
-      (error) => faults.push(error),
-    );
-    worker.emit({
-      t: "ready",
-      panels: ["main"],
-      ...(contract === undefined ? {} : { hardenedContract: contract }),
-    });
-    worker.emit({
-      t: "call",
-      id: "after-fault",
-      instance: "i1",
-      method: "action",
-      args: [MACHINES_RESOURCE, {}],
-    });
-    await flush();
-    expect(faults).toEqual([`unsupported web hardened contract ${String(contract ?? 1)}`]);
-    expect(worker.terminated).toBe(true);
-    expect(worker.frames().some((frame) => frame.t === "mount")).toBe(false);
-    expect(calls).toEqual([]);
-  });
+  test.each([undefined, 8, HARDENED_CONTRACT_VERSION + 1])(
+    "portable contract %s cannot mount or call",
+    async (contract) => {
+      const { host, worker, calls } = bench(undefined, true);
+      const faults: string[] = [];
+      host.mount(
+        "i1",
+        "main",
+        () => {},
+        (error) => faults.push(error),
+      );
+      worker.emit({
+        t: "ready",
+        panels: ["main"],
+        ...(contract === undefined ? {} : { hardenedContract: contract }),
+      });
+      worker.emit({
+        t: "call",
+        id: "after-fault",
+        instance: "i1",
+        method: "action",
+        args: [MACHINES_RESOURCE, {}],
+      });
+      await flush();
+      expect(faults).toHaveLength(1);
+      expect(worker.terminated).toBe(true);
+      expect(worker.frames().some((frame) => frame.t === "mount")).toBe(false);
+      expect(calls).toEqual([]);
+    },
+  );
 
   test("legacy projection preserves refusals and leaves unrelated or invalid results untouched", async () => {
     const client = fakeClient([]);
@@ -874,6 +878,189 @@ test("terminal authoring cannot borrow another mount or survive authority loss d
       worker.frames().find((frame) => frame.t === "reply" && frame.id === "after-unmount"),
     ).toMatchObject({ ok: false });
     expect(created).toEqual(["m1"]);
+  } finally {
+    host.stop();
+  }
+});
+
+test("element edits reject stale source snapshots, read-only and retired mounts", async () => {
+  const { host, worker } = bench();
+  const mountedHost = fakeHost([]);
+  let writes = 0;
+  const edit = {
+    writable: true,
+    patch: async () => {
+      writes += 1;
+    },
+  };
+  const oldElement = { id: "image", data: { source: "old", amount: 1 } };
+  const element = { id: "image", data: { source: "current", amount: 1 } };
+  const unmount = host.mount(
+    "image",
+    "picture",
+    () => {},
+    () => {},
+    {
+      kind: "element",
+      host: mountedHost,
+      element: oldElement,
+      edit,
+    },
+  );
+  host.mount(
+    "panel",
+    "main",
+    () => {},
+    () => {},
+    { host: mountedHost },
+  );
+  worker.emit({ t: "ready", hardenedContract: 12, panels: ["main"], elements: ["picture"] });
+  const send = (id: string, instance: string, expected = element.data): void => {
+    worker.emit({
+      t: "call",
+      id,
+      instance,
+      method: "patchElement",
+      args: [{ expected, patch: { amount: 2 } }],
+    });
+  };
+  try {
+    host.update("image", mountedHost, undefined, element, edit);
+    send("stale", "image", oldElement.data);
+    send("other-kind", "panel");
+    await flush();
+    expect(writes).toBe(0);
+    send("current", "image");
+    await flush();
+    expect(writes).toBe(1);
+    host.update("image", mountedHost, undefined, element, { ...edit, writable: false });
+    send("read-only", "image");
+    await flush();
+    unmount();
+    send("retired", "image");
+    await flush();
+    expect(writes).toBe(1);
+    const refused = worker.frames().filter((frame) => frame.t === "reply" && !frame.ok);
+    expect(refused.map((frame) => (frame.t === "reply" ? frame.id : ""))).toEqual([
+      "stale",
+      "other-kind",
+      "read-only",
+      "retired",
+    ]);
+  } finally {
+    host.stop();
+  }
+});
+
+test.each([9, 10, 11])(
+  "an admitted contract-%i portable peer accepts strict mount and context updates",
+  async (contract) => {
+    const source = `
+    import { z } from ${JSON.stringify(import.meta.resolve("zod"))};
+    import { PanelArgSchema, WebHostContextSchema } from ${JSON.stringify(import.meta.resolve("@manifold/protocol"))};
+    const context = WebHostContextSchema.pick({
+      principal: true, caps: true, containerId: true, topics: true,
+      status: true, hidden: true, canAuthor: true,
+    });
+    const mount = z.strictObject({
+      t: z.literal("mount"), instance: z.string(), panel: z.string(),
+      kind: z.enum(["panel", "section"]).optional(), context, arg: PanelArgSchema.optional(),
+    });
+    const update = z.strictObject({
+      t: z.literal("context"), instance: z.string(), context, arg: PanelArgSchema.optional(),
+    });
+    self.onmessage = ({ data }) => {
+      if (data.t === "init") {
+        self.postMessage({ t: "ready", panels: ["main"], hardenedContract: ${contract} });
+      } else if (data.t === "mount" || data.t === "context") {
+        const parsed = (data.t === "mount" ? mount : update).safeParse(data);
+        self.postMessage(parsed.success
+          ? { t: "render", instance: data.instance, tree: { type: "text", text: parsed.data.context.status } }
+          : { t: "fault", instance: data.instance, error: "legacy strict context rejected" });
+      }
+    };
+  `;
+    const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
+    const completed = Promise.withResolvers<void>();
+    const painted: string[] = [];
+    const timeout = setTimeout(() => completed.reject(new Error("legacy peer timed out")), 10_000);
+    const host = new WorkerHost({
+      pluginId: "acme.notes",
+      principal: VIEWER,
+      caps: [],
+      containerId: "c1",
+      host: fakeHost([]),
+      portableWorker: true,
+      workerFactory: () => new Worker(url, { type: "module" }),
+    });
+    try {
+      host.start();
+      host.mount(
+        "legacy",
+        "main",
+        (tree) => {
+          if (tree.type !== "text") return;
+          painted.push(tree.text);
+          if (painted.length === 1 && tree.text === "open") {
+            host.update(
+              "legacy",
+              fakeHost([], "c1", { ...fakeClient([]), status: "reconnecting" }),
+            );
+          } else completed.resolve();
+        },
+        (error) => completed.reject(new Error(error)),
+      );
+      await completed.promise;
+      expect(painted).toEqual(["open", "reconnecting"]);
+    } finally {
+      clearTimeout(timeout);
+      host.stop();
+      URL.revokeObjectURL(url);
+    }
+  },
+  15_000,
+);
+
+test("an intake result cannot repeat, cross a credential change, or outlive its mount", () => {
+  const { host, worker } = bench();
+  const viewer = fakeHost([]);
+  const accepted: string[] = [];
+  const faulted: string[] = [];
+  const mount = (instance: string): (() => void) =>
+    host.mount(
+      instance,
+      "main",
+      () => {},
+      () => {
+        faulted.push(instance);
+      },
+      {
+        host: viewer,
+        input: { value: { flow: "save" }, files: [] },
+        onResult: () => {
+          accepted.push(instance);
+        },
+      },
+    );
+  const send = (instance: string): void =>
+    worker.emit({
+      t: "panel_result",
+      instance,
+      result: { state: "accepted" },
+    });
+  try {
+    mount("current");
+    mount("changed");
+    const retire = mount("retired");
+    worker.emit({ t: "ready", hardenedContract: 12, panels: ["main"] });
+    send("current");
+    send("current");
+    host.update("changed", { ...viewer, token: "replacement-credential" });
+    send("changed");
+    retire();
+    send("retired");
+    expect(accepted).toEqual(["current"]);
+    expect(faulted).toEqual(["current", "changed"]);
   } finally {
     host.stop();
   }

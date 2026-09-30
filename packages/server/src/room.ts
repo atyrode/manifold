@@ -549,7 +549,7 @@ export class Room {
    * never touches canonical state, observers, authorship, undo history or snapshot timers.
    * Unlike socket accept-then-repair, native writes must fit before either half is visible.
    */
-  transactDoc(write: (doc: Y.Doc) => void, origin: unknown): boolean {
+  transactDoc(write: (doc: Y.Doc) => void, origin: unknown, beforeCommit?: () => void): boolean {
     if (this.isDocOverLimit()) return false;
     const staged = createSceneDoc();
     // Keep deleted structs during preflight: canonical undo observers may retain them too.
@@ -559,7 +559,9 @@ export class Room {
       const before = Y.encodeStateVector(staged);
       staged.transact(() => write(staged), origin);
       if (Y.encodeStateAsUpdate(staged).byteLength > this.docBytesLimit) return false;
-      Y.applyUpdate(this.doc, Y.encodeStateAsUpdate(staged, before), origin);
+      const update = Y.encodeStateAsUpdate(staged, before);
+      beforeCommit?.();
+      Y.applyUpdate(this.doc, update, origin);
       return true;
     } finally {
       staged.destroy();

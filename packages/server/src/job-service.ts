@@ -45,6 +45,11 @@ import {
   type ServiceTunnelFrame,
 } from "@manifold/protocol";
 import {
+  canonicalNativeTransferPolicy,
+  MACHINE_NATIVE_TRANSFERS_PROTOCOL_VERSION,
+} from "@manifold/protocol";
+import { NativeTransferService } from "./native-transfer-service.ts";
+import {
   canonicalJobJson,
   JobRequestSchema,
   JobCommandSchema,
@@ -1495,6 +1500,13 @@ export class JobService {
     return promise;
   }
   private platform(install: JobInstallation): keyof MachineHalf["artifacts"] {
+    if (install.machine.transferPolicy) {
+      const platform = this.channels
+        .get(install.machineId)
+        ?.owner.platforms.find((value) => value === "linux-x64" || value === "linux-arm64");
+      if (!platform) fail("installation_platform_unavailable");
+      return platform as keyof MachineHalf["artifacts"];
+    }
     const platform = Object.entries(install.machine.artifacts).find(
       ([platform, artifact]) =>
         artifact.sha256 === install.artifact &&
@@ -2222,7 +2234,10 @@ export class JobService {
   }
 
   private accessChanged(): void {
-    this.store.afterCommit(() => this.changeNotifier?.access());
+    this.store.afterCommit(() => {
+      this.changeNotifier?.access();
+      void this.nativeTransfers?.reconcilePendingAdmissions();
+    });
   }
 
   /** The same metadata-only projection serves execution, status and retained discovery. */
@@ -2896,6 +2911,7 @@ export class JobService {
 
   tick(): void {
     this.reconcileAuthority();
+    this.nativeTransfers.retryPendingAdmissions();
     this.jobSchedules.tick(this.runtime.now(), {
       reauthorize: (request) => this.reauthorizeDeferred(request),
       isOnline: (machineId) => this.channels.get(machineId)?.proved === true,
@@ -3454,6 +3470,11 @@ export class JobService {
     sha256: string,
     platforms?: readonly string[],
   ): Pick<Extract<JobCommand, { type: "install" }>, "artifact" | "toolArtifacts"> | null {
+    if (machine.transferPolicy)
+      return createHash("sha256").update(canonicalNativeTransferPolicy(machine)).digest("hex") ===
+        sha256
+        ? {}
+        : null;
     const candidates = Object.entries(machine.artifacts).filter(
       ([platform, artifact]) =>
         artifact.sha256 === sha256 && (!platforms?.length || platforms.includes(platform)),
@@ -3688,6 +3709,7 @@ export class JobService {
     }
   }
   readonly jobs: JobStore;
+  readonly nativeTransfers: NativeTransferService;
   private readonly deployments: JobDeployments;
   readonly admissionPublicKey: string;
   private readonly signingKey: string;
@@ -3720,7 +3742,8 @@ export class JobService {
         return live?.proved ? live.owner : null;
       },
       artifactAvailable: (install, platform) =>
-        install.machine.artifacts[platform]?.sha256 === install.artifact &&
+        (install.machine.transferPolicy !== undefined ||
+          install.machine.artifacts[platform]?.sha256 === install.artifact) &&
         this.artifactDelivery(
           install.pluginId,
           install.machine,
@@ -3898,6 +3921,26 @@ export class JobService {
     });
     this.signingKey = keys.privateKey;
     this.admissionPublicKey = keys.publicKey;
+    this.nativeTransfers = new NativeTransferService(
+      store,
+      auth,
+      {
+        owner: (machineId) => {
+          const live = this.channels.get(machineId);
+          return live?.proved &&
+            (live.channel.protocolVersion ?? 0) >= MACHINE_NATIVE_TRANSFERS_PROTOCOL_VERSION
+            ? { owner: live.owner, channel: live.channel, seatNonce: live.nonce }
+            : null;
+        },
+        installation: (machineId, pluginId) => this.jobs.installation(machineId, pluginId),
+        held: (pluginId) => this.heldPlugins.has(pluginId),
+        consent: (installation, ref, cap) =>
+          this.consentFor(installation, ref, cap)?.revision ?? null,
+        sign: (body) =>
+          sign(null, Buffer.from(canonicalJobJson(body)), this.signingKey).toString("base64"),
+      },
+      () => this.runtime.now(),
+    );
     auth.onAuthorityChanged(() => {
       this.reconcileAuthority();
       this.accessChanged();
@@ -4224,9 +4267,21 @@ export class JobService {
     const machine = MachineHalfSchema.parse(args.machine);
     if (
       !this.store.getMachine(args.machineId) ||
-      !Object.values(machine.artifacts).some((a) => a.sha256 === args.artifactSha256)
+      !(machine.transferPolicy
+        ? createHash("sha256").update(canonicalNativeTransferPolicy(machine)).digest("hex") ===
+          args.artifactSha256
+        : Object.values(machine.artifacts).some((a) => a.sha256 === args.artifactSha256))
     )
       fail();
+    if (machine.transferPolicy) {
+      const live = this.channels.get(args.machineId);
+      if (
+        !live?.proved ||
+        !jobOwnerSupports(live.owner.protocolVersion, "nativeTransfers") ||
+        (live.channel.protocolVersion ?? 0) < MACHINE_NATIVE_TRANSFERS_PROTOCOL_VERSION
+      )
+        fail("native_transfer_unsupported");
+    }
     const declared = this.declaredMachine(args.pluginId);
     if (declared === null || digest(declared) !== digest(machine))
       fail("manifest_declaration_mismatch");
@@ -4376,6 +4431,12 @@ export class JobService {
           : node.kind !== "job" && node.kind !== "output")
     )
       fail();
+    if (
+      args.cap === "locations:create-child" &&
+      (node.kind !== "location" ||
+        !install.machine.transferPolicy?.locations[node.locationId]?.includes("create-child"))
+    )
+      fail("native_transfer_consent_undeclared");
     const consentNode =
       node.kind === "job" || node.kind === "output"
         ? formatManifoldUri({
@@ -5278,6 +5339,7 @@ export class JobService {
       this.closeServiceTunnel(tunnel);
   }
   private disconnectInputs(channel: JobChannel): void {
+    this.nativeTransfers.disconnect(channel);
     for (const pending of this.agentCalls.values())
       if (pending.channel === channel) this.closeAgentCalls(pending.jobId, "disconnected");
     for (const tunnel of this.serviceTunnels.values())
@@ -5298,6 +5360,11 @@ export class JobService {
   private sendInstall(install: JobInstallation): void {
     const live = this.channels.get(install.machineId);
     if (!live?.proved) return;
+    if (
+      install.machine.transferPolicy &&
+      (live.channel.protocolVersion ?? 0) < MACHINE_NATIVE_TRANSFERS_PROTOCOL_VERSION
+    )
+      return;
     const machine = jobOwnerMachine(live.owner.protocolVersion, install.machine);
     if (!machine) return;
     const enabled = install.enabled && !this.heldPlugins.has(install.pluginId);
@@ -5433,6 +5500,7 @@ export class JobService {
             },
           });
       }
+      void this.nativeTransfers.reconcile(channel.machineId);
       return;
     }
     if (!live.proved) {
@@ -5451,6 +5519,10 @@ export class JobService {
           (event.type !== "result" || active.has(event.result.state)))
       )
         return;
+    }
+    if (event.type === "native_transfer_result") {
+      if (live.proved) this.nativeTransfers.event(channel, event);
+      return;
     }
     if (event.type === "agent_run_request") {
       this.agentRunRequest(channel, event);
@@ -6423,6 +6495,7 @@ export class JobService {
     this.accessChanged();
   }
   purgePlugin(pluginId: string): void {
+    this.nativeTransfers.assertPurgeable(pluginId);
     for (const liveJob of this.jobs.active()) {
       let ancestor: JobRecord | null = liveJob;
       for (let depth = 0; ancestor !== null && depth <= 64; depth++) {

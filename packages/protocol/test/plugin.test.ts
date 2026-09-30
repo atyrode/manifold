@@ -114,6 +114,84 @@ describe("action result text declarations", () => {
   });
 });
 
+describe("owned reference declarations", () => {
+  function ownerManifest(): PluginManifest {
+    return manifest({
+      id: "vendor.files",
+      capabilities: [
+        "vendor.files:create",
+        "vendor.files:read",
+        "vendor.files:delete",
+        "vendor.files:share",
+        "vendor.files:approve",
+      ],
+      contributes: {
+        panels: [],
+        sections: [],
+        elements: [],
+        tools: [],
+        events: [],
+        references: [
+          {
+            kind: "file",
+            resolveAction: "resolve",
+            readCapability: "vendor.files:read",
+            createCapability: "vendor.files:create",
+            deleteCapability: "vendor.files:delete",
+            creatorCaps: [
+              "vendor.files:read",
+              "vendor.files:delete",
+              "vendor.files:share",
+              "vendor.files:approve",
+            ],
+            sharing: {
+              grantorCapability: "vendor.files:share",
+              prerequisites: ["vendor.files:read", "vendor.files:share", "vendor.files:approve"],
+              grantableCaps: ["vendor.files:read"],
+            },
+          },
+        ],
+      },
+    });
+  }
+
+  test("creator grants cannot omit read, delete, or any sharing prerequisite", () => {
+    const valid = ownerManifest();
+    expect(PluginManifestSchema.safeParse(valid).success).toBe(true);
+    for (const missing of valid.contributes.references![0]!.creatorCaps) {
+      const candidate = ownerManifest();
+      const declaration = candidate.contributes.references![0]!;
+      declaration.creatorCaps = declaration.creatorCaps.filter((cap) => cap !== missing);
+      expect(PluginManifestSchema.safeParse(candidate).success).toBe(false);
+    }
+  });
+
+  test("read remains a creator right when sharing prerequisites do not require it", () => {
+    const candidate = ownerManifest();
+    const declaration = candidate.contributes.references![0]!;
+    declaration.sharing = {
+      grantorCapability: "vendor.files:share",
+      prerequisites: ["vendor.files:share"],
+      grantableCaps: ["vendor.files:share"],
+    };
+    expect(PluginManifestSchema.safeParse(candidate).success).toBe(true);
+    declaration.creatorCaps = ["vendor.files:delete", "vendor.files:share"];
+    expect(PluginManifestSchema.safeParse(candidate).success).toBe(false);
+  });
+
+  test("a receipt door is an optional distinct local action name", () => {
+    const candidate = ownerManifest();
+    const declaration = candidate.contributes.references![0]!;
+    expect(PluginManifestSchema.safeParse(candidate).success).toBe(true);
+    declaration.receiptAction = "receipt";
+    expect(PluginManifestSchema.safeParse(candidate).success).toBe(true);
+    for (const receiptAction of ["resolve", "", "vendor.files.receipt", "x".repeat(33)]) {
+      declaration.receiptAction = receiptAction;
+      expect(PluginManifestSchema.safeParse(candidate).success).toBe(false);
+    }
+  });
+});
+
 describe("plugin manifest", () => {
   test("stream declarations refuse unbounded or unsupported body schemas before publication", () => {
     const descriptor = {
@@ -771,6 +849,44 @@ describe("plugin data versioning", () => {
         JSON.stringify(database),
       ).toBe(false);
     }
+  });
+
+  test("bounded recovery requires an aligned explicit image cap without lowering general database caps", () => {
+    for (const maxBytes of [4096, 64 * 1024 * 1024]) {
+      expect(
+        PluginManifestSchema.safeParse(
+          manifest({
+            database: { maxBytes, recovery: { profile: "bounded-wal-v1" } },
+          }),
+        ).success,
+      ).toBe(true);
+    }
+    for (const maxBytes of [undefined, 4097, 64 * 1024 * 1024 + 4096]) {
+      expect(
+        PluginManifestSchema.safeParse(
+          manifest({
+            database: {
+              ...(maxBytes === undefined ? {} : { maxBytes }),
+              recovery: { profile: "bounded-wal-v1" },
+            },
+          }),
+        ).success,
+      ).toBe(false);
+    }
+    expect(
+      PluginManifestSchema.safeParse(
+        manifest({
+          database: { maxBytes: CEILING_DATABASE_MAX_BYTES },
+        }),
+      ).success,
+    ).toBe(true);
+    expect(
+      PluginManifestSchema.safeParse(
+        manifest({
+          database: { maxBytes: 4096, recovery: { profile: "unknown" } },
+        } as never),
+      ).success,
+    ).toBe(false);
   });
 });
 

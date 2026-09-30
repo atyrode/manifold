@@ -11,6 +11,15 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
+import { openDatabase } from "../packages/server/src/db.ts";
+import { ServerStore } from "../packages/server/src/stores.ts";
+import { RecoveryBudget } from "../packages/server/src/recovery-budget.ts";
+import {
+  openPluginDatabase,
+  pluginDatabasePath,
+  recoverPluginDatabases,
+  stagePluginDatabase,
+} from "../packages/server/src/plugin-database.ts";
 
 const roots: string[] = [];
 const servers: ReturnType<typeof Bun.serve>[] = [];
@@ -193,3 +202,95 @@ test("capture refuses oversized sparse state before reading or uploading it", as
   expect(requests).toBe(0);
   expect(result.out).toBe("");
 });
+
+for (const phase of ["prepared", "committed"] as const) {
+  test(`sealed recovery preserves exact ${phase} migration images and their durable decision`, async () => {
+    const objects = new Map<string, Uint8Array>();
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      async fetch(request) {
+        const path = new URL(request.url).pathname;
+        if (request.method === "HEAD")
+          return new Response(null, { status: objects.has(path) ? 200 : 404 });
+        if (request.method === "PUT") {
+          objects.set(path, new Uint8Array(await request.arrayBuffer()));
+          return new Response(null, { status: 200 });
+        }
+        const bytes = objects.get(path);
+        return bytes === undefined
+          ? new Response(null, { status: 404 })
+          : new Response(Buffer.from(bytes));
+      },
+    });
+    servers.push(server);
+    const source = temporary(`manifold-recovery-${phase}`);
+    const restored = temporary(`manifold-recovery-${phase}-restored`);
+    const control = temporary("manifold-recovery-control");
+    const store = new ServerStore(openDatabase(join(source, "manifold.db")));
+    const options = {
+      dataDir: source,
+      pluginId: "test.migration",
+      maxBytes: 64 * 1024 * 1024,
+      recovery: { profile: "bounded-wal-v1" as const },
+      recoveryBudget: new RecoveryBudget(source, store.db),
+    };
+    const live = openPluginDatabase(options);
+    let recoveredStore: ServerStore | undefined;
+    try {
+      await live.run("CREATE TABLE retained(value TEXT NOT NULL)");
+      await live.run("INSERT INTO retained VALUES ('before migration')");
+      live.close();
+      const stage = stagePluginDatabase(options, store);
+      await stage.database.run("ALTER TABLE retained ADD COLUMN candidate INTEGER DEFAULT 7");
+      stage.activate();
+      if (phase === "committed") stage.committed();
+      const canonical = pluginDatabasePath(source, options.pluginId);
+      const before = readFileSync(canonical);
+      const backup = readFileSync(`${canonical}.backup`);
+      const common = {
+        MANIFOLD_BUILD: "1.2.3",
+        MANIFOLD_OWNER_KEY: "a451".repeat(16),
+        MANIFOLD_REPLICA_BUCKET: "fixture",
+        MANIFOLD_REPLICA_ENDPOINT: `http://127.0.0.1:${String(server.port)}`,
+        LITESTREAM_ACCESS_KEY_ID: "fixture-access",
+        LITESTREAM_SECRET_ACCESS_KEY: "fixture-secret",
+      };
+      const captured = await run(["capture", phase], { ...common, MANIFOLD_DATA_DIR: source });
+      if (captured.code !== 0) throw new Error(captured.err);
+      const receipt = JSON.parse(captured.out) as { readonly objectSha256: string };
+      const result = await run(["restore", phase, receipt.objectSha256], {
+        ...common,
+        MANIFOLD_DATA_DIR: restored,
+        MANIFOLD_RECOVERY_EXPECTED_BUILD: "1.2.3",
+        MANIFOLD_RECOVERY_LITESTREAM_CONFIG: join(control, "litestream.yml"),
+        MANIFOLD_RECOVERY_DATABASES_FILE: join(control, "databases"),
+      });
+      if (result.code !== 0) throw new Error(result.err);
+      const restoredPath = pluginDatabasePath(restored, options.pluginId);
+      expect(readFileSync(restoredPath)).toEqual(before);
+      expect(readFileSync(`${restoredPath}.backup`)).toEqual(backup);
+      for (const path of [canonical, `${canonical}.backup`, restoredPath, `${restoredPath}.backup`])
+        for (const suffix of ["-wal", "-shm", "-journal"])
+          expect(existsSync(`${path}${suffix}`)).toBe(false);
+      recoveredStore = new ServerStore(openDatabase(join(restored, "manifold.db")));
+      recoverPluginDatabases(restored, recoveredStore);
+      const database = new Database(restoredPath);
+      try {
+        expect(database.query("SELECT * FROM retained").all()).toEqual([
+          phase === "prepared"
+            ? { value: "before migration" }
+            : { value: "before migration", candidate: 7 },
+        ]);
+      } finally {
+        database.close();
+      }
+      expect(recoveredStore.pluginDatabaseJournals()).toEqual([]);
+      expect(recoveredStore.db.query("SELECT * FROM plugin_recovery_stages").all()).toEqual([]);
+    } finally {
+      live.close();
+      recoveredStore?.close();
+      store.close();
+    }
+  });
+}

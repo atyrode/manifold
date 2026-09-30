@@ -10,6 +10,13 @@ COPY --from=application --chown=1000:1000 /app /app
 RUN chown 1000:1000 /app
 
 # Profile Bun is available before activation; no executable crosses from the PR base.
+# Native application modules use the ABI library already owned by the pinned environment.
+# Keep its store path out of application configuration; ambiguous runtime closures fail closed.
+RUN set -eu; \
+    set -- /nix/store/*-gcc-*-lib/lib/libstdc++.so.6; \
+    test "$#" -eq 1 && test -f "$1" || { echo 'preview: development runtime must expose one C++ ABI library' >&2; exit 1; }; \
+    mkdir -p /usr/local/lib/manifold; \
+    ln -s "$1" /usr/local/lib/manifold/libstdc++.so.6
 RUN test -f /app/infra/entrypoint.sh && test -x /app/infra/entrypoint.sh || { echo 'preview: artifact contract requires executable /app/infra/entrypoint.sh' >&2; exit 1; }
 RUN bun -e '\
   const required = (await Bun.file("/app/package.json").json())?.engines?.bun; \
@@ -24,6 +31,7 @@ ARG DEVELOPMENT_IMAGE
 ARG DEVELOPMENT_DIGEST
 ENV MANIFOLD_BIND=0.0.0.0 \
     MANIFOLD_DATA_DIR=/data \
+    LD_LIBRARY_PATH=/usr/local/lib/manifold \
     MANIFOLD_VERSION=${MANIFOLD_VERSION} \
     MANIFOLD_BUILD=${MANIFOLD_BUILD} \
     MANIFOLD_CHANNEL=${MANIFOLD_CHANNEL}

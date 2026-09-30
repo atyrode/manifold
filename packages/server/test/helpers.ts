@@ -329,10 +329,26 @@ export function testEventHub(
   );
 }
 
+const testHosts = new WeakMap<ServerStore, Set<PluginHost>>();
+
+/** Register only a successfully booted host, including custom assemblies over the same store. */
+export function trackTestPluginHost(store: ServerStore, host: PluginHost): void {
+  const hosts = testHosts.get(store) ?? new Set<PluginHost>();
+  hosts.add(host);
+  testHosts.set(store, hosts);
+}
+
+/** Stop every host over this fixture's store before closing its database. */
+export function closeTestStore(store: ServerStore): void {
+  for (const host of testHosts.get(store) ?? []) host.close();
+  testHosts.delete(store);
+  store.close();
+}
+
 /**
- * The real assembly, in a test. Tests assemble the SAME defs production does — a fixture
- * with a hand-written plugin list would let the action door pass here and refuse in the
- * server, which is exactly the divergence the registry exists to prevent.
+ * By default, tests assemble the SAME defs production does: a hand-written plugin list
+ * would let the action door pass here and refuse in the server. Alternate-owner fixtures
+ * can supply a complete assembly before any shipped reference-kind reservations are made.
  */
 export async function testPluginHost(
   store: ServerStore,
@@ -341,6 +357,8 @@ export async function testPluginHost(
   broker: TerminalBroker,
   runtime: RuntimeDeps,
   options: {
+    /** Explicit base assembly for a fresh alternate workspace, before settings plugins are added. */
+    readonly assembly?: readonly ServerPluginDef[];
     readonly settingsPlugins?: readonly ServerPluginDef[];
     readonly lifecycleTimeoutMs?: number;
     readonly jobSettledTimeouts?: Readonly<Record<string, number>>;
@@ -397,7 +415,7 @@ export async function testPluginHost(
       (context, node) => host?.canReadGoverned(context, node) ?? false,
     );
   host = await PluginHost.boot(
-    [...SERVER_PLUGIN_DEFS, ...(options.settingsPlugins ?? [])],
+    [...(options.assembly ?? SERVER_PLUGIN_DEFS), ...(options.settingsPlugins ?? [])],
     store,
     auth,
     rooms,
@@ -424,6 +442,7 @@ export async function testPluginHost(
     */
     { ...options, distribution: SHIPPED_PLUGIN_IDS },
   );
+  trackTestPluginHost(store, host);
   if (options.events === undefined) {
     broker.setEvents(events);
     rooms.setEvents(events);

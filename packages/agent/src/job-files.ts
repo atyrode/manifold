@@ -61,11 +61,32 @@ const FILE_SYMBOLS = {
   __errno_location: { args: [], returns: FFIType.ptr },
 } as const;
 let libc: Library<typeof FILE_SYMBOLS> | undefined;
+/** Exact identity for prepared publication recovery, never a content-hash substitute. */
+export function fileIdentity(fd: number): string {
+  const stat = fstatSync(fd, { bigint: true });
+  return `${stat.dev}:${stat.ino}`;
+}
+
+/** Writable, sealable anonymous backing; the caller must verify seals before reading a result. */
+export function createPrivateByteFile(): number {
+  libc ??= dlopen("libc.so.6", FILE_SYMBOLS);
+  const name = Buffer.from("manifold-native-transfer\0");
+  const fd = libc.symbols.memfd_create(ptr(name), 1 | 2);
+  if (fd < 0) throw new Error("native_snapshot_unavailable");
+  return fd;
+}
 /** Lock remains owned by the open description until the caller closes it. */
 export function lockExclusive(fd: number): void {
   libc ??= dlopen("libc.so.6", FILE_SYMBOLS);
   if (libc.symbols.flock(fd, 2 | 4) !== 0) throw new Error("job_owner_already_locked");
 }
+/** The exclusive rename syscall itself refused: unlike a later fsync, no name was published. */
+export class ExclusivePublicationError extends Error {
+  constructor(readonly code: string) {
+    super("exclusive_file_publication_failed");
+  }
+}
+
 /** renameat2(RENAME_NOREPLACE) between held directories. */
 function renameNoReplace(
   from: HeldDirectory,
@@ -80,7 +101,7 @@ function renameNoReplace(
   if (libc.symbols.renameat2(from.fd, ptr(source), to.fd, ptr(target), 1) !== 0) {
     const address = libc.symbols.__errno_location();
     const code = address === null ? "UNKNOWN" : getSystemErrorName(-readNative.i32(address));
-    throw Object.assign(new Error("exclusive_file_publication_failed"), { code });
+    throw new ExclusivePublicationError(code);
   }
 }
 

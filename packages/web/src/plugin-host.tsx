@@ -48,6 +48,8 @@ import {
   type OpenPanelRequest,
   type PanelProps,
   type SectionProps,
+  type PortablePanelProps,
+  type PortableSectionProps,
 } from "@manifold/plugin";
 import {
   BindingsResponseSchema,
@@ -81,8 +83,9 @@ import { dispatchAction, type StoredIdentity } from "./api.ts";
 import { requestJson, requestResponse } from "./http.ts";
 import { createRoomPipeRegistry, panelSessionHandle } from "./room-pipes.ts";
 import { ContainerErrorBoundary } from "./error-boundary.tsx";
-import { isolatedPanel, isolatedSection } from "./isolate/index.ts";
+import { isolatedElement, isolatedPanel, isolatedSection } from "./isolate/index.ts";
 import { webModulePath } from "./isolate/worker-host.ts";
+import { byteContribution, byteElement } from "./byte-renderer.tsx";
 import { FEED_TOPICS, SPACE_SET_LAYOUT_ACTION, WEB_PLUGIN_DEFS } from "./assembly.ts";
 
 /**
@@ -133,8 +136,12 @@ import { FEED_TOPICS, SPACE_SET_LAYOUT_ACTION, WEB_PLUGIN_DEFS } from "./assembl
  */
 export interface WebPluginDef {
   readonly id: string;
-  readonly panels?: Readonly<Record<string, ComponentType<PanelProps>>>;
-  readonly sections?: Readonly<Record<string, ComponentType<SectionProps>>>;
+  readonly panels?: Readonly<
+    Record<string, ComponentType<PanelProps> | ComponentType<PortablePanelProps>>
+  >;
+  readonly sections?: Readonly<
+    Record<string, ComponentType<SectionProps> | ComponentType<PortableSectionProps>>
+  >;
   readonly elements?: Readonly<Record<string, ComponentType<never>>>;
   /** Native shortcuts and point authoring, keyed by manifest-declared tools. */
   readonly tools?: Readonly<Record<string, Pick<RegisteredTool, "shortcut" | "point">>>;
@@ -369,7 +376,7 @@ export function buildBrowserAssembly(
         arranges: panel.arranges,
         Component: isolated
           ? isolatedPanel(manifest.id, panel.id, manifest.entry?.worker === true)
-          : (def?.panels?.[panel.id] ?? null),
+          : byteContribution(def?.panels?.[panel.id], manifest.entry?.worker === true),
         enabled,
       });
     }
@@ -394,7 +401,7 @@ export function buildBrowserAssembly(
         presentation: section.presentation ?? DEFAULT_SECTION_PRESENTATION,
         Component: isolated
           ? isolatedSection(manifest.id, section.id, manifest.entry?.worker === true)
-          : (def?.sections?.[section.id] ?? null),
+          : byteContribution(def?.sections?.[section.id], manifest.entry?.worker === true),
         enabled,
       });
     }
@@ -403,13 +410,19 @@ export function buildBrowserAssembly(
         plugin: manifest.id,
         title: element.title,
         ...(element.presentation === undefined ? {} : { presentation: element.presentation }),
-        Component: def?.elements?.[element.type] ?? null,
+        Component: isolated
+          ? isolatedElement(manifest.id, element.type, manifest.entry?.worker === true)
+          : byteElement(def?.elements?.[element.type], manifest.entry?.worker === true),
         enabled,
       });
     }
     for (const tool of manifest.contributes.tools) {
       const attachment = isolated ? undefined : def?.tools?.[tool.id];
       const toolbar = tool.toolbar ?? DEFAULT_TOOLBAR;
+      const Component =
+        tool.panel === undefined
+          ? null
+          : (panels.get(`${manifest.id}.${tool.panel}`)?.Component ?? null);
       const claimant = `${manifest.id}.${tool.id}`;
       if (attachment?.shortcut !== undefined) {
         claim(toolShortcuts, `${toolbar}:${attachment.shortcut.toLowerCase()}`, claimant);
@@ -423,6 +436,7 @@ export function buildBrowserAssembly(
         title: tool.title,
         toolbar,
         enabled,
+        ...(Component === null ? {} : { Component }),
         ...(attachment?.shortcut === undefined ? {} : { shortcut: attachment.shortcut }),
         ...(attachment?.point === undefined ? {} : { point: attachment.point }),
       });
@@ -1657,6 +1671,17 @@ export function HostServicesGate({
         },
       ]),
     );
+    const panels = new Map<string, RegisteredRenderer<PanelProps>>(
+      [...assembly.panels].map(([id, panel]) => [
+        id,
+        {
+          plugin: panel.plugin,
+          title: assembly.pluginTitle(panel.plugin) ?? panel.plugin,
+          enabled: panel.enabled,
+          Component: panel.Component,
+        },
+      ]),
+    );
     return {
       revision: assembly.revision,
       Placeholder: PluginPlaceholder,
@@ -1667,6 +1692,7 @@ export function HostServicesGate({
       workspaceOverlay: (slot) => assembly.workspaceOverlays.get(slot) ?? null,
       element: (type) => assembly.elements.get(type) ?? null,
       section: (id) => sections.get(id) ?? null,
+      panel: (id) => panels.get(id) ?? null,
       elements: assembly.elements,
       tools: assembly.tools,
     };

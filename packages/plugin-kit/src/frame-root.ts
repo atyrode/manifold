@@ -1,4 +1,8 @@
 import {
+  ByteDownloadStatusSchema,
+  ByteImageStatusSchema,
+  LocalFileSelectionSchema,
+  PanelResultSchema,
   MAX_UI_DEPTH,
   MAX_UI_NODES,
   MAX_UI_TEXT_LENGTH,
@@ -66,6 +70,10 @@ const DATA_PROPS: Readonly<Record<UiNodeType, readonly string[]>> = {
   select: ["value", "options", "label", "disabled"],
   input: ["value", "label", "placeholder", "mono", "disabled"],
   toggle: ["value", "label", "disabled"],
+  fileInput: ["label", "accept", "multiple", "clipboard", "disabled"],
+  byteImage: ["label", "source", "crop", "fit"],
+  byteDownload: ["label", "filename", "source", "disabled"],
+  borrowedPanel: ["panelId", "input"],
   list: ["items"],
   empty: ["text"],
 };
@@ -76,6 +84,10 @@ const CALLBACK_PROPS: Readonly<Partial<Record<UiNodeType, readonly string[]>>> =
   select: ["onChange", "onBlur"],
   input: ["onChange", "onBlur"],
   toggle: ["onChange", "onBlur"],
+  fileInput: ["onChange"],
+  byteImage: ["onChange"],
+  byteDownload: ["onChange"],
+  borrowedPanel: ["onResult"],
 };
 
 const LIST_ITEM_DATA: readonly string[] = ["key", "primary", "secondary", "tone"];
@@ -380,7 +392,11 @@ class Projection {
     const out: Record<string, unknown> = { type: node.kind, key: `n${String(node.id)}` };
     copyFields(node.props, META_PROPS, out);
     copyFields(node.props, DATA_PROPS[node.kind], out);
-    if (CALLBACK_PROPS[node.kind] !== undefined) {
+    if (
+      CALLBACK_PROPS[node.kind] !== undefined &&
+      ((node.kind !== "byteImage" && node.kind !== "byteDownload") ||
+        node.props["onChange"] !== undefined)
+    ) {
       out["event"] = this.register(node, node.kind === "button" ? "click" : "change");
       if (node.props["onBlur"] !== undefined) out["blurEvent"] = this.register(node, "blur");
     }
@@ -455,6 +471,20 @@ function checkedValue(
   if (slot !== "change") {
     return payload === undefined ? { value: undefined } : "this control's event carries no payload";
   }
+  if (node.kind === "fileInput" || node.kind === "byteImage") {
+    const result = (
+      node.kind === "fileInput" ? LocalFileSelectionSchema : ByteImageStatusSchema
+    ).safeParse(payload);
+    return result.success ? { value: result.data } : "invalid byte surface event";
+  }
+  if (node.kind === "byteDownload") {
+    const result = ByteDownloadStatusSchema.safeParse(payload);
+    return result.success ? { value: result.data } : "invalid byte download event";
+  }
+  if (node.kind === "borrowedPanel") {
+    const result = PanelResultSchema.safeParse(payload);
+    return result.success ? { value: result.data } : "invalid panel result";
+  }
   if (node.kind === "toggle") {
     return typeof payload === "boolean" ? { value: payload } : "toggle changes must be booleans";
   }
@@ -475,7 +505,15 @@ function handlerFor(node: FrameNode, slot: Slot): unknown {
     const items = (node.props["items"] ?? []) as readonly ListItem[];
     return items.find((item) => item["key"] === slot.row)?.["onClick"];
   }
-  return node.props[slot === "click" ? "onClick" : slot === "blur" ? "onBlur" : "onChange"];
+  return node.props[
+    slot === "click"
+      ? "onClick"
+      : slot === "blur"
+        ? "onBlur"
+        : node.kind === "borrowedPanel"
+          ? "onResult"
+          : "onChange"
+  ];
 }
 
 /**

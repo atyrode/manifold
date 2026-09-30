@@ -2505,17 +2505,17 @@ manager's Installed band names that row **In-realm** or **Hardened**.
 **Trusted first-party selection (ADR 0053, #259).** A registered first-party
 plugin can also be selected by `MANIFOLD_HARDENED_PLUGINS=<id>[,<id>…]` at
 bootstrap; absent means all first-party definitions run in-realm. The composition
-root alone names source recipes. At present `core.machines` has a recipe: the
-_actual_ server handlers and portable web definition compile from the registered
-manifest, not a renamed stand-in. Source/Docker builds compile selected definitions
+root alone names source recipes. `core.machines`, `core.files` and `core.files.images`
+have recipes: their actual server handlers and portable web definitions compile from
+the registered manifests, not renamed stand-ins. Source/Docker builds compile selected definitions
 at boot. The source-free Nix package builds these artifacts with the same compiler
 ahead of time and its wrapper sets `MANIFOLD_FIRST_PARTY_ARTIFACTS` to their own
 directory. A selected id without registration, recipe or artifact, a compile failure
 or a binding mismatch stops startup naming that id; there is no in-realm fallback.
-Binding checks the exact registered manifest, artifact hash/current contract (9),
-server/Worker halves, and the child's published door declarations/schemas. An
-element payload-schema definition cannot cross this boundary. Trusted artifacts
-live under `first-party/<id>/<sha256>/`, not plugin installs: no install row,
+Binding checks the exact registered manifest, artifact hash/current contract (10),
+server/Worker halves, and the child's published door declarations/schemas. Element
+payload validators remain in the trusted composition root; executable schema definitions
+do not cross the guest boundary. Trusted artifacts live under `first-party/<id>/<sha256>/`, not plugin installs: no install row,
 third-party provenance or reserved `core.*`/`engine.*` upload exception results.
 They use the ordinary isolate supervisor, enablement, dispatch ladder and
 lifecycle; a held child's process is retired and restarted on release, including
@@ -2554,8 +2554,8 @@ dependency. The bundle's optional `builtAgainst` version map is recorded as
 shared builds also record React/package versions. Admission and boot check that stamp against
 the explicit `PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS` set and compare React by major. The
 bundle set is independent of session, machine and instance negotiation: sessions still require
-the current wire version. Protocol 52 admits bundle stamps 47, 48, 51 and 52: its session document
-cutover retains the viewport/plugin ABI and the older hardened machine-inventory projection. A prior stamp
+the current wire version. Protocol 53 admits bundle stamps 47, 48, 51, 52 and 53: the session document
+cutover and contract-gated Files additions retain prior plugin frames and inventory projections. A prior stamp
 may remain only with proof from unchanged released artifacts through candidate assembly and
 loading; an incompatible plugin ABI change resets the set. No numeric range, future version
 or deployment bypass is implied. Known incompatibility refuses fresh admission or holds an
@@ -2620,8 +2620,9 @@ uninstalled, or replaced at a new pin — so a disabled plugin paints nothing (D
 nothing. A plugin's own JSX wears the root class on its root element; the engine adds no wrapper.
 
 **The artifact (`PluginBundleSchema`).** One JSON file, `<id>.manifold-plugin.json`,
-at most `ISOLATE_MAX_ARTIFACT_BYTES` (16 MiB). A portable pack has
-`format: 1`, `hardenedContract: 11`, the validated `PluginManifest`
+at most `ISOLATE_MAX_ARTIFACT_BYTES` (64 MiB). This bounds executable code and its packaged
+runtime assets; it does not widen user-file uploads, image decoding, or private-data quotas. A portable pack has
+`format: 1`, `hardenedContract: 12`, the validated `PluginManifest`
 ([reference](../packages/plugin-kit/test/fixtures/sample/manifest.json), whose
 `entry` declares `{ "server": true, "web": "web.js", "worker": true }`),
 and base64 `files["server.js"]`, `files["web.js"]`,
@@ -2633,7 +2634,7 @@ in a bundle (optional on an in-tree manifest with no executable source pointer)
 and must name at least one half: `entry.server === true` requires the fixed
 `files["server.js"]` child entry (`PLUGIN_BUNDLE_SERVER_FILE`);
 `entry.web` names the page module key, and `entry.worker: true` additionally
-requires the distinct fixed `files["web.worker.js"]` with contract 9.
+requires the distinct fixed `files["web.worker.js"]` with contract 9 or newer.
 Every declared half must be a member of `files`, refused by name if missing.
 `entry.styles === true`
 (additive-optional, #258) means `files["styles.css"]` (`PLUGIN_BUNDLE_STYLES_FILE`, fixed like
@@ -2661,8 +2662,11 @@ always did). A portable pack links `web.js` to the page's React/design system an
 generates a separate, self-contained `web.worker.js` with the kit's React and
 `react-reconciler` 0.33.0; it is selected by the runner, never handwritten or
 produced by `--self-contained`. Older compatible hardened artifacts keep their
-own declared frame behavior. A server child remains self-contained; in-realm
-web bundles use the shared-module registry and plain `import()`.
+own declared frame behavior. A server child carries its JavaScript and native dependency assets
+as bounded flat signed members; compilation never silently drops emitted assets. Platform ABI
+libraries remain system dependencies. The child runs with `--no-install`, not ambient package
+acquisition. Browser entries cannot carry sidecar assets; in-realm web bundles use the
+shared-module registry and plain `import()`.
 
 **Server artifact retrieval (#415).** Both runners use the same source policy. Network sources
 and each of at most five followed redirects must use HTTPS without embedded URL credentials.
@@ -2675,7 +2679,7 @@ first validated numeric answer, without alternate-address retries. It retains or
 certificate verification and SNI, verifies the actual TLS peer before sending HTTP, and preserves
 the original Host header. No second hostname resolution, connection-pool substitution or ambient
 HTTP(S) proxy is used.
-Redirect bodies and refused responses are cancelled; decoded bytes retain the 16 MiB streaming
+Redirect bodies and refused responses are cancelled; decoded bytes retain the 64 MiB streaming
 ceiling and exact-byte SHA verification still precedes parsing or publishing any artifact.
 
 Public/self-hosted HTTPS publishing is supported. Intentionally private sources must use the
@@ -2684,8 +2688,8 @@ not a network-policy exemption. This is server-side retrieval admission, not a r
 the kit client's own inspection fetch or a claim that arbitrary plugin code is network-confined.
 
 **Executable bundle compatibility (#602).** Every pack stamps `hardenedContract` independently
-of `format` and the machine/session protocols. `HARDENED_CONTRACT_VERSION` is 11; the hub accepts
-`HARDENED_CONTRACT_COMPAT_VERSIONS = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}`, with minimum 1. Add an
+of `format` and the machine/session protocols. `HARDENED_CONTRACT_VERSION` is 12; the hub accepts
+`HARDENED_CONTRACT_COMPAT_VERSIONS = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}`, with minimum 1. Add an
 additive-optional contract to that set; reset it for a genuine break. An unstamped or outside-set
 installed artifact is held at assembly with `repack_required` and the minimum, never imported
 or spawned, even if the administrator had it disabled. Fresh incompatible installs are refused
@@ -2708,10 +2712,12 @@ intermediary's machine-list response. Independent current readers retain the liv
 Portable Workers use the explicit accepted contract set with minimum 9, not equality with the
 latest contract. Pre-10 Workers receive the old shape from both `client.machines()` and the
 canonical machine-list action; refusals and unrelated action results remain unchanged.
-Contract 11 adds optional `hook.metadata` for credential-bound
-read-only lifecycle metadata. Older admitted guests omit newer metadata and preserve their
-normalized declarations and digests. Host-to-guest optional fields are gated by the admitted
-contract, never sent speculatively.
+Contract 11 adds optional `hook.metadata` for credential-bound read-only lifecycle metadata.
+Contract 12 adds declared byte/reference/native-transfer facilities, mounted element/byte
+surfaces and ephemeral owner-panel intake/results. Strict contract-9 through contract-11
+web mounts and context updates omit contract-12 fields; new intake requires contract 12.
+Older admitted guests omit newer metadata and preserve their normalized declarations and
+digests. Host-to-guest optional fields are gated by the admitted contract, never sent speculatively.
 “Isolate answered out of protocol” denotes an internal
 protocol violation, not an SDK-upgrade remedy exposed after version drift.
 
@@ -2726,8 +2732,10 @@ current state is separately presented, so a compatibility-held incumbent remains
 
 Discovery, bundles and external changelogs reuse the one bounded artifact reader and its
 per-hop HTTPS policy. The updater does not inherit development path exceptions, and remote
-feeds cannot point at local files. Bounds are 256 KiB per feed, 16 family members, 16 MiB per
-bundle, 32 MiB verified bytes per family, 64 KiB UTF-8 changelog text, 512 KiB serialized review,
+feeds cannot point at local files. Bounds are 256 KiB per feed, 16 family members, 64 MiB per
+bundle, and a separate 32 MiB verified aggregate per family; larger individual bundles therefore
+require the install door rather than a batched update review. Reviews retain 64 KiB UTF-8 changelog
+text, 512 KiB serialized review,
 and eight reviews/64 MiB in the in-memory cache. At most two discoveries and two review
 preparations run concurrently; discovery and changelog preparation each have a 60-second
 outer deadline. Shutdown cancels discovery and polling and drops outstanding reviews.
@@ -2865,6 +2873,14 @@ and an answer without emissions is not rewritten after the fact. A handler that 
 call's refusal returns it as its own. A snapshot of `false` is never fenced: it can only fail
 closed. `auth.allows` stays a live host question.
 
+Contract-12 owners declaring private data callbacks admit independent requests through
+one bounded owner turn: at most 255 wait behind the active turn. Private reentry requires
+a host-owned, still-active call for that exact pending request and child generation; a
+guest-supplied parent is not evidence. Queued work retains its original total deadline
+and can be cancelled before guest entry. Unload or generation retirement rejects old work
+rather than replaying it; idle-only maintenance refuses busy owners. Other owners retain
+their ordinary concurrency. The private data-only and forged-parent fences are unchanged.
+
 **Deadlines, the crash budget, eviction (ADR 0016 §6).** A lifecycle hook defaults to the
 engine's `LIFECYCLE_TIMEOUT_MS` (2 s); a dispatch to `ISOLATE_DISPATCH_DEADLINE_MS` (10 s), past
 which the answer is the ladder's last rung, `unavailable` — "isolate deadline expired" — traced
@@ -2882,9 +2898,12 @@ the load the same way, and on a respawn that failure counts against the budget. 
 next dispatch respawns it (`isolate_evicted`). A `call` names the request it belongs to by
 prefix: its `id` is `<request id>:<n>`, where `<request id>` is the `dispatch`/`hook` frame's
 own `id` (host-chosen, never containing `:`) — that is how the host finds the ctx that grades
-it. The child runs under the server's own `bun` with an environment of exactly `PATH`, `HOME`
-and `MANIFOLD_PLUGIN_ID` ([Data and credential boundaries](#data-and-credential-boundaries)); its stdout and stderr reach the server log line by line
-as `isolate_output`, capped. Log events: `isolate_spawned`, `isolate_exited`, `isolate_crashed`,
+it. The child runs under the server's own `bun` with only `PATH`, optional `HOME` and
+`LD_LIBRARY_PATH` (system native ABI search paths), `MANIFOLD_PLUGIN_ID` and the private
+`MANIFOLD_PLUGIN_PIPE_FD` descriptor number. No application keys, credentials or configuration
+cross this environment ([Data and credential boundaries](#data-and-credential-boundaries)).
+Its stdout and stderr reach the server log line by line as `isolate_output`, capped.
+Log events: `isolate_spawned`, `isolate_exited`, `isolate_crashed`,
 `isolate_evicted`, `isolate_call_failed`, `isolate_output`, `plugin_installed`,
 `plugin_uninstalled`, `plugin_authored`, `plugin_authored_build_failed`,
 `developer_mode_changed`, `web_isolate_fault`.
@@ -2892,17 +2911,18 @@ as `isolate_output`, capped. Log events: `isolate_spawned`, `isolate_exited`, `i
 **Web isolate — page ↔ Worker (`WebIsolateHostFrameSchema` /
 `WebIsolateWorkerFrameSchema`).** `postMessage` frames are discriminated on `t`:
 
-| Direction   | `t`                      | Carries                                                                 |
-| ----------- | ------------------------ | ----------------------------------------------------------------------- |
-| page→worker | `init`                   | `pluginId`, `principal`, `caps`, `containerId`: viewer data, not bearer |
-| page→worker | `mount`                  | `instance`, local `panel`, optional `kind: "panel"                      | "section"`, mounted `context`, optional bounded panel `arg` |
-| page→worker | `context`                | fresh mounted host context and optional panel argument                  |
-| page→worker | `notification`, `stream` | bounded event invalidation / stream delivery                            |
-| page→worker | `event`                  | `instance`, current control's event and scalar payload                  |
-| page→worker | `unmount`, `reply`       | instance retirement / correlated host reply                             |
-| worker→page | `ready`                  | local panel/section ids, optional contract stamp                        |
-| worker→page | `render`                 | `instance`, whole validated `UiNode` tree                               |
-| worker→page | `call`, `fault`          | correlated bounded host method / per-view failure                       |
+| Direction   | `t`                      | Carries                                                                                                                                         |
+| ----------- | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| page→worker | `init`                   | `pluginId`, `principal`, `caps`, `containerId`: viewer data, not bearer                                                                         |
+| page→worker | `mount`                  | instance/local contribution id and kind, mounted context, optional panel `arg`; contract 12 element data or panel-local `input`/`acceptsResult` |
+| page→worker | `context`                | fresh mounted host context and optional panel argument                                                                                          |
+| page→worker | `notification`, `stream` | bounded event invalidation / stream delivery                                                                                                    |
+| page→worker | `event`                  | `instance`, current control's event and scalar payload                                                                                          |
+| page→worker | `unmount`, `reply`       | instance retirement / correlated host reply                                                                                                     |
+| worker→page | `ready`                  | local panel/section ids, optional contract stamp                                                                                                |
+| worker→page | `render`                 | `instance`, whole validated `UiNode` tree                                                                                                       |
+| worker→page | `panel_result`           | contract 12, one bounded data result for the current intake mount                                                                               |
+| worker→page | `call`, `fault`          | correlated bounded host method / per-view failure                                                                                               |
 
 `WEB_HOST_METHODS` include `action`, `place`, `selfCaps`, `machines`,
 `resolve`, `navigate`, terminal read/input/open/create, streams and event
@@ -2932,9 +2952,10 @@ server-process boundary is a separate contract.
 
 **The component vocabulary (`UiNodeSchema`, ADR 0053).** The Worker runs
 actual React with `react-reconciler` 0.33.0 and `@manifold/ui/frames`; its
-committed tree contains only fourteen strict `UI_NODE_TYPES`: `box`,
+committed tree contains only the strict `UI_NODE_TYPES`: `box`,
 `heading`, `text`, `code`, `badge`, `icon`, `divider`, `spinner`, `button`,
-`select`, `input`, `toggle`, `list`, `empty`. The host paints the same
+`select`, `input`, `toggle`, `list`, `empty`, `fileInput`, `byteImage`,
+`byteDownload`, `borrowedPanel`. The host paints the same
 `@manifold/ui` components under its own `mf-vocab` family. Tones are
 `neutral`, `accent`, `muted`, `danger`, `success`. A stray `style`,
 `className`, raw DOM node or unknown prop is refused rather than dropped;
@@ -2966,7 +2987,7 @@ is the one admitted under the root-class rule at install and re-verified at enab
 page-linked `web.js` and generated `web.worker.js`; the existing server
 integration exercises installed child dispatch/refusals, storage, exact-byte
 hash holds and restart behavior. Browser acceptance must run both native
-and hardened panels as real Chromium interactions: the fourteen rendered
+and hardened panels as real Chromium interactions: the affected rendered
 kinds, returned events, state/effect/keyed identity, context refresh,
 terminal behavior where applicable, and teardown. Source-only suites and
 server-only `verify --hardened` do not establish browser parity.
@@ -3049,6 +3070,181 @@ default; selecting `MANIFOLD_HARDENED_PLUGINS=core.machines` chooses
 the exact registered source and fails closed by name if its trusted artifact
 cannot bind. Other registered plugins need their own declared source recipe
 and a portable web/ctx surface before an operator can select them.
+
+## Shared files and bounded byte transfers
+
+`core.files` is an opt-in owner of independent immutable files, its authenticated library
+and explicit native transfers. `core.files.images` requires Files and Canvas and owns image
+references and presentation, not bytes. Disabling Canvas does not hide the library. Files use
+`manifold://file/<opaque-id>`, a root-child resource in the existing URI algebra; distribution
+and retained ownership reservations prevent a different owner from reinterpreting old references.
+[ADR 0057](decisions/0057-private-files-and-byte-transfers.md) records the mechanism and decoder
+decisions; the [adopted acceptance contract](spikes/shared-file-contract.md) remains complete.
+
+### Publication, grants and deletion
+
+The declared owner stores metadata and immutable chunks in its private SQLite database.
+The floor coordinates existence through `ctx.references`, not a second ACL: create is checked
+at the owner's collection, and publication derives only the declaration's exact creator
+capabilities. For Files these are node-local read/delete/share. Engine token ceilings,
+credential lineage, Run scope and ordinary live grant evaluation still apply.
+
+Preparation creates no grant. The owner first commits verified ready data tied to that
+preparation; a private probe confirms it. After that await, the host rechecks current
+authority and lifetime, then publishes the reference and ordinary creator grant in one
+main-database transaction. That commit is the visibility point. No SQLite transaction spans
+a plugin await. A durable pending owner acknowledgement reconciles after a lost reply or
+restart without re-publishing or recreating revoked grants. Unpublished preparations abort
+on restart; mismatched published data is quarantined rather than reclaimed as temporary data.
+Before creator admission reserves private capacity, bounded maintenance expires stale host
+preparations and reclaims only exact terminal owner matches. An unpublished ready reservation
+cannot block replacement indefinitely, and private elapsed time alone cannot delete ready bytes.
+
+Sharing requires current read plus share and grants only read to a named principal on that
+exact file. It cannot create class/subtree/deny grants, foreign rights or delegated sharing.
+Exact decision identity makes retry idempotent; revocation removes only the mechanism's own
+share grant, not a replacement decision or administrator grant. Logical deletion first
+unpublishes and removes mechanism-owned grants, then reclaims matching private bytes.
+Read/list/resolve/inspect and every continuation check authority before metadata:
+missing, denied, disabled and unpublished files have the same unavailable projection.
+Container membership, a scene reference and collection invalidation are not file-read authority.
+Globally known plugin enablement may still produce the ordinary `plugin_disabled` action
+refusal; within each roster state no file candidate discloses existence. JSON API responses,
+including authorized resolution and action/list results, use `no-store`; static caching is separate.
+
+### Quotas and the byte carrier
+
+Files admits at most 16 MiB per completed file, 32 MiB of committed plus reserved logical
+content, 1,000 retained records including incomplete/deleted receipts, and a 64 MiB private
+database. Workspace transfers are bounded at four, with two per principal. Idle expiry is
+60 seconds, absolute lifetime 15 minutes, and receipts are retained seven days within the
+record cap. An exact repeated chunk is idempotent, not progress that extends the lease.
+Zero-byte ordinary files are valid; zero-byte images are not.
+
+Lifecycle operations are ordinary discovered actions. Raw bytes use declared incoming/outgoing
+attachments at `/api/bytes/{pluginId}/{carrierId}`, not action JSON, scenes, events or PTY input.
+`GET /api/protocol` publishes the exact offset/sequence/length envelope and headers. The host
+authenticates the target and asks the owner for admission before reading a body. Requests
+carry at most 256 KiB; at most 16 are active globally, eight per principal and four per transfer,
+with a 15-second request deadline. Queued delivery and asynchronous boundaries recheck the
+current credential, declaration and lease. No unbounded queue or ambient credentials, bearer
+URLs, redirects, HTTP Range or conditional-cache metadata path is available.
+
+The SDK owns this authenticated no-store transport. A lost acknowledgement is not evidence of
+rollback. Exact offset, sequence, length and content identify retries; changed bytes, gaps or
+credential identity refuse. Completion verifies retained length and SHA-256 before publication.
+Projection leases last at most 15 seconds and renew through authorized continuation. Expiry,
+focus recheck, refusal or retirement clears object URLs and decoded views; already received
+independent copies cannot be recalled.
+
+### Owner-mounted intake and image references
+
+Registered panels may accept transient `input` and one bounded `onResult`. Native `File`
+objects enter only the receiving mount's local resource store; portable page and Worker props
+contain owner-local descriptors. JSON options retain the 4 KiB argument bound; a result is
+a JSON record of at most 64 KiB UTF-8 and 32 container levels, not a byte carrier or authority.
+The neutral `BorrowedPanel` resolves the owner's selected renderer, preserves its unavailable
+boundary, rejects cycles and shares four slots across the entire borrowing subtree. Only a
+committed mount acquires file custody or a borrowing slot; abandoned renders acquire neither.
+Client, credential, principal, container and mount retirement fence selection custody and
+completion. Restoring an earlier host identity does not revive a retired intake. Results cannot
+repeat after owner recomposition or reach a later intake. A descendant layout-effect completion
+reaches the current committed callback; replacing that callback alone is not mount retirement.
+Ordinary layout, viewport or assembly metadata recomposition preserves the portable session
+client identity and the current intake. Retired queued image projections do not open new reads.
+
+Picker, drop and explicit clipboard Save use the same owner workflow. Save and Attach/Deliver
+are separate choices. Cancelling after Save or failing to attach preserves the saved file and
+its retry identity; it does not silently delete or duplicate it. An image stores only the
+opaque source reference and presentation geometry. Deleting one reference does not affect
+another or the source. Logical source deletion invalidates all projections. A share is with
+the named principal, not every present or future viewer of the canvas.
+
+File intake blocks action entry and late callbacks synchronously on retirement. React's
+same-commit mount-effect replay may retain a pristine, not-yet-started selection; it cannot
+revive an operation that has started or a controller that has already been disposed.
+
+Before an upload or saved file is acknowledged, a refused or unknown intake may instead be
+explicitly discarded locally. That releases selection custody, not server authority: it neither
+retries the old request nor claims remote cancellation; any unconfirmed preparation expires.
+
+Image intake fully decodes PNG, JPEG, WebP and static GIF with the bounded native decoder,
+preserving original bytes and their hash. The limits are 4,194,304 pixels and 8,192 per side;
+animated, malformed, mismatched or unsupported content is refused, not silently retained
+as an ordinary file. SVG/HTML never becomes a preview. An explicit distinct ordinary-file
+choice is required to retain unsupported bytes.
+
+### Native effects and recovery
+
+Native transfers require machine protocol 53, owner RPC 44, a proved enrolled owner and
+deliberate installation/consent for the exact transfer policy and location revisions. They
+use the existing owner channel, not a shell or terminal fallback. `create-child` means one
+exclusive regular file beneath a reviewed managed root, not overwrite or arbitrary-path
+write. Held descriptors reject unsafe aliases, links, mounts, root replacement and writers.
+The private sibling is verified and synced before current-authority commit, exclusive
+placement, directory sync and a durable receipt. A lost commit reply stays unknown until
+matching owner evidence reconciles it, without repeating the effect. Later source deletion,
+grant loss or disable cannot retract an independently committed copy.
+
+Expiry alone cannot prove native cleanup. Admitted or admission-unknown transfers retain their
+active reservation and block destructive cleanup until exact owner or pre-admission refusal
+evidence resolves them. Native waits consume the original action budget; byte-native waits also
+respect the earlier HTTP deadline. Background evidence delivery cannot make an action wait for
+its own isolate turn.
+
+The product retains its exact immutable native request before admission. Credential-bound
+`recoverAdmission` either returns the original admitted ID or durably fences non-admission
+against an in-flight or later begin. Refusal evidence survives failed private delivery and
+restarts; it shares the existing 1,000-record metadata bound, and unacknowledged evidence does
+not age away. A durable explicitly unsent admission can retire without issuing native commands.
+Once dispatch intent is recorded, a missing reply or an original owner's unknown ID is not
+absence proof: uncertainty and purge blocking remain until authoritative terminal evidence.
+
+Files exposes `receiptNative({ requestId })` for both delivery and download. It returns only
+`{ requestId, state }` for the exact original actor and credential, including when the begin
+reply never supplied a transfer ID or the source has since been deleted. It does not reread
+source content or grant a new native effect.
+A later refusal describes that later call; it cannot erase uncertainty about a prior native
+effect or discard its request identity. An authoritative receipt or continuation must reconcile it.
+
+Caller-independent recovery uses a paired private pending-admission probe and evidence
+callback. An idle-exclusive owner turn covers the bounded snapshot and synchronous absence
+fence, including in-realm owners. Only an exact intent absent from host admission metadata
+can be fenced; existing admissions and uncertain dispatches remain intact. This path needs
+neither the original credential nor an online native owner and never restores caller authority.
+Busy or unavailable sources and failed private acknowledgements remain pending for bounded
+idle/authority transitions and the existing one-second job maintenance pass.
+Probe waits consume existing caller deadlines and cancellation, not a fresh post-wait budget.
+Retained refusal evidence is delivered independently of a later snapshot entry's capacity or
+validation failure; a provably fenced reservation can retire while another remains unresolved.
+
+Each pass considers at most 32 source owners and each source returns at most 32 entries.
+Private insertion is limited to 32 retained refusal fences per owner, counting acknowledged
+and public-origin fences as well as unacknowledged ones, within the shared 1,000-record cap.
+Acknowledgement does not replenish that allowance before retention pruning; producer timestamps
+cannot shorten host-created retention, and unacknowledged evidence is never pruned for age.
+
+Downloads name a bounded relative file under a reviewed read root and produce an immutable
+snapshot. They do not retain a library file unless separately saved. Terminal-local MIME
+paste stays local-only. File fallback explicitly Saves then Delivers; Copy path is the
+default. Separate current input-authorized insertion sends the literal path, no shell
+quoting or Enter, refuses control characters and does not claim application consumption.
+
+Files uses the optional `bounded-wal-v1` storage profile. Full image and retained migration
+obligations are charged before admission; logical quotas alone are not physical capacity.
+The complete encrypted checkpoint retains its 256 MiB/10,000-file ceiling. Capture takes
+the shared administrative gate before the main write fence, copies main then private
+images, and releases the fences before upload. A separate process and 30-second watchdog
+bound synchronous copy. Failure emits no receipt and releases locks. Restore cannot pair
+reclaimed bytes with an older visible publication or restore provisional bytes as authorized
+content. This is the publication invariant, not universal cross-database ACID. Operational
+capture, retention and authenticated rollback remain governed by [Backup](SELF-HOST.md#backup).
+Migration-journaled images retain their exact authorized bytes and hashes during capture.
+Integrity verification of copied closed images uses immutable read-only SQLite handles and
+must not create sidecars. Built-in Files follows the first-party lifecycle: disable retains
+data, re-enable never replays effects, and quiescent purge leaves references unavailable.
+It is not an uploaded installation, so uninstall refuses `not_installed` without deleting data.
+Unknown native outcomes and failed cleanup remain visible and block destructive receipt cleanup.
 
 ## WS /ws/session — session channel (JSON text frames)
 
@@ -4104,8 +4300,8 @@ incumbent continuity mismatch, or `supersession damped`). A name conflict is dec
 same atomic write that would admit the hello; it sends no welcome, changes neither machine row,
 and leaves an incumbent connection untouched. Version acceptance uses
 `MACHINE_PROTOCOL_COMPAT_VERSIONS`, currently
-`{30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52}`; session/browser joins remain strictly
-current at protocol 52. An unchanged machine
+`{30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52, 53}`; session/browser joins remain strictly
+current at protocol 53. An unchanged machine
 wire may add a version to the set. A strictly additive-optional change may also add it only
 when old frames still parse and absent fields preserve the old semantics. Other changes
 reset the set and require a coordinated hub/transport upgrade. An admission bound applied
@@ -4227,7 +4423,7 @@ machine transport. An owner outside the acceptance set that does not qualify for
 receives no native authority, while machine presence, retained terminal continuity and the
 named drain/maintenance path remain available for the coordinated upgrade.
 
-The independent federation set is `{27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52}`; these session/machine changes leave its
+The independent federation set is `{27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52, 53}`; these session/machine changes leave its
 frames and resource vocabularies unchanged. The earlier per-program and per-job transport
 version gates are retired: every accepted transport understands those frames, while
 authority comes from explicit declarations and live owner proof.
@@ -5302,7 +5498,7 @@ IS the cross-instance reference. `tickets` answers with the subset of the advert
 still live, and the guest drops the rest. Or the host closes: 4401 unauthorized / origin
 mismatch, 4403 revoked, 4409 version, 4002 malformed or first-frame-not-hello or duplicate
 hello, 4008 liveness timeout, 4001 superseded. Version acceptance is
-`INSTANCE_PROTOCOL_COMPAT_VERSIONS` `{27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52}` — its own wire, its own set, the
+`INSTANCE_PROTOCOL_COMPAT_VERSIONS` `{27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52, 53}` — its own wire, its own set, the
 same [Protocol and compatibility](#protocol-and-compatibility) discipline the machine channel follows.
 Governed jobs and streams expand the closed capability and reference vocabularies, so protocol 27
 independently resets instance acceptance; older instances cannot decode that governed wire.

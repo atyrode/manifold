@@ -18,6 +18,7 @@ import { RoomManager } from "../src/room.ts";
 import type { ServerStore } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
 import {
+  closeTestStore,
   FakeClock,
   FakeRuntime,
   hostWithSeatOff,
@@ -138,7 +139,7 @@ describe("core.access ladder", () => {
     // A caller probing for a read that does not exist learns exactly that, and no more: the
     // plugin publishes three doors, and inventing a fourth is not a capability question.
     expect(denial(outcome).rule).toBe("unknown_action");
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("an access seat that is off closes creation and minting but never revocation", async () => {
@@ -172,7 +173,7 @@ describe("core.access ladder", () => {
     // while the plugin that issued it is switched off. `cleanup: true` is what makes it so.
     expect(result(revoked)).toEqual({ revoked: 1 });
     expect(() => fix.auth.authenticate(victim.token)).toThrow();
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("a container-scoped token is refused the workspace door and admitted to the scoped ones", async () => {
@@ -202,7 +203,7 @@ describe("core.access ladder", () => {
     */
     const delegated = result(minted);
     expect(delegated).toMatchObject({ containerId: container, caps: ["scenes:write"] });
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("a scoped minter cannot reach another container, which is the scope obligation", async () => {
@@ -221,7 +222,7 @@ describe("core.access ladder", () => {
     // keeps the door honest then runs in the mechanism, on the real caller. Naming a
     // container you are not scoped to is refused with the wording the route returned.
     expect(denial(outcome)).toEqual({ rule: "refused", message: "cannot widen container scope" });
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("declared caps mirror the routes: root for a bootstrap, tokens:mint for the rest", async () => {
@@ -251,7 +252,7 @@ describe("core.access ladder", () => {
       rule: "forbidden",
       message: "tokens:mint capability required",
     });
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("authority is checked before shape, so a bad request from a bad caller says forbidden", async () => {
@@ -263,7 +264,7 @@ describe("core.access ladder", () => {
     // The rung order is the contract: a caller must not learn a door's argument schema by
     // knocking on one it may not open.
     expect(denial(outcome).rule).toBe("forbidden");
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("a malformed mint is invalid_args, including the either-or the schema refines", async () => {
@@ -285,7 +286,7 @@ describe("core.access ladder", () => {
     expect(denial(noPrincipal).rule).toBe("invalid_args");
     expect(denial(bothPrincipals).rule).toBe("invalid_args");
     expect(denial(noCaps).rule).toBe("invalid_args");
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("the mechanism's refusals arrive as refusals, with their wording intact", async () => {
@@ -323,7 +324,7 @@ describe("core.access ladder", () => {
       rule: "refused",
       message: "cannot revoke another principal",
     });
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("the bootstrap door issues a usable root identity", async () => {
@@ -342,7 +343,7 @@ describe("core.access ladder", () => {
     // The point of the door is a WORKING identity, not a row: the browser's whole boot path
     // is this call followed by authenticating with what it returned.
     expect(fix.auth.holdsRoot(fix.auth.authenticate(token))).toBe(true);
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("root and sponsor cannot casually revoke native service identities", async () => {
@@ -392,7 +393,7 @@ describe("core.access ladder", () => {
       fix.auth.revokeNativeServiceCredential(credential, sponsor.principal.id);
       expect(fix.auth.restoreCredential(credential)).toBeNull();
     } finally {
-      fix.store.close();
+      closeTestStore(fix.store);
     }
   });
 
@@ -412,7 +413,7 @@ describe("core.access ladder", () => {
     // a nil count is the honest answer, never a refusal.
     expect(result(first)).toEqual({ revoked: 2 });
     expect(result(again)).toEqual({ revoked: 0 });
-    fix.store.close();
+    closeTestStore(fix.store);
   });
   test("pause dominates deeper grants and resume restores the same live credential", async () => {
     const fix = await fixture();
@@ -510,7 +511,7 @@ describe("core.access ladder", () => {
       message: "workspace owner access cannot be paused",
     });
     stop();
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("pausing an active Run principal does not settle its work", async () => {
@@ -551,7 +552,7 @@ describe("core.access ladder", () => {
     );
     expect(fix.store.getAgentRun(created.run.id)?.state).toBe("active");
     expect(fix.auth.allows(actor, "containers:read", containerId)).toBe(true);
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("a dispatch that MINTS a secret records no secret", async () => {
@@ -576,7 +577,7 @@ describe("core.access ladder", () => {
     expect(log).toContain("core.access.mint");
     expect(log).not.toContain(token);
     expect(log).not.toContain("logged");
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 });
 
@@ -624,7 +625,7 @@ describe("core.access share ladder", () => {
       share: { ref: containerNode(home), caps: ["containers:read"], origin: GUEST_ORIGIN },
     });
     expect(denial(trespass)).toEqual({ rule: "refused", message: "cannot widen container scope" });
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("minting a share is `tokens:mint`, and it attenuates in the mechanism's words", async () => {
@@ -655,7 +656,7 @@ describe("core.access share ladder", () => {
       rule: "refused",
       message: "cannot mint capability scenes:write",
     });
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("only a container can be shared, and a bad origin is refused rather than normalized", async () => {
@@ -684,7 +685,7 @@ describe("core.access share ladder", () => {
       message: "only a container can be shared",
     });
     expect(denial(pathMounted).rule).toBe("invalid_args");
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("the guest doors are workspace-grade, because a dial is not in any local container", async () => {
@@ -707,7 +708,7 @@ describe("core.access share ladder", () => {
         message: "scoped tokens cannot invoke workspace actions",
       });
     }
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("opening a dial reads containers; accepting one writes them", async () => {
@@ -733,7 +734,7 @@ describe("core.access share ladder", () => {
       message: "containers:write capability required",
     });
     expect(denial(openedByReader).rule).toBe("refused");
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("an access seat that is off stops sharing and dialling, but never revocation", async () => {
@@ -768,7 +769,7 @@ describe("core.access share ladder", () => {
     expect(denial(blocked).rule).toBe("plugin_disabled");
     expect(denial(listed).rule).toBe("plugin_disabled");
     expect(result(revoked)).toEqual({ revoked: 0 });
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("the inventory publishes the share and never its secret", async () => {
@@ -791,7 +792,7 @@ describe("core.access share ladder", () => {
     expect(inventory).toMatchObject({ dials: [] });
     expect(JSON.stringify(inventory)).not.toContain(token);
     expect((Reflect.get(inventory as object, "shares") as unknown[]).length).toBe(1);
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("a dispatch that mints a SHARE secret records no secret", async () => {
@@ -817,7 +818,7 @@ describe("core.access share ladder", () => {
     // rather than assumed: the dispatch is logged by name, and the secret is nowhere in it.
     expect(log).toContain("core.access.mintShare");
     expect(log).not.toContain(token);
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 });
 
@@ -890,7 +891,7 @@ describe("core.access grant ladder", () => {
       rule: "forbidden",
       message: "scoped tokens cannot invoke workspace actions",
     });
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("a node grant widens a LIVE container-scoped credential the token never carried", async () => {
@@ -922,7 +923,7 @@ describe("core.access grant ladder", () => {
       message: "containers:write capability required",
     });
     expect(result(after)).toMatchObject({ container: { id: container, name: "renamed by grant" } });
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("a deny at the container beats an allow at the root: deeper wins", async () => {
@@ -955,7 +956,7 @@ describe("core.access grant ladder", () => {
       rule: "forbidden",
       message: "containers:write capability required",
     });
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("at equal depth and equal specificity, deny beats allow", async () => {
@@ -986,7 +987,7 @@ describe("core.access grant ladder", () => {
       rule: "forbidden",
       message: "containers:write capability required",
     });
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("a named principal's allow beats a class deny at the same node: specificity outranks effect", async () => {
@@ -1020,7 +1021,7 @@ describe("core.access grant ladder", () => {
     expect(result(await rename(fix, reader, container))).toMatchObject({
       container: { id: container },
     });
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("revoking a grant takes effect on the next dispatch, with no reconnect", async () => {
@@ -1060,7 +1061,7 @@ describe("core.access grant ladder", () => {
       rule: "forbidden",
       message: "containers:write capability required",
     });
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("a token's own row is not revocable as a grant, and the owner cannot be denied", async () => {
@@ -1105,7 +1106,7 @@ describe("core.access grant ladder", () => {
       rule: "refused",
       message: "cannot deny the workspace owner",
     });
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("listGrants narrows by node and by principal, and a malformed row never lands", async () => {
@@ -1156,7 +1157,7 @@ describe("core.access grant ladder", () => {
     // Neither closed pair has a default. A row that meant `deny` and got `allow` by omission is
     // the mistake a default makes silently, so the schema makes it impossible.
     expect(denial(noEffect).rule).toBe("invalid_args");
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("grant service administration is issuer-owned beneath the root-only doors", async () => {
@@ -1202,7 +1203,7 @@ describe("core.access grant ladder", () => {
         }),
       ).rule,
     ).toBe("forbidden");
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("revoking a grant outlives an access seat being off; writing and listing do not", async () => {
@@ -1242,7 +1243,7 @@ describe("core.access grant ladder", () => {
     expect(result(revoked)).toEqual({ revoked: 1 });
     // And it was a real revocation, not a bookkeeping one: the caller it widened is refused.
     expect(denial(await rename(fix, reader, container)).rule).toBe("forbidden");
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   /*
@@ -1321,7 +1322,7 @@ describe("core.access grant ladder", () => {
     ).toEqual({ revoked: 1 });
     expect(result(await rootDoor(fix, live))).toBeDefined();
     expect(result(await manageDoor(fix, live))).toEqual({});
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("a local class deny withdraws root from minted owner-principal bearers, never the owner key", async () => {
@@ -1357,7 +1358,7 @@ describe("core.access grant ladder", () => {
     ).toEqual({ revoked: 1 });
     expect(result(await rootDoor(fix, live))).toBeDefined();
     expect(fix.auth.allows(live, "containers:read", container)).toBe(true);
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("only a deny that decides an engine capability within reach withdraws root", async () => {
@@ -1403,7 +1404,7 @@ describe("core.access grant ladder", () => {
     });
     expect(fix.auth.allows(live, "containers:write", container)).toBe(true);
     expect(denial(await rootDoor(fix, live))).toEqual(ROOT_REFUSAL);
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("a node-reach exception at a leaf leaves nothing beneath for the class deny to decide", async () => {
@@ -1431,7 +1432,7 @@ describe("core.access grant ladder", () => {
     // contest the class deny can enter: nothing is attenuated and root stays.
     expect(fix.auth.effectiveCaps(live, element).has("containers:write")).toBe(true);
     expect(result(await rootDoor(fix, live))).toBeDefined();
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("a withdrawn wildcard delegates nothing, not even concrete caps it also carries", async () => {
@@ -1475,7 +1476,7 @@ describe("core.access grant ladder", () => {
     // A non-wildcard minter, which never held root, keeps its literal-subset delegation.
     expect(result(await mint(ordinary))).toMatchObject({ caps: ["containers:write"] });
     expect(result(await share(ordinary))).toMatchObject({ share: { caps: ["containers:write"] } });
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 });
 
@@ -1520,7 +1521,7 @@ describe("core.access shares are grant rows", () => {
     // the mint answer alone, and a grant has no field one fits in.
     const token = Reflect.get(minted as object, "token");
     expect(JSON.stringify(listed)).not.toContain(token as string);
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("revoking a share deletes its grant row, and the share stays auditable", async () => {
@@ -1553,7 +1554,7 @@ describe("core.access shares are grant rows", () => {
     */
     expect(listed.grants.some((grant) => grant.principal.kind === "instance")).toBe(false);
     expect(Reflect.get(inventory as object, "shares")).toMatchObject([{ id: shareId }]);
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 });
 
@@ -1598,7 +1599,7 @@ describe("core.access revocation retires a token's grant row", () => {
     expect(fix.store.listTokensByPrincipal(principalId)).toMatchObject([
       { caps: ["containers:read", "scenes:write"], grantId: null },
     ]);
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("a principal with two tokens keeps the survivor's row until the second dies", async () => {
@@ -1640,7 +1641,7 @@ describe("core.access revocation retires a token's grant row", () => {
     expect(stillHeld).toBe(principalId);
     expect(result(second)).toEqual({ revoked: 1 });
     expect(none).toEqual([]);
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("a share's tickets lose their rows with the share, and the share row stays", async () => {
@@ -1681,6 +1682,6 @@ describe("core.access revocation retires a token's grant row", () => {
     expect(after).toEqual([]);
     expect(() => fix.auth.authenticate(ticket.token)).toThrow(ServiceError);
     expect(fix.store.getShare(minted.share.id)?.revokedAt).not.toBeNull();
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 });

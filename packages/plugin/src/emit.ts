@@ -44,12 +44,10 @@ export type EmitEvent = (ref: ManifoldRef, kind: EventKind, payload?: EventPaylo
  *   each plugin, and emitting a word absent from its own manifest would publish under a
  *   vocabulary it does not own, which makes the roster's declaration a lie.
  *
- *   A PLUGIN NODE IS ITS OWNER'S. Collection-level facts (a container born, a machine
- *   enrolled) have no node of their own, so they ride the declaring plugin's node — which makes
- *   `manifold://plugin/<id>` the one address form where the topic itself names a party, and the
- *   one that must therefore be checked against the emitter. Every other form addresses a node
- *   nobody owns exclusively: a container event is legitimately emitted by whichever door
- *   committed the change.
+ *   AN OWNED NODE IS ITS OWNER'S. Collection-level facts ride the declaring plugin's own
+ *   node. File topics belong to the plugin that declared their reference kind, not every
+ *   plugin with a declared event vocabulary. Other forms may describe a shared node: a
+ *   container event is legitimately emitted by whichever door committed the change.
  */
 export function emissionRefusal(
   assembly: Assembly,
@@ -62,6 +60,9 @@ export function emissionRefusal(
   }
   if (ref.kind === "plugin" && ref.pluginId !== pluginId) {
     return `plugin "${pluginId}" emitted "${kind}" on ${formatManifoldUri(ref)}, which is another plugin's node`;
+  }
+  if (ref.kind === "file" && assembly.referenceKinds.get(ref.kind)?.plugin !== pluginId) {
+    return `plugin "${pluginId}" emitted "${kind}" on a reference kind it does not own`;
   }
   return null;
 }

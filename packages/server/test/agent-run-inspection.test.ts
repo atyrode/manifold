@@ -12,7 +12,14 @@ import { silentLogger } from "../src/log.ts";
 import { RoomManager } from "../src/room.ts";
 import { sha256Hex } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
-import { FakeClock, FakeRuntime, testPluginHost, testStore, testTileTrees } from "./helpers.ts";
+import {
+  closeTestStore,
+  FakeClock,
+  FakeRuntime,
+  testPluginHost,
+  testStore,
+  testTileTrees,
+} from "./helpers.ts";
 import { createExternalRun } from "./agent-fixtures.ts";
 
 async function fixture() {
@@ -182,7 +189,7 @@ describe("agent run inspection", () => {
         .run(otherSponsor.principal.id, child.created.run.id);
       expect(denied(await inspect(parent.actor, child.created.run.id))).toEqual(invisible);
     } finally {
-      f.store.close();
+      closeTestStore(f.store);
     }
   });
 
@@ -238,7 +245,7 @@ describe("agent run inspection", () => {
         expiring.actor.principal.id,
       );
     } finally {
-      f.store.close();
+      closeTestStore(f.store);
     }
   });
 
@@ -262,7 +269,7 @@ describe("agent run inspection", () => {
       expect(self.runs.map((entry) => entry.id)).toEqual([own.created.run.id]);
       expect(self.truncated).toBe(false);
     } finally {
-      f.store.close();
+      closeTestStore(f.store);
     }
   });
 
@@ -496,7 +503,7 @@ describe("agent run inspection", () => {
       expect(JSON.stringify(redacted)).not.toContain("dXNlcjpwYXNzd29yZA==");
       expect(JSON.stringify(redacted)).not.toContain("short-secret");
     } finally {
-      f.store.close();
+      closeTestStore(f.store);
     }
   });
 
@@ -564,7 +571,7 @@ describe("agent run inspection", () => {
       );
       expect(agents.agents.map((agent) => agent.principalId)).not.toContain(legacy.id);
     } finally {
-      f.store.close();
+      closeTestStore(f.store);
     }
   });
 });

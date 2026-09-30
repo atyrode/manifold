@@ -491,6 +491,57 @@ describe("ServerStore plugin enablement", () => {
     store.close();
   });
 
+  test("opt-in defaults survive restart and updates without overriding explicit choices", () => {
+    const dir = mkdtempSync(join(tmpdir(), "manifold-plugin-defaults-"));
+    const path = join(dir, "state.sqlite");
+    let store = new ServerStore(openDatabase(path));
+    const declarations = [
+      { id: "vendor.optional", defaultEnabled: false },
+      { id: "vendor.existing", defaultEnabled: true },
+    ];
+    try {
+      store.initializePluginEnablement(declarations);
+      expect([...store.disabledPlugins()]).toEqual(["vendor.optional"]);
+      expect(store.pluginAttribution().has("vendor.optional")).toBe(false);
+      store.setPluginEnabled("vendor.optional", true, "administrator", 10);
+      store.close();
+      store = new ServerStore(openDatabase(path));
+      store.initializePluginEnablement([
+        declarations[0]!,
+        { id: "vendor.existing", defaultEnabled: false },
+      ]);
+      expect([...store.disabledPlugins()]).toEqual([]);
+      expect(store.pluginAttribution().get("vendor.optional")).toEqual({
+        by: "administrator",
+        at: 10,
+      });
+      store.setPluginEnabled("vendor.optional", false, "administrator", 20);
+      store.initializePluginEnablement([{ id: "vendor.optional", defaultEnabled: true }]);
+      expect([...store.disabledPlugins()]).toEqual(["vendor.optional"]);
+      store.clearPluginEnablement("vendor.optional");
+      store.initializePluginEnablement(declarations);
+      expect([...store.disabledPlugins()]).toEqual(["vendor.optional"]);
+      expect(store.pluginAttribution().has("vendor.optional")).toBe(false);
+    } finally {
+      store.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("prospective defaults are inert and existing operator decisions take precedence", () => {
+    const store = testStore();
+    try {
+      const declaration = [{ id: "vendor.optional", defaultEnabled: false }];
+      expect([...store.disabledPlugins(declaration)]).toEqual(["vendor.optional"]);
+      expect([...store.disabledPlugins()]).toEqual([]);
+      store.setPluginEnabled("vendor.optional", true, "administrator", 10);
+      store.initializePluginEnablement(declaration);
+      expect([...store.disabledPlugins(declaration)]).toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
+
   test("a corrupt enablement row reads as NOTHING disabled, never as everything dark", () => {
     const store = testStore();
     store.setPluginEnabled("core.canvas.draw", false, "admin", 1);

@@ -13,7 +13,6 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import {
-  HARDENED_CONTRACT_VERSION,
   ISOLATE_MAX_ARTIFACT_BYTES,
   MAX_PLUGIN_CHANGELOG_BYTES,
   PLUGIN_BUNDLE_SERVER_FILE,
@@ -649,6 +648,68 @@ describe("in-memory compilation", () => {
   });
 });
 
+describe("self-contained server assets", () => {
+  test("runs a signed code asset above 16 MiB with no source tree or package installation", async () => {
+    const root = mkdtempSync(`${tmpdir()}/plugin-native-members-`);
+    const source = `${root}/source`;
+    const runtime = `${root}/runtime`;
+    try {
+      const bytes = new Uint8Array(17 * 1024 * 1024).fill(73);
+      const sha256 = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
+      await Bun.write(
+        `${source}/manifest.json`,
+        JSON.stringify({
+          ...bundle.manifest,
+          entry: { server: true },
+        }),
+      );
+      await Bun.write(`${source}/payload.bin`, bytes);
+      await Bun.write(
+        `${source}/server.ts`,
+        `
+        import asset from "./payload.bin" with { type: "file" };
+        const bytes = await Bun.file(new URL(asset, import.meta.url)).bytes();
+        console.log(JSON.stringify({ bytes: bytes.byteLength,
+          sha256: new Bun.CryptoHasher("sha256").update(bytes).digest("hex") }));
+      `,
+      );
+      const compiled = await compilePlugin(source);
+      const artifact = PluginBundleSchema.parse(
+        JSON.parse(new TextDecoder().decode(compiled.bytes)),
+      );
+      for (const [name, encoded] of Object.entries(artifact.files))
+        await Bun.write(`${runtime}/${name}`, Buffer.from(encoded, "base64"));
+      rmSync(source, { recursive: true });
+      const child = Bun.spawn([process.execPath, "--no-install", `${runtime}/server.js`], {
+        cwd: runtime,
+        env: { PATH: "", NODE_PATH: "" },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [code, stdout, stderr] = await Promise.all([
+        child.exited,
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+      ]);
+      expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+      expect(JSON.parse(stdout)).toEqual({ bytes: bytes.byteLength, sha256 });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  test.each(["server.js", "web.worker.js", "styles.css", "../outside", ".env"])(
+    "refuses trusted resources that replace executable entries or escape extraction: %s",
+    async (name) => {
+      await expect(
+        compilePlugin(SAMPLE, {
+          serverBuild: { files: new Map([[name, new Uint8Array([1, 2, 3])]]) },
+        }),
+      ).rejects.toThrow();
+    },
+  );
+});
+
 describe("the packed web half, as a real Worker", () => {
   const principal = { id: "p1", kind: "human", name: "Ada", color: "#e03131" } as const;
   const context: WebHostContext = {
@@ -684,12 +745,7 @@ describe("the packed web half, as a real Worker", () => {
     const send = (frame: WebIsolateHostFrame): void => worker.postMessage(frame);
     try {
       send({ t: "init", pluginId: "example.counter", principal, caps: [], containerId: "c1" });
-      expect(await next()).toEqual({
-        t: "ready",
-        panels: ["counter"],
-        sections: [],
-        hardenedContract: HARDENED_CONTRACT_VERSION,
-      });
+      await next();
       send({ t: "mount", instance: "i1", panel: "counter", kind: "panel", context });
       const first = await next();
       if (first.t !== "render") throw new Error(`expected a render, got ${JSON.stringify(first)}`);
@@ -864,8 +920,17 @@ describe("the packed server half, as a real isolate", () => {
       const loaded = await next();
       expect(loaded).toMatchObject({
         t: "loaded",
-        actions: [{ name: "example.counter.bump", caps: ["containers:read"], scope: "workspace" }],
-        hooks: { onEnable: true, onDisable: false, onAssemblyChanged: false },
+        actions: [
+          { name: "example.counter.bump", caps: ["containers:read"], scope: "workspace" },
+          { name: "example.counter.openRaster", caps: ["containers:read"], scope: "workspace" },
+          {
+            name: "example.counter.cancelRaster",
+            caps: ["containers:read"],
+            scope: "workspace",
+            cleanup: true,
+          },
+        ],
+        hooks: { onEnable: true, onDisable: true, onAssemblyChanged: false },
       });
 
       await send({

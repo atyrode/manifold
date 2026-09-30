@@ -1013,12 +1013,26 @@ try {
   await sleep(400);
   const grab = await pointIn(
     browser,
-    `.react-flow__node[data-id="${mover.id}"] .terminal-titlebar`,
-    0.25,
+    `.react-flow__node[data-id="${mover.id}"] .terminal-titlebar .node-titlebar__title`,
+    0.5,
     0.5,
   );
   const anchorRect = await nodeRect(browser, anchor.id);
   if (grab === null || anchorRect === null) throw new Error("compose nodes are not rendered");
+  // Controls can wrap onto another titlebar row. A fraction of the whole header can
+  // land on the sizing button instead of drag chrome; hit-test the actual title.
+  const grabbingTitle = await browser.evaluate<boolean>(
+    `(() => {
+      const hit = document.elementFromPoint(${String(grab.x)}, ${String(grab.y)});
+      const bar = document.querySelector('.react-flow__node[data-id="${mover.id}"] .terminal-titlebar');
+      return hit instanceof HTMLElement && bar !== null && bar.contains(hit) &&
+        hit.closest('.node-titlebar__title') !== null &&
+        hit.closest('button, input, textarea, select, a, [contenteditable="true"]') === null &&
+        bar.hasAttribute('data-titlebar-draggable');
+    })()`,
+  );
+  if (!grabbingTitle)
+    throw new Error("compose gesture cannot reach its terminal title drag handle");
   // The right-hand snap band: the released zone becomes the split edge.
   const zone = {
     x: anchorRect.left + anchorRect.width * 0.85,

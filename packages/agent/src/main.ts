@@ -15,6 +15,7 @@ import { TerminalHost } from "./terminal-host.ts";
 import { listenJobOwner, unixJobOwnerDialer } from "./job-owner-link.ts";
 import { openConfiguredJobOwner } from "./job-runtime.ts";
 import { OOM_KILL_SAMPLE_INTERVAL_MS, OomKillWatch, cgroupOomKillCounter } from "./oom-kills.ts";
+import { runNativeTransferSnapshotHelper } from "./native-transfer-snapshot.ts";
 
 /**
  * One binary, three separately supervised lifetimes.
@@ -170,6 +171,15 @@ function transportMain(): void {
 
 function main(): void {
   const args = process.argv.slice(2);
+  if (
+    args.some(
+      (arg) =>
+        arg === "--native-transfer-snapshot" || arg.startsWith("--native-transfer-snapshot="),
+    )
+  ) {
+    if (args.length !== 2 || args[0] !== "--native-transfer-snapshot") process.exit(4);
+    runNativeTransferSnapshotHelper(args[1]);
+  }
   if (args.some((arg) => arg === "--maintenance" || arg.startsWith("--maintenance="))) {
     // Route malformed maintenance invocations here too: never enter a supervised mode
     // or expose an argument through its ordinary parser's error message.

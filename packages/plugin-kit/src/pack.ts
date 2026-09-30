@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { BuildOutput, BunPlugin } from "bun";
+import type { BuildArtifact, BuildOutput, BunPlugin } from "bun";
 import { open, realpath } from "node:fs/promises";
 import { constants } from "node:fs";
 import { verifyBundledArtifacts } from "./artifacts.ts";
@@ -16,6 +16,7 @@ import {
   PROTOCOL_VERSION,
   PluginBundleSchema,
   PluginManifestSchema,
+  PluginBundleFileSchema,
   machineArtifacts,
   type PluginBundle,
   type PluginManifest,
@@ -39,6 +40,14 @@ export interface PackOptions {
 }
 
 export interface CompileOptions extends PackOptions {
+  /** Trusted build-time adapters and flat resources for a self-contained server half. */
+  readonly serverBuild?:
+    | {
+        readonly plugins?: readonly BunPlugin[];
+        readonly external?: readonly string[];
+        readonly files?: ReadonlyMap<string, Uint8Array>;
+      }
+    | undefined;
   /** Replace root manifest imports and supply every declared bundled machine member in memory. */
   readonly generated?: {
     readonly manifest: PluginManifest;
@@ -198,6 +207,8 @@ function portableModules(pluginDir: string, webSource: string): BunPlugin {
           case "@manifold/ui":
           case "@manifold/ui/frames":
             return { path: Bun.resolveSync("@manifold/ui/frames", KIT_SOURCE) };
+          case "@manifold/plugin/action":
+            return { path: fromPlugin("@manifold/plugin/action") };
           case "@manifold/plugin/hooks":
           case "@manifold/plugin/portable-hooks":
             return { path: fromPlugin("@manifold/plugin/portable-hooks") };
@@ -224,7 +235,8 @@ async function build(
   target: "bun" | "browser",
   plugins: BunPlugin[],
   onlyEntry = false,
-): Promise<string> {
+  external: string[] = [],
+): Promise<readonly BuildArtifact[]> {
   let result: BuildOutput;
   try {
     result = await Bun.build({
@@ -235,6 +247,7 @@ async function build(
       // hash is a security pin, so remove those comments in the build rather than rewriting output.
       minify: { whitespace: true },
       plugins,
+      external,
       /*
         A bundle is a PRODUCTION artifact whatever the packing process's NODE_ENV: the shell it
         runs in is a production React whose shared `react/jsx-dev-runtime` exports `jsxDEV` as
@@ -260,12 +273,16 @@ async function build(
     const detail = result.logs.map((log) => log.message).join("; ");
     throw new Error(`bundling ${entrypoint} failed: ${detail === "" ? "no output" : detail}`);
   }
-  const [artifact] = result.outputs;
-  if (artifact === undefined) throw new Error(`bundling ${entrypoint} produced no artifact`);
-  if (onlyEntry && (result.outputs.length !== 1 || artifact.kind !== "entry-point")) {
-    throw new Error(`bundling ${entrypoint} produced assets a portable Worker cannot carry`);
+  const entries = result.outputs.filter((artifact) => artifact.kind === "entry-point");
+  if (entries.length !== 1) throw new Error(`bundling ${entrypoint} must produce one entry`);
+  if (onlyEntry && result.outputs.length !== 1) {
+    throw new Error(`bundling ${entrypoint} produced assets a browser entry cannot carry`);
   }
-  return artifact.text();
+  if (
+    result.outputs.some((artifact) => artifact.kind !== "entry-point" && artifact.kind !== "asset")
+  )
+    throw new Error(`bundling ${entrypoint} produced an unsupported output`);
+  return result.outputs;
 }
 
 /**
@@ -329,6 +346,22 @@ export async function compilePlugin(
   // Own caller input before the first await; neither manifest edits nor byte/map mutations
   // during compilation may change the identity being compiled and verified.
   const shared = options.shared;
+  const serverBuild = options.serverBuild;
+  const serverPlugins = [...(serverBuild?.plugins ?? [])];
+  const serverExternal = [...(serverBuild?.external ?? [])];
+  const serverFiles = new Map<string, string>();
+  let serverResourceBytes = 0;
+  for (const [name, bytes] of serverBuild?.files ?? []) {
+    PluginBundleFileSchema.parse(name);
+    if (!(bytes instanceof Uint8Array)) throw new Error(`invalid server resource: ${name}`);
+    serverResourceBytes += 4 * Math.ceil(bytes.byteLength / 3);
+    if (serverResourceBytes > ISOLATE_MAX_ARTIFACT_BYTES)
+      throw new Error("server resources exceed the artifact byte budget");
+    serverFiles.set(
+      name,
+      Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64"),
+    );
+  }
   const generated = options.generated;
   const generatedManifest =
     generated === undefined ? undefined : PluginManifestSchema.parse(generated.manifest);
@@ -392,6 +425,8 @@ export async function compilePlugin(
   if (manifest.entry.web === PLUGIN_BUNDLE_CHANGELOG_FILE) {
     throw new Error(`${where}: entry.web may not claim ${PLUGIN_BUNDLE_CHANGELOG_FILE}`);
   }
+  if (serverBuild !== undefined && manifest.entry.server !== true)
+    throw new Error(`${where}: server build resources require a server half`);
   if (registered !== undefined) {
     if ((manifest.entry.server === true) !== (registered.server !== undefined)) {
       throw new Error(`${where}: a server source is required exactly when entry.server is true`);
@@ -471,6 +506,36 @@ export async function compilePlugin(
       await file.close();
     }
   }
+  const entryNames = new Set([
+    PLUGIN_BUNDLE_SERVER_FILE,
+    manifest.entry.web,
+    PLUGIN_BUNDLE_WEB_WORKER_FILE,
+    PLUGIN_BUNDLE_STYLES_FILE,
+    PLUGIN_BUNDLE_CHANGELOG_FILE,
+  ]);
+  const addResource = (name: string, encoded: string): void => {
+    PluginBundleFileSchema.parse(name);
+    if (entryNames.has(name) || Object.hasOwn(files, name))
+      throw new Error(`server resource collides with another bundle member: ${name}`);
+    files[name] = encoded;
+  };
+  for (const [name, encoded] of serverFiles) addResource(name, encoded);
+  const addBuild = async (entry: string, outputs: readonly BuildArtifact[]): Promise<void> => {
+    const encodedBytes =
+      Object.values(files).reduce((total, data) => total + data.length, 0) +
+      outputs.reduce((total, artifact) => total + 4 * Math.ceil(artifact.size / 3), 0);
+    if (encodedBytes > ISOLATE_MAX_ARTIFACT_BYTES)
+      throw new Error("compiled members exceed the artifact byte budget");
+    for (const artifact of outputs) {
+      const encoded = Buffer.from(await artifact.arrayBuffer()).toString("base64");
+      if (artifact.kind === "entry-point") {
+        if (Object.hasOwn(files, entry)) throw new Error(`duplicate bundle entry: ${entry}`);
+        files[entry] = encoded;
+      } else {
+        addResource(basename(artifact.path), encoded);
+      }
+    }
+  };
   const manifestPlugins: BunPlugin[] = [];
   if (generatedManifest !== undefined) {
     const rootManifest = await realpath(manifestFile);
@@ -503,16 +568,17 @@ export async function compilePlugin(
       registered?.server === undefined
         ? `${pluginDir}/server.ts`
         : resolve(pluginDir, registered.server);
-    const server = await build(entry, "bun", manifestPlugins);
-    files[PLUGIN_BUNDLE_SERVER_FILE] = Buffer.from(server, "utf8").toString("base64");
+    await addBuild(
+      PLUGIN_BUNDLE_SERVER_FILE,
+      await build(entry, "bun", [...manifestPlugins, ...serverPlugins], false, serverExternal),
+    );
   }
   if (manifest.entry.web !== undefined) {
     const entry =
       registered?.web === undefined
         ? await webEntry(pluginDir)
         : resolve(pluginDir, registered.web);
-    const page = await build(entry, "browser", plugins);
-    files[manifest.entry.web] = Buffer.from(page, "utf8").toString("base64");
+    await addBuild(manifest.entry.web, await build(entry, "browser", plugins, true));
     if (manifest.entry.worker === true) {
       const worker = await build(
         WORKER_ENTRY,
@@ -520,7 +586,7 @@ export async function compilePlugin(
         [...manifestPlugins, portableModules(pluginDir, entry)],
         true,
       );
-      files[PLUGIN_BUNDLE_WEB_WORKER_FILE] = Buffer.from(worker, "utf8").toString("base64");
+      await addBuild(PLUGIN_BUNDLE_WEB_WORKER_FILE, worker);
     }
   }
   const bundle: PluginBundle = PluginBundleSchema.parse({

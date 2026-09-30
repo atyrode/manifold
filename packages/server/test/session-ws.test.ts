@@ -19,6 +19,7 @@ import { SessionGateway } from "../src/session-ws.ts";
 import type { ServerStore } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
 import {
+  closeTestStore,
   FakeClock,
   FakeRuntime,
   FakeSocket,
@@ -232,7 +233,7 @@ describe("SessionGateway high-rate request cadence", () => {
     send(fixture.gateway, "peer", CH, { type: "resync_request" });
     expect(socket.messages().filter((message) => message.type === "resync")).toHaveLength(2);
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("a rapid second resync request is served once at the cadence boundary", async () => {
@@ -259,7 +260,7 @@ describe("SessionGateway high-rate request cadence", () => {
     expect(fixture.clock.pendingJobs).toBe(armed);
 
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("rapid cursors coalesce to one trailing frame with the latest coordinates", async () => {
@@ -289,7 +290,7 @@ describe("SessionGateway high-rate request cadence", () => {
     expect(cursors.map((message) => [message.x, message.y])).toEqual([[4, 4]]);
     expect(fixture.clock.pendingJobs).toBe(armed);
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("closing a connection cancels its pending cursor flush", async () => {
@@ -311,7 +312,7 @@ describe("SessionGateway high-rate request cadence", () => {
     fixture.clock.advance(30);
     expect(second.messages().filter((message) => message.type === "cursor")).toEqual([]);
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 });
 
@@ -360,7 +361,7 @@ describe("SessionGateway connection identity", () => {
       y: 2,
     });
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("same-principal sockets keep distinct correlation through refusal and closure", async () => {
@@ -425,7 +426,7 @@ describe("SessionGateway connection identity", () => {
     expect(healthy.messages().some((message) => message.type === "resync")).toBe(true);
     expect(healthy.closed).toBeNull();
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 });
 
@@ -456,7 +457,7 @@ describe("SessionGateway channel multiplexing", () => {
     expect(routed).toEqual(["a", "a", "b", "b"]);
 
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("presence and attendance stay per channel: one socket, two memberships", async () => {
@@ -482,7 +483,7 @@ describe("SessionGateway channel multiplexing", () => {
     expect(witnessB.messages()).toEqual([]);
 
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("role is per channel: one socket occupies one room and only watches another", async () => {
@@ -515,7 +516,7 @@ describe("SessionGateway channel multiplexing", () => {
     });
 
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("one channel leaving never disturbs the other, and an empty socket must rejoin", async () => {
@@ -554,7 +555,7 @@ describe("SessionGateway channel multiplexing", () => {
     expect(socket.closed).toEqual({ code: 4002, reason: "handshake timeout" });
 
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("a roomless observer authenticates once and keeps connection state live", async () => {
@@ -584,7 +585,7 @@ describe("SessionGateway channel multiplexing", () => {
     expect(socket.closed).toBeNull();
 
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("the channel cap refuses one channel, never the connection", async () => {
@@ -618,7 +619,7 @@ describe("SessionGateway channel multiplexing", () => {
     expect(socket.frames()).toEqual([expect.objectContaining({ type: "resync", ch: "c0" })]);
 
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("a duplicate channel id is a client bug and closes the socket", async () => {
@@ -635,7 +636,7 @@ describe("SessionGateway channel multiplexing", () => {
     expect(socket.closed).toEqual({ code: 4002, reason: "duplicate join" });
 
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("an unknown container refuses its channel; the socket keeps its other rooms", async () => {
@@ -661,7 +662,7 @@ describe("SessionGateway channel multiplexing", () => {
     expect(socket.frames().at(-1)?.type).toBe("resync");
 
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("a forbidden foreign home refuses only its channel and preserves admitted document traffic", async () => {
@@ -715,7 +716,7 @@ describe("SessionGateway channel multiplexing", () => {
       expect(socket.closed).toBeNull();
     } finally {
       fixture.gateway.shutdown();
-      fixture.store.close();
+      closeTestStore(fixture.store);
     }
   });
 
@@ -734,7 +735,7 @@ describe("SessionGateway channel multiplexing", () => {
     expect(socket.closed).toEqual({ code: 4409, reason: "protocol version mismatch" });
 
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("invalid credentials on a second join still close the whole socket", async () => {
@@ -753,7 +754,7 @@ describe("SessionGateway channel multiplexing", () => {
       expect(socket.closed).toEqual({ code: 4401, reason: "unauthorized" });
     } finally {
       fixture.gateway.shutdown();
-      fixture.store.close();
+      closeTestStore(fixture.store);
     }
   });
 
@@ -776,7 +777,7 @@ describe("SessionGateway channel multiplexing", () => {
     expect(fresh.closed).toEqual({ code: 4002, reason: "first frame must be join or observe" });
 
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 });
 
@@ -796,7 +797,7 @@ describe("SessionGateway liveness", () => {
     }
 
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("durable Agent runs isolate trace and socket identities; generic revocation fences a cross-Agent child", async () => {
@@ -937,7 +938,7 @@ describe("SessionGateway liveness", () => {
       expect(fixture.store.getAgentRun(child.run.id)?.state).toBe("revoked");
     } finally {
       fixture.gateway.shutdown();
-      fixture.store.close();
+      closeTestStore(fixture.store);
     }
   });
 
@@ -975,7 +976,7 @@ describe("SessionGateway liveness", () => {
     expect(socket.closed).toEqual({ code: 4403, reason: "expired" });
 
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("an unanswered ping reaps the socket and the room stops counting it", async () => {
@@ -1018,7 +1019,7 @@ describe("SessionGateway liveness", () => {
     ]);
 
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("the watchdog dies with the connection rather than outliving it", async () => {
@@ -1032,7 +1033,7 @@ describe("SessionGateway liveness", () => {
     expect(fixture.clock.pendingJobs).toBe(0);
 
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 });
 
@@ -1083,7 +1084,7 @@ describe("SessionGateway gesture cadence", () => {
     fixture.clock.advance(30);
     expect(second.messages()).toHaveLength(1);
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("a trailing active gesture sends only the newest coordinates", async () => {
@@ -1122,7 +1123,7 @@ describe("SessionGateway gesture cadence", () => {
       expect.objectContaining({ type: "gesture", width: 40, height: 40 }),
     ]);
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   /*
@@ -1207,7 +1208,7 @@ describe("SessionGateway gesture cadence", () => {
     ]);
 
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("unrelated gestures stay home without erasing carry source and aim end recipients", async () => {
@@ -1263,7 +1264,7 @@ describe("SessionGateway gesture cadence", () => {
       ]);
     }
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("ending one simultaneous carry preserves the other carry's foreign recipients", async () => {
@@ -1318,7 +1319,7 @@ describe("SessionGateway gesture cadence", () => {
       expect.objectContaining({ kind: "carry", phase: "end", elementId: "second", aimOnly: true }),
     ]);
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("source and aim sharing one room receive each carry frame only once", async () => {
@@ -1341,7 +1342,7 @@ describe("SessionGateway gesture cadence", () => {
     ]);
 
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("a forged source receives neither active nor end without read authority", async () => {
@@ -1366,7 +1367,7 @@ describe("SessionGateway gesture cadence", () => {
     expect(watcher.messages()).toEqual([]);
 
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("a carry aimed at another container reaches that container's own room", async () => {
@@ -1404,7 +1405,7 @@ describe("SessionGateway gesture cadence", () => {
     ]);
 
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("an aim moving to a third container retracts from the one it left", async () => {
@@ -1433,7 +1434,7 @@ describe("SessionGateway gesture cadence", () => {
     ]);
 
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("read authority on the aimed container is the bar, so a forged aim reaches nobody", async () => {
@@ -1462,7 +1463,7 @@ describe("SessionGateway gesture cadence", () => {
     expect(watcher.messages()).toEqual([]);
 
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 });
 
@@ -1499,7 +1500,7 @@ describe("SessionGateway spectator sockets", () => {
     ]);
 
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 
   test("every write a watching socket attempts is refused while its reads are served", async () => {
@@ -1556,7 +1557,7 @@ describe("SessionGateway spectator sockets", () => {
     expect(watcherSocket.closed).toBeNull();
 
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 });
 
@@ -1653,7 +1654,7 @@ describe("SessionGateway scene writes", () => {
       expect(socket.closed).toBeNull();
     } finally {
       fixture.gateway.shutdown();
-      fixture.store.close();
+      closeTestStore(fixture.store);
     }
   });
 
@@ -1720,6 +1721,6 @@ describe("SessionGateway scene writes", () => {
     ]);
 
     fixture.gateway.shutdown();
-    fixture.store.close();
+    closeTestStore(fixture.store);
   });
 });

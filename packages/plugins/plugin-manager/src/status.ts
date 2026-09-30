@@ -3,10 +3,12 @@ import {
   CORE_NAMESPACE_PREFIX,
   GOVERNED_CAPS,
   PLUGIN_INSTALL_REFUSALS,
+  formatManifoldUri,
   hasCap,
   isEngineCap,
   type AuthoredCap,
   type Cap,
+  type MachineHalf,
   type PluginDependency,
   type PluginDependencyMap,
   type PluginInstallRefusal,
@@ -328,10 +330,36 @@ export const CAP_MEANINGS: Readonly<Record<Cap, string>> = {
   "locations:read": "Read an explicitly admitted location",
   "locations:write": "Write an explicitly admitted location",
   "locations:create": "Create entries in an explicitly admitted location",
+  "locations:create-child":
+    "Exclusively create a regular-file child in an explicitly admitted managed root; never overwrite, suffix, delete or write arbitrary directory contents",
   "operations:invoke": "Invoke an explicitly admitted operation",
   "network:host": "Use explicitly admitted host networking",
   "plugins:manage": "Turn plugins on and off for everyone",
 };
+
+export function highRiskRuntimeRight(cap: Cap): boolean {
+  return (
+    cap === "network:host" ||
+    cap === "locations:write" ||
+    cap === "locations:create" ||
+    cap === "locations:create-child"
+  );
+}
+
+/** Exact declared location rights, not every location and never an implied read grant. */
+export function machineLocationRights(machineId: string, machine: MachineHalf) {
+  const rights = new Map<string, { node: string; cap: Cap; label: string }>();
+  const add = (locationId: string, access: "read" | "write" | "create" | "create-child") => {
+    const node = formatManifoldUri({ kind: "location", machineId, locationId });
+    const cap = `locations:${access}` as const;
+    rights.set(`${node}:${cap}`, { node, cap, label: `${access} ${locationId}` });
+  };
+  for (const operation of Object.values(machine.operations))
+    for (const location of operation.locations) add(location.locationId, location.access);
+  for (const [locationId, access] of Object.entries(machine.transferPolicy?.locations ?? {}))
+    for (const right of access) add(locationId, right);
+  return [...rights.values()];
+}
 
 /**
  * What a PLUGIN'S OWN capability lets a holder do, in the only words the engine honestly has

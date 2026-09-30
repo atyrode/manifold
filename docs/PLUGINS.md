@@ -181,18 +181,21 @@ A part is a DIRECTORY inside its parent's package, never a package of its own:
 npm allows one slash in a package name, so `@manifold-plugin/canvas/draw` can only ever be a
 subpath; the workspace glob does not change and no hyphenated package appears. The parent's
 `tsconfig.json#include` widens to the part's source and test directories; the child has no
-`tsconfig.json` and no separate typecheck entry in `scripts/gate.ts`. The part's third-party dependencies
-— which a plugin may not have beyond the four floor packages anyway — would live in the parent's
-`package.json`, which is a signal you may be a peer. Registration is unchanged: a part is its own
+`tsconfig.json` and no separate typecheck entry in `scripts/gate.ts`. Reviewed, bundled third-party
+dependencies live in the parent's `package.json`; they do not create a cross-plugin runtime
+import or relax the dependency-decision requirement. Registration is unchanged: a part is its own
 plugin def in both `assembly.ts` files, reached through the parent's subpath.
 
 Imports follow the tree, and nothing else. A part imports, of its parent, ONLY the `contract`
 subpath — never `./web`, never `./server`, never a path into its `src/` — so it can share the
 parent's vocabulary without reaching its runtime state or components. The parent NEVER imports a
 part: that is what makes "canvas without draw" literally true. Parts never import each other and
-peers never import each other — doors only, as today. The `contract` module itself imports only the
-four floor packages and names no React or DOM type, so it cannot smuggle runtime either way. The
-gate check for this is S18 (`REGISTRY.md` §Gates).
+peers never import each other — doors and owner-mounted projections only. The `contract` module
+imports only the platform-free floor entries and the existing `zod` schema DSL, and names no
+React or DOM type. Shared DTO schemas stay with their owner rather than being duplicated by a
+child or lifted into protocol as plugin policy. This narrow schema allowance changes neither
+runtime-state ownership nor the prohibition on importing a sibling's implementation.
+The gate check for this is S18 (`REGISTRY.md` §Gates; ADR 0057).
 Out-of-tree plugins (§9) are untouched at runtime — their bundles import no in-tree
 code — and the same directory convention applies in their own repositories.
 
@@ -1166,7 +1169,8 @@ other's, and the engine never reads your tables for any purpose but purge and co
 Hardened calls encode `bigint` and `Uint8Array` values into bounded JSON-safe database wire
 values and decode them on the other side; the public SQL value contract is the same in-realm
 and isolated. Non-finite numeric parameters or results are refused rather than changing to
-JSON `null`.
+JSON `null`. Normalize an integer to a JSON `number` only after checking that it is a safe
+integer; do not use a typed query result to pretend SQLite returned a number.
 
 **Your tables are made by a migration, or lazily by your own code.** `PluginMigration.migrate`
 takes the database as its second parameter, using the candidate manifest's declaration and byte cap:
@@ -1197,10 +1201,115 @@ deletes `data.db` with its `-wal` and `-shm`, and its record says how many bytes
 `<data>/` includes `plugins/`; your tables are **not** in `manifold.db`, and nothing should assume
 they are.
 
-It is not a document plane (§5 is still where large blobs and collaborative text belong), not a
-shared database (no plugin reads another's rows — cross-plugin data travels through actions and
-events), not a query API over the engine's own tables, and not a replacement for `ctx.storage`: a
-preference is still a key. The reasoning is `docs/decisions/0034-plugin-database.md`.
+It is not a document plane (§5 owns collaborative text and arrangement), not a shared database
+(no plugin reads another's rows), not a query API over the engine's own tables, and not a
+replacement for `ctx.storage`: a preference is still a key. Immutable private bytes require the
+explicit bounded profile and authenticated carrier below, rather than treating arbitrary BLOB
+support as an unlimited file store. The original table reasoning is
+`docs/decisions/0034-plugin-database.md`.
+
+### Bounded byte owners and publication
+
+A plugin retaining immutable binary content declares
+`database: { maxBytes, recovery: { profile: "bounded-wal-v1" } }`. The profile admits at most
+64 MiB per image and accounts for the image, bounded WAL family, migration stages, and full-state
+recovery scratch before growth. The ordinary database size limit is not a filesystem quota;
+capacity, busy, and recovery refusals remain visible. Replication of `manifold.db` alone does not
+back up this content.
+Capacity admission supports the listed local Linux filesystem families (ext, XFS, Btrfs,
+overlayfs and tmpfs) and Darwin's locally registered APFS/HFS families. Darwin filesystem numbers
+are resolved by name through the OS, not assumed to be fixed magic values. Other filesystems,
+unsupported allocation granules, insufficient bytes/inodes and unavailable recovery still
+refuse; macOS hub storage support does not authorize unsupported native machine effects.
+
+Declare incoming/outgoing `contributes.byteCarriers` with a local ID, capability, and accepted
+reference kinds. The SDK's `writeByteChunk` and `readByteChunk` use authenticated, bounded binary
+HTTP requests, not actions containing base64, signed URLs, or bearer-like transfer IDs. Every
+request rechecks current caller and owner authority. An incoming acknowledgement's `sequence`
+is the **submitted request sequence**, not the next sequence to send; `offset` is the durable
+acknowledged frontier and `acceptedBytes` is that request's accepted length. A receiver may keep
+its next expected sequence separately. Losing an acknowledgement is not proof of failure or
+permission to start a different transfer.
+
+For plugin-owned references, `ctx.references.prepare` allocates an identity without publishing
+it. The owner commits its private ready record before `ctx.references.publish` atomically
+publishes the identity and creator grants. The private `probeReady` callback receives
+`{ref, preparationId, requestId, bindingDigest, publication}`; `publication` is the host's
+`prepared` or `published` phase. It returns `null`, or
+`{preparationId, readyDigest: string | null, expiresAt}`. A null digest denotes a known preparation
+that is not ready. `expiresAt` bounds only an unfinished preparation, never an already published
+file. Host-confirmed publication can release the owner's pending-transfer reservation after a
+lost reply without recreating grants or needing a surviving creator credential. Already-expired
+owner preparations are retired before admitting replacements. A deadline that passes only
+during a probe does not prove that subsequent accepted progress failed to refresh it.
+The host commits a durable pending acknowledgement with publication, awaits the published-phase
+probe, then rechecks the caller before replying. Failed acknowledgements do not undo publication.
+Bounded rotating maintenance retries pending records without borrowing the original credential.
+`probeReadyWhenIdle` supplies the same data-only proof only when the owner's existing effect fence
+is idle; the hardened proxy implements this admission check. Busy or transiently unavailable owners
+remain pending, while missing or mismatched committed data is quarantined. A successful probe
+retires only the owner's matching private activity; it must not replay publication or restore grants.
+
+These callbacks have only bounded private storage/database access and a clock, not an actor,
+action, or publication capability. `reclaimReferences` consumes exact terminal identity receipts;
+it cannot infer deletion from a transient read refusal. Reconciliation never publishes bytes or
+restores revoked access. Arithmetic and public metadata must preserve the database's lossless
+integer contract in both in-realm and hardened execution.
+
+For contract-12 isolates declaring private data callbacks, independent ordinary requests take
+bounded owner turns. A private callback may re-enter only from the host-owned, still-active
+call for the exact current request and generation. Unrelated work queues with its original
+total deadline; abort, unload and generation retirement remove queued work without replay.
+Idle-only maintenance declines busy owners. This preserves the strict data-only guest fence
+without serializing generic owners or creating another process.
+
+### Governed native byte transfers
+
+`machine.transferPolicy` declares reviewed location rights for the existing native owner
+channel. `ctx.nativeTransfers` provides `describe`, `beginPut`, `putChunk`, `commitPut`,
+`beginRead`, `readChunk`, `cancel`, `status`, `receipt` and `recoverAdmission`. These methods
+retain the original caller, declared rights, current installation/consent and original execution
+deadline; they are not a filesystem browser, shell channel or authority cache. See
+[Native effects and recovery](CONTRACTS.md#native-effects-and-recovery) for platform and
+create-only confinement requirements.
+
+Persist the complete immutable begin request, including its `mode`, before crossing admission.
+If the reply is lost, `recoverAdmission` accepts that exact request: it returns
+`{ kind: "admitted", transferId }` for the existing admission, or
+`{ kind: "not-admitted", reason }` after durably fencing any later admission of that intent.
+Changing arguments under the same request identity refuses. Recovery is bound to the exact
+current actor and credential; it does not require reading a source that has since been deleted
+and does not replay a native effect. It is unavailable in byte and private-data callback contexts.
+
+Private terminal evidence retires only matching product reservations. A failed callback remains
+pending across restart; never manufacture a transfer ID or release an uncertain reservation from
+elapsed time. A recorded unsent admission may terminate locally, but a durable dispatch intent
+stays unknown without authoritative terminal evidence. An owner's unknown ID alone is not proof
+that no effect occurred.
+
+Owners with durable pre-admission reservations declare paired server callbacks
+`pendingNativeTransfers(ctx)` and `reconcileNativeTransfers(ctx, evidence)`. The pending callback
+returns at most 32 strict records `{ actorId, credentialBinding, request, createdAt }`;
+`request` is the complete immutable `NativeTransferRecoverAdmissionArgs`, including its mode.
+`ReferenceProbeCtx` provides only bounded private storage/database access and a clock, never
+an actor or native-effect context. The hardened host supplies the idle-only bridge; do not
+substitute an empty snapshot when that owner is busy or unavailable.
+
+The host keeps the owner idle through snapshot validation and synchronous absence fencing.
+It then delivers durable private evidence without replaying a native effect or impersonating
+the old caller. Existing admissions and unknown dispatch intent are not absence evidence.
+Failed probes or acknowledgements remain debt for existing idle/authority notifications and
+the one-second job maintenance pass, not a new polling loop.
+Waiting behind a private probe still consumes the caller's original deadline and cancellation.
+Delivery of already-durable refusal evidence does not depend on every new snapshot entry fitting
+the metadata budget; capacity failure is not permission to forget earlier unacknowledged evidence.
+
+A pass visits at most 32 owners. Private insertion permits at most 32 retained refusal fences
+per owner, including acknowledged and public-origin fences, within the shared 1,000-record
+metadata bound. Repeated exact requests reuse their fence. Acknowledgement does not immediately
+free that allowance or refresh its seven-day host-created retention; unacknowledged evidence
+does not expire. Keep a caller-known request identity: Files' public `receiptNative({ requestId })`
+returns only its matching `{ requestId, state }`, without needing a lost begin response.
 
 ### Element types are reserved while you are away
 
@@ -1537,12 +1646,15 @@ title: "Deep links" }` is `core.uri` saying it answers on `/uri/<rest>`. There i
 
 ### Host services
 
-A section component receives exactly one prop, and a panel one more — its own leaf's argument:
+A section receives its host. A panel also receives its persisted argument and, when borrowed,
+optional mount-local intake input and a single result callback:
 
 ```ts
 interface PanelProps {
   host: HostServices;
   readonly arg?: PanelArg | undefined; // what THIS tile is showing it for; absent ≡ none
+  readonly input?: { readonly value?: PanelArg; readonly files?: readonly File[] };
+  readonly onResult?: (result: PanelArg) => void;
 }
 interface SectionProps {
   host: HostServices;
@@ -3910,6 +4022,12 @@ The same React definition runs in-realm and in the Worker. This example is the
 [`example.counter` fixture](../packages/plugin-kit/test/fixtures/sample/web.tsx)
 reduced to its action and state path; its manifest declares
 `"entry": { "server": true, "web": "web.js", "worker": true }` and panel `counter`.
+The full fixture also borrows its registered `raster` panel, opens a credential-bound,
+one-minute read through `openRaster`, and renders real `ByteImage` and `ByteDownload`
+controls over its declared byte carrier. `cancelRaster` retires the read before the panel
+returns its one-shot result; unmount also attempts cancellation, the absolute deadline bounds
+an interrupted cleanup, and disable clears every remaining reader. Its `FileInput` displays
+selection metadata and releases the local handles without uploading bytes.
 
 ```tsx
 import type { PortablePanelProps } from "@manifold/plugin";
@@ -3979,31 +4097,68 @@ of caps or identity does not authorize a later call. Import `PortablePanelProps`
 and `PortableSectionProps` with `import type`; the Worker may import
 `@manifold/plugin/hooks` only for its portable hook exports.
 
+### Owner-mounted intake panels
+
+Use `<BorrowedPanel panelId="publisher.owner.intake" input={{ flow: "save" }}
+onResult={receive} />` to compose another registered owner without importing its implementation.
+The host chooses that owner's page or Worker component, preserves its disable/fault boundary,
+and shares a four-panel budget across the whole borrowing subtree. Recursive borrowing refuses.
+This is an ephemeral projection, not `host.openPanel`, a new action door or a persisted tile.
+Equal JSON options preserve the existing intake across parent rerenders. To begin a new
+intake with the same options, use a new React key rather than allocating an equivalent object.
+
+A native mount site may resolve `useProjection().panel(fullPanelId)` and supply `PanelProps.input`.
+Keep that input object stable for one intake; replace it or remount to start another.
+Raw `File` objects are captured in the receiving owner's mounted store. `PortablePanelProps.input`
+contains only `{ value?, files: LocalFileDescriptor[] }`, in both page and Worker execution;
+`host.localFiles` reads bounded chunks from those owner-local handles. A handle never transfers
+another mount's custody. Capture and shared-slot admission happen only at commit. Changing the
+client, credential, principal or container retires an existing intake rather than handing an old
+selection to the new viewer; restoring the previous identity does not revive that intake.
+Ordinary layout, viewport and assembly metadata updates preserve the portable client facade.
+Do not treat those updates as a new credential or use them to replace a pending request.
+
+`input.value` obeys the existing 4 KiB JSON-record argument bound but is never persisted as `arg`.
+`onResult` accepts one JSON record, at most 64 KiB UTF-8 and 32 container levels deep. It is fenced to the
+current mount, owner and credential; late or repeated results cannot complete another intake.
+A result produced during a descendant layout effect reaches that commit's callback, including
+after the requester recomposes. A new callback identity alone does not retire the intake.
+Callbacks, DOM objects and file bytes never enter a frame. Results are data, not authority:
+effects still use ordinary discovered actions and their current authorization.
+
+Files exposes its intake through this seam; the image child imports only its parent's pure
+`/contract` DTOs. Terminal code keeps clipboard and deliberate path insertion after the owner's
+result, without importing the Files upload/delivery workflow or sending Enter.
+
 ### The vocabulary
 
-Fourteen `UiNode` kinds are emitted by the portable `@manifold/ui` components
+The following `UiNode` kinds are emitted by the portable `@manifold/ui` components
 (`UiNodeSchema` and `GET /api/protocol` publish the wire):
 
-| Wire kind | Portable JSX              | Accepted meaning                                                                                       |
-| --------- | ------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `box`     | `Stack`, `Cluster`        | column / wrapping row; `align`, `justify`, `grow`, `wrap`; adaptive default gap or explicit `0`–`4rem` |
-| `heading` | `Heading`                 | text, heading level 1–3 (default 2)                                                                    |
-| `text`    | `Text`                    | text, tone, `mono`, `wrap`, `strong`, `grow`                                                           |
-| `code`    | `Code`                    | preformatted text (up to 64 KiB)                                                                       |
-| `badge`   | `Badge`                   | text and tone                                                                                          |
-| `icon`    | `ControlIcon`, `ItemIcon` | named control/item glyph and optional size                                                             |
-| `divider` | `Divider`                 | horizontal separator                                                                                   |
-| `spinner` | `Spinner`                 | optional progress label                                                                                |
-| `button`  | `Button`                  | label, tone, disabled, optional icon; `onClick`, `onBlur`, public `data-action`                        |
-| `select`  | `Select`                  | controlled string/null, bounded `{ value, label }` options, scalar `onChange`, `onBlur`                |
-| `input`   | `Input`                   | text, label, placeholder, `mono`, disabled; scalar `onChange`, `onBlur`                                |
-| `toggle`  | `Toggle`                  | boolean, label, disabled; scalar `onChange`, `onBlur`                                                  |
-| `list`    | `List`                    | keyed rows with primary/secondary text and optional `onClick`                                          |
-| `empty`   | `Empty`                   | empty-state text                                                                                       |
+| Wire kind       | Portable JSX              | Accepted meaning                                                                                       |
+| --------------- | ------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `box`           | `Stack`, `Cluster`        | column / wrapping row; `align`, `justify`, `grow`, `wrap`; adaptive default gap or explicit `0`–`4rem` |
+| `heading`       | `Heading`                 | text, heading level 1–3 (default 2)                                                                    |
+| `text`          | `Text`                    | text, tone, `mono`, `wrap`, `strong`, `grow`                                                           |
+| `code`          | `Code`                    | preformatted text (up to 64 KiB)                                                                       |
+| `badge`         | `Badge`                   | text and tone                                                                                          |
+| `icon`          | `ControlIcon`, `ItemIcon` | named control/item glyph and optional size                                                             |
+| `divider`       | `Divider`                 | horizontal separator                                                                                   |
+| `spinner`       | `Spinner`                 | optional progress label                                                                                |
+| `button`        | `Button`                  | label, tone, disabled, optional icon; `onClick`, `onBlur`, public `data-action`                        |
+| `select`        | `Select`                  | controlled string/null, bounded `{ value, label }` options, scalar `onChange`, `onBlur`                |
+| `input`         | `Input`                   | text, label, placeholder, `mono`, disabled; scalar `onChange`, `onBlur`                                |
+| `toggle`        | `Toggle`                  | boolean, label, disabled; scalar `onChange`, `onBlur`                                                  |
+| `fileInput`     | `FileInput`               | explicit bounded file/clipboard selection; owner-local descriptors, never paths or raw files           |
+| `byteImage`     | `ByteImage`               | authenticated, bounded raster projection with crop/fit presentation and status                         |
+| `byteDownload`  | `ByteDownload`            | explicit authenticated browser download, cancellation and truthful status                              |
+| `borrowedPanel` | `BorrowedPanel`           | registered owner intake; bounded JSON input and one result, no sibling implementation import           |
+| `list`          | `List`                    | keyed rows with primary/secondary text and optional `onClick`                                          |
+| `empty`         | `Empty`                   | empty-state text                                                                                       |
 
 Five tones mean `neutral`, `accent`, `muted`, `danger`, `success`, never arbitrary
 colours. Text-bearing components take text, not nested markup. Control callbacks
-receive scalars (or no argument), never DOM events. A `Button`'s full action name
+receive scalars, bounded descriptor/status/result data, or no argument, never DOM events. A `Button`'s full action name
 goes in **`data-action`**; its callback actually dispatches through `host.client.action`.
 Metadata is limited to `title`, `aria-label`, `data-testid` and
 `role="status" | "alert"`. A frame has at most 32 levels and 2000 nodes, 256
@@ -4029,7 +4184,7 @@ isolated Bun child, `web.js` linked to the page's React/design system, and a
 web definition and attaches the guest runtime; authors do not write a separate
 Worker or add `--self-contained` (that flag conflicts with a page-linked portable
 entry). The JSON artifact carries exact-byte SHA-256, base64 members,
-`format: 1`, `hardenedContract: 11` and a protocol stamp. The host serves the
+`format: 1`, `hardenedContract: 12` and a protocol stamp. The host serves the
 declared Worker member at `/api/plugins/<id>/web.worker.js` only while enabled,
 with the artifact pin and `no-store`. A Worker cannot import `react-dom` or the
 page's engine objects; unsupported imports/JSX refuse by name. Hardening
@@ -4037,15 +4192,18 @@ selection never falls back to native when packing, loading or runtime fails.
 `verify --hardened` exercises actual server doors, not browser rendering:
 exercise the panel in a browser too. The install door and grant remain §7.
 
-Current packs stamp contract 11; the hub admits stamped contracts 1–11 using
+Current packs stamp contract 12; the hub admits stamped contracts 1–12 using
 each artifact's own compatible frames. Contract 8 adds caller-plugin attribution;
 contract 9 adds React frame roots, mounted context/sections, generated portable
 Worker member, event invalidations, authoring and narrow machine bridges. Portable Workers
 require an accepted contract of at least 9, not the newest stamp. Contract 10 adds optional
 physical-core metadata; older strict consumers retain the old machine-list shape through
 nested server calls and both Worker machine-reading routes. Contract 11 adds credential-bound
-read-only lifecycle metadata. Older admitted artifacts keep their declared behavior rather
-than acquiring these facilities. Missing stamps require a genuine repack, not an assumed contract 1;
+read-only lifecycle metadata. Contract 12 adds mounted byte resources, element write authority,
+and owner-mounted intake input/results. Contract-9 through contract-11 web mounts keep their
+strict original context shape: they do not receive the new fields, and intake requests require
+contract 12. Older admitted artifacts keep their declared behavior rather than acquiring these
+facilities. Missing stamps require a genuine repack, not an assumed contract 1;
 `repack_required` holds incompatible incumbents before import or spawn.
 
 ### Developing against a hub
@@ -4123,7 +4281,7 @@ made public, because `@manifold/testkit` is private and an author repository can
 
 ```sh
 bun run --cwd packages/plugin-kit verify <bundle>... --hardened
-# {"bundle":"dist/example.counter.manifold-plugin.json","id":"example.counter","sha256":"8b8a…","doors":{"example.counter.bump":"ok"}}
+# {"bundle":"dist/example.counter.manifold-plugin.json","id":"example.counter","sha256":"8b8a…","doors":{"example.counter.bump":"ok","example.counter.openRaster":"ok","example.counter.cancelRaster":"invalid_args"}}
 ```
 
 It spawns this checkout's server (a temporary data dir, a fixed throwaway owner key, a free port,
@@ -4435,8 +4593,8 @@ import (`zod` above) is inlined into your member, which is why your directory ne
 floor resolves from your directory first and from the checkout the kit runs in otherwise. The
 bundle records the version of each shared package and the protocol wire version it was built
 against (`builtAgainst`, copied to `install.builtAgainst` on your row). On every boot and
-admission the hub checks the explicit `PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS` set (47, 48, 51 and 52
-on protocol 52) and the React major; session joins still require the exact current protocol.
+admission the hub checks the explicit `PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS` set (47, 48, 51, 52 and 53
+on protocol 53) and the React major; session joins still require the exact current protocol.
 A known incompatibility holds the row before code loads, and the manager names the
 built/current versions. Hardened-contract and digest checks are not relaxed. Legacy missing
 metadata remains visibly unknown. Outside the shell and hub the registry does not exist, and
@@ -4468,6 +4626,19 @@ in both compiled halves and bundle metadata, leaving unrelated JSON imports alon
 `packPlugin` remains the file-writing convenience over the same compiler. Source and installed
 dependencies are trusted build inputs and must stay stable; compilation grants no installation
 or execution authority.
+
+Trusted native build integrations may supply `options.serverBuild` with Bun build `plugins`,
+an `external` package list and a map of additional flat `files` such as upstream notices.
+These are build inputs, never manifest-selected hooks. Server output assets are carried beside
+`server.js`, with filename/collision checks and the shared 64 MiB encoded artifact budget checked
+before asset encoding. Portable and page browser entries must remain single-entry builds.
+The server runtime disables automatic package installation; native dependencies must be present
+in the signed artifact, apart from the supported operating system's ABI libraries.
+
+Portable shared declarations may import the pure `defineAction` helper from
+`@manifold/plugin/action`. This is the same typed identity helper used by the page API, not a
+second action implementation or an execution authority. The page's `@manifold/plugin` runtime
+barrel and React DOM remain forbidden in a Worker.
 
 ### Install with the door
 

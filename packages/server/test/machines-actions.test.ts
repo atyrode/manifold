@@ -14,7 +14,14 @@ import type { MachineAdmission, PluginHost } from "../src/plugin-host.ts";
 import { RoomManager } from "../src/room.ts";
 import type { ServerStore } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
-import { FakeClock, FakeRuntime, testPluginHost, testStore, testTileTrees } from "./helpers.ts";
+import {
+  closeTestStore,
+  FakeClock,
+  FakeRuntime,
+  testPluginHost,
+  testStore,
+  testTileTrees,
+} from "./helpers.ts";
 
 /**
  * THE FLEET'S TWO DOORS, rung by rung.
@@ -146,7 +153,7 @@ describe("core.machines.enroll", () => {
     // recovery path below has to exist at all — and it authenticates as a MACHINE, never as
     // a principal bearer.
     expect(fix.auth.authenticateMachine(result.machineToken ?? "").id).toBe(result.machine.id);
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("re-enrolling a name is IDEMPOTENT: same row, no new token", async () => {
@@ -164,7 +171,7 @@ describe("core.machines.enroll", () => {
     expect(again.machine.id).toBe(first.machine.id);
     expect(again.machineToken).toBeUndefined();
     expect(fix.auth.authenticateMachine(first.machineToken ?? "").id).toBe(first.machine.id);
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("rotateToken recovers a lost token file: same row, fresh secret, old one dead", async () => {
@@ -186,7 +193,7 @@ describe("core.machines.enroll", () => {
     // Rotation is a revocation too, or the "lost" token would still be a way in.
     expect(() => fix.auth.authenticateMachine(first.machineToken ?? "")).toThrow();
     expect(fix.auth.authenticateMachine(rotated.machineToken ?? "").id).toBe(first.machine.id);
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("a container-scoped token is refused for its SCOPE, above the capability it holds", async () => {
@@ -202,7 +209,7 @@ describe("core.machines.enroll", () => {
       message: "scoped tokens cannot invoke workspace actions",
     });
     expect(fix.store.getMachineByName("alpha")).toBeNull();
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("without machines:mint it is forbidden, and the argument shape stays unlearnable", async () => {
@@ -217,7 +224,7 @@ describe("core.machines.enroll", () => {
       rule: "forbidden",
       message: "machines:mint capability required",
     });
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("a nameless enrolment is invalid_args, not a machine called nothing", async () => {
@@ -227,7 +234,7 @@ describe("core.machines.enroll", () => {
 
     expect(denial(outcome).rule).toBe("invalid_args");
     expect(fix.store.listMachines()).toHaveLength(0);
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("a disabled fleet plugin refuses enrolment — creation dies with the plugin", async () => {
@@ -240,7 +247,7 @@ describe("core.machines.enroll", () => {
       rule: "plugin_disabled",
       message: 'plugin "core.machines" is disabled',
     });
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 });
 
@@ -274,7 +281,7 @@ describe("core.machines.list", () => {
         lastRefusal: { code: 4403, at: fix.runtime.now() },
       },
     ]);
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test('a container-scoped reader still sees the whole fleet — the read is scope:"container"', async () => {
@@ -289,7 +296,7 @@ describe("core.machines.list", () => {
     // it. Converting the read to an action must not quietly take that away.
     if (!outcome.ok) throw new Error(`expected a list: ${outcome.denial.message}`);
     expect(MachinesResponseSchema.parse(outcome.result).machines).toHaveLength(1);
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("without containers:read it is forbidden, scoped or not", async () => {
@@ -303,7 +310,7 @@ describe("core.machines.list", () => {
       rule: "forbidden",
       message: "containers:read capability required",
     });
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("an argument the door does not publish is invalid_args", async () => {
@@ -316,7 +323,7 @@ describe("core.machines.list", () => {
     // The fleet is not filterable, and a strict schema is how a caller finds that out rather
     // than silently receiving everything under the impression it asked for one container.
     expect(denial(outcome).rule).toBe("invalid_args");
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("a disabled fleet plugin refuses the inventory: a list is not cleanup", async () => {
@@ -329,7 +336,7 @@ describe("core.machines.list", () => {
       rule: "plugin_disabled",
       message: 'plugin "core.machines" is disabled',
     });
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 });
 
@@ -361,7 +368,7 @@ describe("core.machines.forget", () => {
       door: "core.machines.forget",
       outcome: "refused",
     });
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("retained terminals and a pending drain refuse without destroying inventory", async () => {
@@ -388,7 +395,7 @@ describe("core.machines.forget", () => {
     expect(denial(await forget()).message).toBe("terminals_retained");
     fix.store.deleteTerminal("retained-terminal");
     expect((await forget()).ok).toBe(true);
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("fleet administration requires an unscoped machines:mint credential", async () => {
@@ -408,7 +415,7 @@ describe("core.machines.forget", () => {
       ).toBe("forbidden");
     }
     expect(fix.store.getMachine(machine.id)).not.toBeNull();
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 });
 
@@ -437,7 +444,7 @@ describe("core.machines.drain", () => {
       draining: true,
       terminalIds: ["t1"],
     });
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("an owner that cannot answer is refused, never reported empty", async () => {
@@ -455,7 +462,7 @@ describe("core.machines.drain", () => {
       rule: "refused",
       message: "machine is offline: its terminals are unknown",
     });
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("an unknown machine is refused before the mechanism is asked", async () => {
@@ -467,7 +474,7 @@ describe("core.machines.drain", () => {
     });
 
     expect(denial(outcome)).toEqual({ rule: "refused", message: "unknown machine" });
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("needs machines:mint at workspace scope, exactly as enroll and revoke do", async () => {
@@ -500,6 +507,6 @@ describe("core.machines.drain", () => {
       machineId: alpha,
     });
     expect(denial(malformed).rule).toBe("invalid_args");
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 });

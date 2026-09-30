@@ -66,8 +66,10 @@ import {
   type Cap,
   type Container,
   type Grant,
+  type PluginOwnedRefKind,
   type IndexEntry,
   type PluginInstallMode,
+  type PluginManifest,
   type PluginSettingValues,
   type MachineRefusal,
   type Principal,
@@ -96,6 +98,7 @@ const TRACED_DENIAL_RULES_JSON = JSON.stringify(TRACED_DENIAL_RULES);
 /** Workspace-global plugin enablement and per-principal shells live in `meta`. */
 const PLUGINS_DISABLED_META = "plugins:disabled";
 const PLUGINS_ATTRIBUTION_META = "plugins:attribution";
+const PLUGINS_INITIALIZED_META = "plugins:initialized";
 const ELEMENT_OWNERS_META = "plugins:element-owners";
 /** The workspace's developer-mode switch (ADR 0025 §4): `"1"` on, anything else off. */
 const DEVELOPER_MODE_META = "plugins:developer-mode";
@@ -1174,17 +1177,50 @@ export class ServerStore {
   }
 
   /**
-   * Which plugins an administrator turned off, workspace-globally. Stored as the DISABLED
-   * set rather than the enabled one so a plugin that ships later is on by default and no
-   * write is owed when the assembly grows. A corrupt row reads as "nothing disabled":
-   * the alternative is a workspace that boots with every plugin dark because one meta value
-   * lost its brackets.
+   * Workspace-global disabled choices, including seeded opt-in defaults. New declarations
+   * can be previewed without committing them, before installation/migration admission.
+   * Existing corrupt-row handling remains "nothing recorded", not "every plugin dark".
    */
-  disabledPlugins(): ReadonlySet<string> {
+  disabledPlugins(
+    discovered: readonly Pick<PluginManifest, "id" | "defaultEnabled">[] = [],
+  ): ReadonlySet<string> {
     const parsed = DisabledPluginsSchema.safeParse(
       readJsonMeta(this.getMeta(PLUGINS_DISABLED_META)),
     );
+    const disabled = new Set(parsed.success ? parsed.data : []);
+    if (discovered.length === 0) return disabled;
+    const initialized = this.initializedPlugins();
+    const attribution = this.pluginAttribution();
+    for (const manifest of discovered) {
+      if (
+        manifest.defaultEnabled === false &&
+        !initialized.has(manifest.id) &&
+        !attribution.has(manifest.id)
+      )
+        disabled.add(manifest.id);
+    }
+    return disabled;
+  }
+
+  private initializedPlugins(): Set<string> {
+    const parsed = DisabledPluginsSchema.safeParse(
+      readJsonMeta(this.getMeta(PLUGINS_INITIALIZED_META)),
+    );
     return new Set(parsed.success ? parsed.data : []);
+  }
+
+  /** Seed inert defaults once, without fabricating a human attribution or overriding a decision. */
+  initializePluginEnablement(
+    discovered: readonly Pick<PluginManifest, "id" | "defaultEnabled">[],
+  ): void {
+    this.transaction(() => {
+      const initialized = this.initializedPlugins();
+      if (discovered.every((manifest) => initialized.has(manifest.id))) return;
+      const disabled = this.disabledPlugins(discovered);
+      for (const manifest of discovered) initialized.add(manifest.id);
+      this.setMeta(PLUGINS_DISABLED_META, JSON.stringify([...disabled].sort()));
+      this.setMeta(PLUGINS_INITIALIZED_META, JSON.stringify([...initialized].sort()));
+    });
   }
 
   /**
@@ -1208,18 +1244,18 @@ export class ServerStore {
   }
 
   /**
-   * Forgets everything the enablement meta knows about one id: its place in the disabled
-   * set and its attribution. The uninstall door's hands — the row the switch belonged to is
-   * gone, and a later install of the same id is a fresh row, on by default and flipped by
-   * nobody, exactly like a first install. Without this an id switched off to be uninstalled
-   * came back off, its child spawned for a door that answered `plugin_disabled`.
+   * Forgets one installation's enablement and attribution. A later install starts from its
+   * declared default again; neither an old enable nor an old disable silently survives it.
    */
   clearPluginEnablement(id: string): void {
     const disabled = new Set(this.disabledPlugins());
     const attribution = new Map(this.pluginAttribution());
+    const initialized = this.initializedPlugins();
     const forgotten = disabled.delete(id);
-    if (!attribution.delete(id) && !forgotten) return;
+    const initializationRemoved = initialized.delete(id);
+    if (!attribution.delete(id) && !forgotten && !initializationRemoved) return;
     this.setMeta(PLUGINS_DISABLED_META, JSON.stringify([...disabled].sort()));
+    this.setMeta(PLUGINS_INITIALIZED_META, JSON.stringify([...initialized].sort()));
     this.setMeta(
       PLUGINS_ATTRIBUTION_META,
       JSON.stringify(
@@ -1247,6 +1283,41 @@ export class ServerStore {
       readJsonMeta(this.getMeta(PLUGINS_ATTRIBUTION_META)),
     );
     return new Map(Object.entries(parsed.success ? parsed.data : {}));
+  }
+
+  referenceKindOwners(): ReadonlyMap<PluginOwnedRefKind, string> {
+    return new Map(
+      this.db
+        .query<
+          {
+            kind: PluginOwnedRefKind;
+            plugin_id: string;
+          },
+          []
+        >("SELECT kind,plugin_id FROM reference_kind_owners")
+        .all()
+        .map((row) => [row.kind, row.plugin_id]),
+    );
+  }
+
+  /** Reservations outlive disable, missing builds and purge: surviving URIs never change owner. */
+  claimReferenceKinds(pluginId: string, kinds: readonly PluginOwnedRefKind[]): void {
+    this.transaction(() => {
+      for (const kind of kinds) {
+        const owner = this.db
+          .query<{ plugin_id: string }, [string]>(
+            "SELECT plugin_id FROM reference_kind_owners WHERE kind=?",
+          )
+          .get(kind);
+        if (owner !== null && owner.plugin_id !== pluginId)
+          throw new Error("reference_kind_conflict");
+        this.db
+          .query(
+            "INSERT OR IGNORE INTO reference_kind_owners(kind,plugin_id,allocation_state) VALUES(?,?,?)",
+          )
+          .run(kind, pluginId, JSON.stringify({ incarnation: crypto.randomUUID(), counter: 0 }));
+      }
+    });
   }
 
   /**

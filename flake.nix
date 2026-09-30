@@ -36,10 +36,10 @@
       # Measured with the pinned Bun's explicit optional-dependency target selectors.
       # Regenerate and independently rebuild these trees when their inputs change.
       depsHashes = {
-        x86_64-linux = "sha256-PDkNbpzkxf+hJmCd7dy3wydoEB9RxEdmsymkTdQYZxw=";
-        aarch64-linux = "sha256-5PH+5nKFtMRUucAKI0361MXegCGYoYUpvTeu10SaS7g=";
-        x86_64-darwin = "sha256-pIwF6pBxDlNqkfJib73619C71SmCe5NJAyLx9L5W1ZA=";
-        aarch64-darwin = "sha256-9Q/oT17B0IuNDekHxnHQ2YncvcaWNVAjS0Ij4SVTT+Y=";
+        x86_64-linux = "sha256-sHtXxnyRJRyz0lLtq99Ftd6+g0bGOnEiQBcSyPgW/iM=";
+        aarch64-linux = "sha256-FNUpCHECCG9jDUR2sA3y1aG6R2pSioC4aFZts7eQMaY=";
+        x86_64-darwin = "sha256-pTdrEL8Nb+BEDWs5L8E3VgHyzrQu8V4bEv6WOYhaZFI=";
+        aarch64-darwin = "sha256-+DNWymRb6SYM/QvdyzhCZQj2Hmdn0RYtjy/vCsokQrE=";
       };
 
       # Keep the dependency input independent of unrelated workspace sources.
@@ -195,6 +195,7 @@
             {
               pname,
               entry,
+              compileCommand ? "bun build --compile ${entry} --outfile ${pname}",
               extraBuild ? "",
               extraInstall ? "",
               # Raw shell fragment appended to the makeWrapper call; runs in
@@ -218,7 +219,7 @@
                 runHook preBuild
                 ${restoreDeps}
                 ${extraBuild}
-                bun build --compile ${entry} --outfile ${pname}
+                ${compileCommand}
                 runHook postBuild
               '';
               installPhase = ''
@@ -266,7 +267,11 @@
           manifold-server = compiled {
             pname = "manifold-server";
             entry = "packages/server/src/main.ts";
+            compileCommand = "bun scripts/build-server.ts manifold-server";
             extraBuild = ''
+              ${pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
+                export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [ pkgs.stdenv.cc.cc.lib ]}"
+              ''}
               bun run changelog:generate
               (cd packages/web && bun run build)
               # The compiled hub carries no source tree, so the trusted first-party builds an
@@ -278,8 +283,13 @@
               mkdir -p "$out/share/manifold"
               cp -r packages/web/dist "$out/share/manifold/web"
               cp -r first-party "$out/share/manifold/first-party"
+              install -Dm644 files-decoder-notices.txt "$out/share/manifold/files-decoder-notices.txt"
             '';
-            wrapperArgs = ''--set-default MANIFOLD_WEB_DIST "$out/share/manifold/web" --set MANIFOLD_FIRST_PARTY_ARTIFACTS "$out/share/manifold/first-party" --set-default MANIFOLD_SPAWN_AGENT 0 --prefix PATH : "${bun}/bin"'';
+            wrapperArgs =
+              ''--set-default MANIFOLD_WEB_DIST "$out/share/manifold/web" --set MANIFOLD_FIRST_PARTY_ARTIFACTS "$out/share/manifold/first-party" --set-default MANIFOLD_SPAWN_AGENT 0 --prefix PATH : "${bun}/bin"''
+              + pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux (
+                " " + ''--prefix LD_LIBRARY_PATH : "${pkgs.lib.makeLibraryPath [ pkgs.stdenv.cc.cc.lib ]}"''
+              );
           };
         }
       );

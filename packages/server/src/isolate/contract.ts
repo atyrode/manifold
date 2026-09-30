@@ -51,8 +51,12 @@ export interface IsolateRunner {
   unload(pluginId: string): Promise<void>;
   /** `stopped` for an id this runner never loaded. */
   state(pluginId: string): IsolateState;
+  /** Original call budget remaining; Infinity outside a child call, zero after retirement. */
+  remainingHostCallMs(): number;
   /** Fires on every transition; returns the unsubscribe. */
   onState(listener: (pluginId: string, state: IsolateState, detail?: string) => void): () => void;
+  /** A drained guest can retry deferred private maintenance without a polling timer. */
+  onIdle?(listener: (pluginId: string) => void): () => void;
   /** Server shutdown: unloads every child. */
   close(): Promise<void>;
 }

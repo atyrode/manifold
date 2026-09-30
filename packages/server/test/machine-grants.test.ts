@@ -8,7 +8,14 @@ import type { PluginHost, ServerPluginDef } from "../src/plugin-host.ts";
 import { RoomManager } from "../src/room.ts";
 import type { ServerStore } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
-import { FakeClock, FakeRuntime, testPluginHost, testStore, testTileTrees } from "./helpers.ts";
+import {
+  closeTestStore,
+  FakeClock,
+  FakeRuntime,
+  testPluginHost,
+  testStore,
+  testTileTrees,
+} from "./helpers.ts";
 
 /**
  * MACHINE-SCOPED GRANTS AND PLUGIN-DECLARED CAPABILITIES (ADR 0035, #506).
@@ -153,7 +160,7 @@ describe("a grant scoped to one machine", () => {
       target.auth.allowsRef(agent, "jobs:read", { kind: "machine", machineId: target.there }),
     ).toBe(false);
     expect(target.auth.allows(agent, "jobs:read")).toBe(false);
-    target.store.close();
+    closeTestStore(target.store);
   });
 
   test("reach: node stops at the machine and does not descend to its operations", async () => {
@@ -181,7 +188,7 @@ describe("a grant scoped to one machine", () => {
         operationId: "scan",
       }),
     ).toBe(false);
-    target.store.close();
+    closeTestStore(target.store);
   });
 
   test("a deny at one machine bites through a root wildcard and leaves the fleet alone", async () => {
@@ -214,7 +221,7 @@ describe("a grant scoped to one machine", () => {
     expect(
       target.auth.allowsRef(root, "jobs:read", { kind: "machine", machineId: target.here }),
     ).toBe(true);
-    target.store.close();
+    closeTestStore(target.store);
   });
 
   test("a machine id that needs escaping is stored canonically and still found by the walk", async () => {
@@ -242,7 +249,7 @@ describe("a grant scoped to one machine", () => {
     expect(
       target.auth.listGrants({ node: machineUri(awkward) }, target.owner).map((grant) => grant.id),
     ).toEqual([row.id]);
-    target.store.close();
+    closeTestStore(target.store);
   });
 
   test("a container-scoped credential is refused at a machine, row or no row", async () => {
@@ -281,7 +288,7 @@ describe("a grant scoped to one machine", () => {
     expect(
       target.auth.allowsRef(scoped, ARCHIVE, { kind: "machine", machineId: target.here }),
     ).toBe(false);
-    target.store.close();
+    closeTestStore(target.store);
   });
 });
 
@@ -319,7 +326,7 @@ describe("a plugin's own capability", () => {
     expect([...target.auth.effectiveCaps(root, machineUri(target.here))]).toContain(ARCHIVE);
     // Another plugin's namespace is another capability entirely, granted to nobody here.
     expect(target.auth.allowsRef(root, OTHER_CAP, here)).toBe(false);
-    target.store.close();
+    closeTestStore(target.store);
   });
 
   test("precedence decides a plugin capability exactly as it decides the engine's", async () => {
@@ -355,7 +362,7 @@ describe("a plugin's own capability", () => {
     expect(
       target.auth.allowsRef(agent, ARCHIVE, { kind: "machine", machineId: target.there }),
     ).toBe(true);
-    target.store.close();
+    closeTestStore(target.store);
   });
 
   test("a row survives the vocabulary: a grant may name a capability no plugin declared", async () => {
@@ -396,7 +403,7 @@ describe("a plugin's own capability", () => {
         target.owner,
       ),
     ).toThrow();
-    target.store.close();
+    closeTestStore(target.store);
   });
 
   test("a grant scoped to one machine opens the plugin's door for that machine alone", async () => {
@@ -445,7 +452,7 @@ describe("a plugin's own capability", () => {
         }),
       ),
     ).toBe(`${ARCHIVE} capability required at target`);
-    target.store.close();
+    closeTestStore(target.store);
   });
 
   test("the roster publishes the declaration, so a reader learns the capability exists", async () => {
@@ -458,7 +465,7 @@ describe("a plugin's own capability", () => {
       caps: [ARCHIVE],
       requirements: [{ cap: ARCHIVE, target: ["machine"] }],
     });
-    target.store.close();
+    closeTestStore(target.store);
   });
 
   test("the mint refuses what a credential cannot carry", async () => {
@@ -476,6 +483,6 @@ describe("a plugin's own capability", () => {
         target.owner,
       ),
     ).toThrow(/caps/);
-    target.store.close();
+    closeTestStore(target.store);
   });
 });

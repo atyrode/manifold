@@ -18,7 +18,15 @@ import {
 import { RoomManager } from "../src/room.ts";
 import { TRACE_ROW_TYPE, type ServerStore, type StoredEvent } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
-import { FakeClock, FakeRuntime, testEventHub, testStore, testTileTrees } from "./helpers.ts";
+import {
+  closeTestStore,
+  FakeClock,
+  FakeRuntime,
+  testEventHub,
+  testStore,
+  testTileTrees,
+  trackTestPluginHost,
+} from "./helpers.ts";
 
 /**
  * `ctx.actions.call` — ONE PLUGIN'S HANDLER AT ANOTHER PLUGIN'S DOOR (ADR 0041, #575).
@@ -330,6 +338,7 @@ async function fixture(defs: readonly ServerPluginDef[] = pair()): Promise<Fixtu
     events,
     {},
   );
+  trackTestPluginHost(store, host);
   return { store, auth, owner: auth.authenticate(OWNER_KEY), host, runtime };
 }
 
@@ -383,7 +392,7 @@ describe("a declared dependency's door", () => {
         callerPlugin: "test.forged",
       }),
     ).toEqual({ ok: true, result: { callerPlugin: null } });
-    base.store.close();
+    closeTestStore(base.store);
   });
 
   test("opens under the CALLER'S principal, with the calling plugin as the origin", async () => {
@@ -413,7 +422,7 @@ describe("a declared dependency's door", () => {
       origin: CALLER,
       parentTrace: caller.id,
     });
-    base.store.close();
+    closeTestStore(base.store);
   });
 
   test("a client cannot forge the reserved attribution keys, on a committed row or a refused one", async () => {
@@ -448,7 +457,7 @@ describe("a declared dependency's door", () => {
       const payload = JSON.parse(rowFor(base, door).payload) as Record<string, unknown>;
       expect(payload).toEqual({ word: "hi" });
     }
-    base.store.close();
+    closeTestStore(base.store);
   });
 
   test("a callee that THROWS is not a refusal, and its error text never reaches the caller", async () => {
@@ -474,7 +483,7 @@ describe("a declared dependency's door", () => {
     // The two rows still tell the truth apart: the callee broke, the caller refused.
     expect(rowFor(base, `${CALLEE}.boom`).outcome).toBe("failed");
     expect(rowFor(base, `${CALLER}.probe`).outcome).toBe("refused");
-    base.store.close();
+    closeTestStore(base.store);
   });
 
   test("a callee's staged emissions flush on ITS success while the caller's stay staged", async () => {
@@ -489,7 +498,7 @@ describe("a declared dependency's door", () => {
 
     expect(base.store.listEvents({ type: "echoed", limit: 5 })).toHaveLength(1);
     expect(base.store.listEvents({ type: "relayed", limit: 5 })).toHaveLength(0);
-    base.store.close();
+    closeTestStore(base.store);
   });
 
   test("a hardened guest reaches the same door through the proxy and gets the same result", async () => {
@@ -506,7 +515,7 @@ describe("a declared dependency's door", () => {
       ok: true,
       result: { answer: { word: "through the wire", principal: base.owner.principal.id } },
     });
-    base.store.close();
+    closeTestStore(base.store);
   });
 });
 
@@ -527,7 +536,7 @@ describe("what a sibling call is refused by", () => {
       message: `undeclared_dependency: ${CALLER} -> ${STRANGER}`,
     });
     expect(traces(base).some((row) => row.door === `${STRANGER}.echo`)).toBe(false);
-    base.store.close();
+    closeTestStore(base.store);
   });
 
   test("a declared optional dependency that is off refuses dependency_unavailable, and the caller stays enabled", async () => {
@@ -550,7 +559,7 @@ describe("what a sibling call is refused by", () => {
     expect(
       await base.host.dispatch(base.owner, `${CALLER}.relay`, { word: "still here" }),
     ).toMatchObject({ ok: true });
-    base.store.close();
+    closeTestStore(base.store);
   });
 
   test("a declared dependency nothing composed is the same class", async () => {
@@ -564,7 +573,7 @@ describe("what a sibling call is refused by", () => {
       rule: "refused",
       message: `dependency_unavailable: ${CALLER} -> test.absent`,
     });
-    base.store.close();
+    closeTestStore(base.store);
   });
 
   test("a principal without the callee's capability is refused AT the callee, with capability", async () => {
@@ -588,7 +597,7 @@ describe("what a sibling call is refused by", () => {
     });
     expect(rowFor(base, `${CALLEE}.echo`).outcome).toBe("forbidden");
     expect(base.store.listEvents({ type: "echoed", limit: 5 })).toHaveLength(0);
-    base.store.close();
+    closeTestStore(base.store);
   });
 
   test("a caller whose own ceiling lacks the callee door's capability refuses caller_ceiling", async () => {
@@ -637,7 +646,7 @@ describe("what a sibling call is refused by", () => {
     expect(await base.host.dispatch(base.owner, `${CALLER}.relay`, { word: "hi" })).toMatchObject({
       ok: true,
     });
-    base.store.close();
+    closeTestStore(base.store);
   });
 
   test("an engine builtin is not a callee at all, however a manifest names it", async () => {
@@ -698,7 +707,7 @@ describe("what a sibling call is refused by", () => {
         enabled: false,
       }),
     ).toEqual({ ok: true, result: {} });
-    base.store.close();
+    closeTestStore(base.store);
   });
 
   test("the same bound crossing the proxy, and a declared ceiling still succeeds", async () => {
@@ -725,7 +734,7 @@ describe("what a sibling call is refused by", () => {
         proxy: true,
       }),
     ).toEqual({ ok: true, result: { answer: { answer: { word: "open" } } } });
-    base.store.close();
+    closeTestStore(base.store);
   });
 
   test("the engine's job doors are not reachable either, and the plugin identity is why", async () => {
@@ -787,7 +796,7 @@ describe("what a sibling call is refused by", () => {
         pluginId: "test.runner",
       }),
     ).toMatchObject({ ok: true });
-    base.store.close();
+    closeTestStore(base.store);
   });
 
   test("a callee door guarded by its OWN namespaced capability is reachable", async () => {
@@ -876,7 +885,7 @@ describe("what a sibling call is refused by", () => {
       rule: "refused",
       message: `capability: ${CALLER} -> test.own.echo (test.own:echo capability required)`,
     });
-    base.store.close();
+    closeTestStore(base.store);
   });
 
   test("a door the callee does not publish refuses unknown_action", async () => {
@@ -892,7 +901,7 @@ describe("what a sibling call is refused by", () => {
       rule: "refused",
       message: `unknown_action: ${CALLEE}.ghost`,
     });
-    base.store.close();
+    closeTestStore(base.store);
   });
 
   test("the callee's own refusal propagates with the callee named", async () => {
@@ -908,7 +917,7 @@ describe("what a sibling call is refused by", () => {
       rule: "refused",
       message: `refused: ${CALLER} -> ${CALLEE}.sulk (the callee says no)`,
     });
-    base.store.close();
+    closeTestStore(base.store);
   });
 
   test("a plugin already on the trace refuses dispatch_cycle", async () => {
@@ -931,7 +940,7 @@ describe("what a sibling call is refused by", () => {
       rule: "refused",
       message: `dispatch_cycle: ${CALLER} -> ${CALLER}`,
     });
-    base.store.close();
+    closeTestStore(base.store);
   });
 
   test("a chain one plugin deeper than the bound refuses dispatch_depth", async () => {
@@ -957,7 +966,7 @@ describe("what a sibling call is refused by", () => {
     expect(
       traces(base).filter((row) => row.door === `test.p${MAX_ACTION_CALL_DEPTH - 1}.relay`),
     ).toHaveLength(1);
-    base.store.close();
+    closeTestStore(base.store);
   });
 
   test("a refusal crossing the isolate boundary is the same sentence, thrown", async () => {
@@ -977,6 +986,6 @@ describe("what a sibling call is refused by", () => {
       rule: "refused",
       message: `undeclared_dependency: ${CALLER} -> ${STRANGER}`,
     });
-    base.store.close();
+    closeTestStore(base.store);
   });
 });

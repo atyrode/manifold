@@ -13,7 +13,14 @@ import type { MachineAdmission, PluginHost } from "../src/plugin-host.ts";
 import { RoomManager } from "../src/room.ts";
 import type { ServerStore } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
-import { FakeClock, FakeRuntime, testPluginHost, testStore, testTileTrees } from "./helpers.ts";
+import {
+  closeTestStore,
+  FakeClock,
+  FakeRuntime,
+  testPluginHost,
+  testStore,
+  testTileTrees,
+} from "./helpers.ts";
 
 /**
  * `engine.machines.repository`, rung by rung (issue #529).
@@ -116,7 +123,7 @@ describe("engine.machines.repository", () => {
       observed(WORK),
     );
     expect(fix.asked).toEqual([WORK]);
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("a caller without machines:read never reaches the host", async () => {
@@ -132,7 +139,7 @@ describe("engine.machines.repository", () => {
     expect(denial(outcome).message).toContain("machines:read");
     // Not merely denied: nothing was asked of the fleet, so no probe ran on any host.
     expect(fix.asked).toEqual([]);
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("the capability is asked AT the machine: another machine's folders stay unreadable", async () => {
@@ -168,7 +175,7 @@ describe("engine.machines.repository", () => {
     // The refusal names no host, and the withheld machine was never asked anything.
     expect(denial(refused).message).not.toContain(theirs);
     expect(fix.asked).toEqual([WORK]);
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("a machine this workspace never enrolled is refused before the fleet is asked", async () => {
@@ -181,7 +188,7 @@ describe("engine.machines.repository", () => {
 
     expect(denial(outcome).message).toBe("unknown machine");
     expect(fix.asked).toEqual([]);
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("a relative path, a NUL and an over-long path are refused as arguments", async () => {
@@ -196,7 +203,7 @@ describe("engine.machines.repository", () => {
       expect(denial(outcome).rule).toBe("invalid_args");
     }
     expect(fix.asked).toEqual([]);
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 
   test("a fleet that cannot be asked answers why, never a fact nobody observed", async () => {
@@ -209,6 +216,6 @@ describe("engine.machines.repository", () => {
     });
 
     expect(denial(outcome).message).toBe("machine is offline: it cannot be asked");
-    fix.store.close();
+    closeTestStore(fix.store);
   });
 });

@@ -11,6 +11,8 @@ export interface TerminalClipboard {
   setPasteMode(enabled: boolean): void;
   reset(): void;
   pasteFromClipboard(stillCurrent?: () => boolean): Promise<void>;
+  /** Returns false for a file that needs explicit library Save instead of native MIME paste. */
+  pasteFile(file: File): boolean;
   dispose(): void;
 }
 
@@ -97,6 +99,7 @@ export function installTerminalClipboard(
     send(data: string): void;
     notice(message: string): void;
     offerCopy(request: TerminalClipboardCopy | null): void;
+    offerFile?: ((file: File) => void) | undefined;
   },
 ): TerminalClipboard {
   const document = host.ownerDocument;
@@ -270,6 +273,25 @@ export function installTerminalClipboard(
       failedPaste(operation, error);
     }
   };
+  const pasteFile = (file: File): boolean => {
+    if (!mode || !SUPPORTED_TYPES.has(file.type)) return false;
+    const operation = begin();
+    if (!operation) {
+      options.notice(
+        "Native MIME paste requires current terminal control and no pending clipboard exchange.",
+      );
+      return true;
+    }
+    try {
+      const snapshot: Snapshot = new Map();
+      operation.release = () => snapshot.clear();
+      add(snapshot, file.type, file);
+      void publish(operation, snapshot).catch((error: unknown) => failedPaste(operation, error));
+    } catch (error) {
+      failedPaste(operation, error);
+    }
+    return true;
+  };
   const paste = (event: ClipboardEvent): void => {
     if (!event.isTrusted) return;
     if (!authorized()) {
@@ -282,6 +304,12 @@ export function installTerminalClipboard(
     if (!mode && data?.types.includes("text/plain")) return; // xterm owns ordinary paste.
     event.preventDefault();
     event.stopImmediatePropagation();
+    if (!mode && data?.files.length && options.offerFile) {
+      if (data.files.length !== 1) {
+        options.notice("Select one file at a time for deliberate Save and delivery.");
+      } else options.offerFile(data.files[0]!);
+      return;
+    }
     const operation = begin();
     if (!operation) {
       options.notice(
@@ -478,6 +506,7 @@ export function installTerminalClipboard(
       abort();
     },
     pasteFromClipboard,
+    pasteFile,
     dispose: () => {
       abort();
       disposed = true;

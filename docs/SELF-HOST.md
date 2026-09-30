@@ -966,15 +966,39 @@ The archive contains the owner key and preview-identity signing key — store it
 Before an upgrade that migrates data on an ephemeral `/data` volume, or whose migrated database
 cannot be opened by the previous release, capture an authenticated recovery checkpoint while the
 current hub still owns the data and administrative file mutations such as plugin installation and
-key rotation are paused. Stream the reviewed helper from the release checkout so this also works
-when the incumbent predates the helper:
+key rotation are paused. Use the helper shipped in that image with the incumbent's existing
+environment:
 
 ```sh
-docker compose exec -T manifold bun - capture before-vX.Y.Z < scripts/full-state-recovery.ts
+docker compose exec -T manifold bun /app/scripts/full-state-recovery.ts capture before-vX.Y.Z
 ```
 
+If the incumbent predates the helper, build a self-contained reviewed helper from the release
+checkout and deliver only that non-secret program. Materialize it at a private path inside the
+incumbent so its separate capture process can respawn it; executing source with `bun -` cannot
+provide that path or its imported recovery mechanisms.
+
+```sh
+umask 077
+helper_dir=$(mktemp -d)
+trap 'rm -rf -- "$helper_dir"' EXIT
+bun build scripts/full-state-recovery.ts --target=bun --outfile "$helper_dir/full-state-recovery.js"
+docker compose exec -T manifold sh -c '
+  umask 077
+  tool_dir=$(mktemp -d /tmp/manifold-recovery.XXXXXX) || exit
+  trap '\''rm -rf -- "$tool_dir"'\'' EXIT
+  cat > "$tool_dir/full-state-recovery.js" || exit
+  bun "$tool_dir/full-state-recovery.js" "$@"
+' sh capture before-vX.Y.Z < "$helper_dir/full-state-recovery.js"
+```
+
+Use the same invocation with `verify ID SHA256` for verification. Neither path copies credentials
+out of the incumbent or bypasses its pinned-key/configuration requirements.
+
 This mode requires the four replica variables below and a pinned `MANIFOLD_OWNER_KEY`. It makes
-consistent SQLite copies, includes every other regular `/data` file except process handles and
+authorization-coherent SQLite copies: a shared administrative gate precedes the main write fence,
+main is copied before private images, and a separate process is killed if capture exceeds
+30 seconds. It includes every other retained regular `/data` file except process handles and
 database sidecars, encrypts and authenticates the result with a purpose-bound key derived from
 the owner key, and writes it once under `manifold-full-state/<id>.mfr` in the same dedicated
 object store. It refuses links, devices, an existing object, changing non-database files, a bad

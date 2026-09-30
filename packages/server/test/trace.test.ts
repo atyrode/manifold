@@ -30,6 +30,7 @@ import { TRACE_ROW_TYPE, type ServerStore, type StoredEvent } from "../src/store
 import { TerminalBroker } from "../src/terminal-broker.ts";
 import { createExternalRun } from "./agent-fixtures.ts";
 import {
+  closeTestStore,
   FakeClock,
   FakeRuntime,
   hostWithSeatOff,
@@ -37,6 +38,7 @@ import {
   testPluginHost,
   testStore,
   testTileTrees,
+  trackTestPluginHost,
 } from "./helpers.ts";
 
 /**
@@ -310,6 +312,7 @@ async function probeHost(base: Fixture): Promise<PluginHost> {
     silentLogger,
     events,
   );
+  trackTestPluginHost(base.store, host);
   return host;
 }
 
@@ -349,7 +352,7 @@ describe("the trace ledger records every exercise of authority", () => {
     const noConsent = await host.dispatch(base.owner, "test.probe.governed", { target });
     expect(noConsent.ok).toBe(false);
     if (!noConsent.ok) expect(noConsent.denial.rule).toBe("forbidden");
-    base.store.close();
+    closeTestStore(base.store);
   });
   test("an ok dispatch leaves ONE settled row naming door, actor, authority and targets", async () => {
     const base = await fixture();
@@ -377,7 +380,7 @@ describe("the trace ledger records every exercise of authority", () => {
     expect(row.targets).toEqual(["manifold://plugin/core.index"]);
     expect(row.session).toBe("sock-7");
     expect(JSON.parse(row.payload)).toEqual({ name: "traced" });
-    base.store.close();
+    closeTestStore(base.store);
   });
 
   test("leaf removal — the door that used to commit untraced — leaves a settled `ok` row", async () => {
@@ -451,7 +454,7 @@ describe("the trace ledger records every exercise of authority", () => {
     // The node the door named at its commit point, which is the composition that lost the leaf.
     expect(row.targets).toEqual([`manifold://container/${composition.id}`]);
     expect(JSON.parse(row.payload)).toEqual({ containerId: composition.id, tileId: first });
-    base.store.close();
+    closeTestStore(base.store);
   });
 
   test("a dispatch over the HTTP door records no session, and the absence is the datum", async () => {
@@ -460,7 +463,7 @@ describe("the trace ledger records every exercise of authority", () => {
     await base.host.dispatch(base.owner, "core.index.createContainer", { name: "api" });
 
     expect(newestTrace(base).session).toBeNull();
-    base.store.close();
+    closeTestStore(base.store);
   });
 
   test("a container-scoped token's authority and container land on the row", async () => {
@@ -479,7 +482,7 @@ describe("the trace ledger records every exercise of authority", () => {
     expect(row.authority).toBe("containers:read");
     expect(row.containerId).toBe(containerId);
     expect(row.principalId).toBe(scoped.principal.id);
-    base.store.close();
+    closeTestStore(base.store);
   });
 
   test("EVERY refusal rung above the handler leaves a settled row naming its rung", async () => {
@@ -619,7 +622,7 @@ describe("the trace ledger records every exercise of authority", () => {
       if (rule === "refused" || rule === "unavailable") continue;
       expect(outcomes.has(rule)).toBeTrue();
     }
-    base.store.close();
+    closeTestStore(base.store);
   });
 
   test("a handler's own refusal settles `refused`, keeping the nodes it named", async () => {
@@ -634,7 +637,7 @@ describe("the trace ledger records every exercise of authority", () => {
     // A refusal is not an event — nothing was published — but the node the door named is still
     // what it was reaching for, and an auditor wants that.
     expect(row.targets).toEqual(["manifold://plugin/test.probe"]);
-    base.store.close();
+    closeTestStore(base.store);
   });
 
   test("the ONE untraced name is an unregistered one, and it is still logged", async () => {
@@ -648,7 +651,7 @@ describe("the trace ledger records every exercise of authority", () => {
     // No door, no declared authority, nothing exercised — and a caller-chosen name that would
     // otherwise be a writer into the ledger (ADR 0018 §4).
     expect(traces(base).length).toBe(0);
-    base.store.close();
+    closeTestStore(base.store);
   });
 
   test("a door that throws is traced `failed`, and its mutation stands", async () => {
@@ -665,7 +668,7 @@ describe("the trace ledger records every exercise of authority", () => {
     // The write committed on its own before the throw, so the ledger and the store agree: it
     // happened, and it is attributed.
     expect(base.store.getContainer("kept")).not.toBeNull();
-    base.store.close();
+    closeTestStore(base.store);
   });
 
   test("a mutation ROLLED BACK by its own transaction still leaves its trace", async () => {
@@ -686,7 +689,7 @@ describe("the trace ledger records every exercise of authority", () => {
     const row = newestTrace(base);
     expect(row.door).toBe("test.probe.rollbackWrite");
     expect(row.outcome).toBe("failed");
-    base.store.close();
+    closeTestStore(base.store);
   });
 
   test("the attribution is DURABLE BEFORE the handler runs, unsettled while it does", async () => {
@@ -710,7 +713,7 @@ describe("the trace ledger records every exercise of authority", () => {
     });
     // And by the time the dispatch answers, that same row carries the outcome.
     expect(recorded.outcome).toBe("ok");
-    base.store.close();
+    closeTestStore(base.store);
   });
 
   test("secrets and terminal bytes never reach stdout or the ledger read door", async () => {
@@ -784,7 +787,7 @@ describe("the trace ledger records every exercise of authority", () => {
       expect(row.authority).toBe(TRACE_AUTHORITY_OPEN);
     } finally {
       stdout.mockRestore();
-      base.store.close();
+      closeTestStore(base.store);
     }
   });
 
@@ -822,7 +825,7 @@ describe("the trace ledger records every exercise of authority", () => {
       });
       expect(JSON.stringify(listed.result)).not.toContain(source);
     } finally {
-      base.store.close();
+      closeTestStore(base.store);
     }
   });
 
@@ -904,7 +907,7 @@ describe("the trace ledger records every exercise of authority", () => {
     const payload = OversizePayloadSchema.parse(JSON.parse(row.payload));
     expect(payload.keys.some((key) => key.prefix === "runtime")).toBeTrue();
     expect(JSON.stringify(payload).length).toBeLessThanOrEqual(4_096);
-    base.store.close();
+    closeTestStore(base.store);
   });
 
   test("an inherited launch shape cannot forge an oversize terminal trace", async () => {
@@ -923,7 +926,7 @@ describe("the trace ledger records every exercise of authority", () => {
     expect(payload.keys).toEqual([
       { prefix: "padding", length: "padding".length, truncated: false },
     ]);
-    base.store.close();
+    closeTestStore(base.store);
   });
 
   test("an oversize argument list keeps only a hard-bounded key summary", async () => {
@@ -967,7 +970,7 @@ describe("the trace ledger records every exercise of authority", () => {
     expect(payload.keys[0]?.prefix).toBe("x".repeat(255));
     expect(surrogateBoundaryKey.startsWith(payload.keys[0]?.prefix ?? "")).toBeTrue();
     expect(JSON.stringify(payload).length).toBeLessThanOrEqual(4_096);
-    base.store.close();
+    closeTestStore(base.store);
   });
 
   test("the trail's ONE read door publishes the ledger", async () => {
@@ -988,7 +991,7 @@ describe("the trace ledger records every exercise of authority", () => {
     expect(created?.targets).toEqual(["manifold://plugin/core.index"]);
     // The list door's own dispatch is in the ledger too, unsettled at the moment it read.
     expect(rows.some((row) => row.door === "core.events.list")).toBeTrue();
-    base.store.close();
+    closeTestStore(base.store);
   });
 
   test("an event row is not a trace row: the two families share one table and one reader", async () => {
@@ -1003,7 +1006,7 @@ describe("the trace ledger records every exercise of authority", () => {
     expect(event?.outcome).toBeNull();
     expect(event?.session).toBeNull();
     expect(event?.targets).toEqual([]);
-    base.store.close();
+    closeTestStore(base.store);
   });
 
   test("an outcome settles exactly once: a second settle changes nothing", () => {
@@ -1026,7 +1029,7 @@ describe("the trace ledger records every exercise of authority", () => {
     const row = store.listEvents({ type: TRACE_ROW_TYPE, limit: 1 })[0]!;
     expect(row.outcome).toBe("ok");
     expect(row.targets).toEqual(["manifold://container/c1"]);
-    store.close();
+    closeTestStore(store);
   });
 
   test("the ledger's outcome vocabulary covers every rung the ladder can answer with", () => {
@@ -1082,7 +1085,7 @@ describe("the trace ledger records every exercise of authority", () => {
       expect(JSON.stringify(traces(base))).not.toContain(secret);
       expect(base.store.db.query("SELECT * FROM machine_job_consents").all()).toEqual([]);
     } finally {
-      base.store.close();
+      closeTestStore(base.store);
     }
   });
 
@@ -1136,7 +1139,7 @@ describe("the trace ledger records every exercise of authority", () => {
       expect(base.store.db.query("SELECT * FROM machine_job_consents").all()).toEqual([]);
       expect(base.store.db.query("SELECT * FROM machine_job_installs").all()).toEqual([]);
     } finally {
-      base.store.close();
+      closeTestStore(base.store);
     }
   });
 });

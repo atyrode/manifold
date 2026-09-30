@@ -10,6 +10,8 @@ import { drawWebPlugin } from "@manifold-plugin/canvas/draw/web";
 import { KeysRow } from "@manifold-plugin/keys/web";
 import { MachinesSection } from "@manifold-plugin/machines/web";
 import { textWeb } from "@manifold-plugin/text/web";
+import { FileIntakePanel, FilesPanel, FilesSection } from "@manifold-plugin/files/web";
+import { filesImagesWeb } from "@manifold-plugin/files/images/web";
 import { PluginManagerSection } from "@manifold-plugin/plugin-manager/web";
 import { presenceWebPlugin } from "@manifold-plugin/presence/web";
 import { terminalsWebPlugin } from "@manifold-plugin/terminals/web";
@@ -192,6 +194,12 @@ export const WEB_PLUGIN_DEFS: readonly WebPluginDef[] = [
   },
   { id: "core.index", sections: { index: IndexSection, "new-folder": NewFolderRow } },
   { id: "core.machines", sections: { machines: MachinesSection } },
+  {
+    id: "core.files",
+    panels: { library: FilesPanel, intake: FileIntakePanel },
+    sections: { library: FilesSection },
+  },
+  filesImagesWeb,
   /*
     Durable profiles and their runs belong to Agents; Sessions remains the identity and
     credential surface. Both are ordinary Access contributions, so the browser floor does

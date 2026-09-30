@@ -4,6 +4,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./action": "./src/action.ts",
     "./hooks": "./src/hooks.ts",
     "./portable-hooks": "./src/portable-hooks.ts",
     "./ui": "./src/ui/index.ts"

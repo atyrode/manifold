@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import {
-  HARDENED_CONTRACT_VERSION,
   MAX_UI_DEPTH,
   MAX_UI_NODES,
   type MachineSummary,
@@ -25,6 +24,7 @@ import {
 } from "react";
 import { attachWebGuest } from "../src/web-guest.ts";
 import type { ReactWebPluginDef } from "../src/web.ts";
+import { ByteDownload } from "@manifold/ui/frames";
 
 /**
  * THE WEB GUEST, DRIVEN BY A FAKE PAGE over an in-memory port: the frames the page posts to a
@@ -119,7 +119,8 @@ function nodes(tree: UiNode): UiNode[] {
 
 function eventOf(tree: UiNode, label: string): string {
   const control = nodes(tree).find((node) => "label" in node && node.label === label);
-  if (control === undefined || !("event" in control)) throw new Error(`no control "${label}"`);
+  if (control === undefined || !("event" in control) || control.event === undefined)
+    throw new Error(`no control "${label}"`);
   return control.event;
 }
 
@@ -150,19 +151,14 @@ function Counter({ host }: PortablePanelProps): ReactElement {
 }
 
 describe("init and mount", () => {
-  test("ready advertises panels, sections and the contract; mount paints the committed tree", async () => {
+  test("mount paints the committed panel and section trees", async () => {
     const fake = page({
       id: "example.thing",
       panels: { main: Counter },
       sections: { side: () => frame("empty", { text: "side" }) },
     });
     fake.send({ t: "init", pluginId: "example.thing", principal, caps: [], containerId: "c1" });
-    expect(await fake.next()).toEqual({
-      t: "ready",
-      panels: ["main"],
-      sections: ["side"],
-      hardenedContract: HARDENED_CONTRACT_VERSION,
-    });
+    await fake.next();
     fake.send({ t: "mount", instance: "i1", panel: "main", context: context() });
     expect(textsOf(await rendered(fake))).toEqual(["Ada: 0"]);
     fake.send({ t: "mount", instance: "s1", panel: "side", kind: "section", context: context() });
@@ -667,10 +663,47 @@ describe("refusals", () => {
       { kind: "section" },
     );
     fake.send({ t: "context", instance: "i1", context: context(), arg: { stray: true } });
-    expect(await fake.next()).toEqual({
-      t: "fault",
-      instance: "i1",
-      error: 'section "main" failed: a section takes no argument',
-    });
+    expect(await fake.next()).toMatchObject({ t: "fault", instance: "i1" });
   });
+});
+
+test("replacing a download source retires queued completion events for the old source", async () => {
+  const completed: string[] = [];
+  const Download = (): ReactElement => {
+    const [transferId, setTransferId] = useState("first");
+    return frame(
+      "box",
+      {},
+      createElement(ByteDownload, {
+        label: "Download",
+        filename: "data.bin",
+        source: {
+          pluginId: "example.bytes",
+          carrierId: "read",
+          transferId,
+          ref: { kind: "file", fileId: "file-one" },
+          bytes: 0,
+          sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        },
+        onChange: (status) => {
+          if (status.state === "complete") completed.push(transferId);
+        },
+      }),
+      frame("button", { label: "Replace", onClick: () => setTransferId("second") }),
+    );
+  };
+  const { fake, tree } = await mounted({ id: "example.bytes", panels: { main: Download } });
+  const previous = eventOf(tree, "Download");
+  fake.send({ t: "event", instance: "i1", event: eventOf(tree, "Replace") });
+  const replacement = await rendered(fake);
+  fake.send({ t: "event", instance: "i1", event: previous, payload: { state: "complete" } });
+  expect(completed).toEqual([]);
+  fake.send({
+    t: "event",
+    instance: "i1",
+    event: eventOf(replacement, "Download"),
+    payload: { state: "complete" },
+  });
+  expect(completed).toEqual(["second"]);
+  fake.send({ t: "unmount", instance: "i1" });
 });

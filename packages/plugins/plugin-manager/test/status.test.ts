@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import type {
   AuthoredCap,
   Cap,
+  MachineHalf,
+  MachineOperation,
   PluginDependencyMap,
   PluginInstall,
   PluginLifecycleState,
@@ -13,7 +15,9 @@ import type {
 } from "@manifold/protocol";
 import {
   appliedMismatch,
+  highRiskRuntimeRight,
   linkHost,
+  machineLocationRights,
   needsAttention,
   permissionCount,
   pluginPermissions,
@@ -320,6 +324,100 @@ describe("permissions", () => {
     expect(pluginPermissions(installed).map(({ cap, state }) => [cap, state])).toEqual(
       [...reviewed.values()].map(({ cap, state }) => [cap, state]),
     );
+  });
+});
+
+describe("native location permission selection", () => {
+  const transfer: MachineHalf = {
+    artifacts: {},
+    operations: {},
+    locations: {
+      delivery: {
+        anchor: "state",
+        components: ["delivery"],
+        revision: "v1",
+        kind: "directory",
+        managed: true,
+      },
+      source: {
+        anchor: "state",
+        components: ["source"],
+        revision: "v2",
+        kind: "directory",
+        managed: true,
+      },
+      unused: {
+        anchor: "state",
+        components: ["unused"],
+        revision: "v1",
+        kind: "directory",
+        managed: true,
+      },
+    },
+    transferPolicy: {
+      format: "native-transfer-v1",
+      locations: { delivery: ["create-child"], source: ["read"] },
+    },
+  };
+
+  test("transfer-only approval controls select exact policy roots without implying read or write", () => {
+    const rights = machineLocationRights("destination", transfer);
+    expect(rights.map(({ node, cap }) => [node, cap])).toEqual([
+      ["manifold://machine/destination/location/delivery", "locations:create-child"],
+      ["manifold://machine/destination/location/source", "locations:read"],
+    ]);
+    expect(rights.filter(({ cap }) => highRiskRuntimeRight(cap)).map(({ node }) => node)).toEqual([
+      "manifold://machine/destination/location/delivery",
+    ]);
+    const narrowed: MachineHalf = {
+      ...transfer,
+      transferPolicy: {
+        format: "native-transfer-v1",
+        locations: { source: ["read"] },
+      },
+    };
+    expect(
+      machineLocationRights("other-destination", narrowed).map(({ node, cap }) => [node, cap]),
+    ).toEqual([["manifold://machine/other-destination/location/source", "locations:read"]]);
+  });
+
+  test("ordinary operations retain distinct read, create and write controls without duplicate grants", () => {
+    const operation: MachineOperation = {
+      argv: [],
+      input: {},
+      runtimeTools: [],
+      outputs: [],
+      network: "none",
+      stdin: false,
+      limits: { timeoutMs: 1000, memoryBytes: 1024, processes: 1, outputBytes: 1024 },
+      locations: [
+        { locationId: "data", access: "read" },
+        { locationId: "data", access: "create" },
+      ],
+    };
+    const machine: MachineHalf = {
+      artifacts: {},
+      locations: {
+        data: { anchor: "state", components: ["data"], revision: "v1", kind: "directory" },
+      },
+      operations: {
+        first: operation,
+        second: {
+          ...operation,
+          locations: [
+            { locationId: "data", access: "read" },
+            { locationId: "data", access: "write" },
+          ],
+        },
+      },
+    };
+    expect(
+      machineLocationRights("destination", machine).map(({ node, cap }) => [node, cap]),
+    ).toEqual([
+      ["manifold://machine/destination/location/data", "locations:read"],
+      ["manifold://machine/destination/location/data", "locations:create"],
+      ["manifold://machine/destination/location/data", "locations:write"],
+    ]);
   });
 });
 

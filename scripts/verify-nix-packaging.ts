@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /** Verify native Nix outputs without a workspace install or a live machine owner. */
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -8,11 +8,14 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
+  writeFileSync,
 } from "node:fs";
 import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve, sep } from "node:path";
+import { crc32, deflateSync } from "node:zlib";
 import { ownerKeyOf, sleep } from "./gate-lib.ts";
 
 const repoRoot = resolve(import.meta.dir, "..");
@@ -105,6 +108,7 @@ async function build(name: string, rebuild = false): Promise<string> {
   if (!isAbsolute(output) || output.includes("\n")) {
     throw new Error(`Nix did not report exactly one output path for ${name}`);
   }
+  console.log(`Nix packaging: ${name} output ${output}`);
   return output;
 }
 
@@ -112,9 +116,13 @@ const deps = await build("bun-deps");
 if ((await build("bun-deps", true)) !== deps) {
   throw new Error("Nix dependency rebuild returned a different output path");
 }
+console.log(
+  `Nix packaging: native dependency NAR ${await command([nix, "hash", "path", deps], 30_000)}`,
+);
 const agentOutput = await build("manifold-agent");
 const serverOutput = await build("manifold-server");
 const clientOutput = await build("manifold");
+const bunOutput = await build("bun-runtime");
 const manifest: unknown = JSON.parse(
   readFileSync(join(repoRoot, "packages/web/package.json"), "utf8"),
 );
@@ -129,12 +137,10 @@ if (
 const version = manifest.version;
 
 /*
-  THE HARDENED SELECTION UNDER PROOF (ADR 0053 §7, #259). `core.machines` is the one first-party
-  plugin the composition root names a hardened source recipe for. Its doors are the plugin's own
-  declarations (`packages/plugins/machines/src/index.ts`, the id-derived names in `names.ts`) and
-  the toggle is the engine's (`packages/plugin/src/builtin.ts`). This verifier installs no
-  workspace dependency, so it cannot import them: the live roster must publish each one before
-  it is called, and a renamed door fails as unpublished rather than as a guess.
+  THE HARDENED SELECTIONS UNDER PROOF: Machines and Files have packaged first-party recipes.
+  Their doors are each plugin's own declarations and the toggle is the engine's. This verifier
+  installs no workspace dependency, so it cannot import them: the live roster must publish each
+  door before it is called, and a renamed door fails as unpublished rather than as a guess.
 */
 const MACHINES = "core.machines";
 const LIST = `${MACHINES}.list`;
@@ -144,6 +150,16 @@ const FORGET = `${MACHINES}.forget`;
 const ENGINE_PLUGINS = "engine.plugins";
 const SET_ENABLED = `${ENGINE_PLUGINS}.setEnabled`;
 const WORKER_ROUTE = `/api/plugins/${MACHINES}/web.worker.js`;
+const FILES = "core.files";
+const COLLECTION = { kind: "plugin", pluginId: FILES };
+const FILE_DOORS = [
+  "beginUpload",
+  "completeUpload",
+  "inspectUpload",
+  "inspect",
+  "openRead",
+  "list",
+];
 /** Above the isolate dispatch deadline (10s): a hung child answers `unavailable`, not a timeout. */
 const REQUEST_DEADLINE_MS = 15_000;
 /** Beyond any installed web asset or plugin member; nothing a hub answers buffers unbounded. */
@@ -151,7 +167,7 @@ const MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
 /** One log line, or a refused boot's whole captured stream. */
 const MAX_LOG_CHARS = 64_000;
 
-const root = mkdtempSync(join(tmpdir(), "manifold-nix-packaging-"));
+const root = realpathSync(mkdtempSync(join(tmpdir(), "manifold-nix-packaging-")));
 const cwd = join(root, "cwd");
 const home = join(root, "home");
 const temporary = join(root, "tmp");
@@ -169,6 +185,103 @@ const hubSettings = {
   MANIFOLD_ANNOUNCE_KEY: "0",
 };
 const requests = new AbortController();
+let sandbox: readonly string[] = [];
+
+/**
+ * Runtime proof sees the output closure, never build inputs. Linux starts with an empty mount
+ * namespace; macOS denies checkout, build sources and every node_modules tree with Seatbelt.
+ * A fresh HOME and disabled auto-install also prohibit a warm Bun dependency-cache fallback.
+ */
+async function coldSandbox(): Promise<readonly string[]> {
+  writeFileSync(join(root, "bunfig.toml"), '[install]\nauto = "disable"\n', { mode: 0o600 });
+  if (process.platform === "darwin") {
+    const profile = join(root, "cold.sb");
+    writeFileSync(
+      profile,
+      [
+        "(version 1)",
+        "(allow default)",
+        `(deny file-read* (subpath ${JSON.stringify(realpathSync(repoRoot))})`,
+        `  (subpath ${JSON.stringify(deps)}) (subpath "/build")`,
+        '  (regex #"(^|/)node_modules(/|$)") (regex #"^/nix/store/[^/]+-source(/|$)"))',
+        "(deny network-outbound)",
+        '(allow network-outbound (remote ip "localhost:*"))',
+      ].join("\n"),
+      { mode: 0o600 },
+    );
+    return ["/usr/bin/sandbox-exec", "-f", profile];
+  }
+  const bwrap = await command(
+    [
+      nix!,
+      "build",
+      "--no-link",
+      "--print-out-paths",
+      "--inputs-from",
+      ".",
+      `nixpkgs#legacyPackages.${system}.bubblewrap`,
+    ],
+    10 * 60_000,
+  );
+  if (!isAbsolute(bwrap) || bwrap.includes("\n"))
+    throw new Error("Nix did not report one bubblewrap output");
+  const closure = (
+    await command(
+      [nix!, "path-info", "--recursive", agentOutput, serverOutput, clientOutput, bunOutput],
+      30_000,
+    )
+  ).split("\n");
+  if (
+    closure.some(
+      (path) => !/^\/nix\/store\/[^/]+$/.test(path) || path === deps || path.endsWith("-source"),
+    )
+  )
+    throw new Error("Packaged runtime closure includes a source or dependency fallback");
+  return [
+    join(bwrap, "bin/bwrap"),
+    "--die-with-parent",
+    "--new-session",
+    "--proc",
+    "/proc",
+    "--dev",
+    "/dev",
+    "--tmpfs",
+    "/tmp",
+    ...closure.flatMap((path) => ["--ro-bind", path, path]),
+    "--bind",
+    root,
+    root,
+    "--chdir",
+    cwd,
+    "--",
+  ];
+}
+
+/** The same denial must hold for the interpreter used by packaged hardened children. */
+async function sourceFallbackAbsent(): Promise<void> {
+  const inputs = [join(repoRoot, "package.json"), join(deps, "node_modules/sharp/package.json")];
+  if (inputs.some((path) => !existsSync(path)))
+    throw new Error("Cold package denial probe does not name actual build inputs");
+  await command(
+    [
+      ...sandbox,
+      join(bunOutput, "bin/bun"),
+      "--no-install",
+      "--eval",
+      `
+    const { readFileSync } = require("node:fs");
+    for (const path of ${JSON.stringify(inputs)}) {
+      let readable = false;
+      try { readFileSync(path); readable = true; } catch {}
+      if (readable) throw new Error("Cold package can read a source/dependency fallback");
+    }
+  `,
+    ],
+    30_000,
+    cwd,
+    env,
+  );
+}
 
 /** One disposable loopback hub from the package, and the isolate children its own log named. */
 interface Hub {
@@ -180,7 +293,7 @@ interface Hub {
   readonly reaped: Set<number>;
 }
 
-/** A booted hub's loopback origin and the owner key that same hub generated for itself. */
+/** A booted hub's loopback origin and a credential that same hub generated or minted. */
 interface Fixture {
   readonly origin: string;
   readonly key: string;
@@ -191,6 +304,7 @@ interface Shipped {
   readonly pin: string;
   readonly server: Buffer;
   readonly worker: Buffer;
+  readonly files: ReadonlyMap<string, Buffer>;
 }
 
 interface Answer {
@@ -200,7 +314,8 @@ interface Answer {
 }
 
 type Outcome =
-  { readonly ok: true; readonly result: unknown } | { readonly ok: false; readonly rule: string };
+  | { readonly ok: true; readonly result: unknown }
+  | { readonly ok: false; readonly rule: string; readonly reason?: string };
 
 const hubs = new Set<Hub>();
 
@@ -244,9 +359,11 @@ async function boot(
 ): Promise<{ readonly hub: Hub; readonly origin: string }> {
   interrupted.signal.throwIfAborted();
   const dataDir = join(root, `${label}-data`);
-  const proc = Bun.spawn([hubBinary], {
+  const coldHome = join(root, `${label}-home`);
+  mkdirSync(coldHome, { mode: 0o700 });
+  const proc = Bun.spawn([...sandbox, hubBinary], {
     cwd,
-    env: { ...hubSettings, MANIFOLD_DATA_DIR: dataDir, ...selection },
+    env: { ...hubSettings, HOME: coldHome, MANIFOLD_DATA_DIR: dataDir, ...selection },
     stdin: "ignore",
     stdout: "pipe",
     stderr: "inherit",
@@ -390,7 +507,7 @@ async function bounded(stream: ReadableStream<Uint8Array>, what: string): Promis
  */
 async function refusal(label: string, selector: string, reason: string): Promise<void> {
   interrupted.signal.throwIfAborted();
-  const proc = Bun.spawn([hubBinary], {
+  const proc = Bun.spawn([...sandbox, hubBinary], {
     cwd,
     env: {
       ...hubSettings,
@@ -432,21 +549,23 @@ async function refusal(label: string, selector: string, reason: string): Promise
 /*
   node:http goes directly to the announced loopback listener, irrespective of inherited HTTP
   proxy settings. Nothing follows a redirect, and a path that would resolve to any other origin
-  is refused before a request exists. The one credential a request may carry is the owner key
-  the SAME fresh fixture's hub generated in its private data directory: read into memory only
-  after that hub announced readiness, sent only as a bearer header to that hub's own origin,
-  never logged or quoted in an error, and deleted with the fixture. Nothing is read from an
+  is refused before a request exists. A credential may only come from the SAME fresh fixture's
+  hub: its generated owner key or a token minted through that owner's action. Kept in memory
+  after readiness, sent only as a bearer header to that hub's own origin, never logged or quoted
+  in an error, and deleted with the fixture. Nothing is read from an
   operator's environment, home, checkout or any other instance.
 */
 async function exchange(
   origin: string,
   pathname: string,
-  options: { readonly key?: string; readonly json?: unknown } = {},
+  options: { readonly key?: string; readonly json?: unknown; readonly bytes?: Buffer } = {},
 ): Promise<Answer> {
   const target = new URL(pathname, origin);
   if (target.origin !== origin)
     throw new Error(`Packaged server path ${pathname} leaves its loopback origin`);
-  const body = options.json === undefined ? undefined : Buffer.from(JSON.stringify(options.json));
+  const body =
+    options.bytes ??
+    (options.json === undefined ? undefined : Buffer.from(JSON.stringify(options.json)));
   const { promise, resolve: resolveAnswer, reject } = Promise.withResolvers<Answer>();
   const req = httpRequest(
     target,
@@ -457,7 +576,11 @@ async function exchange(
         ...(options.key === undefined ? {} : { authorization: `Bearer ${options.key}` }),
         ...(body === undefined
           ? {}
-          : { "content-type": "application/json", "content-length": body.length }),
+          : {
+              "content-type":
+                options.bytes === undefined ? "application/json" : "application/octet-stream",
+              "content-length": body.length,
+            }),
       },
       signal: AbortSignal.any([
         interrupted.signal,
@@ -574,14 +697,28 @@ async function act(at: Fixture, name: string, input: unknown): Promise<Outcome> 
     throw new Error(`Packaged server ${name} returned HTTP ${answer.status}`);
   const outcome = parsed(answer.body, `Packaged server ${name}`);
   if (member(outcome, "ok") === true) return { ok: true, result: member(outcome, "result") };
-  const rule = member(member(outcome, "denial"), "rule");
-  if (member(outcome, "ok") === false && typeof rule === "string") return { ok: false, rule };
+  const denial = member(outcome, "denial");
+  const rule = member(denial, "rule");
+  const message = member(denial, "message");
+  // Only named capacity/decoder refusals are safe diagnostics; never quote arbitrary responses.
+  const reason =
+    typeof message === "string" &&
+    /^(recovery_unavailable|storage_capacity|backup_capacity|database_busy|database_full|unavailable|unsupported|invalid_image|image_too_large|outcome_unknown|integrity)$/.test(
+      message,
+    )
+      ? message
+      : undefined;
+  if (member(outcome, "ok") === false && typeof rule === "string")
+    return { ok: false, rule, ...(reason === undefined ? {} : { reason }) };
   throw new Error(`Packaged server ${name} did not answer an action outcome`);
 }
 
 async function granted(at: Fixture, name: string, input: unknown): Promise<unknown> {
   const outcome = await act(at, name, input);
-  if (!outcome.ok) throw new Error(`Packaged server refused ${name} (${outcome.rule})`);
+  if (!outcome.ok)
+    throw new Error(
+      `Packaged server refused ${name} (${outcome.rule}${outcome.reason ? `: ${outcome.reason}` : ""})`,
+    );
   return outcome.result;
 }
 
@@ -640,8 +777,8 @@ async function emptyResult(at: Fixture, name: string, input: unknown): Promise<v
     throw new Error(`Packaged server ${name} did not answer its empty result`);
 }
 
-async function workerServed(at: Fixture, shipped: Shipped): Promise<void> {
-  const answer = await exchange(at.origin, WORKER_ROUTE, { key: at.key });
+async function workerServed(at: Fixture, shipped: Shipped, plugin = MACHINES): Promise<void> {
+  const answer = await exchange(at.origin, `/api/plugins/${plugin}/web.worker.js`, { key: at.key });
   if (
     answer.status !== 200 ||
     answer.headers.etag !== `"${shipped.pin}"` ||
@@ -649,7 +786,7 @@ async function workerServed(at: Fixture, shipped: Shipped): Promise<void> {
     !(answer.headers["content-type"] ?? "").startsWith("text/javascript") ||
     !answer.body.equals(shipped.worker)
   )
-    throw new Error(`Packaged hardened server did not serve the ${MACHINES} Worker it ships`);
+    throw new Error(`Packaged hardened server did not serve the ${plugin} Worker it ships`);
 }
 
 async function workerAbsent(at: Fixture, why: string): Promise<void> {
@@ -658,29 +795,48 @@ async function workerAbsent(at: Fixture, why: string): Promise<void> {
 }
 
 /** The package's own build-time artifact for the selection; absent is a packaging defect. */
-function shippedArtifact(): Shipped {
-  const file = join(serverOutput, "share/manifold/first-party", `${MACHINES}.manifold-plugin.json`);
-  if (!existsSync(file))
-    throw new Error(`Packaged server ships no ${MACHINES} first-party artifact`);
+function shippedArtifact(plugin = MACHINES): Shipped {
+  const file = join(serverOutput, "share/manifold/first-party", `${plugin}.manifold-plugin.json`);
+  if (!existsSync(file)) throw new Error(`Packaged server ships no ${plugin} first-party artifact`);
   const bytes = readFileSync(file);
-  const artifact = parsed(bytes, `Packaged ${MACHINES} artifact`);
+  if (bytes.length > 64 * 1024 * 1024)
+    throw new Error(`Packaged ${plugin} artifact exceeds the signed-code ceiling`);
+  const artifact = parsed(bytes, `Packaged ${plugin} artifact`);
   const declared = member(artifact, "manifest");
   const files = member(artifact, "files");
   const server = member(files, "server.js");
   const worker = member(files, "web.worker.js");
   if (
-    member(declared, "id") !== MACHINES ||
+    member(declared, "id") !== plugin ||
     member(member(declared, "entry"), "worker") !== true ||
+    typeof files !== "object" ||
+    files === null ||
+    Array.isArray(files) ||
     typeof server !== "string" ||
     server === "" ||
     typeof worker !== "string" ||
     worker === ""
   )
-    throw new Error(`Packaged ${MACHINES} artifact carries no server half and portable Worker`);
+    throw new Error(`Packaged ${plugin} artifact carries no server half and portable Worker`);
+  const members = new Map<string, Buffer>();
+  let extractedBytes = 0;
+  for (const [name, value] of Object.entries(files)) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name) || typeof value !== "string")
+      throw new Error(`Packaged ${plugin} artifact has a non-flat member`);
+    const content = Buffer.from(value, "base64");
+    extractedBytes += content.length;
+    if (extractedBytes > 64 * 1024 * 1024)
+      throw new Error(`Packaged ${plugin} artifact exceeds the extraction ceiling`);
+    members.set(name, content);
+  }
+  console.log(
+    `Nix packaging: ${plugin} artifact ${bytes.length} bytes, extracted ${extractedBytes} bytes`,
+  );
   return {
     pin: createHash("sha256").update(bytes).digest("hex"),
     server: Buffer.from(server, "base64"),
     worker: Buffer.from(worker, "base64"),
+    files: members,
   };
 }
 
@@ -774,18 +930,211 @@ async function hardenedSmoke(hub: Hub, origin: string, shipped: Shipped): Promis
     throw new Error(`Packaged server ${LIST} does not return to the fixture's own inventory`);
 }
 
+/** Genuine RGB pixels compressed with zlib; no decoder or workspace dependency in the runner. */
+function imageFixture(width = 7, height = 5, corrupt = false): Buffer {
+  const chunk = (type: string, data: Buffer): Buffer => {
+    const bytes = Buffer.alloc(data.length + 12);
+    bytes.writeUInt32BE(data.length);
+    bytes.write(type, 4, 4, "latin1");
+    data.copy(bytes, 8);
+    bytes.writeUInt32BE(crc32(bytes.subarray(4, -4)), bytes.length - 4);
+    return bytes;
+  };
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width);
+  header.writeUInt32BE(height, 4);
+  header[8] = 8;
+  header[9] = 2;
+  const pixels = Buffer.alloc(5 * (1 + 7 * 3), 112);
+  for (let y = 0; y < 5; y++) pixels[y * 22] = 0;
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk("IHDR", header),
+    // Valid framing/CRC but invalid compressed pixels must not pass a metadata-only decoder.
+    chunk("IDAT", corrupt ? Buffer.from("not a zlib stream") : deflateSync(pixels)),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
+function bytePath(carrier: string, transferId: string, ref: string, bytes: number): string {
+  const query = new URLSearchParams({
+    transferId,
+    ref,
+    offset: "0",
+    sequence: "0",
+    length: String(bytes),
+  });
+  return `/api/bytes/${FILES}/${carrier}?${query}`;
+}
+
+async function uploadImage(at: Fixture, bytes: Buffer): Promise<string> {
+  const started = await granted(at, `${FILES}.beginUpload`, {
+    collection: COLLECTION,
+    requestId: `${Date.now()}_${randomUUID()}`,
+    name: "cold-image.png",
+    declaredMediaType: "image/png",
+    bytes: bytes.length,
+    expectedSha256: createHash("sha256").update(bytes).digest("hex"),
+    purpose: "image",
+  });
+  const id = member(started, "transferId");
+  if (typeof id !== "string" || member(started, "state") !== "receiving")
+    throw new Error("Packaged Files did not reserve an image upload");
+  const answer = await exchange(
+    at.origin,
+    bytePath("upload", id, `manifold://plugin/${FILES}`, bytes.length),
+    { key: at.key, bytes },
+  );
+  const receipt = parsed(answer.body, "Packaged Files byte receipt");
+  if (
+    answer.status !== 200 ||
+    answer.headers["cache-control"] !== "no-store" ||
+    member(receipt, "offset") !== bytes.length ||
+    member(receipt, "sequence") !== 0 ||
+    member(receipt, "acceptedBytes") !== bytes.length
+  )
+    throw new Error("Packaged Files did not acknowledge its actual image bytes");
+  return id;
+}
+
+/** Both the compiled in-realm decoder and the extracted hardened owner must do real work cold. */
+async function filesSmoke(hub: Hub, origin: string, shipped?: Shipped): Promise<void> {
+  const owner: Fixture = { origin, key: await ownerKey(hub) };
+  await emptyResult(owner, SET_ENABLED, { id: FILES, enabled: true });
+  const rows = await roster(owner);
+  const row = rows.get(FILES);
+  const hardened = shipped !== undefined;
+  const selected = [...rows].filter(([, entry]) => member(entry, "hardened") === true);
+  if (
+    member(row, "enabled") !== true ||
+    (member(row, "hardened") === true) !== hardened ||
+    member(row, "held") !== undefined ||
+    member(row, "install") !== undefined ||
+    FILE_DOORS.some((door) => !doors(row).includes(`${FILES}.${door}`)) ||
+    selected.length !== (hardened ? 1 : 0) ||
+    hub.children.some(({ plugin }) => plugin !== FILES) ||
+    hub.children.length > 0 !== hardened
+  )
+    throw new Error("Packaged Files did not publish the selected execution and doors");
+  if (shipped !== undefined) {
+    const extracted = join(hub.dataDir, "first-party", FILES, shipped.pin);
+    if (!existsSync(extracted) || readdirSync(extracted).length !== shipped.files.size)
+      throw new Error("Packaged Files did not extract exactly its signed flat members");
+    for (const [name, bytes] of shipped.files) {
+      if (!readFileSync(join(extracted, name)).equals(bytes))
+        throw new Error(`Packaged Files changed its signed ${name} member`);
+    }
+    await workerServed(owner, shipped, FILES);
+  }
+  if (
+    ["core.access.mint", "core.access.grant"].some(
+      (name) => !doors(rows.get("core.access")).includes(name),
+    )
+  )
+    throw new Error("Packaged server did not publish the fixture's access doors");
+  const uploader = await granted(owner, "core.access.mint", {
+    principal: { name: "Cold package image uploader" },
+    caps: ["containers:read"],
+  });
+  const principalId = member(member(uploader, "principal"), "id");
+  const token = member(uploader, "token");
+  if (typeof principalId !== "string" || typeof token !== "string" || token === "")
+    throw new Error("Packaged server did not mint the fixture's uploader");
+  await granted(owner, "core.access.grant", {
+    principal: { kind: "principal", id: principalId },
+    node: `manifold://plugin/${FILES}`,
+    caps: [`${FILES}:create`],
+    effect: "allow",
+    reach: "node",
+  });
+  const at: Fixture = { origin, key: token };
+  const bytes = imageFixture();
+  const transferId = await uploadImage(at, bytes);
+  const published = await granted(at, `${FILES}.completeUpload`, {
+    collection: COLLECTION,
+    transferId,
+  });
+  const ref = member(published, "ref");
+  const fileId = member(ref, "fileId");
+  if (member(ref, "kind") !== "file" || typeof fileId !== "string")
+    throw new Error("Packaged Files did not publish the decoded image");
+  const descriptor = await granted(at, `${FILES}.inspect`, { ref });
+  const image = member(descriptor, "image");
+  if (
+    member(image, "width") !== 7 ||
+    member(image, "height") !== 5 ||
+    member(image, "mediaType") !== "image/png" ||
+    member(descriptor, "bytes") !== bytes.length ||
+    member(descriptor, "sha256") !== createHash("sha256").update(bytes).digest("hex")
+  )
+    throw new Error("Packaged Files did not validate the complete image raster");
+  const opened = await granted(at, `${FILES}.openRead`, {
+    ref,
+    requestId: `${Date.now()}_${randomUUID()}`,
+  });
+  const readId = member(member(opened, "transfer"), "transferId");
+  if (typeof readId !== "string")
+    throw new Error("Packaged Files did not open the published bytes");
+  const received = await exchange(
+    origin,
+    bytePath("read", readId, `manifold://file/${fileId}`, bytes.length),
+    { key: at.key },
+  );
+  if (
+    received.status !== 200 ||
+    received.headers["cache-control"] !== "no-store" ||
+    !received.body.equals(bytes)
+  )
+    throw new Error("Packaged Files did not preserve the original uploaded image bytes");
+
+  for (const [input, reason] of [
+    [imageFixture(7, 5, true), "invalid_image"],
+    [imageFixture(8193, 1), "image_too_large"],
+    [imageFixture(2049, 2048), "image_too_large"],
+  ] as const) {
+    const rejectedId = await uploadImage(at, input);
+    await denied(
+      at,
+      `${FILES}.completeUpload`,
+      {
+        collection: COLLECTION,
+        transferId: rejectedId,
+      },
+      "refused",
+    );
+    const receipt = await granted(at, `${FILES}.inspectUpload`, {
+      collection: COLLECTION,
+      transferId: rejectedId,
+    });
+    if (member(receipt, "state") !== "failed" || member(receipt, "reason") !== reason)
+      throw new Error(`Packaged Files did not durably refuse ${reason}`);
+  }
+  const listed = member(await granted(at, `${FILES}.list`, {}), "files");
+  if (
+    !Array.isArray(listed) ||
+    listed.length !== 1 ||
+    member(member(listed[0], "ref"), "fileId") !== fileId
+  )
+    throw new Error("Packaged Files published a rejected image or lost the valid publication");
+  console.log(
+    `Nix packaging: cold ${hardened ? "hardened" : "compiled"} Files decoded, published and read ${bytes.length} original bytes; corrupt pixels, dimension and pixel bounds refused`,
+  );
+}
+
 try {
   chmodSync(root, 0o700);
   for (const path of [cwd, home, temporary, emptyPath]) mkdirSync(path, { mode: 0o700 });
+  sandbox = await coldSandbox();
+  await sourceFallbackAbsent();
   await command(
-    [join(agentOutput, "bin/manifold-agent"), "--maintenance", "--help"],
+    [...sandbox, join(agentOutput, "bin/manifold-agent"), "--maintenance", "--help"],
     30_000,
     cwd,
     env,
   );
-  await command([join(clientOutput, "bin/manifold"), "context"], 30_000, cwd, env, 1);
+  await command([...sandbox, join(clientOutput, "bin/manifold"), "context"], 30_000, cwd, env, 1);
   const diagnosis: unknown = JSON.parse(
-    await command([join(clientOutput, "bin/manifold"), "doctor"], 30_000, cwd, env, 1),
+    await command([...sandbox, join(clientOutput, "bin/manifold"), "doctor"], 30_000, cwd, env, 1),
   );
   if (
     typeof diagnosis !== "object" ||
@@ -800,6 +1149,7 @@ try {
 
   const inRealm = await boot("in-realm");
   await during(inRealm.hub, inRealmSmoke(inRealm.hub, inRealm.origin));
+  await during(inRealm.hub, filesSmoke(inRealm.hub, inRealm.origin));
   await close(inRealm.hub);
 
   const shipped = shippedArtifact();
@@ -811,10 +1161,18 @@ try {
   await during(hardened.hub, hardenedSmoke(hardened.hub, hardened.origin, shipped));
   await close(hardened.hub);
 
+  const filesArtifact = shippedArtifact(FILES);
+  const files = await boot("files-hardened", {
+    MANIFOLD_HARDENED_PLUGINS: FILES,
+    MANIFOLD_FIRST_PARTY_ARTIFACTS: join(root, "not-the-packaged-artifacts"),
+  });
+  await during(files.hub, filesSmoke(files.hub, files.origin, filesArtifact));
+  await close(files.hub);
+
   await refusal("unsupported", "core.terminals", '"core.terminals" has no hardened source recipe');
   await refusal("unknown", "core.nothing", '"core.nothing" is not a plugin this build registers');
   console.log(
-    `PASS  Nix packaging: ${system}, dependency rebuild, compiled agent and terminal client, hub ${version}, packaged web and asset, hardened ${MACHINES} artifact, Worker and lifecycle, selector refusals`,
+    `PASS  Nix packaging: ${system}, dependency rebuild, compiled agent and terminal client, hub ${version}, packaged web and asset, hardened ${MACHINES} artifact, Worker and lifecycle, cold compiled/hardened Files image publication and decoder bounds without source/dependency fallback, selector refusals`,
   );
 } finally {
   requests.abort();

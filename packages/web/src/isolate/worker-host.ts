@@ -1,8 +1,21 @@
-import type { HostServices, SessionHandle, StreamHandle } from "@manifold/plugin";
+import type {
+  HostServices,
+  PortableElementEdit,
+  SessionHandle,
+  StreamHandle,
+} from "@manifold/plugin";
 import { MACHINES_RESOURCE } from "@manifold/plugin/portable-hooks";
 import { requestResponse } from "../http.ts";
+import { MountedByteResources } from "../byte-renderer.tsx";
 import {
   ActionOutcomeSchema,
+  ByteCarrierRequestSchema,
+  ByteReadChunkSchema,
+  ByteTransferError,
+  ByteWriteReceiptSchema,
+  MAX_BYTE_REQUESTS,
+  MAX_BYTE_CHUNK_BYTES,
+  LocalFileHandleSchema,
   ISOLATE_ERROR_TEXT_MAX,
   HARDENED_CONTRACT_COMPAT_VERSIONS,
   IsolateReplyFrameSchema,
@@ -11,6 +24,12 @@ import {
   MachinesResponseSchema,
   PLUGIN_BUNDLE_WEB_WORKER_FILE,
   TerminalRuntimeSchema,
+  PortableElementProjectionSchema,
+  PortableElementPatchSchema,
+  PortablePanelInputSchema,
+  type PortablePanelInput,
+  canonicalJobJson,
+  type PortableElementProjection,
   WebHostContextSchema,
   StreamOpenSchema,
   type Cap,
@@ -54,6 +73,7 @@ import {
 /** The `Worker` surface the supervisor uses, so a test can hand it a fake and read its frames. */
 export interface WorkerLike {
   postMessage(message: unknown): void;
+  postMessage(message: unknown, transfer: ArrayBuffer[]): void;
   terminate(): void;
   addEventListener(type: "message", listener: (event: { readonly data: unknown }) => void): void;
   addEventListener(type: "messageerror", listener: () => void): void;
@@ -164,19 +184,31 @@ function argText(method: WebHostMethod, args: readonly unknown[], index: number)
 const SubscriptionTopicsSchema = ManifoldRefSchema.array().max(64);
 
 interface MountOptions {
-  readonly kind?: "panel" | "section";
+  readonly kind?: "panel" | "section" | "element";
   readonly host?: HostServices;
   readonly arg?: PanelArg | undefined;
+  readonly input?: PortablePanelInput | undefined;
+  readonly onResult?: ((result: PanelArg) => void) | undefined;
+  readonly resources?: MountedByteResources;
+  readonly element?: PortableElementProjection | undefined;
+  readonly edit?: PortableElementEdit | undefined;
 }
 
 interface Mounted {
   readonly panel: string;
-  readonly kind: "panel" | "section";
+  readonly kind: "panel" | "section" | "element";
   host: HostServices;
   arg: PanelArg | undefined;
+  readonly input: PortablePanelInput | undefined;
+  readonly onResult: ((result: PanelArg) => void) | undefined;
+  resultDelivered: boolean;
+  element: PortableElementProjection | undefined;
+  edit: PortableElementEdit | undefined;
   offStatus: (() => void) | null;
   contextStamp: string | null;
   faulted: boolean;
+  resources: MountedByteResources;
+  ownsResources: boolean;
   readonly onRender: (tree: UiNode) => void;
   readonly onFault: (error: string) => void;
   /** Whether a `mount` frame has gone out: only then does an `unmount` owe one. */
@@ -196,6 +228,7 @@ export class WorkerHost {
   /** The panels the guest announced with `ready`; null until it has. */
   private panels: ReadonlySet<string> | null = null;
   private sections: ReadonlySet<string> = new Set();
+  private elements: ReadonlySet<string> = new Set();
   private contract = 0;
   private readonly mounted = new Map<string, Mounted>();
   private readonly streams = new Map<
@@ -208,6 +241,10 @@ export class WorkerHost {
     }
   >();
   private readonly subscriptions = new Map<string, Subscription>();
+  private readonly byteRequests = new Map<
+    string,
+    { readonly instance: string; readonly controller: AbortController }
+  >();
   private offVisibility: (() => void) | null = null;
   private started = false;
   /** The worker-wide fault, once there is one; sticky for the life of this supervisor. */
@@ -296,14 +333,40 @@ export class WorkerHost {
       return () => {};
     }
     if (this.mounted.has(instance)) throw new Error("duplicate mounted instance");
+    const projection =
+      options.element === undefined
+        ? undefined
+        : PortableElementProjectionSchema.safeParse(options.element);
+    const input =
+      options.input === undefined ? undefined : PortablePanelInputSchema.safeParse(options.input);
+    if (
+      (options.kind === "element") !== (projection !== undefined) ||
+      projection?.success === false ||
+      input?.success === false ||
+      (options.kind !== undefined &&
+        options.kind !== "panel" &&
+        (options.arg !== undefined ||
+          options.input !== undefined ||
+          options.onResult !== undefined))
+    ) {
+      onFault("contribution mount data is unavailable");
+      return () => {};
+    }
     const entry: Mounted = {
       panel,
       kind: options.kind ?? "panel",
       host: options.host ?? this.host,
       arg: options.arg,
+      input: input?.data,
+      onResult: options.onResult,
+      resultDelivered: false,
+      element: projection?.data,
+      edit: options.edit,
       offStatus: null,
       contextStamp: null,
       faulted: false,
+      resources: options.resources ?? new MountedByteResources((options.host ?? this.host).client),
+      ownsResources: options.resources === undefined,
       onRender,
       onFault,
       announced: false,
@@ -319,12 +382,46 @@ export class WorkerHost {
   }
 
   /** Update one mount's presentation and live authority without resetting its React state. */
-  update(instance: string, host: HostServices, arg?: PanelArg): void {
+  update(
+    instance: string,
+    host: HostServices,
+    arg?: PanelArg,
+    element?: PortableElementProjection,
+    edit?: PortableElementEdit,
+  ): void {
     const entry = this.mounted.get(instance);
     if (entry === undefined || entry.faulted) return;
+    const projection =
+      element === undefined ? undefined : PortableElementProjectionSchema.safeParse(element);
+    if (
+      (entry.kind === "element") !== (projection !== undefined) ||
+      projection?.success === false ||
+      (entry.element !== undefined && entry.element.id !== projection?.data?.id) ||
+      (entry.kind !== "panel" && arg !== undefined)
+    ) {
+      this.faultInstance(instance, entry, "mounted contribution identity or payload kind changed");
+      return;
+    }
     const changedClient = entry.host.client !== host.client;
+    if (
+      (entry.input !== undefined || entry.onResult !== undefined) &&
+      (changedClient ||
+        entry.host.token !== host.token ||
+        entry.host.containerId !== host.containerId)
+    ) {
+      this.faultInstance(instance, entry, "intake retired: its host identity changed");
+      return;
+    }
+    if (changedClient || entry.host.token !== host.token) {
+      this.cancelInstanceBytes(instance);
+      entry.resources.close();
+      entry.resources = new MountedByteResources(host.client);
+      entry.ownsResources = true;
+    }
     entry.host = host;
     entry.arg = arg;
+    entry.element = projection?.data;
+    entry.edit = edit;
     if (entry.announced && this.contract >= 9) {
       if (changedClient) {
         try {
@@ -371,7 +468,7 @@ export class WorkerHost {
   stop(): void {
     if (this.stopped) return;
     this.stopped = true;
-    for (const [instance, entry] of this.mounted) this.releaseInstance(instance, entry);
+    for (const [instance, entry] of this.mounted) this.releaseInstance(instance, entry, true);
     this.mounted.clear();
     this.offVisibility?.();
     this.offVisibility = null;
@@ -381,13 +478,26 @@ export class WorkerHost {
 
   private announce(instance: string, entry: Mounted): void {
     if (this.panels === null) return;
-    const contributions = entry.kind === "section" ? this.sections : this.panels;
+    const contributions =
+      entry.kind === "element"
+        ? this.elements
+        : entry.kind === "section"
+          ? this.sections
+          : this.panels;
     if (!contributions.has(entry.panel)) {
       this.faultInstance(
         instance,
         entry,
         `${entry.kind} "${entry.panel}" is declared by ${this.deps.pluginId} but its web half serves no component for it`,
       );
+      return;
+    }
+    if (entry.kind === "element" && this.contract < 12) {
+      this.faultInstance(instance, entry, "element projection requires hardened contract 12");
+      return;
+    }
+    if ((entry.input !== undefined || entry.onResult !== undefined) && this.contract < 12) {
+      this.faultInstance(instance, entry, "transient panel intake requires hardened contract 12");
       return;
     }
     entry.announced = true;
@@ -397,7 +507,7 @@ export class WorkerHost {
     }
     this.observeStatus(instance, entry);
     const context = this.context(entry);
-    entry.contextStamp = JSON.stringify({ context, arg: entry.arg });
+    entry.contextStamp = JSON.stringify({ context, arg: entry.arg, element: entry.element });
     this.post({
       t: "mount",
       instance,
@@ -405,6 +515,9 @@ export class WorkerHost {
       kind: entry.kind,
       context,
       ...(entry.arg === undefined ? {} : { arg: entry.arg }),
+      ...(entry.element === undefined ? {} : { element: entry.element }),
+      ...(entry.input === undefined ? {} : { input: entry.input }),
+      ...(entry.onResult === undefined ? {} : { acceptsResult: true as const }),
     });
   }
 
@@ -418,6 +531,7 @@ export class WorkerHost {
       status: host.client.status,
       hidden: typeof document !== "undefined" && document.hidden,
       canAuthor: host.authoring !== null,
+      ...(this.contract >= 12 ? { elementWritable: entry.edit?.writable ?? false } : {}),
     });
   }
 
@@ -435,7 +549,7 @@ export class WorkerHost {
     )
       return;
     const context = this.context(entry);
-    const stamp = JSON.stringify({ context, arg: entry.arg });
+    const stamp = JSON.stringify({ context, arg: entry.arg, element: entry.element });
     if (stamp === entry.contextStamp) return;
     entry.contextStamp = stamp;
     this.post({
@@ -443,10 +557,17 @@ export class WorkerHost {
       instance,
       context,
       ...(entry.arg === undefined ? {} : { arg: entry.arg }),
+      ...(entry.element === undefined ? {} : { element: entry.element }),
     });
   }
 
-  private releaseInstance(instance: string, entry: Mounted): void {
+  private releaseInstance(
+    instance: string,
+    entry: Mounted,
+    closeResources = entry.ownsResources,
+  ): void {
+    if (closeResources) entry.resources.close();
+    this.cancelInstanceBytes(instance);
     entry.offStatus?.();
     entry.offStatus = null;
     for (const [id, stream] of this.streams) {
@@ -460,13 +581,14 @@ export class WorkerHost {
   private faultInstance(instance: string, entry: Mounted, error: string): void {
     if (entry.faulted) return;
     entry.faulted = true;
-    this.releaseInstance(instance, entry);
+    this.releaseInstance(instance, entry, true);
     if (entry.announced) this.post({ t: "unmount", instance });
     entry.onFault(error);
   }
 
-  private post(frame: WebIsolateHostFrame): void {
-    this.worker?.postMessage(frame);
+  private post(frame: WebIsolateHostFrame, transfer?: ArrayBuffer[]): void {
+    if (transfer === undefined) this.worker?.postMessage(frame);
+    else this.worker?.postMessage(frame, transfer);
   }
 
   private receive(data: unknown): void {
@@ -498,6 +620,7 @@ export class WorkerHost {
         }
         this.contract = contract;
         this.sections = new Set(frame.sections ?? []);
+        this.elements = new Set(frame.elements ?? []);
         this.panels = new Set(frame.panels);
         for (const [instance, entry] of this.mounted) this.announce(instance, entry);
         return;
@@ -505,6 +628,23 @@ export class WorkerHost {
       case "render": {
         const entry = this.mounted.get(frame.instance);
         if (entry?.announced === true && !entry.faulted) entry.onRender(frame.tree);
+        return;
+      }
+      case "panel_result": {
+        const entry = this.mounted.get(frame.instance);
+        if (entry === undefined || !entry.announced || entry.faulted) return;
+        if (
+          this.contract < 12 ||
+          entry.kind !== "panel" ||
+          entry.onResult === undefined ||
+          entry.resultDelivered ||
+          !entry.resources.isLive
+        ) {
+          this.faultInstance(frame.instance, entry, "panel result has no live intake receiver");
+          return;
+        }
+        entry.resultDelivered = true;
+        entry.onResult(frame.result);
         return;
       }
       case "call": {
@@ -529,18 +669,56 @@ export class WorkerHost {
 
   private async serve(frame: CallFrame): Promise<void> {
     let reply: IsolateReplyFrame;
+    let transfer: ArrayBuffer[] | undefined;
     const scoped = this.contract >= 9 || this.deps.portableWorker === true;
     const owner = frame.instance === undefined ? undefined : this.mounted.get(frame.instance);
+    const currentHost = owner?.host;
+    const isByteCall =
+      frame.method === "readByteChunk" ||
+      frame.method === "writeByteChunk" ||
+      frame.method === "readLocalFile";
     if (scoped && (owner === undefined || !owner.announced || owner.faulted)) {
       this.reply(refusalFrame(frame.id, "call owner is not mounted"));
       return;
     }
     try {
       const value: unknown = await this.dispatch(frame.method, frame.args, frame.instance);
-      const result = this.contract < 10 ? legacyMachineResult(frame, value) : value;
+      let result: unknown = this.contract < 10 ? legacyMachineResult(frame, value) : value;
+      if (frame.method === "readByteChunk") {
+        const chunk = ByteReadChunkSchema.parse(result);
+        // Never expose an unrelated backing-buffer region or detach somebody else's view.
+        const data =
+          chunk.data.buffer instanceof ArrayBuffer &&
+          chunk.data.byteOffset === 0 &&
+          chunk.data.byteLength === chunk.data.buffer.byteLength
+            ? (chunk.data as Uint8Array<ArrayBuffer>)
+            : new Uint8Array(chunk.data);
+        result = { ...chunk, data };
+        transfer = [data.buffer];
+      }
+      if (frame.method === "readLocalFile") {
+        if (!(result instanceof Uint8Array) || result.byteLength > MAX_BYTE_CHUNK_BYTES) {
+          throw new ByteTransferError("invalid");
+        }
+        const data =
+          result.buffer instanceof ArrayBuffer &&
+          result.byteOffset === 0 &&
+          result.byteLength === result.buffer.byteLength
+            ? (result as Uint8Array<ArrayBuffer>)
+            : new Uint8Array(result);
+        result = data;
+        transfer = [data.buffer];
+      }
       reply = { t: "reply", id: frame.id, ok: true, result };
     } catch (reason) {
-      reply = refusalFrame(frame.id, reason);
+      reply = refusalFrame(
+        frame.id,
+        isByteCall && !(reason instanceof ByteTransferError)
+          ? new ByteTransferError(
+              frame.method === "writeByteChunk" ? "outcome_unknown" : "unavailable",
+            )
+          : reason,
+      );
     }
     if (this.fault !== null || this.stopped) return;
     if (
@@ -549,13 +727,25 @@ export class WorkerHost {
       (this.mounted.get(frame.instance!) !== owner || owner.faulted)
     )
       return;
-    this.reply(reply);
+    if (
+      isByteCall &&
+      (owner?.host.client !== currentHost?.client || owner?.host.token !== currentHost?.token)
+    ) {
+      reply = refusalFrame(
+        frame.id,
+        new ByteTransferError(
+          frame.method === "writeByteChunk" ? "outcome_unknown" : "unavailable",
+        ),
+      );
+      transfer = undefined;
+    }
+    this.reply(reply, transfer);
   }
 
-  private reply(frame: IsolateReplyFrame): void {
+  private reply(frame: IsolateReplyFrame, transfer?: ArrayBuffer[]): void {
     const reply = IsolateReplyFrameSchema.parse(frame);
     try {
-      this.post(reply);
+      this.post(reply, transfer);
     } catch (reason) {
       // A result the structured clone refuses (a live handle, a function): answer once by id.
       this.post(refusalFrame(frame.id, reason, "result not serialisable: "));
@@ -651,6 +841,156 @@ export class WorkerHost {
     return authoring.createTerminal(machine, runtime);
   }
 
+  private cancelInstanceBytes(instance: string): void {
+    for (const request of this.byteRequests.values()) {
+      if (request.instance === instance) request.controller.abort();
+    }
+  }
+
+  private async byteRequest(
+    method: "readByteChunk" | "writeByteChunk",
+    args: readonly unknown[],
+    instance: string | undefined,
+  ): Promise<unknown> {
+    const [id, pluginId, carrierId, input, data] = args;
+    const parsed = ByteCarrierRequestSchema.safeParse(input);
+    if (
+      args.length !== (method === "readByteChunk" ? 4 : 5) ||
+      typeof id !== "string" ||
+      !/^[a-zA-Z0-9_-]{1,128}$/.test(id) ||
+      typeof pluginId !== "string" ||
+      pluginId.length === 0 ||
+      pluginId.length > 128 ||
+      typeof carrierId !== "string" ||
+      carrierId.length === 0 ||
+      carrierId.length > 128 ||
+      !parsed.success
+    ) {
+      throw new ByteTransferError("invalid");
+    }
+    if (
+      method === "writeByteChunk" &&
+      (!(data instanceof Uint8Array) ||
+        data.byteLength !== parsed.data.length ||
+        !(data.buffer instanceof ArrayBuffer) ||
+        data.byteOffset !== 0 ||
+        data.buffer.byteLength !== data.byteLength)
+    ) {
+      throw new ByteTransferError("invalid");
+    }
+    if (this.byteRequests.has(id) || this.byteRequests.size >= MAX_BYTE_REQUESTS) {
+      throw new ByteTransferError("busy");
+    }
+    const entry = this.mountedOwner(instance);
+    const host = entry.host;
+    const controller = new AbortController();
+    const request = { instance: instance!, controller };
+    this.byteRequests.set(id, request);
+    const assertCurrent = (): void => {
+      if (
+        controller.signal.aborted ||
+        this.stopped ||
+        this.fault !== null ||
+        this.mounted.get(instance!) !== entry ||
+        entry.faulted ||
+        entry.host.client !== host.client ||
+        entry.host.token !== host.token
+      ) {
+        throw new ByteTransferError("unavailable");
+      }
+    };
+    try {
+      assertCurrent();
+      if (method === "readByteChunk") {
+        const result = await host.client.readByteChunk(
+          pluginId,
+          carrierId,
+          parsed.data,
+          controller.signal,
+        );
+        assertCurrent();
+        const chunk = ByteReadChunkSchema.safeParse(result);
+        if (
+          !chunk.success ||
+          chunk.data.offset !== parsed.data.offset ||
+          chunk.data.data.byteLength > parsed.data.length
+        ) {
+          throw new ByteTransferError("invalid");
+        }
+        return chunk.data;
+      }
+      // The branch above admitted this exact, exclusively transferred buffer.
+      const result = await host.client.writeByteChunk(
+        pluginId,
+        carrierId,
+        parsed.data,
+        data as Uint8Array,
+        controller.signal,
+      );
+      try {
+        assertCurrent();
+      } catch {
+        // The write already returned an acknowledgement; losing its delivery is not rollback.
+        throw new ByteTransferError("outcome_unknown");
+      }
+      const receipt = ByteWriteReceiptSchema.safeParse(result);
+      if (
+        !receipt.success ||
+        receipt.data.offset < parsed.data.offset + parsed.data.length ||
+        receipt.data.sequence !== parsed.data.sequence ||
+        receipt.data.acceptedBytes !== parsed.data.length
+      ) {
+        throw new ByteTransferError("outcome_unknown");
+      }
+      return receipt.data;
+    } catch (reason) {
+      if (reason instanceof ByteTransferError) throw reason;
+      throw new ByteTransferError(method === "writeByteChunk" ? "outcome_unknown" : "unavailable");
+    } finally {
+      this.byteRequests.delete(id);
+    }
+  }
+
+  private async readLocalFile(
+    args: readonly unknown[],
+    instance: string | undefined,
+  ): Promise<Uint8Array> {
+    const [id, handle, offset, length] = args;
+    if (
+      args.length !== 4 ||
+      typeof id !== "string" ||
+      !/^[a-zA-Z0-9_-]{1,128}$/.test(id) ||
+      !LocalFileHandleSchema.safeParse(handle).success ||
+      typeof offset !== "number" ||
+      typeof length !== "number"
+    ) {
+      throw new ByteTransferError("invalid");
+    }
+    if (this.byteRequests.has(id) || this.byteRequests.size >= MAX_BYTE_REQUESTS)
+      throw new ByteTransferError("busy");
+    const entry = this.mountedOwner(instance);
+    const resources = entry.resources;
+    const controller = new AbortController();
+    this.byteRequests.set(id, { instance: instance!, controller });
+    try {
+      const data = await resources.localFiles.read(handle as string, offset, length, {
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted) throw new ByteTransferError("cancelled");
+      if (
+        entry.faulted ||
+        this.stopped ||
+        this.mounted.get(instance!) !== entry ||
+        entry.resources !== resources
+      ) {
+        throw new ByteTransferError("unavailable");
+      }
+      return data;
+    } finally {
+      this.byteRequests.delete(id);
+    }
+  }
+
   private dispatch(
     method: WebHostMethod,
     args: readonly unknown[],
@@ -667,7 +1007,50 @@ export class WorkerHost {
     ) {
       throw new Error(`slice_unavailable: ${method} requires hardened contract 9`);
     }
+    if (
+      this.contract < 12 &&
+      (method === "readByteChunk" ||
+        method === "writeByteChunk" ||
+        method === "cancelByteRequest" ||
+        method === "readLocalFile" ||
+        method === "releaseLocalFile")
+    ) {
+      throw new ByteTransferError("unsupported");
+    }
     switch (method) {
+      case "patchElement": {
+        const owner = this.mountedOwner(instance);
+        const request = PortableElementPatchSchema.parse(args.length === 1 ? args[0] : null);
+        if (
+          owner.kind !== "element" ||
+          !owner.element ||
+          !owner.edit?.writable ||
+          canonicalJobJson(request.expected) !== canonicalJobJson(owner.element.data)
+        ) {
+          throw new Error("Element edit context changed");
+        }
+        return owner.edit.patch(request.patch);
+      }
+      case "readLocalFile":
+        return this.readLocalFile(args, instance);
+      case "releaseLocalFile": {
+        if (args.length !== 1 || !LocalFileHandleSchema.safeParse(args[0]).success) {
+          throw new ByteTransferError("invalid");
+        }
+        return this.mountedOwner(instance).resources.localFiles.release(args[0] as string);
+      }
+      case "readByteChunk":
+      case "writeByteChunk":
+        return this.byteRequest(method, args, instance);
+      case "cancelByteRequest": {
+        if (args.length !== 1 || typeof args[0] !== "string" || args[0].length > 128) {
+          throw new ByteTransferError("invalid");
+        }
+        const request = this.byteRequests.get(args[0]);
+        this.checkResourceOwner(request, instance);
+        request?.controller.abort();
+        return null;
+      }
       case "subscribe": {
         this.mountedOwner(instance);
         const id = argText(method, args, 0);

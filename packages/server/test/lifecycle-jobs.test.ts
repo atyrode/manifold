@@ -43,7 +43,15 @@ import { PlaceExecutor, assemblyItemNouns, assemblyPlacementVocabulary } from ".
 import { RoomManager } from "../src/room.ts";
 import { sha256Hex } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
-import { FakeClock, FakeRuntime, testEventHub, testStore, testTileTrees } from "./helpers.ts";
+import {
+  closeTestStore,
+  FakeClock,
+  FakeRuntime,
+  testEventHub,
+  testStore,
+  testTileTrees,
+  trackTestPluginHost,
+} from "./helpers.ts";
 
 /*
   THE ENABLE THAT CAN START A CADENCE (#514).
@@ -147,6 +155,9 @@ class StubRunner implements IsolateRunner {
   state(pluginId: string): IsolateState {
     return this.states.get(pluginId) ?? "stopped";
   }
+  remainingHostCallMs(): number {
+    return Number.POSITIVE_INFINITY;
+  }
   onState(): () => void {
     return () => {};
   }
@@ -235,6 +246,7 @@ async function fixture(
           : { lifecycleTimeoutMs: options.lifecycleTimeoutMs }),
       },
     );
+    trackTestPluginHost(store, host);
     return host;
   };
   const service = new JobService(store, auth, runtime);
@@ -324,7 +336,7 @@ async function fixture(
     online,
     request: { source, sha256: sha256Hex(bytes), hardened: true as const },
     close: () => {
-      store.close();
+      closeTestStore(store);
       rmSync(dataDir, { recursive: true, force: true });
     },
   };
@@ -918,18 +930,35 @@ test("settled metadata uses the job credential instead of an owner or absent ins
       },
       {
         capabilities: scenario === "attenuated-install" ? ["*"] : METADATA_CAPS,
+        // Replacement drains this callback before changing its grant. Bound that deliberate
+        // suspension so the late reads exercise the retired lease, not a circular fixture wait.
+        ...(scenario === "attenuated-install" ? { lifecycleTimeoutMs: 1_000 } : {}),
         onJobSettled: async (ctx) => {
-          seen.push(await metadataFailure(() => ctx.host!.enabled(PLUGIN_ID)));
-          seen.push(ctx.services!.listInstances({}));
-          inventories.push(ctx.machines!.inventory());
-          entered.resolve();
-          await resume.promise;
-          seen.push(await metadataFailure(() => ctx.host!.roster()));
-          seen.push(await metadataFailure(() => ctx.services!.listInstances({})));
-          inventories.push(ctx.machines!.inventory());
-          seen.push(await metadataFailure(() => ctx.jobs.schedules()));
-          seen.push(await metadataFailure(() => ctx.storage.set("late", "no")));
-          finished.resolve();
+          try {
+            seen.push(await metadataFailure(() => ctx.host!.enabled(PLUGIN_ID)));
+            seen.push(ctx.services!.listInstances({}));
+            inventories.push(ctx.machines!.inventory());
+            entered.resolve();
+            await resume.promise;
+            if (scenario === "attenuated-install") {
+              // Replacement waited for the old lease to end; it cannot admit new work.
+              expect(() => ctx.host!.roster()).toThrow(Error);
+              expect(() => ctx.services!.listInstances({})).toThrow(Error);
+              expect(() => ctx.machines!.inventory()).toThrow(Error);
+              expect(() => ctx.jobs.schedules()).toThrow(Error);
+              await expect(ctx.storage.set("late", "no")).rejects.toThrow(Error);
+            } else {
+              seen.push(await metadataFailure(() => ctx.host!.roster()));
+              seen.push(await metadataFailure(() => ctx.services!.listInstances({})));
+              inventories.push(ctx.machines!.inventory());
+              seen.push(await metadataFailure(() => ctx.jobs.schedules()));
+              seen.push(await metadataFailure(() => ctx.storage.set("late", "no")));
+            }
+            finished.resolve();
+          } catch (error) {
+            finished.reject(error);
+            throw error;
+          }
         },
       },
     );
@@ -995,7 +1024,7 @@ test("settled metadata uses the job credential instead of an owner or absent ins
           outputs: [],
         },
       });
-      await entered.promise;
+      await Promise.race([entered.promise, finished.promise]);
       if (scenario === "attenuated-install") {
         await f.host.install(
           { ...f.request, grant: [], replace: true },
@@ -1018,9 +1047,11 @@ test("settled metadata uses the job credential instead of an owner or absent ins
           value: { machines: [{ id: f.machineId, name: "worker" }] },
         });
       }
-      expect(inventories[1]).toMatchObject({ ok: false, code: "forbidden" });
-      expect(inventories[1]).not.toHaveProperty("value");
-      expect(seen.slice(2)).toEqual(["forbidden", "forbidden", "forbidden", "forbidden"]);
+      if (scenario !== "attenuated-install") {
+        expect(inventories[1]).toMatchObject({ ok: false, code: "forbidden" });
+        expect(inventories[1]).not.toHaveProperty("value");
+        expect(seen.slice(2)).toEqual(["forbidden", "forbidden", "forbidden", "forbidden"]);
+      }
     } finally {
       resume.resolve();
       f.close();

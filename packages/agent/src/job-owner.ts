@@ -88,6 +88,11 @@ import {
 } from "./job-service-proxy.ts";
 import { materializeJobInputs, type JobServiceEndpoint } from "./job-inputs.ts";
 import { createServiceTunnel, type ServiceTunnel } from "./job-service-tunnel.ts";
+import {
+  NativeTransferOwner,
+  nativeDirectoriesOverlap,
+  validateNativeTransferInstallation,
+} from "./native-transfers.ts";
 
 interface OwnedServiceTunnel {
   wire: ServiceTunnel;
@@ -258,6 +263,8 @@ export class MachineJobOwner {
   private readonly challenges = new Set<string>();
   private readonly admissionKey: KeyObject;
   private readonly exclusions: DirectoryExclusions;
+  private readonly nativeTransfers: NativeTransferOwner;
+  private nativeTransferSeatNonce: string | null = null;
   private sink: ((event: JobEvent) => boolean) | null = null;
   private draining = false;
   private ready = false;
@@ -315,6 +322,38 @@ export class MachineJobOwner {
       ),
       resolveRuntime: (policy, signal) => this.instanceService(policy, signal),
     });
+    this.nativeTransfers = new NativeTransferOwner({
+      machineId: options.machineId,
+      journal: options.journal,
+      admissionKey: this.admissionKey,
+      managedState: options.managedState,
+      anchors: options.anchors,
+      exclusions: this.exclusions,
+      outputs: options.outputs,
+      installation: (pluginId, revision) => this.installs.get(this.installKey(pluginId, revision)),
+      anchorDigest: (anchor) => {
+        this.resources.refresh({ tools: [], anchors: [anchor], services: [] });
+        return this.resources.snapshot().anchors[anchor];
+      },
+      seat: () => (this.sink ? this.seatController.signal : null),
+      seatNonce: () => this.nativeTransferSeatNonce,
+      draining: () => this.draining,
+      assertRootAvailable: (fd) => {
+        for (const job of this.jobs.values()) {
+          // Empty workloads can still have an output seal in flight. A private receiving
+          // sibling must not be swept into that earlier job's archive.
+          for (const lease of job.leases)
+            if (nativeDirectoriesOverlap(fd, lease.directory.fd))
+              throw new Error("native_transfer_job_location_busy");
+          if (job.emptyObserved) continue;
+          for (const location of job.locations.values()) {
+            const directory = location.directory?.fd ?? location.parentFd;
+            if (directory !== undefined && nativeDirectoriesOverlap(fd, directory))
+              throw new Error("native_transfer_job_location_busy");
+          }
+        }
+      },
+    });
   }
 
   static async open(options: JobOwnerOptions): Promise<MachineJobOwner> {
@@ -342,6 +381,7 @@ export class MachineJobOwner {
           },
         });
     }
+    owner.nativeTransfers.recover();
     // Only now is every earlier workload proven gone and every earlier job's result terminal, so
     // nothing left in the temporary namespace can still be written, sealed or read. A namespace
     // that cannot be cleared stays whole: it closes admission, never the owner's retained state.
@@ -366,6 +406,7 @@ export class MachineJobOwner {
     return (
       this.draining &&
       this.directServiceCalls.size === 0 &&
+      this.nativeTransfers.idle &&
       [...this.jobs.values()].every((job) => job.emptyObserved)
     );
   }
@@ -377,6 +418,7 @@ export class MachineJobOwner {
     this.draining = draining;
     if (draining) for (const tunnel of this.serviceTunnels.values()) tunnel.controller.abort();
     if (draining) for (const job of this.jobs.values()) job.context?.abortAgentRuns();
+    if (draining) this.nativeTransfers.invalidate();
   }
   get identity(): JobOwner {
     const journal = this.options.journal;
@@ -399,6 +441,7 @@ export class MachineJobOwner {
     if (this.sink) throw new Error("job_owner_seat_taken");
     this.sink = sink;
     this.seatController = new AbortController();
+    this.nativeTransferSeatNonce = null;
     for (const job of this.jobs.values()) {
       if (job.outputGap) sink({ type: "refusal", jobId: job.request.jobId, reason: "output_gap" });
     }
@@ -406,6 +449,8 @@ export class MachineJobOwner {
       if (this.sink === sink) {
         this.sink = null;
         this.seatController.abort();
+        this.nativeTransferSeatNonce = null;
+        this.nativeTransfers.invalidate();
         for (const pending of this.serviceAuthorizations.values()) pending.resolve(false);
         for (const pending of this.directServiceCalls.values()) pending.controller.abort();
         for (const pending of this.inputAuthorizations.values()) pending.resolve(false);
@@ -418,6 +463,21 @@ export class MachineJobOwner {
     if (!this.ready) throw new Error("job_owner_not_ready");
     try {
       switch (command.type) {
+        case "native_transfer": {
+          if (parentJobId !== null) throw new Error("context_command_forbidden");
+          const seat = this.seatController.signal;
+          const result = await this.nativeTransfers.execute(command);
+          if (seat.aborted || seat !== this.seatController.signal || !this.sink) return;
+          const refusal = this.nativeTransfers.deliveryRefusal(command, seat);
+          this.emit({
+            type: "native_transfer_result",
+            rpcId: command.rpcId,
+            ownerId: this.options.journal.ownerId,
+            ownerGeneration: this.options.journal.generation,
+            result: refusal ? { ok: false, reason: refusal } : result,
+          });
+          return;
+        }
         case "owner_challenge": {
           if (
             command.machineId !== this.options.machineId ||
@@ -428,6 +488,7 @@ export class MachineJobOwner {
           if (this.challenges.has(challenge) || this.challenges.size >= 4096)
             throw new Error("owner_challenge_replayed_or_exhausted");
           this.challenges.add(challenge);
+          this.nativeTransferSeatNonce = command.nonce;
           const body = {
             nonce: command.nonce,
             serverEpoch: command.serverEpoch,
@@ -1931,6 +1992,18 @@ export class MachineJobOwner {
   }
 
   private restoreInstallation(command: Extract<JobCommand, { type: "install" }>): void {
+    if (command.machine.transferPolicy) {
+      validateNativeTransferInstallation(command);
+      this.installs.set(this.installKey(command.pluginId, command.installationRevision), {
+        command: { ...command, action: undefined },
+        enabled: command.action !== "disable",
+        artifact: null,
+        tools: new Map(),
+        toolFailures: new Map(),
+        runtimeAliases: new Map(),
+      });
+      return;
+    }
     const runtimeAliases = this.runtimeAliases(command);
     const spec = command.machine.artifacts[this.platform()];
     if (!spec || spec.sha256 !== command.artifactSha256)
@@ -1966,6 +2039,10 @@ export class MachineJobOwner {
   }
 
   private async install(incoming: Extract<JobCommand, { type: "install" }>): Promise<void> {
+    if (incoming.machine.transferPolicy) {
+      this.installNativeTransfer(incoming);
+      return;
+    }
     const { artifact: delivery, toolArtifacts, ...command } = incoming;
     const artifactSpec = command.machine.artifacts[this.platform()];
     if (!artifactSpec || artifactSpec.sha256 !== command.artifactSha256)
@@ -2169,6 +2246,34 @@ export class MachineJobOwner {
         );
       }
     }
+    this.publishInstallationChange(command);
+  }
+
+  private installNativeTransfer(command: Extract<JobCommand, { type: "install" }>): void {
+    this.platform();
+    validateNativeTransferInstallation(command);
+    if (this.draining && !command.action) throw new Error("owner_draining");
+    const key = this.installKey(command.pluginId, command.installationRevision);
+    const existing = this.installs.get(key);
+    const normalized = { ...command, action: undefined };
+    if (existing && jobDigest(existing.command) !== jobDigest(normalized))
+      throw new Error("installation_revision_changed");
+    if (command.action && !existing) throw new Error("installation_revision_changed");
+    if (!existing && this.installs.size >= 128) throw new Error("installation_capacity");
+    this.nativeTransfers.invalidate(command.pluginId);
+    if (command.action === "purge" && this.nativeTransfers.hasUnknown(command.pluginId))
+      throw new Error("native_transfer_outcome_unknown");
+    this.options.journal.append({ kind: "install", command });
+    if (command.action === "purge") this.installs.delete(key);
+    else
+      this.installs.set(key, {
+        command: normalized,
+        enabled: command.action !== "disable",
+        artifact: null,
+        tools: new Map(),
+        toolFailures: new Map(),
+        runtimeAliases: new Map(),
+      });
     this.publishInstallationChange(command);
   }
 
@@ -2615,8 +2720,10 @@ export class MachineJobOwner {
           job.locations.has(declaration.locationId)
         )
           throw new Error("location_anchor_unavailable_or_duplicate");
-        const beforeCreate = (parentFd: number) =>
+        const beforeCreate = (parentFd: number) => {
+          this.nativeTransfers.assertCreateAvailable(parentFd);
           this.options.outputs.assertCreateAllowed(parentFd, preparation);
+        };
         const resolved = resource.temporary
           ? resolveTemporaryJobLocation(
               () => this.provisionOutputScratch(job),
@@ -2643,6 +2750,7 @@ export class MachineJobOwner {
                 beforeCreate,
               );
         job.locations.set(declaration.locationId, resolved);
+        this.nativeTransfers.assertLocationAvailable(resolved.fd, resolved.parentFd);
         if (resolved.writable && !declaration.outputOnly)
           job.releaseWriters.push(
             this.options.outputs.retainWriter(resolved.fd, resolved.parentFd, preparation),
@@ -3474,7 +3582,9 @@ export class MachineJobOwner {
     // Admission and the pre-spawn check refresh their required resource fingerprints.
     const inventory = installation ? this.resources.snapshot() : undefined;
     return {
-      artifactAvailable: installation?.artifact !== null && installation?.artifact !== undefined,
+      artifactAvailable:
+        installation?.command.machine.transferPolicy !== undefined ||
+        (installation?.artifact !== null && installation?.artifact !== undefined),
       tools: installation
         ? [
             ...new Set([
@@ -3531,6 +3641,7 @@ export class MachineJobOwner {
     if (!this.ready) return;
     this.draining = true;
     this.seatController.abort();
+    await this.nativeTransfers.close();
     for (const authority of this.serviceAuthorities.values()) authority.abort();
     this.unconfiguredServices.abort();
     this.serviceRunner.close();

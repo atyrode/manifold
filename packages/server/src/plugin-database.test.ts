@@ -1,5 +1,6 @@
-import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { describe, expect, spyOn, test } from "bun:test";
+import { Database } from "bun:sqlite";
+import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MAX_SQL_PARAMS_BYTES, PluginDatabaseError } from "@manifold/plugin";
@@ -11,6 +12,7 @@ import {
 } from "./plugin-database.ts";
 import { openDatabase } from "./db.ts";
 import { ServerStore } from "./stores.ts";
+import { RecoveryBudget, boundedWalFamily } from "./recovery-budget.ts";
 
 function scratch(): { dataDir: string; done: () => void } {
   const dataDir = mkdtempSync(join(tmpdir(), "manifold-plugin-db-"));
@@ -278,6 +280,104 @@ describe("a plugin's own tables", () => {
     } finally {
       live.close();
       store.close();
+      done();
+    }
+  });
+});
+
+describe("bounded recovery database transactions", () => {
+  test("DML RETURNING refusal rolls back rather than rejecting an already committed insert", async () => {
+    const { dataDir, done } = scratch();
+    const db = openPluginDatabase({ dataDir, pluginId: "test.returning" });
+    try {
+      await db.run("CREATE TABLE t(v INTEGER)");
+      await expect(
+        db.query("INSERT INTO t VALUES (1) RETURNING zeroblob(4194304)"),
+      ).rejects.toThrow(/result.*limit/);
+      expect(await db.query("SELECT count(*) AS count FROM t")).toEqual([{ count: 0n }]);
+      await expect(db.query("INSERT INTO t VALUES (2) RETURNING 1e999")).rejects.toThrow(
+        /non-finite/,
+      );
+      expect(await db.query("SELECT count(*) AS count FROM t")).toEqual([{ count: 0n }]);
+    } finally {
+      db.close();
+      done();
+    }
+  });
+
+  test("a pinned WAL reader refuses every subsequent transaction without appending frames", async () => {
+    const { dataDir, done } = scratch();
+    const store = new ServerStore(openDatabase(join(dataDir, "manifold.db")));
+    const pluginId = "test.bounded";
+    const path = pluginDatabasePath(dataDir, pluginId);
+    const maxBytes = 4 * 1024 * 1024;
+    const db = openPluginDatabase({
+      dataDir,
+      pluginId,
+      maxBytes,
+      recovery: { profile: "bounded-wal-v1" },
+      recoveryBudget: new RecoveryBudget(dataDir, store.db),
+    });
+    let reader: Database | undefined;
+    try {
+      await db.run("CREATE TABLE t(v BLOB)");
+      await db.run("INSERT INTO t VALUES (zeroblob(524288))");
+      await db.batch(
+        Array.from({ length: 32 }, () => ({ sql: "UPDATE t SET v = randomblob(524288)" })),
+      );
+      const walBytes = statSync(`${path}-wal`).size;
+      expect(walBytes).toBeLessThanOrEqual(boundedWalFamily(maxBytes).wal);
+      reader = new Database(path, { readonly: true });
+      reader.exec("BEGIN");
+      expect(reader.query("SELECT length(v) AS bytes FROM t").get()).toEqual({ bytes: 524288 });
+      for (let index = 0; index < 8; index++) {
+        await expect(db.run("INSERT INTO t VALUES (zeroblob(524288))")).rejects.toThrow(
+          /database_busy/,
+        );
+        expect(statSync(`${path}-wal`).size).toBe(walBytes);
+      }
+      reader.exec("ROLLBACK");
+      reader.close();
+      reader = undefined;
+      expect(await db.query("SELECT count(*) AS count FROM t")).toEqual([{ count: 1n }]);
+    } finally {
+      reader?.close();
+      db.close();
+      store.close();
+      done();
+    }
+  });
+
+  test("lost COMMIT acknowledgement freezes the handle and durable state is reconciled on reopen", async () => {
+    const { dataDir, done } = scratch();
+    const pluginId = "test.unknown";
+    const db = openPluginDatabase({ dataDir, pluginId });
+    const exec = Database.prototype.exec;
+    let fault: { mockRestore(): void } | undefined;
+    try {
+      await db.run("CREATE TABLE t(id TEXT PRIMARY KEY)");
+      fault = spyOn(Database.prototype, "exec").mockImplementation(function (
+        this: Database,
+        sql: string,
+      ) {
+        const result = exec.call(this, sql);
+        if (sql === "COMMIT") throw new Error("lost durable commit acknowledgement");
+        return result;
+      });
+      const result = db.run("INSERT INTO t VALUES ('operation-identity')");
+      fault.mockRestore();
+      fault = undefined;
+      await expect(result).rejects.toThrow(/outcome_unknown/);
+      await expect(db.run("INSERT INTO t VALUES ('retry')")).rejects.toThrow(/outcome_unknown/);
+      const reopened = new Database(pluginDatabasePath(dataDir, pluginId), { readonly: true });
+      try {
+        expect(reopened.query("SELECT id FROM t").all()).toEqual([{ id: "operation-identity" }]);
+      } finally {
+        reopened.close();
+      }
+    } finally {
+      fault?.mockRestore();
+      db.close();
       done();
     }
   });

@@ -1,5 +1,8 @@
 import type {
   ActionOutcome,
+  ByteCarrierRequest,
+  ByteReadChunk,
+  ByteWriteReceipt,
   Cap,
   MachineSummary,
   Container,
@@ -14,6 +17,8 @@ import type {
   PlacementRef,
   Principal,
   PluginRoster,
+  PortablePanelInput,
+  PortableElementProjection,
   ResolveResponse,
   ServerEvent,
   ServerMessageBody,
@@ -96,6 +101,20 @@ export interface SessionHandle {
   }): StreamHandle;
   /** Invoke an action by its FULL name (`core.terminals.rename`); a denial is data, not a throw. */
   action(name: string, args: unknown): Promise<ActionOutcome>;
+  /** Authenticated bounded bytes, with the same private credential as action(). */
+  readByteChunk(
+    pluginId: string,
+    carrierId: string,
+    request: ByteCarrierRequest,
+    signal?: AbortSignal,
+  ): Promise<ByteReadChunk>;
+  writeByteChunk(
+    pluginId: string,
+    carrierId: string,
+    request: ByteCarrierRequest,
+    data: Uint8Array,
+    signal?: AbortSignal,
+  ): Promise<ByteWriteReceipt>;
   /** THE placement call: put an item in a container. */
   place(ref: PlacementRef, destination: PlacementDestination): Promise<PlaceOutcome>;
   /** The caller's own caps, as the server granted them: what UI to offer, and what to gray out. */
@@ -631,6 +650,15 @@ export interface PanelProps {
    * from any other prop, and must not copy it into state it then fails to refresh.
    */
   readonly arg?: PanelArg | undefined;
+  /** Ephemeral intake custody. Files are captured by this panel's own mounted resource store. */
+  readonly input?:
+    | {
+        readonly value?: PanelArg | undefined;
+        readonly files?: readonly File[] | undefined;
+      }
+    | undefined;
+  /** At most one bounded result, fenced to this intake mount and credential lifetime. */
+  readonly onResult?: ((result: PanelArg) => void) | undefined;
 }
 
 /** A contributed sidebar section, ordered by its manifest's declared `order`. */
@@ -644,6 +672,8 @@ export interface PortableSessionHandle
     Pick<
       SessionHandle,
       | "action"
+      | "readByteChunk"
+      | "writeByteChunk"
       | "place"
       | "selfCaps"
       | "machines"
@@ -655,21 +685,48 @@ export interface PortableSessionHandle
     >,
     FeedEvents {}
 
+/** Mounted intake only: no paths, URLs, DOM objects or cross-mount bearer handles. */
+export interface LocalFilesHandle {
+  read(
+    handle: string,
+    offset: number,
+    length: number,
+    options?: { readonly signal?: AbortSignal | undefined },
+  ): Promise<Uint8Array>;
+  release(handle: string): Promise<void>;
+}
+
 /** No bearer, DOM handle, room replica, assembly object or arbitrary host service. */
 export interface PortableHostServices extends Pick<
   HostServices,
   "principal" | "containerId" | "navigate" | "topics" | "authoring"
 > {
   readonly client: PortableSessionHandle;
+  readonly localFiles: LocalFilesHandle;
 }
 
 export interface PortablePanelProps {
   readonly host: PortableHostServices;
   readonly arg?: PanelArg | undefined;
+  readonly input?: PortablePanelInput | undefined;
+  readonly onResult?: ((result: PanelArg) => void) | undefined;
 }
 
 export interface PortableSectionProps {
   readonly host: PortableHostServices;
+}
+
+/** Exact mounted element only; data edits use the ordinary document channel. */
+export interface PortableElementEdit {
+  readonly writable: boolean;
+  patch(data: Readonly<PortableElementProjection["data"]>): Promise<void>;
+}
+
+/** Same bounded element projection and editing port in page React and a hardened worker. */
+export interface PortableElementProps extends PortableElementProjection {
+  readonly data: Readonly<PortableElementProjection["data"]>;
+  readonly host: PortableHostServices;
+  readonly edit: PortableElementEdit;
 }
 
 /**

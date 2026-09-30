@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import {
   canonicalJobJson,
+  canonicalNativeTransferPolicy,
+  jobOwnerSupports,
   formatManifoldUri,
   isOperatorAnchor,
   parseManifoldUri,
@@ -304,6 +306,9 @@ export class JobDeployments {
           `locations:${location.access}`,
         );
     }
+    for (const [locationId, access] of Object.entries(machine.transferPolicy?.locations ?? {}))
+      for (const right of access)
+        add(formatManifoldUri({ kind: "location", machineId, locationId }), `locations:${right}`);
     return [...rights.values()].sort(
       (a, b) => a.node.localeCompare(b.node) || a.cap.localeCompare(b.cap),
     );
@@ -654,13 +659,19 @@ export class JobDeployments {
         const owner = this.host.owner(machineId);
         const current = this.service.jobs.installation(machineId, request.pluginId);
         const pinnedOwner = this.service.jobs.owner(machineId);
-        const candidates = Object.keys(machine.artifacts) as (keyof typeof machine.artifacts)[];
+        const candidates: (keyof typeof machine.artifacts)[] = machine.transferPolicy
+          ? ["linux-x64", "linux-arm64"]
+          : (Object.keys(machine.artifacts) as (keyof typeof machine.artifacts)[]);
         const platform =
           selected ??
           candidates.find((value) => owner?.platforms.includes(value)) ??
           candidates.find((value) => machine.artifacts[value]?.sha256 === current?.artifact) ??
           null;
-        const artifactSha256 = platform ? (machine.artifacts[platform]?.sha256 ?? null) : null;
+        const artifactSha256 = !platform
+          ? null
+          : machine.transferPolicy
+            ? createHash("sha256").update(canonicalNativeTransferPolicy(machine)).digest("hex")
+            : (machine.artifacts[platform]?.sha256 ?? null);
         let reason: string | null =
           !destination ||
           !token ||
@@ -674,6 +685,12 @@ export class JobDeployments {
                 : !platform || !artifactSha256 || (owner && !owner.platforms.includes(platform))
                   ? "installation_platform_unavailable"
                   : null;
+        if (machine.transferPolicy) {
+          if (platform && platform !== "linux-x64" && platform !== "linux-arm64")
+            reason ??= "native_transfer_platform_unsupported";
+          if (owner && !jobOwnerSupports(owner.protocolVersion, "nativeTransfers"))
+            reason ??= "native_transfer_protocol_unsupported";
+        }
         reason ??= this.host.selfProvidedServiceRefusal(
           machineId,
           request.pluginId,
@@ -721,6 +738,21 @@ export class JobDeployments {
                   reason ??= "resource_evidence_unknown";
               }
           }
+        }
+        for (const locationId of Object.keys(machine.transferPolicy?.locations ?? {})) {
+          const location = machine.locations[locationId]!;
+          if (
+            location.managed ||
+            resources.some((row) => row.group === "anchors" && row.name === location.anchor)
+          )
+            continue;
+          const name = location.anchor;
+          const sha256 = known?.anchors[name] ?? null;
+          const operator = isOperatorAnchor(name);
+          const source = operator ? owner?.resources?.anchorDefinitions?.[name]?.source : undefined;
+          resources.push({ group: "anchors", name, sha256, ...(source ? { source } : {}) });
+          if (sha256) bindings.anchors[name] = sha256;
+          if (!sha256 || (operator && !source)) reason ??= "resource_evidence_unknown";
         }
         const needsBindings =
           machine.requiresResourceBindings ||
@@ -1053,6 +1085,12 @@ export class JobDeployments {
       const owner = this.host.owner(target.machineId);
       if (owner) {
         if (!owner.platforms.includes(target.platform)) return "installation_platform_unavailable";
+        if (install.machine.transferPolicy) {
+          if (target.platform !== "linux-x64" && target.platform !== "linux-arm64")
+            return "native_transfer_platform_unsupported";
+          if (!jobOwnerSupports(owner.protocolVersion, "nativeTransfers"))
+            return "native_transfer_protocol_unsupported";
+        }
         // A reviewed instance service is excluded here on purpose: its promoted digest is
         // checked against the proposal, and then against the configured record, by
         // `instanceRefusal`. Once configured, that check also requires the owner's advertised

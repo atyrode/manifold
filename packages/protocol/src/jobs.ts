@@ -2,6 +2,12 @@ import { z } from "zod";
 import { CapSchema } from "./capabilities.ts";
 import { SessionRefSchema } from "./session-ref.ts";
 import {
+  NativeTransferPolicySchema,
+  NativeTransferRequestSchema,
+  NativeTransferPermitSchema,
+  NativeTransferResultSchema,
+} from "./native-transfers.ts";
+import {
   ServiceAuthoritySubjectSchema,
   ServiceBindingSchema,
   ServiceConfigurationSchema,
@@ -24,8 +30,10 @@ import {
 const ISOLATED_JOB_PROTOCOL_VERSION = 42;
 /** Disposable per-job output scratch; older owners would retain its raw bytes. */
 const TEMPORARY_LOCATIONS_PROTOCOL_VERSION = 43;
+/** Inline transfer-policy artifacts and bounded native transfer RPC. */
+const NATIVE_TRANSFERS_PROTOCOL_VERSION = 44;
 /** Native owner RPC changes independently of hub, session, and transport releases. */
-export const JOB_OWNER_PROTOCOL_VERSION = TEMPORARY_LOCATIONS_PROTOCOL_VERSION;
+export const JOB_OWNER_PROTOCOL_VERSION = NATIVE_TRANSFERS_PROTOCOL_VERSION;
 
 /**
  * Native owners outlive hub deploys. An unchanged or strictly additive-optional RPC change
@@ -45,6 +53,9 @@ export const JOB_OWNER_PROTOCOL_VERSION = TEMPORARY_LOCATIONS_PROTOCOL_VERSION;
  * ordinary requests retain their accepted older owners. v43 adds the optional machine location
  * `temporary` lifetime: an older strict owner never receives such a declaration, used or not,
  * and every operation using one is omitted from its install projection rather than retained.
+ * v44 adds inline native-transfer-v1 artifacts and signed bounded native transfer commands.
+ * Older owners refuse the whole transfer installation, never receive an empty job projection,
+ * and retain unchanged support for executable job installations.
  * v38 and v39 were reserved by drafts and are never accepted: capability checks compare
  * revisions, so a later change must not reuse them. Revision-pinned policies and ordinary
  * admissions remain unchanged; contextual policies are sent only to owners and machine
@@ -59,6 +70,7 @@ export const JOB_OWNER_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
   41,
   ISOLATED_JOB_PROTOCOL_VERSION,
   TEMPORARY_LOCATIONS_PROTOCOL_VERSION,
+  NATIVE_TRANSFERS_PROTOCOL_VERSION,
 ]);
 
 export type JobOwnerCapability =
@@ -70,7 +82,8 @@ export type JobOwnerCapability =
   | "agentTools"
   | "serviceBindings"
   | "outputOnlyLocations"
-  | "temporaryLocations";
+  | "temporaryLocations"
+  | "nativeTransfers";
 const jobOwnerCapabilityVersions: Readonly<Record<JobOwnerCapability, number>> = {
   privateEnv: 35,
   launchBinding: 35,
@@ -81,6 +94,7 @@ const jobOwnerCapabilityVersions: Readonly<Record<JobOwnerCapability, number>> =
   serviceBindings: ISOLATED_JOB_PROTOCOL_VERSION,
   outputOnlyLocations: ISOLATED_JOB_PROTOCOL_VERSION,
   temporaryLocations: TEMPORARY_LOCATIONS_PROTOCOL_VERSION,
+  nativeTransfers: NATIVE_TRANSFERS_PROTOCOL_VERSION,
 };
 
 /** Capability support never grants execution authority to an owner outside the accepted set. */
@@ -485,12 +499,38 @@ export const MachineHalfSchema = z
       .record(component, platformArtifacts)
       .refine((tools) => Object.keys(tools).length <= 8)
       .optional(),
-    operations: z
-      .record(id, MachineOperationSchema)
-      .refine((v) => Object.keys(v).length > 0 && Object.keys(v).length <= 64),
+    operations: z.record(id, MachineOperationSchema).refine((v) => Object.keys(v).length <= 64),
     locations: z.record(id, MachineLocationSchema).refine((v) => Object.keys(v).length <= 64),
+    transferPolicy: NativeTransferPolicySchema.optional(),
     requiresResourceBindings: z.boolean().optional(),
   })
+  .refine(
+    (machine) =>
+      machine.transferPolicy === undefined
+        ? Object.keys(machine.operations).length > 0
+        : Object.keys(machine.operations).length === 0 &&
+          Object.keys(machine.artifacts).length === 0 &&
+          machine.tools === undefined,
+    { message: "A native transfer policy replaces executables and tools, never a fake operation" },
+  )
+  .refine(
+    (machine) =>
+      Object.entries(machine.transferPolicy?.locations ?? {}).every(([locationId, rights]) => {
+        const location = Object.hasOwn(machine.locations, locationId)
+          ? machine.locations[locationId]
+          : undefined;
+        return (
+          location?.kind === "directory" &&
+          !location.temporary &&
+          (!rights.includes("create-child") ||
+            (location.managed === true && location.anchor === "state"))
+        );
+      }),
+    {
+      message:
+        "Transfer rights require exact retained directories; create-child requires managed state",
+    },
+  )
   .refine(
     (machine) =>
       Object.values(machine.operations).every((operation) =>
@@ -549,6 +589,24 @@ export type MachineArtifact = z.infer<typeof MachineArtifactSchema>;
 export type MachineOperation = z.infer<typeof MachineOperationSchema>;
 export type MachineLocation = z.infer<typeof MachineLocationSchema>;
 
+/**
+ * Exact inline artifact bytes. Rights are sets; declaration and right insertion order cannot
+ * change identity. Every selected full declaration (including revision) is digest-bound.
+ */
+export function canonicalNativeTransferPolicy(machine: MachineHalf): string {
+  const parsed = MachineHalfSchema.parse(machine);
+  if (!parsed.transferPolicy) throw new Error("native_transfer_policy_required");
+  return canonicalJobJson({
+    format: parsed.transferPolicy.format,
+    locations: Object.fromEntries(
+      Object.entries(parsed.transferPolicy.locations).map(([locationId, rights]) => [
+        locationId,
+        { location: parsed.locations[locationId], access: [...rights].sort() },
+      ]),
+    ),
+  });
+}
+
 /** Strict install parsers must never receive a declaration for a newer-only operation. */
 export function jobOwnerOperationRefusal(
   protocolVersion: number,
@@ -584,6 +642,7 @@ export function jobOwnerOperationRefusal(
 /** Preserve complete supported declarations; an omitted operation never gains weaker semantics. */
 export function jobOwnerMachine(protocolVersion: number, machine: MachineHalf): MachineHalf | null {
   if (!JOB_OWNER_PROTOCOL_COMPAT_VERSIONS.has(protocolVersion)) return null;
+  if (machine.transferPolicy && !jobOwnerSupports(protocolVersion, "nativeTransfers")) return null;
   if (
     jobOwnerSupports(protocolVersion, "operatorAnchors") &&
     jobOwnerSupports(protocolVersion, "outputOnlyLocations") &&
@@ -1099,6 +1158,11 @@ export const JobCommandSchema = z.discriminatedUnion("type", [
         .optional(),
     })
     .refine(
+      ({ machine, artifact, toolArtifacts }) =>
+        !machine.transferPolicy || (artifact === undefined && toolArtifacts === undefined),
+      { message: "Native transfer policies are inline artifacts, not executable deliveries" },
+    )
+    .refine(
       ({ artifact, toolArtifacts, ...metadata }) =>
         new TextEncoder().encode(JSON.stringify(metadata)).byteLength +
           (artifact === undefined ? 0 : artifact.bundleFile.length) +
@@ -1217,6 +1281,12 @@ export const JobCommandSchema = z.discriminatedUnion("type", [
     jobId: id,
     requestId: id,
     payload: agentToolReplyPayload,
+  }),
+  z.strictObject({
+    type: z.literal("native_transfer"),
+    rpcId: id,
+    request: NativeTransferRequestSchema,
+    permit: NativeTransferPermitSchema,
   }),
 ]);
 export type JobCommand = z.infer<typeof JobCommandSchema>;
@@ -1491,6 +1561,13 @@ export const JobEventSchema = z.discriminatedUnion("type", [
     payload: AgentToolPayloadSchema,
   }),
   z.strictObject({ type: z.literal("agent_run_cancel"), jobId: id, requestId: id }),
+  z.strictObject({
+    type: z.literal("native_transfer_result"),
+    rpcId: id,
+    ownerId: id,
+    ownerGeneration: count,
+    result: NativeTransferResultSchema,
+  }),
 ]);
 export type JobEvent = z.infer<typeof JobEventSchema>;
 export const JobFollowEventSchema = z.union([

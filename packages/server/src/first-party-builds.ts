@@ -2,7 +2,7 @@ import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { AnyActionDef } from "@manifold/plugin";
-import { compilePlugin, type CompiledPlugin } from "@manifold/plugin-kit/pack";
+import { compilePlugin, type CompiledPlugin, type CompileOptions } from "@manifold/plugin-kit/pack";
 import {
   HARDENED_CONTRACT_VERSION,
   PluginManifestSchema,
@@ -41,6 +41,8 @@ export interface HardenedSourceRecipe {
   readonly server: string;
   /** The module whose default export is the plugin's portable web definition. */
   readonly web: string;
+  /** Trusted native dependency adapters and notices, never supplied by an installation. */
+  readonly serverBuild?: CompileOptions["serverBuild"];
 }
 
 /** One compiled first-party definition: the exact artifact bytes, parsed, and their pin. */
@@ -88,6 +90,7 @@ export async function compileTrustedBuilds(
         const recipe = resolveRecipe();
         compiled = await compilePlugin(recipe.pluginDir, {
           source: { manifest: def.manifest, server: recipe.server, web: recipe.web },
+          serverBuild: recipe.serverBuild,
         });
       } else {
         const bytes = readFileSync(trustedArtifactFile(artifacts, id));
@@ -111,8 +114,8 @@ export async function compileTrustedBuilds(
 /**
  * The artifact must BE the registered definition: the same id and the byte-for-byte parsed
  * manifest, a server half to supervise, the current contract, and — when it has a web half —
- * the portable Worker entry a hardened browser runs. A definition carrying element payload
- * schemas cannot cross: those schemas are host-side code and would silently stop policing.
+ * the portable Worker entry a hardened browser runs. Registered element payload schemas remain
+ * host-owned; they are never obtained from or executed in the guest.
  */
 export function assertTrustedBinding(def: ServerPluginDef, build: TrustedBuild): void {
   const { manifest } = build.bundle;
@@ -129,8 +132,6 @@ export function assertTrustedBinding(def: ServerPluginDef, build: TrustedBuild):
   if (manifest.entry.server !== true) refuse("it has no server half to supervise");
   if (manifest.entry.web !== undefined && manifest.entry.worker !== true)
     refuse("its web half has no portable Worker entry");
-  if (Object.keys(def.elements ?? {}).length > 0)
-    refuse("element payload schemas cannot run outside the host");
 }
 
 /**

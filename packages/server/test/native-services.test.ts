@@ -26,7 +26,13 @@ import { AuthService, type AuthContext } from "../src/auth.ts";
 import { openDatabase } from "../src/db.ts";
 import { JobService } from "../src/job-service.ts";
 import { ServerStore, TRACE_ROW_TYPE } from "../src/stores.ts";
-import { FakeClock, FakeRuntime, testPluginHost, testTileTrees } from "./helpers.ts";
+import {
+  closeTestStore,
+  FakeClock,
+  FakeRuntime,
+  testPluginHost,
+  testTileTrees,
+} from "./helpers.ts";
 import { serviceContext } from "../src/service-doors.ts";
 import {
   buildIsolateDef,
@@ -279,7 +285,7 @@ test("limited consumers can establish metering readiness without configuration a
     expect(remaining.operations[0]).not.toHaveProperty("meter");
     expect(remaining.operations[0]).not.toHaveProperty("prices");
   } finally {
-    f.store.close();
+    closeTestStore(f.store);
   }
 });
 
@@ -325,7 +331,7 @@ test("v35 native reads keep working with service authority, not machine executio
     expect(durable).not.toContain("remaining");
     expect(f.store.db.query("SELECT action FROM machine_job_decisions").all().length).toBe(3);
   } finally {
-    f.store.close();
+    closeTestStore(f.store);
   }
 });
 
@@ -410,7 +416,7 @@ test("contextual policies are projected for either legacy fence without disrupti
         configuration,
       });
     } finally {
-      f.store.close();
+      closeTestStore(f.store);
     }
   }
 });
@@ -448,7 +454,7 @@ test("configuration CAS is canonical, root-only, and synchronization never impli
       configuration: changed,
     });
   } finally {
-    f.store.close();
+    closeTestStore(f.store);
   }
 });
 
@@ -489,7 +495,7 @@ test("root browser tokens retain bounded service configuration authority until r
       f.service.readServiceConfiguration(delegated, { machineId: f.machineId }),
     ).toThrow();
   } finally {
-    f.store.close();
+    closeTestStore(f.store);
   }
 });
 
@@ -555,7 +561,7 @@ test("instance setup requires configuration authority, not service invocation au
       configured.configuration!.revision,
     );
   } finally {
-    f.store.close();
+    closeTestStore(f.store);
   }
 });
 
@@ -598,7 +604,7 @@ test("stale policy fingerprints and non-readable full or mutating policies canno
     }
     expect(f.commands.some((command) => command.type === "service_read")).toBe(false);
   } finally {
-    f.store.close();
+    closeTestStore(f.store);
   }
 });
 
@@ -633,7 +639,7 @@ test.each(["disconnect", "false-send", "throw-send", "revoke", "lost-result"] as
         dispatched,
       );
     } finally {
-      f.store.close();
+      closeTestStore(f.store);
     }
   },
   10000,
@@ -672,7 +678,7 @@ test("foreign-channel, unbound and revoked service authorizations cannot disclos
     await expect(pending).rejects.toThrow("service_unauthorized");
     expect(f.service.describeServices(f.reader, { machineId: f.machineId }).services).toEqual([]);
   } finally {
-    f.store.close();
+    closeTestStore(f.store);
   }
 });
 
@@ -823,7 +829,7 @@ test("resource promotion, projected operation pins and managed availability refu
     });
     expect(describe().operations![installed.independent]?.ready).toBe(true);
   } finally {
-    f.store.close();
+    closeTestStore(f.store);
   }
 });
 
@@ -882,7 +888,7 @@ test("job service effects require a live matching installed binding and fresh na
     f.service.event(f.channel, event);
     expect(f.commands.at(-1)).toMatchObject({ type: "service_authorized", allowed: false });
   } finally {
-    f.store.close();
+    closeTestStore(f.store);
   }
 });
 
@@ -975,7 +981,7 @@ test("one job's post, owner events, authorization, tick and cancel cost the same
       }
       return samples.sort((a, b) => a - b)[3]!;
     } finally {
-      f.store.close();
+      closeTestStore(f.store);
     }
   };
   const small = medianCycle(1_000);
@@ -1053,7 +1059,7 @@ test("an owner that authorized a call and then would not serve it says so in the
         ),
     ).toHaveLength(1);
   } finally {
-    f.store.close();
+    closeTestStore(f.store);
   }
 });
 
@@ -1087,7 +1093,7 @@ test("credential availability changes revoke pending reads and disable only serv
     expect(operations[installed.operationId]?.ready).toBe(false);
     expect(operations[installed.independent]?.ready).toBe(true);
   } finally {
-    f.store.close();
+    closeTestStore(f.store);
   }
 });
 
@@ -1341,7 +1347,7 @@ test("targetless guest delegates invoke only with concrete source authority and 
     });
     expect(f.commands.filter((command) => command.type === "service_invoke")).toHaveLength(2);
   } finally {
-    f.store.close();
+    closeTestStore(f.store);
   }
 });
 
@@ -1366,7 +1372,7 @@ test("guest declarations cannot borrow root native methods or replace owner conf
       result: { policies: [] },
     });
   } finally {
-    f.store.close();
+    closeTestStore(f.store);
   }
 });
 
@@ -1410,7 +1416,7 @@ test("direct mutations require invocation authority and an explicit projected po
     expect(JSON.stringify(events)).not.toContain("private-source-input");
     expect(f.store.db.query("SELECT job_id FROM machine_jobs").all()).toEqual([]);
   } finally {
-    f.store.close();
+    closeTestStore(f.store);
   }
 });
 
@@ -1420,7 +1426,7 @@ test("an unmarked GET operation cannot be upgraded to an invocation", async () =
     await expect(f.service.invokeService(f.root, f.args)).rejects.toThrow("service_unauthorized");
     expect(f.commands.some((command) => command.type === "service_invoke")).toBe(false);
   } finally {
-    f.store.close();
+    closeTestStore(f.store);
   }
 });
 
@@ -1449,7 +1455,7 @@ test.each(["revoke", "policy", "disconnect"] as const)(
       f.prove();
       expect(f.commands.filter((command) => command.type === "service_invoke")).toHaveLength(1);
     } finally {
-      f.store.close();
+      closeTestStore(f.store);
     }
   },
 );
@@ -1484,7 +1490,7 @@ test("read authorization and result frames cannot discharge a pending invocation
     });
     await expect(pending).rejects.toThrow("service_unauthorized");
   } finally {
-    f.store.close();
+    closeTestStore(f.store);
   }
 });
 
@@ -1508,7 +1514,7 @@ test("owner refusals remain named refusals even before upstream authorization", 
       refusal: "service_input_invalid",
     });
   } finally {
-    f.store.close();
+    closeTestStore(f.store);
   }
 });
 
@@ -1585,7 +1591,7 @@ test("hub checks each body source and origin without disabling unrelated metadat
     f.result(requestId);
     expect(await pending).toMatchObject({ ok: true });
   } finally {
-    f.store.close();
+    closeTestStore(f.store);
   }
 });
 
@@ -1622,6 +1628,6 @@ test("body source disappearance revokes pending invocations without affecting me
     expect(operations.find((operation) => operation.operationId === "inspect")?.ready).toBe(true);
     expect(operations.find((operation) => operation.operationId === "enroll")?.ready).toBe(false);
   } finally {
-    f.store.close();
+    closeTestStore(f.store);
   }
 });

@@ -1,13 +1,20 @@
 import { ENGINE_SET_SETTING_ACTION } from "@manifold/plugin";
 import type { ActionOutcome } from "@manifold/protocol";
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { AuthService, type AuthContext } from "../src/auth.ts";
 import { silentLogger } from "../src/log.ts";
 import type { PluginHost } from "../src/plugin-host.ts";
 import { RoomManager } from "../src/room.ts";
 import type { ServerStore } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
-import { FakeClock, FakeRuntime, testPluginHost, testStore, testTileTrees } from "./helpers.ts";
+import {
+  closeTestStore,
+  FakeClock,
+  FakeRuntime,
+  testPluginHost,
+  testStore,
+  testTileTrees,
+} from "./helpers.ts";
 
 /**
  * `engine.plugins.setSetting` — THE ONE DOOR that writes a principal's plugin preferences, and
@@ -22,6 +29,10 @@ import { FakeClock, FakeRuntime, testPluginHost, testStore, testTileTrees } from
  */
 
 const OWNER_KEY = "a".repeat(64);
+const stores: ServerStore[] = [];
+afterEach(() => {
+  for (const store of stores.splice(0)) closeTestStore(store);
+});
 
 interface Fixture {
   readonly store: ServerStore;
@@ -34,6 +45,7 @@ async function fixture(): Promise<Fixture> {
   const runtime = new FakeRuntime();
   const clock = new FakeClock(runtime);
   const store = testStore();
+  stores.push(store);
   const auth = new AuthService(store, OWNER_KEY, runtime);
   const owner = auth.authenticate(OWNER_KEY);
   const rooms = new RoomManager(store, runtime, clock, silentLogger, testTileTrees);

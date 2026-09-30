@@ -283,6 +283,31 @@
   overflow-wrap: anywhere;
 }
 
+.terminal-file-intake {
+  position: absolute;
+  grid-area: 2 / 1;
+  inset: 0;
+  z-index: 7;
+  display: block;
+  overflow: auto;
+  padding: 0.75rem;
+  background: var(--terminal-background);
+  color: #e6e9ef;
+}
+
+.terminal-file-save {
+  width: auto;
+  padding-inline: 0.35rem;
+}
+
+.terminal-file-path {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  unicode-bidi: plaintext;
+  user-select: text;
+}
+
 /* Centering and rhythm are the layout Cover+Stack's; this is the veil itself. */
 .terminal-exited {
   position: absolute;

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import {
   InspectRunResultSchema,
   PROTOCOL_VERSION,
@@ -19,6 +19,7 @@ import { SessionGateway } from "../src/session-ws.ts";
 import { TRACE_ROW_TYPE, type ServerStore, type StoredEvent } from "../src/stores.ts";
 import { TerminalBroker, type MachineChannel } from "../src/terminal-broker.ts";
 import {
+  closeTestStore,
   FakeClock,
   FakeRuntime,
   FakeSocket,
@@ -76,6 +77,16 @@ interface TerminalsFixture {
   readonly host: PluginHost;
   readonly gateway: SessionGateway;
 }
+
+const fixtures = new Set<TerminalsFixture>();
+function closeFixture(fixture: TerminalsFixture): void {
+  if (!fixtures.delete(fixture)) return;
+  fixture.gateway.shutdown();
+  closeTestStore(fixture.store);
+}
+afterEach(() => {
+  for (const fixture of fixtures) closeFixture(fixture);
+});
 
 /**
  * A workspace with one composition container, one online machine, and the real assembly of
@@ -158,7 +169,21 @@ async function fixture(): Promise<TerminalsFixture> {
     runtime,
     events,
   );
-  return { runtime, clock, store, auth, owner, container, rooms, broker, machine, host, gateway };
+  const value = {
+    runtime,
+    clock,
+    store,
+    auth,
+    owner,
+    container,
+    rooms,
+    broker,
+    machine,
+    host,
+    gateway,
+  };
+  fixtures.add(value);
+  return value;
 }
 
 /** A minted token, so authority is exercised through real attenuation. */
@@ -277,7 +302,7 @@ describe("core.terminals doors", () => {
         placement: "tile",
       }),
     ).toEqual({ ok: true, result: {} });
-    base.store.close();
+    closeFixture(base);
   });
   test("HTTP creation waits for durable birth and the returned terminal attaches later", async () => {
     const base = await fixture();
@@ -429,7 +454,7 @@ describe("core.terminals doors", () => {
       ]);
       expect((await inspect(child.run.id)).terminals).toEqual([]);
     } finally {
-      base.store.close();
+      closeFixture(base);
     }
   });
 
@@ -562,7 +587,7 @@ describe("core.terminals doors", () => {
       controllerId: writer.principal.id,
       containerId: base.container.id,
     });
-    base.store.close();
+    closeFixture(base);
   });
 
   test("taking the lease is a door: caps, scope, and an exited terminal has nothing to take", async () => {

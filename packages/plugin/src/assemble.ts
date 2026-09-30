@@ -14,6 +14,9 @@ import {
   hasCap,
   PluginIdSchema,
   PluginManifestSchema,
+  PluginOwnedRefSchema,
+  ReferenceReceiptRequestSchema,
+  ReferenceTerminalReceiptSchema,
   type ActionSummary,
   type DisciplineDeclaration,
   type PlacementTraits,
@@ -22,6 +25,8 @@ import {
   type PluginInstall,
   type PluginLifecycleState,
   type PluginManifest,
+  type OwnedReferenceDeclaration,
+  type PluginOwnedRefKind,
   type PluginRefusalReason,
   type PluginRoster,
   type PluginRosterEntry,
@@ -216,6 +221,12 @@ export interface AssemblyStream {
   readonly descriptor: StreamDescriptor;
 }
 
+/** A protocol-admitted reference kind and its sole declaring owner, including disabled rows. */
+export interface AssemblyReferenceKind {
+  readonly plugin: string;
+  readonly declaration: OwnedReferenceDeclaration;
+}
+
 /** A plugin's stored data as the ledger knows it: what was stamped, and what already ran. */
 export interface PluginStoredData {
   readonly version: PluginDataVersion | null;
@@ -260,6 +271,8 @@ export interface AssemblyEnv {
    * `draw` elements must not be reinterpreted by whatever ships next under that name.
    */
   readonly elementOwners?: ReadonlyMap<string, string>;
+  /** Permanent reference-kind reservations; disable, missing builds and purge do not free them. */
+  readonly referenceKindOwners?: ReadonlyMap<PluginOwnedRefKind, string>;
   /** Stamped data version + applied migration names, per plugin. */
   readonly dataState?: ReadonlyMap<string, PluginStoredData>;
   /** The outcome of the last lifecycle fan-out per plugin; absent means `ok`. */
@@ -333,6 +346,7 @@ export interface Assembly {
    */
   readonly events: ReadonlyMap<string, ReadonlyMap<string, AssemblyEvent>>;
   readonly streams: ReadonlyMap<string, AssemblyStream>;
+  readonly referenceKinds: ReadonlyMap<PluginOwnedRefKind, AssemblyReferenceKind>;
   /**
    * THE order: topological over `dependencies` ∪ `after`, ties broken by lexicographic id.
    * Derived, deterministic and total, and it is the order lifecycle hooks fan out in — which
@@ -478,6 +492,60 @@ function publishSchema(
     return {};
   }
 }
+
+const ReferenceResolverSchema = z.strictObject({ ref: PluginOwnedRefSchema });
+const referenceResolverInput = z.toJSONSchema(ReferenceResolverSchema);
+const referenceReceiptInput = z.toJSONSchema(ReferenceReceiptRequestSchema);
+const referenceReceiptResult = z.toJSONSchema(ReferenceTerminalReceiptSchema);
+
+/** Compare the canonical schema structurally; object/required-key order is not syntax. */
+function matchesCanonicalReferenceSchema(value: unknown, canonical: unknown): boolean {
+  if (value === canonical) return true;
+  if (Array.isArray(canonical)) {
+    return (
+      Array.isArray(value) &&
+      value.length === canonical.length &&
+      canonical.every((item) => value.includes(item))
+    );
+  }
+  if (canonical === null || typeof canonical !== "object") return false;
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const expected = canonical as Record<string, unknown>;
+  const actual = value as Record<string, unknown>;
+  const keys = Object.keys(actual).filter(
+    (key) => typeof expected.type !== "string" || (key !== "title" && key !== "description"),
+  );
+  return (
+    keys.length === Object.keys(expected).length &&
+    keys.every(
+      (key) =>
+        Object.hasOwn(expected, key) && matchesCanonicalReferenceSchema(actual[key], expected[key]),
+    )
+  );
+}
+
+const ResolverTitleSchema = z.object({
+  type: z.literal("string"),
+  maxLength: z.number().int().min(0).max(512),
+});
+const NullableResolverTitleSchema = z.object({
+  anyOf: z.tuple([ResolverTitleSchema, z.object({ type: z.literal("null") })]),
+});
+const ReferenceResolverResultSchema = z
+  .object({
+    type: z.literal("object"),
+    properties: z.object({
+      title: z.union([ResolverTitleSchema, NullableResolverTitleSchema]),
+      exists: z.object({ type: z.literal("boolean") }).optional(),
+    }),
+    required: z.array(z.string()),
+  })
+  .refine(
+    (schema) =>
+      schema.required.includes("title") &&
+      (!("anyOf" in schema.properties.title) ||
+        (schema.properties.exists !== undefined && schema.required.includes("exists"))),
+  );
 
 /** A manifest's declared dependencies as entry pairs, sorted so every report is stable. */
 function dependencyEntries(
@@ -696,6 +764,7 @@ function assembleDefinitions(
   const toolIds: Claims = new Map();
   const harnessIds: Claims = new Map();
   const streamKinds: Claims = new Map();
+  const referenceKindClaims: Claims = new Map();
   const seatPanels: Claims = new Map();
   const routeSegments: Claims = new Map();
   const settingRefs: Claims = new Map();
@@ -713,6 +782,7 @@ function assembleDefinitions(
   const declaredEvents: [string, ReadonlyMap<string, AssemblyEvent>][] = [];
   const declaredStreams: [string, AssemblyStream][] = [];
   const pendingMigrations = new Map<string, readonly PluginMigration[]>();
+  const referenceKinds = new Map<PluginOwnedRefKind, AssemblyReferenceKind>();
 
   for (const [index, def] of defs.entries()) {
     const problems: string[] = [];
@@ -860,6 +930,112 @@ function assembleDefinitions(
     }
     summaries.set(manifest.id, published);
 
+    for (const declaration of manifest.contributes.references ?? []) {
+      claim(referenceKindClaims, declaration.kind, manifest.id);
+      referenceKinds.set(declaration.kind, { plugin: manifest.id, declaration });
+      const owner = env.referenceKindOwners?.get(declaration.kind);
+      if (owner !== undefined && owner !== manifest.id) {
+        problems.push(
+          `reference kind "${declaration.kind}" is reserved by "${owner}"; "${manifest.id}" cannot claim it`,
+        );
+      }
+      const resolver = def.actions.find((action) => action.name === declaration.resolveAction);
+      const name = `${manifest.id}.${declaration.resolveAction}`;
+      if (
+        resolver === undefined ||
+        (resolver.scope ?? "workspace") !== "workspace" ||
+        !resolver.caps.includes(declaration.readCapability) ||
+        !resolver.requirements?.some(
+          (requirement) =>
+            requirement.cap === declaration.readCapability &&
+            requirement.target.length === 1 &&
+            requirement.target[0] === "ref",
+        )
+      ) {
+        problems.push(
+          `reference kind "${declaration.kind}" requires workspace resolver "${name}" with read capability at ["ref"]`,
+        );
+        continue;
+      }
+      for (const io of ["input", "output"] as const) {
+        const input = publishSchema(
+          resolver.input,
+          io,
+          `reference resolver "${name}" input`,
+          problems,
+        );
+        if (!matchesCanonicalReferenceSchema(input, referenceResolverInput)) {
+          problems.push(`reference resolver "${name}" must accept only canonical {ref} input`);
+          break;
+        }
+      }
+      const result = publishSchema(
+        resolver.result,
+        "output",
+        `reference resolver "${name}" result`,
+        problems,
+      );
+      if (!ReferenceResolverResultSchema.safeParse(result).success) {
+        problems.push(
+          `reference resolver "${name}" must return a required title bounded to 512 characters`,
+        );
+      }
+      if (declaration.listAction !== undefined) {
+        const listing = def.actions.find((action) => action.name === declaration.listAction);
+        if (
+          listing === undefined ||
+          (listing.scope ?? "workspace") !== "workspace" ||
+          listing.trace !== "opaque" ||
+          listing.caps.length !== 0 ||
+          (listing.requirements?.length ?? 0) !== 0 ||
+          (listing.delegates?.length ?? 0) !== 0
+        ) {
+          problems.push(
+            `reference list "${manifest.id}.${declaration.listAction}" requires an opaque workspace action without direct capabilities, native delegates or requirements`,
+          );
+        }
+      }
+      if (declaration.receiptAction === undefined) continue;
+      const receipt = def.actions.find((action) => action.name === declaration.receiptAction);
+      const receiptName = `${manifest.id}.${declaration.receiptAction}`;
+      if (
+        receipt === undefined ||
+        (receipt.scope ?? "workspace") !== "workspace" ||
+        receipt.caps.length !== 0 ||
+        (receipt.requirements?.length ?? 0) !== 0
+      ) {
+        problems.push(
+          `reference receipt "${receiptName}" requires a workspace action with no capabilities or requirements`,
+        );
+        continue;
+      }
+      for (const io of ["input", "output"] as const) {
+        const input = publishSchema(
+          receipt.input,
+          io,
+          `reference receipt "${receiptName}" input`,
+          problems,
+        );
+        if (!matchesCanonicalReferenceSchema(input, referenceReceiptInput)) {
+          problems.push(
+            `reference receipt "${receiptName}" must accept only canonical {ref} input`,
+          );
+          break;
+        }
+      }
+      const receiptResult = publishSchema(
+        receipt.result,
+        "output",
+        `reference receipt "${receiptName}" result`,
+        problems,
+      );
+      if (!matchesCanonicalReferenceSchema(receiptResult, referenceReceiptResult)) {
+        problems.push(
+          `reference receipt "${receiptName}" must return only the canonical terminal receipt`,
+        );
+      }
+    }
+
     for (const panel of manifest.contributes.panels) {
       const id = panelRefId(manifest.id, panel.id);
       claim(panelIds, id, manifest.id);
@@ -984,6 +1160,14 @@ function assembleDefinitions(
       disciplines.set(discipline.id, { plugin: manifest.id, declaration: discipline });
     }
     for (const tool of manifest.contributes.tools) {
+      if (
+        tool.panel !== undefined &&
+        !manifest.contributes.panels.some((panel) => panel.id === tool.panel)
+      ) {
+        problems.push(
+          `plugin "${manifest.id}" tool "${tool.id}" names undeclared panel "${tool.panel}"`,
+        );
+      }
       claim(toolIds, tool.id, manifest.id);
       tools.push({ id: tool.id, plugin: manifest.id, title: tool.title });
     }
@@ -1091,6 +1275,7 @@ function assembleDefinitions(
   duplicates(settingRefs, "setting");
   duplicates(toolIds, "tool");
   duplicates(streamKinds, "stream");
+  duplicates(referenceKindClaims, "reference kind");
   duplicates(seatPanels, "seat");
   duplicates(routeSegments, "route");
   for (const [id, plugins] of harnessIds) {
@@ -1241,6 +1426,7 @@ function assembleDefinitions(
     tools,
     events: new Map(declaredEvents),
     streams: new Map(declaredStreams),
+    referenceKinds,
     order,
     pendingMigrations,
     enabled: isEnabled,

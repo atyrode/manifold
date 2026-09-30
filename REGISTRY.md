@@ -78,6 +78,8 @@ must never be taught one.
         "packages/server/src/shared-modules.ts",
         "packages/server/src/first-party-builds.ts",
         "packages/server/src/first-party/machines.server.ts",
+        "packages/server/src/first-party/files.server.ts",
+        "packages/server/src/first-party/files-images.server.ts",
         "packages/server/src/isolate/**",
         "packages/server/src/assembly.ts",
         "packages/server/src/main.ts",
@@ -91,7 +93,11 @@ must never be taught one.
     },
     {
       "id": "identity-caps",
-      "globs": ["packages/server/src/auth.ts", "packages/web/src/identity.tsx"],
+      "globs": [
+        "packages/server/src/auth.ts",
+        "packages/server/src/reference-service.ts",
+        "packages/web/src/identity.tsx"
+      ],
       "litmus": ["bootstrap", "neutrality", "arbitration"],
       "verdict": "who is asking and what they may do, plus this device's token custody. Every door presupposes it, it knows no domain noun, and it is the one call surface the A5 evaluator replaces. Administration of principals and tokens is NOT here: those verbs are core.access.",
       "adr": "docs/decisions/0011-permission-waterfall.md"
@@ -101,6 +107,8 @@ must never be taught one.
       "globs": [
         "packages/server/src/db.ts",
         "packages/server/src/stores.ts",
+        "packages/server/src/recovery-budget.ts",
+        "packages/server/src/recovery-gate.ts",
         "packages/server/src/migrate-solo.ts",
         "packages/server/src/migrate-lexicon.ts",
         "packages/server/src/migrate-grants.ts",
@@ -117,6 +125,9 @@ must never be taught one.
         "packages/server/src/event-hub.ts",
         "packages/server/src/stream-service.ts",
         "packages/server/src/machine-ws.ts",
+        "packages/server/src/byte-transport.ts",
+        "packages/server/src/native-transfer-context.ts",
+        "packages/server/src/native-transfer-service.ts",
         "packages/server/src/job-service.ts",
         "packages/server/src/job-store.ts",
         "packages/server/src/job-schedules.ts",
@@ -158,6 +169,9 @@ must never be taught one.
         "packages/web/src/room-pipes.ts",
         "packages/web/src/document-access.tsx",
         "packages/web/src/assembly.ts",
+        "packages/web/src/byte-renderer.tsx",
+        "packages/web/src/borrowed-panels.tsx",
+        "packages/web/src/portable-element-edit.ts",
         "packages/web/src/api.ts",
         "packages/web/src/error-boundary.tsx",
         "packages/web/src/lens.tsx",
@@ -215,8 +229,10 @@ registry-liveness checks read.
 
 Everything else is a feature, and features are plugins (A1). Two consequences are mechanical:
 floor files MUST NOT import `@manifold-plugin/*` — the two `assembly.ts` registration files
-and the exact trusted guest entry `packages/server/src/first-party/machines.server.ts`
-are the sole exceptions; no directory wildcard is exempt — and packages under
+and the exact trusted guest entries `packages/server/src/first-party/machines.server.ts`,
+`packages/server/src/first-party/files.server.ts` and
+`packages/server/src/first-party/files-images.server.ts` are the sole exceptions;
+no directory wildcard is exempt — and packages under
 `packages/plugins/*` import only `@manifold/protocol`, `@manifold/scene`, `@manifold/sdk`,
 `@manifold/plugin`, `@manifold/ui` and their permitted subpaths and own sources.
 
@@ -270,12 +286,24 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
       "why": "identity and authority at the boundary; the A5 evaluator's one call surface — what effectiveCaps() replaced when the waterfall landed (ADR 0011, wave 4, #77)"
     },
     {
+      "glob": "packages/server/src/reference-service.ts",
+      "why": "ADR 0057 identity arbitration: one publication-existence gate, original-credential revalidation, ordinary grant provenance and exact private owner acknowledgements. Owners cannot grant themselves publication authority or recreate revoked access; owner declarations supply policy without a privileged plugin branch"
+    },
+    {
       "glob": "packages/server/src/db.ts",
       "why": "persistence: SQLite schema and migrations"
     },
     {
       "glob": "packages/server/src/stores.ts",
       "why": "persistence: containers, tokens, terminals, plugin enablement, per-principal workspace layout"
+    },
+    {
+      "glob": "packages/server/src/recovery-budget.ts",
+      "why": "ADR 0057 neutral persistence admission across main and private database images, WAL, migration stages and checkpoint scratch. A plugin cannot reserve or inspect sibling storage; one physical budget arbitrates all declared bounded owners before growth"
+    },
+    {
+      "glob": "packages/server/src/recovery-gate.ts",
+      "why": "ADR 0057 persistence fence for whole-state capture and restore: independently owned databases cannot coordinate their own authorization-coherent snapshot. Shared admission and draining preserve the one writer and checkpoint boundary without reading plugin-domain rows"
     },
     {
       "glob": "packages/server/src/room.ts",
@@ -347,7 +375,15 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     },
     {
       "glob": "packages/server/src/first-party/machines.server.ts",
-      "why": "ADR 0053 exact trusted guest composition entry: registers the same core.machines manifest, doors and handlers in a supervised child. This file alone joins the two assembly roots' permission to import @manifold-plugin/*; its directory gains no exemption"
+      "why": "ADR 0053 exact trusted guest composition entry: registers the same core.machines manifest, doors and handlers in a supervised child. Only individually listed trusted guest entries join the assembly roots' permission to import @manifold-plugin/*; their directory gains no exemption"
+    },
+    {
+      "glob": "packages/server/src/first-party/files.server.ts",
+      "why": "ADR 0057 exact trusted guest composition entry for the Files owner: selects the same manifest, doors, bounded byte handlers and private data callbacks as the native assembly, without an installed-artifact provenance bypass or a directory-wide import exception"
+    },
+    {
+      "glob": "packages/server/src/first-party/files-images.server.ts",
+      "why": "ADR 0057 exact trusted guest composition entry for the image child: registers the same contributed definition in its own supervised process; this source alone is a composition-root import exception, not its directory or another owner's runtime"
     },
     {
       "glob": "packages/server/src/plugin-installs.ts",
@@ -375,7 +411,7 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     },
     {
       "glob": "packages/server/src/assembly.ts",
-      "why": "the native server-side registration point; only this file and the exact trusted first-party/machines.server.ts guest entry may import @manifold-plugin/* on the server"
+      "why": "the native server-side registration point; only this file and the individually listed trusted guest composition entries may import @manifold-plugin/* on the server"
     },
     {
       "glob": "packages/server/src/config.ts",
@@ -392,6 +428,18 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     {
       "glob": "packages/server/src/stream-service.ts",
       "why": "ADR 0033 generic continuous stream transport: manifest-owned kinds and node ownership, bounded validated rings, unpredictable producer epochs, exact snapshot watermarks and explicit gaps/closure. Producer lifecycle is traced; continuous frames never enter the event journal. Bootstrap, neutral declaration vocabulary and shared delivery-budget arbitration extend the existing transport pillar."
+    },
+    {
+      "glob": "packages/server/src/byte-transport.ts",
+      "why": "ADR 0057 transport arbitration: bounded authenticated binary continuations, current caller and owner admission, cancellation and backpressure before any plugin receives bytes. Reference declarations select policy; actions retain lifecycle and binary payloads never enter JSON action arguments or events"
+    },
+    {
+      "glob": "packages/server/src/native-transfer-context.ts",
+      "why": "ADR 0057 dispatch-bound native transfer context: restores the actual caller and confines every owner operation to its declared template, current machine consent and effect lifetime. It supplies transport machinery, not a file-library or destination-selection policy"
+    },
+    {
+      "glob": "packages/server/src/native-transfer-service.ts",
+      "why": "ADR 0057 shared native transport coordination: owner generations, exact operation receipts, durable actor/credential/request refusal fences, idle-exclusive bounded private absence probes without caller impersonation, explicit unsent versus intended dispatch, live authority cuts and terminal evidence cannot be arbitrated by a requesting plugin. The existing machine channel carries bounded commands; no shell or terminal fallback grants ambient filesystem access"
     },
     {
       "glob": "packages/server/src/index.ts",
@@ -494,6 +542,18 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
       "why": "generated at build (scripts/generate-web-changelog.ts) from CHANGELOG.md's released sections and the pending changes/*.md fragments; untracked and never hand-edited, which is why §Lexicon allows its frozen vocabulary"
     },
     {
+      "glob": "packages/web/src/byte-renderer.tsx",
+      "why": "ADR 0057 browser-host custody: mount-local File stores, bounded byte projections/downloads, credential retirement and narrow page/Worker props. Plugins cannot arbitrate another mount's DOM files or object URLs; the host names no content owner"
+    },
+    {
+      "glob": "packages/web/src/borrowed-panels.tsx",
+      "why": "ADR 0057 owner-preserving panel composition: resolve the registered owner and its selected execution mode, bound the whole borrowing subtree, keep raw files in the receiving mount and fence one bounded JSON result. No sibling code import, persisted callback or cross-mount local-file handle is introduced"
+    },
+    {
+      "glob": "packages/web/src/portable-element-edit.ts",
+      "why": "ADR 0057 browser-host element projection: only the mounted declared element's bounded data may cross a Worker boundary, and its edits use the existing authorized document channel. A guest receives neither a document replica nor another element's mutation authority"
+    },
+    {
       "glob": "packages/web/src/isolate/**",
       "why": "the isolation runner's browser half (ADR 0016, ADR 0053; joins web-plugin-host): the per-plugin Worker supervisor serves bounded calls from the mounted panel or section's real host without handing it the bearer; installed and selected trusted first-party definitions share the same mounted-instance lifecycle. The host paints the closed UiNode tree through @manifold/ui, whose stylesheet owns the vocabulary ink. Floor by the host's litmus: mounts a contribution without knowing which plugin wrote it and arbitrates what its Worker may reach"
     }
@@ -517,8 +577,10 @@ A plugin package holds a manifest, its actions (server half) and its contributio
 and it imports only the three named layers (ADR 0025 §8, #240): the SDK — `@manifold/protocol`,
 `@manifold/sdk` (and `@manifold/scene`), talking to the hub; the ENGINE API — `@manifold/plugin`,
 being a plugin; and the DESIGN SYSTEM — `@manifold/ui`, looking like manifold. The engine ships
-three entry points on purpose. `@manifold/plugin` is platform-free (manifests, action definitions,
-assembly, host contracts) and is what the server imports. `@manifold/plugin/hooks` carries the
+four entry points on purpose. `@manifold/plugin` is platform-free (manifests, action definitions,
+assembly, host contracts) and is what the server imports. `@manifold/plugin/action` is the pure
+action-definition entry a portable bundle can include without the rest of the engine.
+`@manifold/plugin/hooks` carries the
 plane mechanism a plugin needs in a browser (the carry/drop vocabulary, the element host,
 `usePolledResource`, THE tile tree, the consumer half of the one notice stack, this device's
 published vantage store — neutral MECHANISM, every piece of it addressed by two parties that may
@@ -2429,7 +2491,7 @@ parser over the dispatch ladder; its live half dispatches every registered door.
 | Check | What it asserts                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | S1    | Both `assembly.ts` files assemble without an `AssemblyError`, and every panel id in the default workspace tree — `composeDefaultLayout(roster)`, composed from the enabled roster's declared `contributes.seats` rather than from a constant — exists in the assembly, and the composition is `validateTileLayout`-clean. Discipline values equal their owning plugin's last id segment.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| S2    | Import boundary, walked with the TypeScript parser over this file's `floor` globs: floor files import no `@manifold-plugin/*` except the two `assembly.ts` roots and the exact trusted guest entry `packages/server/src/first-party/machines.server.ts` (never a directory wildcard); plugin packages import only the permitted SDK, engine and design-system entry points.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| S2    | Import boundary, walked with the TypeScript parser over this file's `floor` globs: floor files import no `@manifold-plugin/*` except the two `assembly.ts` roots and the individually named trusted guest entries `first-party/machines.server.ts`, `first-party/files.server.ts` and `first-party/files-images.server.ts` under `packages/server/src` (never a directory wildcard); plugin packages import only the permitted SDK, engine and design-system entry points.                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | S3    | Every `localStorage` key literal in `packages/web` and `packages/plugins` appears in the `deviceLocal` register.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | S4    | Every `data-action` literal in the source names an action the assembly actually publishes (soundness; coverage ratchets up as later waves convert the remaining affordances).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | S5    | Every `packages/plugins/*` package declares registered manifests, including children in nested directories exported through its subpaths; every export resolves to a file and every assembled definition maps back to a package — **builtin rows excepted**: an engine door (`source: "builtin"`) has no package by design, and the script assembles it explicitly.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
@@ -2445,7 +2507,7 @@ parser over the dispatch ladder; its live half dispatches every registered door.
 | S15   | **Gate contracts**: every `[data-testid=…]` literal and every `clickTestId(…)` argument in `scripts/` resolves to a §Gate-contracts row AND to a live `data-testid=` attribute in that row's renderer (templated attributes match by shape), and every row is queried by some script. A gate keyed off button copy, or off a test-id nobody declared, fails.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | S16   | **Retired 2026-09-12 (operator decision, #504).** Was a line ceiling on `packages/plugin/src` whose only sanctioned exit was a defence paragraph in the script; it moved six times in twelve days and was raised by whoever needed to land code, so it taxed every engine change without ever forcing an extraction. What shrank the engine was the `@manifold/ui` extraction (ADR 0025), tracked as work, not as a number. The litmus test governs each addition in review; extraction candidates (`tile-geometry.ts`, `projection.ts`) are issues.                                                                                                                                                                                                                                                                                                                                                                                                |
 | S17   | **Hosting neutrality**: no file a self-hoster ships or runs — `Dockerfile`, `compose.yaml`, `flake.nix`, `infra/**`, `packages/**`, `scripts/**`, `.github/workflows/**` — names a hosting provider or carries its env prefix; the one exemption is the operator's own deployment workflow, `.github/workflows/deploy-hub.yml`, which is gated on a repository variable so a fork never runs it (ADR 0022). A hit is reworded, never allow-listed: the exemption list is that one path.                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| S18   | **Import direction follows the plugin tree** (ADR 0023 §5). Every source under a plugin package is walked, and the tree is read off the paths: a file under a parent's `src/**` never imports a part's directory, by path or by subpath specifier; a file under a part's directory imports, of its parent, only the `contract` subpath (`@manifold-plugin/<parent>/contract`); the `contract` module itself imports only the four floor packages and no React or DOM name, so it cannot smuggle runtime; any other `@manifold-plugin/*` edge stays S2's offence. RED names file and line, as S2 does. S2's own-name rule is a path rule (ADR 0023 T5).                                                                                                                                                                                                                                                                                              |
+| S18   | **Import direction follows the plugin tree** (ADR 0023 §5, schema clarification in ADR 0057). Every source under a plugin package is walked: a parent's `src/**` never imports a child; a child imports its parent only through `@manifold-plugin/<parent>/contract`; that contract imports only platform-free floor entries and the existing `zod` schema DSL, with no React or DOM name, runtime state or component. Every other `@manifold-plugin/*` edge remains S2's offence. Owner-mounted projections do not relax this code boundary. RED names file and line; S2's own-name rule remains a path rule.                                                                                                                                                                                                                                                                                                                                      |
 | S19   | **Decision records**: every `docs/decisions/*.md` carries the status block directly under its title — `Date`, `Status` from `proposed \| accepted \| superseded \| rejected`, `Superseded-by` present exactly when the status is `superseded` and naming a file in the directory, optional `Ratified` — in that order; every `00NN` number is taken by one file; and `docs/decisions/README.md` equals what `bun scripts/decisions-index.ts` renders, byte for byte, with the first drifting line named. The check reads the block with the generator's own parser, so a block the index cannot render is RED rather than a blank row (`AXIOMS.md` §Change control: a record is reasoning, the spec is law).                                                                                                                                                                                                                                        |
 | R1    | Vocabulary: `GET /api/protocol` actions ≡ the assembly; `GET /api/plugins` ≡ the roster; input/result schemas are present.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | R2    | Parity both directions: an SDK `core.terminals.rename` updates the browser DOM with no reload, and the browser's rename affordance is observed by the SDK as a `terminal_event`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
@@ -2457,7 +2519,7 @@ parser over the dispatch ladder; its live half dispatches every registered door.
 | R8    | The denial ladder end to end, including a container-scoped token on `engine.plugins.setEnabled` → `forbidden` (a door's audience is DECLARED: `scope: "workspace"` refuses scoped callers, `scope: "container"` admits them and obliges the handler to confine the answer — ADR 0013 §15).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | R9    | Layout resilience: under adversarial content (unbroken 60+ character names, eight containers, a three-deep folder chain, a long terminal name) and a bounded sweep of sidebar widths (≥6), the sidebar, the plugin manager and a canvas terminal node's chrome hold four invariant classes — no VISIBLE horizontal overflow where overflow is `visible`, no visible content cut by `overflow: hidden` without a declared ellipsis, no visible descendant escaping the audited root's box, no two statically-flowing siblings painting over each other. Grounded in what an observer sees: effective opacity 0 paints nothing, and a negative-margin stack is a declared overlap.                                                                                                                                                                                                                                                                    |
 | R10   | **The plane is live** (ADR 0012). Three real connections: a browser whose feeds hold subscriptions, an SDK peer subscribed to the same collection node, and a THIRD principal mutating through the action door — so `actor` names somebody neither observer could mistake for itself. The frame must arrive with the right topic, kind and actor; the browser's sidebar must reflect the change inside ONE SECOND measured from the dispatch, not from the frame; and the feed's own report must show `reads.event` moving while `reads.timer` stands still, because no DOM assertion can tell a subscription from a poll that happened to be fast. The negative rung is the admission half: a container-scoped token subscribing to a foreign collection is refused SILENTLY — no frame, no socket close — and the refusal is read in the structured log, since "received nothing" would also be true of a subscription that merely never matched. |
-| R11   | **A stranger's plugin, both halves** (ADR 0016 §8 stage 1, ADR 0053). The kit's canonical portable React fixture (`packages/plugin-kit/test/fixtures/sample/web.tsx`) is packed by its own command, admitted from `<data>/plugin-uploads/` at `engine.plugins.install`, dispatched once over HTTP from its own child process, seated as a panel through `core.space.setLayout` in the viewer's tree, painted from its self-contained Worker in real Chromium with all fourteen `UI_NODE_TYPES` kinds under their `mf-vocab-<kind>` anchors, and one press on its `data-action` button becomes exactly one dispatch at the same door (action log); then uninstalled, and the row and its doors are gone.                                                                                                                                                                                                                                             |
+| R11   | **A stranger's plugin, both halves** (ADR 0016 §8 stage 1, ADR 0053). The kit's canonical portable React fixture (`packages/plugin-kit/test/fixtures/sample/web.tsx`) is packed by its own command, admitted from `<data>/plugin-uploads/` at `engine.plugins.install`, dispatched over HTTP from its own child process, seated through `core.space.setLayout`, and painted from its Worker in Chromium with every `UI_NODE_TYPES` kind under its own `mf-vocab-<kind>` anchor. A bump is exactly one action dispatch. A borrowed Worker panel decodes its authenticated raster, downloads it through the byte carrier, and retires its bounded reader through a one-shot result; then uninstall removes the row and its doors.                                                                                                                                                                                                                     |
 | T1    | **One ledger writer** (A6, ADR 0018; `verify:trace`). `appendTrace`/`settleTrace` are called from the store that defines them and the dispatch ladder that uses them, and from nowhere else — walked with the TypeScript parser, because a trace written from a third place is an attribution no dispatch stands behind.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | T2    | **Every rung, by construction.** Every `{ ok: false }` denial literal inside `PluginHost.run` writes the ledger in its OWN statement block; exactly one may not, and its rule must be `unknown_action` — the exemption ADR 0018 §4 rules out by argument. This is the half that survives nobody remembering to dispatch a new rung. Beside it, the vocabulary join: every denial rung except that one is a member of `TRACE_OUTCOMES`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | T3    | **Every registered door traces, live.** Against the REAL composed server (its own process, its own data dir, ephemeral port), every action in `GET /api/plugins` is dispatched and the ledger must hold a row naming it; a door without a trace is RED. The sentinel argument refuses at the argument rung — every input is a `z.strictObject` — so every door is knocked on and nothing is created or destroyed. It also asserts the WRITE-AHEAD in production: the only unsettled row is the reading door's own in-flight dispatch, which is the attribution being durable before its handler runs.                                                                                                                                                                                                                                                                                                                                               |

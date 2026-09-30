@@ -708,6 +708,7 @@ button.chip:focus-visible {
   flex-direction: column;
   gap: 0.5rem;
   width: 100%;
+  min-width: 0;
   height: 100%;
   min-height: 0;
   overflow: auto;
@@ -722,6 +723,22 @@ button.chip:focus-visible {
   height: auto;
   overflow: visible;
   padding: 0;
+}
+
+/* Element geometry is already owned by the container's projection frame. */
+.mf-vocab.is-element {
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 0;
+}
+
+.mf-vocab.is-element > .layout-stack {
+  min-height: 100%;
+  flex: 1 0 auto;
+}
+
+.mf-vocab.is-element > .layout-stack > :not(.mf-vocab-image__projection) {
+  flex: 0 0 auto;
 }
 
 /* ── box ── Stack/Cluster own layout; these flags preserve the older wire's sizing knobs. */
@@ -873,6 +890,7 @@ button.chip:focus-visible {
   justify-content: center;
   gap: 0.3rem;
   width: fit-content;
+  max-width: 100%;
   border: 1px solid var(--mf-vocab-border);
   border-radius: var(--mf-vocab-radius);
   padding: 0.3rem 0.65rem;
@@ -881,7 +899,8 @@ button.chip:focus-visible {
   font-size: 0.76rem;
   font-weight: 600;
   line-height: 1.4;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
   cursor: pointer;
 }
 
@@ -1012,4 +1031,28 @@ button.chip:focus-visible {
 .mf-vocab-list__secondary {
   color: var(--mf-vocab-muted);
   font-size: 0.68rem;
+}
+
+.mf-vocab-file {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+  margin: 0;
+  border: 1px solid currentColor;
+  border-radius: var(--mf-vocab-radius);
+  padding: 0.5rem;
+  font: inherit;
+}
+
+.mf-vocab-image__projection {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.mf-vocab-image {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
 }

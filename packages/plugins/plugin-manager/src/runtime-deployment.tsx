@@ -2,6 +2,7 @@ import type { SectionProps } from "@manifold/plugin";
 import { FALLBACK_POLL_MS, usePolledResource } from "@manifold/plugin/hooks";
 import {
   canonicalJobJson,
+  canonicalNativeTransferPolicy,
   isOperatorAnchor,
   JobDeploymentDescriptionSchema,
   JobDeploymentListResultSchema,
@@ -21,6 +22,7 @@ import {
 import { Cluster, Stack } from "@manifold/ui";
 import { useEffect, useRef, useState, type ReactElement } from "react";
 import { RuntimeInvocationEdgeReview } from "./runtime-invocations.tsx";
+import { CAP_MEANINGS, highRiskRuntimeRight } from "./status.ts";
 
 type Host = SectionProps["host"];
 type ReadResult<T> = { value: T; failure: null } | { value: null; failure: string };
@@ -71,16 +73,80 @@ export function OperatorHostPath({
   );
 }
 
+export function RuntimeLocation({
+  location,
+  source,
+}: {
+  readonly location: MachineLocation;
+  readonly source: string | undefined;
+}): ReactElement {
+  return (
+    <>
+      <small>
+        {location.anchor}/{location.components.join("/")} · revision {location.revision} ·{" "}
+        {location.kind ?? "directory"}
+      </small>
+      {location.guestPath ? <small>Guest mount {location.guestPath}</small> : null}
+      {location.managed ? (
+        <small>
+          Managed root · private to the native owner's OS UID. Enrollment or PTY control does not
+          prove that a terminal application runs as that UID or can access this root.
+        </small>
+      ) : null}
+      <OperatorHostPath location={location} source={source} />
+    </>
+  );
+}
+
+/** The native doors supply this digest; there is no executable entry in an inline policy. */
+export function NativeTransferPolicyIdentity({
+  machine,
+  artifactSha256,
+}: {
+  readonly machine: MachineHalf;
+  readonly artifactSha256: string | null;
+}): ReactElement | null {
+  if (!machine.transferPolicy) return null;
+  return (
+    <div
+      className="plugin-manager-runtime-identity"
+      data-artifact-format={machine.transferPolicy.format}
+    >
+      <strong>Native transfer policy · {machine.transferPolicy.format}</strong>
+      <small>
+        Policy artifact SHA-256: <code>{artifactSha256 ?? "Not yet pinned by server review"}</code>
+      </small>
+      <p>
+        This inline policy is the installed artifact, not an executable or a job. Approval grants
+        only the exact read/create-child location rights shown; it never starts a transfer.
+      </p>
+      <p>
+        Create-child permits exclusive regular-file creation only: no overwrite, automatic suffix,
+        delete or arbitrary directory write. Read requires a separately reviewed root and a named
+        regular-file path; it does not grant directory browsing. Enrollment and PTY control do not
+        prove application access. Older or unsupported native owners refuse without a PTY fallback.
+      </p>
+      <details className="plugin-manager-runtime-evidence">
+        <summary>Exact canonical policy artifact</summary>
+        <pre>{canonicalNativeTransferPolicy(machine)}</pre>
+      </details>
+    </div>
+  );
+}
+
 function ReviewedPreparation({ review }: { readonly review: JobDeploymentReview }): ReactElement {
   const hasInvocationEdges = review.targets.some((target) => target.invocationEdges.length > 0);
+  const hasConsents = review.targets.some((target) => target.consents.length > 0);
   return (
     <Stack gap="0.65rem" className="plugin-manager-runtime-review">
       <p>
-        {review.request.operationIds.length === 0
+        {!hasConsents
           ? "Installation approval only — no permission changes are requested. Existing consents are not revoked. No operation will run."
-          : hasInvocationEdges
-            ? `Installation, consent and the exact runtime edges below for ${review.request.operationIds.join(", ")} only. No operation will run.`
-            : `Installation and consent for ${review.request.operationIds.join(", ")} only. No operation will run.`}
+          : review.machine.transferPolicy
+            ? "Installation and consent for the exact native transfer policy and location rights below. No transfer or operation will run."
+            : hasInvocationEdges
+              ? `Installation, consent and the exact runtime edges below for ${review.request.operationIds.join(", ")} only. No operation will run.`
+              : `Installation and consent for ${review.request.operationIds.join(", ")} only. No operation will run.`}
       </p>
       {review.targets.map((target) => {
         const artifact = target.platform ? review.machine.artifacts[target.platform] : undefined;
@@ -114,6 +180,10 @@ function ReviewedPreparation({ review }: { readonly review: JobDeploymentReview 
               Platform:{" "}
               <code>{target.platform ?? "Unresolved — choose a platform and review again"}</code>
             </small>
+            <NativeTransferPolicyIdentity
+              machine={review.machine}
+              artifactSha256={target.artifactSha256}
+            />
             <strong>Exact requested permissions</strong>
             {target.consents.length === 0 ? (
               <p>No permission changes — installation approval only.</p>
@@ -132,22 +202,19 @@ function ReviewedPreparation({ review }: { readonly review: JobDeploymentReview 
                       data-cap={consent.cap}
                       data-approved={consent.approved}
                       data-revision={consent.revision ?? ""}
-                      className={`plugin-manager-runtime-right${consent.cap === "network:host" || consent.cap === "locations:write" || consent.cap === "locations:create" ? " is-high-risk" : ""}`}
+                      className={`plugin-manager-runtime-right${highRiskRuntimeRight(consent.cap) ? " is-high-risk" : ""}`}
                     >
                       <div>
                         <strong>
+                          {highRiskRuntimeRight(consent.cap) ? "HIGH RISK — " : ""}
                           {consent.cap === "network:host"
-                            ? "HIGH RISK — host network, including reachable local services"
-                            : consent.cap === "locations:write"
-                              ? "Writable location — may modify existing data"
-                              : consent.cap === "locations:create"
-                                ? "Create access — may create location contents"
-                                : consent.cap}
+                            ? "Host networking, including reachable local services"
+                            : CAP_MEANINGS[consent.cap]}
                         </strong>
                         <code>{consent.cap}</code>
                         <small>{consent.node}</small>
                         {location ? (
-                          <OperatorHostPath
+                          <RuntimeLocation
                             location={location}
                             source={
                               target.resources.find(
@@ -656,6 +723,11 @@ export function RuntimePreparation({
   const draftFocus = useRef<HTMLHeadingElement>(null);
   const declarationKey = canonicalJobJson(declaration);
   const review = reviewed?.review ?? null;
+  const consentCount =
+    review?.targets.reduce((count, target) => count + target.consents.length, 0) ?? 0;
+  const platforms = declaration.transferPolicy
+    ? ["linux-x64", "linux-arm64"]
+    : Object.keys(declaration.artifacts);
   const invocationEdgeCount =
     review?.targets.reduce((count, target) => count + target.invocationEdges.length, 0) ?? 0;
   const reviewCurrent = reviewed?.declaration === declarationKey;
@@ -860,7 +932,7 @@ export function RuntimePreparation({
                       }}
                     >
                       <option value="">Resolve from server evidence</option>
-                      {Object.keys(declaration.artifacts).map((platform) => (
+                      {platforms.map((platform) => (
                         <option key={platform} value={platform}>
                           {platform}
                         </option>
@@ -900,12 +972,36 @@ export function RuntimePreparation({
         </p>
       </fieldset>
       <fieldset disabled={pending !== null || !canApprove}>
-        <legend>2. Optional operation permissions · {operationIds.length} selected</legend>
+        <legend>
+          {declaration.transferPolicy
+            ? "2. Exact native transfer policy permissions"
+            : `2. Optional operation permissions · ${operationIds.length} selected`}
+        </legend>
         <p>
-          {operationIds.length === 0
-            ? "Installation approval only — no permission changes requested."
-            : "Only the selected operations request permissions. Review shows the exact location, operation and network capabilities per machine, plus any additional service-runtime invocation edges and their limits."}
+          {declaration.transferPolicy
+            ? "Preparing this policy requests the exact location rights below. Review and explicit approval are required; selecting destinations or requesting a review grants nothing. Individual rights can be revoked in the installed machine inspector."
+            : operationIds.length === 0
+              ? "Installation approval only — no permission changes requested."
+              : "Only the selected operations request permissions. Review shows the exact location, operation and network capabilities per machine, plus any additional service-runtime invocation edges and their limits."}
         </p>
+        <NativeTransferPolicyIdentity machine={declaration} artifactSha256={null} />
+        {Object.entries(declaration.transferPolicy?.locations ?? {}).map(([locationId, rights]) => (
+          <div key={locationId} className="plugin-manager-runtime-location">
+            <strong>{locationId}</strong>
+            <RuntimeLocation location={declaration.locations[locationId]!} source={undefined} />
+            {rights.map((right) => (
+              <small
+                key={right}
+                className={
+                  highRiskRuntimeRight(`locations:${right}`) ? "plugin-manager-runtime-risk" : ""
+                }
+              >
+                {highRiskRuntimeRight(`locations:${right}`) ? "HIGH RISK — " : ""}
+                <code>locations:{right}</code> · {CAP_MEANINGS[`locations:${right}`]}
+              </small>
+            ))}
+          </div>
+        ))}
         {Object.entries(declaration.operations).map(([operationId, operation]) => (
           <label key={operationId} className="plugin-manager-runtime-choice">
             <input
@@ -987,7 +1083,7 @@ export function RuntimePreparation({
           <div className="plugin-manager-runtime-review-heading">
             <h5>
               Review installation
-              {review.request.operationIds.length > 0 ? " and permissions" : " only"}
+              {consentCount > 0 ? " and permissions" : " only"}
               {invocationEdgeCount > 0 ? " and runtime edges" : ""}
             </h5>
             <p role="status">
@@ -997,7 +1093,7 @@ export function RuntimePreparation({
                   ? "Approval refused — inspect destination evidence."
                   : attempted
                     ? "Apply attempted — inspect saved progress before reviewing again."
-                    : `${review.targets.length} exact destination${review.targets.length === 1 ? "" : "s"} · ${review.request.operationIds.length === 0 ? "no permission changes" : `${review.request.operationIds.length} selected operation${review.request.operationIds.length === 1 ? "" : "s"}`}`}
+                    : `${review.targets.length} exact destination${review.targets.length === 1 ? "" : "s"} · ${consentCount === 0 ? "no permission changes" : `${consentCount} exact node/capability consent${consentCount === 1 ? "" : "s"}`}`}
             </p>
             {invocationEdgeCount > 0 ? (
               <p>
@@ -1024,15 +1120,15 @@ export function RuntimePreparation({
                 ? "Saving and applying reviewed preparation…"
                 : attempted
                   ? "Apply attempted — inspect saved progress"
-                  : review.request.operationIds.length === 0
+                  : consentCount === 0
                     ? "4. Approve and prepare installation only"
                     : invocationEdgeCount > 0
                       ? "4. Approve and prepare installation with exact permissions and runtime edges"
                       : "4. Approve and prepare installation with exact permissions"}
             </button>
             <small>
-              No operation will run. Installation and current owner acknowledgement are tracked
-              separately below.
+              No transfer or operation will run. Installation and current owner acknowledgement are
+              tracked separately below.
             </small>
           </div>
           <div

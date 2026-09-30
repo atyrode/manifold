@@ -1,4 +1,17 @@
 import type {
+  NativeTransferBeginPutArgs,
+  NativeTransferBeginReadArgs,
+  NativeTransferRecoverAdmissionArgs,
+  NativeTransferAdmissionRecovery,
+  NativeTransferDescribeArgs,
+  NativeTransferDescription,
+  NativeTransferPutChunkArgs,
+  NativeTransferReadChunkArgs,
+  NativeTransferReadChunkResult,
+  NativeTransferContinuationArgs,
+  NativeTransferStatus,
+  NativeTransferReceiptView,
+  NativeTransferReason,
   InspectJobInputsArgs,
   NativeAgentRunBinding,
   InspectJobInputsResult,
@@ -27,8 +40,60 @@ import type {
   InstanceServicesDescription,
   InstanceServiceConfigurationRead,
   InstanceServiceReadArgs,
+  ReferencePrepareRequest,
+  ReferenceAttachmentRequest,
+  ReferenceAttachmentResult,
+  ReferenceReceiptRequest,
+  ReferenceReadFilterRequest,
+  ReferenceReadFilterResult,
+  ReferencePublishRequest,
+  ReferenceAbortRequest,
+  ReferenceRequirePublishedRequest,
+  ReferenceUnpublishRequest,
+  ReferenceGrantRequest,
+  ReferenceRevokeRequest,
+  ReferenceAudienceRequest,
+  ReferencePreparation,
+  PublishedReference,
+  PublishedReferenceIdentity,
+  ReferenceTerminalReceipt,
+  RestrictedGrantView,
+  RestrictedGrantResult,
+  RestrictedAudiencePage,
 } from "@manifold/protocol";
+import { NativeTransferReasonSchema } from "@manifold/protocol";
+import type { PluginDatabase } from "./database.ts";
+import type { PluginStorage } from "./storage.ts";
 export type { ServiceConfigurationRead } from "@manifold/protocol";
+
+/** Bound to the invoking action's declaration, original credential and live dispatch lease. */
+export interface PluginReferenceContext {
+  /** Create one's own element under current scene-write and published referent-read authority. */
+  attach(input: ReferenceAttachmentRequest): Promise<ReferenceAttachmentResult>;
+  prepare(input: ReferencePrepareRequest): Promise<ReferencePreparation>;
+  publish(input: ReferencePublishRequest): Promise<PublishedReference>;
+  abort(input: ReferenceAbortRequest): Promise<ReferenceTerminalReceipt>;
+  requirePublished(input: ReferenceRequirePublishedRequest): Promise<PublishedReferenceIdentity>;
+  unpublish(input: ReferenceUnpublishRequest): Promise<ReferenceTerminalReceipt>;
+  /** No-effect terminal reconciliation, only through the owner's declared receipt action. */
+  receipt(input: ReferenceReceiptRequest): Promise<ReferenceTerminalReceipt>;
+  /** Filters own candidate identities, only through the owner's declared library action. */
+  readable(input: ReferenceReadFilterRequest): Promise<ReferenceReadFilterResult>;
+  grant(input: ReferenceGrantRequest): Promise<RestrictedGrantView>;
+  revoke(input: ReferenceRevokeRequest): Promise<RestrictedGrantResult>;
+  audience(input: ReferenceAudienceRequest): Promise<RestrictedAudiencePage>;
+}
+
+/**
+ * Only the owner's data lease and clock. No caller, identity, action or reference authority.
+ * The database is the ordinary owner lease, NOT a claim of SQLite read-only enforcement;
+ * immutable ready records remain the owner's invariant.
+ */
+export interface ReferenceProbeCtx {
+  readonly storage: PluginStorage;
+  readonly database?: PluginDatabase;
+  now(): number;
+}
 
 export type JobExecution = Pick<
   JobRequest,
@@ -110,6 +175,32 @@ export interface PluginJobContext {
   schedule(args: Omit<JobExecution, "agentRun"> & JobScheduleTiming): Record<string, never>;
   schedules(): PublicJobSchedule[];
   disableSchedule(args: { scheduleId: string; revision: string }): Record<string, never>;
+}
+
+/** Typed private byte transport over the governed native owner channel, never public action bytes. */
+export interface PluginNativeTransferContext {
+  describe(args: NativeTransferDescribeArgs): Promise<NativeTransferDescription>;
+  beginPut(args: NativeTransferBeginPutArgs): Promise<NativeTransferStatus>;
+  putChunk(args: NativeTransferPutChunkArgs): Promise<NativeTransferStatus>;
+  commitPut(args: NativeTransferContinuationArgs): Promise<NativeTransferStatus>;
+  beginRead(args: NativeTransferBeginReadArgs): Promise<NativeTransferStatus>;
+  readChunk(args: NativeTransferReadChunkArgs): Promise<NativeTransferReadChunkResult>;
+  cancel(args: NativeTransferContinuationArgs): Promise<NativeTransferStatus>;
+  status(args: NativeTransferContinuationArgs): Promise<NativeTransferStatus>;
+  /** Exact live original credential; terminal state only, never bytes or destination metadata. */
+  receipt(args: NativeTransferContinuationArgs): Promise<NativeTransferReceiptView>;
+  /** Recover the original admission or durably fence it; never available to byte/data callbacks. */
+  recoverAdmission(
+    args: NativeTransferRecoverAdmissionArgs,
+  ): Promise<NativeTransferAdmissionRecovery>;
+}
+
+/** A named native transfer refusal, identical in realm and across the hardened boundary. */
+export class NativeTransferError extends Error {
+  constructor(readonly reason: NativeTransferReason) {
+    super(NativeTransferReasonSchema.parse(reason));
+    this.name = "NativeTransferError";
+  }
 }
 
 export interface ServiceDescription {

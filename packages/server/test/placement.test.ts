@@ -12,6 +12,7 @@ import {
   SceneElementSchema,
   censusSolo,
   elementString,
+  formatManifoldUri,
   placementContainerFor,
   placementItemFor,
   placementRefusalRule,
@@ -64,6 +65,7 @@ import {
   FakeClock,
   FakeRuntime,
   FakeSocket,
+  closeTestStore,
   hostWithSeatOff,
   placeTile,
   testPluginHost,
@@ -73,6 +75,7 @@ import {
 
 const OWNER_KEY = "f".repeat(64);
 const temporaryDirectories: string[] = [];
+const fixtureCleanup: (() => void)[] = [];
 
 class FakeMachine implements MachineChannel {
   readonly terminalExecution: MachineChannel["terminalExecution"] = "unconfined";
@@ -155,6 +158,17 @@ function element(
       ...overrides,
     };
   }
+  if (overrides.type === "file_image") {
+    return {
+      ...base,
+      file: formatManifoldUri({ kind: "file", fileId: "placement-image" }),
+      cropX: 0,
+      cropY: 0,
+      cropWidth: 1,
+      cropHeight: 1,
+      ...overrides,
+    };
+  }
   return {
     ...base,
     ...overrides,
@@ -180,6 +194,7 @@ async function placementFixture(): Promise<PlacementFixture> {
   const runtime = new FakeRuntime();
   const clock = new FakeClock(runtime);
   const store = testStore();
+  fixtureCleanup.push(() => closeTestStore(store));
   const auth = new AuthService(store, OWNER_KEY, runtime);
   const root = auth.authenticate(OWNER_KEY);
   const newContainer = (name: string, discipline: ContainerDiscipline): Container => {
@@ -289,6 +304,7 @@ async function placementFixture(): Promise<PlacementFixture> {
     );
   }
   writeElement(canvasDoc, element({ id: "el-draw", type: "draw" }), LOCAL_ORIGIN);
+  writeElement(canvasDoc, element({ id: "el-image", type: "file_image" }), LOCAL_ORIGIN);
   writeElement(
     canvasDoc,
     element({ id: "el-portal-canvas", type: "portal", containerId: other.id }),
@@ -461,6 +477,7 @@ function refs(fixture: PlacementFixture): Readonly<Record<string, PlacementRef>>
     canvas_note: { kind: "element", containerId: fixture.canvas.id, elementId: "el-canvas-note" },
     "text-home": { kind: "container", containerId: fixture.textHome.id },
     draw: { kind: "element", containerId: fixture.canvas.id, elementId: "el-draw" },
+    file_image: { kind: "element", containerId: fixture.canvas.id, elementId: "el-image" },
     tile: {
       kind: "tile",
       containerId: fixture.composition.id,
@@ -525,6 +542,7 @@ async function call(
 }
 
 afterEach(() => {
+  for (const close of fixtureCleanup.splice(0).reverse()) close();
   for (const directory of temporaryDirectories.splice(0)) {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -569,6 +587,10 @@ describe("the placement algebra, executed", () => {
     ["draw", "tile", "add_tile"],
     ["draw", "compose", "compose"],
     ["draw", "unplaced", "denied:not_accepted"],
+    ["file_image", "canvas", "move_element"],
+    ["file_image", "tile", "denied:not_accepted"],
+    ["file_image", "compose", "denied:not_accepted"],
+    ["file_image", "unplaced", "denied:not_accepted"],
     ["tile", "canvas", "extract"],
     // A leaf is a re-placeable PLACEMENT: both composition cells were
     // `denied:not_accepted` until the center-swap work, and the operator approved the
