@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { defineAction } from "@manifold/plugin";
 import { z } from "zod";
 import {
@@ -52,6 +52,10 @@ import type { EventHub } from "../src/event-hub.ts";
 
 const OWNER_KEY = "e".repeat(64);
 const CH = "c1";
+const stores: ServerStore[] = [];
+afterEach(() => {
+  for (const store of stores.splice(0)) closeTestStore(store);
+});
 
 interface PlaneFixture {
   readonly runtime: FakeRuntime;
@@ -100,11 +104,15 @@ function newContainer(runtime: FakeRuntime, name: string): Container {
 
 async function planeFixture(
   governedRead?: (auth: AuthService, context: AuthContext, node: ManifoldRef) => boolean,
-  plugins: readonly ServerPluginDef[] = [],
+  options: {
+    readonly settingsPlugins?: readonly ServerPluginDef[];
+    readonly assembly?: readonly ServerPluginDef[];
+  } = {},
 ): Promise<PlaneFixture> {
   const runtime = new FakeRuntime();
   const clock = new FakeClock(runtime);
   const store = testStore();
+  stores.push(store);
   const auth = new AuthService(store, OWNER_KEY, runtime);
   const owner = auth.authenticate(OWNER_KEY);
   const container = newContainer(runtime, "watched canvas");
@@ -155,7 +163,7 @@ async function planeFixture(
   host = await testPluginHost(store, auth, rooms, broker, runtime, {
     events,
     logger,
-    settingsPlugins: plugins,
+    ...options,
   });
   broker.setEvents(events);
   rooms.setEvents(events);
@@ -583,7 +591,7 @@ describe("event plane fan-out", () => {
       actions: [],
       handlers: {},
     };
-    const fixture = await planeFixture(undefined, [babel]);
+    const fixture = await planeFixture(undefined, { settingsPlugins: [babel] });
     try {
       const babelNode: ManifoldRef = { kind: "plugin", pluginId: "atyrode.babel" };
       const accessNode: ManifoldRef = { kind: "plugin", pluginId: "core.access" };
@@ -988,7 +996,7 @@ describe("event plane fan-out", () => {
     };
     const fixture = await planeFixture(
       (auth, reader, node) => auth.allowsRef(reader, "vendor.files:read", node),
-      [files, foreign],
+      { assembly: [files, foreign] },
     );
     try {
       const file: PluginOwnedRef = { kind: "file", fileId: "private-file" };

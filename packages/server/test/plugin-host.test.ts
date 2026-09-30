@@ -1,5 +1,5 @@
 import "../src/shared-modules.ts";
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import {
   existsSync,
   mkdirSync,
@@ -121,6 +121,10 @@ import {
  */
 
 const OWNER_KEY = "a".repeat(64);
+const stores: ServerStore[] = [];
+afterEach(() => {
+  for (const store of stores.splice(0)) closeTestStore(store);
+});
 
 /** No machine is connected in a bare fixture, which is the honest state of a fresh store. */
 const OFFLINE_MACHINES: MachineAdmission = {
@@ -149,7 +153,7 @@ const DEFAULT_LAYOUT = composeDefaultLayout(
  * contributed element kind, and a thunk that reached back into a half-built host would be
  * wiring the test differently from the server.
  */
-function testPlacement(fixture: HostFixture): PlaceExecutor {
+function testPlacement(fixture: Omit<HostFixture, "host">): PlaceExecutor {
   return new PlaceExecutor(
     fixture.store,
     fixture.rooms,
@@ -172,10 +176,11 @@ interface HostFixture {
   readonly broker: TerminalBroker;
 }
 
-async function hostFixture(): Promise<HostFixture> {
+async function hostFixture(defs?: readonly ServerPluginDef[]): Promise<HostFixture> {
   const runtime = new FakeRuntime();
   const clock = new FakeClock(runtime);
   const store = testStore();
+  stores.push(store);
   const auth = new AuthService(store, OWNER_KEY, runtime);
   const owner = auth.authenticate(OWNER_KEY);
   const rooms = new RoomManager(store, runtime, clock, silentLogger, testTileTrees);
@@ -191,15 +196,16 @@ async function hostFixture(): Promise<HostFixture> {
   );
   rooms.setTerminalProvider((containerId) => broker.listForContainer(containerId));
   rooms.setPendingOpenProvider((containerId) => broker.hasPendingOpenForContainer(containerId));
-  return {
-    store,
-    auth,
-    owner,
-    host: await testPluginHost(store, auth, rooms, broker, runtime),
-    runtime,
-    rooms,
-    broker,
-  };
+  const fixture = { store, auth, owner, runtime, rooms, broker };
+  const host =
+    defs === undefined
+      ? await testPluginHost(store, auth, rooms, broker, runtime)
+      : await customHost(fixture, defs);
+  return { ...fixture, host };
+}
+
+function enablementSnapshot(store: ServerStore) {
+  return { disabled: store.disabledPlugins(), attribution: store.pluginAttribution() };
 }
 
 /** A token, so authority is exercised through real attenuation rather than a hand-built context. */
@@ -625,6 +631,7 @@ describe("PluginHost denial ladder", () => {
 
   test("a container-scoped token is refused for its scope even when it holds the capability", async () => {
     const fixture = await hostFixture();
+    const before = enablementSnapshot(fixture.store);
     const container = fixture.runtime.newId();
     fixture.store.createContainer({
       id: container,
@@ -648,7 +655,7 @@ describe("PluginHost denial ladder", () => {
       rule: "forbidden",
       message: "scoped tokens cannot invoke workspace actions",
     });
-    expect([...fixture.store.disabledPlugins()]).toEqual([]);
+    expect(enablementSnapshot(fixture.store)).toEqual(before);
     closeTestStore(fixture.store);
   });
 
@@ -712,6 +719,8 @@ describe("PluginHost denial ladder", () => {
 describe("PluginHost enablement", () => {
   test("setEnabled persists, recomposes, and publishes the new roster", async () => {
     const fixture = await hostFixture();
+    const before = enablementSnapshot(fixture.store);
+    expect(before.disabled.has("core.terminals")).toBe(false);
     const seen: PluginRoster[] = [];
     const remove = fixture.host.onRosterChange((roster) => {
       seen.push(roster);
@@ -719,7 +728,9 @@ describe("PluginHost enablement", () => {
 
     expect(await fixture.host.setEnabled("core.terminals", false, "admin")).toEqual({ ok: true });
 
-    expect([...fixture.store.disabledPlugins()]).toEqual(["core.terminals"]);
+    expect(fixture.store.disabledPlugins()).toEqual(
+      new Set([...before.disabled, "core.terminals"]),
+    );
     expect(fixture.host.assembly().enabled("core.terminals")).toBe(false);
     expect(seen).toHaveLength(1);
     expect(seen[0]?.find((entry) => entry.manifest.id === "core.terminals")?.enabled).toBe(false);
@@ -730,7 +741,8 @@ describe("PluginHost enablement", () => {
     );
 
     expect(await fixture.host.setEnabled("core.terminals", true, "admin")).toEqual({ ok: true });
-    expect([...fixture.store.disabledPlugins()]).toEqual([]);
+    expect(fixture.store.disabledPlugins()).toEqual(before.disabled);
+    expect(fixture.host.assembly().enabled("core.terminals")).toBe(true);
     expect(seen).toHaveLength(2);
     remove();
     closeTestStore(fixture.store);
@@ -738,6 +750,7 @@ describe("PluginHost enablement", () => {
 
   test("a no-op toggle publishes NOTHING, so a socket is not woken for a non-change", async () => {
     const fixture = await hostFixture();
+    const before = enablementSnapshot(fixture.store);
     const seen: PluginRoster[] = [];
     const remove = fixture.host.onRosterChange((roster) => {
       seen.push(roster);
@@ -748,13 +761,18 @@ describe("PluginHost enablement", () => {
     // answer, not news.
     expect(await fixture.host.setEnabled("core.terminals", true, "admin")).toEqual({ ok: true });
     expect(seen).toHaveLength(0);
-    expect([...fixture.store.disabledPlugins()]).toEqual([]);
+    expect(enablementSnapshot(fixture.store)).toEqual(before);
 
     expect(await fixture.host.setEnabled("core.terminals", false, "admin")).toEqual({ ok: true });
     expect(seen).toHaveLength(1);
+    expect(fixture.store.disabledPlugins()).toEqual(
+      new Set([...before.disabled, "core.terminals"]),
+    );
+    const disabled = enablementSnapshot(fixture.store);
     // ...and a second disable of the same plugin is equally quiet.
     expect(await fixture.host.setEnabled("core.terminals", false, "admin")).toEqual({ ok: true });
     expect(seen).toHaveLength(1);
+    expect(enablementSnapshot(fixture.store)).toEqual(disabled);
     remove();
     closeTestStore(fixture.store);
   });
@@ -801,22 +819,25 @@ describe("PluginHost enablement", () => {
 
   test("an essential plugin refuses to be disabled, and an unknown id refuses too", async () => {
     const fixture = await hostFixture();
+    const before = enablementSnapshot(fixture.store);
 
     expect(await fixture.host.setEnabled("core.shell", false, "admin")).toEqual({
       refused: "essential",
     });
+    expect(enablementSnapshot(fixture.store)).toEqual(before);
     expect(await fixture.host.setEnabled("core.ghost", false, "admin")).toEqual({
       refused: "unknown_plugin: core.ghost",
     });
 
     // Nothing was written and nothing went dark: the refusal is total.
-    expect([...fixture.store.disabledPlugins()]).toEqual([]);
+    expect(enablementSnapshot(fixture.store)).toEqual(before);
     expect(fixture.host.assembly().enabled("core.shell")).toBe(true);
     closeTestStore(fixture.store);
   });
 
   test("the engine's builtin door refuses to be switched off, through its own door", async () => {
     const fixture = await hostFixture();
+    const before = enablementSnapshot(fixture.store);
 
     // BOTH doors, because enablement has two: the in-process host method the server's own
     // wiring calls, and the dispatched action any `plugins:manage` holder can reach. A
@@ -824,6 +845,7 @@ describe("PluginHost enablement", () => {
     expect(await fixture.host.setEnabled(ENGINE_PLUGINS_ID, false, "admin")).toEqual({
       refused: `builtin: ${ENGINE_PLUGINS_ID}`,
     });
+    expect(enablementSnapshot(fixture.store)).toEqual(before);
 
     const outcome = await fixture.host.dispatch(fixture.owner, ENGINE_SET_ENABLED_ACTION, {
       id: ENGINE_PLUGINS_ID,
@@ -837,13 +859,14 @@ describe("PluginHost enablement", () => {
       administer plugins, never authority to destroy the administration.
      */
     expect(denial(outcome)).toEqual({ rule: "refused", message: `builtin: ${ENGINE_PLUGINS_ID}` });
-    expect([...fixture.store.disabledPlugins()]).toEqual([]);
+    expect(enablementSnapshot(fixture.store)).toEqual(before);
     expect(fixture.host.assembly().enabled(ENGINE_PLUGINS_ID)).toBe(true);
     closeTestStore(fixture.store);
   });
 
   test("the manager's SEAT is essential while the door stays outside the assembly", async () => {
     const fixture = await hostFixture();
+    const before = enablementSnapshot(fixture.store);
 
     /*
       TWO CLAIMS THAT USED TO LOOK LIKE ONE, and separating them is what issue #91 changed.
@@ -867,7 +890,7 @@ describe("PluginHost enablement", () => {
     expect(denial(refused)).toEqual({ rule: "refused", message: "essential" });
     expect(fixture.host.assembly().enabled("core.plugins")).toBe(true);
     // Nothing was written: a refused disable is an answer, not a half-applied transition.
-    expect([...fixture.store.disabledPlugins()]).toEqual([]);
+    expect(enablementSnapshot(fixture.store)).toEqual(before);
 
     // The door is reachable and effective on an ORDINARY plugin, with the manager's own seat
     // still standing — which is what "the door is not a member of the assembly it administers"
@@ -878,7 +901,10 @@ describe("PluginHost enablement", () => {
         enabled: false,
       }),
     ).toEqual({ ok: true, result: {} });
-    expect([...fixture.store.disabledPlugins()]).toEqual(["core.canvas.draw"]);
+    expect(fixture.store.disabledPlugins()).toEqual(
+      new Set([...before.disabled, "core.canvas.draw"]),
+    );
+    expect(fixture.host.assembly().enabled("core.canvas.draw")).toBe(false);
     expect(fixture.host.assembly().enabled("core.plugins")).toBe(true);
     closeTestStore(fixture.store);
   });
@@ -899,6 +925,7 @@ describe("PluginHost enablement", () => {
 
   test("setEnabled needs plugins:manage, which the roster publishes as the action's cap", async () => {
     const fixture = await hostFixture();
+    const before = enablementSnapshot(fixture.store);
     const writer = context(fixture, ["containers:read", "containers:write"]);
 
     const outcome = await fixture.host.dispatch(writer, ENGINE_SET_ENABLED_ACTION, {
@@ -910,7 +937,7 @@ describe("PluginHost enablement", () => {
       rule: "forbidden",
       message: "plugins:manage capability required",
     });
-    expect([...fixture.store.disabledPlugins()]).toEqual([]);
+    expect(enablementSnapshot(fixture.store)).toEqual(before);
     closeTestStore(fixture.store);
   });
 });
@@ -1313,7 +1340,7 @@ function recorder(
 }
 
 async function customHost(
-  fixture: HostFixture,
+  fixture: Omit<HostFixture, "host">,
   defs: readonly ServerPluginDef[],
   options: {
     readonly lifecycleTimeoutMs?: number;
@@ -1502,6 +1529,8 @@ describe("PluginHost lifecycle", () => {
         },
       }),
     ]);
+    const before = enablementSnapshot(fixture.store);
+    expect(before.disabled.has("test.alpha")).toBe(false);
 
     expect(await host.setEnabled("test.alpha", false, "admin")).toEqual({ ok: true });
 
@@ -1509,7 +1538,7 @@ describe("PluginHost lifecycle", () => {
     // never be that plugin, so the flag is written, the roster says so, and the failure is
     // reported as state rather than swallowed or obeyed.
     expect(host.assembly().enabled("test.alpha")).toBe(false);
-    expect([...fixture.store.disabledPlugins()]).toEqual(["test.alpha"]);
+    expect(fixture.store.disabledPlugins()).toEqual(new Set([...before.disabled, "test.alpha"]));
     const entry = host.roster().find((row) => row.manifest.id === "test.alpha");
     expect(entry?.lifecycle).toBe("disable_failed");
     closeTestStore(fixture.store);
@@ -1599,7 +1628,9 @@ describe("PluginHost dependencies", () => {
   test("disabling a dependency is REFUSED and names the dependents", async () => {
     const fixture = await hostFixture();
     const host = await customHost(fixture, pair());
-    await host.setEnabled("test.rival", false, "admin");
+    expect(await host.setEnabled("test.rival", false, "admin")).toEqual({ ok: true });
+    const before = enablementSnapshot(fixture.store);
+    expect(before.disabled.has("test.rival")).toBe(true);
 
     const outcome = await host.setEnabled("test.base", false, "admin");
 
@@ -1608,7 +1639,7 @@ describe("PluginHost dependencies", () => {
     // round trip that says exactly what is in the way.
     expect(outcome).toEqual({ refused: "missing_dependency: test.leaf" });
     expect(host.assembly().enabled("test.base")).toBe(true);
-    expect([...fixture.store.disabledPlugins()]).toEqual(["test.rival"]);
+    expect(enablementSnapshot(fixture.store)).toEqual(before);
     closeTestStore(fixture.store);
   });
 
@@ -6535,8 +6566,6 @@ describe("reviewed family updates through the one installer", () => {
 });
 
 async function referenceAttachmentFixture() {
-  const fixture = await hostFixture();
-  await fixture.host.close();
   const ready = new Map<
     string,
     { preparationId: string; readyDigest: string; expiresAt: number }
@@ -6667,7 +6696,8 @@ async function referenceAttachmentFixture() {
       },
     },
   );
-  const host = await customHost(fixture, [owner, consumer]);
+  const fixture = await hostFixture([owner, consumer]);
+  const { host } = fixture;
   fixture.auth.grant(
     {
       principal: { kind: "principal", id: fixture.owner.principal.id },
