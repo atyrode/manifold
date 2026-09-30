@@ -1031,7 +1031,8 @@ try {
         bar.hasAttribute('data-titlebar-draggable');
     })()`,
   );
-  if (!grabbingTitle) throw new Error("compose gesture cannot reach its terminal title drag handle");
+  if (!grabbingTitle)
+    throw new Error("compose gesture cannot reach its terminal title drag handle");
   // The right-hand snap band: the released zone becomes the split edge.
   const zone = {
     x: anchorRect.left + anchorRect.width * 0.85,
