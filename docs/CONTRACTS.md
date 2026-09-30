@@ -2764,7 +2764,8 @@ the explicit `PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS` set and compare React by m
 bundle set is independent of session, machine and instance negotiation: sessions still require
 the current wire version. Protocol 56 admits bundle stamps 47, 48, 51, 52, 53, 54, 55 and 56:
 terminal geometry adds a subscription without changing existing plugin call signatures, and
-portable Worker projections expose no terminal byte/snapshot subscriptions. A prior stamp
+portable Worker projections expose no terminal byte/snapshot subscriptions. The Text session
+document cutover retains the plugin ABI. A prior stamp
 may remain only with proof from unchanged released artifacts through candidate assembly and
 loading; an incompatible plugin ABI change resets the set. No numeric range, future version
 or deployment bypass is implied. Known incompatibility refuses fresh admission or holds an
