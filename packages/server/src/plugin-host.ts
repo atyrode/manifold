@@ -103,6 +103,7 @@ import { nativeTransferContext } from "./native-transfer-context.ts";
 import {
   NativeTransferReasonSchema,
   type NativeTransferTerminalEvidence,
+  type NativeTransferPendingAdmission,
 } from "@manifold/protocol";
 import type {
   ActionCallRefusal,
@@ -1049,6 +1050,14 @@ export type ServerPluginDef = PluginDef & {
     ctx: ReferenceProbeCtx,
     receipts: readonly NativeTransferTerminalEvidence[],
   ) => Promise<void>;
+  /** Private reservation metadata; the host admits this callback only while the owner is idle. */
+  readonly pendingNativeTransfers?: (
+    ctx: ReferenceProbeCtx,
+  ) => Promise<readonly NativeTransferPendingAdmission[]>;
+  /** Isolate bridge only; null means busy, never an empty authoritative snapshot. */
+  readonly pendingNativeTransfersWhenIdle?: (
+    ctx: ReferenceProbeCtx,
+  ) => Promise<readonly NativeTransferPendingAdmission[] | null>;
   /** Set only by the isolate bridge: real parsing precedes the host admission continuation. */
   readonly inputValidation?: "guest";
 };
@@ -1663,6 +1672,7 @@ export class PluginHost {
    */
   private readonly replacing = new Set<string>();
   private readonly activeDispatches = new Map<string, Set<Promise<void>>>();
+  private readonly nativePendingProbes = new Map<string, Promise<void>>();
   private readonly isolates: IsolateDeps | null;
   /**
    * The unpacked directory's hands (ADR 0025 §4): present exactly when this host admits
@@ -1744,6 +1754,7 @@ export class PluginHost {
     input: ByteCarrierRequest,
     request: Request,
   ): Promise<Response> {
+    while (this.nativePendingProbes.has(pluginId)) await this.nativePendingProbes.get(pluginId);
     const definition = this.byteDefinitions.get(pluginId);
     const declaration = definition?.manifest.contributes.byteCarriers?.find(
       (candidate) => candidate.id === carrierId,
@@ -1790,6 +1801,7 @@ export class PluginHost {
       if (this.activeDispatches.get(pluginId)?.size === 0) this.activeDispatches.delete(pluginId);
       controller.abort(new ByteTransferError("cancelled"));
       settled.resolve();
+      this.nativeOwnerIdle(pluginId);
     };
     const abort = (reason: ByteRefusal): void => {
       if (!open) return;
@@ -1991,11 +2003,49 @@ export class PluginHost {
     };
   }
 
+  private nativeOwnerIdle(pluginId: string): void {
+    if (this.closed || (this.activeDispatches.get(pluginId)?.size ?? 0) !== 0) return;
+    void this.jobs?.nativeTransfers.reconcilePendingAdmissions(pluginId);
+  }
+
+  /** Ordinary work waits until both the snapshot and its synchronous metadata fence finish. */
+  private async pendingNativeAdmissions(
+    pluginId: string,
+    accept: (snapshot: unknown) => void,
+  ): Promise<boolean> {
+    const def = this.defs.find((candidate) => candidate.manifest.id === pluginId);
+    const probe = def?.pendingNativeTransfersWhenIdle ?? def?.pendingNativeTransfers;
+    if (
+      this.closed || this.replacing.has(pluginId) || !def?.reconcileNativeTransfers || !probe ||
+      this.nativePendingProbes.has(pluginId) ||
+      (this.activeDispatches.get(pluginId)?.size ?? 0) !== 0
+    ) return false;
+    const settled = Promise.withResolvers<void>();
+    let open = true;
+    this.nativePendingProbes.set(pluginId, settled.promise);
+    try {
+      return await this.referenceDataCall(pluginId, async (ctx) => {
+        const snapshot = await probe(ctx);
+        if (!open || snapshot === null || this.closed || this.replacing.has(pluginId) ||
+          this.defs.find((candidate) => candidate.manifest.id === pluginId) !== def) return false;
+        accept(snapshot);
+        return true;
+      }, true);
+    } finally {
+      open = false;
+      this.nativePendingProbes.delete(pluginId);
+      settled.resolve();
+    }
+  }
+
   /** A private bounded owner-data lease, not a dispatch or borrowed lifecycle authority. */
   private async referenceDataCall<T>(
     pluginId: string,
     invoke: (ctx: ReferenceProbeCtx) => Promise<T>,
+    pendingProbe = false,
   ): Promise<T> {
+    if (!pendingProbe)
+      while (this.nativePendingProbes.has(pluginId)) await this.nativePendingProbes.get(pluginId);
     const lease = this.dataLease(
       pluginId,
       this.storage(pluginId),
@@ -2028,6 +2078,8 @@ export class PluginHost {
       settled.resolve();
       active.delete(settled.promise);
       if (active.size === 0) this.activeDispatches.delete(pluginId);
+      if (!pendingProbe && active.size === 0 && !this.closed)
+        this.jobs?.nativeTransfers.retryPendingAdmissions(pluginId);
     }
   }
 
@@ -2141,6 +2193,7 @@ export class PluginHost {
   ): Promise<T> {
     const def = this.harnessDefinition(id);
     const pluginId = def.manifest.id;
+    while (this.nativePendingProbes.has(pluginId)) await this.nativePendingProbes.get(pluginId);
     const install = this.installed.get(pluginId);
     const current = this.authService.restoreCredential(this.authService.credentialReference(actor));
     if (!current) throw new ServiceError("forbidden", "harness caller unavailable");
@@ -2210,6 +2263,7 @@ export class PluginHost {
       settled.resolve();
       active.delete(settled.promise);
       if (active.size === 0) this.activeDispatches.delete(pluginId);
+      this.nativeOwnerIdle(pluginId);
     }
   }
 
@@ -2328,6 +2382,16 @@ export class PluginHost {
       if (!def.reconcileNativeTransfers) return true;
       await this.referenceDataCall(pluginId, (ctx) => def.reconcileNativeTransfers!(ctx, receipts));
       return true;
+    });
+    for (const def of this.defs)
+      if ((def.pendingNativeTransfers || def.pendingNativeTransfersWhenIdle) && !def.reconcileNativeTransfers)
+        throw new Error(`${def.manifest.id}: pending native transfers require reconciliation`);
+    jobs.nativeTransfers.setPendingAdmissionSource({
+      owners: () => this.defs.filter((def) =>
+        def.manifest.machine?.transferPolicy !== undefined &&
+        (def.pendingNativeTransfers !== undefined || def.pendingNativeTransfersWhenIdle !== undefined),
+      ).map((def) => def.manifest.id),
+      probe: (pluginId, accept) => this.pendingNativeAdmissions(pluginId, accept),
     });
     void jobs.nativeTransfers.reconcile();
     jobs.setHeldPlugins(
@@ -2856,6 +2920,12 @@ export class PluginHost {
     this.syncDefs();
     this.isolates.runner.onState((pluginId) => {
       this.onIsolateState(pluginId);
+    });
+    this.isolates.runner.onIdle?.((pluginId) => {
+      if (this.closed || this.nativePendingProbes.has(pluginId)) return;
+      queueMicrotask(() => {
+        if (!this.closed) this.jobs?.nativeTransfers.retryPendingAdmissions(pluginId);
+      });
     });
   }
 
@@ -4979,6 +5049,11 @@ export class PluginHost {
     pluginId: string,
     invoke: (ctx: LifecycleCtx) => void | Promise<void>,
   ): Promise<HookOutcome> {
+    while (this.nativePendingProbes.has(pluginId)) await this.nativePendingProbes.get(pluginId);
+    const settled = Promise.withResolvers<void>();
+    let dispatches = this.activeDispatches.get(pluginId);
+    if (!dispatches) this.activeDispatches.set(pluginId, (dispatches = new Set()));
+    dispatches.add(settled.promise);
     let active: PluginDataLease | undefined;
     try {
       return await runHook(async () => {
@@ -4994,6 +5069,10 @@ export class PluginHost {
     } finally {
       // `runHook` stops waiting at the deadline; the callback may still be live.
       active?.close();
+      settled.resolve();
+      dispatches.delete(settled.promise);
+      if (dispatches.size === 0) this.activeDispatches.delete(pluginId);
+      this.nativeOwnerIdle(pluginId);
     }
   }
 
@@ -5070,6 +5149,10 @@ export class PluginHost {
     if (this.closed || !this.assembled.enabled(id) || this.store.disabledPlugins().has(id)) return;
     const invoke = this.defs.find((def) => def.manifest.id === id)?.lifecycle?.onJobSettled;
     if (invoke === undefined) return;
+    while (this.nativePendingProbes.has(id)) await this.nativePendingProbes.get(id);
+    const settled = Promise.withResolvers<void>();
+    let dispatches = this.activeDispatches.get(id);
+    if (!dispatches) this.activeDispatches.set(id, (dispatches = new Set()));
     const auth = delivery.auth;
     if (auth === null) {
       this.logger.warn("plugin_lifecycle", {
@@ -5121,6 +5204,7 @@ export class PluginHost {
       actions: this.actionCalls(id, auth, null, delivery.traceId, [id], lease.check),
     };
     let outcome: HookOutcome;
+    dispatches.add(settled.promise);
     try {
       outcome = await runHook(
         () => {
@@ -5141,6 +5225,10 @@ export class PluginHost {
       );
     } finally {
       lease.close();
+      settled.resolve();
+      dispatches.delete(settled.promise);
+      if (dispatches.size === 0) this.activeDispatches.delete(id);
+      this.nativeOwnerIdle(id);
     }
     if (outcome.ok) return;
     this.logger.error("plugin_lifecycle", {
@@ -5345,6 +5433,8 @@ export class PluginHost {
     options: DispatchOptions = {},
   ): Promise<ActionOutcome> {
     const pluginId = this.assembled.actions.get(fullName)?.plugin.id;
+    if (pluginId !== undefined)
+      while (this.nativePendingProbes.has(pluginId)) await this.nativePendingProbes.get(pluginId);
     const settled = Promise.withResolvers<void>();
     let active: Set<Promise<void>> | undefined;
     if (pluginId !== undefined) {
@@ -5363,6 +5453,7 @@ export class PluginHost {
         settled.resolve();
         active?.delete(settled.promise);
         if (pluginId !== undefined && active?.size === 0) this.activeDispatches.delete(pluginId);
+        if (pluginId !== undefined) this.nativeOwnerIdle(pluginId);
       }
     } catch (error) {
       this.logger.error("action", {

@@ -17,8 +17,9 @@ import {
   type NativeTransferResult,
   type NativeTransferStatus,
   type NativeTransferTerminalEvidence,
+  type NativeTransferPendingAdmission,
 } from "@manifold/protocol";
-import { AuthService, ServiceError, type GovernedAdmission } from "../src/auth.ts";
+import { AuthService, ServiceError, type AuthContext, type GovernedAdmission } from "../src/auth.ts";
 import { openDatabase } from "../src/db.ts";
 import { ServerStore } from "../src/stores.ts";
 import {
@@ -29,7 +30,7 @@ import {
 import type { JobInstallation } from "../src/job-store.ts";
 import { FakeClock, FakeRuntime, testPluginHost, testTileTrees } from "./helpers.ts";
 import { JobService } from "../src/job-service.ts";
-import type { PluginHost, ServerPluginDef } from "../src/plugin-host.ts";
+import type { ActionCtx, PluginHost, ServerPluginDef } from "../src/plugin-host.ts";
 import { RoomManager } from "../src/room.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
 import { silentLogger } from "../src/log.ts";
@@ -421,6 +422,206 @@ test("non-admission recovery fences the exact request without source or machine 
   expect(f.store.db.query("SELECT id FROM native_transfers").all()).toEqual([]);
 });
 
+function pendingAdmission(
+  f: { actor: AuthContext; auth: AuthService; request: NativeTransferPendingAdmission["request"]; runtime: FakeRuntime },
+  overrides: Partial<NativeTransferPendingAdmission> = {},
+): NativeTransferPendingAdmission {
+  return {
+    actorId: f.actor.principal.id,
+    credentialBinding: f.auth.credentialBinding(f.actor),
+    request: f.request,
+    createdAt: f.runtime.now(),
+    ...overrides,
+  };
+}
+
+for (const loss of ["revoked", "expired", "nonreturning"] as const) {
+  test(`idle owner recovery retires a pre-host reservation with a ${loss} caller and no online machine`, async () => {
+    const f = fixture();
+    const actor = {
+      ...f.auth.authenticate(f.auth.mintToken({
+        principal: { name: "original", kind: "human" }, caps: ["locations:create-child"],
+      }, f.actor).token),
+      expiresAt: 30_000,
+    };
+    const reservation = pendingAdmission(f, {
+      actorId: actor.principal.id, credentialBinding: f.auth.credentialBinding(actor),
+    });
+    if (loss === "revoked") f.auth.revokePrincipal(actor.principal.id, f.actor);
+    if (loss === "expired") f.runtime.time = 30_000;
+    f.controls.ownerAvailable = false;
+    f.controls.sourceAvailable = false;
+    f.restart();
+    let pending = true;
+    const delivered: NativeTransferTerminalEvidence[] = [];
+    f.service.setPendingAdmissionSource({
+      owners: () => [f.caller.pluginId],
+      probe: async (_plugin, accept) => { accept(pending ? [reservation] : []); return true; },
+    });
+    f.service.setEvidenceSink(async (pluginId, receipts) => {
+      expect(pluginId).toBe(f.caller.pluginId);
+      for (const receipt of receipts) {
+        if (receipt.kind === "admission-refused" &&
+          receipt.actorId === reservation.actorId &&
+          receipt.credentialBinding === reservation.credentialBinding &&
+          receipt.requestId === reservation.request.requestId) pending = false;
+      }
+      delivered.push(...receipts);
+      return true;
+    });
+    await f.service.reconcile();
+    expect(pending).toBe(false);
+    expect(delivered).toEqual([{
+      kind: "admission-refused", actorId: reservation.actorId,
+      credentialBinding: reservation.credentialBinding, requestId: f.request.requestId,
+      mode: "put", attemptedAt: f.runtime.now(), reason: "transfer_unavailable",
+    }]);
+    f.service.assertPurgeable(f.caller.pluginId);
+    if (loss !== "nonreturning")
+      await expect(f.service.recoverAdmission({ ...f.caller, auth: actor }, f.request))
+        .rejects.toThrow("credential_revoked_or_expired");
+    await f.service.reconcile();
+    expect(delivered).toHaveLength(1);
+    expect(f.commands).toEqual([]);
+    expect(f.store.db.query("SELECT id FROM native_transfers").all()).toEqual([]);
+  });
+}
+
+test("private pending fences isolate plugin, actor, credential, request and complete request arguments", async () => {
+  const f = fixture();
+  const original = pendingAdmission(f);
+  const otherPlugin = "other.transfer";
+  const reservations = [
+    original,
+    { ...original, actorId: "another-actor" },
+    { ...original, credentialBinding: "c".repeat(64) },
+    { ...original, request: { ...f.request, requestId: "another-request" } },
+  ];
+  const delivered = new Map<string, NativeTransferTerminalEvidence[]>();
+  f.service.setPendingAdmissionSource({
+    owners: () => [f.caller.pluginId, otherPlugin],
+    probe: async (pluginId, accept) => {
+      accept(pluginId === otherPlugin ? [original] : reservations);
+      return true;
+    },
+  });
+  f.service.setEvidenceSink(async (pluginId, receipts) => {
+    delivered.set(pluginId, [...delivered.get(pluginId) ?? [], ...receipts]);
+    return true;
+  });
+  await f.service.reconcilePendingAdmissions();
+  expect(delivered.get(f.caller.pluginId)?.map((entry) => [
+    entry.actorId, entry.credentialBinding, entry.requestId,
+  ]).sort()).toEqual(reservations.map((entry) => [
+    entry.actorId, entry.credentialBinding, entry.request.requestId,
+  ]).sort());
+  expect(delivered.get(otherPlugin)).toEqual([expect.objectContaining({
+    actorId: original.actorId, credentialBinding: original.credentialBinding,
+    requestId: original.request.requestId,
+  })]);
+  for (const request of [
+    { ...f.request, filename: "different.bin" },
+    { ...f.request, source: { ...f.request.source, bytes: 1 } },
+    { ...nativePins(f.request), mode: "read" as const, relativePath: ["different.bin"] },
+  ])
+    await expect(f.service.recoverAdmission(f.caller, request)).rejects.toThrow("transfer_request_conflict");
+  await expect(f.service.begin(f.caller, f.request)).rejects.toThrow("transfer_unavailable");
+  expect((await f.service.begin(f.caller, { ...f.request, requestId: "unfenced" })).state).toBe("receiving");
+  expect(f.commands.map((command) => command.request.method)).toEqual(["beginPut"]);
+});
+
+for (const state of ["admitted", "intended", "commit-unknown"] as const) {
+  test(`private pending recovery preserves an existing ${state} admission without replay`, async () => {
+    const f = fixture();
+    let transferId: string;
+    if (state === "intended") {
+      f.controls.dropBeforeBegin = true;
+      await expect(f.service.begin(f.caller, f.request)).rejects.toThrow("transfer_disconnected");
+      transferId = f.store.db.query<{ id: string }, []>("SELECT id FROM native_transfers").get()!.id;
+    } else {
+      transferId = (await f.service.begin(f.caller, f.request)).transferId;
+      if (state === "commit-unknown") {
+        f.controls.dropCommit = true;
+        await expect(f.service.commitPut(f.caller, transferId)).rejects.toThrow("outcome_unknown");
+      }
+    }
+    f.controls.ownerAvailable = false;
+    f.restart();
+    const delivered: NativeTransferTerminalEvidence[] = [];
+    f.service.setEvidenceSink(async (_id, receipts) => { delivered.push(...receipts); return true; });
+    f.service.setPendingAdmissionSource({
+      owners: () => [f.caller.pluginId],
+      probe: async (_id, accept) => { accept([pendingAdmission(f)]); return true; },
+    });
+    await f.service.reconcile();
+    expect(await f.service.recoverAdmission(f.caller, f.request)).toEqual({ kind: "admitted", transferId });
+    expect(delivered).toEqual([]);
+    expect(f.store.db.query("SELECT record FROM native_admission_refusals").all()).toEqual([]);
+    expect(f.commands.filter((command) => command.request.method === "beginPut")).toHaveLength(1);
+    expect(() => f.service.assertPurgeable(f.caller.pluginId)).toThrow(
+      state === "admitted" ? "active_native_transfers" : "outcome_unknown",
+    );
+  });
+}
+
+test("busy and malformed pending probes remain purge-blocking until a bounded successful retry", async () => {
+  const f = fixture();
+  let snapshot: unknown = null;
+  f.service.setPendingAdmissionSource({
+    owners: () => [f.caller.pluginId],
+    probe: async (_id, accept) => {
+      if (snapshot === null) return false;
+      accept(snapshot);
+      return true;
+    },
+  });
+  f.service.setEvidenceSink(async () => true);
+  for (const invalid of [null, Array.from({ length: 33 }, () => pendingAdmission(f)), [
+    { ...pendingAdmission(f), credential: { secret: "not-metadata" } },
+  ]]) {
+    snapshot = invalid;
+    await f.service.reconcilePendingAdmissions();
+    expect(() => f.service.assertPurgeable(f.caller.pluginId)).toThrow("native_transfer_cleanup_unknown");
+    expect(f.store.db.query("SELECT record FROM native_admission_refusals").all()).toEqual([]);
+  }
+  snapshot = [pendingAdmission(f)];
+  await f.service.reconcilePendingAdmissions();
+  f.service.assertPurgeable(f.caller.pluginId);
+  await expect(f.service.begin(f.caller, f.request)).rejects.toThrow("transfer_unavailable");
+  expect(f.commands).toEqual([]);
+});
+
+test("private owner budget counts ACKed fences and cannot be bypassed with producer timestamps", async () => {
+  const f = fixture();
+  f.runtime.time = 9 * 24 * 60 * 60_000;
+  let snapshot = Array.from({ length: 32 }, (_, index) => pendingAdmission(f, {
+    request: { ...f.request, requestId: `private-${index}` }, createdAt: 0,
+  }));
+  const delivered: NativeTransferTerminalEvidence[] = [];
+  f.service.setPendingAdmissionSource({
+    owners: () => [f.caller.pluginId],
+    probe: async (_id, accept) => { accept(snapshot); return true; },
+  });
+  f.service.setEvidenceSink(async (_id, receipts) => { delivered.push(...receipts); return true; });
+  await f.service.reconcilePendingAdmissions();
+  expect(delivered).toHaveLength(32);
+  expect(delivered.every((entry) =>
+    entry.kind === "admission-refused" && entry.attemptedAt === f.runtime.now())).toBe(true);
+  snapshot = [pendingAdmission(f, { request: { ...f.request, requestId: "private-overflow" }, createdAt: 0 })];
+  await f.service.reconcilePendingAdmissions();
+  expect(delivered).toHaveLength(32);
+  expect(() => f.service.assertPurgeable(f.caller.pluginId)).toThrow("native_transfer_cleanup_unknown");
+  // Existing authenticated recovery keeps its existing shared bound; private owner metadata
+  // cannot spend that caller authority merely by advertising another actor or credential.
+  expect(await f.service.recoverAdmission(f.caller, snapshot[0]!.request)).toEqual({
+    kind: "not-admitted", reason: "transfer_unavailable",
+  });
+  expect(delivered).toHaveLength(33);
+  await f.service.reconcilePendingAdmissions();
+  f.service.assertPurgeable(f.caller.pluginId);
+  expect(f.commands).toEqual([]);
+});
+
 test("non-admission fence wins atomically against an already-awaited source probe", async () => {
   const f = fixture();
   const gate = Promise.withResolvers<string>();
@@ -539,11 +740,21 @@ test("non-admission fences share the native receipt bound and retain failed deli
   });
   const overflow = { ...f.request, requestId: "overflow" };
   await expect(f.service.recoverAdmission(f.caller, overflow)).rejects.toThrow("transfer_receipt_limit");
+  f.service.setPendingAdmissionSource({
+    owners: () => [f.caller.pluginId],
+    probe: async (_id, accept) => {
+      accept([pendingAdmission(f, { request: overflow })]);
+      return true;
+    },
+  });
+  await f.service.reconcilePendingAdmissions();
+  expect(() => f.service.assertPurgeable(f.caller.pluginId)).toThrow("native_transfer_cleanup_unknown");
   f.runtime.time += 8 * 24 * 60 * 60_000;
   f.controls.ownerAvailable = false;
   await expect(f.service.recoverAdmission(f.caller, overflow)).rejects.toThrow("transfer_receipt_limit");
   f.service.setEvidenceSink(async () => true);
   await f.service.reconcile();
+  await f.service.reconcilePendingAdmissions();
   expect(await f.service.recoverAdmission(f.caller, overflow)).toEqual({
     kind: "not-admitted", reason: "transfer_unavailable",
   });
@@ -1324,7 +1535,12 @@ test("accepted progress cannot extend the absolute fifteen-minute lifetime", asy
   ).rejects.toThrow("transfer_expired");
 });
 
-async function readActionFixture() {
+async function readActionFixture(options: {
+  lateJobs?: boolean;
+  beforeBegin?: (ctx: ActionCtx, request: NativeTransferPendingAdmission["request"]) => Promise<void>;
+  pending?: ServerPluginDef["pendingNativeTransfers"];
+  reconcile?: ServerPluginDef["reconcileNativeTransfers"];
+} = {}) {
   const f = fixture({ decide: (request) => jobs.decide(request) });
   const importCap = "sample.transfer:import";
   const started = Promise.withResolvers<void>();
@@ -1354,8 +1570,11 @@ async function readActionFixture() {
         result: z.strictObject({ text: z.string() }),
       }),
     ],
+    ...(options.pending ? { pendingNativeTransfers: options.pending } : {}),
+    ...(options.reconcile ? { reconcileNativeTransfers: options.reconcile } : {}),
     handlers: {
       read: async (ctx) => {
+        await options.beforeBegin?.(ctx, { ...pins, mode: "read", relativePath: ["source.bin"] });
         const transfer = await ctx.nativeTransfers.beginRead({
           ...pins,
           relativePath: ["source.bin"],
@@ -1394,7 +1613,7 @@ async function readActionFixture() {
     override readonly nativeTransfers = f.service;
   }
   const jobs: JobService = new FixtureJobs(f.store, f.auth, f.runtime);
-  host.setJobs(jobs);
+  if (!options.lateJobs) host.setJobs(jobs);
   const commands: JobCommand[] = [];
   const channel = {
     machineId: f.request.machineId,
@@ -1478,9 +1697,109 @@ async function readActionFixture() {
     resume,
     delivered,
     revoke,
+    registerJobs: () => host.setJobs(jobs),
+    nativeActor: actor,
+    readRequest: { ...pins, mode: "read" as const, relativePath: ["source.bin"] },
     dispatch: () => host.dispatch(actor, "sample.transfer.read", { source, location }),
   };
 }
+
+for (const abandoned of [false, true]) {
+  test(`startup pending probe waits for an active reservation and ${abandoned ? "retries its abandoned row without another caller" : "preserves its eventual admission"}`, async () => {
+    const reserved = Promise.withResolvers<void>();
+    const proceed = Promise.withResolvers<void>();
+    const reclaimed = Promise.withResolvers<void>();
+    let pending: NativeTransferPendingAdmission[] = [];
+    const evidence: NativeTransferTerminalEvidence[] = [];
+    const f = await readActionFixture({
+      lateJobs: true,
+      beforeBegin: async (ctx, request) => {
+        pending.push({ actorId: ctx.auth.principal.id, credentialBinding: ctx.credentialBinding,
+          request, createdAt: ctx.now() });
+        reserved.resolve();
+        await proceed.promise;
+        if (abandoned) throw new Error("reservation abandoned before host admission");
+      },
+      pending: async () => pending,
+      reconcile: async (_ctx, receipts) => {
+        evidence.push(...receipts);
+        pending = pending.filter((entry) => !receipts.some((receipt) =>
+          receipt.actorId === entry.actorId && receipt.credentialBinding === entry.credentialBinding &&
+          receipt.requestId === entry.request.requestId));
+        if (!pending.length) reclaimed.resolve();
+      },
+    });
+    const action = f.dispatch();
+    const outcome = action.catch((error: unknown) => error);
+    await reserved.promise;
+    f.registerJobs();
+    await f.service.reconcilePendingAdmissions();
+    expect(pending).toHaveLength(1);
+    expect(evidence).toEqual([]);
+    expect(f.store.db.query("SELECT record FROM native_admission_refusals").all()).toEqual([]);
+    proceed.resolve();
+    if (abandoned) {
+      expect(await outcome).toBeInstanceOf(Error);
+      await reclaimed.promise;
+      expect(pending).toEqual([]);
+      expect(evidence).toEqual([expect.objectContaining({
+        kind: "admission-refused", mode: "read", reason: "transfer_unavailable",
+      })]);
+      f.service.assertPurgeable(f.caller.pluginId);
+      expect(f.commands).toEqual([]);
+    } else {
+      await f.started.promise;
+      f.resume.resolve();
+      expect(await outcome).toEqual({ ok: true, result: { text: "data" } });
+      await f.service.reconcilePendingAdmissions();
+      expect(evidence).toEqual([]);
+      expect(pending).toHaveLength(1);
+      expect(f.commands.map((command) => command.request.method)).toEqual(["beginRead", "readChunk"]);
+      expect(f.store.db.query("SELECT record FROM native_admission_refusals").all()).toEqual([]);
+    }
+  });
+}
+
+test("an idle pending snapshot excludes a new action until its metadata fence commits", async () => {
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let hold = false;
+  let actionEntered = false;
+  let snapshot: NativeTransferPendingAdmission[] = [];
+  const f = await readActionFixture({
+    pending: async () => {
+      if (hold) {
+        entered.resolve();
+        await release.promise;
+      }
+      return snapshot;
+    },
+    reconcile: async () => {},
+    beforeBegin: async () => { actionEntered = true; },
+  });
+  // Drain startup/owner/consent passes before deliberately suspending a fresh idle snapshot.
+  await f.service.reconcilePendingAdmissions();
+  snapshot = [pendingAdmission(f, {
+    actorId: f.nativeActor.principal.id,
+    credentialBinding: f.auth.credentialBinding(f.nativeActor),
+    request: f.readRequest,
+  })];
+  hold = true;
+  const probe = f.service.reconcilePendingAdmissions();
+  await entered.promise;
+  const action = f.dispatch();
+  await Promise.resolve();
+  expect(actionEntered).toBe(false);
+  expect(f.commands).toEqual([]);
+  hold = false;
+  release.resolve();
+  await probe;
+  expect(await action).toEqual({
+    ok: false, denial: { rule: "refused", message: "transfer_unavailable" },
+  });
+  expect(actionEntered).toBe(true);
+  expect(f.commands).toEqual([]);
+});
 
 for (const queued of [false, true]) {
   test(`host rechecks a revoked non-location action requirement ${queued ? "before queued read disclosure" : "after a suspended read"}`, async () => {

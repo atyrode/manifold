@@ -12,6 +12,7 @@ import {
   NativeTransferResultSchema,
   NativeTransferRequestSchema,
   NativeTransferReasonSchema,
+  NativeTransferPendingAdmissionsSchema,
   type AuthoredCap,
   type Cap,
   type JobCommand,
@@ -36,6 +37,18 @@ import {
 import { ServiceError, type AuthContext, type AuthService } from "./auth.ts";
 import type { ServerStore } from "./stores.ts";
 import type { JobInstallation } from "./job-store.ts";
+
+interface AdmissionIdentity {
+  pluginId: string;
+  actorId: string;
+  credentialBinding: string;
+}
+
+/** The host consumes each snapshot while the owner's private idle turn is still held. */
+export interface NativeTransferPendingSource {
+  owners(): readonly string[];
+  probe(pluginId: string, accept: (snapshot: unknown) => void): Promise<boolean>;
+}
 
 const ACTIVE: Partial<Record<NativeTransferStatus["state"], true>> = {
   queued: true,
@@ -134,6 +147,11 @@ export class NativeTransferService {
   private delivering: Promise<void> | undefined;
   private deliveryQueued: Promise<void> | undefined;
   private reconciliationFailed = false;
+  private pendingSource: NativeTransferPendingSource | undefined;
+  private readonly pendingOwners = new Set<string>();
+  private readonly probingOwners = new Map<string, Promise<void>>();
+  private readonly queuedProbes = new Set<string>();
+  private probeOffset = 0;
   constructor(
     private readonly store: ServerStore,
     private readonly auth: AuthService,
@@ -150,6 +168,65 @@ export class NativeTransferService {
     this.evidenceSink = sink;
   }
 
+
+  setPendingAdmissionSource(source: NativeTransferPendingSource): void {
+    this.pendingSource = source;
+    for (const pluginId of source.owners()) this.pendingOwners.add(pluginId);
+  }
+
+  retryPendingAdmissions(pluginId: string): void {
+    if (this.pendingOwners.has(pluginId))
+      void this.reconcilePendingAdmissions(pluginId);
+  }
+
+  /** Startup, idle transitions and existing maintenance each do one bounded pass. */
+  async reconcilePendingAdmissions(pluginId?: string): Promise<void> {
+    const source = this.pendingSource;
+    if (!source) return;
+    const owners = source.owners();
+    const selected = pluginId === undefined
+      ? owners.slice(this.probeOffset, this.probeOffset + 32)
+      : owners.includes(pluginId) ? [pluginId] : [];
+    if (pluginId === undefined)
+      this.probeOffset = this.probeOffset + 32 >= owners.length ? 0 : this.probeOffset + 32;
+    for (const id of selected) {
+      const existing = this.probingOwners.get(id);
+      if (existing) {
+        this.queuedProbes.add(id);
+        continue;
+      }
+      this.pendingOwners.add(id);
+      const work = this.probePendingOwner(source, id);
+      this.probingOwners.set(id, work);
+      try {
+        await work;
+      } finally {
+        this.probingOwners.delete(id);
+        if (this.queuedProbes.delete(id)) void this.reconcilePendingAdmissions(id);
+      }
+    }
+  }
+
+  private async probePendingOwner(source: NativeTransferPendingSource, pluginId: string): Promise<void> {
+    try {
+      let accepted = false;
+      const available = await source.probe(pluginId, (snapshot) => {
+        if (accepted) throw new ServiceError("conflict", "native_transfer_cleanup_unknown");
+        const entries = NativeTransferPendingAdmissionsSchema.parse(snapshot);
+        for (const entry of entries) {
+          this.fenceAdmission({
+            pluginId, actorId: entry.actorId, credentialBinding: entry.credentialBinding,
+          }, entry.request, "transfer_unavailable", true);
+        }
+        accepted = true;
+      });
+      if (available && accepted) this.pendingOwners.delete(pluginId);
+      await this.deliverEvidence();
+    } catch {
+      // Busy, malformed and unavailable owners remain purge-blocking until a later seam.
+      this.pendingOwners.add(pluginId);
+    }
+  }
   /** One bounded pass per startup/owner proof/explicit inspection, never a polling loop. */
   async reconcile(machineId?: string): Promise<void> {
     try {
@@ -166,6 +243,7 @@ export class NativeTransferService {
         )
           await this.acquireEvidence(record);
       }
+      await this.reconcilePendingAdmissions();
       await this.deliverEvidence();
       this.reconciliationFailed = false;
     } catch {
@@ -397,6 +475,8 @@ export class NativeTransferService {
 
   /** Purge must not destroy product receipts while a native outcome still needs reconciliation. */
   assertPurgeable(pluginId: string): void {
+    if (this.pendingOwners.has(pluginId))
+      throw new ServiceError("conflict", "native_transfer_cleanup_unknown");
     if (this.reconciliationFailed)
       throw new ServiceError("conflict", "native_transfer_cleanup_unknown");
     this.prune();
@@ -433,6 +513,10 @@ export class NativeTransferService {
   private credentialBinding(auth: AuthContext): string {
     return this.auth.credentialBinding(auth);
   }
+  private admissionIdentity(caller: Caller): AdmissionIdentity {
+    return { pluginId: caller.pluginId, actorId: caller.auth.principal.id,
+      credentialBinding: this.credentialBinding(caller.auth) };
+  }
   private load(caller: Caller, transferId: string): TransferRecord {
     // Match original host lineage before checking live authority. A revoked matching caller
     // may learn only uncertainty; another actor, credential or plugin learns no record state.
@@ -459,20 +543,20 @@ export class NativeTransferService {
       .run(canonicalJobJson(record), this.now(), record.binding.transferId);
   }
 
-  private admittedRequest(caller: Caller, request: NativeTransferRecoverAdmissionArgs): TransferRecord | null {
+  private admittedRequest(identity: AdmissionIdentity, request: NativeTransferRecoverAdmissionArgs): TransferRecord | null {
     const row = this.store.db.query<{ record: string }, [string, string, string, string]>(
       "SELECT record FROM native_transfers WHERE plugin_id=? AND actor_id=? AND credential_binding=? AND request_id=?",
-    ).get(caller.pluginId, caller.auth.principal.id, this.credentialBinding(caller.auth), request.requestId);
+    ).get(identity.pluginId, identity.actorId, identity.credentialBinding, request.requestId);
     if (!row) return null;
     const record = recordSchema.parse(JSON.parse(row.record));
     if (digest(record.binding.request) !== digest(request)) return refused("transfer_request_conflict");
     return record;
   }
 
-  private admissionRefusal(caller: Caller, request: NativeTransferRecoverAdmissionArgs): RefusalRecord | null {
+  private admissionRefusal(identity: AdmissionIdentity, request: NativeTransferRecoverAdmissionArgs): RefusalRecord | null {
     const row = this.store.db.query<{ record: string }, [string, string, string, string]>(
       "SELECT record FROM native_admission_refusals WHERE plugin_id=? AND actor_id=? AND credential_binding=? AND request_id=?",
-    ).get(caller.pluginId, caller.auth.principal.id, this.credentialBinding(caller.auth), request.requestId);
+    ).get(identity.pluginId, identity.actorId, identity.credentialBinding, request.requestId);
     if (!row) return null;
     const record = refusalRecordSchema.parse(JSON.parse(row.record));
     if (record.requestDigest !== digest(request) || record.mode !== request.mode)
@@ -487,18 +571,26 @@ export class NativeTransferService {
     if (row.count >= 1000) return refused("transfer_receipt_limit");
   }
 
-  private fenceAdmission(caller: Caller, request: NativeTransferRecoverAdmissionArgs, reason: NativeTransferReason):
+  private fenceAdmission(identity: AdmissionIdentity, request: NativeTransferRecoverAdmissionArgs,
+    reason: NativeTransferReason, privateProbe = false):
     { kind: "admitted"; record: TransferRecord } | { kind: "not-admitted"; record: RefusalRecord } {
     return this.store.transaction(() => {
-      const admitted = this.admittedRequest(caller, request);
+      const admitted = this.admittedRequest(identity, request);
       if (admitted) return { kind: "admitted" as const, record: admitted };
-      const prior = this.admissionRefusal(caller, request);
+      const prior = this.admissionRefusal(identity, request);
       if (prior) return { kind: "not-admitted" as const, record: prior };
       this.prune();
+      if (privateProbe) {
+        // Private metadata is not caller authority. ACKing invented batches must not let one
+        // owner consume the shared journal; count all retained fences, not only unACKed ones.
+        const row = this.store.db.query<{ count: number }, [string]>(
+          "SELECT count(*) AS count FROM native_admission_refusals WHERE plugin_id=?",
+        ).get(identity.pluginId)!;
+        if (row.count >= 32) return refused("transfer_receipt_limit");
+      }
       this.assertMetadataCapacity();
       const record: RefusalRecord = {
-        pluginId: caller.pluginId, actorId: caller.auth.principal.id,
-        credentialBinding: this.credentialBinding(caller.auth), requestId: request.requestId,
+        ...identity, requestId: request.requestId,
         requestDigest: digest(request), mode: request.mode, reason,
         attemptedAt: this.now(), evidenceDelivered: false,
       };
@@ -513,7 +605,7 @@ export class NativeTransferService {
   /** Lifecycle reconciliation: atomically fences absence against a later awaited admission. */
   async recoverAdmission(caller: Caller, request: NativeTransferRecoverAdmissionArgs): Promise<NativeTransferAdmissionRecovery> {
     this.current(caller);
-    const recovery = this.fenceAdmission(caller, request, "transfer_unavailable");
+    const recovery = this.fenceAdmission(this.admissionIdentity(caller), request, "transfer_unavailable");
     if (recovery.kind === "admitted")
       return { kind: "admitted", transferId: recovery.record.binding.transferId };
     await this.deliverEvidence(false);
@@ -701,11 +793,11 @@ export class NativeTransferService {
       const reason = NativeTransferReasonSchema.safeParse(error instanceof ServiceError ? error.message : "");
       // Persist the no-admission fence before trying the private callback. An in-flight
       // source probe must recheck this exact fence before inserting its admission record.
-      const recovery = this.fenceAdmission(caller, request,
+      const recovery = this.fenceAdmission(this.admissionIdentity(caller), request,
         reason.success ? reason.data : "native_transfer_unavailable");
       if (recovery.kind === "not-admitted" && this.evidenceSink) {
         await this.deliverEvidence(false);
-        if (!this.admissionRefusal(caller, request)?.evidenceDelivered)
+        if (!this.admissionRefusal(this.admissionIdentity(caller), request)?.evidenceDelivered)
           throw new ServiceError("conflict", "native_transfer_cleanup_unknown");
       }
       throw error;
@@ -729,7 +821,7 @@ export class NativeTransferService {
         return refused("transfer_request_conflict");
       return this.status(caller, prior.binding.transferId);
     }
-    const refusal = this.admissionRefusal(caller, request);
+    const refusal = this.admissionRefusal(this.admissionIdentity(caller), request);
     if (refusal) return refused(refusal.reason);
     const live = this.host.owner(request.machineId);
     const installation = this.host.installation(request.machineId, caller.pluginId);
@@ -775,7 +867,7 @@ export class NativeTransferService {
           return refused("transfer_request_conflict");
         return prior.binding.transferId;
       }
-      const refusal = this.admissionRefusal(caller, request);
+      const refusal = this.admissionRefusal(this.admissionIdentity(caller), request);
       if (refusal) return refused(refusal.reason);
       this.waitBudget(caller.guard);
       this.prune();

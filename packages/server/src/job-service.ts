@@ -2234,7 +2234,10 @@ export class JobService {
   }
 
   private accessChanged(): void {
-    this.store.afterCommit(() => this.changeNotifier?.access());
+    this.store.afterCommit(() => {
+      this.changeNotifier?.access();
+      void this.nativeTransfers?.reconcilePendingAdmissions();
+    });
   }
 
   /** The same metadata-only projection serves execution, status and retained discovery. */
