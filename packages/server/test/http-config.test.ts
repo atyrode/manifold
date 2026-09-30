@@ -62,6 +62,29 @@ test("external supervision cannot silently bypass native bootstrap", () => {
   ).toThrow("must be external");
 });
 
+test("settlement allowances refuse malformed or unbounded operator configuration", () => {
+  const cwd = temporaryDirectory();
+  const common = {
+    MANIFOLD_DATA_DIR: "data",
+    MANIFOLD_OWNER_KEY: "f".repeat(64),
+    MANIFOLD_SPAWN_AGENT: "0",
+  };
+  for (const value of [
+    "null",
+    "[]",
+    '{"invalid plugin id":30000}',
+    '{"test.slow":0}',
+    '{"test.slow":60001}',
+    '{"test.slow":2000.5}',
+    '{"test.slow":"30000"}',
+    "not JSON",
+  ]) {
+    expect(() => loadConfig({ ...common, MANIFOLD_JOB_SETTLED_TIMEOUTS: value }, cwd)).toThrow(
+      "MANIFOLD_JOB_SETTLED_TIMEOUTS",
+    );
+  }
+});
+
 describe("server bind policy", () => {
   test("defaults to loopback and honors an explicit MANIFOLD_BIND", () => {
     const cwd = temporaryDirectory();

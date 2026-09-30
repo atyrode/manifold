@@ -31,6 +31,7 @@ import {
   type SettledJob,
 } from "@manifold/protocol";
 import type { Logger } from "../log.ts";
+import { jobSettledTimeouts, type JobSettledTimeouts } from "../settled-job-timeouts.ts";
 import type { ActionCtx } from "../plugin-host.ts";
 import {
   IsolateDenial,
@@ -71,6 +72,8 @@ import { isDeepStrictEqual } from "node:util";
 
 /** How long a child gets between `shutdown` and `SIGKILL`. */
 const SHUTDOWN_GRACE_MS = 2_000;
+/** The host hook may still need to finish flushing its answer after its own lease ends. */
+const SETTLED_FLUSH_GRACE_MS = 1_000;
 
 /**
  * THE ROOT FENCE'S REFUSAL (#411). A dispatch or harness frame carries the caller's root class
@@ -98,7 +101,7 @@ type AnsweredFrame = Extract<
 /** One round trip awaiting its answer, with the ctx that serves the child's calls meanwhile. */
 interface Pending {
   readonly served: ServedCtx | null;
-  readonly request: IsolateHostFrame;
+  readonly request: Extract<IsolateHostFrame, { id: string }>;
   serving: number;
   admitted: boolean;
   readonly answer: (frame: AnsweredFrame) => void;
@@ -151,6 +154,7 @@ export interface IsolateSupervisorDeps {
   readonly runtime: RuntimeDeps;
   /** The runner's numbers, defaulting to the protocol's; a test narrows them. */
   readonly dispatchDeadlineMs?: number;
+  readonly jobSettledTimeouts?: JobSettledTimeouts;
   readonly idleEvictMs?: number;
   readonly migrationDeadlineMs?: number;
   readonly crashBudget?: { readonly count: number; readonly windowMs: number };
@@ -171,6 +175,7 @@ export class IsolateSupervisor implements IsolateRunner {
   private readonly logger: Logger;
   private readonly runtime: RuntimeDeps;
   private readonly dispatchDeadlineMs: number;
+  private readonly jobSettledTimeouts: ReadonlyMap<string, number>;
   private readonly idleEvictMs: number;
   private readonly migrationDeadlineMs: number;
   private readonly crashBudget: { readonly count: number; readonly windowMs: number };
@@ -180,6 +185,7 @@ export class IsolateSupervisor implements IsolateRunner {
     this.logger = deps.logger;
     this.runtime = deps.runtime;
     this.dispatchDeadlineMs = deps.dispatchDeadlineMs ?? ISOLATE_DISPATCH_DEADLINE_MS;
+    this.jobSettledTimeouts = jobSettledTimeouts(deps.jobSettledTimeouts);
     this.idleEvictMs = deps.idleEvictMs ?? ISOLATE_IDLE_EVICT_MS;
     this.migrationDeadlineMs = deps.migrationDeadlineMs ?? ISOLATE_MIGRATION_DEADLINE_MS;
     this.crashBudget = deps.crashBudget ?? ISOLATE_CRASH_BUDGET;
@@ -382,7 +388,7 @@ export class IsolateSupervisor implements IsolateRunner {
   private async hooked(
     pluginId: string,
     hook: IsolateHook,
-    build: (id: string) => IsolateHostFrame,
+    build: (id: string) => Pending["request"],
     served: ServedCtx,
   ): Promise<void> {
     const frame = await this.request(pluginId, build, served);
@@ -425,13 +431,13 @@ export class IsolateSupervisor implements IsolateRunner {
    * One round trip: a running child (spawned now if it was evicted), a fresh id, the frame,
    * and the answer inside the deadline. The pending entry holds the request's ctx for the
    * child's calls until the answer arrives or the request fails — by deadline, by exit, or
-   * by unload — and the idle clock restarts when nothing is in flight. Hooks ride the same
-   * deadline as a backstop behind `runHook`'s own 2 s: the engine stops waiting at two
-   * seconds, and the supervisor stops holding the ctx — and kills the child — at ten.
+   * by unload — and the idle clock restarts when nothing is in flight. Only selected settled
+   * hooks get the operator's longer bound plus finite flush grace; other requests retain
+   * their existing deadlines.
    */
   private async request(
     pluginId: string,
-    build: (id: string) => IsolateHostFrame,
+    build: (id: string) => Pending["request"],
     served: ServedCtx | null,
   ): Promise<AnsweredFrame> {
     const isolate = this.isolates.get(pluginId);
@@ -463,10 +469,15 @@ export class IsolateSupervisor implements IsolateRunner {
     isolate.nextRequest += 1;
     const id = `r${String(isolate.nextRequest)}`;
     this.clearIdle(isolate);
-    const deadline = setTimeout(
-      () => this.expire(isolate, id),
-      served?.kind === "migration" ? this.migrationDeadlineMs : this.dispatchDeadlineMs,
-    );
+    const settledTimeoutMs =
+      served?.kind === "settled" ? this.jobSettledTimeouts.get(pluginId) : undefined;
+    const deadlineMs =
+      served?.kind === "migration"
+        ? this.migrationDeadlineMs
+        : settledTimeoutMs === undefined
+          ? this.dispatchDeadlineMs
+          : settledTimeoutMs + SETTLED_FLUSH_GRACE_MS;
+    const deadline = setTimeout(() => this.expire(isolate, id, deadlineMs), deadlineMs);
     try {
       const { promise, resolve, reject } = Promise.withResolvers<AnsweredFrame>();
       const request = build(id);
@@ -647,14 +658,14 @@ export class IsolateSupervisor implements IsolateRunner {
   }
 
   /** The deadline: the request answers `unavailable` and the child that sat on it is killed. */
-  private expire(isolate: Isolate, id: string): void {
+  private expire(isolate: Isolate, id: string, deadlineMs: number): void {
     const pending = isolate.pending.get(id);
     if (pending === undefined) return;
     this.logger.warn("isolate_call_failed", {
       plugin: isolate.ref.pluginId,
       id,
       reason: "deadline",
-      deadlineMs: this.dispatchDeadlineMs,
+      deadlineMs,
     });
     // Validation cannot release its fence while the timed-out guest can still send frames.
     // The killed child's drained exit fails the request and clears the phase together.
@@ -891,6 +902,9 @@ export class IsolateSupervisor implements IsolateRunner {
     let reply: IsolateHostFrame;
     const migration = isolate.migration;
     try {
+      // Calls wait behind earlier host work; a captured ctx is not authority after teardown.
+      if (pending !== undefined && isolate.pending.get(pending.request.id) !== pending)
+        throw new Error("no such request");
       if (
         pending?.served?.kind === "dispatch" &&
         (!pending.admitted ||
@@ -1039,7 +1053,12 @@ export class IsolateSupervisor implements IsolateRunner {
       const message = error instanceof Error ? error.message : String(error);
       reply = { t: "reply", id: frame.id, ok: false, error: message.slice(0, 2048) };
     }
-    if (isolate.child === child) child.send(reply);
+    // An in-flight host read may finish after its request has expired; never return it then.
+    if (
+      isolate.child === child &&
+      (pending === undefined || isolate.pending.get(pending.request.id) === pending)
+    )
+      child.send(reply);
   }
 
   /** Whether this request was sent a root caller who has since lost the class (#411). */

@@ -343,6 +343,7 @@ export async function testPluginHost(
   options: {
     readonly settingsPlugins?: readonly ServerPluginDef[];
     readonly lifecycleTimeoutMs?: number;
+    readonly jobSettledTimeouts?: Readonly<Record<string, number>>;
     /** Machine liveness and admission, defaulting to "nothing is connected" — the honest state of a store. */
     readonly machines?: MachineAdmission;
     /** A sink, for cases that assert what a dispatch DOES and does not record. */

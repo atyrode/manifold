@@ -927,6 +927,8 @@ test("settled metadata uses the job credential instead of an owner or absent ins
           seen.push(await metadataFailure(() => ctx.host!.roster()));
           seen.push(await metadataFailure(() => ctx.services!.listInstances({})));
           inventories.push(ctx.machines!.inventory());
+          seen.push(await metadataFailure(() => ctx.jobs.schedules()));
+          seen.push(await metadataFailure(() => ctx.storage.set("late", "no")));
           finished.resolve();
         },
       },
@@ -1018,7 +1020,7 @@ test("settled metadata uses the job credential instead of an owner or absent ins
       }
       expect(inventories[1]).toMatchObject({ ok: false, code: "forbidden" });
       expect(inventories[1]).not.toHaveProperty("value");
-      expect(seen.slice(2)).toEqual(["forbidden", "forbidden"]);
+      expect(seen.slice(2)).toEqual(["forbidden", "forbidden", "forbidden", "forbidden"]);
     } finally {
       resume.resolve();
       f.close();

@@ -340,7 +340,11 @@ async function startAsWriter({
     is built before the host because the host loads every installed bundle at boot, and it is
     closed at shutdown after the sockets, so no dispatch in flight finds its child gone.
   */
-  const isolates = new IsolateSupervisor({ logger, runtime });
+  const settlementPolicy =
+    config.jobSettledTimeouts === undefined
+      ? {}
+      : { jobSettledTimeouts: config.jobSettledTimeouts };
+  const isolates = new IsolateSupervisor({ logger, runtime, ...settlementPolicy });
   opened.push(() => isolates.close());
   /*
     The assembly, and the host that answers for it. It is built BEFORE the gateways
@@ -360,6 +364,7 @@ async function startAsWriter({
     logger,
     events,
     {
+      ...settlementPolicy,
       /*
         The `core.` reservation, made real: the ids this distribution registers, derived from
         `assembly.ts` and handed to the host as data, because the host may not name a plugin.
