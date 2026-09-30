@@ -6,6 +6,7 @@ export const PROTOCOL_VERSION = 56;
  * Protocol 56 adds terminal stream geometry without changing prior plugin call signatures.
  * Private credential entry adds no plugin secret/value interface or hardened contract change.
  * Session authority, correlated scopes and subscription ordering require the current SDK.
+ * Protocol 56 changes session document representation, not the admitted plugin ABI.
  * Retain a prior stamp only after proving its unchanged artifacts against the host;
  * reset on an incompatible plugin ABI change. Do not infer a numeric version range.
  */
