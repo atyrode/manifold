@@ -18,13 +18,16 @@ import { RoomManager } from "../src/room.ts";
 import { SessionGateway } from "../src/session-ws.ts";
 import type { ServerStore } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
-import { closeTestStore, FakeClock,
-FakeRuntime,
-FakeSocket,
-testEventHub,
-testPluginHost,
-testStore,
-testTileTrees, } from "./helpers.ts";
+import {
+  closeTestStore,
+  FakeClock,
+  FakeRuntime,
+  FakeSocket,
+  testEventHub,
+  testPluginHost,
+  testStore,
+  testTileTrees,
+} from "./helpers.ts";
 
 /** Tests that are not about routing drive one channel per socket, exactly as v11 did. */
 const CH = "c1";

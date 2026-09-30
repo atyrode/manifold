@@ -28,13 +28,16 @@ import { RoomManager } from "../src/room.ts";
 import { SessionGateway } from "../src/session-ws.ts";
 import type { ServerStore } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
-import { closeTestStore, FakeClock,
-FakeRuntime,
-FakeSocket,
-testEventHub,
-testPluginHost,
-testStore,
-testTileTrees, } from "./helpers.ts";
+import {
+  closeTestStore,
+  FakeClock,
+  FakeRuntime,
+  FakeSocket,
+  testEventHub,
+  testPluginHost,
+  testStore,
+  testTileTrees,
+} from "./helpers.ts";
 import type { EventHub } from "../src/event-hub.ts";
 
 /**

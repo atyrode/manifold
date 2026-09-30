@@ -871,12 +871,10 @@ for (const row of registries.floor) {
           if (
             ts.isIdentifier(node) &&
             domNames.has(node.text) &&
-            contractTypes
-              .getSymbolAtLocation(node)
-              ?.declarations?.every((declaration) => {
-                const source = declaration.getSourceFile().fileName;
-                return source === join(libDir, "lib.dom.d.ts") || /\/@types\/react\//.test(source);
-              })
+            contractTypes.getSymbolAtLocation(node)?.declarations?.every((declaration) => {
+              const source = declaration.getSourceFile().fileName;
+              return source === join(libDir, "lib.dom.d.ts") || /\/@types\/react\//.test(source);
+            })
           ) {
             directionOffenders.push(
               `${path}:${String(lineOf(file, node))} contract names ${node.text}`,
@@ -1094,7 +1092,9 @@ for (const row of registries.floor) {
           if (property.name.getText(file) !== "id") continue;
           const id = declaredString(file, property.initializer);
           if (id === null)
-            problems.push(`${path}:${String(lineOf(file, property))} has an unreadable manifest id`);
+            problems.push(
+              `${path}:${String(lineOf(file, property))} has an unreadable manifest id`,
+            );
           else declared.push(id);
         }
       });
@@ -6184,7 +6184,8 @@ try {
       (await settles(
         async () =>
           (await browser!.evaluate<boolean>(`${vocabIn(".mf-vocab-byteImage")} === null`)) &&
-          actionLog.filter((entry) => entry.name === `${STRANGER_PLUGIN_ID}.cancelRaster`).length ===
+          actionLog.filter((entry) => entry.name === `${STRANGER_PLUGIN_ID}.cancelRaster`)
+            .length ===
             cancelsBefore + 1,
         10_000,
       ));

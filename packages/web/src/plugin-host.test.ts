@@ -1,10 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { AssemblyError } from "@manifold/plugin";
-import type {
-  PluginManifest,
-  PluginRoster,
-  PluginRosterEntry,
-} from "@manifold/protocol";
+import type { PluginManifest, PluginRoster, PluginRosterEntry } from "@manifold/protocol";
 import {
   buildBrowserAssembly,
   mountPluginStylesheet,
@@ -592,4 +588,3 @@ describe("mountPluginStylesheet", () => {
     expect(pluginStylesheetPath("acme/x")).toBe("/api/plugins/acme%2Fx/styles.css");
   });
 });
-

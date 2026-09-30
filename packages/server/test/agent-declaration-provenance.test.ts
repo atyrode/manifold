@@ -13,7 +13,13 @@ import { silentLogger } from "../src/log.ts";
 import { RoomManager } from "../src/room.ts";
 import { ServerStore } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
-import { closeTestStore, FakeClock, FakeRuntime, testPluginHost, testTileTrees } from "./helpers.ts";
+import {
+  closeTestStore,
+  FakeClock,
+  FakeRuntime,
+  testPluginHost,
+  testTileTrees,
+} from "./helpers.ts";
 import { createExternalRun } from "./agent-fixtures.ts";
 import { dropFilesSchema } from "./migration-fixtures.ts";
 

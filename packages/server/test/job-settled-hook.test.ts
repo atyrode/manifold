@@ -25,7 +25,14 @@ import type { PluginHost, ServerPluginDef } from "../src/plugin-host.ts";
 import { RoomManager } from "../src/room.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
 import type { ServerStore } from "../src/stores.ts";
-import { closeTestStore, FakeClock, FakeRuntime, testPluginHost, testStore, testTileTrees } from "./helpers.ts";
+import {
+  closeTestStore,
+  FakeClock,
+  FakeRuntime,
+  testPluginHost,
+  testStore,
+  testTileTrees,
+} from "./helpers.ts";
 
 /**
  * `onJobSettled` — THE ONE WAKE A SERVER HALF HAS FOR ITS OWN FINISHED WORK.

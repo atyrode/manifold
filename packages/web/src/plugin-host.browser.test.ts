@@ -566,7 +566,9 @@ test("mounted panels open beside their caller, focus an existing record, and ref
       "the second record opened beside its caller",
     );
     expect(
-      await browser.evaluate('Array.from(document.querySelectorAll("h2"), node => node.textContent)'),
+      await browser.evaluate(
+        'Array.from(document.querySelectorAll("h2"), node => node.textContent)',
+      ),
     ).toEqual(["Feed", "Record r-2", "Record r-1"]);
     expect(await browser.evaluate("window.panelFixture()")).toMatchObject({
       commits: 1,
@@ -594,7 +596,9 @@ test("mounted panels open beside their caller, focus an existing record, and ref
         outcome: { ok: false, refused },
       });
       expect(
-        await browser.evaluate('Array.from(document.querySelectorAll("h2"), node => node.textContent)'),
+        await browser.evaluate(
+          'Array.from(document.querySelectorAll("h2"), node => node.textContent)',
+        ),
       ).toEqual(["Feed", "Record r-2", "Record r-1"]);
     }
   } finally {

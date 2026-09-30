@@ -12,7 +12,14 @@ import { silentLogger } from "../src/log.ts";
 import { RoomManager } from "../src/room.ts";
 import { sha256Hex } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
-import { closeTestStore, FakeClock, FakeRuntime, testPluginHost, testStore, testTileTrees } from "./helpers.ts";
+import {
+  closeTestStore,
+  FakeClock,
+  FakeRuntime,
+  testPluginHost,
+  testStore,
+  testTileTrees,
+} from "./helpers.ts";
 import { createExternalRun } from "./agent-fixtures.ts";
 
 async function fixture() {

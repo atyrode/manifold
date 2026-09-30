@@ -48,6 +48,11 @@ export {
   type VocabularyMeta,
   type VocabularyText,
 } from "./vocabulary.tsx";
-export { FileInput, ByteImage, type FileInputProps, type ByteImageProps } from "./byte-renderer.tsx";
+export {
+  FileInput,
+  ByteImage,
+  type FileInputProps,
+  type ByteImageProps,
+} from "./byte-renderer.tsx";
 export { ByteDownload, type ByteDownloadProps, type ByteDownloadStatus } from "./byte-download.tsx";
 export { BorrowedPanel, type BorrowedPanelProps } from "./borrowed-panel.tsx";

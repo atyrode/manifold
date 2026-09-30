@@ -65,6 +65,7 @@ import {
   FakeClock,
   FakeRuntime,
   FakeSocket,
+  closeTestStore,
   hostWithSeatOff,
   placeTile,
   testPluginHost,
@@ -193,7 +194,7 @@ async function placementFixture(): Promise<PlacementFixture> {
   const runtime = new FakeRuntime();
   const clock = new FakeClock(runtime);
   const store = testStore();
-  fixtureCleanup.push(() => store.close());
+  fixtureCleanup.push(() => closeTestStore(store));
   const auth = new AuthService(store, OWNER_KEY, runtime);
   const root = auth.authenticate(OWNER_KEY);
   const newContainer = (name: string, discipline: ContainerDiscipline): Container => {
@@ -232,7 +233,6 @@ async function placementFixture(): Promise<PlacementFixture> {
     declaration. The roster arrives as a thunk, exactly as production wires it.
    */
   const plugins = await testPluginHost(store, auth, rooms, broker, runtime);
-  fixtureCleanup.push(() => plugins.close());
   const placement = new PlaceExecutor(
     store,
     rooms,

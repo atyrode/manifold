@@ -13,12 +13,15 @@ import { silentLogger } from "../src/log.ts";
 import { DOC_BYTES_LIMIT, RoomManager } from "../src/room.ts";
 import { SessionChannel } from "../src/session-channel.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
-import { closeTestStore, FakeClock,
-FakeRuntime,
-FakeSocket,
-testPluginHost,
-testStore,
-testTileTrees, } from "./helpers.ts";
+import {
+  closeTestStore,
+  FakeClock,
+  FakeRuntime,
+  FakeSocket,
+  testPluginHost,
+  testStore,
+  testTileTrees,
+} from "./helpers.ts";
 
 describe("native Text creation capacity", () => {
   test("pending creations share current capacity and refusals leave body, reference and history untouched", async () => {

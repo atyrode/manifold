@@ -18,13 +18,16 @@ import { SessionChannel } from "../src/session-channel.ts";
 import { SessionGateway } from "../src/session-ws.ts";
 import { TRACE_ROW_TYPE, type ServerStore, type StoredEvent } from "../src/stores.ts";
 import { TerminalBroker, type MachineChannel } from "../src/terminal-broker.ts";
-import { closeTestStore, FakeClock,
-FakeRuntime,
-FakeSocket,
-testEventHub,
-testPluginHost,
-testStore,
-testTileTrees, } from "./helpers.ts";
+import {
+  closeTestStore,
+  FakeClock,
+  FakeRuntime,
+  FakeSocket,
+  testEventHub,
+  testPluginHost,
+  testStore,
+  testTileTrees,
+} from "./helpers.ts";
 import { createExternalRun } from "./agent-fixtures.ts";
 
 /**
@@ -166,7 +169,19 @@ async function fixture(): Promise<TerminalsFixture> {
     runtime,
     events,
   );
-  const value = { runtime, clock, store, auth, owner, container, rooms, broker, machine, host, gateway };
+  const value = {
+    runtime,
+    clock,
+    store,
+    auth,
+    owner,
+    container,
+    rooms,
+    broker,
+    machine,
+    host,
+    gateway,
+  };
   fixtures.add(value);
   return value;
 }

@@ -14,7 +14,14 @@ import { RoomManager } from "../src/room.ts";
 import type { ServerStore } from "../src/stores.ts";
 import { sha256Hex } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
-import { closeTestStore, FakeClock, FakeRuntime, testPluginHost, testStore, testTileTrees } from "./helpers.ts";
+import {
+  closeTestStore,
+  FakeClock,
+  FakeRuntime,
+  testPluginHost,
+  testStore,
+  testTileTrees,
+} from "./helpers.ts";
 import { createExternalRun } from "./agent-fixtures.ts";
 
 /**

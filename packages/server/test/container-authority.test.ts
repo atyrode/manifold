@@ -25,7 +25,14 @@ import type { ActionCtx, PluginHost, ServerPluginDef } from "../src/plugin-host.
 import { RoomManager } from "../src/room.ts";
 import type { ServerStore } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
-import { closeTestStore, FakeClock, FakeRuntime, testPluginHost, testStore, testTileTrees } from "./helpers.ts";
+import {
+  closeTestStore,
+  FakeClock,
+  FakeRuntime,
+  testPluginHost,
+  testStore,
+  testTileTrees,
+} from "./helpers.ts";
 
 /**
  * A GOVERNED DOOR HANDS ONE NAMED CONTAINER'S AUTHORITY TO THE WORK IT STARTS (ADR 0051, #883).

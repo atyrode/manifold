@@ -26,7 +26,13 @@ import { AuthService, type AuthContext } from "../src/auth.ts";
 import { openDatabase } from "../src/db.ts";
 import { JobService } from "../src/job-service.ts";
 import { ServerStore, TRACE_ROW_TYPE } from "../src/stores.ts";
-import { closeTestStore, FakeClock, FakeRuntime, testPluginHost, testTileTrees } from "./helpers.ts";
+import {
+  closeTestStore,
+  FakeClock,
+  FakeRuntime,
+  testPluginHost,
+  testTileTrees,
+} from "./helpers.ts";
 import { serviceContext } from "../src/service-doors.ts";
 import {
   buildIsolateDef,
