@@ -5,9 +5,11 @@ import {
   NativeTransferEvidenceBatchSchema,
   NativeTransferAdmissionRecoverySchema,
   NativeTransferRecoverAdmissionArgsSchema,
+  NativeTransferPendingAdmissionsSchema,
   type ByteCarrierRequest,
   type NativeTransferStatus,
   type NativeTransferTerminalEvidence,
+  type NativeTransferPendingAdmission,
 } from "@manifold/protocol";
 import { z } from "zod";
 import {
@@ -139,6 +141,29 @@ async function saveStatus(
       return fail("outcome_unknown");
     throw error;
   }
+}
+
+/** Own-data intent metadata only; the host fences absence without borrowing caller authority. */
+export async function filesPendingNativeTransfers(
+  ctx: DataContext,
+): Promise<readonly NativeTransferPendingAdmission[]> {
+  const db = database(ctx);
+  await initialize(db);
+  const rows = await queryTransfers(
+    db,
+    `SELECT * FROM file_transfers
+    WHERE kind IN ('delivery','download') AND native_id IS NULL
+      AND state='queued' AND active=1 AND terminal IS NULL
+    ORDER BY created,id LIMIT 32`,
+  );
+  return NativeTransferPendingAdmissionsSchema.parse(
+    rows.map((row) => ({
+      actorId: row.actor,
+      credentialBinding: row.credential,
+      request: savedRequest(row).native,
+      createdAt: row.created,
+    })),
+  );
 }
 
 /** Exact host evidence releases only its own reservation, never any independent copy. */

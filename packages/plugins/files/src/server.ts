@@ -60,7 +60,7 @@ import {
 import { nativeHandlers, downloadCarrier } from "./native.ts";
 import { queryTransfers, sqlInteger } from "./backend-store.ts";
 import type { ReferenceProbeRequest, ReferenceProbeResult } from "@manifold/protocol";
-export { filesReconcileNativeTransfers } from "./native.ts";
+export { filesPendingNativeTransfers, filesReconcileNativeTransfers } from "./native.ts";
 
 export interface FilesContext extends BoundContext {
   readonly references: PluginReferenceContext;

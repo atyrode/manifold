@@ -38,7 +38,7 @@ import {
   filesReclaimReferences,
   type FilesContext,
 } from "../src/server.ts";
-import { filesReconcileNativeTransfers } from "../src/native.ts";
+import { filesPendingNativeTransfers, filesReconcileNativeTransfers } from "../src/native.ts";
 
 const databases: Database[] = [];
 afterEach(() => {
@@ -938,13 +938,15 @@ describe("durable Files product transitions", () => {
         purpose: "file" as const,
       });
     expect(await next()).toEqual({ refused: "busy" });
+    const [pending] = await filesPendingNativeTransfers({ database: f.db, now: f.now });
+    expect(await next()).toEqual({ refused: "busy" });
     const evidence = {
       kind: "terminal" as const,
       transferId: "refused-native",
-      requestId,
-      actorId: ctx.principal.id,
-      credentialBinding: ctx.credentialBinding,
-      mode: "read" as const,
+      requestId: pending!.request.requestId,
+      actorId: pending!.actorId,
+      credentialBinding: pending!.credentialBinding,
+      mode: pending!.request.mode,
       state: "refused" as const,
       reason: "native_source_writer_active" as const,
     };
