@@ -270,6 +270,18 @@ export const NativeTransferBindingSchema = z
   );
 export type NativeTransferBinding = z.infer<typeof NativeTransferBindingSchema>;
 
+/** Own durable reservation metadata only; never grants the named actor's authority. */
+export const NativeTransferPendingAdmissionSchema = z.strictObject({
+  actorId: identity.actorId,
+  credentialBinding: identity.credentialBinding,
+  request: NativeTransferRecoverAdmissionArgsSchema,
+  createdAt: count,
+});
+export type NativeTransferPendingAdmission = z.infer<typeof NativeTransferPendingAdmissionSchema>;
+export const NativeTransferPendingAdmissionsSchema = z
+  .array(NativeTransferPendingAdmissionSchema)
+  .max(32);
+
 export const NativeTransferReceiptSchema = z.strictObject({
   transferId: id,
   mode: z.enum(["put", "read"]),

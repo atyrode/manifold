@@ -24,6 +24,8 @@ import {
   NativeTransferResultSchema,
   NativeTransferStatusSchema,
   NativeTransferEvidenceBatchSchema,
+  NativeTransferPendingAdmissionSchema,
+  NativeTransferPendingAdmissionsSchema,
   NATIVE_TRANSFER_MAX_CHUNK_BYTES,
   NATIVE_TRANSFER_MAX_FILE_BYTES,
   NATIVE_TRANSFER_MAX_LIFETIME_MS,
@@ -112,6 +114,39 @@ const permit = {
   },
   signature: Buffer.alloc(64).toString("base64"),
 };
+
+test("pending admissions are bounded exact metadata, never selected actor or credential authority", () => {
+  const pending = {
+    actorId: binding.actorId,
+    credentialBinding: binding.credentialBinding,
+    request: binding.request,
+    createdAt: binding.createdAt,
+  };
+  expect(NativeTransferPendingAdmissionSchema.parse(pending)).toEqual(pending);
+  const read = { ...pending, request: { mode: "read", ...pins, relativePath: ["source.txt"] } };
+  expect(NativeTransferPendingAdmissionSchema.parse(read)).toEqual(read);
+  for (const change of [
+    { pluginId: "other.plugin" },
+    { principal: { id: "root", kind: "human" } },
+    { credential: "secret" },
+    { transferId: "invented" },
+    { actorId: "" },
+    { credentialBinding: "secret" },
+    { createdAt: -1 },
+    { createdAt: Number.MAX_SAFE_INTEGER + 1 },
+    { request: { ...binding.request, mode: "read" } },
+    { request: { ...binding.request, source: { ...put.source, token: "secret" } } },
+  ])
+    expect(NativeTransferPendingAdmissionSchema.safeParse({ ...pending, ...change }).success).toBe(
+      false,
+    );
+  const rows = Array.from({ length: 32 }, (_, index) => ({
+    ...pending,
+    request: { ...pending.request, requestId: `pending-${index}` },
+  }));
+  expect(NativeTransferPendingAdmissionsSchema.parse(rows)).toEqual(rows);
+  expect(NativeTransferPendingAdmissionsSchema.safeParse([...rows, read]).success).toBe(false);
+});
 
 test("transfer-only artifacts admit exact retained directories without executable authority", () => {
   expect(MachineHalfSchema.parse(machine).operations).toEqual({});

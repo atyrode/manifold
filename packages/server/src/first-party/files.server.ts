@@ -8,6 +8,7 @@ import {
   filesProbeReady,
   filesReclaimReferences,
   filesReconcileNativeTransfers,
+  filesPendingNativeTransfers,
 } from "@manifold-plugin/files/server";
 
 defineServerPlugin({
@@ -20,4 +21,5 @@ defineServerPlugin({
   probeReady: filesProbeReady,
   reclaimReferences: filesReclaimReferences,
   reconcileNativeTransfers: filesReconcileNativeTransfers,
+  pendingNativeTransfers: filesPendingNativeTransfers,
 });

@@ -17,6 +17,7 @@ import type {
   ManifoldRef,
   PluginManifest,
   SettledJob,
+  NativeTransferPendingAdmission,
 } from "@manifold/protocol";
 import { ByteTransferError } from "@manifold/protocol";
 import { AuthService } from "../src/auth.ts";
@@ -65,6 +66,21 @@ const settledJob: SettledJob = {
 };
 
 const principal = { id: "p1", kind: "human" as const, name: "Pat", color: "#123456" };
+const pendingAdmission: NativeTransferPendingAdmission = {
+  actorId: "expired-actor",
+  credentialBinding: "a".repeat(64),
+  createdAt: 1,
+  request: {
+    mode: "read",
+    requestId: "abandoned",
+    machineId: "offline-machine",
+    installationRevision: "installation",
+    artifactSha256: "b".repeat(64),
+    locationId: "location",
+    locationRevision: "revision",
+    relativePath: ["source.txt"],
+  },
+};
 
 interface LogLine {
   readonly level: LogLevel;
@@ -365,6 +381,158 @@ afterEach(async () => {
 });
 
 describe("IsolateSupervisor", () => {
+  test.each(["completeAfterBarrier", "prepareAfterBarrier"])(
+    "pending admissions decline an active owner without queuing a stale probe: %s",
+    async (action) => {
+      const f = await referenceFixture({ referenceProbeDeadlineMs: 2_000 });
+      const probe = f.def.pendingNativeTransfersWhenIdle;
+      if (!probe) throw new Error("missing pending admission probe");
+      await f.storage.set("native-pending", JSON.stringify([pendingAdmission]));
+      const gate = await guestBarrier();
+      const ordinary = invoke(f.def, action, f.ctx, { text: gate.dir });
+      let reads = 0;
+      const data = {
+        storage: {
+          ...f.storage,
+          get: async (key: string) => {
+            reads += 1;
+            return f.storage.get(key);
+          },
+        },
+        now: () => f.runtime.now(),
+      };
+      const idle = Promise.withResolvers<void>();
+      const unsubscribe = f.supervisor.onIdle(() => idle.resolve());
+      try {
+        await gate.entered();
+        let returned = false;
+        const busy = probe(data).then((value) => {
+          returned = true;
+          return value;
+        });
+        await until(() => returned);
+        expect(await busy).toBeNull();
+        expect(reads).toBe(0);
+      } finally {
+        await gate.release();
+      }
+      await ordinary;
+      await idle.promise;
+      unsubscribe();
+      expect(reads).toBe(0);
+      expect(await probe(data)).toEqual([pendingAdmission]);
+      expect(reads).toBe(1);
+      expect(f.logger.count("isolate_exited")).toBe(0);
+    },
+  );
+
+  test("a pending snapshot excludes fresh actions until its private data request finishes", async () => {
+    const f = await referenceFixture({ referenceProbeDeadlineMs: 2_000 });
+    const probe = f.def.pendingNativeTransfersWhenIdle;
+    if (!probe) throw new Error("missing pending admission probe");
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<string | null>();
+    const pending = probe({
+      storage: {
+        ...f.storage,
+        get: async () => {
+          entered.resolve();
+          return release.promise;
+        },
+      },
+      now: () => f.runtime.now(),
+    });
+    let admitted = false;
+    let ordinary: Promise<unknown> | undefined;
+    try {
+      await entered.promise;
+      ordinary = invoke(
+        f.def,
+        "echo",
+        { ...f.ctx, admitPrepared: () => { admitted = true; } },
+        { text: "after snapshot" },
+      );
+      expect(await probe({ storage: f.storage, now: () => f.runtime.now() })).toBeNull();
+      expect(admitted).toBe(false);
+      expect(await f.storage.get("count")).toBeNull();
+    } finally {
+      release.resolve(JSON.stringify([pendingAdmission]));
+    }
+    expect(await pending).toEqual([pendingAdmission]);
+    expect(await ordinary).toEqual({ text: "after snapshot", count: 1 });
+    expect(admitted).toBe(true);
+  });
+
+  test.each(["unload", "deadline"])(
+    "pending admission data from a retired generation cannot survive %s",
+    async (retirement) => {
+      const f = await referenceFixture({ referenceProbeDeadlineMs: 500 });
+      const probe = f.def.pendingNativeTransfersWhenIdle;
+      if (!probe) throw new Error("missing pending admission probe");
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<string | null>();
+      const pending = probe({
+        storage: {
+          ...f.storage,
+          get: async () => {
+            entered.resolve();
+            return release.promise;
+          },
+        },
+        now: () => f.runtime.now(),
+      }).catch((error: unknown) => error);
+      try {
+        await entered.promise;
+        if (retirement === "unload") await f.supervisor.unload(PLUGIN_ID);
+        expect(await pending).toBeInstanceOf(IsolateDenial);
+        const { def } =
+          retirement === "unload"
+            ? await f.supervisor.load({
+                pluginId: PLUGIN_ID,
+                manifest,
+                dir: GUEST_DIR,
+                hardenedContract: 12,
+              })
+            : { def: f.def };
+        const fresh = def.pendingNativeTransfersWhenIdle;
+        if (!fresh) throw new Error("missing replacement probe");
+        await f.storage.set("native-pending", JSON.stringify([pendingAdmission]));
+        const data = { storage: f.storage, now: () => f.runtime.now() };
+        expect(await fresh(data)).toEqual([pendingAdmission]);
+        if (retirement === "unload")
+          await expect(probe(data)).rejects.toBeInstanceOf(IsolateDenial);
+        release.resolve(JSON.stringify([{ ...pendingAdmission, actorId: "stale-actor" }]));
+        expect(await fresh(data)).toEqual([pendingAdmission]);
+      } finally {
+        release.resolve(null);
+        await pending;
+      }
+    },
+  );
+
+  test.each(["escape", "credential", "oversized"])(
+    "untrusted pending probes cannot escape the data lease or return %s metadata",
+    async (mode) => {
+      const f = await referenceFixture({ referenceProbeDeadlineMs: 500 });
+      const probe = f.def.pendingNativeTransfersWhenIdle;
+      if (!probe) throw new Error("missing pending admission probe");
+      const rows =
+        mode === "escape"
+          ? [{ ...pendingAdmission, request: { ...pendingAdmission.request, requestId: "escape" } }]
+          : mode === "credential"
+            ? [{ ...pendingAdmission, credential: "secret" }]
+            : Array.from({ length: 33 }, (_, index) => ({
+                ...pendingAdmission,
+                request: { ...pendingAdmission.request, requestId: `pending-${index}` },
+              }));
+      await f.storage.set("native-pending", JSON.stringify(rows));
+      await expect(
+        probe({ storage: f.storage, now: () => f.runtime.now() }),
+      ).rejects.toBeInstanceOf(IsolateDenial);
+      expect(await f.storage.get("native-pending")).toBe(JSON.stringify(rows));
+    },
+  );
+
   test.each(["escape", "recover-admission"])("native data lease refuses %s", async (requestId) => {
     const { supervisor, runtime, storage } = fixture({ referenceProbeDeadlineMs: 500 });
     const { def } = await supervisor.load({
@@ -435,6 +603,11 @@ describe("IsolateSupervisor", () => {
       denial: "slice_unavailable: nativeTransfers.recoverAdmission",
     });
     expect(recovered).toBe(false);
+    expect(def.pendingNativeTransfersWhenIdle).toBeUndefined();
+    expect(await invoke(def, "echo", ctx, { text: "legacy remains usable" })).toEqual({
+      text: "legacy remains usable",
+      count: 1,
+    });
   });
 
   test("a byte request cannot recover or fence native admission", async () => {

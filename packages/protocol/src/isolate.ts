@@ -26,7 +26,10 @@ import {
   ReferenceProbeResultSchema,
   ReferenceTerminalReceiptSchema,
 } from "./references.ts";
-import { NativeTransferEvidenceBatchSchema } from "./native-transfers.ts";
+import {
+  NativeTransferEvidenceBatchSchema,
+  NativeTransferPendingAdmissionsSchema,
+} from "./native-transfers.ts";
 import {
   IsolateByteCtxSchema,
   IsolateByteDeclarationsSchema,
@@ -850,6 +853,11 @@ export const IsolateHostFrameSchema = z.discriminatedUnion("t", [
     receipts: NativeTransferEvidenceBatchSchema,
     now: z.number().int().min(0),
   }),
+  z.strictObject({
+    t: z.literal("pending_native_transfers"),
+    id: frameId,
+    now: z.number().int().min(0),
+  }),
   /** Resumes this same dispatch after the guest parsed and the host admitted its input. */
   z.strictObject({
     t: z.literal("admitted"),
@@ -947,6 +955,7 @@ export const IsolateChildFrameSchema = z.discriminatedUnion("t", [
     probeReady: z.literal(true).optional(),
     reclaimReferences: z.literal(true).optional(),
     reconcileNativeTransfers: z.literal(true).optional(),
+    pendingNativeTransfers: z.literal(true).optional(),
     byteCarriers: IsolateByteDeclarationsSchema.optional(),
   }),
   z.strictObject({ t: z.literal("load_failed"), error: errorText }),
@@ -992,6 +1001,14 @@ export const IsolateChildFrameSchema = z.discriminatedUnion("t", [
     id: frameId,
     outcome: z.discriminatedUnion("ok", [
       z.strictObject({ ok: z.literal(true) }),
+      z.strictObject({ ok: z.literal(false), error: errorText }),
+    ]),
+  }),
+  z.strictObject({
+    t: z.literal("pending_native_transfers_result"),
+    id: frameId,
+    outcome: z.discriminatedUnion("ok", [
+      z.strictObject({ ok: z.literal(true), result: NativeTransferPendingAdmissionsSchema }),
       z.strictObject({ ok: z.literal(false), error: errorText }),
     ]),
   }),

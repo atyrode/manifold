@@ -90,6 +90,8 @@ import {
   NativeTransferRecoverAdmissionArgsSchema,
   NativeTransferAdmissionRecoverySchema,
   type NativeTransferTerminalEvidence,
+  NativeTransferPendingAdmissionsSchema,
+  type NativeTransferPendingAdmission,
   type MachineBridgeAnswer,
   type MachineCredentialGrant,
   type MachineDrainOutcome,
@@ -597,6 +599,9 @@ export interface ServerPluginDef {
     ctx: GuestReferenceProbeCtx,
     receipts: readonly NativeTransferTerminalEvidence[],
   ) => Promise<void>;
+  readonly pendingNativeTransfers?: (
+    ctx: GuestReferenceProbeCtx,
+  ) => Promise<readonly NativeTransferPendingAdmission[]>;
 }
 
 // ---------------------------------------------------------------------------- the transport
@@ -1825,6 +1830,12 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
         typeof def.probeReady !== "function"
       )
         throw new Error("reference owner has no readiness probe");
+      if (
+        def.pendingNativeTransfers !== undefined &&
+        (typeof def.pendingNativeTransfers !== "function" ||
+          typeof def.reconcileNativeTransfers !== "function")
+      )
+        throw new Error("pending native admissions require evidence reconciliation");
       byteCarriers = IsolateByteDeclarationsSchema.parse(
         Object.entries(def.byteCarriers ?? {}).map(([id, handler]) => ({
           id,
@@ -1868,6 +1879,7 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       ...(def.probeReady === undefined ? {} : { probeReady: true }),
       ...(def.reclaimReferences === undefined ? {} : { reclaimReferences: true }),
       ...(def.reconcileNativeTransfers === undefined ? {} : { reconcileNativeTransfers: true }),
+      ...(def.pendingNativeTransfers === undefined ? {} : { pendingNativeTransfers: true }),
       ...(byteCarriers.length === 0 ? {} : { byteCarriers }),
     });
   };
@@ -2136,7 +2148,13 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
   const onReferenceData = async (
     frame: Extract<
       IsolateHostFrame,
-      { t: "probe_ready" | "reclaim_references" | "reconcile_native_transfers" }
+      {
+        t:
+          | "probe_ready"
+          | "reclaim_references"
+          | "reconcile_native_transfers"
+          | "pending_native_transfers";
+      }
     >,
   ): Promise<void> => {
     const requests = callsFor(frame.id);
@@ -2158,6 +2176,15 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
         );
         requests.close();
         post({ t: "probed_ready", id: frame.id, outcome: { ok: true, result } });
+      } else if (frame.t === "pending_native_transfers") {
+        const pendingNativeTransfers = def.pendingNativeTransfers;
+        if (pendingNativeTransfers === undefined || def.reconcileNativeTransfers === undefined)
+          throw new IsolateSliceUnavailable("pending native admissions");
+        const result = NativeTransferPendingAdmissionsSchema.parse(
+          await referenceProbe.run(frame.id, () => pendingNativeTransfers(ctx)),
+        );
+        requests.close();
+        post({ t: "pending_native_transfers_result", id: frame.id, outcome: { ok: true, result } });
       } else if (frame.t === "reconcile_native_transfers") {
         const reconcileNativeTransfers = def.reconcileNativeTransfers;
         if (reconcileNativeTransfers === undefined)
@@ -2181,7 +2208,9 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
             ? "probed_ready"
             : frame.t === "reconcile_native_transfers"
               ? "reconciled_native_transfers"
-              : "reclaimed_references",
+              : frame.t === "pending_native_transfers"
+                ? "pending_native_transfers_result"
+                : "reclaimed_references",
         id: frame.id,
         outcome: { ok: false, error: errorText(error).slice(0, 2048) },
       });
@@ -2298,6 +2327,7 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       case "probe_ready":
       case "reclaim_references":
       case "reconcile_native_transfers":
+      case "pending_native_transfers":
         void onReferenceData(host);
         return;
       case "admitted":

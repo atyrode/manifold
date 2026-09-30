@@ -51,6 +51,8 @@ import {
   NativeTransferAdmissionRecoverySchema,
   NativeTransferEvidenceBatchSchema,
   type NativeTransferTerminalEvidence,
+  NativeTransferPendingAdmissionsSchema,
+  type NativeTransferPendingAdmission,
   ReferencePrepareRequestSchema,
   ReferenceReceiptRequestSchema,
   ReferenceReadFilterRequestSchema,
@@ -126,6 +128,9 @@ export interface IsolateTransport {
     ctx: ReferenceProbeCtx,
     receipts: readonly NativeTransferTerminalEvidence[],
   ): Promise<void>;
+  pendingNativeTransfersWhenIdle?(
+    ctx: ReferenceProbeCtx,
+  ): Promise<readonly NativeTransferPendingAdmission[] | null>;
   hook(hook: IsolateHook, ctx: LifecycleCtx, delta?: AssemblyDelta): Promise<void>;
   /** `onJobSettled` alone: its own ctx (the job slice rides it) and its own argument. */
   settled(ctx: JobSettledCtx, job: SettledJob): Promise<void>;
@@ -204,6 +209,14 @@ export function buildIsolateDef(
     throw new IsolateLoadError("reference reclamation transport is unavailable");
   if (loaded.reconcileNativeTransfers === true && transport.reconcileNativeTransfers === undefined)
     throw new IsolateLoadError("native evidence reconciliation transport is unavailable");
+  if (
+    loaded.pendingNativeTransfers === true &&
+    (loaded.reconcileNativeTransfers !== true ||
+      transport.pendingNativeTransfersWhenIdle === undefined)
+  )
+    throw new IsolateLoadError(
+      "pending native admissions require idle transport and evidence reconciliation",
+    );
   const declaredCarriers = manifest.contributes?.byteCarriers ?? [];
   const reportedCarriers = loaded.byteCarriers ?? [];
   if (
@@ -408,6 +421,16 @@ export function buildIsolateDef(
                 ctx,
                 NativeTransferEvidenceBatchSchema.parse(receipts),
               );
+            },
+          }),
+      ...(loaded.pendingNativeTransfers !== true
+        ? {}
+        : {
+            pendingNativeTransfersWhenIdle: async (ctx: ReferenceProbeCtx) => {
+              if (transport.pendingNativeTransfersWhenIdle === undefined)
+                throw new IsolateDenial("unavailable", "pending native admissions unavailable");
+              const result = await transport.pendingNativeTransfersWhenIdle(ctx);
+              return result === null ? null : NativeTransferPendingAdmissionsSchema.parse(result);
             },
           }),
       ...(harness === undefined ? {} : { harness }),

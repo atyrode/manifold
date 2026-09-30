@@ -38,6 +38,8 @@ import {
   type ReferenceTerminalReceipt,
   NativeTransferEvidenceBatchSchema,
   type NativeTransferTerminalEvidence,
+  NativeTransferPendingAdmissionsSchema,
+  type NativeTransferPendingAdmission,
   type IsolateHarnessRequest,
   type IsolateDispatchCtx,
   type IsolateChildFrame,
@@ -122,6 +124,7 @@ type AnsweredFrame = Extract<
       | "probed_ready"
       | "reclaimed_references"
       | "reconciled_native_transfers"
+      | "pending_native_transfers_result"
       | "byte_answered";
   }
 >;
@@ -136,6 +139,7 @@ const ANSWER_FOR_REQUEST: Partial<Record<IsolateHostFrame["t"], AnsweredFrame["t
   probe_ready: "probed_ready",
   reclaim_references: "reclaimed_references",
   reconcile_native_transfers: "reconciled_native_transfers",
+  pending_native_transfers: "pending_native_transfers_result",
   byte_request: "byte_answered",
 };
 
@@ -195,6 +199,8 @@ class Isolate {
   callTail: Promise<void> = Promise.resolve();
   queuedCalls = 0;
   queuedCallBytes = 0;
+  /** Drained admission excludes current work, not resource-charged retired awaits. */
+  currentQueuedCalls = 0;
   migration: { readonly id: string; readonly calls: Set<string> } | null = null;
   /** A context-free validation owns the drained guest until its request settles. */
   validation: { readonly id: string; violated: boolean } | null = null;
@@ -239,6 +245,7 @@ export class IsolateSupervisor implements IsolateRunner {
   private readonly listeners = new Set<
     (pluginId: string, state: IsolateState, detail?: string) => void
   >();
+  private readonly idleListeners = new Set<(pluginId: string) => void>();
   private readonly logger: Logger;
   private readonly runtime: RuntimeDeps;
   private readonly dispatchDeadlineMs: number;
@@ -288,6 +295,7 @@ export class IsolateSupervisor implements IsolateRunner {
       reclaimReferences: (ctx, receipts) => this.reclaimReferences(isolate, ctx, receipts),
       reconcileNativeTransfers: (ctx, receipts) =>
         this.reconcileNativeTransfers(isolate, ctx, receipts),
+      pendingNativeTransfersWhenIdle: (ctx) => this.pendingNativeTransfersWhenIdle(isolate, ctx),
       hook: (hook, ctx, delta) => this.hook(pluginId, hook, ctx, delta),
       settled: (ctx, job) => this.settled(pluginId, ctx, job),
       migrate: (migration, storage, database) =>
@@ -338,6 +346,13 @@ export class IsolateSupervisor implements IsolateRunner {
     this.listeners.add(listener);
     return () => {
       this.listeners.delete(listener);
+    };
+  }
+
+  onIdle(listener: (pluginId: string) => void): () => void {
+    this.idleListeners.add(listener);
+    return () => {
+      this.idleListeners.delete(listener);
     };
   }
 
@@ -546,6 +561,43 @@ export class IsolateSupervisor implements IsolateRunner {
     if (!frame.outcome.ok) throw new Error(frame.outcome.error);
   }
 
+  private async pendingNativeTransfersWhenIdle(
+    isolate: Isolate,
+    ctx: ReferenceProbeCtx,
+  ): Promise<readonly NativeTransferPendingAdmission[] | null> {
+    if (
+      this.isolates.get(isolate.ref.pluginId) !== isolate ||
+      (isolate.ref.hardenedContract ?? 1) < 12 ||
+      isolate.loaded?.pendingNativeTransfers !== true ||
+      isolate.loaded.reconcileNativeTransfers !== true
+    )
+      throw new IsolateDenial("unavailable", "pending native admissions unavailable");
+    // Never queue a stale absence probe behind an action crossing into native admission.
+    // request() acquires the exclusive owner turn synchronously before its first await.
+    if (
+      isolate.ownerTurn !== null ||
+      isolate.waitingOwnerTurns.size !== 0 ||
+      isolate.pending.size !== 0 ||
+      isolate.currentQueuedCalls !== 0 ||
+      isolate.producers.size !== 0 ||
+      isolate.jobObservers.size !== 0 ||
+      isolate.migration !== null ||
+      isolate.validation !== null ||
+      isolate.probe !== null
+    )
+      return null;
+    const frame = await this.request(
+      isolate.ref.pluginId,
+      (id) => ({ t: "pending_native_transfers", id, now: ctx.now() }),
+      { kind: "probe", ctx },
+      true,
+    );
+    if (frame.t !== "pending_native_transfers_result")
+      throw new IsolateDenial("unavailable", "pending native admissions answered out of protocol");
+    if (!frame.outcome.ok) throw new Error(frame.outcome.error);
+    return NativeTransferPendingAdmissionsSchema.parse(frame.outcome.result);
+  }
+
   private async hook(
     pluginId: string,
     hook: IsolateHook,
@@ -718,7 +770,7 @@ export class IsolateSupervisor implements IsolateRunner {
         isolate.migration !== null ||
         ((idleOnly || served === null || served.kind === "migration") &&
           (isolate.pending.size !== 0 ||
-            isolate.queuedCalls !== 0 ||
+            isolate.currentQueuedCalls !== 0 ||
             isolate.producers.size !== 0 ||
             isolate.jobObservers.size !== 0))
       )
@@ -781,7 +833,8 @@ export class IsolateSupervisor implements IsolateRunner {
       !(
         isolate.loaded?.probeReady ||
         isolate.loaded?.reclaimReferences ||
-        isolate.loaded?.reconcileNativeTransfers
+        isolate.loaded?.reconcileNativeTransfers ||
+        isolate.loaded?.pendingNativeTransfers
       )
     )
       return null;
@@ -789,6 +842,7 @@ export class IsolateSupervisor implements IsolateRunner {
     // This lineage exists only while the host is serving this owner's exact current call.
     // A guest-provided request id, or a detached continuation after that call, grants nothing.
     if (
+      !idleOnly &&
       served?.kind === "probe" &&
       origin?.active &&
       origin.isolate === isolate &&
@@ -1033,6 +1087,7 @@ export class IsolateSupervisor implements IsolateRunner {
     // child's callbacks behind its abandoned publish or owner-data await.
     isolate.callTail = Promise.resolve();
     isolate.probeCallTail = Promise.resolve();
+    isolate.currentQueuedCalls = 0;
     for (const producer of isolate.producers.values()) producer.close();
     isolate.producers.clear();
     for (const observer of isolate.jobObservers.values()) observer.follow?.close();
@@ -1127,6 +1182,7 @@ export class IsolateSupervisor implements IsolateRunner {
       case "probed_ready":
       case "reclaimed_references":
       case "reconciled_native_transfers":
+      case "pending_native_transfers_result":
       case "byte_answered":
       case "hooked": {
         const pending = isolate.pending.get(frame.id);
@@ -1178,6 +1234,7 @@ export class IsolateSupervisor implements IsolateRunner {
               frame.t !== "probed_ready" &&
               frame.t !== "reclaimed_references" &&
               frame.t !== "reconciled_native_transfers" &&
+              frame.t !== "pending_native_transfers_result" &&
               frame.t !== "byte_answered" &&
               frame.outcome.ok &&
               frame.outcome.emits.length !== 0 &&
@@ -1229,7 +1286,8 @@ export class IsolateSupervisor implements IsolateRunner {
             pending?.served?.kind !== "probe" ||
             (pending.request.t !== "probe_ready" &&
               pending.request.t !== "reclaim_references" &&
-              pending.request.t !== "reconcile_native_transfers") ||
+              pending.request.t !== "reconcile_native_transfers" &&
+              pending.request.t !== "pending_native_transfers") ||
             pending.request.id !== probe.id ||
             !(frame.method.startsWith("storage.") || frame.method.startsWith("database.")) ||
             probe.calls.has(frame.id) ||
@@ -1244,6 +1302,7 @@ export class IsolateSupervisor implements IsolateRunner {
         if (pending !== undefined) pending.serving += 1;
         isolate.queuedCalls += 1;
         isolate.queuedCallBytes += bytes;
+        isolate.currentQueuedCalls += 1;
         const serve = async (): Promise<void> => {
           try {
             if (isolate.child === child) await this.serve(isolate, child, frame, pending);
@@ -1251,6 +1310,10 @@ export class IsolateSupervisor implements IsolateRunner {
             if (pending !== undefined && pending.serving > 0) pending.serving -= 1;
             isolate.queuedCalls -= 1;
             isolate.queuedCallBytes -= bytes;
+            if (isolate.child === child) {
+              isolate.currentQueuedCalls -= 1;
+              this.armIdle(isolate);
+            }
           }
         };
         // A references.publish call may await this very probe. Its data calls must not queue
@@ -1555,6 +1618,8 @@ export class IsolateSupervisor implements IsolateRunner {
     if (
       isolate.state !== "running" ||
       isolate.child === null ||
+      this.isolates.get(isolate.ref.pluginId) !== isolate ||
+      isolate.currentQueuedCalls !== 0 ||
       isolate.pending.size > 0 ||
       isolate.ownerTurn !== null ||
       isolate.waitingOwnerTurns.size > 0 ||
@@ -1568,6 +1633,7 @@ export class IsolateSupervisor implements IsolateRunner {
     isolate.cancelIdle = (): void => {
       clearTimeout(timer);
     };
+    for (const listener of this.idleListeners) listener(isolate.ref.pluginId);
   }
 
   private clearIdle(isolate: Isolate): void {

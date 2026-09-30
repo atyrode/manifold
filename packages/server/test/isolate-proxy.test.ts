@@ -260,6 +260,30 @@ describe("buildIsolateDef", () => {
     expect(assembly.roster[0]?.actions[0]?.resultProjection).toEqual(policy);
   });
 
+  test("pending admission discovery cannot load without durable evidence delivery", () => {
+    const transport = {
+      ...scripted({ ok: true, result: null, emits: [] }),
+      pendingNativeTransfersWhenIdle: async () => [],
+    };
+    expect(() =>
+      buildIsolateDef(
+        manifest,
+        { ...loaded([]), pendingNativeTransfers: true },
+        transport,
+      ),
+    ).toThrow(IsolateLoadError);
+    expect(() =>
+      buildIsolateDef(
+        manifest,
+        { ...loaded([]), pendingNativeTransfers: true, reconcileNativeTransfers: true },
+        {
+          ...scripted({ ok: true, result: null, emits: [] }),
+          reconcileNativeTransfers: async () => {},
+        },
+      ),
+    ).toThrow(IsolateLoadError);
+  });
+
   test("names are made local under the plugin's own namespace, or the load fails", () => {
     const transport = scripted({ ok: true, result: null, emits: [] });
     const { def } = buildIsolateDef(manifest, loaded(["test.proxy.echo"]), transport);

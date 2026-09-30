@@ -11,6 +11,7 @@ import {
   type IsolateDispatchCtx,
   type IsolateHostFrame,
   type PluginManifest,
+  type NativeTransferPendingAdmission,
 } from "@manifold/protocol";
 import { z } from "zod";
 import { ActionCallError, HostCallError } from "../src/errors.ts";
@@ -150,6 +151,113 @@ function load(fake: FakeHost, pluginId = manifest.id): void {
 }
 
 describe("reference data callbacks", () => {
+  test("pending admission discovery requires the terminal evidence callback", async () => {
+    const fake = host({
+      manifest,
+      actions: [],
+      handlers: {},
+      pendingNativeTransfers: async () => [],
+    });
+    load(fake);
+    expect(await fake.next()).toMatchObject({ t: "load_failed" });
+    expect(fake.sent.some((frame) => frame.t === "loaded")).toBe(false);
+  });
+
+  test("pending admission discovery cannot borrow actor effects or retain its own data lease", async () => {
+    const retained = Promise.withResolvers<GuestCtx>();
+    const release = Promise.withResolvers<void>();
+    let data: GuestReferenceProbeCtx | undefined;
+    const saved: NativeTransferPendingAdmission = {
+      actorId: principal.id,
+      credentialBinding: "b".repeat(64),
+      request: recoveryRequest,
+      createdAt: 7,
+    };
+    const fake = host({
+      manifest,
+      actions: [echo],
+      handlers: {
+        echo: async (ctx) => {
+          retained.resolve(ctx);
+          await release.promise;
+          return { text: "finished" };
+        },
+      },
+      reconcileNativeTransfers: async () => {},
+      pendingNativeTransfers: async (ctx) => {
+        data = ctx;
+        expect("principal" in ctx || "nativeTransfers" in ctx || "actions" in ctx).toBe(false);
+        const actor = await retained.promise;
+        await expect(actor.nativeTransfers.recoverAdmission(recoveryRequest)).rejects.toMatchObject({
+          reason: "native_transfer_unavailable",
+        });
+        await expect(
+          actor.nativeTransfers.beginRead({
+            requestId: "replayed",
+            machineId: "machine",
+            installationRevision: "installation",
+            artifactSha256: "a".repeat(64),
+            locationId: "location",
+            locationRevision: "revision",
+            relativePath: ["source.txt"],
+          }),
+        ).rejects.toMatchObject({ reason: "native_transfer_unavailable" });
+        await expect(actor.identity.revokeMachine("machine")).rejects.toThrow(
+          "only its own data context",
+        );
+        const json = await ctx.storage.get("pending");
+        return JSON.parse(json!) as NativeTransferPendingAdmission[];
+      },
+    });
+    load(fake);
+    await fake.next();
+    fake.send({ t: "dispatch", id: "actor", action: "echo", args: { text: "hold" }, ctx: ctxOf() });
+    await retained.promise;
+    fake.send({ t: "pending_native_transfers", id: "pending", now: 20 });
+    expect((await serve(fake, JSON.stringify([saved]))).method).toBe("storage.get");
+    expect(await fake.next()).toEqual({
+      t: "pending_native_transfers_result",
+      id: "pending",
+      outcome: { ok: true, result: [saved] },
+    });
+    if (!data) throw new Error("missing pending admission probe");
+    await expect(data.storage.get("pending")).rejects.toThrow("already answered");
+    release.resolve();
+    expect(await fake.next()).toMatchObject({
+      t: "dispatched",
+      outcome: { ok: true, result: { text: "finished" } },
+    });
+  });
+
+  test.each(["credential", "oversized"])("pending admission replies reject %s metadata", async (mode) => {
+    const row = {
+      actorId: principal.id,
+      credentialBinding: "a".repeat(64),
+      request: recoveryRequest,
+      createdAt: 1,
+    };
+    const fake = host({
+      manifest,
+      actions: [],
+      handlers: {},
+      reconcileNativeTransfers: async () => {},
+      pendingNativeTransfers: async () =>
+        mode === "credential"
+          ? [{ ...row, credential: "secret" }]
+          : Array.from({ length: 33 }, (_, index) => ({
+              ...row,
+              request: { ...row.request, requestId: `pending-${index}` },
+            })),
+    });
+    load(fake);
+    await fake.next();
+    fake.send({ t: "pending_native_transfers", id: "pending", now: 20 });
+    expect(await fake.next()).toMatchObject({
+      t: "pending_native_transfers_result",
+      outcome: { ok: false },
+    });
+  });
+
   test("native evidence callbacks cannot borrow live publication authority or retain their data lease", async () => {
     const retained = Promise.withResolvers<GuestCtx>();
     const release = Promise.withResolvers<void>();

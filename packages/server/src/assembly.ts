@@ -19,6 +19,7 @@ import {
   filesProbeReady,
   filesReclaimReferences,
   filesReconcileNativeTransfers,
+  filesPendingNativeTransfers,
 } from "@manifold-plugin/files/server";
 import {
   filesImagesActions,
@@ -147,6 +148,7 @@ export const SERVER_PLUGIN_DEFS: readonly ServerPluginDef[] = [
     probeReady: filesProbeReady,
     reclaimReferences: filesReclaimReferences,
     reconcileNativeTransfers: filesReconcileNativeTransfers,
+    pendingNativeTransfers: filesPendingNativeTransfers,
   },
   {
     manifest: filesImagesManifest,

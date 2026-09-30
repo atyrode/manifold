@@ -244,7 +244,12 @@ onFrame(async (frame) => {
           ? { harness: frame.manifest.contributes.harness }
           : {}),
         ...(frame.hardenedContract >= 12
-          ? { probeReady: true, reclaimReferences: true, reconcileNativeTransfers: true }
+          ? {
+              probeReady: true,
+              reclaimReferences: true,
+              reconcileNativeTransfers: true,
+              pendingNativeTransfers: true,
+            }
           : {}),
         byteCarriers: (frame.manifest.contributes.byteCarriers ?? []).map(({ id, direction }) => ({
           id,
@@ -524,6 +529,14 @@ onFrame(async (frame) => {
         },
       });
       return;
+    case "pending_native_transfers": {
+      const saved = await call(frame.id, "storage.get", ["native-pending"]);
+      const result = saved === null ? [] : JSON.parse(saved);
+      if (result[0]?.request.requestId === "escape")
+        await call(frame.id, "nativeTransfers.recoverAdmission", [result[0].request]);
+      send({ t: "pending_native_transfers_result", id: frame.id, outcome: { ok: true, result } });
+      return;
+    }
     case "reconcile_native_transfers":
       for (const receipt of frame.receipts) {
         if (receipt.kind === "admission-refused") {
