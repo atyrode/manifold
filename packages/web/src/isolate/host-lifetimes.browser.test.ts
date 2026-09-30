@@ -146,3 +146,31 @@ test("retained portable edits cannot act after committed owner or source replace
     await fixture.close();
   }
 }, 60_000);
+
+test("a recomposed intake delivers layout completion to its current committed callback", async () => {
+  const fixture = await serveHostLifetimes();
+  const browser = new Browser();
+  try {
+    await browser.launch({ incognito: true });
+    await browser.goto(fixture.origin);
+    for (const strict of [false, true]) {
+      await browser.evaluate(`window.fixture.mount("page", "layout", ${strict})`);
+      expect(await browser.evaluate<string>("document.body.textContent")).toContain(
+        "Waiting for layout completion",
+      );
+      await browser.evaluate("window.fixture.completeInLayout()");
+      expect(await browser.evaluate<number>("window.fixture.layoutSetups()")).toBe(strict ? 2 : 1);
+      expect((await browser.evaluate<Counts>("window.fixture.counts()")).results).toEqual([
+        { state: "completed", callbackVersion: 1 },
+      ]);
+      await browser.evaluate("window.fixture.completeInLayout()");
+      expect((await browser.evaluate<Counts>("window.fixture.counts()")).results).toEqual([
+        { state: "completed", callbackVersion: 1 },
+      ]);
+    }
+    await browser.evaluate("window.fixture.close()");
+  } finally {
+    await browser.close();
+    await fixture.close();
+  }
+}, 60_000);

@@ -71,6 +71,10 @@ and portable props carry owner-local descriptors, not another mount's handles. T
 the larger result allowance accommodates a legal fully escaped native receipt path, not bytes.
 The borrowing subtree has four slots and refuses cycles. Client, credential, container,
 owner and mount retirement fence callbacks and resource custody.
+Callback liveness follows the committed mount, not the requester's callback identity. The host
+installs the current callback before descendant layout effects so ordinary mounts and StrictMode
+replay preserve the same once-only result. Pristine local upload custody can survive same-commit
+effect replay, while cleanup immediately fences action entry and terminally retires started work.
 
 The parent's `/contract` owns shared DTO schemas. S18 narrowly admits the already-adopted
 `zod` schema DSL there, alongside platform-free floor entries; it still excludes React, DOM,
@@ -317,6 +321,22 @@ variant carries the exact request, actor, credential binding, mode, attempt time
 not an invented transfer ID. The Files owner retires only the matching queued reservation and
 retains the refused receipt. Admitted terminal evidence keeps its real transfer ID. Failed
 evidence delivery remains `native_transfer_cleanup_unknown`; it is not proof of clean cancellation.
+
+The host retains that refusal as an exact plugin/actor/credential/request/mode/full-argument
+digest fence, not only an ephemeral callback. The product stores its immutable native request
+before admission. `recoverAdmission` atomically returns its existing admitted ID or records a
+non-admission fence, which an awaited preflight rechecks before insertion. This recovers a killed
+product action before the host was reached, even after source deletion, without replaying begin.
+Failed evidence delivery is retried after restart. Refusals share the existing 1,000-record
+metadata cap; unacknowledged fences do not expire, and acknowledgement does not refresh the
+original seven-day retention timestamp.
+
+The host journals whether begin is still explicitly unsent or has a durable dispatch intent.
+Known-unsent budget, cancellation and restart paths can terminate without a native command.
+The intent-before-send crash gap deliberately remains unknown. The original owner's unknown ID
+cannot prove absence after journal compaction or receipt expiry, and a replacement owner cannot
+attest the original owner's effects. No retained-coverage attestation is invented here.
+
 Hub or plugin-local expiry is not native cleanup evidence. Admitted and admission-unknown native
 transfers retain uncertainty and their active reservation until exact owner or pre-admission
 refusal evidence retires them. A failed unlink, inode check or directory sync therefore remains

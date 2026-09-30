@@ -3144,9 +3144,12 @@ objects enter only the receiving mount's local resource store; portable page and
 contain owner-local descriptors. JSON options retain the 4 KiB argument bound; a result is
 a JSON record of at most 64 KiB UTF-8 and 32 container levels, not a byte carrier or authority.
 The neutral `BorrowedPanel` resolves the owner's selected renderer, preserves its unavailable
-boundary, rejects cycles and shares four slots across the entire borrowing subtree. Client,
-credential, container and mount retirement fence selection custody and completion. Results
-cannot repeat after owner recomposition or reach a later intake.
+boundary, rejects cycles and shares four slots across the entire borrowing subtree. Only a
+committed mount acquires file custody or a borrowing slot; abandoned renders acquire neither.
+Client, credential, principal, container and mount retirement fence selection custody and
+completion. Restoring an earlier host identity does not revive a retired intake. Results cannot
+repeat after owner recomposition or reach a later intake. A descendant layout-effect completion
+reaches the current committed callback; replacing that callback alone is not mount retirement.
 
 Picker, drop and explicit clipboard Save use the same owner workflow. Save and Attach/Deliver
 are separate choices. Cancelling after Save or failing to attach preserves the saved file and
@@ -3154,6 +3157,10 @@ its retry identity; it does not silently delete or duplicate it. An image stores
 opaque source reference and presentation geometry. Deleting one reference does not affect
 another or the source. Logical source deletion invalidates all projections. A share is with
 the named principal, not every present or future viewer of the canvas.
+
+File intake blocks action entry and late callbacks synchronously on retirement. React's
+same-commit mount-effect replay may retain a pristine, not-yet-started selection; it cannot
+revive an operation that has started or a controller that has already been disposed.
 
 Before an upload or saved file is acknowledged, a refused or unknown intake may instead be
 explicitly discarded locally. That releases selection custody, not server authority: it neither
@@ -3182,6 +3189,14 @@ active reservation and block destructive cleanup until exact owner or pre-admiss
 evidence resolves them. Native waits consume the original action budget; byte-native waits also
 respect the earlier HTTP deadline. Background evidence delivery cannot make an action wait for
 its own isolate turn.
+
+The product retains its exact immutable native request before admission. Credential-bound
+`recoverAdmission` either returns the original admitted ID or durably fences non-admission
+against an in-flight or later begin. Refusal evidence survives failed private delivery and
+restarts; it shares the existing 1,000-record metadata bound, and unacknowledged evidence does
+not age away. A durable explicitly unsent admission can retire without issuing native commands.
+Once dispatch intent is recorded, a missing reply or an original owner's unknown ID is not
+absence proof: uncertainty and purge blocking remain until authoritative terminal evidence.
 
 Downloads name a bounded relative file under a reviewed read root and produce an immutable
 snapshot. They do not retain a library file unless separately saved. Terminal-local MIME

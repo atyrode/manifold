@@ -103,13 +103,22 @@ export async function serveHostLifetimes(): Promise<{
       const initialHost = () => ({client:client(),principal,containerId:"container-one",token:crypto.randomUUID(),authoring:null,
         topics:{index:[],terminals:[],attendance:[],machines:[]},navigate:()=>{},assembly:{panels:new Map(),sections:[]}});
       const fileInput = () => ({value:{label:"selection"},files:[new File(["private selection"],"selection.txt",{type:"text/plain"})]});
-      let root, host, originalHost, input, mode, scenario, generation=0, visible=true, branch=true, probeElement, suspended=false;
+      let root, host, originalHost, input, mode, scenario, generation=0, visible=true, branch=true, probeElement, suspended=false, layoutVersion=0, strict=true, layoutSetups=0;
       const never = Promise.withResolvers().promise;
       function Suspender() { throw never; }
       function EditProbe() {
         const edit = usePortableElementEdit(probeElement);
         useLayoutEffect(()=>{edits.push(edit);},[edit]);
         return createElement(Text,null,edit.writable ? "Element writable" : "Element read only");
+      }
+      function LayoutCompletion({onResult,attempt}) {
+        useLayoutEffect(()=>{layoutSetups++;onResult({state:"completed"});},[attempt,onResult]);
+        return createElement(Text,null,"Completed during layout");
+      }
+      function LayoutIntake({arg,onResult}) {
+        return arg.complete
+          ? createElement(LayoutCompletion,{onResult,attempt:arg.complete})
+          : createElement(Text,null,"Waiting for layout completion");
       }
       const boundary = ({children}) => children;
       function render() {
@@ -120,20 +129,30 @@ export async function serveHostLifetimes(): Promise<{
         if (!visible) child = createElement(Text,null,"Unmounted");
         else if (scenario === "selection") child = createElement(adapted,{host,input,onResult:result=>results.push(result)});
         else if (scenario === "edit") child = createElement(ProjectionScopeProvider,{value:{host,client:host.client,locationPath:null}},createElement(EditProbe));
+        else if (scenario === "layout") {
+          const callbackVersion = layoutVersion;
+          child = createElement(byteContribution(LayoutIntake,true),{
+            host,input,arg:{complete:layoutVersion},
+            onResult:result=>results.push({...result,callbackVersion}),
+          });
+        }
         else child = createElement(MountedByteSurface,{host},()=>createElement(Stack,null,
           branch && createElement(BorrowedPanel,{key:"chain",panelId:"example.lifetime.a",input:{label:"a",next:scenario === "cycle" ? ["a"] : ["b","c","d","e"]},onResult:result=>results.push(result)}),
           scenario === "budget" && createElement(BorrowedPanel,{key:"sibling",panelId:"example.lifetime.e",input:{label:"sibling"},onResult:result=>results.push(result)})));
         if (suspended) child = createElement(Suspense,{fallback:createElement(Text,null,"Suspended")},child,createElement(Suspender));
-        flushSync(()=>root.render(createElement(StrictMode,null,createElement(ProjectionProvider,{value:registry},child))));
+        const tree = createElement(ProjectionProvider,{value:registry},child);
+        flushSync(()=>root.render(strict ? createElement(StrictMode,null,tree) : tree));
       }
       window.fixture = {
-        mount(nextMode,nextScenario="selection") {
+        mount(nextMode,nextScenario="selection",nextStrict=true) {
           if(root) flushSync(()=>root.unmount());
           root=createRoot(document.getElementById("root"));
           mode=nextMode;scenario=nextScenario;host=originalHost=initialHost();input=fileInput();visible=true;branch=true;suspended=false;
-          probeElement={id:"image",data:{file:"source"}};results.length=pending.length=captures.length=edits.length=0;render();
+          probeElement={id:"image",data:{file:"source"}};layoutVersion=layoutSetups=0;strict=nextStrict;results.length=pending.length=captures.length=edits.length=0;render();
         },
         recompose() { host={...host};generation++;render(); },
+        completeInLayout() { layoutVersion++;host={...host};generation++;render(); },
+        layoutSetups() { return layoutSetups; },
         restoreHost() { host=originalHost;render(); },
         change(field) {
           if(field === "input") input=fileInput();

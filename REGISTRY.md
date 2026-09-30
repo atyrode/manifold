@@ -439,7 +439,7 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     },
     {
       "glob": "packages/server/src/native-transfer-service.ts",
-      "why": "ADR 0057 shared native transport coordination: owner generations, exact operation receipts, live authority cuts and terminal evidence cannot be arbitrated by a requesting plugin. The existing machine channel carries bounded commands; no shell or terminal fallback grants ambient filesystem access"
+      "why": "ADR 0057 shared native transport coordination: owner generations, exact operation receipts, durable actor/credential/request refusal fences, explicit unsent versus intended dispatch, live authority cuts and terminal evidence cannot be arbitrated by a requesting plugin. The existing machine channel carries bounded commands; no shell or terminal fallback grants ambient filesystem access"
     },
     {
       "glob": "packages/server/src/index.ts",

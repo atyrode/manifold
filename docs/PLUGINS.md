@@ -1258,6 +1258,31 @@ total deadline; abort, unload and generation retirement remove queued work witho
 Idle-only maintenance declines busy owners. This preserves the strict data-only guest fence
 without serializing generic owners or creating another process.
 
+### Governed native byte transfers
+
+`machine.transferPolicy` declares reviewed location rights for the existing native owner
+channel. `ctx.nativeTransfers` provides `describe`, `beginPut`, `putChunk`, `commitPut`,
+`beginRead`, `readChunk`, `cancel`, `status`, `receipt` and `recoverAdmission`. These methods
+retain the original caller, declared rights, current installation/consent and original execution
+deadline; they are not a filesystem browser, shell channel or authority cache. See
+[Native effects and recovery](CONTRACTS.md#native-effects-and-recovery) for platform and
+create-only confinement requirements.
+
+Persist the complete immutable begin request, including its `mode`, before crossing admission.
+If the reply is lost, `recoverAdmission` accepts that exact request: it returns
+`{ kind: "admitted", transferId }` for the existing admission, or
+`{ kind: "not-admitted", reason }` after durably fencing any later admission of that intent.
+Changing arguments under the same request identity refuses. Recovery is bound to the exact
+current actor and credential; it does not require reading a source that has since been deleted
+and does not replay a native effect. It is unavailable in byte and private-data callback contexts.
+
+Private terminal evidence retires only matching product reservations. A failed callback remains
+pending across restart; never manufacture a transfer ID or release an uncertain reservation from
+elapsed time. A recorded unsent admission may terminate locally, but a durable dispatch intent
+stays unknown without authoritative terminal evidence. An owner's unknown ID alone is not proof
+that no effect occurred.
+
+
 ### Element types are reserved while you are away
 
 The engine records which plugin owns which element `type` (a workspace-level `meta` row, beside the
@@ -4053,12 +4078,15 @@ Keep that input object stable for one intake; replace it or remount to start ano
 Raw `File` objects are captured in the receiving owner's mounted store. `PortablePanelProps.input`
 contains only `{ value?, files: LocalFileDescriptor[] }`, in both page and Worker execution;
 `host.localFiles` reads bounded chunks from those owner-local handles. A handle never transfers
-another mount's custody. Changing the client, credential or container retires an existing intake
-rather than handing an old selection to the new viewer.
+another mount's custody. Capture and shared-slot admission happen only at commit. Changing the
+client, credential, principal or container retires an existing intake rather than handing an old
+selection to the new viewer; restoring the previous identity does not revive that intake.
 
 `input.value` obeys the existing 4 KiB JSON-record argument bound but is never persisted as `arg`.
 `onResult` accepts one JSON record, at most 64 KiB UTF-8 and 32 container levels deep. It is fenced to the
 current mount, owner and credential; late or repeated results cannot complete another intake.
+A result produced during a descendant layout effect reaches that commit's callback, including
+after the requester recomposes. A new callback identity alone does not retire the intake.
 Callbacks, DOM objects and file bytes never enter a frame. Results are data, not authority:
 effects still use ordinary discovered actions and their current authorization.
 

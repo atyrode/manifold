@@ -13,6 +13,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useInsertionEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -219,13 +220,16 @@ function IntakeLifetime({
   const delivered = useRef(false);
   const live = useRef(false);
   const callback = useRef(onResult);
-  useLayoutEffect(() => {
+  // Descendant layout effects may complete immediately; install this commit's callback first.
+  useInsertionEffect(() => {
     callback.current = onResult;
+  }, [onResult]);
+  useInsertionEffect(() => {
     live.current = true;
     return () => {
       live.current = false;
     };
-  }, [onResult]);
+  }, []);
   const result = useCallback<NonNullable<PanelProps["onResult"]>>((value) => {
     if (!live.current || delivered.current) return;
     const parsed = PanelResultSchema.parse(value);
