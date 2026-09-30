@@ -44,6 +44,7 @@ import { IsolateChild } from "./ipc.ts";
 import {
   buildIsolateDef,
   serveCtxCall,
+  serveLifecycleMetadata,
   type IsolateDispatchOutcome,
   type IsolateTransport,
   type ServedCtx,
@@ -348,6 +349,12 @@ export class IsolateSupervisor implements IsolateRunner {
           : { delta: { enabled: [...delta.enabled], disabled: [...delta.disabled] } }),
         // The child's ctx mirrors the host's: a slice the host cannot serve is not announced.
         ...(ctx.jobs === undefined ? {} : { jobs: true }),
+        ...((this.isolates.get(pluginId)?.ref.hardenedContract ?? 0) >= 11 &&
+        ctx.host !== undefined &&
+        ctx.services !== undefined &&
+        ctx.machines !== undefined
+          ? { metadata: true }
+          : {}),
       }),
       { kind: "hook", ctx },
     );
@@ -357,7 +364,18 @@ export class IsolateSupervisor implements IsolateRunner {
     await this.hooked(
       pluginId,
       "onJobSettled",
-      (id) => ({ t: "hook", id, hook: "onJobSettled", job }),
+      (id) => ({
+        t: "hook",
+        id,
+        hook: "onJobSettled",
+        job,
+        ...((this.isolates.get(pluginId)?.ref.hardenedContract ?? 0) >= 11 &&
+        ctx.host !== undefined &&
+        ctx.services !== undefined &&
+        ctx.machines !== undefined
+          ? { metadata: true }
+          : {}),
+      }),
       { kind: "settled", ctx },
     );
   }
@@ -992,14 +1010,28 @@ export class IsolateSupervisor implements IsolateRunner {
         // The fleet bridge is contract 9's; an older guest was never built to ask for it.
         if (isMachineBridgeMethod(frame.method) && (isolate.ref.hardenedContract ?? 1) < 9)
           throw new Error(`slice_unavailable: ${frame.method}`);
-        result = await serveCtxCall(frame.method, frame.args, pending.served);
-        if (frame.method === "machines.inventory" && (isolate.ref.hardenedContract ?? 1) < 10) {
-          // Contract-9 packed guests strictly parse the pre-topology inventory shape.
-          const inventory = MachineBridgeResultSchemas["machines.inventory"].parse(result);
-          if (inventory.ok) {
-            for (const machine of inventory.value.machines) delete machine.physicalCoreCount;
+        if (
+          (pending.served.kind === "hook" || pending.served.kind === "settled") &&
+          (frame.method === "host.roster" ||
+            frame.method === "host.enabled" ||
+            frame.method === "services.listInstances" ||
+            frame.method === "machines.inventory")
+        ) {
+          if ((isolate.ref.hardenedContract ?? 1) < 11)
+            throw new Error(`slice_unavailable: ${frame.method}`);
+          // Read after any queue wait, then reply without an await that could outlive
+          // the credential, resource grant or hook lease which authorized these bytes.
+          result = serveLifecycleMetadata(frame.method, frame.args, pending.served.ctx);
+        } else {
+          result = await serveCtxCall(frame.method, frame.args, pending.served);
+          if (frame.method === "machines.inventory" && (isolate.ref.hardenedContract ?? 1) < 10) {
+            // Contract-9 packed guests strictly parse the pre-topology inventory shape.
+            const inventory = MachineBridgeResultSchemas["machines.inventory"].parse(result);
+            if (inventory.ok) {
+              for (const machine of inventory.value.machines) delete machine.physicalCoreCount;
+            }
+            result = inventory;
           }
-          result = inventory;
         }
       }
       reply = { t: "reply", id: frame.id, ok: true, result: result ?? null };

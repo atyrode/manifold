@@ -710,6 +710,8 @@ export const IsolateHostFrameSchema = z.discriminatedUnion("t", [
      * exactly one thing: an ordinary lifecycle hook has an installer's authority behind it.
      */
     jobs: z.boolean().optional(),
+    /** Contract 11+: credential-bound, read-only host, fleet and instance-service metadata. */
+    metadata: z.boolean().optional(),
   }),
   z.strictObject({
     t: z.literal("migrate"),
@@ -982,10 +984,12 @@ export const PLUGIN_BUNDLE_FORMAT = 1;
  *    Legacy web guests keep their original init/mount shapes and existing control frames.
  * 9 -> 10: Optional live `physicalCoreCount` in machine inventory (#939). Hosts omit it
  *    for older admitted guests, whose strict inventory parser predates the field.
+ * 10 -> 11: Additive-optional hook.metadata announces read-only lifecycle host/fleet/service
+ *    metadata. Older packed strict guests retain their original hook frames.
  */
-export const HARDENED_CONTRACT_VERSION = 10;
+export const HARDENED_CONTRACT_VERSION = 11;
 export const HARDENED_CONTRACT_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
 ]);
 export const HARDENED_CONTRACT_MINIMUM = Math.min(...HARDENED_CONTRACT_COMPAT_VERSIONS);
 

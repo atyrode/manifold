@@ -904,14 +904,34 @@ export const serverDef = {
 };
 ```
 
-A hook receives exactly `{ pluginId, storage, now() }` and may be sync or `async` — both are awaited
-under the same bound. The context is that narrow on purpose: a hook exists to order your **own**
-durable state, and anything that touches the workspace is a mutation, which goes through an action
-door where it can be authorized, validated, logged and observed
-([the plane rule](../AXIOMS.md#the-plane-rule)). Because the
-parameter is contravariant you may declare only the slice you use —
-`onDisable: (ctx: { storage: PluginStorage }) => void` type-checks — the same sandbox shape action
-handlers have.
+A hook receives its plugin identity, storage, clock and declared database, plus credential-bound
+jobs, dependency actions and read-only metadata when authority is restorable. It may be sync or
+`async`; both are awaited under the same bound. Effects still go through the existing authority
+owners ([the plane rule](../AXIOMS.md#the-plane-rule)). Because the parameter is contravariant you
+may declare only the slice you use — `onDisable: (ctx: { storage: PluginStorage }) => void`
+type-checks — the same sandbox shape action handlers have.
+
+For current dependency identity, use `ctx.host?.roster()` / `ctx.host?.enabled(id)`. For visible
+instance service readiness and `configuration.{revision,policySha256}`, use
+`ctx.services?.listInstances({})`. For the current public fleet inventory use
+`ctx.machines?.inventory()`, which returns the existing success/refusal answer from the same
+live projection as dispatch inventory. These are metadata-only handles: no drain, machine
+credential mutation, invocation, configuration, policy/secret reads or filesystem access.
+Declare `containers:read` for host/fleet metadata and `services:read` for instance metadata; both
+must also be inside the install grant and current credential authority. Service rows remain
+filtered by the credential's `services:read` authority at their operation refs.
+An invoke-only credential is not a metadata reader. The operation's policy need not mark it
+`readable`, however: listing its identity is not calling it, and a paid operation is never
+executed to obtain this metadata.
+
+Ordinary hooks use the restored installer, never whoever toggled enablement; missing, expired or
+revoked lineage leaves the handles absent. Settled hooks use their job's credential instead,
+including when it differs from the installer. Reads recheck current manifest/grant, credential,
+service visibility and hook lifetime; do not retain a context for a later callback. Host reads
+are synchronous, guest reads are promises, so `await` works for both. After a hook returns or
+times out its handles refuse even if your async continuation still runs. Contract-11 packed
+guests receive an explicit metadata announcement; older compatible artifacts retain their old
+hook frames and must be repacked only if they want to use this new API.
 
 - **`onAssemblyChanged` fires on every SURVIVING plugin** — enabled before AND after the change —
   in assembly order, after the roster commits and before it is broadcast, with
@@ -3720,10 +3740,13 @@ become a prerequisite for an ordinary review session.
 
 A hook (`onEnable`, `onDisable`, `onAssemblyChanged`) gets storage and the clock. It does NOT get
 `emit`: the `hooked` frame has no carrier for emissions, so a hook that emits fails by name instead
-of publishing into the void. `onEnable` and `onDisable` also get `ctx.jobs` and `ctx.actions` — the
+of publishing into the void. Ordinary hooks also get `ctx.jobs` and `ctx.actions` — the
 installer's job authority and the sibling verb — whenever the host could restore that credential;
 both are `undefined` otherwise, so branch on them. `onJobSettled` always has both, bound to its own
-job's credential instead.
+job's credential instead. Contract 11 additionally announces optional `ctx.host`, `ctx.machines`
+and `ctx.services` read-only lifecycle metadata on those same authority terms (§4). Only
+`host.roster`, `host.enabled`, `machines.inventory` and `services.listInstances` are served;
+machine/service effects and configuration methods remain unavailable on every hook.
 
 A declared `ServerHarness` is available in a hardened server from contract 7. Export its complete
 `profileSchema`, `launch`, `sessions`, `resolveSession` and `send` implementation. The loaded
@@ -3864,7 +3887,7 @@ isolated Bun child, `web.js` linked to the page's React/design system, and a
 web definition and attaches the guest runtime; authors do not write a separate
 Worker or add `--self-contained` (that flag conflicts with a page-linked portable
 entry). The JSON artifact carries exact-byte SHA-256, base64 members,
-`format: 1`, `hardenedContract: 9` and a protocol stamp. The host serves the
+`format: 1`, `hardenedContract: 11` and a protocol stamp. The host serves the
 declared Worker member at `/api/plugins/<id>/web.worker.js` only while enabled,
 with the artifact pin and `no-store`. A Worker cannot import `react-dom` or the
 page's engine objects; unsupported imports/JSX refuse by name. Hardening
@@ -3872,12 +3895,12 @@ selection never falls back to native when packing, loading or runtime fails.
 `verify --hardened` exercises actual server doors, not browser rendering:
 exercise the panel in a browser too. The install door and grant remain §7.
 
-Current packs stamp contract 9; the hub admits stamped contracts 1–9 using
+Current packs stamp contract 11; the hub admits stamped contracts 1–9 and 11 using
 each artifact's own compatible frames. Contract 8 adds caller-plugin attribution;
 contract 9 adds React frame roots, mounted context/sections, generated portable
-Worker member, event invalidations, authoring and narrow machine bridges. Older
-admitted artifacts keep their declared behavior rather than acquiring these
-facilities. Missing stamps require a genuine repack, not an assumed contract 1;
+Worker member, event invalidations, authoring and narrow machine bridges. Contract 11 adds
+credential-bound read-only lifecycle metadata. Older admitted artifacts keep their declared
+behavior rather than acquiring these facilities. Missing stamps require a genuine repack, not an assumed contract 1;
 `repack_required` holds incompatible incumbents before import or spawn.
 
 ### Developing against a hub

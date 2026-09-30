@@ -1,8 +1,14 @@
-import type { PluginId, SettledJob } from "@manifold/protocol";
+import type {
+  MachineBridgeAnswer,
+  MachineInventory,
+  PluginId,
+  PluginRoster,
+  SettledJob,
+} from "@manifold/protocol";
 import type { EmitEvent } from "./emit.ts";
 import type { PluginDatabase } from "./database.ts";
 import type { PluginStorage } from "./storage.ts";
-import type { PluginActionContext, PluginJobContext } from "./runtime.ts";
+import type { PluginActionContext, PluginJobContext, PluginServiceContext } from "./runtime.ts";
 
 /**
  * THE LIFECYCLE — four hooks, one bound, no veto.
@@ -25,10 +31,8 @@ export const LIFECYCLE_TIMEOUT_MS = 2_000;
 /**
  * What a hook is handed: its own identity, its own storage, its own tables when it declared
  * any, the server's clock, the one emission call, and — when the row's installer still has
- * restorable authority — the job slice. Nothing else — deliberately. A lifecycle hook exists
- * to put a plugin's OWN durable state in order; anything that touches the workspace is a
- * mutation, and every mutation goes through an action door where it can be authorized,
- * validated, logged and observed (AXIOMS.md §The plane rule).
+ * restorable authority — jobs, dependency actions and read-only metadata. Every effect still
+ * goes through its existing authority owner (AXIOMS.md §The plane rule).
  *
  * `emit` is not an exception to that rule, it is the shape of it: an event NOTIFIES and never
  * mutates, so handing a hook the ability to say "I am serving now" costs nothing a door would
@@ -49,6 +53,12 @@ export const LIFECYCLE_TIMEOUT_MS = 2_000;
  * and the principal it asks under is the installer's — the one authority the row has when
  * nobody is dispatching — so the two slices are present or absent together.
  *
+ * `host`, `machines` and `services` share that credential, never the enabling administrator's.
+ * Their narrow reads recheck the current manifest, install grant, credential and hook lifetime
+ * at use. Roster and fleet inventory require `containers:read`; instance listing requires
+ * `services:read` and retains per-service visibility. No machine effect, policy, secret,
+ * invocation or configuration handle is exposed. A settled hook uses its job's credential.
+ *
  * The parameter is contravariant, so a plugin may declare the minimal slice it actually uses
  * (`(ctx: { storage: PluginStorage }) => void`) and still satisfy the hook type. That is the
  * same sandbox shape the server's action handlers use, checked at the registration site — and
@@ -67,6 +77,14 @@ export interface LifecycleCtx {
   readonly emit: EmitEvent;
   readonly jobs?: PluginJobContext | undefined;
   readonly actions?: PluginActionContext | undefined;
+  readonly host?:
+    | {
+        roster(): PluginRoster;
+        enabled(id: string): boolean;
+      }
+    | undefined;
+  readonly services?: Pick<PluginServiceContext, "listInstances"> | undefined;
+  readonly machines?: { inventory(): MachineBridgeAnswer<MachineInventory> } | undefined;
   now(): number;
 }
 

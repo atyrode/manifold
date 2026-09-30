@@ -19,6 +19,7 @@ import {
   defineServerAction,
   type GuestCtx,
   type GuestDatabase,
+  type GuestLifecycleCtx,
   type GuestStreamProducer,
   type ServerPluginDef,
   type ServerMigration,
@@ -1252,6 +1253,64 @@ describe("hooks, shutdown and stray frames", () => {
       delta: { enabled: ["core.notes"], disabled: [] },
     });
     expect(await fake.next()).toEqual({ t: "hooked", id: "h3", ok: true });
+  });
+
+  test("lifecycle metadata is opt-in on ordinary and settled hooks, narrow, and expires with its request", async () => {
+    const contexts: GuestLifecycleCtx[] = [];
+    const fake = host({
+      manifest,
+      actions: [],
+      handlers: {},
+      lifecycle: {
+        onEnable: (ctx) => {
+          contexts.push(ctx);
+        },
+        onJobSettled: (ctx) => {
+          contexts.push(ctx);
+        },
+      },
+    });
+    load(fake);
+    await fake.next();
+    for (const announced of [false, true]) {
+      for (const settled of [false, true]) {
+        fake.send({
+          t: "hook",
+          id: `metadata-${String(announced)}-${String(settled)}`,
+          hook: settled ? "onJobSettled" : "onEnable",
+          ...(announced ? { metadata: true } : {}),
+          ...(settled
+            ? {
+                job: {
+                  jobId: "finished",
+                  machineId: "worker",
+                  pluginId: manifest.id,
+                  operationId: `${manifest.id}.run`,
+                  state: "exited" as const,
+                  exitCode: 0,
+                  reason: null,
+                  finishedAt: 1,
+                  outputs: [],
+                },
+              }
+            : {}),
+        });
+        expect(await fake.next()).toMatchObject({ t: "hooked", ok: true });
+        const ctx = contexts.at(-1)!;
+        if (!announced) {
+          expect(ctx.host).toBeUndefined();
+          expect(ctx.services).toBeUndefined();
+          expect(ctx.machines).toBeUndefined();
+        } else {
+          expect(Object.keys(ctx.services!)).toEqual(["listInstances"]);
+          expect(Object.keys(ctx.host!).sort()).toEqual(["enabled", "roster"]);
+          expect(Object.keys(ctx.machines!)).toEqual(["inventory"]);
+          await expect(ctx.host!.roster()).rejects.toThrow("already answered");
+          await expect(ctx.services!.listInstances({})).rejects.toThrow("already answered");
+          await expect(ctx.machines!.inventory()).rejects.toThrow();
+        }
+      }
+    }
   });
 
   test("shutdown exits 0; an unknown frame and a reply for nobody are ignored with a line", () => {

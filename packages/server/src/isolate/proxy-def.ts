@@ -239,12 +239,10 @@ export function buildIsolateDef(
  * serves storage and the plugin's own database — a hook orders its OWN durable state, and
  * rows are as much of that as keys — and answers `slice_unavailable` for the rest, the same
  * word the guest runtime uses for a slice stage 1 does not carry, EXCEPT for `jobs.*` and
- * `actions.call`, which it serves when and only when that ctx carries them (the installer's
- * restored credential, #514, ADR 0041). `onJobSettled` sits between them: it is a hook, and it
- * carries both slices bound to the settled job's own credential, so it serves storage, the
- * database, `jobs.*` and `actions.call` and nothing else — a separate kind because its slice
- * is guaranteed: the host does not deliver the wake without one. A MIGRATION carries storage
- * alone: the supervisor admits only `storage.*` from a migrating guest, so a guest's tables are
+ * `actions.call`, and read-only `host.roster`/`host.enabled`/`services.listInstances`/
+ * `machines.inventory`, served only when that ctx carries them (the installer's credential).
+ * `onJobSettled` instead carries the settled job's credential, never the installer's.
+ * A migration carries storage alone: the supervisor admits only `storage.*` from it, so tables are
  * made where the reference plugin makes them — in `onEnable`, which does carry the database.
  */
 export type ServedCtx =
@@ -480,6 +478,30 @@ function statementsArg(
   return decoded;
 }
 
+/** No suspension between a lifecycle metadata authority check, its read and the wire reply. */
+export function serveLifecycleMetadata(
+  method: "host.roster" | "host.enabled" | "services.listInstances" | "machines.inventory",
+  args: readonly unknown[],
+  ctx: LifecycleCtx,
+): unknown {
+  switch (method) {
+    case "host.roster":
+      if (ctx.host === undefined) throw new Error(`slice_unavailable: ${method}`);
+      return ctx.host.roster();
+    case "host.enabled":
+      if (ctx.host === undefined) throw new Error(`slice_unavailable: ${method}`);
+      return ctx.host.enabled(stringArg(args, 0, method));
+    case "services.listInstances":
+      if (ctx.services === undefined) throw new Error(`slice_unavailable: ${method}`);
+      return ctx.services.listInstances(serviceDoorSchemas.listInstances.parse(args[0]));
+    case "machines.inventory":
+      if (ctx.machines === undefined) throw new Error(`slice_unavailable: ${method}`);
+      if (!MachineBridgeArgsSchemas[method].safeParse(args).success)
+        throw new Error(`${method}: takes no arguments`);
+      return ctx.machines.inventory();
+  }
+}
+
 /**
  * Serves one `call`. Every branch forwards to the SAME object an in-realm handler would
  * touch — `ctx.storage` is the plugin's own namespace, `ctx.auth.allows` grades the
@@ -582,6 +604,14 @@ export async function serveCtxCall(
     case "actions.call":
       break;
   }
+  if (
+    (served.kind === "hook" || served.kind === "settled") &&
+    (method === "host.roster" ||
+      method === "host.enabled" ||
+      method === "services.listInstances" ||
+      method === "machines.inventory")
+  )
+    return serveLifecycleMetadata(method, args, served.ctx);
   /*
     A hook serves `jobs.*` and `actions.call` only when its ctx carries them, and it carries
     them only when the installer's credential restored (`plugin-host.ts` `lifecycleCtx`). The

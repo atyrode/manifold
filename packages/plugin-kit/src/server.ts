@@ -446,6 +446,9 @@ export interface GuestCtx {
  * registers it here and one that composes on a dependency may ask it something, while a hook
  * whose installer is gone sees `undefined` rather than handles whose every call refuses. One
  * flag governs both because one credential does.
+ * `host`, `machines` and `services` are separately announced (contract 11+): current
+ * roster/enabled, fleet inventory and visible instance-service metadata only. The host rechecks
+ * credential, manifest, grant and hook lifetime on each read; no effects or configuration handle.
  */
 export interface GuestLifecycleCtx {
   readonly pluginId: string;
@@ -454,6 +457,9 @@ export interface GuestLifecycleCtx {
   readonly emit: GuestEmit;
   readonly jobs?: GuestHookJobs | undefined;
   readonly actions?: GuestActions | undefined;
+  readonly host?: Pick<GuestCtx["host"], "roster" | "enabled"> | undefined;
+  readonly services?: Pick<GuestServices, "listInstances"> | undefined;
+  readonly machines?: Pick<GuestCtx["machines"], "inventory"> | undefined;
   now(): number;
 }
 /** The settled hook's ctx: an ordinary hook ctx whose authority is the settled job's own. */
@@ -1343,7 +1349,7 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
    * sibling verb rides the same announcement because it rides the same credential — the
    * installer's, restored per fan-out (ADR 0041) — so the pair is present or absent together.
    */
-  const hookCtx = (call: Call, jobs: boolean): GuestLifecycleCtx => {
+  const hookCtx = (call: Call, jobs: boolean, metadata: boolean): GuestLifecycleCtx => {
     const database = databaseFor(call);
     return {
       pluginId: def.manifest.id,
@@ -1354,6 +1360,24 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
         throw new IsolateSliceUnavailable("emit");
       },
       ...(jobs ? { jobs: jobsFor(call), actions: actionsFor(call) } : {}),
+      ...(metadata
+        ? {
+            host: {
+              roster: async () => (await call("host.roster", [])) as PluginRoster,
+              enabled: async (id: string) => (await call("host.enabled", [id])) as boolean,
+            },
+            services: {
+              listInstances: async (args: Record<string, never>) =>
+                (await call("services.listInstances", [args])) as InstanceServicesDescription,
+            },
+            machines: {
+              inventory: async () =>
+                MachineBridgeResultSchemas["machines.inventory"].parse(
+                  await call("machines.inventory", []),
+                ),
+            },
+          }
+        : {}),
       now: () => Date.now(),
     };
   };
@@ -1610,7 +1634,7 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
 
   const onHook = async (frame: Extract<IsolateHostFrame, { t: "hook" }>): Promise<void> => {
     const requests = callsFor(frame.id);
-    const ctx = hookCtx(requests.call, frame.jobs === true);
+    const ctx = hookCtx(requests.call, frame.jobs === true, frame.metadata === true);
     try {
       const lifecycle = def.lifecycle ?? {};
       switch (frame.hook) {

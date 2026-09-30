@@ -1697,6 +1697,39 @@ credential no longer restores. The caller's `delegates` ceiling is deliberately 
 ceiling governs native effects a plugin performs with its own consented authority, and a sibling
 call performs none.
 
+**Read-only lifecycle metadata (#940).** `LifecycleCtx` and the packed guest's
+`GuestLifecycleCtx` expose optional `host.roster()`, `host.enabled(id)`,
+`machines.inventory()` and `services.listInstances({})`, not a full action context.
+Ordinary hooks restore the original installer lineage; absent, revoked or expired lineage
+leaves these slices absent. The principal
+who enables the row is never a substitute. `onJobSettled` instead binds all these reads to the
+settled job's credential, even if the installer has different authority or no lineage exists.
+
+Each read requires its capability inside the currently admitted manifest and current install
+grant as well as the live credential: `containers:read` for roster/enablement and fleet
+inventory, and `services:read` for instance metadata. Roster results are detached public
+roster data, including installed bundle identity. `machines.inventory()` uses the same live
+public fleet projection as dispatch inventory, returning its existing `MachineBridgeAnswer`
+success/refusal shape. It does not expose drain, repository, identity mutation, credential
+or filesystem methods and never caches an earlier dispatch's observations or authority.
+Instance listing uses `JobService.listInstanceServices` and the existing
+per-operation service-ref visibility checks; owner/root credentials do not bypass the plugin
+ceiling. It exposes current readiness and configuration revision/policy hash, not policies,
+configuration, secrets, invocation, native effects or filesystem handles. Default-owner
+administrative metadata is not carried by this slice.
+`services:invoke` alone does not authorize this read-only slice; governed invocation grants
+and consent semantics are unchanged. Conversely, the visible operation need not declare
+`readable: true`: reading its metadata is not invoking or reading the service operation itself.
+
+Authority is checked at every use, including after the hook awaits other work. Metadata reads
+are synchronous on the host, with no suspension between the live checks, read and wire reply;
+the guest awaits correlated RPCs. The hook's existing lease closes on return, timeout or host
+shutdown, so retaining a handle or continuing after the deadline cannot revive it. Retired
+artifacts cannot lend authority to their old hooks. Hardened contract 11 announces availability
+through optional `hook.metadata`; older admitted strict guests receive no new field and cannot
+forge these hook reads. Repacking is required to consume the new slice, not to keep older hooks
+working. No capability grants are created or widened by this interface.
+
 The callee's read-only `ActionCtx.callerPlugin` is the verified **immediate** calling plugin id,
 or explicit `null` for a direct human, HTTP, session or host entry. A → B → C names A at B and
 B at C; the trace retains the full chain. The host derives it from dispatch origin, never
@@ -2543,7 +2576,7 @@ nothing. A plugin's own JSX wears the root class on its root element; the engine
 
 **The artifact (`PluginBundleSchema`).** One JSON file, `<id>.manifold-plugin.json`,
 at most `ISOLATE_MAX_ARTIFACT_BYTES` (16 MiB). A portable pack has
-`format: 1`, `hardenedContract: 9`, the validated `PluginManifest`
+`format: 1`, `hardenedContract: 11`, the validated `PluginManifest`
 ([reference](../packages/plugin-kit/test/fixtures/sample/manifest.json), whose
 `entry` declares `{ "server": true, "web": "web.js", "worker": true }`),
 and base64 `files["server.js"]`, `files["web.js"]`,
@@ -2606,8 +2639,8 @@ not a network-policy exemption. This is server-side retrieval admission, not a r
 the kit client's own inspection fetch or a claim that arbitrary plugin code is network-confined.
 
 **Executable bundle compatibility (#602).** Every pack stamps `hardenedContract` independently
-of `format` and the machine/session protocols. `HARDENED_CONTRACT_VERSION` is 10; the hub accepts
-`HARDENED_CONTRACT_COMPAT_VERSIONS = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}`, with minimum 1. Add an
+of `format` and the machine/session protocols. `HARDENED_CONTRACT_VERSION` is 11; the hub accepts
+`HARDENED_CONTRACT_COMPAT_VERSIONS = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}`, with minimum 1. Add an
 additive-optional contract to that set; reset it for a genuine break. An unstamped or outside-set
 installed artifact is held at assembly with `repack_required` and the minimum, never imported
 or spawned, even if the administrator had it disabled. Fresh incompatible installs are refused
@@ -2625,9 +2658,10 @@ adds harness calls, and 8 adds host-owned `callerPlugin` to the dispatch context
 adds portable React Worker entries and the bounded fleet bridge. Contract 10 adds optional
 `physicalCoreCount` in `machines.inventory`; the host omits it for older admitted packed
 guests, whose strict inventory parser predates it. Current in-realm and hardened readers
-receive the same live facts. Older admitted guests omit newer metadata and preserve their
-normalized declarations and digests. Host-to-guest
-optional fields are gated by the admitted contract, never sent speculatively.
+receive the same live facts. Contract 11 adds optional `hook.metadata` for credential-bound
+read-only lifecycle metadata. Older admitted guests omit newer metadata and preserve their
+normalized declarations and digests. Host-to-guest optional fields are gated by the admitted
+contract, never sent speculatively.
 “Isolate answered out of protocol” denotes an internal
 protocol violation, not an SDK-upgrade remedy exposed after version drift.
 
@@ -2730,7 +2764,7 @@ receipt, so merely writing more calls cannot hide an unread reply backlog:
 | ---------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | host→child | `load`        | `pluginId`, `manifest`, `dir`, `hardenedContract?` (contract 2+) — the first frame; the child already runs from `dir`                                                                                   |
 | host→child | `dispatch`    | `id`, `action` (LOCAL name), `args`, `ctx: { traceId, principal, caps, isRoot, containerScope, agentRun? (6+), callerPlugin? (8+), now }` — host-owned caller attribution and authority captured per id |
-| host→child | `hook`        | `id`, `hook: "onEnable" \| "onDisable" \| "onAssemblyChanged"`, `delta?: { enabled, disabled }`                                                                                                         |
+| host→child | `hook`        | `id`, `hook: "onEnable" \| "onDisable" \| "onAssemblyChanged" \| "onJobSettled"`, `delta?: { enabled, disabled }`, `job?: SettledJob`, `jobs?: boolean`, `metadata?: boolean` (contract 11+)            |
 | host→child | `reply`       | `id`, `ok: true, result` or `ok: false, error` — the answer to a child's `call`                                                                                                                         |
 | host→child | `shutdown`    | orderly exit; also what idle eviction sends                                                                                                                                                             |
 | child→host | `loaded`      | `actions: ActionSummary[]` (input/result as JSON Schema from the child's own zod), `hooks: { onEnable, onDisable, onAssemblyChanged, onJobSettled }` booleans                                           |
@@ -4858,6 +4892,9 @@ exitCode, reason, finishedAt, scheduleId?, revision?, outputs }` — the job's o
   discharges caps, grants and that revision's consent. `follow` is not served there. The hook
   obeys the lifecycle bound and the no-veto rule: nothing waits for it, a throw or overrun is
   logged and never retried, no lifecycle state is recorded, and a disabled plugin is skipped.
+  Its optional read-only `host`, `machines` and `services` metadata slices also use that original job
+  credential, never an installer-bound context; live capability/resource checks and the hook
+  lifetime apply after every await as described under [Plugins, actions, and the workspace layout](#plugins-actions-and-the-workspace-layout).
 - **Carried container authority (ADR 0051).** A GOVERNED door — one whose `caps` include a
   governed capability — may declare `containers:read` or `containers:write` with a
   `requirements` target, and that target must be a container `ManifoldRef`; any other ref is
