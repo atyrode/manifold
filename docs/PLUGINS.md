@@ -4427,9 +4427,45 @@ above found the row already at the same bytes; cycle 2 is one edit to `server.ts
 switched the row off, installed over it, switched it on, and the next dispatch answered with the
 new sentence and `"calls":2`: **storage survives a replace** exactly as it survives a disable
 (§4). In the browser the replaced web half is dropped and the new one imported, so the panel
-REMOUNTS and its component state is gone — save the state you care about through `ctx.storage`
-or the document, not `useState`. Hot module replacement that keeps component state is not
-shipped and not promised.
+remounts and its component state is gone. This installed-bundle loop is not React Fast Refresh.
+Use the explicit source-development session below for frontend iteration.
+
+### Fast Refresh
+
+External React plugins can use the same Vite development frontend and React runtime as the
+host, rather than a separate demo application or a replace-installed bundle on every save:
+
+```sh
+# Discover the command without credentials, a running hub or a source directory.
+bun run --cwd packages/plugin-kit dev --help
+bun run --cwd packages/plugin-kit dev --describe
+
+# The plugin is already installed and enabled on the target hub.
+bun run --cwd packages/plugin-kit dev /path/to/plugin-sources --fast-refresh --hub http://127.0.0.1:7777
+```
+
+The command reports a non-secret JSON readiness record and the ordinary development URL.
+Open that URL, use normal Manifold admission for the target instance, and mount the plugin's
+existing panel. Source registration is not action authority: only an enabled installed in-realm
+row with a matching manifest can use its source graph. The command reads no owner key,
+installs no bundle, changes no global developer-mode setting and never converts a hardened row
+to in-realm execution. There is no persistent production configuration toggle.
+
+CSS changes update without remounting the panel; compatible component edits use React Fast
+Refresh and normally retain unsaved local input and state. Component-only modules with named
+PascalCase exports are the standard refresh boundary. Hook-signature, component-key or
+descriptor/contribution changes can remount; state preservation is not promised for every edit.
+Syntax errors are visible in the development overlay and a corrected edit resumes the source
+loop. Keep durable data in the normal document/storage APIs.
+
+The approved local source graph and its stylesheet lifetime belong to this process. Stopping
+or losing that development session removes its source override and returns to the admitted
+packed definition and stylesheet, without installing those source edits. Manifest, backend,
+capability, dependency and native-resource changes still require the ordinary pack, verify and
+install/review path. After accepting frontend changes, stop source development, validate the
+normal artifacts and publish through the existing release workflow; a development URL is not
+a release.
+
 
 ### Unpacked plugins: the hub holds the kit
 
