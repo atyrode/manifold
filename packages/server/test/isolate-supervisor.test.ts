@@ -283,7 +283,7 @@ async function harnessFixture(overrides: Partial<IsolateSupervisorDeps> = {}) {
 async function referenceFixture(overrides: Partial<IsolateSupervisorDeps> = {}) {
   const subject = fixture(overrides);
   const { def } = await subject.supervisor.load({
-    pluginId: PLUGIN_ID, manifest, dir: GUEST_DIR, hardenedContract: 10,
+    pluginId: PLUGIN_ID, manifest, dir: GUEST_DIR, hardenedContract: 12,
   });
   if (def.probeReady === undefined) throw new Error("missing readiness probe");
   const { ctx } = actionCtx(subject.storage, subject.runtime);
@@ -322,7 +322,7 @@ describe("IsolateSupervisor", () => {
   test("native terminal reconciliation has only its data lease across the real child boundary", async () => {
     const { supervisor, runtime, storage } = fixture({ referenceProbeDeadlineMs: 500 });
     const { def } = await supervisor.load({
-      pluginId: PLUGIN_ID, manifest, dir: GUEST_DIR, hardenedContract: 10,
+      pluginId: PLUGIN_ID, manifest, dir: GUEST_DIR, hardenedContract: 12,
     });
     const reconcile = def.reconcileNativeTransfers;
     if (!reconcile) throw new Error("missing native evidence callback");
@@ -343,7 +343,7 @@ describe("IsolateSupervisor", () => {
   test("publication can await a nested data probe without inheriting or deadlocking action authority", async () => {
     const { supervisor, runtime, storage } = fixture({ referenceProbeDeadlineMs: 500 });
     const { def } = await supervisor.load({
-      pluginId: PLUGIN_ID, manifest, dir: GUEST_DIR, hardenedContract: 10,
+      pluginId: PLUGIN_ID, manifest, dir: GUEST_DIR, hardenedContract: 12,
     });
     const { ctx } = actionCtx(storage, runtime);
     const probe = def.probeReady;
@@ -518,7 +518,7 @@ describe("IsolateSupervisor", () => {
           },
         },
         dir: GUEST_DIR,
-        hardenedContract: 10,
+        hardenedContract: 12,
       });
       const probe = def.probeReady;
       const harness = def.harness;
@@ -761,7 +761,7 @@ describe("IsolateSupervisor", () => {
   test("an aborted queued byte request never enters the guest or survives into its next owner turn", async () => {
     const f = fixture({ referenceProbeDeadlineMs: 2_000 });
     const { def } = await f.supervisor.load({
-      pluginId: PLUGIN_ID, dir: GUEST_DIR, hardenedContract: 10,
+      pluginId: PLUGIN_ID, dir: GUEST_DIR, hardenedContract: 12,
       manifest: {
         ...manifest,
         contributes: {
@@ -839,7 +839,7 @@ describe("IsolateSupervisor", () => {
       expect(await queued).toBeInstanceOf(IsolateDenial);
       expect(admitted).toBe(false);
       const { def } = await f.supervisor.load({
-        pluginId: PLUGIN_ID, manifest, dir: GUEST_DIR, hardenedContract: 10,
+        pluginId: PLUGIN_ID, manifest, dir: GUEST_DIR, hardenedContract: 12,
       });
       expect(await invoke(def, "echo", f.ctx, { text: "fresh generation" })).toEqual({
         text: "fresh generation", count: 1,
@@ -915,7 +915,7 @@ describe("IsolateSupervisor", () => {
   test("a reference call before input admission cannot reach the host service", async () => {
     const { supervisor, runtime, storage } = fixture();
     const { def } = await supervisor.load({
-      pluginId: PLUGIN_ID, manifest, dir: GUEST_DIR, hardenedContract: 10,
+      pluginId: PLUGIN_ID, manifest, dir: GUEST_DIR, hardenedContract: 12,
     });
     const { ctx } = actionCtx(storage, runtime);
     let spent = false;
@@ -935,7 +935,7 @@ describe("IsolateSupervisor", () => {
     async (preparationId) => {
       const { supervisor, runtime, storage } = fixture({ referenceProbeDeadlineMs: 200 });
       const { def } = await supervisor.load({
-        pluginId: PLUGIN_ID, manifest, dir: GUEST_DIR, hardenedContract: 10,
+        pluginId: PLUGIN_ID, manifest, dir: GUEST_DIR, hardenedContract: 12,
       });
       const { ctx } = actionCtx(storage, runtime);
       const probe = def.probeReady;

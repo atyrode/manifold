@@ -1251,7 +1251,7 @@ it cannot infer deletion from a transient read refusal. Reconciliation never pub
 restores revoked access. Arithmetic and public metadata must preserve the database's lossless
 integer contract in both in-realm and hardened execution.
 
-For contract-10 isolates declaring private data callbacks, independent ordinary requests take
+For contract-12 isolates declaring private data callbacks, independent ordinary requests take
 bounded owner turns. A private callback may re-enter only from the host-owned, still-active
 call for the exact current request and generation. Unrelated work queues with its original
 total deadline; abort, unload and generation retirement remove queued work without replay.

@@ -459,12 +459,12 @@ export class WorkerHost {
       );
       return;
     }
-    if (entry.kind === "element" && this.contract < 10) {
-      this.faultInstance(instance, entry, "element projection requires hardened contract 10");
+    if (entry.kind === "element" && this.contract < 12) {
+      this.faultInstance(instance, entry, "element projection requires hardened contract 12");
       return;
     }
-    if ((entry.input !== undefined || entry.onResult !== undefined) && this.contract < 10) {
-      this.faultInstance(instance, entry, "transient panel intake requires hardened contract 10");
+    if ((entry.input !== undefined || entry.onResult !== undefined) && this.contract < 12) {
+      this.faultInstance(instance, entry, "transient panel intake requires hardened contract 12");
       return;
     }
     entry.announced = true;
@@ -498,7 +498,7 @@ export class WorkerHost {
       status: host.client.status,
       hidden: typeof document !== "undefined" && document.hidden,
       canAuthor: host.authoring !== null,
-      ...(this.contract >= 10 ? { elementWritable: entry.edit?.writable ?? false } : {}),
+      ...(this.contract >= 12 ? { elementWritable: entry.edit?.writable ?? false } : {}),
     });
   }
 
@@ -596,7 +596,7 @@ export class WorkerHost {
       case "panel_result": {
         const entry = this.mounted.get(frame.instance);
         if (entry === undefined || !entry.announced || entry.faulted) return;
-        if (this.contract < 10 || entry.kind !== "panel" || entry.onResult === undefined ||
+        if (this.contract < 12 || entry.kind !== "panel" || entry.onResult === undefined ||
             entry.resultDelivered || !entry.resources.isLive) {
           this.faultInstance(frame.instance, entry, "panel result has no live intake receiver");
           return;
@@ -941,7 +941,7 @@ export class WorkerHost {
       throw new Error(`slice_unavailable: ${method} requires hardened contract 9`);
     }
     if (
-      this.contract < 10 &&
+      this.contract < 12 &&
       (method === "readByteChunk" ||
         method === "writeByteChunk" ||
         method === "cancelByteRequest" ||

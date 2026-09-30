@@ -222,7 +222,7 @@ onFrame(async (frame) => {
         ...(frame.hardenedContract >= 7 && frame.manifest.contributes.harness !== undefined
           ? { harness: frame.manifest.contributes.harness }
           : {}),
-        ...(frame.hardenedContract >= 10 ? { probeReady: true, reclaimReferences: true, reconcileNativeTransfers: true } : {}),
+        ...(frame.hardenedContract >= 12 ? { probeReady: true, reclaimReferences: true, reconcileNativeTransfers: true } : {}),
         byteCarriers: (frame.manifest.contributes.byteCarriers ?? []).map(({ id, direction }) => ({ id, direction })),
       });
       return;

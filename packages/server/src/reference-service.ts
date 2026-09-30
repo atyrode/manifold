@@ -266,6 +266,11 @@ export class ReferenceService {
     };
   }
 
+  /** Host-side admission maintenance must precede an owner's private reservation check. */
+  async reclaimExpiredPreparations(kind: PluginOwnedRefKind, pluginId: string): Promise<void> {
+    await this.expireOwnerPreparations(this.liveOwner(kind, pluginId));
+  }
+
   private async expireOwnerPreparations(owner: ReferenceOwner): Promise<void> {
     const rows = this.store.db.query<Publication, [string]>(
       "SELECT * FROM reference_publications WHERE owner_plugin=? AND state='prepared' ORDER BY created_at LIMIT 4",

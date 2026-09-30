@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import type { ServerWebSocket } from "bun";
 import { elementPayloadGuard } from "@manifold/plugin";
 import {
+  BYTE_REQUEST_TIMEOUT_MS,
   defaultRuntime,
   INSTANCE_CHANNEL_PATH,
   MAX_JOB_INSTALL_FRAME_BYTES,
@@ -455,6 +456,8 @@ async function startAsWriter({
     port: config.port,
     hostname: config.hostname,
     maxRequestBodySize: MAX_HTTP_BODY_BYTES,
+    // Bun's coarse socket-idle timer needs headroom for the carrier's precise typed deadline.
+    idleTimeout: 2 * Math.ceil(BYTE_REQUEST_TIMEOUT_MS / 1_000),
     fetch(request, bunServer) {
       const pathname = new URL(request.url).pathname;
       if (quiescing && pathname !== "/healthz") return http.handover(request);

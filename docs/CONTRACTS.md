@@ -2873,7 +2873,7 @@ and an answer without emissions is not rewritten after the fact. A handler that 
 call's refusal returns it as its own. A snapshot of `false` is never fenced: it can only fail
 closed. `auth.allows` stays a live host question.
 
-Contract-10 owners declaring private data callbacks admit independent requests through
+Contract-12 owners declaring private data callbacks admit independent requests through
 one bounded owner turn: at most 255 wait behind the active turn. Private reentry requires
 a host-owned, still-active call for that exact pending request and child generation; a
 guest-supplied parent is not evidence. Queued work retains its original total deadline
@@ -2914,14 +2914,14 @@ Log events: `isolate_spawned`, `isolate_exited`, `isolate_crashed`,
 | Direction   | `t`                      | Carries                                                                 |
 | ----------- | ------------------------ | ----------------------------------------------------------------------- |
 | page→worker | `init`                   | `pluginId`, `principal`, `caps`, `containerId`: viewer data, not bearer |
-| page→worker | `mount`                  | instance/local contribution id and kind, mounted context, optional panel `arg`; contract 10 element data or panel-local `input`/`acceptsResult` |
+| page→worker | `mount`                  | instance/local contribution id and kind, mounted context, optional panel `arg`; contract 12 element data or panel-local `input`/`acceptsResult` |
 | page→worker | `context`                | fresh mounted host context and optional panel argument                  |
 | page→worker | `notification`, `stream` | bounded event invalidation / stream delivery                            |
 | page→worker | `event`                  | `instance`, current control's event and scalar payload                  |
 | page→worker | `unmount`, `reply`       | instance retirement / correlated host reply                             |
 | worker→page | `ready`                  | local panel/section ids, optional contract stamp                        |
 | worker→page | `render`                 | `instance`, whole validated `UiNode` tree                               |
-| worker→page | `panel_result`           | contract 10, one bounded data result for the current intake mount         |
+| worker→page | `panel_result`           | contract 12, one bounded data result for the current intake mount         |
 | worker→page | `call`, `fault`          | correlated bounded host method / per-view failure                       |
 
 `WEB_HOST_METHODS` include `action`, `place`, `selfCaps`, `machines`,
@@ -3096,6 +3096,9 @@ main-database transaction. That commit is the visibility point. No SQLite transa
 a plugin await. A durable pending owner acknowledgement reconciles after a lost reply or
 restart without re-publishing or recreating revoked grants. Unpublished preparations abort
 on restart; mismatched published data is quarantined rather than reclaimed as temporary data.
+Before creator admission reserves private capacity, bounded maintenance expires stale host
+preparations and reclaims only exact terminal owner matches. An unpublished ready reservation
+cannot block replacement indefinitely, and private elapsed time alone cannot delete ready bytes.
 
 Sharing requires current read plus share and grants only read to a named principal on that
 exact file. It cannot create class/subtree/deny grants, foreign rights or delegated sharing.
@@ -3105,6 +3108,9 @@ unpublishes and removes mechanism-owned grants, then reclaims matching private b
 Read/list/resolve/inspect and every continuation check authority before metadata:
 missing, denied, disabled and unpublished files have the same unavailable projection.
 Container membership, a scene reference and collection invalidation are not file-read authority.
+Globally known plugin enablement may still produce the ordinary `plugin_disabled` action
+refusal; within each roster state no file candidate discloses existence. JSON API responses,
+including authorized resolution and action/list results, use `no-store`; static caching is separate.
 
 ### Quotas and the byte carrier
 
@@ -3157,7 +3163,7 @@ choice is required to retain unsupported bytes.
 
 ### Native effects and recovery
 
-Native transfers require machine protocol 49, owner RPC 44, a proved enrolled owner and
+Native transfers require machine protocol 50, owner RPC 44, a proved enrolled owner and
 deliberate installation/consent for the exact transfer policy and location revisions. They
 use the existing owner channel, not a shell or terminal fallback. `create-child` means one
 exclusive regular file beneath a reviewed managed root, not overwrite or arbitrary-path
@@ -3182,6 +3188,12 @@ bound synchronous copy. Failure emits no receipt and releases locks. Restore can
 reclaimed bytes with an older visible publication or restore provisional bytes as authorized
 content. This is the publication invariant, not universal cross-database ACID. Operational
 capture, retention and authenticated rollback remain governed by [Backup](SELF-HOST.md#backup).
+Migration-journaled images retain their exact authorized bytes and hashes during capture.
+Integrity verification of copied closed images uses immutable read-only SQLite handles and
+must not create sidecars. Built-in Files follows the first-party lifecycle: disable retains
+data, re-enable never replays effects, and quiescent purge leaves references unavailable.
+It is not an uploaded installation, so uninstall refuses `not_installed` without deleting data.
+Unknown native outcomes and failed cleanup remain visible and block destructive receipt cleanup.
 
 ## WS /ws/session — session channel (JSON text frames)
 
@@ -4237,8 +4249,8 @@ incumbent continuity mismatch, or `supersession damped`). A name conflict is dec
 same atomic write that would admit the hello; it sends no welcome, changes neither machine row,
 and leaves an incumbent connection untouched. Version acceptance uses
 `MACHINE_PROTOCOL_COMPAT_VERSIONS`, currently
-`{30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52}`; session/browser joins remain strictly
-current at protocol 52. An unchanged machine
+`{30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52, 53}`; session/browser joins remain strictly
+current at protocol 53. An unchanged machine
 wire may add a version to the set. A strictly additive-optional change may also add it only
 when old frames still parse and absent fields preserve the old semantics. Other changes
 reset the set and require a coordinated hub/transport upgrade. An admission bound applied

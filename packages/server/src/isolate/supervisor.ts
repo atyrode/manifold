@@ -365,7 +365,7 @@ export class IsolateSupervisor implements IsolateRunner {
   private dispatchCtx(pluginId: string, ctx: ActionCtx): IsolateDispatchCtx {
     return {
       traceId: ctx.traceId,
-      ...((this.isolates.get(pluginId)?.ref.hardenedContract ?? 0) >= 10
+      ...((this.isolates.get(pluginId)?.ref.hardenedContract ?? 0) >= 12
         ? { credentialBinding: ctx.credentialBinding }
         : {}),
       principal: ctx.principal,
@@ -425,7 +425,7 @@ export class IsolateSupervisor implements IsolateRunner {
     ctx.assertCurrent();
     if (
       this.isolates.get(isolate.ref.pluginId) !== isolate ||
-      (isolate.ref.hardenedContract ?? 1) < 10
+      (isolate.ref.hardenedContract ?? 1) < 12
     )
       throw new ByteTransferError("unavailable");
     // Includes cancelled requests awaiting a guest answer/timeout, even during cold startup.
@@ -464,7 +464,7 @@ export class IsolateSupervisor implements IsolateRunner {
   ): Promise<ReferenceProbeResult> {
     if (
       this.isolates.get(isolate.ref.pluginId) !== isolate ||
-      (isolate.ref.hardenedContract ?? 1) < 10 ||
+      (isolate.ref.hardenedContract ?? 1) < 12 ||
       isolate.loaded?.probeReady !== true
     )
       throw new IsolateDenial("unavailable", "readiness probe unavailable");
@@ -488,7 +488,7 @@ export class IsolateSupervisor implements IsolateRunner {
   ): Promise<void> {
     if (
       this.isolates.get(isolate.ref.pluginId) !== isolate ||
-      (isolate.ref.hardenedContract ?? 1) < 10 ||
+      (isolate.ref.hardenedContract ?? 1) < 12 ||
       isolate.loaded?.reclaimReferences !== true
     )
       throw new IsolateDenial("unavailable", "reference reclamation unavailable");
@@ -507,7 +507,7 @@ export class IsolateSupervisor implements IsolateRunner {
     isolate: Isolate, ctx: ReferenceProbeCtx, receipts: readonly NativeTransferTerminalEvidence[],
   ): Promise<void> {
     if (this.isolates.get(isolate.ref.pluginId) !== isolate ||
-        (isolate.ref.hardenedContract ?? 1) < 10 || isolate.loaded?.reconcileNativeTransfers !== true)
+        (isolate.ref.hardenedContract ?? 1) < 12 || isolate.loaded?.reconcileNativeTransfers !== true)
       throw new IsolateDenial("unavailable", "native evidence reconciliation unavailable");
     const request = NativeTransferEvidenceBatchSchema.parse(receipts);
     const frame = await this.request(isolate.ref.pluginId,
@@ -742,7 +742,7 @@ export class IsolateSupervisor implements IsolateRunner {
     expiresAt: number,
   ): Promise<OwnerTurn | null> {
     if (
-      (isolate.ref.hardenedContract ?? 1) < 10 ||
+      (isolate.ref.hardenedContract ?? 1) < 12 ||
       !(isolate.loaded?.probeReady || isolate.loaded?.reclaimReferences || isolate.loaded?.reconcileNativeTransfers)
     ) return null;
     const origin = this.hostCall.getStore();
@@ -1294,7 +1294,7 @@ export class IsolateSupervisor implements IsolateRunner {
         throw new Error("reference data lease expired");
       if (
         frame.method.startsWith("references.") &&
-        ((isolate.ref.hardenedContract ?? 1) < 10 ||
+        ((isolate.ref.hardenedContract ?? 1) < 12 ||
           !(pending?.served?.kind === "dispatch" ||
             (pending?.served?.kind === "byte" && frame.method === "references.requirePublished")) ||
           !pending?.admitted)
@@ -1302,7 +1302,7 @@ export class IsolateSupervisor implements IsolateRunner {
         throw new Error(`slice_unavailable: ${frame.method}`);
       if (
         frame.method.startsWith("nativeTransfers.") &&
-        (isolate.ref.hardenedContract ?? 1) < 10
+        (isolate.ref.hardenedContract ?? 1) < 12
       )
         throw new Error(`slice_unavailable: ${frame.method}`);
       if (pending?.served?.kind === "byte") {

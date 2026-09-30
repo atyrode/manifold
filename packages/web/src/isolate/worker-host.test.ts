@@ -890,7 +890,7 @@ test("element edits reject stale source snapshots, read-only and retired mounts"
     kind: "element", host: mountedHost, element: oldElement, edit,
   });
   host.mount("panel", "main", () => {}, () => {}, { host: mountedHost });
-  worker.emit({ t: "ready", hardenedContract: 10, panels: ["main"], elements: ["picture"] });
+  worker.emit({ t: "ready", hardenedContract: 12, panels: ["main"], elements: ["picture"] });
   const send = (id: string, instance: string, expected = element.data): void => {
     worker.emit({ t: "call", id, instance, method: "patchElement", args: [{ expected, patch: { amount: 2 } }] });
   };
@@ -915,7 +915,7 @@ test("element edits reject stale source snapshots, read-only and retired mounts"
   } finally { host.stop(); }
 });
 
-test("an admitted contract-nine portable peer accepts strict mount and context updates", async () => {
+test.each([9, 10, 11])("an admitted contract-%i portable peer accepts strict mount and context updates", async (contract) => {
   const source = `
     import { z } from ${JSON.stringify(import.meta.resolve("zod"))};
     import { PanelArgSchema, WebHostContextSchema } from ${JSON.stringify(import.meta.resolve("@manifold/protocol"))};
@@ -932,7 +932,7 @@ test("an admitted contract-nine portable peer accepts strict mount and context u
     });
     self.onmessage = ({ data }) => {
       if (data.t === "init") {
-        self.postMessage({ t: "ready", panels: ["main"], hardenedContract: 9 });
+        self.postMessage({ t: "ready", panels: ["main"], hardenedContract: ${contract} });
       } else if (data.t === "mount" || data.t === "context") {
         const parsed = (data.t === "mount" ? mount : update).safeParse(data);
         self.postMessage(parsed.success
@@ -984,7 +984,7 @@ test("an intake result cannot repeat, cross a credential change, or outlive its 
     mount("current");
     mount("changed");
     const retire = mount("retired");
-    worker.emit({ t: "ready", hardenedContract: 10, panels: ["main"] });
+    worker.emit({ t: "ready", hardenedContract: 12, panels: ["main"] });
     send("current");
     send("current");
     host.update("changed", { ...viewer, token: "replacement-credential" });

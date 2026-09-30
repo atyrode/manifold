@@ -6349,6 +6349,12 @@ export class PluginHost {
     let produced: unknown;
     const admitted = async (): Promise<unknown> => {
       try {
+        // A private ready row can still be an unpublished reservation. Reclaim only from
+        // host terminal evidence, before the owner's own capacity check can block prepare.
+        for (const declaration of entry.plugin.contributes.references ?? []) {
+          if (entry.def.caps.includes(declaration.createCapability))
+            await this.referenceService.reclaimExpiredPreparations(declaration.kind, pluginId);
+        }
         const handler = this.handlers.get(pluginId)?.[entry.def.name];
         if (handler === undefined) throw new Error(`action "${fullName}" has no server handler`);
         const invoke = handler as (ctx: ActionCtx, args: unknown) => Promise<unknown>;

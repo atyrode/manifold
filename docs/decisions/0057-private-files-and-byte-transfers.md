@@ -138,7 +138,13 @@ an ordinary guest effect. Busy or failed owners stay truthfully pending; missing
 committed data is quarantined. This retires private upload activity without requiring the original
 reader to regain authority, replaying publication or recreating any grant.
 
-Contract-10 isolates declaring private data callbacks serialize independent ordinary requests
+Before a declared creator action reserves more private capacity, bounded host-first maintenance
+expires its stale preparations and supplies exact terminal evidence to the owner. Private ready
+rows are never reclaimed solely because their local clock expired: they may already correspond
+to a committed publication whose acknowledgement was lost. This ordering also prevents two
+expired unpublished ready rows from permanently occupying one principal's admission slots.
+
+Contract-12 isolates declaring private data callbacks serialize independent ordinary requests
 into bounded owner turns. Only a host-owned, still-active call for the exact current request
 and generation may re-enter a private callback; no guest-supplied parent or borrowed pending
 dispatch proves that relationship. Queued work keeps its original total deadline, is cancellable
@@ -191,6 +197,10 @@ cannot become a metadata oracle. There is no unbounded request queue: the transp
 requests globally, per principal and per transfer. Its short request deadline is distinct from a
 transfer's durable lifetime. A lost/ambiguous write acknowledgement is not proof that no bytes
 committed.
+JSON API responses, including file resolution and action/list results, default to `no-store`;
+static asset policies stay separate. Bun's socket idle bound is twice the 15-second carrier
+deadline so its coarse connection timer cannot preempt the carrier's named request timeout.
+The deadline is measured from request admission and an early partial body does not renew it.
 
 The SDK owns this transport for agents and renderers. Mounted preview handles have a local lease
 of at most 15 seconds, renewed only through an authorized continuation and checked again on focus.
@@ -261,9 +271,16 @@ publication invariant, not universal ACID across arbitrary plugin databases. A s
 process and 30-second watchdog bound synchronous copy work; a same-process timer cannot interrupt
 SQLite. A timeout/copy/capacity failure emits no recovery receipt and must release both locks.
 
+Migration-journaled canonical, stage and backup images are copied byte-for-byte, not through
+VACUUM: the journal authorizes their exact hashes, so a logically equivalent rewritten image
+is not admissible recovery evidence. Inventory never opens those images. Integrity checks on
+freshly captured/restored closed images use immutable read-only SQLite connections, which must
+not create WAL/SHM sidecars. Source-free self-contained Bun helpers and compiled capture children
+use the same capture/restore protocol; a checkout is not a runtime prerequisite.
+
 ## Native policy artifacts and create-only effects
 
-Use the existing transport and proved private owner, with machine protocol 49 and owner RPC 44
+Use the existing transport and proved private owner, with machine protocol 50 and owner RPC 44
 required for native byte frames. Older transports retain ordinary workloads but refuse this
 feature and transfer-only installation. There is no compatibility path through a shell or PTY.
 
@@ -294,6 +311,12 @@ concurrent revisions. A held-descriptor bounded lease/snapshot mechanism may ref
 busy sources; ordinary path checks followed by reopen are insufficient. Download does not retain a
 library file unless the user explicitly saves it. No live fleet installation is implied by code or
 release publication.
+
+Lifecycle follows the existing distribution contract. Built-in Files can be disabled, re-enabled
+and explicitly purged at the quiescent boundary; it is not an uploaded installation and its
+uninstall door refuses `not_installed` without discarding state. That refusal is not a successful
+uninstall claim. Purge must retain unknown native outcomes and surface cleanup failure; neither
+purge nor an uninstall refusal removes an independent completed machine copy.
 
 Terminal fallback presents Save, then Deliver, with the actual machine audience and resulting path.
 Copy path is the default. Insertion into a PTY is a separate current input-authorized choice, sends

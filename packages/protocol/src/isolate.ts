@@ -711,7 +711,7 @@ export type AssemblyDelta = z.infer<typeof AssemblyDeltaSchema>;
  */
 export const IsolateDispatchCtxSchema = z.strictObject({
   traceId: z.number().int().positive(),
-  /** Contract 10+: equality key for the host's credential lineage, never a bearer. */
+  /** Contract 12+: equality key for the host's credential lineage, never a bearer. */
   credentialBinding: z.string().length(64).regex(/^[a-f0-9]{64}$/).optional(),
   /** Host-derived immediate plugin caller for contract 8+; omitted entirely for older guests. */
   callerPlugin: PluginIdSchema.nullable().optional(),
