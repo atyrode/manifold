@@ -16,11 +16,11 @@ import {
 } from "@manifold/protocol";
 import type { z } from "zod";
 import {
-  BeginFileUploadInputSchema,
-  FileReadRequestSchema,
-  FileRequestSchema,
-  FileUploadRequestSchema,
-  ListFilesInputSchema,
+  type BeginFileUploadInputSchema,
+  type FileReadRequestSchema,
+  type FileRequestSchema,
+  type FileUploadRequestSchema,
+  type ListFilesInputSchema,
   OpenFileReadInputSchema,
   FILE_CHUNK_BYTES,
   FILE_COLLECTION,
@@ -68,12 +68,21 @@ export interface FilesContext extends BoundContext {
   newId(): string | Promise<string>;
 }
 function displayName(value: string): string {
-  const name = value
-    .normalize("NFC")
-    .replace(/[\\/\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/g, "_")
-    .trim();
+  let sanitized = "";
+  for (const character of value.normalize("NFC")) {
+    const code = character.codePointAt(0)!;
+    sanitized +=
+      code <= 0x1f ||
+      code === 0x7f ||
+      character === "/" ||
+      character === "\\" ||
+      (code >= 0x202a && code <= 0x202e) ||
+      (code >= 0x2066 && code <= 0x2069)
+        ? "_"
+        : character;
+  }
   let result = "";
-  for (const character of name || "file") {
+  for (const character of sanitized.trim() || "file") {
     if (result.length + character.length > 255) break;
     result += character;
   }
@@ -236,11 +245,11 @@ async function completeUpload(ctx: FilesContext, args: z.output<typeof FileUploa
     } catch (error) {
       // Before ready there is no publishable payload. Abort main first; failed authority leaves
       // the host's bounded preparation expiry/restart reconciliation in charge of reclamation.
-      if (error instanceof FileImageValidationError) error = new Error(error.reason);
+      const failure = error instanceof FileImageValidationError ? new Error(error.reason) : error;
       if (row.preparation) await ctx.references.abort({ preparationId: row.preparation });
-      const why = reason(error);
+      const why = reason(failure);
       await terminal(ctx, row, "failed", why === "recovery_unavailable" ? "storage_capacity" : why);
-      throw error;
+      throw failure;
     }
   }
   if (!row.preparation || !row.ready_digest) return fail("unavailable");

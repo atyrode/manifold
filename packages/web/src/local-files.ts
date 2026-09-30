@@ -23,10 +23,16 @@ export class LocalFileStore {
     // Admission is all-or-none, including the metadata that crosses the guest boundary.
     return files.map((file) => {
       const handle = crypto.randomUUID();
+      const sourceName = file.name;
+      let name = "";
+      for (let index = 0; index < sourceName.length && name.length < 255; index++) {
+        const code = sourceName.charCodeAt(index);
+        if (code > 0x1f && code !== 0x7f) name += sourceName[index];
+      }
       this.files.set(handle, file);
       return {
         handle,
-        name: file.name.replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 255),
+        name,
         mediaType: file.type.slice(0, 128),
         bytes: file.size,
       };

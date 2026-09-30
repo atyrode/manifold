@@ -123,16 +123,21 @@ export const NativeTransferFilenameSchema = z
   .string()
   .min(1)
   .max(255)
-  .refine(
-    (value) =>
+  .refine((value) => {
+    for (let index = 0; index < value.length; index++) {
+      const code = value.charCodeAt(index);
+      if (code <= 0x1f || code === 0x7f) return false;
+    }
+    return (
       value !== "." &&
       value !== ".." &&
       value.normalize("NFC") === value &&
-      !/[\\/:\x00-\x1f\x7f]/.test(value) &&
+      !/[\\/:]/.test(value) &&
       !/[. ]$/.test(value) &&
       !/^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(value) &&
-      encoder.encode(value).byteLength <= 255,
-  );
+      encoder.encode(value).byteLength <= 255
+    );
+  });
 export const NativeTransferRelativePathSchema = z
   .array(NativeTransferFilenameSchema)
   .min(1)

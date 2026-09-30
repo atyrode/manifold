@@ -17,6 +17,7 @@ import type {
   PlacementRef,
   Principal,
   PluginRoster,
+  PortablePanelInput,
   PortableElementProjection,
   ResolveResponse,
   ServerEvent,
@@ -707,7 +708,7 @@ export interface PortableHostServices extends Pick<
 export interface PortablePanelProps {
   readonly host: PortableHostServices;
   readonly arg?: PanelArg | undefined;
-  readonly input?: import("@manifold/protocol").PortablePanelInput | undefined;
+  readonly input?: PortablePanelInput | undefined;
   readonly onResult?: ((result: PanelArg) => void) | undefined;
 }
 

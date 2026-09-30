@@ -23,7 +23,7 @@ export function sanitizeDownloadFilename(input: string): string {
   const clean = input
     .slice(0, 255)
     .normalize("NFKC")
-    .replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069/\\:*?"<>|]/g, "_")
+    .replace(/[\p{Cc}\u202a-\u202e\u2066-\u2069/\\:*?"<>|]/gu, "_")
     .replace(/^\.+/, "")
     .trim();
   let name = "";

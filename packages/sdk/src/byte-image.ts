@@ -8,7 +8,7 @@ import { inspectStaticRaster } from "./raster.ts";
 import { ByteReadLease, reserveByteRead, type ByteReadClient } from "./byte-read.ts";
 
 /** Structural SessionHandle slice. This helper never constructs a client or holds a token. */
-export interface ByteImageClient extends ByteReadClient {}
+export type ByteImageClient = ByteReadClient;
 export interface ByteImageObserver {
   loading(): void;
   ready(url: string, expiresAt: number): void;

@@ -1,15 +1,18 @@
-# Proposed shared-file contract
+# Shared-file design record
 
-**Status: design proposal, not adopted policy or an implementation claim.** This is the full
-A+B+C design deliverable for [#370](https://github.com/atyrode/manifold/issues/370): durable shared
-files, canvas images, and explicit machine delivery/download. It changes no runtime, grant,
-protocol, default roster, foundation pillar, backup, or deployment. All limits below are proposed
-product limits, not measurements. All acceptance scenarios are future implementation proof.
+**Status: adopted design; historical proposal retained for rationale.** The full A+B+C design
+was [adopted as the implementation contract](https://github.com/atyrode/manifold/issues/370#issuecomment-5821983696)
+on 2026-09-24: durable shared files, canvas images and explicit machine delivery/download.
+Current normative behavior belongs to [CONTRACTS](../CONTRACTS.md), [PLUGINS](../PLUGINS.md),
+the [registry](../../REGISTRY.md) and
+[ADR 0057](../decisions/0057-private-files-and-byte-transfers.md), under the
+[axioms](../../AXIOMS.md). Proposal and missing-mechanism wording below records the original
+design, not a competing current specification or a claim that implementation remains deferred.
 
-The [axioms](../../AXIOMS.md), [CONTRACTS](../CONTRACTS.md), [PLUGINS](../PLUGINS.md), and
-[registry](../../REGISTRY.md) remain authoritative. Adoption requires their coordinated updates
-and the missing mechanisms named below; merging this proposal does not authorize those changes.
-Native terminal clipboard support remains independent and must not wait for this design.
+The acceptance matrix is preserved in full. Current source, runtime and operational evidence
+is tracked on [#370](https://github.com/atyrode/manifold/issues/370); this record is not a
+verification receipt. Adoption does not authorize persistent-instance transfers, fleet changes
+or production activation. Native terminal clipboard support remains independent.
 
 ## Scope and present substrate
 
@@ -434,13 +437,12 @@ run-owned disposable principals, machines and storage; live operations require s
 
 ## Design-delivery reconciliation
 
-The selected A+B+C scope is fully specified here; none is replaced by job artifacts, installation
-uploads or native clipboard. The original requirement to defer implementation is preserved. The
-original runtime acceptance remains explicitly future and unrun in the matrix, not superseded or
-checked off. Adoption and implementation require their own authorized work; this document creates
-neither a runtime feature nor permission to perform live transfers.
+The design-only delivery specified the entire A+B+C scope without replacing it with job
+artifacts, installation uploads or native clipboard. It did not implement a runtime feature
+or exercise the acceptance matrix. Subsequent adoption authorized source implementation and
+disposable proof; it did not supersede any A1–L2 requirement or grant live-transfer authority.
 
-[#370](https://github.com/atyrode/manifold/issues/370) remains the tracker for adoption and every
-unrun A1–L2 scenario; no separate implementation tracker is created to make the design PR appear
-complete. The design PR uses `Refs #370`, records the completed proposal and the remaining
-runtime/operational acceptance, and does not close the issue merely by publishing this document.
+[#370](https://github.com/atyrode/manifold/issues/370) continues to own all remaining
+implementation and runtime/operational acceptance. Its current receipts, rather than this
+historical proposal's future-tense wording, distinguish verified boundaries from outstanding
+ones. The original design PR used `Refs #370` and did not close that remaining work.

@@ -112,7 +112,11 @@ export function retainedRecoveryFiles(root: string): string[] {
     for (const name of names) {
       const path = prefix === "" ? name : `${prefix}/${name}`;
       if (RECOVERY_TRANSIENT_PATHS[path] === true) continue;
-      if (/[\\\u0000-\u001f\u007f]/.test(path)) throw new CapacityRefusal("backup_capacity");
+      for (let index = 0; index < path.length; index++) {
+        const code = path.charCodeAt(index);
+        if (code <= 0x1f || code === 0x7f || code === 0x5c)
+          throw new CapacityRefusal("backup_capacity");
+      }
       const absolute = join(root, path);
       const info = lstatSync(absolute);
       if (info.isDirectory()) {

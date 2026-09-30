@@ -18,7 +18,7 @@ import { AgentSchema, HarnessDefinitionSchema, HarnessTargetSchema } from "./age
 import { AgentRunSchema, SendRunInputRequestSchema } from "./agent-runs.ts";
 import { SessionRefSchema } from "./session-ref.ts";
 import { TerminalRuntimeSchema } from "./jobs.ts";
-import { PanelArgSchema, validPanelArg } from "./layout.ts";
+import { PanelArgSchema, validPanelArg, type PanelArg } from "./layout.ts";
 import { PanelResultSchema, PortablePanelInputSchema } from "./panels.ts";
 import { SceneElementPayloadSchema } from "./elements.ts";
 import {
@@ -304,7 +304,7 @@ export type UiNode = UiNodeMeta &
     | {
         readonly type: "borrowedPanel";
         readonly panelId: string;
-        readonly input?: import("./layout.ts").PanelArg | undefined;
+        readonly input?: PanelArg | undefined;
         readonly event: string;
       }
     | { readonly type: "list"; readonly items: readonly UiListItem[] }
