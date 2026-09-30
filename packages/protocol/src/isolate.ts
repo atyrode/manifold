@@ -623,6 +623,7 @@ export const ISOLATE_CTX_METHODS = [
   "nativeTransfers.cancel",
   "nativeTransfers.status",
   "nativeTransfers.receipt",
+  "nativeTransfers.recoverAdmission",
   "services.describe",
   "services.readConfiguration",
   "services.configureConfiguration",

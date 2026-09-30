@@ -3,11 +3,13 @@ import {
   canonicalJobJson,
   NativeTransferStatusSchema,
   NativeTransferEvidenceBatchSchema,
+  NativeTransferAdmissionRecoverySchema,
+  NativeTransferRecoverAdmissionArgsSchema,
   type ByteCarrierRequest,
   type NativeTransferStatus,
   type NativeTransferTerminalEvidence,
 } from "@manifold/protocol";
-import type { z } from "zod";
+import { z } from "zod";
 import {
   BeginFileDeliverySchema,
   BeginFileDownloadSchema,
@@ -48,6 +50,26 @@ type Delivery = z.output<typeof BeginFileDeliverySchema>;
 type Download = z.output<typeof BeginFileDownloadSchema>;
 type DeliveryRequest = z.output<typeof FileDeliveryRequestSchema>;
 type DownloadRequest = z.output<typeof FileDownloadRequestSchema>;
+const SavedDeliveryRequestSchema = z.strictObject({
+  args: BeginFileDeliverySchema,
+  native: NativeTransferRecoverAdmissionArgsSchema,
+});
+const SavedDownloadRequestSchema = z.strictObject({
+  args: BeginFileDownloadSchema,
+  native: NativeTransferRecoverAdmissionArgsSchema,
+});
+function savedRequest(row: TransferRow) {
+  const saved =
+    row.kind === "delivery"
+      ? SavedDeliveryRequestSchema.parse(JSON.parse(row.request))
+      : SavedDownloadRequestSchema.parse(JSON.parse(row.request));
+  if (
+    saved.native.mode !== (row.kind === "delivery" ? "put" : "read") ||
+    saved.native.requestId !== row.request_id
+  )
+    return fail("integrity");
+  return saved;
+}
 function pins(args: Delivery | Download): void {
   if (
     args.machine.machineId !== args.location.machineId ||
@@ -176,31 +198,9 @@ async function beginDelivery(ctx: FilesContext, args: Delivery) {
     readyDigest: source.ready_digest,
     preparationId: source.preparation,
   });
-  let row = await byRequest(ctx, args.requestId, binding);
-  if (row) {
-    if (row.native_id === null && row.state === "refused" && row.terminal !== null)
-      return result(row);
-    if (row.native_id) return result(await reconcile(ctx, row));
-    active(row, ctx.now());
-  } else {
-    row = await reserve(ctx, {
-      id: await ctx.newId(),
-      requestId: args.requestId,
-      binding,
-      kind: "delivery",
-      target: args.ref,
-      fileId: args.ref.fileId,
-      bytes: file.bytes,
-      charged: 0,
-      request: args,
-      state: "queued",
-    });
-  }
-  await database(ctx).run(
-    "UPDATE file_transfers SET preparation=?,ready_digest=? WHERE id=? AND native_id IS NULL",
-    [source.preparation, source.ready_digest, row.id],
-  );
-  const status = await ctx.nativeTransfers.beginPut({
+  const previous = await byRequest(ctx, args.requestId, binding);
+  if (previous) return result(await reconcile(ctx, previous));
+  const nativeArgs = {
     requestId: args.requestId,
     machineId: args.machine.machineId,
     installationRevision: args.installationRevision,
@@ -209,32 +209,35 @@ async function beginDelivery(ctx: FilesContext, args: Delivery) {
     locationRevision: args.locationRevision,
     filename: args.filename,
     source: { ref: file.ref, sha256: file.sha256, bytes: file.bytes },
+  };
+  const request = SavedDeliveryRequestSchema.parse({ args, native: { mode: "put", ...nativeArgs } });
+  const id = await ctx.newId();
+  const row = await reserve(ctx, {
+    id,
+    requestId: args.requestId,
+    binding,
+    kind: "delivery",
+    target: args.ref,
+    fileId: args.ref.fileId,
+    bytes: file.bytes,
+    charged: 0,
+    request,
+    state: "queued",
   });
+  if (row.id !== id) return result(await reconcile(ctx, row));
+  await database(ctx).run(
+    "UPDATE file_transfers SET preparation=?,ready_digest=? WHERE id=? AND native_id IS NULL",
+    [source.preparation, source.ready_digest, row.id],
+  );
+  const status = await ctx.nativeTransfers.beginPut(nativeArgs);
   return result(await saveStatus(ctx, row, status));
 }
 async function beginDownload(ctx: FilesContext, args: Download) {
   pins(args);
   const binding = digest({ kind: "download", args });
-  let row = await byRequest(ctx, args.requestId, binding);
-  if (row) {
-    if (row.native_id === null && row.state === "refused" && row.terminal !== null)
-      return result(row);
-    if (row.native_id) return result(await reconcile(ctx, row));
-    active(row, ctx.now());
-  } else {
-    row = await reserve(ctx, {
-      id: await ctx.newId(),
-      requestId: args.requestId,
-      binding,
-      kind: "download",
-      target: args.location,
-      bytes: 0,
-      charged: 0,
-      request: args,
-      state: "queued",
-    });
-  }
-  const status = await ctx.nativeTransfers.beginRead({
+  const previous = await byRequest(ctx, args.requestId, binding);
+  if (previous) return result(await reconcile(ctx, previous));
+  const nativeArgs = {
     requestId: args.requestId,
     machineId: args.machine.machineId,
     installationRevision: args.installationRevision,
@@ -242,7 +245,22 @@ async function beginDownload(ctx: FilesContext, args: Download) {
     locationId: args.locationId,
     locationRevision: args.locationRevision,
     relativePath: args.relativePath,
+  };
+  const request = SavedDownloadRequestSchema.parse({ args, native: { mode: "read", ...nativeArgs } });
+  const id = await ctx.newId();
+  const row = await reserve(ctx, {
+    id,
+    requestId: args.requestId,
+    binding,
+    kind: "download",
+    target: args.location,
+    bytes: 0,
+    charged: 0,
+    request,
+    state: "queued",
   });
+  if (row.id !== id) return result(await reconcile(ctx, row));
+  const status = await ctx.nativeTransfers.beginRead(nativeArgs);
   return result(await saveStatus(ctx, row, status));
 }
 async function bound(
@@ -251,22 +269,52 @@ async function bound(
   kind: "delivery" | "download",
 ): Promise<TransferRow> {
   const row = await load(ctx, args.transferId, kind);
-  const request =
-    kind === "delivery"
-      ? BeginFileDeliverySchema.parse(JSON.parse(row.request))
-      : BeginFileDownloadSchema.parse(JSON.parse(row.request));
+  const request = savedRequest(row).args;
   if (!sameRef(args.machine, request.machine) || !sameRef(args.location, request.location))
     return fail("unavailable");
   if (kind === "delivery") {
     if (!("ref" in args) || !("ref" in request) || !sameRef(args.ref, request.ref))
       return fail("unavailable");
     const source = await authorizedFile(ctx, args.ref);
-    if (source.ready_digest !== row.ready_digest || source.preparation !== row.preparation)
+    if (
+      digest({
+        kind,
+        args: request,
+        readyDigest: source.ready_digest,
+        preparationId: source.preparation,
+      }) !== row.binding
+    )
       return fail("unavailable");
   }
   return row;
 }
+async function recoverAdmission(ctx: FilesContext, row: TransferRow): Promise<TransferRow> {
+  if (row.native_id !== null || row.state !== "queued") return row;
+  const request = savedRequest(row);
+  const recovery = NativeTransferAdmissionRecoverySchema.parse(
+    await ctx.nativeTransfers.recoverAdmission(request.native),
+  );
+  // Persist an admitted identity before asking for status or a receipt: either can fail
+  // independently, and neither failure permits another begin or releases the reservation.
+  if (recovery.kind === "admitted") {
+    await database(ctx).run(
+      `UPDATE file_transfers SET native_id=?
+      WHERE id=? AND native_id IS NULL AND state='queued' AND active=1 AND request=?`,
+      [recovery.transferId, row.id, row.request],
+    );
+  } else {
+    await database(ctx).run(
+      `UPDATE file_transfers SET state='refused',reason=?,active=0,charged=0,
+      terminal=COALESCE(terminal,?),native_status=NULL
+      WHERE id=? AND native_id IS NULL AND state='queued' AND active=1 AND request=?`,
+      [recovery.reason, ctx.now(), row.id, row.request],
+    );
+  }
+  return load(ctx, row.id, row.kind);
+}
 async function reconcile(ctx: FilesContext, row: TransferRow): Promise<TransferRow> {
+  row = await recoverAdmission(ctx, row);
+  if (row.native_id === null && row.state === "refused" && row.terminal !== null) return row;
   if (row.native_id === null) return fail("conflict");
   const status = await ctx.nativeTransfers.status({ transferId: row.native_id });
   // Completing a browser download does not turn a retained snapshot status into a new read.
@@ -350,7 +398,9 @@ async function cancel(
   args: DeliveryRequest | DownloadRequest,
   kind: "delivery" | "download",
 ) {
-  const row = await bound(ctx, args, kind);
+  const row = await recoverAdmission(ctx, await bound(ctx, args, kind));
+  if (row.native_id === null && row.state === "refused" && row.terminal !== null)
+    return result(row);
   if (!row.native_id) return fail("conflict");
   const status = await ctx.nativeTransfers.cancel({ transferId: row.native_id });
   return result(await saveStatus(ctx, row, status));
@@ -372,7 +422,7 @@ export const nativeHandlers = {
   ),
   cancelDownload: action(async (ctx, args: DownloadRequest) => cancel(ctx, args, "download")),
   receiptDelivery: action(async (ctx, args: { transferId: string }) => {
-    const row = await load(ctx, args.transferId, "delivery");
+    const row = await recoverAdmission(ctx, await load(ctx, args.transferId, "delivery"));
     if (row.native_id === null && row.state === "refused" && row.terminal !== null)
       return { transferId: row.id, state: "refused" as const };
     if (!row.native_id) return fail("unavailable");

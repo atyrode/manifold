@@ -1124,6 +1124,15 @@ CREATE TABLE native_transfers(
  updated_at INTEGER NOT NULL,
  UNIQUE(plugin_id,actor_id,credential_binding,request_id)
 );
+CREATE TABLE native_admission_refusals(
+ plugin_id TEXT NOT NULL,
+ actor_id TEXT NOT NULL,
+ credential_binding TEXT NOT NULL,
+ request_id TEXT NOT NULL,
+ record TEXT NOT NULL,
+ updated_at INTEGER NOT NULL,
+ PRIMARY KEY(plugin_id,actor_id,credential_binding,request_id)
+);
 INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','50');
 `,
 };

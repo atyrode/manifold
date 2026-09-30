@@ -117,6 +117,9 @@ function actionCtx(
   runtime: FakeRuntime,
 ): { readonly ctx: ActionCtx; readonly emitted: Emitted[] } {
   const emitted: Emitted[] = [];
+  const unexpectedNative = async (): Promise<never> => {
+    throw new Error("unexpected native transfer call");
+  };
   const slice: Pick<
     ActionCtx,
     | "traceId"
@@ -131,6 +134,7 @@ function actionCtx(
     | "emit"
     | "admitPrepared"
     | "references"
+    | "nativeTransfers"
   > = {
     traceId: 1,
     callerPlugin: null,
@@ -182,6 +186,18 @@ function actionCtx(
       audience: async () => {
         throw new Error("unexpected references.audience");
       },
+    },
+    nativeTransfers: {
+      describe: unexpectedNative,
+      beginPut: unexpectedNative,
+      beginRead: unexpectedNative,
+      putChunk: unexpectedNative,
+      commitPut: unexpectedNative,
+      readChunk: unexpectedNative,
+      cancel: unexpectedNative,
+      status: unexpectedNative,
+      receipt: unexpectedNative,
+      recoverAdmission: unexpectedNative,
     },
     emit: (ref, kind, payload) => {
       emitted.push({ ref, kind, payload });
@@ -349,7 +365,7 @@ afterEach(async () => {
 });
 
 describe("IsolateSupervisor", () => {
-  test("native terminal reconciliation has only its data lease across the real child boundary", async () => {
+  test.each(["escape", "recover-admission"])("native data lease refuses %s", async (requestId) => {
     const { supervisor, runtime, storage } = fixture({ referenceProbeDeadlineMs: 500 });
     const { def } = await supervisor.load({
       pluginId: PLUGIN_ID,
@@ -389,10 +405,86 @@ describe("IsolateSupervisor", () => {
     expect(await storage.get("reservation:independent")).toBe("active");
     await storage.set("reservation:transfer", "active");
     await expect(
-      reconcile({ storage, now: () => runtime.now() }, [{ ...evidence, requestId: "escape" }]),
+      reconcile({ storage, now: () => runtime.now() }, [{ ...evidence, requestId }]),
     ).rejects.toBeInstanceOf(IsolateDenial);
     expect(await storage.get("reservation:transfer")).toBe("active");
     expect(await storage.get("reservation:independent")).toBe("active");
+  });
+
+  test.each([1, 11])("contract %i cannot recover native admission", async (hardenedContract) => {
+    const f = fixture();
+    const { def } = await f.supervisor.load({
+      pluginId: PLUGIN_ID,
+      manifest,
+      dir: GUEST_DIR,
+      hardenedContract,
+    });
+    const { ctx } = actionCtx(f.storage, f.runtime);
+    let recovered = false;
+    const caller: ActionCtx = {
+      ...ctx,
+      nativeTransfers: {
+        ...ctx.nativeTransfers,
+        recoverAdmission: async () => {
+          recovered = true;
+          return { kind: "not-admitted", reason: "transfer_unavailable" };
+        },
+      },
+    };
+    expect(await invoke(def, "recoverNativeAdmission", caller, { text: "recover" })).toEqual({
+      denial: "slice_unavailable: nativeTransfers.recoverAdmission",
+    });
+    expect(recovered).toBe(false);
+  });
+
+  test("a byte request cannot recover or fence native admission", async () => {
+    const f = fixture();
+    const { def } = await f.supervisor.load({
+      pluginId: PLUGIN_ID,
+      dir: GUEST_DIR,
+      hardenedContract: 12,
+      manifest: {
+        ...manifest,
+        capabilities: ["scenes:read"],
+        contributes: {
+          ...manifest.contributes,
+          byteCarriers: [
+            { id: "bytes", direction: "outgoing", capability: "scenes:read", refKinds: ["file"] },
+          ],
+        },
+      },
+    });
+    const carrier = def.byteCarriers?.["bytes"];
+    if (!carrier) throw new Error("missing byte carrier");
+    const { ctx } = actionCtx(f.storage, f.runtime);
+    let recovered = false;
+    const nativeTransfers = {
+      ...ctx.nativeTransfers,
+      recoverAdmission: async () => {
+        recovered = true;
+        return { kind: "not-admitted" as const, reason: "transfer_unavailable" as const };
+      },
+    };
+    const byteCtx: ByteCarrierContext = {
+      pluginId: PLUGIN_ID,
+      principal,
+      credentialBinding: "b".repeat(64),
+      signal: new AbortController().signal,
+      now: () => f.runtime.now(),
+      assertCurrent: () => {},
+      requirePublished: (ref) => ctx.references.requirePublished({ ref, access: "read" }),
+      nativeTransfers,
+    };
+    await expect(
+      carrier.authorize(byteCtx, {
+        transferId: "recover-admission",
+        ref: { kind: "file", fileId: "source" },
+        offset: 0,
+        sequence: 0,
+        length: 1,
+      }),
+    ).rejects.toMatchObject({ reason: "unavailable" });
+    expect(recovered).toBe(false);
   });
 
   test("publication can await a nested data probe without inheriting or deadlocking action authority", async () => {
@@ -1258,7 +1350,15 @@ describe("IsolateSupervisor", () => {
     expect(spent).toBe(false);
   });
 
-  test.each(["identity", "references", "receipt", "storage", "parent-answer", "hang"])(
+  test.each([
+    "identity",
+    "references",
+    "receipt",
+    "storage",
+    "native-recovery",
+    "parent-answer",
+    "hang",
+  ])(
     "a nested readiness probe cannot borrow its waiting action or outlive its deadline: %s",
     async (preparationId) => {
       const { supervisor, runtime, storage } = fixture({ referenceProbeDeadlineMs: 200 });
@@ -1275,6 +1375,7 @@ describe("IsolateSupervisor", () => {
       let published = false;
       let identityWrites = 0;
       let receipts = 0;
+      let recoveries = 0;
       const caller = {
         ...ctx,
         credentialBinding: "b".repeat(64),
@@ -1283,6 +1384,13 @@ describe("IsolateSupervisor", () => {
           revokeMachine: () => {
             identityWrites += 1;
             return { ok: true, value: 1 };
+          },
+        },
+        nativeTransfers: {
+          ...ctx.nativeTransfers,
+          recoverAdmission: async () => {
+            recoveries += 1;
+            throw new Error("must not reach");
           },
         },
         references: {
@@ -1314,6 +1422,7 @@ describe("IsolateSupervisor", () => {
       expect(publications).toBe(1);
       expect(identityWrites).toBe(0);
       expect(receipts).toBe(0);
+      expect(recoveries).toBe(0);
       expect(published).toBe(false);
       expect(await storage.get("borrowed")).toBeNull();
     },

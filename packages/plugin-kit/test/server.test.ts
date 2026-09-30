@@ -53,6 +53,17 @@ const manifest: PluginManifest = {
 
 const principal = { id: "p1", kind: "human", name: "Ada", color: "#e03131" } as const;
 
+const recoveryRequest = {
+  mode: "read" as const,
+  requestId: "request",
+  machineId: "machine",
+  installationRevision: "installation",
+  artifactSha256: "a".repeat(64),
+  locationId: "location",
+  locationRevision: "revision",
+  relativePath: ["source.txt"],
+};
+
 const ctxOf = (overrides: Partial<IsolateDispatchCtx> = {}): IsolateDispatchCtx => ({
   traceId: 1,
   callerPlugin: null,
@@ -168,6 +179,9 @@ describe("reference data callbacks", () => {
             maxBytes: 1,
           }),
         ).rejects.toMatchObject({ reason: "native_transfer_unavailable" });
+        await expect(
+          actor.nativeTransfers.recoverAdmission(recoveryRequest),
+        ).rejects.toMatchObject({ reason: "native_transfer_unavailable" });
         await ctx.storage.delete(`reservation:${receipt.transferId}`);
       },
     });
@@ -238,6 +252,42 @@ describe("reference data callbacks", () => {
         ok: true,
         result: { text: "transfer_reply_invalid" },
       },
+    });
+  });
+
+  test.each([
+    { kind: "not-admitted", reason: "transfer_invalid_request", transferId: "invented" },
+    { kind: "not-admitted", reason: "EIO at /private/source" },
+    { kind: "admitted", transferId: "transfer", path: "/private/source" },
+  ])("native admission recovery rejects an unsafe result: %j", async (reply) => {
+    const fake = host({
+      manifest,
+      actions: [echo],
+      handlers: {
+        echo: async (ctx) => {
+          try {
+            await ctx.nativeTransfers.recoverAdmission(recoveryRequest);
+            return { text: "unexpected recovery" };
+          } catch (error) {
+            if (!(error instanceof NativeTransferError)) throw error;
+            return { text: error.reason };
+          }
+        },
+      },
+    });
+    load(fake);
+    await fake.next();
+    fake.send({
+      t: "dispatch",
+      id: "recovery",
+      action: "echo",
+      args: { text: "recover" },
+      ctx: ctxOf(),
+    });
+    await serve(fake, reply);
+    expect(await fake.next()).toMatchObject({
+      t: "dispatched",
+      outcome: { ok: true, result: { text: "transfer_reply_invalid" } },
     });
   });
 

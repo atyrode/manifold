@@ -7,6 +7,7 @@ import {
   NativeTransferReadChunkArgsSchema,
   NativeTransferContinuationArgsSchema,
   NativeTransferReasonSchema,
+  NativeTransferRecoverAdmissionArgsSchema,
 } from "@manifold/protocol";
 import { ServiceError, type AuthContext } from "./auth.ts";
 import type { NativeTransferGuard, NativeTransferService } from "./native-transfer-service.ts";
@@ -67,6 +68,10 @@ export function nativeTransferContext(
     receipt: (args) =>
       invoke(() =>
         service().receipt(caller, NativeTransferContinuationArgsSchema.parse(args).transferId),
+      ),
+    recoverAdmission: (args) =>
+      invoke(() =>
+        service().recoverAdmission(caller, NativeTransferRecoverAdmissionArgsSchema.parse(args)),
       ),
   };
 }

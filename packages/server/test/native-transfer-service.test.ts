@@ -13,6 +13,7 @@ import {
   type JobCommand,
   type JobOwner,
   type NativeTransferBinding,
+  type NativeTransferBeginPutArgs,
   type NativeTransferResult,
   type NativeTransferStatus,
   type NativeTransferTerminalEvidence,
@@ -98,6 +99,7 @@ function fixture(admission?: GovernedAdmission) {
     rejectPut: false,
     invalidRead: false,
     dropBeforeCommit: false,
+    dropBeforeBegin: false,
     silentCommit: false,
     prepared: () => {},
     committed: () => {},
@@ -133,6 +135,10 @@ function fixture(admission?: GovernedAdmission) {
       queueMicrotask(() => {
         const request = command.request;
         const id = "binding" in request ? request.binding.transferId : request.transferId;
+        if ("binding" in request && controls.dropBeforeBegin) {
+          service.disconnect(channel);
+          return;
+        }
         if ("binding" in request)
           remote.set(id, {
             binding: request.binding,
@@ -144,7 +150,13 @@ function fixture(admission?: GovernedAdmission) {
             },
             chunks: new Map(),
           });
-        const row = remote.get(id)!;
+        const row = remote.get(id);
+        if (!row) {
+          service.event(channel, { type: "native_transfer_result", rpcId: command.rpcId,
+            ownerId: owner.ownerId, ownerGeneration: owner.generation,
+            result: { ok: false, reason: "native_transfer_unknown" } });
+          return;
+        }
         let result: NativeTransferResult;
         if (request.method === "beginRead") {
           const source = request.binding.request;
@@ -331,6 +343,12 @@ function fixture(admission?: GovernedAdmission) {
   };
 }
 
+function nativePins(request: NativeTransferBeginPutArgs) {
+  return { requestId: request.requestId, machineId: request.machineId,
+    installationRevision: request.installationRevision, artifactSha256: request.artifactSha256,
+    locationId: request.locationId, locationRevision: request.locationRevision };
+}
+
 test("unadmitted refusals retire only the exact queued product request without inventing a native transfer", async () => {
   const f = fixture();
   const evidence: unknown[] = [];
@@ -354,10 +372,11 @@ test("unadmitted refusals retire only the exact queued product request without i
   ]);
   expect(f.commands).toEqual([]);
   expect(f.store.db.query("SELECT id FROM native_transfers").all()).toEqual([]);
-  const started = await f.service.begin(f.caller, f.request);
+  const next = { ...f.request, requestId: "new-intent" };
+  const started = await f.service.begin(f.caller, next);
   evidence.length = 0;
   await expect(
-    f.service.begin(f.caller, { ...f.request, filename: "changed.bin" }),
+    f.service.begin(f.caller, { ...next, filename: "changed.bin" }),
   ).rejects.toThrow("transfer_request_conflict");
   expect(evidence).toEqual([]);
   expect(retained(f, started.transferId).status.state).toBe("receiving");
@@ -371,6 +390,165 @@ test("failed pre-admission reservation cleanup is explicit rather than a clean r
   ).rejects.toThrow("native_transfer_cleanup_unknown");
   expect(f.commands).toEqual([]);
   expect(f.store.db.query("SELECT id FROM native_transfers").all()).toEqual([]);
+  f.restart();
+  const evidence: NativeTransferTerminalEvidence[] = [];
+  f.service.setEvidenceSink(async (_plugin, receipts) => { evidence.push(...receipts); return true; });
+  await f.service.reconcile();
+  expect(evidence).toEqual([expect.objectContaining({
+    kind: "admission-refused", requestId: f.request.requestId, mode: "put",
+    actorId: f.actor.principal.id, credentialBinding: f.auth.credentialBinding(f.actor),
+    reason: "installation_changed",
+  })]);
+  f.service.assertPurgeable(f.caller.pluginId);
+  await f.service.reconcile();
+  expect(evidence).toHaveLength(1);
+});
+
+test("non-admission recovery fences the exact request without source or machine effect authority", async () => {
+  const f = fixture();
+  f.controls.sourceAvailable = false;
+  f.controls.ownerAvailable = false;
+  const expected = { kind: "not-admitted", reason: "transfer_unavailable" };
+  expect(await f.service.recoverAdmission(f.caller, f.request)).toEqual(expected);
+  f.restart();
+  expect(await f.service.recoverAdmission(f.caller, f.request)).toEqual(expected);
+  await expect(f.service.begin(f.caller, f.request)).rejects.toThrow("transfer_unavailable");
+  await expect(f.service.recoverAdmission(f.caller, { ...f.request, filename: "different.bin" }))
+    .rejects.toThrow("transfer_request_conflict");
+  await expect(f.service.recoverAdmission(f.caller, { ...nativePins(f.request), mode: "read", relativePath: ["different.bin"] }))
+    .rejects.toThrow("transfer_request_conflict");
+  expect(f.commands).toEqual([]);
+  expect(f.store.db.query("SELECT id FROM native_transfers").all()).toEqual([]);
+});
+
+test("non-admission fence wins atomically against an already-awaited source probe", async () => {
+  const f = fixture();
+  const gate = Promise.withResolvers<string>();
+  const caller = { ...f.caller, guard: { ...f.caller.guard, requireSource: () => gate.promise } };
+  const pending = f.service.begin(caller, f.request);
+  try {
+    expect(await f.service.recoverAdmission(f.caller, f.request)).toEqual({
+      kind: "not-admitted", reason: "transfer_unavailable",
+    });
+    gate.resolve("b".repeat(64));
+    await expect(pending).rejects.toThrow("transfer_unavailable");
+    expect(f.commands).toEqual([]);
+    expect(f.store.db.query("SELECT id FROM native_transfers").all()).toEqual([]);
+  } finally {
+    gate.resolve("b".repeat(64));
+    await pending.catch(() => {});
+  }
+});
+
+test("an exhausted post-admission budget durably refuses an unsent begin across restart", async () => {
+  const f = fixture();
+  let remaining = 1000;
+  let probes = 0;
+  f.caller.guard.remainingMs = () => remaining;
+  f.caller.guard.requireSource = async () => {
+    if (++probes === 2) remaining = 250;
+    return "b".repeat(64);
+  };
+  f.service.setEvidenceSink(async () => false);
+  await expect(f.service.begin(f.caller, f.request)).rejects.toThrow("transfer_action_unavailable");
+  const id = f.store.db.query<{ id: string }, []>("SELECT id FROM native_transfers").get()!.id;
+  expect(retained(f, id)).toMatchObject({
+    beginDispatch: "unsent", status: { state: "refused", reason: "transfer_action_unavailable" },
+  });
+  expect(f.commands).toEqual([]);
+  f.restart();
+  const delivered: NativeTransferTerminalEvidence[] = [];
+  f.service.setEvidenceSink(async (_plugin, receipts) => { delivered.push(...receipts); return true; });
+  await f.service.reconcile();
+  expect(await f.service.receipt(f.caller, id)).toEqual({
+    transferId: id, state: "refused", reason: "transfer_action_unavailable",
+  });
+  expect(await f.service.cancel(f.caller, id)).toMatchObject({ state: "refused" });
+  await expect(f.service.putChunk(f.caller, { transferId: id, seq: 0, offset: 0, data: new Uint8Array([1]) }))
+    .rejects.toThrow("transfer_action_unavailable");
+  expect(f.commands).toEqual([]);
+  expect(delivered).toEqual([expect.objectContaining({ kind: "terminal", transferId: id, state: "refused" })]);
+  f.service.assertPurgeable(f.caller.pluginId);
+  remaining = 1000;
+  expect((await f.service.begin(f.caller, { ...f.request, requestId: "new-intent" })).state).toBe("receiving");
+  expect(f.commands.map((command) => command.request.method)).toEqual(["beginPut"]);
+});
+
+test("coordinator reconstruction retires an unsent journal record without replaying begin", async () => {
+  const f = fixture();
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<string>();
+  let probes = 0;
+  f.caller.guard.requireSource = async () => {
+    if (++probes !== 2) return "b".repeat(64);
+    entered.resolve();
+    return release.promise;
+  };
+  const pending = f.service.begin(f.caller, f.request);
+  await entered.promise;
+  const id = f.store.db.query<{ id: string }, []>("SELECT id FROM native_transfers").get()!.id;
+  expect(retained(f, id)).toMatchObject({ beginDispatch: "unsent", status: { state: "queued" } });
+  try {
+    f.restart();
+    await f.service.reconcile();
+    expect(await f.service.receipt(f.caller, id)).toMatchObject({ state: "refused" });
+    release.resolve("b".repeat(64));
+    await expect(pending).rejects.toThrow("transfer_unavailable");
+    expect((await f.service.begin(f.caller, f.request)).state).toBe("refused");
+    expect(f.commands).toEqual([]);
+    f.service.assertPurgeable(f.caller.pluginId);
+  } finally {
+    release.resolve("b".repeat(64));
+    await pending.catch(() => {});
+  }
+});
+
+test("unknown owner ID cannot turn a retained dispatch intent into proof of non-admission", async () => {
+  const f = fixture();
+  f.controls.dropBeforeBegin = true;
+  await expect(f.service.begin(f.caller, f.request)).rejects.toThrow("transfer_disconnected");
+  const id = f.store.db.query<{ id: string }, []>("SELECT id FROM native_transfers").get()!.id;
+  expect(retained(f, id).beginDispatch).toBe("intended");
+  expect(f.remote.has(id)).toBe(false);
+  f.restart();
+  f.owner.generation++;
+  f.runtime.time += 8 * 24 * 60 * 60_000;
+  await f.service.reconcile();
+  expect(await f.service.recoverAdmission(f.caller, f.request)).toEqual({ kind: "admitted", transferId: id });
+  expect(await f.service.receipt(f.caller, id)).toMatchObject({ state: "outcome_unknown" });
+  expect(() => f.service.assertPurgeable(f.caller.pluginId)).toThrow("outcome_unknown");
+  expect(f.commands.filter((command) => command.request.method === "beginPut")).toHaveLength(1);
+});
+
+test("non-admission fences share the native receipt bound and retain failed delivery through aging", async () => {
+  const f = fixture();
+  const active = await f.service.begin(f.caller, f.request);
+  f.service.setEvidenceSink(async () => false);
+  await f.service.recoverAdmission(f.caller, { ...f.request, requestId: "fenced" });
+  const row = f.store.db.query<{ record: string }, []>("SELECT record FROM native_admission_refusals").get()!;
+  const refusal = JSON.parse(row.record);
+  f.store.transaction(() => {
+    for (let index = 0; index < 998; index++) {
+      const request = { ...f.request, requestId: `capacity-${index}` };
+      const record = { ...refusal, requestId: request.requestId,
+        requestDigest: createHash("sha256").update(canonicalJobJson(request)).digest("hex") };
+      f.store.db.query(
+        "INSERT INTO native_admission_refusals(plugin_id,actor_id,credential_binding,request_id,record,updated_at) VALUES (?,?,?,?,?,?)",
+      ).run(record.pluginId, record.actorId, record.credentialBinding, record.requestId, canonicalJobJson(record), f.runtime.now());
+    }
+  });
+  const overflow = { ...f.request, requestId: "overflow" };
+  await expect(f.service.recoverAdmission(f.caller, overflow)).rejects.toThrow("transfer_receipt_limit");
+  f.runtime.time += 8 * 24 * 60 * 60_000;
+  f.controls.ownerAvailable = false;
+  await expect(f.service.recoverAdmission(f.caller, overflow)).rejects.toThrow("transfer_receipt_limit");
+  f.service.setEvidenceSink(async () => true);
+  await f.service.reconcile();
+  expect(await f.service.recoverAdmission(f.caller, overflow)).toEqual({
+    kind: "not-admitted", reason: "transfer_unavailable",
+  });
+  expect(retained(f, active.transferId).status.state).toBe("outcome_unknown");
+  expect(() => f.service.assertPurgeable(f.caller.pluginId)).toThrow("outcome_unknown");
 });
 
 test("exhausted preparation budget refuses before creating or dispatching a commit decision", async () => {
@@ -522,7 +700,7 @@ test("changed request and caller credential cannot reuse a retained transfer", a
 
 test("read bytes queued before dispatch revocation never reach the consumer", async () => {
   const f = fixture();
-  const { source: _source, filename: _filename, mode: _mode, ...pins } = f.request;
+  const pins = nativePins(f.request);
   const started = await f.service.begin(f.caller, {
     ...pins,
     mode: "read",
@@ -542,7 +720,8 @@ test("old owner and replaced owner generation refuse before command delivery", a
   await expect(f.service.begin(f.caller, f.request)).rejects.toThrow("native_transfer_unsupported");
   expect(f.commands).toEqual([]);
   f.owner.protocolVersion = JOB_OWNER_PROTOCOL_VERSION;
-  const started = await f.service.begin(f.caller, f.request);
+  await expect(f.service.begin(f.caller, f.request)).rejects.toThrow("native_transfer_unsupported");
+  const started = await f.service.begin(f.caller, { ...f.request, requestId: "after-upgrade" });
   f.owner.generation++;
   await expect(
     f.service.putChunk(f.caller, {
@@ -600,9 +779,8 @@ test("elapsed admission remains charged until exact owner cleanup evidence arriv
   f.runtime.time += 16 * 60_000;
   const fresh = { ...f.request, requestId: "fresh", filename: "fresh.bin" };
   await expect(f.service.begin(f.caller, fresh)).rejects.toThrow("transfer_concurrency_limit");
-  expect(retained(f, idle.transferId).status).toMatchObject({
-    state: "outcome_unknown",
-    reason: "native_transfer_cleanup_unknown",
+  expect(await f.service.receipt(f.caller, idle.transferId)).toMatchObject({
+    state: "outcome_unknown", reason: "native_transfer_cleanup_unknown",
   });
   expect(() => f.service.assertPurgeable(f.caller.pluginId)).toThrow("outcome_unknown");
   await f.service.reconcile();
@@ -616,7 +794,7 @@ test("elapsed admission remains charged until exact owner cleanup evidence arriv
     expect.objectContaining({ kind: "terminal", transferId: idle.transferId, state: "expired" }),
   ]);
   f.service.assertPurgeable(f.caller.pluginId);
-  expect((await f.service.begin(f.caller, fresh)).state).toBe("receiving");
+  expect((await f.service.begin(f.caller, { ...fresh, requestId: "after-cleanup" })).state).toBe("receiving");
 });
 
 test("terminal action never waits for background evidence queued behind its own owner turn", async () => {
@@ -749,7 +927,7 @@ for (const method of ["commitPut", "status", "cancel"] as const) {
         f.caller.pluginId,
         f.caller.guard,
       );
-      const { mode: _mode, ...request } = f.request;
+      const request = { ...nativePins(f.request), filename: f.request.filename, source: f.request.source };
       const started = await context.beginPut(request);
       f.controls.dropCommit = true;
       await expect(context.commitPut({ transferId: started.transferId })).rejects.toMatchObject({
@@ -1029,7 +1207,8 @@ test("proved terminal recovery frees hub admission without permitting a second p
   await expect(f.service.begin(f.caller, next)).rejects.toThrow("transfer_concurrency_limit");
   await f.service.reconcile();
   f.service.assertPurgeable(f.caller.pluginId);
-  expect((await f.service.begin(f.caller, next)).state).toBe("receiving");
+  await expect(f.service.begin(f.caller, next)).rejects.toThrow("transfer_concurrency_limit");
+  expect((await f.service.begin(f.caller, { ...next, requestId: "after-recovery" })).state).toBe("receiving");
   expect(f.commands.filter((command) => command.request.method === "commitPut")).toHaveLength(2);
 });
 
@@ -1086,7 +1265,7 @@ test("accepted put bytes renew idle time but rejected and replayed chunks cannot
 
 test("new read ranges renew idle time but replayed and invalid ranges cannot", async () => {
   const f = fixture();
-  const { source: _source, filename: _filename, mode: _mode, ...pins } = f.request;
+  const pins = nativePins(f.request);
   const started = await f.service.begin(f.caller, {
     ...pins,
     mode: "read",
@@ -1146,13 +1325,12 @@ test("accepted progress cannot extend the absolute fifteen-minute lifetime", asy
 });
 
 async function readActionFixture() {
-  let jobs: JobService;
   const f = fixture({ decide: (request) => jobs.decide(request) });
   const importCap = "sample.transfer:import";
   const started = Promise.withResolvers<void>();
   const resume = Promise.withResolvers<void>();
   const delivered: string[] = [];
-  const { source: _source, filename: _filename, mode: _mode, ...pins } = f.request;
+  const pins = nativePins(f.request);
   const plugin: ServerPluginDef = {
     manifest: {
       id: f.caller.pluginId,
@@ -1215,7 +1393,7 @@ async function readActionFixture() {
   class FixtureJobs extends JobService {
     override readonly nativeTransfers = f.service;
   }
-  jobs = new FixtureJobs(f.store, f.auth, f.runtime);
+  const jobs: JobService = new FixtureJobs(f.store, f.auth, f.runtime);
   host.setJobs(jobs);
   const commands: JobCommand[] = [];
   const channel = {

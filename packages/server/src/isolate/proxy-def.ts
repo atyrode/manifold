@@ -47,6 +47,8 @@ import {
   NativeTransferReadChunkArgsSchema,
   NativeTransferChunkDataSchema,
   NativeTransferReceiptViewSchema,
+  NativeTransferRecoverAdmissionArgsSchema,
+  NativeTransferAdmissionRecoverySchema,
   NativeTransferEvidenceBatchSchema,
   type NativeTransferTerminalEvidence,
   ReferencePrepareRequestSchema,
@@ -806,6 +808,7 @@ export async function serveCtxCall(
     case "nativeTransfers.cancel":
     case "nativeTransfers.status":
     case "nativeTransfers.receipt":
+    case "nativeTransfers.recoverAdmission":
     case "services.describe":
     case "services.readConfiguration":
     case "services.configureConfiguration":
@@ -902,6 +905,12 @@ export async function serveCtxCall(
     case "nativeTransfers.receipt":
       return NativeTransferReceiptViewSchema.parse(
         await ctx.nativeTransfers.receipt(NativeTransferContinuationArgsSchema.parse(args[0])),
+      );
+    case "nativeTransfers.recoverAdmission":
+      return NativeTransferAdmissionRecoverySchema.parse(
+        await ctx.nativeTransfers.recoverAdmission(
+          NativeTransferRecoverAdmissionArgsSchema.parse(args[0]),
+        ),
       );
     case "nativeTransfers.readChunk": {
       const result = await ctx.nativeTransfers.readChunk(

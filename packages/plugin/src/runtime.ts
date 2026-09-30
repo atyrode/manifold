@@ -1,6 +1,8 @@
 import type {
   NativeTransferBeginPutArgs,
   NativeTransferBeginReadArgs,
+  NativeTransferRecoverAdmissionArgs,
+  NativeTransferAdmissionRecovery,
   NativeTransferDescribeArgs,
   NativeTransferDescription,
   NativeTransferPutChunkArgs,
@@ -187,6 +189,10 @@ export interface PluginNativeTransferContext {
   status(args: NativeTransferContinuationArgs): Promise<NativeTransferStatus>;
   /** Exact live original credential; terminal state only, never bytes or destination metadata. */
   receipt(args: NativeTransferContinuationArgs): Promise<NativeTransferReceiptView>;
+  /** Recover the original admission or durably fence it; never available to byte/data callbacks. */
+  recoverAdmission(
+    args: NativeTransferRecoverAdmissionArgs,
+  ): Promise<NativeTransferAdmissionRecovery>;
 }
 
 /** A named native transfer refusal, identical in realm and across the hardened boundary. */

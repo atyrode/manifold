@@ -87,6 +87,8 @@ import {
   NativeTransferStatusSchema,
   NativeTransferReadChunkWireResultSchema,
   NativeTransferReceiptViewSchema,
+  NativeTransferRecoverAdmissionArgsSchema,
+  NativeTransferAdmissionRecoverySchema,
   type NativeTransferTerminalEvidence,
   type MachineBridgeAnswer,
   type MachineCredentialGrant,
@@ -1339,6 +1341,15 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
         checked(
           NativeTransferReceiptViewSchema,
           await ask("nativeTransfers.receipt", checked(NativeTransferContinuationArgsSchema, args)),
+          "transfer_reply_invalid",
+        ),
+      recoverAdmission: async (args) =>
+        checked(
+          NativeTransferAdmissionRecoverySchema,
+          await ask(
+            "nativeTransfers.recoverAdmission",
+            checked(NativeTransferRecoverAdmissionArgsSchema, args),
+          ),
           "transfer_reply_invalid",
         ),
       readChunk: async (args) => {

@@ -31,17 +31,17 @@ import {
 } from "@manifold/protocol";
 import {
   ExclusivePublicationError,
-  HeldDirectory,
+  type HeldDirectory,
   directoryAncestry,
   fileIdentity,
   safeComponent,
 } from "./job-files.ts";
 import {
-  DirectoryExclusions,
+  type DirectoryExclusions,
   resolveJobLocation,
   resolveManagedTransferRoot,
 } from "./job-locations.ts";
-import { JobJournal, jobDigest } from "./job-journal.ts";
+import { type JobJournal, jobDigest } from "./job-journal.ts";
 import type { JobOutputStore } from "./job-outputs.ts";
 import type { RetainedNativeTransfer } from "./native-transfer-state.ts";
 import { stableNativeSnapshot } from "./native-transfer-snapshot.ts";

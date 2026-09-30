@@ -62,6 +62,17 @@ function call(requestId, method, args) {
   });
 }
 
+const recoveryRequest = {
+  mode: "read",
+  requestId: "request",
+  machineId: "machine",
+  installationRevision: "installation",
+  artifactSha256: "a".repeat(64),
+  locationId: "location",
+  locationRevision: "revision",
+  relativePath: ["source.txt"],
+};
+
 const schema = { type: "object", properties: { text: { type: "string" } }, required: ["text"] };
 const action = (name, input = schema) => ({
   name: `test.guest.${name}`,
@@ -186,6 +197,14 @@ const handlers = {
       return { ok: true, result: { binding: ctx.credentialBinding, result }, emits: [] };
     } catch (error) {
       return { ok: false, rule: "refused", message: error };
+    }
+  },
+  async recoverNativeAdmission(id) {
+    try {
+      const result = await call(id, "nativeTransfers.recoverAdmission", [recoveryRequest]);
+      return { ok: true, result, emits: [] };
+    } catch (error) {
+      return { ok: true, result: { denial: error }, emits: [] };
     }
   },
   async completeAfterBarrier(_id, args) {
@@ -404,7 +423,9 @@ onFrame(async (frame) => {
         });
         return;
       }
-      if (["identity", "references", "receipt", "storage"].includes(preparationId)) {
+      if (
+        ["identity", "references", "receipt", "storage", "native-recovery"].includes(preparationId)
+      ) {
         const methods = {
           identity: ["identity.revokeMachine", ["m1"]],
           references: [
@@ -413,6 +434,7 @@ onFrame(async (frame) => {
           ],
           receipt: ["references.receipt", [{ ref: frame.request.ref }]],
           storage: ["storage.set", ["borrowed", "forbidden"]],
+          "native-recovery": ["nativeTransfers.recoverAdmission", [recoveryRequest]],
         };
         const [method, args] = methods[preparationId];
         send({ t: "call", id: `${referenceActionId ?? frame.id}:attack`, method, args });
@@ -472,6 +494,26 @@ onFrame(async (frame) => {
       return;
     case "byte_request":
       if (frame.request.method !== "authorize") throw new Error("unexpected fixture byte method");
+      if (frame.request.input.transferId === "recover-admission") {
+        try {
+          await call(frame.id, "nativeTransfers.recoverAdmission", [recoveryRequest]);
+          send({
+            t: "byte_answered",
+            id: frame.id,
+            outcome: {
+              ok: true,
+              reply: { method: "authorize", result: { expiresAt: frame.ctx.now + 60000 } },
+            },
+          });
+        } catch (error) {
+          send({
+            t: "byte_answered",
+            id: frame.id,
+            outcome: { ok: false, reason: error === "unavailable" ? "unavailable" : "invalid" },
+          });
+        }
+        return;
+      }
       await writeFile(`${frame.request.input.ref.fileId}/byte-entered`, "admitted");
       send({
         t: "byte_answered",
@@ -490,6 +532,8 @@ onFrame(async (frame) => {
         }
         if (receipt.requestId === "escape")
           await call(frame.id, "nativeTransfers.commitPut", [{ transferId: receipt.transferId }]);
+        if (receipt.requestId === "recover-admission")
+          await call(frame.id, "nativeTransfers.recoverAdmission", [recoveryRequest]);
         await call(frame.id, "storage.delete", [`reservation:${receipt.transferId}`]);
       }
       send({ t: "reconciled_native_transfers", id: frame.id, outcome: { ok: true } });

@@ -12,6 +12,8 @@ import {
 } from "@manifold/plugin";
 import {
   ByteTransferError,
+  canonicalJobJson,
+  type NativeTransferRecoverAdmissionArgs,
   type ByteCarrierRequest,
   type DatabaseRecoveryAdmission,
   type PluginOwnedRef,
@@ -53,6 +55,7 @@ function fixture() {
   databases.push(sqlite);
   let now = 1_900_000_000_000;
   let recovery: DatabaseRecoveryAdmission = { ok: true };
+  let nativeReservationCut = false;
   type Bindings = Exclude<SqlParam, boolean>[];
   const params = (input: readonly SqlParam[] = []): Bindings =>
     input.map((value) => (typeof value === "boolean" ? Number(value) : value));
@@ -60,7 +63,16 @@ function fixture() {
     pluginId: "core.files",
     admitRecovery: async () => recovery,
     async query<Row extends SqlRow>(sql: string, values?: readonly SqlParam[]) {
-      return sqlite.query<Row, Bindings>(sql).all(...params(values));
+      const rows = sqlite.query<Row, Bindings>(sql).all(...params(values));
+      if (
+        nativeReservationCut &&
+        sql.startsWith("INSERT INTO file_transfers") &&
+        rows.some((row) => row.kind === "delivery" || row.kind === "download")
+      ) {
+        nativeReservationCut = false;
+        throw new NativeTransferError("transfer_disconnected");
+      }
+      return rows;
     },
     async run(sql, values) {
       const result = sqlite.query(sql).run(...params(values));
@@ -106,6 +118,7 @@ function fixture() {
   };
   const nativeTransfers: PluginNativeTransferContext = {
     describe: unsupported,
+    recoverAdmission: unsupported,
     beginPut: unsupported,
     putChunk: unsupported,
     commitPut: unsupported,
@@ -314,6 +327,9 @@ function fixture() {
     },
     cutPublication: (value: typeof publicationCut) => {
       publicationCut = value;
+    },
+    cutNativeReservation: () => {
+      nativeReservationCut = true;
     },
     deletionObservedBytes: () => deletionObservedBytes,
   };
@@ -1020,7 +1036,424 @@ describe("durable Files product transitions", () => {
     expect((await f.begin(ctx)).state).toBe("receiving");
   });
 
+  test("recovery identity, mode and argument mismatches leave the exact queued reservation retained", async () => {
+    const f = fixture();
+    const ctx = f.context();
+    const ref = await f.save(new Uint8Array([7]));
+    const args = {
+      ref,
+      machine: { kind: "machine" as const, machineId: "m" },
+      location: { kind: "location" as const, machineId: "m", locationId: "core.files.deliveries" },
+      requestId: createFileRequestId(f.now()),
+      installationRevision: "install",
+      artifactSha256: "d".repeat(64),
+      locationId: "core.files.deliveries",
+      locationRevision: "1",
+      filename: "file.bin",
+    };
+    f.cutNativeReservation();
+    expect(await filesHandlers.beginDelivery(ctx, args)).toEqual({
+      refused: "transfer_disconnected",
+    });
+    const row = () =>
+      f.sqlite
+        .query<
+          {
+            id: string;
+            state: string;
+            native_id: string | null;
+            active: bigint;
+            terminal: bigint | null;
+          },
+          [string]
+        >("SELECT id,state,native_id,active,terminal FROM file_transfers WHERE request_id=?")
+        .get(args.requestId)!;
+    const queued = row();
+    const request = { transferId: queued.id };
+    let recoveries = 0;
+    f.nativeTransfers.recoverAdmission = async () => {
+      recoveries += 1;
+      throw new NativeTransferError("transfer_request_conflict");
+    };
+    for (const unauthorized of [f.context("other"), f.context("owner", "b".repeat(64))])
+      expect(await filesHandlers.receiptDelivery(unauthorized, request)).toEqual({
+        refused: "unavailable",
+      });
+    expect(
+      await filesHandlers.inspectDownload(ctx, {
+        ...request,
+        machine: args.machine,
+        location: args.location,
+      }),
+    ).toEqual({ refused: "unavailable" });
+    for (const changed of [
+      { ...args, filename: "other.bin" },
+      { ...args, installationRevision: "other" },
+      { ...args, artifactSha256: "e".repeat(64) },
+      { ...args, locationRevision: "2" },
+    ])
+      expect(await filesHandlers.beginDelivery(ctx, changed)).toEqual({ refused: "conflict" });
+    expect(recoveries).toBe(0);
+    expect(row()).toEqual(queued);
+    expect(await filesHandlers.receiptDelivery(ctx, request)).toEqual({
+      refused: "transfer_request_conflict",
+    });
+    expect(recoveries).toBe(1);
+    expect(row()).toEqual(queued);
+    await f.begin(ctx);
+    await expect(f.begin(ctx)).rejects.toThrow("busy");
+  });
+
+  for (const admitted of [false, true]) {
+    test(`delivery receipt recovers ${admitted ? "admitted" : "absent"} admission from its original snapshot after source deletion`, async () => {
+      const f = fixture();
+      const ctx = f.context();
+      const bytes = new Uint8Array([7]);
+      const ref = await f.save(bytes);
+      const args = {
+        ref,
+        machine: { kind: "machine" as const, machineId: "m" },
+        location: { kind: "location" as const, machineId: "m", locationId: "core.files.deliveries" },
+        requestId: createFileRequestId(f.now()),
+        installationRevision: "install",
+        artifactSha256: "d".repeat(64),
+        locationId: "core.files.deliveries",
+        locationRevision: "1",
+        filename: "file.bin",
+      };
+      const original: NativeTransferRecoverAdmissionArgs = {
+        mode: "put",
+        requestId: args.requestId,
+        machineId: args.machine.machineId,
+        installationRevision: args.installationRevision,
+        artifactSha256: args.artifactSha256,
+        locationId: args.locationId,
+        locationRevision: args.locationRevision,
+        filename: args.filename,
+        source: { ref, sha256: hash(bytes), bytes: bytes.length },
+      };
+      let begins = 0;
+      f.nativeTransfers.beginPut = async () => {
+        begins += 1;
+        throw new NativeTransferError("transfer_disconnected");
+      };
+      if (!admitted) f.cutNativeReservation();
+      expect(await filesHandlers.beginDelivery(ctx, args)).toEqual({
+        refused: "transfer_disconnected",
+      });
+      const row = () =>
+        f.sqlite
+          .query<
+            {
+              id: string;
+              request: string;
+              native_id: string | null;
+              state: string;
+              active: bigint;
+              terminal: bigint | null;
+            },
+            [string]
+          >("SELECT id,request,native_id,state,active,terminal FROM file_transfers WHERE request_id=?")
+          .get(args.requestId)!;
+      const queued = row();
+      expect(JSON.parse(queued.request)).toEqual({ args, native: original });
+      args.filename = "changed-after-reservation.bin";
+      expect(accepted(await filesHandlers.delete(ctx, { ref })).state).toBe("deleted");
+      expect(await filesHandlers.inspect(ctx, { ref })).toEqual({ refused: "reference_unavailable" });
+      f.advance(FILE_RECEIPT_MS + FILE_LIFETIME_MS + 1);
+      let recoveries = 0;
+      f.nativeTransfers.recoverAdmission = async (input) => {
+        recoveries += 1;
+        if (canonicalJobJson(input) !== canonicalJobJson(original))
+          throw new NativeTransferError("transfer_request_conflict");
+        return admitted
+          ? { kind: "admitted", transferId: "remote" }
+          : { kind: "not-admitted", reason: "installation_changed" };
+      };
+      let receipts = 0;
+      f.nativeTransfers.receipt = async ({ transferId }) => {
+        receipts += 1;
+        if (!admitted || transferId !== "remote")
+          throw new NativeTransferError("transfer_request_conflict");
+        return { transferId, state: "committed" };
+      };
+      const receipt = {
+        transferId: queued.id,
+        state: admitted ? "completed" : "refused",
+      };
+      expect(await filesHandlers.receiptDelivery(ctx, { transferId: queued.id })).toEqual(receipt);
+      const terminal = row();
+      expect(terminal).toEqual({
+        ...queued,
+        native_id: admitted ? "remote" : null,
+        state: receipt.state,
+        active: 0n,
+        terminal: BigInt(f.now()),
+      });
+      expect(await filesHandlers.receiptDelivery(ctx, { transferId: queued.id })).toEqual(receipt);
+      expect(row()).toEqual(terminal);
+      expect(recoveries).toBe(1);
+      expect(receipts).toBe(admitted ? 2 : 0);
+      expect(begins).toBe(admitted ? 1 : 0);
+    });
+  }
+
   for (const kind of ["delivery", "download"] as const) {
+    for (const recoverVia of ["begin", "inspect", "cancel"] as const) {
+      test(`${kind} ${recoverVia} fences a reserve-before-host crash beyond all product clocks without replay`, async () => {
+        const f = fixture();
+        const ctx = f.context();
+        const bytes = new Uint8Array([1, 2, 3]);
+        const ref = await f.save(bytes);
+        const machine = { kind: "machine" as const, machineId: "m" };
+        const location = {
+          kind: "location" as const,
+          machineId: "m",
+          locationId: kind === "delivery" ? "core.files.deliveries" : "core.files.downloads",
+        };
+        const pins = {
+          machine,
+          location,
+          requestId: createFileRequestId(f.now()),
+          installationRevision: "install",
+          artifactSha256: "d".repeat(64),
+          locationId: location.locationId,
+          locationRevision: "1",
+        };
+        const delivery = { ...pins, ref, filename: "copy.bin" };
+        const download = { ...pins, relativePath: ["source.bin"] };
+        const begin = (requestId = pins.requestId) =>
+          kind === "delivery"
+            ? filesHandlers.beginDelivery(ctx, { ...delivery, requestId })
+            : filesHandlers.beginDownload(ctx, { ...download, requestId });
+        const nativePins = {
+          requestId: pins.requestId,
+          machineId: machine.machineId,
+          installationRevision: pins.installationRevision,
+          artifactSha256: pins.artifactSha256,
+          locationId: pins.locationId,
+          locationRevision: pins.locationRevision,
+        };
+        const original: NativeTransferRecoverAdmissionArgs =
+          kind === "delivery"
+            ? {
+                ...nativePins,
+                mode: "put",
+                filename: delivery.filename,
+                source: { ref, sha256: hash(bytes), bytes: bytes.length },
+              }
+            : { ...nativePins, mode: "read", relativePath: download.relativePath };
+        let effects = 0;
+        const effect = async (): Promise<never> => {
+          effects += 1;
+          throw new NativeTransferError("native_transfer_unavailable");
+        };
+        f.nativeTransfers.beginPut = effect;
+        f.nativeTransfers.beginRead = effect;
+        f.nativeTransfers.status = effect;
+        f.nativeTransfers.cancel = effect;
+        f.cutNativeReservation();
+        expect(await begin()).toEqual({ refused: "transfer_disconnected" });
+        const row = (requestId = pins.requestId) =>
+          f.sqlite
+            .query<
+              {
+                id: string;
+                request: string;
+                state: string;
+                native_id: string | null;
+                active: bigint;
+                charged: bigint;
+                terminal: bigint | null;
+              },
+              [string]
+            >(
+              "SELECT id,request,state,native_id,active,charged,terminal FROM file_transfers WHERE request_id=?",
+            )
+            .get(requestId)!;
+        const queued = row();
+        expect(JSON.parse(queued.request)).toEqual({
+          args: kind === "delivery" ? delivery : download,
+          native: original,
+        });
+        const otherRequestId = createFileRequestId(f.now());
+        f.cutNativeReservation();
+        expect(await begin(otherRequestId)).toEqual({ refused: "transfer_disconnected" });
+        const other = row(otherRequestId);
+        let recoveries = 0;
+        f.nativeTransfers.recoverAdmission = async (input) => {
+          recoveries += 1;
+          if (canonicalJobJson(input) !== canonicalJobJson(original))
+            throw new NativeTransferError("transfer_request_conflict");
+          return { kind: "not-admitted", reason: "installation_changed" };
+        };
+        f.advance(FILE_RECEIPT_MS + FILE_LIFETIME_MS + 1);
+        await expect(f.begin(ctx)).rejects.toThrow("busy");
+        const request = { machine, location, ref, transferId: queued.id };
+        const recovered = accepted(
+          recoverVia === "begin"
+            ? await begin()
+            : recoverVia === "inspect"
+              ? kind === "delivery"
+                ? await filesHandlers.inspectDelivery(ctx, request)
+                : await filesHandlers.inspectDownload(ctx, request)
+              : kind === "delivery"
+                ? await filesHandlers.cancelDelivery(ctx, request)
+                : await filesHandlers.cancelDownload(ctx, request),
+        );
+        expect(recovered.transfer).toMatchObject({
+          transferId: queued.id,
+          state: "refused",
+          reason: "installation_changed",
+        });
+        expect(recovered.native).toBeNull();
+        const terminal = row();
+        expect(terminal).toEqual({
+          ...queued,
+          state: "refused",
+          active: 0n,
+          charged: 0n,
+          terminal: BigInt(f.now()),
+        });
+        expect(row(otherRequestId)).toEqual(other);
+        expect(accepted(await begin()).transfer.transferId).toBe(queued.id);
+        expect(row()).toEqual(terminal);
+        expect(recoveries).toBe(1);
+        expect(effects).toBe(0);
+        expect((await f.begin(ctx)).state).toBe("receiving");
+      });
+    }
+
+    test(`${kind} retains an admitted ambiguous identity before status fails and reconciles without another begin`, async () => {
+      const f = fixture();
+      const ctx = f.context();
+      const bytes = new Uint8Array([1, 2, 3]);
+      const ref = await f.save(bytes);
+      const machine = { kind: "machine" as const, machineId: "m" };
+      const location = {
+        kind: "location" as const,
+        machineId: "m",
+        locationId: kind === "delivery" ? "core.files.deliveries" : "core.files.downloads",
+      };
+      const pins = {
+        machine,
+        location,
+        requestId: createFileRequestId(f.now()),
+        installationRevision: "install",
+        artifactSha256: "d".repeat(64),
+        locationId: location.locationId,
+        locationRevision: "1",
+      };
+      let original: NativeTransferRecoverAdmissionArgs | undefined;
+      let begins = 0;
+      f.nativeTransfers.beginPut = async (args) => {
+        begins += 1;
+        original = { mode: "put", ...args };
+        throw new NativeTransferError("transfer_disconnected");
+      };
+      f.nativeTransfers.beginRead = async (args) => {
+        begins += 1;
+        original = { mode: "read", ...args };
+        throw new NativeTransferError("transfer_disconnected");
+      };
+      const begin = () =>
+        kind === "delivery"
+          ? filesHandlers.beginDelivery(ctx, { ...pins, ref, filename: "copy.bin" })
+          : filesHandlers.beginDownload(ctx, { ...pins, relativePath: ["source.bin"] });
+      expect(await begin()).toEqual({ refused: "transfer_disconnected" });
+      const row = () =>
+        f.sqlite
+          .query<
+            {
+              id: string;
+              native_id: string | null;
+              state: string;
+              active: bigint;
+              terminal: bigint | null;
+            },
+            [string]
+          >("SELECT id,native_id,state,active,terminal FROM file_transfers WHERE request_id=?")
+          .get(pins.requestId)!;
+      const queued = row();
+      let recoveries = 0;
+      f.nativeTransfers.recoverAdmission = async (args) => {
+        recoveries += 1;
+        if (!original || canonicalJobJson(args) !== canonicalJobJson(original))
+          throw new NativeTransferError("transfer_request_conflict");
+        return { kind: "admitted", transferId: "remote" };
+      };
+      f.nativeTransfers.status = async () => {
+        throw new NativeTransferError("transfer_disconnected");
+      };
+      f.advance(FILE_RECEIPT_MS + FILE_LIFETIME_MS + 1);
+      expect(await begin()).toEqual({ refused: "transfer_disconnected" });
+      expect(row()).toEqual({ ...queued, native_id: "remote" });
+      f.nativeTransfers.status = async ({ transferId }) => {
+        if (transferId !== "remote") throw new NativeTransferError("transfer_request_conflict");
+        if (kind === "delivery")
+          return { transferId, mode: "put", state: "receiving", bytes: bytes.length };
+        return {
+          transferId,
+          mode: "read",
+          state: "ready",
+          bytes: bytes.length,
+          sha256: hash(bytes),
+          receipt: {
+            transferId,
+            mode: "read",
+            requestId: pins.requestId,
+            machineId: machine.machineId,
+            installationRevision: pins.installationRevision,
+            artifactSha256: pins.artifactSha256,
+            locationId: pins.locationId,
+            locationRevision: pins.locationRevision,
+            pluginId: "core.files",
+            actorId: ctx.principal.id,
+            credentialBinding: ctx.credentialBinding,
+            ownerId: "owner",
+            ownerGeneration: 1,
+            path: "/approved/source.bin",
+            bytes: bytes.length,
+            sha256: hash(bytes),
+            committedAt: f.now(),
+          },
+        };
+      };
+      const request = { machine, location, ref, transferId: queued.id };
+      const reconciled = accepted(
+        kind === "delivery"
+          ? await filesHandlers.inspectDelivery(ctx, request)
+          : await filesHandlers.inspectDownload(ctx, request),
+      );
+      expect(reconciled.transfer).toMatchObject({
+        transferId: queued.id,
+        state: kind === "delivery" ? "receiving" : "reading",
+        bytes: 3,
+      });
+      f.nativeTransfers.cancel = async ({ transferId }) => ({
+        transferId,
+        mode: kind === "delivery" ? "put" : "read",
+        state: "cancelled",
+        bytes: 3,
+      });
+      expect(
+        accepted(
+          kind === "delivery"
+            ? await filesHandlers.cancelDelivery(ctx, request)
+            : await filesHandlers.cancelDownload(ctx, request),
+        ).transfer.state,
+      ).toBe("cancelled");
+      expect(row()).toEqual({
+        id: queued.id,
+        native_id: "remote",
+        state: "cancelled",
+        active: 0n,
+        terminal: BigInt(f.now()),
+      });
+      expect(begins).toBe(1);
+      expect(recoveries).toBe(1);
+    });
+
     for (const acknowledged of [true, false]) {
       test(`${kind} ${acknowledged ? "admitted" : "unacknowledged"} reservation outlives product clocks until exact cleanup evidence`, async () => {
         const f = fixture();

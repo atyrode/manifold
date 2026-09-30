@@ -240,6 +240,21 @@ const readRequest = z.strictObject({
   mode: z.literal("read"),
   ...NativeTransferBeginReadArgsSchema.shape,
 });
+export const NativeTransferRecoverAdmissionArgsSchema = z.discriminatedUnion("mode", [
+  putRequest,
+  readRequest,
+]);
+export type NativeTransferRecoverAdmissionArgs = z.infer<
+  typeof NativeTransferRecoverAdmissionArgsSchema
+>;
+export const NativeTransferAdmissionRecoverySchema = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("admitted"), transferId: id }),
+  z.strictObject({ kind: z.literal("not-admitted"), reason: NativeTransferReasonSchema }),
+]);
+export type NativeTransferAdmissionRecovery = z.infer<
+  typeof NativeTransferAdmissionRecoverySchema
+>;
+
 /** Only the floor constructs this identity; no public argument accepts an override. */
 export const NativeTransferBindingSchema = z
   .strictObject({
@@ -247,7 +262,7 @@ export const NativeTransferBindingSchema = z
     ...identity,
     createdAt: count,
     expiresAt: count,
-    request: z.discriminatedUnion("mode", [putRequest, readRequest]),
+    request: NativeTransferRecoverAdmissionArgsSchema,
   })
   .refine(
     ({ createdAt, expiresAt }) =>
