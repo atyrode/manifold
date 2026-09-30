@@ -2,7 +2,14 @@ import { FALLBACK_POLL_MS, MACHINES_RESOURCE, usePolledResource } from "@manifol
 import type { PortableSectionProps } from "@manifold/plugin";
 import type { MachineSummary, UiIcon } from "@manifold/protocol";
 import { Button, Cluster, Empty, ItemIcon, Spinner, Stack, Text } from "@manifold/ui";
-import { useCallback, useState, type ReactElement } from "react";
+import {
+  useCallback,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactElement,
+} from "react";
 import { MACHINES_FORGET_ACTION, MACHINES_REVOKE_ACTION } from "./names.ts";
 
 /**
@@ -65,9 +72,15 @@ export function MachinesSection({ host }: PortableSectionProps): ReactElement {
       initial: null,
       topics: host.topics.machines,
       events: host.client,
+      requiresWorkspaceEvents: true,
     },
   );
-  const caps = host.client.selfCaps();
+  const subscribeAuthority = useCallback(
+    (notify: () => void) => host.client.onAuthorityChange(notify),
+    [host.client],
+  );
+  const readWorkspaceCaps = useCallback(() => host.client.workspaceCaps(), [host.client]);
+  const caps = useSyncExternalStore(subscribeAuthority, readWorkspaceCaps, readWorkspaceCaps);
   const mayRevoke = caps.includes("*") || caps.includes("machines:mint");
   /**
    * Which row's withdrawal is ARMED — one slot, because arming a second must disarm the
@@ -77,11 +90,34 @@ export function MachinesSection({ host }: PortableSectionProps): ReactElement {
   const [armedId, setArmedId] = useState<string | null>(null);
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
+  const [mutationClient, setMutationClient] = useState(host.client);
+  if (mutationClient !== host.client) {
+    setMutationClient(host.client);
+    setPendingId(null);
+    setArmedId(null);
+    setFailure(null);
+  }
+  const mutationEpoch = useRef(0);
+  useLayoutEffect(() => {
+    mutationEpoch.current += 1;
+    const off = host.client.onAuthorityChange(() => {
+      mutationEpoch.current += 1;
+      // Retire pending effects on unknown transport authority without calling it withdrawal.
+      if (host.client.status !== "open") return;
+      setPendingId(null);
+      setArmedId(null);
+    });
+    return () => {
+      mutationEpoch.current += 1;
+      off();
+    };
+  }, [host.client]);
   const authoring = host.authoring;
   const online = machines?.filter((machine) => machine.online).length ?? 0;
 
   const administer = async (machine: MachineSummary): Promise<void> => {
     const machineId = machine.id;
+    const epoch = mutationEpoch.current;
     setPendingId(machineId);
     setFailure(null);
     try {
@@ -89,13 +125,17 @@ export function MachinesSection({ host }: PortableSectionProps): ReactElement {
         machine.revoked === true ? MACHINES_FORGET_ACTION : MACHINES_REVOKE_ACTION,
         { machineId },
       );
+      if (epoch !== mutationEpoch.current) return;
       if (!outcome.ok) setFailure(outcome.denial.message);
       else refresh();
     } catch (reason: unknown) {
+      if (epoch !== mutationEpoch.current) return;
       setFailure(reason instanceof Error ? reason.message : "Could not administer the machine");
     } finally {
-      setPendingId(null);
-      setArmedId(null);
+      if (epoch === mutationEpoch.current) {
+        setPendingId(null);
+        setArmedId(null);
+      }
     }
   };
 

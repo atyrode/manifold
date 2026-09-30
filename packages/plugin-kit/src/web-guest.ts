@@ -3,6 +3,7 @@ import {
   WebIsolateHostFrameSchema,
   WebIsolateWorkerFrameSchema,
   type ActionOutcome,
+  type Cap,
   type ContainerTerminalSummary,
   type MachineSummary,
   type ManifoldRef,
@@ -55,6 +56,8 @@ const MAX_STREAMS = 64;
 const MAX_SUBSCRIPTIONS = 64;
 /** Replies still owed to retired calls, absorbed silently; oldest forgotten first. */
 const MAX_RETIRED_CALLS = 1024;
+const SUBSCRIPTION_SYNC_TIMEOUT_MS = 5_000;
+const NO_WORKSPACE_CAPS: readonly Cap[] = [];
 
 type Kind = "panel" | "section";
 type Contribution = ComponentType<PortablePanelProps>;
@@ -71,6 +74,7 @@ interface Owner {
   readonly streams: Set<string>;
   readonly subscriptions: Set<string>;
   readonly statusListeners: Set<(status: SessionStatus) => void>;
+  readonly authorityListeners: Set<() => void>;
   readonly visibilityListeners: Set<() => void>;
 }
 
@@ -91,6 +95,7 @@ interface PendingCall {
   readonly method: WebHostMethod;
   /** Null for the runtime's own release calls, which outlive their owner. */
   readonly owner: Owner | null;
+  readonly timer: Timer | undefined;
   resolve(value: unknown): void;
   reject(error: Error): void;
 }
@@ -193,6 +198,11 @@ export function attachWebGuest(def: ReactWebPluginDef, port: WebGuestPort): void
     port.post(WebIsolateWorkerFrameSchema.parse(frame));
   };
 
+  const rememberRetired = (id: string): void => {
+    retired.add(id);
+    if (retired.size > MAX_RETIRED_CALLS) retired.delete(retired.values().next().value!);
+  };
+
   const fault = (instance: string | undefined, error: string): void => {
     post(instance === undefined ? { t: "fault", error } : { t: "fault", instance, error });
   };
@@ -222,11 +232,20 @@ export function attachWebGuest(def: ReactWebPluginDef, port: WebGuestPort): void
     callSeq += 1;
     const id = `c${String(callSeq)}`;
     const { promise, resolve, reject } = Promise.withResolvers<unknown>();
-    pending.set(id, { method, owner, resolve, reject });
+    const timer =
+      method === "syncSubscriptions"
+        ? setTimeout(() => {
+            if (!pending.delete(id)) return;
+            rememberRetired(id);
+            resolve(false);
+          }, SUBSCRIPTION_SYNC_TIMEOUT_MS)
+        : undefined;
+    pending.set(id, { method, owner, timer, resolve, reject });
     try {
       post({ t: "call", id, instance, method, args: [...args] });
     } catch (error) {
       pending.delete(id);
+      clearTimeout(timer);
       return Promise.reject(error instanceof Error ? error : new Error(String(error)));
     }
     return promise;
@@ -381,6 +400,34 @@ export function attachWebGuest(def: ReactWebPluginDef, port: WebGuestPort): void
     place: async (ref, destination) =>
       (await send(mounted.id, mounted, "place", [ref, destination])) as PlaceOutcome,
     selfCaps: () => mounted.context.caps,
+    workspaceCaps: () =>
+      mounted.live && mounted.context.status === "open"
+        ? (mounted.context.workspaceCaps ?? NO_WORKSPACE_CAPS)
+        : NO_WORKSPACE_CAPS,
+    workspaceEventsAvailable: () =>
+      mounted.live && mounted.context.status === "open" && mounted.context.workspaceEvents === true,
+    onAuthorityChange: (callback) => {
+      if (!mounted.live) return () => {};
+      mounted.authorityListeners.add(callback);
+      return () => {
+        mounted.authorityListeners.delete(callback);
+      };
+    },
+    syncSubscriptions: () => {
+      if (
+        !mounted.live ||
+        mounted.context.status !== "open" ||
+        mounted.context.workspaceCaps === undefined ||
+        mounted.context.workspaceEvents === undefined
+      )
+        return Promise.resolve(false);
+      // The physical pool coalesces by declaration watermark. A mount-local promise
+      // cannot cover an interest declared after its earlier request.
+      return send(mounted.id, mounted, "syncSubscriptions", []).then(
+        (value) => value as boolean,
+        () => false,
+      );
+    },
     machines: async () =>
       (await send(mounted.id, mounted, "machines", [])) as readonly MachineSummary[],
     resolve: async (uri) => (await send(mounted.id, mounted, "resolve", [uri])) as ResolveResponse,
@@ -429,6 +476,15 @@ export function attachWebGuest(def: ReactWebPluginDef, port: WebGuestPort): void
     mounted.hostKey = key;
     mounted.host = hostOf(mounted.context, mounted.client, mounted.navigate, mounted.authoring);
   };
+  const retireSyncCalls = (mounted: Owner): void => {
+    for (const [id, call] of pending) {
+      if (call.owner !== mounted || call.method !== "syncSubscriptions") continue;
+      pending.delete(id);
+      clearTimeout(call.timer);
+      rememberRetired(id);
+      call.resolve(false);
+    }
+  };
 
   const render = (mounted: Mounted): void => {
     const props: PortablePanelProps =
@@ -455,22 +511,29 @@ export function attachWebGuest(def: ReactWebPluginDef, port: WebGuestPort): void
       }
     }
     mounted.live = false;
+    retireSyncCalls(mounted);
     for (const id of [...mounted.streams]) streams.get(id)?.drop();
     for (const id of mounted.subscriptions) subscriptions.delete(id);
     mounted.subscriptions.clear();
     for (const [id, call] of pending) {
       if (call.owner !== mounted) continue;
       pending.delete(id);
-      retired.add(id);
+      clearTimeout(call.timer);
+      rememberRetired(id);
       call.reject(new Error(`${mounted.label} is unmounted`));
     }
-    for (const id of retired) {
-      if (retired.size <= MAX_RETIRED_CALLS) break;
-      retired.delete(id);
-    }
+    const authorityListeners = [...mounted.authorityListeners];
+    mounted.authorityListeners.clear();
     const listeners = [...mounted.statusListeners];
     mounted.statusListeners.clear();
     mounted.visibilityListeners.clear();
+    for (const listener of authorityListeners) {
+      try {
+        listener();
+      } catch (error) {
+        port.warn(errorText(error));
+      }
+    }
     // Anything still listening to this client (a feed another reader shares) learns it is gone.
     for (const listener of listeners) {
       try {
@@ -528,6 +591,7 @@ export function attachWebGuest(def: ReactWebPluginDef, port: WebGuestPort): void
       streams: new Set(),
       subscriptions: new Set(),
       statusListeners: new Set(),
+      authorityListeners: new Set(),
       visibilityListeners: new Set(),
     };
     const client = clientFor(owner);
@@ -579,6 +643,14 @@ export function attachWebGuest(def: ReactWebPluginDef, port: WebGuestPort): void
     }
     const previous = mounted.context;
     mounted.context = frame.context;
+    const previousCaps = previous.workspaceCaps ?? NO_WORKSPACE_CAPS;
+    const nextCaps = frame.context.workspaceCaps ?? NO_WORKSPACE_CAPS;
+    const authorityChanged =
+      previous.workspaceEvents !== frame.context.workspaceEvents ||
+      (previous.status === "open") !== (frame.context.status === "open") ||
+      previousCaps.length !== nextCaps.length ||
+      previousCaps.some((cap, index) => cap !== nextCaps[index]);
+    if (authorityChanged || previous.status !== frame.context.status) retireSyncCalls(mounted);
     refreshHost(mounted);
     const argKey = JSON.stringify(frame.arg);
     if (argKey !== mounted.argKey) {
@@ -586,6 +658,15 @@ export function attachWebGuest(def: ReactWebPluginDef, port: WebGuestPort): void
       mounted.arg = frame.arg;
     }
     render(mounted);
+    if (authorityChanged) {
+      for (const listener of [...mounted.authorityListeners]) {
+        try {
+          listener();
+        } catch (error) {
+          port.warn(errorText(error));
+        }
+      }
+    }
     if (previous.status !== frame.context.status) {
       for (const listener of [...mounted.statusListeners]) {
         try {
@@ -666,8 +747,14 @@ export function attachWebGuest(def: ReactWebPluginDef, port: WebGuestPort): void
       return;
     }
     pending.delete(frame.id);
-    if (frame.ok) waiting.resolve(frame.result);
-    else waiting.reject(new HostCallError(waiting.method, frame.error));
+    clearTimeout(waiting.timer);
+    if (frame.ok) {
+      if (waiting.method === "syncSubscriptions" && typeof frame.result !== "boolean") {
+        waiting.reject(new HostCallError(waiting.method, "result must be a boolean"));
+      } else {
+        waiting.resolve(frame.result);
+      }
+    } else waiting.reject(new HostCallError(waiting.method, frame.error));
   };
 
   port.onMessage((data) => {

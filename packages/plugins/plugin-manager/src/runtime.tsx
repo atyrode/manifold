@@ -1157,6 +1157,7 @@ export function MachineRuntime({
       enabled: entry.manifest.machine !== undefined,
       topics: host.topics.machines,
       events: host.client,
+      requiresWorkspaceEvents: true,
       onError: (reason) => setFailure(failureMessage(reason)),
     },
   );

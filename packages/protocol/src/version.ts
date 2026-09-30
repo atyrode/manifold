@@ -463,6 +463,13 @@ export const PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<string> = new S
  * viewport identity and desired geometry (null withdraws); transient sizing attribution
  * carries only connection references. Machine, native-owner and instance wires are unchanged.
  * Versions 49/50 are reserved by held Text/Files branches, not integrated session revisions.
+ *
+ * v49: LIVE WORKSPACE AUTHORITY AND SUBSCRIPTION ORDERING (issue #956).
+ * Session connections publish authority_context for their actual credential and support
+ * ID-only sync_subscriptions/subscriptions_synced ordering fences. Hardened contract 12
+ * forwards those facts and the bounded fence to portable feeds; older strict Workers
+ * retain their exact context projection. Machine, instance and retained-owner IPC are
+ * unchanged, so their compatibility sets add 49 without requiring a fleet restart.
  */
 export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
   30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51,

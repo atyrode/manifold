@@ -195,6 +195,8 @@ export interface SessionEvents {
    * nothing about it is off.
    */
   plugins_changed: (roster: PluginRoster, developerMode: boolean) => void;
+  /** Current coarse workspace authority changed, or its physical connection retired. */
+  authority_changed: () => void;
 }
 
 /**
@@ -207,6 +209,13 @@ interface TopicSubscription {
   readonly handler: (event: ServerEvent) => void;
   release: (() => void) | null;
 }
+
+interface WorkspaceAuthorityState {
+  readonly workspaceCaps: readonly Cap[];
+  readonly workspaceEvents: boolean;
+}
+
+const NO_WORKSPACE_CAPS: readonly Cap[] = [];
 
 type EventKey = ChannelFrame["type"] | keyof SessionEvents;
 type Handler = (...args: never[]) => void;
@@ -276,6 +285,8 @@ export class SessionClient {
   self: Principal | null = null;
   selfConnId: string | null = null;
   private selfCapsState: readonly Cap[] = [];
+  private workspaceAuthority: WorkspaceAuthorityState | null = null;
+  private readonly subscriptionSyncWaits = new Set<() => void>();
   status: ConnectionStatus = "idle";
   private connectionIdState: string | null = null;
 
@@ -341,6 +352,66 @@ export class SessionClient {
    */
   selfCaps(): readonly Cap[] {
     return this.selfCapsState;
+  }
+
+  /** Effective caps at the workspace root for this physical connection's credential. */
+  workspaceCaps(): readonly Cap[] {
+    return this.workspaceAuthority?.workspaceCaps ?? NO_WORKSPACE_CAPS;
+  }
+
+  /** A coarse event-plane hint, never a per-topic admission or action authorization. */
+  workspaceEventsAvailable(): boolean {
+    return this.workspaceAuthority?.workspaceEvents ?? false;
+  }
+
+  onAuthorityChange(callback: () => void): () => void {
+    return this.on("authority_changed", callback);
+  }
+
+  /** Orders declarations before a catch-up read; false preserves the caller's polling. */
+  syncSubscriptions(): Promise<boolean> {
+    const channel = this.channel;
+    const authority = this.workspaceAuthority;
+    if (channel === null || this.status !== "open" || authority === null) {
+      return Promise.resolve(false);
+    }
+    return new Promise<boolean>((resolve) => {
+      const retire = (): void => {
+        this.subscriptionSyncWaits.delete(retire);
+        resolve(false);
+      };
+      this.subscriptionSyncWaits.add(retire);
+      void channel.syncSubscriptions().then((synchronized) => {
+        this.subscriptionSyncWaits.delete(retire);
+        resolve(
+          synchronized &&
+            this.channel === channel &&
+            this.status === "open" &&
+            this.workspaceAuthority === authority,
+        );
+      });
+    });
+  }
+
+  private retireSubscriptionSyncWaits(): void {
+    for (const retire of this.subscriptionSyncWaits) retire();
+  }
+
+  private updateWorkspaceAuthority(authority: WorkspaceAuthorityState | null): void {
+    const prior = this.workspaceAuthority;
+    if (
+      prior === authority ||
+      (prior !== null &&
+        authority !== null &&
+        prior.workspaceEvents === authority.workspaceEvents &&
+        prior.workspaceCaps.length === authority.workspaceCaps.length &&
+        prior.workspaceCaps.every((cap, index) => cap === authority.workspaceCaps[index]))
+    ) {
+      return;
+    }
+    this.retireSubscriptionSyncWaits();
+    this.workspaceAuthority = authority;
+    this.emit("authority_changed");
   }
 
   private installDoc(doc: Y.Doc): void {
@@ -425,6 +496,7 @@ export class SessionClient {
       this.terminalSizing.clear();
       this.emit("terminals_changed");
     }
+    if (status !== "open") this.retireSubscriptionSyncWaits();
     this.emit("status", status);
   }
 
@@ -497,6 +569,7 @@ export class SessionClient {
     // Releasing drops this room or observer and closes the socket only when no pooled handle remains.
     channel?.release();
     this.setStatus("closed");
+    this.updateWorkspaceAuthority(null);
   }
 
   /** The join THIS room wants, rebuilt per attempt so resume hints are current. */
@@ -530,6 +603,7 @@ export class SessionClient {
     const transportPhase = (phase: ConnectionStatus): void => {
       this.connectionIdState = null;
       this.setStatus(phase);
+      this.updateWorkspaceAuthority(null);
     };
     const transportClosed = (
       failure: { readonly code: number; readonly reason: string } | null,
@@ -547,6 +621,7 @@ export class SessionClient {
               failure.reason,
             );
       this.setStatus("closed");
+      this.updateWorkspaceAuthority(null);
     };
     this.channel =
       this.opts.containerId === null
@@ -580,6 +655,7 @@ export class SessionClient {
                 reason,
               );
               this.setStatus("closed");
+              this.updateWorkspaceAuthority(null);
             },
             transportClosed,
           });
@@ -635,6 +711,9 @@ export class SessionClient {
         this.emit("plugins_changed", body.roster, developerMode);
         return;
       }
+      case "authority_context":
+        this.updateWorkspaceAuthority(body);
+        return;
       case "event":
         this.deliverEvent(body);
         return;

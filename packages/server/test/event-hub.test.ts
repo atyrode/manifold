@@ -356,6 +356,63 @@ describe("governed event disclosure", () => {
 });
 
 describe("event plane subscription authority", () => {
+  test("accepted and refused interests receive the same ID-only ordering fence", async () => {
+    const fixture = await planeFixture();
+    try {
+      const owner = connect(fixture, "owner");
+      const scoped = connect(fixture, "scoped", {
+        token: context(fixture, ["containers:read"], fixture.container.id),
+      });
+      owner.clear();
+      scoped.clear();
+      for (const id of ["owner", "scoped"]) {
+        subscribe(fixture, id, [INDEX_TOPIC]);
+        fixture.gateway.message(id, JSON.stringify({ type: "sync_subscriptions", id: 17 }));
+      }
+      expect(fixture.events.held("owner")).toBe(1);
+      expect(fixture.events.held("scoped")).toBe(0);
+      expect(owner.sent).toEqual(scoped.sent);
+      expect(owner.frames()).toEqual([{ type: "subscriptions_synced", id: 17 }]);
+      await fixture.host.dispatch(fixture.owner, "core.index.createContainer", {
+        name: "after admission fence",
+      });
+      expect(eventsOn(owner).map((event) => event.kind)).toEqual(["container_created"]);
+      expect(eventsOn(scoped)).toEqual([]);
+      owner.clear();
+      unsubscribe(fixture, "owner", [INDEX_TOPIC]);
+      fixture.gateway.message("owner", JSON.stringify({ type: "sync_subscriptions", id: 18 }));
+      expect(owner.frames()).toEqual([{ type: "subscriptions_synced", id: 18 }]);
+      await fixture.host.dispatch(fixture.owner, "core.index.createContainer", {
+        name: "after release fence",
+      });
+      expect(eventsOn(owner)).toEqual([]);
+      expect(owner.closed).toBeNull();
+      expect(scoped.closed).toBeNull();
+    } finally {
+      fixture.gateway.shutdown();
+      fixture.store.close();
+    }
+  });
+
+  test("an ordering fence requires a surviving authenticated connection", async () => {
+    const fixture = await planeFixture();
+    try {
+      const cold = new FakeSocket();
+      fixture.gateway.open("cold", cold);
+      cold.clear();
+      fixture.gateway.message("cold", JSON.stringify({ type: "sync_subscriptions", id: 1 }));
+      expect(cold.frames()).toEqual([]);
+      expect(cold.closed).toEqual({ code: 4002, reason: "first frame must be join or observe" });
+      const live = connect(fixture, "live");
+      fixture.gateway.close("live");
+      fixture.gateway.message("live", JSON.stringify({ type: "sync_subscriptions", id: 2 }));
+      expect(live.frames()).toEqual([]);
+    } finally {
+      fixture.gateway.shutdown();
+      fixture.store.close();
+    }
+  });
+
   test("an owner subscribes to a container and hears it; the OTHER container stays silent", async () => {
     const fixture = await planeFixture();
     const socket = connect(fixture, "tab");

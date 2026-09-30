@@ -102,6 +102,22 @@ Native resize admission failure also retires sizing intent and retains the last 
 only a fresh eligible measurement can enter again. Do not describe an unapplied desired size
 as the shared grid.
 
+## Live session authority and feeds
+
+`SessionClient.workspaceCaps()` reports live effective engine caps at the workspace root
+for its actual physical connection credential. `workspaceEventsAvailable()` reports coarse
+workspace-event eligibility. Unknown/disconnected authority is empty/false; room `selfCaps()`
+and the mounted container do not answer either question. `onAuthorityChange(callback)`
+returns its release and calls back after current getters update, without replacing the client.
+Late room/observer handles inherit the current snapshot before readiness.
+
+After `subscribe(topics, handler)`, await `syncSubscriptions(): Promise<boolean>` before the
+catch-up read that switches a feed to event-only mode. It is a five-second socket ordering
+fence, not a subscription acknowledgement: the server replies identically for accepted and
+refused topics and reveals no per-topic admission. The physical pool coalesces requests by
+generation, authority epoch and declaration watermark; an earlier reply cannot cover later
+interests. False means retain fallback polling. Rebind/disconnect/authority retirement clears
+the proof, and gaining workspace-event access re-declares all retained interests.
 ## Trusted launcher
 
 Use the repository's supported Bun (at least 1.4.2) and installed workspace dependencies:
