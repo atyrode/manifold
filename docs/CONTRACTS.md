@@ -83,10 +83,11 @@ Session revision 34 adds the required event-frame `plugin` origin (#601, ADR 004
 kind must qualify it by its declaring origin. Topics and machine/instance frames are unchanged;
 their compatibility sets only add the shared revision, retaining previously admitted versions.
 
-Session revision **48** carries independently retained named collaborative texts and requires
-`sceneWriteAllowed` on room full-state frames. It fences clients that could replay legacy
-inline note bodies; `selfCaps` remains the raw credential ceiling, not effective authority at
-a home. Machine and instance wires are unchanged and their compatibility sets add 48.
+Session revision **52**, after integrated viewport revision 51, carries independently retained
+named collaborative texts and requires `sceneWriteAllowed` on room full-state frames. It fences
+clients that could replay legacy inline note bodies; `selfCaps` remains the raw credential
+ceiling, not effective authority at a home. Machine and instance wires are unchanged and their
+compatibility sets add 52 while retaining integrated 51; former held candidates 49/50 are not admitted.
 
 ### Producer-neutral behavior
 
@@ -3729,7 +3730,7 @@ depends on it.
   Corrupt rows remain corrupt rather than being laundered; target collisions or unsupported
   legacy shapes refuse the transaction. Notes state/storage and ownership reservations are
   explicitly reconciled, including all disabled combinations without fabricated attribution.
-  Protocol 49 fences the old inline-body session format; machine/instance compatibility remains
+  Protocol 52 fences the old inline-body session format; machine/instance compatibility remains
   additive. Rollback uses the complete pre-version image with a compatible old binary, not an
   old binary pointed at the migrated database. Disposable proof does not claim live activation.
   Migration records the maximum positive encoding growth across retained revisions as a fixed
