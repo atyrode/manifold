@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.29.2] - 2026-09-30
+
+### Fixed
+
+- Release publication refreshes tracked main after the checked rebase merge, so ordinary push policies recognize already-reviewed remote history without requiring a manual fetch and resume. Exact release-tree checks, immutable tags, local-work preservation and refusals for newly introduced disallowed commits remain in force. (#949, #966)
+
 ## [0.29.1] - 2026-09-30
 
 ### Fixed
