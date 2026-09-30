@@ -4227,7 +4227,7 @@ machine transport. An owner outside the acceptance set that does not qualify for
 receives no native authority, while machine presence, retained terminal continuity and the
 named drain/maintenance path remain available for the coordinated upgrade.
 
-The independent federation set is `{27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49}`; these session/machine changes leave its
+The independent federation set is `{27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52}`; these session/machine changes leave its
 frames and resource vocabularies unchanged. The earlier per-program and per-job transport
 version gates are retired: every accepted transport understands those frames, while
 authority comes from explicit declarations and live owner proof.
@@ -5302,7 +5302,7 @@ IS the cross-instance reference. `tickets` answers with the subset of the advert
 still live, and the guest drops the rest. Or the host closes: 4401 unauthorized / origin
 mismatch, 4403 revoked, 4409 version, 4002 malformed or first-frame-not-hello or duplicate
 hello, 4008 liveness timeout, 4001 superseded. Version acceptance is
-`INSTANCE_PROTOCOL_COMPAT_VERSIONS` `{27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49}` — its own wire, its own set, the
+`INSTANCE_PROTOCOL_COMPAT_VERSIONS` `{27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52}` — its own wire, its own set, the
 same [Protocol and compatibility](#protocol-and-compatibility) discipline the machine channel follows.
 Governed jobs and streams expand the closed capability and reference vocabularies, so protocol 27
 independently resets instance acceptance; older instances cannot decode that governed wire.
