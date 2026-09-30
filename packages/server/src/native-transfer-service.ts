@@ -116,6 +116,7 @@ export class NativeTransferService {
   /** One bounded pass per startup/owner proof/explicit inspection, never a polling loop. */
   async reconcile(machineId?: string): Promise<void> {
     try {
+      this.prune();
       const records = this.store.db.query<{ record: string }, []>(
         "SELECT record FROM native_transfers ORDER BY id LIMIT 1000",
       ).all().map((row) => recordSchema.parse(JSON.parse(row.record)));
@@ -191,7 +192,7 @@ export class NativeTransferService {
     } finally { this.busy.delete(transferId); }
   }
 
-  private async deliverEvidence(): Promise<void> {
+  private async deliverEvidence(waitForExisting = true): Promise<void> {
     if (this.delivering) {
       // At most one coalesced next pass. A terminal result arriving during a callback await
       // must not be stranded behind the earlier pass's already-read snapshot.
@@ -199,7 +200,9 @@ export class NativeTransferService {
         this.deliveryQueued = undefined;
         return this.deliverEvidence();
       });
-      return this.deliveryQueued;
+      // A background callback can be queued behind the current Files owner turn.
+      // That action must return its persisted result before the callback can run.
+      return waitForExisting ? this.deliveryQueued : undefined;
     }
     const work = this.deliverRetainedEvidence();
     this.delivering = work;
@@ -250,7 +253,7 @@ export class NativeTransferService {
   async receipt(caller: Caller, transferId: string): Promise<NativeTransferReceiptView> {
     const record = this.load(caller, transferId);
     await this.acquireEvidence(record, caller.guard);
-    await this.deliverEvidence();
+    await this.deliverEvidence(false);
     // Acquisition is private. Disclosure still needs the exact live credential and request,
     // but not deleted-source or revised effect consent authority; no private metadata escapes.
     this.current(caller);
@@ -511,7 +514,7 @@ export class NativeTransferService {
     let record = this.load(caller, transferId);
     if (record.commitDecision !== undefined) {
       await this.acquireEvidence(record, caller.guard);
-      await this.deliverEvidence();
+      await this.deliverEvidence(false);
       record = this.load(caller, transferId);
       try {
         await this.source(caller, record);
@@ -591,7 +594,7 @@ export class NativeTransferService {
         if (changed || progressed) this.save(record);
       }
       // Receipt persistence is independent of disclosure: a post-commit revocation cannot erase it.
-      if (!ACTIVE[record.status.state]) await this.deliverEvidence();
+      if (!ACTIVE[record.status.state]) await this.deliverEvidence(false);
       await this.source(caller, record);
       this.authorize(caller, record, reconcile);
       if (!result.ok) return refused(result.reason);
@@ -668,8 +671,10 @@ export class NativeTransferService {
       if (ACTIVE[record.status.state] && record.status.state !== "outcome_unknown" &&
           record.commitDecision === undefined &&
           (this.now() >= record.binding.expiresAt || this.now() - record.touchedAt >= 60_000)) {
+        // Elapsed hub time cannot prove the owner removed private staging/snapshots.
+        // Retain charges until that exact owner establishes terminal cleanup.
         record.status = { transferId: record.binding.transferId, mode: record.binding.request.mode,
-          state: "expired", bytes: record.status.bytes, reason: "transfer_expired" };
+          state: "outcome_unknown", bytes: record.status.bytes, reason: "native_transfer_cleanup_unknown" };
         this.save(record);
       }
       if (!ACTIVE[record.status.state] && (!this.evidenceSink || record.evidenceDelivered) && this.now() - row.updated_at > RECEIPT_MS)

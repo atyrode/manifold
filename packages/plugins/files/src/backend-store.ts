@@ -84,8 +84,11 @@ export async function admission(db: PluginDatabase): Promise<void> {
 export async function maintenance(ctx: DataContext): Promise<void> {
   const db = database(ctx); const now = ctx.now();
   await db.batch([
+    // Native admission/cleanup is not proved by this product clock, including a begin
+    // whose native id acknowledgement was lost. Only exact host/owner evidence retires it.
     { sql: `UPDATE file_transfers SET state='expired',reason='expired',active=0,terminal=COALESCE(terminal,?)
-      WHERE active=1 AND state NOT IN ('ready','publishing','outcome_unknown') AND (created+?<=? OR progress+?<=?)`,
+      WHERE kind IN ('upload','read') AND active=1 AND state NOT IN ('ready','publishing','outcome_unknown')
+        AND (created+?<=? OR progress+?<=?)`,
       params: [now, FILE_LIFETIME_MS, now, FILE_IDLE_MS, now] },
     { sql: `DELETE FROM file_chunks WHERE (transfer_id,sequence) IN (
       SELECT c.transfer_id,c.sequence FROM file_chunks c JOIN file_transfers t ON t.id=c.transfer_id

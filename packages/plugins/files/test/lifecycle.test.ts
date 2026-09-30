@@ -436,6 +436,51 @@ describe("durable Files product transitions", () => {
     expect((await f.begin(ctx)).state).toBe("receiving");
   });
 
+  for (const kind of ["delivery", "download"] as const) {
+    for (const acknowledged of [true, false]) {
+      test(`${kind} ${acknowledged ? "admitted" : "unacknowledged"} reservation outlives product clocks until exact cleanup evidence`, async () => {
+        const f = fixture(); const ctx = f.context();
+        const source = await f.save(new Uint8Array([1, 2, 3]));
+        const machine = { kind: "machine" as const, machineId: "m" };
+        const location = { kind: "location" as const, machineId: "m",
+          locationId: kind === "delivery" ? "core.files.deliveries" : "core.files.downloads" };
+        const requestId = createFileRequestId(f.now());
+        const pins = { machine, location, requestId, installationRevision: "install",
+          artifactSha256: "d".repeat(64), locationId: location.locationId, locationRevision: "1" };
+        f.nativeTransfers.beginPut = async () => {
+          if (!acknowledged) throw new NativeTransferError("transfer_disconnected");
+          return { transferId: "remote", mode: "put", state: "receiving", bytes: 0 };
+        };
+        f.nativeTransfers.beginRead = async () => {
+          if (!acknowledged) throw new NativeTransferError("transfer_disconnected");
+          return { transferId: "remote", mode: "read", state: "ready", bytes: 3 };
+        };
+        const begun = kind === "delivery"
+          ? await filesHandlers.beginDelivery(ctx, { ...pins, ref: source, filename: "copy.bin" })
+          : await filesHandlers.beginDownload(ctx, { ...pins, relativePath: ["source.bin"] });
+        if (!acknowledged) expect(begun).toEqual({ refused: "transfer_disconnected" });
+        const row = () => f.sqlite.query<{
+          state: string; active: bigint; charged: bigint; terminal: bigint | null; native_id: string | null;
+        }, [string]>("SELECT state,active,charged,terminal,native_id FROM file_transfers WHERE request_id=?").get(requestId)!;
+        const retained = row();
+        f.advance(FILE_RECEIPT_MS + FILE_LIFETIME_MS + 1);
+        await f.begin(ctx);
+        expect(row()).toEqual(retained);
+        expect(row()).toMatchObject({ active: 1n, terminal: null,
+          charged: 0n, native_id: acknowledged ? "remote" : null });
+        const next = () => filesHandlers.beginUpload(ctx, { collection: FILE_COLLECTION,
+          requestId: createFileRequestId(f.now()), name: "next.bin", declaredMediaType: null, bytes: 0, purpose: "file" as const });
+        expect(await next()).toEqual({ refused: "busy" });
+        const evidence = { kind: "terminal" as const, transferId: "remote", requestId,
+          actorId: ctx.principal.id, credentialBinding: ctx.credentialBinding,
+          mode: kind === "delivery" ? "put" as const : "read" as const, state: "cancelled" as const };
+        await filesReconcileNativeTransfers({ database: f.db, now: f.now }, [evidence]);
+        expect(row()).toMatchObject({ state: "cancelled", active: 0n, charged: 0n, terminal: BigInt(f.now()) });
+        expect(accepted(await next()).state).toBe("receiving");
+      });
+    }
+  }
+
   test("machine downloads use the private carrier and do not become library files", async () => {
     const f = fixture(); const ctx = f.context(); const bytes = new Uint8Array([9, 2, 6]);
     const machine = { kind: "machine" as const, machineId: "m" };

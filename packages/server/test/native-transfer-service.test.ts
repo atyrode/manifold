@@ -15,6 +15,7 @@ import {
   type NativeTransferBinding,
   type NativeTransferResult,
   type NativeTransferStatus,
+  type NativeTransferTerminalEvidence,
 } from "@manifold/protocol";
 import { AuthService, ServiceError, type GovernedAdmission } from "../src/auth.ts";
 import { openDatabase } from "../src/db.ts";
@@ -326,19 +327,71 @@ test("concurrent source probes cannot oversubscribe per-principal reservations",
   expect(f.commands.map((command) => command.request.method)).toEqual(["beginPut", "beginPut"]);
 });
 
-test("expired private work releases reservation but unknown publication remains charged", async () => {
+test("elapsed admission remains charged until exact owner cleanup evidence arrives", async () => {
   const f = fixture();
   const first = await f.service.begin(f.caller, f.request);
   f.controls.dropCommit = true;
   await expect(f.service.commitPut(f.caller, first.transferId)).rejects.toThrow("outcome_unknown");
-  await f.service.begin(f.caller, { ...f.request, requestId: "idle", filename: "idle.bin" });
+  const idle = await f.service.begin(f.caller, { ...f.request, requestId: "idle", filename: "idle.bin" });
+  f.remote.get(idle.transferId)!.status = { ...idle, state: "outcome_unknown",
+    reason: "native_transfer_cleanup_unknown" };
+  const delivered: NativeTransferTerminalEvidence[] = [];
+  f.service.setEvidenceSink(async (_plugin, receipts) => { delivered.push(...receipts); return true; });
   f.runtime.time += 16 * 60_000;
-  await f.service.begin(f.caller, { ...f.request, requestId: "fresh", filename: "fresh.bin" });
-  await expect(f.service.begin(f.caller, { ...f.request, requestId: "excess", filename: "excess.bin" }))
-    .rejects.toThrow("transfer_concurrency_limit");
-  const rows = f.store.db.query<{ record: string }, []>("SELECT record FROM native_transfers").all().map((row) => JSON.parse(row.record));
-  expect(rows.find((row) => row.binding.request.requestId === "request1").status.state).toBe("outcome_unknown");
-  expect(rows.find((row) => row.binding.request.requestId === "idle").status.state).toBe("expired");
+  const fresh = { ...f.request, requestId: "fresh", filename: "fresh.bin" };
+  await expect(f.service.begin(f.caller, fresh)).rejects.toThrow("transfer_concurrency_limit");
+  expect(retained(f, idle.transferId).status).toMatchObject({
+    state: "outcome_unknown", reason: "native_transfer_cleanup_unknown",
+  });
+  expect(() => f.service.assertPurgeable(f.caller.pluginId)).toThrow("outcome_unknown");
+  await f.service.reconcile();
+  expect(delivered).not.toContainEqual(expect.objectContaining({ transferId: idle.transferId }));
+  expect(() => f.service.assertPurgeable(f.caller.pluginId)).toThrow("outcome_unknown");
+  f.remote.get(idle.transferId)!.status = { ...idle, state: "expired", reason: "transfer_expired" };
+  await f.service.reconcile();
+  expect(delivered.filter((value) => value.kind === "terminal" && value.transferId === idle.transferId)).toEqual([
+    expect.objectContaining({ kind: "terminal", transferId: idle.transferId, state: "expired" }),
+  ]);
+  f.service.assertPurgeable(f.caller.pluginId);
+  expect((await f.service.begin(f.caller, fresh)).state).toBe("receiving");
+});
+
+test("terminal action never waits for background evidence queued behind its own owner turn", async () => {
+  const f = fixture();
+  const prior = await f.service.begin(f.caller, f.request);
+  await f.service.commitPut(f.caller, prior.transferId);
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const delivered: string[] = [];
+  f.service.setEvidenceSink(async (_plugin, receipts) => {
+    if (delivered.length === 0) {
+      entered.resolve();
+      await release.promise;
+    }
+    delivered.push(...receipts.flatMap((receipt) => receipt.kind === "terminal" ? [receipt.transferId] : []));
+    return true;
+  });
+  const background = f.service.reconcile();
+  await entered.promise;
+  try {
+    const next = await f.service.begin(f.caller, { ...f.request, requestId: "next", filename: "next.bin" });
+    let result: NativeTransferStatus | undefined;
+    const completion = f.service.commitPut(f.caller, next.transferId).then((status) => { result = status; });
+    // This fixture dispatches through microtasks only. Drain that event-loop turn without
+    // releasing the blocked callback: a completion waiting on it remains observably absent.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(result?.state).toBe("committed");
+    expect(retained(f, next.transferId).status.state).toBe("committed");
+    release.resolve();
+    await completion;
+    await background;
+    await f.service.reconcile();
+    expect(delivered).toEqual([prior.transferId, next.transferId]);
+    f.service.assertPurgeable(f.caller.pluginId);
+  } finally {
+    release.resolve();
+    await background;
+  }
 });
 
 test("unexpected host exceptions never disclose paths as native refusals", async () => {
@@ -577,7 +630,7 @@ test("status and begin retries do not renew an idle reservation or its retention
   f.runtime.time = 60_000;
   await expect(f.service.commitPut(f.caller, started.transferId)).rejects.toThrow("transfer_expired");
   await f.service.begin(f.caller, { ...f.request, requestId: "replacement", filename: "replacement.bin" });
-  expect(retained(f, started.transferId).status.state).toBe("expired");
+  expect(retained(f, started.transferId).status.state).toBe("outcome_unknown");
   expect(f.commands.map((command) => command.request.method)).toEqual(["beginPut", "status", "status", "beginPut"]);
 });
 
