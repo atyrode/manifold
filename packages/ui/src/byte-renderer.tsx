@@ -192,9 +192,10 @@ function LocalFileInput({
       className="mf-vocab-file mf-vocab-fileInput"
       disabled={unavailable || reading}
       onDragOver={(event) => {
-        if (!unavailable) event.preventDefault();
+        if (!unavailable && event.dataTransfer.types.includes("Files")) event.preventDefault();
       }}
       onDrop={(event) => {
+        if (!event.dataTransfer.types.includes("Files")) return;
         event.preventDefault();
         if (unavailable || busy.current) return;
         try {

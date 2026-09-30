@@ -138,6 +138,13 @@ test("byte renderers keep page/worker custody, static decode and revocation sema
           document.querySelector("fieldset").dispatchEvent(new DragEvent("drop",{bubbles:true,dataTransfer:transfer}));
           await until(()=>!Array.from(document.querySelectorAll("button")).find(button=>button.textContent==="Read selected").disabled);
         },
+        internalCarry() {
+          const transfer = new DataTransfer();
+          transfer.setData("application/x-manifold-item", JSON.stringify({kind:"structure",type:"spacer"}));
+          return ["dragover","drop"].map(type =>
+            document.querySelector("fieldset").dispatchEvent(
+              new DragEvent(type,{bubbles:true,cancelable:true,dataTransfer:transfer})));
+        },
         async press(label, expected) {
           Array.from(document.querySelectorAll("button")).find(button=>button.textContent===label).click();
           await until(()=>document.querySelector('[data-testid="read-result"]').textContent===expected);
@@ -221,6 +228,10 @@ test("byte renderers keep page/worker custody, static decode and revocation sema
           ),
         ).toEqual(mediaType === "image/gif" ? { width: 1, height: 1 } : { width: 3, height: 2 });
         if (mediaType === "image/png") {
+          expect(await browser.evaluate<boolean[]>("window.fixture.internalCarry()")).toEqual([
+            true,
+            true,
+          ]);
           const selected = await browser.send("Runtime.evaluate", {
             expression: 'document.querySelector("input[type=file]")',
           });

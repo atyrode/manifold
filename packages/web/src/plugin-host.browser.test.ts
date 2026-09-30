@@ -566,23 +566,23 @@ test("mounted panels open beside their caller, focus an existing record, and ref
       "the second record opened beside its caller",
     );
     expect(
-      await browser.evaluate(
+      await browser.evaluate<string[]>(
         'Array.from(document.querySelectorAll("h2"), node => node.textContent)',
       ),
     ).toEqual(["Feed", "Record r-2", "Record r-1"]);
-    expect(await browser.evaluate("window.panelFixture()")).toMatchObject({
+    expect(await browser.evaluate<unknown>("window.panelFixture()")).toMatchObject({
       commits: 1,
       valid: true,
       outcome: { ok: true, placed: true },
     });
     await browser.evaluate<void>('document.getElementById("existing-record").click()');
-    expect(await browser.evaluate("window.panelFixture()")).toMatchObject({
+    expect(await browser.evaluate<unknown>("window.panelFixture()")).toMatchObject({
       commits: 1,
       outcome: { ok: true, tileId: "ws-record", placed: false },
     });
-    expect(await browser.evaluate('document.activeElement?.getAttribute("aria-label")')).toBe(
-      "Record r-1",
-    );
+    expect(
+      await browser.evaluate<string | null>('document.activeElement?.getAttribute("aria-label")'),
+    ).toBe("Record r-1");
     for (const [button, refused] of [
       ["foreign", "other_plugin"],
       ["unknown", "unknown_panel"],
@@ -590,13 +590,13 @@ test("mounted panels open beside their caller, focus an existing record, and ref
       ["invalid", "invalid_arg"],
     ]) {
       await browser.evaluate<void>(`document.getElementById(${JSON.stringify(button)}).click()`);
-      expect(await browser.evaluate("window.panelFixture()")).toMatchObject({
+      expect(await browser.evaluate<unknown>("window.panelFixture()")).toMatchObject({
         commits: 1,
         valid: true,
         outcome: { ok: false, refused },
       });
       expect(
-        await browser.evaluate(
+        await browser.evaluate<string[]>(
           'Array.from(document.querySelectorAll("h2"), node => node.textContent)',
         ),
       ).toEqual(["Feed", "Record r-2", "Record r-1"]);

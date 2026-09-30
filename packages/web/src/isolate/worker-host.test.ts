@@ -573,33 +573,36 @@ describe("portable Worker compatibility", () => {
     },
   );
 
-  test.each([undefined, 8, HARDENED_CONTRACT_VERSION + 1])("portable contract %s cannot mount or call", async (contract) => {
-    const { host, worker, calls } = bench(undefined, true);
-    const faults: string[] = [];
-    host.mount(
-      "i1",
-      "main",
-      () => {},
-      (error) => faults.push(error),
-    );
-    worker.emit({
-      t: "ready",
-      panels: ["main"],
-      ...(contract === undefined ? {} : { hardenedContract: contract }),
-    });
-    worker.emit({
-      t: "call",
-      id: "after-fault",
-      instance: "i1",
-      method: "action",
-      args: [MACHINES_RESOURCE, {}],
-    });
-    await flush();
-    expect(faults).toHaveLength(1);
-    expect(worker.terminated).toBe(true);
-    expect(worker.frames().some((frame) => frame.t === "mount")).toBe(false);
-    expect(calls).toEqual([]);
-  });
+  test.each([undefined, 8, HARDENED_CONTRACT_VERSION + 1])(
+    "portable contract %s cannot mount or call",
+    async (contract) => {
+      const { host, worker, calls } = bench(undefined, true);
+      const faults: string[] = [];
+      host.mount(
+        "i1",
+        "main",
+        () => {},
+        (error) => faults.push(error),
+      );
+      worker.emit({
+        t: "ready",
+        panels: ["main"],
+        ...(contract === undefined ? {} : { hardenedContract: contract }),
+      });
+      worker.emit({
+        t: "call",
+        id: "after-fault",
+        instance: "i1",
+        method: "action",
+        args: [MACHINES_RESOURCE, {}],
+      });
+      await flush();
+      expect(faults).toHaveLength(1);
+      expect(worker.terminated).toBe(true);
+      expect(worker.frames().some((frame) => frame.t === "mount")).toBe(false);
+      expect(calls).toEqual([]);
+    },
+  );
 
   test("legacy projection preserves refusals and leaves unrelated or invalid results untouched", async () => {
     const client = fakeClient([]);

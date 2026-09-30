@@ -41,7 +41,7 @@ export const rasterActions = [
 ];
 
 export const rasterHandlers = {
-  openRaster(ctx: GuestCtx): ByteImageSource | { refused: string } {
+  async openRaster(ctx: GuestCtx): Promise<ByteImageSource | { refused: string }> {
     for (const [id, lease] of leases) if (lease.expiresAt <= ctx.now()) leases.delete(id);
     if (leases.size >= 8) return { refused: "the reference raster has eight active readers" };
     const transferId = crypto.randomUUID();
@@ -60,10 +60,10 @@ export const rasterHandlers = {
       mediaType: "image/png",
     };
   },
-  cancelRaster(
+  async cancelRaster(
     ctx: GuestCtx,
     args: { transferId: string },
-  ): Record<string, never> | { refused: string } {
+  ): Promise<Record<string, never> | { refused: string }> {
     const lease = leases.get(args.transferId);
     if (lease !== undefined) {
       if (

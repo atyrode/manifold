@@ -6143,6 +6143,33 @@ try {
         : `never painted: ${list(kindsMissing)}`,
     );
 
+    const localSelectionPath = join(dataDir, "local-selection.bin");
+    writeFileSync(localSelectionPath, new Uint8Array([1, 2, 3]));
+    const picker = await browser.send("Runtime.evaluate", {
+      expression: vocabIn('.mf-vocab-fileInput input[type="file"]'),
+    });
+    const pickerId = (picker.result?.["result"] as { objectId?: string } | undefined)?.objectId;
+    if (pickerId === undefined) throw new Error("the installed Worker's file picker did not mount");
+    const selection = await browser.send("DOM.setFileInputFiles", {
+      objectId: pickerId,
+      files: [localSelectionPath],
+    });
+    if (selection.error !== undefined) throw new Error(selection.error.message);
+    const inspected = await settles(
+      () =>
+        browser!.evaluate<boolean>(
+          `document.querySelector(${JSON.stringify(panelSelector)})?.textContent?.includes("local-selection.bin: 3 bytes") === true`,
+        ),
+      5_000,
+    );
+    check(
+      "R11 the installed Worker inspects a real local selection",
+      inspected,
+      inspected
+        ? "the native picker delivered the selected file's name and byte count to its Worker"
+        : "the Worker never received the local selection",
+    );
+
     const downloadPressed = await browser.evaluate<boolean>(
       `(() => { const button = ${vocabIn(".mf-vocab-byteDownload button")};
         if (!(button instanceof HTMLButtonElement) || button.disabled) return false;
