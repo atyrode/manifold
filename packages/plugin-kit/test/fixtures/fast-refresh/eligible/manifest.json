@@ -1,0 +1,19 @@
+{
+  "id": "example.fast-refresh",
+  "version": "1.0.0",
+  "title": "Fast Refresh acceptance",
+  "description": "An installed source fixture with co-located and component-only React refresh boundaries.",
+  "capabilities": [],
+  "contributes": {
+    "settings": [],
+    "panels": [
+      { "id": "counter", "title": "Refresh counter" },
+      { "id": "separate", "title": "Separate component" }
+    ],
+    "sections": [],
+    "elements": [],
+    "tools": [],
+    "events": []
+  },
+  "entry": { "web": "web.js", "styles": true }
+}

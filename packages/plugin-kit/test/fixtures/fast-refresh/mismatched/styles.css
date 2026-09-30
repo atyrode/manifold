@@ -1,0 +1,4 @@
+.plugin-example_counter {
+  color: rgb(199, 11, 99);
+  --fast-refresh-ineligible: mismatch;
+}

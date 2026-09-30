@@ -1,0 +1,15 @@
+{
+  "id": "example.not-installed",
+  "version": "1.0.0",
+  "title": "Not installed source",
+  "description": "A local source must not create a plugin installation.",
+  "capabilities": [],
+  "contributes": {
+    "panels": [{ "id": "counter", "title": "Not installed" }],
+    "sections": [],
+    "elements": [],
+    "tools": [],
+    "events": []
+  },
+  "entry": { "web": "web.js", "styles": true }
+}

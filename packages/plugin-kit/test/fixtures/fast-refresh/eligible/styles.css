@@ -1,0 +1,4 @@
+.plugin-example_fast-refresh {
+  color: rgb(41, 83, 127);
+  --fast-refresh-lease: packed;
+}
