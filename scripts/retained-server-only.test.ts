@@ -200,3 +200,87 @@ await import(${JSON.stringify(classifier)});
     }
   });
 }
+
+for (const [scenario, admitted] of [
+  ["legacy", true],
+  ["current", true],
+  ["current-library", true],
+  ["legacy-library", true],
+  ["changed-library", false],
+  ["unbound-library", false],
+  ["extra-flag", false],
+  ["wrong-parent", false],
+  ["wrong-cwd", false],
+  ["wrong-socket", false],
+  ["wrong-id", false],
+  ["extra-environment", false],
+] as const) {
+  test(`retained isolate ${admitted ? "admits" : "holds"} ${scenario}`, async () => {
+    const script = `
+import { mock } from "bun:test";
+const scenario = ${JSON.stringify(scenario)};
+const legacy = scenario.startsWith("legacy");
+const libraries = ["current-library", "legacy-library", "changed-library"].includes(scenario);
+const dir = "/data/plugins/example.counter/" + "a".repeat(64);
+const command = ["/usr/local/bin/bun", ...(legacy ? [] : ["--no-install"]), "--smol", dir + "/server.js"];
+if (scenario === "extra-flag") command.splice(1, 0, "--preload=/tmp/foreign.js");
+const serverEnv = { PATH: "/usr/local/bin", HOME: "/home/hub", ...(libraries ? { LD_LIBRARY_PATH: "/lib/reviewed" } : {}) };
+const childEnv = {
+  PATH: serverEnv.PATH, HOME: serverEnv.HOME,
+  MANIFOLD_PLUGIN_ID: scenario === "wrong-id" ? "example.other" : "example.counter",
+  MANIFOLD_PLUGIN_PIPE_FD: "3",
+  ...(!legacy && libraries ? { LD_LIBRARY_PATH: serverEnv.LD_LIBRARY_PATH } : {}),
+};
+if (scenario === "changed-library" || scenario === "unbound-library") childEnv.LD_LIBRARY_PATH = "/lib/foreign";
+if (scenario === "extra-environment") childEnv.BUN_OPTIONS = "--preload=/tmp/foreign.js";
+const fields = (values) => values.join("\\0") + "\\0";
+const environment = (value) => fields(Object.entries(value).map(([key, entry]) => key + "=" + entry));
+const stat = (parent) => "1 (bun) " + Array.from({ length: 20 }, (_, index) =>
+  index === 0 ? "S" : index === 1 ? parent : index === 17 ? "1" : index === 19 ? "12345" : "0").join(" ");
+mock.module("node:fs", () => ({
+  readdirSync: () => ["1", "99999999"],
+  readFileSync: (path) => {
+    if (path === "/proc/1/stat") return stat("0");
+    if (path === "/proc/99999999/stat") return stat(scenario === "wrong-parent" ? "77" : "1");
+    if (path.endsWith("/status")) return "Uid:\\t0 0 0 0\\nGid:\\t0 0 0 0\\n";
+    if (path === "/proc/1/environ") return environment(serverEnv);
+    if (path === "/proc/99999999/environ") return environment(childEnv);
+    if (path === "/proc/1/cmdline") return fields(["bun", "packages/server/src/main.ts"]);
+    if (path === "/proc/99999999/cmdline") return fields(command);
+    throw new Error("unexpected process read");
+  },
+  readlinkSync: (path) => {
+    if (path.endsWith("/exe")) return "/usr/local/bin/bun";
+    if (path === "/proc/1/cwd") return "/app";
+    if (path === "/proc/99999999/cwd") return scenario === "wrong-cwd" ? "/tmp" : dir;
+    if (path === "/proc/99999999/fd/3") return scenario === "wrong-socket" ? "/tmp/foreign" : "socket:[42]";
+    throw new Error("unexpected process link");
+  },
+}));
+await import(${JSON.stringify(classifier)});
+`;
+    const directory = mkdtempSync(join(tmpdir(), "manifold-retained-isolate-"));
+    try {
+      const fixture = join(directory, "classifier.test.ts");
+      writeFileSync(fixture, script);
+      const child = Bun.spawn([process.execPath, "test", fixture], {
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [code, stdout, stderr] = await Promise.all([
+        child.exited,
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+      ]);
+      expect(code).toBe(admitted ? 0 : 1);
+      expect(stdout.split("\n").filter((line) => line.startsWith("retained-processes-"))).toEqual([
+        admitted
+          ? "retained-processes-server-only"
+          : "retained-processes-hold:unclassified-process",
+      ]);
+      expect(stderr).not.toContain("unexpected process");
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+}

@@ -143,6 +143,11 @@ healthcheck and installed server-plugin isolates matching the hub loader's compl
 direct-child command, bundle path, process identity, control descriptor and minimal
 environment fingerprint. Those isolates are supervised parts of the hub: they stop
 with it, reload from their pinned bundles after replacement and own no native execution.
+The process check recognizes the exact old `--smol` launch for retained incumbents and the
+current `--no-install --smol` launch. Only the latter may carry `LD_LIBRARY_PATH`, and only
+when it exactly matches the hub's explicit system-library path. Extra flags, environment
+keys or altered library paths still hold replacement; parent, identity, working directory,
+bundle path and private socket checks remain required.
 An already terminated, single-threaded kernel zombie is non-owning only after two observations
 confirm state `Z`, one thread and the same starttime. A process that was live at the first
 observation and has exited by the second is the same fact arriving later: a field that vanishes

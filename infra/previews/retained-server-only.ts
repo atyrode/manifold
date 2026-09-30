@@ -191,17 +191,20 @@ function serverOwnedIsolate(
   serverIdentity: string,
   serverEnvironment: Map<string, string>,
 ): boolean {
-  const matched = pluginServer.exec(args[2] ?? "");
+  // Retained incumbents may still use the pre-native launcher. Recognize both exact forms.
+  const noInstall = args.length === 4 && args[1] === "--no-install";
+  const entryIndex = noInstall ? 3 : 2;
+  const matched = pluginServer.exec(args[entryIndex] ?? "");
   if (
     matched === null ||
     matched[1]!.length > 64 ||
-    args.length !== 3 ||
+    args.length !== entryIndex + 1 ||
     args[0] !== "/usr/local/bin/bun" ||
-    args[1] !== "--smol" ||
+    args[entryIndex - 1] !== "--smol" ||
     executable !== "/usr/local/bin/bun"
   )
     return false;
-  const dir = args[2]!.slice(0, -"/server.js".length);
+  const dir = args[entryIndex]!.slice(0, -"/server.js".length);
   if (
     procFields(pid)[1] !== "1" ||
     readlinkSync(`/proc/${pid}/cwd`) !== dir ||
@@ -211,11 +214,13 @@ function serverOwnedIsolate(
     return false;
   const environment = processEnvironment(pid);
   const serverHome = serverEnvironment.get("HOME");
+  const serverLibraries = noInstall ? serverEnvironment.get("LD_LIBRARY_PATH") : undefined;
   const expectedKeys = new Set([
     "PATH",
     "MANIFOLD_PLUGIN_ID",
     "MANIFOLD_PLUGIN_PIPE_FD",
     ...(serverHome === undefined ? [] : ["HOME"]),
+    ...(serverLibraries === undefined ? [] : ["LD_LIBRARY_PATH"]),
   ]);
   return (
     environment.size === expectedKeys.size &&
@@ -223,7 +228,8 @@ function serverOwnedIsolate(
     environment.get("PATH") === (serverEnvironment.get("PATH") ?? "") &&
     environment.get("MANIFOLD_PLUGIN_ID") === matched[1] &&
     environment.get("MANIFOLD_PLUGIN_PIPE_FD") === "3" &&
-    environment.get("HOME") === serverHome
+    environment.get("HOME") === serverHome &&
+    environment.get("LD_LIBRARY_PATH") === serverLibraries
   );
 }
 

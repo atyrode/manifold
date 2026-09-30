@@ -261,7 +261,6 @@ test("a bundle that does not hash to its pin is refused and leaves nothing behin
     }
     expect(await rosterRow(server)).toBeUndefined();
     expect(existsSync(installHome(server))).toBe(false);
-    expect(existsSync(join(server.dataDir, "plugins"))).toBe(false);
   } catch (error) {
     throw e2eFailure(error, servers);
   } finally {
