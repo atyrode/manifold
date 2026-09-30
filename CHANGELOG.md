@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.28.0] - 2026-09-30
+
+### Added
+
+- Machine inventory now reports `physicalCoreCount` when a connected Linux agent can observe its online physical package/core topology. SMT siblings count once, separate packages remain distinct, and unavailable topology stays unknown rather than falling back to logical CPUs or quotas. The observation refreshes on reconnect and disappears on disconnect or withdrawal. Authorized in-realm and hardened readers receive the same live metadata; older compatible agents remain connected without a count, and older packed plugins retain their supported inventory shape. Upgrade the hub before newer transports. (#939, #941)
+- Plugin lifecycle hooks can inspect current installed/enabled plugin identity, live public machine inventory, and visible instance-service readiness and policy revisions through narrow read-only metadata handles. Ordinary callbacks use the original installer's live credential; settled-job callbacks use that job's authority instead. Reads enforce current manifest and install grants, service-resource visibility, revocation, expiry and hook lifetime without exposing machine effects, invocation, configuration or secrets. Hardened contract 11 announces the handles only to compatible guests, preserving older packed hooks unchanged. (#940, #942)
+
+### Fixed
+
+- Protocol 48 now admits unchanged protocol 47 plugin bundles through an explicit, independently checked compatibility set, avoiding unnecessary holds during development deployment. The released OMP, Code and Babel family loads without repacking, and prior portable Workers still mount and read machines through their original strict shapes. Current readers retain physical-core metadata. Future and older unproven stamps, incompatible React majors and hardened contracts remain refused; session clients still require the current protocol. (#943, #944)
+- Dropping a stack into a sidebar gap now places it between the rows that actually border that gap, even when spare room or hidden rows makes the projected layout differ from its painted extent. Nested row and column gaps keep their direction and retained rows; real drag, fill and reorder checks continue to exercise the unchanged release path. (#945, #946)
+
 ## [0.27.0] - 2026-09-29
 
 ### Added
