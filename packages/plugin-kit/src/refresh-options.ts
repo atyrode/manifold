@@ -14,14 +14,19 @@ export const PLUGIN_REFRESH_DESCRIPTION = {
   lifetime: "process-local; close(), SIGINT or SIGTERM removes source leases and closes Vite",
   changes: {
     web: "Vite HMR and React Refresh; compatible component and CSS edits retain mounted state",
-    installation: "manifest, backend, native and dependency edits cancel the source until an explicit restart after installation",
+    installation:
+      "manifest, backend, native and dependency edits cancel the source until an explicit restart after installation",
   },
   credentials: "does not read an owner key or install/update a bundle",
-  fallback: "authenticated packed definition and CSS retained by the browser before source admission",
+  fallback:
+    "authenticated packed definition and CSS retained by the browser before source admission",
 } as const;
 
 export class PluginRefreshError extends Error {
-  constructor(readonly reason: string, message: string) {
+  constructor(
+    readonly reason: string,
+    message: string,
+  ) {
     super(message);
     this.name = "PluginRefreshError";
   }

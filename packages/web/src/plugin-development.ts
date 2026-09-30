@@ -1,12 +1,10 @@
-import { PluginManifestSchema } from "@manifold/protocol";
 import type { PluginRoster, PluginRosterEntry } from "@manifold/protocol";
 import { sources } from "virtual:manifold-plugin-development";
 import type { DevelopmentSource, DevelopmentWebModule } from "virtual:manifold-plugin-development";
-import { mountPluginStylesheet } from "./plugin-host.tsx";
+import { mountPluginStylesheet, pluginManifestKey } from "./plugin-host.tsx";
 import type { LoadedWebPlugin, WebPluginDef } from "./plugin-host.tsx";
 
 export interface PluginDevelopmentLoader {
-  definitionFor(row: PluginRosterEntry, held: LoadedWebPlugin): WebPluginDef;
   reconcile(): void;
   dispose(): void;
 }
@@ -20,33 +18,21 @@ interface SourceLease {
   unsubscribe: (() => void) | null;
 }
 
-function canonical(value: unknown): string {
-  return JSON.stringify(value, (_key, item: unknown) => {
-    if (item === null || typeof item !== "object" || Array.isArray(item)) return item;
-    return Object.fromEntries(
-      Object.entries(item).sort(([left], [right]) => left.localeCompare(right)),
-    );
-  });
-}
-
-function manifestKey(manifest: unknown): string | null {
-  const result = PluginManifestSchema.safeParse(manifest);
-  return result.success ? canonical(result.data) : null;
-}
-
 function eligible(row: PluginRosterEntry | undefined): row is PluginRosterEntry {
-  return row !== undefined &&
+  return (
+    row !== undefined &&
     row.enabled &&
     row.install !== undefined &&
     row.hardened !== true &&
     row.held === undefined &&
     row.install.refusal === undefined &&
-    row.manifest.entry?.web !== undefined;
+    row.manifest.entry?.web !== undefined
+  );
 }
 
 /** Projection and keyboard claims have no manifest row; their packed declarations stay admitted. */
 function registrationClaims(definition: WebPluginDef): string {
-  return canonical({
+  return JSON.stringify({
     renderers: Object.keys(definition.renderers ?? {}).sort(),
     overlays: Object.keys(definition.overlays ?? {}).sort(),
     workspaceOverlays: Object.keys(definition.workspaceOverlays ?? {}).sort(),
@@ -72,14 +58,16 @@ export function createPluginDevelopmentLoader(
 
   const current = (lease: SourceLease): boolean => {
     const row = currentRow(lease.source.id);
-    return !disposed &&
+    return (
+      !disposed &&
       leases.get(lease.source.id) === lease &&
       sources.includes(lease.source) &&
       loaded.get(lease.source.id) === lease.held &&
       eligible(row) &&
       row.install!.sha256 === lease.held.sha256 &&
-      manifestKey(row.manifest) === lease.manifestKey &&
-      manifestKey(lease.source.manifest) === lease.manifestKey;
+      pluginManifestKey(row.manifest) === lease.manifestKey &&
+      pluginManifestKey(lease.source.manifest) === lease.manifestKey
+    );
   };
 
   const cancel = (lease: SourceLease): void => {
@@ -95,10 +83,18 @@ export function createPluginDevelopmentLoader(
     lease.held.unmountStyles = null;
     lease.held.def = lease.held.packedDef;
     const row = currentRow(id);
-    if (!disposed && loaded.get(id) === lease.held && eligible(row) &&
-      row.install!.sha256 === lease.held.sha256) {
+    if (
+      !disposed &&
+      loaded.get(id) === lease.held &&
+      eligible(row) &&
+      row.install!.sha256 === lease.held.sha256
+    ) {
       if (lease.held.packedCss !== null) {
-        lease.held.unmountStyles = mountPluginStylesheet(id, lease.held.packedCss, document);
+        lease.held.unmountStyles = mountPluginStylesheet<HTMLStyleElement>(
+          id,
+          lease.held.packedCss,
+          document,
+        );
       }
       publish();
     }
@@ -121,23 +117,24 @@ export function createPluginDevelopmentLoader(
       cancel(lease);
       return;
     }
-    if (!validDefinition(lease, module.default)) {
-      cancel(lease);
-      return;
-    }
-    // The module owns Vite's Refresh families. Publishing its real component types preserves
-    // compatible state without wrapping components or introducing another Refresh engine.
-    lease.held.unmountStyles?.();
-    lease.held.unmountStyles = null;
-    lease.active = true;
     try {
-      lease.held.unmountStyles = module.mountStyles();
-      lease.held.def = module.default;
       const unsubscribe = module.subscribe((definition) => {
         if (leases.get(lease.source.id) !== lease) return;
-        if (!current(lease) || definition === null || !validDefinition(lease, definition)) {
+        if (!current(lease) || definition === null) {
           cancel(lease);
           return;
+        }
+        // A bridge subscribes before loading its graph, so first-import errors remain recoverable.
+        if (definition === undefined) return;
+        if (!validDefinition(lease, definition)) {
+          cancel(lease);
+          return;
+        }
+        if (!lease.active) {
+          lease.held.unmountStyles?.();
+          lease.held.unmountStyles = null;
+          lease.active = true;
+          lease.held.unmountStyles = module.mountStyles();
         }
         lease.held.def = definition;
         publish();
@@ -156,11 +153,6 @@ export function createPluginDevelopmentLoader(
   };
 
   return {
-    definitionFor(row: PluginRosterEntry, held: LoadedWebPlugin): WebPluginDef {
-      const lease = leases.get(row.manifest.id);
-      // A new roster frame can render before passive effects cancel the previous lease.
-      return lease?.active === true && current(lease) ? held.def : held.packedDef;
-    },
     reconcile(): void {
       if (disposed) return;
       for (const lease of leases.values()) {
@@ -171,8 +163,8 @@ export function createPluginDevelopmentLoader(
         const row = currentRow(source.id);
         const held = loaded.get(source.id);
         if (!eligible(row) || held === undefined || row.install!.sha256 !== held.sha256) continue;
-        const key = manifestKey(source.manifest);
-        if (key === null || key !== manifestKey(row.manifest) || key !== manifestKey(held.manifest)) {
+        const key = pluginManifestKey(source.manifest);
+        if (key === null || key !== pluginManifestKey(row.manifest) || key !== held.manifestKey) {
           continue;
         }
         const lease: SourceLease = {

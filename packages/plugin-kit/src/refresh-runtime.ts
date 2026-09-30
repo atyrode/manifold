@@ -1,102 +1,120 @@
 /** A Vite-local lifecycle event, never a Manifold session frame or native channel. */
 export const PLUGIN_REFRESH_CANCEL_EVENT = "manifold:plugin-refresh-cancel";
+export const PLUGIN_REFRESH_READY_EVENT = "manifold:plugin-refresh-ready";
 
-/** Browser lease adapter; Vite and React Refresh retain ownership of CSS updates and families. */
+/** Browser leases preserve real types; React Refresh owns families and hook compatibility. */
 export const pluginRefreshRuntime = String.raw`
-import * as React from "react";
-import * as Refresh from "/@react-refresh";
-import { updateStyle as applyStyle, removeStyle as discardStyle } from "/@vite/client";
+import { updateStyle as applyStyle, removeStyle as discardStyle, ErrorOverlay } from "/@vite/client";
 
 const sources = new Map();
 const sheets = new Map();
-const componentSlots = { panels: true, sections: true, elements: true, routes: true, renderers: true, overlays: true, workspaceOverlays: true, terminals: true };
+const registrations = new WeakMap();
+let ended = false;
+let transportLive = false;
+let graphFailed = false;
 
 function state(id) {
   let value = sources.get(id);
   if (!value) {
-    value = { id, raw: null, definition: null, listeners: new Set(), leases: 0, cancelled: false, components: new Map(), previous: null };
+    value = { id, raw: null, definition: undefined, listeners: new Set(), leases: 0, cancelled: ended, configured: false, stylesReady: false, failed: false, error: null };
     sources.set(id, value);
   }
   return value;
 }
 
+function definition(value) {
+  return value.cancelled ? null : transportLive && value.stylesReady ? value.definition : undefined;
+}
+
 function notify(value) {
-  for (const listener of value.listeners) listener(value.cancelled ? null : value.definition);
+  for (const listener of value.listeners) listener(definition(value));
 }
 
-function compatible(before, after, slot = false) {
-  if (slot && Refresh.isLikelyComponentType(before) && Refresh.isLikelyComponentType(after)) return true;
-  if (Object.is(before, after)) return true;
-  if (!before || !after || typeof before !== "object" || typeof after !== "object") return false;
-  if (Array.isArray(before) !== Array.isArray(after)) return false;
-  const left = Object.keys(before).sort();
-  const right = Object.keys(after).sort();
-  return left.length === right.length && left.every((key, index) => key === right[index] && compatible(before[key], after[key], slot || componentSlots[key] === true));
+export function registerComponent(runtime, type, id) {
+  runtime.register(type, id);
+  if (type && (typeof type === "function" || typeof type === "object")) registrations.set(type, id);
 }
 
-function bridge(value, definition, path = "", slot = false) {
-  if (slot && Refresh.isLikelyComponentType(definition)) {
-    Refresh.register(definition, value.id + " descriptor " + path);
-    let cell = value.components.get(path);
-    if (!cell) {
-      cell = { current: definition, wrapper: null };
-      const component = (props) => React.createElement(cell.current, props);
-      component.displayName = "PluginRefresh(" + path + ")";
-      cell.wrapper = component;
-      value.components.set(path, cell);
+function retainTypes(previous, next) {
+  if (Object.is(previous, next) || !previous || !next) return next;
+  if ((typeof next === "function" || typeof next === "object") && registrations.has(next) && registrations.get(previous) === registrations.get(next)) return previous;
+  if (typeof next !== "object" || typeof previous !== "object") return next;
+  if (Array.isArray(next) !== Array.isArray(previous)) return next;
+  if (!Array.isArray(next) && Object.getPrototypeOf(next) !== Object.prototype) return next;
+  let result = next;
+  for (const key of Object.keys(next)) {
+    const held = retainTypes(previous[key], next[key]);
+    if (held !== next[key]) {
+      if (result === next) result = Array.isArray(next) ? [...next] : { ...next };
+      result[key] = held;
     }
-    cell.current = definition;
-    return cell.wrapper;
   }
-  if (!definition || typeof definition !== "object") return definition;
-  const result = Array.isArray(definition) ? [] : {};
-  for (const key of Object.keys(definition)) result[key] = bridge(value, definition[key], path + "/" + key, slot || componentSlots[key] === true);
   return result;
 }
 
-export function publish(id, definition) {
+export function publish(id, next) {
   const value = state(id);
-  if (value.cancelled) return;
-  if (!definition || typeof definition !== "object" || definition.id !== id) {
+  if (value.cancelled || value.raw === next) return;
+  if (!next || typeof next !== "object" || next.id !== id) {
     cancel(id, "source_id_mismatch");
     return;
   }
-  value.previous = value.raw;
-  if (value.raw && !compatible(value.raw, definition)) value.components.clear();
-  value.raw = definition;
-  value.definition = bridge(value, definition);
+  // Old real types keep their state until the standard debounced Refresh advances their families.
+  value.definition = retainTypes(value.definition, next);
+  value.raw = next;
+  if (value.stylesReady) {
+    value.failed = false;
+    value.error?.remove();
+    value.error = null;
+  }
   notify(value);
 }
 
-// Only an entry descriptor gets this adapter. Ordinary component modules use Vite's own boundary.
-export function acceptDescriptor(runtime, filename, before, after) {
-  const id = entryIds.get(filename);
-  if (!id || state(id).cancelled) return;
-  if (after?.default && after.default !== state(id).raw) publish(id, after.default);
-  if (state(id).cancelled) return;
+export function acceptDescriptor(runtime, filename, id, before, after) {
   const stable = before?.default ?? null;
-  // The descriptor was reconciled above. React Refresh still decides component and hook compatibility.
-  const reason = runtime.validateRefreshBoundaryAndEnqueueUpdate(filename, { ...before, default: stable }, { ...after, default: stable });
-  if (reason) {
+  const incompatible = runtime.validateRefreshBoundaryAndEnqueueUpdate(filename, { ...before, default: stable }, { ...after, default: stable });
+  if (incompatible) {
     const value = state(id);
-    value.components.clear();
-    value.definition = bridge(value, value.raw);
-    notify(value);
-    runtime.validateRefreshBoundaryAndEnqueueUpdate(filename, { default: null }, { default: null });
+    if (!value.cancelled) {
+      value.definition = value.raw;
+      notify(value);
+    }
   }
 }
 
-const entryIds = new Map();
-export function registerEntry(filename, id) { entryIds.set(filename, id); }
-export function acceptEntry(filename, id, module) {
-  registerEntry(filename, id);
-  acceptDescriptor(Refresh, filename, { default: state(id).previous }, module);
+export function graphError(id, reason) {
+  const value = state(id);
+  if (value.cancelled) return;
+  graphFailed = true;
+  value.failed = true;
+  console.error("plugin-refresh:", id, reason);
+  if (!document.querySelector("vite-error-overlay")) {
+    value.error = new ErrorOverlay({ message: reason instanceof Error ? reason.message : String(reason), stack: reason instanceof Error ? reason.stack : undefined });
+    document.body.appendChild(value.error);
+  }
 }
 
-export function sourceModule(id) {
+export function stylesLoaded(id) {
   const value = state(id);
+  if (value.cancelled || value.stylesReady) return;
+  value.stylesReady = true;
+  if (value.raw) {
+    value.failed = false;
+    value.error?.remove();
+    value.error = null;
+  }
+  notify(value);
+}
+
+export function sourceModule(id, stylesheet) {
+  const value = state(id);
+  if (!value.configured) {
+    value.configured = true;
+    value.stylesReady = !stylesheet;
+  }
   return {
-    get default() { return value.cancelled ? null : value.definition; },
+    get default() { return definition(value); },
+    get initialFailurePending() { return !value.cancelled && value.failed && (!value.raw || !value.stylesReady); },
     mountStyles() {
       if (value.cancelled) return () => {};
       value.leases++;
@@ -111,7 +129,7 @@ export function sourceModule(id) {
     },
     subscribe(listener) {
       value.listeners.add(listener);
-      listener(value.cancelled ? null : value.definition);
+      listener(definition(value));
       return () => value.listeners.delete(listener);
     },
   };
@@ -128,15 +146,36 @@ export function cancel(id, reason) {
   if (value.cancelled) return;
   value.cancelled = true;
   value.leases = 0;
+  value.error?.remove();
+  value.error = null;
   for (const [key, sheet] of sheets) if (sheet.owners.includes(id) && !sheet.owners.some((owner) => state(owner).leases > 0)) discardStyle(key);
   notify(value);
   console.warn("plugin-refresh:", id, reason);
 }
 
+function end(reason) {
+  ended = true;
+  transportLive = false;
+  for (const id of sources.keys()) cancel(id, reason);
+}
+
 if (import.meta.hot) {
+  const nonce = crypto.randomUUID();
+  import.meta.hot.on(${JSON.stringify(PLUGIN_REFRESH_READY_EVENT)}, data => {
+    if (ended || transportLive || data?.nonce !== nonce) return;
+    transportLive = true;
+    for (const value of sources.values()) notify(value);
+  });
+  import.meta.hot.on("vite:beforeUpdate", () => {
+    if (!graphFailed) return;
+    // The native overlay stays visible until correction, without first-update document reload.
+    for (const overlay of document.querySelectorAll("vite-error-overlay")) overlay.remove();
+    for (const value of sources.values()) value.error = null;
+    graphFailed = false;
+  });
   import.meta.hot.on(${JSON.stringify(PLUGIN_REFRESH_CANCEL_EVENT)}, ({ ids, reason }) => { for (const id of ids) cancel(id, reason); });
-  import.meta.hot.on("vite:ws:disconnect", () => { for (const id of sources.keys()) cancel(id, "disconnected"); });
-  // An explicit frontend restart ends old admissions rather than reviving a disconnected lease.
-  import.meta.hot.on("vite:beforeFullReload", () => { for (const id of sources.keys()) cancel(id, "restart_required"); });
+  import.meta.hot.on("vite:ws:disconnect", () => end("disconnected"));
+  import.meta.hot.on("vite:beforeFullReload", () => end("restart_required"));
+  import.meta.hot.send(${JSON.stringify(PLUGIN_REFRESH_READY_EVENT)}, { nonce });
 }
 `;

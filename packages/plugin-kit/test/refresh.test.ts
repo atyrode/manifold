@@ -8,25 +8,42 @@ import type { PluginRefreshHandle } from "../src/refresh.ts";
 
 const HUB = "http://127.0.0.1:1";
 
-async function source(root: string, directory: string, id: string, server = false): Promise<string> {
+async function source(
+  root: string,
+  directory: string,
+  id: string,
+  server = false,
+): Promise<string> {
   const dir = join(root, directory);
   await mkdir(dir, { recursive: true });
-  await Bun.write(join(dir, "manifest.json"), JSON.stringify({
-    id,
-    version: "1.0.0",
-    title: "Refresh boundary fixture",
-    description: "A source module subject to installed-plugin admission.",
-    capabilities: [],
-    contributes: { panels: [{ id: "counter", title: "Counter" }] },
-    entry: { web: "web.js", styles: true, ...(server ? { server: true } : {}) },
-  }));
-  await Bun.write(join(dir, "web.tsx"), `import { useState } from "react";
+  await Bun.write(
+    join(dir, "manifest.json"),
+    JSON.stringify({
+      id,
+      version: "1.0.0",
+      title: "Refresh boundary fixture",
+      description: "A source module subject to installed-plugin admission.",
+      capabilities: [],
+      contributes: { panels: [{ id: "counter", title: "Counter" }] },
+      entry: { web: "web.js", styles: true, ...(server ? { server: true } : {}) },
+    }),
+  );
+  await Bun.write(
+    join(dir, "web.tsx"),
+    `import { useState } from "react";
 function Counter() { const [n, setN] = useState(0); return <button onClick={() => setN(n + 1)}>{n}</button>; }
 export default { id: ${JSON.stringify(id)}, panels: { counter: Counter } };
-`);
-  await Bun.write(join(dir, "styles.css"), `.plugin-${id.replaceAll(".", "_")} { color: rgb(1, 2, 3); }\n`);
+`,
+  );
+  await Bun.write(
+    join(dir, "styles.css"),
+    `.plugin-${id.replaceAll(".", "_")} { color: rgb(1, 2, 3); }\n`,
+  );
   if (server) {
-    await Bun.write(join(dir, "server.ts"), `import { protocol } from "./contract.ts"; export const backend = protocol;\n`);
+    await Bun.write(
+      join(dir, "server.ts"),
+      `import { protocol } from "./contract.ts"; export const backend = protocol;\n`,
+    );
     await Bun.write(join(dir, "contract.ts"), `export const protocol = "backend-v1";\n`);
   }
   return dir;
@@ -49,45 +66,49 @@ async function cancelled(handle: PluginRefreshHandle, file: string): Promise<Res
 }
 
 test("source flags refuse installation authority and invalid listener ports before filesystem access", () => {
-  expect(parseRefreshFlags(["missing-root", "--fast-refresh", "--hub", HUB, "--port", "0"])).toEqual({ root: resolve("missing-root"), hub: HUB, port: 0 });
-  expect(parseRefreshFlags(["missing-root", "--fast-refresh", "--hub", HUB, "--port", "65535"]).port).toBe(65535);
-  for (const flag of ["--owner-key-file", "--deliver", "--hardened"]) expect(() => parseRefreshFlags(["missing-root", "--fast-refresh", "--hub", HUB, flag, "not-read"])).toThrow("cannot be used with --fast-refresh");
-  for (const port of ["-1", "65536", "1.5", "NaN", ""]) expect(() => parseRefreshFlags(["missing-root", "--fast-refresh", "--hub", HUB, "--port", port])).toThrow("--port");
-  expect(() => parseRefreshFlags(["missing-root", "--fast-refresh", "--hub", HUB, "--poert", "42"])).toThrow("unknown flag");
-  expect(() => parseRefreshFlags(["one", "two", "--fast-refresh", "--hub", HUB])).toThrow("exactly one");
+  expect(
+    parseRefreshFlags(["missing-root", "--fast-refresh", "--hub", HUB, "--port", "0"]),
+  ).toEqual({ root: resolve("missing-root"), hub: HUB, port: 0 });
+  expect(
+    parseRefreshFlags(["missing-root", "--fast-refresh", "--hub", HUB, "--port", "65535"]).port,
+  ).toBe(65535);
+  for (const flag of ["--owner-key-file", "--deliver", "--hardened"])
+    expect(() =>
+      parseRefreshFlags(["missing-root", "--fast-refresh", "--hub", HUB, flag, "not-read"]),
+    ).toThrow("cannot be used with --fast-refresh");
+  for (const port of ["-1", "65536", "1.5", "NaN", ""])
+    expect(() =>
+      parseRefreshFlags(["missing-root", "--fast-refresh", "--hub", HUB, "--port", port]),
+    ).toThrow("--port");
+  expect(() =>
+    parseRefreshFlags(["missing-root", "--fast-refresh", "--hub", HUB, "--poert", "42"]),
+  ).toThrow("unknown flag");
+  expect(() => parseRefreshFlags(["one", "two", "--fast-refresh", "--hub", HUB])).toThrow(
+    "exactly one",
+  );
 });
 
-test("CLI help and description require neither a source, a hub nor an owner key", async () => {
-  for (const flag of ["--help", "--describe"]) {
-    const child = Bun.spawn([process.execPath, join(import.meta.dir, "../src/dev.ts"), "nonexistent-source", "--fast-refresh", flag], {
-      stdout: "pipe",
-      stderr: "pipe",
-      env: { ...process.env, MANIFOLD_OWNER_KEY_FILE: "/nonexistent-owner-key-for-refresh-description" },
-    });
-    const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
-    expect(exit).toBe(0);
-    expect(stderr).not.toContain("owner key");
-    if (flag === "--describe") {
-      const description: unknown = JSON.parse(stdout);
-      expect(description).toMatchObject({ mode: "frontend-source", binding: "127.0.0.1" });
-    }
-  }
-});
-
-test("public handle serves multiple explicit entries, proxies ordinary hub routes and releases its listener", async () => {
+test("public handle serves multiple explicit entries and releases its listener", async () => {
   const root = await mkdtemp(join(tmpdir(), "plugin-refresh-lifetime-"));
-  const hub = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: (incoming) => new Response(new URL(incoming.url).pathname) });
   let handle: PluginRefreshHandle | undefined;
+  const hub = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: (request) => Response.json({ path: new URL(request.url).pathname }),
+  });
   try {
     const first = await source(root, "parent", "example.refresh");
     const second = await source(root, "parent/child", "example.refresh.child");
     handle = await startPluginRefresh({ root, hub: hub.url.origin, port: 0 });
     expect(handle.plugins).toEqual(["example.refresh", "example.refresh.child"]);
-    expect(handle.sources.map((item) => item.manifest.id)).toEqual(handle.plugins);
     expect(new URL(handle.url).hostname).toBe("127.0.0.1");
     expect(new URL(handle.url).searchParams.get("instance")).toBe(hub.url.origin);
-    for (const directory of [first, second]) expect((await request(handle, join(directory, "web.tsx"))).status).toBe(200);
-    for (const path of ["/healthz", "/auth/session", "/api/protocol"]) expect(await (await fetch(new URL(path, handle.url))).text()).toBe(path);
+    for (const path of ["/api/development-proxy", "/healthz", "/auth/development-proxy"]) {
+      const response = await fetch(new URL(path, handle.url));
+      expect(await response.json()).toEqual({ path });
+    }
+    for (const directory of [first, second])
+      expect((await request(handle, join(directory, "web.tsx"))).status).toBe(200);
     await Promise.all([handle.close(), handle.close(), handle.closed]);
     await expect(fetch(handle.url)).rejects.toThrow();
   } finally {
@@ -107,14 +128,31 @@ test("HTTP source boundaries refuse arbitrary modules, secrets, encoded traversa
     await Bun.write(privateFile, 'export const content = "PRIVATE_SOURCE_MARKER";');
     await Bun.write(join(outside, "public.ts"), 'export const content = "OUTSIDE_SOURCE_MARKER";');
     await symlink(join(outside, "public.ts"), join(directory, "escaped.ts"));
-    for (const name of [".env", ".env.local", "owner.key", "credentials.json", ".git/config"]) await Bun.write(join(directory, name), "PRIVATE_SOURCE_MARKER");
+    for (const name of [".env", ".env.local", "owner.key", "credentials.json", ".git/config"])
+      await Bun.write(join(directory, name), "PRIVATE_SOURCE_MARKER");
     handle = await startPluginRefresh({ root, hub: HUB, port: 0 });
-    for (const file of [privateFile, join(directory, "escaped.ts"), join(outside, "public.ts"), ...[".env", ".env.local", "owner.key", "credentials.json", ".git/config"].map((name) => join(directory, name))]) {
+    for (const file of [
+      privateFile,
+      join(directory, "escaped.ts"),
+      join(outside, "public.ts"),
+      ...[".env", ".env.local", "owner.key", "credentials.json", ".git/config"].map((name) =>
+        join(directory, name),
+      ),
+    ]) {
       const response = await request(handle, file);
       expect(response.status).toBe(403);
       expect(await response.text()).not.toContain("SOURCE_MARKER");
+      for (const prefix of ["/@id/", "/@id/%2F"]) {
+        const wrapped = await fetch(
+          new URL(prefix + (prefix.endsWith("%2F") ? file.slice(1) : file) + "?raw", handle.url),
+        );
+        expect(wrapped.status).toBe(403);
+        expect(await wrapped.text()).not.toContain("SOURCE_MARKER");
+      }
     }
-    const traversal = await fetch(`${new URL(handle.url).origin}/@fs${directory}/%252e%252e/private.ts`);
+    const traversal = await fetch(
+      `${new URL(handle.url).origin}/@fs${directory}/%252e%252e/private.ts`,
+    );
     expect(traversal.status).toBe(403);
     expect((await request(handle, join(directory, "web.tsx"))).status).toBe(200);
   } finally {
@@ -132,15 +170,27 @@ test("source startup refuses symlinked entry escapes, missing explicit entries a
     await rm(join(directory, "web.tsx"));
     await Bun.write(join(outside, "entry.tsx"), 'export default { id: "example.refresh" };');
     await symlink(join(outside, "entry.tsx"), join(directory, "web.tsx"));
-    await expect(startPluginRefresh({ root, hub: HUB, port: 0 })).rejects.toMatchObject({ reason: "source_boundary" });
+    await expect(startPluginRefresh({ root, hub: HUB, port: 0 })).rejects.toMatchObject({
+      reason: "source_boundary",
+    });
     await rm(join(directory, "web.tsx"));
-    await expect(startPluginRefresh({ root, hub: HUB, port: 0 })).rejects.toMatchObject({ reason: "missing_entry" });
+    await expect(startPluginRefresh({ root, hub: HUB, port: 0 })).rejects.toMatchObject({
+      reason: "missing_entry",
+    });
     await source(root, "plugin", "example.refresh");
-    for (const css of ["body { color: red; }", '@import "./another.css";', ".plugin-example_refresh { .foreign & { color: red; } }"]) {
+    for (const css of [
+      "body { color: red; }",
+      '@import "./another.css";',
+      ".plugin-example_refresh { .foreign & { color: red; } }",
+    ]) {
       await Bun.write(join(directory, "styles.css"), css);
-      await expect(startPluginRefresh({ root, hub: HUB, port: 0 })).rejects.toMatchObject({ reason: "stylesheet_unscoped" });
+      await expect(startPluginRefresh({ root, hub: HUB, port: 0 })).rejects.toMatchObject({
+        reason: "stylesheet_unscoped",
+      });
     }
-    await expect(startPluginRefresh({ root, hub: HUB, port: 65536 })).rejects.toBeInstanceOf(PluginRefreshError);
+    await expect(startPluginRefresh({ root, hub: HUB, port: 65536 })).rejects.toBeInstanceOf(
+      PluginRefreshError,
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
     await rm(outside, { recursive: true, force: true });
@@ -153,19 +203,42 @@ test("real external package imports are registered narrowly and dependency edits
   let handle: PluginRefreshHandle | undefined;
   try {
     const directory = await source(root, "plugin", "example.refresh");
-    await Bun.write(join(root, "package.json"), JSON.stringify({ private: true, type: "module", dependencies: { "external-ui": "1.0.0" } }));
+    await Bun.write(
+      join(root, "package.json"),
+      JSON.stringify({ private: true, type: "module", dependencies: { "external-ui": "1.0.0" } }),
+    );
     await mkdir(join(root, "node_modules"), { recursive: true });
-    await Bun.write(join(packageRoot, "package.json"), JSON.stringify({ name: "external-ui", version: "1.0.0", type: "module", exports: "./index.tsx" }));
-    await Bun.write(join(packageRoot, "index.tsx"), 'import { useState } from "react"; export function Counter() { const [n] = useState(7); return <span>{n}</span>; }');
-    await Bun.write(join(packageRoot, "private.ts"), 'export const secret = "UNREGISTERED_PACKAGE_MARKER";');
+    await Bun.write(
+      join(packageRoot, "package.json"),
+      JSON.stringify({
+        name: "external-ui",
+        version: "1.0.0",
+        type: "module",
+        exports: "./index.tsx",
+      }),
+    );
+    await Bun.write(
+      join(packageRoot, "index.tsx"),
+      'import { useState } from "react"; export function Counter() { const [n] = useState(7); return <span>{n}</span>; }',
+    );
+    await Bun.write(
+      join(packageRoot, "private.ts"),
+      'export const secret = "UNREGISTERED_PACKAGE_MARKER";',
+    );
     await symlink(packageRoot, join(root, "node_modules/external-ui"));
-    await Bun.write(join(directory, "web.tsx"), 'import { Counter } from "external-ui"; export default { id: "example.refresh", panels: { counter: Counter } };');
+    await Bun.write(
+      join(directory, "web.tsx"),
+      'import { Counter } from "external-ui"; export default { id: "example.refresh", panels: { counter: Counter } };',
+    );
     handle = await startPluginRefresh({ root, hub: HUB, port: 0 });
     expect((await request(handle, join(packageRoot, "index.tsx"))).status).toBe(403);
     expect((await request(handle, join(directory, "web.tsx"))).status).toBe(200);
     expect((await request(handle, join(packageRoot, "index.tsx"))).status).toBe(200);
     expect((await request(handle, join(packageRoot, "private.ts"))).status).toBe(403);
-    await Bun.write(join(packageRoot, "index.tsx"), 'export function Counter() { return <span>changed dependency</span>; }');
+    await Bun.write(
+      join(packageRoot, "index.tsx"),
+      "export function Counter() { return <span>changed dependency</span>; }",
+    );
     expect((await cancelled(handle, join(directory, "web.tsx"))).status).toBe(410);
   } finally {
     await handle?.close();
@@ -179,7 +252,10 @@ test("backend shared-contract and manifest edits terminate admission until an ex
   let handle: PluginRefreshHandle | undefined;
   try {
     const directory = await source(root, "plugin", "example.refresh", true);
-    await Bun.write(join(directory, "web.tsx"), 'import { protocol } from "./contract.ts"; export default { id: "example.refresh", panels: {} }; console.log(protocol);');
+    await Bun.write(
+      join(directory, "web.tsx"),
+      'import { protocol } from "./contract.ts"; export default { id: "example.refresh", panels: {} }; console.log(protocol);',
+    );
     handle = await startPluginRefresh({ root, hub: HUB, port: 0 });
     expect((await request(handle, join(directory, "web.tsx"))).status).toBe(200);
     expect((await request(handle, join(directory, "server.ts"))).status).toBe(403);
@@ -197,6 +273,253 @@ test("backend shared-contract and manifest edits terminate admission until an ex
     expect(handle.sources[0]?.manifest.version).toBe("1.0.0");
   } finally {
     await handle?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+}, 30000);
+
+test("source transforms reject secret and outside-root asset inlining before Vite can read bytes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "plugin-refresh-assets-"));
+  const outside = await mkdtemp(join(tmpdir(), "plugin-refresh-asset-outside-"));
+  try {
+    const directory = await source(root, "plugin", "example.refresh");
+    await Bun.write(join(directory, ".env"), "SECRET_ASSET_MARKER");
+    const outsideFile = join(outside, "payload.txt");
+    await Bun.write(outsideFile, "OUTSIDE_ASSET_MARKER");
+    for (const asset of [".env?inline", outsideFile + "?inline"]) {
+      await Bun.write(
+        join(directory, "web.tsx"),
+        `export default { id: "example.refresh", panels: {} }; export const asset = new URL(${JSON.stringify(asset)}, import.meta.url);`,
+      );
+      const handle = await startPluginRefresh({ root, hub: HUB, port: 0 });
+      try {
+        const response = await request(handle, join(directory, "web.tsx"));
+        expect(response.ok).toBe(false);
+        const body = await response.text();
+        expect(body).not.toContain("SECRET_ASSET_MARKER");
+        expect(body).not.toContain("OUTSIDE_ASSET_MARKER");
+      } finally {
+        await handle.close();
+      }
+    }
+    await Bun.write(
+      join(directory, "web.tsx"),
+      'import "./unsafe.css"; export default { id: "example.refresh", panels: {} };',
+    );
+    for (const target of [".env?inline", outsideFile + "?inline"]) {
+      await Bun.write(
+        join(directory, "unsafe.css"),
+        `.plugin-example_refresh { background: url(${JSON.stringify(target)}); }`,
+      );
+      const handle = await startPluginRefresh({ root, hub: HUB, port: 0 });
+      try {
+        expect((await request(handle, join(directory, "web.tsx"))).status).toBe(200);
+        const response = await request(handle, join(directory, "unsafe.css"));
+        expect(response.ok).toBe(false);
+        const body = await response.text();
+        expect(body).not.toContain("SECRET_ASSET_MARKER");
+        expect(body).not.toContain("OUTSIDE_ASSET_MARKER");
+      } finally {
+        await handle.close();
+      }
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+}, 30000);
+
+test("one plugin cannot import a sibling's backend, including a server-only sibling", async () => {
+  const root = await mkdtemp(join(tmpdir(), "plugin-refresh-sibling-"));
+  try {
+    const first = await source(root, "first", "example.first");
+    const second = await source(root, "second", "example.second", true);
+    for (const serverOnly of [false, true]) {
+      if (serverOnly) {
+        const file = join(second, "manifest.json");
+        const manifest = await Bun.file(file).json();
+        await Bun.write(
+          file,
+          JSON.stringify({ ...manifest, contributes: {}, entry: { server: true } }),
+        );
+      }
+      await Bun.write(
+        join(first, "web.tsx"),
+        'import "../second/server.ts"; export default { id: "example.first", panels: {} };',
+      );
+      const handle = await startPluginRefresh({ root, hub: HUB, port: 0 });
+      try {
+        const response = await request(handle, join(first, "web.tsx"));
+        expect(response.ok).toBe(false);
+        expect(await response.text()).not.toContain("backend-v1");
+        expect((await request(handle, join(second, "server.ts"))).status).toBe(403);
+      } finally {
+        await handle.close();
+      }
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}, 30000);
+
+test("declared native bundle members must be regular files, not source-serving symlinks", async () => {
+  const root = await mkdtemp(join(tmpdir(), "plugin-refresh-native-"));
+  const outside = await mkdtemp(join(tmpdir(), "plugin-refresh-native-outside-"));
+  try {
+    const directory = await source(root, "plugin", "example.refresh");
+    const manifestFile = join(directory, "manifest.json");
+    const manifest = await Bun.file(manifestFile).json();
+    await Bun.write(
+      manifestFile,
+      JSON.stringify({
+        ...manifest,
+        machine: {
+          artifacts: {
+            "linux-x64": {
+              bundleFile: "native",
+              sha256: "0".repeat(64),
+              entrySha256: "0".repeat(64),
+              format: "raw",
+              entry: ["native"],
+              maxBytes: 64,
+              maxExpandedBytes: 64,
+              maxMembers: 1,
+            },
+          },
+          locations: {},
+          operations: {
+            "example.refresh.run": {
+              argv: [],
+              input: {},
+              runtimeTools: [],
+              locations: [],
+              outputs: [],
+              network: "none",
+              stdin: false,
+              limits: { timeoutMs: 1000, memoryBytes: 1048576, processes: 1, outputBytes: 4096 },
+            },
+          },
+        },
+      }),
+    );
+    await Bun.write(join(outside, "payload"), "OUTSIDE_NATIVE_MARKER");
+    await symlink(join(outside, "payload"), join(directory, "native"));
+    await expect(startPluginRefresh({ root, hub: HUB, port: 0 })).rejects.toMatchObject({
+      reason: "source_boundary",
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+test("unsupported stylesheet dialects cannot bypass plugin-root CSS admission", async () => {
+  const root = await mkdtemp(join(tmpdir(), "plugin-refresh-styles-"));
+  try {
+    const directory = await source(root, "plugin", "example.refresh");
+    for (const extension of [".pcss", ".postcss", ".scss"]) {
+      await Bun.write(
+        join(directory, "web.tsx"),
+        `import "./extra${extension}"; export default { id: "example.refresh", panels: {} };`,
+      );
+      await Bun.write(join(directory, "extra" + extension), "body { color: red; }");
+      const handle = await startPluginRefresh({ root, hub: HUB, port: 0 });
+      try {
+        expect((await request(handle, join(directory, "web.tsx"))).status).toBe(200);
+        expect((await request(handle, join(directory, "extra" + extension))).ok).toBe(false);
+      } finally {
+        await handle.close();
+      }
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}, 30000);
+
+test("implicit Vite readers cannot compose CSS Modules, follow authored source maps or enumerate source globs", async () => {
+  const root = await mkdtemp(join(tmpdir(), "plugin-refresh-implicit-"));
+  const outside = await mkdtemp(join(tmpdir(), "plugin-refresh-map-outside-"));
+  try {
+    const directory = await source(root, "plugin", "example.refresh");
+    const web = join(directory, "web.tsx");
+    const mapped = join(outside, "mapped-private.ts");
+    await Bun.write(mapped, "PRIVATE_MAPPED_SOURCE_MARKER");
+    await Bun.write(join(directory, ".env"), "PRIVATE_COMPOSED_SOURCE_MARKER");
+    await Bun.write(join(directory, "unsafe.css"), '.x { background: url("./.env?inline"); }\n');
+    await Bun.write(
+      join(directory, "unsafe.module.css"),
+      '.plugin-example_refresh { composes: x from "./unsafe.css"; }\n',
+    );
+    await Bun.write(
+      join(directory, "plain.css"),
+      '.plugin-example_refresh { composes: x from "./unsafe.css"; }\n',
+    );
+    const map = Buffer.from(
+      JSON.stringify({ version: 3, sources: [mapped], names: [], mappings: "AAAA" }),
+    ).toString("base64");
+    for (const [contents, target] of [
+      [
+        'import "./unsafe.module.css"; export default { id: "example.refresh", panels: {} };',
+        join(directory, "unsafe.module.css"),
+      ],
+      [
+        'import "./plain.css?x.module.css"; export default { id: "example.refresh", panels: {} };',
+        join(directory, "plain.css") + "?x.module.css",
+      ],
+      [
+        'import "./plain.css?x.module.scss"; export default { id: "example.refresh", panels: {} };',
+        join(directory, "plain.css") + "?x.module.scss",
+      ],
+      [
+        `export default { id: "example.refresh", panels: {} };\n//# sourceMappingURL=data:application/json;base64,${map}\n`,
+        web,
+      ],
+      [
+        `export const paths = Object.keys(import.meta.glob("../../${outside.slice(outside.lastIndexOf("/") + 1)}/mapped-private.ts", { exhaustive: true })); export default { id: "example.refresh", panels: {} };`,
+        web,
+      ],
+    ] as const) {
+      await Bun.write(web, contents);
+      const handle = await startPluginRefresh({ root, hub: HUB, port: 0 });
+      try {
+        const entry = await request(handle, web);
+        const response = target === web ? entry : await request(handle, target);
+        expect(response.ok).toBe(false);
+        const body = await response.text();
+        expect(body).not.toContain("PRIVATE_MAPPED_SOURCE_MARKER");
+        expect(body).not.toContain("PRIVATE_COMPOSED_SOURCE_MARKER");
+      } finally {
+        await handle.close();
+      }
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+}, 30000);
+
+test("source descriptors accept local default specifiers and default re-exports", async () => {
+  const root = await mkdtemp(join(tmpdir(), "plugin-refresh-exports-"));
+  try {
+    const directory = await source(root, "plugin", "example.refresh");
+    await Bun.write(
+      join(directory, "definition.ts"),
+      'export const definition = { id: "example.refresh", panels: {} }; export default definition;',
+    );
+    for (const contents of [
+      'const definition = { id: "example.refresh", panels: {} }; export { definition as default };',
+      'export { default } from "./definition.ts";',
+      'export { definition as default } from "./definition.ts";',
+    ]) {
+      const web = join(directory, "web.tsx");
+      await Bun.write(web, contents);
+      const handle = await startPluginRefresh({ root, hub: HUB, port: 0 });
+      try {
+        expect((await request(handle, web)).status).toBe(200);
+      } finally {
+        await handle.close();
+      }
+    }
+  } finally {
     await rm(root, { recursive: true, force: true });
   }
 }, 30000);

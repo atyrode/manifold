@@ -3013,6 +3013,62 @@ the exact registered source and fails closed by name if its trusted artifact
 cannot bind. Other registered plugins need their own declared source recipe
 and a portable web/ctx surface before an operator can select them.
 
+### External plugin Fast Refresh
+
+The kit's explicit `dev <plugins-root> --fast-refresh --hub <origin>` mode starts the
+existing Vite development lens with an approved local source graph (#953). It is a frontend
+development session, not another installed-row mode and not the workspace-global
+`developerMode` switch above. Command help and `--describe` expose prerequisites and lifetime
+without credentials or a running hub; the author workflow is
+[Fast Refresh](PLUGINS.md#fast-refresh).
+
+Source selection belongs to the existing browser loader and `web-plugin-host` pillar.
+The caller explicitly approves canonical roots; traversal, symlink escape, secret files and
+unregistered filesystem reads are refused. Vite and its existing React plugin transform the
+graph with the lens's single React and floor namespaces. Stylesheets use the existing
+plugin-root admission checker and Vite's stylesheet lifecycle, never a second parser or
+parallel host stylesheet.
+Source styles use plain `.css`; CSS Modules, preprocessing and CSS filesystem
+`url()`/`image-set()` use the ordinary artifact path. Authored source maps and
+`import.meta.glob` are refused before Vite's implicit file readers or enumerators run.
+JavaScript filesystem asset URLs must resolve statically within the approved graph before
+Vite's asset reader runs. Backend and declared native members across every discovered
+manifest remain unservable, including server-only plugins.
+
+The host loads the development coordinator only when Vite exposes its hot runtime, through
+the Vite-owned `/src/plugin-development.ts` URL. This is a deliberate runtime-loading
+exception: ordinary browser bundles must not statically resolve the development-only
+virtual registry. Its exported module types remain ordinary type-only dependencies.
+
+Registration does not compose a plugin or grant action authority. The authenticated current
+roster must contain an enabled installed in-realm row with the source's validated manifest.
+The imported definition must name that id and retain the packed baseline's declared
+contribution/host-registration claims. A source lease is tied to the initially observed admitted
+pin; a changed pin or ineligible row retires it instead of silently adopting new authority.
+No source URL/path enters SQLite, an installation export, a release artifact or a session
+frame. Production source registration is inactive, and hardened rows never downgrade.
+
+The loader retains the authenticated packed definition and stylesheet before selecting source.
+The session-wide runtime must receive its own nonce acknowledgement over the live Vite
+socket before publishing any source definition. No acknowledgement means packed content,
+and an observed disconnect or session end is terminal even for later module completion.
+Compatible component edits update React Refresh families; CSS edits update only source-owned
+ink. Hook-signature, component-key and descriptor incompatibilities may remount rather than
+promise universal state preservation. Broken edits stay visible in the normal development
+overlay and recover after correction. Manifest, server, capability, dependency and native
+resource changes retain the ordinary pack, verify, install and review semantics.
+
+Explicit stop, source transport loss, eligibility changes and teardown remove exactly the
+source subscriptions and stylesheet. The preloaded admitted definition and stylesheet become
+active again without requiring a final successful request to a stopped Vite server. Unrelated
+panel state and durable plugin/native state are not cleanup targets. Native operations still use
+the existing identity, portable-lens and action transports; source development neither acquires
+an owner credential nor changes preview admission audiences. Readiness and cleanup are
+reported as non-secret facts, never inferred from a process exit.
+
+The foundation and dependency reasoning is recorded in
+[the dated decision](decisions/2026-09-30-external-plugin-fast-refresh.md).
+
 ## WS /ws/session — session channel (JSON text frames)
 
 **Frame grammar (v35).** One socket per tab, many rooms or one roomless observer. Every frame is

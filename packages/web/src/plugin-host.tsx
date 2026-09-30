@@ -57,11 +57,11 @@ import {
   PLUGIN_BUNDLE_STYLES_FILE,
   parseManifoldUri,
   PluginsResponseSchema,
+  PluginManifestSchema,
   SettingsResponseSchema,
   validPanelArg,
   type ManifoldRef,
   type PanelArg,
-  type PluginManifest,
   type PluginRoster,
 } from "@manifold/protocol";
 import { SessionClient } from "@manifold/sdk";
@@ -85,7 +85,7 @@ import { ContainerErrorBoundary } from "./error-boundary.tsx";
 import { isolatedPanel, isolatedSection } from "./isolate/index.ts";
 import { webModulePath } from "./isolate/worker-host.ts";
 import { FEED_TOPICS, SPACE_SET_LAYOUT_ACTION, WEB_PLUGIN_DEFS } from "./assembly.ts";
-import type { PluginDevelopmentLoader } from "./plugin-development.ts";
+import type * as PluginDevelopment from "./plugin-development.ts";
 
 /**
  * The browser half of the plugin engine — FLOOR (REGISTRY.md §Foundation), which is why this
@@ -830,26 +830,49 @@ function EssentialRecovery({
   );
 }
 
-/**
- * Owns the roster and this principal's key overrides for the authenticated terminal: both
- * fetched once at boot (this is why the provider needs the token, and why it mounts inside
- * `IdentityGate`), the roster then kept current by whoever attaches a session client and the
- * overrides re-read on demand when a door writes one.
- *
- * IT ALSO OWNS THE BOOT RECOVERY, and that is the bootstrap-circularity criterion rather than a
- * convenience: an assembly with essential seats switched off cannot host the affordance that
- * turns them back on, so the offer has to come from the floor that composed it, before the
- * workspace paints (see {@link EssentialRecovery}).
- */
 export interface LoadedWebPlugin {
   readonly sha256: string;
-  readonly manifest: PluginManifest;
+  readonly manifestKey: string | null;
   /** Retained authenticated bytes, independent of the development server's lifetime. */
   readonly packedDef: WebPluginDef;
   readonly packedCss: string | null;
   def: WebPluginDef;
   /** Owns either the installed sheet or the active source sheet, never both. */
   unmountStyles: (() => void) | null;
+}
+
+interface RenderedWebPlugin {
+  readonly sha256: string;
+  readonly manifestKey: string | null;
+  readonly packedDef: WebPluginDef;
+  readonly def: WebPluginDef;
+}
+
+/** Immutable render snapshots reject a stale source before lifecycle effects reconcile. */
+export function pluginManifestKey(manifest: unknown): string | null {
+  const result = PluginManifestSchema.safeParse(manifest);
+  if (!result.success) return null;
+  return JSON.stringify(result.data, (_key, item: unknown) => {
+    if (item === null || typeof item !== "object" || Array.isArray(item)) return item;
+    return Object.fromEntries(
+      Object.entries(item).sort(([left], [right]) => left.localeCompare(right)),
+    );
+  });
+}
+
+function snapshotLoadedPlugins(
+  loaded: ReadonlyMap<string, LoadedWebPlugin>,
+): ReadonlyMap<string, RenderedWebPlugin> {
+  const snapshot = new Map<string, RenderedWebPlugin>();
+  for (const [id, held] of loaded) {
+    snapshot.set(id, {
+      sha256: held.sha256,
+      manifestKey: held.manifestKey,
+      packedDef: held.packedDef,
+      def: held.def,
+    });
+  }
+  return snapshot;
 }
 
 /** Fetch authority stays in the header; module evaluation only sees a local Blob URL. */
@@ -920,6 +943,17 @@ export function mountPluginStylesheet<Node extends StyleNode>(
   return () => node.remove();
 }
 
+/**
+ * Owns the roster and this principal's key overrides for the authenticated terminal: both
+ * fetched once at boot (this is why the provider needs the token, and why it mounts inside
+ * `IdentityGate`), the roster then kept current by whoever attaches a session client and the
+ * overrides re-read on demand when a door writes one.
+ *
+ * IT ALSO OWNS THE BOOT RECOVERY, and that is the bootstrap-circularity criterion rather than a
+ * convenience: an assembly with essential seats switched off cannot host the affordance that
+ * turns them back on, so the offer has to come from the floor that composed it, before the
+ * workspace paints (see {@link EssentialRecovery}).
+ */
 export function AssemblyProvider({ identity, children }: AssemblyProviderProps): ReactElement {
   // A new credential owns a new boot, including its requests, live subscriptions and modules.
   // Keying the owner prevents even one render of the previous identity's ready assembly.
@@ -938,20 +972,24 @@ function AssemblyOwner({ identity, children }: AssemblyProviderProps): ReactElem
     snapshot render sees, republished whenever the ref changes.
   */
   const loaded = useRef(new Map<string, LoadedWebPlugin>());
-  const [loadedDefs, setLoadedDefs] = useState<ReadonlyMap<string, LoadedWebPlugin>>(new Map());
+  const [loadedDefs, setLoadedDefs] = useState<ReadonlyMap<string, RenderedWebPlugin>>(new Map());
   const currentRoster = useRef(state.roster);
-  currentRoster.current = state.roster;
-  const development = useRef<PluginDevelopmentLoader | null>(null);
+  const development = useRef<PluginDevelopment.PluginDevelopmentLoader | null>(null);
+  const publishLoaded = useCallback(() => {
+    setLoadedDefs(snapshotLoadedPlugins(loaded.current));
+  }, []);
   useEffect(() => {
-    if (!import.meta.env.DEV) return;
+    if (!import.meta.env.DEV || !import.meta.hot) return;
     let active = true;
-    void import("./plugin-development.ts").then(
+    // Vite alone owns this URL and its virtual registry; ordinary Bun/browser builds cannot link it.
+    const moduleUrl = "/src/plugin-development.ts";
+    void (import(/* @vite-ignore */ moduleUrl) as Promise<typeof PluginDevelopment>).then(
       ({ createPluginDevelopmentLoader }) => {
         if (!active) return;
         development.current = createPluginDevelopmentLoader(
           loaded.current,
           () => currentRoster.current,
-          () => setLoadedDefs(new Map(loaded.current)),
+          publishLoaded,
         );
         development.current.reconcile();
       },
@@ -964,8 +1002,9 @@ function AssemblyOwner({ identity, children }: AssemblyProviderProps): ReactElem
       development.current?.dispose();
       development.current = null;
     };
-  }, []);
+  }, [publishLoaded]);
   useEffect(() => {
+    currentRoster.current = state.roster;
     const controller = new AbortController();
     const wanted = new Map(
       state.roster
@@ -985,11 +1024,10 @@ function AssemblyOwner({ identity, children }: AssemblyProviderProps): ReactElem
       if (wanted.get(id)?.install?.sha256 !== held.sha256) {
         loaded.current.delete(id);
         held.unmountStyles?.();
-        held.unmountStyles = null;
         pruned = true;
       }
     }
-    if (pruned) setLoadedDefs(new Map(loaded.current));
+    if (pruned) publishLoaded();
     development.current?.reconcile();
     for (const [id, row] of wanted) {
       if (loaded.current.has(id)) continue;
@@ -1003,15 +1041,15 @@ function AssemblyOwner({ identity, children }: AssemblyProviderProps): ReactElem
           if (controller.signal.aborted) return;
           loaded.current.set(id, {
             sha256,
-            manifest: row.manifest,
+            manifestKey: import.meta.env.DEV ? pluginManifestKey(row.manifest) : null,
             packedDef: def,
-            packedCss: css,
+            packedCss: import.meta.env.DEV ? css : null,
             def,
             unmountStyles:
               css === null ? null : mountPluginStylesheet<HTMLStyleElement>(id, css, document),
           });
           development.current?.reconcile();
-          setLoadedDefs(new Map(loaded.current));
+          publishLoaded();
         },
         () => {
           // A browser-local import failure leaves this row's named missing-web placeholder.
@@ -1020,7 +1058,7 @@ function AssemblyOwner({ identity, children }: AssemblyProviderProps): ReactElem
       );
     }
     return () => controller.abort();
-  }, [state.roster, identity.token]);
+  }, [state.roster, identity.token, publishLoaded]);
   // The provider leaving takes every injected sheet with it, as it takes every panel.
   useEffect(() => {
     const held = loaded.current;
@@ -1176,7 +1214,13 @@ function AssemblyOwner({ identity, children }: AssemblyProviderProps): ReactElem
               row.install?.refusal === undefined &&
               held?.sha256 === row.install?.sha256 &&
               held !== undefined
-              ? [development.current?.definitionFor(row, held) ?? held.def]
+              ? [
+                  import.meta.env.DEV &&
+                  held.def !== held.packedDef &&
+                  pluginManifestKey(row.manifest) !== held.manifestKey
+                    ? held.packedDef
+                    : held.def,
+                ]
               : [];
           }),
         ],

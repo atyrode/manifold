@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Browser } from "../../../scripts/cdp.ts";
 import { resolveWebDist } from "../../../scripts/gate-dist.ts";
-import { createContainer, ownerAction, startServer, waitFor, type TestServer } from "../src/index.ts";
+import { createContainer, ownerAction, startServer, waitFor } from "../src/index.ts";
+import type { TestServer } from "../src/index.ts";
 
 const ROOT = join(import.meta.dir, "../../..");
 const FIXTURE = join(ROOT, "packages/plugin-kit/test/fixtures/fast-refresh");
@@ -33,13 +34,31 @@ interface PanelState {
   readonly count: string | null;
 }
 
+interface StylesState {
+  readonly lease: string;
+  readonly packed: number;
+  readonly owned: number;
+  readonly ineligible: boolean;
+}
+
+interface UnrelatedState {
+  readonly marker: string | undefined;
+  readonly count: string | null;
+  readonly color: string | null;
+  readonly missing: boolean;
+  readonly mismatched: boolean;
+}
+
 async function pack(root: string, file: string): Promise<Packed> {
   // Like the existing install fixture, use the author's CLI outside Bun.test's isolated linker.
-  const proc = Bun.spawn(["bun", join(ROOT, "packages/plugin-kit/src/pack.ts"), root, "--out", file], {
-    cwd: ROOT,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
+  const proc = Bun.spawn(
+    ["bun", join(ROOT, "packages/plugin-kit/src/pack.ts"), root, "--out", file],
+    {
+      cwd: ROOT,
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  );
   const [stdout, stderr, exit] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
@@ -80,8 +99,9 @@ async function startRefresh(root: string, server: TestServer): Promise<RefreshPr
   let failure: unknown = null;
   const consume = async (stream: ReadableStream<Uint8Array>, stdout: boolean): Promise<void> => {
     let pending = "";
-    for await (const chunk of stream.pipeThrough(new TextDecoderStream())) {
-      pending += chunk;
+    const decoder = new TextDecoder();
+    for await (const chunk of stream) {
+      pending += decoder.decode(chunk, { stream: true });
       const lines = pending.split("\n");
       pending = lines.pop() ?? "";
       for (const line of lines) {
@@ -101,10 +121,13 @@ async function startRefresh(root: string, server: TestServer): Promise<RefreshPr
         }
       }
     }
+    pending += decoder.decode();
     if (pending !== "") output.push(pending);
   };
   const reads = Promise.all([consume(proc.stdout, true), consume(proc.stderr, false)]);
-  void reads.catch((error: unknown) => { failure = error; });
+  void reads.catch((error: unknown) => {
+    failure = error;
+  });
   void proc.exited.then((code) => {
     if (readyUrl === null) failure = new Error(`refresh exited before readiness: ${code}`);
   });
@@ -115,7 +138,8 @@ async function startRefresh(root: string, server: TestServer): Promise<RefreshPr
     proc.kill(signal);
     try {
       const { code } = await waitFor(
-        () => proc.exitCode === null ? false : { code: proc.exitCode },
+        () =>
+          proc.exitCode === null && proc.signalCode === null ? false : { code: proc.exitCode },
         10_000,
         25,
       );
@@ -128,10 +152,14 @@ async function startRefresh(root: string, server: TestServer): Promise<RefreshPr
     }
   };
   try {
-    const url = await waitFor(() => {
-      if (failure !== null) throw failure;
-      return readyUrl;
-    }, 30_000, 25);
+    const url = await waitFor(
+      () => {
+        if (failure !== null) throw failure;
+        return readyUrl;
+      },
+      30_000,
+      25,
+    );
     return { url, output, stop };
   } catch (error) {
     await stop("SIGKILL");
@@ -169,6 +197,7 @@ async function openPanels(
   server: TestServer,
   containerId: string,
   marker: string,
+  sourceEnabled = true,
 ): Promise<void> {
   const destination = new URL(url);
   destination.hash = `key=${server.ownerKey}`;
@@ -187,7 +216,9 @@ async function openPanels(
   );
   expect(
     await browser.evaluate<boolean>(`(async () => {
-      const identity = JSON.parse(localStorage.getItem("manifold.identity"));
+      const origin = ${JSON.stringify(new URL(url).searchParams.get("instance") ?? new URL(url).origin)};
+      const key = origin === location.origin ? "manifold.identity" : "manifold.identity@" + origin;
+      const identity = JSON.parse(localStorage.getItem(key));
       const headers = { Authorization: "Bearer " + identity.token, "Content-Type": "application/json" };
       const { layout } = await (await fetch("/api/layout", { headers })).json();
       const panels = [
@@ -209,13 +240,20 @@ async function openPanels(
   destination.pathname = `/p/${containerId}`;
   destination.hash = "";
   await browser.goto(destination.href);
+  if (sourceEnabled)
+    await waitFor(
+      () =>
+        browser.evaluate<boolean>(
+          "document.querySelector('[data-testid=refresh-counter]') !== null",
+        ),
+      15_000,
+      50,
+    );
   await waitFor(
-    () => browser.evaluate<boolean>("document.querySelector('[data-testid=refresh-counter]') !== null"),
-    15_000,
-    50,
-  );
-  await waitFor(
-    () => browser.evaluate<boolean>("document.querySelector('[data-testid=in-realm-counter]') !== null"),
+    () =>
+      browser.evaluate<boolean>(
+        "document.querySelector('[data-testid=in-realm-counter]') !== null",
+      ),
     15_000,
     50,
   );
@@ -246,7 +284,8 @@ async function expectStyles(
   packed: boolean,
 ): Promise<void> {
   await waitFor(
-    () => browser.evaluate<boolean>(`(() => {
+    () =>
+      browser.evaluate<boolean>(`(() => {
       const panel = document.querySelector("[data-testid=refresh-counter]");
       return panel !== null && getComputedStyle(panel).color === ${JSON.stringify(color)};
     })()`),
@@ -254,7 +293,7 @@ async function expectStyles(
     50,
   );
   expect(
-    await browser.evaluate(`(() => {
+    await browser.evaluate<StylesState>(`(() => {
       const panel = document.querySelector("[data-testid=refresh-counter]");
       const sheets = [...document.querySelectorAll("style")];
       return {
@@ -267,16 +306,20 @@ async function expectStyles(
   ).toEqual({ lease, packed: packed ? 1 : 0, owned: 1, ineligible: false });
 }
 
-async function interact(browser: Browser): Promise<void> {
+async function interact(browser: Browser, incrementUnrelated = true): Promise<void> {
   await browser.typeInto("[data-testid=refresh-input]", "draft survives");
   await browser.typeInto("[data-testid=refresh-separate-input]", "separate survives");
   for (let i = 0; i < 2; i++) await click(browser, "[data-testid=refresh-increment]");
   for (let i = 0; i < 3; i++) await click(browser, "[data-testid=refresh-separate-increment]");
-  for (let i = 0; i < 4; i++) await click(browser, ".plugin-example_counter button");
+  if (incrementUnrelated)
+    for (let i = 0; i < 4; i++) await click(browser, ".plugin-example_counter button");
   await waitFor(async () => (await state(browser)).count === "2", 5_000, 25);
   await waitFor(async () => (await state(browser, true)).count === "3", 5_000, 25);
   await waitFor(
-    () => browser.evaluate<boolean>("document.querySelector('[data-testid=in-realm-counter]').textContent === '4'"),
+    () =>
+      browser.evaluate<boolean>(
+        "document.querySelector('[data-testid=in-realm-counter]').textContent === '4'",
+      ),
     5_000,
     25,
   );
@@ -284,7 +327,7 @@ async function interact(browser: Browser): Promise<void> {
 
 async function expectUnrelated(browser: Browser, marker: string, count = "4"): Promise<void> {
   expect(
-    await browser.evaluate(`(() => {
+    await browser.evaluate<UnrelatedState>(`(() => {
       const other = document.querySelector("[data-testid=in-realm-counter]");
       return {
         marker: globalThis.__pluginRefreshDocument,
@@ -306,33 +349,28 @@ function expectedState(title: string, separate = false): PanelState {
   };
 }
 
-async function expectRefreshState(browser: Browser, entry: string, separate: string): Promise<void> {
+async function expectRefreshState(
+  browser: Browser,
+  entry: string,
+  separate: string,
+): Promise<void> {
   expect(await state(browser)).toEqual(expectedState(entry));
   expect(await state(browser, true)).toEqual(expectedState(separate, true));
 }
 
-async function editAfterCancellation(browser: Browser, file: string, contents: string): Promise<void> {
-  // Wait for Vite's completed public HMR event, not a delay that could let a late readmission pass.
-  let updated = false;
-  const off = browser.on("Runtime.consoleAPICalled", (params) => {
-    const args = params["args"];
-    if (!Array.isArray(args)) return;
-    updated ||= args.some((arg: unknown) =>
-      typeof arg === "object" && arg !== null && "value" in arg &&
-      typeof arg.value === "string" && arg.value.includes("[vite] hot updated:"),
-    );
-  });
-  try {
-    writeFileSync(file, contents);
-    await waitFor(() => updated, 10_000, 25);
-    await browser.evaluate(`(() => {
-      const completion = Promise.withResolvers();
-      requestAnimationFrame(() => requestAnimationFrame(completion.resolve));
-      return completion.promise;
-    })()`);
-  } finally {
-    off();
-  }
+async function editAfterCancellation(
+  browser: Browser,
+  file: string,
+  contents: string,
+): Promise<void> {
+  writeFileSync(file, contents);
+  // Evaluate the edited module before observing the retired host lease, rather than timing a log.
+  await browser.evaluate(`(async () => {
+    await import(${JSON.stringify(`/@fs${file}`)} + "?t=" + Date.now());
+    const completion = Promise.withResolvers();
+    requestAnimationFrame(() => requestAnimationFrame(completion.resolve));
+    await completion.promise;
+  })()`);
 }
 
 // One disposable hub admits the packed artifact before the separate development frontend exists.
@@ -353,6 +391,7 @@ test("public Fast Refresh preserves React state and leases CSS; cancellation res
   const development = new Browser();
   const refreshes: RefreshProcess[] = [];
   let active: RefreshProcess | null = null;
+  const failures: unknown[] = [];
   try {
     const dist = resolveWebDist("manifold-plugin-refresh-web-");
     cleanupDist = dist.cleanup;
@@ -379,13 +418,15 @@ test("public Fast Refresh preserves React state and leases CSS; cancellation res
     await heading(packedBrowser, "Packed entry");
     await heading(packedBrowser, "Packed separate", true);
     await expectStyles(packedBrowser, PACKED_COLOR, "packed", true);
-    await interact(packedBrowser);
 
     let sourceWeb = originalWeb.replace("Packed entry", "Source entry");
     let sourceSeparate = originalSeparate.replace("Packed separate", "Source separate");
-    writeFileSync(webFile, sourceWeb);
+    writeFileSync(webFile, "export default { id: ");
     writeFileSync(separateFile, sourceSeparate);
-    writeFileSync(cssFile, `.plugin-example_fast-refresh { color: ${SOURCE_COLOR}; --fast-refresh-lease: source; }\n`);
+    writeFileSync(
+      cssFile,
+      `.plugin-example_fast-refresh { color: ${SOURCE_COLOR}; --fast-refresh-lease: source; }\n`,
+    );
     // The development HTTP surface must not widen the registered explicit source tree.
     const denied = "private-fixture-not-a-credential";
     writeFileSync(join(eligible, ".env"), denied);
@@ -395,14 +436,35 @@ test("public Fast Refresh preserves React state and leases CSS; cancellation res
     const outside = join(scratch, "outside.ts");
     writeFileSync(outside, `export const privateFixture = ${JSON.stringify(denied)};`);
     symlinkSync(outside, join(eligible, "escaped.ts"));
+    await ownerAction(server, "engine.plugins.setEnabled", { id: ID, enabled: false });
     active = await startRefresh(sourceRoot, server);
     refreshes.push(active);
-    await openPanels(development, active.url, server, container.id, "source-edits");
+    const proxiedFrontend = new URL(active.url);
+    proxiedFrontend.searchParams.delete("instance");
+    await openPanels(
+      development,
+      proxiedFrontend.href,
+      server,
+      container.id,
+      "source-edits",
+      false,
+    );
+    for (let i = 0; i < 4; i++) await click(development, ".plugin-example_counter button");
+    await ownerAction(server, "engine.plugins.setEnabled", { id: ID, enabled: true });
+    await waitFor(
+      () => development.evaluate<boolean>("document.querySelector('vite-error-overlay') !== null"),
+      10_000,
+      50,
+    );
+    await heading(development, "Packed entry");
+    await expectUnrelated(development, "source-edits");
+    writeFileSync(webFile, sourceWeb);
     await heading(development, "Source entry");
     await heading(development, "Source separate", true);
     await expectStyles(development, SOURCE_COLOR, "source", false);
-    await expectUnrelated(development, "source-edits", "0");
-    await interact(development);
+    await expectUnrelated(development, "source-edits");
+    await interact(development, false);
+    await interact(packedBrowser);
 
     for (const file of [
       join(eligible, ".env"),
@@ -416,7 +478,10 @@ test("public Fast Refresh preserves React state and leases CSS; cancellation res
       expect(await response.text()).not.toContain(denied);
     }
 
-    writeFileSync(cssFile, `.plugin-example_fast-refresh { color: ${UPDATED_COLOR}; --fast-refresh-lease: source-updated; }\n`);
+    writeFileSync(
+      cssFile,
+      `.plugin-example_fast-refresh { color: ${UPDATED_COLOR}; --fast-refresh-lease: source-updated; }\n`,
+    );
     await expectStyles(development, UPDATED_COLOR, "source-updated", false);
     await expectRefreshState(development, "Source entry", "Source separate");
     await expectUnrelated(development, "source-edits");
@@ -431,7 +496,10 @@ test("public Fast Refresh preserves React state and leases CSS; cancellation res
     await expectStyles(development, UPDATED_COLOR, "source-updated", false);
     await expectRefreshState(development, "Source entry", "Source separate");
     await expectUnrelated(development, "source-edits");
-    writeFileSync(cssFile, `.plugin-example_fast-refresh { color: ${UPDATED_COLOR}; --fast-refresh-lease: source-updated; }\n`);
+    writeFileSync(
+      cssFile,
+      `.plugin-example_fast-refresh { color: ${UPDATED_COLOR}; --fast-refresh-lease: source-updated; }\n`,
+    );
     await waitFor(
       () => development.evaluate<boolean>("document.querySelector('vite-error-overlay') === null"),
       10_000,
@@ -440,7 +508,11 @@ test("public Fast Refresh preserves React state and leases CSS; cancellation res
     await expectStyles(development, UPDATED_COLOR, "source-updated", false);
     await expectRefreshState(development, "Source entry", "Source separate");
 
-    sourceWeb = sourceWeb.replace("Source entry", "Edited entry");
+    sourceWeb =
+      sourceWeb
+        .replace("Source entry", "Edited entry")
+        .replace("export default {", "const definition = {") +
+      "\nexport { definition as default };\n";
     writeFileSync(webFile, sourceWeb);
     await heading(development, "Edited entry");
     await expectRefreshState(development, "Edited entry", "Source separate");
@@ -483,11 +555,19 @@ test("public Fast Refresh preserves React state and leases CSS; cancellation res
 
     // A new descriptor component is an honest incompatible boundary, not a component edit.
     sourceWeb = sourceWeb
-      .replace("export default {", "function ReplacementCounter() { return <Counter />; }\n\nexport default {")
+      .replace(
+        "const definition = {",
+        "function ReplacementCounter() { return <Counter />; }\n\nconst definition = {",
+      )
       .replace("counter: Counter,", "counter: ReplacementCounter,");
     writeFileSync(webFile, sourceWeb);
     await waitFor(async () => (await state(development)).count === "0", 10_000, 50);
-    expect(await state(development)).toEqual({ heading: "Recovered entry", input: "", draft: "", count: "0" });
+    expect(await state(development)).toEqual({
+      heading: "Recovered entry",
+      input: "",
+      draft: "",
+      count: "0",
+    });
     expect(await state(development, true)).toEqual(expectedState("Edited separate", true));
     await expectUnrelated(development, "source-edits");
 
@@ -495,11 +575,38 @@ test("public Fast Refresh preserves React state and leases CSS; cancellation res
     await heading(development, "Packed entry");
     await heading(development, "Packed separate", true);
     await expectStyles(development, PACKED_COLOR, "packed", true);
-    expect(await state(development)).toEqual({ heading: "Packed entry", input: "", draft: "", count: "0" });
+    expect(await state(development)).toEqual({
+      heading: "Packed entry",
+      input: "",
+      draft: "",
+      count: "0",
+    });
     await expectUnrelated(development, "source-edits");
     await expectRefreshState(packedBrowser, "Packed entry", "Packed separate");
     await expectStyles(packedBrowser, PACKED_COLOR, "packed", true);
     await expectUnrelated(packedBrowser, "packed-baseline");
+
+    // Linking can fail beneath an analyzed React boundary that never registered its callback.
+    writeFileSync(separateFile, "export function Separate(");
+    await ownerAction(server, "engine.plugins.setEnabled", { id: ID, enabled: false });
+    active = await startRefresh(sourceRoot, server);
+    refreshes.push(active);
+    await openPanels(development, active.url, server, container.id, "source-child-error", false);
+    for (let i = 0; i < 4; i++) await click(development, ".plugin-example_counter button");
+    await ownerAction(server, "engine.plugins.setEnabled", { id: ID, enabled: true });
+    await waitFor(
+      () => development.evaluate<boolean>("document.querySelector('vite-error-overlay') !== null"),
+      10_000,
+      50,
+    );
+    await heading(development, "Packed entry");
+    await expectUnrelated(development, "source-child-error");
+    writeFileSync(separateFile, sourceSeparate);
+    await heading(development, "Recovered entry");
+    await heading(development, "Edited separate", true);
+    await expectStyles(development, UPDATED_COLOR, "source-updated", false);
+    await expectUnrelated(development, "source-child-error");
+    await active.stop();
 
     // Disable cancels this source lease permanently; re-enable restores the packed artifact.
     active = await startRefresh(sourceRoot, server);
@@ -509,12 +616,17 @@ test("public Fast Refresh preserves React state and leases CSS; cancellation res
     await interact(development);
     await ownerAction(server, "engine.plugins.setEnabled", { id: ID, enabled: false });
     await waitFor(
-      () => development.evaluate<boolean>("document.querySelector('[data-testid=refresh-counter]') === null"),
+      () =>
+        development.evaluate<boolean>(
+          "document.querySelector('[data-testid=refresh-counter]') === null",
+        ),
       10_000,
       50,
     );
     expect(
-      await development.evaluate<number>("[...document.querySelectorAll('style')].filter((sheet) => sheet.textContent.includes('.plugin-example_fast-refresh')).length"),
+      await development.evaluate<number>(
+        "[...document.querySelectorAll('style')].filter((sheet) => sheet.textContent.includes('.plugin-example_fast-refresh')).length",
+      ),
     ).toBe(0);
     await expectUnrelated(development, "source-disable");
     await ownerAction(server, "engine.plugins.setEnabled", { id: ID, enabled: true });
@@ -535,12 +647,26 @@ test("public Fast Refresh preserves React state and leases CSS; cancellation res
     await interact(development);
     const revisionRoot = join(scratch, "revision");
     cpSync(join(FIXTURE, "eligible"), revisionRoot, { recursive: true });
-    writeFileSync(join(revisionRoot, "web.tsx"), originalWeb.replace("Packed entry", "Installed revision two"));
-    writeFileSync(join(revisionRoot, "Separate.tsx"), originalSeparate.replace("Packed separate", "Installed separate two"));
-    writeFileSync(join(revisionRoot, "styles.css"), `.plugin-example_fast-refresh { color: ${REVISION_COLOR}; --fast-refresh-lease: installed-two; }\n`);
+    writeFileSync(
+      join(revisionRoot, "web.tsx"),
+      originalWeb.replace("Packed entry", "Installed revision two"),
+    );
+    writeFileSync(
+      join(revisionRoot, "Separate.tsx"),
+      originalSeparate.replace("Packed separate", "Installed separate two"),
+    );
+    writeFileSync(
+      join(revisionRoot, "styles.css"),
+      `.plugin-example_fast-refresh { color: ${REVISION_COLOR}; --fast-refresh-lease: installed-two; }\n`,
+    );
     const revision = await pack(revisionRoot, join(scratch, "revision.json"));
     expect(revision.sha256).not.toBe(baseline.sha256);
-    await ownerAction(server, "engine.plugins.install", { source: revision.file, sha256: revision.sha256, hardened: false });
+    await ownerAction(server, "engine.plugins.install", {
+      source: revision.file,
+      sha256: revision.sha256,
+      hardened: false,
+      replace: true,
+    });
     await heading(development, "Installed revision two");
     await expectStyles(development, REVISION_COLOR, "installed-two", true);
     sourceWeb = sourceWeb.replace("Source after disable", "Source after pin");
@@ -549,6 +675,42 @@ test("public Fast Refresh preserves React state and leases CSS; cancellation res
     await expectStyles(development, REVISION_COLOR, "installed-two", true);
     await expectUnrelated(development, "source-pin");
     await active.stop();
+
+    // A lost liveness acknowledgement cannot select an otherwise real, successfully loaded graph.
+    const withheld = await development.send("Page.addScriptToEvaluateOnNewDocument", {
+      source: `(() => {
+        const send = WebSocket.prototype.send;
+        WebSocket.prototype.send = function (data) {
+          if (typeof data === "string" && data.includes("manifold:plugin-refresh-ready")) {
+            const frame = JSON.parse(data);
+            if (frame.type === "custom" && frame.event === "manifold:plugin-refresh-ready") return;
+          }
+          return send.call(this, data);
+        };
+      })()`,
+    });
+    const withheldScript = withheld.result?.["identifier"];
+    if (typeof withheldScript !== "string")
+      throw new Error("Chromium did not install the fault injector");
+    active = await startRefresh(sourceRoot, server);
+    refreshes.push(active);
+    await openPanels(development, active.url, server, container.id, "source-no-ack");
+    expect(
+      await development.evaluate<string>(`(async () => {
+        const source = await import(${JSON.stringify(`/@fs${webFile}`)});
+        await import(${JSON.stringify(`/@fs${cssFile}`)});
+        return source.default.id;
+      })()`),
+    ).toBe(ID);
+    await heading(development, "Installed revision two");
+    await expectStyles(development, REVISION_COLOR, "installed-two", true);
+    await interact(development);
+    await expectRefreshState(development, "Installed revision two", "Installed separate two");
+    await expectUnrelated(development, "source-no-ack");
+    await active.stop();
+    await development.send("Page.removeScriptToEvaluateOnNewDocument", {
+      identifier: withheldScript,
+    });
 
     // No orderly shutdown notification, and no remaining source HTTP server: the retained real
     // installed definition and CSS must still win, without reloading this document or its peer.
@@ -562,17 +724,24 @@ test("public Fast Refresh preserves React state and leases CSS; cancellation res
     await heading(development, "Installed revision two");
     await heading(development, "Installed separate two", true);
     await expectStyles(development, REVISION_COLOR, "installed-two", true);
-    expect(await state(development)).toEqual({ heading: "Installed revision two", input: "", draft: "", count: "0" });
+    expect(await state(development)).toEqual({
+      heading: "Installed revision two",
+      input: "",
+      draft: "",
+      count: "0",
+    });
     await expectUnrelated(development, "source-crash");
   } catch (error) {
     let diagnostics = JSON.stringify({
-      body: await development.evaluate("document.body.innerText").catch(() => "browser unavailable"),
+      body: await development
+        .evaluate("document.body.innerText")
+        .catch(() => "browser unavailable"),
       messages: development.drainMessages(),
       refresh: active?.output,
     });
     if (server !== null) diagnostics = diagnostics.replaceAll(server.ownerKey, "[fixture-key]");
     console.error(diagnostics);
-    throw error;
+    failures.push(error);
   } finally {
     const cleanup = await Promise.allSettled([
       ...refreshes.map((refresh) => refresh.stop()),
@@ -584,7 +753,10 @@ test("public Fast Refresh preserves React state and leases CSS; cancellation res
     rmSync(scratch, { recursive: true, force: true });
     cleanupDist?.();
     for (const result of cleanup) {
-      if (result.status === "rejected") throw result.reason;
+      if (result.status === "rejected") failures.push(result.reason);
     }
   }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1)
+    throw new AggregateError(failures, "refresh acceptance and cleanup failed");
 }, 240_000);

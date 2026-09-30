@@ -11,7 +11,8 @@
     "./hub": "./src/hub.ts",
     "./install": "./src/install.ts",
     "./artifacts": "./src/artifacts.ts",
-    "./refresh": "./src/refresh.ts"
+    "./refresh": "./src/refresh.ts",
+    "./refresh-vite": "./src/refresh-vite.ts"
   },
   "bin": {
     "manifold-pack": "./src/pack.ts",

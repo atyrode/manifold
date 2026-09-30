@@ -18,10 +18,7 @@ import {
   type InstallOutcome,
 } from "./install.ts";
 import { packPlugin, type PackResult } from "./pack.ts";
-import {
-  PLUGIN_REFRESH_DESCRIPTION,
-  PluginRefreshError,
-} from "./refresh-options.ts";
+import { PLUGIN_REFRESH_DESCRIPTION, PluginRefreshError } from "./refresh-options.ts";
 import type { PluginRefreshHandle } from "./refresh.ts";
 
 /**
@@ -193,7 +190,11 @@ function usage(): never {
 }
 
 /** Source mode is selected before the ordinary installation parser or owner-key resolution. */
-export function parseRefreshFlags(argv: readonly string[]): { root: string; hub: string; port?: number } {
+export function parseRefreshFlags(argv: readonly string[]): {
+  root: string;
+  hub: string;
+  port?: number;
+} {
   const ordinary: string[] = [];
   let port: number | undefined;
   for (let at = 0; at < argv.length; at++) {
@@ -201,16 +202,19 @@ export function parseRefreshFlags(argv: readonly string[]): { root: string; hub:
     if (word === "--fast-refresh") continue;
     if (word === "--port") {
       const value = argv[++at];
-      if (value === undefined || !/^\d+$/.test(value) || Number(value) > 65535) throw new Error("--port must be an integer from 0 through 65535");
+      if (value === undefined || !/^\d+$/.test(value) || Number(value) > 65535)
+        throw new Error("--port must be an integer from 0 through 65535");
       port = Number(value);
       continue;
     }
-    if (word === "--owner-key-file" || word === "--deliver" || word === "--hardened") throw new Error(`${word} installs bundles and cannot be used with --fast-refresh`);
+    if (word === "--owner-key-file" || word === "--deliver" || word === "--hardened")
+      throw new Error(`${word} installs bundles and cannot be used with --fast-refresh`);
     if (word !== undefined) ordinary.push(word);
   }
   const flags = parseHubFlags(ordinary, false);
   const [root] = flags.positionals;
-  if (root === undefined || flags.positionals.length !== 1) throw new Error("--fast-refresh requires exactly one plugins-root");
+  if (root === undefined || flags.positionals.length !== 1)
+    throw new Error("--fast-refresh requires exactly one plugins-root");
   return { root: resolve(root), hub: flags.hub, ...(port === undefined ? {} : { port }) };
 }
 
@@ -218,10 +222,25 @@ async function refreshCommand(argv: readonly string[]): Promise<void> {
   // A standalone kit's pack/install loop must not resolve the checkout-only frontend.
   const { startPluginRefresh } = await import("./refresh.ts");
   const handle: PluginRefreshHandle = await startPluginRefresh(parseRefreshFlags(argv));
-  console.log(JSON.stringify({ event: "plugin-refresh-ready", mode: "frontend-source", url: handle.url, hub: handle.hub, plugins: handle.plugins, state: "listening", prerequisites: PLUGIN_REFRESH_DESCRIPTION.prerequisites }));
+  console.log(
+    JSON.stringify({
+      event: "plugin-refresh-ready",
+      mode: "frontend-source",
+      url: handle.url,
+      hub: handle.hub,
+      plugins: handle.plugins,
+      state: "listening",
+      prerequisites: PLUGIN_REFRESH_DESCRIPTION.prerequisites,
+    }),
+  );
   const close = (): void => {
     void handle.close().catch((error: unknown) => {
-      console.error(JSON.stringify({ event: "plugin-refresh-cleanup-failed", reason: error instanceof Error ? error.message : String(error) }));
+      console.error(
+        JSON.stringify({
+          event: "plugin-refresh-cleanup-failed",
+          reason: error instanceof Error ? error.message : String(error),
+        }),
+      );
       process.exitCode = 1;
     });
   };
@@ -229,7 +248,13 @@ async function refreshCommand(argv: readonly string[]): Promise<void> {
   process.once("SIGTERM", close);
   try {
     await handle.closed;
-    console.log(JSON.stringify({ event: "plugin-refresh-stopped", plugins: handle.plugins, cleanup: "complete" }));
+    console.log(
+      JSON.stringify({
+        event: "plugin-refresh-stopped",
+        plugins: handle.plugins,
+        cleanup: "complete",
+      }),
+    );
   } finally {
     process.removeListener("SIGINT", close);
     process.removeListener("SIGTERM", close);
@@ -241,7 +266,9 @@ if (import.meta.main) {
     const argv = process.argv.slice(2);
     if (argv.includes("--help") || argv.includes("-h")) {
       console.log("manifold-dev <plugins-root> --hub <origin> [--fast-refresh [--port <n>]]");
-      console.log("Without --fast-refresh: pack/install/watch; --hardened, --deliver and --owner-key-file retain their ordinary meanings.");
+      console.log(
+        "Without --fast-refresh: pack/install/watch; --hardened, --deliver and --owner-key-file retain their ordinary meanings.",
+      );
       console.log(JSON.stringify(PLUGIN_REFRESH_DESCRIPTION, null, 2));
     } else if (argv.includes("--describe")) {
       console.log(JSON.stringify(PLUGIN_REFRESH_DESCRIPTION));
@@ -261,7 +288,13 @@ if (import.meta.main) {
     }
   } catch (error) {
     if (process.argv.includes("--fast-refresh")) {
-      console.error(JSON.stringify({ event: "plugin-refresh-failed", reason: error instanceof PluginRefreshError ? error.reason : "startup_failed", message: error instanceof Error ? error.message : String(error) }));
+      console.error(
+        JSON.stringify({
+          event: "plugin-refresh-failed",
+          reason: error instanceof PluginRefreshError ? error.reason : "startup_failed",
+          message: error instanceof Error ? error.message : String(error),
+        }),
+      );
       process.exitCode = 1;
     } else exitWith("dev", error);
   }

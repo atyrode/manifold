@@ -2,9 +2,10 @@ import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, relative, resolve, sep } from "node:path";
-import { defineConfig, loadEnv, type Plugin } from "vite";
+import { defineConfig, loadEnv } from "vite";
+import type { Plugin } from "vite";
 import react from "@vitejs/plugin-react";
-import { pluginDevelopment } from "@manifold/plugin-kit/refresh";
+import { pluginDevelopment } from "@manifold/plugin-kit/refresh-vite";
 import { resolveBuildIdentity } from "../../scripts/build-identity.ts";
 
 const packageRoot = dirname(fileURLToPath(import.meta.url));
