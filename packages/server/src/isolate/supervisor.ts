@@ -133,6 +133,7 @@ const ANSWER_FOR_REQUEST: Partial<Record<IsolateHostFrame["t"], AnsweredFrame["t
 interface Pending {
   readonly served: ServedCtx | null;
   readonly request: Extract<IsolateHostFrame, { id: string }>;
+  readonly expiresAt: number;
   serving: number;
   admitted: boolean;
   readonly answer: (frame: AnsweredFrame) => void;
@@ -304,6 +305,19 @@ export class IsolateSupervisor implements IsolateRunner {
 
   state(pluginId: string): IsolateState {
     return this.isolates.get(pluginId)?.state ?? "stopped";
+  }
+
+  remainingHostCallMs(): number {
+    const call = this.hostCall.getStore();
+    if (call === undefined) return Number.POSITIVE_INFINITY;
+    const request = call.pending.request;
+    if (
+      !call.active || this.closed ||
+      this.isolates.get(call.isolate.ref.pluginId) !== call.isolate ||
+      call.isolate.child !== call.child ||
+      !("id" in request) || call.isolate.pending.get(request.id) !== call.pending
+    ) return 0;
+    return Math.max(0, call.pending.expiresAt - performance.now());
   }
 
   onState(listener: (pluginId: string, state: IsolateState, detail?: string) => void): () => void {
@@ -621,7 +635,12 @@ export class IsolateSupervisor implements IsolateRunner {
           : settledTimeoutMs === undefined
             ? this.dispatchDeadlineMs
             : settledTimeoutMs + SETTLED_FLUSH_GRACE_MS;
-    const expiresAt = performance.now() + duration;
+    const now = performance.now();
+    // Awaited re-entry cannot acquire a fresh budget beyond its still-serving parent.
+    const inheritedBudget = this.hostCall.getStore()?.active
+      ? this.remainingHostCallMs()
+      : Number.POSITIVE_INFINITY;
+    const expiresAt = now + Math.min(duration, inheritedBudget);
     const turn = await this.acquireOwnerTurn(isolate, served, idleOnly, expiresAt);
     let startupDeadline: Timer | undefined;
     try {
@@ -689,6 +708,7 @@ export class IsolateSupervisor implements IsolateRunner {
         const pending: Pending = {
           served,
           request,
+          expiresAt,
           serving: 0,
           admitted: (request.t === "harness" && served !== null) || request.t === "byte_request",
           answer: resolve,

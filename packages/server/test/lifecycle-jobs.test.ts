@@ -147,6 +147,9 @@ class StubRunner implements IsolateRunner {
   state(pluginId: string): IsolateState {
     return this.states.get(pluginId) ?? "stopped";
   }
+  remainingHostCallMs(): number {
+    return Number.POSITIVE_INFINITY;
+  }
   onState(): () => void {
     return () => {};
   }

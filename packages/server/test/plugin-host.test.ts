@@ -2740,6 +2740,10 @@ class FakeRunner implements IsolateRunner {
     return this.states.get(pluginId) ?? "stopped";
   }
 
+  remainingHostCallMs(): number {
+    return Number.POSITIVE_INFINITY;
+  }
+
   onState(listener: (pluginId: string, state: IsolateState, detail?: string) => void): () => void {
     this.listeners.add(listener);
     return () => {

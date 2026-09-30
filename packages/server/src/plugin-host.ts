@@ -1876,6 +1876,8 @@ export class PluginHost {
           pluginId,
           {
             assertCurrent,
+            remainingMs: () => Math.max(0, deadlineAt - this.runtime.now()),
+            signal: controller.signal,
             require: requireCapability,
             requireSource: async () => {
               throw new ByteTransferError("unavailable");
@@ -6046,6 +6048,7 @@ export class PluginHost {
         auth,
         pluginId,
         {
+          remainingMs: () => this.isolates?.runner.remainingHostCallMs() ?? Number.POSITIVE_INFINITY,
           assertCurrent: () => {
             if (!machineBridgeOpen || this.closed || this.replacing.has(pluginId) ||
                 this.assembled.actions.get(fullName)?.def !== entry.def ||
