@@ -55,6 +55,25 @@ describe("chooseDefaultMachine", () => {
     expect(chooseDefaultMachine([], null, "unconfined")).toBeNull();
   });
 
+  test.each([{ revoked: true }, { draining: true }])(
+    "remembered unavailable endpoints cannot bypass launch availability: %s",
+    (unavailable) => {
+      const previous = { ...machine("previous", true), ...unavailable };
+      const available = machine("available", true);
+      expect(chooseDefaultMachine([previous], previous.id, "unconfined")).toBeNull();
+      expect(
+        chooseDefaultMachine(
+          [previous, available, machine("another", true)],
+          previous.id,
+          "unconfined",
+        ),
+      ).toBeNull();
+      expect(chooseDefaultMachine([previous, available], previous.id, "unconfined")?.id).toBe(
+        available.id,
+      );
+    },
+  );
+
   test("memory cannot cross execution authority and unknown owners never grant shell access", () => {
     const shell = machine("shell", true);
     const native: MachineSummary = { ...machine("native", true), terminalExecution: "governed" };

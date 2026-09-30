@@ -2070,6 +2070,17 @@ metadata until explicitly removed and never rebind by name. Removal deletes meta
 The manifest declares data version 1.0 and storage purging; successful CAS emits the
 revision-only `host_views_changed` at the machine plugin node.
 
+The core Machines section edits that registry with CAS and preserves a stale edit draft on
+refusal. Grouping is optional presentation: read failure falls back to individual accounts.
+Multi-member launch requires explicit exact-account choice, and an unavailable selected
+member is never replaced. Positive unconfined declaration, online/nonrevoked/nonpaused
+state and current placement are independent prerequisites, not inferred from host rollup.
+Enrollment uses the existing door with a distinct explicit name and no implicit rotation.
+Only a newly returned credential enters component-local transient state, in a selectable
+readonly input; hide, unmount, client replacement or actual administration loss retires it.
+Unknown/disconnected authority is not claimed as withdrawal. Core setup instructions do
+not install an account/owner or confer shell authority.
+
 Roster rows may carry `physicalCoreCount`, a positive integer from the current admitted live
 machine hello (#939). It counts distinct OS-visible physical package/core identities among
 online Linux CPUs, not logical processors, cgroup quota or bare-metal attestation. Unknown,
@@ -2711,8 +2722,14 @@ contract, never sent speculatively.
 Contract 12 adds optional live workspace authority to Worker init/mounted contexts and the
 bounded `syncSubscriptions` client method. The initial common init remains strictly legacy;
 after a current guest announces contract 12, the host sends its enriched init before mounts.
-Pre-12 guests omit both workspace fields and cannot call the new method. Authority changes
-update current getters and listeners without remounting or replacing the client.
+Pre-12 guests omit workspace fields and the optional mounted `clientEpoch`, and cannot
+call the new method. Authority/presentation changes update current getters and listeners
+without remounting or replacing the client. Actual page-client replacement increments the
+opaque epoch even when all coarse facts are identical, retires captured old client custody
+and pending replies, and supplies a new portable client without remounting React.
+Contract 12 also admits optional readonly inputs and expanded buttons. Unused/false
+readonly is omitted from frames; true prevents edits but preserves text selection and
+focused controlled updates. A pre-12 declaration of either feature faults only its instance.
 “Isolate answered out of protocol” denotes an internal
 protocol violation, not an SDK-upgrade remedy exposed after version drift.
 

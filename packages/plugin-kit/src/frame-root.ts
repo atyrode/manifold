@@ -62,7 +62,7 @@ const DATA_PROPS: Readonly<Record<UiNodeType, readonly string[]>> = {
   icon: ["icon"],
   divider: [],
   spinner: ["label"],
-  button: ["label", "tone", "disabled", "action", "icon", "iconOnly"],
+  button: ["label", "tone", "disabled", "expanded", "action", "icon", "iconOnly"],
   select: ["value", "options", "label", "disabled"],
   input: ["value", "label", "placeholder", "mono", "disabled", "readOnly"],
   toggle: ["value", "label", "disabled"],

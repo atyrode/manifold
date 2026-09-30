@@ -103,8 +103,9 @@ describe("the closed component vocabulary", () => {
       expect(UiNodeSchema.safeParse({ ...input, readOnly }).success).toBe(false);
     }
     expect(UiNodeSchema.safeParse({ type: "text", text: "x", readOnly: true }).success).toBe(false);
-    expect(UiNodeSchema.safeParse(box([{ ...input, type: "input", readOnly: true }])).success)
-      .toBe(true);
+    expect(UiNodeSchema.safeParse(box([{ ...input, type: "input", readOnly: true }])).success).toBe(
+      true,
+    );
   });
 
   test("a tree is bounded in depth and in size, and refused past either rather than clipped", () => {

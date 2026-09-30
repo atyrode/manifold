@@ -212,6 +212,7 @@ export type UiNode = UiNodeMeta &
         readonly payload?: unknown;
         readonly tone?: UiTone | undefined;
         readonly disabled?: boolean | undefined;
+        readonly expanded?: boolean | undefined;
         readonly action?: string | undefined;
         readonly icon?: UiIcon | undefined;
         readonly iconOnly?: boolean | undefined;
@@ -314,6 +315,7 @@ const uiNode: z.ZodType<UiNode> = z.lazy(() =>
       payload: z.unknown().optional(),
       tone: UiToneSchema.optional(),
       disabled: z.boolean().optional(),
+      expanded: z.boolean().optional(),
       action: z.string().min(1).max(96).optional(),
       icon: UiIconSchema.optional(),
       iconOnly: z.boolean().optional(),
@@ -863,6 +865,8 @@ export const WebHostContextSchema = z.strictObject({
   caps: CapSchema.array(),
   workspaceCaps: CapSchema.array().optional(),
   workspaceEvents: z.boolean().optional(),
+  /** Changes only when the page replaces this mount's actual client binding. */
+  clientEpoch: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
   containerId: z.string().min(1).nullable(),
   topics: z.strictObject({
     index: ManifoldRefSchema.array().max(64),

@@ -285,6 +285,15 @@ account labels. It is display metadata, not a machine, grant target or OS-accoun
 Accounts keep separate credentials, owner lifetimes, execution modes and maintenance states.
 Identical names do not group endpoints automatically.
 
+In **Machines**, administrators can create/edit a host grouping and label its existing
+account enrollments. Expand a group for each account's independent status and withdrawal/
+forget controls. A single-account `+` uses that exact enrollment; a multi-account `+`
+requires an explicit choice and never substitutes another account when it is unavailable.
+The host's online rollup is not shell permission. Unknown/governed declarations, paused
+admission, revoked credentials, offline transports and missing placement context explain
+why a new shell cannot start. If grouping cannot be read, individual enrollments remain
+available; an unreadable machine inventory is not an empty fleet.
+
 `core.machines.listHostViews {}` returns `{ revision, hosts }` to the same
 `containers:read` audience as the fleet inventory. To create or edit metadata, call
 `core.machines.setHostView { expectedRevision, host: { id, name, members } }`, where each
@@ -303,6 +312,20 @@ Revocation, going offline and forgetting remain per-account operations. Forgotte
 as missing display metadata until explicitly removed; a reused name never rebinds them.
 `core.machines.removeHostView { expectedRevision, hostId }` requires `machines:mint` and
 removes only metadata, not accounts, credentials or terminals.
+
+## Enroll from core Machines
+
+A viewer with live workspace `machines:mint` can open **Enroll shell account**, enter an
+explicit distinct name and dispatch the existing enrollment door. An existing name is
+**Already enrolled**, not implicit credential rotation. The one-time credential is a
+selectable, immutable field for manual copying to its private authorized token custodian;
+it is never inserted into setup commands, URLs, grouping metadata or persisted UI state.
+**Hide credential**, unmount, client replacement and actual administration loss remove it.
+Temporary disconnected/unknown authority hides the reveal without claiming revocation.
+
+The setup panel links the Linux, Darwin and NixOS instructions above. Enrollment does not
+create an OS account, install/start its owner or establish ordinary-shell authority. Provision
+the selected existing account and wait for the shared fleet inventory's positive declaration.
 
 ## Notes
 

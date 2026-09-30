@@ -216,6 +216,8 @@ export interface ButtonProps extends VocabularyMeta {
   readonly onBlur?: (() => void) | undefined;
   readonly tone?: UiTone | undefined;
   readonly disabled?: boolean | undefined;
+  /** Disclosure state when this button shows or hides an associated subtree. */
+  readonly expanded?: boolean | undefined;
   /**
    * The FULL action name the press ultimately dispatches, painted as `data-action` so the
    * affordance names the door it opens (AXIOMS.md §Foundation law and REGISTRY.md §Foundation,
@@ -233,6 +235,7 @@ export function Button({
   onBlur,
   tone,
   disabled,
+  expanded,
   "data-action": action,
   icon,
   iconOnly,
@@ -248,6 +251,7 @@ export function Button({
       onBlur,
       tone,
       disabled,
+      expanded,
       action,
       icon,
       iconOnly,
@@ -264,6 +268,7 @@ export function Button({
       disabled={disabled === true}
       {...attributes(meta)}
       aria-label={meta.ariaLabel ?? (bare ? label : undefined)}
+      aria-expanded={expanded}
       onClick={() => onClick()}
       onBlur={onBlur === undefined ? undefined : () => onBlur()}
     >
@@ -366,7 +371,7 @@ export function Input({
       placeholder,
       mono,
       disabled,
-      ...(readOnly === true ? { readOnly: true } : {}),
+      readOnly: readOnly === true ? true : undefined,
       onChange,
       onBlur,
       ...meta,

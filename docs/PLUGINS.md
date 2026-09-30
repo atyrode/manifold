@@ -3870,6 +3870,10 @@ authorize a door. Updates notify without remounting or changing client identity.
 admitted strict Workers omit the new context fields and cannot call the synchronization
 RPC. That RPC reports socket ordering only, never per-topic admission; the physical pool
 coalesces by declaration watermark, so a later interest cannot inherit an earlier fence.
+Contract 12 mounted contexts also carry an opaque `clientEpoch`: changing the actual page
+client replaces the portable client and retires its old calls, listeners and subscriptions
+without remounting the React component. Identical coarse authority facts do not preserve
+old custody. Ordinary presentation/authority updates retain client identity.
 
 ### The vocabulary
 
@@ -3886,12 +3890,20 @@ Fourteen `UiNode` kinds are emitted by the portable `@manifold/ui` components
 | `icon`    | `ControlIcon`, `ItemIcon` | named control/item glyph and optional size                                                             |
 | `divider` | `Divider`                 | horizontal separator                                                                                   |
 | `spinner` | `Spinner`                 | optional progress label                                                                                |
-| `button`  | `Button`                  | label, tone, disabled, optional icon; `onClick`, `onBlur`, public `data-action`                        |
+| `button`  | `Button`                  | label, tone, disabled, optional icon/`expanded`; `onClick`, `onBlur`, public `data-action`             |
 | `select`  | `Select`                  | controlled string/null, bounded `{ value, label }` options, scalar `onChange`, `onBlur`                |
-| `input`   | `Input`                   | text, label, placeholder, `mono`, disabled; scalar `onChange`, `onBlur`                                |
+| `input`   | `Input`                   | text, label, placeholder, `mono`, disabled, optional `readOnly`; scalar `onChange`, `onBlur`           |
 | `toggle`  | `Toggle`                  | boolean, label, disabled; scalar `onChange`, `onBlur`                                                  |
 | `list`    | `List`                    | keyed rows with primary/secondary text and optional `onClick`                                          |
 | `empty`   | `Empty`                   | empty-state text                                                                                       |
+
+`Input.readOnly` defaults false and is omitted from frames when unused/false. True blocks
+typing/paste while preserving focus/selection and follows controlled value changes even
+while focused; editable inputs retain their focused-buffer discipline. A credential reveal
+must still unmount on hide or custody loss. `Button.expanded` is the closed disclosure
+state mapped to `aria-expanded`, not an arbitrary DOM attribute escape. Both features
+require contract 12; a pre-12 artifact declaring either is quarantined per instance without
+terminating unaffected siblings.
 
 Five tones mean `neutral`, `accent`, `muted`, `danger`, `success`, never arbitrary
 colours. Text-bearing components take text, not nested markup. Control callbacks
@@ -3936,9 +3948,10 @@ Worker member, event invalidations, authoring and narrow machine bridges. Portab
 require an accepted contract of at least 9, not the newest stamp. Contract 10 adds optional
 physical-core metadata; older strict consumers retain the old machine-list shape through
 nested server calls and both Worker machine-reading routes. Contract 11 adds credential-bound
-read-only lifecycle metadata. Contract 12 adds live workspace authority hints and bounded
-subscription ordering; older strict Workers retain their original contexts. Older admitted
-artifacts keep their declared behavior rather than acquiring these facilities.
+read-only lifecycle metadata. Contract 12 adds live workspace authority hints, bounded
+subscription ordering, explicit client-binding retirement, readonly inputs and disclosure
+buttons; older strict Workers retain their original contexts and ordinary controls. Older
+admitted artifacts keep their declared behavior rather than acquiring these facilities.
 Missing stamps require a genuine repack, not an assumed contract 1;
 `repack_required` holds incompatible incumbents before import or spawn.
 

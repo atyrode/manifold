@@ -127,14 +127,16 @@ function legacyMachineResult(frame: CallFrame, result: unknown): unknown {
 }
 
 /** The frame schema already bounds and validates this tree; only feature admission remains. */
-function usesReadOnlyInput(node: UiNode): boolean {
-  if (node.type === "input") return node.readOnly !== undefined;
+function contract12UiFeature(node: UiNode): "readOnly input" | "expanded button" | undefined {
+  if (node.type === "input" && node.readOnly !== undefined) return "readOnly input";
+  if (node.type === "button" && node.expanded !== undefined) return "expanded button";
   if (node.type === "box") {
     for (const child of node.children) {
-      if (usesReadOnlyInput(child)) return true;
+      const feature = contract12UiFeature(child);
+      if (feature !== undefined) return feature;
     }
   }
-  return false;
+  return undefined;
 }
 
 /**
@@ -188,6 +190,7 @@ interface Mounted {
   offStatus: (() => void) | null;
   offAuthority: (() => void) | null;
   authorityEpoch: number;
+  clientEpoch: number;
   contextStamp: string | null;
   faulted: boolean;
   readonly onRender: (tree: UiNode) => void;
@@ -317,6 +320,7 @@ export class WorkerHost {
       offStatus: null,
       offAuthority: null,
       authorityEpoch: 0,
+      clientEpoch: 0,
       contextStamp: null,
       faulted: false,
       onRender,
@@ -343,6 +347,7 @@ export class WorkerHost {
     if (entry.announced && this.contract >= 9) {
       if (changedClient) {
         entry.authorityEpoch += 1;
+        entry.clientEpoch += 1;
         try {
           this.observeStatus(instance, entry);
           for (const [id, stream] of this.streams) {
@@ -434,6 +439,7 @@ export class WorkerHost {
         : {
             workspaceCaps: host.client.workspaceCaps(),
             workspaceEvents: host.client.workspaceEventsAvailable(),
+            clientEpoch: entry.clientEpoch,
           }),
       containerId: host.containerId,
       topics: host.topics,
@@ -553,9 +559,12 @@ export class WorkerHost {
       case "render": {
         const entry = this.mounted.get(frame.instance);
         if (entry?.announced !== true || entry.faulted) return;
-        if (this.contract < 12 && usesReadOnlyInput(frame.tree)) {
-          this.faultInstance(frame.instance, entry, "readOnly input requires hardened contract 12");
-          return;
+        if (this.contract < 12) {
+          const feature = contract12UiFeature(frame.tree);
+          if (feature !== undefined) {
+            this.faultInstance(frame.instance, entry, `${feature} requires hardened contract 12`);
+            return;
+          }
         }
         entry.onRender(frame.tree);
         return;

@@ -611,37 +611,42 @@ describe("portable Worker compatibility", () => {
   );
 
   test.each([1, 9, 11])(
-    "contract %i keeps editable inputs but refuses readOnly declarations per instance",
+    "contract %i isolates contract-12 input and disclosure features from unaffected instances",
     (contract) => {
       const { host, worker } = bench(undefined, contract >= 9);
       const rendered: UiNode[] = [];
-      const faults: string[] = [];
+      const faultedInstances: string[] = [];
       host.mount(
         "editable",
         "main",
         (tree) => rendered.push(tree),
-        (error) => faults.push(error),
+        () => faultedInstances.push("editable"),
       );
-      for (const instance of ["read-only", "explicit-false"]) {
+      const editable: UiNode = { type: "input", event: "edit", value: "draft" };
+      const button: UiNode = { type: "button", event: "toggle", label: "Show accounts" };
+      const features: readonly { instance: string; tree: UiNode }[] = [
+        { instance: "read-only", tree: { ...editable, readOnly: true } },
+        { instance: "explicit-false", tree: { ...editable, readOnly: false } },
+        { instance: "expanded", tree: { ...button, expanded: true } },
+        { instance: "collapsed", tree: { ...button, expanded: false } },
+      ];
+      for (const { instance } of features) {
         host.mount(
           instance,
           "main",
           (tree) => rendered.push(tree),
-          (error) => faults.push(error),
+          () => faultedInstances.push(instance),
         );
       }
       try {
         worker.emit({ t: "ready", hardenedContract: contract, panels: ["main"] });
-        const editable: UiNode = { type: "input", event: "edit", value: "draft" };
+        worker.emit({ t: "render", instance: "editable", tree: button });
         worker.emit({ t: "render", instance: "editable", tree: editable });
-        for (const readOnly of [true, false]) {
+        for (const { instance, tree } of features) {
           worker.emit({
             t: "render",
-            instance: readOnly ? "read-only" : "explicit-false",
-            tree: {
-              type: "box",
-              children: [{ type: "box", children: [{ ...editable, readOnly }] }],
-            },
+            instance,
+            tree: { type: "box", children: [{ type: "box", children: [tree] }] },
           });
         }
         worker.emit({ t: "render", instance: "read-only", tree: editable });
@@ -650,14 +655,13 @@ describe("portable Worker compatibility", () => {
           instance: "editable",
           tree: { ...editable, value: "still editable" },
         });
-        expect(rendered).toEqual([editable, { ...editable, value: "still editable" }]);
-        expect(faults).toEqual([
-          "readOnly input requires hardened contract 12",
-          "readOnly input requires hardened contract 12",
-        ]);
+        expect(rendered).toEqual([button, editable, { ...editable, value: "still editable" }]);
+        expect(faultedInstances).toEqual(["read-only", "explicit-false", "expanded", "collapsed"]);
         expect(worker.frames().filter((frame) => frame.t === "unmount")).toEqual([
           { t: "unmount", instance: "read-only" },
           { t: "unmount", instance: "explicit-false" },
+          { t: "unmount", instance: "expanded" },
+          { t: "unmount", instance: "collapsed" },
         ]);
         expect(worker.terminated).toBe(false);
       } finally {

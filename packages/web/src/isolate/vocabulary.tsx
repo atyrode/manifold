@@ -142,6 +142,7 @@ function Node({ node, onEvent }: NodeProps): ReactElement {
           data-action={node.action}
           icon={node.icon}
           iconOnly={node.iconOnly}
+          expanded={node.expanded}
           {...metaOf(node)}
           onClick={() => onEvent(node.event, node.payload)}
           onBlur={blurOf(node.blurEvent, onEvent)}

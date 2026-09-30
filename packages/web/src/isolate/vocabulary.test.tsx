@@ -347,19 +347,19 @@ test("a Worker root preserves keyed fields and panel or section sizing", async (
       document.querySelector("#reference input").select();
     `);
     await paste();
-    expect(
-      await browser.evaluate<string>('document.querySelector("#reference input").value'),
-    ).toBe("pasted replacement");
+    expect(await browser.evaluate<string>('document.querySelector("#reference input").value')).toBe(
+      "pasted replacement",
+    );
     await browser.evaluate<void>(
       "window.frameFixture.native({ value: 'stale owner value', readOnly: false })",
     );
-    expect(
-      await browser.evaluate<string>('document.querySelector("#reference input").value'),
-    ).toBe("pasted replacement");
+    expect(await browser.evaluate<string>('document.querySelector("#reference input").value')).toBe(
+      "pasted replacement",
+    );
     await browser.evaluate<void>('document.querySelector("#reference input").blur()');
-    expect(
-      await browser.evaluate<string>('document.querySelector("#reference input").value'),
-    ).toBe("stale owner value");
+    expect(await browser.evaluate<string>('document.querySelector("#reference input").value')).toBe(
+      "stale owner value",
+    );
     const beforeReadOnly = await browser.evaluate<{
       nativeChanges: number;
       nativeBlurs: number;
@@ -421,10 +421,12 @@ test("a Worker root preserves keyed fields and panel or section sizing", async (
       );
       await browser.evaluate<void>("window.selectedCredential.blur()");
       const blurCount = id === "root" ? "workerBlurs" : "nativeBlurs";
-      expect(await browser.evaluate<typeof beforeReadOnly>("window.frameFixture.counts()")).toEqual({
-        ...beforeBlur,
-        [blurCount]: beforeBlur[blurCount] + 1,
-      });
+      expect(await browser.evaluate<typeof beforeReadOnly>("window.frameFixture.counts()")).toEqual(
+        {
+          ...beforeBlur,
+          [blurCount]: beforeBlur[blurCount] + 1,
+        },
+      );
       await browser.evaluate<void>("window.selectedCredential.focus()");
       await browser.evaluate<void>(`window.frameFixture.${repaint}({ visible: false })`);
       expect(
@@ -433,7 +435,9 @@ test("a Worker root preserves keyed fields and panel or section sizing", async (
         `),
       ).toBe(true);
     }
-    expect(await browser.evaluate<string[]>("window.frameFixture.calls()")).toEqual(callsBeforeReadOnly);
+    expect(await browser.evaluate<string[]>("window.frameFixture.calls()")).toEqual(
+      callsBeforeReadOnly,
+    );
     const afterReadOnly = await browser.evaluate<typeof beforeReadOnly>(
       "window.frameFixture.counts()",
     );

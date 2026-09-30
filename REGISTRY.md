@@ -2314,7 +2314,7 @@ Four rules give it teeth:
   inferred from a rate. A timer beside a live subscription is RED even at a rate the table would
   otherwise admit.
 
-`feed` is the join between this table and the feed vocabulary those five names live in, and it is
+`feed` is the join between this table and the feed vocabulary those resource names live in, and it is
 checked in both directions like every other runtime join here: a row whose feed is absent from
 the page is RED, and a live feed with no row is the undeclared-resource rule.
 
@@ -2357,6 +2357,12 @@ asserts is the same defect as an undeclared door, one register further in.
         "feed": "core.machines.list",
         "perMin": 0,
         "why": "the machine roster. ZERO: one subscription to manifold://plugin/core.machines. It was the slowest timer of the five on the grounds that a machine coming online is not a thing an operator waits on; with `machine_online` gated on a genuine transition, the operator no longer waits at all"
+      },
+      {
+        "resource": "core.machines.listHostViews",
+        "feed": "core.machines.listHostViews",
+        "perMin": 0,
+        "why": "optional host/account display metadata. ZERO after synchronized eligible catch-up: the shared machine-plugin subscription invalidates registry changes; scoped or unsynchronized viewers retain the same shared fallback, never a per-account timer"
       }
     ],
     "idleCanvas": {

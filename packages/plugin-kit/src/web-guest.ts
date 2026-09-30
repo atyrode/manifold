@@ -176,6 +176,21 @@ function hostOf(
   };
 }
 
+function ownerOf(id: string, label: string, kind: Kind, context: WebHostContext): Owner {
+  return {
+    id,
+    label,
+    kind,
+    context,
+    live: true,
+    streams: new Set(),
+    subscriptions: new Set(),
+    statusListeners: new Set(),
+    authorityListeners: new Set(),
+    visibilityListeners: new Set(),
+  };
+}
+
 /**
  * Wires a definition to a port and starts answering page frames. The packer's Worker entry
  * calls {@link startWebWorker}; tests call this with a fake page.
@@ -553,6 +568,36 @@ export function attachWebGuest(def: ReactWebPluginDef, port: WebGuestPort): void
     queueMicrotask(() => mounted.root.unmount());
   };
 
+  const mountedOf = (
+    owner: Owner,
+    component: Contribution,
+    root: UiRoot,
+    arg: PanelArg | undefined,
+  ): Mounted => {
+    const client = clientFor(owner);
+    const navigate = (uri: string): void => {
+      void send(owner.id, owner, "navigate", [uri]).catch(warnFailure("navigate"));
+    };
+    const authoring: AuthoringHandle = {
+      createTerminal: async (machine, runtime) =>
+        (await send(owner.id, owner, "createTerminal", [
+          machine === undefined ? null : machine.id,
+          runtime ?? null,
+        ])) as TerminalInfo | null,
+    };
+    return Object.assign(owner, {
+      component,
+      root,
+      client,
+      navigate,
+      authoring,
+      host: hostOf(owner.context, client, navigate, authoring),
+      hostKey: hostKeyOf(owner.context),
+      arg,
+      argKey: JSON.stringify(arg),
+    });
+  };
+
   const onMount = (frame: Extract<WebIsolateHostFrame, { t: "mount" }>): void => {
     if (!initialized) {
       fault(frame.instance, "mount before init");
@@ -582,29 +627,7 @@ export function attachWebGuest(def: ReactWebPluginDef, port: WebGuestPort): void
       return;
     }
     const instance = frame.instance;
-    const owner: Owner = {
-      id: instance,
-      label,
-      kind,
-      context: frame.context,
-      live: true,
-      streams: new Set(),
-      subscriptions: new Set(),
-      statusListeners: new Set(),
-      authorityListeners: new Set(),
-      visibilityListeners: new Set(),
-    };
-    const client = clientFor(owner);
-    const navigate = (uri: string): void => {
-      void send(instance, owner, "navigate", [uri]).catch(warnFailure("navigate"));
-    };
-    const authoring: AuthoringHandle = {
-      createTerminal: async (machine, runtime) =>
-        (await send(instance, owner, "createTerminal", [
-          machine === undefined ? null : machine.id,
-          runtime ?? null,
-        ])) as TerminalInfo | null,
-    };
+    const owner = ownerOf(instance, label, kind, frame.context);
     const root: UiRoot = createUiRoot({
       // The tree was validated against the vocabulary before it got here.
       commit: (tree) => port.post({ t: "render", instance, tree }),
@@ -614,23 +637,13 @@ export function attachWebGuest(def: ReactWebPluginDef, port: WebGuestPort): void
       },
       report: (error) => port.warn(`${label}: ${errorText(error)}`),
     });
-    const mounted: Mounted = Object.assign(owner, {
-      component: component as Contribution,
-      root,
-      client,
-      navigate,
-      authoring,
-      host: hostOf(frame.context, client, navigate, authoring),
-      hostKey: hostKeyOf(frame.context),
-      arg: frame.arg,
-      argKey: JSON.stringify(frame.arg),
-    });
+    const mounted = mountedOf(owner, component as Contribution, root, frame.arg);
     instances.set(instance, mounted);
     render(mounted);
   };
 
   const onContext = (frame: Extract<WebIsolateHostFrame, { t: "context" }>): void => {
-    const mounted = instances.get(frame.instance);
+    let mounted = instances.get(frame.instance);
     if (mounted === undefined) {
       if (!faulted.has(frame.instance)) {
         port.warn(`context for unknown instance "${frame.instance}"; ignored`);
@@ -642,6 +655,20 @@ export function attachWebGuest(def: ReactWebPluginDef, port: WebGuestPort): void
       return;
     }
     const previous = mounted.context;
+    if ((previous.clientEpoch ?? 0) !== (frame.context.clientEpoch ?? 0)) {
+      // Replace host custody without remounting the component. Captured old clients
+      // and pending replies retire; presentation-only/authority updates keep identity.
+      retire(mounted, true);
+      mounted = mountedOf(
+        ownerOf(mounted.id, mounted.label, mounted.kind, frame.context),
+        mounted.component,
+        mounted.root,
+        frame.arg,
+      );
+      instances.set(mounted.id, mounted);
+      render(mounted);
+      return;
+    }
     mounted.context = frame.context;
     const previousCaps = previous.workspaceCaps ?? NO_WORKSPACE_CAPS;
     const nextCaps = frame.context.workspaceCaps ?? NO_WORKSPACE_CAPS;

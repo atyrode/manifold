@@ -60,6 +60,7 @@ beforeAll(async () => {
       return barrier.promise;
     };
     const act = (action, args) => {
+      if (action === "core.machines.listHostViews") return Promise.resolve({ ok: true, result: { revision: 0, hosts: [] } });
       actions.push({ action, args });
       const pending = Promise.withResolvers();
       finish = () => {
