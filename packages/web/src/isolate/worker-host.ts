@@ -126,6 +126,17 @@ function legacyMachineResult(frame: CallFrame, result: unknown): unknown {
   };
 }
 
+/** The frame schema already bounds and validates this tree; only feature admission remains. */
+function usesReadOnlyInput(node: UiNode): boolean {
+  if (node.type === "input") return node.readOnly !== undefined;
+  if (node.type === "box") {
+    for (const child of node.children) {
+      if (usesReadOnlyInput(child)) return true;
+    }
+  }
+  return false;
+}
+
 /**
  * A `call` the closed method vocabulary does not name, read just far enough to answer it. The
  * full schema refuses it (and a refused frame is a worker-wide fault), but a guest built against
@@ -541,7 +552,12 @@ export class WorkerHost {
       }
       case "render": {
         const entry = this.mounted.get(frame.instance);
-        if (entry?.announced === true && !entry.faulted) entry.onRender(frame.tree);
+        if (entry?.announced !== true || entry.faulted) return;
+        if (this.contract < 12 && usesReadOnlyInput(frame.tree)) {
+          this.faultInstance(frame.instance, entry, "readOnly input requires hardened contract 12");
+          return;
+        }
+        entry.onRender(frame.tree);
         return;
       }
       case "call": {

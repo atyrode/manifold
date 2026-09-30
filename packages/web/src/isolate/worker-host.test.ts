@@ -610,6 +610,89 @@ describe("portable Worker compatibility", () => {
     },
   );
 
+  test.each([1, 9, 11])(
+    "contract %i keeps editable inputs but refuses readOnly declarations per instance",
+    (contract) => {
+      const { host, worker } = bench(undefined, contract >= 9);
+      const rendered: UiNode[] = [];
+      const faults: string[] = [];
+      host.mount(
+        "editable",
+        "main",
+        (tree) => rendered.push(tree),
+        (error) => faults.push(error),
+      );
+      for (const instance of ["read-only", "explicit-false"]) {
+        host.mount(
+          instance,
+          "main",
+          (tree) => rendered.push(tree),
+          (error) => faults.push(error),
+        );
+      }
+      try {
+        worker.emit({ t: "ready", hardenedContract: contract, panels: ["main"] });
+        const editable: UiNode = { type: "input", event: "edit", value: "draft" };
+        worker.emit({ t: "render", instance: "editable", tree: editable });
+        for (const readOnly of [true, false]) {
+          worker.emit({
+            t: "render",
+            instance: readOnly ? "read-only" : "explicit-false",
+            tree: {
+              type: "box",
+              children: [{ type: "box", children: [{ ...editable, readOnly }] }],
+            },
+          });
+        }
+        worker.emit({ t: "render", instance: "read-only", tree: editable });
+        worker.emit({
+          t: "render",
+          instance: "editable",
+          tree: { ...editable, value: "still editable" },
+        });
+        expect(rendered).toEqual([editable, { ...editable, value: "still editable" }]);
+        expect(faults).toEqual([
+          "readOnly input requires hardened contract 12",
+          "readOnly input requires hardened contract 12",
+        ]);
+        expect(worker.frames().filter((frame) => frame.t === "unmount")).toEqual([
+          { t: "unmount", instance: "read-only" },
+          { t: "unmount", instance: "explicit-false" },
+        ]);
+        expect(worker.terminated).toBe(false);
+      } finally {
+        host.stop();
+      }
+    },
+  );
+
+  test("contract 12 admits a selectable input tree until its instance unmounts", () => {
+    const { host, worker } = bench(undefined, true);
+    const rendered: UiNode[] = [];
+    const faults: string[] = [];
+    const unmount = host.mount(
+      "i1",
+      "main",
+      (tree) => rendered.push(tree),
+      (error) => faults.push(error),
+    );
+    const tree: UiNode = {
+      type: "box",
+      children: [{ type: "input", event: "edit", value: "fixture credential", readOnly: true }],
+    };
+    try {
+      worker.emit({ t: "ready", hardenedContract: 12, panels: ["main"] });
+      worker.emit({ t: "render", instance: "i1", tree });
+      unmount();
+      worker.emit({ t: "render", instance: "i1", tree });
+      expect(rendered).toEqual([tree]);
+      expect(faults).toEqual([]);
+      expect(worker.terminated).toBe(false);
+    } finally {
+      host.stop();
+    }
+  });
+
   test("legacy projection preserves refusals and leaves unrelated or invalid results untouched", async () => {
     const client = fakeClient([]);
     let result: unknown;

@@ -169,6 +169,7 @@ function Node({ node, onEvent }: NodeProps): ReactElement {
           placeholder={node.placeholder}
           mono={node.mono}
           disabled={node.disabled}
+          readOnly={node.readOnly}
           {...metaOf(node)}
           onChange={(value) => onEvent(node.event, value)}
           onBlur={blurOf(node.blurEvent, onEvent)}

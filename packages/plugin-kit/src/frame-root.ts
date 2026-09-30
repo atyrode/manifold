@@ -64,7 +64,7 @@ const DATA_PROPS: Readonly<Record<UiNodeType, readonly string[]>> = {
   spinner: ["label"],
   button: ["label", "tone", "disabled", "action", "icon", "iconOnly"],
   select: ["value", "options", "label", "disabled"],
-  input: ["value", "label", "placeholder", "mono", "disabled"],
+  input: ["value", "label", "placeholder", "mono", "disabled", "readOnly"],
   toggle: ["value", "label", "disabled"],
   list: ["items"],
   empty: ["text"],
@@ -358,7 +358,7 @@ const reconciler = createReconciler(hostConfig);
 function copyFields(from: Props, names: readonly string[], into: Record<string, unknown>): void {
   for (const name of names) {
     const value = from[name];
-    if (value !== undefined) into[name] = value;
+    if (value !== undefined && !(name === "readOnly" && value === false)) into[name] = value;
   }
 }
 

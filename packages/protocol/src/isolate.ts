@@ -234,6 +234,7 @@ export type UiNode = UiNodeMeta &
         readonly placeholder?: string | undefined;
         readonly mono?: boolean | undefined;
         readonly disabled?: boolean | undefined;
+        readonly readOnly?: boolean | undefined;
       }
     | {
         readonly type: "toggle";
@@ -339,6 +340,7 @@ const uiNode: z.ZodType<UiNode> = z.lazy(() =>
       placeholder: uiText.optional(),
       mono: z.boolean().optional(),
       disabled: z.boolean().optional(),
+      readOnly: z.boolean().optional(),
     }),
     z.strictObject({
       ...uiNodeMeta,

@@ -97,6 +97,16 @@ describe("the closed component vocabulary", () => {
     ).toBe(false);
   });
 
+  test("readOnly is a boolean input declaration, never a coerced value or arbitrary node prop", () => {
+    const input = { type: "input", event: "edit", value: "fixture credential" };
+    for (const readOnly of ["true", 1, null, {}]) {
+      expect(UiNodeSchema.safeParse({ ...input, readOnly }).success).toBe(false);
+    }
+    expect(UiNodeSchema.safeParse({ type: "text", text: "x", readOnly: true }).success).toBe(false);
+    expect(UiNodeSchema.safeParse(box([{ ...input, type: "input", readOnly: true }])).success)
+      .toBe(true);
+  });
+
   test("a tree is bounded in depth and in size, and refused past either rather than clipped", () => {
     expect(UiNodeSchema.safeParse(nested(MAX_UI_DEPTH)).success).toBe(true);
     const tooDeep = UiNodeSchema.safeParse(nested(MAX_UI_DEPTH + 1));
