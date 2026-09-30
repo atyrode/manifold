@@ -32,6 +32,8 @@ import {
   DescribeFileMachineSchema,
   BeginFileDeliverySchema,
   FileNativeResultSchema,
+  FileNativeReceiptRequestSchema,
+  FileNativeReceiptSchema,
   FileDeliveryRequestSchema,
   BeginFileDownloadSchema,
   FileDownloadRequestSchema,
@@ -319,14 +321,11 @@ export const filesActions = [
     }),
   ),
   defineAction({
-    name: "receiptDelivery",
-    title: "Reconcile uncertainty without disclosing a destination",
+    name: "receiptNative",
+    title: "Reconcile the original native request without disclosing source or destination",
     trace: "opaque",
     caps: [],
-    input: z.strictObject({ transferId: FileTransferSchema.shape.transferId }),
-    result: z.strictObject({
-      transferId: FileTransferSchema.shape.transferId,
-      state: z.enum(["completed", "cancelled", "failed", "expired", "refused", "outcome_unknown"]),
-    }),
+    input: FileNativeReceiptRequestSchema,
+    result: FileNativeReceiptSchema,
   }),
 ];

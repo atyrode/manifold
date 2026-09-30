@@ -750,12 +750,13 @@ describe("durable Files product transitions", () => {
       machineId: "m",
       locationId: "core.files.deliveries",
     };
+    const requestId = createFileRequestId(f.now());
     const started = accepted(
       await filesHandlers.beginDelivery(ctx, {
         ref,
         machine,
         location,
-        requestId: createFileRequestId(f.now()),
+        requestId,
         installationRevision: "install",
         artifactSha256: "d".repeat(64),
         locationId: location.locationId,
@@ -780,14 +781,14 @@ describe("durable Files product transitions", () => {
     expect(commits).toBe(1);
     f.publications.get(ref.fileId)!.readers.clear();
     f.nativeTransfers.receipt = async () => ({ transferId: "remote", state: "outcome_unknown" });
-    expect(await filesHandlers.receiptDelivery(ctx, { transferId: request.transferId })).toEqual({
-      transferId: request.transferId,
+    expect(await filesHandlers.receiptNative(ctx, { requestId })).toEqual({
+      requestId,
       state: "outcome_unknown",
     });
     f.nativeTransfers.receipt = async () => {
       throw new NativeTransferError("transfer_authority_refused");
     };
-    expect(await filesHandlers.receiptDelivery(ctx, { transferId: request.transferId })).toEqual({
+    expect(await filesHandlers.receiptNative(ctx, { requestId })).toEqual({
       refused: "transfer_authority_refused",
     });
   });
@@ -890,13 +891,13 @@ describe("durable Files product transitions", () => {
       refused: "reference_unavailable",
     });
     f.nativeTransfers.receipt = async () => ({ transferId: "remote", state: "committed" });
-    expect(await filesHandlers.receiptDelivery(ctx, { transferId: request.transferId })).toEqual({
-      transferId: request.transferId,
+    expect(await filesHandlers.receiptNative(ctx, { requestId })).toEqual({
+      requestId,
       state: "completed",
     });
     expect(
-      await filesHandlers.receiptDelivery(f.context("owner", "b".repeat(64)), {
-        transferId: request.transferId,
+      await filesHandlers.receiptNative(f.context("owner", "b".repeat(64)), {
+        requestId,
       }),
     ).toEqual({ refused: "unavailable" });
   });
@@ -1010,11 +1011,11 @@ describe("durable Files product transitions", () => {
     expect(repeated.transfer.state).toBe("refused");
     expect(repeated.native).toBeNull();
     expect(
-      await filesHandlers.receiptDelivery(ctx, { transferId: repeated.transfer.transferId }),
-    ).toEqual({ transferId: repeated.transfer.transferId, state: "refused" });
+      await filesHandlers.receiptNative(ctx, { requestId: args.requestId }),
+    ).toEqual({ requestId: args.requestId, state: "refused" });
     expect(
-      await filesHandlers.receiptDelivery(f.context("owner", "b".repeat(64)), {
-        transferId: repeated.transfer.transferId,
+      await filesHandlers.receiptNative(f.context("owner", "b".repeat(64)), {
+        requestId: args.requestId,
       }),
     ).toEqual({ refused: "unavailable" });
     const terminal = f.sqlite
@@ -1034,6 +1035,33 @@ describe("durable Files product transitions", () => {
         .get(args.requestId),
     ).toEqual(terminal);
     expect((await f.begin(ctx)).state).toBe("receiving");
+  });
+
+  test("native receipt cannot recover a non-native reservation through its request identity", async () => {
+    const f = fixture();
+    const ctx = f.context();
+    const requestId = createFileRequestId(f.now());
+    const upload = accepted(
+      await filesHandlers.beginUpload(ctx, {
+        collection: FILE_COLLECTION,
+        requestId,
+        name: "library.bin",
+        declaredMediaType: null,
+        bytes: 1,
+        purpose: "file",
+      }),
+    );
+    expect(await filesHandlers.receiptNative(ctx, { requestId })).toEqual({
+      refused: "unavailable",
+    });
+    expect(
+      accepted(
+        await filesHandlers.inspectUpload(ctx, {
+          collection: FILE_COLLECTION,
+          transferId: upload.transferId,
+        }),
+      ).state,
+    ).toBe("receiving");
   });
 
   test("recovery identity, mode and argument mismatches leave the exact queued reservation retained", async () => {
@@ -1070,13 +1098,14 @@ describe("durable Files product transitions", () => {
         .get(args.requestId)!;
     const queued = row();
     const request = { transferId: queued.id };
+    const receiptRequest = { requestId: args.requestId };
     let recoveries = 0;
     f.nativeTransfers.recoverAdmission = async () => {
       recoveries += 1;
       throw new NativeTransferError("transfer_request_conflict");
     };
     for (const unauthorized of [f.context("other"), f.context("owner", "b".repeat(64))])
-      expect(await filesHandlers.receiptDelivery(unauthorized, request)).toEqual({
+      expect(await filesHandlers.receiptNative(unauthorized, receiptRequest)).toEqual({
         refused: "unavailable",
       });
     expect(
@@ -1095,7 +1124,7 @@ describe("durable Files product transitions", () => {
       expect(await filesHandlers.beginDelivery(ctx, changed)).toEqual({ refused: "conflict" });
     expect(recoveries).toBe(0);
     expect(row()).toEqual(queued);
-    expect(await filesHandlers.receiptDelivery(ctx, request)).toEqual({
+    expect(await filesHandlers.receiptNative(ctx, receiptRequest)).toEqual({
       refused: "transfer_request_conflict",
     });
     expect(recoveries).toBe(1);
@@ -1178,10 +1207,10 @@ describe("durable Files product transitions", () => {
         return { transferId, state: "committed" };
       };
       const receipt = {
-        transferId: queued.id,
+        requestId: args.requestId,
         state: admitted ? "completed" : "refused",
       };
-      expect(await filesHandlers.receiptDelivery(ctx, { transferId: queued.id })).toEqual(receipt);
+      expect(await filesHandlers.receiptNative(ctx, { requestId: args.requestId })).toEqual(receipt);
       const terminal = row();
       expect(terminal).toEqual({
         ...queued,
@@ -1190,7 +1219,7 @@ describe("durable Files product transitions", () => {
         active: 0n,
         terminal: BigInt(f.now()),
       });
-      expect(await filesHandlers.receiptDelivery(ctx, { transferId: queued.id })).toEqual(receipt);
+      expect(await filesHandlers.receiptNative(ctx, { requestId: args.requestId })).toEqual(receipt);
       expect(row()).toEqual(terminal);
       expect(recoveries).toBe(1);
       expect(receipts).toBe(admitted ? 2 : 0);
@@ -1199,7 +1228,7 @@ describe("durable Files product transitions", () => {
   }
 
   for (const kind of ["delivery", "download"] as const) {
-    for (const recoverVia of ["begin", "inspect", "cancel"] as const) {
+    for (const recoverVia of ["begin", "inspect", "cancel", "receipt"] as const) {
       test(`${kind} ${recoverVia} fences a reserve-before-host crash beyond all product clocks without replay`, async () => {
         const f = fixture();
         const ctx = f.context();
@@ -1289,24 +1318,32 @@ describe("durable Files product transitions", () => {
         };
         f.advance(FILE_RECEIPT_MS + FILE_LIFETIME_MS + 1);
         await expect(f.begin(ctx)).rejects.toThrow("busy");
-        const request = { machine, location, ref, transferId: queued.id };
-        const recovered = accepted(
-          recoverVia === "begin"
-            ? await begin()
-            : recoverVia === "inspect"
-              ? kind === "delivery"
-                ? await filesHandlers.inspectDelivery(ctx, request)
-                : await filesHandlers.inspectDownload(ctx, request)
-              : kind === "delivery"
-                ? await filesHandlers.cancelDelivery(ctx, request)
-                : await filesHandlers.cancelDownload(ctx, request),
-        );
-        expect(recovered.transfer).toMatchObject({
-          transferId: queued.id,
-          state: "refused",
-          reason: "installation_changed",
-        });
-        expect(recovered.native).toBeNull();
+        if (recoverVia === "receipt") {
+          f.publications.get(ref.fileId)!.readers.clear();
+          expect(await filesHandlers.receiptNative(ctx, { requestId: pins.requestId })).toEqual({
+            requestId: pins.requestId,
+            state: "refused",
+          });
+        } else {
+          const request = { machine, location, ref, transferId: queued.id };
+          const recovered = accepted(
+            recoverVia === "begin"
+              ? await begin()
+              : recoverVia === "inspect"
+                ? kind === "delivery"
+                  ? await filesHandlers.inspectDelivery(ctx, request)
+                  : await filesHandlers.inspectDownload(ctx, request)
+                : kind === "delivery"
+                  ? await filesHandlers.cancelDelivery(ctx, request)
+                  : await filesHandlers.cancelDownload(ctx, request),
+          );
+          expect(recovered.transfer).toMatchObject({
+            transferId: queued.id,
+            state: "refused",
+            reason: "installation_changed",
+          });
+          expect(recovered.native).toBeNull();
+        }
         const terminal = row();
         expect(terminal).toEqual({
           ...queued,
@@ -1316,7 +1353,12 @@ describe("durable Files product transitions", () => {
           terminal: BigInt(f.now()),
         });
         expect(row(otherRequestId)).toEqual(other);
-        expect(accepted(await begin()).transfer.transferId).toBe(queued.id);
+        if (recoverVia === "receipt")
+          expect(await filesHandlers.receiptNative(ctx, { requestId: pins.requestId })).toEqual({
+            requestId: pins.requestId,
+            state: "refused",
+          });
+        else expect(accepted(await begin()).transfer.transferId).toBe(queued.id);
         expect(row()).toEqual(terminal);
         expect(recoveries).toBe(1);
         expect(effects).toBe(0);

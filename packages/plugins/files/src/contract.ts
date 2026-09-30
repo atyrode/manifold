@@ -172,6 +172,10 @@ export const FileNativeResultSchema = z.strictObject({
   transfer: FileTransferSchema,
   native: NativeTransferStatusSchema.nullable(),
 });
+export const FileNativeReceiptRequestSchema = z.strictObject({ requestId: FileRequestIdSchema });
+export const FileNativeReceiptSchema = FileNativeReceiptRequestSchema.extend({
+  state: z.enum(["completed", "cancelled", "failed", "expired", "refused", "outcome_unknown"]),
+});
 
 export const FileIntakeResultSchema = z.discriminatedUnion("state", [
   z.strictObject({ state: z.literal("saved"), ref: PluginOwnedRefSchema }),

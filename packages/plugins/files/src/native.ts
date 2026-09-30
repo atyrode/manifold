@@ -15,6 +15,7 @@ import {
   BeginFileDownloadSchema,
   FileDeliveryRequestSchema,
   FileDownloadRequestSchema,
+  type FileNativeReceiptRequestSchema,
   DescribeFileMachineSchema,
   FILE_CHUNK_BYTES,
   FILE_LIFETIME_MS,
@@ -36,6 +37,7 @@ import {
   initialize,
   load,
   prepareData,
+  queryTransfers,
   reason,
   reserve,
   sameRef,
@@ -421,10 +423,19 @@ export const nativeHandlers = {
     result(await reconcile(ctx, await bound(ctx, args, "download"))),
   ),
   cancelDownload: action(async (ctx, args: DownloadRequest) => cancel(ctx, args, "download")),
-  receiptDelivery: action(async (ctx, args: { transferId: string }) => {
-    const row = await recoverAdmission(ctx, await load(ctx, args.transferId, "delivery"));
+  receiptNative: action(async (ctx, args: z.output<typeof FileNativeReceiptRequestSchema>) => {
+    const pending = (
+      await queryTransfers(
+        database(ctx),
+        `SELECT * FROM file_transfers WHERE request_id=? AND actor=? AND credential=?
+        AND kind IN ('delivery','download')`,
+        [args.requestId, ctx.principal.id, ctx.credentialBinding],
+      )
+    )[0];
+    if (!pending) return fail("unavailable");
+    const row = await recoverAdmission(ctx, await load(ctx, pending.id));
     if (row.native_id === null && row.state === "refused" && row.terminal !== null)
-      return { transferId: row.id, state: "refused" as const };
+      return { requestId: row.request_id, state: "refused" as const };
     if (!row.native_id) return fail("unavailable");
     const receipt = await ctx.nativeTransfers.receipt({ transferId: row.native_id });
     if (receipt.state !== "outcome_unknown") {
@@ -433,7 +444,7 @@ export const nativeHandlers = {
           ...receipt,
           kind: "terminal",
           state: receipt.state,
-          mode: "put",
+          mode: row.kind === "delivery" ? "put" : "read",
           requestId: row.request_id,
           actorId: row.actor,
           credentialBinding: row.credential,
@@ -441,7 +452,7 @@ export const nativeHandlers = {
       ]);
     }
     return {
-      transferId: row.id,
+      requestId: row.request_id,
       state: receipt.state === "committed" ? ("completed" as const) : receipt.state,
     };
   }),

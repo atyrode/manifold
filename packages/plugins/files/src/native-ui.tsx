@@ -14,12 +14,13 @@ import {
   type ReactElement,
   type ReactNode,
 } from "react";
-import { z } from "zod";
+import type { z } from "zod";
 import {
   BeginFileDeliverySchema,
   BeginFileDownloadSchema,
   createFileRequestId,
   FileNativeResultSchema,
+  FileNativeReceiptSchema,
   FILES_ID,
   type FileDescriptor,
 } from "./contract.ts";
@@ -34,10 +35,6 @@ import { verifiedDeliveryReceipt } from "./delivery-receipt.ts";
 type Delivery = z.output<typeof BeginFileDeliverySchema>;
 type Download = z.output<typeof BeginFileDownloadSchema>;
 type NativeResult = z.output<typeof FileNativeResultSchema>;
-const DeliveryReceiptSchema = z.strictObject({
-  transferId: z.string(),
-  state: z.enum(["completed", "cancelled", "failed", "expired", "outcome_unknown"]),
-});
 
 /** No shell, filesystem browser, automatic continuation or replacement request. */
 export function NativeFileTransfer({
@@ -61,7 +58,7 @@ export function NativeFileTransfer({
   const [name, setName] = useState("");
   const [intent, setIntent] = useState<Delivery | Download | null>(null);
   const [result, setResult] = useState<NativeResult | null>(null);
-  const [receipt, setReceipt] = useState<z.output<typeof DeliveryReceiptSchema> | null>(null);
+  const [receipt, setReceipt] = useState<z.output<typeof FileNativeReceiptSchema> | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [uncertain, setUncertain] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -206,13 +203,13 @@ export function NativeFileTransfer({
     });
   };
   const reconcileReceipt = (): void => {
-    if (!result) return;
+    if (!intent) return;
     void operate(async () => {
       const next = await fileAction(
         host,
-        "receiptDelivery",
-        { transferId: result.transfer.transferId },
-        DeliveryReceiptSchema,
+        "receiptNative",
+        { requestId: intent.requestId },
+        FileNativeReceiptSchema,
       );
       if (mounted.current) {
         setReceipt(next);
@@ -428,7 +425,7 @@ export function NativeFileTransfer({
         </Text>
       ) : null}
       <Cluster gap="0.4rem">
-        {!result ? (
+        {!result && !terminal ? (
           <Button
             disabled={
               busy || (!intent && (!location?.available || !selectedMachine || name.length === 0))
@@ -470,10 +467,10 @@ export function NativeFileTransfer({
             Reconcile exact transfer
           </Button>
         ) : null}
-        {delivery && result ? (
+        {intent ? (
           <Button
             disabled={busy}
-            data-action="core.files.receiptDelivery"
+            data-action="core.files.receiptNative"
             onClick={reconcileReceipt}
           >
             Reconcile terminal evidence only
