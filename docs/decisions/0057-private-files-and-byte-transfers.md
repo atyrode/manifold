@@ -310,12 +310,22 @@ spent queued or inside nested calls. Each wait retains the existing 15-second ce
 reserves 250 ms for the result to cross the child boundary before the outer hard deadline.
 No remaining budget before commit means no commit decision; timeout or abort after the durable
 decision is `outcome_unknown`, even if the owner stayed connected while its reply was lost.
+Byte-native waits use the earlier of the HTTP carrier deadline and the remaining isolate call
+budget; a longer socket lifetime never grants extra execution time.
 
 An authoritative refusal before native admission has no transfer identity. Its private evidence
 variant carries the exact request, actor, credential binding, mode, attempt time and named reason,
 not an invented transfer ID. The Files owner retires only the matching queued reservation and
 retains the refused receipt. Admitted terminal evidence keeps its real transfer ID. Failed
 evidence delivery remains `native_transfer_cleanup_unknown`; it is not proof of clean cancellation.
+Hub or plugin-local expiry is not native cleanup evidence. Admitted and admission-unknown native
+transfers retain uncertainty and their active reservation until exact owner or pre-admission
+refusal evidence retires them. A failed unlink, inode check or directory sync therefore remains
+unknown and purge-blocking even after the transfer deadline.
+
+An active action does not await a background evidence delivery already queued behind its own
+isolate turn. The retained terminal record schedules the bounded private reconciliation instead;
+the exact reservation is retired once, without replaying the native effect.
 
 Download names a bounded relative path beneath a separately reviewed read root, never a directory
 browser. It must produce a stable immutable regular-file snapshot, not merely hash a mixture of

@@ -3177,6 +3177,12 @@ placement, directory sync and a durable receipt. A lost commit reply stays unkno
 matching owner evidence reconciles it, without repeating the effect. Later source deletion,
 grant loss or disable cannot retract an independently committed copy.
 
+Expiry alone cannot prove native cleanup. Admitted or admission-unknown transfers retain their
+active reservation and block destructive cleanup until exact owner or pre-admission refusal
+evidence resolves them. Native waits consume the original action budget; byte-native waits also
+respect the earlier HTTP deadline. Background evidence delivery cannot make an action wait for
+its own isolate turn.
+
 Downloads name a bounded relative file under a reviewed read root and produce an immutable
 snapshot. They do not retain a library file unless separately saved. Terminal-local MIME
 paste stays local-only. File fallback explicitly Saves then Delivers; Copy path is the

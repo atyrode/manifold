@@ -1876,7 +1876,10 @@ export class PluginHost {
           pluginId,
           {
             assertCurrent,
-            remainingMs: () => Math.max(0, deadlineAt - this.runtime.now()),
+            remainingMs: () => Math.max(0, Math.min(
+              deadlineAt - this.runtime.now(),
+              this.isolates?.runner.remainingHostCallMs() ?? Number.POSITIVE_INFINITY,
+            )),
             signal: controller.signal,
             require: requireCapability,
             requireSource: async () => {
