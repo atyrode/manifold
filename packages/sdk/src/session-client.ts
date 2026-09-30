@@ -722,6 +722,11 @@ export class SessionClient {
         for (const p of msg.attendance) this.attendance.set(p.principal.id, p);
         this.terminals.clear();
         for (const s of msg.terminals) this.terminals.set(s.id, s);
+        for (const terminalId of this.terminalSizing.keys()) {
+          if (this.terminals.get(terminalId)?.status !== "running") {
+            this.terminalSizing.delete(terminalId);
+          }
+        }
         this.setStatus("open");
         // Liveness belongs to the socket, which the pooled connection owns and answers for.
         this.flushOutbox();

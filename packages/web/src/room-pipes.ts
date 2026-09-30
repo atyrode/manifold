@@ -106,8 +106,10 @@ export function panelSessionHandle(
     detachTerminal: (terminalId) => watch.detachTerminal(terminalId),
     sendTerminalInput: (terminalId, data) =>
       pipes.pipeHolding(terminalId).sendTerminalInput(terminalId, data),
-    resizeTerminal: (terminalId, cols, rows) =>
-      pipes.pipeHolding(terminalId).resizeTerminal(terminalId, cols, rows),
+    resizeTerminal: (terminalId, cols, rows, viewportId) =>
+      pipes.pipeHolding(terminalId).resizeTerminal(terminalId, cols, rows, viewportId),
+    releaseTerminalViewport: (terminalId, viewportId) =>
+      pipes.pipeHolding(terminalId).releaseTerminalViewport(terminalId, viewportId),
     takeTerminal: (terminalId) => pipes.pipeHolding(terminalId).takeTerminal(terminalId),
     killTerminal: (terminalId) => pipes.pipeHolding(terminalId).killTerminal(terminalId),
   };

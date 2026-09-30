@@ -325,7 +325,7 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     },
     {
       "glob": "packages/server/src/terminal-broker.ts",
-      "why": "the PTY broker: attach state machine, viewer registry, the no-gap invariant"
+      "why": "the PTY broker: attach state machine, viewer registry, no-gap invariant and ephemeral controller-authorized smallest active viewport arbitration"
     },
     {
       "glob": "packages/server/src/placement.ts",
@@ -2020,7 +2020,7 @@ register. Anything else is presence, document, or action state — A2 leaves no 
     },
     {
       "key": "manifold:terminal-font-sizes",
-      "why": "core.terminals' per-device, per-terminalId font-size map: integer pixels 8..32, default/reset 13, at most 128 non-default entries with oldest-updated eviction and malformed entries ignored. Readability depends on THIS display, so it is neither shared document nor action state; spectators may adjust their own font, while PTY resize remains controller-only after snapshot and never from a preview"
+      "why": "core.terminals' per-device, per-terminalId font-size map: integer pixels 8..32, default/reset 13, at most 128 non-default entries with oldest-updated eviction and malformed entries ignored. Readability depends on THIS display, so it is neither shared document nor action state; spectators may adjust their own font but do not constrain the PTY. Eligible foreground visible controller-principal views publish independent desired measurements after replay and never from a preview; the broker minimizes columns and rows independently"
     },
     {
       "key": "terminal-clipboard",

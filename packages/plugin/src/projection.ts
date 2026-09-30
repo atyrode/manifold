@@ -134,6 +134,7 @@ export interface TerminalRendererProps {
   readonly terminalId: string;
   /** Stable placement id: a canvas element id, or a tile id inside a composition. */
   readonly elementId: string;
+  /** Selects keyboard input; sizing participation instead follows actual visibility. */
   readonly active: boolean;
   /** Requests the host's occupant socket without itself taking the terminal lease. */
   readonly onEngage?: () => void;
@@ -479,7 +480,7 @@ const noViewportRegistration = (_handle: ViewportHandle | null): void => undefin
 
 /**
  * What the host routes through a published room pipe, and nothing more: the room's terminal
- * table (which is how a terminal-keyed verb finds its home) and the five terminal mutations.
+ * table (which is how a terminal-keyed verb finds its home) and terminal mutations.
  * A renderer publishes its whole room client and the type keeps the host to this slice.
  */
 export type RoomPipe = Pick<
@@ -488,6 +489,7 @@ export type RoomPipe = Pick<
   | "openTerminal"
   | "sendTerminalInput"
   | "resizeTerminal"
+  | "releaseTerminalViewport"
   | "takeTerminal"
   | "killTerminal"
 >;
