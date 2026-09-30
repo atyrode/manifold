@@ -348,7 +348,7 @@ describe("durable Files product transitions", () => {
     const begin = () => filesHandlers.beginUpload(ctx, { collection: FILE_COLLECTION, requestId: createFileRequestId(f.now()),
       name: "next.bin", declaredMediaType: null, bytes: 0, purpose: "file" as const });
     expect(await begin()).toEqual({ refused: "busy" });
-    const evidence = { transferId: "remote", requestId, actorId: ctx.principal.id,
+    const evidence = { kind: "terminal" as const, transferId: "remote", requestId, actorId: ctx.principal.id,
       credentialBinding: ctx.credentialBinding, mode: "put" as const, state: "committed" as const };
     for (const wrong of [
       { ...evidence, transferId: "another" }, { ...evidence, requestId: "another" },
@@ -388,7 +388,7 @@ describe("durable Files product transitions", () => {
     const next = () => filesHandlers.beginUpload(ctx, { collection: FILE_COLLECTION, requestId: createFileRequestId(f.now()),
       name: "next.bin", declaredMediaType: null, bytes: 0, purpose: "file" as const });
     expect(await next()).toEqual({ refused: "busy" });
-    const evidence = { transferId: "refused-native", requestId, actorId: ctx.principal.id,
+    const evidence = { kind: "terminal" as const, transferId: "refused-native", requestId, actorId: ctx.principal.id,
       credentialBinding: ctx.credentialBinding, mode: "read" as const, state: "refused" as const,
       reason: "native_source_writer_active" as const };
     for (const wrong of [
@@ -398,6 +398,42 @@ describe("durable Files product transitions", () => {
     expect(await next()).toEqual({ refused: "busy" });
     await filesReconcileNativeTransfers({ database: f.db, now: f.now }, [evidence]);
     expect(accepted(await next()).state).toBe("receiving");
+  });
+
+  test("unadmitted refusal has a credential-bound terminal receipt but no native identity or retry effect", async () => {
+    const f = fixture(); const ctx = f.context(); const ref = await f.save(new Uint8Array([7]));
+    const args = { ref, machine: { kind: "machine" as const, machineId: "m" },
+      location: { kind: "location" as const, machineId: "m", locationId: "core.files.deliveries" },
+      requestId: createFileRequestId(f.now()), installationRevision: "stale",
+      artifactSha256: "d".repeat(64), locationId: "core.files.deliveries", locationRevision: "1", filename: "file.bin" };
+    f.nativeTransfers.beginPut = async () => { throw new NativeTransferError("installation_changed"); };
+    expect(await filesHandlers.beginDelivery(ctx, args)).toEqual({ refused: "installation_changed" });
+    const evidence = { kind: "admission-refused" as const, requestId: args.requestId,
+      actorId: ctx.principal.id, credentialBinding: ctx.credentialBinding, mode: "put" as const,
+      attemptedAt: f.now(), reason: "installation_changed" as const };
+    for (const wrong of [
+      { ...evidence, requestId: "other" }, { ...evidence, actorId: "other" },
+      { ...evidence, credentialBinding: "b".repeat(64) }, { ...evidence, mode: "read" as const },
+      { ...evidence, attemptedAt: f.now() - 1 },
+    ]) await filesReconcileNativeTransfers(ctx, [wrong]);
+    expect(f.sqlite.query<{ state: string }, [string]>("SELECT state FROM file_transfers WHERE request_id=?")
+      .get(args.requestId)!.state).toBe("queued");
+    await filesReconcileNativeTransfers(ctx, [evidence]);
+    f.nativeTransfers.beginPut = async () => { throw new Error("a refused attempt must never restart"); };
+    const repeated = accepted(await filesHandlers.beginDelivery(ctx, args));
+    expect(repeated.transfer.state).toBe("refused");
+    expect(repeated.native).toBeNull();
+    expect(await filesHandlers.receiptDelivery(ctx, { transferId: repeated.transfer.transferId }))
+      .toEqual({ transferId: repeated.transfer.transferId, state: "refused" });
+    expect(await filesHandlers.receiptDelivery(f.context("owner", "b".repeat(64)), { transferId: repeated.transfer.transferId }))
+      .toEqual({ refused: "unavailable" });
+    const terminal = f.sqlite.query("SELECT native_id,active,charged,terminal FROM file_transfers WHERE request_id=?").get(args.requestId);
+    expect(terminal).toEqual({ native_id: null, active: 0n, charged: 0n, terminal: BigInt(f.now()) });
+    f.advance(1);
+    await filesReconcileNativeTransfers(ctx, [evidence]);
+    expect(f.sqlite.query("SELECT native_id,active,charged,terminal FROM file_transfers WHERE request_id=?").get(args.requestId))
+      .toEqual(terminal);
+    expect((await f.begin(ctx)).state).toBe("receiving");
   });
 
   test("machine downloads use the private carrier and do not become library files", async () => {

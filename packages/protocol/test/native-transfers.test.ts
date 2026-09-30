@@ -23,6 +23,7 @@ import {
   NativeTransferRequestSchema,
   NativeTransferResultSchema,
   NativeTransferStatusSchema,
+  NativeTransferEvidenceBatchSchema,
   NATIVE_TRANSFER_MAX_CHUNK_BYTES,
   NATIVE_TRANSFER_MAX_FILE_BYTES,
   NATIVE_TRANSFER_MAX_LIFETIME_MS,
@@ -289,4 +290,18 @@ test("publication receipts cannot turn an uncertain or prepared put into success
   expect(NativeTransferStatusSchema.parse(snapshot)).toEqual(snapshot);
   expect(NativeTransferStatusSchema.safeParse({ ...snapshot, receipt: undefined }).success).toBe(false);
   expect(NativeTransferStatusSchema.safeParse({ ...snapshot, sha256: undefined }).success).toBe(false);
+});
+
+test("unadmitted evidence cannot claim a native transfer or disclose effect metadata", () => {
+  const refused = {
+    kind: "admission-refused", requestId: "request", actorId: "actor",
+    credentialBinding: hash, mode: "put", attemptedAt: 1234, reason: "installation_changed",
+  };
+  expect(NativeTransferEvidenceBatchSchema.parse([refused])).toEqual([refused]);
+  for (const extra of [
+    { transferId: "invented" }, { state: "committed" }, { path: "/private/file" },
+    { data: "private bytes" }, { reason: "EIO /private/path" },
+  ]) expect(NativeTransferEvidenceBatchSchema.safeParse([{ ...refused, ...extra }]).success).toBe(false);
+  expect(NativeTransferEvidenceBatchSchema.safeParse([{ ...refused, attemptedAt: -1 }]).success).toBe(false);
+  expect(NativeTransferEvidenceBatchSchema.safeParse(Array.from({ length: 65 }, () => refused)).success).toBe(false);
 });

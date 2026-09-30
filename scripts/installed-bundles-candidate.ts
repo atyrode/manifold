@@ -84,6 +84,11 @@ async function candidateRoster(dataDir: string): Promise<PluginRoster> {
       cwd: join(import.meta.dir, ".."),
       env: {
         PATH: process.env.PATH ?? "",
+        // Preserve the configured native runtime ABI search path (for example Nix's
+        // libstdc++ wrapper), without inheriting authentication or tool-session state.
+        ...(process.env.LD_LIBRARY_PATH === undefined
+          ? {}
+          : { LD_LIBRARY_PATH: process.env.LD_LIBRARY_PATH }),
         MANIFOLD_DATA_DIR: dataDir,
         MANIFOLD_BIND: "127.0.0.1",
         MANIFOLD_PORT: "0",

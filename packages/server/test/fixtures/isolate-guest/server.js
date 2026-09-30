@@ -428,6 +428,10 @@ onFrame(async (frame) => {
       return;
     case "reconcile_native_transfers":
       for (const receipt of frame.receipts) {
+        if (receipt.kind === "admission-refused") {
+          await call(frame.id, "storage.delete", [`reservation:${receipt.requestId}`]);
+          continue;
+        }
         if (receipt.requestId === "escape")
           await call(frame.id, "nativeTransfers.commitPut", [{ transferId: receipt.transferId }]);
         await call(frame.id, "storage.delete", [`reservation:${receipt.transferId}`]);

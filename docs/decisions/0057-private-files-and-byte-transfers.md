@@ -305,6 +305,18 @@ A prepared inode identity reconciles a crash after rename; an unrelated preexist
 is not proof of completion. Unknown commit remains unknown and cannot be erased by purge or a blind
 retry. Independent committed remote copies are not retracted by later source deletion/revocation.
 
+Native waits consume the original host-proven action/request budget, including time already
+spent queued or inside nested calls. Each wait retains the existing 15-second ceiling and
+reserves 250 ms for the result to cross the child boundary before the outer hard deadline.
+No remaining budget before commit means no commit decision; timeout or abort after the durable
+decision is `outcome_unknown`, even if the owner stayed connected while its reply was lost.
+
+An authoritative refusal before native admission has no transfer identity. Its private evidence
+variant carries the exact request, actor, credential binding, mode, attempt time and named reason,
+not an invented transfer ID. The Files owner retires only the matching queued reservation and
+retains the refused receipt. Admitted terminal evidence keeps its real transfer ID. Failed
+evidence delivery remains `native_transfer_cleanup_unknown`; it is not proof of clean cancellation.
+
 Download names a bounded relative path beneath a separately reviewed read root, never a directory
 browser. It must produce a stable immutable regular-file snapshot, not merely hash a mixture of
 concurrent revisions. A held-descriptor bounded lease/snapshot mechanism may refuse unsupported or
@@ -374,6 +386,14 @@ for an independently granted reader; revoking the previous share preserved its r
 and an unknown share decision refused. These full-hub runs had no checkout or `node_modules`
 mounted, but retained loopback networking for the client. The remaining three-platform,
 browser-corpus and crash/recovery acceptance is separate.
+
+The existing installed-bundles candidate also preserves the configured native ABI library search
+path while continuing to exclude authentication/tool-session environment. Without that narrow
+runtime input, source-based Nix candidate startup cannot load libstdc++ even when the invoking
+distribution configured it. Both wire49 Text and wire50 Files candidates loaded the same eleven
+published wire47/contract9 artifacts from `atyrode/babel` v0.5.7 after both release checksum lists
+were verified. Native/portable/hardened execution selection was preserved; no artifact was
+restamped or repacked. This verifies installed and all-loadable phases, not a live deployment.
 
 ## Delivery proof
 

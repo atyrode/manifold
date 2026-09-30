@@ -56,7 +56,7 @@ function fixture(admission?: GovernedAdmission) {
     platforms: ["linux-x64"], publicKey: keys.publicKey.export({ type: "spki", format: "pem" }).toString(), inventoryDigest: "a".repeat(64) };
   const controls = { consent: "consent1", ready: "b".repeat(64), current: true, declared: true, dropCommit: false,
     sourceAvailable: true, ownerAvailable: true, rejectPut: false, invalidRead: false,
-    dropBeforeCommit: false, prepared: () => {}, committed: () => {}, readReply: () => {}, statusReply: () => {} };
+    dropBeforeCommit: false, silentCommit: false, prepared: () => {}, committed: () => {}, readReply: () => {}, statusReply: () => {} };
   const commands: Extract<JobCommand, { type: "native_transfer" }>[] = [];
   const remote = new Map<string, { binding: NativeTransferBinding; status: NativeTransferStatus;
     chunks: Map<number, { offset: number; data: string }> }>();
@@ -103,6 +103,7 @@ function fixture(admission?: GovernedAdmission) {
             path: `/private/files/${source.filename}`, bytes: source.source.bytes, sha256: source.source.sha256, committedAt: runtime.now() } };
         if (controls.dropCommit) { service.disconnect(channel); return; }
         controls.committed();
+        if (controls.silentCommit) return;
       }
       result = { ok: true, status: row.status };
       if (request.method === "putChunk") {
@@ -135,6 +136,7 @@ function fixture(admission?: GovernedAdmission) {
   }, () => runtime.now());
   service = createService();
   const guard: NativeTransferGuard = {
+    remainingMs: () => Number.POSITIVE_INFINITY,
     assertCurrent: () => { if (!controls.current) throw new Error("transfer_action_unavailable"); },
     require: () => { if (!controls.declared) throw new Error("transfer_requirement_undeclared"); },
     requireSource: async () => {
@@ -148,6 +150,79 @@ function fixture(admission?: GovernedAdmission) {
     source: { ref: { kind: "file" as const, fileId: "source-file" }, sha256: createHash("sha256").update("").digest("hex"), bytes: 0 } };
   return { store, auth, actor, runtime, get service() { return service; }, caller, request, controls, commands, owner, installation, keys,
     remote, restart() { service = createService(); } };
+}
+
+test("unadmitted refusals retire only the exact queued product request without inventing a native transfer", async () => {
+  const f = fixture();
+  const evidence: unknown[] = [];
+  f.service.setEvidenceSink(async (_plugin, receipts) => { evidence.push(...receipts); return true; });
+  await expect(f.service.begin(f.caller, { ...f.request, installationRevision: "stale" }))
+    .rejects.toThrow("installation_changed");
+  expect(evidence).toEqual([{
+    kind: "admission-refused", requestId: f.request.requestId, actorId: f.actor.principal.id,
+    credentialBinding: f.auth.credentialBinding(f.actor), mode: "put",
+    attemptedAt: f.runtime.now(), reason: "installation_changed",
+  }]);
+  expect(f.commands).toEqual([]);
+  expect(f.store.db.query("SELECT id FROM native_transfers").all()).toEqual([]);
+  const started = await f.service.begin(f.caller, f.request);
+  evidence.length = 0;
+  await expect(f.service.begin(f.caller, { ...f.request, filename: "changed.bin" }))
+    .rejects.toThrow("transfer_request_conflict");
+  expect(evidence).toEqual([]);
+  expect(retained(f, started.transferId).status.state).toBe("receiving");
+});
+
+test("failed pre-admission reservation cleanup is explicit rather than a clean refusal", async () => {
+  const f = fixture();
+  f.service.setEvidenceSink(async () => false);
+  await expect(f.service.begin(f.caller, { ...f.request, installationRevision: "stale" }))
+    .rejects.toThrow("native_transfer_cleanup_unknown");
+  expect(f.commands).toEqual([]);
+  expect(f.store.db.query("SELECT id FROM native_transfers").all()).toEqual([]);
+});
+
+test("exhausted preparation budget refuses before creating or dispatching a commit decision", async () => {
+  const f = fixture();
+  let remaining = 1000;
+  f.caller.guard.remainingMs = () => remaining;
+  const started = await f.service.begin(f.caller, f.request);
+  f.controls.prepared = () => { remaining = 250; };
+  await expect(f.service.commitPut(f.caller, started.transferId)).rejects.toThrow("transfer_action_unavailable");
+  expect(retained(f, started.transferId).commitDecision).toBeUndefined();
+  expect(f.commands.map((command) => command.request.method)).toEqual(["beginPut", "preparePut"]);
+});
+
+test("lost committed acknowledgement respects the remaining outer budget and reconciles without replay", async () => {
+  const f = fixture();
+  const started = await f.service.begin(f.caller, f.request);
+  let remaining = 1000;
+  f.caller.guard.remainingMs = () => remaining;
+  f.controls.prepared = () => { remaining = 300; };
+  f.controls.silentCommit = true;
+  await expect(f.service.commitPut(f.caller, started.transferId)).rejects.toThrow("outcome_unknown");
+  expect(retained(f, started.transferId).status.state).toBe("outcome_unknown");
+  f.caller.guard.remainingMs = () => Number.POSITIVE_INFINITY;
+  expect(await f.service.receipt(f.caller, started.transferId)).toEqual({
+    transferId: started.transferId, state: "committed",
+  });
+  expect(f.commands.filter((command) => command.request.method === "commitPut")).toHaveLength(1);
+});
+
+for (const boundary of ["prepare", "commit"] as const) {
+  test(`lifetime abort at ${boundary} preserves the publication decision boundary`, async () => {
+    const f = fixture();
+    const controller = new AbortController();
+    const caller = { ...f.caller, guard: { ...f.caller.guard, signal: controller.signal } };
+    const started = await f.service.begin(caller, f.request);
+    if (boundary === "prepare") f.controls.prepared = () => controller.abort();
+    else f.controls.committed = () => controller.abort();
+    await expect(f.service.commitPut(caller, started.transferId))
+      .rejects.toThrow(boundary === "prepare" ? "transfer_action_unavailable" : "outcome_unknown");
+    expect(f.commands.filter((command) => command.request.method === "commitPut"))
+      .toHaveLength(boundary === "prepare" ? 0 : 1);
+    expect(retained(f, started.transferId).commitDecision !== undefined).toBe(boundary === "commit");
+  });
 }
 
 test("consent revoked after preparation refuses before the signed publish decision", async () => {
@@ -414,7 +489,7 @@ for (const loss of ["source deletion", "credential expiry", "credential revocati
     expect(retained(f, started.transferId)).toMatchObject({
       evidenceDelivered: true, status: { state: "committed", receipt: { ownerGeneration: 1 } },
     });
-    expect(delivered).toEqual([{ transferId: started.transferId, requestId: f.request.requestId,
+    expect(delivered).toEqual([{ kind: "terminal", transferId: started.transferId, requestId: f.request.requestId,
       actorId: actor.principal.id, credentialBinding: f.auth.credentialBinding(actor), mode: "put", state: "committed" }]);
     f.service.assertPurgeable(caller.pluginId);
     if (loss === "credential expiry" || loss === "credential revocation")

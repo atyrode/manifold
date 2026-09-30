@@ -148,18 +148,21 @@ describe("reference data callbacks", () => {
       handlers: { echo: async (ctx) => { retained.resolve(ctx); await release.promise; return { text: "done" }; } },
       reconcileNativeTransfers: async (ctx, receipts) => {
         data = ctx;
+        const receipt = receipts[0]!;
+        if (receipt.kind !== "terminal") throw new Error("expected terminal evidence");
         const actor = await retained.promise;
-        await expect(actor.nativeTransfers.commitPut({ transferId: receipts[0]!.transferId }))
+        await expect(actor.nativeTransfers.commitPut({ transferId: receipt.transferId }))
           .rejects.toMatchObject({ reason: "native_transfer_unavailable" });
-        await expect(actor.nativeTransfers.readChunk({ transferId: receipts[0]!.transferId, offset: 0, maxBytes: 1 }))
+        await expect(actor.nativeTransfers.readChunk({ transferId: receipt.transferId, offset: 0, maxBytes: 1 }))
           .rejects.toMatchObject({ reason: "native_transfer_unavailable" });
-        await ctx.storage.delete(`reservation:${receipts[0]!.transferId}`);
+        await ctx.storage.delete(`reservation:${receipt.transferId}`);
       },
     });
     load(fake); await fake.next();
     fake.send({ t: "dispatch", id: "actor", action: "echo", args: { text: "held" }, ctx: ctxOf() });
     await retained.promise;
     fake.send({ t: "reconcile_native_transfers", id: "evidence", now: 1234, receipts: [{
+      kind: "terminal",
       transferId: "transfer", requestId: "request", actorId: principal.id, credentialBinding: "a".repeat(64),
       mode: "put", state: "committed",
     }] });

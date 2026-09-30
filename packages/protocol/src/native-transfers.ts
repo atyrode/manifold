@@ -295,15 +295,27 @@ export const NativeTransferReceiptViewSchema = z.strictObject({
 });
 export type NativeTransferReceiptView = z.infer<typeof NativeTransferReceiptViewSchema>;
 /** Host-private reservation reconciliation; no destination path, source metadata or bytes. */
-export const NativeTransferTerminalEvidenceSchema = z.strictObject({
-  transferId: id,
-  requestId: id,
-  actorId: id,
-  credentialBinding: hash,
-  mode: z.enum(["put", "read"]),
-  state: NativeTransferTerminalStateSchema,
-  reason: NativeTransferReasonSchema.optional(),
-});
+export const NativeTransferTerminalEvidenceSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("terminal"),
+    transferId: id,
+    requestId: id,
+    actorId: id,
+    credentialBinding: hash,
+    mode: z.enum(["put", "read"]),
+    state: NativeTransferTerminalStateSchema,
+    reason: NativeTransferReasonSchema.optional(),
+  }),
+  z.strictObject({
+    kind: z.literal("admission-refused"),
+    requestId: id,
+    actorId: id,
+    credentialBinding: hash,
+    mode: z.enum(["put", "read"]),
+    attemptedAt: count,
+    reason: NativeTransferReasonSchema,
+  }),
+]);
 export type NativeTransferTerminalEvidence = z.infer<typeof NativeTransferTerminalEvidenceSchema>;
 export const NativeTransferEvidenceBatchSchema = z.array(NativeTransferTerminalEvidenceSchema).min(1).max(64);
 export const NativeTransferReadChunkResultSchema = z.strictObject({

@@ -47,7 +47,7 @@ async function saveStatus(ctx: BoundContext, row: TransferRow, status: NativeTra
   }
 }
 
-/** Exact host-journal evidence releases only its own reservation, never any independent copy. */
+/** Exact host evidence releases only its own reservation, never any independent copy. */
 export async function filesReconcileNativeTransfers(
   ctx: DataContext, input: readonly NativeTransferTerminalEvidence[],
 ): Promise<void> {
@@ -56,7 +56,14 @@ export async function filesReconcileNativeTransfers(
   // host's unique request/actor/credential/mode binding still identifies that queued row.
   const db = database(ctx);
   await initialize(db);
-  await db.batch(receipts.map((receipt) => ({
+  await db.batch(receipts.map((receipt) => receipt.kind === "admission-refused" ? {
+    sql: `UPDATE file_transfers SET state='refused',reason=?,active=0,charged=0,
+      terminal=COALESCE(terminal,?),native_status=NULL
+      WHERE native_id IS NULL AND state='queued' AND active=1
+        AND request_id=? AND actor=? AND credential=? AND kind=? AND created<=?`,
+    params: [receipt.reason, ctx.now(), receipt.requestId, receipt.actorId,
+      receipt.credentialBinding, receipt.mode === "put" ? "delivery" : "download", receipt.attemptedAt],
+  } : {
     sql: `UPDATE file_transfers SET native_id=COALESCE(native_id,?),state=?,reason=?,active=0,charged=0,
       terminal=COALESCE(terminal,?),native_status=NULL
       WHERE (native_id=? OR (native_id IS NULL AND state='queued'))
@@ -65,13 +72,14 @@ export async function filesReconcileNativeTransfers(
     params: [receipt.transferId, receipt.state === "committed" ? "completed" : receipt.state, receipt.reason ?? null, ctx.now(),
       receipt.transferId, receipt.requestId, receipt.actorId, receipt.credentialBinding,
       receipt.mode === "put" ? "delivery" : "download"],
-  })));
+  }));
 }
 async function beginDelivery(ctx: FilesContext, args: Delivery) {
   pins(args); const source = await authorizedFile(ctx, args.ref); const file = descriptor(source);
   const binding = digest({ kind: "delivery", args, readyDigest: source.ready_digest, preparationId: source.preparation });
   let row = await byRequest(ctx, args.requestId, binding);
   if (row) {
+    if (row.native_id === null && row.state === "refused" && row.terminal !== null) return result(row);
     if (row.native_id) return result(await reconcile(ctx, row));
     active(row, ctx.now());
   } else {
@@ -89,6 +97,7 @@ async function beginDownload(ctx: FilesContext, args: Download) {
   pins(args); const binding = digest({ kind: "download", args });
   let row = await byRequest(ctx, args.requestId, binding);
   if (row) {
+    if (row.native_id === null && row.state === "refused" && row.terminal !== null) return result(row);
     if (row.native_id) return result(await reconcile(ctx, row));
     active(row, ctx.now());
   } else {
@@ -181,10 +190,12 @@ export const nativeHandlers = {
   cancelDownload: action(async (ctx, args: DownloadRequest) => cancel(ctx, args, "download")),
   receiptDelivery: action(async (ctx, args: { transferId: string }) => {
     const row = await load(ctx, args.transferId, "delivery");
+    if (row.native_id === null && row.state === "refused" && row.terminal !== null)
+      return { transferId: row.id, state: "refused" as const };
     if (!row.native_id) return fail("unavailable");
     const receipt = await ctx.nativeTransfers.receipt({ transferId: row.native_id });
     if (receipt.state !== "outcome_unknown") {
-      await filesReconcileNativeTransfers(ctx, [{ ...receipt, state: receipt.state, mode: "put", requestId: row.request_id,
+      await filesReconcileNativeTransfers(ctx, [{ ...receipt, kind: "terminal", state: receipt.state, mode: "put", requestId: row.request_id,
         actorId: row.actor, credentialBinding: row.credential }]);
     }
     return { transferId: row.id, state: receipt.state === "committed" ? "completed" as const : receipt.state };

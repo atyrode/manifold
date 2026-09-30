@@ -328,10 +328,18 @@ describe("IsolateSupervisor", () => {
     if (!reconcile) throw new Error("missing native evidence callback");
     await storage.set("reservation:transfer", "active");
     await storage.set("reservation:independent", "active");
-    const evidence = { transferId: "transfer", requestId: "request", actorId: principal.id,
+    const evidence = { kind: "terminal" as const, transferId: "transfer", requestId: "request", actorId: principal.id,
       credentialBinding: "a".repeat(64), mode: "put" as const, state: "committed" as const };
     await reconcile({ storage, now: () => runtime.now() }, [evidence]);
     expect(await storage.get("reservation:transfer")).toBeNull();
+    expect(await storage.get("reservation:independent")).toBe("active");
+    await storage.set("reservation:unadmitted", "active");
+    await reconcile({ storage, now: () => runtime.now() }, [{
+      kind: "admission-refused", requestId: "unadmitted", actorId: principal.id,
+      credentialBinding: "a".repeat(64), mode: "put", attemptedAt: runtime.now(),
+      reason: "installation_changed",
+    }]);
+    expect(await storage.get("reservation:unadmitted")).toBeNull();
     expect(await storage.get("reservation:independent")).toBe("active");
     await storage.set("reservation:transfer", "active");
     await expect(reconcile({ storage, now: () => runtime.now() }, [{ ...evidence, requestId: "escape" }]))

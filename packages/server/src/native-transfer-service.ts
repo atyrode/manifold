@@ -11,6 +11,7 @@ import {
   NATIVE_TRANSFER_RECEIPT_RETENTION_MS as RECEIPT_MS,
   NativeTransferResultSchema,
   NativeTransferRequestSchema,
+  NativeTransferReasonSchema,
   type AuthoredCap,
   type Cap,
   type JobCommand,
@@ -45,6 +46,9 @@ const refused = (reason: NativeTransferReason): never => { throw new ServiceErro
 /** Every method is bound to one still-active action or explicitly admitted byte carrier. */
 export interface NativeTransferGuard {
   assertCurrent(): void;
+  /** Current original action/request budget, never renewed by a continuation or queue. */
+  remainingMs(): number;
+  readonly signal?: AbortSignal;
   require(cap: AuthoredCap, ref: ManifoldRef): void;
   /** Readiness identity through the reference owner's current read declaration. Product code binds content metadata. */
   requireSource(source: NativeTransferBeginPutArgs["source"]): Promise<string>;
@@ -137,16 +141,18 @@ export class NativeTransferService {
     return row ? recordSchema.parse(JSON.parse(row.record)) : null;
   }
 
-  private async acquireEvidence(record: TransferRecord): Promise<void> {
+  private async acquireEvidence(record: TransferRecord, guard?: NativeTransferGuard): Promise<void> {
     const id = record.binding.transferId;
     const existing = this.reconciling.get(id);
-    if (existing) return existing;
-    const work = this.acquireRetainedEvidence(record);
+    // An action cannot inherit a background observation's independent 15-second lifetime.
+    // Its retained unknown receipt is honest while that already-running observation settles.
+    if (existing) return guard ? undefined : existing;
+    const work = this.acquireRetainedEvidence(record, guard);
     this.reconciling.set(id, work);
     try { await work; } finally { this.reconciling.delete(id); }
   }
 
-  private async acquireRetainedEvidence(record: TransferRecord): Promise<void> {
+  private async acquireRetainedEvidence(record: TransferRecord, guard?: NativeTransferGuard): Promise<void> {
     const transferId = record.binding.transferId;
     if (!ACTIVE[record.status.state] || this.busy.has(transferId) || this.pending.size >= 4) return;
     const live = this.host.owner(record.binding.request.machineId);
@@ -161,7 +167,7 @@ export class NativeTransferService {
       seatNonce: live.seatNonce, issuedAt: this.now(), expiresAt: this.now() + 5000 };
     this.busy.add(transferId);
     try {
-      const result = await this.send(live, request, { body, signature: this.host.sign(body) });
+      const result = await this.send(live, request, { body, signature: this.host.sign(body) }, guard);
       // Even a proved owner cannot use an observation response to carry bytes. Active,
       // missing and cleanup-unknown answers are not proof of a terminal publication.
       if (!result.ok || result.data !== undefined) return;
@@ -217,10 +223,11 @@ export class NativeTransferService {
       for (let offset = 0; offset < records.length; offset += 64) {
         const batch = records.slice(offset, offset + 64);
         const evidence = batch.map((record): NativeTransferTerminalEvidence => ({
+          kind: "terminal",
           transferId: record.binding.transferId, requestId: record.binding.request.requestId,
           actorId: record.binding.actorId, credentialBinding: record.binding.credentialBinding,
           mode: record.binding.request.mode,
-          state: record.status.state as NativeTransferTerminalEvidence["state"],
+          state: record.status.state as Extract<NativeTransferTerminalEvidence, { kind: "terminal" }>["state"],
           ...(record.status.reason ? { reason: record.status.reason } : {}),
         }));
         try {
@@ -242,7 +249,7 @@ export class NativeTransferService {
 
   async receipt(caller: Caller, transferId: string): Promise<NativeTransferReceiptView> {
     const record = this.load(caller, transferId);
-    await this.acquireEvidence(record);
+    await this.acquireEvidence(record, caller.guard);
     await this.deliverEvidence();
     // Acquisition is private. Disclosure still needs the exact live credential and request,
     // but not deleted-source or revised effect consent authority; no private metadata escapes.
@@ -390,6 +397,35 @@ export class NativeTransferService {
   }
 
   async begin(caller: Caller, request: NativeTransferBinding["request"]): Promise<NativeTransferStatus> {
+    try {
+      return await this.admit(caller, request);
+    } catch (error) {
+      // The product reserves before entering this authority boundary. A refusal before
+      // the host journal admits the exact request cannot have dispatched native work.
+      // Retire only that queued reservation; an admitted request must reconcile its owner.
+      const credentialBinding = this.credentialBinding(caller.auth);
+      const admitted = this.store.db.query<{ id: string }, [string, string, string, string]>(
+        "SELECT id FROM native_transfers WHERE plugin_id=? AND actor_id=? AND credential_binding=? AND request_id=?",
+      ).get(caller.pluginId, caller.auth.principal.id, credentialBinding, request.requestId);
+      if (!admitted && this.evidenceSink) {
+        const reason = NativeTransferReasonSchema.safeParse(error instanceof ServiceError ? error.message : "");
+        let delivered = false;
+        try {
+          delivered = await this.evidenceSink(caller.pluginId, [{
+            kind: "admission-refused", requestId: request.requestId,
+            actorId: caller.auth.principal.id, credentialBinding, mode: request.mode,
+            attemptedAt: this.now(), reason: reason.success ? reason.data : "native_transfer_unavailable",
+          }]);
+        } catch {
+          // No native effect exists, but the product's reservation may still need cleanup.
+        }
+        if (!delivered) throw new ServiceError("conflict", "native_transfer_cleanup_unknown");
+      }
+      throw error;
+    }
+  }
+
+  private async admit(caller: Caller, request: NativeTransferBinding["request"]): Promise<NativeTransferStatus> {
     const current = this.current(caller);
     const credentialBinding = this.credentialBinding(caller.auth);
     const existing = this.store.db.query<{ record: string }, [string, string, string, string]>(
@@ -474,7 +510,7 @@ export class NativeTransferService {
   async status(caller: Caller, transferId: string): Promise<NativeTransferStatus> {
     let record = this.load(caller, transferId);
     if (record.commitDecision !== undefined) {
-      await this.acquireEvidence(record);
+      await this.acquireEvidence(record, caller.guard);
       await this.deliverEvidence();
       record = this.load(caller, transferId);
       try {
@@ -500,6 +536,7 @@ export class NativeTransferService {
       const reconcile = request.method === "status" || request.method === "cancel";
       const { live, permit } = this.store.transaction(() => {
         const live = this.authorize(caller, record, reconcile);
+        this.waitBudget(caller.guard);
         if (!reconcile && (this.now() >= record.binding.expiresAt || this.now() - record.touchedAt >= 60_000))
           return refused("transfer_expired");
         const body: NativeTransferPermit["body"] = { permitId: randomUUID(), commandDigest: digest(request), transferId,
@@ -516,7 +553,7 @@ export class NativeTransferService {
         }
         return { live, permit };
       });
-      let result = await this.send(live, request, permit);
+      let result = await this.send(live, request, permit, caller.guard);
       let readEnd: number | undefined;
       if (request.method === "readChunk" && result.ok) {
         if (result.data === undefined || result.offset !== request.offset || result.eof === undefined)
@@ -568,19 +605,33 @@ export class NativeTransferService {
       throw error;
     } finally { if (acquired) this.busy.delete(transferId); }
   }
-  private send(live: NativeOwner, request: NativeTransferRequest, permit: NativeTransferPermit): Promise<NativeTransferResult> {
+  /** Leave 250ms inside the original outer deadline for the result to cross the guest boundary. */
+  private waitBudget(guard?: NativeTransferGuard): number {
+    const remaining = guard ? guard.remainingMs() - 250 : 15_000;
+    if (guard?.signal?.aborted || !(remaining > 0)) return refused("transfer_action_unavailable");
+    return Math.min(remaining, 15_000);
+  }
+
+  private send(live: NativeOwner, request: NativeTransferRequest, permit: NativeTransferPermit,
+    guard?: NativeTransferGuard): Promise<NativeTransferResult> {
+    const budget = this.waitBudget(guard);
     return new Promise<NativeTransferResult>((resolve, reject) => {
       const rpcId = randomUUID();
       const finish = (value: NativeTransferResult | Error): void => {
         if (!this.pending.has(rpcId)) return;
         this.pending.delete(rpcId);
         clearTimeout(timer);
+        guard?.signal?.removeEventListener("abort", abort);
         if (value instanceof Error) reject(value); else resolve(value);
       };
+      const abort = (): void => finish(new ServiceError("conflict",
+        request.method === "commitPut" ? "outcome_unknown" : "transfer_action_unavailable"));
       const timer = setTimeout(() => finish(new ServiceError("conflict",
-        request.method === "commitPut" ? "outcome_unknown" : "transfer_disconnected")), 15_000);
+        request.method === "commitPut" ? "outcome_unknown" : "transfer_disconnected")), budget);
       this.pending.set(rpcId, { channel: live.channel, ownerId: live.owner.ownerId,
         ownerGeneration: live.owner.generation, transferId: permit.body.transferId, finish });
+      guard?.signal?.addEventListener("abort", abort, { once: true });
+      if (guard?.signal?.aborted) { abort(); return; }
       if (!live.channel.send({ type: "job_command", command: { type: "native_transfer", rpcId, request, permit } }))
         finish(new ServiceError("conflict", request.method === "commitPut" ? "outcome_unknown" : "transfer_disconnected"));
     });
