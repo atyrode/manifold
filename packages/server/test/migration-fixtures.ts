@@ -15,3 +15,16 @@ CREATE TABLE IF NOT EXISTS dials(id TEXT PRIMARY KEY, origin TEXT NOT NULL, secr
 CREATE UNIQUE INDEX IF NOT EXISTS dials_origin_secret_unique ON dials(origin, secret);
 `);
 }
+
+/** Undo schema 50 when constructing an older fixture from a freshly migrated database. */
+export function dropFilesSchema(db: Database): void {
+  db.exec(`
+DROP TABLE reference_grant_provenance;
+DROP TABLE reference_publications;
+DROP TABLE reference_kind_owners;
+DROP TABLE plugin_recovery_allocations;
+DROP TABLE plugin_recovery_stages;
+DROP TABLE native_transfers;
+DROP TABLE native_admission_refusals;
+`);
+}

@@ -20,7 +20,7 @@ import { migrateToGrantRows } from "../src/migrate-grants.ts";
 import { migrateToElementRefs } from "../src/migrate-lexicon.ts";
 import { ServerStore, sha256Hex } from "../src/stores.ts";
 import { FakeRuntime } from "./helpers.ts";
-import { seedHistoricalSceneTables } from "./migration-fixtures.ts";
+import { dropFilesSchema, seedHistoricalSceneTables } from "./migration-fixtures.ts";
 
 const LEGACY_TOKEN_COLUMNS =
   "id, hash, principal_id, caps, container_id, created_at, revoked_at, minted_by, grant_id, expires_at";
@@ -122,6 +122,7 @@ ALTER TABLE agent_runs DROP COLUMN native_call_ids_json;
 `);
     store.db.exec("ALTER TABLE terminals DROP COLUMN exit_reason");
     store.db.exec("ALTER TABLE terminals DROP COLUMN session");
+    dropFilesSchema(store.db);
     store.db.exec("UPDATE meta SET value='43' WHERE key='schema_version'");
     store.close();
     store = new ServerStore(openDatabase(path));
@@ -2482,6 +2483,7 @@ test("migration 34 preserves edge authority and retires reviews that never displ
   let db = openDatabase(path);
   try {
     // Remove every post-v33 addition so migration 35 recreates the pre-v37 run schema.
+    dropFilesSchema(db);
     db.exec(`
 ALTER TABLE job_invocation_edges DROP COLUMN revision;
 INSERT INTO job_invocation_edges VALUES ('caller-a','callee','{"maxDepth":1}',1);
@@ -2574,6 +2576,7 @@ test.each([46, 47] as const)(
     const targetRows =
       "SELECT deployment_id,machine_id,plugin_id,phase,attempt,reason,receipt FROM machine_job_deployment_targets ORDER BY rowid";
     try {
+      dropFilesSchema(db);
       // Schema 47 is the current schema without 48's target-table rebuild; 46 also lacks 47's
       // job column. Every legacy phase is present, and a finished `applied` target shares its
       // machine/plugin pair with a `pending` one, which the pre-48 index permitted.
@@ -2755,6 +2758,7 @@ test("migration 42 persists the last identifiable machine refusal until admissio
     const owner = auth.authenticate(ownerKey);
     const enrollment = auth.enrollMachine("spoke", owner);
 
+    dropFilesSchema(db);
     db.exec(`
 ALTER TABLE machines DROP COLUMN last_refusal_code;
 ALTER TABLE machines DROP COLUMN last_refusal_at;

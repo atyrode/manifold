@@ -24,6 +24,7 @@ import { Room, DOC_BYTES_LIMIT } from "../src/room.ts";
 import { SessionChannel, SESSION_TRANSPORT_PAYLOAD_BYTES } from "../src/session-channel.ts";
 import { silentLogger } from "../src/log.ts";
 import { FakeClock, FakeRuntime, FakeSocket } from "./helpers.ts";
+import { dropFilesSchema } from "./migration-fixtures.ts";
 
 const HOME = "home:/終";
 const ID = "note:/α:終";
@@ -41,6 +42,7 @@ function fixture(): { dir: string; path: string; db: Database } {
   const dir = mkdtempSync(join(tmpdir(), "manifold-text-history-"));
   const path = join(dir, "manifold.db");
   const db = openDatabase(path);
+  dropFilesSchema(db);
   db.query("UPDATE meta SET value = '48' WHERE key = 'schema_version'").run();
   db.query(
     "INSERT INTO containers(id, name, created_at, sort_order, discipline) VALUES (?, 'Historical home', 17, 0, 'canvas')",
@@ -515,6 +517,7 @@ describe("migration 49: retained text ownership", () => {
       // Direct reset of retained rows must also remove credit, not just the store's
       // pruning door. Recreate a migrated lineage through the actual migration.
       db.query("DELETE FROM scene_docs").run();
+      dropFilesSchema(db);
       db.query("UPDATE meta SET value = '48' WHERE key = 'schema_version'").run();
       db.query("DELETE FROM meta WHERE key LIKE 'plugins:%'").run();
       db.query("DELETE FROM plugin_kv").run();

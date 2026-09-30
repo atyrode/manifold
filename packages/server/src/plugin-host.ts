@@ -1936,7 +1936,7 @@ export class PluginHost {
           context,
           handler,
           release,
-          report: (evt) => this.logger.error(evt, { pluginId }),
+          logger: { error: (evt) => this.logger.error(evt, { pluginId }) },
           restrictDeadline: (expiresAt) => restrictDeadline(expiresAt, "expired"),
           ...(definition.manifest.database?.recovery === undefined
             ? {}
@@ -2249,7 +2249,7 @@ export class PluginHost {
       if (
         !open ||
         this.closed ||
-        this.harnessDefinition(id) !== def ||
+        this.harnessDefinition(id).harness !== def.harness ||
         !this.authService.restoreCredential(this.authService.credentialReference(actor))
       )
         throw new ServiceError("forbidden", "harness caller unavailable");
@@ -2818,8 +2818,13 @@ export class PluginHost {
       if (migrated) host.assembled = await host.reassemble();
       await host.referenceService.reconcile();
     };
-    if (host.dataDir === null) await initialize();
-    else await withRecoveryGate(host.dataDir, initialize);
+    try {
+      if (host.dataDir === null) await initialize();
+      else await withRecoveryGate(host.dataDir, initialize);
+    } catch (error) {
+      host.close();
+      throw error;
+    }
     authService.setAgentProfileValidator((harness, profile) =>
       host.validateAgentProfile(harness, profile),
     );

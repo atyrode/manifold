@@ -47,6 +47,7 @@ import { jobContext } from "../src/job-doors.ts";
 import { projectPluginAuthorFacts } from "../src/log.ts";
 import { ServerStore } from "../src/stores.ts";
 import { FakeRuntime } from "./helpers.ts";
+import { dropFilesSchema } from "./migration-fixtures.ts";
 
 const key = "9".repeat(64);
 const pluginId = "sample.worker";
@@ -1603,6 +1604,7 @@ test("data-only credential migration and author audit projection preserve enable
     f.store.db
       .query("UPDATE principals SET kind='agent' WHERE id=?")
       .run(start.request.credential.principalId);
+    dropFilesSchema(f.store.db);
     f.store.db.exec(`
 ALTER TABLE terminals DROP COLUMN cwd;
 ALTER TABLE terminals DROP COLUMN launch_recipe;
@@ -8382,6 +8384,7 @@ describe("reviewed native deployment approvals", () => {
         .query("UPDATE machine_job_deployments SET approval=? WHERE deployment_id=?")
         .run(canonicalJobJson(legacy), value.deploymentId);
       // Remove every post-v33 addition so migration 35 recreates the pre-v37 run schema.
+      dropFilesSchema(f.store.db);
       f.store.db.exec(`
 UPDATE machine_job_deployment_targets SET receipt=json_extract(receipt,'$.consents');
 ALTER TABLE job_invocation_edges DROP COLUMN revision;

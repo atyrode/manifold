@@ -15,6 +15,7 @@ import { ServerStore } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
 import { FakeClock, FakeRuntime, testPluginHost, testTileTrees } from "./helpers.ts";
 import { createExternalRun } from "./agent-fixtures.ts";
+import { dropFilesSchema } from "./migration-fixtures.ts";
 
 const CUTOVER = "agent-runs:declarations-after-event-id";
 const OWNER_KEY = "p".repeat(64);
@@ -63,6 +64,7 @@ function restorePreCutoverSchema(f: Fixture): void {
   // Replay the real v35 upgrade, not a current schema with an old label.
   // This fixture has one run per Agent, so restoring legacy principal uniqueness is safe.
   f.store.transaction(() => {
+    dropFilesSchema(f.store.db);
     f.store.db.exec(`
       DELETE FROM grants WHERE id IN (SELECT grant_id FROM tokens WHERE runner_agent_id IS NOT NULL);
       DELETE FROM tokens WHERE runner_agent_id IS NOT NULL;

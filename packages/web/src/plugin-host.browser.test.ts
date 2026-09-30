@@ -456,3 +456,150 @@ test("a replacement credential cannot reuse ready metadata or accept the previou
     await expectNamedPanels(browser);
   });
 }, 60_000);
+
+test("mounted panels open beside their caller, focus an existing record, and refuse foreign or invalid openings", async () => {
+  const scratch = mkdtempSync(join(tmpdir(), "manifold-panel-openings-"));
+  const browser = new Browser();
+  let server: Bun.Server<undefined> | undefined;
+  try {
+    const entry = join(scratch, "fixture.js");
+    const output = join(scratch, "dist");
+    await Bun.write(
+      entry,
+      `
+      import { createElement as h, useState } from ${JSON.stringify(Bun.resolveSync("react", import.meta.dir))};
+      import { createRoot } from ${JSON.stringify(Bun.resolveSync("react-dom/client", import.meta.dir))};
+      import { ROOT_TILE_ID, validateTileLayout } from ${JSON.stringify(Bun.resolveSync("@manifold/protocol", import.meta.dir))};
+      import { buildBrowserAssembly, ComposedAssemblyProvider, HostServicesProvider, PanelOutlet } from ${JSON.stringify(resolve(import.meta.dir, "plugin-host.tsx"))};
+      const recordPanel = "acme.feed.record";
+      const recordOne = { kind: "record", id: "r-1" };
+      let commits = 0, outcome = null, currentLayout;
+      function Home({ host }) {
+        const open = (panelId, arg) => { outcome = host.openPanel({ panelId, arg }); };
+        return h("div", null,
+          h("h2", null, "Feed"),
+          h("button", { id: "new-record", onClick: () => open(recordPanel, { kind: "record", id: "r-2" }) }, "Open record two"),
+          h("button", { id: "existing-record", onClick: () => open(recordPanel, recordOne) }, "Open record one"),
+          h("button", { id: "foreign", onClick: () => open("core.shell.sidebar") }, "Try foreign panel"),
+          h("button", { id: "unknown", onClick: () => open("acme.feed.ghost") }, "Try unknown panel"),
+          h("button", { id: "plugin-id", onClick: () => open("acme.feed") }, "Try plugin identifier"),
+          h("button", { id: "invalid", onClick: () => open(recordPanel, { at: new Date(0) }) }, "Try invalid argument"));
+      }
+      function Record({ arg }) {
+        return h("div", null, h("h2", null, "Record " + arg.id),
+          h("input", { "aria-label": "Record " + arg.id, defaultValue: arg.id }));
+      }
+      const entry = (id, panels) => ({
+        manifest: { id, version: "1.0.0", title: id, description: "", capabilities: [],
+          contributes: { panels, sections: [], elements: [], tools: [], events: [] } },
+        enabled: true, source: "plugin", actions: []
+      });
+      const assembly = buildBrowserAssembly([
+        entry("acme.feed", [{ id: "home", title: "Feed" }, { id: "record", title: "Record" }]),
+        entry("core.shell", [{ id: "sidebar", title: "Sidebar" }])
+      ], 1, [
+        { id: "acme.feed", panels: { home: Home, record: Record } },
+        { id: "core.shell", panels: { sidebar: () => h("div", null, "Sidebar") } }
+      ]);
+      const client = {};
+      const principal = { id: "panel-reader", kind: "human", name: "Reader", color: "#74c0fc" };
+      function Workspace() {
+        const [layout, setLayout] = useState({
+          [ROOT_TILE_ID]: { id: ROOT_TILE_ID, dir: "row", ratios: [0.5, 0.5], children: ["ws-home", "ws-record"], ref: null },
+          "ws-home": { id: "ws-home", dir: null, ratios: [], children: [], ref: { kind: "panel", panelId: "acme.feed.home" } },
+          "ws-record": { id: "ws-record", dir: null, ratios: [], children: [], ref: { kind: "panel", panelId: recordPanel }, arg: recordOne }
+        });
+        currentLayout = layout;
+        const host = {
+          client, principal, token: "fixture-only", containerId: null,
+          assembly: { panels: assembly.panels },
+          tileGeometry: { layout, getTreeElement: () => document.getElementById("tiles"),
+            applyLayout: next => { commits += 1; setLayout(next); } }
+        };
+        return h(ComposedAssemblyProvider, { value: assembly },
+          h(HostServicesProvider, { value: host },
+            h("main", { id: "tiles", style: { display: "flex", gap: "24px" } },
+              layout[ROOT_TILE_ID].children.map(id =>
+                h("section", { key: id, "data-tile-id": id },
+                  h(PanelOutlet, { panelId: layout[id].ref.panelId, tileId: id, arg: layout[id].arg }))))));
+      }
+      window.panelFixture = () => ({
+        commits, outcome, valid: validateTileLayout(currentLayout),
+        children: currentLayout[ROOT_TILE_ID].children,
+        layout: currentLayout
+      });
+      createRoot(document.getElementById("root")).render(h(Workspace));
+      `,
+    );
+    const build = await Bun.build({
+      entrypoints: [entry],
+      target: "browser",
+      outdir: output,
+      define: { "import.meta.env": "{}" },
+    });
+    if (!build.success) throw new Error(build.logs.map(String).join("\n"));
+    server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch(request) {
+        return new URL(request.url).pathname === "/fixture.js"
+          ? new Response(Bun.file(join(output, "fixture.js")), {
+              headers: { "Content-Type": "text/javascript" },
+            })
+          : new Response(
+              '<!doctype html><meta charset="utf-8"><div id="root"></div><script type="module" src="/fixture.js"></script>',
+              { headers: { "Content-Type": "text/html" } },
+            );
+      },
+    });
+    await browser.launch({ incognito: true });
+    await browser.goto(`http://127.0.0.1:${String(server.port)}/`);
+    await until(
+      () => browser.evaluate<boolean>('document.querySelector("input")?.value === "r-1"'),
+      5_000,
+      "the record painted by the committed panel",
+    );
+    await browser.evaluate<void>('document.getElementById("new-record").click()');
+    await until(
+      () => browser.evaluate<boolean>('document.querySelectorAll("input").length === 2'),
+      5_000,
+      "the second record opened beside its caller",
+    );
+    expect(
+      await browser.evaluate('Array.from(document.querySelectorAll("h2"), node => node.textContent)'),
+    ).toEqual(["Feed", "Record r-2", "Record r-1"]);
+    expect(await browser.evaluate("window.panelFixture()")).toMatchObject({
+      commits: 1,
+      valid: true,
+      outcome: { ok: true, placed: true },
+    });
+    await browser.evaluate<void>('document.getElementById("existing-record").click()');
+    expect(await browser.evaluate("window.panelFixture()")).toMatchObject({
+      commits: 1,
+      outcome: { ok: true, tileId: "ws-record", placed: false },
+    });
+    expect(await browser.evaluate('document.activeElement?.getAttribute("aria-label")')).toBe(
+      "Record r-1",
+    );
+    for (const [button, refused] of [
+      ["foreign", "other_plugin"],
+      ["unknown", "unknown_panel"],
+      ["plugin-id", "unknown_panel"],
+      ["invalid", "invalid_arg"],
+    ]) {
+      await browser.evaluate<void>(`document.getElementById(${JSON.stringify(button)}).click()`);
+      expect(await browser.evaluate("window.panelFixture()")).toMatchObject({
+        commits: 1,
+        valid: true,
+        outcome: { ok: false, refused },
+      });
+      expect(
+        await browser.evaluate('Array.from(document.querySelectorAll("h2"), node => node.textContent)'),
+      ).toEqual(["Feed", "Record r-2", "Record r-1"]);
+    }
+  } finally {
+    await browser.close();
+    server?.stop(true);
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}, 60_000);
