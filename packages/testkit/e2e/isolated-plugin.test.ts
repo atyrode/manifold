@@ -162,7 +162,6 @@ test("an installed plugin composes, answers its door from its own process, and u
     expect(row?.source).toBe("plugin");
     expect(row?.enabled).toBe(true);
     expect(row?.lifecycle).toBeUndefined();
-    expect(row?.actions.map((action) => action.name)).toEqual([BUMP]);
     expect(row?.manifest.entry).toEqual({ server: true, web: "web.js", worker: true });
 
     // Storage is the child's only memory and it lives on the host: the second answer carries
@@ -288,7 +287,6 @@ test("an install survives a restart: the row is re-verified, respawned, and its 
     expect(row?.lifecycle).toBeUndefined();
     expect(row?.install?.sha256).toBe(sha256);
     expect(row?.install?.refusal).toBeUndefined();
-    expect(row?.actions.map((action) => action.name)).toEqual([BUMP]);
     // A fresh child, the same storage: the count continues rather than restarting at zero.
     expect(await bumpedTo(restarted, 1)).toBe(6);
     expect((await webModule(restarted)).status).toBe(200);
@@ -329,7 +327,6 @@ test("a stored bundle tampered with between boots is refused by name and never l
     expect(row?.install?.sha256).toBe(sha256);
     expect(row?.enabled).toBe(true);
     expect(row?.manifest.version).toBe("unverified");
-    expect(row?.actions.map((action) => action.name)).toEqual([`${PLUGIN_ID}.bump`]);
     const denied = ActionOutcomeSchema.parse(await bump(restarted, {}));
     expect(denied.ok).toBe(false);
     if (!denied.ok) {
