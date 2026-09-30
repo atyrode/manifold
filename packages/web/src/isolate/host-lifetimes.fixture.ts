@@ -75,7 +75,7 @@ export async function serveHostLifetimes(): Promise<{
     await Bun.write(
       entry,
       `
-      import {createElement,useState,useLayoutEffect,StrictMode,Suspense} from ${JSON.stringify(Bun.resolveSync("react", import.meta.dir))};
+      import {createElement,useState,useLayoutEffect,StrictMode,Suspense,startTransition} from ${JSON.stringify(Bun.resolveSync("react", import.meta.dir))};
       import {createRoot} from ${JSON.stringify(Bun.resolveSync("react-dom/client", import.meta.dir))};
       import {flushSync} from ${JSON.stringify(Bun.resolveSync("react-dom", import.meta.dir))};
       import {Stack,Text,Button,BorrowedPanel} from ${JSON.stringify(Bun.resolveSync("@manifold/ui", import.meta.dir))};
@@ -84,8 +84,15 @@ export async function serveHostLifetimes(): Promise<{
       import {isolatedPanel} from ${JSON.stringify(resolve(import.meta.dir, "isolated-panel.tsx"))};
       import {LocalFileStore} from ${JSON.stringify(resolve(import.meta.dir, "../local-files.ts"))};
       import {usePortableElementEdit} from ${JSON.stringify(resolve(import.meta.dir, "../portable-element-edit.ts"))};
+      import {FileIntakePanel} from ${JSON.stringify(resolve(import.meta.dir, "../../../plugins/files/src/intake-ui.tsx"))};
+      import {FileUploadController} from ${JSON.stringify(resolve(import.meta.dir, "../../../plugins/files/src/upload.ts"))};
       ${guest}
-      const captures = [], results = [], pending = [], edits = [];
+      const captures = [], results = [], pending = [], edits = [], requests = [], controllers = new Set();
+      const originalMount = FileUploadController.prototype.mount;
+      FileUploadController.prototype.mount = function() {
+        controllers.add(this);
+        return originalMount.call(this);
+      };
       const originalCapture = LocalFileStore.prototype.capture;
       LocalFileStore.prototype.capture = function(files) {
         const descriptors = originalCapture.call(this, files);
@@ -93,19 +100,30 @@ export async function serveHostLifetimes(): Promise<{
         return descriptors;
       };
       const principal = {id:"viewer",kind:"human",name:"Viewer",color:"#ffffff"};
+      let clientGeneration = 0;
       function client() {
+        const id = ++clientGeneration;
         const elements = new Map([["image",{id:"image",type:"example.lifetime.image",file:"source"}]]);
         return {status:"open",epoch:"epoch-one",spectator:false,sceneWriteAllowed:true,elements,
           selfCaps:()=>[],on:()=>()=>{},
-          action:(_name,args)=>{const deferred=Promise.withResolvers();pending.push({resolve:deferred.resolve,label:args.label});return deferred.promise;},
+          action:(name,args)=>{
+            const deferred=Promise.withResolvers();
+            requests.push({client:id,name,args});
+            pending.push({resolve:deferred.resolve,reject:deferred.reject,label:args.label});
+            return deferred.promise;
+          },
           transact:run=>run({patch:(id,data)=>{elements.set(id,{...elements.get(id),...data});return true;}})};
       }
       const initialHost = () => ({client:client(),principal,containerId:"container-one",token:crypto.randomUUID(),authoring:null,
         topics:{index:[],terminals:[],attendance:[],machines:[]},navigate:()=>{},assembly:{panels:new Map(),sections:[]}});
       const fileInput = () => ({value:{label:"selection"},files:[new File(["private selection"],"selection.txt",{type:"text/plain"})]});
-      let root, host, originalHost, input, mode, scenario, generation=0, visible=true, branch=true, probeElement, suspended=false, layoutVersion=0, strict=true, layoutSetups=0;
+      let root, host, originalHost, input, mode, scenario, generation=0, visible=true, branch=true, probeElement, suspended=false, layoutVersion=0, strict=true, layoutSetups=0, committedHost, suspensionAttempts=0;
       const never = Promise.withResolvers().promise;
-      function Suspender() { throw never; }
+      function Suspender() { suspensionAttempts++; throw never; }
+      function FilesIntake(props) {
+        if ("token" in props.host || "token" in props.host.client) throw new Error("credential escaped");
+        return createElement(FileIntakePanel,props);
+      }
       function EditProbe() {
         const edit = usePortableElementEdit(probeElement);
         useLayoutEffect(()=>{edits.push(edit);},[edit]);
@@ -121,13 +139,14 @@ export async function serveHostLifetimes(): Promise<{
           : createElement(Text,null,"Waiting for layout completion");
       }
       const boundary = ({children}) => children;
-      function render() {
+      function render(concurrent=false) {
         const adapted = mode === "worker" ? isolatedPanel("example.lifetime","a",true) : byteContribution(Intake,true);
         const registry = {revision:generation,ErrorBoundary:boundary,Placeholder:({name})=>createElement(Text,null,name),
           panel:id=>({enabled:true,title:id,Component:mode === "worker" ? isolatedPanel("example.lifetime",id.split(".").at(-1),true) : byteContribution(Intake,true)})};
         let child;
         if (!visible) child = createElement(Text,null,"Unmounted");
         else if (scenario === "selection") child = createElement(adapted,{host,input,onResult:result=>results.push(result)});
+        else if (scenario === "files") child = createElement(byteContribution(FilesIntake,true),{host,input,onResult:result=>results.push(result)});
         else if (scenario === "edit") child = createElement(ProjectionScopeProvider,{value:{host,client:host.client,locationPath:null}},createElement(EditProbe));
         else if (scenario === "layout") {
           const callbackVersion = layoutVersion;
@@ -139,18 +158,26 @@ export async function serveHostLifetimes(): Promise<{
         else child = createElement(MountedByteSurface,{host},()=>createElement(Stack,null,
           branch && createElement(BorrowedPanel,{key:"chain",panelId:"example.lifetime.a",input:{label:"a",next:scenario === "cycle" ? ["a"] : ["b","c","d","e"]},onResult:result=>results.push(result)}),
           scenario === "budget" && createElement(BorrowedPanel,{key:"sibling",panelId:"example.lifetime.e",input:{label:"sibling"},onResult:result=>results.push(result)})));
-        if (suspended) child = createElement(Suspense,{fallback:createElement(Text,null,"Suspended")},child,createElement(Suspender));
+        child = createElement(Suspense,{fallback:createElement(Text,null,"Suspended")},child,suspended && createElement(Suspender));
         const tree = createElement(ProjectionProvider,{value:registry},child);
-        flushSync(()=>root.render(strict ? createElement(StrictMode,null,tree) : tree));
+        const commit = () => root.render(strict ? createElement(StrictMode,null,tree) : tree);
+        if (concurrent) startTransition(commit); else flushSync(commit);
       }
       window.fixture = {
         mount(nextMode,nextScenario="selection",nextStrict=true) {
           if(root) flushSync(()=>root.unmount());
           root=createRoot(document.getElementById("root"));
           mode=nextMode;scenario=nextScenario;host=originalHost=initialHost();input=fileInput();visible=true;branch=true;suspended=false;
-          probeElement={id:"image",data:{file:"source"}};layoutVersion=layoutSetups=0;strict=nextStrict;results.length=pending.length=captures.length=edits.length=0;render();
+          if (scenario === "files") input={...input,value:{flow:"save",purpose:"file"}};
+          probeElement={id:"image",data:{file:"source"}};layoutVersion=layoutSetups=suspensionAttempts=0;strict=nextStrict;results.length=pending.length=captures.length=edits.length=requests.length=0;controllers.clear();render();
         },
-        recompose() { host={...host};generation++;render(); },
+        recompose() {
+          host={...host,principal:{...host.principal},topics:{...host.topics},assembly:{...host.assembly},navigate:()=>{}};
+          generation++;render();
+        },
+        speculativeClient() { committedHost=host;host={...host,client:client()};suspended=true;render(true); },
+        abandonClient() { host=committedHost;suspended=false;render(); },
+        suspensionAttempts() { return suspensionAttempts; },
         completeInLayout() { layoutVersion++;host={...host};generation++;render(); },
         layoutSetups() { return layoutSetups; },
         restoreHost() { host=originalHost;render(); },
@@ -165,6 +192,15 @@ export async function serveHostLifetimes(): Promise<{
         branch(value) { branch=value;render(); },
         unmount() { visible=false;render(); },
         completePending() { for(const entry of pending.splice(0)) entry.resolve({ok:true,result:{}}); },
+        failPending() { for(const entry of pending.splice(0)) entry.reject(new Error("receipt lost")); },
+        files() { return {
+          controllers:[...controllers].map(controller=>{
+            const state=controller.getSnapshot();
+            return {requestId:state.requestId,handle:state.selection.handle,phase:state.phase,busy:state.busy};
+          }),
+          requests:[...requests],
+          handles:captures.map(({descriptor})=>descriptor.handle),
+        }; },
         counts() { return {results:[...results],pending:pending.length,captures:captures.length,owners:[...document.querySelectorAll('[data-testid="owner"]')].map(node=>node.textContent)}; },
         async custody() { return Promise.all(captures.map(async({store,descriptor})=>{
           try{return new TextDecoder().decode(await store.read(descriptor.handle,0,descriptor.bytes));}

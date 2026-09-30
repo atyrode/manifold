@@ -43,12 +43,14 @@ export class MountedByteResources {
     read: (handle, offset, length, options) => this.files.read(handle, offset, length, options),
     release: (handle) => this.files.release(handle),
   };
+  readonly portableClient: PortableHostServices["client"];
   readonly services: ByteSurfaceServices;
   private readonly projections = new Set<ByteImageReadHandle>();
   private readonly downloads = new Set<ByteDownloadHandle>();
   private live = true;
 
   constructor(client: SessionHandle) {
+    this.portableClient = portableClient(client);
     this.services = {
       capture: (files) => {
         if (!this.live) throw new ByteTransferError("unavailable");
@@ -208,34 +210,38 @@ function ByteSurfaceLifetime({
   );
 }
 
+/** One bearer-free facade belongs to the committed session owner, not its host metadata. */
+function portableClient(client: SessionHandle): PortableHostServices["client"] {
+  return {
+    action: (name, args) => client.action(name, args),
+    readByteChunk: (...args) => client.readByteChunk(...args),
+    writeByteChunk: (...args) => client.writeByteChunk(...args),
+    place: (...args) => client.place(...args),
+    selfCaps: () => client.selfCaps(),
+    machines: () => client.machines(),
+    resolve: (uri) => client.resolve(uri),
+    openStream: (options) => client.openStream(options),
+    openTerminal: (options) => client.openTerminal(options),
+    sendTerminalInput: (...args) => client.sendTerminalInput(...args),
+    terminalsByContainer: () => client.terminalsByContainer(),
+    subscribe: (...args) => client.subscribe(...args),
+    get status() {
+      return client.status;
+    },
+    on: (...args) => client.on(...args),
+  };
+}
+
 /** A portable page contribution receives the same narrow, bearer-free surface as a worker. */
-function portableHost(host: HostServices, localFiles: LocalFilesHandle): PortableHostServices {
-  const client = host.client;
+function portableHost(host: HostServices, resources: MountedByteResources): PortableHostServices {
   return {
     principal: host.principal,
     containerId: host.containerId,
     topics: host.topics,
     navigate: host.navigate,
     authoring: host.authoring,
-    localFiles,
-    client: {
-      action: (name, args) => client.action(name, args),
-      readByteChunk: (...args) => client.readByteChunk(...args),
-      writeByteChunk: (...args) => client.writeByteChunk(...args),
-      place: (...args) => client.place(...args),
-      selfCaps: () => client.selfCaps(),
-      machines: () => client.machines(),
-      resolve: (uri) => client.resolve(uri),
-      openStream: (options) => client.openStream(options),
-      openTerminal: (options) => client.openTerminal(options),
-      sendTerminalInput: (...args) => client.sendTerminalInput(...args),
-      terminalsByContainer: () => client.terminalsByContainer(),
-      subscribe: (...args) => client.subscribe(...args),
-      get status() {
-        return client.status;
-      },
-      on: (...args) => client.on(...args),
-    },
+    localFiles: resources.localFiles,
+    client: resources.portableClient,
   };
 }
 
@@ -259,7 +265,7 @@ function ContributionBody({
   const bound = useMemo(
     () =>
       portable
-        ? portableHost(host, resources.localFiles)
+        ? portableHost(host, resources)
         : { ...host, localFiles: resources.localFiles },
     [host, portable, resources],
   );
@@ -342,7 +348,7 @@ function PortableElementBody({
   readonly element: PortableElementProjection;
   readonly resources: MountedByteResources;
 }): ReactElement {
-  const bound = useMemo(() => portableHost(host, resources.localFiles), [host, resources]);
+  const bound = useMemo(() => portableHost(host, resources), [host, resources]);
   const edit = usePortableElementEdit(element);
   return (
     <div

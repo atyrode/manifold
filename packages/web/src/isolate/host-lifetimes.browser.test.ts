@@ -174,3 +174,111 @@ test("a recomposed intake delivers layout completion to its current committed ca
     await fixture.close();
   }
 }, 60_000);
+
+interface FilesState {
+  readonly controllers: readonly {
+    readonly requestId: string;
+    readonly handle: string;
+    readonly phase: string;
+    readonly busy: boolean;
+  }[];
+  readonly requests: readonly {
+    readonly client: number;
+    readonly name: string;
+    readonly args: { readonly requestId: string };
+  }[];
+  readonly handles: readonly string[];
+}
+
+test("portable Files keeps its selection and exact Save through host recomposition and abandoned identity renders", async () => {
+  const fixture = await serveHostLifetimes();
+  const browser = new Browser();
+  try {
+    await browser.launch({ incognito: true });
+    await browser.goto(fixture.origin);
+    for (const strict of [false, true]) {
+      await browser.evaluate(`window.fixture.mount("page", "files", ${strict})`);
+      const initial = await browser.evaluate<FilesState>("window.fixture.files()");
+      expect(initial.controllers).toHaveLength(1);
+      const custody = await browser.evaluate<string[]>("window.fixture.custody()");
+      expect(custody.at(-1)).toBe("private selection");
+      await browser.evaluate("window.fixture.recompose()");
+      expect(await browser.evaluate<FilesState>("window.fixture.files()")).toEqual(initial);
+      expect(await browser.evaluate<string[]>("window.fixture.custody()")).toEqual(custody);
+
+      await press(browser, "Save file");
+      await until(browser, "window.fixture.counts().pending === 1");
+      const started = await browser.evaluate<FilesState>("window.fixture.files()");
+      expect(started.controllers).toEqual([
+        { ...initial.controllers[0], phase: "uploading", busy: true },
+      ]);
+      expect(started.requests).toHaveLength(1);
+      expect(started.requests[0]!.args.requestId).toBe(initial.controllers[0]!.requestId);
+
+      await browser.evaluate("window.fixture.speculativeClient()");
+      await until(browser, "window.fixture.suspensionAttempts() > 0");
+      expect(await browser.evaluate<FilesState>("window.fixture.files()")).toEqual(started);
+      expect(await browser.evaluate<string[]>("window.fixture.custody()")).toEqual(custody);
+      await browser.evaluate("window.fixture.abandonClient()");
+      await browser.evaluate("window.fixture.recompose()");
+      expect(await browser.evaluate<FilesState>("window.fixture.files()")).toEqual(started);
+      expect(await browser.evaluate<string>("document.querySelector('[role=\"status\"]').textContent"))
+        .toContain("uploading");
+      expect(await browser.evaluate<string[]>("window.fixture.custody()")).toEqual(custody);
+
+      await browser.evaluate("window.fixture.failPending()");
+      await until(browser, "window.fixture.files().controllers[0].phase === 'outcome_unknown' && !window.fixture.files().controllers[0].busy");
+      await browser.evaluate("window.fixture.recompose()");
+      await press(browser, "Retry exact Save request");
+      await until(browser, "window.fixture.counts().pending === 1");
+      const retried = await browser.evaluate<FilesState>("window.fixture.files()");
+      expect(retried.controllers).toEqual(started.controllers);
+      expect(retried.handles).toEqual(initial.handles);
+      expect(retried.requests).toEqual([started.requests[0]!, started.requests[0]!]);
+      expect(await browser.evaluate<string[]>("window.fixture.custody()")).toEqual(custody);
+      await browser.evaluate("window.fixture.unmount(); window.fixture.failPending()");
+      expect(await browser.evaluate<string[]>("window.fixture.custody()")).toEqual(
+        custody.map(() => "unavailable"),
+      );
+    }
+    await browser.evaluate("window.fixture.close()");
+  } finally {
+    await browser.close();
+    await fixture.close();
+  }
+}, 60_000);
+
+test("portable Files retires genuine session authority changes without reviving restored selection", async () => {
+  const fixture = await serveHostLifetimes();
+  const browser = new Browser();
+  try {
+    await browser.launch({ incognito: true });
+    await browser.goto(fixture.origin);
+    for (const strict of [false, true]) {
+      for (const field of ["client", "token", "principal", "container"]) {
+        await browser.evaluate(`window.fixture.mount("page", "files", ${strict})`);
+        await press(browser, "Save file");
+        await until(browser, "window.fixture.counts().pending === 1");
+        const started = await browser.evaluate<FilesState>("window.fixture.files()");
+        await browser.evaluate(`window.fixture.change(${JSON.stringify(field)})`);
+        await browser.evaluate("window.fixture.restoreHost(); window.fixture.failPending()");
+        await until(browser, "!window.fixture.files().controllers[0].busy");
+        expect(await browser.evaluate<string>("document.body.textContent")).toContain("Intake retired");
+        const retired = await browser.evaluate<FilesState>("window.fixture.files()");
+        expect(retired.requests).toEqual(started.requests);
+        expect(retired.handles).toEqual(started.handles);
+        expect(retired.controllers).toEqual([
+          { ...started.controllers[0], phase: "outcome_unknown", busy: false },
+        ]);
+        expect(await browser.evaluate<string[]>("window.fixture.custody()")).toEqual(
+          started.handles.map(() => "unavailable"),
+        );
+        expect((await browser.evaluate<Counts>("window.fixture.counts()")).results).toEqual([]);
+      }
+    }
+    await browser.evaluate("window.fixture.close()");
+  } finally {
+    await browser.close();
+    await fixture.close();
+  }
+}, 60_000);
