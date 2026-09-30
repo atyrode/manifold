@@ -61,6 +61,7 @@ import {
   validPanelArg,
   type ManifoldRef,
   type PanelArg,
+  type PluginManifest,
   type PluginRoster,
 } from "@manifold/protocol";
 import { SessionClient } from "@manifold/sdk";
@@ -84,6 +85,7 @@ import { ContainerErrorBoundary } from "./error-boundary.tsx";
 import { isolatedPanel, isolatedSection } from "./isolate/index.ts";
 import { webModulePath } from "./isolate/worker-host.ts";
 import { FEED_TOPICS, SPACE_SET_LAYOUT_ACTION, WEB_PLUGIN_DEFS } from "./assembly.ts";
+import type { PluginDevelopmentLoader } from "./plugin-development.ts";
 
 /**
  * The browser half of the plugin engine — FLOOR (REGISTRY.md §Foundation), which is why this
@@ -839,11 +841,15 @@ function EssentialRecovery({
  * turns them back on, so the offer has to come from the floor that composed it, before the
  * workspace paints (see {@link EssentialRecovery}).
  */
-interface LoadedWebPlugin {
+export interface LoadedWebPlugin {
   readonly sha256: string;
-  readonly def: WebPluginDef;
-  /** Removes the injected `<style>`; null when the bundle declared no sheet. */
-  readonly unmountStyles: (() => void) | null;
+  readonly manifest: PluginManifest;
+  /** Retained authenticated bytes, independent of the development server's lifetime. */
+  readonly packedDef: WebPluginDef;
+  readonly packedCss: string | null;
+  def: WebPluginDef;
+  /** Owns either the installed sheet or the active source sheet, never both. */
+  unmountStyles: (() => void) | null;
 }
 
 /** Fetch authority stays in the header; module evaluation only sees a local Blob URL. */
@@ -933,6 +939,32 @@ function AssemblyOwner({ identity, children }: AssemblyProviderProps): ReactElem
   */
   const loaded = useRef(new Map<string, LoadedWebPlugin>());
   const [loadedDefs, setLoadedDefs] = useState<ReadonlyMap<string, LoadedWebPlugin>>(new Map());
+  const currentRoster = useRef(state.roster);
+  currentRoster.current = state.roster;
+  const development = useRef<PluginDevelopmentLoader | null>(null);
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    let active = true;
+    void import("./plugin-development.ts").then(
+      ({ createPluginDevelopmentLoader }) => {
+        if (!active) return;
+        development.current = createPluginDevelopmentLoader(
+          loaded.current,
+          () => currentRoster.current,
+          () => setLoadedDefs(new Map(loaded.current)),
+        );
+        development.current.reconcile();
+      },
+      (reason: unknown) => {
+        if (active) console.error("evt=plugin_source_registry_failed", reason);
+      },
+    );
+    return () => {
+      active = false;
+      development.current?.dispose();
+      development.current = null;
+    };
+  }, []);
   useEffect(() => {
     const controller = new AbortController();
     const wanted = new Map(
@@ -942,25 +974,27 @@ function AssemblyOwner({ identity, children }: AssemblyProviderProps): ReactElem
             row.enabled &&
             row.install !== undefined &&
             row.hardened !== true &&
+            row.held === undefined &&
             row.install.refusal === undefined &&
             row.manifest.entry?.web !== undefined,
         )
-        .map((row) => [
-          row.manifest.id,
-          { sha256: row.install!.sha256, styles: row.manifest.entry?.styles === true },
-        ]),
+        .map((row) => [row.manifest.id, row] as const),
     );
     let pruned = false;
     for (const [id, held] of loaded.current) {
-      if (wanted.get(id)?.sha256 !== held.sha256) {
+      if (wanted.get(id)?.install?.sha256 !== held.sha256) {
         loaded.current.delete(id);
         held.unmountStyles?.();
+        held.unmountStyles = null;
         pruned = true;
       }
     }
     if (pruned) setLoadedDefs(new Map(loaded.current));
-    for (const [id, { sha256, styles }] of wanted) {
+    development.current?.reconcile();
+    for (const [id, row] of wanted) {
       if (loaded.current.has(id)) continue;
+      const sha256 = row.install!.sha256;
+      const styles = row.manifest.entry?.styles === true;
       void Promise.all([
         importWebPlugin(id, identity.token, controller.signal),
         styles ? fetchPluginStylesheet(id, identity.token, controller.signal) : null,
@@ -969,10 +1003,14 @@ function AssemblyOwner({ identity, children }: AssemblyProviderProps): ReactElem
           if (controller.signal.aborted) return;
           loaded.current.set(id, {
             sha256,
+            manifest: row.manifest,
+            packedDef: def,
+            packedCss: css,
             def,
             unmountStyles:
               css === null ? null : mountPluginStylesheet<HTMLStyleElement>(id, css, document),
           });
+          development.current?.reconcile();
           setLoadedDefs(new Map(loaded.current));
         },
         () => {
@@ -1133,10 +1171,12 @@ function AssemblyOwner({ identity, children }: AssemblyProviderProps): ReactElem
           ...state.roster.flatMap((row) => {
             const held = loadedDefs.get(row.manifest.id);
             return row.enabled &&
-              row.install?.hardened !== true &&
+              row.hardened !== true &&
+              row.held === undefined &&
+              row.install?.refusal === undefined &&
               held?.sha256 === row.install?.sha256 &&
               held !== undefined
-              ? [held.def]
+              ? [development.current?.definitionFor(row, held) ?? held.def]
               : [];
           }),
         ],
