@@ -196,6 +196,8 @@ class Isolate {
   /** Only callback-owning guests exclude unrelated authority while serving a private probe. */
   ownerTurn: OwnerTurn | null = null;
   readonly waitingOwnerTurns = new Set<WaitingOwnerTurn>();
+  /** Host snapshot-consumption gates hold no guest owner turn or caller authority. */
+  readonly waitingAdmissionGates = new Set<(error: Error) => void>();
   callTail: Promise<void> = Promise.resolve();
   queuedCalls = 0;
   queuedCallBytes = 0;
@@ -722,6 +724,12 @@ export class IsolateSupervisor implements IsolateRunner {
       ? this.remainingHostCallMs()
       : Number.POSITIVE_INFINITY;
     const expiresAt = now + Math.min(duration, inheritedBudget);
+    if (served?.kind === "dispatch" && served.ctx.waitForNativePendingProbe !== undefined)
+      await this.waitForAdmissionGate(
+        isolate,
+        served.ctx.waitForNativePendingProbe,
+        expiresAt,
+      );
     const turn = await this.acquireOwnerTurn(isolate, served, idleOnly, expiresAt);
     let startupDeadline: Timer | undefined;
     try {
@@ -822,6 +830,33 @@ export class IsolateSupervisor implements IsolateRunner {
     }
   }
 
+  private async waitForAdmissionGate(
+    isolate: Isolate,
+    wait: () => Promise<void>,
+    expiresAt: number,
+  ): Promise<void> {
+    if (
+      isolate.waitingAdmissionGates.size + isolate.waitingOwnerTurns.size + isolate.pending.size >=
+      256
+    )
+      throw new IsolateDenial("unavailable", "too many pending isolate requests");
+    const { promise, reject } = Promise.withResolvers<never>();
+    const fail = (error: Error): void => reject(error);
+    isolate.waitingAdmissionGates.add(fail);
+    const deadline = setTimeout(
+      () => fail(new IsolateDenial("unavailable", "isolate deadline expired before admission")),
+      Math.max(0, expiresAt - performance.now()),
+    );
+    try {
+      // The pending probe must still be able to enter its guest while an ordinary
+      // request waits for the host to consume that probe's result.
+      await Promise.race([wait(), promise]);
+    } finally {
+      clearTimeout(deadline);
+      isolate.waitingAdmissionGates.delete(fail);
+    }
+  }
+
   private async acquireOwnerTurn(
     isolate: Isolate,
     served: ServedCtx | null,
@@ -854,7 +889,10 @@ export class IsolateSupervisor implements IsolateRunner {
       return null;
     if (idleOnly && (isolate.ownerTurn !== null || isolate.waitingOwnerTurns.size !== 0))
       throw new IsolateDenial("unavailable", "exclusive request requires a drained guest");
-    if (isolate.waitingOwnerTurns.size + isolate.pending.size >= 256)
+    if (
+      isolate.waitingAdmissionGates.size + isolate.waitingOwnerTurns.size + isolate.pending.size >=
+      256
+    )
       throw new IsolateDenial("unavailable", "too many pending isolate requests");
     if (served?.kind === "byte") served.ctx.assertCurrent();
     const turn: OwnerTurn = { pending: null };
@@ -1081,6 +1119,8 @@ export class IsolateSupervisor implements IsolateRunner {
     isolate.ownerTurn = null;
     for (const waiting of isolate.waitingOwnerTurns) waiting.fail(error);
     isolate.waitingOwnerTurns.clear();
+    for (const fail of isolate.waitingAdmissionGates) fail(error);
+    isolate.waitingAdmissionGates.clear();
     isolate.validation = null;
     isolate.probe = null;
     // Old-generation work remains charged until it settles, but cannot hold a new

@@ -426,6 +426,78 @@ describe("IsolateSupervisor", () => {
     },
   );
 
+  test("host snapshot gating consumes the original dispatch deadline without owning the guest", async () => {
+    const f = await referenceFixture({ dispatchDeadlineMs: 100, referenceProbeDeadlineMs: 2_000 });
+    const probe = f.def.pendingNativeTransfersWhenIdle;
+    if (!probe) throw new Error("missing pending admission probe");
+    await f.storage.set("native-pending", JSON.stringify([pendingAdmission]));
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const ordinary = invoke(
+      f.def,
+      "echo",
+      {
+        ...f.ctx,
+        waitForNativePendingProbe: () => {
+          entered.resolve();
+          return release.promise;
+        },
+      },
+      { text: "must never enter" },
+    ).catch((error: unknown) => error);
+    try {
+      await entered.promise;
+      expect(await probe({ storage: f.storage, now: () => f.runtime.now() })).toEqual([
+        pendingAdmission,
+      ]);
+      expect(await ordinary).toBeInstanceOf(IsolateDenial);
+      expect(await f.storage.get("count")).toBeNull();
+    } finally {
+      release.resolve();
+    }
+    expect(await invoke(f.def, "echo", f.ctx, { text: "after expired gate" })).toEqual({
+      text: "after expired gate",
+      count: 1,
+    });
+    expect(f.logger.count("isolate_exited")).toBe(0);
+  });
+
+  test("unload retires host-gated requests before a replacement generation can serve them", async () => {
+    const f = await referenceFixture();
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const ordinary = invoke(
+      f.def,
+      "echo",
+      {
+        ...f.ctx,
+        waitForNativePendingProbe: () => {
+          entered.resolve();
+          return release.promise;
+        },
+      },
+      { text: "retired" },
+    ).catch((error: unknown) => error);
+    try {
+      await entered.promise;
+      await f.supervisor.unload(PLUGIN_ID);
+      expect(await ordinary).toBeInstanceOf(IsolateDenial);
+      const { def } = await f.supervisor.load({
+        pluginId: PLUGIN_ID,
+        manifest,
+        dir: GUEST_DIR,
+        hardenedContract: 12,
+      });
+      release.resolve();
+      expect(await invoke(def, "echo", f.ctx, { text: "replacement" })).toEqual({
+        text: "replacement",
+        count: 1,
+      });
+    } finally {
+      release.resolve();
+    }
+  });
+
   test("a pending snapshot excludes fresh actions until its private data request finishes", async () => {
     const f = await referenceFixture({ referenceProbeDeadlineMs: 2_000 });
     const probe = f.def.pendingNativeTransfersWhenIdle;
