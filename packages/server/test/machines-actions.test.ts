@@ -1,4 +1,8 @@
-import { describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { HostViewsSchema, type HostView } from "@manifold-plugin/machines";
 import {
   MachineDrainStatusSchema,
   MachineEnrollResponseSchema,
@@ -8,7 +12,10 @@ import {
   type Cap,
   type MachineEnrollResponse,
 } from "@manifold/protocol";
+import { HARDENED_SOURCE_RECIPES, SERVER_PLUGIN_DEFS } from "../src/assembly.ts";
 import { AuthService, type AuthContext } from "../src/auth.ts";
+import { compileTrustedBuilds, type TrustedBuild } from "../src/first-party-builds.ts";
+import { IsolateSupervisor } from "../src/isolate/supervisor.ts";
 import { silentLogger } from "../src/log.ts";
 import type { MachineAdmission, PluginHost } from "../src/plugin-host.ts";
 import { RoomManager } from "../src/room.ts";
@@ -17,7 +24,7 @@ import { TerminalBroker } from "../src/terminal-broker.ts";
 import { FakeClock, FakeRuntime, testPluginHost, testStore, testTileTrees } from "./helpers.ts";
 
 /**
- * THE FLEET'S TWO DOORS, rung by rung.
+ * THE FLEET'S DOORS, rung by rung.
  *
  * `core.machines.list` and `core.machines.enroll` are what `GET` and `POST /api/machines`
  * became, so these cases are two claims at once: that the ladder answers each rung in its
@@ -35,6 +42,7 @@ interface Fixture {
   readonly owner: AuthContext;
   readonly host: PluginHost;
   readonly runtime: FakeRuntime;
+  dispose(): Promise<void>;
 }
 
 /** Liveness a case can drive after enrolling, standing in for machines that have dialled in. */
@@ -67,7 +75,10 @@ function liveness(online: ReadonlySet<string>): MachineAdmission {
   };
 }
 
-async function fixture(online: ReadonlySet<string> = new Set()): Promise<Fixture> {
+async function fixture(
+  online: ReadonlySet<string> = new Set(),
+  trusted: readonly TrustedBuild[] = [],
+): Promise<Fixture> {
   const runtime = new FakeRuntime();
   const clock = new FakeClock(runtime);
   const store = testStore();
@@ -86,13 +97,41 @@ async function fixture(online: ReadonlySet<string> = new Set()): Promise<Fixture
   );
   rooms.setTerminalProvider((containerId) => broker.listForContainer(containerId));
   rooms.setPendingOpenProvider((containerId) => broker.hasPendingOpenForContainer(containerId));
-  return {
-    store,
-    auth,
-    owner,
-    host: await testPluginHost(store, auth, rooms, broker, runtime, { machines: liveness(online) }),
-    runtime,
-  };
+  const isolates =
+    trusted.length === 0
+      ? undefined
+      : {
+          runner: new IsolateSupervisor({ logger: silentLogger, runtime }),
+          dataDir: mkdtempSync(join(tmpdir(), "manifold-host-views-")),
+        };
+  try {
+    const host = await testPluginHost(store, auth, rooms, broker, runtime, {
+      machines: liveness(online),
+      trusted,
+      ...(isolates === undefined ? {} : { isolates }),
+    });
+    return {
+      store,
+      auth,
+      owner,
+      host,
+      runtime,
+      async dispose() {
+        try {
+          await isolates?.runner.close();
+        } finally {
+          host.close();
+          store.close();
+          if (isolates !== undefined) rmSync(isolates.dataDir, { recursive: true, force: true });
+        }
+      },
+    };
+  } catch (error) {
+    await isolates?.runner.close();
+    store.close();
+    if (isolates !== undefined) rmSync(isolates.dataDir, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 /** A real token, so authority is exercised through attenuation rather than a hand-built context. */
@@ -502,4 +541,267 @@ describe("core.machines.drain", () => {
     expect(denial(malformed).rule).toBe("invalid_args");
     fix.store.close();
   });
+});
+
+describe("core.machines host-view doors", () => {
+  let builds: readonly TrustedBuild[] = [];
+  beforeAll(async () => {
+    builds = await compileTrustedBuilds(
+      ["core.machines"],
+      SERVER_PLUGIN_DEFS,
+      HARDENED_SOURCE_RECIPES,
+    );
+  }, 120_000);
+
+  for (const mode of ["native", "hardened"] as const) {
+    test(`${mode} grouping preserves inventory, forgotten IDs and metadata-only removal`, async () => {
+      const fix = await fixture(new Set(), mode === "hardened" ? builds : []);
+      try {
+        const alpha = enrolled(
+          await fix.host.dispatch(fix.owner, "core.machines.enroll", { name: "shell-account" }),
+        );
+        const beta = enrolled(
+          await fix.host.dispatch(fix.owner, "core.machines.enroll", { name: "governed-account" }),
+        );
+        const view: HostView = {
+          id: "10000000-0000-4000-8000-000000000001",
+          name: "Physical host",
+          members: [
+            { machineId: alpha.machine.id, accountLabel: "shell" },
+            { machineId: beta.machine.id, accountLabel: "governed" },
+          ],
+        };
+        const read = async (actor = fix.owner) => {
+          const outcome = await fix.host.dispatch(actor, "core.machines.listHostViews", {});
+          if (!outcome.ok) throw new Error(outcome.denial.message);
+          return HostViewsSchema.parse(outcome.result);
+        };
+        expect(await read()).toEqual({ revision: 0, hosts: [] });
+        expect(await fix.store.pluginStorage("core.machines").get("host-views")).toBeNull();
+        const administrator = context(fix, ["machines:mint", "containers:read"]);
+        const saved = await fix.host.dispatch(administrator, "core.machines.setHostView", {
+          expectedRevision: 0,
+          host: {
+            ...view,
+            name: "  Physical host  ",
+            members: view.members.map((member) => ({
+              ...member,
+              accountLabel: ` ${member.accountLabel} `,
+            })),
+          },
+        });
+        if (!saved.ok) throw new Error(saved.denial.message);
+        expect(HostViewsSchema.parse(saved.result)).toEqual({ revision: 1, hosts: [view] });
+        expect(await read(context(fix, ["containers:read"], container(fix)))).toEqual({
+          revision: 1,
+          hosts: [view],
+        });
+
+        const news = fix.store.listEvents({ type: "host_views_changed", limit: 100 });
+        expect(news.map((event) => JSON.parse(event.payload))).toEqual([{ revision: 1 }]);
+        expect(
+          (await fix.host.dispatch(fix.owner, "core.machines.setHostView", {
+            expectedRevision: 1,
+            host: view,
+          })).ok,
+        ).toBe(true);
+        expect(fix.store.listEvents({ type: "host_views_changed", limit: 100 })).toEqual(news);
+        expect(
+          denial(await fix.host.dispatch(fix.owner, "core.machines.setHostView", {
+            expectedRevision: 0,
+            host: view,
+          })),
+        ).toEqual({ rule: "refused", message: "host_views_changed" });
+        expect(
+          denial(await fix.host.dispatch(fix.owner, "core.machines.removeHostView", {
+            expectedRevision: 0,
+            hostId: view.id,
+          })),
+        ).toEqual({ rule: "refused", message: "host_views_changed" });
+
+        // No online/offline transition is available to invalidate these two mutations.
+        expect((await fix.host.dispatch(fix.owner, "core.machines.revoke", {
+          machineId: alpha.machine.id,
+        })).ok).toBe(true);
+        expect((await fix.host.dispatch(fix.owner, "core.machines.forget", {
+          machineId: alpha.machine.id,
+        })).ok).toBe(true);
+        expect(fix.store.listEvents({ type: "machine_inventory_changed", limit: 100 })
+          .map((event) => JSON.parse(event.payload))).toEqual([
+          { machineId: alpha.machine.id },
+          { machineId: alpha.machine.id },
+        ]);
+        expect(await read()).toEqual({ revision: 1, hosts: [view] });
+        const replacement = enrolled(
+          await fix.host.dispatch(fix.owner, "core.machines.enroll", { name: "shell-account" }),
+        );
+        expect(replacement.machine.id).not.toBe(alpha.machine.id);
+        expect(await read()).toEqual({ revision: 1, hosts: [view] });
+
+        const renamed = { ...view, name: "Renamed host" };
+        const renamedOutcome = await fix.host.dispatch(fix.owner, "core.machines.setHostView", {
+          expectedRevision: 1,
+          host: renamed,
+        });
+        if (!renamedOutcome.ok) throw new Error(renamedOutcome.denial.message);
+        expect(HostViewsSchema.parse(renamedOutcome.result)).toEqual({
+          revision: 2,
+          hosts: [renamed],
+        });
+        expect(
+          denial(await fix.host.dispatch(fix.owner, "core.machines.setHostView", {
+            expectedRevision: 2,
+            host: {
+              ...renamed,
+              members: [{ machineId: alpha.machine.id, accountLabel: "changed missing account" }],
+            },
+          })),
+        ).toEqual({ rule: "refused", message: "machine_unavailable" });
+        const removed = await fix.host.dispatch(fix.owner, "core.machines.removeHostView", {
+          expectedRevision: 2,
+          hostId: view.id,
+        });
+        if (!removed.ok) throw new Error(removed.denial.message);
+        expect(HostViewsSchema.parse(removed.result)).toEqual({ revision: 3, hosts: [] });
+        const inventory = await fix.host.dispatch(fix.owner, "core.machines.list", {});
+        if (!inventory.ok) throw new Error(inventory.denial.message);
+        expect(MachinesResponseSchema.parse(inventory.result).machines.map((machine) => machine.id))
+          .toEqual([beta.machine.id, replacement.machine.id]);
+        expect(fix.auth.authenticateMachine(beta.machineToken ?? "").id).toBe(beta.machine.id);
+        expect(fix.auth.authenticateMachine(replacement.machineToken ?? "").id)
+          .toBe(replacement.machine.id);
+      } finally {
+        await fix.dispose();
+      }
+    }, 60_000);
+
+    test(`${mode} host-view doors enforce administrator authority and input boundaries`, async () => {
+      const fix = await fixture(new Set(), mode === "hardened" ? builds : []);
+      try {
+        const machine = fix.auth.enrollMachine("account", fix.owner).machine;
+        const view: HostView = {
+          id: "20000000-0000-4000-8000-000000000001",
+          name: "Host",
+          members: [{ machineId: machine.id, accountLabel: "shell" }],
+        };
+        const reader = context(fix, ["containers:read"]);
+        for (const actor of [reader, context(fix, ["machines:mint"], container(fix))]) {
+          expect(denial(await fix.host.dispatch(actor, "core.machines.setHostView", {
+            expectedRevision: 0,
+            host: view,
+          })).rule).toBe("forbidden");
+          expect(denial(await fix.host.dispatch(actor, "core.machines.removeHostView", {
+            expectedRevision: 0,
+            hostId: view.id,
+          })).rule).toBe("forbidden");
+        }
+        expect(denial(await fix.host.dispatch(context(fix, ["terminals:write"]),
+          "core.machines.listHostViews", {})).rule).toBe("forbidden");
+        expect(denial(await fix.host.dispatch(context(fix, ["machines:mint"]),
+          "core.machines.setHostView", { expectedRevision: 0, host: view }))).toEqual({
+          rule: "refused",
+          message: "containers:read capability required",
+        });
+        const invalidHosts = [
+          { ...view, id: "not-a-uuid" },
+          { ...view, name: "   " },
+          { ...view, name: "n".repeat(65) },
+          { ...view, members: [] },
+          { ...view, members: [...view.members, ...view.members] },
+          { ...view, members: Array.from({ length: 65 }, (_, index) => ({
+            machineId: `endpoint-${index}`,
+            accountLabel: "shell",
+          })) },
+          { ...view, members: [{ machineId: machine.id, accountLabel: " " }] },
+          { ...view, members: [{ machineId: machine.id, accountLabel: "a".repeat(65) }] },
+        ];
+        for (const host of invalidHosts) {
+          expect(denial(await fix.host.dispatch(fix.owner, "core.machines.setHostView", {
+            expectedRevision: 0,
+            host,
+          })).rule).toBe("invalid_args");
+        }
+        expect(denial(await fix.host.dispatch(fix.owner, "core.machines.setHostView", {
+          host: view,
+        })).rule).toBe("invalid_args");
+        expect(denial(await fix.host.dispatch(fix.owner, "core.machines.setHostView", {
+          expectedRevision: 0,
+          host: { ...view, members: [{ machineId: "unknown-endpoint", accountLabel: "shell" }] },
+        }))).toEqual({ rule: "refused", message: "machine_unavailable" });
+        expect(await fix.store.pluginStorage("core.machines").get("host-views")).toBeNull();
+        expect(fix.store.listEvents({ type: "host_views_changed", limit: 100 })).toEqual([]);
+      } finally {
+        await fix.dispose();
+      }
+    }, 60_000);
+
+    test(`${mode} concurrent host CAS has one winner and enforces global membership on retry`, async () => {
+      const fix = await fixture(new Set(), mode === "hardened" ? builds : []);
+      try {
+        const machine = fix.auth.enrollMachine("shared-account", fix.owner).machine;
+        const views: HostView[] = [1, 2].map((index) => ({
+          id: `30000000-0000-4000-8000-${index.toString().padStart(12, "0")}`,
+          name: "Same display name",
+          members: [{ machineId: machine.id, accountLabel: "shell" }],
+        }));
+        const outcomes = await Promise.all(views.map((host) =>
+          fix.host.dispatch(fix.owner, "core.machines.setHostView", { expectedRevision: 0, host })));
+        const successful = outcomes.filter((outcome) => outcome.ok);
+        expect(successful).toHaveLength(1);
+        expect(outcomes.filter((outcome) => !outcome.ok).map(denial)).toEqual([
+          { rule: "refused", message: "host_views_changed" },
+        ]);
+        const winner = successful[0];
+        if (winner === undefined || !winner.ok) throw new Error("expected one CAS winner");
+        const registry = HostViewsSchema.parse(winner.result);
+        const loser = views.find((view) => view.id !== registry.hosts[0]?.id);
+        if (loser === undefined) throw new Error("expected the other host");
+        expect(denial(await fix.host.dispatch(fix.owner, "core.machines.setHostView", {
+          expectedRevision: 1,
+          host: loser,
+        }))).toEqual({ rule: "refused", message: "host_view_member_already_grouped" });
+        const read = await fix.host.dispatch(fix.owner, "core.machines.listHostViews", {});
+        if (!read.ok) throw new Error(read.denial.message);
+        expect(HostViewsSchema.parse(read.result)).toEqual(registry);
+        expect(fix.store.listEvents({ type: "host_views_changed", limit: 100 })
+          .map((event) => JSON.parse(event.payload))).toEqual([{ revision: 1 }]);
+      } finally {
+        await fix.dispose();
+      }
+    }, 60_000);
+
+    test(`${mode} multibyte capacity refusal leaves the registry bytes unchanged`, async () => {
+      const fix = await fixture(new Set(), mode === "hardened" ? builds : []);
+      try {
+        const historical: HostView[] = Array.from({ length: 4 }, (_, index) => ({
+          id: `40000000-0000-4000-8000-${index.toString().padStart(12, "0")}`,
+          name: "Historical host",
+          members: Array.from({ length: 64 }, (_, member) => ({
+            machineId: `historical-${index}-${member}`,
+            accountLabel: "界".repeat(64),
+          })),
+        }));
+        const registry = { revision: 4, hosts: historical };
+        const stored = JSON.stringify(registry);
+        const storage = fix.store.pluginStorage("core.machines");
+        await storage.set("host-views", stored);
+        const members = Array.from({ length: 64 }, (_, index) => ({
+          machineId: fix.auth.enrollMachine(`account-${index}`, fix.owner).machine.id,
+          accountLabel: "界".repeat(64),
+        }));
+        expect(denial(await fix.host.dispatch(fix.owner, "core.machines.setHostView", {
+          expectedRevision: 4,
+          host: {
+            id: "40000000-0000-4000-8000-000000000004",
+            name: "New host",
+            members,
+          },
+        }))).toEqual({ rule: "refused", message: "host_view_capacity_exceeded" });
+        expect(await storage.get("host-views")).toBe(stored);
+        expect(fix.store.listEvents({ type: "host_views_changed", limit: 100 })).toEqual([]);
+      } finally {
+        await fix.dispose();
+      }
+    }, 60_000);
+  }
 });

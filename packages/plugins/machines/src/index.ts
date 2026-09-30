@@ -13,14 +13,35 @@ import {
 } from "@manifold/protocol";
 import { z } from "zod";
 import type { MACHINES_PLUGIN_ID } from "./names.ts";
+import {
+  HostViewsSchema,
+  RemoveHostViewRequestSchema,
+  SetHostViewRequestSchema,
+} from "./host-views.ts";
 
-export { MACHINES_FORGET_ACTION, MACHINES_REVOKE_ACTION } from "./names.ts";
+export {
+  MACHINES_FORGET_ACTION,
+  MACHINES_LIST_HOST_VIEWS_ACTION,
+  MACHINES_REMOVE_HOST_VIEW_ACTION,
+  MACHINES_REVOKE_ACTION,
+  MACHINES_SET_HOST_VIEW_ACTION,
+} from "./names.ts";
+export {
+  HostViewMemberSchema,
+  HostViewSchema,
+  HostViewsSchema,
+  RemoveHostViewRequestSchema,
+  SetHostViewRequestSchema,
+  type HostViewMember,
+  type HostView,
+  type HostViews,
+} from "./host-views.ts";
 
 /**
- * The machine fleet, as a plugin: the inventory a workspace can see and the enrolment that
- * puts something in it. Both verbs were bespoke HTTP routes (`GET`/`POST /api/machines`)
- * and are now the two doors below, so "which machines exist" and "add one" are discoverable
- * in `GET /api/plugins` beside every other capability instead of only in the CONTRACTS table.
+ * The machine fleet, as a plugin: inventory, enrollment and operator-owned host views.
+ * Host views group exact account endpoints for display without changing their execution
+ * identity or the released inventory shape. Every fleet operation remains a discoverable
+ * action in `GET /api/plugins`.
  *
  * `machines:mint` is the ceiling this manifest declares, and it is genuinely load-bearing:
  * enrolment mints a durable credential for a process nobody in this workspace can see, which
@@ -33,8 +54,10 @@ export const machinesManifest: PluginManifest & { readonly id: typeof MACHINES_P
   version: "1.3.0",
   title: "Machines",
   description:
-    "Enrolls machines, lists them with live online state, withdraws a machine's credential, drains a machine's terminal admission, and births terminals.",
+    "Enrolls machines, lists their live state, groups account endpoints into host views, withdraws credentials, and drains terminal admission.",
   capabilities: ["machines:mint", "containers:read"],
+  dataVersion: { major: 1, minor: 0 },
+  purges: ["storage"],
   contributes: {
     panels: [],
     sections: [{ id: "machines", title: "Machines", order: 20, setting: "machines" }],
@@ -51,20 +74,20 @@ export const machinesManifest: PluginManifest & { readonly id: typeof MACHINES_P
     elements: [],
     tools: [],
     /*
-      THE FLEET'S NEWS (ADR 0012). A machine has no `manifold://` form of its own — the
-      grammar's seven forms address containers, their contents, principals, plugins and
-      actions, and a machine is none of them — so all three are addressed to this plugin's own
-      node, which is the node that publishes the roster and the one subscription the Machines
-      section needs to stop polling. WHICH machine moved is the payload.
+      THE FLEET'S NEWS (ADR 0012). Inventory and host-view invalidations share this plugin's
+      node, so one subscription covers the roster and its display metadata. Machine IDs in
+      payloads still identify exact account endpoints, never synthetic host identities.
 
-      `machine_enrolled` is emitted by this plugin's own door below; the online pair is emitted
-      by the FLOOR, because only the socket registry knows when a machine's connection appears
-      or dies. That is ADR 0012 §1 exactly: the engine emits, the plugin declares.
+      Enrollment, withdrawal, forgetting and host-view CAS commits are announced here.
+      Online/offline transitions and committed drain latches belong to the FLOOR, which
+      emits under this plugin's declared vocabulary.
      */
     events: [
       { id: "machine_enrolled", title: "Machine enrolled" },
       { id: "machine_online", title: "Machine online" },
       { id: "machine_offline", title: "Machine offline" },
+      { id: "machine_inventory_changed", title: "Machine inventory changed" },
+      { id: "host_views_changed", title: "Host views changed" },
     ],
   },
   /*
@@ -77,11 +100,9 @@ export const machinesManifest: PluginManifest & { readonly id: typeof MACHINES_P
 };
 
 /**
- * The wire shapes are the protocol's, not this plugin's, and deliberately: `MachineSummary`
- * is what the SDK's `machines()` parses and what the machine channel's own vocabulary is
- * described in. A plugin re-declaring the same object under a private name would be the
- * second convention docs/CONTRACTS.md §One authoritative implementation forbids — so the actions publish the protocol schemas and
- * the roster's JSON Schema is that shape, byte for byte.
+ * Existing machine doors retain the protocol's strict wire shapes for SDK and machine-channel
+ * compatibility. Host-view doors publish plugin-owned metadata schemas separately; they do
+ * not add fields to `MachineSummary` or change the machine wire.
  */
 export const machinesActions: readonly AnyActionDef[] = [
   {
@@ -99,6 +120,30 @@ export const machinesActions: readonly AnyActionDef[] = [
     caps: ["containers:read"],
     input: z.strictObject({}),
     result: MachinesResponseSchema,
+  },
+  {
+    scope: "container",
+    name: "listHostViews",
+    title: "List host views",
+    caps: ["containers:read"],
+    input: z.strictObject({}),
+    result: HostViewsSchema,
+  },
+  {
+    name: "setHostView",
+    title: "Create or update a host view",
+    caps: ["machines:mint"],
+    // Inventory validation is read-only; the caller-bound bridge still proves the read.
+    delegates: ["containers:read"],
+    input: SetHostViewRequestSchema,
+    result: HostViewsSchema,
+  },
+  {
+    name: "removeHostView",
+    title: "Remove a host view",
+    caps: ["machines:mint"],
+    input: RemoveHostViewRequestSchema,
+    result: HostViewsSchema,
   },
   {
     name: "enroll",
