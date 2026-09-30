@@ -596,6 +596,13 @@ jobs:
           nix_conf: |
             experimental-features = nix-command flakes
             sandbox = true
+      - name: Permit cold-runtime namespaces on the disposable Linux runner
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          if [[ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
+            sudo -n sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
       - name: Verify native Nix packaging
         uses: ./.github/actions/gate-slice
         with:

@@ -17,7 +17,8 @@
  * failure path a plugin writes is a `try`/`catch` around an `await`, whichever way it runs.
  */
 
-import { CEILING_DATABASE_MAX_BYTES } from "@manifold/protocol";
+import { CEILING_DATABASE_MAX_BYTES, type DatabaseRecoveryAdmission } from "@manifold/protocol";
+export type { DatabaseRecoveryAdmission } from "@manifold/protocol";
 
 /** A bound parameter: what SQLite can hold and what crosses the isolate boundary intact. */
 export type SqlParam = string | number | bigint | boolean | null | Uint8Array;
@@ -33,6 +34,8 @@ export type SqlRow = Readonly<Record<string, SqlParam>>;
 
 export interface PluginDatabase {
   readonly pluginId: string;
+  /** Fresh whole-workspace recovery admission. No reservation or authority is returned. */
+  admitRecovery(): Promise<DatabaseRecoveryAdmission>;
   /**
    * One statement, bound parameters, rows back. `SELECT` and any statement with `RETURNING`
    * yield their rows; every other statement yields an empty array (use `run` to learn what

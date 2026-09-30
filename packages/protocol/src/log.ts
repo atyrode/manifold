@@ -234,6 +234,12 @@ export const LOG_EVENTS = [
   // Temporary output scratch this owner could not dispose after a job's proven closure and
   // published result (issue #933). The result stands; new admission fails closed instead.
   "job_output_cleanup_failed",
+
+  // Bounded byte carriers and owner-private reference cleanup.
+  "byte_handler_failed",
+  "byte_body_cancel_failed",
+  "byte_request_failed",
+  "reference_cleanup_pending",
 ] as const;
 
 /** One name from the operational log vocabulary; the `evt` field of every JSONL record. */

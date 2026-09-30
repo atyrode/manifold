@@ -5,7 +5,7 @@ import { ContainerDisciplineSchema } from "./layout.ts";
 import { MAX_STREAM_DESCRIPTORS, StreamDescriptorSchema, streamVocabulary } from "./stream.ts";
 import { MachineHalfSchema } from "./jobs.ts";
 import { HarnessDefinitionSchema } from "./agents.ts";
-import { ManifoldRefSchema } from "./uri.ts";
+import { ManifoldRefSchema, PluginOwnedRefKindSchema } from "./uri.ts";
 import { compileJsonProjection, JsonProjectionError, JsonProjectionSchema } from "./services.ts";
 import {
   DEFAULT_ELEMENT_PLACEMENT_TRAITS,
@@ -134,6 +134,77 @@ export function pluginCapNamespace(cap: string): string | null {
   if (!PluginCapSchema.safeParse(cap).success) return null;
   return cap.slice(0, cap.indexOf(":"));
 }
+
+const ReferenceCapsSchema = PluginCapSchema.array()
+  .min(1)
+  .max(16)
+  .refine((caps) => new Set(caps).size === caps.length, "duplicate reference capability");
+
+/** Ownership and restricted ordinary-grant derivation, not an alternate ACL. */
+export const OwnedReferenceDeclarationSchema = z
+  .strictObject({
+    kind: PluginOwnedRefKindSchema,
+    resolveAction: LocalNameSchema,
+    /** A no-effect terminal receipt door, reachable after creator grants retire. */
+    receiptAction: LocalNameSchema.optional(),
+    /** A bounded, read-only candidate filter for the owner's private library action. */
+    listAction: LocalNameSchema.optional(),
+    readCapability: PluginCapSchema,
+    createCapability: PluginCapSchema,
+    deleteCapability: PluginCapSchema,
+    creatorCaps: ReferenceCapsSchema,
+    sharing: z.strictObject({
+      grantorCapability: PluginCapSchema,
+      prerequisites: ReferenceCapsSchema,
+      grantableCaps: ReferenceCapsSchema,
+    }),
+  })
+  .check((ctx) => {
+    const { sharing, creatorCaps, readCapability, deleteCapability, resolveAction, receiptAction } = ctx.value;
+    if (
+      !creatorCaps.includes(readCapability) ||
+      !creatorCaps.includes(deleteCapability) ||
+      sharing.prerequisites.some((cap) => !creatorCaps.includes(cap))
+    ) {
+      ctx.issues.push({
+        code: "custom",
+        input: creatorCaps,
+        path: ["creatorCaps"],
+        message: "creator capabilities must include read, delete, and every sharing prerequisite",
+      });
+    }
+    if (receiptAction === resolveAction) {
+      ctx.issues.push({
+        code: "custom",
+        input: receiptAction,
+        path: ["receiptAction"],
+        message: "receipt and resolve actions must be distinct",
+      });
+    }
+    if (
+      ctx.value.listAction !== undefined &&
+      (ctx.value.listAction === resolveAction || ctx.value.listAction === receiptAction)
+    ) {
+      ctx.issues.push({
+        code: "custom",
+        input: ctx.value.listAction,
+        path: ["listAction"],
+        message: "list, receipt and resolve actions must be distinct",
+      });
+    }
+    if (
+      !sharing.prerequisites.includes(sharing.grantorCapability) ||
+      sharing.grantableCaps.some((cap) => !sharing.prerequisites.includes(cap))
+    ) {
+      ctx.issues.push({
+        code: "custom",
+        input: sharing,
+        path: ["sharing"],
+        message: "sharing prerequisites must include the grantor and every grantable capability",
+      });
+    }
+  });
+export type OwnedReferenceDeclaration = z.infer<typeof OwnedReferenceDeclarationSchema>;
 
 const TitleSchema = z.string().min(1).max(64);
 
@@ -387,6 +458,19 @@ export const RouteDefSchema = z.strictObject({
 });
 export type RouteDef = z.infer<typeof RouteDefSchema>;
 
+/** A bounded authenticated continuation, not an action-argument or event-body byte tunnel. */
+export const ByteCarrierDefSchema = z.strictObject({
+  id: LocalNameSchema,
+  direction: z.enum(["incoming", "outgoing"]),
+  capability: AskableCapSchema,
+  refKinds: z
+    .array(z.enum(ManifoldRefSchema.options.map((option) => option.shape.kind.value)))
+    .min(1)
+    .max(8)
+    .refine((kinds) => new Set(kinds).size === kinds.length),
+});
+export type ByteCarrierDef = z.infer<typeof ByteCarrierDefSchema>;
+
 /**
  * What a plugin declares it adds to the assembly. Each list is bounded, because a
  * manifest is read on every roster fan-out and a plugin contributing hundreds of anything
@@ -404,6 +488,8 @@ const ContributesSchema = z.strictObject({
   harness: z.lazy(() => HarnessDefinitionSchema).optional(),
   panels: z.array(PanelDefSchema).max(8).default([]),
   streams: z.lazy(() => z.array(StreamDescriptorSchema).max(MAX_STREAM_DESCRIPTORS)).optional(),
+  references: z.array(OwnedReferenceDeclarationSchema).max(1).optional(),
+  byteCarriers: z.array(ByteCarrierDefSchema).max(8).optional(),
   /**
    * WHERE THIS PLUGIN'S PANELS ASK TO SIT in the default workspace ({@link SeatDefSchema}).
    * Optional rather than defaulted to `[]`: absence is a MEANING here — the plugin seats
@@ -463,6 +549,8 @@ const ContributesSchema = z.strictObject({
         id: LocalNameSchema,
         title: TitleSchema,
         toolbar: ToolbarSchema.optional(),
+        /** Mount this same owner's portable panel while the tool is selected. */
+        panel: LocalNameSchema.optional(),
       }),
     )
     .max(8)
@@ -642,6 +730,16 @@ export type PluginEntry = z.infer<typeof PluginEntrySchema>;
  */
 export const CEILING_DATABASE_MAX_BYTES = 4 * 1024 * 1024 * 1024;
 
+export const MAX_BOUNDED_RECOVERY_IMAGE_BYTES = 64 * 1024 * 1024;
+export const DatabaseRecoveryAdmissionSchema = z.discriminatedUnion("ok", [
+  z.strictObject({ ok: z.literal(true) }),
+  z.strictObject({
+    ok: z.literal(false),
+    reason: z.enum(["recovery_unavailable", "backup_capacity", "storage_capacity", "database_busy"]),
+  }),
+]);
+export type DatabaseRecoveryAdmission = z.infer<typeof DatabaseRecoveryAdmissionSchema>;
+
 /**
  * How many capabilities one manifest may declare. Named rather than inline because the
  * install door's `grant` is bounded by it too (a grant can never exceed a declaration), and a
@@ -699,6 +797,8 @@ export const PluginManifestSchema = z
      * clients that switched on prose would have to be rewritten each time.
      */
     essential: z.boolean().optional(),
+    /** First-discovery default only; never replaces a persisted operator choice or update state. */
+    defaultEnabled: z.boolean().optional(),
     contributes: ContributesSchema,
     machine: MachineHalfSchema.optional(),
     /**
@@ -725,7 +825,16 @@ export const PluginManifestSchema = z
     database: z
       .strictObject({
         maxBytes: z.number().int().positive().max(CEILING_DATABASE_MAX_BYTES).optional(),
+        recovery: z.strictObject({ profile: z.literal("bounded-wal-v1") }).optional(),
       })
+      .refine(
+        (database) =>
+          database.recovery === undefined ||
+          (database.maxBytes !== undefined &&
+            database.maxBytes <= MAX_BOUNDED_RECOVERY_IMAGE_BYTES &&
+            database.maxBytes % 4096 === 0),
+        { message: "bounded-wal-v1 requires a 4096-aligned maxBytes at most 64 MiB" },
+      )
       .optional(),
     /** Absent ≡ `{ mode: DEFAULT_DORMANT_MODE }` — a named, inert ghost. */
     dormant: PluginDormantSchema.optional(),
@@ -766,6 +875,14 @@ export const PluginManifestSchema = z
     element schema already refused), which is why the loop only has the foreign case to say.
   */
   .check((ctx) => {
+    if (ctx.value.essential === true && ctx.value.defaultEnabled === false) {
+      ctx.issues.push({
+        code: "custom",
+        input: ctx.value.defaultEnabled,
+        path: ["defaultEnabled"],
+        message: "an essential plugin cannot default to disabled",
+      });
+    }
     for (const cap of ctx.value.capabilities) {
       const namespace = pluginCapNamespace(cap);
       if (namespace === null || namespace === ctx.value.id) continue;
@@ -775,6 +892,42 @@ export const PluginManifestSchema = z
         path: ["capabilities"],
         message: `capability "${cap}" is in plugin "${namespace}"'s namespace, not "${ctx.value.id}"'s`,
       });
+    }
+    for (const [index, declaration] of (ctx.value.contributes.references ?? []).entries()) {
+      const caps = [
+        declaration.readCapability,
+        declaration.createCapability,
+        declaration.deleteCapability,
+        ...declaration.creatorCaps,
+        declaration.sharing.grantorCapability,
+        ...declaration.sharing.prerequisites,
+        ...declaration.sharing.grantableCaps,
+      ];
+      for (const cap of new Set(caps)) {
+        if (
+          pluginCapNamespace(cap) === ctx.value.id &&
+          ctx.value.capabilities.includes(cap)
+        ) continue;
+        ctx.issues.push({
+          code: "custom",
+          input: cap,
+          path: ["contributes", "references", index],
+          message: `reference capability "${cap}" must be declared in plugin "${ctx.value.id}"'s own namespace`,
+        });
+      }
+    }
+    const carriers = ctx.value.contributes.byteCarriers ?? [];
+    const names = new Set<string>();
+    for (const [index, carrier] of carriers.entries()) {
+      if (names.has(carrier.id) || !ctx.value.capabilities.includes(carrier.capability)) {
+        ctx.issues.push({
+          code: "custom",
+          input: carrier,
+          path: ["contributes", "byteCarriers", index],
+          message: "Byte carriers need unique names and a manifest-declared capability",
+        });
+      }
+      names.add(carrier.id);
     }
   });
 export type PluginManifest = z.infer<typeof PluginManifestSchema>;
@@ -846,6 +999,7 @@ const NATIVE_DELEGATE_CAPS: readonly Cap[] = [
   "locations:read",
   "locations:write",
   "locations:create",
+  "locations:create-child",
   "operations:invoke",
   "services:read",
   "services:invoke",

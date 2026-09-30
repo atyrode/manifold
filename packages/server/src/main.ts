@@ -15,6 +15,7 @@ import {
   HARDENED_SOURCE_RECIPES,
   SERVER_PLUGIN_DEFS,
   SHIPPED_PLUGIN_IDS,
+  SHIPPED_REFERENCE_KIND_OWNERS,
 } from "./assembly.ts";
 import { AuthService } from "./auth.ts";
 import { finalizePublicUrl, loadConfig, type ServerConfig } from "./config.ts";
@@ -371,6 +372,7 @@ async function startAsWriter({
         Without this argument a manifest under `core.` composes unchecked (`AssemblyEnv`).
       */
       distribution: SHIPPED_PLUGIN_IDS,
+      referenceKindOwners: SHIPPED_REFERENCE_KIND_OWNERS,
       isolates: { runner: isolates, dataDir: config.dataDir, devPaths: config.pluginDevPaths },
       /*
         TRUSTED FIRST-PARTY HARDENING (ADR 0053 §7): the operator's selection, compiled from this

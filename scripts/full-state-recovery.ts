@@ -1,10 +1,11 @@
 #!/usr/bin/env bun
-import { Database } from "bun:sqlite";
-import { S3Client } from "bun";
+import { Database, constants as sqliteConstants } from "bun:sqlite";
+import { S3Client, type Subprocess } from "bun";
 import { createCipheriv, createDecipheriv, createHash, hkdfSync, randomBytes } from "node:crypto";
 import {
   closeSync,
   constants,
+  existsSync,
   fstatSync,
   lstatSync,
   mkdirSync,
@@ -18,6 +19,12 @@ import {
 } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
+import { pathToFileURL } from "node:url";
+import {
+  MAX_CHECKPOINT_BYTES, MAX_CHECKPOINT_FILES,
+  retainedRecoveryFiles, inspectRecoveryCapacity, closedRecoveryImages,
+} from "../packages/server/src/recovery-budget.ts";
+import { waitForRecoveryCapture, withRecoveryCaptureFence } from "../packages/server/src/recovery-gate.ts";
 
 const ARCHIVE_MAGIC = Buffer.from("MFRDATA1");
 const ENVELOPE_MAGIC = Buffer.from("MFRSEAL1");
@@ -25,19 +32,9 @@ const HEADER_BYTES = 4;
 const SALT_BYTES = 32;
 const IV_BYTES = 12;
 const TAG_BYTES = 16;
-const MAX_CHECKPOINT_BYTES = 256 * 1024 * 1024;
-const MAX_CHECKPOINT_FILES = 10_000;
 const CHECKPOINT_ID = /^[a-z0-9][a-z0-9._-]{0,95}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
-const EXACT_BUILD = /^\d+\.\d+\.\d+$/;
-const TRANSIENT_PATHS = new Set([
-  "agent.lock",
-  "agent.pid",
-  "manifold.writer",
-  "manifold.replica-writer",
-  "terminal-host.pid",
-  "terminal-host/host.sock",
-]);
+const EXACT_BUILD = /^\d{1,32}\.\d{1,32}\.\d{1,32}$/;
 
 interface ArchiveFile {
   readonly path: string;
@@ -152,7 +149,10 @@ function recoveryKey(checkpointId: string, salt: Uint8Array): Buffer {
 }
 
 function assertDatabase(path: string): void {
-  const database = new Database(path, { readonly: true });
+  // Only freshly copied/extracted, closed images reach this verifier. Ordinary readonly
+  // WAL opens create sidecars, which would invalidate the migration recovery contract.
+  const database = new Database(`${pathToFileURL(path).href}?immutable=1`,
+    sqliteConstants.SQLITE_OPEN_READONLY | sqliteConstants.SQLITE_OPEN_URI);
   try {
     const rows = database.query("PRAGMA integrity_check").all() as Record<string, unknown>[];
     if (rows.length !== 1 || Object.values(rows[0] ?? {})[0] !== "ok")
@@ -203,56 +203,95 @@ function copyDatabase(source: string, destination: string, limit: number): Buffe
   return readBoundedFile(destination, limit);
 }
 
-function capturedFiles(root: string): CapturedFile[] {
-  const staging = mkdtempSync(join(tmpdir(), "manifold-full-state-"));
+function capturedFiles(root: string, staging: string, closedImages: ReadonlySet<string>): CapturedFile[] {
+  mkdirSync(staging, { mode: 0o700 });
   const files: CapturedFile[] = [];
   let total = 0;
-  const visit = (directory: string): void => {
-    for (const name of readdirSync(directory).sort()) {
-      const absolute = join(directory, name);
-      const relativePath = safePath(relative(root, absolute).split(sep).join("/"));
-      if (TRANSIENT_PATHS.has(relativePath)) continue;
+  try {
+    for (const relativePath of retainedRecoveryFiles(root)) {
+      safePath(relativePath);
+      const absolute = join(root, relativePath);
       const before = lstatSync(absolute);
-      if (before.isDirectory()) {
-        visit(absolute);
-        continue;
-      }
-      if (before.isSocket() && relativePath === "terminal-host/host.sock") continue;
-      if (!before.isFile() || before.nlink !== 1) fail(`unsupported state entry ${relativePath}`);
-      if (/\.(?:db-wal|db-shm|db-journal)$/.test(relativePath)) continue;
-      if (files.length >= MAX_CHECKPOINT_FILES) fail("checkpoint exceeds the 10,000-file bound");
       const temporary = join(staging, `${String(files.length)}.db`);
-      const data = relativePath.endsWith(".db")
+      // Migration journals authorize exact closed-file hashes, not an equivalent VACUUM image.
+      const closed = closedImages.has(relativePath);
+      if (closed) {
+        for (const suffix of ["-wal", "-shm", "-journal"])
+          if (existsSync(`${absolute}${suffix}`)) fail("journaled migration image is not closed");
+      }
+      const snapshot = relativePath.endsWith(".db") && !closed;
+      const data = snapshot
         ? copyDatabase(absolute, temporary, MAX_CHECKPOINT_BYTES - total)
         : readBoundedFile(absolute, MAX_CHECKPOINT_BYTES - total);
-      if (!relativePath.endsWith(".db")) {
+      if (!snapshot) {
         const after = statSync(absolute);
-        if (
-          before.dev !== after.dev ||
-          before.ino !== after.ino ||
-          before.size !== after.size ||
-          before.mtimeMs !== after.mtimeMs
-        )
+        if (before.dev !== after.dev || before.ino !== after.ino ||
+            before.size !== after.size || before.mtimeMs !== after.mtimeMs)
           fail(`state entry changed during capture: ${relativePath}`);
       }
       total += data.byteLength;
       if (total > MAX_CHECKPOINT_BYTES) fail("checkpoint exceeds the 256 MiB bound");
-      files.push({
-        path: relativePath,
-        bytes: data.byteLength,
-        sha256: sha256(data),
-        data,
-      });
+      files.push({ path: relativePath, bytes: data.byteLength, sha256: sha256(data), data });
     }
-  };
+  } finally { rmSync(staging, { recursive: true, force: true }); }
+  if (files[0]?.path !== "manifold.db") fail("checkpoint has no manifold.db");
+  return files;
+}
+
+/** Only this separate process holds the fence during synchronous SQLite/filesystem work. */
+async function captureImage(checkpointId: string, output: string): Promise<void> {
+  validateCheckpointId(checkpointId);
+  const sourceBuild = validateBuild(required("MANIFOLD_BUILD"));
+  const root = dataDirectory();
+  const plaintext = await withRecoveryCaptureFence(root, () => {
+    const main = new Database(join(root, "manifold.db"), { readonly: true });
+    let closedImages: ReadonlySet<string>;
+    try {
+      const admission = inspectRecoveryCapacity(root, main, { scratchDir: output });
+      if (!admission.ok) fail(`${admission.reason}: checkpoint admission refused`);
+      closedImages = closedRecoveryImages(main);
+    } finally { main.close(); }
+    const files = capturedFiles(root, join(output, "copies"), closedImages);
+    try { return archive(checkpointId, sourceBuild, files); }
+    finally { for (const file of files) file.data.fill(0); }
+  });
   try {
-    visit(root);
+    const header = JSON.parse(plaintext.subarray(
+      ARCHIVE_MAGIC.byteLength + HEADER_BYTES,
+      ARCHIVE_MAGIC.byteLength + HEADER_BYTES + plaintext.readUInt32BE(ARCHIVE_MAGIC.byteLength),
+    ).toString("utf8")) as ArchiveHeader;
+    const sealed = sealCheckpoint(checkpointId, sourceBuild, plaintext);
+    try {
+      writeFileSync(join(output, "checkpoint"), sealed, { mode: 0o600, flag: "wx" });
+      writeFileSync(join(output, "captured-at"), header.capturedAt, { mode: 0o600, flag: "wx" });
+    } finally { sealed.fill(0); }
+  } finally { plaintext.fill(0); }
+}
+
+/** Parent watchdog can kill VACUUM even while the child's JS event loop is blocked. */
+export async function captureCheckpointImage(
+  checkpointId: string,
+): Promise<{ readonly sealed: Buffer; readonly capturedAt: string }> {
+  const staging = mkdtempSync(join(tmpdir(), "manifold-full-state-"));
+  let child: Subprocess<"ignore", "ignore", "pipe"> | undefined;
+  try {
+    const command = Bun.main.startsWith("/$bunfs/")
+      ? [process.execPath] : [process.execPath, import.meta.path];
+    child = Bun.spawn([...command, "capture-image", checkpointId, staging], {
+      env: process.env, stdin: "ignore", stdout: "ignore", stderr: "pipe",
+    });
+    await waitForRecoveryCapture(child);
+    const capturedAt = readBoundedFile(join(staging, "captured-at"), 32).toString("utf8");
+    if (!/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(capturedAt))
+      fail("invalid capture process metadata");
+    return { sealed: readBoundedFile(join(staging, "checkpoint"), MAX_CHECKPOINT_BYTES), capturedAt };
   } finally {
+    if (child !== undefined && child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGKILL");
+      await child.exited;
+    }
     rmSync(staging, { recursive: true, force: true });
   }
-  files.sort((left, right) => left.path.localeCompare(right.path));
-  if (!files.some((file) => file.path === "manifold.db")) fail("checkpoint has no manifold.db");
-  return files;
 }
 
 function archive(
@@ -342,7 +381,7 @@ function parseHeader(value: unknown): ArchiveHeader {
     typeof row.checkpointId !== "string" ||
     typeof row.sourceBuild !== "string" ||
     typeof row.capturedAt !== "string" ||
-    !Array.isArray(row.files)
+    !Array.isArray(row.files) || row.files.length > MAX_CHECKPOINT_FILES
   )
     fail("checkpoint header is invalid");
   const files = row.files.map((candidate): ArchiveFile => {
@@ -492,20 +531,7 @@ async function readCheckpointObject(checkpointId: string): Promise<Buffer> {
 async function capture(checkpointId: string): Promise<void> {
   validateCheckpointId(checkpointId);
   const sourceBuild = validateBuild(required("MANIFOLD_BUILD"));
-  const root = dataDirectory();
-  const files = capturedFiles(root);
-  const plaintext = archive(checkpointId, sourceBuild, files);
-  const capturedAt = JSON.parse(
-    plaintext
-      .subarray(
-        ARCHIVE_MAGIC.byteLength + HEADER_BYTES,
-        ARCHIVE_MAGIC.byteLength + HEADER_BYTES + plaintext.readUInt32BE(ARCHIVE_MAGIC.byteLength),
-      )
-      .toString("utf8"),
-  ).capturedAt as string;
-  const sealed = sealCheckpoint(checkpointId, sourceBuild, plaintext);
-  plaintext.fill(0);
-  for (const file of files) file.data.fill(0);
+  const { sealed, capturedAt } = await captureCheckpointImage(checkpointId);
   const client = objectClient();
   const object = objectName(checkpointId);
   const target = client.file(object);
@@ -573,6 +599,8 @@ async function restore(
 
 async function main(): Promise<void> {
   const [command, checkpointId, digest, ...rest] = process.argv.slice(2);
+  if (command === "capture-image" && checkpointId !== undefined && digest !== undefined && rest.length === 0)
+    return captureImage(checkpointId, digest);
   if (rest.length !== 0 || checkpointId === undefined)
     fail("usage: full-state-recovery <capture ID | verify ID SHA256 | restore ID SHA256>");
   if (command === "capture" && digest === undefined) return capture(checkpointId);

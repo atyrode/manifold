@@ -43,6 +43,8 @@ const AGENT_VERSION = "0.2.0";
 
 /** Maximum queued websocket bytes before reconnect recovery replaces live streaming. */
 export const MAX_SOCKET_BUFFERED_AMOUNT_BYTES = 8 * 1024 * 1024;
+const MAX_NATIVE_TRANSFER_FRAME_BYTES = 512 * 1024;
+const MAX_NATIVE_TRANSFER_QUEUE_BYTES = 4 * MAX_NATIVE_TRANSFER_FRAME_BYTES;
 
 /** Close code the transport uses when it loses the terminal host mid-connection. */
 export const TERMINAL_HOST_LOST_CLOSE_CODE = 4010;
@@ -110,6 +112,9 @@ function classifyServerFrame(data: unknown): ClassifiedFrame {
   if (KNOWN_SERVER_TYPES[frameType] !== true) return { kind: "unknown_type", frameType };
   const parsed = ServerToAgentMessageSchema.safeParse(raw);
   if (!parsed.success) return { kind: "malformed", detail: `invalid ${frameType} frame` };
+  if (parsed.data.type === "job_command" && parsed.data.command.type === "native_transfer" &&
+      Buffer.byteLength(data) > MAX_NATIVE_TRANSFER_FRAME_BYTES)
+    return { kind: "malformed", detail: "native transfer frame exceeds byte limit" };
   return { kind: "message", message: parsed.data };
 }
 
@@ -155,6 +160,7 @@ export class Agent {
       owner: JobOwnerLink;
     }
   >();
+  private readonly nativeTransferCalls = new Map<string, { socket: WebSocket; owner: JobOwnerLink }>();
 
   private seat: Seat | null = null;
   /** The link whose `attach` is outstanding; becomes the seat on `attached`. */
@@ -413,6 +419,7 @@ export class Agent {
           if (acquired && this.jobOwnerLink === acquired) {
             this.jobOwnerLink = null;
             this.agentCalls.clear();
+            this.nativeTransferCalls.clear();
             this.socket?.close(4011, "job owner unavailable");
           }
           if (!this.stopped && this.jobOwnerTimer === null)
@@ -444,6 +451,18 @@ export class Agent {
 
   private onJobEvent(event: JobEvent): void {
     const socket = this.socket;
+    if (event.type === "native_transfer_result") {
+      const pending = this.nativeTransferCalls.get(event.rpcId);
+      if (!pending || pending.socket !== socket || pending.owner !== this.jobOwnerLink) return;
+      this.nativeTransferCalls.delete(event.rpcId);
+      if (socket === null || this.helloSent !== socket || socket.readyState !== WebSocket.OPEN) return;
+      if (socket.bufferedAmount + MAX_NATIVE_TRANSFER_FRAME_BYTES > MAX_NATIVE_TRANSFER_QUEUE_BYTES) {
+        socket.close(4009, "native transfer buffer exceeded");
+        return;
+      }
+      this.send(socket, { type: "job_event", event });
+      return;
+    }
     if (event.type === "agent_run_request") {
       const owner = this.jobOwnerLink;
       if (!owner) return; // The abandoned owner seat cancels its own pending calls.
@@ -640,6 +659,21 @@ export class Agent {
         return;
       }
       case "job_command":
+        if (msg.command.type === "native_transfer") {
+          const owner = this.jobOwnerLink;
+          if (!owner || this.nativeTransferCalls.size >= 4 || this.nativeTransferCalls.has(msg.command.rpcId)) {
+            this.send(socket, { type: "job_event", event: {
+              type: "native_transfer_result", rpcId: msg.command.rpcId,
+              ownerId: msg.command.permit.body.ownerId,
+              ownerGeneration: msg.command.permit.body.ownerGeneration,
+              result: { ok: false, reason: owner ? "native_transfer_queue_limit" : "native_transfer_owner_unavailable" },
+            } });
+            return;
+          }
+          this.nativeTransferCalls.set(msg.command.rpcId, { socket, owner });
+          owner.send(msg.command);
+          return;
+        }
         if (msg.command.type === "agent_run_result") {
           const key = JSON.stringify([msg.command.jobId, msg.command.requestId]);
           const pending = this.agentCalls.get(key);
@@ -799,6 +833,8 @@ export class Agent {
   private onDisconnect(socket: WebSocket, code?: number, reason?: string): void {
     if (this.socket !== socket) return; // stale/superseded socket
     this.socket = null;
+    for (const [rpcId, pending] of this.nativeTransferCalls)
+      if (pending.socket === socket) this.nativeTransferCalls.delete(rpcId);
     for (const [key, pending] of this.agentCalls) {
       if (pending.socket !== socket) continue;
       this.agentCalls.delete(key);

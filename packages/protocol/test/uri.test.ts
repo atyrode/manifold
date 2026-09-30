@@ -5,6 +5,7 @@ import {
   MANIFOLD_URI_SCHEME,
   MAX_GRANT_NODE_LENGTH,
   ManifoldRefSchema,
+  canContain,
   containmentPath,
   formatManifoldUri,
   parseManifoldUri,
@@ -50,9 +51,30 @@ const REFS: readonly { readonly ref: ManifoldRef; readonly uri: string }[] = [
     ref: { kind: "action", actionName: "core.terminals.rename" },
     uri: "manifold://action/core.terminals.rename",
   },
+  { ref: { kind: "file", fileId: "f/1" }, uri: "manifold://file/f%2F1" },
 ];
 
 describe("manifold:// addressing", () => {
+  test("files are sovereign root leaves, not nested paths or extensible owner kinds", () => {
+    const ref: ManifoldRef = { kind: "file", fileId: "a/b% ?#é" };
+    const uri = "manifold://file/a%2Fb%25%20%3F%23%C3%A9";
+    expect(formatManifoldUri(ref)).toBe(uri);
+    expect(parseManifoldUri(uri)).toEqual(ref);
+    expect(containmentPath(uri)).toEqual([MANIFOLD_ROOT_URI, uri]);
+    expect(canContain(uri)).toBe(false);
+    for (const invalid of [
+      "manifold://file/",
+      "manifold://file/id/",
+      "manifold://file/id/element/e",
+      "manifold://container/c/file/f",
+      "manifold://plugin/vendor.owner/file/f",
+      "manifold://image/f",
+      "manifold://file/%zz",
+      `manifold://file/${"f".repeat(129)}`,
+    ]) expect(parseManifoldUri(invalid)).toBeNull();
+    expect(ManifoldRefSchema.safeParse({ ...ref, containerId: "c" }).success).toBe(false);
+    expect(ManifoldRefSchema.safeParse({ kind: "file", fileId: "" }).success).toBe(false);
+  });
   test("output authority descends through its admitted operation and job, never a sibling location", () => {
     expect(containmentPath("manifold://machine/m/operation/o/job/j/output/out")).toEqual([
       "manifold://",

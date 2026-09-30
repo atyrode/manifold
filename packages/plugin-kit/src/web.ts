@@ -1,4 +1,4 @@
-import type { PortablePanelProps, PortableSectionProps } from "@manifold/plugin";
+import type { PortableElementProps, PortablePanelProps, PortableSectionProps } from "@manifold/plugin";
 import type { ComponentType } from "react";
 
 /**
@@ -20,6 +20,8 @@ export interface ReactWebPluginDef {
   readonly panels?: Readonly<Record<string, ComponentType<PortablePanelProps>>> | undefined;
   /** Keyed by LOCAL section id, the ids the manifest's `contributes.sections` declares. */
   readonly sections?: Readonly<Record<string, ComponentType<PortableSectionProps>>> | undefined;
+  /** Keyed by the manifest's element type, with no DOM, Yjs or layout-library props. */
+  readonly elements?: Readonly<Record<string, ComponentType<PortableElementProps>>> | undefined;
 }
 
 /** Identity helper for `export default defineWebPlugin({ ... })`: typed once, at the definition. */

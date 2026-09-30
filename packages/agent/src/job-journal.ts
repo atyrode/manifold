@@ -20,6 +20,10 @@ import { closeSync, constants, fsyncSync, fstatSync, readFileSync, writeSync } f
 import { z } from "zod";
 import type { HeldDirectory } from "./job-files.ts";
 import { lockExclusive } from "./job-files.ts";
+import {
+  RetainedNativeTransferSchema,
+  type RetainedNativeTransfer,
+} from "./native-transfer-state.ts";
 
 const MAX_RECORD_BYTES = 1024 * 1024;
 // A checkpoint part holds at least one entry, so it exceeds the ordinary cap only by its own
@@ -105,6 +109,7 @@ const RetainedJobSchema = z.strictObject({
 const CheckpointEntrySchema = z.union([
   z.strictObject({ install: z.looseObject({}) }),
   z.strictObject({ job: RetainedJobSchema }),
+  z.strictObject({ nativeTransfer: RetainedNativeTransferSchema }),
 ]);
 const CheckpointPartSchema = z.strictObject({
   kind: z.literal("checkpoint_part"),
@@ -147,14 +152,36 @@ class JournalState {
   readonly installs = new Map<string, InstallCommand>();
   readonly jobs = new Map<string, JobEntry>();
   readonly permits = new Set<string>();
+  readonly nativeTransfers = new Map<string, RetainedNativeTransfer>();
 
   get size(): number {
-    return this.installs.size + this.jobs.size;
+    return this.installs.size + this.jobs.size + this.nativeTransfers.size;
   }
 
   prepare(body: unknown): () => void {
     if (body === null || typeof body !== "object") throw new Error("invalid_job_journal_record");
     switch (Reflect.get(body, "kind")) {
+      case "native_transfer": {
+        const transfer = RetainedNativeTransferSchema.parse(Reflect.get(body, "transfer"));
+        const id = transfer.binding.transferId;
+        const previous = this.nativeTransfers.get(id);
+        if (
+          transfer.status.transferId !== id ||
+          transfer.status.mode !== transfer.binding.request.mode ||
+          (previous && canonicalJobJson(previous.binding) !== canonicalJobJson(transfer.binding)) ||
+          (previous?.commitPermit &&
+            canonicalJobJson(previous.commitPermit) !== canonicalJobJson(transfer.commitPermit))
+        )
+          throw new Error("invalid_native_transfer_record");
+        return () => { this.nativeTransfers.set(id, transfer); };
+      }
+      case "native_transfer_forget": {
+        const id = z.string().parse(Reflect.get(body, "transferId"));
+        const transfer = this.nativeTransfers.get(id);
+        if (!transfer || !["committed", "cancelled", "refused", "failed", "expired"].includes(transfer.status.state))
+          throw new Error("invalid_native_transfer_forget");
+        return () => { this.nativeTransfers.delete(id); };
+      }
       case "invocation":
         return () => {};
       case "drain": {
@@ -231,6 +258,7 @@ class JournalState {
     for (const install of this.installs.values()) yield { install };
     for (const job of this.jobs.values())
       yield { job: { ...job, inputRequests: [...job.inputRequests] } };
+    for (const nativeTransfer of this.nativeTransfers.values()) yield { nativeTransfer };
   }
 
   *parts(limit: number): Generator<object[]> {
@@ -259,6 +287,13 @@ class JournalState {
       const key = installKey(command);
       if (this.installs.has(key)) throw new Error("journal_checkpoint_corrupt");
       this.installs.set(key, command);
+      return;
+    }
+    if ("nativeTransfer" in entry) {
+      const transfer = entry.nativeTransfer;
+      if (this.nativeTransfers.has(transfer.binding.transferId))
+        throw new Error("journal_checkpoint_corrupt");
+      this.prepare({ kind: "native_transfer", transfer })();
       return;
     }
     const { inputRequests, ...job } = entry.job;
@@ -576,6 +611,12 @@ export class JobJournal {
   /** A permit is single-use for this owner's lifetime, across every segment. */
   permitConsumed(permitId: string): boolean {
     return this.state.permits.has(permitId);
+  }
+  nativeTransfers(): IterableIterator<RetainedNativeTransfer> {
+    return this.state.nativeTransfers.values();
+  }
+  nativeTransfer(transferId: string): RetainedNativeTransfer | undefined {
+    return this.state.nativeTransfers.get(transferId);
   }
 
   append(body: unknown): void {

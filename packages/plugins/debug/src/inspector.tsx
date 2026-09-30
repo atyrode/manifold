@@ -466,6 +466,8 @@ function addressLabel(uri: string): string {
       return `plugin ${ref.pluginId}`;
     case "action":
       return `door ${ref.actionName}`;
+    case "file":
+      return `file ${ref.fileId}`;
     case "operation":
     case "service":
     case "location":

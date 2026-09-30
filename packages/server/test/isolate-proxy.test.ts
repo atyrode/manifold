@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -17,7 +17,11 @@ import {
 import { PluginDatabaseError } from "@manifold/plugin-kit";
 import { attachServerGuest } from "@manifold/plugin-kit/server";
 import { openPluginDatabase } from "../src/plugin-database.ts";
+import { openDatabase } from "../src/db.ts";
+import { ServerStore } from "../src/stores.ts";
+import { RecoveryBudget } from "../src/recovery-budget.ts";
 import type { IsolateChildFrame, PluginManifest, SettledJob } from "@manifold/protocol";
+import { ISOLATE_CTX_METHODS } from "@manifold/protocol";
 import { z } from "zod";
 import { IsolateDenial, IsolateLoadError } from "../src/isolate/contract.ts";
 import {
@@ -376,6 +380,24 @@ describe("buildIsolateDef", () => {
 });
 
 describe("serveCtxCall", () => {
+  test.each(ISOLATE_CTX_METHODS.filter((method) => method.startsWith("references.")))(
+    "%s cannot spend authority from a data-only probe or lifecycle context",
+    async (method) => {
+      const store = testStore();
+      try {
+        const data = { storage: store.pluginStorage(manifest.id), now: () => 0 };
+        await expect(serveCtxCall(method, [{}], { kind: "probe", ctx: data })).rejects.toThrow(
+          `slice_unavailable: ${method}`,
+        );
+        await expect(serveCtxCall(method, [{}], {
+          kind: "hook", ctx: { ...data, pluginId: manifest.id, emit: () => {} },
+        })).rejects.toThrow(`slice_unavailable: ${method}`);
+      } finally {
+        store.close();
+      }
+    },
+  );
+
   test("the guest runtime commits through native storage and distinguishes a stale comparison", async () => {
     const store = testStore();
     try {
@@ -446,6 +468,7 @@ describe("serveCtxCall", () => {
       const seen: (readonly unknown[] | undefined)[] = [];
       const database = {
         pluginId: manifest.id,
+        admitRecovery: async () => ({ ok: false as const, reason: "recovery_unavailable" as const }),
         query: async (_sql: string, params?: readonly unknown[]) => {
           seen.push(params);
           return [{ integer: 9223372036854775807n, bytes: new Uint8Array([0, 127, 255]) }];
@@ -709,10 +732,14 @@ describe("serveCtxCall", () => {
     }
   });
 
-  test("the three database verbs round-trip, and a refusal arrives as PluginDatabaseError", async () => {
+  test("hardened database rollback and recovery capacity refusals preserve retained reads", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "manifold-proxy-db-"));
-    const database = openPluginDatabase({ dataDir, pluginId: manifest.id });
-    const storage = testStore().pluginStorage(manifest.id);
+    const store = new ServerStore(openDatabase(join(dataDir, "manifold.db")));
+    const database = openPluginDatabase({
+      dataDir, pluginId: manifest.id, maxBytes: 4 * 1024 * 1024,
+      recovery: { profile: "bounded-wal-v1" }, recoveryBudget: new RecoveryBudget(dataDir, store.db),
+    });
+    const storage = store.pluginStorage(manifest.id);
     /*
       The whole conversation in one process: the guest's `ctx.database` posts `call` frames, a
       scripted host answers each from `serveCtxCall` against the engine's real file, and what
@@ -726,7 +753,9 @@ describe("serveCtxCall", () => {
     const seen: unknown[] = [];
     let receive: (frame: unknown) => void = () => {};
     const completed = Promise.withResolvers<Extract<IsolateChildFrame, { t: "hooked" }>>();
-    const dbManifest = { ...manifest, database: { maxBytes: 4 * 1024 * 1024 } };
+    const dbManifest = { ...manifest, database: {
+      maxBytes: 4 * 1024 * 1024, recovery: { profile: "bounded-wal-v1" as const },
+    } };
     attachServerGuest(
       {
         manifest: dbManifest,
@@ -736,6 +765,7 @@ describe("serveCtxCall", () => {
           async onEnable(ctx) {
             const db = ctx.database;
             if (db === undefined) throw new Error("a declaring plugin got no database");
+            seen.push(await db.admitRecovery());
             await db.run("CREATE TABLE records(id INTEGER PRIMARY KEY, body TEXT NOT NULL)");
             const written = await db.run("INSERT INTO records(body) VALUES (?)", ["first"]);
             seen.push(written.changes);
@@ -753,6 +783,10 @@ describe("serveCtxCall", () => {
                   seen.push(error instanceof PluginDatabaseError ? error.name : String(error));
                 },
               );
+            const unrelated = join(dataDir, "unrelated-retained-state");
+            writeFileSync(unrelated, "");
+            truncateSync(unrelated, 250 * 1024 * 1024);
+            seen.push(await db.admitRecovery());
             seen.push(await db.query("SELECT body FROM records"));
           },
         },
@@ -785,9 +819,13 @@ describe("serveCtxCall", () => {
       receive({ t: "load", pluginId: manifest.id, manifest: dbManifest, dir: "/unused" });
       receive({ t: "hook", id: "rows", hook: "onEnable" });
       expect(await completed.promise).toMatchObject({ ok: true });
-      expect(seen).toEqual([1, [{ body: "first" }], "PluginDatabaseError", [{ body: "first" }]]);
+      expect(seen).toEqual([
+        { ok: true }, 1, [{ body: "first" }], "PluginDatabaseError",
+        { ok: false, reason: "backup_capacity" }, [{ body: "first" }],
+      ]);
     } finally {
       database.close();
+      store.close();
       rmSync(dataDir, { recursive: true, force: true });
     }
   });
@@ -806,6 +844,7 @@ describe("serveCtxCall", () => {
         storage: store.pluginStorage(manifest.id),
         database: {
           pluginId: manifest.id,
+          admitRecovery: unavailable,
           query: unavailable,
           run: unavailable,
           batch: unavailable,

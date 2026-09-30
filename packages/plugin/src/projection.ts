@@ -30,6 +30,7 @@ import type {
   ElementHost,
   ElementProps,
   HostServices,
+  PanelProps,
   SectionProps,
   SessionHandle,
   ViewportHandle,
@@ -139,6 +140,8 @@ export interface RegisteredTool {
   readonly enabled: boolean;
   readonly shortcut?: string;
   readonly point?: PointTool;
+  /** Same-owner portable panel mounted for a selected tool; arg carries the chosen point. */
+  readonly Component?: ComponentType<PanelProps> | undefined;
 }
 
 /**
@@ -357,6 +360,8 @@ export interface ProjectionRegistry {
   element(type: string): RegisteredElement | null;
   /** Keyed by the GLOBAL section id a manifest declared — one sidebar, one slot per name. */
   section(id: string): RegisteredRenderer<SectionProps> | null;
+  /** Owner-wrapped panel program; borrowing never imports another plugin's implementation. */
+  panel(id: string): RegisteredRenderer<PanelProps> | null;
   /** The whole element vocabulary, for a paint boundary that needs a map (React Flow's). */
   readonly elements: ReadonlyMap<string, RegisteredElement>;
   /** The tool vocabulary in roster order, for whichever ref owns a toolbar. */

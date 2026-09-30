@@ -269,15 +269,19 @@ const UTF8 = new TextEncoder();
  * `path` holds the objects on the way down, so a value REACHED twice is legal (JSON copies
  * it) while a value containing itself is not.
  */
-function jsonData(value: unknown, path: Set<object>): boolean {
+function jsonData(value: unknown, path: Set<object>, budget: { remaining: number }, depth: number): boolean {
+  if (--budget.remaining < 0) return false;
   if (value === null) return true;
   switch (typeof value) {
     case "string":
+      budget.remaining -= value.length + 1; // A JSON string also owns two quote bytes.
+      return budget.remaining >= 0;
     case "boolean":
       return true;
     case "number":
       return Number.isFinite(value);
     case "object":
+      if (depth <= 0) return false;
       break;
     default:
       return false;
@@ -286,12 +290,31 @@ function jsonData(value: unknown, path: Set<object>): boolean {
   if (path.has(held)) return false;
   const array = Array.isArray(held);
   if (!array && Object.getPrototypeOf(held) !== Object.prototype) return false;
+  if (--budget.remaining < 0) return false; // Both braces/brackets count before recursion.
   path.add(held);
-  for (const member of array ? held : Object.values(held)) {
-    if (!jsonData(member, path)) return false;
+  if (array) {
+    for (const member of held) {
+      if (!jsonData(member, path, budget, depth - 1)) return false;
+    }
+  } else {
+    for (const key in held) {
+      if (!Object.hasOwn(held, key)) continue;
+      budget.remaining -= key.length + 3; // Quoted property name and colon, before escaping.
+      if (budget.remaining < 0 || !jsonData(
+        (held as Record<string, unknown>)[key], path, budget, depth - 1,
+      )) return false;
+    }
   }
   path.delete(held);
   return true;
+}
+
+/** Shared JSON-record validation for persisted arguments and bounded transient view data. */
+export function validPanelData(value: unknown, maxBytes: number, maxDepth: number): value is PanelArg {
+  if (value === null || typeof value !== "object" || Array.isArray(value) ||
+      !jsonData(value, new Set(), { remaining: maxBytes }, maxDepth)) return false;
+  const json = JSON.stringify(value);
+  return json.length <= maxBytes && UTF8.encode(json).length <= maxBytes;
 }
 
 /**
@@ -304,10 +327,7 @@ function jsonData(value: unknown, path: Set<object>): boolean {
  * that is obviously too long is refused without encoding it at all.
  */
 export function validPanelArg(arg: PanelArg): boolean {
-  if (!jsonData(arg, new Set())) return false;
-  const json = JSON.stringify(arg);
-  if (json.length > MAX_PANEL_ARG_BYTES) return false;
-  return UTF8.encode(json).length <= MAX_PANEL_ARG_BYTES;
+  return validPanelData(arg, MAX_PANEL_ARG_BYTES, MAX_PANEL_ARG_BYTES);
 }
 
 /**

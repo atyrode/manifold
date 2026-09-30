@@ -1,4 +1,8 @@
 import {
+  ByteTransferError,
+  type ByteCarrierRequest,
+  type ByteReadChunk,
+  type ByteWriteReceipt,
   BootstrapPrincipalRequestSchema,
   ClientMessageBodySchema,
   CredentialsResponseSchema,
@@ -95,6 +99,7 @@ import {
 } from "@manifold/scene";
 import { bytesToBase64, textToBase64 } from "./base64.ts";
 import { invokeAction } from "./action-http.ts";
+import { readByteChunk, writeByteChunk, type ByteHttpOptions } from "./byte-http.ts";
 import {
   acquireChannel,
   acquireObserver,
@@ -324,6 +329,7 @@ export class SessionClient {
    */
   private readonly subscriptions = new Set<TopicSubscription>();
   private readonly streams = new Set<StreamHandle>();
+  private readonly byteRequests = new Set<AbortController>();
   private currentDoc = createSceneDoc();
   private undoManager!: Y.UndoManager;
   private hasLocalEdits = false;
@@ -556,6 +562,8 @@ export class SessionClient {
   }
 
   close(): void {
+    for (const request of this.byteRequests) request.abort();
+    this.byteRequests.clear();
     this.closeError = null;
     const channel = this.channel;
     this.channel = null;
@@ -1113,6 +1121,44 @@ export class SessionClient {
   async action(name: string, args: unknown): Promise<ActionOutcome> {
     return (await invokeAction({ origin: this.apiOrigin(), token: this.opts.token }, name, args))
       .outcome;
+  }
+
+  /** Bounded binary transport using this handle's credential, never a token-bearing URL. */
+  readByteChunk(
+    pluginId: string,
+    carrierId: string,
+    input: ByteCarrierRequest,
+    signal?: AbortSignal,
+  ): Promise<ByteReadChunk> {
+    return this.byteRequest(signal, (options) => readByteChunk(options, pluginId, carrierId, input));
+  }
+
+  writeByteChunk(
+    pluginId: string,
+    carrierId: string,
+    input: ByteCarrierRequest,
+    data: Uint8Array,
+    signal?: AbortSignal,
+  ): Promise<ByteWriteReceipt> {
+    return this.byteRequest(signal, (options) => writeByteChunk(options, pluginId, carrierId, input, data));
+  }
+
+  private async byteRequest<T>(
+    signal: AbortSignal | undefined,
+    invoke: (options: ByteHttpOptions) => Promise<T>,
+  ): Promise<T> {
+    if (this.status === "closed") throw new ByteTransferError("cancelled");
+    const request = new AbortController();
+    this.byteRequests.add(request);
+    try {
+      return await invoke({
+        origin: this.apiOrigin(),
+        token: this.opts.token,
+        signal: signal === undefined ? request.signal : AbortSignal.any([request.signal, signal]),
+      });
+    } finally {
+      this.byteRequests.delete(request);
+    }
   }
 
   /** The HTTP origin this terminal's socket URL implies; `apiUrl` overrides it. */

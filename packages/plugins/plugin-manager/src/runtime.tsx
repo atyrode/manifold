@@ -22,10 +22,12 @@ import { useState, type ReactElement } from "react";
 import { RuntimeInvocations } from "./runtime-invocations.tsx";
 import {
   DestinationPreparation,
-  OperatorHostPath,
+  NativeTransferPolicyIdentity,
+  RuntimeLocation,
   RuntimePreparation,
   useDestinationPreparation,
 } from "./runtime-deployment.tsx";
+import { CAP_MEANINGS, highRiskRuntimeRight, machineLocationRights } from "./status.ts";
 
 type Host = SectionProps["host"];
 type ReadResult<T> = { value: T; failure: null } | { value: null; failure: string };
@@ -66,7 +68,7 @@ function operationRights(
     { node, cap: "jobs:cancel", label: "Cancel its jobs" },
     { node, cap: "operations:invoke", label: "Allow governed operation invocation" },
     ...(operation.network === "host"
-      ? [{ node, cap: "network:host" as const, label: "HIGH RISK — host networking" }]
+      ? [{ node, cap: "network:host" as const, label: "Host networking" }]
       : []),
   ];
 }
@@ -90,12 +92,16 @@ function ConsentRow({
   const approved = consent?.enabled === true;
   return (
     <li
-      className={`plugin-manager-runtime-right${right.cap === "network:host" || right.cap === "locations:write" || right.cap === "locations:create" ? " is-high-risk" : ""}`}
+      className={`plugin-manager-runtime-right${highRiskRuntimeRight(right.cap) ? " is-high-risk" : ""}`}
     >
       <div>
-        <strong>{right.label}</strong>
+        <strong>
+          {highRiskRuntimeRight(right.cap) ? "HIGH RISK — " : ""}
+          {right.label}
+        </strong>
         <code>{right.cap}</code>
         <small>{right.node}</small>
+        {right.cap.startsWith("locations:") ? <small>{CAP_MEANINGS[right.cap]}</small> : null}
         <small>
           {description === null
             ? "Consent not verified"
@@ -621,18 +627,7 @@ function MachineSetup({
       );
     });
   };
-  const locationRights: ConsentRight[] = [];
-  for (const operation of Object.values(declaration.operations))
-    for (const location of operation.locations) {
-      const node = formatManifoldUri({
-        kind: "location",
-        machineId: machine.id,
-        locationId: location.locationId,
-      });
-      const cap = `locations:${location.access}` as const;
-      if (!locationRights.some((right) => right.node === node && right.cap === cap))
-        locationRights.push({ node, cap, label: `${location.access} ${location.locationId}` });
-    }
+  const locationRights = machineLocationRights(machine.id, declaration);
   const rightApproved = (right: ConsentRight): boolean =>
     consentDescription?.consents.some(
       (row) => row.node === right.node && row.cap === right.cap && row.enabled,
@@ -684,8 +679,8 @@ function MachineSetup({
       <p className="plugin-manager-sheet-muted">
         Proved runtime platforms:{" "}
         {description?.connected ? description.platforms.join(", ") || "none" : "unavailable"}.
-        Native acknowledgement and current operation admission, not platform compatibility alone,
-        determine readiness.
+        Native acknowledgement and current operation or transfer admission, not platform
+        compatibility alone, determine readiness.
       </p>
       {artifact ? (
         <div className="plugin-manager-runtime-identity">
@@ -700,6 +695,10 @@ function MachineSetup({
           </small>
         </div>
       ) : null}
+      <NativeTransferPolicyIdentity
+        machine={declaration}
+        artifactSha256={matches ? installation.artifactSha256 : null}
+      />
       <div className="plugin-manager-runtime-identity">
         {installation ? (
           <>
@@ -767,20 +766,20 @@ function MachineSetup({
           ? "Installed named-location rights"
           : "Manifest named-location effects — installation not verified"}
       </h5>
-      {Object.entries(declaration.locations).map(([id, location]) => (
-        <div className="plugin-manager-runtime-location" key={id}>
-          <strong>{id}</strong>
-          <small>
-            {location.anchor}/{location.components.join("/")} · revision {location.revision} ·{" "}
-            {location.kind ?? "directory"}
-          </small>
-          {location.guestPath ? <small>Guest mount {location.guestPath}</small> : null}
-          <OperatorHostPath
-            location={location}
-            source={description?.resources?.anchorDefinitions?.[location.anchor]?.source}
-          />
-        </div>
-      ))}
+      {Object.entries(declaration.locations)
+        .filter(
+          ([id]) =>
+            !declaration.transferPolicy || Object.hasOwn(declaration.transferPolicy.locations, id),
+        )
+        .map(([id, location]) => (
+          <div className="plugin-manager-runtime-location" key={id}>
+            <strong>{id}</strong>
+            <RuntimeLocation
+              location={location}
+              source={description?.resources?.anchorDefinitions?.[location.anchor]?.source}
+            />
+          </div>
+        ))}
       {locationRights.length === 0 ? (
         <p className="plugin-manager-sheet-muted">No named-location access requested.</p>
       ) : (
@@ -797,9 +796,17 @@ function MachineSetup({
           ))}
         </ul>
       )}
-      <h5>
-        {matches ? "Installed operations" : "Manifest operations — installation not verified"}
-      </h5>
+      {declaration.transferPolicy ? (
+        <p role="status">
+          {ready && locationRights.every(rightApproved)
+            ? "Installed transfer policy and exact consents are current. Each explicit transfer still requires current caller authority and native admission."
+            : "Transfers require the installed policy, native acknowledgement and exact location approvals. No executable operations are declared."}
+        </p>
+      ) : (
+        <h5>
+          {matches ? "Installed operations" : "Manifest operations — installation not verified"}
+        </h5>
+      )}
       {Object.entries(declaration.operations).map(([operationId, operation]) => {
         const rights = operationRights(machine.id, operationId, operation);
         const required = rights.filter(
@@ -935,7 +942,9 @@ function MachineSetup({
           </section>
         );
       })}
-      <RuntimeInvocations host={host} machineId={machine.id} pluginId={pluginId} />
+      {!declaration.transferPolicy ? (
+        <RuntimeInvocations host={host} machineId={machine.id} pluginId={pluginId} />
+      ) : null}
     </Stack>
   );
 }
@@ -1167,7 +1176,7 @@ export function MachineRuntime({
       className="plugin-manager-sheet-card plugin-manager-runtime"
       data-testid="plugin-manager-machine-runtime"
     >
-      <h4>Machine operations</h4>
+      <h4>{declaration?.transferPolicy ? "Native file transfers" : "Machine operations"}</h4>
       {declaration === undefined ? (
         <p className="plugin-manager-sheet-muted">
           No machine operations declared. This plugin has no machine artifact to install or approve.

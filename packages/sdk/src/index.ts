@@ -7,6 +7,18 @@ export {
   type ActionHttpOptions,
   type ActionInvocation,
 } from "./action-http.ts";
+export { readByteChunk, writeByteChunk, type ByteHttpOptions } from "./byte-http.ts";
+export { LocalFileStore } from "./local-files.ts";
+export { inspectStaticRaster, type RasterDimensions } from "./raster.ts";
+export {
+  createByteImageReadHandle,
+  type ByteImageClient, type ByteImageObserver, type ByteImageReadHandle,
+} from "./byte-image.ts";
+export {
+  createByteDownloadHandle, sanitizeDownloadFilename,
+  type ByteDownloadHandle, type ByteDownloadObserver,
+} from "./byte-download.ts";
+export type { ByteReadClient } from "./byte-read.ts";
 export { base64ToBytes, base64ToText, bytesToBase64, textToBase64 } from "./base64.ts";
 export {
   InstanceDial,

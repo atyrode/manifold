@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { renameSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { Database } from "bun:sqlite";
 import { canonicalJobJson, type JobDeploymentReview } from "@manifold/protocol";
 import { migrateToGrantRows } from "./migrate-grants.ts";
@@ -9,9 +9,10 @@ import { migrateToSoloCompositions } from "./migrate-solo.ts";
 import { JOB_SCHEDULE_SCHEMA_SQL } from "./job-schedules.ts";
 import { migrateToDurableAgents } from "./migrate-agents.ts";
 import { migrateToOwnedText } from "./migrate-text.ts";
+import { withRecoveryGateSync } from "./recovery-gate.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 49;
+export const SCHEMA_VERSION = 50;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
@@ -1062,6 +1063,69 @@ INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','48');
 `,
   /** Independent text ownership (#263, ADR0056), including every retained CRDT revision. */
   49: { backup: true, apply: migrateToOwnedText },
+  /** Owned-reference publication, ordinary-grant provenance and bounded recovery custody. */
+  50: `
+CREATE TABLE reference_kind_owners(
+ kind TEXT PRIMARY KEY CHECK(kind IN ('file')),
+ plugin_id TEXT NOT NULL,
+ allocation_state TEXT NOT NULL
+);
+CREATE TABLE reference_publications(
+ publication_id TEXT PRIMARY KEY,
+ node TEXT NOT NULL UNIQUE,
+ owner_plugin TEXT NOT NULL,
+ preparation_id TEXT NOT NULL UNIQUE,
+ request_id TEXT NOT NULL,
+ actor_principal TEXT NOT NULL,
+ credential_json TEXT NOT NULL,
+ credential_binding TEXT NOT NULL,
+ binding_digest TEXT NOT NULL,
+ policy_digest TEXT NOT NULL,
+ owner_generation TEXT NOT NULL,
+ ready_digest TEXT,
+ state TEXT NOT NULL CHECK(state IN ('prepared','published','aborted','deleted','quarantined')),
+ cleanup_pending INTEGER NOT NULL DEFAULT 0 CHECK(cleanup_pending IN (0,1)),
+ created_at INTEGER NOT NULL,
+ expires_at INTEGER NOT NULL,
+ terminal_at INTEGER,
+ terminal_actor TEXT,
+ terminal_credential_binding TEXT,
+ trace_id INTEGER NOT NULL,
+ UNIQUE(owner_plugin,actor_principal,credential_binding,request_id)
+);
+CREATE INDEX reference_publications_owner_state ON reference_publications(owner_plugin,state);
+CREATE TABLE reference_grant_provenance(
+ grant_id TEXT PRIMARY KEY,
+ publication_id TEXT NOT NULL REFERENCES reference_publications(publication_id),
+ role TEXT NOT NULL CHECK(role IN ('creator','share')),
+ policy_digest TEXT NOT NULL,
+ principal_id TEXT NOT NULL,
+ caps_key TEXT NOT NULL,
+ previous_grant_id TEXT,
+ UNIQUE(publication_id,role,principal_id,caps_key)
+);
+CREATE TABLE plugin_recovery_allocations(
+ plugin_id TEXT PRIMARY KEY,
+ profile TEXT NOT NULL CHECK(profile='bounded-wal-v1'),
+ max_image_bytes INTEGER NOT NULL CHECK(max_image_bytes>0 AND max_image_bytes<=67108864 AND max_image_bytes%4096=0)
+);
+CREATE TABLE plugin_recovery_stages(
+ plugin_id TEXT PRIMARY KEY,
+ max_image_bytes INTEGER NOT NULL CHECK(max_image_bytes>0),
+ profile TEXT NOT NULL CHECK(profile='bounded-wal-v1')
+);
+CREATE TABLE native_transfers(
+ id TEXT PRIMARY KEY,
+ plugin_id TEXT NOT NULL,
+ actor_id TEXT NOT NULL,
+ credential_binding TEXT NOT NULL,
+ request_id TEXT NOT NULL,
+ record TEXT NOT NULL,
+ updated_at INTEGER NOT NULL,
+ UNIQUE(plugin_id,actor_id,credential_binding,request_id)
+);
+INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','50');
+`,
 };
 
 interface TableRow {
@@ -1120,6 +1184,12 @@ const SQLITE_BUSY_TIMEOUT_MS = 5000;
 
 /** Opens a Bun SQLite database, enables WAL, and applies numbered migrations atomically. */
 export function openDatabase(path: string): Database {
+  return path === "" || path === ":memory:" || path.startsWith("file::memory:")
+    ? openAndMigrateDatabase(path)
+    : withRecoveryGateSync(dirname(path), () => openAndMigrateDatabase(path));
+}
+
+function openAndMigrateDatabase(path: string): Database {
   const db = new Database(path, { create: true, strict: true });
   try {
     db.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS};`);

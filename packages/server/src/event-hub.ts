@@ -155,6 +155,7 @@ function topicContainer(ref: ManifoldRef, terminals: TerminalHomePort): string |
     case "principal":
     case "agent":
     case "run":
+    case "file":
     case "plugin":
     case "action":
       return null;
@@ -242,7 +243,12 @@ export class EventHub {
     if (topic.kind === "agent" || topic.kind === "run")
       return this.authority.canReadAgentNode(auth, topic);
     if (topic.kind === "operation" || topic.kind === "location") return false;
-    if (topic.kind === "job" || topic.kind === "output" || topic.kind === "service")
+    if (
+      topic.kind === "job" ||
+      topic.kind === "output" ||
+      topic.kind === "service" ||
+      topic.kind === "file"
+    )
       return this.deps.canReadGoverned(auth, topic);
     return this.authorized(auth, topicContainer(topic, this.deps.terminals));
   }
@@ -341,10 +347,10 @@ export class EventHub {
    * this: a floor door emits under the plugin that owns the concept (the broker emits
    * `terminal_exited` as whichever plugin `assembly.ts` says owns terminal vocabulary), because
    * ADR 0012's rule is that the engine emits and the plugin declares. An emission whose kind
-   * that plugin never declared is REFUSED — no history row, no fan-out, one error line — which
-   * is the D5 vocabulary check moved to the one moment a kind can be known. It is refused
-   * rather than thrown because the callers are a PTY exit, a socket close and a database
-   * commit: a vocabulary bug must be loud, never able to take one of those down.
+   * that plugin never declared, or on a reference kind it does not own, is REFUSED — no history
+   * row, no fan-out, one error line — which is the D5 vocabulary and ownership check before
+   * either effect. It is refused rather than thrown because the callers are a PTY exit, a socket
+   * close and a database commit: an emission bug must be loud, never able to take those down.
    *
    * `trailContainerId` is where the row lands in the audit trail, and it is a DIFFERENT
    * question from the topic. The topic answers "who hears this"; the trail's container answers
@@ -497,7 +503,8 @@ export class EventHub {
           ? !this.authority.canReadAgentNode(entry.subscriber.auth, governingTopic)
           : governingTopic.kind === "job" ||
               governingTopic.kind === "output" ||
-              governingTopic.kind === "service"
+              governingTopic.kind === "service" ||
+              governingTopic.kind === "file"
             ? !this.deps.canReadGoverned(entry.subscriber.auth, governingTopic)
             : !this.authorized(entry.subscriber.auth, containerId)
       )

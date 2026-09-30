@@ -14,6 +14,8 @@ export {
   IsolateSliceUnavailable,
   PluginDatabaseError,
 } from "./errors.ts";
+export { NativeTransferError } from "@manifold/plugin";
+export type { DatabaseRecoveryAdmission } from "@manifold/protocol";
 export type {
   ServerHarness,
   Agent,
@@ -26,12 +28,16 @@ export type {
   GuestActions,
   GuestAuth,
   GuestCtx,
+  GuestReferenceProbeCtx,
+  GuestByteCarrierCtx,
+  GuestByteCarrierHandler,
   GuestDatabase,
   GuestSqlParam,
   GuestSqlRow,
   GuestSqlStatement,
   GuestEmit,
   GuestJobs,
+  GuestNativeTransfers,
   GuestServices,
   GuestJobRequest,
   GuestJobStatus,

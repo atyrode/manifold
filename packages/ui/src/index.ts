@@ -30,6 +30,12 @@
  * verbs and forbidden to grow the union — and that contrast is the rule rather than an
  * exception to it.
  */
+export { BorrowedPanel, BorrowedPanelProvider, type BorrowedPanelProps } from "./borrowed-panel.tsx";
+export {
+  FileInput, ByteImage, ByteSurfaceProvider,
+  type FileInputProps, type ByteImageProps, type ByteSurfaceServices,
+} from "./byte-surface.tsx";
+export { ByteDownload, type ByteDownloadProps, type ByteDownloadStatus } from "./byte-download.tsx";
 import "./styles.css";
 export {
   ControlIcon,

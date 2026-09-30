@@ -13,6 +13,11 @@ import {
   ActionResultProjectionDigestSchema,
   AGENT_JUSTIFICATION_HEADER,
   decodeAgentJustification,
+  BYTE_EOF_HEADER,
+  BYTE_LEASE_HEADER,
+  BYTE_OFFSET_HEADER,
+  ByteCarrierRequestSchema,
+  ByteTransferError,
   ActionOutcomeSchema,
   CAPS,
   AttendanceResponseSchema,
@@ -53,6 +58,7 @@ import type { PluginHost } from "./plugin-host.ts";
 import type { RoomManager } from "./room.ts";
 import type { ServerStore } from "./stores.ts";
 import type { TerminalBroker } from "./terminal-broker.ts";
+import { byteFailure } from "./byte-transport.ts";
 
 /** HTTP JSON ceiling, mirrored by Bun.serve so chunked bodies cannot reach its 128 MiB default. */
 export const MAX_HTTP_BODY_BYTES = 1_048_576;
@@ -108,7 +114,10 @@ function corsResponse(response: Response): Response {
     `authorization, content-type, ${AGENT_JUSTIFICATION_HEADER}, ${ACTION_RESULT_PROJECTION_HEADER}`,
   );
   // Retry-After is not CORS-safelisted; a lens reads it from a quiescing hub's 503 (#318).
-  response.headers.set("access-control-expose-headers", `${ACTION_TRACE_ID_HEADER}, retry-after`);
+  response.headers.set(
+    "access-control-expose-headers",
+    `${ACTION_TRACE_ID_HEADER}, retry-after, ${BYTE_OFFSET_HEADER}, ${BYTE_EOF_HEADER}, ${BYTE_LEASE_HEADER}`,
+  );
   response.headers.set("access-control-max-age", "600");
   return response;
 }
@@ -619,6 +628,40 @@ export class HttpApp {
       );
     }
 
+    const byteMatch = /^\/api\/bytes\/([^/]+)\/([^/]+)$/.exec(pathname);
+    if (byteMatch !== null && (request.method === "GET" || request.method === "POST")) {
+      try {
+        const actor = this.authenticate(request);
+        const pluginId = decodePathSegment(byteMatch[1], "plugin id");
+        const carrierId = decodePathSegment(byteMatch[2], "carrier id");
+        const query = new URL(request.url).searchParams;
+        const fields = ["transferId", "ref", "offset", "sequence", "length"] as const;
+        if (
+          [...query.keys()].length !== fields.length ||
+          fields.some((field) => query.getAll(field).length !== 1)
+        )
+          throw new ByteTransferError("invalid");
+        const number = (field: "offset" | "sequence" | "length"): number => {
+          const raw = query.get(field)!;
+          return /^\d+$/.test(raw) ? Number(raw) : NaN;
+        };
+        const parsed = ByteCarrierRequestSchema.safeParse({
+          transferId: query.get("transferId"),
+          ref: parseManifoldUri(query.get("ref")!),
+          offset: number("offset"),
+          sequence: number("sequence"),
+          length: number("length"),
+        });
+        if (!parsed.success) throw new ByteTransferError("invalid");
+        return await this.plugins.serveBytes(actor, pluginId, carrierId, parsed.data, request);
+      } catch (error) {
+        if (error instanceof ByteTransferError) return byteFailure(error.reason);
+        const response = this.failureResponse(request, error);
+        response.headers.set("cache-control", "no-store");
+        return response;
+      }
+    }
+
     /*
       THE ACTION DOOR. One route for every mutation any plugin declares, because a door per
       feature is how a workspace ends up with thirty of them and no published vocabulary.
@@ -832,18 +875,20 @@ export class HttpApp {
 
     if (request.method === "GET" && pathname === "/api/resolve") {
       const context = this.authenticate(request);
-      this.requireCap(context, "containers:read");
       const raw = new URL(request.url).searchParams.get("uri");
       if (raw === null) throw new RequestError("invalid", "uri query parameter is required");
       const ref = parseManifoldUri(raw);
       // An address this server cannot parse is a bad REQUEST; an address that parses and
       // points at nothing is a legitimate answer carrying `exists: false`.
       if (ref === null) throw new RequestError("invalid", "uri is not a manifold:// address");
+      if (ref.kind !== "file") this.requireCap(context, "containers:read");
       return jsonResponse(
         ResolveResponseSchema.parse({
           uri: formatManifoldUri(ref),
           ref,
-          ...this.resolveRef(ref, context),
+          ...(ref.kind === "file"
+            ? await this.plugins.resolveOwnedReference(context, ref)
+            : this.resolveRef(ref, context)),
         }),
       );
     }
@@ -969,7 +1014,7 @@ export class HttpApp {
    * already holds.
    */
   private resolveRef(
-    ref: ManifoldRef,
+    ref: Exclude<ManifoldRef, { kind: "file" }>,
     context: AuthContext,
   ): { exists: boolean; title: string | null } {
     switch (ref.kind) {

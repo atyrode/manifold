@@ -50,6 +50,8 @@ let calls = 0;
 let hardenedContract = 1;
 const waiting = new Map();
 const admissions = new Map();
+let referenceActionId;
+let emissionVictim;
 
 function call(requestId, method, args) {
   calls += 1;
@@ -172,6 +174,34 @@ const handlers = {
     ];
     return { ok: true, result: {}, emits };
   },
+  async reference(id, args, ctx) {
+    referenceActionId = id;
+    try {
+      const result = await call(id, "references.publish", [{
+        preparationId: args.text,
+        readyDigest: "a".repeat(64),
+      }]);
+      return { ok: true, result: { binding: ctx.credentialBinding, result }, emits: [] };
+    } catch (error) {
+      return { ok: false, rule: "refused", message: error };
+    }
+  },
+  async completeAfterBarrier(_id, args) {
+    await barrier(args.text);
+    return { ok: true, result: { text: "completed" }, emits: [] };
+  },
+  async holdForProbe(id, args) {
+    emissionVictim = { t: "dispatched", id, result: { text: "forged" } };
+    await barrier(args.text);
+    await call(id, "storage.get", ["nested-probe"]);
+    return null;
+  },
+  prepareAfterBarrier() {
+    return { ok: true, result: { text: "admitted" }, emits: [] };
+  },
+  referenceBeforeAdmission(_id, args) {
+    return { ok: true, result: { denial: args.denial }, emits: [] };
+  },
 };
 
 onFrame(async (frame) => {
@@ -192,6 +222,8 @@ onFrame(async (frame) => {
         ...(frame.hardenedContract >= 7 && frame.manifest.contributes.harness !== undefined
           ? { harness: frame.manifest.contributes.harness }
           : {}),
+        ...(frame.hardenedContract >= 10 ? { probeReady: true, reclaimReferences: true, reconcileNativeTransfers: true } : {}),
+        byteCarriers: (frame.manifest.contributes.byteCarriers ?? []).map(({ id, direction }) => ({ id, direction })),
       });
       return;
     case "dispatch": {
@@ -209,6 +241,13 @@ onFrame(async (frame) => {
         });
         return;
       }
+      if (frame.action === "referenceBeforeAdmission") {
+        frame.args.denial = await call(frame.id, "references.publish", [{
+          preparationId: "prepared",
+          readyDigest: "a".repeat(64),
+        }]).catch((error) => error);
+      }
+      if (frame.action === "prepareAfterBarrier") await barrier(frame.args.text);
       const admission = new Promise((resolve) => admissions.set(frame.id, resolve));
       send({ t: "prepared", id: frame.id, targets: [] });
       if (!(await admission)) return;
@@ -220,6 +259,12 @@ onFrame(async (frame) => {
       const request = frame.request;
       const mode =
         request.method === "validateProfile" ? request.profile : request.target?.machineId;
+      if (request.method === "sessions" && typeof mode === "string" && mode.startsWith("hold-for-probe:")) {
+        emissionVictim = { t: "harnessed", id: frame.id, result: [] };
+        await barrier(mode.slice("hold-for-probe:".length));
+        await call(frame.id, "storage.get", ["nested-probe"]);
+        return;
+      }
       if (typeof mode === "string" && mode.startsWith("barrier:"))
         await barrier(mode.slice("barrier:".length));
       if (mode !== null && typeof mode === "object") {
@@ -310,6 +355,85 @@ onFrame(async (frame) => {
       send({ t: "harnessed", id: frame.id, outcome: { ok: true, result, emits } });
       return;
     }
+    case "probe_ready": {
+      const { preparationId } = frame.request;
+      if (preparationId === "hang") return;
+      if (preparationId === "emission") {
+        send({
+          t: emissionVictim.t,
+          id: emissionVictim.id,
+          outcome: {
+            ok: true,
+            result: emissionVictim.result,
+            emits: [{
+              ref: { kind: "plugin", pluginId: "test.guest" },
+              kind: "echoed",
+              payload: { borrowed: true },
+            }],
+          },
+        });
+      }
+      if (preparationId === "parent-answer") {
+        send({
+          t: "dispatched", id: referenceActionId,
+          outcome: { ok: true, result: { borrowed: true }, emits: [] },
+        });
+        send({ t: "probed_ready", id: frame.id, outcome: { ok: true, result: { preparationId, readyDigest: "a".repeat(64), expiresAt: frame.now + 60000 } } });
+        return;
+      }
+      if (["identity", "references", "receipt", "storage"].includes(preparationId)) {
+        const methods = {
+          identity: ["identity.revokeMachine", ["m1"]],
+          references: ["references.publish", [{ preparationId: "prepared", readyDigest: "a".repeat(64) }]],
+          receipt: ["references.receipt", [{ ref: frame.request.ref }]],
+          storage: ["storage.set", ["borrowed", "forbidden"]],
+        };
+        const [method, args] = methods[preparationId];
+        send({ t: "call", id: `${referenceActionId ?? frame.id}:attack`, method, args });
+        // A buffered result must not release the fence after the violating frame.
+        send({ t: "probed_ready", id: frame.id, outcome: { ok: true, result: { preparationId, readyDigest: "a".repeat(64), expiresAt: frame.now + 60000 } } });
+        return;
+      }
+      if (preparationId.startsWith("early:")) {
+        void call(frame.id, "storage.get", ["ready:early"]).catch(() => {});
+        await barrier(preparationId.slice("early:".length));
+        send({ t: "probed_ready", id: frame.id, outcome: { ok: true, result: { preparationId, readyDigest: "a".repeat(64), expiresAt: frame.now + 60000 } } });
+        return;
+      }
+      if (preparationId === "overflow" || preparationId === "replay") {
+        for (let index = 0; index < (preparationId === "overflow" ? 257 : 2); index += 1) {
+          send({
+            t: "call", id: `${frame.id}:${preparationId === "replay" ? 1 : index}`,
+            method: "storage.get", args: ["ready:bounded"],
+          });
+        }
+        return;
+      }
+      const readyDigest = await call(frame.id, "storage.get", [`ready:${preparationId}`]);
+      send({ t: "probed_ready", id: frame.id, outcome: { ok: true, result: readyDigest === null ? null : { preparationId, readyDigest, expiresAt: frame.now + 60000 } } });
+      return;
+    }
+    case "reclaim_references":
+      for (const receipt of frame.receipts)
+        await call(frame.id, "storage.delete", [`ready:${receipt.preparationId}`]);
+      send({ t: "reclaimed_references", id: frame.id, outcome: { ok: true } });
+      return;
+    case "byte_request":
+      if (frame.request.method !== "authorize") throw new Error("unexpected fixture byte method");
+      await writeFile(`${frame.request.input.ref.fileId}/byte-entered`, "admitted");
+      send({
+        t: "byte_answered", id: frame.id,
+        outcome: { ok: true, reply: { method: "authorize", result: { expiresAt: frame.ctx.now + 60000 } } },
+      });
+      return;
+    case "reconcile_native_transfers":
+      for (const receipt of frame.receipts) {
+        if (receipt.requestId === "escape")
+          await call(frame.id, "nativeTransfers.commitPut", [{ transferId: receipt.transferId }]);
+        await call(frame.id, "storage.delete", [`reservation:${receipt.transferId}`]);
+      }
+      send({ t: "reconciled_native_transfers", id: frame.id, outcome: { ok: true } });
+      return;
     case "admitted":
       admissions.get(frame.id)?.(frame.allowed);
       admissions.delete(frame.id);

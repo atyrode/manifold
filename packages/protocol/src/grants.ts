@@ -111,7 +111,7 @@ export const GrantSchema = z.strictObject({
    * the intersection; a row naming a vocabulary nobody declared answers no question, exactly
    * as ADR 0011 says of a grant that grants nothing.
    */
-  caps: z.array(AuthoredCapSchema).min(1),
+  caps: z.array(z.lazy(() => AuthoredCapSchema)).min(1),
   effect: GrantEffectSchema,
   reach: GrantReachSchema,
   createdBy: z.string().min(1).max(128),
@@ -128,7 +128,7 @@ export type Grant = z.infer<typeof GrantSchema>;
 export const CreateGrantRequestSchema = z.strictObject({
   principal: GrantPrincipalSchema,
   node: GrantNodeSchema,
-  caps: z.array(AuthoredCapSchema).min(1),
+  caps: z.array(z.lazy(() => AuthoredCapSchema)).min(1),
   effect: GrantEffectSchema,
   reach: GrantReachSchema,
 });

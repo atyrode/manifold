@@ -92,6 +92,40 @@ export function resolveManagedJobLocation(
   }
 }
 
+/** Create-child is not job write/create. Only this resolver may provision its managed root. */
+export function resolveManagedTransferRoot(
+  root: HeldDirectory,
+  pluginId: string,
+  declaration: MachineLocation,
+  beforeCreate: (parentFd: number) => void,
+  create = true,
+): HeldDirectory {
+  if (
+    !declaration.managed || declaration.temporary || declaration.kind !== "directory" ||
+    declaration.anchor !== "state" || !declaration.components.length || !ownerPrivate(root)
+  ) throw new Error("invalid_transfer_location");
+  let current = root.reopen();
+  try {
+    for (const component of [pluginId, ...declaration.components]) {
+      beforeCreate(current.fd);
+      const next = current.openChild(component, { create });
+      try {
+        if (!ownerPrivate(next)) throw new Error("transfer_root_not_private");
+        if (create) current.sync();
+      } catch (error) {
+        next.close();
+        throw error;
+      }
+      current.close();
+      current = next;
+    }
+    return current;
+  } catch (error) {
+    current.close();
+    throw error;
+  }
+}
+
 /**
  * A temporary location backs output leases only, and never with its declared path: `provision`
  * returns this job's own exclusive root in the owner's private scratch namespace, and is called

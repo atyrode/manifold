@@ -19,6 +19,31 @@ import { AgentRunSchema, SendRunInputRequestSchema } from "./agent-runs.ts";
 import { SessionRefSchema } from "./session-ref.ts";
 import { TerminalRuntimeSchema } from "./jobs.ts";
 import { PanelArgSchema, validPanelArg } from "./layout.ts";
+import { PanelResultSchema, PortablePanelInputSchema } from "./panels.ts";
+import { SceneElementPayloadSchema } from "./elements.ts";
+import { ReferenceProbeRequestSchema, ReferenceProbeResultSchema, ReferenceTerminalReceiptSchema } from "./references.ts";
+import { NativeTransferEvidenceBatchSchema } from "./native-transfers.ts";
+import {
+  IsolateByteCtxSchema,
+  IsolateByteDeclarationsSchema,
+  IsolateByteOutcomeSchema,
+  IsolateByteRequestSchema,
+} from "./isolate-bytes.ts";
+import {
+  ByteDownloadSourceSchema,
+  ByteDownloadStatusSchema,
+  type ByteDownloadSource,
+  ByteImageCropSchema,
+  type ByteImageCrop,
+  ByteImageSourceSchema,
+  ByteImageStatusSchema,
+  LocalFileSelectionSchema,
+  MAX_LOCAL_FILES,
+  MAX_LOCAL_FILE_BYTES,
+  MAX_RASTER_PIXELS,
+  MAX_RASTER_SIDE,
+  type ByteImageSource,
+} from "./byte-ui.ts";
 
 /**
  * THE ISOLATION VOCABULARY (ADR 0016): everything that crosses the boundary between the engine
@@ -113,6 +138,10 @@ export const UI_NODE_TYPES = [
   "select",
   "input",
   "toggle",
+  "fileInput",
+  "byteImage",
+  "byteDownload",
+  "borrowedPanel",
   "list",
   "empty",
 ] as const satisfies readonly UiNode["type"][];
@@ -243,6 +272,37 @@ export type UiNode = UiNodeMeta &
         readonly label: string;
         readonly disabled?: boolean | undefined;
       }
+    | {
+        readonly type: "fileInput";
+        readonly event: string;
+        readonly label: string;
+        readonly accept?: "files" | "images" | undefined;
+        readonly multiple?: boolean | undefined;
+        readonly clipboard?: boolean | undefined;
+        readonly disabled?: boolean | undefined;
+      }
+    | {
+        readonly type: "byteImage";
+        readonly label: string;
+        readonly source: ByteImageSource;
+        readonly crop?: ByteImageCrop | undefined;
+        readonly fit?: "frame" | undefined;
+        readonly event?: string | undefined;
+      }
+    | {
+        readonly type: "byteDownload";
+        readonly label: string;
+        readonly filename: string;
+        readonly source: ByteDownloadSource;
+        readonly disabled?: boolean | undefined;
+        readonly event?: string | undefined;
+      }
+    | {
+        readonly type: "borrowedPanel";
+        readonly panelId: string;
+        readonly input?: import("./layout.ts").PanelArg | undefined;
+        readonly event: string;
+      }
     | { readonly type: "list"; readonly items: readonly UiListItem[] }
     | { readonly type: "empty"; readonly text: string }
   );
@@ -351,6 +411,41 @@ const uiNode: z.ZodType<UiNode> = z.lazy(() =>
     }),
     z.strictObject({
       ...uiNodeMeta,
+      type: z.literal("fileInput"),
+      event: uiEventName,
+      label: uiText.min(1),
+      accept: z.enum(["files", "images"]).optional(),
+      multiple: z.boolean().optional(),
+      clipboard: z.boolean().optional(),
+      disabled: z.boolean().optional(),
+    }),
+    z.strictObject({
+      ...uiNodeMeta,
+      type: z.literal("byteImage"),
+      label: uiText.min(1),
+      source: ByteImageSourceSchema,
+      crop: ByteImageCropSchema.optional(),
+      fit: z.literal("frame").optional(),
+      event: uiEventName.optional(),
+    }),
+    z.strictObject({
+      ...uiNodeMeta,
+      type: z.literal("byteDownload"),
+      label: uiText.min(1),
+      filename: z.string().max(255),
+      source: ByteDownloadSourceSchema,
+      disabled: z.boolean().optional(),
+      event: uiEventName.optional(),
+    }),
+    z.strictObject({
+      ...uiNodeMeta,
+      type: z.literal("borrowedPanel"),
+      panelId: z.string().min(1).max(160),
+      input: PanelArgSchema.refine(validPanelArg, "panel input must be bounded JSON data").optional(),
+      event: uiEventName,
+    }),
+    z.strictObject({
+      ...uiNodeMeta,
       type: z.literal("list"),
       items: z
         .array(
@@ -430,6 +525,8 @@ export const ISOLATE_CRASH_BUDGET = { count: 3, windowMs: 300_000 } as const;
  * hooks keep the engine's own 2 s bound (`LIFECYCLE_TIMEOUT_MS`).
  */
 export const ISOLATE_DISPATCH_DEADLINE_MS = 10_000;
+/** A private owner-data probe is shorter than an action and never carries its authority. */
+export const ISOLATE_REFERENCE_PROBE_DEADLINE_MS = 2_000;
 
 /**
  * How long a child may sit without a dispatch before the supervisor shuts it down; the next
@@ -440,7 +537,7 @@ export const ISOLATE_DISPATCH_DEADLINE_MS = 10_000;
 export const ISOLATE_IDLE_EVICT_MS = 600_000;
 
 /** The largest artifact an install door will read, from a path or over the network. */
-export const ISOLATE_MAX_ARTIFACT_BYTES = 16 * 1024 * 1024;
+export const ISOLATE_MAX_ARTIFACT_BYTES = 64 * 1024 * 1024;
 /** Raw bytes in one server-isolate frame, capped before JSON parsing in either process. */
 export const ISOLATE_MAX_FRAME_BYTES = 8 * 1024 * 1024;
 
@@ -473,6 +570,7 @@ export const ISOLATE_CTX_METHODS = [
   "database.query",
   "database.run",
   "database.batch",
+  "database.admitRecovery",
   "auth.allows",
   "outsideScope",
   "newId",
@@ -509,6 +607,15 @@ export const ISOLATE_CTX_METHODS = [
   "jobs.follow",
   "jobs.ack",
   "jobs.unfollow",
+  "nativeTransfers.describe",
+  "nativeTransfers.beginPut",
+  "nativeTransfers.putChunk",
+  "nativeTransfers.commitPut",
+  "nativeTransfers.beginRead",
+  "nativeTransfers.readChunk",
+  "nativeTransfers.cancel",
+  "nativeTransfers.status",
+  "nativeTransfers.receipt",
   "services.describe",
   "services.readConfiguration",
   "services.configureConfiguration",
@@ -520,6 +627,17 @@ export const ISOLATE_CTX_METHODS = [
   "services.configureInstance",
   "services.readInstance",
   "services.invokeInstance",
+  "references.prepare",
+  "references.publish",
+  "references.abort",
+  "references.requirePublished",
+  "references.unpublish",
+  "references.grant",
+  "references.revoke",
+  "references.audience",
+  "references.receipt",
+  "references.readable",
+  "references.attach",
   "actions.call",
 ] as const;
 export const IsolateCtxMethodSchema = z.enum(ISOLATE_CTX_METHODS);
@@ -593,6 +711,8 @@ export type AssemblyDelta = z.infer<typeof AssemblyDeltaSchema>;
  */
 export const IsolateDispatchCtxSchema = z.strictObject({
   traceId: z.number().int().positive(),
+  /** Contract 10+: equality key for the host's credential lineage, never a bearer. */
+  credentialBinding: z.string().length(64).regex(/^[a-f0-9]{64}$/).optional(),
   /** Host-derived immediate plugin caller for contract 8+; omitted entirely for older guests. */
   callerPlugin: PluginIdSchema.nullable().optional(),
   principal: PrincipalSchema,
@@ -644,6 +764,8 @@ export const IsolateHarnessResultSchemas = {
   send: z.null(),
 } as const;
 
+export const IsolateReferenceReclaimRequestSchema = ReferenceTerminalReceiptSchema.array().max(64);
+
 /**
  * An answer to a `call`, in either direction on either boundary — one shape, because a
  * worker asking the page for `machines()` and a child asking the server for `storage.get`
@@ -674,6 +796,13 @@ export const IsolateHostFrameSchema = z.discriminatedUnion("t", [
     hardenedContract: z.number().int().positive().optional(),
   }),
   z.strictObject({
+    t: z.literal("byte_request"),
+    id: frameId,
+    request: IsolateByteRequestSchema,
+    ctx: IsolateByteCtxSchema,
+  }),
+  z.strictObject({ t: z.literal("byte_cancel"), id: frameId }),
+  z.strictObject({
     t: z.literal("dispatch"),
     id: frameId,
     /** The LOCAL action name: the child knows its own plugin id from `load`. */
@@ -691,6 +820,24 @@ export const IsolateHostFrameSchema = z.discriminatedUnion("t", [
     .refine(({ request, ctx }) => (request.method === "validateProfile") === (ctx === undefined), {
       message: "only profile validation omits caller context",
     }),
+  z.strictObject({
+    t: z.literal("probe_ready"),
+    id: frameId,
+    request: ReferenceProbeRequestSchema,
+    now: z.number().int().min(0),
+  }),
+  z.strictObject({
+    t: z.literal("reclaim_references"),
+    id: frameId,
+    receipts: IsolateReferenceReclaimRequestSchema,
+    now: z.number().int().min(0),
+  }),
+  z.strictObject({
+    t: z.literal("reconcile_native_transfers"),
+    id: frameId,
+    receipts: NativeTransferEvidenceBatchSchema,
+    now: z.number().int().min(0),
+  }),
   /** Resumes this same dispatch after the guest parsed and the host admitted its input. */
   z.strictObject({
     t: z.literal("admitted"),
@@ -785,6 +932,10 @@ export const IsolateChildFrameSchema = z.discriminatedUnion("t", [
     }),
     migrations: IsolateMigrationsSchema.optional(),
     harness: HarnessDefinitionSchema.optional(),
+    probeReady: z.literal(true).optional(),
+    reclaimReferences: z.literal(true).optional(),
+    reconcileNativeTransfers: z.literal(true).optional(),
+    byteCarriers: IsolateByteDeclarationsSchema.optional(),
   }),
   z.strictObject({ t: z.literal("load_failed"), error: errorText }),
   /** Only declared authority targets cross; transformed handler arguments stay in the guest. */
@@ -802,6 +953,35 @@ export const IsolateChildFrameSchema = z.discriminatedUnion("t", [
     t: z.literal("harnessed"),
     id: frameId,
     outcome: IsolateDispatchOutcomeSchema,
+  }),
+  z.strictObject({
+    t: z.literal("probed_ready"),
+    id: frameId,
+    outcome: z.discriminatedUnion("ok", [
+      z.strictObject({ ok: z.literal(true), result: ReferenceProbeResultSchema }),
+      z.strictObject({ ok: z.literal(false), error: errorText }),
+    ]),
+  }),
+  z.strictObject({
+    t: z.literal("byte_answered"),
+    id: frameId,
+    outcome: IsolateByteOutcomeSchema,
+  }),
+  z.strictObject({
+    t: z.literal("reclaimed_references"),
+    id: frameId,
+    outcome: z.discriminatedUnion("ok", [
+      z.strictObject({ ok: z.literal(true) }),
+      z.strictObject({ ok: z.literal(false), error: errorText }),
+    ]),
+  }),
+  z.strictObject({
+    t: z.literal("reconciled_native_transfers"),
+    id: frameId,
+    outcome: z.discriminatedUnion("ok", [
+      z.strictObject({ ok: z.literal(true) }),
+      z.strictObject({ ok: z.literal(false), error: errorText }),
+    ]),
   }),
   z.strictObject({
     t: z.literal("hooked"),
@@ -837,6 +1017,12 @@ export type IsolateChildFrame = z.infer<typeof IsolateChildFrameSchema>;
  */
 export const WEB_HOST_METHODS = [
   "action",
+  "readByteChunk",
+  "writeByteChunk",
+  "cancelByteRequest",
+  "readLocalFile",
+  "releaseLocalFile",
+  "patchElement",
   "place",
   "selfCaps",
   "machines",
@@ -854,6 +1040,19 @@ export const WEB_HOST_METHODS = [
   "createTerminal",
 ] as const;
 
+/** A mounted element's inert document payload; never its Yjs handles or renderer internals. */
+export const PortableElementProjectionSchema = z.strictObject({
+  id: z.string().min(1).max(128),
+  data: SceneElementPayloadSchema,
+});
+export type PortableElementProjection = z.infer<typeof PortableElementProjectionSchema>;
+
+/** No element selector or envelope edits: ownership is the current mounted instance. */
+export const PortableElementPatchSchema = z.strictObject({
+  expected: SceneElementPayloadSchema,
+  patch: SceneElementPayloadSchema,
+});
+
 /** Mounted-view facts only. A current host call, not this snapshot, decides authority. */
 export const WebHostContextSchema = z.strictObject({
   principal: PrincipalSchema,
@@ -868,6 +1067,7 @@ export const WebHostContextSchema = z.strictObject({
   status: z.enum(["idle", "connecting", "open", "reconnecting", "closed"]),
   hidden: z.boolean(),
   canAuthor: z.boolean(),
+  elementWritable: z.boolean().optional(),
 });
 export type WebHostContext = z.infer<typeof WebHostContextSchema>;
 export const WebHostMethodSchema = z.enum(WEB_HOST_METHODS);
@@ -890,14 +1090,30 @@ export const WebIsolateHostFrameSchema = z.discriminatedUnion("t", [
   z.strictObject({
     t: z.literal("mount"),
     instance: instanceId,
-    panel: LocalNameSchema,
-    kind: z.enum(["panel", "section"]).optional(),
+    // Historical field name; element mounts carry their manifest-declared wire type here.
+    panel: z.string().min(1).max(32),
+    kind: z.enum(["panel", "section", "element"]).optional(),
     context: WebHostContextSchema.optional(),
     arg: PanelArgSchema.refine(
       validPanelArg,
       "panel argument must be bounded JSON data",
     ).optional(),
-  }),
+    input: PortablePanelInputSchema.optional(),
+    acceptsResult: z.literal(true).optional(),
+    element: PortableElementProjectionSchema.optional(),
+  }).refine(
+    (frame) => frame.kind === "element" || LocalNameSchema.safeParse(frame.panel).success,
+    { message: "panel and section names must be local names", path: ["panel"] },
+  ).refine(
+    (frame) => (frame.kind === "element") === (frame.element !== undefined),
+    { message: "element data belongs only to an element mount", path: ["element"] },
+  ).refine(
+    (frame) => frame.arg === undefined || frame.kind === undefined || frame.kind === "panel",
+    { message: "only a panel takes an argument", path: ["arg"] },
+  ).refine(
+    (frame) => (frame.input === undefined && frame.acceptsResult === undefined) || frame.kind === undefined || frame.kind === "panel",
+    { message: "only a panel takes transient input or returns a result", path: ["input"] },
+  ),
   z.strictObject({
     t: z.literal("context"),
     instance: instanceId,
@@ -906,6 +1122,7 @@ export const WebIsolateHostFrameSchema = z.discriminatedUnion("t", [
       validPanelArg,
       "panel argument must be bounded JSON data",
     ).optional(),
+    element: PortableElementProjectionSchema.optional(),
   }),
   z.strictObject({ t: z.literal("notification"), id: frameId }),
   z.strictObject({ t: z.literal("unmount"), instance: instanceId }),
@@ -931,9 +1148,11 @@ export const WebIsolateWorkerFrameSchema = z.discriminatedUnion("t", [
     t: z.literal("ready"),
     panels: LocalNameSchema.array().max(MAX_ISOLATE_PANELS),
     sections: LocalNameSchema.array().max(MAX_ISOLATE_PANELS).optional(),
+    elements: z.array(z.string().min(1).max(32)).max(MAX_ISOLATE_PANELS).optional(),
     hardenedContract: z.number().int().positive().optional(),
   }),
   z.strictObject({ t: z.literal("render"), instance: instanceId, tree: UiNodeSchema }),
+  z.strictObject({ t: z.literal("panel_result"), instance: instanceId, result: PanelResultSchema }),
   z.strictObject({
     t: z.literal("call"),
     id: frameId,
@@ -986,10 +1205,14 @@ export const PLUGIN_BUNDLE_FORMAT = 1;
  *    for older admitted guests, whose strict inventory parser predates the field.
  * 10 -> 11: Additive-optional hook.metadata announces read-only lifecycle host/fleet/service
  *    metadata. Older packed strict guests retain their original hook frames.
+ * 11 -> 12: Credential binding, declaration-governed references, data-only readiness probes,
+ *    bounded byte carriers, the fenced native-transfer context, mounted element edits and
+ *    owner-local panel intake/results. Contract-9 through contract-11 React guests retain
+ *    their strict context shape.
  */
-export const HARDENED_CONTRACT_VERSION = 11;
+export const HARDENED_CONTRACT_VERSION = 12;
 export const HARDENED_CONTRACT_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
+  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
 ]);
 export const HARDENED_CONTRACT_MINIMUM = Math.min(...HARDENED_CONTRACT_COMPAT_VERSIONS);
 
@@ -1162,6 +1385,16 @@ export function isolateVocabulary(): Record<string, unknown> {
     uiControlKinds: UI_CONTROL_KINDS,
     maxUiDepth: MAX_UI_DEPTH,
     maxUiNodes: MAX_UI_NODES,
+    maxLocalFiles: MAX_LOCAL_FILES,
+    maxLocalFileBytes: MAX_LOCAL_FILE_BYTES,
+    maxRasterPixels: MAX_RASTER_PIXELS,
+    maxRasterSide: MAX_RASTER_SIDE,
+    localFileSelection: z.toJSONSchema(LocalFileSelectionSchema),
+    byteImageSource: z.toJSONSchema(ByteImageSourceSchema),
+    byteImageCrop: z.toJSONSchema(ByteImageCropSchema),
+    byteImageStatus: z.toJSONSchema(ByteImageStatusSchema),
+    byteDownloadSource: z.toJSONSchema(ByteDownloadSourceSchema),
+    byteDownloadStatus: z.toJSONSchema(ByteDownloadStatusSchema),
     ctxMethods: ISOLATE_CTX_METHODS,
     hostMethods: WEB_HOST_METHODS,
     crashBudget: ISOLATE_CRASH_BUDGET,

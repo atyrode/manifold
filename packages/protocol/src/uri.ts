@@ -24,6 +24,7 @@ import { z } from "zod";
  *   manifold://machine/<machineId>/service/<serviceId>/operation/<operationId>
  *   manifold://machine/<machineId>/operation/<operationId>/job/<jobId>
  *   manifold://machine/<machineId>/operation/<operationId>/job/<jobId>/output/<outputId>
+ *   manifold://file/<fileId>
  *
  * An element and a tile are addressed THROUGH their container because neither has an
  * identity outside it — the same reason `TileRef`'s element form names an element id
@@ -38,6 +39,15 @@ export const MANIFOLD_URI_SCHEME = "manifold://";
  * wearing an address's clothes.
  */
 const RefIdSchema = z.string().min(1).max(128);
+
+/** Protocol-admitted owner kinds, never an extensible manifest-selected address grammar. */
+export const PluginOwnedRefKindSchema = z.enum(["file"]);
+export type PluginOwnedRefKind = z.infer<typeof PluginOwnedRefKindSchema>;
+export const PluginOwnedRefSchema = z.strictObject({
+  kind: z.literal("file"),
+  fileId: RefIdSchema,
+});
+export type PluginOwnedRef = z.infer<typeof PluginOwnedRefSchema>;
 
 export const ManifoldRefSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("terminal"), terminalId: RefIdSchema }),
@@ -79,6 +89,7 @@ export const ManifoldRefSchema = z.discriminatedUnion("kind", [
   }),
   z.strictObject({ kind: z.literal("agent"), agentId: RefIdSchema }),
   z.strictObject({ kind: z.literal("run"), runId: RefIdSchema }),
+  PluginOwnedRefSchema,
 ]);
 export type ManifoldRef = z.infer<typeof ManifoldRefSchema>;
 
@@ -124,6 +135,8 @@ export function formatManifoldUri(ref: ManifoldRef): string {
       return `${formatManifoldUri({ kind: "operation", machineId: ref.machineId, operationId: ref.operationId })}/job/${encodeURIComponent(ref.jobId)}`;
     case "output":
       return `${formatManifoldUri({ kind: "job", machineId: ref.machineId, operationId: ref.operationId, jobId: ref.jobId })}/output/${encodeURIComponent(ref.outputId)}`;
+    case "file":
+      return `${MANIFOLD_URI_SCHEME}file/${encodeURIComponent(ref.fileId)}`;
     default: {
       const exhaustive: never = ref;
       return exhaustive;
@@ -187,6 +200,8 @@ export function parseManifoldUri(text: string): ManifoldRef | null {
         return { kind: "action", actionName: first };
       case "machine":
         return { kind: "machine", machineId: first };
+      case "file":
+        return { kind: "file", fileId: first };
       default:
         return null;
     }
@@ -337,6 +352,7 @@ export function canContain(node: string): boolean | null {
     case "action":
     case "agent":
     case "run":
+    case "file":
       return false;
     default: {
       const exhaustive: never = ref;

@@ -1,4 +1,6 @@
 import type {
+  ByteCarrierContext,
+  ByteCarrierHandler,
   AnyActionDef,
   ServerHarness,
   AssemblyDelta,
@@ -9,6 +11,7 @@ import type {
   PluginLifecycle,
   PluginMigration,
   PluginStorage,
+  ReferenceProbeCtx,
   SqlParam,
   SqlRow,
   SqlStatement,
@@ -22,6 +25,10 @@ import {
 import {
   ActionCallArgsSchema,
   AskableCapSchema,
+  ByteTransferError,
+  IsolateByteReplySchema,
+  type IsolateByteRequest,
+  type IsolateByteReply,
   GuestMigrationDeclarationsSchema,
   ManifoldRefSchema,
   LocalNameSchema,
@@ -32,6 +39,42 @@ import {
   IsolateHarnessResultSchemas,
   HarnessDefinitionSchema,
   MachineBridgeArgsSchemas,
+  NativeTransferBeginPutArgsSchema,
+  NativeTransferBeginReadArgsSchema,
+  NativeTransferContinuationArgsSchema,
+  NativeTransferDescribeArgsSchema,
+  NativeTransferPutChunkArgsSchema,
+  NativeTransferReadChunkArgsSchema,
+  NativeTransferChunkDataSchema,
+  NativeTransferReceiptViewSchema,
+  NativeTransferEvidenceBatchSchema,
+  type NativeTransferTerminalEvidence,
+  ReferencePrepareRequestSchema,
+  ReferenceReceiptRequestSchema,
+  ReferenceReadFilterRequestSchema,
+  ReferenceReadFilterResultSchema,
+  ReferenceAttachmentRequestSchema,
+  ReferenceAttachmentResultSchema,
+  ReferencePublishRequestSchema,
+  ReferenceAbortRequestSchema,
+  ReferenceRequirePublishedRequestSchema,
+  ReferenceUnpublishRequestSchema,
+  ReferenceGrantRequestSchema,
+  ReferenceRevokeRequestSchema,
+  ReferenceAudienceRequestSchema,
+  ReferencePreparationSchema,
+  PublishedReferenceSchema,
+  PublishedReferenceIdentitySchema,
+  ReferenceTerminalReceiptSchema,
+  RestrictedGrantViewSchema,
+  RestrictedGrantResultSchema,
+  RestrictedAudiencePageSchema,
+  ReferenceProbeRequestSchema,
+  ReferenceProbeResultSchema,
+  IsolateReferenceReclaimRequestSchema,
+  type ReferenceTerminalReceipt,
+  type ReferenceProbeRequest,
+  type ReferenceProbeResult,
   type IsolateHarnessRequest,
   type ActionSummary,
   type IsolateChildFrame,
@@ -67,6 +110,20 @@ export type IsolateDispatchOutcome = Extract<IsolateChildFrame, { t: "dispatched
 export interface IsolateTransport {
   dispatch(action: string, args: unknown, ctx: ActionCtx): Promise<IsolateDispatchOutcome>;
   harness(request: IsolateHarnessRequest, ctx?: ActionCtx): Promise<IsolateDispatchOutcome>;
+  byteRequest?(request: IsolateByteRequest, ctx: ByteCarrierContext): Promise<IsolateByteReply>;
+  probeReady?(
+    ctx: ReferenceProbeCtx,
+    input: ReferenceProbeRequest,
+    idleOnly?: boolean,
+  ): Promise<ReferenceProbeResult>;
+  reclaimReferences?(
+    ctx: ReferenceProbeCtx,
+    receipts: readonly ReferenceTerminalReceipt[],
+  ): Promise<void>;
+  reconcileNativeTransfers?(
+    ctx: ReferenceProbeCtx,
+    receipts: readonly NativeTransferTerminalEvidence[],
+  ): Promise<void>;
   hook(hook: IsolateHook, ctx: LifecycleCtx, delta?: AssemblyDelta): Promise<void>;
   /** `onJobSettled` alone: its own ctx (the job slice rides it) and its own argument. */
   settled(ctx: JobSettledCtx, job: SettledJob): Promise<void>;
@@ -137,6 +194,71 @@ export function buildIsolateDef(
   });
   if (!declarations.success) throw new IsolateLoadError(declarations.error.message);
   const { migrations } = declarations.data;
+  if (loaded.probeReady === true && transport.probeReady === undefined)
+    throw new IsolateLoadError("readiness probe transport is unavailable");
+  if ((manifest.contributes?.references?.length ?? 0) !== 0 && loaded.probeReady !== true)
+    throw new IsolateLoadError("reference owner has no readiness probe");
+  if (loaded.reclaimReferences === true && transport.reclaimReferences === undefined)
+    throw new IsolateLoadError("reference reclamation transport is unavailable");
+  if (loaded.reconcileNativeTransfers === true && transport.reconcileNativeTransfers === undefined)
+    throw new IsolateLoadError("native evidence reconciliation transport is unavailable");
+  const declaredCarriers = manifest.contributes?.byteCarriers ?? [];
+  const reportedCarriers = loaded.byteCarriers ?? [];
+  if (
+    declaredCarriers.length !== reportedCarriers.length ||
+    declaredCarriers.some(
+      (declaration) => !reportedCarriers.some(
+        (reported) => reported.id === declaration.id && reported.direction === declaration.direction,
+      ),
+    ) ||
+    (declaredCarriers.length !== 0 && transport.byteRequest === undefined)
+  )
+    throw new IsolateLoadError("byte carrier declarations do not match the guest");
+  const byteCarriers: Record<string, ByteCarrierHandler> = {};
+  const byteRequest = async (
+    request: IsolateByteRequest,
+    ctx: ByteCarrierContext,
+  ): Promise<IsolateByteReply> => {
+    ctx.assertCurrent();
+    if (transport.byteRequest === undefined) throw new ByteTransferError("unavailable");
+    const reply = IsolateByteReplySchema.parse(await transport.byteRequest(request, ctx));
+    ctx.assertCurrent();
+    if (reply.method !== request.method)
+      throw new ByteTransferError(request.method === "write" ? "outcome_unknown" : "unavailable");
+    return reply;
+  };
+  for (const declaration of declaredCarriers) {
+    const carrierId = declaration.id;
+    const authorize: ByteCarrierHandler["authorize"] = async (ctx, input) => {
+      const reply = await byteRequest({ method: "authorize", carrierId, input }, ctx);
+      if (reply.method !== "authorize") throw new ByteTransferError("unavailable");
+      return reply.result;
+    };
+    byteCarriers[carrierId] = declaration.direction === "incoming"
+      ? {
+          direction: "incoming",
+          authorize,
+          write: async (ctx, input, data) => {
+            const reply = await byteRequest({
+              method: "write",
+              carrierId,
+              input,
+              data: Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString("base64"),
+            }, ctx);
+            if (reply.method !== "write") throw new ByteTransferError("outcome_unknown");
+            return reply.result;
+          },
+        }
+      : {
+          direction: "outgoing",
+          authorize,
+          read: async (ctx, input) => {
+            const reply = await byteRequest({ method: "read", carrierId, input }, ctx);
+            if (reply.method !== "read") throw new ByteTransferError("unavailable");
+            return { ...reply.result, data: Buffer.from(reply.result.data, "base64") };
+          },
+        };
+  }
   const actions: AnyActionDef[] = [];
   const handlers: Record<string, ActionHandler> = {};
   for (const summary of loaded.actions) {
@@ -220,9 +342,47 @@ export function buildIsolateDef(
     def: {
       manifest,
       inputValidation: "guest",
+      ...(declaredCarriers.length === 0 ? {} : { byteCarriers }),
       actions,
       handlers,
       lifecycle,
+      ...(loaded.probeReady !== true
+        ? {}
+        : {
+            probeReady: async (ctx: ReferenceProbeCtx, input: ReferenceProbeRequest) => {
+              if (transport.probeReady === undefined)
+                throw new IsolateDenial("unavailable", "readiness probe transport is unavailable");
+              return ReferenceProbeResultSchema.parse(
+                await transport.probeReady(ctx, ReferenceProbeRequestSchema.parse(input)),
+              );
+            },
+            probeReadyWhenIdle: async (ctx: ReferenceProbeCtx, input: ReferenceProbeRequest) => {
+              if (transport.probeReady === undefined)
+                throw new IsolateDenial("unavailable", "readiness probe transport is unavailable");
+              return ReferenceProbeResultSchema.parse(
+                await transport.probeReady(ctx, ReferenceProbeRequestSchema.parse(input), true),
+              );
+            },
+          }),
+      ...(loaded.reclaimReferences !== true
+        ? {}
+        : {
+            reclaimReferences: async (
+              ctx: ReferenceProbeCtx,
+              receipts: readonly ReferenceTerminalReceipt[],
+            ) => {
+              if (transport.reclaimReferences === undefined)
+                throw new IsolateDenial("unavailable", "reference reclamation transport is unavailable");
+              await transport.reclaimReferences(ctx, IsolateReferenceReclaimRequestSchema.parse(receipts));
+            },
+          }),
+      ...(loaded.reconcileNativeTransfers !== true ? {} : {
+        reconcileNativeTransfers: async (ctx: ReferenceProbeCtx, receipts: readonly NativeTransferTerminalEvidence[]) => {
+          if (!transport.reconcileNativeTransfers)
+            throw new IsolateDenial("unavailable", "native evidence reconciliation transport is unavailable");
+          await transport.reconcileNativeTransfers(ctx, NativeTransferEvidenceBatchSchema.parse(receipts));
+        },
+      }),
       ...(harness === undefined ? {} : { harness }),
       migrations: migrations.map((migration) => ({
         ...migration,
@@ -247,6 +407,8 @@ export function buildIsolateDef(
  */
 export type ServedCtx =
   | { readonly kind: "dispatch"; readonly ctx: ActionCtx }
+  | { readonly kind: "byte"; readonly ctx: ByteCarrierContext }
+  | { readonly kind: "probe"; readonly ctx: ReferenceProbeCtx }
   | { readonly kind: "settled"; readonly ctx: JobSettledCtx }
   | { readonly kind: "hook"; readonly ctx: LifecycleCtx }
   | {
@@ -343,6 +505,11 @@ function databaseOf(served: ServedCtx, method: IsolateCtxMethod): PluginDatabase
   const database = served.ctx.database;
   if (database === undefined) throw new Error(`slice_unavailable: ${method}`);
   return database;
+}
+
+function storageOf(served: ServedCtx, method: IsolateCtxMethod): PluginStorage {
+  if (served.kind === "byte") throw new Error(`slice_unavailable: ${method}`);
+  return served.ctx.storage;
 }
 
 const SQL_WIRE_TAG = "$manifold.sql";
@@ -515,6 +682,28 @@ export async function serveCtxCall(
   args: readonly unknown[],
   served: ServedCtx,
 ): Promise<unknown> {
+  if (served.kind === "byte") {
+    const { ctx } = served;
+    ctx.assertCurrent();
+    if (!method.startsWith("database.")) {
+      if (args.length !== 1) throw new ByteTransferError("invalid");
+      switch (method) {
+        case "references.requirePublished":
+          return ctx.requirePublished(ReferenceRequirePublishedRequestSchema.parse(args[0]).ref);
+        case "nativeTransfers.status":
+          return ctx.nativeTransfers.status(NativeTransferContinuationArgsSchema.parse(args[0]));
+        case "nativeTransfers.readChunk": {
+          const result = await ctx.nativeTransfers.readChunk(NativeTransferReadChunkArgsSchema.parse(args[0]));
+          return {
+            ...result,
+            data: Buffer.from(result.data.buffer, result.data.byteOffset, result.data.byteLength).toString("base64"),
+          };
+        }
+        default:
+          throw new ByteTransferError("unavailable");
+      }
+    }
+  }
   switch (method) {
     case "streams.open":
     case "streams.publish":
@@ -524,21 +713,23 @@ export async function serveCtxCall(
     case "jobs.unfollow":
       throw new Error("long-lived context handles require isolate ownership");
     case "storage.get":
-      return served.ctx.storage.get(stringArg(args, 0, method));
+      return storageOf(served, method).get(stringArg(args, 0, method));
     case "storage.set":
-      return served.ctx.storage.set(stringArg(args, 0, method), stringArg(args, 1, method));
+      return storageOf(served, method).set(stringArg(args, 0, method), stringArg(args, 1, method));
     case "storage.compareAndSet":
-      return served.ctx.storage.compareAndSet(
+      return storageOf(served, method).compareAndSet(
         stringArg(args, 0, method),
         args[1] === null ? null : stringArg(args, 1, method),
         stringArg(args, 2, method),
       );
     case "storage.delete":
-      return served.ctx.storage.delete(stringArg(args, 0, method));
+      return storageOf(served, method).delete(stringArg(args, 0, method));
     case "storage.keys":
-      return served.ctx.storage.keys(
+      return storageOf(served, method).keys(
         args[0] === undefined ? undefined : stringArg(args, 0, method),
       );
+    case "database.admitRecovery":
+      return databaseOf(served, method).admitRecovery();
     case "database.query":
       return sqlRowsToWire(
         await databaseOf(served, method).query(
@@ -575,6 +766,15 @@ export async function serveCtxCall(
     case "jobs.schedule":
     case "jobs.schedules":
     case "jobs.disableSchedule":
+    case "nativeTransfers.describe":
+    case "nativeTransfers.beginPut":
+    case "nativeTransfers.putChunk":
+    case "nativeTransfers.commitPut":
+    case "nativeTransfers.beginRead":
+    case "nativeTransfers.readChunk":
+    case "nativeTransfers.cancel":
+    case "nativeTransfers.status":
+    case "nativeTransfers.receipt":
     case "services.describe":
     case "services.readConfiguration":
     case "services.configureConfiguration":
@@ -586,6 +786,16 @@ export async function serveCtxCall(
     case "services.configureInstance":
     case "services.readInstance":
     case "services.invokeInstance":
+    case "references.prepare":
+    case "references.publish":
+    case "references.abort":
+    case "references.requirePublished":
+    case "references.unpublish":
+    case "references.grant":
+    case "references.revoke":
+    case "references.audience":
+    case "references.receipt":
+    case "references.readable":
     case "auth.allows":
     case "outsideScope":
     case "newId":
@@ -637,7 +847,75 @@ export async function serveCtxCall(
   }
   if (served.kind !== "dispatch") throw new Error(`slice_unavailable: ${method}`);
   const ctx = served.ctx;
+  if (method.startsWith("references.") && args.length !== 1)
+    throw new Error(`${method}: exactly one argument is required`);
   switch (method) {
+    case "nativeTransfers.describe":
+      return ctx.nativeTransfers.describe(NativeTransferDescribeArgsSchema.parse(args[0]));
+    case "nativeTransfers.beginPut":
+      return ctx.nativeTransfers.beginPut(NativeTransferBeginPutArgsSchema.parse(args[0]));
+    case "nativeTransfers.beginRead":
+      return ctx.nativeTransfers.beginRead(NativeTransferBeginReadArgsSchema.parse(args[0]));
+    case "nativeTransfers.putChunk": {
+      const wire = NativeTransferPutChunkArgsSchema.extend({ data: NativeTransferChunkDataSchema }).parse(args[0]);
+      return ctx.nativeTransfers.putChunk({ ...wire, data: Buffer.from(wire.data, "base64") });
+    }
+    case "nativeTransfers.commitPut":
+      return ctx.nativeTransfers.commitPut(NativeTransferContinuationArgsSchema.parse(args[0]));
+    case "nativeTransfers.cancel":
+      return ctx.nativeTransfers.cancel(NativeTransferContinuationArgsSchema.parse(args[0]));
+    case "nativeTransfers.status":
+      return ctx.nativeTransfers.status(NativeTransferContinuationArgsSchema.parse(args[0]));
+    case "nativeTransfers.receipt":
+      return NativeTransferReceiptViewSchema.parse(await ctx.nativeTransfers.receipt(NativeTransferContinuationArgsSchema.parse(args[0])));
+    case "nativeTransfers.readChunk": {
+      const result = await ctx.nativeTransfers.readChunk(NativeTransferReadChunkArgsSchema.parse(args[0]));
+      return { ...result, data: Buffer.from(result.data.buffer, result.data.byteOffset, result.data.byteLength).toString("base64") };
+    }
+    case "references.attach":
+      return ReferenceAttachmentResultSchema.parse(
+        await ctx.references.attach(ReferenceAttachmentRequestSchema.parse(args[0])),
+      );
+    case "references.prepare":
+      return ReferencePreparationSchema.parse(
+        await ctx.references.prepare(ReferencePrepareRequestSchema.parse(args[0])),
+      );
+    case "references.publish":
+      return PublishedReferenceSchema.parse(
+        await ctx.references.publish(ReferencePublishRequestSchema.parse(args[0])),
+      );
+    case "references.abort":
+      return ReferenceTerminalReceiptSchema.parse(
+        await ctx.references.abort(ReferenceAbortRequestSchema.parse(args[0])),
+      );
+    case "references.requirePublished":
+      return PublishedReferenceIdentitySchema.parse(
+        await ctx.references.requirePublished(ReferenceRequirePublishedRequestSchema.parse(args[0])),
+      );
+    case "references.unpublish":
+      return ReferenceTerminalReceiptSchema.parse(
+        await ctx.references.unpublish(ReferenceUnpublishRequestSchema.parse(args[0])),
+      );
+    case "references.grant":
+      return RestrictedGrantViewSchema.parse(
+        await ctx.references.grant(ReferenceGrantRequestSchema.parse(args[0])),
+      );
+    case "references.revoke":
+      return RestrictedGrantResultSchema.parse(
+        await ctx.references.revoke(ReferenceRevokeRequestSchema.parse(args[0])),
+      );
+    case "references.audience":
+      return RestrictedAudiencePageSchema.parse(
+        await ctx.references.audience(ReferenceAudienceRequestSchema.parse(args[0])),
+      );
+    case "references.readable":
+      return ReferenceReadFilterResultSchema.parse(
+        await ctx.references.readable(ReferenceReadFilterRequestSchema.parse(args[0])),
+      );
+    case "references.receipt":
+      return ReferenceTerminalReceiptSchema.parse(
+        await ctx.references.receipt(ReferenceReceiptRequestSchema.parse(args[0])),
+      );
     case "jobs.describe":
     case "jobs.describeDeployment":
     case "jobs.execute":

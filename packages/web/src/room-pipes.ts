@@ -100,6 +100,10 @@ export function panelSessionHandle(
   };
   return {
     action: (name, args) => watch.action(name, args),
+    readByteChunk: (pluginId, carrierId, request, signal) =>
+      watch.readByteChunk(pluginId, carrierId, request, signal),
+    writeByteChunk: (pluginId, carrierId, request, data, signal) =>
+      watch.writeByteChunk(pluginId, carrierId, request, data, signal),
     place: (ref, destination) => watch.place(ref, destination),
     selfCaps: () => watch.selfCaps(),
     machines: () => watch.machines(),

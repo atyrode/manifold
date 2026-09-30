@@ -15,6 +15,9 @@ import type { MachineJobOwner } from "./job-owner.ts";
 
 const MAX_FRAME = MAX_JOB_INSTALL_FRAME_BYTES;
 const MAX_QUEUE = 2 * MAX_JOB_INSTALL_FRAME_BYTES;
+// Install delivery keeps its existing budget; native bytes never inherit that larger queue.
+const MAX_TRANSFER_FRAME = 512 * 1024;
+const MAX_TRANSFER_QUEUE = 4 * MAX_TRANSFER_FRAME;
 export interface JobOwnerLink {
   readonly identity: JobOwner;
   send(command: JobCommand): void;
@@ -29,6 +32,8 @@ interface OwnerConnection {
   writer: FrameWriter;
   detach: () => void;
   pending: number;
+  pendingTransfers: number;
+  pendingTransferBytes: number;
   closed: boolean;
 }
 
@@ -52,6 +57,8 @@ export async function listenJobOwner(
           writer: new FrameWriter(socket, () => socket.end(), MAX_QUEUE),
           detach: () => {},
           pending: 0,
+          pendingTransfers: 0,
+          pendingTransferBytes: 0,
           closed: false,
         };
         socket.data = state;
@@ -60,7 +67,10 @@ export async function listenJobOwner(
           state.detach = owner.attach((event) => {
             if (state.closed) return false;
             if (!state.writer.send({ type: "identity", owner: owner.identity })) return false;
-            return state.writer.send({ type: "event", event });
+            return state.writer.send(
+              { type: "event", event },
+              event.type === "native_transfer_result" ? MAX_TRANSFER_QUEUE : MAX_QUEUE,
+            );
           });
           state.writer.send({ type: "identity", owner: owner.identity });
         } catch {
@@ -74,6 +84,14 @@ export async function listenJobOwner(
           for (const line of state.reader.push(bytes)) {
             const command = JobCommandSchema.parse(JSON.parse(line));
             const count = Buffer.byteLength(line);
+            const transfer = command.type === "native_transfer";
+            if (transfer) {
+              state.pendingTransfers++;
+              state.pendingTransferBytes += count;
+              if (count > MAX_TRANSFER_FRAME || state.pendingTransfers > 4 ||
+                  state.pendingTransferBytes > MAX_TRANSFER_QUEUE)
+                throw new Error("owner_transfer_queue_limit");
+            }
             state.pending += count;
             if (state.pending > MAX_QUEUE) throw new Error("owner_command_queue_limit");
             void owner
@@ -81,6 +99,10 @@ export async function listenJobOwner(
               .catch(() => socket.end())
               .finally(() => {
                 state.pending -= count;
+                if (transfer) {
+                  state.pendingTransfers--;
+                  state.pendingTransferBytes -= count;
+                }
               });
           }
         } catch {
@@ -155,15 +177,21 @@ export function unixJobOwnerDialer(socketPath: string): JobOwnerDialer {
                       return identity;
                     },
                     send(command) {
-                      if (!closed) writer?.send(command);
+                      if (!closed) writer?.send(
+                        command,
+                        command.type === "native_transfer" ? MAX_TRANSFER_QUEUE : MAX_QUEUE,
+                      );
                     },
                     close() {
                       sock.end();
                     },
                   });
-                } else if (Reflect.get(raw, "type") === "event" && identity)
-                  handlers.onEvent(JobEventSchema.parse(Reflect.get(raw, "event")));
-                else throw new Error("invalid_owner_frame");
+                } else if (Reflect.get(raw, "type") === "event" && identity) {
+                  const event = JobEventSchema.parse(Reflect.get(raw, "event"));
+                  if (event.type === "native_transfer_result" && Buffer.byteLength(line) > MAX_TRANSFER_FRAME)
+                    throw new Error("owner_transfer_frame_limit");
+                  handlers.onEvent(event);
+                } else throw new Error("invalid_owner_frame");
               }
             } catch {
               sock.end();

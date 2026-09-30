@@ -4,8 +4,9 @@
 ARG MANIFOLD_RECOVERY_BASE_IMAGE=oven/bun:1.4.2@sha256:9114c058aeae42162ee16dd5084b95fe9473970bb6bcb5b232ab1630f0546895
 FROM oven/bun:1.4.2@sha256:9114c058aeae42162ee16dd5084b95fe9473970bb6bcb5b232ab1630f0546895 AS recovery-build
 WORKDIR /src
-COPY scripts/full-state-recovery.ts ./full-state-recovery.ts
-RUN bun build --compile --target=bun --outfile=/out/manifold-full-state-recovery ./full-state-recovery.ts
+COPY scripts/full-state-recovery.ts ./scripts/full-state-recovery.ts
+COPY packages/server/src/recovery-budget.ts packages/server/src/recovery-gate.ts ./packages/server/src/
+RUN bun build --compile --target=bun --outfile=/out/manifold-full-state-recovery ./scripts/full-state-recovery.ts
 COPY scripts/replica-guard.ts ./replica-guard.ts
 RUN bun build --compile --target=bun --outfile=/out/manifold-replica-guard ./replica-guard.ts
 

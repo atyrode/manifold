@@ -31,6 +31,8 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
+  useMemo,
   useReducer,
   useRef,
   useState,
@@ -73,6 +75,7 @@ import {
   subscribeTerminalFontPreferences,
   terminalFontPreferences,
 } from "./terminal-font-preferences";
+import { TerminalFileIntake } from "./terminal-file-intake";
 
 const EMPTY_SNAPSHOT = new Uint8Array(0);
 
@@ -118,6 +121,19 @@ export function TerminalView({
   const clipboardLiveRef = useRef(false);
   const activeRef = useRef(active);
   const [clipboardCopy, setClipboardCopy] = useState<TerminalClipboardCopy | null>(null);
+  const [fileSelection, setFileSelection] = useState<{
+    file: File;
+    hostClient: typeof host.client;
+    client: typeof client;
+    principal: string;
+    terminalId: string;
+  } | null>(null);
+  const [selectingClipboardFile, setSelectingClipboardFile] = useState(false);
+  const filePendingRef = useRef(false);
+  const fileOfferedRef = useRef(false);
+  const fileOfferRef = useRef<(file: File) => void>(() => {});
+  const inputRef = useRef<((data: string) => boolean) | null>(null);
+  const fileReviewRef = useRef<HTMLDivElement | null>(null);
   const resizeFrameRef = useRef<number | null>(null);
   const scheduleResizeRef = useRef<((refresh?: boolean) => void) | null>(null);
   const syncViewportRef = useRef<(() => void) | null>(null);
@@ -217,6 +233,64 @@ export function TerminalView({
     }
     activeRef.current = active;
   }, [active, readOnly, isController]);
+
+  const filesEnabled = host.assembly.enabled("core.files");
+  const fileLifetime = useMemo(() => ({}), [host.client, host.principal.id, client, terminalId, filesEnabled, readOnly]);
+  const fileLifetimeRef = useRef<object | null>(fileLifetime);
+  fileLifetimeRef.current = fileLifetime;
+  const selectionCurrent = fileSelection !== null && fileSelection.hostClient === host.client &&
+    fileSelection.client === client && fileSelection.principal === host.principal.id &&
+    fileSelection.terminalId === terminalId && filesEnabled && !readOnly;
+  useLayoutEffect(() => {
+    if (selectionCurrent) fileReviewRef.current?.focus();
+  }, [selectionCurrent, fileSelection]);
+  useLayoutEffect(() => {
+    filePendingRef.current = false;
+    fileOfferedRef.current = false;
+    setSelectingClipboardFile(false);
+    setFileSelection(null);
+    return () => {
+      if (fileLifetimeRef.current === fileLifetime) fileLifetimeRef.current = null;
+    };
+  }, [fileLifetime]);
+  fileOfferRef.current = (file) => {
+    if (!filesEnabled || readOnly) {
+      notifyRef.current("Save and delivery require the optional Files plugin and a live terminal view.");
+      return;
+    }
+    if (fileOfferedRef.current || filePendingRef.current) {
+      notifyRef.current("Finish or cancel the current file review before selecting another file.");
+      return;
+    }
+    fileOfferedRef.current = true;
+    setFileSelection({ file, hostClient: host.client, client, principal: host.principal.id, terminalId });
+  };
+  const selectClipboardFile = async (): Promise<void> => {
+    if (!filesEnabled || readOnly || fileSelection || filePendingRef.current) return;
+    const lifetime = fileLifetime;
+    filePendingRef.current = true;
+    setSelectingClipboardFile(true);
+    try {
+      const items = await navigator.clipboard.read();
+      if (lifetime !== fileLifetimeRef.current) return;
+      if (items.length !== 1) throw new Error("Select one clipboard item at a time.");
+      const item = items[0]!;
+      const type = item.types.find((value) => value.startsWith("image/")) ??
+        item.types.find((value) => value === "text/plain") ?? item.types[0];
+      if (!type) throw new Error("No clipboard file representation is available.");
+      const blob = await item.getType(type);
+      if (lifetime !== fileLifetimeRef.current) return;
+      filePendingRef.current = false;
+      fileOfferRef.current(new File([blob], "clipboard-file", { type }));
+    } catch {
+      if (lifetime === fileLifetimeRef.current) notifyRef.current("Clipboard file selection unavailable. Allow clipboard access and select a single item, or drop a file. Nothing was saved.");
+    } finally {
+      if (lifetime === fileLifetimeRef.current) {
+        filePendingRef.current = false;
+        setSelectingClipboardFile(false);
+      }
+    }
+  };
 
   /**
    * Real-terminal feel: activation (one click-release anywhere on the embed)
@@ -338,6 +412,7 @@ export function TerminalView({
     terminalRef.current = terminal;
     const canWrite = (): boolean => {
       const current = clientRef.current;
+      const caps = current.selfCaps();
       return (
         terminalRef.current === terminal &&
         clipboardLiveRef.current &&
@@ -345,15 +420,21 @@ export function TerminalView({
         !readOnlyRef.current &&
         current.status === "open" &&
         current.self !== null &&
+        (caps.includes("*") || caps.includes("terminals:write")) &&
+        current.terminals.get(terminalId)?.status === "running" &&
         current.terminals.get(terminalId)?.controllerId === current.self.id
       );
     };
+    inputRef.current = (data) => {
+      if (!canWrite()) return false;
+      clientRef.current.sendTerminalInput(terminalId, data);
+      return true;
+    };
     const clipboard = installTerminalClipboard(terminal, container, {
       canWrite,
-      send: (data) => {
-        if (canWrite()) clientRef.current.sendTerminalInput(terminalId, data);
-      },
+      send: (data) => { inputRef.current?.(data); },
       notice: (message) => notifyRef.current(message, { key: `terminal-clipboard:${terminalId}` }),
+      offerFile: (file) => fileOfferRef.current(file),
       offerCopy: (request) => {
         if (
           request === null &&
@@ -565,6 +646,7 @@ export function TerminalView({
       disposeGestures();
       clipboard.dispose();
       clipboardRef.current = null;
+      inputRef.current = null;
       graphics.dispose();
       graphicsRef.current = null;
       pasteMode.dispose();
@@ -1105,6 +1187,17 @@ export function TerminalView({
             >
               +
             </button>
+            <button
+              type="button"
+              className="node-titlebar__ctl terminal-file-save"
+              disabled={!filesEnabled || readOnly || fileSelection !== null || selectingClipboardFile}
+              aria-label="Select clipboard file for explicit Save"
+              title="Save clipboard file separately; native MIME paste stays one-use"
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={() => { void selectClipboardFile(); }}
+            >
+              Save file…
+            </button>
             {titlebarExtras}
           </>
         }
@@ -1116,6 +1209,24 @@ export function TerminalView({
         ref={containerRef}
         data-action={showTakeControl ? "core.terminals.take" : undefined}
         onDoubleClickCapture={handleTakeControl}
+        onDragOver={(event) => {
+          if (event.dataTransfer.types.includes("Files")) {
+            event.preventDefault();
+            event.stopPropagation();
+          }
+        }}
+        onDrop={(event) => {
+          if (!event.dataTransfer.types.includes("Files")) return;
+          event.preventDefault();
+          event.stopPropagation();
+          if (!event.isTrusted) return;
+          if (event.dataTransfer.files.length !== 1) {
+            notifyRef.current("Select one file at a time for explicit Save and delivery.");
+            return;
+          }
+          const file = event.dataTransfer.files[0]!;
+          if (!clipboardRef.current?.pasteFile(file)) fileOfferRef.current(file);
+        }}
         onDoubleClick={(event) => {
           // Never preventDefault: a controller keeps xterm's word selection.
           event.stopPropagation();
@@ -1155,6 +1266,14 @@ export function TerminalView({
         className={`terminal-idle-veil${active ? "" : " terminal-idle-veil--on"}`}
         aria-hidden="true"
       />
+      {selectionCurrent && fileSelection ? <Cover className="terminal-file-intake" role="dialog" aria-label="Terminal file Save and delivery"
+        onKeyDown={(event) => event.stopPropagation()}>
+        <div className="mf-vocab" tabIndex={-1} ref={fileReviewRef}>
+          <TerminalFileIntake host={host} file={fileSelection.file} suggestedMachineId={machine?.id}
+            send={(text) => active && fileLifetimeRef.current === fileLifetime && selectionCurrent && inputRef.current?.(text) === true}
+            onClose={() => { fileOfferedRef.current = false; setFileSelection(null); }} />
+        </div>
+      </Cover> : null}
       {clipboardCopy === null ? null : (
         <Cover
           className="terminal-clipboard-request"

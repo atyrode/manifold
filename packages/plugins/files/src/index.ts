@@ -1,0 +1,186 @@
+import { defineAction } from "@manifold/plugin/action";
+import {
+  NativeTransferDescriptionSchema, ReferenceAudienceRequestSchema, ReferenceGrantRequestSchema,
+  ReferenceReceiptRequestSchema, ReferenceRevokeRequestSchema, ReferenceTerminalReceiptSchema,
+  RestrictedAudiencePageSchema, RestrictedGrantResultSchema, RestrictedGrantViewSchema,
+  type PluginManifest,
+} from "@manifold/protocol";
+import { z } from "zod";
+import {
+  FILES_ID, FILE_CREATE, FILE_READ, FILE_DELETE, FILE_SHARE, FILE_DATABASE_BYTES,
+  BeginFileUploadInputSchema, FileUploadRequestSchema, FileTransferSchema, FileRequestSchema,
+  ListFilesInputSchema, ListFilesResultSchema, FileDescriptorSchema, OpenFileReadInputSchema,
+  OpenFileReadResultSchema, FileReadRequestSchema, DescribeFileMachineSchema,
+  BeginFileDeliverySchema, FileNativeResultSchema, FileDeliveryRequestSchema,
+  BeginFileDownloadSchema, FileDownloadRequestSchema,
+} from "./contract.ts";
+
+export const filesManifest: PluginManifest = {
+  id: FILES_ID,
+  version: "1.0.0",
+  defaultEnabled: false,
+  title: "Files",
+  description: "Private immutable files, explicit named sharing, and confined machine transfers.",
+  capabilities: [FILE_CREATE, FILE_READ, FILE_DELETE, FILE_SHARE, "machines:read", "locations:read", "locations:create-child"],
+  dataVersion: { major: 1, minor: 0 },
+  database: { maxBytes: FILE_DATABASE_BYTES, recovery: { profile: "bounded-wal-v1" } },
+  purges: ["storage"],
+  machine: {
+    artifacts: {}, operations: {},
+    requiresResourceBindings: true,
+    locations: {
+      "core.files.deliveries": {
+        anchor: "state", components: ["deliveries"], revision: "1",
+        kind: "directory", managed: true,
+      },
+      "core.files.downloads": {
+        anchor: "operator.files", components: [], revision: "1", kind: "directory",
+      },
+    },
+    transferPolicy: {
+      format: "native-transfer-v1",
+      locations: { "core.files.deliveries": ["create-child"], "core.files.downloads": ["read"] },
+    },
+  },
+  contributes: {
+    panels: [{ id: "library", title: "Files" }, { id: "intake", title: "Review file intake" }],
+    sections: [{ id: "library", title: "Files", order: 5, presentation: "plain" }],
+    elements: [], tools: [],
+    references: [{
+      kind: "file", resolveAction: "resolve", listAction: "list", receiptAction: "receipt",
+      createCapability: FILE_CREATE, readCapability: FILE_READ, deleteCapability: FILE_DELETE,
+      creatorCaps: [FILE_READ, FILE_DELETE, FILE_SHARE],
+      sharing: { grantorCapability: FILE_SHARE, prerequisites: [FILE_READ, FILE_SHARE], grantableCaps: [FILE_READ] },
+    }],
+    byteCarriers: [
+      { id: "upload", direction: "incoming", capability: FILE_CREATE, refKinds: ["plugin"] },
+      { id: "read", direction: "outgoing", capability: FILE_READ, refKinds: ["file"] },
+      { id: "download", direction: "outgoing", capability: "locations:read", refKinds: ["location"] },
+    ],
+    events: [],
+  },
+  entry: { server: true, web: "web.js", worker: true },
+};
+
+export const filesActions = [
+  defineAction({
+    name: "beginUpload", title: "Reserve a private file upload", trace: "opaque",
+    caps: [FILE_CREATE], requirements: [{ cap: FILE_CREATE, target: ["collection"] }],
+    input: BeginFileUploadInputSchema, result: FileTransferSchema,
+  }),
+  defineAction({
+    name: "inspectUpload", title: "Inspect this credential's upload receipt", trace: "opaque",
+    caps: [FILE_CREATE], requirements: [{ cap: FILE_CREATE, target: ["collection"] }],
+    input: FileUploadRequestSchema, result: FileTransferSchema,
+  }),
+  defineAction({
+    name: "completeUpload", title: "Verify and publish a private file", trace: "opaque",
+    caps: [FILE_CREATE], requirements: [{ cap: FILE_CREATE, target: ["collection"] }],
+    input: FileUploadRequestSchema, result: FileRequestSchema,
+  }),
+  defineAction({
+    name: "cancelUpload", title: "Cancel an incomplete private upload", trace: "opaque",
+    caps: [FILE_CREATE], requirements: [{ cap: FILE_CREATE, target: ["collection"] }],
+    input: FileUploadRequestSchema, result: FileTransferSchema,
+  }),
+  defineAction({
+    name: "list", title: "List files this credential may read", trace: "opaque", caps: [],
+    input: ListFilesInputSchema, result: ListFilesResultSchema,
+  }),
+  defineAction({
+    name: "inspect", title: "Inspect a published private file", trace: "opaque",
+    caps: [FILE_READ], requirements: [{ cap: FILE_READ, target: ["ref"] }],
+    input: FileRequestSchema, result: FileDescriptorSchema,
+  }),
+  defineAction({
+    name: "resolve", title: "Resolve an authorized file title", trace: "opaque",
+    caps: [FILE_READ], requirements: [{ cap: FILE_READ, target: ["ref"] }],
+    input: FileRequestSchema, result: z.strictObject({ title: z.string().max(255) }),
+  }),
+  defineAction({
+    name: "openRead", title: "Open an authenticated file read", trace: "opaque",
+    caps: [FILE_READ], requirements: [{ cap: FILE_READ, target: ["ref"] }],
+    input: OpenFileReadInputSchema, result: OpenFileReadResultSchema,
+  }),
+  defineAction({
+    name: "inspectRead", title: "Inspect this credential's file read", trace: "opaque",
+    caps: [FILE_READ], requirements: [{ cap: FILE_READ, target: ["ref"] }],
+    input: FileReadRequestSchema, result: FileTransferSchema,
+  }),
+  defineAction({
+    name: "cancelRead", title: "Close this credential's file read", trace: "opaque",
+    caps: [FILE_READ], requirements: [{ cap: FILE_READ, target: ["ref"] }],
+    input: FileReadRequestSchema, result: FileTransferSchema,
+  }),
+  defineAction({
+    name: "delete", title: "Logically delete a file without deleting independent copies", trace: "opaque",
+    caps: [FILE_DELETE], requirements: [{ cap: FILE_DELETE, target: ["ref"] }],
+    input: ReferenceReceiptRequestSchema, result: ReferenceTerminalReceiptSchema,
+  }),
+  defineAction({
+    name: "receipt", title: "Reconcile this credential's terminal file operation", trace: "opaque", caps: [],
+    input: ReferenceReceiptRequestSchema, result: ReferenceTerminalReceiptSchema,
+  }),
+  defineAction({
+    name: "share", title: "Grant a reviewed named principal file read access", trace: "opaque",
+    caps: [FILE_READ, FILE_SHARE], requirements: [
+      { cap: FILE_READ, target: ["ref"] }, { cap: FILE_SHARE, target: ["ref"] },
+    ],
+    input: ReferenceGrantRequestSchema, result: RestrictedGrantViewSchema,
+  }),
+  defineAction({
+    name: "unshare", title: "Revoke only this file owner's named read grant", trace: "opaque",
+    caps: [FILE_READ, FILE_SHARE], requirements: [
+      { cap: FILE_READ, target: ["ref"] }, { cap: FILE_SHARE, target: ["ref"] },
+    ],
+    input: ReferenceRevokeRequestSchema, result: RestrictedGrantResultSchema,
+  }),
+  defineAction({
+    name: "audience", title: "Review active and retired named sharing decisions", trace: "opaque",
+    caps: [FILE_READ, FILE_SHARE], requirements: [
+      { cap: FILE_READ, target: ["ref"] }, { cap: FILE_SHARE, target: ["ref"] },
+    ],
+    input: ReferenceAudienceRequestSchema, result: RestrictedAudiencePageSchema,
+  }),
+  defineAction({
+    name: "describeMachine", title: "Review exact machine file locations and consent", trace: "opaque",
+    caps: ["machines:read"], requirements: [{ cap: "machines:read", target: ["machine"] }],
+    input: DescribeFileMachineSchema, result: NativeTransferDescriptionSchema,
+  }),
+  defineAction({
+    name: "beginDelivery", title: "Start explicit create-only machine delivery", trace: "opaque",
+    caps: [FILE_READ, "locations:create-child"], requirements: [
+      { cap: FILE_READ, target: ["ref"] },
+      { cap: "locations:create-child", target: ["location"] },
+    ],
+    input: BeginFileDeliverySchema, result: FileNativeResultSchema,
+  }),
+  ...(["advanceDelivery", "commitDelivery", "inspectDelivery", "cancelDelivery"] as const).map((name) =>
+    defineAction({
+      name, title: `${name} without overwriting an independent machine copy`, trace: "opaque",
+      caps: [FILE_READ, "locations:create-child"], requirements: [
+        { cap: FILE_READ, target: ["ref"] },
+        { cap: "locations:create-child", target: ["location"] },
+      ],
+      input: FileDeliveryRequestSchema, result: FileNativeResultSchema,
+    }),
+  ),
+  defineAction({
+    name: "beginDownload", title: "Snapshot an explicitly selected machine file without library retention",
+    trace: "opaque", caps: ["locations:read"],
+    requirements: [{ cap: "locations:read", target: ["location"] }],
+    input: BeginFileDownloadSchema, result: FileNativeResultSchema,
+  }),
+  ...(["inspectDownload", "cancelDownload"] as const).map((name) =>
+    defineAction({
+      name, title: `${name} without library retention`, trace: "opaque", caps: ["locations:read"],
+      requirements: [{ cap: "locations:read", target: ["location"] }],
+      input: FileDownloadRequestSchema, result: FileNativeResultSchema,
+    }),
+  ),
+  defineAction({
+    name: "receiptDelivery", title: "Reconcile uncertainty without disclosing a destination", trace: "opaque",
+    caps: [], input: z.strictObject({ transferId: FileTransferSchema.shape.transferId }),
+    result: z.strictObject({ transferId: FileTransferSchema.shape.transferId, state: z.enum(["completed", "cancelled", "failed", "expired", "refused", "outcome_unknown"]) }),
+  }),
+];

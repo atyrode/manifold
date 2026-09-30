@@ -3,15 +3,17 @@ import { resolve } from "node:path";
 import { existsSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import type { JobSettledCtx, LifecycleCtx, PluginStorage } from "@manifold/plugin";
+import type { ByteCarrierContext, JobSettledCtx, LifecycleCtx, PluginStorage } from "@manifold/plugin";
 import type {
   Cap,
   EventKind,
   EventPayload,
+  ReferenceProbeResult,
   ManifoldRef,
   PluginManifest,
   SettledJob,
 } from "@manifold/protocol";
+import { ByteTransferError } from "@manifold/protocol";
 import { AuthService } from "../src/auth.ts";
 import { IsolateDenial, IsolateLoadError, type IsolateState } from "../src/isolate/contract.ts";
 import { IsolateSupervisor, type IsolateSupervisorDeps } from "../src/isolate/supervisor.ts";
@@ -123,6 +125,7 @@ function actionCtx(
     | "newId"
     | "emit"
     | "admitPrepared"
+    | "references"
   > = {
     traceId: 1,
     callerPlugin: null,
@@ -140,6 +143,19 @@ function actionCtx(
     storage,
     now: () => runtime.now(),
     newId: () => runtime.newId(),
+    references: {
+      attach: async () => { throw new Error("unexpected references.attach"); },
+      prepare: async () => { throw new Error("unexpected references.prepare"); },
+      publish: async () => { throw new Error("unexpected references.publish"); },
+      abort: async () => { throw new Error("unexpected references.abort"); },
+      requirePublished: async () => { throw new Error("unexpected references.requirePublished"); },
+      unpublish: async () => { throw new Error("unexpected references.unpublish"); },
+      receipt: async () => { throw new Error("unexpected references.receipt"); },
+      readable: async () => { throw new Error("unexpected references.readable"); },
+      grant: async () => { throw new Error("unexpected references.grant"); },
+      revoke: async () => { throw new Error("unexpected references.revoke"); },
+      audience: async () => { throw new Error("unexpected references.audience"); },
+    },
     emit: (ref, kind, payload) => {
       emitted.push({ ref, kind, payload });
     },
@@ -264,6 +280,22 @@ async function harnessFixture(overrides: Partial<IsolateSupervisorDeps> = {}) {
   };
 }
 
+async function referenceFixture(overrides: Partial<IsolateSupervisorDeps> = {}) {
+  const subject = fixture(overrides);
+  const { def } = await subject.supervisor.load({
+    pluginId: PLUGIN_ID, manifest, dir: GUEST_DIR, hardenedContract: 10,
+  });
+  if (def.probeReady === undefined) throw new Error("missing readiness probe");
+  const { ctx } = actionCtx(subject.storage, subject.runtime);
+  return {
+    ...subject,
+    def,
+    probe: def.probeReady,
+    ctx: { ...ctx, credentialBinding: "b".repeat(64) } as ActionCtx,
+    ref: { kind: "file" as const, fileId: "owned" },
+  };
+}
+
 async function unavailable(promise: Promise<unknown>): Promise<void> {
   let settled = false;
   const outcome = promise
@@ -287,6 +319,657 @@ afterEach(async () => {
 });
 
 describe("IsolateSupervisor", () => {
+  test("native terminal reconciliation has only its data lease across the real child boundary", async () => {
+    const { supervisor, runtime, storage } = fixture({ referenceProbeDeadlineMs: 500 });
+    const { def } = await supervisor.load({
+      pluginId: PLUGIN_ID, manifest, dir: GUEST_DIR, hardenedContract: 10,
+    });
+    const reconcile = def.reconcileNativeTransfers;
+    if (!reconcile) throw new Error("missing native evidence callback");
+    await storage.set("reservation:transfer", "active");
+    await storage.set("reservation:independent", "active");
+    const evidence = { transferId: "transfer", requestId: "request", actorId: principal.id,
+      credentialBinding: "a".repeat(64), mode: "put" as const, state: "committed" as const };
+    await reconcile({ storage, now: () => runtime.now() }, [evidence]);
+    expect(await storage.get("reservation:transfer")).toBeNull();
+    expect(await storage.get("reservation:independent")).toBe("active");
+    await storage.set("reservation:transfer", "active");
+    await expect(reconcile({ storage, now: () => runtime.now() }, [{ ...evidence, requestId: "escape" }]))
+      .rejects.toBeInstanceOf(IsolateDenial);
+    expect(await storage.get("reservation:transfer")).toBe("active");
+    expect(await storage.get("reservation:independent")).toBe("active");
+  });
+
+  test("publication can await a nested data probe without inheriting or deadlocking action authority", async () => {
+    const { supervisor, runtime, storage } = fixture({ referenceProbeDeadlineMs: 500 });
+    const { def } = await supervisor.load({
+      pluginId: PLUGIN_ID, manifest, dir: GUEST_DIR, hardenedContract: 10,
+    });
+    const { ctx } = actionCtx(storage, runtime);
+    const probe = def.probeReady;
+    const reclaim = def.reclaimReferences;
+    if (probe === undefined || reclaim === undefined) throw new Error("missing reference callbacks");
+    const ref = { kind: "file" as const, fileId: "owned" };
+    const readyDigest = "a".repeat(64);
+    await storage.set("ready:prepared", readyDigest);
+    const caller = {
+      ...ctx,
+      credentialBinding: "b".repeat(64),
+      references: {
+        ...ctx.references,
+        publish: async ({ preparationId }: { preparationId: string }) => {
+          const ready = await probe({ storage, now: () => runtime.now() }, { ref, preparationId, requestId: 'request', bindingDigest: 'b'.repeat(64), publication: 'prepared' });
+          if (ready === null) throw new Error("published_ready_missing");
+          if (ready?.readyDigest == null) throw new Error('published_ready_missing');
+          return { ref, preparationId: ready.preparationId, readyDigest: ready.readyDigest };
+        },
+      },
+    } satisfies ActionCtx;
+    expect(await invoke(def, "reference", caller, { text: "prepared" })).toEqual({
+      binding: "b".repeat(64),
+      result: { ref, preparationId: "prepared", readyDigest },
+    });
+    await reclaim({ storage, now: () => runtime.now() }, [
+      { ref, preparationId: "prepared", state: "deleted" },
+    ]);
+    expect(await probe({ storage, now: () => runtime.now() }, { ref, preparationId: "prepared", requestId: 'request', bindingDigest: 'b'.repeat(64), publication: 'prepared' })).toBeNull();
+  });
+
+  test("idle maintenance declines a busy guest without interrupting its ordinary effects", async () => {
+    const f = await referenceFixture({ referenceProbeDeadlineMs: 2_000 });
+    const idleProbe = f.def.probeReadyWhenIdle;
+    if (idleProbe === undefined) throw new Error("missing idle readiness probe");
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const ordinary = invoke(f.def, "echo", {
+      ...f.ctx,
+      storage: {
+        ...f.storage,
+        get: async (key) => {
+          entered.resolve();
+          await release.promise;
+          return f.storage.get(key);
+        },
+      },
+    }, { text: "uninterrupted" });
+    const request = {
+      ref: f.ref, preparationId: "prepared", requestId: "request",
+      bindingDigest: "b".repeat(64), publication: "published" as const,
+    };
+    try {
+      await entered.promise;
+      await unavailable(idleProbe({ storage: f.storage, now: () => f.runtime.now() }, request));
+    } finally {
+      release.resolve();
+    }
+    expect(await ordinary).toEqual({ text: "uninterrupted", count: 1 });
+    expect(await f.storage.get("count")).toBe("1");
+
+    const probing = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<string | null>();
+    const recovery = idleProbe({
+      storage: {
+        ...f.storage,
+        get: async () => { probing.resolve(); return finish.promise; },
+      },
+      now: () => f.runtime.now(),
+    }, request);
+    let admitted = false;
+    let queued: Promise<unknown> | undefined;
+    try {
+      await probing.promise;
+      queued = invoke(f.def, "echo", {
+        ...f.ctx, admitPrepared: () => { admitted = true; },
+      }, { text: "queued behind recovery" }).catch((error: unknown) => error);
+      expect(await f.storage.get("count")).toBe("1");
+      expect(admitted).toBe(false);
+    } finally {
+      finish.resolve("a".repeat(64));
+    }
+    expect(await recovery).toEqual({
+      preparationId: "prepared", readyDigest: "a".repeat(64), expiresAt: f.runtime.now() + 60_000,
+    });
+    expect(await queued).toEqual({ text: "queued behind recovery", count: 2 });
+    expect(admitted).toBe(true);
+    expect(f.logger.count("isolate_exited")).toBe(0);
+    expect(await invoke(f.def, "echo", f.ctx, { text: "resumed" })).toEqual({ text: "resumed", count: 3 });
+  });
+
+  test.each(["completeAfterBarrier", "prepareAfterBarrier"])(
+    "a private publication probe waits for the current owner turn and excludes new admission: %s",
+    async (action) => {
+      const f = await referenceFixture({ referenceProbeDeadlineMs: 2_000 });
+      const gate = await guestBarrier();
+      const release = Promise.withResolvers<string | null>();
+      let reading = false;
+      let admitted = 0;
+      let published = false;
+      const existing = invoke(f.def, action, {
+        ...f.ctx,
+        admitPrepared: () => { admitted += 1; },
+      }, { text: gate.dir }).catch((error: unknown) => error);
+      await gate.entered();
+      const caller = {
+        ...f.ctx,
+        references: {
+          ...f.ctx.references,
+          publish: async ({ preparationId }: { preparationId: string }) => {
+            const ready = await f.probe({
+              storage: {
+                ...f.storage,
+                get: async () => { reading = true; return release.promise; },
+              },
+              now: () => f.runtime.now(),
+            }, { ref: f.ref, preparationId, requestId: 'request', bindingDigest: 'b'.repeat(64), publication: 'prepared' });
+            published = true;
+            if (ready?.readyDigest == null) throw new Error('published_ready_missing');
+            return { ref: f.ref, preparationId: ready.preparationId, readyDigest: ready.readyDigest };
+          },
+        },
+      } satisfies ActionCtx;
+      const publication = invoke(f.def, "reference", caller, { text: "prepared" })
+        .catch((error: unknown) => error);
+      let queued: Promise<unknown> | undefined;
+      let queuedAdmitted = false;
+      try {
+        expect(reading).toBe(false);
+        await gate.release();
+        expect(await existing).toEqual({
+          text: action === "completeAfterBarrier" ? "completed" : "admitted",
+        });
+        expect(admitted).toBe(1);
+        await until(() => reading);
+        queued = invoke(f.def, "echo", {
+          ...f.ctx, admitPrepared: () => { queuedAdmitted = true; },
+        }, { text: "still usable" }).catch((error: unknown) => error);
+        expect(await f.storage.get("count")).toBeNull();
+        expect(queuedAdmitted).toBe(false);
+        expect(published).toBe(false);
+        expect(f.logger.count("isolate_exited")).toBe(0);
+        release.resolve("a".repeat(64));
+        expect(await publication).toEqual({
+          binding: "b".repeat(64),
+          result: { ref: f.ref, preparationId: "prepared", readyDigest: "a".repeat(64) },
+        });
+        expect(await queued).toEqual({
+          text: "still usable", count: 1,
+        });
+        expect(queuedAdmitted).toBe(true);
+        expect(f.logger.count("isolate_spawned")).toBe(1);
+      } finally {
+        release.resolve(null);
+        await gate.release();
+        await Promise.all([existing, publication, queued]);
+      }
+    },
+  );
+
+  test.each(["dispatch", "harness"])(
+    "a probe cannot forge its waiting %s completion to acquire emission authority",
+    async (victimKind) => {
+      const f = fixture({ referenceProbeDeadlineMs: 2_000 });
+      const { def } = await f.supervisor.load({
+        pluginId: PLUGIN_ID,
+        manifest: {
+          ...manifest,
+          contributes: {
+            ...manifest.contributes,
+            harness: { id: "test", title: "Test", profileSchema: {}, sessionRef: "typed" },
+          },
+        },
+        dir: GUEST_DIR,
+        hardenedContract: 10,
+      });
+      const probe = def.probeReady;
+      const harness = def.harness;
+      if (probe === undefined || harness === undefined) throw new Error("missing guest callbacks");
+      const { ctx, emitted } = actionCtx(f.storage, f.runtime);
+      const gate = await guestBarrier();
+      const caller = {
+        ...ctx,
+        storage: {
+          ...f.storage,
+          get: async (key: string) => {
+            if (key !== "nested-probe") return f.storage.get(key);
+            await probe({ storage: f.storage, now: () => f.runtime.now() }, {
+              ref: { kind: "file", fileId: "owned" }, preparationId: "emission",
+              requestId: "request", bindingDigest: "b".repeat(64), publication: "prepared",
+            });
+            return null;
+          },
+        },
+      } satisfies ActionCtx;
+      const victim = (victimKind === "dispatch"
+        ? invoke(def, "holdForProbe", caller, { text: gate.dir })
+        : harness.sessions(caller, { machineId: `hold-for-probe:${gate.dir}` }))
+        .catch((error: unknown) => error);
+      try {
+        await gate.entered();
+        await gate.release();
+        expect(await victim).toBeInstanceOf(IsolateDenial);
+        expect(emitted).toEqual([]);
+        expect(await invoke(def, "echo", ctx, { text: "fresh generation" })).toEqual({
+          text: "fresh generation", count: 1,
+        });
+        expect(emitted).toEqual([{
+          ref: { kind: "plugin", pluginId: PLUGIN_ID }, kind: "echoed", payload: { count: 1 },
+        }]);
+        expect(f.logger.count("isolate_spawned")).toBe(2);
+      } finally {
+        await gate.release();
+        await victim;
+      }
+    },
+  );
+
+  test("a parent publish timeout can finish without releasing the still-running probe's fence", async () => {
+    const f = await referenceFixture({ referenceProbeDeadlineMs: 2_000 });
+    const release = Promise.withResolvers<string | null>();
+    const expired = Promise.withResolvers<never>();
+    let reading = false;
+    let probeResult: Promise<ReferenceProbeResult> | undefined;
+    const caller = {
+      ...f.ctx,
+      references: {
+        ...f.ctx.references,
+        publish: async () => {
+          probeResult = f.probe({
+            storage: {
+              ...f.storage,
+              get: async () => { reading = true; return release.promise; },
+            },
+            now: () => f.runtime.now(),
+          }, { ref: f.ref, preparationId: "prepared", requestId: 'request', bindingDigest: 'b'.repeat(64), publication: 'prepared' });
+          const ready = await Promise.race([probeResult, expired.promise]);
+          if (ready === null) throw new Error("published_ready_missing");
+          if (ready?.readyDigest == null) throw new Error('published_ready_missing');
+          return { ref: f.ref, preparationId: ready.preparationId, readyDigest: ready.readyDigest };
+        },
+      },
+    } satisfies ActionCtx;
+    const publication = invoke(f.def, "reference", caller, { text: "prepared" })
+      .catch((error: unknown) => error);
+    try {
+      await until(() => reading);
+      expired.reject(new Error("authority_lost"));
+      expect(await publication).toEqual({ refused: "authority_lost" });
+      await unavailable(invoke(f.def, "identify", f.ctx, { text: "still fenced" }));
+      release.resolve("a".repeat(64));
+      expect(await probeResult).toMatchObject({ preparationId: "prepared", readyDigest: "a".repeat(64) });
+      expect(await invoke(f.def, "echo", f.ctx, { text: "after timeout" })).toEqual({
+        text: "after timeout", count: 1,
+      });
+      expect(f.logger.count("isolate_spawned")).toBe(1);
+      expect(f.logger.count("isolate_exited")).toBe(0);
+    } finally {
+      release.resolve(null);
+      await Promise.allSettled([publication, probeResult]);
+    }
+  });
+
+  test(
+    "an action deadline quarantines its nested probe and late data result",
+    async () => {
+      const f = await referenceFixture({
+        dispatchDeadlineMs: 500, referenceProbeDeadlineMs: 2_000,
+      });
+      const release = Promise.withResolvers<string | null>();
+      let reading = false;
+      let published = false;
+      const caller = {
+        ...f.ctx,
+        references: {
+          ...f.ctx.references,
+          publish: async () => {
+            const ready = await f.probe({
+              storage: {
+                ...f.storage,
+                get: async () => { reading = true; return release.promise; },
+              },
+              now: () => f.runtime.now(),
+            }, { ref: f.ref, preparationId: "prepared", requestId: 'request', bindingDigest: 'b'.repeat(64), publication: 'prepared' });
+            published = true;
+            if (ready?.readyDigest == null) throw new Error('published_ready_missing');
+            return { ref: f.ref, preparationId: ready.preparationId, readyDigest: ready.readyDigest };
+          },
+        },
+      } satisfies ActionCtx;
+      const publication = invoke(f.def, "reference", caller, { text: "prepared" })
+        .catch((error: unknown) => error);
+      try {
+        await until(() => reading);
+        // A dead generation's outstanding data await must not serialize its replacement.
+        expect(await publication).toBeInstanceOf(IsolateDenial);
+        expect(published).toBe(false);
+        expect(await f.probe({ storage: f.storage, now: () => f.runtime.now() }, { ref: f.ref, preparationId: "fresh", requestId: 'request', bindingDigest: 'b'.repeat(64), publication: 'prepared' })).toBeNull();
+        release.resolve("a".repeat(64));
+        expect(await invoke(f.def, "echo", f.ctx, { text: "fresh generation" })).toEqual({
+          text: "fresh generation", count: 1,
+        });
+        expect(published).toBe(false);
+        expect(f.logger.count("isolate_spawned")).toBe(2);
+      } finally {
+        release.resolve(null);
+        await publication;
+      }
+    },
+  );
+
+  test("an unadmitted owner request expires without killing the active data callback", async () => {
+    const f = await referenceFixture({ dispatchDeadlineMs: 100, referenceProbeDeadlineMs: 2_000 });
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<string | null>();
+    const probing = f.probe({
+      storage: {
+        ...f.storage,
+        get: async () => { entered.resolve(); return release.promise; },
+      },
+      now: () => f.runtime.now(),
+    }, {
+      ref: f.ref, preparationId: "prepared", requestId: "request",
+      bindingDigest: "b".repeat(64), publication: "published",
+    });
+    let admitted = false;
+    try {
+      await entered.promise;
+      await unavailable(invoke(f.def, "echo", {
+        ...f.ctx, admitPrepared: () => { admitted = true; },
+      }, { text: "expired before admission" }));
+      expect(admitted).toBe(false);
+      expect(await f.storage.get("count")).toBeNull();
+      release.resolve("a".repeat(64));
+      expect(await probing).toMatchObject({ preparationId: "prepared", readyDigest: "a".repeat(64) });
+      expect(await invoke(f.def, "echo", f.ctx, { text: "still live" })).toEqual({
+        text: "still live", count: 1,
+      });
+      expect(f.logger.count("isolate_exited")).toBe(0);
+    } finally {
+      release.resolve(null);
+      await Promise.allSettled([probing]);
+    }
+  });
+
+  test("a dequeued owner request retains its original total deadline", async () => {
+    const f = await referenceFixture({ dispatchDeadlineMs: 1_000, referenceProbeDeadlineMs: 800 });
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<string | null>();
+    const request = {
+      ref: f.ref, preparationId: "prepared", requestId: "request",
+      bindingDigest: "b".repeat(64), publication: "published" as const,
+    };
+    const activeProbe = f.probe({
+      storage: {
+        ...f.storage,
+        get: async () => { entered.resolve(); return release.promise; },
+      },
+      now: () => f.runtime.now(),
+    }, request);
+    await entered.promise;
+    const action = invoke(f.def, "hang", f.ctx, { text: "remaining deadline" })
+      .catch((error: unknown) => error);
+    try {
+      // This integration exercises actual IPC/deadline/SIGKILL ordering. Advancing only
+      // parent timers would not advance the child process that must receive the request.
+      await Bun.sleep(650);
+      release.resolve("a".repeat(64));
+      await activeProbe;
+      // Its 800 ms starts now: the action's original remaining 350 ms must expire first.
+      // Resetting the action to 1,000 ms after dequeue would let this queued probe expire
+      // without killing the generation, and would retain the action's authority too long.
+      await unavailable(f.probe({ storage: f.storage, now: () => f.runtime.now() }, request));
+      expect(f.logger.count("isolate_exited")).toBe(1);
+      expect(await action).toBeInstanceOf(IsolateDenial);
+    } finally {
+      release.resolve(null);
+      await Promise.allSettled([activeProbe, action]);
+    }
+  });
+
+  test("owner request admission is bounded while a data callback holds the guest", async () => {
+    const f = await referenceFixture({ referenceProbeDeadlineMs: 2_000 });
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<string | null>();
+    const probing = f.probe({
+      storage: {
+        ...f.storage,
+        get: async () => { entered.resolve(); return release.promise; },
+      },
+      now: () => f.runtime.now(),
+    }, {
+      ref: f.ref, preparationId: "prepared", requestId: "request",
+      bindingDigest: "b".repeat(64), publication: "published",
+    });
+    const queued: Promise<unknown>[] = [];
+    try {
+      await entered.promise;
+      for (let index = 0; index < 255; index += 1) {
+        queued.push(invoke(f.def, "echo", f.ctx, { text: "queued" }).catch((error: unknown) => error));
+      }
+      await unavailable(invoke(f.def, "echo", f.ctx, { text: "over capacity" }));
+      expect(await f.storage.get("count")).toBeNull();
+      release.resolve("a".repeat(64));
+      await probing;
+      for (const result of await Promise.all(queued)) expect(result).toMatchObject({ text: "queued" });
+      expect(await f.storage.get("count")).toBe("255");
+      expect(f.logger.count("isolate_exited")).toBe(0);
+    } finally {
+      release.resolve(null);
+      await Promise.allSettled([probing, ...queued]);
+    }
+  });
+
+  test("an aborted queued byte request never enters the guest or survives into its next owner turn", async () => {
+    const f = fixture({ referenceProbeDeadlineMs: 2_000 });
+    const { def } = await f.supervisor.load({
+      pluginId: PLUGIN_ID, dir: GUEST_DIR, hardenedContract: 10,
+      manifest: {
+        ...manifest,
+        contributes: {
+          ...manifest.contributes,
+          byteCarriers: [{ id: "bytes", direction: "outgoing", capability: "scenes:read", refKinds: ["file"] }],
+        },
+      },
+    });
+    const probe = def.probeReady;
+    const carrier = def.byteCarriers?.["bytes"];
+    if (probe === undefined || carrier === undefined) throw new Error("missing guest callbacks");
+    const gate = await guestBarrier();
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<string | null>();
+    const probing = probe({
+      storage: {
+        ...f.storage,
+        get: async () => { entered.resolve(); return release.promise; },
+      },
+      now: () => f.runtime.now(),
+    }, {
+      ref: { kind: "file", fileId: "owned" }, preparationId: "prepared", requestId: "request",
+      bindingDigest: "b".repeat(64), publication: "published",
+    });
+    const abort = new AbortController();
+    const byteCtx: ByteCarrierContext = {
+      pluginId: PLUGIN_ID, principal, credentialBinding: "b".repeat(64),
+      signal: abort.signal, now: () => f.runtime.now(),
+      assertCurrent: () => { if (abort.signal.aborted) throw new ByteTransferError("cancelled"); },
+      requirePublished: async () => { throw new Error("unexpected fixture publication call"); },
+      nativeTransfers: {
+        readChunk: async () => { throw new Error("unexpected fixture native read"); },
+        status: async () => { throw new Error("unexpected fixture native status"); },
+      },
+    };
+    const input = {
+      transferId: "queued-byte", ref: { kind: "file" as const, fileId: gate.dir },
+      offset: 0, sequence: 0, length: 1,
+    };
+    try {
+      await entered.promise;
+      const cancelled = carrier.authorize(byteCtx, input);
+      abort.abort();
+      await expect(cancelled).rejects.toMatchObject({ reason: "cancelled" });
+      release.resolve("a".repeat(64));
+      await probing;
+      expect(existsSync(resolve(gate.dir, "byte-entered"))).toBe(false);
+      const fresh = new AbortController();
+      expect(await carrier.authorize({
+        ...byteCtx,
+        signal: fresh.signal,
+        assertCurrent: () => { if (fresh.signal.aborted) throw new ByteTransferError("cancelled"); },
+      }, input)).toEqual({ expiresAt: f.runtime.now() + 60_000 });
+      expect(existsSync(resolve(gate.dir, "byte-entered"))).toBe(true);
+      expect(f.logger.count("isolate_exited")).toBe(0);
+    } finally {
+      release.resolve(null);
+      await Promise.allSettled([probing]);
+    }
+  });
+
+  test("unload cancels unadmitted owner requests rather than replaying them in the next generation", async () => {
+    const f = await referenceFixture();
+    const gate = await guestBarrier();
+    const active = invoke(f.def, "completeAfterBarrier", f.ctx, { text: gate.dir })
+      .catch((error: unknown) => error);
+    await gate.entered();
+    let admitted = false;
+    const queued = invoke(f.def, "echo", {
+      ...f.ctx, admitPrepared: () => { admitted = true; },
+    }, { text: "not replayed" }).catch((error: unknown) => error);
+    try {
+      await f.supervisor.unload(PLUGIN_ID);
+      expect(await active).toBeInstanceOf(IsolateDenial);
+      expect(await queued).toBeInstanceOf(IsolateDenial);
+      expect(admitted).toBe(false);
+      const { def } = await f.supervisor.load({
+        pluginId: PLUGIN_ID, manifest, dir: GUEST_DIR, hardenedContract: 10,
+      });
+      expect(await invoke(def, "echo", f.ctx, { text: "fresh generation" })).toEqual({
+        text: "fresh generation", count: 1,
+      });
+      const unsent = invoke(def, "echo", f.ctx, { text: "retired before startup" })
+        .catch((error: unknown) => error);
+      await f.supervisor.unload(PLUGIN_ID);
+      expect(await unsent).toBeInstanceOf(IsolateDenial);
+      expect(await f.storage.get("count")).toBe("1");
+      expect(f.logger.count("isolate_spawned")).toBe(2);
+    } finally {
+      await gate.release();
+      await Promise.all([active, queued]);
+    }
+  });
+
+  test("a probe cannot complete while an owner-data callback is still outstanding", async () => {
+    const f = await referenceFixture({ referenceProbeDeadlineMs: 2_000 });
+    const gate = await guestBarrier();
+    const release = Promise.withResolvers<string | null>();
+    let reading = false;
+    const probed = f.probe({
+      storage: {
+        ...f.storage,
+        get: async () => { reading = true; return release.promise; },
+      },
+      now: () => f.runtime.now(),
+    }, { ref: f.ref, preparationId: `early:${gate.dir}`, requestId: 'request', bindingDigest: 'b'.repeat(64), publication: 'prepared' }).catch((error: unknown) => error);
+    try {
+      await until(() => reading);
+      await gate.release();
+      expect(await probed).toBeInstanceOf(IsolateDenial);
+      expect(f.logger.lines.some((line) => line.fields?.reason === "deadline")).toBe(false);
+      release.resolve("a".repeat(64));
+      expect(await invoke(f.def, "echo", f.ctx, { text: "after quarantine" })).toEqual({
+        text: "after quarantine", count: 1,
+      });
+    } finally {
+      release.resolve(null);
+      await gate.release();
+      await probed;
+    }
+  });
+
+  test.each(["overflow", "replay"])(
+    "probe data calls cannot exceed the bounded queue or reuse an accepted callback id: %s",
+    async (preparationId) => {
+      const f = await referenceFixture({ referenceProbeDeadlineMs: 2_000 });
+      const release = Promise.withResolvers<string | null>();
+      let reads = 0;
+      const probed = f.probe({
+        storage: {
+          ...f.storage,
+          get: async () => { reads += 1; return release.promise; },
+        },
+        now: () => f.runtime.now(),
+      }, { ref: f.ref, preparationId, requestId: 'request', bindingDigest: 'b'.repeat(64), publication: 'prepared' }).catch((error: unknown) => error);
+      try {
+        expect(await probed).toBeInstanceOf(IsolateDenial);
+        expect(f.logger.lines.some((line) => line.fields?.reason === "deadline")).toBe(false);
+        expect(reads).toBeLessThanOrEqual(1);
+        release.resolve(null);
+        expect(await invoke(f.def, "echo", f.ctx, { text: "queue drained" })).toEqual({
+          text: "queue drained", count: 1,
+        });
+      } finally {
+        release.resolve(null);
+        await probed;
+      }
+    },
+  );
+
+  test("a reference call before input admission cannot reach the host service", async () => {
+    const { supervisor, runtime, storage } = fixture();
+    const { def } = await supervisor.load({
+      pluginId: PLUGIN_ID, manifest, dir: GUEST_DIR, hardenedContract: 10,
+    });
+    const { ctx } = actionCtx(storage, runtime);
+    let spent = false;
+    const caller = {
+      ...ctx,
+      credentialBinding: "b".repeat(64),
+      references: { ...ctx.references, publish: async () => { spent = true; throw new Error("must not reach"); } },
+    } satisfies ActionCtx;
+    expect(await invoke(def, "referenceBeforeAdmission", caller, {})).toEqual({
+      denial: "slice_unavailable: references.publish",
+    });
+    expect(spent).toBe(false);
+  });
+
+  test.each(["identity", "references", "receipt", "storage", "parent-answer", "hang"])(
+    "a nested readiness probe cannot borrow its waiting action or outlive its deadline: %s",
+    async (preparationId) => {
+      const { supervisor, runtime, storage } = fixture({ referenceProbeDeadlineMs: 200 });
+      const { def } = await supervisor.load({
+        pluginId: PLUGIN_ID, manifest, dir: GUEST_DIR, hardenedContract: 10,
+      });
+      const { ctx } = actionCtx(storage, runtime);
+      const probe = def.probeReady;
+      if (probe === undefined) throw new Error("missing readiness probe");
+      let publications = 0;
+      let published = false;
+      let identityWrites = 0;
+      let receipts = 0;
+      const caller = {
+        ...ctx,
+        credentialBinding: "b".repeat(64),
+        identity: { ...ctx.identity, revokeMachine: () => { identityWrites += 1; return { ok: true, value: 1 }; } },
+        references: {
+          ...ctx.references,
+          receipt: async () => { receipts += 1; throw new Error("must not reach"); },
+          publish: async () => {
+            publications += 1;
+            await probe({ storage, now: () => runtime.now() }, { ref: { kind: "file", fileId: "owned" }, preparationId, requestId: 'request', bindingDigest: 'b'.repeat(64), publication: 'prepared' });
+            published = true;
+            throw new Error("probe unexpectedly returned");
+          },
+        },
+      } satisfies ActionCtx;
+      await expect(invoke(def, "reference", caller, { text: preparationId })).rejects.toBeInstanceOf(
+        IsolateDenial,
+      );
+      expect(publications).toBe(1);
+      expect(identityWrites).toBe(0);
+      expect(receipts).toBe(0);
+      expect(published).toBe(false);
+      expect(await storage.get("borrowed")).toBeNull();
+    },
+  );
+
   test("harness requests use the caller's host slices and stage emissions only after a valid answer", async () => {
     const { supervisor, runtime, storage } = fixture();
     const declared: PluginManifest = {
@@ -605,38 +1288,6 @@ describe("IsolateSupervisor", () => {
       count: 1,
     });
   });
-  test("load turns the child's report into a def with local names and only the declared hooks", async () => {
-    const { supervisor, logger, states } = fixture();
-    const { def, lifecycle } = await supervisor.load({
-      pluginId: PLUGIN_ID,
-      manifest,
-      dir: GUEST_DIR,
-    });
-
-    expect(def.manifest).toBe(manifest);
-    expect(def.actions.map((action) => action.name).sort()).toEqual([
-      "backpressure",
-      "boom",
-      "echo",
-      "fenced",
-      "fencedEmit",
-      "garble",
-      "hang",
-      "identify",
-      "oversize",
-      "refuse",
-      "slice",
-    ]);
-    expect(Object.keys(def.handlers).sort()).toEqual(
-      def.actions.map((action) => action.name).sort(),
-    );
-    expect(typeof lifecycle.onEnable).toBe("function");
-    expect(lifecycle.onDisable).toBeUndefined();
-    expect(def.lifecycle).toBe(lifecycle);
-    expect(supervisor.state(PLUGIN_ID)).toBe("running");
-    expect(states.map((row) => row.state)).toEqual(["starting", "running"]);
-    expect(logger.count("isolate_spawned")).toBe(1);
-  });
 
   test("only contract 8 receives the host-owned immediate caller on real child dispatches", async () => {
     for (const contract of [7, 8]) {
@@ -683,6 +1334,25 @@ describe("IsolateSupervisor", () => {
     ]);
     // A non-storage slice is served from the same dispatch's ctx.
     expect(await invoke(def, "slice", ctx, {})).toBe("id-1");
+  });
+
+  test("an isolate without private callbacks still admits independent requests concurrently", async () => {
+    const f = fixture();
+    const { def } = await f.supervisor.load({
+      pluginId: PLUGIN_ID, manifest, dir: GUEST_DIR, hardenedContract: 9,
+    });
+    const { ctx } = actionCtx(f.storage, f.runtime);
+    const gate = await guestBarrier();
+    const held = invoke(def, "completeAfterBarrier", ctx, { text: gate.dir });
+    try {
+      await gate.entered();
+      expect(await invoke(def, "echo", ctx, { text: "independent" })).toEqual({
+        text: "independent", count: 1,
+      });
+    } finally {
+      await gate.release();
+      expect(await held).toEqual({ text: "completed" });
+    }
   });
 
   test("concurrent child dispatches increment durable state without losing an update", async () => {

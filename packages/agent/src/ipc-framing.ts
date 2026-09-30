@@ -82,10 +82,16 @@ export class FrameWriter {
     return this.queuedBytes;
   }
 
-  /** Encodes one frame as a line and writes or queues it. Returns false once overflowed. */
-  send(frame: unknown): boolean {
+  /** Encodes one frame as a line. A caller may impose a smaller shared-backlog ceiling. */
+  send(frame: unknown, queueLimit?: number): boolean {
     if (this.overflowed) return false;
     const bytes = Buffer.from(`${JSON.stringify(frame)}\n`, "utf8");
+    if (queueLimit !== undefined && this.queuedBytes + bytes.byteLength > queueLimit) {
+      this.overflowed = true;
+      this.queue = [];
+      this.onOverflow(this.queuedBytes + bytes.byteLength);
+      return false;
+    }
     if (this.queue.length === 0) {
       const written = this.socket.write(bytes);
       if (written >= bytes.byteLength) return true;

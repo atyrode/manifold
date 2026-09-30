@@ -1,7 +1,9 @@
-import type { ManifoldRef, PluginManifest } from "@manifold/protocol";
+import { PluginManifestSchema, PluginOwnedRefSchema, type ManifoldRef, type PluginManifest } from "@manifold/protocol";
 import { describe, expect, test } from "bun:test";
+import { z } from "zod";
 import {
   assembleRoster,
+  defineAction,
   emissionRefusal,
   emitterMayEmit,
   type Assembly,
@@ -97,7 +99,7 @@ describe("the declared-topics index", () => {
 });
 
 describe("emission is refused unless it was declared", () => {
-  test("a declared kind emitted by its owner is legal on any node", () => {
+  test("a declared kind emitted by its owner is legal on shared nodes", () => {
     const live = assembly();
     for (const ref of [
       CONTAINER,
@@ -130,10 +132,8 @@ describe("emission is refused unless it was declared", () => {
 
   test("a plugin may emit on its OWN node and never on another plugin's", () => {
     /*
-      Collection-level facts (a container born, a machine enrolled) have no node of their own,
-      so they ride the declaring plugin's node — which makes manifold://plugin/<id> the one
-      address form whose topic names a party, and therefore the one that must be checked
-      against the emitter. Every other form addresses a node nobody owns exclusively.
+      Collection-level facts ride the declaring plugin's own node, so the explicit plugin
+      identity in the address must match the emitter.
     */
     const live = assembly();
     const own: ManifoldRef = { kind: "plugin", pluginId: "core.index" };
@@ -142,6 +142,48 @@ describe("emission is refused unless it was declared", () => {
     const refusal = emissionRefusal(live, "core.index", foreign, "container_created");
     expect(refusal).toContain("another plugin's node");
     expect(refusal).toContain("manifold://plugin/core.terminals");
+  });
+
+  test("a declared vocabulary cannot impersonate the owner of a file topic", () => {
+    const files: PluginDef = {
+      manifest: PluginManifestSchema.parse({
+        id: "vendor.files", version: "1.0.0", title: "Files", description: "",
+        capabilities: ["vendor.files:create", "vendor.files:read", "vendor.files:delete", "vendor.files:share"],
+        contributes: {
+          events: [{ id: "file_changed", title: "File changed" }],
+          references: [{
+            kind: "file", resolveAction: "resolve", readCapability: "vendor.files:read",
+            createCapability: "vendor.files:create", deleteCapability: "vendor.files:delete",
+            creatorCaps: ["vendor.files:read", "vendor.files:delete", "vendor.files:share"],
+            sharing: {
+              grantorCapability: "vendor.files:share",
+              prerequisites: ["vendor.files:read", "vendor.files:share"],
+              grantableCaps: ["vendor.files:read"],
+            },
+          }],
+        },
+      }),
+      actions: [defineAction({
+        name: "resolve", title: "Resolve", caps: ["vendor.files:read"],
+        requirements: [{ cap: "vendor.files:read", target: ["ref"] }],
+        input: z.strictObject({ ref: PluginOwnedRefSchema }),
+        result: z.strictObject({ title: z.string().max(128) }),
+      })],
+    };
+    const foreign: PluginDef = {
+      manifest: manifest({
+        id: "vendor.foreign",
+        events: [{ id: "file_changed", title: "File changed" }],
+      }),
+      actions: [],
+    };
+    const file: ManifoldRef = { kind: "file", fileId: "private" };
+    const live = assembleRoster([files, foreign], NONE);
+    expect(live.enabled("vendor.foreign")).toBe(true);
+    expect(emitterMayEmit(live, "vendor.files", file, "file_changed")).toBe(true);
+    expect(emitterMayEmit(live, "vendor.foreign", file, "file_changed")).toBe(false);
+    expect(emitterMayEmit(assembleRoster([foreign], NONE), "vendor.foreign", file, "file_changed"))
+      .toBe(false);
   });
 
   test("an assembly that declares nothing refuses every emission", () => {

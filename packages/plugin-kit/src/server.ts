@@ -1,12 +1,17 @@
 import type {
+  ByteCarrierContext,
   ConfigureServiceConfigurationArgs,
+  PluginNativeTransferContext,
   JobExecution,
   JobScheduleTiming,
   PublicJobSchedule,
   ServiceConfigurationRead,
   ServiceDescription,
+  PluginReferenceContext,
 } from "@manifold/plugin";
 import type { ServerHarness } from "@manifold/plugin";
+import { NativeTransferError } from "@manifold/plugin";
+export { NativeTransferError } from "@manifold/plugin";
 export type {
   ServerHarness,
   Agent,
@@ -16,7 +21,20 @@ export type {
   TerminalRuntime,
 } from "@manifold/plugin";
 import {
+  ByteTransferError,
+  ByteRefusalSchema,
+  IsolateByteDeclarationsSchema,
+  IsolateByteReplySchema,
+  MAX_BYTE_CHUNK_BYTES,
+  MAX_BYTE_REQUESTS,
+  type ByteAdmission,
+  type ByteCarrierRequest,
+  type ByteReadChunk,
+  type ByteWriteReceipt,
+  type IsolateByteReply,
   ActionResultProjectionSchema,
+  DatabaseRecoveryAdmissionSchema,
+  type DatabaseRecoveryAdmission,
   type ActionResultProjection,
   HARDENED_CONTRACT_VERSION,
   EventKindSchema,
@@ -27,12 +45,49 @@ import {
   GuestMigrationDeclarationsSchema,
   HarnessDefinitionSchema,
   IsolateHarnessResultSchemas,
+  ReferenceProbeResultSchema,
+  type ReferenceProbeRequest,
+  type ReferenceProbeResult,
+  ReferencePrepareRequestSchema,
+  ReferencePublishRequestSchema,
+  ReferenceAbortRequestSchema,
+  ReferenceRequirePublishedRequestSchema,
+  ReferenceUnpublishRequestSchema,
+  ReferenceReceiptRequestSchema,
+  ReferenceReadFilterRequestSchema,
+  ReferenceReadFilterResultSchema,
+  ReferenceAttachmentRequestSchema,
+  ReferenceAttachmentResultSchema,
+  ReferenceGrantRequestSchema,
+  ReferenceRevokeRequestSchema,
+  ReferenceAudienceRequestSchema,
+  ReferencePreparationSchema,
+  PublishedReferenceSchema,
+  PublishedReferenceIdentitySchema,
+  ReferenceTerminalReceiptSchema,
+  type ReferenceTerminalReceipt,
+  RestrictedGrantViewSchema,
+  RestrictedGrantResultSchema,
+  RestrictedAudiencePageSchema,
   type HarnessDefinition,
   MAX_ISOLATE_ACTIONS,
   MAX_ISOLATE_EMITS,
   ISOLATE_MAX_FRAME_BYTES,
   ManifoldRefSchema,
   MachineBridgeResultSchemas,
+  NativeTransferBeginPutArgsSchema,
+  NativeTransferBeginReadArgsSchema,
+  NativeTransferContinuationArgsSchema,
+  NativeTransferDescribeArgsSchema,
+  NativeTransferDescriptionSchema,
+  NativeTransferPutChunkArgsSchema,
+  NativeTransferReadChunkArgsSchema,
+  NativeTransferReadChunkResultSchema,
+  NativeTransferReasonSchema,
+  NativeTransferStatusSchema,
+  NativeTransferReadChunkWireResultSchema,
+  NativeTransferReceiptViewSchema,
+  type NativeTransferTerminalEvidence,
   type MachineBridgeAnswer,
   type MachineCredentialGrant,
   type MachineDrainOutcome,
@@ -239,6 +294,7 @@ export type GuestSqlRow = Readonly<Record<string, GuestSqlParam>>;
  */
 export interface GuestDatabase {
   readonly pluginId: string;
+  admitRecovery(): Promise<DatabaseRecoveryAdmission>;
   query<Row extends GuestSqlRow = GuestSqlRow>(
     sql: string,
     params?: readonly GuestSqlParam[],
@@ -343,6 +399,7 @@ export interface GuestJobs {
 }
 /** What a lifecycle hook may reach: every job verb except the live subscription. */
 export type GuestHookJobs = Omit<GuestJobs, "follow">;
+export type GuestNativeTransfers = PluginNativeTransferContext;
 
 /**
  * THE ONE VERB ONTO A SIBLING, served across the boundary (ADR 0041). `call` opens a door of
@@ -376,6 +433,8 @@ export interface GuestServices {
 
 export interface GuestCtx {
   readonly traceId: IsolateDispatchCtx["traceId"];
+  /** Host-derived credential equality binding; not a bearer or authority. */
+  readonly credentialBinding: string;
   readonly pluginId: string;
   /**
    * Verified immediate plugin caller, or null for a direct non-plugin entry; not a grant. Reading
@@ -398,8 +457,10 @@ export interface GuestCtx {
    */
   readonly database?: GuestDatabase;
   readonly jobs: GuestJobs;
+  readonly nativeTransfers: GuestNativeTransfers;
   readonly services: GuestServices;
   readonly actions: GuestActions;
+  readonly references: PluginReferenceContext;
   readonly streams: {
     open(kind: string, node: ManifoldRef): Promise<GuestStreamProducer>;
   };
@@ -483,6 +544,30 @@ export interface GuestLifecycle {
  */
 export type ServerHandler = (ctx: GuestCtx, args: never) => Promise<unknown>;
 
+/** Own data lease and clock only; query is not a claim of SQLite read-only execution. */
+export interface GuestReferenceProbeCtx {
+  readonly storage: GuestStorage;
+  readonly database?: GuestDatabase;
+  now(): number;
+}
+
+export interface GuestByteCarrierCtx extends Omit<ByteCarrierContext, "database" | "nativeTransfers"> {
+  readonly database?: GuestDatabase;
+  readonly nativeTransfers: Pick<GuestNativeTransfers, "readChunk" | "status">;
+}
+
+export type GuestByteCarrierHandler =
+  | {
+      readonly direction: "incoming";
+      authorize(ctx: GuestByteCarrierCtx, request: ByteCarrierRequest): Promise<ByteAdmission>;
+      write(ctx: GuestByteCarrierCtx, request: ByteCarrierRequest, data: Uint8Array): Promise<ByteWriteReceipt>;
+    }
+  | {
+      readonly direction: "outgoing";
+      authorize(ctx: GuestByteCarrierCtx, request: ByteCarrierRequest): Promise<ByteAdmission>;
+      read(ctx: GuestByteCarrierCtx, request: ByteCarrierRequest): Promise<ByteReadChunk>;
+    };
+
 export interface ServerPluginDef {
   readonly manifest: PluginManifest;
   readonly actions: readonly ServerActionDef[];
@@ -490,6 +575,19 @@ export interface ServerPluginDef {
   readonly lifecycle?: GuestLifecycle | undefined;
   readonly migrations?: readonly ServerMigration[] | undefined;
   readonly harness?: ServerHarness<GuestCtx>;
+  readonly byteCarriers?: Readonly<Record<string, GuestByteCarrierHandler>>;
+  readonly probeReady?: (
+    ctx: GuestReferenceProbeCtx,
+    input: ReferenceProbeRequest,
+  ) => Promise<ReferenceProbeResult>;
+  readonly reclaimReferences?: (
+    ctx: GuestReferenceProbeCtx,
+    receipts: readonly ReferenceTerminalReceipt[],
+  ) => Promise<void>;
+  readonly reconcileNativeTransfers?: (
+    ctx: GuestReferenceProbeCtx,
+    receipts: readonly NativeTransferTerminalEvidence[],
+  ) => Promise<void>;
 }
 
 // ---------------------------------------------------------------------------- the transport
@@ -844,6 +942,9 @@ const UNSERVED_SLICES = ["store", "rooms", "broker", "dials"] as const;
 /** One request's calls: `<requestId>:<n>`, so the host finds the dispatch a call belongs to. */
 type Call = (method: IsolateCtxMethod, args: readonly unknown[]) => Promise<unknown>;
 
+/** A request was sent but no conclusive host result reached this guest. */
+class UnacknowledgedHostCall extends Error {}
+
 /** Every emission is checked as it is staged, so a `dispatched` frame is valid by construction. */
 const EmissionSchema = z.strictObject({
   ref: ManifoldRefSchema,
@@ -878,6 +979,7 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
   );
   let loaded = false;
   let harnessMetadata: HarnessDefinition | undefined;
+  const byteRequests = new Map<string, AbortController>();
   interface ProfileValidation {
     readonly id: string;
     violated: boolean;
@@ -887,6 +989,8 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
   // here too: an AsyncResource created earlier need not inherit the validation's ALS store.
   // ALS additionally fences callbacks inherited from a validation after that phase ends.
   const profileValidation = new AsyncLocalStorage<ProfileValidation>();
+  const referenceProbe = new AsyncLocalStorage<string>();
+  let activeReferenceProbe: string | undefined;
   const requireAuthority = (): void => {
     const inheritedValidation = profileValidation.getStore();
     if (activeProfileValidation === undefined && inheritedValidation === undefined) return;
@@ -919,6 +1023,13 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       call: (method, args) => {
         try {
           requireAuthority();
+          const probe = activeReferenceProbe ?? referenceProbe.getStore();
+          if (
+            probe !== undefined &&
+            (probe !== requestId ||
+              !(method.startsWith("storage.") || method.startsWith("database.")))
+          )
+            throw new IsolateSliceUnavailable("readiness probe has only its own data context");
         } catch (error) {
           return Promise.reject(error);
         }
@@ -932,7 +1043,12 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
         const id = `${requestId}:${String(seq)}`;
         const { promise, resolve, reject } = Promise.withResolvers<unknown>();
         pending.set(id, { method, resolve, reject });
-        post({ t: "call", id, method, args: [...args] });
+        try {
+          post({ t: "call", id, method, args: [...args] });
+        } catch {
+          pending.delete(id);
+          reject(new UnacknowledgedHostCall("host call send was not acknowledged"));
+        }
         return promise;
       },
       close: () => {
@@ -940,7 +1056,7 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
         for (const [id, waiting] of pending) {
           if (!id.startsWith(`${requestId}:`)) continue;
           pending.delete(id);
-          waiting.reject(new Error(`request "${requestId}" already answered`));
+          waiting.reject(new UnacknowledgedHostCall(`request "${requestId}" already answered`));
         }
       },
     };
@@ -1032,21 +1148,32 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
    */
   const databaseFor = (call: Call): GuestDatabase | undefined => {
     if (!databaseDeclared) return undefined;
+    let outcomeUnknown = false;
     const ask = async (
-      method: "database.query" | "database.run" | "database.batch",
+      method: "database.query" | "database.run" | "database.batch" | "database.admitRecovery",
       args: readonly unknown[],
     ): Promise<unknown> => {
+      if (outcomeUnknown)
+        throw new PluginDatabaseError("outcome_unknown: reopen and reconcile durable operation identity");
       try {
         return await call(method, args);
       } catch (error) {
+        if (error instanceof HostCallError) {
+          if (error.detail.startsWith("outcome_unknown:")) outcomeUnknown = true;
+          throw new PluginDatabaseError(error.detail);
+        }
+        if (error instanceof UnacknowledgedHostCall) {
+          outcomeUnknown = true;
+          throw new PluginDatabaseError("outcome_unknown: database response was not acknowledged");
+        }
         if (error instanceof PluginDatabaseError) throw error;
-        throw new PluginDatabaseError(
-          error instanceof HostCallError ? error.detail : errorText(error),
-        );
+        throw new PluginDatabaseError(errorText(error));
       }
     };
     return {
       pluginId: def.manifest.id,
+      admitRecovery: async () =>
+        DatabaseRecoveryAdmissionSchema.parse(await ask("database.admitRecovery", [])),
       query: async <Row extends GuestSqlRow = GuestSqlRow>(
         sql: string,
         params?: readonly GuestSqlParam[],
@@ -1116,6 +1243,61 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       (await call("jobs.disableSchedule", [args])) as Record<string, never>,
   });
 
+  const nativeTransfersFor = (call: Call): GuestNativeTransfers => {
+    const checked = <T>(schema: z.ZodType<T>, value: unknown,
+      reason: "transfer_invalid_request" | "transfer_reply_invalid" = "transfer_invalid_request"): T => {
+      const result = schema.safeParse(value);
+      if (!result.success) throw new NativeTransferError(reason);
+      return result.data;
+    };
+    let pending = 0;
+    const ask = async (method: IsolateCtxMethod, args: unknown): Promise<unknown> => {
+      if (pending >= 4) throw new NativeTransferError("transfer_backpressure");
+      pending++;
+      try { return await call(method, [args]); }
+      catch (error) {
+        const reason = error instanceof HostCallError ? NativeTransferReasonSchema.safeParse(error.detail) : null;
+        throw new NativeTransferError(reason?.success ? reason.data : "native_transfer_unavailable");
+      }
+      finally { pending--; }
+    };
+    return {
+      describe: async (args) => checked(NativeTransferDescriptionSchema,
+        await ask("nativeTransfers.describe", checked(NativeTransferDescribeArgsSchema, args)), "transfer_reply_invalid",
+      ),
+      beginPut: async (args) => checked(NativeTransferStatusSchema,
+        await ask("nativeTransfers.beginPut", checked(NativeTransferBeginPutArgsSchema, args)), "transfer_reply_invalid",
+      ),
+      beginRead: async (args) => checked(NativeTransferStatusSchema,
+        await ask("nativeTransfers.beginRead", checked(NativeTransferBeginReadArgsSchema, args)), "transfer_reply_invalid",
+      ),
+      putChunk: async (args) => {
+        const parsed = checked(NativeTransferPutChunkArgsSchema, args);
+        return checked(NativeTransferStatusSchema, await ask("nativeTransfers.putChunk", {
+          ...parsed,
+          data: Buffer.from(parsed.data.buffer, parsed.data.byteOffset, parsed.data.byteLength).toString("base64"),
+        }), "transfer_reply_invalid");
+      },
+      commitPut: async (args) => checked(NativeTransferStatusSchema,
+        await ask("nativeTransfers.commitPut", checked(NativeTransferContinuationArgsSchema, args)), "transfer_reply_invalid",
+      ),
+      cancel: async (args) => checked(NativeTransferStatusSchema,
+        await ask("nativeTransfers.cancel", checked(NativeTransferContinuationArgsSchema, args)), "transfer_reply_invalid",
+      ),
+      status: async (args) => checked(NativeTransferStatusSchema,
+        await ask("nativeTransfers.status", checked(NativeTransferContinuationArgsSchema, args)), "transfer_reply_invalid",
+      ),
+      receipt: async (args) => checked(NativeTransferReceiptViewSchema,
+        await ask("nativeTransfers.receipt", checked(NativeTransferContinuationArgsSchema, args)), "transfer_reply_invalid",
+      ),
+      readChunk: async (args) => {
+        const result = checked(NativeTransferReadChunkWireResultSchema,
+          await ask("nativeTransfers.readChunk", checked(NativeTransferReadChunkArgsSchema, args)), "transfer_reply_invalid");
+        return checked(NativeTransferReadChunkResultSchema, { ...result, data: Buffer.from(result.data, "base64") }, "transfer_reply_invalid");
+      },
+    };
+  };
+
   /**
    * One round trip per sibling call (ADR 0041). The host owns every verdict — the declared
    * edge, the callee's whole ladder, the cycle and the depth — so nothing is checked here: a
@@ -1136,12 +1318,30 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
     },
   });
 
+  const callReference = async (
+    call: Call,
+    method: IsolateCtxMethod,
+    input: unknown,
+  ): Promise<unknown> => {
+    try {
+      return await call(method, [input]);
+    } catch (error) {
+      if (error instanceof HostCallError) throw new Error(error.detail);
+      throw error;
+    }
+  };
+
   const dispatchCtx = (call: Call, carried: IsolateDispatchCtx, staged: Emission[]): GuestCtx => {
     // Spread, not assigned: a plugin that declared no database has NO member here, so reading
     // it is `undefined` rather than a handle that would fail one round trip later.
     const database = databaseFor(call);
     const ctx: GuestCtx = {
       traceId: carried.traceId,
+      get credentialBinding() {
+        if (carried.credentialBinding === undefined)
+          throw new IsolateSliceUnavailable("credentialBinding");
+        return carried.credentialBinding;
+      },
       pluginId: def.manifest.id,
       get callerPlugin() {
         // Absent means the host did not carry contract-8 attribution. Reading it must never
@@ -1166,6 +1366,69 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       newId: async () => (await call("newId", [])) as string,
       storage: storageFor(call),
       ...(database === undefined ? {} : { database }),
+      nativeTransfers: nativeTransfersFor(call),
+      references: {
+        attach: async (input) =>
+          ReferenceAttachmentResultSchema.parse(
+            await callReference(
+              call, "references.attach", ReferenceAttachmentRequestSchema.parse(input),
+            ),
+          ),
+        prepare: async (input) =>
+          ReferencePreparationSchema.parse(
+            await callReference(
+              call, "references.prepare", ReferencePrepareRequestSchema.parse(input),
+            ),
+          ),
+        publish: async (input) =>
+          PublishedReferenceSchema.parse(
+            await callReference(
+              call, "references.publish", ReferencePublishRequestSchema.parse(input),
+            ),
+          ),
+        abort: async (input) =>
+          ReferenceTerminalReceiptSchema.parse(
+            await callReference(call, "references.abort", ReferenceAbortRequestSchema.parse(input)),
+          ),
+        requirePublished: async (input) =>
+          PublishedReferenceIdentitySchema.parse(
+            await callReference(
+              call, "references.requirePublished", ReferenceRequirePublishedRequestSchema.parse(input),
+            ),
+          ),
+        unpublish: async (input) =>
+          ReferenceTerminalReceiptSchema.parse(
+            await callReference(
+              call, "references.unpublish", ReferenceUnpublishRequestSchema.parse(input),
+            ),
+          ),
+        receipt: async (input) =>
+          ReferenceTerminalReceiptSchema.parse(
+            await callReference(
+              call, "references.receipt", ReferenceReceiptRequestSchema.parse(input),
+            ),
+          ),
+        readable: async (input) =>
+          ReferenceReadFilterResultSchema.parse(
+            await callReference(
+              call, "references.readable", ReferenceReadFilterRequestSchema.parse(input),
+            ),
+          ),
+        grant: async (input) =>
+          RestrictedGrantViewSchema.parse(
+            await callReference(call, "references.grant", ReferenceGrantRequestSchema.parse(input)),
+          ),
+        revoke: async (input) =>
+          RestrictedGrantResultSchema.parse(
+            await callReference(call, "references.revoke", ReferenceRevokeRequestSchema.parse(input)),
+          ),
+        audience: async (input) =>
+          RestrictedAudiencePageSchema.parse(
+            await callReference(
+              call, "references.audience", ReferenceAudienceRequestSchema.parse(input),
+            ),
+          ),
+      },
       jobs: {
         ...jobsFor(call),
         follow: async (node, receive) => {
@@ -1285,6 +1548,8 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       },
       emit: (ref, kind, payload) => {
         requireAuthority();
+        if (activeReferenceProbe !== undefined || referenceProbe.getStore() !== undefined)
+          throw new IsolateSliceUnavailable("reference data callback cannot emit");
         if (staged.length >= MAX_ISOLATE_EMITS) {
           throw new Error(`a dispatch may stage at most ${String(MAX_ISOLATE_EMITS)} emissions`);
         }
@@ -1432,6 +1697,7 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       return;
     }
     let summaries: ActionSummary[];
+    let byteCarriers: z.infer<typeof IsolateByteDeclarationsSchema> = [];
     try {
       if (
         frame.hardenedContract !== undefined &&
@@ -1465,6 +1731,27 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       } else if (frame.manifest.contributes?.harness !== undefined) {
         throw new Error("declared harness has no implementation");
       }
+      if (
+        (frame.manifest.contributes?.references?.length ?? 0) !== 0 &&
+        typeof def.probeReady !== "function"
+      )
+        throw new Error("reference owner has no readiness probe");
+      byteCarriers = IsolateByteDeclarationsSchema.parse(
+        Object.entries(def.byteCarriers ?? {}).map(([id, handler]) => ({ id, direction: handler.direction })),
+      );
+      const declarations = frame.manifest.contributes?.byteCarriers ?? [];
+      if (
+        declarations.length !== byteCarriers.length ||
+        declarations.some((declaration) => {
+          const handler = def.byteCarriers?.[declaration.id];
+          return handler === undefined || handler.direction !== declaration.direction ||
+            typeof handler.authorize !== "function" ||
+            (handler.direction === "incoming"
+              ? typeof handler.write !== "function"
+              : typeof handler.read !== "function");
+        })
+      )
+        throw new Error("byte carrier implementation does not match its declaration");
     } catch (error) {
       post({ t: "load_failed", error: errorText(error) });
       return;
@@ -1483,6 +1770,10 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       },
       migrations: (def.migrations ?? []).map(({ name, to }) => ({ name, to })),
       ...(harnessMetadata === undefined ? {} : { harness: harnessMetadata }),
+      ...(def.probeReady === undefined ? {} : { probeReady: true }),
+      ...(def.reclaimReferences === undefined ? {} : { reclaimReferences: true }),
+      ...(def.reconcileNativeTransfers === undefined ? {} : { reconcileNativeTransfers: true }),
+      ...(byteCarriers.length === 0 ? {} : { byteCarriers }),
     });
   };
 
@@ -1632,6 +1923,154 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
     }
   };
 
+  const onByte = async (frame: Extract<IsolateHostFrame, { t: "byte_request" }>): Promise<void> => {
+    if (!loaded || byteRequests.has(frame.id) || byteRequests.size >= MAX_BYTE_REQUESTS) {
+      post({ t: "byte_answered", id: frame.id, outcome: { ok: false, reason: "busy" } });
+      return;
+    }
+    const controller = new AbortController();
+    byteRequests.set(frame.id, controller);
+    const requests = callsFor(frame.id);
+    let open = true;
+    let writing = false;
+    const assertCurrent = (): void => {
+      if (!open || controller.signal.aborted) throw new ByteTransferError("cancelled");
+    };
+    try {
+      const handler = def.byteCarriers?.[frame.request.carrierId];
+      if (handler === undefined) throw new ByteTransferError("unavailable");
+      const database = databaseFor(requests.call);
+      const native = nativeTransfersFor(requests.call);
+      const ctx = Object.freeze<GuestByteCarrierCtx>({
+        pluginId: def.manifest.id,
+        principal: frame.ctx.principal,
+        credentialBinding: frame.ctx.credentialBinding,
+        signal: controller.signal,
+        ...(database === undefined ? {} : { database }),
+        nativeTransfers: { readChunk: native.readChunk, status: native.status },
+        now: () => frame.ctx.now,
+        assertCurrent,
+        requirePublished: async (ref) => {
+          assertCurrent();
+          try {
+            const result = PublishedReferenceIdentitySchema.parse(await requests.call(
+              "references.requirePublished", [ReferenceRequirePublishedRequestSchema.parse({ ref, access: "read" })],
+            ));
+            assertCurrent();
+            return result;
+          } catch {
+            throw new ByteTransferError("unavailable");
+          }
+        },
+      });
+      let reply: IsolateByteReply;
+      switch (frame.request.method) {
+        case "authorize":
+          reply = { method: "authorize", result: await handler.authorize(ctx, frame.request.input) };
+          break;
+        case "write": {
+          if (handler.direction !== "incoming") throw new ByteTransferError("unavailable");
+          const data = Buffer.from(frame.request.data, "base64");
+          if (data.byteLength !== frame.request.input.length) throw new ByteTransferError("invalid");
+          writing = true;
+          reply = { method: "write", result: await handler.write(ctx, frame.request.input, data) };
+          break;
+        }
+        case "read": {
+          if (handler.direction !== "outgoing") throw new ByteTransferError("unavailable");
+          const result = await handler.read(ctx, frame.request.input);
+          assertCurrent();
+          if (!(result.data instanceof Uint8Array) ||
+              result.data.byteLength > Math.min(MAX_BYTE_CHUNK_BYTES, frame.request.input.length))
+            throw new ByteTransferError("invalid");
+          reply = {
+            method: "read",
+            result: {
+              offset: result.offset,
+              eof: result.eof,
+              leaseMs: result.leaseMs,
+              data: Buffer.from(result.data.buffer, result.data.byteOffset, result.data.byteLength).toString("base64"),
+            },
+          };
+          break;
+        }
+        default: {
+          const exhaustive: never = frame.request;
+          throw new Error(`unhandled byte method: ${String(exhaustive)}`);
+        }
+      }
+      assertCurrent();
+      const result = IsolateByteReplySchema.parse(reply);
+      requests.close();
+      post({ t: "byte_answered", id: frame.id, outcome: { ok: true, reply: result } });
+    } catch (error) {
+      const reason = ByteRefusalSchema.safeParse(
+        error instanceof ByteTransferError || error instanceof NativeTransferError ? error.reason : null,
+      );
+      requests.close();
+      post({
+        t: "byte_answered",
+        id: frame.id,
+        outcome: { ok: false, reason: reason.success ? reason.data : writing ? "outcome_unknown" : "unavailable" },
+      });
+    } finally {
+      open = false;
+      requests.close();
+      byteRequests.delete(frame.id);
+      controller.abort(new ByteTransferError("cancelled"));
+    }
+  };
+
+  const onReferenceData = async (
+    frame: Extract<IsolateHostFrame, { t: "probe_ready" | "reclaim_references" | "reconcile_native_transfers" }>,
+  ): Promise<void> => {
+    const requests = callsFor(frame.id);
+    try {
+      if (!loaded || activeReferenceProbe !== undefined)
+        throw new IsolateSliceUnavailable("reference data callback");
+      activeReferenceProbe = frame.id;
+      const database = databaseFor(requests.call);
+      const ctx: GuestReferenceProbeCtx = Object.freeze({
+        storage: storageFor(requests.call),
+        ...(database === undefined ? {} : { database }),
+        now: () => frame.now,
+      });
+      if (frame.t === "probe_ready") {
+        const probeReady = def.probeReady;
+        if (probeReady === undefined) throw new IsolateSliceUnavailable("readiness probe");
+        const result = ReferenceProbeResultSchema.parse(
+          await referenceProbe.run(frame.id, () => probeReady(ctx, frame.request)),
+        );
+        requests.close();
+        post({ t: "probed_ready", id: frame.id, outcome: { ok: true, result } });
+      } else if (frame.t === "reconcile_native_transfers") {
+        const reconcileNativeTransfers = def.reconcileNativeTransfers;
+        if (reconcileNativeTransfers === undefined)
+          throw new IsolateSliceUnavailable("native evidence reconciliation");
+        await referenceProbe.run(frame.id, () => reconcileNativeTransfers(ctx, frame.receipts));
+        requests.close();
+        post({ t: "reconciled_native_transfers", id: frame.id, outcome: { ok: true } });
+      } else {
+        const reclaimReferences = def.reclaimReferences;
+        if (reclaimReferences === undefined)
+          throw new IsolateSliceUnavailable("reference reclamation");
+        await referenceProbe.run(frame.id, () => reclaimReferences(ctx, frame.receipts));
+        requests.close();
+        post({ t: "reclaimed_references", id: frame.id, outcome: { ok: true } });
+      }
+    } catch (error) {
+      requests.close();
+      post({
+        t: frame.t === "probe_ready" ? "probed_ready" :
+          frame.t === "reconcile_native_transfers" ? "reconciled_native_transfers" : "reclaimed_references",
+        id: frame.id,
+        outcome: { ok: false, error: errorText(error).slice(0, 2048) },
+      });
+    } finally {
+      if (activeReferenceProbe === frame.id) activeReferenceProbe = undefined;
+    }
+  };
+
   const onHook = async (frame: Extract<IsolateHostFrame, { t: "hook" }>): Promise<void> => {
     const requests = callsFor(frame.id);
     const ctx = hookCtx(requests.call, frame.jobs === true, frame.metadata === true);
@@ -1731,6 +2170,17 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       case "harness":
         void onHarness(host);
         return;
+      case "byte_request":
+        void onByte(host);
+        return;
+      case "byte_cancel":
+        byteRequests.get(host.id)?.abort(new ByteTransferError("cancelled"));
+        return;
+      case "probe_ready":
+      case "reclaim_references":
+      case "reconcile_native_transfers":
+        void onReferenceData(host);
+        return;
       case "admitted":
         admissions.get(host.id)?.(host.allowed);
         admissions.delete(host.id);
@@ -1751,6 +2201,8 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
         producerClosures.get(host.id)?.();
         return;
       case "shutdown":
+        for (const controller of byteRequests.values()) controller.abort(new ByteTransferError("unavailable"));
+        byteRequests.clear();
         for (const notify of producerClosures.values()) notify();
         producerClosures.clear();
         for (const observer of observers.values()) {
@@ -1764,7 +2216,8 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
         producerCalls.close();
         for (const resolve of admissions.values()) resolve(false);
         admissions.clear();
-        for (const waiting of pending.values()) waiting.reject(new Error("isolate shutting down"));
+        for (const waiting of pending.values())
+          waiting.reject(new UnacknowledgedHostCall("isolate shutting down"));
         pending.clear();
         activeProfileValidation = undefined;
         transport.exit(0);

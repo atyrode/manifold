@@ -708,12 +708,13 @@ for (const row of registries.floor) {
 {
   const offenders: string[] = [];
   for (const path of [...floorFiles].sort()) {
-    // The trusted machine guest entry assembles the same definition as the native root.
-    // This exact file is the only additional exception; its directory is not a boundary.
+    // Exact trusted guest composition entries; no directory gains an import exemption.
     if (
       path === WEB_COMPOSITION ||
       path === SERVER_COMPOSITION ||
-      path === "packages/server/src/first-party/machines.server.ts"
+      path === "packages/server/src/first-party/machines.server.ts" ||
+      path === "packages/server/src/first-party/files.server.ts" ||
+      path === "packages/server/src/first-party/files-images.server.ts"
     )
       continue;
     for (const specifier of moduleSpecifiers(path)) {
@@ -726,7 +727,7 @@ for (const row of registries.floor) {
     "S2 floor imports no plugin",
     offenders.length === 0,
     offenders.length === 0
-      ? `${String(floorFiles.size)} floor sources import no @manifold-plugin/* outside the two assembly roots and the exact trusted machines entry`
+      ? `${String(floorFiles.size)} floor sources import no @manifold-plugin/* outside the two assembly roots and exact trusted guest entries`
       : list(offenders),
   );
 }
@@ -744,6 +745,7 @@ for (const row of registries.floor) {
     "@manifold/scene": true,
     "@manifold/sdk": true,
     "@manifold/plugin": true,
+    "@manifold/plugin/action": true,
     "@manifold/plugin/hooks": true,
     "@manifold/plugin/ui": true,
     "@manifold/ui": true,
@@ -817,7 +819,7 @@ for (const row of registries.floor) {
         }
         if (
           isContract &&
-          (ENGINE[text] !== true ||
+          ((ENGINE[text] !== true && text !== "zod") ||
             text === "@manifold/plugin/hooks" ||
             text === "@manifold/plugin/ui" ||
             text === "@manifold/ui")

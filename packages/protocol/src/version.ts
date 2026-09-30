@@ -1,5 +1,5 @@
 /** Wire revision; session joins require the current version (close 4409 otherwise). */
-export const PROTOCOL_VERSION = 52;
+export const PROTOCOL_VERSION = 53;
 
 /**
  * Explicit bundle build compatibility, not session or machine-channel negotiation.
@@ -470,9 +470,15 @@ export const PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<string> = new S
  * representations replace inline note bodies. Strict session admission fences pre-cutover
  * document replicas; historical room epochs remain unchanged. Machine and instance frames,
  * terminal-host ownership and adoption are unchanged, so both compatibility sets add 52.
+ *
+ * v53: owned file references, private byte carriers, restricted publication grants and
+ * bounded recovery profiles extend session/HTTP vocabulary. Native transfers add commands
+ * that require both machine transport 53 and owner RPC 44; older transports remain admitted
+ * for their existing workloads and never receive those commands or transfer-only installs.
+ * Instance frames are unchanged; container tickets do not gain file-node authority.
  */
 export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52,
+  30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52, 53,
 ]);
 
 /**
@@ -490,6 +496,9 @@ export const MACHINE_SELF_PROVIDER_PROTOCOL_VERSION = 41;
 
 /** Tool requests require the actual machine transport as well as owner RPC 41. */
 export const MACHINE_AGENT_TOOLS_PROTOCOL_VERSION = 43;
+
+/** Native byte frames require the transport parser as well as the proved private owner. */
+export const MACHINE_NATIVE_TRANSFERS_PROTOCOL_VERSION = 53;
 
 /**
  * Instance-channel acceptance set, and a SEPARATE set on purpose (ADR 0014).
@@ -523,10 +532,10 @@ export const MACHINE_AGENT_TOOLS_PROTOCOL_VERSION = 43;
  * never receives a machine ref, so the instance wire is unchanged.
  * v26: image-aware terminal viewers; instance frames remain unchanged.
  * v27: governed jobs expand the closed share resource/capability vocabularies (ADR 0033);
- * instance compatibility resets to protocol 27. v28 through v48 and v51/v52 leave that wire unchanged.
+ * instance compatibility resets to protocol 27. v28 through v48 and v51–v53 leave that wire unchanged.
  */
 export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52,
+  27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52, 53,
 ]);
 
 /**

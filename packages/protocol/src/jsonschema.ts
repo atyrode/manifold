@@ -53,6 +53,7 @@ import {
   StreamClientMessageSchema,
   StreamServerMessageSchema,
 } from "./stream.ts";
+import { byteVocabulary } from "./bytes.ts";
 
 /**
  * The live assembly, when the caller has one to publish. The protocol package describes
@@ -111,6 +112,7 @@ export function buildProtocolJsonSchema(extras?: ProtocolExtras): Record<string,
       resultProjectionHeader: ACTION_RESULT_PROJECTION_HEADER,
       resultProjectionEncoding: "sha256-schema-normalized-declaration",
     },
+    byteTransport: byteVocabulary(),
     session: {
       client: z.toJSONSchema(ClientMessageSchema),
       server: z.toJSONSchema(ServerMessageSchema),

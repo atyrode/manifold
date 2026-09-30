@@ -51,6 +51,7 @@ function resolveTarget(rest: string): Target {
     case "plugin":
     case "agent":
     case "run":
+    case "file":
       /*
         These records are shown by a surface inside the workspace rather than a route of
         their own. Hand the native address back to the host, where the declared section

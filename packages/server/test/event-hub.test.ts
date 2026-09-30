@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { defineAction } from "@manifold/plugin";
+import { z } from "zod";
 import {
   CONNECTION_BODIES,
   CreateRunCredentialResultSchema,
@@ -6,12 +8,15 @@ import {
   MAX_SUBSCRIPTIONS_PER_CONNECTION,
   PROTOCOL_VERSION,
   PlaceResponseSchema,
+  PluginManifestSchema,
+  PluginOwnedRefSchema,
   ServerMessageSchema,
   formatManifoldUri,
   topicMatches,
   type Cap,
   type Container,
   type ManifoldRef,
+  type PluginOwnedRef,
   type ServerEvent,
 } from "@manifold/protocol";
 import { FLOOR_EVENT_OWNERS } from "../src/assembly.ts";
@@ -898,6 +903,117 @@ describe("event plane fan-out", () => {
       expect(fixture.logs.some((line) => line.evt === "event_undeclared")).toBe(true);
     } finally {
       fixture.gateway.shutdown();
+      fixture.store.close();
+    }
+  });
+
+  test("foreign file producers never persist or reach file and plugin-collection subscribers", async () => {
+    const emit = defineAction({
+      name: "emit", title: "Emit file change", caps: [],
+      input: z.strictObject({ ref: PluginOwnedRefSchema }),
+      result: z.null(),
+    });
+    const files: ServerPluginDef = {
+      manifest: PluginManifestSchema.parse({
+        id: "vendor.files", version: "1.0.0", title: "Files", description: "",
+        capabilities: ["vendor.files:create", "vendor.files:read", "vendor.files:delete", "vendor.files:share"],
+        contributes: {
+          events: [{ id: "file_changed", title: "File changed" }],
+          references: [{
+            kind: "file", resolveAction: "resolve", readCapability: "vendor.files:read",
+            createCapability: "vendor.files:create", deleteCapability: "vendor.files:delete",
+            creatorCaps: ["vendor.files:read", "vendor.files:delete", "vendor.files:share"],
+            sharing: {
+              grantorCapability: "vendor.files:share",
+              prerequisites: ["vendor.files:read", "vendor.files:share"],
+              grantableCaps: ["vendor.files:read"],
+            },
+          }],
+        },
+      }),
+      actions: [emit, defineAction({
+        name: "resolve", title: "Resolve", caps: ["vendor.files:read"],
+        requirements: [{ cap: "vendor.files:read", target: ["ref"] }],
+        input: z.strictObject({ ref: PluginOwnedRefSchema }),
+        result: z.strictObject({ title: z.string().max(128) }),
+      })],
+      handlers: {
+        async emit(ctx, input: { ref: PluginOwnedRef }) {
+          ctx.emit(input.ref, "file_changed", { change: "committed" });
+          return null;
+        },
+        async resolve(ctx, input: { ref: PluginOwnedRef }) {
+          await ctx.references.requirePublished({ ref: input.ref, access: "read" });
+          return { title: input.ref.fileId };
+        },
+      },
+    };
+    const foreign: ServerPluginDef = {
+      manifest: PluginManifestSchema.parse({
+        id: "vendor.foreign", version: "1.0.0", title: "Foreign", description: "",
+        capabilities: [],
+        contributes: { events: [{ id: "file_changed", title: "File changed" }] },
+      }),
+      actions: [emit],
+      handlers: {
+        async emit(ctx, input: { ref: PluginOwnedRef }) {
+          ctx.emit(input.ref, "file_changed", { change: "forged" });
+          return null;
+        },
+      },
+    };
+    const fixture = await planeFixture(
+      (auth, reader, node) => auth.allowsRef(reader, "vendor.files:read", node),
+      [files, foreign],
+    );
+    try {
+      const file: PluginOwnedRef = { kind: "file", fileId: "private-file" };
+      const ownerCollection: ManifoldRef = { kind: "plugin", pluginId: "vendor.files" };
+      const foreignCollection: ManifoldRef = { kind: "plugin", pluginId: "vendor.foreign" };
+      const token = context(fixture, ["containers:read"]);
+      const reader = fixture.auth.authenticate(token);
+      const grant = fixture.auth.grant({
+        principal: { kind: "principal", id: reader.principal.id },
+        node: formatManifoldUri(file),
+        caps: ["vendor.files:read"], effect: "allow", reach: "node",
+      }, fixture.owner);
+      const direct = connect(fixture, "file-direct", { token });
+      const collections = connect(fixture, "file-collections", { token });
+      subscribe(fixture, "file-direct", [file]);
+      subscribe(fixture, "file-collections", [ownerCollection, foreignCollection]);
+      expect(fixture.events.held("file-direct")).toBe(1);
+      expect(fixture.events.held("file-collections")).toBe(2);
+      expect(fixture.host.assembly().enabled("vendor.foreign")).toBe(true);
+      expect(fixture.host.assembly().referenceKinds.get("file")?.plugin).toBe("vendor.files");
+
+      expect(await fixture.host.dispatch(fixture.owner, "vendor.foreign.emit", { ref: file }))
+        .toMatchObject({ ok: true });
+      expect(eventsOn(direct)).toEqual([]);
+      expect(eventsOn(collections)).toEqual([]);
+      expect(fixture.store.listEvents({ type: "file_changed", limit: 10 })).toEqual([]);
+      expect(fixture.logs.some((line) => line.evt === "event_undeclared")).toBe(true);
+
+      expect(await fixture.host.dispatch(fixture.owner, "vendor.files.emit", { ref: file }))
+        .toMatchObject({ ok: true });
+      const event = {
+        type: "event" as const, plugin: "vendor.files", kind: "file_changed",
+        at: fixture.runtime.now(), actor: fixture.owner.principal.id,
+        payload: { change: "committed" },
+      };
+      expect(eventsOn(direct)).toEqual([{ ...event, topic: file }]);
+      expect(eventsOn(collections)).toEqual([{ ...event, topic: ownerCollection }]);
+      expect(fixture.store.listEvents({ type: "file_changed", limit: 10 }).map((row) => JSON.parse(row.payload)))
+        .toEqual([{ change: "committed" }]);
+
+      direct.clear();
+      collections.clear();
+      fixture.auth.revokeGrant(grant.id, fixture.owner);
+      await fixture.host.dispatch(fixture.owner, "vendor.files.emit", { ref: file });
+      expect(eventsOn(direct)).toEqual([]);
+      expect(eventsOn(collections)).toEqual([]);
+    } finally {
+      fixture.gateway.shutdown();
+      fixture.host.close();
       fixture.store.close();
     }
   });

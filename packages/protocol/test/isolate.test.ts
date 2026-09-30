@@ -6,7 +6,6 @@ import {
   ISOLATE_CTX_METHODS,
   ISOLATE_DISPATCH_DEADLINE_MS,
   ISOLATE_IDLE_EVICT_MS,
-  ISOLATE_MAX_ARTIFACT_BYTES,
   IsolateChildFrameSchema,
   IsolateHostFrameSchema,
   MAX_UI_DEPTH,
@@ -311,7 +310,6 @@ describe("the install artifact", () => {
       const files = { "server.js": "aGk=", "web.js": "aGk=", [name]: "aGk=" };
       expect(PluginBundleSchema.safeParse(bundle({ files })).success).toBe(false);
     }
-    expect(ISOLATE_MAX_ARTIFACT_BYTES).toBe(16 * 1024 * 1024);
   });
 
   test("declared web and server halves require their members; an empty plugin is refused", () => {

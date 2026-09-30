@@ -123,6 +123,29 @@ function received(frames: string[], mime: string) {
 }
 
 describe("terminal clipboard consent and MIME transport", () => {
+  test("a compatible file drop uses the one-use MIME grant, while incompatible drops remain unsent", async () => {
+    const f = fixture();
+    try {
+      const file = new File([new Uint8Array([0, 255, 27, 10])], "image.png", { type: "image/png" });
+      f.clipboard.setPasteMode(false);
+      expect(f.clipboard.pasteFile(file)).toBe(false);
+      expect(f.sent).toEqual([]);
+      expect(f.pasted).toEqual([]);
+      f.clipboard.setPasteMode(true);
+      expect(f.clipboard.pasteFile(new File(["opaque"], "file.bin", { type: "application/octet-stream" }))).toBe(false);
+      expect(f.sent).toEqual([]);
+      expect(f.clipboard.pasteFile(file)).toBe(true);
+      const token = f.token();
+      f.sent.length = 0;
+      f.osc(5522, request(token, "image/png"));
+      await f.until(() => f.sent.some((frame) => frame.includes("status=DONE")));
+      expect(received(f.sent, "image/png")).toEqual(Buffer.from([0, 255, 27, 10]));
+      f.sent.length = 0;
+      f.osc(5522, request(token, "image/png"));
+      expect(f.sent).toEqual([]);
+    } finally { f.clipboard.dispose(); }
+  });
+
   test("lists actual Blob formats and negotiates available types, preserving binary and split UTF-8 bytes", async () => {
     const text = "a".repeat(4095) + "🦉" + "z".repeat(8192);
     const image = Uint8Array.from({ length: 9000 }, (_, index) => index % 256);
