@@ -97,6 +97,8 @@ function UploadSelection({ controller, purpose, onPublished, onSaved, onClear, o
   const state = useSyncExternalStore(subscribe, controller.getSnapshot, controller.getSnapshot);
   const terminal = state.phase === "cancelled" || state.phase === "saved" ||
     (state.phase === "refused" && state.transfer !== null && ["failed", "expired", "deleted"].includes(state.transfer.state));
+  const localOnly = !state.busy && !state.transfer && !state.savedRef &&
+    (state.phase === "refused" || state.phase === "outcome_unknown");
   return <Stack gap="0.4rem">
     <Text strong wrap>{state.selection.name || "file"}</Text>
     <Text wrap>{state.selection.bytes} bytes · {purpose === "image" ? "Validated static image requested" : "Opaque file; no preview promised"}</Text>
@@ -106,11 +108,13 @@ function UploadSelection({ controller, purpose, onPublished, onSaved, onClear, o
     {state.savedRef ? <Text wrap mono>{formatManifoldUri(state.savedRef)}</Text> : null}
     {state.reason ? <Text wrap tone={state.phase === "saved" ? "muted" : "danger"} role="alert">{state.reason}</Text> : null}
     {purpose === "image" && state.phase === "refused" ? <Text wrap>Image intake refused; see the exact reason above. No automatic conversion or opaque-file publication occurs. Reconcile or cancel this attempt before deliberately choosing opaque intake.</Text> : null}
+    {localOnly ? <Text wrap>No upload acknowledgement was received. You may discard this local selection without retrying. This does not confirm server cancellation; any unconfirmed incomplete reservation expires without publication.</Text> : null}
     <Cluster gap="0.4rem">
       {!terminal ? <Button disabled={state.busy} data-action="core.files.beginUpload" onClick={() => { void controller.save(); }}>{state.phase === "pending" ? "Save file" : "Retry exact Save request"}</Button> : null}
       {state.transfer || state.savedRef ? <Button disabled={state.busy} data-action={state.savedRef ? "core.files.inspect" : "core.files.inspectUpload"} onClick={() => { void controller.reconcile(); }}>Reconcile without publishing</Button> : null}
       {!terminal ? <Button data-action="core.files.cancelUpload" onClick={() => { void controller.cancel(); }}>Cancel and discard incomplete upload</Button> : null}
       {terminal ? <Button disabled={state.busy} onClick={onClear}>Choose another file</Button> : null}
+      {localOnly ? <Button onClick={onClear}>Discard local selection and choose another</Button> : null}
       {purpose === "image" && terminal && !state.savedRef ? <Button disabled={state.busy} onClick={onChooseOpaque}>Choose opaque intake instead</Button> : null}
     </Cluster>
   </Stack>;
