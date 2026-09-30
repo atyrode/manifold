@@ -4639,7 +4639,7 @@ machine transport. An owner outside the acceptance set that does not qualify for
 receives no native authority, while machine presence, retained terminal continuity and the
 named drain/maintenance path remain available for the coordinated upgrade.
 
-The independent federation set is `{27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48}`; these session/machine changes leave its
+The independent federation set is `{53, 54, 55, 56}`; these session/machine changes leave its
 frames and resource vocabularies unchanged. The earlier per-program and per-job transport
 version gates are retired: every accepted transport understands those frames, while
 authority comes from explicit declarations and live owner proof.
