@@ -5,6 +5,7 @@ export const PROTOCOL_VERSION = 52;
  * Explicit bundle build compatibility, not session or machine-channel negotiation.
  * Protocol 51 preserves the protocol 47/48 plugin ABI and the three-argument SDK resize
  * call. Viewport participation and sizing attribution add only session-channel vocabulary.
+ * Protocol 52 changes session document representation, not the admitted plugin ABI.
  * Retain a prior stamp only after proving its unchanged artifacts against the host;
  * reset on an incompatible plugin ABI change. Do not infer a numeric version range.
  */
@@ -12,6 +13,7 @@ export const PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<string> = new S
   "47",
   "48",
   "51",
+  "52",
 ]);
 
 /**
