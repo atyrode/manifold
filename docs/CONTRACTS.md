@@ -3375,7 +3375,7 @@ depends on it.
   Corrupt rows remain corrupt rather than being laundered; target collisions or unsupported
   legacy shapes refuse the transaction. Notes state/storage and ownership reservations are
   explicitly reconciled, including all disabled combinations without fabricated attribution.
-  Protocol 48 fences the old inline-body session format; machine/instance compatibility remains
+  Protocol 49 fences the old inline-body session format; machine/instance compatibility remains
   additive. Rollback uses the complete pre-version image with a compatible old binary, not an
   old binary pointed at the migrated database. Disposable proof does not claim live activation.
   Migration records the maximum positive encoding growth across retained revisions as a fixed
@@ -4103,8 +4103,8 @@ incumbent continuity mismatch, or `supersession damped`). A name conflict is dec
 same atomic write that would admit the hello; it sends no welcome, changes neither machine row,
 and leaves an incumbent connection untouched. Version acceptance uses
 `MACHINE_PROTOCOL_COMPAT_VERSIONS`, currently
-`{30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48}`; session/browser joins remain strictly
-current at protocol 48. An unchanged machine
+`{30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49}`; session/browser joins remain strictly
+current at protocol 49. An unchanged machine
 wire may add a version to the set. A strictly additive-optional change may also add it only
 when old frames still parse and absent fields preserve the old semantics. Other changes
 reset the set and require a coordinated hub/transport upgrade. An admission bound applied
