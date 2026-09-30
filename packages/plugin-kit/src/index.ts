@@ -5,8 +5,8 @@
  * behind their own doors so a bundle carries only the half it runs — `@manifold/plugin-kit/server`
  * (`defineServerPlugin`) and `@manifold/plugin-kit/web` (`defineWebPlugin`, a React definition
  * the packer runs in-realm or in a Worker) — and the commands are `pack` (a directory to an
- * artifact), `install` (an artifact onto a hub), `dev` (pack and install on every change) and
- * `verify` (artifacts against a real spawned engine), each its own file under `src/` (issue #319).
+ * artifact), `install` (an artifact onto a hub), `dev` (the packed installation loop, or
+ * opt-in frontend source refresh) and `verify` (artifacts against a spawned engine).
  */
 export {
   ActionCallError,

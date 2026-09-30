@@ -70,7 +70,7 @@ export interface PackResult {
   readonly bytes: number;
 }
 
-const SHARED: Record<string, true> = {
+export const SHARED_MODULES: Readonly<Record<string, true>> = {
   react: true,
   "react-dom": true,
   "react/jsx-runtime": true,
@@ -93,7 +93,7 @@ async function sharedModules(
     version: string;
   };
   // Inventory before the consuming build: nested Bun.build calls inside onLoad deadlock.
-  for (const path of Object.keys(SHARED)) {
+  for (const path of Object.keys(SHARED_MODULES)) {
     let entry: string;
     try {
       entry = Bun.resolveSync(path, pluginDir);
@@ -139,7 +139,7 @@ async function sharedModules(
     name: "manifold-shared",
     setup(builder) {
       builder.onResolve({ filter: /^(?:react(?:-dom)?(?:\/.*)?|@manifold\/.*)$/ }, ({ path }) => {
-        if (SHARED[path]) return { path, namespace: "manifold-shared" };
+        if (SHARED_MODULES[path]) return { path, namespace: "manifold-shared" };
         return undefined;
       });
       builder.onLoad({ filter: /.*/, namespace: "manifold-shared" }, ({ path }) => {
