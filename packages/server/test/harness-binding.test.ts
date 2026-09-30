@@ -331,8 +331,8 @@ async function fixture(
     broker.resize(peer, {
       type: "terminal_resize",
       terminalId: tile.ref.terminalId,
-      cols: 80,
-      rows: 24,
+      viewportId: "fixture",
+      viewport: { cols: 80, rows: 24 },
     });
     return socket;
   };

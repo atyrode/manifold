@@ -315,7 +315,7 @@ async function run(): Promise<void> {
     2,
   );
   if (pendingTerminalId === null) throw new Error("pending terminal tile disappeared before fit");
-  a.resizeTerminal(pendingTerminalId, 80, 24);
+  a.resizeTerminal(pendingTerminalId, 80, 24, "transport-a");
   const terminal = await opening;
   const ca = new Capture("A", a, terminal.id);
   a.attachTerminal(terminal.id);
@@ -324,7 +324,7 @@ async function run(): Promise<void> {
   a.sendTerminalInput(terminal.id, "draw\n");
   await ca.marker("x24@@");
   phase = "resize-before-fresh-viewer";
-  a.resizeTerminal(terminal.id, 96, 28);
+  a.resizeTerminal(terminal.id, 96, 28, "transport-a");
   await ca.marker("96x28@@");
   const b = await viewer();
   identity.samePrincipal = a.self?.id === grant.principal.id && b.self?.id === grant.principal.id;
@@ -368,12 +368,20 @@ async function run(): Promise<void> {
   for (let index = 0; index < workload.resizes; index += 1) {
     // B starts with the size DIFFERENT from setup, then A takes it back.
     const sender = index % 2 === 0 ? b : a;
+    // This measures one desired viewport at a time, not competing live minima.
+    const previous = sender === a ? b : a;
+    previous.releaseTerminalViewport(terminal.id, previous === a ? "transport-a" : "transport-b");
     const size = workload.sizes[index % 2 === 0 ? 1 : 0];
     if (size === undefined) throw new Error("size unavailable");
     const offsetA = ca.text.length,
       offsetB = cb.text.length;
     const sentAtMs = now();
-    sender.resizeTerminal(terminal.id, size.cols, size.rows);
+    sender.resizeTerminal(
+      terminal.id,
+      size.cols,
+      size.rows,
+      sender === a ? "transport-a" : "transport-b",
+    );
     const marker = `@@D:${String(size.cols)}x${String(size.rows)}@@`;
     const [received] = await Promise.all([ca.marker(marker, offsetA), cb.marker(marker, offsetB)]);
     const redraw = ca.text.slice(offsetA, received.index + marker.length);

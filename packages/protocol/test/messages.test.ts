@@ -152,7 +152,12 @@ describe("session channel schemas", () => {
       { type: "resync_request" as const },
       { type: "terminal_attach" as const, terminalId: "s1" },
       { type: "terminal_detach" as const, terminalId: "s1" },
-      { type: "terminal_resize" as const, terminalId: "s1", cols: 80, rows: 24 },
+      {
+        type: "terminal_resize" as const,
+        terminalId: "s1",
+        viewportId: "fixture",
+        viewport: { cols: 80, rows: 24 },
+      },
       { type: "terminal_take" as const, terminalId: "s1" },
       { type: "terminal_kill" as const, terminalId: "s1" },
       { type: "terminal_open" as const, elementId: "el1", cols: 80, rows: 24 },

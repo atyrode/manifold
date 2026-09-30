@@ -7,7 +7,6 @@ import {
   HOST_TO_GUEST_MESSAGE_TYPES,
   HostToGuestMessageSchema,
   INSTANCE_CHANNEL_PATH,
-  INSTANCE_PROTOCOL_COMPAT_VERSIONS,
   MAX_ADVERTISED_TICKETS,
   MintShareRequestSchema,
   PROTOCOL_VERSION,
@@ -211,16 +210,6 @@ describe("the instance channel handshake", () => {
     */
     expect(DIAL_PING_INTERVAL_MS).toBe(30_000);
     expect(DIAL_LIVENESS_TIMEOUT_MS).toBe(DIAL_PING_INTERVAL_MS * 2 + 15_000);
-  });
-
-  test("expanded shared vocabularies require protocol 27", () => {
-    // Protocol and compatibility (docs/CONTRACTS.md) applies independently per wire:
-    // expanded closed share vocabularies reset instances, not terminal agents.
-    for (let version = 0; version <= PROTOCOL_VERSION + 1; version++) {
-      expect(INSTANCE_PROTOCOL_COMPAT_VERSIONS.has(version)).toBe(
-        version >= 27 && version <= PROTOCOL_VERSION,
-      );
-    }
   });
 });
 

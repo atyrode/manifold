@@ -381,6 +381,8 @@ describe("reviewed plugin updates", () => {
 
     for (const [version, builtAgainst] of [
       ["too-old", { [BUILT_AGAINST_PROTOCOL]: "46" }],
+      ["reserved-49", { [BUILT_AGAINST_PROTOCOL]: "49" }],
+      ["reserved-50", { [BUILT_AGAINST_PROTOCOL]: "50" }],
       ["future", { [BUILT_AGAINST_PROTOCOL]: String(PROTOCOL_VERSION + 1) }],
       ["noncanonical", { [BUILT_AGAINST_PROTOCOL]: "047" }],
       ["wrong-react", { [BUILT_AGAINST_PROTOCOL]: "47", react: "999.0.0" }],

@@ -382,8 +382,8 @@ function bornInComposition(fixture: LifecycleFixture, inside: Witness, ref: stri
   fixture.broker.resize(inside.peer, {
     type: "terminal_resize",
     terminalId: pending.ref.terminalId,
-    cols: 80,
-    rows: 24,
+    viewportId: "fixture",
+    viewport: { cols: 80, rows: 24 },
   });
   const create = lastCreate(fixture.machine);
   fixture.broker.onCreated(fixture.machine.machineId, create.terminalId);

@@ -191,7 +191,12 @@ function fitPending(base: TerminalsFixture, cols = 80, rows = 24): string {
       base.container.id,
       "fit",
     ),
-    { type: "terminal_resize", terminalId: tile.ref.terminalId, cols, rows },
+    {
+      type: "terminal_resize",
+      terminalId: tile.ref.terminalId,
+      viewportId: "fixture",
+      viewport: { cols, rows },
+    },
   );
   return tile.ref.terminalId;
 }

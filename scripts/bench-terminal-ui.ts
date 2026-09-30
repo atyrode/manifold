@@ -42,6 +42,8 @@ interface WireSample {
   observedMs: number;
   type: string;
   terminalId?: string;
+  viewportId?: string;
+  withdrawn?: boolean;
   cols?: number;
   rows?: number;
   kind?: string;
@@ -276,6 +278,13 @@ async function launch(name: string, width: number, height: number, dpr: number):
         observations["wireCaptureOverflow"] = true;
         return;
       }
+      const viewport = message["viewport"];
+      const geometry =
+        message["type"] === "terminal_resize"
+          ? typeof viewport === "object" && viewport !== null
+            ? (viewport as Record<string, unknown>)
+            : null
+          : message;
       wires.push({
         browser: name,
         phase,
@@ -284,8 +293,10 @@ async function launch(name: string, width: number, height: number, dpr: number):
         observedMs: performance.now(),
         type: String(message["type"]),
         ...(typeof message["terminalId"] === "string" ? { terminalId: message["terminalId"] } : {}),
-        ...(typeof message["cols"] === "number" ? { cols: message["cols"] } : {}),
-        ...(typeof message["rows"] === "number" ? { rows: message["rows"] } : {}),
+        ...(typeof message["viewportId"] === "string" ? { viewportId: message["viewportId"] } : {}),
+        ...(message["type"] === "terminal_resize" ? { withdrawn: viewport === null } : {}),
+        ...(typeof geometry?.["cols"] === "number" ? { cols: geometry["cols"] } : {}),
+        ...(typeof geometry?.["rows"] === "number" ? { rows: geometry["rows"] } : {}),
         ...(typeof message["kind"] === "string" ? { kind: message["kind"] } : {}),
       });
     });

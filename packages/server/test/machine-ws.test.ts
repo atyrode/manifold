@@ -974,32 +974,61 @@ describe("machine admission and terminal continuity", () => {
       fix.store.close();
     }
   });
-  test("pre-cutover transports cannot advertise ownership or adopt durable terminals", () => {
-    const fix = fixture("9".repeat(64), ["t1"]);
-    const jobs = new JobService(fix.store, fix.auth, fix.runtime);
-    fix.gateway.setJobs(jobs);
-    const socket = fix.hello("pre-job-owner", {
-      protocolVersion: 29,
-      alive: ["t1"],
-      jobOwner: {
-        protocolVersion: JOB_OWNER_PROTOCOL_VERSION,
-        ownerId: "job-owner",
-        publicKey: "untrusted-owner-key",
-        generation: 1,
-        platforms: ["linux-x64"],
-        inventoryDigest: "a".repeat(64),
-      },
-    });
-    expect(socket.closed).toEqual({ code: 4409, reason: "protocol version mismatch" });
-    expect(machineMessages(socket)).toEqual([]);
-    expect(fix.gateway.isOnline(fix.machineId)).toBe(false);
-    expect(fix.status("t1")).toBe("running");
-    expect(
-      jobs.describe(fix.root, { machineId: fix.machineId, pluginId: "sample.worker" }).connected,
-    ).toBe(false);
-    fix.gateway.shutdown();
-    fix.store.close();
-  });
+
+  test.each([30, 48, PROTOCOL_VERSION])(
+    "retained terminals rejoin on admitted machine transport %s",
+    (protocolVersion) => {
+      const fix = fixture("9".repeat(64), ["t1"], "retained-host");
+      try {
+        const socket = fix.hello("retained", {
+          protocolVersion,
+          terminalHostId: "retained-host",
+          alive: ["t1"],
+        });
+        expect(socket.closed).toBeNull();
+        expect(machineMessages(socket)[0]?.type).toBe("welcome");
+        expect(machineMessages(socket).some((frame) => frame.type === "kill")).toBe(false);
+        expect(fix.gateway.isOnline(fix.machineId)).toBe(true);
+        expect(fix.status("t1")).toBe("running");
+      } finally {
+        fix.gateway.shutdown();
+        fix.store.close();
+      }
+    },
+  );
+
+  test.each([29, 49, 50, PROTOCOL_VERSION + 1])(
+    "unsupported machine transport %s cannot advertise ownership or adopt durable terminals",
+    (protocolVersion) => {
+      const fix = fixture("9".repeat(64), ["t1"]);
+      const jobs = new JobService(fix.store, fix.auth, fix.runtime);
+      fix.gateway.setJobs(jobs);
+      try {
+        const socket = fix.hello("pre-job-owner", {
+          protocolVersion,
+          alive: ["t1"],
+          jobOwner: {
+            protocolVersion: JOB_OWNER_PROTOCOL_VERSION,
+            ownerId: "job-owner",
+            publicKey: "untrusted-owner-key",
+            generation: 1,
+            platforms: ["linux-x64"],
+            inventoryDigest: "a".repeat(64),
+          },
+        });
+        expect(socket.closed).toEqual({ code: 4409, reason: "protocol version mismatch" });
+        expect(machineMessages(socket)).toEqual([]);
+        expect(fix.gateway.isOnline(fix.machineId)).toBe(false);
+        expect(fix.status("t1")).toBe("running");
+        expect(
+          jobs.describe(fix.root, { machineId: fix.machineId, pluginId: "sample.worker" }).connected,
+        ).toBe(false);
+      } finally {
+        fix.gateway.shutdown();
+        fix.store.close();
+      }
+    },
+  );
 
   test("an incompatible native owner keeps terminal continuity and maintenance without job authority", async () => {
     const fix = fixture("c".repeat(64), ["t1"], "retained-host");
