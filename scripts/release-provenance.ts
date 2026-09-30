@@ -337,7 +337,16 @@ export async function verifyReleaseCommit(
   const main = z
     .object({ name: z.literal("main"), commit: z.object({ sha: Sha }) })
     .parse(await api(`repos/${repository}/branches/main`)).commit.sha;
-  await command(["git", "fetch", "--no-tags", "origin", sha, main]);
+  // Tracking refs, not fetched objects alone, establish remote history for push policies.
+  await command([
+    "git",
+    "fetch",
+    "--no-tags",
+    "origin",
+    sha,
+    main,
+    "refs/heads/main:refs/remotes/origin/main",
+  ]);
   await command(["git", "merge-base", "--is-ancestor", sha, main]);
   const { parent, sourceCi } = await verifyReleaseCandidate(repository, tag, sha);
   const pulls = z
