@@ -3728,7 +3728,7 @@ depends on it.
   Corrupt rows remain corrupt rather than being laundered; target collisions or unsupported
   legacy shapes refuse the transaction. Notes state/storage and ownership reservations are
   explicitly reconciled, including all disabled combinations without fabricated attribution.
-  Protocol 48 fences the old inline-body session format; machine/instance compatibility remains
+  Protocol 49 fences the old inline-body session format; machine/instance compatibility remains
   additive. Rollback uses the complete pre-version image with a compatible old binary, not an
   old binary pointed at the migrated database. Disposable proof does not claim live activation.
   Migration records the maximum positive encoding growth across retained revisions as a fixed
