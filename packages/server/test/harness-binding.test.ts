@@ -314,6 +314,10 @@ async function fixture(
       placement: "tile" as const,
       runtime: value,
     };
+    const previousTerminalIds = new Set<string>();
+    for (const node of Object.values(rooms.get(containerId)?.tileLayout() ?? {})) {
+      if (node.ref?.kind === "terminal") previousTerminalIds.add(node.ref.terminalId);
+    }
     const admission = z
       .strictObject({ traceId: z.number() })
       .parse(
@@ -324,6 +328,7 @@ async function fixture(
       (candidate) =>
         candidate.dir === null &&
         candidate.ref?.kind === "terminal" &&
+        !previousTerminalIds.has(candidate.ref.terminalId) &&
         store.getTerminal(candidate.ref.terminalId) === null,
     );
     if (tile?.dir !== null || tile.ref?.kind !== "terminal")
@@ -331,8 +336,8 @@ async function fixture(
     broker.resize(peer, {
       type: "terminal_resize",
       terminalId: tile.ref.terminalId,
-      cols: 80,
-      rows: 24,
+      viewportId: "fixture",
+      viewport: { cols: 80, rows: 24 },
     });
     return socket;
   };

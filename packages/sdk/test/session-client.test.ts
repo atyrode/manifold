@@ -6,6 +6,7 @@ import {
   type ManifoldRef,
   type SceneElement,
   type ServerMessageBody,
+  type TerminalSizing,
   type TileRef,
 } from "@manifold/protocol";
 import {
@@ -1417,6 +1418,11 @@ describe("terminal attach refcounting", () => {
     createdBy: "me",
   };
   const INIT_WITH_TERMINAL: InitFrame = { ...INIT, terminals: [TERMINAL] };
+  const SIZING: TerminalSizing = {
+    mode: "smallest",
+    columns: [{ connId: "conn-original", viewportId: "view-a" }],
+    rows: [{ connId: "conn-original", viewportId: "view-b" }],
+  };
 
   test("every view-attach re-subscribes on the wire; only the last detach unsubscribes", () => {
     const { client, socket } = connected();
@@ -1473,6 +1479,11 @@ describe("terminal attach refcounting", () => {
     socket.receive(INIT_WITH_TERMINAL);
     client.attachTerminal("s1");
     client.attachTerminal("s1");
+    socket.receive({ type: "terminal_sizing", terminalId: "s1", sizing: SIZING });
+    const sizingAtExit: (TerminalSizing | undefined)[] = [];
+    client.on("terminal_event", (event) => {
+      if (event.kind === "exited") sizingAtExit.push(client.terminalSizing.get(event.terminalId));
+    });
     socket.receive({
       type: "terminal_event",
       terminalId: "s1",
@@ -1487,6 +1498,7 @@ describe("terminal attach refcounting", () => {
       exitCode: 1,
       exitReason: "owner_oom_stopped",
     });
+    expect(sizingAtExit).toEqual([undefined]);
     expect(client.terminals.get("s1")).toMatchObject({
       status: "exited",
       exitCode: 1,
@@ -1522,38 +1534,65 @@ describe("terminal attach refcounting", () => {
     expect(sentTypes(socket).at(-1)).toBe("terminal_detach");
   });
 
-  test("same-connection resync preserves the existing wire subscription", () => {
+  test("same-connection resync preserves live subscriptions but retires absent or exited sizing", () => {
     const { client, socket } = connected();
-    socket.receive(INIT_WITH_TERMINAL);
+    socket.receive({
+      ...INIT_WITH_TERMINAL,
+      terminals: [TERMINAL, { ...TERMINAL, id: "s2" }],
+    });
     client.attachTerminal("s1");
+    socket.receive({ type: "terminal_sizing", terminalId: "s1", sizing: SIZING });
+    socket.receive({ type: "terminal_sizing", terminalId: "s2", sizing: SIZING });
+    const visibleSizing: string[][] = [];
+    client.on("terminals_changed", () => visibleSizing.push([...client.terminalSizing.keys()]));
     const attachesBeforeResync = sentTypes(socket).filter(
       (type) => type === "terminal_attach",
     ).length;
 
     socket.receive({ ...INIT_WITH_TERMINAL, type: "resync" });
 
+    expect(client.terminalSizing.get("s1")).toEqual(SIZING);
+    expect(visibleSizing.at(-1)).toEqual(["s1"]);
+
+    socket.receive({
+      ...INIT_WITH_TERMINAL,
+      type: "resync",
+      terminals: [{ ...TERMINAL, status: "exited", exitCode: 1 }],
+    });
+    expect(visibleSizing.at(-1)).toEqual([]);
     expect(sentTypes(socket).filter((type) => type === "terminal_attach")).toHaveLength(
       attachesBeforeResync,
     );
   });
 
-  test("reconnect re-subscribes running terminals views still hold, without double-counting", () => {
+  test("reconnect reacquires streams without reviving stale attribution or offline viewport intents", () => {
     const { client } = dialing({ reconnect: true });
     const first = FakeSocket.instances.at(-1);
     if (first === undefined) throw new Error("no socket");
+    client.resizeTerminal("s1", 90, 25, "unmounted-before-init");
+    client.releaseTerminalViewport("s1", "unmounted-before-init");
     first.open();
     first.receive(INIT_WITH_TERMINAL);
+    expect(framesOfType(first, "terminal_resize")).toEqual([]);
+    const visibleSizing: number[] = [];
+    client.on("terminals_changed", () => visibleSizing.push(client.terminalSizing.size));
+    first.receive({ type: "terminal_sizing", terminalId: "s1", sizing: SIZING });
     client.attachTerminal("s1");
     expect(sentTypes(first).filter((t) => t === "terminal_attach")).toHaveLength(1);
 
     vi.useFakeTimers();
     try {
       first.close(1006, "network");
+      expect(visibleSizing.at(-1)).toBe(0);
+      client.resizeTerminal("s1", 120, 35, "hidden-while-offline");
+      client.releaseTerminalViewport("s1", "hidden-while-offline");
       vi.advanceTimersByTime(5_000);
       const second = FakeSocket.instances.at(-1);
       if (second === undefined || second === first) throw new Error("no reconnect socket");
       second.open();
       second.receive({ ...INIT_WITH_TERMINAL, selfConnId: "conn-reconnected" });
+      expect(client.terminalSizing.size).toBe(0);
+      expect(framesOfType(second, "terminal_resize")).toEqual([]);
       // server viewer registry is connection-scoped: SDK must re-attach exactly once
       expect(sentTypes(second).filter((t) => t === "terminal_attach")).toHaveLength(1);
       // a single detach still fully unsubscribes (refcount untouched by reconnect)
@@ -1562,6 +1601,78 @@ describe("terminal attach refcounting", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  test("closing-window viewport frames never replay across fresh init, including pending births", () => {
+    vi.useFakeTimers();
+    const { client, socket: first } = dialing({ reconnect: true, backoffCapMs: 0 });
+    const init: InitFrame = {
+      ...INIT_WITH_TERMINAL,
+      doc: encodedCompositionDoc({ kind: "terminal", terminalId: "pending-birth" }),
+    };
+    try {
+      first.open();
+      first.receive(init);
+      expect(client.layout()?.[ROOT_TILE_ID]?.ref).toEqual({
+        kind: "terminal",
+        terminalId: "pending-birth",
+      });
+      expect(client.terminals.has("pending-birth")).toBe(false);
+      client.attachTerminal("s1");
+      client.resizeTerminal("s1", 80, 24, "withdrawn-on-close");
+      first.sent.length = 0;
+
+      // WebSocket.close() enters CLOSING before onclose updates the cached client status.
+      first.readyState = 2;
+      expect(client.status).toBe("open");
+      client.resizeTerminal("s1", 90, 25, "hidden-on-reconnect");
+      client.releaseTerminalViewport("s1", "withdrawn-on-close");
+      // A placed tile has no TerminalInfo until its first writable measurement starts birth.
+      client.resizeTerminal("pending-birth", 60, 18, "unmounted-before-birth");
+      client.transact((tx) => tx.create(element("survives-reconnect")));
+      first.close(1006, "network");
+      expect(client.status).toBe("reconnecting");
+      client.releaseTerminalViewport("s1", "hidden-on-reconnect");
+      client.releaseTerminalViewport("pending-birth", "unmounted-before-birth");
+      expect(framesOfType(first, "terminal_resize")).toEqual([]);
+
+      vi.advanceTimersByTime(5_000);
+      const second = FakeSocket.instances.at(-1);
+      if (second === undefined || second === first) throw new Error("no reconnect socket");
+      second.open();
+      second.receive({ ...init, selfConnId: "conn-reconnected" });
+
+      // Neither obsolete geometry nor a closing-window withdrawal may cross the new channel.
+      expect(framesOfType(second, "terminal_resize")).toEqual([]);
+      expect(framesOfType(second, "terminal_attach")).toEqual([
+        { type: "terminal_attach", ch: channelOf(client), terminalId: "s1" },
+      ]);
+      const replica = createSceneDoc();
+      for (const update of docUpdateFrames(second)) {
+        Y.applyUpdate(replica, decodeUpdate(update.update));
+      }
+      expect(readElements(replica).get("survives-reconnect")).toEqual(
+        element("survives-reconnect"),
+      );
+      replica.destroy();
+    } finally {
+      client.close();
+    }
+  });
+
+  test("departure retires visible sizing before observers repaint the former home", () => {
+    const { client, socket } = connected();
+    socket.receive(INIT_WITH_TERMINAL);
+    socket.receive({ type: "terminal_sizing", terminalId: "s1", sizing: SIZING });
+    const visibleSizing: (TerminalSizing | undefined)[] = [];
+    client.on("terminal_event", (event) => {
+      if (event.kind === "parked") visibleSizing.push(client.terminalSizing.get(event.terminalId));
+    });
+
+    socket.receive({ type: "terminal_event", terminalId: "s1", kind: "parked" });
+
+    expect(client.terminals.has("s1")).toBe(false);
+    expect(visibleSizing).toEqual([undefined]);
   });
 });
 

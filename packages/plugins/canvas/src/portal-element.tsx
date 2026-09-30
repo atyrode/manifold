@@ -253,6 +253,8 @@ function PortalTerminalTile({
   const machineId = client.terminals.get(terminalId)?.machineId;
   const publishHere = usePublishLocation(projectionScope);
   const engage = (event: React.SyntheticEvent<HTMLDivElement>): void => {
+    // React bubbles portaled disclosures through this tile; only its own DOM may engage it.
+    if (!(event.target instanceof Node) || !event.currentTarget.contains(event.target)) return;
     publishHere();
     if (event.target instanceof Element && event.target.closest(".node-titlebar") !== null) return;
     onEngage(tileId);
@@ -627,6 +629,14 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
       if (root === null) return;
       const target = event.target;
       if (target instanceof Node && root.contains(target)) return;
+      // A portaled dialog still belongs here when this portal contains its owning trigger.
+      const dialog = target instanceof Element ? target.closest('[role="dialog"][id]') : null;
+      if (
+        dialog !== null &&
+        root.querySelector(`[aria-controls~="${CSS.escape(dialog.id)}"]`) !== null
+      ) {
+        return;
+      }
       /*
        * The frame's resize controls live OUTSIDE `.portal` (the frame clips its
        * overflow, and a clipped control is a dead pointer target), but grabbing this

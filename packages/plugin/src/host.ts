@@ -237,8 +237,10 @@ export interface SessionHandle {
    * hears an `error` frame with code `not_controller` and `ref` naming the terminal.
    */
   sendTerminalInput(terminalId: string, data: string | Uint8Array): void;
-  /** Resizes a terminal (controller only); the new geometry reaches every viewer as a `resized` event. */
-  resizeTerminal(terminalId: string, cols: number, rows: number): void;
+  /** Publishes one active attached viewport's desired geometry under the controller lease. */
+  resizeTerminal(terminalId: string, cols: number, rows: number, viewportId?: string): void;
+  /** Withdraws one viewport's geometry without releasing sibling stream subscriptions. */
+  releaseTerminalViewport(terminalId: string, viewportId?: string): void;
   /** Takes the controller lease (`core.terminals.take` decides); announced as `controller_changed`. */
   takeTerminal(terminalId: string): void;
   /** Kills the PTY (`core.terminals.kill` decides); its exit reaches every viewer as an `exited` event. */

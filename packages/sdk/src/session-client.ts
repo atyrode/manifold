@@ -56,6 +56,7 @@ import {
   type ServerEvent,
   type ServerMessageBody,
   type TerminalEnv,
+  type TerminalSizing,
   type TerminalInfo,
   type TerminalProgram,
   type TerminalRuntime,
@@ -264,6 +265,8 @@ const OUTBOX_LIMIT = 256;
 export class SessionClient {
   readonly attendance = new Map<string, PresenceState>();
   readonly terminals = new Map<string, TerminalInfo>();
+  /** Transient sizing attribution; never persisted with a terminal or scene document. */
+  readonly terminalSizing = new Map<string, TerminalSizing>();
   private readonly elementsState = new Map<string, SceneElement>();
   readonly elements: ReadonlyMap<string, SceneElement> = this.elementsState;
   /** Live view refcounts per attached terminal (see attachTerminal). */
@@ -418,6 +421,10 @@ export class SessionClient {
   private setStatus(status: ConnectionStatus): void {
     if (this.status === status) return;
     this.status = status;
+    if (status !== "open" && this.terminalSizing.size > 0) {
+      this.terminalSizing.clear();
+      this.emit("terminals_changed");
+    }
     this.emit("status", status);
   }
 
@@ -715,6 +722,11 @@ export class SessionClient {
         for (const p of msg.attendance) this.attendance.set(p.principal.id, p);
         this.terminals.clear();
         for (const s of msg.terminals) this.terminals.set(s.id, s);
+        for (const terminalId of this.terminalSizing.keys()) {
+          if (this.terminals.get(terminalId)?.status !== "running") {
+            this.terminalSizing.delete(terminalId);
+          }
+        }
         this.setStatus("open");
         // Liveness belongs to the socket, which the pooled connection owns and answers for.
         this.flushOutbox();
@@ -794,6 +806,7 @@ export class SessionClient {
           // reachable over this channel. It either re-homed into another composition (a
           // merge or an extraction) or it was killed and left every room.
           this.terminals.delete(msg.terminalId);
+          this.terminalSizing.delete(msg.terminalId);
           this.emit(msg.type, msg);
           this.emit("terminals_changed");
           break;
@@ -803,6 +816,7 @@ export class SessionClient {
           const next: TerminalInfo = { ...terminal };
           if (msg.kind === "exited") {
             next.status = "exited";
+            this.terminalSizing.delete(msg.terminalId);
             next.exitCode = msg.exitCode ?? null;
             next.exitReason = msg.exitReason ?? null;
           }
@@ -823,6 +837,7 @@ export class SessionClient {
             next.exitCode = null;
             next.exitReason = null;
             next.readiness = null;
+            this.terminalSizing.delete(msg.terminalId);
             next.controllerId = msg.controllerId ?? null;
           }
           this.terminals.set(msg.terminalId, next);
@@ -834,6 +849,14 @@ export class SessionClient {
           // local view before acquiring the replacement stream's fresh snapshot.
           this.send({ type: "terminal_attach", terminalId: msg.terminalId });
         }
+        break;
+      }
+      case "terminal_sizing": {
+        if (this.terminals.has(msg.terminalId)) {
+          this.terminalSizing.set(msg.terminalId, msg.sizing);
+          this.emit("terminals_changed");
+        }
+        this.emit(msg.type, msg);
         break;
       }
       case "error": {
@@ -879,9 +902,9 @@ export class SessionClient {
       channel.send(msg);
       return;
     }
-    // High-rate ephemera is never worth replaying: a stale cursor or gesture is noise.
+    // Connection-scoped ephemera must never replay: active views republish current intent.
     // Liveness is not here at all — the pooled connection owns the socket's ping.
-    if (msg.type === "cursor" || msg.type === "gesture") return;
+    if (msg.type === "cursor" || msg.type === "gesture" || msg.type === "terminal_resize") return;
     if (this.outbox.length >= OUTBOX_LIMIT) this.outbox.shift();
     this.outbox.push(msg);
   }
@@ -1411,8 +1434,21 @@ export class SessionClient {
     this.send({ type: "terminal_input", terminalId, data: b64 });
   }
 
-  resizeTerminal(terminalId: string, cols: number, rows: number): void {
-    this.send({ type: "terminal_resize", terminalId, cols, rows });
+  /**
+   * Publishes desired geometry for one active attached view, not the applied shared grid.
+   * Renew at TERMINAL_VIEWPORT_REFRESH_MS while foreground and visible; an unrenewed
+   * measurement expires after TERMINAL_VIEWPORT_LEASE_MS. The three-argument public call
+   * represents this client's single virtual "sdk" viewport; mounted views supply their id.
+   */
+  resizeTerminal(terminalId: string, cols: number, rows: number, viewportId = "sdk"): void {
+    if (this.status !== "open") return;
+    this.send({ type: "terminal_resize", terminalId, viewportId, viewport: { cols, rows } });
+  }
+
+  /** Immediately retires one view without detaching sibling renderers on this channel. */
+  releaseTerminalViewport(terminalId: string, viewportId = "sdk"): void {
+    if (this.status !== "open") return;
+    this.send({ type: "terminal_resize", terminalId, viewportId, viewport: null });
   }
 
   takeTerminal(terminalId: string): void {

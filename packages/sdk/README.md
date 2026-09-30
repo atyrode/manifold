@@ -79,6 +79,29 @@ loaded context; verify a fresh session through the actual harness loader.
 From a development checkout, the equivalent entrypoint is
 `bun packages/plugins/terminals/cli/main.ts`; it consumes only public SDK exports.
 
+## Active terminal viewport measurements
+
+After `attachTerminal` and the ordered snapshot handoff, an eligible controller-principal
+view publishes **desired** cell space with `resizeTerminal(terminalId, cols, rows, viewportId)`.
+Each mount owns a unique opaque id. The public three-argument form uses the client's single
+virtual `sdk` viewport. Renew only foreground visible intent every
+`TERMINAL_VIEWPORT_REFRESH_MS` (10 seconds); stale measurements expire after
+`TERMINAL_VIEWPORT_LEASE_MS` (30 seconds). Call
+`releaseTerminalViewport(terminalId, viewportId)` on hiding or disposal, separately from
+refcounted `detachTerminal`. Offline measurements and withdrawals are not queued for replay.
+The pending tiled terminal's first writable measured view still supplies birth geometry.
+
+The server derives the minimum desired columns and rows independently over eligible LIVE
+occupant views. Read-only, non-controller and preview views cannot constrain the grid.
+With no eligible view, the server retains the last applied grid. `terminalSizing` holds ephemeral
+`terminal_sizing` attribution (`mode`, column/row connection+viewport references), while
+`terminals` and `resized` events remain the authoritative applied geometry. Attribution
+references are not authority or private identity; name them only through already-visible
+attendance. This session-only revision does not require a native owner or fleet restart.
+Native resize admission failure also retires sizing intent and retains the last successful grid;
+only a fresh eligible measurement can enter again. Do not describe an unapplied desired size
+as the shared grid.
+
 ## Trusted launcher
 
 Use the repository's supported Bun (at least 1.4.2) and installed workspace dependencies:

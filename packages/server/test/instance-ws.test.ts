@@ -28,7 +28,10 @@ class StatusSocket implements RawSocket {
 }
 
 /** A gateway with one live share, and the guest hello that dials it. */
-function dial(status: number): { socket: StatusSocket; open: () => void } {
+function dial(
+  status: number,
+  protocolVersion = PROTOCOL_VERSION,
+): { socket: StatusSocket; open: () => void; close: () => void } {
   const runtime = new FakeRuntime();
   const store = testStore();
   const auth = new AuthService(store, OWNER_KEY, runtime);
@@ -65,12 +68,16 @@ function dial(status: number): { socket: StatusSocket; open: () => void } {
         "connection",
         JSON.stringify({
           type: "hello",
-          protocolVersion: PROTOCOL_VERSION,
+          protocolVersion,
           origin: GUEST_ORIGIN,
           instanceVersion: "0.0.0",
           token: share.token,
         }),
       );
+    },
+    close: () => {
+      gateway.shutdown();
+      store.close();
     },
   };
 }
@@ -104,4 +111,34 @@ describe("instance channel send status", () => {
     expect(dialed.socket.closed?.code).toBe(1013);
     expect(dialed.socket.closed?.reason).toBe("outbound queue overflow");
   });
+});
+
+describe("instance protocol admission", () => {
+  test.each([27, 48, PROTOCOL_VERSION])(
+    "an unchanged instance wire at revision %s can authenticate its share",
+    (protocolVersion) => {
+      const dialed = dial(1, protocolVersion);
+      try {
+        dialed.open();
+        expect(dialed.socket.closed).toBeNull();
+        expect(JSON.parse(dialed.socket.sent[0]!).type).toBe("welcome");
+      } finally {
+        dialed.close();
+      }
+    },
+  );
+
+  test.each([26, 49, 50, PROTOCOL_VERSION + 1])(
+    "unsupported instance revision %s is refused before welcome",
+    (protocolVersion) => {
+      const dialed = dial(1, protocolVersion);
+      try {
+        dialed.open();
+        expect(dialed.socket.closed).toEqual({ code: 4409, reason: "protocol version mismatch" });
+        expect(dialed.socket.sent).toEqual([]);
+      } finally {
+        dialed.close();
+      }
+    },
+  );
 });

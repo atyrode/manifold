@@ -186,6 +186,22 @@ const terminalGeometry = {
   cols: z.number().int().positive().max(1000),
   rows: z.number().int().positive().max(1000),
 };
+
+/** Foreground measurements expire even when a suspended client cannot withdraw them. */
+export const TERMINAL_VIEWPORT_REFRESH_MS = 10_000;
+export const TERMINAL_VIEWPORT_LEASE_MS = 30_000;
+export const MAX_TERMINAL_VIEWPORTS = 64;
+const TerminalViewportRefSchema = z.strictObject({
+  connId: z.string().min(1).max(128),
+  viewportId: z.string().min(1).max(128),
+});
+/** Ephemeral attribution only; names come from the recipient's existing visible presence. */
+export const TerminalSizingSchema = z.strictObject({
+  mode: z.enum(["smallest", "retained"]),
+  columns: z.array(TerminalViewportRefSchema).max(MAX_TERMINAL_VIEWPORTS),
+  rows: z.array(TerminalViewportRefSchema).max(MAX_TERMINAL_VIEWPORTS),
+});
+export type TerminalSizing = z.infer<typeof TerminalSizingSchema>;
 const optionalTerminalGeometry = {
   cols: terminalGeometry.cols.optional(),
   rows: terminalGeometry.rows.optional(),
@@ -305,7 +321,9 @@ const CLIENT_BODIES = {
   terminal_resize: z.strictObject({
     type: z.literal("terminal_resize"),
     terminalId: z.string().min(1),
-    ...terminalGeometry,
+    viewportId: z.string().min(1).max(128),
+    /** null withdraws this view; desired dimensions are independent of the applied grid. */
+    viewport: z.strictObject(terminalGeometry).nullable(),
   }),
   terminal_take: z.strictObject({
     type: z.literal("terminal_take"),
@@ -542,6 +560,11 @@ const SERVER_BODIES = {
     fallback: z.enum(["original", "home", "no_recipe"]).optional(),
     readiness: TerminalReadinessSchema.optional(),
   }),
+  terminal_sizing: z.strictObject({
+    type: z.literal("terminal_sizing"),
+    terminalId: z.string().min(1),
+    sizing: TerminalSizingSchema,
+  }),
   saved: z.strictObject({
     type: z.literal("saved"),
     rev: z.number().int().nonnegative(),
@@ -652,6 +675,7 @@ export const ServerMessageBodySchema = z.discriminatedUnion("type", [
   SERVER_BODIES.terminal_snapshot,
   SERVER_BODIES.terminal_output,
   SERVER_BODIES.terminal_event,
+  SERVER_BODIES.terminal_sizing,
   SERVER_BODIES.saved,
   SERVER_BODIES.error,
   SERVER_BODIES.channel_closed,
@@ -681,6 +705,7 @@ export const ServerMessageSchema = z.discriminatedUnion("type", [
   channelized(SERVER_BODIES.terminal_snapshot),
   channelized(SERVER_BODIES.terminal_output),
   channelized(SERVER_BODIES.terminal_event),
+  channelized(SERVER_BODIES.terminal_sizing),
   channelized(SERVER_BODIES.saved),
   channelized(SERVER_BODIES.error),
   channelized(SERVER_BODIES.channel_closed),
@@ -734,6 +759,7 @@ export const SERVER_MESSAGE_TYPES = [
   "terminal_snapshot",
   "terminal_output",
   "terminal_event",
+  "terminal_sizing",
   "saved",
   "error",
   "channel_closed",

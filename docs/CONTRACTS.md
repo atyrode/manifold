@@ -1983,8 +1983,8 @@ terminal is
 dismissable by any `terminals:write` holder, a running one only by its controller or the wildcard.
 `terminal_take` has `terminal_open`'s shape rather than `terminal_kill`'s: it dispatches
 `core.terminals.take` and, only if allowed, lets the broker move the lease and broadcast
-`controller_changed`, because a lease is held BY a connection and the broadcast goes to the room
-that connection is joined to. `take` is NOT `cleanup` — claiming control of a live PTY is
+`controller_changed`, because a lease is held by a principal and the broadcast goes to the
+terminal's home room. `take` is NOT `cleanup` — claiming control of a live PTY is
 administration, not tidying up — and its rule is the broker's former one minus the authority
 half: a terminal that cannot be named is `terminal not found`, an exited one is
 `terminal has exited`, and the principal currently HOLDING the lease is deliberately no
@@ -3516,7 +3516,9 @@ body uses the terminal's own background and padding without replacing the live x
 Mono windows and embedded compositions use the same native chrome and font scale; canvas
 zoom scales the projection once. Every viewer interprets output at the shared PTY grid:
 spectators scroll a smaller local viewport rather than fitting/reflowing that grid.
-Only a controller's non-preview view may propose a new shared size.
+Only the controller principal's writable, foreground, visible, non-preview occupant views
+participate in sizing. The broker fits the smallest desired columns and rows independently,
+not the last proposal. Keyboard focus does not determine whether a visible view participates.
 
 Element `presentation?: Record<discipline, "body" | "titlebar">` is inert contribution data,
 preserved through `RegisteredElement`. Canvas reads the declaration for `canvas`, defaulting
@@ -3544,13 +3546,14 @@ the current-size button resets to **13px**. `core.terminals` stores this device'
 non-default sizes under `manifold:terminal-font-sizes`, bounded to 128 entries with
 oldest-updated eviction and malformed entries ignored. The same terminal's mounted projections
 share that local preference; other devices do not. This is local readability, not a shared
-document edit or an action. Spectators can adjust their own font; a resulting PTY resize is
-still controller-only, post-snapshot and non-preview. Zoom updates the existing xterm instance,
-not the socket or terminal lifecycle.
+document edit or an action. Spectators can adjust their own font but cannot constrain the PTY.
+A controller's eligible view remeasures after font changes and snapshot replay; zoom updates
+the existing xterm instance, not the socket or terminal lifecycle.
 
 The terminal's visual inset is outside the FitAddon measurement box, so the measured host
 is usable cell space rather than padding counted as rows. After snapshot replay, measurement
-schedules at most one pending animation-frame publication; unchanged proposals are not sent.
+schedules at most one pending animation-frame publication; unchanged proposals are not sent
+except for the explicit ten-second active-view lease refresh.
 Publication measures the current host without resizing the local terminal. Every viewer,
 including the proposer, applies the authoritative resize event, so cursor-positioned output
 does not acquire a different interpretation merely because its viewport is smaller.
@@ -3791,7 +3794,7 @@ env? }` → server targets `machineId` when given (error `no_machine` if it is u
   synchronize xterm to those advertised dimensions and replay the serialized snapshot before
   fitting to its canvas element. Serialized cursor movement is geometry-dependent; fitting first
   can corrupt wrapping after a container switch or reload. After replay, the viewer fits once
-  rendering settles and the controller reports the resulting geometry through `terminal_resize`.
+  rendering settles and an eligible controller view reports its desired geometry.
 - **Client-side viewer pairing.** The viewer registry above is **channel-scoped** (one
   `Viewer` per room membership, which before v12 was one per socket). A client presenting
   several renderers of one terminal on that channel sends `terminal_attach` on every mount:
@@ -3807,9 +3810,50 @@ env? }` → server targets `machineId` when given (error `no_machine` if it is u
 - Controller lease: opener starts as controller; `terminal_take { terminalId }` dispatches
   `core.terminals.take` (cap `terminals:write`, `scope: "container"`) and, only when that door
   allows, transfers the lease to that principal (event
-  `terminal_event { kind:"controller_changed", controllerId }`). Controller-only: input,
-  `terminal_resize` (broadcast as
-  `terminal_event { kind:"resized", cols, rows }` so every viewer refits), `terminal_kill`.
+  `terminal_event { kind:"controller_changed", controllerId }`). Input, geometry participation
+  and running-terminal control retain that principal lease; viewing never grants it.
+- **Smallest active viewport.** `terminal_resize { terminalId, viewportId, viewport }`
+  publishes desired `{ cols, rows }` for one mounted view; `viewport: null` withdraws it.
+  The viewport id is an opaque per-mount identity (maximum128 characters), not a device
+  fingerprint. The server stamps its room connection id; clients cannot choose another
+  connection's identity. At most64 registrations exist per runtime terminal; a further
+  identity receives `conflict` without replacing an existing measurement.
+  Only a running terminal's current controller principal with live `terminals:write` on its
+  home, on an attached LIVE occupant channel, is eligible. PENDING attachment may hold
+  desired intent but contributes only after snapshot/output handoff. The pending-tile birth
+  rule above remains separate: its first real writable measurement starts the PTY.
+  An eligible browser view has a foreground document, positive measured cell space and an
+  on-screen layout intersection; input focus is irrelevant. Preview, hidden, off-screen,
+  parked, unmounted or newly unauthorized views withdraw immediately. Active measurements
+  refresh every10 seconds and expire after30 seconds without renewal, including a suspended
+  client that cannot send withdrawal. Disconnect/departure and terminal lifecycle retire
+  participation; controller transfer retires the previous principal's geometry.
+  The broker minimizes columns and rows independently over desired measurements, retaining
+  all tied limiting references for each dimension. The applied PTY grid is never a desired
+  measurement. With no eligible active view, retain the last successfully requested grid
+  (including the birth grid); do not collapse, refit to defaults or end the PTY.
+  If the native owner refuses a changed grid, retire the current sizing intents and their
+  expiry timer, retain the last successful grid and publish retained/empty attribution.
+  A fresh measurement must re-enter admission; desired geometry never explains an unapplied grid.
+  Changed grids send the existing machine resize and home-room
+  `terminal_event { kind:"resized", cols, rows }`; unchanged grids send no duplicate native
+  resize. Attribution changes still publish `terminal_sizing { terminalId, sizing }`,
+  including on attachment: `{ mode: "smallest" | "retained", columns, rows }`, where each
+  array contains only `{ connId, viewportId }`. Retained mode has no limiting references.
+  This state is ephemeral, absent from retained TerminalInfo/scene/HTTP records.
+  The native terminal size indicator exposes dimension-specific limits through hover,
+  keyboard focus and touch disclosure. It names only principals already visible in the
+  recipient's attendance, identifies its own mount as “This view”, and uses a generic
+  “Another active view” when presence does not disclose a matching connection. No private
+  name/path/device lookup or resizing authority follows from attribution.
+  The indicator reserves a geometry-independent width for the bounded size label so applied
+  dimensions cannot change its own measurement area. Interacting with its portaled disclosure
+  neither engages a spectator terminal nor disengages its own active portal. A genuine outside
+  press still ends portal occupancy.
+  Session clients migrate together at wire51; the native machine, owner, terminal-host and
+  instance wires are unchanged. The public three-argument SDK `resizeTerminal` remains one
+  virtual `sdk` viewport; explicit mounted ids and `releaseTerminalViewport` support multiple
+  local views. Callers must renew only active desired intent and never queue offline geometry.
 - Kill authorization: the current **controller**, OR any holder of the wildcard
   capability (`*`), may send `terminal_kill` for a RUNNING terminal; other principals
   receive `error { code:"forbidden" }`. An EXITED terminal has no controller, so there is no

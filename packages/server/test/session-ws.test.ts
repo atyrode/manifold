@@ -1444,7 +1444,12 @@ describe("SessionGateway spectator sockets", () => {
       { type: "gesture", kind: "move", phase: "active", elementId: "element", x: 1, y: 1 },
       { type: "terminal_open", elementId: "element", cols: 80, rows: 24 },
       { type: "terminal_input", terminalId: "terminal", data: "AA==" },
-      { type: "terminal_resize", terminalId: "terminal", cols: 80, rows: 24 },
+      {
+        type: "terminal_resize",
+        terminalId: "terminal",
+        viewportId: "fixture",
+        viewport: { cols: 80, rows: 24 },
+      },
       { type: "terminal_take", terminalId: "terminal" },
       { type: "terminal_kill", terminalId: "terminal" },
     ];

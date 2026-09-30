@@ -48,7 +48,7 @@ async function fitPendingTerminal(
   await waitFor(() => findPending() !== null, 10_000, 20);
   const terminalId = findPending();
   if (terminalId === null) throw new Error("pending terminal tile disappeared before fit");
-  client.resizeTerminal(terminalId, cols, rows);
+  client.resizeTerminal(terminalId, cols, rows, "fixture");
   return terminalId;
 }
 
@@ -311,7 +311,7 @@ test("terminal lifecycle enforces attach contiguity, controller authority, resiz
         message.cols === 100 &&
         message.rows === 30,
     );
-    clientB.resizeTerminal(terminal.id, 100, 30);
+    clientB.resizeTerminal(terminal.id, 100, 30, "controller-b");
     await resized;
     const beforeResizeProbeOutput = captureA.snapshotText.length + captureA.outputText.length;
     clientB.sendTerminalInput(terminal.id, 'printf \'SIZE_%s_%s\\n\' "$LINES" "$COLUMNS"\n');

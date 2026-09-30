@@ -348,8 +348,8 @@ function openInComposition(fixture: FixtureCore, containerId: string): string {
   fixture.broker.resize(channel, {
     type: "terminal_resize",
     terminalId: pending.ref.terminalId,
-    cols: 80,
-    rows: 24,
+    viewportId: "fixture",
+    viewport: { cols: 80, rows: 24 },
   });
   const terminalId = lastTerminal(fixture);
   fixture.broker.onCreated(fixture.machine.machineId, terminalId);
