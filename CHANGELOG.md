@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.30.0] - 2026-09-30
+
+### Added
+
+- External plugin authors can opt into React Fast Refresh with `manifold-dev <plugins-root> --fast-refresh --hub <origin>`. The development frontend updates compatible components and scoped CSS without losing unsaved React state, while installed-plugin admission stays authoritative. Stopping or losing the source session restores the admitted packed plugin; ordinary pack, verify and install remain unchanged. `--help` and `--describe` expose the prerequisites and session lifecycle without credentials. (#953, #954)
+
+### Fixed
+
+- Release publication refreshes tracked main after the checked rebase merge, so ordinary push policies recognize already-reviewed remote history without requiring a manual fetch and resume. Exact release-tree checks, immutable tags, local-work preservation and refusals for newly introduced disallowed commits remain in force. (#949, #966)
+- The Fast Refresh toolchain's workspace lock now records its declared Vite peer dependency, so semantic release preparation no longer introduces unrelated lock changes. (#953, #968)
+
 ## [0.29.1] - 2026-09-30
 
 ### Fixed
