@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { existsSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import type { LifecycleCtx, PluginStorage } from "@manifold/plugin";
+import type { JobSettledCtx, LifecycleCtx, PluginStorage } from "@manifold/plugin";
 import type { Cap, EventKind, EventPayload, ManifoldRef, PluginManifest } from "@manifold/protocol";
 import { AuthService } from "../src/auth.ts";
 import { IsolateDenial, IsolateLoadError, type IsolateState } from "../src/isolate/contract.ts";
@@ -717,6 +717,60 @@ describe("IsolateSupervisor", () => {
     await expect(lifecycle.onEnable?.(lifecycleCtx)).rejects.toThrow(
       "onEnable failed in the isolate",
     );
+  });
+
+  test("strict older guests omit hook metadata and cannot forge its reads; new hooks remain read-only", async () => {
+    for (const contract of [1, 9, 11]) {
+      const { supervisor, runtime, storage } = fixture();
+      const { lifecycle } = await supervisor.load({
+        pluginId: PLUGIN_ID,
+        manifest,
+        dir: GUEST_DIR,
+        hardenedContract: contract,
+      });
+      await storage.set("metadataProbe", "yes");
+      const ctx: LifecycleCtx = {
+        pluginId: PLUGIN_ID,
+        storage,
+        now: () => runtime.now(),
+        emit: () => {},
+        host: { roster: () => [], enabled: () => true },
+        services: { listInstances: () => ({ defaultOwner: null, services: [] }) },
+        machines: { inventory: () => ({ ok: true, value: { machines: [] } }) },
+      };
+      for (const settled of [false, true]) {
+        if (settled) {
+          await lifecycle.onJobSettled!(
+            {
+              ...ctx,
+              jobs: {} as JobSettledCtx["jobs"],
+              actions: {} as JobSettledCtx["actions"],
+            },
+            {
+              jobId: "finished",
+              machineId: "worker",
+              pluginId: PLUGIN_ID,
+              operationId: `${PLUGIN_ID}.run`,
+              state: "exited",
+              exitCode: 0,
+              reason: null,
+              finishedAt: 1,
+              outputs: [],
+            },
+          );
+        } else await lifecycle.onEnable!(ctx);
+        expect(JSON.parse((await storage.get("metadataProbeResult"))!)).toEqual({
+          announced: contract >= 11,
+          "host.enabled": contract >= 11 ? "allowed" : "slice_unavailable: host.enabled",
+          "services.listInstances":
+            contract >= 11 ? "allowed" : "slice_unavailable: services.listInstances",
+          "services.invokeInstance": "slice_unavailable: services.invokeInstance",
+          "machines.inventory":
+            contract >= 11 ? "allowed" : "slice_unavailable: machines.inventory",
+          "machines.drain": "slice_unavailable: machines.drain",
+        });
+      }
+    }
   });
 
   test("a crash fails the dispatch, respawns on the next one, and the budget ends respawning", async () => {

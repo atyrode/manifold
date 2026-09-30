@@ -629,12 +629,17 @@ export class JobService {
       reason,
     };
   }
-  private canInspectInstance(current: AuthContext, record: InstanceServiceRecord): boolean {
+  private canInspectInstance(
+    current: AuthContext,
+    record: InstanceServiceRecord,
+    ceiling?: readonly Cap[],
+  ): boolean {
     return (
-      this.auth.holdsRoot(current) ||
+      (ceiling === undefined && this.auth.holdsRoot(current)) ||
       Object.keys(record.policy.operations).some((operationId) =>
         (["services:read", "services:invoke"] as const).some(
           (cap) =>
+            (ceiling === undefined || ceiling.includes(cap)) &&
             (current.caps.includes("*") || current.caps.includes(cap)) &&
             this.auth.allowsRef(current, cap, {
               kind: "service",
@@ -657,15 +662,19 @@ export class JobService {
       fail("service_unauthorized");
     return this.instanceDescription(record, args.serviceId, root);
   }
-  listInstanceServices(auth: AuthContext): InstanceServicesDescription {
+  /**
+   * A lifecycle ceiling limits metadata to service-ref authority, even for an owner
+   * installer; omitted preserves the ordinary administrative listing projection.
+   */
+  listInstanceServices(auth: AuthContext, ceiling?: readonly Cap[]): InstanceServicesDescription {
     const current = this.auth.restoreCredential(this.auth.credentialReference(auth));
     if (!current) fail("service_unauthorized");
-    const root = this.auth.holdsRoot(current);
+    const root = ceiling === undefined && this.auth.holdsRoot(current);
     return {
       defaultOwner: root ? this.instanceOwner(this.instanceServices.defaultOwnerId()) : null,
       services: this.instanceServices
         .list()
-        .filter((record) => this.canInspectInstance(current, record))
+        .filter((record) => this.canInspectInstance(current, record, ceiling))
         .map((record) => this.instanceDescription(record, record.serviceId, root)),
     };
   }

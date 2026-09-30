@@ -226,8 +226,15 @@ import type {
 } from "@manifold/plugin";
 import { jobContext, jobDoors, type JobContext } from "./job-doors.ts";
 import type { JobService, SettledJobDelivery } from "./job-service.ts";
-import { serviceContext, serviceDoors } from "./service-doors.ts";
+import { serviceContext, serviceDoors, serviceDoorSchemas } from "./service-doors.ts";
 import { machineDoors } from "./machine-doors.ts";
+
+interface PluginDataLease {
+  readonly storage: PluginStorage;
+  readonly database?: PluginDatabase;
+  check(): void;
+  close(): void;
+}
 
 /**
  * The caller's authority as a handler sees it: identity, what the token carries, and the
@@ -2699,7 +2706,7 @@ export class PluginHost {
     pluginId: string,
     storage: PluginStorage = this.storage(pluginId),
     database: PluginDatabase | null = this.databaseSlice(pluginId) ?? null,
-  ): { storage: PluginStorage; database?: PluginDatabase; close(): void } {
+  ): PluginDataLease {
     let open = true;
     const check = (): void => {
       if (!open || this.closed) throw new Error("plugin data request is closed");
@@ -2711,6 +2718,7 @@ export class PluginHost {
         throw new PluginDatabaseError("plugin database request belongs to a retired handle");
     };
     return {
+      check,
       close: () => {
         open = false;
       },
@@ -4282,8 +4290,7 @@ export class PluginHost {
   }
 
   /**
-   * THE HOOK'S CTX, and the two pieces of it that are not the plugin's own: `jobs` and
-   * `actions`.
+   * THE HOOK'S CTX: own data plus credential-bound jobs, dependency actions and metadata.
    *
    * A plugin that owns a cadence has to be able to register it when it is turned ON (#514) —
    * the first dispatch or settlement may never come for a half nobody opens. The authority is
@@ -4298,11 +4305,38 @@ export class PluginHost {
    */
   private lifecycleCtx(
     pluginId: string,
-    storage: PluginStorage,
-    database?: PluginDatabase,
+    lease: PluginDataLease,
+    authority?: AuthContext,
   ): LifecycleCtx {
-    const installer = this.installed.get(pluginId)?.row.installer;
-    const auth = installer === undefined ? null : this.authService.restoreCredential(installer);
+    const { storage, database } = lease;
+    const installed = this.installed.get(pluginId);
+    const installer = installed?.row.installer;
+    const auth =
+      authority ?? (installer === undefined ? null : this.authService.restoreCredential(installer));
+    const manifest = this.defs.find((def) => def.manifest.id === pluginId)?.manifest;
+    const credential = auth === null ? null : this.authService.credentialReference(auth);
+    const metadataAuthority = (cap: "containers:read" | "services:read"): AuthContext => {
+      lease.check();
+      const currentInstall = this.installed.get(pluginId);
+      const currentManifest = this.defs.find((def) => def.manifest.id === pluginId)?.manifest;
+      if (
+        credential === null ||
+        manifest === undefined ||
+        currentManifest !== manifest ||
+        currentInstall?.row.sha256 !== installed?.row.sha256 ||
+        !withinCeiling(cap, currentManifest.capabilities) ||
+        (currentInstall !== undefined && !withinCeiling(cap, currentInstall.row.grantedCaps))
+      )
+        throw new ServiceError("forbidden", "plugin metadata authority unavailable");
+      const current = this.authService.restoreCredential(credential);
+      if (
+        current === null ||
+        !withinCeiling(cap, current.caps) ||
+        (cap === "containers:read" && !this.authService.allows(current, cap))
+      )
+        throw new ServiceError("forbidden", `${cap} capability required`);
+      return current;
+    };
     return {
       pluginId,
       storage,
@@ -4323,6 +4357,34 @@ export class PluginHost {
       ...(auth === null
         ? {}
         : {
+            host: {
+              roster: () => {
+                metadataAuthority("containers:read");
+                return structuredClone(this.roster());
+              },
+              enabled: (id) => {
+                metadataAuthority("containers:read");
+                return this.assembled.enabled(id);
+              },
+            },
+            machines: {
+              inventory: () =>
+                identityCall(() => {
+                  metadataAuthority("containers:read");
+                  return this.machineInventory();
+                }),
+            },
+            services: {
+              listInstances: (args) => {
+                serviceDoorSchemas.listInstances.parse(args);
+                const current = metadataAuthority("services:read");
+                if (this.jobs === null)
+                  throw new ServiceError("forbidden", "service authority unavailable");
+                // Even an owner installer is narrowed to the admitted metadata cap. The
+                // shared listing still grades each service ref and never returns secrets.
+                return this.jobs.listInstanceServices(current, ["services:read"]);
+              },
+            },
             jobs: jobContext(
               () => {
                 if (this.jobs === null)
@@ -4349,13 +4411,13 @@ export class PluginHost {
     pluginId: string,
     invoke: (ctx: LifecycleCtx) => void | Promise<void>,
   ): Promise<HookOutcome> {
-    let active: ReturnType<PluginHost["dataLease"]> | undefined;
+    let active: PluginDataLease | undefined;
     try {
       return await runHook(async () => {
         const lease = this.dataLease(pluginId);
         active = lease;
         try {
-          await invoke(this.lifecycleCtx(pluginId, lease.storage, lease.database));
+          await invoke(this.lifecycleCtx(pluginId, lease));
         } finally {
           lease.close();
           if (active === lease) active = undefined;
@@ -4453,7 +4515,7 @@ export class PluginHost {
     // the same lease `runLifecycle` takes, closed whether the hook returned or overran.
     const lease = this.dataLease(id);
     const ctx: JobSettledCtx = {
-      ...this.lifecycleCtx(id, lease.storage, lease.database),
+      ...this.lifecycleCtx(id, lease, auth),
       jobs: jobContext(
         () => {
           if (this.jobs === null) throw new ServiceError("forbidden", "job service unavailable");
@@ -4709,6 +4771,30 @@ export class PluginHost {
     return outcome;
   }
 
+  /** The public live fleet projection shared by dispatches and read-only lifecycle callbacks. */
+  private machineInventory(): MachineInventory {
+    // One read of the withdrawn set for the whole roster, never a question per row.
+    const withdrawn = this.store.revokedMachineIds();
+    return {
+      machines: this.store.listMachines().map((machine) => {
+        const online = this.machines.isOnline(machine.id);
+        const revoked = withdrawn.has(machine.id);
+        const physicalCoreCount =
+          online && !revoked ? this.machines.getPhysicalCoreCount(machine.id) : undefined;
+        return {
+          id: machine.id,
+          name: machine.name,
+          online,
+          revoked,
+          draining: machine.draining,
+          terminalExecution: this.machines.getTerminalExecution(machine.id),
+          lastRefusal: machine.lastRefusal,
+          ...(physicalCoreCount === undefined ? {} : { physicalCoreCount }),
+        };
+      }),
+    };
+  }
+
   /**
    * THE FLEET BRIDGE (#259): the machine and identity verbs a handler may reach — one object
    * for an in-realm handler and for the proxy serving a hardened guest (`serveCtxCall`).
@@ -4746,26 +4832,7 @@ export class PluginHost {
         inventory: () =>
           identityCall(() => {
             authority("containers:read", false);
-            // One read of the withdrawn set for the whole roster, never a question per row.
-            const withdrawn = this.store.revokedMachineIds();
-            return {
-              machines: this.store.listMachines().map((machine) => {
-                const online = this.machines.isOnline(machine.id);
-                const revoked = withdrawn.has(machine.id);
-                const physicalCoreCount =
-                  online && !revoked ? this.machines.getPhysicalCoreCount(machine.id) : undefined;
-                return {
-                  id: machine.id,
-                  name: machine.name,
-                  online,
-                  revoked,
-                  draining: machine.draining,
-                  terminalExecution: this.machines.getTerminalExecution(machine.id),
-                  lastRefusal: machine.lastRefusal,
-                  ...(physicalCoreCount === undefined ? {} : { physicalCoreCount }),
-                };
-              }),
-            };
+            return this.machineInventory();
           }),
         drain: async (machineId, draining) => {
           const allowed = identityCall(() => authority("machines:mint", true));
@@ -5211,7 +5278,7 @@ export class PluginHost {
               return carried ?? lent;
             },
           };
-    let lease: ReturnType<PluginHost["dataLease"]>;
+    let lease: PluginDataLease;
     try {
       lease = this.dataLease(pluginId);
     } catch (error) {

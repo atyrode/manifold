@@ -177,7 +177,7 @@ onFrame(async (frame) => {
           onEnable: true,
           onDisable: false,
           onAssemblyChanged: false,
-          onJobSettled: false,
+          onJobSettled: true,
         },
         ...(frame.hardenedContract >= 7 && frame.manifest.contributes.harness !== undefined
           ? { harness: frame.manifest.contributes.harness }
@@ -305,6 +305,43 @@ onFrame(async (frame) => {
       admissions.delete(frame.id);
       return;
     case "hook": {
+      const keys = ["t", "id", "hook", "delta", "job", "jobs"];
+      if (hardenedContract >= 11) keys.push("metadata");
+      if (Object.keys(frame).some((key) => !keys.includes(key))) {
+        send({
+          t: "hooked",
+          id: frame.id,
+          ok: false,
+          error: "strict legacy hook rejected a new field",
+        });
+        return;
+      }
+      if (await call(frame.id, "storage.get", ["metadataProbe"])) {
+        const result = { announced: frame.metadata === true };
+        for (const method of [
+          "host.enabled",
+          "services.listInstances",
+          "services.invokeInstance",
+          "machines.inventory",
+          "machines.drain",
+        ]) {
+          try {
+            await call(
+              frame.id,
+              method,
+              method === "host.enabled"
+                ? ["test.guest"]
+                : method === "machines.inventory"
+                  ? []
+                  : [{}],
+            );
+            result[method] = "allowed";
+          } catch (error) {
+            result[method] = String(error);
+          }
+        }
+        await call(frame.id, "storage.set", ["metadataProbeResult", JSON.stringify(result)]);
+      }
       const marker = await call(frame.id, "storage.get", ["enabled"]);
       send({ t: "hooked", id: frame.id, ok: marker === null || marker === "yes" });
       return;
