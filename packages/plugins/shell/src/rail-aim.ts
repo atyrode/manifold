@@ -88,9 +88,9 @@ function holds(box: RailBox, clientX: number, clientY: number): boolean {
  * wrapper or grow behaviour the stylesheet gives it, and a rail with no insets at all resolves
  * exactly as it did before.
  *
- * A pointer in a divider gap belongs to no child, so the descent stops at the split holding
- * that gap and maps across it — which is what makes the gap a SEAM (`tileChainAt` ends on a
- * split) instead of one neighbour's flank.
+ * A painted gap maps to the projected seam after its leading visible child. Mapping the
+ * whole parent box instead can hit a different row when spare space or unpainted children
+ * makes the synthetic stack's extent differ from the paint. Hidden rows retain their order.
  *
  * NOT CLAMPED at the root, deliberately: a pointer outside the rail must map outside the unit
  * square so the kernel answers nothing, exactly as it did when this was one division.
@@ -119,7 +119,42 @@ export function railPoint(
     });
     const nextBox = nextId === undefined ? undefined : boxes.get(nextId);
     const nextRect = nextId === undefined ? undefined : rects.get(nextId);
-    if (nextId === undefined || nextBox === undefined || nextRect === undefined) break;
+    if (nextId === undefined || nextBox === undefined || nextRect === undefined) {
+      if (holds(box, clientX, clientY)) {
+        const along = node.dir === "row" ? clientX : clientY;
+        let leadingIndex = -1;
+        let leadingEnd = -Infinity;
+        let trailingStart = Infinity;
+        for (let index = 0; index < node.children.length; index += 1) {
+          const childBox = boxes.get(node.children[index]!);
+          if (childBox === undefined) continue;
+          const start = node.dir === "row" ? childBox.left : childBox.top;
+          const end = start + (node.dir === "row" ? childBox.width : childBox.height);
+          if (end <= along && end > leadingEnd) {
+            leadingIndex = index;
+            leadingEnd = end;
+          }
+          if (start >= along && start < trailingStart) trailingStart = start;
+        }
+        if (leadingIndex >= 0 && trailingStart < Infinity && trailingStart > leadingEnd) {
+          const leading = rects.get(node.children[leadingIndex]!);
+          const followingId = node.children[leadingIndex + 1];
+          const following = followingId === undefined ? undefined : rects.get(followingId);
+          if (leading !== undefined && following !== undefined) {
+            return node.dir === "row"
+              ? {
+                  x: (leading.x + leading.width + following.x) / 2,
+                  y: rect.y + rect.height / 2,
+                }
+              : {
+                  x: rect.x + rect.width / 2,
+                  y: (leading.y + leading.height + following.y) / 2,
+                };
+          }
+        }
+      }
+      break;
+    }
     box = nextBox;
     rect = nextRect;
     tileId = nextId;

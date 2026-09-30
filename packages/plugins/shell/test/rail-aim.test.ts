@@ -142,6 +142,57 @@ describe("railPoint", () => {
     expect(aimAt(projection, nestedBoxes, 150, -50)).toBeNull();
   });
 
+  test("a painted gap inserts between its neighbours when the rail has spare room", () => {
+    const nodes: readonly SectionNode[] = ["brand", "canvas", "index"];
+    const boxes = new Map<string, RailBox>([
+      ["n0", row(10.39, 32)],
+      ["n1", row(48.79, 37.6)],
+      ["n2", row(92.79, 292.41)],
+    ]);
+    const projection = ground(nodes, boxes);
+    for (const y of [87, 89.59, 92]) {
+      const aim = aimAt(projection, boxes, 150, y);
+      expect(aim).not.toBeNull();
+      expect(
+        aim === null
+          ? null
+          : releasedSectionArrangement(
+              projection,
+              { kind: "structure", structure: { kind: "split", dir: "row" } },
+              aim,
+            ),
+      ).toEqual(["brand", "canvas", { dir: "row", sections: [] }, "index"]);
+    }
+  });
+
+  test("a nested painted gap preserves hidden rows and the cross-axis insertion", () => {
+    const nodes: readonly SectionNode[] = [
+      { dir: "row", sections: ["brand", "hidden", "canvas"] },
+      "index",
+    ];
+    const boxes = new Map<string, RailBox>([
+      ["n0", row(10.39, 37.6)],
+      ["n0.0", { left: 10.39, top: 10.39, width: 126.89, height: 37.6 }],
+      ["n0.2", { left: 143.68, top: 10.39, width: 126.9, height: 37.6 }],
+      ["n1", row(54.39, 292.41)],
+    ]);
+    const projection = ground(nodes, boxes);
+    const aim = aimAt(projection, boxes, 140, 29.19);
+    expect(aim).not.toBeNull();
+    expect(
+      aim === null
+        ? null
+        : releasedSectionArrangement(
+            projection,
+            { kind: "structure", structure: { kind: "split", dir: "column" } },
+            aim,
+          ),
+    ).toEqual([
+      { dir: "row", sections: ["brand", { dir: "column", sections: [] }, "hidden", "canvas"] },
+      "index",
+    ]);
+  });
+
   test("a vacant seat is aimed at where the seat is drawn, not where its split is", () => {
     const nodes: readonly SectionNode[] = ["brand", { dir: "row", sections: [] }, "index"];
     const boxes = new Map<string, RailBox>([
