@@ -1,17 +1,20 @@
 import type { HostServices, SessionHandle, StreamHandle } from "@manifold/plugin";
+import { MACHINES_RESOURCE } from "@manifold/plugin/portable-hooks";
 import { requestResponse } from "../http.ts";
 import {
+  ActionOutcomeSchema,
   ISOLATE_ERROR_TEXT_MAX,
   HARDENED_CONTRACT_COMPAT_VERSIONS,
-  HARDENED_CONTRACT_VERSION,
   IsolateReplyFrameSchema,
   WebIsolateWorkerFrameSchema,
   ManifoldRefSchema,
+  MachinesResponseSchema,
   PLUGIN_BUNDLE_WEB_WORKER_FILE,
   TerminalRuntimeSchema,
   WebHostContextSchema,
   StreamOpenSchema,
   type Cap,
+  type MachineSummary,
   type PlacementDestination,
   type PlacementRef,
   type Principal,
@@ -101,6 +104,27 @@ async function blobModuleWorker(path: string, token: string, name: string): Prom
 
 type CallFrame = Extract<WebIsolateWorkerFrame, { t: "call" }>;
 type OpenTerminalOpts = Parameters<SessionHandle["openTerminal"]>[0];
+
+function legacyMachineSummaries(machines: readonly MachineSummary[]): readonly MachineSummary[] {
+  return machines.map(({ physicalCoreCount: _physicalCoreCount, ...machine }) => machine);
+}
+
+/** Only the public machine-list boundary changes shape for strict pre-contract-10 readers. */
+function legacyMachineResult(frame: CallFrame, result: unknown): unknown {
+  if (frame.method === "machines") {
+    const parsed = MachinesResponseSchema.shape.machines.safeParse(result);
+    return parsed.success ? legacyMachineSummaries(parsed.data) : result;
+  }
+  if (frame.method !== "action" || frame.args[0] !== MACHINES_RESOURCE) return result;
+  const outcome = ActionOutcomeSchema.safeParse(result);
+  if (!outcome.success || !outcome.data.ok) return result;
+  const parsed = MachinesResponseSchema.safeParse(outcome.data.result);
+  if (!parsed.success) return result;
+  return {
+    ...outcome.data,
+    result: { machines: legacyMachineSummaries(parsed.data.machines) },
+  };
+}
 
 /**
  * A `call` the closed method vocabulary does not name, read just far enough to answer it. The
@@ -467,7 +491,7 @@ export class WorkerHost {
         const contract = frame.hardenedContract ?? 1;
         if (
           !HARDENED_CONTRACT_COMPAT_VERSIONS.has(contract) ||
-          (this.deps.portableWorker === true && contract !== HARDENED_CONTRACT_VERSION)
+          (this.deps.portableWorker === true && contract < 9)
         ) {
           this.crash(`unsupported web hardened contract ${String(contract)}`);
           return;
@@ -512,7 +536,8 @@ export class WorkerHost {
       return;
     }
     try {
-      const result: unknown = await this.dispatch(frame.method, frame.args, frame.instance);
+      const value: unknown = await this.dispatch(frame.method, frame.args, frame.instance);
+      const result = this.contract < 10 ? legacyMachineResult(frame, value) : value;
       reply = { t: "reply", id: frame.id, ok: true, result };
     } catch (reason) {
       reply = refusalFrame(frame.id, reason);

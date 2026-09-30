@@ -2514,11 +2514,19 @@ React, React DOM, the JSX runtimes, all three `@manifold/plugin` entries, `@mani
 identities; the kit rewrites shared imports at build time, without an import map or runtime
 dependency. The bundle's optional `builtAgainst` version map is recorded as
 `install.builtAgainst`. Every new pack stamps `manifold:protocol` with the wire version;
-shared builds also record React/package versions. Admission and boot compare the wire version
-exactly and React by major. Known incompatibility refuses fresh admission or holds an incumbent
-with `repack_required` before import/spawn, independent of a declared release feed. Missing
-legacy metadata is `unknown`, never falsely called compatible. `install.compatibility` exposes
-the component, built/current values and classification, and the manager names that difference.
+shared builds also record React/package versions. Admission and boot check that stamp against
+the explicit `PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS` set and compare React by major. The
+bundle set is independent of session, machine and instance negotiation: sessions still require
+the current wire version. Protocol 48 admits bundle stamps 47 and 48 because the shared plugin
+ABI is preserved, including the older hardened machine-inventory projection. A prior stamp
+may remain only with proof from unchanged released artifacts through candidate assembly and
+loading; an incompatible plugin ABI change resets the set. No numeric range, future version
+or deployment bypass is implied. Known incompatibility refuses fresh admission or holds an
+incumbent with `repack_required` before import/spawn, independent of a declared release feed.
+Missing legacy metadata is `unknown`, never falsely called compatible. The hardened contract,
+React-major, digest and ordinary authorization checks remain independent requirements.
+`install.compatibility` exposes the component, built/current values and classification, and
+the manager names that difference.
 
 **Ink ownership at load — S13's runtime twin (ADR 0025 §7, #258).** An installed or unpacked
 plugin's `styles.css` is admitted only if the leftmost compound of EVERY selector anchors on the
@@ -2657,8 +2665,13 @@ contract 4 adds metadata-only `jobs.inspectInputs`; contract 5 adds optional exa
 adds harness calls, and 8 adds host-owned `callerPlugin` to the dispatch context. Contract 9
 adds portable React Worker entries and the bounded fleet bridge. Contract 10 adds optional
 `physicalCoreCount` in `machines.inventory`; the host omits it for older admitted packed
-guests, whose strict inventory parser predates it. Current in-realm and hardened readers
-receive the same live facts. Contract 11 adds optional `hook.metadata` for credential-bound
+guests, whose strict inventory parser predates it. A pre-10 consumer anywhere in the trusted
+plugin action chain constrains that chain's inventory projection, including a current
+intermediary's machine-list response. Independent current readers retain the live field.
+Portable Workers use the explicit accepted contract set with minimum 9, not equality with the
+latest contract. Pre-10 Workers receive the old shape from both `client.machines()` and the
+canonical machine-list action; refusals and unrelated action results remain unchanged.
+Contract 11 adds optional `hook.metadata` for credential-bound
 read-only lifecycle metadata. Older admitted guests omit newer metadata and preserve their
 normalized declarations and digests. Host-to-guest optional fields are gated by the admitted
 contract, never sent speculatively.

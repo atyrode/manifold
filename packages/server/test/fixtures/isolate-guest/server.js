@@ -93,11 +93,20 @@ const handlers = {
       emits: [],
     };
   },
-  async inventory(id) {
-    const inventory = await call(id, "machines.inventory", []);
-    if (!inventory.ok) return { ok: false, rule: "refused", message: inventory.message };
-    // Frozen contract-9 strict row vocabulary. A newer field is a real guest failure,
-    // not silently discarded metadata; contract 10's reader knows the one addition.
+  async inventory(id, args) {
+    const nested = args.text.startsWith("list:");
+    let inventory;
+    if (nested) {
+      inventory = await call(id, "actions.call", [
+        { plugin: args.text.slice("list:".length), action: "list", input: {} },
+      ]);
+    } else {
+      const answer = await call(id, "machines.inventory", []);
+      if (!answer.ok) return { ok: false, rule: "refused", message: answer.message };
+      inventory = answer.value;
+    }
+    // Frozen contract-9 strict inventory and machine-list row vocabularies. A newer field
+    // is a real guest failure; contract 10's reader knows the one addition.
     const keys = [
       "id",
       "name",
@@ -107,13 +116,14 @@ const handlers = {
       "terminalExecution",
       "lastRefusal",
     ];
+    if (nested) keys.push("color");
     if (hardenedContract >= 10) keys.push("physicalCoreCount");
-    for (const machine of inventory.value.machines) {
+    for (const machine of inventory.machines) {
       if (Object.keys(machine).some((key) => !keys.includes(key))) {
         return { ok: false, rule: "refused", message: "unknown inventory field" };
       }
     }
-    return { ok: true, result: inventory.value, emits: [] };
+    return { ok: true, result: inventory, emits: [] };
   },
   boom() {
     process.exit(1);

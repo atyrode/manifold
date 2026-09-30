@@ -6,6 +6,7 @@ import {
   GOVERNED_CAPS,
   HARDENED_CONTRACT_COMPAT_VERSIONS,
   MAX_PLUGIN_UPDATE_FAMILY,
+  PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS,
   PROTOCOL_VERSION,
   canonicalJobJson,
   hasCap,
@@ -44,7 +45,7 @@ export function pluginBuildCompatibility(bundle: PluginBundle): PluginBuildCompa
   const issues: PluginBuildCompatibility["issues"] = [];
   const protocol = bundle.builtAgainst?.[BUILT_AGAINST_PROTOCOL];
   const currentProtocol = String(PROTOCOL_VERSION);
-  if (protocol !== currentProtocol) {
+  if (protocol === undefined || !PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS.has(protocol)) {
     issues.push({
       component: BUILT_AGAINST_PROTOCOL,
       built: protocol?.slice(0, 128) ?? null,

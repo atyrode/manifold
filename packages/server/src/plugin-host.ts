@@ -4772,7 +4772,7 @@ export class PluginHost {
   }
 
   /** The public live fleet projection shared by dispatches and read-only lifecycle callbacks. */
-  private machineInventory(): MachineInventory {
+  private machineInventory(includeTopology = true): MachineInventory {
     // One read of the withdrawn set for the whole roster, never a question per row.
     const withdrawn = this.store.revokedMachineIds();
     return {
@@ -4780,7 +4780,9 @@ export class PluginHost {
         const online = this.machines.isOnline(machine.id);
         const revoked = withdrawn.has(machine.id);
         const physicalCoreCount =
-          online && !revoked ? this.machines.getPhysicalCoreCount(machine.id) : undefined;
+          includeTopology && online && !revoked
+            ? this.machines.getPhysicalCoreCount(machine.id)
+            : undefined;
         return {
           id: machine.id,
           name: machine.name,
@@ -4813,6 +4815,7 @@ export class PluginHost {
       node?: ManifoldRef,
     ) => AuthContext,
     target: (machineId: string) => void,
+    includeTopology: boolean,
   ): {
     readonly machines: Pick<ActionMachines, "inventory" | "drain" | "repository">;
     readonly identity: Pick<
@@ -4832,7 +4835,7 @@ export class PluginHost {
         inventory: () =>
           identityCall(() => {
             authority("containers:read", false);
-            return this.machineInventory();
+            return this.machineInventory(includeTopology);
           }),
         drain: async (machineId, draining) => {
           const allowed = identityCall(() => authority("machines:mint", true));
@@ -5288,6 +5291,11 @@ export class PluginHost {
     const database = lease.database;
     let guestAdmitted = false;
     const actionStack = [...(options.origin?.stack ?? []), pluginId];
+    // Any older packed consumer in the trusted call chain constrains the producer, even
+    // through current intermediaries. Builtins and unpacked source definitions stay current.
+    const includeMachineTopology = actionStack.every(
+      (id) => (this.installed.get(id)?.bundle?.hardenedContract ?? HARDENED_CONTRACT_VERSION) >= 10,
+    );
     /*
       THE FLEET BRIDGE'S AUTHORITY (#259, #897), asked at every inventory, repository, drain and
       machine-credential call rather than frozen here: this dispatch is still open and its door
@@ -5334,9 +5342,13 @@ export class PluginHost {
         throw new ServiceError("forbidden", `${cap} capability required`);
       return live;
     };
-    const machineBridge = this.machineBridge(machineAuthority, (machineId) => {
-      if (!opaque) targets.push({ kind: "machine", machineId });
-    });
+    const machineBridge = this.machineBridge(
+      machineAuthority,
+      (machineId) => {
+        if (!opaque) targets.push({ kind: "machine", machineId });
+      },
+      includeMachineTopology,
+    );
     const authService = this.authService;
     const ctx: ActionCtx = {
       traceId,

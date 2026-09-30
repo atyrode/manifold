@@ -2,6 +2,15 @@
 export const PROTOCOL_VERSION = 48;
 
 /**
+ * Explicit bundle build compatibility, not session or machine-channel negotiation.
+ * Protocol 48 preserves the protocol 47 plugin ABI: shared imports use the host's
+ * current schemas, and older hardened inventory readers retain their old projection.
+ * Retain a prior stamp only after proving its unchanged artifacts against the host;
+ * reset on an incompatible plugin ABI change. Do not infer a numeric version range.
+ */
+export const PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<string> = new Set(["47", "48"]);
+
+/**
  * Machine-channel acceptance set. Agents are long-lived (they hold PTYs and
  * survive server deploys), so the machine channel accepts every protocol
  * version whose agent-facing wire (AgentMessage/ServerToAgentMessage) and

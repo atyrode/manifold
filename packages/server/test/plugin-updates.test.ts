@@ -367,6 +367,37 @@ describe("reviewed plugin updates", () => {
     expect(await f.web()).toBe(old.web);
   });
 
+  test("prior ABI-compatible bundles load but out-of-window stamps and React majors remain blocked", async () => {
+    const f = await fixture();
+    const old = f.bundle(f.manifest("vendor.updates", "prior-wire"), {
+      [BUILT_AGAINST_PROTOCOL]: "47",
+    });
+    await f.install(old);
+    expect((await f.roster()).find((entry) => entry.manifest.id === old.id)).toMatchObject({
+      enabled: true,
+      install: { sha256: old.sha256, compatibility: { status: "compatible", issues: [] } },
+    });
+    expect(await f.web()).toBe(old.web);
+
+    for (const [version, builtAgainst] of [
+      ["too-old", { [BUILT_AGAINST_PROTOCOL]: "46" }],
+      ["future", { [BUILT_AGAINST_PROTOCOL]: String(PROTOCOL_VERSION + 1) }],
+      ["noncanonical", { [BUILT_AGAINST_PROTOCOL]: "047" }],
+      ["wrong-react", { [BUILT_AGAINST_PROTOCOL]: "47", react: "999.0.0" }],
+    ] as const) {
+      f.feed(f.bundle(f.manifest(old.id, version), builtAgainst));
+      const blocked = await f.review();
+      expect(blocked.members[0]?.compatibility.status).toBe("incompatible");
+      expect(
+        blocked.blockers.some((blocker) => blocker.reason.startsWith("repack_required:")),
+      ).toBe(true);
+      await expect(
+        f.call("engine.plugins.applyUpdate", { digest: blocked.digest, consent: [] }),
+      ).rejects.toThrow("update_blocked");
+      expect(await f.web()).toBe(old.web);
+    }
+  });
+
   test("legacy metadata warns while a known incompatible candidate cannot replace it", async () => {
     const f = await fixture();
     const old = f.bundle(f.manifest("vendor.updates", "legacy"), null);

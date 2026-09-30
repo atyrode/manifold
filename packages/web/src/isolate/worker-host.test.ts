@@ -1,12 +1,19 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test, vi } from "bun:test";
 import type { HostServices, SessionHandle, StreamHandle } from "@manifold/plugin";
+import { MACHINES_RESOURCE } from "@manifold/plugin/portable-hooks";
 import type {
   MachineSummary,
   Principal,
   StreamServerMessage,
+  UiNode,
   WebIsolateHostFrame,
 } from "@manifold/protocol";
-import { WebIsolateHostFrameSchema } from "@manifold/protocol";
+import {
+  ActionOutcomeSchema,
+  MachineSummarySchema,
+  MachinesResponseSchema,
+  WebIsolateHostFrameSchema,
+} from "@manifold/protocol";
 import { WORKER_GRACE_MS, WorkerHost, WorkerRegistry, type WorkerLike } from "./worker-host.ts";
 
 /**
@@ -134,13 +141,19 @@ async function flush(): Promise<void> {
   for (let tick = 0; tick < 8; tick += 1) await Promise.resolve();
 }
 
+function replyResult(worker: FakeWorker, id: string): unknown {
+  const frame = worker.frames().find((frame) => frame.t === "reply" && frame.id === id);
+  if (frame?.t !== "reply" || !frame.ok) throw new Error(`expected successful reply ${id}`);
+  return frame.result;
+}
+
 interface Bench {
   readonly worker: FakeWorker;
   readonly host: WorkerHost;
   readonly calls: string[];
 }
 
-function bench(client?: FakeClient): Bench {
+function bench(client?: FakeClient, portableWorker = false): Bench {
   const worker = new FakeWorker();
   const calls: string[] = [];
   const host = new WorkerHost({
@@ -149,6 +162,7 @@ function bench(client?: FakeClient): Bench {
     caps: ["containers:read"],
     containerId: "c1",
     host: fakeHost(calls, "c1", client),
+    portableWorker,
     workerFactory: () => worker,
   });
   host.start();
@@ -410,6 +424,238 @@ describe("WorkerHost frames", () => {
       throw new Error("expected a valid refusal reply");
     }
     expect(parsed.data.error).toStartWith("result not serialisable: ");
+  });
+});
+
+describe("portable Worker compatibility", () => {
+  // Contract 9's protocol-47 machine parser is strict and predates this optional field.
+  const legacyMachines = MachinesResponseSchema.extend({
+    machines: MachineSummarySchema.omit({ physicalCoreCount: true }).array(),
+  });
+  const live = Object.freeze({
+    id: "live",
+    name: "online host",
+    online: true,
+    physicalCoreCount: 6,
+    terminalExecution: "unconfined" as const,
+  });
+  const offline = Object.freeze({
+    id: "offline",
+    name: "offline host",
+    online: false,
+    lastRefusal: Object.freeze({ code: 4409 as const, at: 123 }),
+  });
+  const machines = Object.freeze([live, offline]);
+  const outcome = Object.freeze({ ok: true, result: Object.freeze({ machines }) });
+
+  test("contract 9 mounts, reads strict old machines through both doors, and renders", async () => {
+    const client = fakeClient([]);
+    client.machines = async () => machines;
+    const actionArgs = Object.freeze({});
+    const actions: { name: string; args: unknown }[] = [];
+    client.action = async (name, args) => {
+      actions.push({ name, args });
+      return outcome;
+    };
+    const { host, worker } = bench(client, true);
+    const rendered: UiNode[] = [];
+    const faults: string[] = [];
+    host.mount(
+      "i1",
+      "main",
+      (tree) => rendered.push(tree),
+      (error) => faults.push(error),
+    );
+    // A portable call must continue using its mounted authority, not a newer global binding.
+    host.bind(fakeHost([]));
+    try {
+      worker.emit({ t: "ready", hardenedContract: 9, panels: ["main"], sections: [] });
+      expect(worker.frames().find((frame) => frame.t === "mount")).toMatchObject({
+        instance: "i1",
+        panel: "main",
+        kind: "panel",
+        context: {
+          principal: VIEWER,
+          caps: ["containers:read"],
+          containerId: "c1",
+          status: "open",
+          hidden: false,
+          canAuthor: false,
+        },
+      });
+      worker.emit({ t: "call", id: "direct", instance: "i1", method: "machines", args: [] });
+      worker.emit({
+        t: "call",
+        id: "action",
+        instance: "i1",
+        method: "action",
+        args: [MACHINES_RESOURCE, actionArgs],
+      });
+      await flush();
+      expect(legacyMachines.safeParse({ machines }).success).toBe(false);
+      const direct = legacyMachines.parse({ machines: replyResult(worker, "direct") });
+      const called = ActionOutcomeSchema.parse(replyResult(worker, "action"));
+      if (!called.ok) throw new Error(called.denial.message);
+      const throughAction = legacyMachines.parse(called.result);
+      expect(direct).toEqual({
+        machines: [
+          { id: live.id, name: live.name, online: true, terminalExecution: "unconfined" },
+          offline,
+        ],
+      });
+      expect(throughAction).toEqual(direct);
+      expect(actions).toEqual([{ name: MACHINES_RESOURCE, args: actionArgs }]);
+      expect(actions[0]?.args).toBe(actionArgs);
+      expect(live.physicalCoreCount).toBe(6);
+      expect(outcome.result.machines).toBe(machines);
+
+      host.update("i1", fakeHost([], "c2", client), { tab: "fleet" });
+      expect(worker.frames().at(-1)).toMatchObject({
+        t: "context",
+        instance: "i1",
+        context: { containerId: "c2", status: "open" },
+        arg: { tab: "fleet" },
+      });
+      worker.emit({
+        t: "render",
+        instance: "i1",
+        tree: {
+          type: "text",
+          text: throughAction.machines.map((machine) => machine.name).join(", "),
+        },
+      });
+      expect(rendered).toEqual([{ type: "text", text: "online host, offline host" }]);
+      expect(faults).toEqual([]);
+      expect(worker.terminated).toBe(false);
+    } finally {
+      host.stop();
+    }
+  });
+
+  test.each([10, 11])(
+    "contract %i retains current machine responses unchanged",
+    async (contract) => {
+      const client = fakeClient([]);
+      client.machines = async () => machines;
+      client.action = async () => outcome;
+      const { host, worker } = bench(client, true);
+      host.mount(
+        "i1",
+        "main",
+        () => {},
+        () => {},
+      );
+      try {
+        worker.emit({ t: "ready", hardenedContract: contract, panels: ["main"] });
+        worker.emit({ t: "call", id: "direct", instance: "i1", method: "machines", args: [] });
+        worker.emit({
+          t: "call",
+          id: "action",
+          instance: "i1",
+          method: "action",
+          args: [MACHINES_RESOURCE, {}],
+        });
+        await flush();
+        const direct = replyResult(worker, "direct");
+        const called = replyResult(worker, "action");
+        expect(direct).toBe(machines);
+        expect(called).toBe(outcome);
+        expect(
+          MachinesResponseSchema.parse({ machines: direct }).machines[0]?.physicalCoreCount,
+        ).toBe(6);
+        const parsed = ActionOutcomeSchema.parse(called);
+        if (!parsed.ok) throw new Error(parsed.denial.message);
+        expect(MachinesResponseSchema.parse(parsed.result).machines[0]?.physicalCoreCount).toBe(6);
+      } finally {
+        host.stop();
+      }
+    },
+  );
+
+  test.each([undefined, 8, 12])("portable contract %s cannot mount or call", async (contract) => {
+    const { host, worker, calls } = bench(undefined, true);
+    const faults: string[] = [];
+    host.mount(
+      "i1",
+      "main",
+      () => {},
+      (error) => faults.push(error),
+    );
+    worker.emit({
+      t: "ready",
+      panels: ["main"],
+      ...(contract === undefined ? {} : { hardenedContract: contract }),
+    });
+    worker.emit({
+      t: "call",
+      id: "after-fault",
+      instance: "i1",
+      method: "action",
+      args: [MACHINES_RESOURCE, {}],
+    });
+    await flush();
+    expect(faults).toEqual([`unsupported web hardened contract ${String(contract ?? 1)}`]);
+    expect(worker.terminated).toBe(true);
+    expect(worker.frames().some((frame) => frame.t === "mount")).toBe(false);
+    expect(calls).toEqual([]);
+  });
+
+  test("legacy projection preserves refusals and leaves unrelated or invalid results untouched", async () => {
+    const client = fakeClient([]);
+    let result: unknown;
+    client.action = async () => result;
+    const { host, worker } = bench(client, true);
+    host.mount(
+      "i1",
+      "main",
+      () => {},
+      () => {},
+    );
+    try {
+      worker.emit({ t: "ready", hardenedContract: 9, panels: ["main"] });
+      const refusal = { ok: false, denial: { rule: "forbidden", message: "no machine grant" } };
+      const invalidList = { ok: true, result: { machines: [{ ...live, online: "invalid" }] } };
+      const invalidEnvelope = { ...outcome, extra: "not an action outcome" };
+      for (const [id, name, value] of [
+        ["refusal", MACHINES_RESOURCE, refusal],
+        ["unrelated", "acme.inventory.read", outcome],
+        ["invalid-list", MACHINES_RESOURCE, invalidList],
+        ["invalid-envelope", MACHINES_RESOURCE, invalidEnvelope],
+      ] as const) {
+        result = value;
+        worker.emit({ t: "call", id, instance: "i1", method: "action", args: [name, {}] });
+        await flush();
+        expect(replyResult(worker, id)).toBe(value);
+      }
+      const invalidMachines = [{ ...live, unexpected: true }];
+      client.machines = async () => invalidMachines;
+      worker.emit({
+        t: "call",
+        id: "invalid-direct",
+        instance: "i1",
+        method: "machines",
+        args: [],
+      });
+      await flush();
+      expect(replyResult(worker, "invalid-direct")).toBe(invalidMachines);
+      client.machines = () => Promise.reject(new Error("machine read refused"));
+      worker.emit({
+        t: "call",
+        id: "refused-direct",
+        instance: "i1",
+        method: "machines",
+        args: [],
+      });
+      await flush();
+      expect(worker.frames().at(-1)).toEqual({
+        t: "reply",
+        id: "refused-direct",
+        ok: false,
+        error: "machine read refused",
+      });
+    } finally {
+      host.stop();
+    }
   });
 });
 
