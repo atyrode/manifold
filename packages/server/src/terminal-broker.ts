@@ -721,6 +721,10 @@ export class TerminalBroker implements TerminalPlacementPort {
           rows,
         });
       } else {
+        // The owner admitted no new grid. Retire participation before the reliable refusal
+        // can re-enter through viewer cleanup, then derive retained attribution.
+        this.clearViewportIntents(terminal);
+        terminal.viewportArbitrationPending = true;
         requester?.send({ type: "error", code: "no_machine", ref: terminal.info.id });
       }
     }
