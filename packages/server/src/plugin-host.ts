@@ -154,10 +154,7 @@ import type {
   UNTRACED_DENIAL_RULE,
 } from "@manifold/protocol";
 import { isContainerGrantCap, ServiceError } from "./auth.ts";
-import {
-  ActionAuthorityFence,
-  type ActionAuthorityRequirement,
-} from "./action-authority-fence.ts";
+import { ActionAuthorityFence, type ActionAuthorityRequirement } from "./action-authority-fence.ts";
 import type {
   AuthContext,
   AuthService,

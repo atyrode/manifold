@@ -1,5 +1,10 @@
 import type { AuthoredCap, ManifoldRef } from "@manifold/protocol";
-import { ServiceError, type AuthContext, type AuthService, type CredentialReference } from "./auth.ts";
+import {
+  ServiceError,
+  type AuthContext,
+  type AuthService,
+  type CredentialReference,
+} from "./auth.ts";
 
 /** Hub-only admission evidence. Context requirements use the dispatch's admitted scope. */
 export interface ActionAuthorityRequirement {

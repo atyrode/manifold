@@ -2,14 +2,81 @@
 
 Choose the deployment profile, not a hosting provider:
 
-- **Full native Linux:** the NixOS module below runs the hub, an independently supervised
-  terminal/native owner and a replaceable transport on one node. Execution-only remote nodes
-  use the same owner and authority protocol, with explicit enrolled IDs.
+- **Normal-account shells:** enroll an existing Linux or Darwin account using
+  [ENROLL.md](ENROLL.md). Linux/systemd, Darwin/launchd and the optional NixOS shell role
+  below keep a retained ordinary terminal owner separate from its replaceable transport.
+  No custom plugin, Agent profile or governed runtime is required.
+- **Optional governed Linux execution:** the native role runs a protected terminal/native
+  owner as `manifold`, independently of ordinary-account owners. Execution-only remote nodes
+  use the same native authority protocol, with explicit enrolled IDs.
 - **Container hub:** Compose serves the web app and canonical store. Set
-  `MANIFOLD_SPAWN_AGENT=0` for a hub-only deployment and enroll native execution nodes.
+  `MANIFOLD_SPAWN_AGENT=0` for a hub-only deployment and enroll ordinary or governed accounts.
   The existing default also serves disposable in-container terminals, not governed native
   execution. Container privileges, tmpfs alone and detached children are not native
   enforcement or survival across container replacement.
+
+## Normal-account shells (NixOS)
+
+Include the pinned `inputs.manifold.nixosModules.native` module in the NixOS configuration
+that already owns the account. This explicitly shell-only selection does not create the
+native `manifold` account or native workload directories, require artifact origins, or enable
+bubblewrap/job facilities:
+
+```nix
+services.manifold = {
+  enable = true;
+  hub.enable = false;
+  execution.enable = false;
+  shell = {
+    enable = true;
+    machineName = "workstation-alice";
+    user = "alice"; # already declared in users.users
+    serverUrl = "https://manifold.example.com";
+    tokenFile = "/home/alice/.config/manifold-shell/machine.token";
+    stateDirectory = "/home/alice/.local/state/manifold-shell";
+  };
+};
+```
+
+The shell role defaults to disabled and never activates during an upgrade. Its four string
+settings and the token reference are explicit; even a co-located hub requires `serverUrl`.
+`tokenFile` is a quoted absolute runtime path, not secret bytes or a Nix path literal.
+Enroll the distinct name through `core.machines.enroll` and hand the one-time credential to
+its existing custodian as described in [ENROLL.md](ENROLL.md#1-mint-a-machine-token-once-per-account-endpoint).
+Enrollment alone neither installs nor starts an owner. The module never enrolls, copies,
+rotates, prints or repairs a token.
+
+**The setup grant is the selected OS account's normal authority.** Shells use its configured
+home, primary group, login-shell executable and NSS supplementary groups. Security-wrapper
+PATH precedence and user/system profiles remain available. Manifold ownership does not
+confer OS root, but selecting an already privileged account does not remove its privileges.
+An unconfined shell can use that account's files and credentials; this is not an OS sandbox.
+
+`manifold-shell-owner.service` owns `${stateDirectory}/terminal-host/host.sock`; only
+`manifold-shell-transport.service` receives the enrollment-token reference and hub origin.
+Both run as the configured account with `UMask=0077`. The selected state/terminal-host
+directories are mode 0700. The token must already be a regular non-symlink file, mode 0600,
+owned by the account, in an immediate mode-0700 parent owned by the same account.
+Invalid custody refuses the transport without destroying its retained owner.
+
+State, socket and token paths must be normalized absolute paths, nonoverlapping with native
+control/workload/output storage, `/run/credentials`, kernel pseudo-filesystems, `/nix/store`,
+declared operator-anchor sources and `/run/manifold-anchors` views. Ancestors as well as
+descendants are refused: select separate private custody rather than widening an incumbent
+native owner's exclusions. Spaces are supported; path traversal and systemd specifiers are not.
+
+For coexistence, keep the native role under its protected `manifold` account and give the shell
+role a different account and enrollment name. When a hub or native execution role exists,
+service preflight also refuses a differently named account sharing `manifold`'s effective UID.
+That check is not protection from an explicitly root/privileged shell account.
+
+Transport replacement and hub restart do not stop the shell owner or its PTYs. The owner
+has `restartIfChanged=false`, `stopIfChanged=false`, `RefuseManualStop=true`,
+`OOMPolicy=continue` and `Restart=on-failure`; accepted empty maintenance shutdown stays
+stopped. Updating or removing an occupied owner requires the existing exact-owner drain and
+atomic empty shutdown. A refusal is a maintenance hold, never permission to send a signal.
+Use the account's supported configuration/supervisor path for initial activation, and retain
+its old immutable package generation until that owner exits.
 
 ## Full native Linux (NixOS)
 

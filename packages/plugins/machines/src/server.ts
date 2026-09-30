@@ -92,7 +92,8 @@ async function readHostViews(
   const stored = await storage.get(HOST_VIEWS_KEY);
   return {
     stored,
-    registry: stored === null ? { revision: 0, hosts: [] } : HostViewsSchema.parse(JSON.parse(stored)),
+    registry:
+      stored === null ? { revision: 0, hosts: [] } : HostViewsSchema.parse(JSON.parse(stored)),
   };
 }
 
@@ -173,10 +174,7 @@ export const machinesHandlers = {
     };
   },
 
-  async listHostViews(
-    ctx: MachinesCtx,
-    _args: Record<string, never>,
-  ): Promise<HostViews> {
+  async listHostViews(ctx: MachinesCtx, _args: Record<string, never>): Promise<HostViews> {
     return (await readHostViews(ctx.storage)).registry;
   },
 
@@ -194,9 +192,11 @@ export const machinesHandlers = {
       previous.members.length === args.host.members.length &&
       previous.members.every((member, index) => {
         const next = args.host.members[index];
-        return next !== undefined &&
+        return (
+          next !== undefined &&
           member.machineId === next.machineId &&
-          member.accountLabel === next.accountLabel;
+          member.accountLabel === next.accountLabel
+        );
       })
     ) {
       return registry;

@@ -132,9 +132,9 @@ export const machinesActions: readonly AnyActionDef[] = [
   {
     name: "setHostView",
     title: "Create or update a host view",
-    caps: ["machines:mint"],
-    // Inventory validation is read-only; the caller-bound bridge still proves the read.
-    delegates: ["containers:read"],
+    // Membership validation uses the existing caller-bound inventory read. Non-native
+    // capabilities are admission requirements, not native resource delegates.
+    caps: ["machines:mint", "containers:read"],
     input: SetHostViewRequestSchema,
     result: HostViewsSchema,
   },

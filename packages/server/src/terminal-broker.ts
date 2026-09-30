@@ -518,9 +518,16 @@ export class TerminalBroker implements TerminalPlacementPort {
    * and the owner's half converges at its next hello (`setMachineOnline`).
    */
   drain(machineId: string, draining: boolean): Promise<DrainOutcome> {
+    const changed = this.draining.has(machineId) !== draining;
     this.store.setMachineDraining(machineId, draining);
     if (draining) this.draining.add(machineId);
     else this.draining.delete(machineId);
+    if (changed) {
+      this.events?.emitCollection("machines", "machine_inventory_changed", null, {
+        machineId,
+        draining,
+      });
+    }
     // A request still waiting is now answering a question the caller has since changed.
     this.failPendingDrains(machineId, "superseded by a later drain request");
     const machine = this.machines.get(machineId);

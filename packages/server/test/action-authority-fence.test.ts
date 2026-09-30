@@ -25,9 +25,9 @@ const manifest: PluginManifest = {
   version: "1.0.0",
   title: "Action fence",
   description: "",
-  capabilities: ["machines:mint", "machines:read", "containers:read"],
+  capabilities: ["machines:mint", "machines:read", "containers:read", "tokens:mint"],
   dataVersion: { major: 1, minor: 0 },
-  purges: ["storage", "database"],
+  purges: ["storage"],
   database: {},
   entry: { server: true },
   contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
@@ -43,7 +43,14 @@ async function fixture(hardened: boolean, dispatchDeadlineMs?: number) {
   const owner = auth.authenticate(OWNER_KEY);
   const rooms = new RoomManager(store, runtime, clock, silentLogger, testTileTrees);
   const broker = new TerminalBroker(
-    store, auth, rooms, runtime, clock, silentLogger, () => "http://localhost:7777", testTileTrees,
+    store,
+    auth,
+    rooms,
+    runtime,
+    clock,
+    silentLogger,
+    () => "http://localhost:7777",
+    testTileTrees,
   );
   const runner = new IsolateSupervisor({
     logger: silentLogger,
@@ -77,8 +84,10 @@ async function fixture(hardened: boolean, dispatchDeadlineMs?: number) {
   mkdirSync(authorDir);
   async function bundle(version: string) {
     const declaration = { ...manifest, version };
-  writeFileSync(join(authorDir, "manifest.json"), JSON.stringify(declaration));
-  writeFileSync(join(authorDir, "server.ts"), `
+    writeFileSync(join(authorDir, "manifest.json"), JSON.stringify(declaration));
+    writeFileSync(
+      join(authorDir, "server.ts"),
+      `
     import { z } from ${JSON.stringify(fileURLToPath(import.meta.resolve("zod")))};
     import { defineServerAction, defineServerPlugin } from ${JSON.stringify(fileURLToPath(import.meta.resolve("@manifold/plugin-kit/server")))};
     const def = {
@@ -86,7 +95,7 @@ async function fixture(hardened: boolean, dispatchDeadlineMs?: number) {
       actions: [
         defineServerAction({ name: "seed", title: "Seed", caps: ["machines:mint"],
           input: z.strictObject({}), result: z.strictObject({}) }),
-        defineServerAction({ name: "mutate", title: "Mutate", caps: ["machines:mint"],
+        defineServerAction({ name: "mutate", title: "Mutate", caps: ["machines:mint", "tokens:mint"],
           input: z.strictObject({}), result: z.unknown() }),
         defineServerAction({ name: "targeted", title: "Targeted", caps: ["machines:read"],
           requirements: [{ cap: "machines:read", target: ["target"] }],
@@ -126,21 +135,30 @@ async function fixture(hardened: boolean, dispatchDeadlineMs?: number) {
     };
     defineServerPlugin(def);
     export default def;
-  `);
-  const source = join(dataDir, PLUGIN_UPLOADS_DIR, `fence-${version}.manifold-plugin.json`);
-  const packed = await packPlugin(authorDir, source);
-  return { source, sha256: packed.sha256, hardened };
+  `,
+    );
+    const source = join(dataDir, PLUGIN_UPLOADS_DIR, `fence-${version}.manifold-plugin.json`);
+    const packed = await packPlugin(authorDir, source);
+    return { source, sha256: packed.sha256, hardened };
   }
   const request = await bundle("1.0.0");
-  expect(await host.install(request, owner.principal.id, auth.credentialReference(owner))).toMatchObject({
+  expect(
+    await host.install(
+      { ...request, grant: ["tokens:mint"] },
+      owner.principal.id,
+      auth.credentialReference(owner),
+    ),
+  ).toMatchObject({
     id: PLUGIN_ID,
   });
   expect(await host.dispatch(owner, `${PLUGIN_ID}.seed`, {})).toEqual({ ok: true, result: {} });
-  const token = auth.mintToken({
-    principal: { name: "fleet admin", kind: "human" },
-    caps: ["machines:mint", "machines:read", "containers:read"],
-    expiresAt: runtime.now() + 60_000,
-  }, owner);
+  const token = auth.mintToken(
+    {
+      principal: { name: "fleet admin", kind: "human" },
+      caps: ["machines:mint", "machines:read", "containers:read", "tokens:mint"],
+    },
+    owner,
+  );
   const actor = auth.authenticate(token.token);
   async function records() {
     const database = openPluginDatabase({ dataDir, pluginId: PLUGIN_ID });
@@ -151,7 +169,19 @@ async function fixture(hardened: boolean, dispatchDeadlineMs?: number) {
     }
   }
   return {
-    store, auth, owner, actor, host, runtime, token, storage, entered, resume, request, bundle, records,
+    store,
+    auth,
+    owner,
+    actor,
+    host,
+    runtime,
+    token,
+    storage,
+    entered,
+    resume,
+    request,
+    bundle,
+    records,
     async unchanged() {
       expect(await storage.get("value")).toBe("before");
       expect(await records()).toEqual([{ body: "before" }]);
@@ -168,42 +198,55 @@ async function fixture(hardened: boolean, dispatchDeadlineMs?: number) {
 
 for (const hardened of [false, true]) {
   describe(`action durable authority (hardened: ${String(hardened)})`, () => {
-    test.each(["cap withdrawn", "credential revoked", "credential expired", "disabled", "shutdown"])(
-      "%s after an awaited read fences every next durable effect",
-      async (withdrawal) => {
-        const f = await fixture(hardened);
-        const invocation = f.host.dispatch(f.actor, `${PLUGIN_ID}.mutate`, {});
-        try {
-          await f.entered.promise;
-          switch (withdrawal) {
-            case "cap withdrawn":
-              f.auth.grant({ principal: { kind: "principal", id: f.actor.principal.id },
-                node: "manifold://", caps: ["machines:mint"], effect: "deny", reach: "subtree" }, f.owner);
-              break;
-            case "credential revoked":
-              f.auth.revokePrincipal(f.actor.principal.id, f.owner);
-              break;
-            case "credential expired":
-              f.runtime.time = f.token.expiresAt!;
-              break;
-            case "disabled":
-              expect(await f.host.setEnabled(PLUGIN_ID, false, f.owner.principal.id)).toEqual({ ok: true });
-              break;
-            case "shutdown":
-              f.host.close();
-              break;
-          }
-          f.resume.resolve();
-          const outcome = await invocation.catch(() => null);
-          expect(outcome?.ok ?? false).toBe(false);
-          await f.unchanged();
-        } finally {
-          f.resume.resolve();
-          await invocation.catch(() => {});
-          await f.close();
+    test.each([
+      "cap withdrawn",
+      "credential revoked",
+      "credential expired",
+      "disabled",
+      "shutdown",
+    ])("%s after an awaited read fences every next durable effect", async (withdrawal) => {
+      const f = await fixture(hardened);
+      const invocation = f.host.dispatch(f.actor, `${PLUGIN_ID}.mutate`, {});
+      try {
+        await f.entered.promise;
+        switch (withdrawal) {
+          case "cap withdrawn":
+            f.auth.grant(
+              {
+                principal: { kind: "principal", id: f.actor.principal.id },
+                node: "manifold://",
+                caps: ["machines:mint"],
+                effect: "deny",
+                reach: "subtree",
+              },
+              f.owner,
+            );
+            break;
+          case "credential revoked":
+            f.auth.revokePrincipal(f.actor.principal.id, f.owner);
+            break;
+          case "credential expired":
+            f.runtime.time = f.token.expiresAt!;
+            break;
+          case "disabled":
+            expect(await f.host.setEnabled(PLUGIN_ID, false, f.owner.principal.id)).toEqual({
+              ok: true,
+            });
+            break;
+          case "shutdown":
+            f.host.close();
+            break;
         }
-      },
-    );
+        f.resume.resolve();
+        const outcome = await invocation.catch(() => null);
+        expect(outcome?.ok ?? false).toBe(false);
+        await f.unchanged();
+      } finally {
+        f.resume.resolve();
+        await invocation.catch(() => {});
+        await f.close();
+      }
+    });
 
     test("fixed target authority is re-evaluated without flattening it to a context cap", async () => {
       const f = await fixture(hardened);
@@ -213,8 +256,16 @@ for (const hardened of [false, true]) {
       });
       try {
         await f.entered.promise;
-        f.auth.grant({ principal: { kind: "principal", id: f.actor.principal.id },
-          node: formatManifoldUri({ kind: "machine", machineId }), caps: ["machines:read"], effect: "deny", reach: "node" }, f.owner);
+        f.auth.grant(
+          {
+            principal: { kind: "principal", id: f.actor.principal.id },
+            node: formatManifoldUri({ kind: "machine", machineId }),
+            caps: ["machines:read"],
+            effect: "deny",
+            reach: "node",
+          },
+          f.owner,
+        );
         expect(f.auth.allows(f.actor, "machines:read")).toBe(true);
         f.resume.resolve();
         expect((await invocation).ok).toBe(false);
@@ -233,8 +284,11 @@ for (const hardened of [false, true]) {
       try {
         await f.entered.promise;
         const candidate = await f.bundle("2.0.0");
-        replacement = f.host.install({ ...candidate, replace: true, grant: ["containers:read"] },
-          f.owner.principal.id, f.auth.credentialReference(f.owner));
+        replacement = f.host.install(
+          { ...candidate, replace: true, grant: ["containers:read"] },
+          f.owner.principal.id,
+          f.auth.credentialReference(f.owner),
+        );
         const deadline = Date.now() + 3000;
         while (true) {
           const probe = await f.host.dispatch(f.owner, `${PLUGIN_ID}.probe`, {});
@@ -248,9 +302,12 @@ for (const hardened of [false, true]) {
         expect(await invocation).toEqual({ ok: true, result: { changed: true } });
         expect(await replacement).toMatchObject({ id: PLUGIN_ID });
         expect(await f.storage.get("value")).toBeNull();
-        expect(f.host.roster().find((row) => row.manifest.id === PLUGIN_ID)?.manifest.version).toBe("2.0.0");
+        expect(f.host.roster().find((row) => row.manifest.id === PLUGIN_ID)?.manifest.version).toBe(
+          "2.0.0",
+        );
         expect(await f.host.dispatch(f.actor, `${PLUGIN_ID}.mutate`, {})).toMatchObject({
-          ok: false, denial: { rule: "forbidden" },
+          ok: false,
+          denial: { rule: "forbidden" },
         });
         expect(await f.records()).toEqual([{ body: "before" }, { body: "run" }, { body: "batch" }]);
       } finally {
@@ -282,58 +339,78 @@ test("a real isolate deadline retires data authority before the delayed read ret
 
 // An in-realm action definition and its handler record are the existing mutable registration
 // seam. Changing either while the handler awaits must not leave the old admitted data live.
-test.each(["parser", "handler", "before admission"])("durable data respects the %s boundary", async (binding) => {
-  const runtime = new FakeRuntime();
-  const clock = new FakeClock(runtime);
-  const store = testStore();
-  const auth = new AuthService(store, OWNER_KEY, runtime);
-  const owner = auth.authenticate(OWNER_KEY);
-  const rooms = new RoomManager(store, runtime, clock, silentLogger, testTileTrees);
-  const broker = new TerminalBroker(store, auth, rooms, runtime, clock, silentLogger,
-    () => "http://localhost:7777", testTileTrees);
-  const entered = Promise.withResolvers<void>();
-  const resume = Promise.withResolvers<void>();
-  let retained: PluginStorage | undefined;
-  const action = { ...defineAction({ name: "write", title: "Write", caps: ["machines:mint"],
-    input: z.strictObject({}), result: z.strictObject({}) }) };
-  const handlers = {
-    write: async (ctx: ActionCtx) => {
-      retained = ctx.storage;
-      if (binding === "before admission") {
+test.each(["parser", "handler", "before admission"])(
+  "durable data respects the %s boundary",
+  async (binding) => {
+    const runtime = new FakeRuntime();
+    const clock = new FakeClock(runtime);
+    const store = testStore();
+    const auth = new AuthService(store, OWNER_KEY, runtime);
+    const owner = auth.authenticate(OWNER_KEY);
+    const rooms = new RoomManager(store, runtime, clock, silentLogger, testTileTrees);
+    const broker = new TerminalBroker(
+      store,
+      auth,
+      rooms,
+      runtime,
+      clock,
+      silentLogger,
+      () => "http://localhost:7777",
+      testTileTrees,
+    );
+    const entered = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    let retained: PluginStorage | undefined;
+    const action = {
+      ...defineAction({
+        name: "write",
+        title: "Write",
+        caps: ["machines:mint"],
+        input: z.strictObject({}),
+        result: z.strictObject({}),
+      }),
+    };
+    const handlers = {
+      write: async (ctx: ActionCtx) => {
+        retained = ctx.storage;
+        if (binding === "before admission") {
+          await ctx.storage.compareAndSet("value", null, "forbidden");
+          ctx.admitPrepared!([]);
+          return {};
+        }
+        await ctx.storage.get("value");
+        entered.resolve();
+        await resume.promise;
         await ctx.storage.compareAndSet("value", null, "forbidden");
-        ctx.admitPrepared!([]);
         return {};
+      },
+    };
+    const { database: _database, ...storageManifest } = manifest;
+    const def: ServerPluginDef = {
+      manifest: { ...storageManifest, id: "test.action-binding" },
+      ...(binding === "before admission" ? { inputValidation: "guest" as const } : {}),
+      actions: [action],
+      handlers,
+    };
+    const host = await testPluginHost(store, auth, rooms, broker, runtime, {
+      settingsPlugins: [def],
+    });
+    const invocation = host.dispatch(owner, "test.action-binding.write", {});
+    try {
+      if (binding !== "before admission") {
+        await entered.promise;
+        if (binding === "parser") action.input = z.strictObject({});
+        else handlers.write = async () => ({});
+        resume.resolve();
       }
-      await ctx.storage.get("value");
-      entered.resolve();
-      await resume.promise;
-      await ctx.storage.compareAndSet("value", null, "forbidden");
-      return {};
-    },
-  };
-  const { database: _database, ...storageManifest } = manifest;
-  const def: ServerPluginDef = {
-    manifest: { ...storageManifest, id: "test.action-binding" },
-    ...(binding === "before admission" ? { inputValidation: "guest" as const } : {}),
-    actions: [action],
-    handlers,
-  };
-  const host = await testPluginHost(store, auth, rooms, broker, runtime, { settingsPlugins: [def] });
-  const invocation = host.dispatch(owner, "test.action-binding.write", {});
-  try {
-    if (binding !== "before admission") {
-      await entered.promise;
-      if (binding === "parser") action.input = z.strictObject({});
-      else handlers.write = async () => ({});
+      expect(await invocation).toMatchObject({ ok: false, denial: { rule: "forbidden" } });
+      expect(await store.pluginStorage("test.action-binding").get("value")).toBeNull();
+      await expect(retained!.set("value", "late")).rejects.toThrow();
+    } finally {
       resume.resolve();
+      await invocation.catch(() => {});
+      host.close();
+      store.close();
     }
-    expect(await invocation).toMatchObject({ ok: false, denial: { rule: "forbidden" } });
-    expect(await store.pluginStorage("test.action-binding").get("value")).toBeNull();
-    await expect(retained!.set("value", "late")).rejects.toThrow();
-  } finally {
-    resume.resolve();
-    await invocation.catch(() => {});
-    host.close();
-    store.close();
-  }
-});
+  },
+);

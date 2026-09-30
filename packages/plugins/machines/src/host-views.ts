@@ -40,7 +40,11 @@ export const HostViewsSchema = z
     const machineIds = new Set<string>();
     for (const [index, host] of registry.hosts.entries()) {
       if (hostIds.has(host.id)) {
-        ctx.addIssue({ code: "custom", path: ["hosts", index, "id"], message: "duplicate_host_view" });
+        ctx.addIssue({
+          code: "custom",
+          path: ["hosts", index, "id"],
+          message: "duplicate_host_view",
+        });
       }
       hostIds.add(host.id);
       for (const [memberIndex, member] of host.members.entries()) {

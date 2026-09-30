@@ -48,22 +48,33 @@ let
   # fake PTY or source-text assertions substitute for the account's actual shell output.
   shellClientSource = pkgs.writeText "manifold-shell-client.ts" ''
     import { SessionClient } from "@manifold/sdk";
+    import {
+      ActionOutcomeSchema, ContainerResponseSchema, MachinesResponseSchema, TerminalsResponseSchema,
+    } from "@manifold/protocol";
+    import { z } from "zod";
 
     const hub = process.env.SHELL_FIXTURE_HUB ?? "http://127.0.0.1:7777";
     const key = (await Bun.file(process.env.SHELL_FIXTURE_KEY_FILE!).text()).trim();
     const mode = process.argv[2];
     const statePath = "/run/shell-fixture/session.json";
-    const require = (condition: unknown, message: string): asserts condition => {
+    const StateSchema = z.strictObject({
+      machineId: z.string().min(1),
+      terminalId: z.string().min(1),
+      homeId: z.string().min(1),
+      terminalHostId: z.string().min(1),
+      shellPid: z.string().regex(/^\d+$/).optional(),
+    });
+    function require(condition: unknown, message: string): asserts condition {
       if (!condition) throw new Error(message);
-    };
-    async function action(name: string, args: unknown): Promise<any> {
+    }
+    async function action(name: string, args: unknown): Promise<unknown> {
       const response = await fetch(hub + "/api/actions/" + name, {
         method: "POST",
         headers: { Authorization: "Bearer " + key, "Content-Type": "application/json" },
         body: JSON.stringify(args),
       });
-      const outcome = await response.json() as any;
-      require(outcome.ok, name + " refused: " + JSON.stringify(outcome.denial));
+      const outcome = ActionOutcomeSchema.parse(await response.json());
+      if (!outcome.ok) throw new Error(name + " refused: " + JSON.stringify(outcome.denial));
       return outcome.result;
     }
     async function waitFor(predicate: () => boolean | Promise<boolean>, message: string) {
@@ -81,15 +92,15 @@ let
       await client.connect();
       return client;
     }
-    const machines = (await action("core.machines.list", {})).machines;
-    const machine = machines.find((entry: any) => entry.name === "account-shell");
+    const machines = MachinesResponseSchema.parse(await action("core.machines.list", {})).machines;
+    const machine = machines.find((entry) => entry.name === "account-shell");
     require(machine?.online && machine.terminalExecution === "unconfined", "ordinary account not admitted");
     if (mode === "ready") {
       console.log(JSON.stringify({ machineId: machine.id }));
     } else if (mode === "governed-refusal") {
-      const governed = machines.find((entry: any) => entry.terminalExecution === "governed");
+      const governed = machines.find((entry) => entry.terminalExecution === "governed");
       require(governed?.online, "native owner not admitted alongside ordinary account");
-      const container = (await action("core.index.createContainer", {
+      const container = ContainerResponseSchema.parse(await action("core.index.createContainer", {
         name: "governed runtime refusal", discipline: "composition",
       })).container;
       const client = await connect(container.id);
@@ -103,15 +114,15 @@ let
           refused = error instanceof Error && error.message.includes("requires a declared terminal runtime");
         }
         require(refused, "governed endpoint accepted ordinary runtime-free birth or refused for another reason");
-        const terminals = (await action("core.terminals.listAll", {})).terminals;
-        require(!terminals.some((entry: any) => entry.machineId === governed.id), "refused birth allocated a native terminal");
+        const terminals = TerminalsResponseSchema.parse(await action("core.terminals.listAll", {})).terminals;
+        require(!terminals.some((entry) => entry.machineId === governed.id), "refused birth allocated a native terminal");
       } finally {
         client.close();
       }
     } else {
-      let state: any;
+      let state: z.infer<typeof StateSchema>;
       if (mode === "create") {
-        const container = (await action("core.index.createContainer", {
+        const container = ContainerResponseSchema.parse(await action("core.index.createContainer", {
           name: "ordinary account continuity", discipline: "composition",
         })).container;
         const opener = await connect(container.id);
@@ -128,7 +139,7 @@ let
           opener.close();
         }
       } else {
-        state = await Bun.file(statePath).json();
+        state = StateSchema.parse(await Bun.file(statePath).json());
         require(state.machineId === machine.id, "transport rebound to another endpoint");
       }
       const client = await connect(state.homeId);
@@ -150,9 +161,12 @@ let
         client.takeTerminal(state.terminalId);
         await waitFor(() => client.terminals.get(state.terminalId)?.controllerId === client.self?.id,
           "terminal control not granted");
+        await waitFor(() => text.includes("SHELL_FIXTURE_READY> "),
+          "account shell did not finish its normal startup");
         if (mode === "exit") {
           client.sendTerminalInput(state.terminalId, "exit\n");
-          await waitFor(() => client.terminals.get(state.terminalId)?.status === "exited", "PTY failed to exit");
+          await waitFor(() => !client.terminals.has(state.terminalId) ||
+            client.terminals.get(state.terminalId)?.status === "exited", "PTY failed to exit");
         } else {
           const nonce = crypto.randomUUID();
           // The complete marker is not present in the echoed input: only executed output
@@ -163,15 +177,36 @@ let
             "'" + nonce + "' \"$" + "$\" \"$(id -un)\" \"$HOME\" \"$SHELL\" \"$PWD\" " +
             "\"$(id -gn)\" \"$(cat /srv/shell-fixture/group/readable)\" " +
             "\"$(home-profile-only)\" \"$(user-profile-only)\"; " +
-            "printf 'AUTHORITY_%s:%s\\n' '" + nonce + "' \"$(shell-authority-probe)\"; " +
+            "authority=\"$(shell-authority-probe)\"; authority_status=$?; " +
+            "printf 'AUTHORITY_%s:%s\\n' '" + nonce + "' \"$authority\"; " +
+            "printf 'AUTHORITY_STATUS_%s:%s\\n' '" + nonce + "' \"$authority_status\"; " +
             "printf '%s\\n' home-write > \"$HOME/shell-created\"\n");
-          await waitFor(() => text.includes(marker) && text.includes("AUTHORITY_" + nonce + ":wrapper:wrapper-authority"),
-            "account authority or wrapper/profile command output missing");
+          try {
+            await waitFor(() => text.includes(marker) &&
+              text.includes("AUTHORITY_" + nonce + ":wrapper:wrapper-authority"),
+              "account authority or wrapper/profile command output missing");
+          } catch (error) {
+            // Report fixture observations, never raw PTY bytes or credential material.
+            const statusMarker = "AUTHORITY_STATUS_" + nonce + ":";
+            const statusOffset = text.indexOf(statusMarker);
+            const status = statusOffset < 0 ? null :
+              Number.parseInt(text.slice(statusOffset + statusMarker.length), 10);
+            throw new Error(JSON.stringify({
+              accountOutput: text.includes(marker),
+              authorityOutput: text.includes("AUTHORITY_" + nonce + ":"),
+              authorityStatus: Number.isFinite(status) ? status : null,
+              commandsUnavailable: [...text.matchAll(/command not found: ([a-z][a-z0-9-]*)/g)]
+                .map((match) => match[1]).slice(0, 4),
+              wrongProfileWrapper: text.includes("wrong-profile-wrapper"),
+              homeProfileUnavailable: text.includes("command not found: home-profile-only"),
+              userProfileUnavailable: text.includes("command not found: user-profile-only"),
+            }), { cause: error });
+          }
           const line = text.slice(text.indexOf(marker) + marker.length).split(/\r?\n/)[0]!;
           const fields = line.split(":");
           require(/^\d+$/.test(fields[0]!), "shell did not report its own PID");
           require(fields.slice(1).join(":") ===
-            "account-shell:${shellHome}:${pkgs.zsh}/bin/zsh:${shellHome}:shell-primary:group-access:home-profile:account-shell:user-profile:account-shell",
+            "account-shell:${shellHome}:/run/current-system/sw/bin/zsh:${shellHome}:shell-primary:group-access:home-profile:account-shell:user-profile:account-shell",
             "account home, login shell, primary/supplementary groups or profile authority changed");
           if (state.shellPid !== undefined) require(state.shellPid === fields[0], "PTY process replaced across reconnect");
           state.shellPid = fields[0];
@@ -866,7 +901,6 @@ in
     system.stateVersion = "26.05";
   };
   shellAccount = { ... }: {
-    imports = [ self.nixosModules.native ];
     services.manifold = {
       enable = true;
       shell = {
@@ -879,6 +913,7 @@ in
       };
     };
     programs.zsh.enable = true;
+    programs.zsh.promptInit = "PROMPT='SHELL_FIXTURE_READY> '";
     users.groups.shell-primary.gid = 1400;
     users.groups.shell-access = {};
     users.users.account-shell = {
@@ -911,6 +946,10 @@ in
         chmod 0640 /srv/shell-fixture/group/readable
         printf 'wrapper-authority\n' > /srv/shell-fixture/wrapper-private
         chmod 0600 /srv/shell-fixture/wrapper-private
+        # This is an existing configured account, not zsh's first-user setup dialogue.
+        printf 'export SHELL_FIXTURE_LOGIN=ready\n' > '${shellHome}/.zshrc'
+        chown account-shell:shell-primary '${shellHome}/.zshrc'
+        chmod 0600 '${shellHome}/.zshrc'
         install -d -o account-shell -g shell-primary -m 0700 '${shellHome}/.nix-profile' '${shellHome}/.nix-profile/bin'
         printf '#!${pkgs.runtimeShell}\nprintf "home-profile:account-shell\\n"\n' > '${shellHome}/.nix-profile/bin/home-profile-only'
         printf '#!${pkgs.runtimeShell}\nprintf "wrong-profile-wrapper\\n"\n' > '${shellHome}/.nix-profile/bin/shell-authority-probe'
@@ -1027,7 +1066,7 @@ in
       };
     };
     shellonly = { ... }: {
-      imports = [ shellAccount ];
+      imports = [ self.nixosModules.native shellAccount ];
       services.manifold.hub.enable = false;
       services.manifold.execution.enable = false;
       users.groups.shell-fixture-hub = {};
@@ -1061,7 +1100,6 @@ in
       };
       systemd.services.shell-fixture-enrollment = {
         after = [ "shell-fixture-hub.service" ];
-        requires = [ "shell-fixture-hub.service" ];
         environment.SHELL_FIXTURE_KEY_FILE = "/srv/shell-fixture-hub/owner.key";
       };
       virtualisation.cores = 2;
@@ -1080,7 +1118,6 @@ in
       };
       systemd.services.shell-fixture-enrollment = {
         after = [ "manifold-server.service" "manifold-transport.service" ];
-        requires = [ "manifold-server.service" ];
         environment.SHELL_FIXTURE_KEY_FILE = "/var/lib/manifold/owner.key";
       };
     };
@@ -1102,223 +1139,8 @@ in
 
     # Operator anchor evaluation refusals: ${anchorEvaluations}
     # Complete account-shell toplevel evaluation and custody refusals: ${shellEvaluations}
-    start_all()
-    # Serial log backlog is not boot readiness; connect to the guest shell itself.
-    for node in (machine, credential, anchors, shellonly, coexist):
-        node.connect()
-    machine.wait_for_unit("manifold-server.service", timeout=180)
-    machine.wait_for_unit("manifold-owner.service", timeout=180)
-    machine.wait_for_unit("manifold-transport.service", timeout=180)
-    machine.wait_until_succeeds("${inspectCommand}", timeout=180)
-    identity = machine.succeed("${inspectCommand}").strip()
-    for path in ["owner.key", "agent.token", "job-owner/config.json"]:
-        assert machine.succeed(f"stat -c '%a %U' /var/lib/manifold/{path}").strip() == "600 manifold"
-    # A node that declares no operator anchor retains exactly its earlier owner configuration.
-    for path in ["owner-template.json", "job-owner/config.json"]:
-        assert "operatorAnchors" not in json.loads(machine.succeed(f"cat /var/lib/manifold/{path}")), path
-    machine.succeed("test ! -e /run/manifold-anchors")
-    machine.fail("systemctl cat manifold-operator-anchors.service")
-    owner = machine.succeed("systemctl show -p MainPID --value manifold-owner.service").strip()
-    assert int(owner) > 1
-    machine.succeed("${inspectCommand} install")
-    machine.succeed("${inspectCommand} execute")
-    machine.wait_until_succeeds("${inspectCommand} result", timeout=180)
-    # The module mounts bounded scratch, but must not pre-create plugin components.
-    machine.succeed("test ! -e /var/lib/manifold-output/native-profile")
-    for job_id in ["module-runtime-first", "module-runtime-second"]:
-        machine.succeed("${inspectCommand} execute-outputs " + job_id)
-        receipt = machine.wait_until_succeeds("${inspectCommand} result-outputs " + job_id, timeout=180)
-        print(receipt)
-    assert machine.succeed("stat -c '%a %U' /var/lib/manifold-output/native-profile /var/lib/manifold-output/native-profile/outputs").strip().splitlines() == ["700 manifold", "700 manifold"]
-    machine.succeed("systemctl restart manifold-server.service manifold-transport.service")
-    machine.wait_for_unit("manifold-server.service", timeout=180)
-    machine.wait_for_unit("manifold-transport.service", timeout=180)
-    machine.wait_until_succeeds("${inspectCommand}", timeout=180)
-    assert machine.succeed("${inspectCommand}").strip() == identity
-    assert machine.succeed("systemctl show -p MainPID --value manifold-owner.service").strip() == owner
-    machine.succeed("${inspectCommand} result")
-    original = machine.succeed("readlink -f /run/current-system").strip()
-    retained = machine.succeed("sha256sum /var/lib/manifold/owner-template.json /var/lib/manifold/job-owner/config.json")
-    machine.succeed("systemctl is-active register-nix-paths.service")
-    machine.fail("/run/current-system/specialisation/changed-native/bin/switch-to-configuration test", timeout=180)
-    assert machine.succeed("systemctl show -p MainPID --value manifold-owner.service").strip() == owner
-    assert machine.succeed("sha256sum /var/lib/manifold/owner-template.json /var/lib/manifold/job-owner/config.json") == retained
-    machine.succeed(f"{original}/bin/switch-to-configuration test", timeout=180)
-    machine.wait_until_succeeds("${inspectCommand}", timeout=180)
-    machine.succeed("${inspectCommand} result")
-    machine.succeed("${maintenanceCommand} --help")
-    admission = dict(hub="http://127.0.0.1:7777", machine_id=identity, owner_key_file="/var/lib/manifold/owner.key")
-    machine.succeed("${inspectCommand} execute-hold module-maintenance-live")
-    machine.wait_until_succeeds("${inspectCommand} started-hold module-maintenance-live", timeout=30)
-    drained = maintenance(machine, "drain", **admission)
-    assert drained["machineId"] == identity and drained["draining"], drained
-    # No terminals is deliberately NOT idle proof: this owner still has a real running job.
-    assert drained["terminalIds"] == [], drained
-    expected_host = drained["terminalHostId"]
-    shutdown = dict(socket="/var/lib/manifold/terminal-host/host.sock", terminal_host_id=expected_host)
-    held = maintenance(machine, "shutdown", expected_code=1, **shutdown)
-    assert held["hold"] and held["reason"] == "jobs_retained", held
-    assert machine.succeed("systemctl show -p MainPID --value manifold-owner.service").strip() == owner
-    machine.succeed("${inspectCommand} started-hold module-maintenance-live")
-    machine.succeed("${inspectCommand} drained")
-    # An explicit reopen is distinct from a HOLD; neither command stops the supervisor.
-    reopened = maintenance(machine, "reopen", **admission)
-    assert not reopened["draining"] and reopened["terminalHostId"] == expected_host, reopened
-    machine.succeed("${inspectCommand} execute module-maintenance-reopened")
-    machine.wait_until_succeeds("${inspectCommand} result module-maintenance-reopened", timeout=180)
-    drained = maintenance(machine, "drain", **admission)
-    assert drained["draining"] and drained["terminalHostId"] == expected_host, drained
-    machine.wait_until_succeeds("${inspectCommand} result-hold module-maintenance-live", timeout=180)
-    acknowledged = maintenance(machine, "shutdown", **shutdown)
-    assert acknowledged["terminalHostId"] == expected_host, acknowledged
-    machine.wait_until_succeeds("test \"$(systemctl show -p ActiveState --value manifold-owner.service)\" = inactive", timeout=30)
-    machine.succeed("systemctl start manifold-owner.service")
-    machine.wait_until_succeeds("${inspectCommand}", timeout=180)
-    replacement = machine.succeed("systemctl show -p MainPID --value manifold-owner.service").strip()
-    assert int(replacement) > 1 and replacement != owner
-    assert machine.succeed("${inspectCommand}").strip() == identity
-    machine.succeed("${inspectCommand} result")
-    machine.succeed("${inspectCommand} result-hold module-maintenance-live")
-    reopened = maintenance(machine, "reopen", **admission)
-    assert not reopened["draining"] and reopened["terminalHostId"] != expected_host, reopened
-    machine.succeed("${inspectCommand} execute module-native-recovered")
-    machine.wait_until_succeeds("${inspectCommand} result module-native-recovered", timeout=180)
-
-    # A separate node retains the default local-bootstrap proof above while
-    # exercising the exact same packaged transport with a declared credential.
-    credential.wait_for_unit("manifold-transport.service", timeout=180)
-    credential.wait_until_succeeds("${inspectCommand}", timeout=180)
-    credential_identity = credential.succeed("${inspectCommand}").strip()
-    credential_owner = credential.succeed("systemctl show -p MainPID --value manifold-owner.service").strip()
-    assert int(credential_owner) > 1
-    source = "/etc/manifold-fixture/private/enrollment-token"
-    source_identity = credential.succeed(f"stat -c '%d:%i:%u:%g:%a:%s:%Y:%Z' {source}").strip()
-    assert credential.succeed(f"stat -c '%a %U' {source}").strip() == "600 root"
-    assert credential.succeed("stat -c '%a %U' /etc/manifold-fixture/private").strip() == "700 root"
-    credential.succeed(f"runuser -u manifold -- test ! -r {source}")
-    credential.succeed(f"cmp -s {source} /var/lib/manifold/agent.token")
-
-    def check_private_credential():
-        pid = credential.succeed("systemctl show -p MainPID --value manifold-transport.service").strip()
-        assert int(pid) > 1
-        private = "/run/credentials/manifold-transport.service/enrollment-token"
-        credential.succeed(f"nsenter -t {pid} -m -- runuser -u manifold -- test -r {private}")
-        credential.succeed(f"nsenter -t {pid} -m -- runuser -u manifold -- test ! -w {private}")
-        credential.succeed(f"nsenter -t {pid} -m -- runuser -u manifold -- test ! -w /run/credentials/manifold-transport.service")
-        credential.succeed(f"nsenter -t {pid} -m -- cmp -s {source} {private}")
-        options = credential.succeed(f"nsenter -t {pid} -m -- findmnt -n -o OPTIONS --target {private}").strip().split(",")
-        assert "ro" in options, options
-        return pid
-
-    transport = check_private_credential()
-    credential.succeed("${inspectCommand} install")
-    credential.succeed("${inspectCommand} execute")
-    credential.wait_until_succeeds("${inspectCommand} result", timeout=180)
-    # Selected closures supply the real shell/Git ABI, never unrelated host store paths.
-    assert credential.succeed("${pkgs.hello}/bin/hello").strip() == "Hello, world!"
-    credential.succeed("${inspectCommand} install-tools")
-    credential.succeed("${inspectCommand} execute-tools module-credential-tools")
-    credential.wait_until_succeeds("${inspectCommand} result-tools module-credential-tools", timeout=180)
-    credential.succeed("${inspectCommand} execute-hold module-credential-live")
-    credential.wait_until_succeeds("${inspectCommand} started-hold module-credential-live", timeout=30)
-    credential.succeed("systemctl restart manifold-transport.service")
-    credential.wait_for_unit("manifold-transport.service", timeout=180)
-    credential.wait_until_succeeds("${inspectCommand}", timeout=180)
-    assert check_private_credential() != transport
-    assert credential.succeed("${inspectCommand}").strip() == credential_identity
-    assert credential.succeed("systemctl show -p MainPID --value manifold-owner.service").strip() == credential_owner
-    assert credential.succeed(f"stat -c '%d:%i:%u:%g:%a:%s:%Y:%Z' {source}").strip() == source_identity
-    credential.succeed(f"cmp -s {source} /var/lib/manifold/agent.token")
-    credential.succeed(f"runuser -u manifold -- test ! -r {source}")
-    credential.succeed("${inspectCommand} result")
-    credential.wait_until_succeeds("${inspectCommand} result-hold module-credential-live", timeout=180)
-    credential.succeed("${inspectCommand} execute module-credential-restarted")
-    credential.wait_until_succeeds("${inspectCommand} result module-credential-restarted", timeout=180)
-
-    # Extra unit groups are not NSS membership. Custody must still refuse a
-    # parent writable to the retained owner before PID 1 loads any bytes.
-    credential.succeed("systemctl stop manifold-transport.service")
-    credential.succeed("chgrp credential-writers /etc/manifold-fixture/private && chmod 0775 /etc/manifold-fixture/private")
-    writer_gid = credential.succeed("getent group credential-writers").split(":")[2]
-    owner_groups = credential.succeed(f"cat /proc/{credential_owner}/status")
-    assert writer_gid in next(line.split()[1:] for line in owner_groups.splitlines() if line.startswith("Groups:"))
-    credential.fail("systemctl start manifold-transport.service")
-    credential.succeed("systemctl is-failed --quiet manifold-token-credential-source.service")
-    assert credential.succeed("systemctl show -p MainPID --value manifold-transport.service").strip() == "0"
-    assert credential.succeed("systemctl show -p MainPID --value manifold-owner.service").strip() == credential_owner
-    credential.succeed(f"cmp -s {source} /var/lib/manifold/agent.token")
-    credential.succeed("chmod 0700 /etc/manifold-fixture/private && chgrp root /etc/manifold-fixture/private")
-
-    # Read-only delivery cannot make an exposed original token confidential.
-    credential.succeed(f"chmod 0644 {source}")
-    credential.fail("systemctl start manifold-transport.service")
-    credential.succeed("systemctl is-failed --quiet manifold-token-credential-source.service")
-    assert credential.succeed("systemctl show -p MainPID --value manifold-transport.service").strip() == "0"
-    credential.succeed(f"chmod 0400 {source}")
-    credential.succeed("systemctl reset-failed manifold-token-credential-source.service manifold-transport.service")
-    credential.succeed("systemctl start manifold-transport.service")
-    credential.wait_until_succeeds("${inspectCommand}", timeout=180)
-    check_private_credential()
-    assert credential.succeed("systemctl show -p MainPID --value manifold-owner.service").strip() == credential_owner
-    credential.succeed(f"cmp -s {source} /var/lib/manifold/agent.token")
-    credential.succeed("${inspectCommand} result module-credential-restarted")
-
-    # Operator anchors: root-made read-only idmapped views of a 0700 home beneath protected /home.
-    anchors.wait_for_unit("manifold-owner.service", timeout=180)
-    anchors.wait_for_unit("manifold-transport.service", timeout=180)
-    anchors.wait_until_succeeds("${inspectCommand}", timeout=180)
-    # The service account still cannot reach the source, nor traverse the home above it.
-    denied = anchors.fail("runuser -u manifold -- stat /home/alice/sessions 2>&1")
-    assert "Permission denied" in denied, denied
-    options = anchors.succeed("findmnt -n -o VFS-OPTIONS --mountpoint /run/manifold-anchors/fixture").strip().split(",")
-    for option in ["ro", "nosuid", "nodev", "noexec", "nosymfollow", "idmapped"]:
-        assert option in options, options
-    # Through the view the operator's private files read as manifold's, and stay unwritable.
-    anchors.succeed("runuser -u manifold -- test -r /run/manifold-anchors/fixture/private.jsonl")
-    anchors.succeed("runuser -u manifold -- test -r /run/manifold-anchors/fixture/private-directory/inner.jsonl")
-    anchors.succeed("runuser -u manifold -- test ! -w /run/manifold-anchors/fixture/private.jsonl")
-    # An absent source, and one reached through a link, get no view; the owner only omits them.
-    anchors.succeed("test ! -e /run/manifold-anchors/absent && test ! -e /run/manifold-anchors/linked")
-    helper = anchors.succeed("journalctl -b -u manifold-operator-anchors.service --no-pager")
-    assert "Manifold operator anchor linked has no view: symbolic link at /home/alice/linked" in helper, helper
-    assert "Manifold operator anchor absent has no view: source /home/alice/absent is absent or not a directory" in helper, helper
-    assert "Manifold operator anchor fixture presents /home/alice/sessions read-only at /run/manifold-anchors/fixture" in helper, helper
-    anchors.succeed("systemctl is-failed --quiet manifold-operator-anchors.service")
-    owner_log = anchors.succeed("journalctl -b -u manifold-owner.service --no-pager")
-    for name in ["operator.absent", "operator.linked"]:
-        assert any(
-            '"evt":"operator_anchor_unavailable"' in line and name in line and "operator_anchor_absent" in line
-            for line in owner_log.splitlines()
-        ), owner_log
-    template = json.loads(anchors.succeed("cat /var/lib/manifold/owner-template.json"))
-    assert template["operatorAnchors"] == {
-        "operator." + name: {"path": "/run/manifold-anchors/" + name, "source": source, "readOnly": True}
-        for name, source in [
-            ("fixture", "/home/alice/sessions"),
-            ("absent", "/home/alice/absent"),
-            ("linked", "/home/alice/linked/sessions"),
-        ]
-    }, template
-    # Metadata, ACLs and access times of every source path, read without reading any content.
-    snapshot = "find /home/alice/sessions -exec stat -c '%n %a %u %g %s %i %X %Y %Z' {} + | sort && getfacl -R -p /home/alice/sessions"
-    anchors.succeed(snapshot)
-    before = anchors.succeed(snapshot)
-    anchors.succeed("${inspectCommand} anchors-install")
-    anchors.succeed("${inspectCommand} anchors-ready")
-    for job_id, path, content in [
-        ("anchors-private", "private.jsonl", "private-session"),
-        ("anchors-public", "public.jsonl", "public-session"),
-        ("anchors-inner", "private-directory/inner.jsonl", "inner-session"),
-    ]:
-        anchors.succeed(f"${inspectCommand} anchors-execute {job_id} {path}")
-        anchors.wait_until_succeeds(f"${inspectCommand} anchors-result {job_id} {content}", timeout=180)
-    # Reading and every refused write left the source exactly as it was.
-    assert anchors.succeed(snapshot) == before
-    # A private file created after boot is read by the next job with nothing re-applied.
-    anchors.succeed("runuser -u alice -- sh -c 'umask 077 && printf later-session > /home/alice/sessions/later.jsonl'")
-    assert anchors.succeed("stat -c '%a %U' /home/alice/sessions/later.jsonl").strip() == "600 alice"
-    anchors.succeed("${inspectCommand} anchors-execute anchors-later later.jsonl")
-    anchors.wait_until_succeeds("${inspectCommand} anchors-result anchors-later later-session", timeout=180)
+    # Independent scenarios run one guest at a time so retained-owner proof remains
+    # bounded on an executor; serial log backlog is not guest-shell readiness.
 
     # The ordinary role is exercised independently and beside the unchanged governed
     # role. All secret values remain in private guest files and HTTP bearer headers.
@@ -1326,12 +1148,14 @@ in
         (shellonly, "shell-fixture-hub.service", "/srv/shell-fixture-hub/owner.key"),
         (coexist, "manifold-server.service", "/var/lib/manifold/owner.key"),
     ]:
+        node.start()
+        node.connect()
         node.wait_for_unit(hub_unit, timeout=180)
         node.wait_for_unit("manifold-shell-owner.service", timeout=180)
         node.wait_for_unit("manifold-shell-transport.service", timeout=180)
         fixture_env = "env SHELL_FIXTURE_KEY_FILE=" + shlex.quote(key_file) + " "
         client_command = fixture_env + "${shellClientCommand}"
-        fixture_command = fixture_env + "${shellFixtureCommand}"
+        fixture_command = fixture_env + "${shellFixtureCommand} "
         node.wait_until_succeeds(client_command + " ready", timeout=180)
         shell_owner = node.succeed("systemctl show -p MainPID --value manifold-shell-owner.service").strip()
         assert int(shell_owner) > 1
@@ -1449,11 +1273,237 @@ in
             for unit in ["manifold-shell-owner.service", "manifold-shell-transport.service"]:
                 node.succeed("systemctl reset-failed " + unit)
                 node.fail("systemctl start " + unit)
-                log = node.succeed("journalctl -b -u " + unit + " --no-pager")
-                assert "Manifold shell account shares the protected manifold UID; refusing startup" in log
+                service_log = node.succeed("journalctl -b -u " + unit + " --no-pager")
+                assert "Manifold shell account shares the protected manifold UID; refusing startup" in service_log
                 assert node.succeed("systemctl show -p MainPID --value " + unit).strip() == "0"
                 if unit == "manifold-shell-transport.service":
                     node.succeed("systemctl stop " + unit)
             assert node.succeed("systemctl show -p MainPID --value manifold-owner.service").strip() == native_owner
+        node.shutdown()
+    machine.start()
+    machine.connect()
+    machine.wait_for_unit("manifold-server.service", timeout=180)
+    machine.wait_for_unit("manifold-owner.service", timeout=180)
+    machine.wait_for_unit("manifold-transport.service", timeout=180)
+    machine.wait_until_succeeds("${inspectCommand}", timeout=180)
+    identity = machine.succeed("${inspectCommand}").strip()
+    for path in ["owner.key", "agent.token", "job-owner/config.json"]:
+        assert machine.succeed(f"stat -c '%a %U' /var/lib/manifold/{path}").strip() == "600 manifold"
+    # A node that declares no operator anchor retains exactly its earlier owner configuration.
+    for path in ["owner-template.json", "job-owner/config.json"]:
+        assert "operatorAnchors" not in json.loads(machine.succeed(f"cat /var/lib/manifold/{path}")), path
+    machine.succeed("test ! -e /run/manifold-anchors")
+    machine.fail("systemctl cat manifold-operator-anchors.service")
+    owner = machine.succeed("systemctl show -p MainPID --value manifold-owner.service").strip()
+    assert int(owner) > 1
+    machine.succeed("${inspectCommand} install")
+    machine.succeed("${inspectCommand} execute")
+    machine.wait_until_succeeds("${inspectCommand} result", timeout=180)
+    # The module mounts bounded scratch, but must not pre-create plugin components.
+    machine.succeed("test ! -e /var/lib/manifold-output/native-profile")
+    for job_id in ["module-runtime-first", "module-runtime-second"]:
+        machine.succeed("${inspectCommand} execute-outputs " + job_id)
+        receipt = machine.wait_until_succeeds("${inspectCommand} result-outputs " + job_id, timeout=180)
+        print(receipt)
+    assert machine.succeed("stat -c '%a %U' /var/lib/manifold-output/native-profile /var/lib/manifold-output/native-profile/outputs").strip().splitlines() == ["700 manifold", "700 manifold"]
+    machine.succeed("systemctl restart manifold-server.service manifold-transport.service")
+    machine.wait_for_unit("manifold-server.service", timeout=180)
+    machine.wait_for_unit("manifold-transport.service", timeout=180)
+    machine.wait_until_succeeds("${inspectCommand}", timeout=180)
+    assert machine.succeed("${inspectCommand}").strip() == identity
+    assert machine.succeed("systemctl show -p MainPID --value manifold-owner.service").strip() == owner
+    machine.succeed("${inspectCommand} result")
+    original = machine.succeed("readlink -f /run/current-system").strip()
+    retained = machine.succeed("sha256sum /var/lib/manifold/owner-template.json /var/lib/manifold/job-owner/config.json")
+    machine.succeed("systemctl is-active register-nix-paths.service")
+    machine.fail("/run/current-system/specialisation/changed-native/bin/switch-to-configuration test", timeout=180)
+    assert machine.succeed("systemctl show -p MainPID --value manifold-owner.service").strip() == owner
+    assert machine.succeed("sha256sum /var/lib/manifold/owner-template.json /var/lib/manifold/job-owner/config.json") == retained
+    machine.succeed(f"{original}/bin/switch-to-configuration test", timeout=180)
+    machine.wait_until_succeeds("${inspectCommand}", timeout=180)
+    machine.succeed("${inspectCommand} result")
+    machine.succeed("${maintenanceCommand} --help")
+    admission = dict(hub="http://127.0.0.1:7777", machine_id=identity, owner_key_file="/var/lib/manifold/owner.key")
+    machine.succeed("${inspectCommand} execute-hold module-maintenance-live")
+    machine.wait_until_succeeds("${inspectCommand} started-hold module-maintenance-live", timeout=30)
+    drained = maintenance(machine, "drain", **admission)
+    assert drained["machineId"] == identity and drained["draining"], drained
+    # No terminals is deliberately NOT idle proof: this owner still has a real running job.
+    assert drained["terminalIds"] == [], drained
+    expected_host = drained["terminalHostId"]
+    shutdown = dict(socket="/var/lib/manifold/terminal-host/host.sock", terminal_host_id=expected_host)
+    held = maintenance(machine, "shutdown", expected_code=1, **shutdown)
+    assert held["hold"] and held["reason"] == "jobs_retained", held
+    assert machine.succeed("systemctl show -p MainPID --value manifold-owner.service").strip() == owner
+    machine.succeed("${inspectCommand} started-hold module-maintenance-live")
+    machine.succeed("${inspectCommand} drained")
+    # An explicit reopen is distinct from a HOLD; neither command stops the supervisor.
+    reopened = maintenance(machine, "reopen", **admission)
+    assert not reopened["draining"] and reopened["terminalHostId"] == expected_host, reopened
+    machine.succeed("${inspectCommand} execute module-maintenance-reopened")
+    machine.wait_until_succeeds("${inspectCommand} result module-maintenance-reopened", timeout=180)
+    drained = maintenance(machine, "drain", **admission)
+    assert drained["draining"] and drained["terminalHostId"] == expected_host, drained
+    machine.wait_until_succeeds("${inspectCommand} result-hold module-maintenance-live", timeout=180)
+    acknowledged = maintenance(machine, "shutdown", **shutdown)
+    assert acknowledged["terminalHostId"] == expected_host, acknowledged
+    machine.wait_until_succeeds("test \"$(systemctl show -p ActiveState --value manifold-owner.service)\" = inactive", timeout=30)
+    machine.succeed("systemctl start manifold-owner.service")
+    machine.wait_until_succeeds("${inspectCommand}", timeout=180)
+    replacement = machine.succeed("systemctl show -p MainPID --value manifold-owner.service").strip()
+    assert int(replacement) > 1 and replacement != owner
+    assert machine.succeed("${inspectCommand}").strip() == identity
+    machine.succeed("${inspectCommand} result")
+    machine.succeed("${inspectCommand} result-hold module-maintenance-live")
+    reopened = maintenance(machine, "reopen", **admission)
+    assert not reopened["draining"] and reopened["terminalHostId"] != expected_host, reopened
+    machine.succeed("${inspectCommand} execute module-native-recovered")
+    machine.wait_until_succeeds("${inspectCommand} result module-native-recovered", timeout=180)
+
+    machine.shutdown()
+    credential.start()
+    credential.connect()
+
+    # A separate node retains the default local-bootstrap proof above while
+    # exercising the exact same packaged transport with a declared credential.
+    credential.wait_for_unit("manifold-transport.service", timeout=180)
+    credential.wait_until_succeeds("${inspectCommand}", timeout=180)
+    credential_identity = credential.succeed("${inspectCommand}").strip()
+    credential_owner = credential.succeed("systemctl show -p MainPID --value manifold-owner.service").strip()
+    assert int(credential_owner) > 1
+    source = "/etc/manifold-fixture/private/enrollment-token"
+    source_identity = credential.succeed(f"stat -c '%d:%i:%u:%g:%a:%s:%Y:%Z' {source}").strip()
+    assert credential.succeed(f"stat -c '%a %U' {source}").strip() == "600 root"
+    assert credential.succeed("stat -c '%a %U' /etc/manifold-fixture/private").strip() == "700 root"
+    credential.succeed(f"runuser -u manifold -- test ! -r {source}")
+    credential.succeed(f"cmp -s {source} /var/lib/manifold/agent.token")
+
+    def check_private_credential():
+        pid = credential.succeed("systemctl show -p MainPID --value manifold-transport.service").strip()
+        assert int(pid) > 1
+        private = "/run/credentials/manifold-transport.service/enrollment-token"
+        credential.succeed(f"nsenter -t {pid} -m -- runuser -u manifold -- test -r {private}")
+        credential.succeed(f"nsenter -t {pid} -m -- runuser -u manifold -- test ! -w {private}")
+        credential.succeed(f"nsenter -t {pid} -m -- runuser -u manifold -- test ! -w /run/credentials/manifold-transport.service")
+        credential.succeed(f"nsenter -t {pid} -m -- cmp -s {source} {private}")
+        options = credential.succeed(f"nsenter -t {pid} -m -- findmnt -n -o OPTIONS --target {private}").strip().split(",")
+        assert "ro" in options, options
+        return pid
+
+    transport = check_private_credential()
+    credential.succeed("${inspectCommand} install")
+    credential.succeed("${inspectCommand} execute")
+    credential.wait_until_succeeds("${inspectCommand} result", timeout=180)
+    # Selected closures supply the real shell/Git ABI, never unrelated host store paths.
+    assert credential.succeed("${pkgs.hello}/bin/hello").strip() == "Hello, world!"
+    credential.succeed("${inspectCommand} install-tools")
+    credential.succeed("${inspectCommand} execute-tools module-credential-tools")
+    credential.wait_until_succeeds("${inspectCommand} result-tools module-credential-tools", timeout=180)
+    credential.succeed("${inspectCommand} execute-hold module-credential-live")
+    credential.wait_until_succeeds("${inspectCommand} started-hold module-credential-live", timeout=30)
+    credential.succeed("systemctl restart manifold-transport.service")
+    credential.wait_for_unit("manifold-transport.service", timeout=180)
+    credential.wait_until_succeeds("${inspectCommand}", timeout=180)
+    assert check_private_credential() != transport
+    assert credential.succeed("${inspectCommand}").strip() == credential_identity
+    assert credential.succeed("systemctl show -p MainPID --value manifold-owner.service").strip() == credential_owner
+    assert credential.succeed(f"stat -c '%d:%i:%u:%g:%a:%s:%Y:%Z' {source}").strip() == source_identity
+    credential.succeed(f"cmp -s {source} /var/lib/manifold/agent.token")
+    credential.succeed(f"runuser -u manifold -- test ! -r {source}")
+    credential.succeed("${inspectCommand} result")
+    credential.wait_until_succeeds("${inspectCommand} result-hold module-credential-live", timeout=180)
+    credential.succeed("${inspectCommand} execute module-credential-restarted")
+    credential.wait_until_succeeds("${inspectCommand} result module-credential-restarted", timeout=180)
+
+    # Extra unit groups are not NSS membership. Custody must still refuse a
+    # parent writable to the retained owner before PID 1 loads any bytes.
+    credential.succeed("systemctl stop manifold-transport.service")
+    credential.succeed("chgrp credential-writers /etc/manifold-fixture/private && chmod 0775 /etc/manifold-fixture/private")
+    writer_gid = credential.succeed("getent group credential-writers").split(":")[2]
+    owner_groups = credential.succeed(f"cat /proc/{credential_owner}/status")
+    assert writer_gid in next(line.split()[1:] for line in owner_groups.splitlines() if line.startswith("Groups:"))
+    credential.fail("systemctl start manifold-transport.service")
+    credential.succeed("systemctl is-failed --quiet manifold-token-credential-source.service")
+    assert credential.succeed("systemctl show -p MainPID --value manifold-transport.service").strip() == "0"
+    assert credential.succeed("systemctl show -p MainPID --value manifold-owner.service").strip() == credential_owner
+    credential.succeed(f"cmp -s {source} /var/lib/manifold/agent.token")
+    credential.succeed("chmod 0700 /etc/manifold-fixture/private && chgrp root /etc/manifold-fixture/private")
+
+    # Read-only delivery cannot make an exposed original token confidential.
+    credential.succeed(f"chmod 0644 {source}")
+    credential.fail("systemctl start manifold-transport.service")
+    credential.succeed("systemctl is-failed --quiet manifold-token-credential-source.service")
+    assert credential.succeed("systemctl show -p MainPID --value manifold-transport.service").strip() == "0"
+    credential.succeed(f"chmod 0400 {source}")
+    credential.succeed("systemctl reset-failed manifold-token-credential-source.service manifold-transport.service")
+    credential.succeed("systemctl start manifold-transport.service")
+    credential.wait_until_succeeds("${inspectCommand}", timeout=180)
+    check_private_credential()
+    assert credential.succeed("systemctl show -p MainPID --value manifold-owner.service").strip() == credential_owner
+    credential.succeed(f"cmp -s {source} /var/lib/manifold/agent.token")
+    credential.succeed("${inspectCommand} result module-credential-restarted")
+
+    credential.shutdown()
+    anchors.start()
+    anchors.connect()
+
+    # Operator anchors: root-made read-only idmapped views of a 0700 home beneath protected /home.
+    anchors.wait_for_unit("manifold-owner.service", timeout=180)
+    anchors.wait_for_unit("manifold-transport.service", timeout=180)
+    anchors.wait_until_succeeds("${inspectCommand}", timeout=180)
+    # The service account still cannot reach the source, nor traverse the home above it.
+    denied = anchors.fail("runuser -u manifold -- stat /home/alice/sessions 2>&1")
+    assert "Permission denied" in denied, denied
+    options = anchors.succeed("findmnt -n -o VFS-OPTIONS --mountpoint /run/manifold-anchors/fixture").strip().split(",")
+    for option in ["ro", "nosuid", "nodev", "noexec", "nosymfollow", "idmapped"]:
+        assert option in options, options
+    # Through the view the operator's private files read as manifold's, and stay unwritable.
+    anchors.succeed("runuser -u manifold -- test -r /run/manifold-anchors/fixture/private.jsonl")
+    anchors.succeed("runuser -u manifold -- test -r /run/manifold-anchors/fixture/private-directory/inner.jsonl")
+    anchors.succeed("runuser -u manifold -- test ! -w /run/manifold-anchors/fixture/private.jsonl")
+    # An absent source, and one reached through a link, get no view; the owner only omits them.
+    anchors.succeed("test ! -e /run/manifold-anchors/absent && test ! -e /run/manifold-anchors/linked")
+    helper = anchors.succeed("journalctl -b -u manifold-operator-anchors.service --no-pager")
+    assert "Manifold operator anchor linked has no view: symbolic link at /home/alice/linked" in helper, helper
+    assert "Manifold operator anchor absent has no view: source /home/alice/absent is absent or not a directory" in helper, helper
+    assert "Manifold operator anchor fixture presents /home/alice/sessions read-only at /run/manifold-anchors/fixture" in helper, helper
+    anchors.succeed("systemctl is-failed --quiet manifold-operator-anchors.service")
+    owner_log = anchors.succeed("journalctl -b -u manifold-owner.service --no-pager")
+    for name in ["operator.absent", "operator.linked"]:
+        assert any(
+            '"evt":"operator_anchor_unavailable"' in line and name in line and "operator_anchor_absent" in line
+            for line in owner_log.splitlines()
+        ), owner_log
+    template = json.loads(anchors.succeed("cat /var/lib/manifold/owner-template.json"))
+    assert template["operatorAnchors"] == {
+        "operator." + name: {"path": "/run/manifold-anchors/" + name, "source": source, "readOnly": True}
+        for name, source in [
+            ("fixture", "/home/alice/sessions"),
+            ("absent", "/home/alice/absent"),
+            ("linked", "/home/alice/linked/sessions"),
+        ]
+    }, template
+    # Metadata, ACLs and access times of every source path, read without reading any content.
+    snapshot = "find /home/alice/sessions -exec stat -c '%n %a %u %g %s %i %X %Y %Z' {} + | sort && getfacl -R -p /home/alice/sessions"
+    anchors.succeed(snapshot)
+    before = anchors.succeed(snapshot)
+    anchors.succeed("${inspectCommand} anchors-install")
+    anchors.succeed("${inspectCommand} anchors-ready")
+    for job_id, path, content in [
+        ("anchors-private", "private.jsonl", "private-session"),
+        ("anchors-public", "public.jsonl", "public-session"),
+        ("anchors-inner", "private-directory/inner.jsonl", "inner-session"),
+    ]:
+        anchors.succeed(f"${inspectCommand} anchors-execute {job_id} {path}")
+        anchors.wait_until_succeeds(f"${inspectCommand} anchors-result {job_id} {content}", timeout=180)
+    # Reading and every refused write left the source exactly as it was.
+    assert anchors.succeed(snapshot) == before
+    # A private file created after boot is read by the next job with nothing re-applied.
+    anchors.succeed("runuser -u alice -- sh -c 'umask 077 && printf later-session > /home/alice/sessions/later.jsonl'")
+    assert anchors.succeed("stat -c '%a %U' /home/alice/sessions/later.jsonl").strip() == "600 alice"
+    anchors.succeed("${inspectCommand} anchors-execute anchors-later later.jsonl")
+    anchors.wait_until_succeeds("${inspectCommand} anchors-result anchors-later later-session", timeout=180)
+
+    anchors.shutdown()
   '';
 }
