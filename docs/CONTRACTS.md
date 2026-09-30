@@ -2514,11 +2514,19 @@ React, React DOM, the JSX runtimes, all three `@manifold/plugin` entries, `@mani
 identities; the kit rewrites shared imports at build time, without an import map or runtime
 dependency. The bundle's optional `builtAgainst` version map is recorded as
 `install.builtAgainst`. Every new pack stamps `manifold:protocol` with the wire version;
-shared builds also record React/package versions. Admission and boot compare the wire version
-exactly and React by major. Known incompatibility refuses fresh admission or holds an incumbent
-with `repack_required` before import/spawn, independent of a declared release feed. Missing
-legacy metadata is `unknown`, never falsely called compatible. `install.compatibility` exposes
-the component, built/current values and classification, and the manager names that difference.
+shared builds also record React/package versions. Admission and boot check that stamp against
+the explicit `PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS` set and compare React by major. The
+bundle set is independent of session, machine and instance negotiation: sessions still require
+the current wire version. Protocol 48 admits bundle stamps 47 and 48 because the shared plugin
+ABI is preserved, including the older hardened machine-inventory projection. A prior stamp
+may remain only with proof from unchanged released artifacts through candidate assembly and
+loading; an incompatible plugin ABI change resets the set. No numeric range, future version
+or deployment bypass is implied. Known incompatibility refuses fresh admission or holds an
+incumbent with `repack_required` before import/spawn, independent of a declared release feed.
+Missing legacy metadata is `unknown`, never falsely called compatible. The hardened contract,
+React-major, digest and ordinary authorization checks remain independent requirements.
+`install.compatibility` exposes the component, built/current values and classification, and
+the manager names that difference.
 
 **Ink ownership at load — S13's runtime twin (ADR 0025 §7, #258).** An installed or unpacked
 plugin's `styles.css` is admitted only if the leftmost compound of EVERY selector anchors on the

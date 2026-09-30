@@ -4289,9 +4289,11 @@ import (`zod` above) is inlined into your member, which is why your directory ne
 (`bun add zod` — a `pack` from a directory without it stops at `Could not resolve: "zod"`). The
 floor resolves from your directory first and from the checkout the kit runs in otherwise. The
 bundle records the version of each shared package and the protocol wire version it was built
-against (`builtAgainst`, copied to `install.builtAgainst` on your row). The hub compares the
-wire version exactly and the React major on every boot and admission; a known mismatch holds
-the row before code loads, and the manager names the built/current versions. Legacy missing
+against (`builtAgainst`, copied to `install.builtAgainst` on your row). On every boot and
+admission the hub checks the explicit `PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS` set (47 and 48
+on protocol 48) and the React major; session joins still require the exact current protocol.
+A known incompatibility holds the row before code loads, and the manager names the
+built/current versions. Hardened-contract and digest checks are not relaxed. Legacy missing
 metadata remains visibly unknown. Outside the shell and hub the registry does not exist, and
 the module throws `Missing shared module: <name>` on import: that is what a hardened runner
 sees when handed an in-realm bundle (§9 Packing).
