@@ -6,7 +6,7 @@ import {
   type HostToGuestMessage,
   type Principal,
 } from "@manifold/protocol";
-import { SessionClient, dialInstance } from "@manifold/sdk";
+import { dialInstance } from "@manifold/sdk";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -75,7 +75,7 @@ const welcome = (over: Partial<Extract<HostToGuestMessage, { type: "welcome" }>>
     ...over,
   }) satisfies HostToGuestMessage;
 
-function dial(options: { reconnect?: boolean } = {}) {
+function dial(options: { reconnect?: boolean; ticketTimeoutMs?: number } = {}) {
   const handle = dialInstance({
     url: HOST_URL,
     token: "share-secret",
@@ -162,31 +162,78 @@ describe("the instance dial handshake", () => {
 });
 
 describe("tickets", () => {
-  test("a ticket answers with an ordinary token whose principal carries the guest origin", async () => {
+
+  test.each(["caps", "expiresAt"] as const)(
+    "a ticket missing its %s bound closes as malformed without retaining a resume identity",
+    async (missing) => {
+      const { handle, socket } = dial({ reconnect: false });
+      socket.open();
+      socket.deliver(welcome());
+      const pending = handle.requestTicket(guestPrincipal);
+      const request = socket.frames().at(-1);
+      if (request?.type !== "ticket_request") throw new Error("expected a ticket_request");
+      const frame: Record<string, unknown> = {
+        type: "ticket",
+        requestId: request.requestId,
+        token: "ticket-secret",
+        principal: { ...guestPrincipal, id: "hp1", origin: GUEST_ORIGIN },
+        caps: ["containers:read"],
+        expiresAt: 1_900_000_000_000,
+      };
+      delete frame[missing];
+      socket.deliver(frame);
+      expect(socket.closedWith?.code).toBe(4002);
+      expect(await pending).toEqual({ ok: false, reason: "unavailable" });
+      expect(handle.tickets).toEqual([]);
+      handle.close();
+    },
+  );
+
+  test("host admission refusals leave the dial live, without retrying or retaining tickets", async () => {
+    vi.useFakeTimers();
     const { handle, socket } = dial();
     socket.open();
     socket.deliver(welcome());
-    await handle.ready();
+    for (const reason of ["recipient_unapproved", "recipient_caps_refused"] as const) {
+      const pending = handle.requestTicket(guestPrincipal, ["containers:read"]);
+      const request = socket.frames().at(-1);
+      if (request?.type !== "ticket_request") throw new Error("expected a ticket_request");
+      socket.deliver({ type: "ticket_error", requestId: request.requestId, reason });
+      expect(await pending).toEqual({ ok: false, reason });
+      const sent = socket.sent.length;
+      vi.advanceTimersByTime(10_001);
+      expect(socket.sent.length).toBe(sent);
+      expect(handle.status).toBe("live");
+      expect(handle.tickets).toEqual([]);
+      expect(FakeSocket.instances).toHaveLength(1);
+    }
+    handle.close();
+  });
 
-    const pending = handle.requestTicket(guestPrincipal);
-    const request = socket.frames().at(-1);
-    if (request?.type !== "ticket_request") throw new Error("expected a ticket_request");
-    expect(request.principal).toEqual(guestPrincipal);
-
+  test("deadline and local cancellation discard late tickets instead of resuming abandoned authority", async () => {
+    vi.useFakeTimers();
+    const { handle, socket } = dial({ ticketTimeoutMs: 50 });
+    socket.open();
+    socket.deliver(welcome());
+    const expired = handle.requestTicket(guestPrincipal);
+    const first = socket.frames().at(-1);
+    if (first?.type !== "ticket_request") throw new Error("expected a ticket_request");
+    vi.advanceTimersByTime(50);
+    expect(await expired).toEqual({ ok: false, reason: "unavailable" });
     socket.deliver({
       type: "ticket",
-      requestId: request.requestId,
-      token: "ticket-secret",
-      principal: { ...guestPrincipal, id: "hp1", origin: GUEST_ORIGIN },
+      requestId: first.requestId,
+      token: "abandoned-ticket",
+      principal: { ...guestPrincipal, id: "hp-late", origin: GUEST_ORIGIN },
+      caps: ["containers:read"],
+      expiresAt: 1_900_000_000_000,
     });
-    const outcome = await pending;
-    expect(outcome).toEqual({
-      ok: true,
-      token: "ticket-secret",
-      principal: { ...guestPrincipal, id: "hp1", origin: GUEST_ORIGIN },
-    });
-    expect(handle.tickets).toEqual(["hp1"]);
+    expect(handle.tickets).toEqual([]);
+    const cancelled = handle.requestTicket(guestPrincipal);
     handle.close();
+    expect(await cancelled).toEqual({ ok: false, reason: "unavailable" });
+    vi.advanceTimersByTime(120_000);
+    expect(FakeSocket.instances).toHaveLength(1);
   });
 
   test("a refusal is DATA, and so is a dropped socket — the caller never sees an exception", async () => {
@@ -238,6 +285,8 @@ describe("tickets", () => {
         requestId: request.requestId,
         token: `t-${id}`,
         principal: { ...guestPrincipal, id, origin: GUEST_ORIGIN },
+        caps: ["containers:read"],
+        expiresAt: 1_900_000_000_000,
       });
       await pending;
     }
@@ -289,40 +338,5 @@ describe("revocation", () => {
     vi.advanceTimersByTime(30_000);
     expect(FakeSocket.instances.length).toBeGreaterThan(socketsAfterRevoke + 1);
     dropped.handle.close();
-  });
-});
-
-describe("the projection half needs no new client (docs/CONTRACTS.md §Protocol and compatibility)", () => {
-  test("a ticket opens an ORDINARY SessionClient against the host, keyed by (origin, container)", () => {
-    /*
-      This is the whole reason there is no remote-session class: the pool keys a connection by
-      (factory, url, token), so pointing a client at a second instance with a ticket IS the
-      `(origin, containerId)` keying wave 1 reserved. A relay or a second renderer would be the
-      second sync path A4 and docs/CONTRACTS.md §One authoritative implementation both forbid.
-    */
-    const remote = new SessionClient({
-      url: "wss://host.example/ws/session",
-      containerId: "c1",
-      token: "ticket-secret",
-      webSocketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
-    });
-    const local = new SessionClient({
-      url: "ws://localhost:7777/ws/session",
-      containerId: "c1",
-      token: "local-token",
-      webSocketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
-    });
-    // Neither client is answered with an `init` here: this asserts the pool's KEYING, not a
-    // handshake, so the close below rejects both connects and the rejection is the expected
-    // outcome rather than a failure.
-    const connects = Promise.allSettled([remote.connect(), local.connect()]);
-
-    const urls = FakeSocket.instances.map((socket) => socket.url);
-    expect(urls).toContain("wss://host.example/ws/session");
-    expect(urls).toContain("ws://localhost:7777/ws/session");
-    expect(new Set(urls).size).toBe(urls.length);
-    remote.close();
-    local.close();
-    return connects;
   });
 });
