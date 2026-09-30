@@ -25,6 +25,12 @@ let
   shellProfile = pkgs.writeShellScriptBin "user-profile-only" ''
     printf 'user-profile:%s\n' "$USER"
   '';
+  # Runtime-tool custody opens the declared file without following links. Preserve that
+  # boundary even though the Nix package's public python3 entry is a versioned symlink.
+  nativePython = pkgs.runCommand "manifold-shell-native-python" { } ''
+    mkdir -p "$out/bin"
+    cp --dereference ${pkgs.python3}/bin/python3 "$out/bin/python3"
+  '';
   wrapperSource = pkgs.writeText "shell-authority-probe.c" ''
     #include <stdio.h>
     #include <unistd.h>
@@ -97,6 +103,10 @@ let
     require(machine?.online && machine.terminalExecution === "unconfined", "ordinary account not admitted");
     if (mode === "ready") {
       console.log(JSON.stringify({ machineId: machine.id }));
+    } else if (mode === "governed-ready") {
+      const governed = machines.find((entry) => entry.terminalExecution === "governed");
+      require(governed?.online, "native owner not admitted alongside ordinary account");
+      console.log(JSON.stringify({ machineId: governed.id }));
     } else if (mode === "governed-refusal") {
       const governed = machines.find((entry) => entry.terminalExecution === "governed");
       require(governed?.online, "native owner not admitted alongside ordinary account");
@@ -1110,7 +1120,7 @@ in
       imports = [ common shellAccount ];
       services.manifold.execution = {
         runtimeTools.python = [{
-          source = "${pkgs.python3}/bin/python3";
+          source = "${nativePython}/bin/python3";
           target = "/usr/bin/python3";
           kind = "file";
         }];
@@ -1193,6 +1203,9 @@ in
             # The other account retains no token traversal or Unix connect permission,
             # even outside the workload namespace. Do not lend it extra NSS membership.
             node.succeed("runuser -u manifold -- " + fixture_command + "host-custody")
+            # A Type=simple unit is active before its retained owner and transport admit.
+            # Wait on read-only inventory, then perform the refusal assertion exactly once.
+            node.wait_until_succeeds(client_command + " governed-ready", timeout=180)
             node.succeed(client_command + " governed-refusal")
             node.succeed(fixture_command + "custody-start")
             node.wait_until_succeeds(fixture_command + "custody-result", timeout=180)
