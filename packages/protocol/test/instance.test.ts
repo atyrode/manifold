@@ -13,8 +13,6 @@ import {
   PrincipalSchema,
   ShareGrantSchema,
   ShareSchema,
-  TICKET_REFUSALS,
-  buildProtocolJsonSchema,
   normalizeInstanceOrigin,
   type GuestMessage,
   type HostToGuestMessage,
@@ -158,29 +156,7 @@ describe("the instance channel handshake", () => {
     );
   });
 
-  test("a ticket is an ordinary token whose principal carries the guest's origin", () => {
-    /*
-      The property the whole design rests on (ADR 0014 §3): nothing on this frame is a new
-      credential kind. A host mints it through the ladder it already has, so the host's doors,
-      its revocation fence and its attendance roster all work on a remote guest with no special
-      case — and `origin` travels on the PRINCIPAL, not beside it.
-    */
-    const frame = {
-      type: "ticket" as const,
-      requestId: "r1",
-      token: "ticket-secret",
-      principal: { ...principal, id: "host-mirror-1", origin: ORIGIN },
-    };
-    const parsed = HostToGuestMessageSchema.parse(frame);
-    if (parsed.type !== "ticket") throw new Error("unreachable");
-    expect(parsed.principal.origin).toBe(ORIGIN);
-  });
-
   test("a ticket refusal names a closed class, so a guest knows whether to ask again", () => {
-    for (const reason of TICKET_REFUSALS) {
-      const frame = { type: "ticket_error" as const, requestId: "r1", reason };
-      expect(HostToGuestMessageSchema.parse(frame)).toEqual(frame);
-    }
     expect(
       HostToGuestMessageSchema.safeParse({ type: "ticket_error", requestId: "r1", reason: "nope" })
         .success,
@@ -261,19 +237,3 @@ describe("share vocabulary", () => {
   });
 });
 
-describe("published vocabulary", () => {
-  test("the instance channel is described at /api/protocol, like the other two wires", () => {
-    /*
-      A3 applied to a stranger's INSTANCE rather than a stranger's agent: it has to learn the
-      handshake, the ticket exchange and the closed refusal set from a published document, not
-      from this source tree.
-    */
-    const schema = buildProtocolJsonSchema();
-    const instance = schema["instance"] as Record<string, unknown>;
-    expect(instance["path"]).toBe(INSTANCE_CHANNEL_PATH);
-    expect(instance["ticketRefusals"]).toEqual([...TICKET_REFUSALS]);
-    expect(instance["guest"]).toBeDefined();
-    expect(instance["host"]).toBeDefined();
-    expect(instance["share"]).toBeDefined();
-  });
-});

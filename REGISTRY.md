@@ -319,11 +319,11 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     },
     {
       "glob": "packages/server/src/instance-ws.ts",
-      "why": "instance transport, host half: share authentication, origin binding, version negotiation, liveness, the ticket hop"
+      "why": "instance transport, host half: share authentication, immutable origin binding, host-approved per-recipient ticket bounds and finite expiry, version negotiation and liveness"
     },
     {
       "glob": "packages/server/src/instance-dialer.ts",
-      "why": "instance transport, guest half: the dial rows this instance holds, their outbound sockets, and the door that turns one into a per-principal ticket"
+      "why": "instance transport, guest half: retained outbound dial rows, local admission without remote consent, and the door that returns a host-approved per-principal ticket with actual bounds and expiry"
     },
     {
       "glob": "packages/server/src/terminal-broker.ts",
@@ -1367,6 +1367,12 @@ applied to vocabulary: one door onto "what do we call this kind".
       "allow": []
     },
     {
+      "term": "share recipient",
+      "means": "the host's approval relationship for one share's immutable guest origin and one guest-local principal: proposed remote caps, an explicitly approved subset and durable approval/removal provenance, never a bearer",
+      "banned": [],
+      "allow": []
+    },
+    {
       "term": "dial",
       "means": "a long-lived outbound pipe from a process to an instance, and the guest-side row for one accepted share: the machine channel and the instance channel are both dials",
       "banned": [],
@@ -1386,7 +1392,7 @@ applied to vocabulary: one door onto "what do we call this kind".
     },
     {
       "term": "ticket",
-      "means": "the per-principal token a host mints under a share, carrying the guest's origin: an ordinary attenuated token, never a second credential kind",
+      "means": "the finite per-principal token a host mints under an active share recipient approval, carrying the guest's origin and actual approved remote subset: an ordinary attenuated token, never a second credential kind",
       "banned": [],
       "allow": []
     },

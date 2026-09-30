@@ -1,12 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import type {
-  Dial,
-  DialTicket,
   Grant,
   Principal,
   PrincipalCredentials,
-  Share,
-  ShareGrant,
   TokenGrant,
 } from "@manifold/protocol";
 import { accessHandlers } from "../src/server.ts";
@@ -33,15 +29,9 @@ interface Call {
     | "mint"
     | "revoke"
     | "listCredentials"
-    | "mintShare"
-    | "revokeShare"
-    | "listShares"
     | "grant"
     | "revokeGrant"
-    | "listGrants"
-    | "dial"
-    | "open"
-    | "listDials";
+    | "listGrants";
   readonly payload: unknown;
 }
 
@@ -76,32 +66,6 @@ const credentials: PrincipalCredentials = {
   ],
 };
 
-const share: Share = {
-  id: "share-1",
-  ref: { kind: "container", containerId: "container-7" },
-  caps: ["containers:read"],
-  origin: "https://guest.example",
-  createdAt: 1_700_000_000_000,
-  createdBy: "p-0",
-  revokedAt: null,
-  tickets: 1,
-};
-const shareGrant: ShareGrant = { share, token: "raw-share-secret" };
-const dial: Dial = {
-  id: "dial-1",
-  origin: "https://host.example",
-  ref: { kind: "container", containerId: "remote-3" },
-  caps: ["containers:read"],
-  title: "Their canvas",
-  status: "live",
-  dialedAt: 1_700_000_000_000,
-};
-const ticket: DialTicket = {
-  origin: "https://host.example",
-  ref: { kind: "container", containerId: "remote-3" },
-  caps: ["containers:read"],
-  token: "ticket-secret",
-};
 
 /**
  * One authority row, as the mechanism hands it back. Named for what it IS rather than `grant`,
@@ -125,12 +89,6 @@ function recorder(options: {
   mint?: Answer<TokenGrant>;
   revoke?: Answer<number>;
   listCredentials?: Answer<readonly PrincipalCredentials[]>;
-  mintShare?: Answer<ShareGrant>;
-  revokeShare?: Answer<number>;
-  listShares?: Answer<readonly Share[]>;
-  dial?: Answer<Dial>;
-  open?: Answer<DialTicket>;
-  listDials?: Answer<readonly Dial[]>;
   grant?: Answer<Grant>;
   revokeGrant?: Answer<number>;
   listGrants?: Answer<readonly Grant[]>;
@@ -139,7 +97,7 @@ function recorder(options: {
   const answer = <T>(given: Answer<T> | undefined, fallback: T): Answer<T> =>
     given ?? { ok: true, value: fallback };
   const unused = (): never => {
-    throw new Error("unused Agent lifecycle fixture");
+    throw new Error("unused access fixture");
   };
   return {
     calls,
@@ -185,18 +143,12 @@ function recorder(options: {
           calls.push({ kind: "listCredentials", payload: null });
           return answer(options.listCredentials, [credentials]);
         },
-        mintShare: (input) => {
-          calls.push({ kind: "mintShare", payload: input });
-          return answer(options.mintShare, shareGrant);
-        },
-        revokeShare: (shareId) => {
-          calls.push({ kind: "revokeShare", payload: shareId });
-          return answer(options.revokeShare, 0);
-        },
-        listShares: () => {
-          calls.push({ kind: "listShares", payload: null });
-          return answer(options.listShares, [share]);
-        },
+        mintShare: unused,
+        revokeShare: unused,
+        listShares: unused,
+        listShareRecipients: unused,
+        approveShareRecipient: unused,
+        removeShareRecipient: unused,
         grant: (input) => {
           calls.push({ kind: "grant", payload: input });
           return answer(options.grant, authorityRow);
@@ -211,18 +163,9 @@ function recorder(options: {
         },
       },
       dials: {
-        dial: async (input) => {
-          calls.push({ kind: "dial", payload: input });
-          return answer(options.dial, dial);
-        },
-        open: async (dialId) => {
-          calls.push({ kind: "open", payload: dialId });
-          return answer(options.open, ticket);
-        },
-        list: () => {
-          calls.push({ kind: "listDials", payload: null });
-          return answer(options.listDials, [dial]);
-        },
+        dial: unused,
+        open: unused,
+        list: unused,
       },
     },
   };
@@ -340,137 +283,6 @@ describe("core.access handlers", () => {
   });
 });
 
-describe("core.access share doors (ADR 0014)", () => {
-  const mintArgs = {
-    node: { kind: "container" as const, containerId: "container-7" },
-    caps: ["containers:read" as const],
-    origin: "https://guest.example",
-  };
-
-  test("only a container can be shared, and that rung is the DOOR's own", async () => {
-    /*
-      The one rule these handlers own rather than relay. A share is a token bound to a node,
-      and the grant a token expresses today is a CONTAINER scope — so a share naming a terminal
-      or an element would be a grant the mechanism beneath cannot express, and answering
-      "minted" would misdescribe what was granted. The refusal happens before the mechanism is
-      touched, because there is nothing for it to decide.
-    */
-    const host = recorder({});
-
-    for (const node of [
-      { kind: "terminal" as const, terminalId: "t1" },
-      { kind: "element" as const, containerId: "c1", elementId: "e1" },
-      { kind: "principal" as const, principalId: "p1" },
-    ]) {
-      expect(refusal(await accessHandlers.mintShare(host.ctx, { ...mintArgs, node }))).toBe(
-        "only a container can be shared",
-      );
-    }
-    expect(host.calls).toEqual([]);
-  });
-
-  test("a share grant is relayed whole: the raw secret reaches its caller exactly once", async () => {
-    const host = recorder({});
-
-    const minted = await accessHandlers.mintShare(host.ctx, mintArgs);
-
-    // Identity, not a copy, for `mint`'s reason: a door that rebuilt the grant could drop the
-    // only copy of a secret the host now keeps as a hash.
-    expect(minted).toBe(shareGrant);
-    expect(host.calls).toEqual([{ kind: "mintShare", payload: mintArgs }]);
-  });
-
-  test("the attenuation refusal is the mechanism's, verbatim", async () => {
-    /*
-      A share runs `mint`'s ladder, so it refuses in `mint`'s words. This is the assertion that
-      the door did not grow a second attenuation rule of its own (docs/CONTRACTS.md §One authoritative implementation): the handler
-      has no vocabulary for "too wide" and must be unable to invent one.
-    */
-    const host = recorder({
-      mintShare: { ok: false, code: "forbidden", message: "cannot mint capability scenes:write" },
-    });
-
-    expect(
-      refusal(await accessHandlers.mintShare(host.ctx, { ...mintArgs, caps: ["scenes:write"] })),
-    ).toBe("cannot mint capability scenes:write");
-  });
-
-  test("revoking a share counts severed tickets, and zero is a success", async () => {
-    const nothing = recorder({ revokeShare: { ok: true, value: 0 } });
-    const two = recorder({ revokeShare: { ok: true, value: 2 } });
-
-    // A share nobody has walked through is exactly the one an owner revokes on a hunch; the
-    // pipe is cut either way, and "0" must not read as "refused".
-    expect(await accessHandlers.revokeShare(nothing.ctx, { shareId: "share-1" })).toEqual({
-      revoked: 0,
-    });
-    expect(await accessHandlers.revokeShare(two.ctx, { shareId: "share-1" })).toEqual({
-      revoked: 2,
-    });
-  });
-
-  test("one list door answers both directions, and neither half carries a secret", async () => {
-    const host = recorder({});
-
-    const inventory = await accessHandlers.listShares(host.ctx);
-
-    expect(inventory).toEqual({ shares: [share], dials: [dial] });
-    // The secrets discipline is structural: a `Share` has no field a secret fits in, and the
-    // guest's raw share token lives in the store rather than in a `Dial`. Asserted on the
-    // serialized answer because that is what a caller actually receives.
-    expect(JSON.stringify(inventory)).not.toContain(shareGrant.token);
-    expect(JSON.stringify(inventory)).not.toContain(ticket.token);
-    expect(host.calls.map((call) => call.kind)).toEqual(["listShares", "listDials"]);
-  });
-
-  test("a half-failed inventory refuses whole rather than answering half true", async () => {
-    /*
-      "Here are your dials, and something went wrong with your shares" is a shape no caller can
-      act on — and a partially-true answer about who holds authority over this workspace is
-      worse than no answer.
-    */
-    const host = recorder({
-      listShares: { ok: false, code: "forbidden", message: "root capability required" },
-    });
-
-    expect(refusal(await accessHandlers.listShares(host.ctx))).toBe("root capability required");
-    expect(host.calls.map((call) => call.kind)).toEqual(["listShares"]);
-  });
-
-  test("opening a dial answers an address and a per-principal ticket, never the share secret", async () => {
-    /*
-      The guest half of A4's three steps (ADR 0014 §3). What the caller gets back is a token the
-      HOST minted for this principal — which is what makes a remote viewer attributable and
-      revocable one principal at a time — plus the (origin, ref) pair its lens needs.
-    */
-    const host = recorder({});
-
-    const opened = await accessHandlers.openDial(host.ctx, { dialId: "dial-1" });
-
-    expect(opened).toBe(ticket);
-    expect(JSON.stringify(opened)).not.toContain(shareGrant.token);
-    expect(host.calls).toEqual([{ kind: "open", payload: "dial-1" }]);
-  });
-
-  test("accepting a dial relays the far side's refusal instead of writing a zombie row", async () => {
-    /*
-      The door BLOCKS on the host's welcome, so a bad token, a wrong origin, an already-revoked
-      share and an unreachable host all become one honest refusal. The alternative is a row
-      that is permanently "offline" for a reason nobody can read — a deferral only a log reader
-      can discover, which AXIOMS.md §Change control forbids.
-    */
-    const reachable = recorder({});
-    const silent = recorder({
-      dial: { ok: false, code: "conflict", message: "host did not answer" },
-    });
-    const request = { origin: "https://host.example", token: "share-secret" };
-
-    expect(await accessHandlers.dialShare(reachable.ctx, request)).toBe(dial);
-    expect(refusal(await accessHandlers.dialShare(silent.ctx, request))).toBe(
-      "host did not answer",
-    );
-  });
-});
 
 /**
  * THE GRANT DOORS (ADR 0011), on the same discipline and for a sharper reason than the rest.

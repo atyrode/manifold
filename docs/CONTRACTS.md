@@ -2264,8 +2264,11 @@ No new capability: a share hands authority out, so it declares the cap that alre
 | `core.access.mintShare`   | `tokens:mint`      | container | `{ node, caps, origin }` → `ShareGrant { share, token }` — raw ONCE     |
 | `core.access.revokeShare` | `tokens:mint`      | container | `{ shareId }` → `{ revoked: <tickets severed> }` — **`cleanup: true`**  |
 | `core.access.listShares`  | `tokens:mint`      | container | `{}` → `ShareInventory { shares, dials }` — both directions, no secrets |
+| `core.access.listShareRecipients` | `tokens:mint` | container | `{ shareId }` → `ShareRecipient[]` — pending and last approval, no secrets |
+| `core.access.approveShareRecipient` | `tokens:mint` | container | `{ shareId, guestPrincipalId, caps }` → `ShareRecipient` — host-approved subset |
+| `core.access.removeShareRecipient` | `tokens:mint` | container | `{ shareId, guestPrincipalId }` → `ShareRecipient` — **`cleanup: true`**, withdraw and fence tickets |
 | `core.access.dialShare`   | `containers:write` | workspace | `{ origin, token }` → `Dial`; BLOCKS on the host's welcome              |
-| `core.access.openDial`    | `containers:read`  | workspace | `{ dialId }` → `DialTicket { origin, ref, caps, token }`                |
+| `core.access.openDial`    | `containers:read`  | workspace | `{ dialId, caps? }` → `DialTicket { origin, ref, caps, token, expiresAt }` |
 
 `node` is a `manifold://` reference, never a bare container id ([Reference nodes](#reference-nodes)); a ref that is not
 a container is refused `only a container can be shared`, which is the one rung these handlers
@@ -2276,18 +2279,43 @@ for the host to say what the share names (ten seconds, then `conflict` `host did
 because a `Dial` that named nothing yet would be indistinguishable from a live share that
 happens to be offline; an unanswered attempt is deleted, not revoked.
 
-`openDial` is the guest's own authority question — may THIS principal use this dial — and its
-answer is a per-principal TICKET the host minted, never the share secret. Every admitted
-principal gets the share's full caps this wave; narrowing per remote principal is a grant
-question (ADR 0011). Three lifecycle events (`dial_online`, `dial_offline`, `dial_revoked`) are
+`openDial`'s local `containers:read` check admits the guest door; it is neither host consent nor
+an intersection between local and remote capability names. The **host** approves each
+**share recipient**: the immutable share origin and that guest's local principal id, with a
+selected remote subset. A valid request without active approval records its proposed caps and
+refuses `recipient_unapproved`, without a credential or projection. The host may approve only
+a subset of the proposal and immutable share ceiling, through its share-owner/root visibility,
+container scope and the existing mint attenuation ladder. Another guest principal, origin or
+share cannot inherit that approval.
+
+With active approval, omitted `caps` requests exactly the host-approved subset. An explicit
+request must fit both that subset and the share ceiling or it refuses `recipient_caps_refused`;
+no silent widening or ambient full-share fallback. Successful answers carry actual granted
+caps and a finite ordinary human/automated credential expiry, not the advertised dial ceiling.
+The foreign id remains in the guest namespace; the host uses a distinct stable local principal.
+Approval records expose proposed caps, last approved caps/time/actor and removal time, never
+bearers or hashes. Narrowing and removal durably change approval, retire affected ordinary
+ticket credentials and grant rows, invalidate authority and fence existing sockets; unrelated
+relationships remain live. Removal preserves approval provenance without a permanent principal
+tombstone, so only a new explicit approval can readmit that recipient.
+Ordinary minting, Run/session credential issuance and derived shares retain the exact source
+recipient relationship; approval withdrawal or narrowing cannot be escaped by deriving another
+credential or share. Raw grant administration remains root-only at every bound context ingress.
+
+Retained pre-recipient share tickets fail closed before admission: the schema cutover creates
+no approvals and fences old ticket credentials/grants while preserving unrelated identities,
+share origins/ceilings and data. Old instance protocol peers cannot resume around that policy.
+The session/instance revision and persistence schema are independent of native and hardened
+renderer contracts; unreleased held branches do not reserve their candidate version numbers.
+Three lifecycle events (`dial_online`, `dial_offline`, `dial_revoked`) are
 declared by this plugin and emitted by the floor on `manifold://plugin/core.access`, which is
 `machine_online`'s split: a socket coming up is nobody's commit point.
 
 A share's caps become a GRANT ROW on the shared node at mint (ADR 0011 §Tokens become grant
 references): `{ principal: { kind: "instance", origin }, node: "manifold://container/<id>",
 caps, effect: "allow", reach: "subtree" }`, referenced by `ShareRecord.grant_id`. Ticket
-attenuation is then grant subsetting by construction — a ticket is an ordinary token minted with
-the share's caps at the share's node, so it can never exceed the row its share stands on.
+attenuation is then grant subsetting by construction — each ordinary ticket carries an explicit
+host-approved subset of the share's caps at that node and can never exceed either authority.
 `revokeShare` DELETES that row in the same transaction that marks the share revoked (and nulls
 `grant_id`; the share stays listable and auditable), so a revoked share confers nothing even
 before its tickets are severed. A grant presents no credential, so absence of the row IS its

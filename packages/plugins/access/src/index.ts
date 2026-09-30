@@ -4,6 +4,7 @@ import {
   AcknowledgeAgentPolicyResultSchema,
   AgentPolicyChallengeSchema,
   AgentRequestSchema,
+  ApproveShareRecipientRequestSchema,
   BootstrapPrincipalRequestSchema,
   CreateGrantRequestSchema,
   CreateChildRunRequestSchema,
@@ -30,6 +31,7 @@ import {
   ListRunsRequestSchema,
   ListRunsResultSchema,
   ListGrantsRequestSchema,
+  ListShareRecipientsRequestSchema,
   MintShareRequestSchema,
   MintTokenRequestSchema,
   OpenDialRequestSchema,
@@ -47,11 +49,13 @@ import {
   RenewAgentRunRequestSchema,
   RenewAgentRunResultSchema,
   RevokeResultSchema,
+  RemoveShareRecipientRequestSchema,
   RevokeShareRequestSchema,
   SendRunInputRequestSchema,
   SendRunInputResultSchema,
   ShareGrantSchema,
   ShareInventorySchema,
+  ShareRecipientSchema,
   TokenGrantSchema,
   UpdateAgentRequestSchema,
   type PluginManifest,
@@ -490,13 +494,13 @@ export const accessActions = [
   }),
 
   /*
-    THE SHARE DOORS (ADR 0014). Five verbs, one job each, and no new capability: a share is a
+    THE SHARE DOORS. Eight verbs, one job each, and no new capability: a share is a
     token bound to a node, so `tokens:mint` — the cap that already means "may hand authority
-    out" — is what the host-side three declare, and the ladder they run is `mint`'s ladder
+    out" — is what the host doors declare, and the ladder they run is `mint`'s ladder
     unchanged (caps ⊆ the minter's at that node, `*` root-only, no widening of container
     scope). Inventing `share:manage` would have been a second answer to "who may delegate".
 
-    The three host doors are `scope: "container"` for the same preservation `mint` records
+    The host doors are `scope: "container"` for the same preservation `mint` records
     above: a container-scoped agent may share the container it is confined to, and the
     mechanism confines the answer on the real caller.
 
@@ -556,6 +560,31 @@ export const accessActions = [
     result: ShareInventorySchema,
   }),
   defineAction({
+    name: "listShareRecipients",
+    title: "Inspect a share's guest recipient approvals",
+    caps: ["tokens:mint"],
+    scope: "container",
+    input: ListShareRecipientsRequestSchema,
+    result: z.array(ShareRecipientSchema),
+  }),
+  defineAction({
+    name: "approveShareRecipient",
+    title: "Approve a guest recipient's remote capability subset",
+    caps: ["tokens:mint"],
+    scope: "container",
+    input: ApproveShareRecipientRequestSchema,
+    result: ShareRecipientSchema,
+  }),
+  defineAction({
+    cleanup: true,
+    name: "removeShareRecipient",
+    title: "Withdraw a guest recipient and fence its tickets",
+    caps: ["tokens:mint"],
+    scope: "container",
+    input: RemoveShareRecipientRequestSchema,
+    result: ShareRecipientSchema,
+  }),
+  defineAction({
     name: "dialShare",
     title: "Accept a share from another instance",
     caps: ["containers:write"],
@@ -578,11 +607,10 @@ export const accessActions = [
     scope: "workspace",
     input: OpenDialRequestSchema,
     /*
-      The first of A4's three steps, answered by the guest's OWN instance (ADR 0014 §3): may
-      THIS principal use this dial. The answer is an address and a per-principal ticket — never
-      the share secret, which stays with this instance the way a machine token stays with the
-      agent daemon. Every admitted principal gets the share's full caps this wave; narrowing
-      per remote principal is a grant question, and grants are ADR 0011.
+      Local `containers:read` admits the guest door, not remote authority. The host must
+      separately approve this guest-origin/principal and remote subset. The answer carries
+      actual approved ticket bounds and expiry, never the immutable share secret or an
+      ambient copy of the share ceiling.
     */
     result: DialTicketSchema,
   }),
