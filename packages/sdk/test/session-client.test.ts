@@ -1603,6 +1603,96 @@ describe("terminal attach refcounting", () => {
     }
   });
 
+  test("closing-window viewport frames never replay across fresh init, including pending births", () => {
+    vi.useFakeTimers();
+    const { client, socket: first } = dialing({ reconnect: true, backoffCapMs: 0 });
+    const init: InitFrame = {
+      ...INIT_WITH_TERMINAL,
+      doc: encodedCompositionDoc({ kind: "terminal", terminalId: "pending-birth" }),
+    };
+    try {
+      first.open();
+      first.receive(init);
+      expect(client.layout()?.[ROOT_TILE_ID]?.ref).toEqual({
+        kind: "terminal",
+        terminalId: "pending-birth",
+      });
+      expect(client.terminals.has("pending-birth")).toBe(false);
+      client.attachTerminal("s1");
+      client.resizeTerminal("s1", 80, 24, "withdrawn-on-close");
+      const liveViewport = {
+        type: "terminal_resize",
+        ch: channelOf(client),
+        terminalId: "s1",
+        viewportId: "withdrawn-on-close",
+        viewport: { cols: 80, rows: 24 },
+      };
+      expect(framesOfType(first, "terminal_resize")).toEqual([liveViewport]);
+
+      // WebSocket.close() enters CLOSING before onclose updates the cached client status.
+      first.readyState = 2;
+      expect(client.status).toBe("open");
+      client.resizeTerminal("s1", 90, 25, "hidden-on-reconnect");
+      client.releaseTerminalViewport("s1", "withdrawn-on-close");
+      // A placed tile has no TerminalInfo until its first writable measurement starts birth.
+      client.resizeTerminal("pending-birth", 60, 18, "unmounted-before-birth");
+      client.transact((tx) => tx.create(element("survives-reconnect")));
+      first.close(1006, "network");
+      expect(client.status).toBe("reconnecting");
+      client.releaseTerminalViewport("s1", "hidden-on-reconnect");
+      client.releaseTerminalViewport("pending-birth", "unmounted-before-birth");
+      const queuedWhileOffline = client.outboxSize();
+      expect(framesOfType(first, "terminal_resize")).toEqual([liveViewport]);
+
+      vi.advanceTimersByTime(5_000);
+      const second = FakeSocket.instances.at(-1);
+      if (second === undefined || second === first) throw new Error("no reconnect socket");
+      second.open();
+      second.receive({ ...init, selfConnId: "conn-reconnected" });
+
+      // Neither obsolete geometry nor a closing-window withdrawal may cross the new channel.
+      expect(framesOfType(second, "terminal_resize")).toEqual([]);
+      expect(queuedWhileOffline).toBe(1);
+      expect(framesOfType(second, "terminal_attach")).toEqual([
+        { type: "terminal_attach", ch: channelOf(client), terminalId: "s1" },
+      ]);
+      const replica = createSceneDoc();
+      for (const update of docUpdateFrames(second)) {
+        Y.applyUpdate(replica, decodeUpdate(update.update));
+      }
+      expect(readElements(replica).get("survives-reconnect")).toEqual(
+        element("survives-reconnect"),
+      );
+      replica.destroy();
+
+      // Only a new live measurement is sent, including the public virtual sdk viewport.
+      client.resizeTerminal("s1", 110, 32);
+      client.releaseTerminalViewport("s1");
+      expect(framesOfType(second, "terminal_resize")).toEqual([
+        {
+          type: "terminal_resize",
+          ch: channelOf(client),
+          terminalId: "s1",
+          viewportId: "sdk",
+          viewport: { cols: 110, rows: 32 },
+        },
+        {
+          type: "terminal_resize",
+          ch: channelOf(client),
+          terminalId: "s1",
+          viewportId: "sdk",
+          viewport: null,
+        },
+      ]);
+      client.detachTerminal("s1");
+      expect(framesOfType(second, "terminal_detach")).toEqual([
+        { type: "terminal_detach", ch: channelOf(client), terminalId: "s1" },
+      ]);
+    } finally {
+      client.close();
+    }
+  });
+
   test("departure retires visible sizing before observers repaint the former home", () => {
     const { client, socket } = connected();
     socket.receive(INIT_WITH_TERMINAL);
