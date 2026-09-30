@@ -902,9 +902,9 @@ export class SessionClient {
       channel.send(msg);
       return;
     }
-    // High-rate ephemera is never worth replaying: a stale cursor or gesture is noise.
+    // Connection-scoped ephemera must never replay: active views republish current intent.
     // Liveness is not here at all — the pooled connection owns the socket's ping.
-    if (msg.type === "cursor" || msg.type === "gesture") return;
+    if (msg.type === "cursor" || msg.type === "gesture" || msg.type === "terminal_resize") return;
     if (this.outbox.length >= OUTBOX_LIMIT) this.outbox.shift();
     this.outbox.push(msg);
   }
