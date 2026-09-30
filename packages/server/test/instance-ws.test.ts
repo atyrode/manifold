@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { MAX_SESSION_FRAME_BYTES, PROTOCOL_VERSION, type Container } from "@manifold/protocol";
+import {
+  MAX_SESSION_FRAME_BYTES, PROTOCOL_VERSION, type Container, type HostToGuestMessage,
+} from "@manifold/protocol";
 import { AuthService } from "../src/auth.ts";
 import { InstanceGateway } from "../src/instance-ws.ts";
 import { silentLogger } from "../src/log.ts";
@@ -28,10 +30,7 @@ class StatusSocket implements RawSocket {
 }
 
 /** A gateway with one live share, and the guest hello that dials it. */
-function dial(
-  status: number,
-  protocolVersion = PROTOCOL_VERSION,
-): { socket: StatusSocket; open: () => void; close: () => void } {
+function dial(status: number, protocolVersion = PROTOCOL_VERSION) {
   const runtime = new FakeRuntime();
   const store = testStore();
   const auth = new AuthService(store, OWNER_KEY, runtime);
@@ -46,7 +45,7 @@ function dial(
   const share = auth.mintShare(
     {
       node: { kind: "container", containerId: container.id },
-      caps: ["containers:read"],
+      caps: ["containers:read", "scenes:write"],
       origin: GUEST_ORIGIN,
     },
     root,
@@ -62,6 +61,7 @@ function dial(
   const socket = new StatusSocket(status);
   return {
     socket,
+    gateway, auth, store, runtime, root, share, container,
     open: () => {
       gateway.open("connection", socket);
       gateway.message(
@@ -114,31 +114,112 @@ describe("instance channel send status", () => {
 });
 
 describe("instance protocol admission", () => {
-  test.each([27, 48, PROTOCOL_VERSION])(
-    "an unchanged instance wire at revision %s can authenticate its share",
-    (protocolVersion) => {
-      const dialed = dial(1, protocolVersion);
-      try {
-        dialed.open();
-        expect(dialed.socket.closed).toBeNull();
-        expect(JSON.parse(dialed.socket.sent[0]!).type).toBe("welcome");
-      } finally {
-        dialed.close();
-      }
-    },
-  );
+  test("the current instance revision can authenticate its share", () => {
+    const dialed = dial(1);
+    try {
+      dialed.open();
+      expect(dialed.socket.closed).toBeNull();
+      expect(JSON.parse(dialed.socket.sent[0]!).type).toBe("welcome");
+    } finally {
+      dialed.close();
+    }
+  });
 
-  test.each([26, 49, 50, PROTOCOL_VERSION + 1])(
-    "unsupported instance revision %s is refused before welcome",
+  test.each([26, 27, 48, 49, 50, 51, PROTOCOL_VERSION + 1])(
+    "pre-recipient and unsupported instance revision %s is refused before welcome",
     (protocolVersion) => {
       const dialed = dial(1, protocolVersion);
       try {
         dialed.open();
-        expect(dialed.socket.closed).toEqual({ code: 4409, reason: "protocol version mismatch" });
+        expect(dialed.socket.closed?.code).toBe(4409);
         expect(dialed.socket.sent).toEqual([]);
       } finally {
         dialed.close();
       }
     },
   );
+});
+
+const GUEST = { id: "local-guest", kind: "human" as const, name: "guest", color: "#3355cc" };
+
+function lastHostMessage(socket: StatusSocket): HostToGuestMessage {
+  return JSON.parse(socket.sent.at(-1)!);
+}
+
+describe("host peer recipient admission", () => {
+  test("pending and over-request refusals issue no bearer; tickets expose actual caps and expiry", () => {
+    const fix = dial(1);
+    try {
+      fix.open();
+      const request = (caps?: string[]) => fix.gateway.message("connection", JSON.stringify({
+        type: "ticket_request", requestId: "request", principal: GUEST,
+        ...(caps === undefined ? {} : { caps }),
+      }));
+      request();
+      expect(lastHostMessage(fix.socket)).toEqual({
+        type: "ticket_error", requestId: "request", reason: "recipient_unapproved",
+      });
+      expect(fix.store.shareTicketPrincipals(fix.share.share.id)).toEqual([]);
+      fix.auth.approveShareRecipient({
+        shareId: fix.share.share.id, guestPrincipalId: GUEST.id, caps: ["containers:read"],
+      }, fix.root);
+      request(["scenes:write"]);
+      expect(lastHostMessage(fix.socket)).toEqual({
+        type: "ticket_error", requestId: "request", reason: "recipient_caps_refused",
+      });
+      expect(fix.store.shareTicketPrincipals(fix.share.share.id)).toEqual([]);
+      request();
+      const ticket = lastHostMessage(fix.socket);
+      if (ticket.type !== "ticket") throw new Error("approved recipient was refused");
+      expect(ticket.caps).toEqual(["containers:read"]);
+      expect(ticket.expiresAt).toBeGreaterThan(fix.runtime.now());
+      const actor = fix.auth.authenticate(ticket.token);
+      expect(actor.expiresAt).toBe(ticket.expiresAt);
+      expect(fix.auth.allows(actor, "containers:read", fix.container.id)).toBe(true);
+      expect(fix.auth.allows(actor, "scenes:write", fix.container.id)).toBe(false);
+      fix.runtime.time = ticket.expiresAt;
+      expect(() => fix.auth.authenticate(ticket.token)).toThrow("expired");
+      expect(fix.auth.resumableShareTicketPrincipals(fix.share.share.id)).toEqual([]);
+    } finally {
+      fix.close();
+    }
+  });
+
+  test("resume drops withdrawn ticket principals and share revocation closes the control link", () => {
+    const fix = dial(1);
+    try {
+      fix.open();
+      const request = () => fix.gateway.message("connection", JSON.stringify({
+        type: "ticket_request", requestId: "request", principal: GUEST,
+      }));
+      request();
+      const input = { shareId: fix.share.share.id, guestPrincipalId: GUEST.id };
+      fix.auth.approveShareRecipient({ ...input, caps: ["containers:read"] }, fix.root);
+      request();
+      const issued = lastHostMessage(fix.socket);
+      if (issued.type !== "ticket") throw new Error("approved recipient was refused");
+      // Even another ordinary bearer of that same principal cannot authorize ticket resume.
+      const unrelated = fix.auth.mintToken({
+        principalId: issued.principal.id, caps: ["containers:read"],
+        containerId: fix.container.id,
+      }, fix.root);
+      fix.auth.removeShareRecipient(input, fix.root);
+      const resumed = new StatusSocket(1);
+      fix.gateway.open("resumed", resumed);
+      fix.gateway.message("resumed", JSON.stringify({
+        type: "hello", protocolVersion: PROTOCOL_VERSION, origin: GUEST_ORIGIN,
+        instanceVersion: "0.0.0", token: fix.share.token, tickets: [issued.principal.id],
+      }));
+      const welcome = lastHostMessage(resumed);
+      if (welcome.type !== "welcome") throw new Error("control resume was refused");
+      expect(welcome.tickets).toEqual([]);
+      expect(fix.auth.authenticate(unrelated.token).principal.id).toBe(issued.principal.id);
+      expect(() => fix.auth.authenticate(issued.token)).toThrow("revoked");
+      expect(fix.auth.revokeShare(input.shareId, fix.root)).toBe(0);
+      expect(resumed.closed?.code).toBe(4403);
+      expect(fix.gateway.isLive(input.shareId)).toBe(false);
+    } finally {
+      fix.close();
+    }
+  });
 });

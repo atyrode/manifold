@@ -44,6 +44,9 @@ import {
   CreateGrantRequestSchema,
   MANIFOLD_ROOT_URI,
   MintShareRequestSchema,
+  ApproveShareRecipientRequestSchema,
+  RemoveShareRecipientRequestSchema,
+  PrincipalSchema,
   MintTokenRequestSchema,
   canContain,
   containmentPath,
@@ -73,6 +76,9 @@ import {
   type GrantPrincipal,
   type ListGrantsRequest,
   type MintShareRequest,
+  type ApproveShareRecipientRequest,
+  type RemoveShareRecipientRequest,
+  type ShareRecipient,
   type MintTokenRequest,
   type Principal,
   type MachineRefusal,
@@ -1552,6 +1558,7 @@ export class AuthService {
     actorId: string | null,
     expiry: TokenExpiry,
     runGrant?: { readonly node: string; readonly reach: GrantReach; readonly expiresAt: number },
+    sourceTokenId?: string | null,
   ): { raw: string; record: TokenRecord } {
     const raw = randomSecret();
     const createdAt = this.runtime.now();
@@ -1594,6 +1601,9 @@ export class AuthService {
     return this.store.transaction(() => {
       if (grant !== null) this.store.createGrant(grant);
       this.store.createToken(record);
+      if (sourceTokenId !== undefined && sourceTokenId !== null) {
+        this.store.inheritShareRecipientCredential(record.id, sourceTokenId);
+      }
       this.store.addEvent(containerId, this.runtime.now(), actorId, "token_minted", {
         tokenId: record.id,
         subjectPrincipalId: principalId,
@@ -1682,14 +1692,17 @@ export class AuthService {
     };
   }
 
-  /** Mints only authority no broader than the minter's caps and optional container scope. */
-  mintToken(input: MintTokenRequest, minter: AuthContext): TokenGrant {
-    const parsed = MintTokenRequestSchema.parse(input);
-    if (!this.allows(minter, "tokens:mint")) {
-      throw new ServiceError("forbidden", "tokens:mint capability required");
-    }
+  /** The ordinary mint attenuation rule, shared by shares and their recipient approvals. */
+  private requireMintCapabilities(
+    caps: readonly Cap[],
+    minter: AuthContext,
+    containerScoped = false,
+  ): void {
     const root = this.delegatingRoot(minter);
-    for (const cap of parsed.caps) {
+    for (const cap of caps) {
+      if (cap === "*" && containerScoped) {
+        throw new ServiceError("forbidden", "wildcard authority cannot be container-scoped");
+      }
       if (cap === "*" && !root) {
         throw new ServiceError("forbidden", "only root may mint wildcard authority");
       }
@@ -1697,6 +1710,15 @@ export class AuthService {
         throw new ServiceError("forbidden", `cannot mint capability ${cap}`);
       }
     }
+  }
+
+  /** Mints only authority no broader than the minter's caps and optional container scope. */
+  mintToken(input: MintTokenRequest, minter: AuthContext): TokenGrant {
+    const parsed = MintTokenRequestSchema.parse(input);
+    if (!this.allows(minter, "tokens:mint")) {
+      throw new ServiceError("forbidden", "tokens:mint capability required");
+    }
+    this.requireMintCapabilities(parsed.caps, minter);
     if (
       minter.containerScope !== null &&
       parsed.containerId !== undefined &&
@@ -1745,6 +1767,8 @@ export class AuthService {
       containerId,
       minter.principal.id,
       expiryFor(principal.kind),
+      undefined,
+      minter.tokenId,
     );
     return {
       token: minted.raw,
@@ -1978,6 +2002,7 @@ export class AuthService {
           reach: "node",
           expiresAt: parsed.grant.expiresAt,
         },
+        current.tokenId,
       );
       this.store.bindAgentRunnerCredential(agentId, credential.record.id);
       this.store.addEvent(null, createdAt, current.principal.id, "agent_registered", {
@@ -2435,6 +2460,7 @@ export class AuthService {
         record.authorizedByPrincipalId,
         "automated",
         { node: target, reach, expiresAt },
+        record.authorizationCredential.tokenId,
       );
       this.store.bindAgentRunCredential(runId, credential.record.id);
       this.store.addEvent(null, now, actor.principal.id, "agent_run_created", {
@@ -2697,6 +2723,7 @@ export class AuthService {
         record.authorizedByPrincipalId,
         "automated",
         { node: record.target, reach: record.reach, expiresAt: record.expiresAt },
+        record.authorizationCredential.tokenId,
       );
       this.store.bindAgentRunCredential(runId, credential.record.id);
       return credential.raw;
@@ -2861,6 +2888,7 @@ export class AuthService {
         initial.authorizedByPrincipalId,
         "automated",
         { node: initial.target, reach: initial.reach, expiresAt },
+        initial.authorizationCredential.tokenId,
       );
       this.store.bindAgentRunCredential(initial.id, minted.record.id);
       this.store.addEvent(null, at, currentActor.principal.id, "agent_run_renewed", {
@@ -3108,7 +3136,31 @@ export class AuthService {
    * terminal exit or kill revokes this identity instead of a wall-clock deadline interrupting
    * its PTY. External mints for the same principal still receive the ordinary agent bound.
    */
-  mintSessionAgentToken(terminalId: string, containerId: string, actorId: string): TokenGrant {
+  mintSessionAgentToken(
+    terminalId: string,
+    containerId: string,
+    actorId: string,
+    sourceTokenId?: string | null,
+  ): TokenGrant {
+    const source = sourceTokenId === undefined || sourceTokenId === null
+      ? null
+      : this.store.getToken(sourceTokenId);
+    if (sourceTokenId === undefined || sourceTokenId === null) {
+      if (this.store.hasShareRecipientPrincipal(actorId)) {
+        throw new ServiceError("forbidden", "share_recipient_source_required");
+      }
+    } else {
+      if (
+        source === null || source.principalId !== actorId || source.revokedAt !== null ||
+        (source.expiresAt !== null && source.expiresAt <= this.runtime.now())
+      ) {
+        throw new ServiceError("forbidden", "share_recipient_source_refused");
+      }
+    }
+    const shareDerived = source !== null && this.store.hasShareRecipientCredential(source.id);
+    if (shareDerived && source.containerId !== null && source.containerId !== containerId) {
+      throw new ServiceError("forbidden", "cannot widen container scope");
+    }
     const id = this.runtime.newId();
     const principal: Principal = {
       id,
@@ -3117,8 +3169,13 @@ export class AuthService {
       color: stableColor(id),
     };
     this.store.createPrincipal(principal, this.runtime.now());
-    const caps: Cap[] = ["containers:read", "scenes:write", "terminals:spawn", "terminals:write"];
-    const minted = this.persistToken(principal.id, caps, containerId, actorId, "never");
+    const defaults: Cap[] = ["containers:read", "scenes:write", "terminals:spawn", "terminals:write"];
+    const caps = shareDerived
+      ? defaults.filter((cap) => hasCap(source.caps, cap))
+      : defaults;
+    const minted = this.persistToken(
+      principal.id, caps, containerId, actorId, "never", undefined, sourceTokenId,
+    );
     return { token: minted.raw, principal, caps, containerId };
   }
 
@@ -3576,13 +3633,9 @@ export class AuthService {
    * docs/CONTRACTS.md §Producer-neutral behavior depends on the difference: nothing downstream of arbitration may branch on
    * origin, which is only safe while origin is something this instance decided.
    *
-   * A share's caps also become a GRANT ROW at the shared node (ADR 0011: "a share is a token
-   * minted against a subtree grant at the shared node"), and the row names the guest INSTANCE
-   * rather than any one of its principals. That is the one place ADR 0011's federation form
-   * stops being reserved: a ticket's host-side principal carries the share's origin, so it
-   * inherits the share's authority through the class match and the host mints no row per guest.
-   * The ticket's own token still gets its own row through `persistToken`, which is what makes
-   * ticket attenuation ordinary grant subsetting rather than a cross-instance special case.
+   * A share's caps also become an instance GRANT ROW at the shared node. That is the
+   * immutable remote ceiling, not consent for every principal at the guest. An approved
+   * recipient's ordinary ticket token and its token-bound grant carry only that subset.
    */
   mintShare(input: MintShareRequest, minter: AuthContext): ShareGrant {
     const parsed = MintShareRequestSchema.parse(input);
@@ -3592,15 +3645,7 @@ export class AuthService {
     if (!this.allows(minter, "tokens:mint")) {
       throw new ServiceError("forbidden", "tokens:mint capability required");
     }
-    const root = this.delegatingRoot(minter);
-    for (const cap of parsed.caps) {
-      if (cap === "*") {
-        throw new ServiceError("forbidden", "wildcard authority cannot be container-scoped");
-      }
-      if (!root && !minter.caps.includes(cap)) {
-        throw new ServiceError("forbidden", `cannot mint capability ${cap}`);
-      }
-    }
+    this.requireMintCapabilities(parsed.caps, minter, true);
     const containerId = parsed.node.containerId;
     if (minter.containerScope !== null && containerId !== minter.containerScope) {
       throw new ServiceError("forbidden", "cannot widen container scope");
@@ -3637,6 +3682,9 @@ export class AuthService {
     this.store.transaction(() => {
       this.store.createGrant(grant);
       this.store.createShare(record);
+      if (minter.tokenId !== null) {
+        this.store.bindShareRecipientDelegations(record.id, minter.tokenId);
+      }
       this.store.addEvent(containerId, record.createdAt, minter.principal.id, "share_minted", {
         shareId: record.id,
         origin,
@@ -3659,44 +3707,196 @@ export class AuthService {
    * The foreign principal's own id is never adopted. It is a string from another instance's
    * namespace, and adopting it would let a guest choose who it is here.
    */
-  mintShareTicket(share: ShareRecord, guest: Principal): TokenGrant {
-    if (share.revokedAt !== null) throw new ServiceError("forbidden", "revoked");
-    const candidateId = this.runtime.newId();
-    const principalId = this.store.claimShareTicket(
-      share.id,
-      guest.id,
-      candidateId,
-      this.runtime.now(),
-    );
-    let principal = this.store.getPrincipal(principalId);
-    if (principal === null) {
-      principal = {
-        id: principalId,
-        kind: guest.kind,
-        name: guest.name,
-        color: guest.color,
-        origin: share.origin,
+  mintShareTicket(share: ShareRecord, guest: Principal, caps?: readonly Cap[]): TokenGrant {
+    const parsedGuest = PrincipalSchema.parse(guest);
+    // A pending proposal must commit even though admission is refused. Throw outside the
+    // transaction; all admitted paths read current share/approval and mint in the same write.
+    const outcome = this.store.transaction<{ refusal: string } | { grant: TokenGrant }>(() => {
+      const currentShare = this.store.getShare(share.id);
+      if (currentShare === null || currentShare.revokedAt !== null) {
+        return { refusal: "revoked" } as const;
+      }
+      const previous = this.store.getShareRecipient(currentShare.id, parsedGuest.id);
+      const active = previous !== null &&
+        previous.approvedAt !== null && previous.removedAt === null;
+      const requested = caps ?? (active ? previous.caps : currentShare.caps);
+      if (
+        requested.length === 0 ||
+        requested.some((cap) => !hasCap(currentShare.caps, cap))
+      ) {
+        return { refusal: "recipient_caps_refused" } as const;
+      }
+      const recipient = this.store.requestShareRecipient(
+        currentShare.id,
+        parsedGuest,
+        requested,
+        this.runtime.now(),
+      );
+      if (!active) return { refusal: "recipient_unapproved" } as const;
+      if (requested.some((cap) => !hasCap(recipient.caps, cap))) {
+        return { refusal: "recipient_caps_refused" } as const;
+      }
+      const principalId = this.store.claimShareTicket(
+        currentShare.id,
+        parsedGuest.id,
+        this.runtime.newId(),
+        this.runtime.now(),
+      );
+      let principal = this.store.getPrincipal(principalId);
+      if (principal === null) {
+        principal = {
+          id: principalId,
+          kind: recipient.guestPrincipal.kind,
+          name: recipient.guestPrincipal.name,
+          color: recipient.guestPrincipal.color,
+          origin: currentShare.origin,
+        };
+        this.store.createPrincipal(principal, this.runtime.now());
+      }
+      const minted = this.persistToken(
+        principal.id,
+        requested,
+        currentShare.containerId,
+        recipient.approvedBy,
+        expiryFor(principal.kind),
+      );
+      this.store.bindShareTicketCredential(minted.record.id, currentShare.id, parsedGuest.id);
+      this.store.inheritShareRecipientDelegations(minted.record.id, currentShare.id);
+      const expiresAt = minted.record.expiresAt;
+      if (expiresAt === null) throw new Error("share ticket must have a finite expiry");
+      return {
+        grant: {
+          token: minted.raw,
+          principal,
+          caps: [...requested],
+          containerId: currentShare.containerId,
+          expiresAt,
+        },
       };
-      this.store.createPrincipal(principal, this.runtime.now());
+    });
+    if ("refusal" in outcome) throw new ServiceError("forbidden", outcome.refusal);
+    return outcome.grant;
+  }
+
+  /** Owner/root visibility, live mint authority and scope are the existing share boundary. */
+  private shareAdministrator(shareId: string, actor: AuthContext): {
+    share: ShareRecord;
+    actor: AuthContext;
+  } {
+    const current = this.restoreCredential(this.credentialReference(actor));
+    if (current === null || !this.allows(current, "tokens:mint")) {
+      throw new ServiceError("forbidden", "tokens:mint capability required");
     }
-    /*
-      A ticket is an ORDINARY credential: human guests receive the interactive bound and
-      agent guests receive the automated bound. Federation is not an expiry exemption.
-    */
-    const minted = this.persistToken(
-      principal.id,
-      share.caps,
-      share.containerId,
-      share.mintedBy,
-      expiryFor(principal.kind),
-    );
-    return {
-      token: minted.raw,
-      principal,
-      caps: [...share.caps],
-      containerId: share.containerId,
-      ...(minted.record.expiresAt === null ? {} : { expiresAt: minted.record.expiresAt }),
-    };
+    const share = this.store.getShare(shareId);
+    if (share === null) throw new ServiceError("not_found", "share not found");
+    if (!this.holdsRoot(current) && share.mintedBy !== current.principal.id) {
+      throw new ServiceError("forbidden", "cannot administer another principal's share");
+    }
+    if (current.containerScope !== null && current.containerScope !== share.containerId) {
+      throw new ServiceError("forbidden", "cannot widen container scope");
+    }
+    return { share, actor: current };
+  }
+
+  listShareRecipients(shareId: string, actor: AuthContext): readonly ShareRecipient[] {
+    this.shareAdministrator(shareId, actor);
+    return this.store.listShareRecipients(shareId);
+  }
+
+  private retireShareRecipientTickets(
+    share: ShareRecord,
+    guestPrincipalId: string,
+    at: number,
+    actorId: string,
+  ): readonly string[] {
+    const principals = this.store.shareRecipientCredentialPrincipals(share.id, guestPrincipalId);
+    for (const runId of this.store.shareRecipientCredentialRuns(share.id, guestPrincipalId)) {
+      const run = this.store.getAgentRun(runId);
+      if (run !== null && !TERMINAL_AGENT_RUN_STATES.has(run.state)) {
+        this.settleAgentRunSubtree(run, "revoked", actorId, undefined, false);
+      }
+    }
+    for (const delegated of this.store.shareRecipientDelegatedShares(share.id, guestPrincipalId)) {
+      this.revokeShareRecord(delegated, actorId);
+    }
+    const revoked = this.store.revokeShareRecipientTickets(share.id, guestPrincipalId, at);
+    this.store.afterCommit(() => {
+      this.settleRevocation(revoked);
+      for (const principalId of principals) {
+        for (const listener of [...this.revokedListeners]) listener(principalId, null);
+      }
+    });
+    return principals;
+  }
+
+  approveShareRecipient(
+    input: ApproveShareRecipientRequest,
+    actor: AuthContext,
+  ): ShareRecipient {
+    const parsed = ApproveShareRecipientRequestSchema.parse(input);
+    return this.store.transaction(() => {
+      const { share, actor: current } = this.shareAdministrator(parsed.shareId, actor);
+      if (share.revokedAt !== null) throw new ServiceError("forbidden", "revoked");
+      const recipient = this.store.getShareRecipient(share.id, parsed.guestPrincipalId);
+      if (recipient === null) throw new ServiceError("not_found", "share recipient not found");
+      this.requireMintCapabilities(parsed.caps, current, true);
+      if (
+        parsed.caps.some(
+          (cap) => !hasCap(share.caps, cap) || !hasCap(recipient.requestedCaps, cap),
+        )
+      ) {
+        throw new ServiceError("forbidden", "recipient_caps_refused");
+      }
+      const at = this.runtime.now();
+      this.store.approveShareRecipient(share.id, parsed.guestPrincipalId, parsed.caps, at,
+        current.principal.id);
+      if (
+        recipient.approvedAt !== null && recipient.removedAt === null &&
+        recipient.caps.some((cap) => !hasCap(parsed.caps, cap))
+      ) {
+        this.retireShareRecipientTickets(share, parsed.guestPrincipalId, at, current.principal.id);
+      }
+      const approved = this.store.getShareRecipient(share.id, parsed.guestPrincipalId);
+      if (approved === null) throw new Error("approved recipient was not persisted");
+      this.store.addEvent(share.containerId, at, current.principal.id, "share_recipient_approved", {
+        shareId: share.id,
+        origin: share.origin,
+        guestPrincipalId: parsed.guestPrincipalId,
+        caps: [...parsed.caps],
+      });
+      return approved;
+    });
+  }
+
+  removeShareRecipient(
+    input: RemoveShareRecipientRequest,
+    actor: AuthContext,
+  ): ShareRecipient {
+    const parsed = RemoveShareRecipientRequestSchema.parse(input);
+    return this.store.transaction(() => {
+      const { share, actor: current } = this.shareAdministrator(parsed.shareId, actor);
+      const recipient = this.store.getShareRecipient(share.id, parsed.guestPrincipalId);
+      if (recipient === null) throw new ServiceError("not_found", "share recipient not found");
+      if (recipient.removedAt !== null) return recipient;
+      const at = this.runtime.now();
+      this.store.removeShareRecipient(share.id, parsed.guestPrincipalId, at, current.principal.id);
+      this.retireShareRecipientTickets(share, parsed.guestPrincipalId, at, current.principal.id);
+      const removed = this.store.getShareRecipient(share.id, parsed.guestPrincipalId);
+      if (removed === null) throw new Error("removed recipient was not persisted");
+      this.store.addEvent(share.containerId, at, current.principal.id, "share_recipient_removed", {
+        shareId: share.id,
+        origin: share.origin,
+        guestPrincipalId: parsed.guestPrincipalId,
+      });
+      return removed;
+    });
+  }
+
+  resumableShareTicketPrincipals(shareId: string): readonly string[] {
+    const share = this.store.getShare(shareId);
+    return share === null || share.revokedAt !== null
+      ? []
+      : this.store.resumableShareTicketPrincipals(shareId, this.runtime.now());
   }
 
   /**
@@ -3729,34 +3929,37 @@ export class AuthService {
    * this ruling declined.
    */
   revokeShare(shareId: string, actor: AuthContext): number {
-    if (!this.allows(actor, "tokens:mint")) {
-      throw new ServiceError("forbidden", "tokens:mint capability required");
-    }
-    const share = this.store.getShare(shareId);
-    if (share === null) throw new ServiceError("not_found", "share not found");
-    if (!this.holdsRoot(actor) && share.mintedBy !== actor.principal.id) {
-      throw new ServiceError("forbidden", "cannot revoke another principal's share");
-    }
-    const at = this.runtime.now();
-    const principals = this.store.transaction(() => {
-      this.store.revokeShare(shareId, at);
-      if (share.grantId !== null) this.store.deleteGrant(share.grantId);
-      return this.store.shareTicketPrincipals(shareId);
+    return this.store.transaction(() => {
+      const { share, actor: current } = this.shareAdministrator(shareId, actor);
+      return this.revokeShareRecord(share, current.principal.id);
     });
-    if (share.grantId !== null) this.authorityChanged();
-    let severed = 0;
-    for (const principalId of principals) {
-      const count = this.settleRevocation(this.store.revokeTokensByPrincipal(principalId, at));
-      if (count === 0) continue;
-      severed += 1;
-      for (const listener of [...this.revokedListeners]) listener(principalId, null);
+  }
+
+  /** Already-authorized share withdrawal, also used for authority delegated by a ticket. */
+  private revokeShareRecord(share: ShareRecord, actorId: string): number {
+    const at = this.runtime.now();
+    if (!this.store.revokeShare(share.id, at)) return 0;
+    if (share.grantId !== null) {
+      this.store.deleteGrant(share.grantId);
+      this.store.afterCommit(() => this.authorityChanged());
     }
-    this.store.addEvent(share.containerId, at, actor.principal.id, "share_revoked", {
-      shareId,
+    const principals = new Set<string>();
+    for (const recipient of this.store.listShareRecipients(share.id)) {
+      for (const principalId of this.retireShareRecipientTickets(
+        share, recipient.guestPrincipal.id, at, actorId,
+      )) {
+        principals.add(principalId);
+      }
+    }
+    const severed = principals.size;
+    this.store.addEvent(share.containerId, at, actorId, "share_revoked", {
+      shareId: share.id,
       origin: share.origin,
       severed,
     });
-    for (const listener of [...this.shareRevokedListeners]) listener(shareId);
+    this.store.afterCommit(() => {
+      for (const listener of [...this.shareRevokedListeners]) listener(share.id);
+    });
     return severed;
   }
 
@@ -3801,6 +4004,9 @@ export class AuthService {
     const parsed = CreateGrantRequestSchema.parse(input);
     if (!this.allows(actor, "tokens:mint")) {
       throw new ServiceError("forbidden", "tokens:mint capability required");
+    }
+    if (!this.holdsRoot(actor)) {
+      throw new ServiceError("forbidden", "root capability required");
     }
     const path = containmentPath(parsed.node);
     if (path === null) throw new ServiceError("conflict", "node is not addressable");
@@ -3847,11 +4053,11 @@ export class AuthService {
     if (!this.allows(actor, "tokens:mint")) {
       throw new ServiceError("forbidden", "tokens:mint capability required");
     }
+    if (!this.holdsRoot(actor)) {
+      throw new ServiceError("forbidden", "root capability required");
+    }
     const existing = this.store.getGrant(grantId);
     if (existing === null) return 0;
-    if (!this.holdsRoot(actor) && existing.createdBy !== actor.principal.id) {
-      throw new ServiceError("forbidden", "cannot revoke another principal's grant");
-    }
     if (existing.tokenBound) {
       throw new ServiceError("forbidden", "a token's own grant is revoked by revoking the token");
     }

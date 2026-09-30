@@ -12,11 +12,11 @@ import { FakeRuntime } from "./helpers.ts";
 /**
  * THE PARITY MATRIX — the inviolable contract of the permission waterfall (#77, ADR 0011).
  *
- * Every credential that existed before migration 13 must answer EVERY authority question after
- * it identically. Not "similarly", and not "for the cases we thought of": identically, over the
- * whole domain of `AuthService.allows`, which is (credential × capability × node). This file is
- * where that is PROVEN rather than asserted, and it proves it the only way a rewrite of an
- * evaluator can be proven — by keeping the old evaluator around as an ORACLE and diffing.
+ * Ordinary credentials that existed before migration 13 retain their authority answers.
+ * Schema 49 deliberately fences legacy share tickets until an explicit host recipient
+ * approval; those bearers are checked as refusals rather than passed to the parity oracle.
+ * The retained matrix is compared over the whole domain of `AuthService.allows`, which is
+ * (credential × capability × node), using the old evaluator as an independent oracle.
  *
  * `flatAllows` below is the pre-migration body of `allows`, verbatim. It is deliberately a
  * duplicate of deleted code rather than an import: an oracle that shared an implementation with
@@ -258,7 +258,7 @@ interface GrantDump {
 }
 
 describe("migration 13: flat caps become grant rows", () => {
-  test("every seeded credential answers every authority question identically", () => {
+  test("unrelated seeded credentials retain authority while legacy share tickets fail closed", () => {
     const dir = mkdtempSync(join(tmpdir(), "manifold-grant-parity-"));
     const path = join(dir, "manifold.db");
     try {
@@ -267,12 +267,18 @@ describe("migration 13: flat caps become grant rows", () => {
       const auth = new AuthService(store, OWNER_KEY, new FakeRuntime());
 
       const contexts = new Map<string, AuthContext>();
-      for (const credential of SEEDED) {
+      const retained = SEEDED.filter((credential) => credential.name !== "ticket");
+      for (const credential of retained) {
         contexts.set(credential.name, auth.authenticate(credential.secret));
       }
 
-      // THE CONTRACT, in one comparison.
-      expect(askMatrix(auth, contexts)).toEqual(expectedMatrix(SEEDED));
+      expect(askMatrix(auth, contexts)).toEqual(expectedMatrix(retained));
+      expect(() => auth.authenticate("e".repeat(64))).toThrow("revoked");
+      expect(auth.listShareRecipients("s-live", auth.authenticate(OWNER_KEY))).toMatchObject([{
+        guestPrincipal: { id: "guest-1", kind: "human" },
+        requestedCaps: ["containers:read", "scenes:write"],
+        caps: [], approvedAt: null, approvedBy: null, removedAt: null,
+      }]);
 
       /*
         A matrix of all-false would satisfy the comparison above and prove nothing, so the
@@ -357,20 +363,15 @@ describe("migration 13: flat caps become grant rows", () => {
         .all();
 
       /*
-        Six tokens carry caps and 13 materializes six rows; `t-machine` carries `[]` and becomes
-        none, because a grant granting nothing answers no question. One LIVE share becomes an
-        instance row at its container; the revoked share becomes nothing, which is the same rule
-        `revokeShare` applies going forward. Then 16 runs on the same replay and applies that
-        rule to TOKENS: `t-revoked`'s row is retired (issue #140), because a row only its dead
-        credential could reach is authority nobody holds — so the replay lands on five token rows,
-        and the revoked token's `caps` on its own row is the account of what it was issued.
+        Migration 13 materializes the flat authority; 16 retires the revoked token's row.
+        Migration 49 also retires the retained share ticket until a host explicitly approves
+        its recipient. The share ceiling and unrelated credential rows remain unchanged.
       */
       expect(rows.map((row) => row.id)).toEqual([
         "grant-share-s-live",
         "grant-token-t-narrow",
         "grant-token-t-root",
         "grant-token-t-scoped",
-        "grant-token-t-ticket",
         "grant-token-t-workspace",
       ]);
       expect(rows.every((row) => row.effect === "allow" && row.reach === "subtree")).toBe(true);
@@ -395,8 +396,7 @@ describe("migration 13: flat caps become grant rows", () => {
       expect(share?.principal_id).toBe(GUEST_ORIGIN);
       expect(share?.node).toBe(containerA);
 
-      // Every LIVE credential that has authority references the row carrying it; the revoked
-      // one lost its reference with its row rather than keeping a dangling edge.
+      // Retired credentials lose their grant references; ordinary live credentials retain theirs.
       const references = db
         .query<{ id: string; grant_id: string | null }, []>(
           "SELECT id, grant_id FROM tokens ORDER BY id",
@@ -408,7 +408,7 @@ describe("migration 13: flat caps become grant rows", () => {
         "t-revoked": null,
         "t-root": "grant-token-t-root",
         "t-scoped": "grant-token-t-scoped",
-        "t-ticket": "grant-token-t-ticket",
+        "t-ticket": null,
         "t-workspace": "grant-token-t-workspace",
       });
       expect(
@@ -418,6 +418,7 @@ describe("migration 13: flat caps become grant rows", () => {
       // Rows went one way in 13 and again in 16, so each left its image beside the database.
       expect(existsSync(`${path}.pre-v13.bak`)).toBeTrue();
       expect(existsSync(`${path}.pre-v16.bak`)).toBeTrue();
+      expect(existsSync(`${path}.pre-v49.bak`)).toBeTrue();
       db.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -501,13 +502,19 @@ describe("minted credentials answer the same questions as migrated ones", () => 
       },
       root,
     );
-    const ticket = auth.mintShareTicket(auth.authenticateShare(share.token), {
+    const record = auth.authenticateShare(share.token);
+    const guest = {
       id: "guest-1",
-      kind: "human",
+      kind: "human" as const,
       name: "remote",
       color: "#ea580c",
       origin: GUEST_ORIGIN,
-    });
+    };
+    expect(() => auth.mintShareTicket(record, guest)).toThrow("recipient_unapproved");
+    auth.approveShareRecipient({
+      shareId: record.id, guestPrincipalId: guest.id, caps: shareCaps,
+    }, root);
+    const ticket = auth.mintShareTicket(record, guest);
     minted.push({
       name: "ticket",
       secret: ticket.token,

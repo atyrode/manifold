@@ -1541,3 +1541,71 @@ describe("SessionGateway scene writes", () => {
     fixture.store.close();
   });
 });
+
+test("recipient narrowing and removal fence only retired ticket sockets and allow reapproved joins", async () => {
+  const fix = await gatewayFixture();
+  try {
+    const owner = fix.auth.authenticate(fix.ownerKey);
+    const minted = fix.auth.mintShare({
+      node: { kind: "container", containerId: fix.container.id },
+      caps: ["tokens:mint", "containers:read", "scenes:write"], origin: "https://guest.example",
+    }, owner);
+    const share = fix.auth.authenticateShare(minted.token);
+    const guest = { id: "guest-local", kind: "human" as const, name: "guest", color: "#3355cc" };
+    const input = { shareId: share.id, guestPrincipalId: guest.id };
+    expect(() => fix.auth.mintShareTicket(share, guest)).toThrow("recipient_unapproved");
+    fix.auth.approveShareRecipient({
+      ...input, caps: ["tokens:mint", "containers:read", "scenes:write"],
+    }, owner);
+    const first = fix.auth.mintShareTicket(share, guest);
+    const second = fix.auth.mintShareTicket(share, guest);
+    const source = fix.auth.authenticate(first.token);
+    const child = fix.auth.mintToken({
+      principal: { name: "derived socket", kind: "human" },
+      caps: ["containers:read", "scenes:write"],
+    }, source);
+    const terminal = fix.auth.mintSessionAgentToken(
+      "derived-session-socket", fix.container.id, source.principal.id, source.tokenId,
+    );
+    const unrelated = fix.auth.mintToken({
+      principalId: first.principal.id, caps: ["containers:read"],
+      containerId: fix.container.id,
+    }, owner);
+    const firstSocket = new FakeSocket();
+    const secondSocket = new FakeSocket();
+    const unrelatedSocket = new FakeSocket();
+    const childSocket = new FakeSocket();
+    const terminalSocket = new FakeSocket();
+    join(fix.gateway, "recipient-first", firstSocket, fix.container.id, first.token);
+    join(fix.gateway, "recipient-second", secondSocket, fix.container.id, second.token);
+    join(fix.gateway, "recipient-unrelated", unrelatedSocket, fix.container.id, unrelated.token);
+    join(fix.gateway, "recipient-derived", childSocket, fix.container.id, child.token);
+    join(fix.gateway, "recipient-terminal", terminalSocket, fix.container.id, terminal.token);
+    fix.auth.approveShareRecipient({ ...input, caps: ["containers:read"] }, owner);
+    expect(firstSocket.closed?.code).toBe(4403);
+    expect(secondSocket.closed?.code).toBe(4403);
+    expect(childSocket.closed?.code).toBe(4403);
+    expect(terminalSocket.closed?.code).toBe(4403);
+    expect(unrelatedSocket.closed).toBeNull();
+    const narrowed = fix.auth.mintShareTicket(share, guest);
+    const narrowedSocket = new FakeSocket();
+    join(fix.gateway, "recipient-narrowed", narrowedSocket, fix.container.id, narrowed.token);
+    expect(narrowedSocket.closed).toBeNull();
+    fix.auth.removeShareRecipient(input, owner);
+    expect(narrowedSocket.closed?.code).toBe(4403);
+    expect(unrelatedSocket.closed).toBeNull();
+    expect(() => fix.auth.mintShareTicket(share, guest)).toThrow("recipient_unapproved");
+    fix.auth.approveShareRecipient({ ...input, caps: ["containers:read"] }, owner);
+    const reapproved = fix.auth.mintShareTicket(share, guest);
+    const reapprovedSocket = new FakeSocket();
+    join(fix.gateway, "recipient-reapproved", reapprovedSocket, fix.container.id, reapproved.token);
+    expect(reapprovedSocket.closed).toBeNull();
+    expect(reapproved.principal.id).toBe(first.principal.id);
+    fix.auth.revokeShare(share.id, owner);
+    expect(reapprovedSocket.closed?.code).toBe(4403);
+    expect(unrelatedSocket.closed).toBeNull();
+  } finally {
+    fix.gateway.shutdown();
+    fix.store.close();
+  }
+});

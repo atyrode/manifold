@@ -9,7 +9,9 @@ import {
   normalizeInstanceOrigin,
   type GuestMessage,
   type HostToGuestMessage,
+  type Cap,
   type Principal,
+  type TicketRefusal,
 } from "@manifold/protocol";
 import { ServiceError, type AuthService } from "./auth.ts";
 import type { Logger } from "./log.ts";
@@ -246,7 +248,7 @@ export class InstanceGateway {
       projection the guest must drop — which is the whole of resume, with no second frame
       and no offsets, because catch-up is reading state.
     */
-    const held = new Set(this.store.shareTicketPrincipals(share.id));
+    const held = new Set(this.auth.resumableShareTicketPrincipals(share.id));
     const tickets = (message.tickets ?? []).filter((principalId) => held.has(principalId));
     const container = this.store.getContainer(share.containerId);
 
@@ -303,7 +305,7 @@ export class InstanceGateway {
         connection.awaitingPong = false;
         return;
       case "ticket_request":
-        this.ticket(connection, message.requestId, message.principal);
+        this.ticket(connection, message.requestId, message.principal, message.caps);
         return;
       default: {
         const exhaustive: never = message;
@@ -316,9 +318,14 @@ export class InstanceGateway {
    * THE ticket hop. A guest principal asks its own instance for a pipe, its instance asks
    * here, and what comes back is an ordinary attenuated token for an ordinary principal —
    * so the projection that follows is an ordinary session join, arriving at the host's
-   * doors with the share's capabilities and nothing else. The ladder is the ladder.
+   * doors with the host-approved subset of the share's ceiling. The ladder is the ladder.
    */
-  private ticket(connection: InstanceConnection, requestId: string, principal: Principal): void {
+  private ticket(
+    connection: InstanceConnection,
+    requestId: string,
+    principal: Principal,
+    caps?: readonly Cap[],
+  ): void {
     const shareId = connection.shareId;
     if (shareId === null) return;
     const share = this.store.getShare(shareId);
@@ -328,13 +335,25 @@ export class InstanceGateway {
     }
     let grant;
     try {
-      grant = this.auth.mintShareTicket(share, principal);
+      grant = this.auth.mintShareTicket(share, principal, caps);
     } catch (error) {
-      const reason = error instanceof ServiceError ? "invalid_principal" : "unavailable";
+      let reason: TicketRefusal = "unavailable";
+      if (error instanceof ServiceError) {
+        reason = error.message.startsWith("recipient_unapproved")
+          ? "recipient_unapproved"
+          : error.message.startsWith("recipient_caps_refused")
+            ? "recipient_caps_refused"
+            : error.message === "revoked"
+              ? "share_revoked"
+              : "invalid_principal";
+      }
       this.logger.warn("instance_ticket_refused", { shareId, reason });
       this.send(connection, { type: "ticket_error", requestId, reason });
       return;
     }
+    // The mint path above requires finite expiry before exposing an ordinary bearer.
+    const expiresAt = grant.expiresAt;
+    if (expiresAt === undefined) throw new Error("share ticket must have a finite expiry");
     this.logger.info("instance_ticket_issued", {
       shareId,
       principalId: grant.principal.id,
@@ -344,6 +363,8 @@ export class InstanceGateway {
       requestId,
       token: grant.token,
       principal: grant.principal,
+      caps: [...grant.caps],
+      expiresAt,
     });
   }
 

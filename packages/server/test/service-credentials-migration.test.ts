@@ -20,6 +20,12 @@ CREATE TABLE tokens(id TEXT PRIMARY KEY,hash TEXT UNIQUE,principal_id TEXT,caps 
   expires_at INTEGER,run_id TEXT,runner_agent_id TEXT);
 CREATE TABLE grants(id TEXT PRIMARY KEY,principal_kind TEXT,principal_id TEXT,node TEXT,caps TEXT,
   effect TEXT,reach TEXT,created_by TEXT,created_at INTEGER);
+CREATE TABLE shares(id TEXT PRIMARY KEY,hash TEXT UNIQUE NOT NULL,container_id TEXT NOT NULL,
+  caps TEXT NOT NULL,origin TEXT NOT NULL,minted_by TEXT NOT NULL,
+  created_at INTEGER NOT NULL,revoked_at INTEGER,grant_id TEXT);
+CREATE TABLE share_tickets(share_id TEXT NOT NULL,guest_principal_id TEXT NOT NULL,
+  principal_id TEXT NOT NULL,created_at INTEGER NOT NULL,
+  PRIMARY KEY(share_id,guest_principal_id)) WITHOUT ROWID;
 CREATE TABLE native_instance_services(
   service_id TEXT PRIMARY KEY,revision TEXT NOT NULL,machine_id TEXT NOT NULL,
   plugin_id TEXT NOT NULL,configuration TEXT NOT NULL,credential TEXT,job_id TEXT,
