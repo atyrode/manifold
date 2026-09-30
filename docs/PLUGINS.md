@@ -1216,6 +1216,11 @@ A plugin retaining immutable binary content declares
 recovery scratch before growth. The ordinary database size limit is not a filesystem quota;
 capacity, busy, and recovery refusals remain visible. Replication of `manifold.db` alone does not
 back up this content.
+Capacity admission supports the listed local Linux filesystem families (ext, XFS, Btrfs,
+overlayfs and tmpfs) and Darwin's locally registered APFS/HFS families. Darwin filesystem numbers
+are resolved by name through the OS, not assumed to be fixed magic values. Other filesystems,
+unsupported allocation granules, insufficient bytes/inodes and unavailable recovery still
+refuse; macOS hub storage support does not authorize unsupported native machine effects.
 
 Declare incoming/outgoing `contributes.byteCarriers` with a local ID, capability, and accepted
 reference kinds. The SDK's `writeByteChunk` and `readByteChunk` use authenticated, bounded binary

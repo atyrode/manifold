@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import { dlopen, ptr } from "bun:ffi";
 import {
   closeSync,
   existsSync,
@@ -52,6 +53,39 @@ interface Inventory {
 class CapacityRefusal extends Error {
   constructor(readonly reason: Exclude<DatabaseRecoveryAdmission, { ok: true }>["reason"]) {
     super(reason);
+  }
+}
+// Darwin's f_type is a registered VFS number, not a stable Linux filesystem magic.
+// Query the OS by name instead of assuming that a number such as 24 or 26 means APFS.
+// The public, binary-compatible vfsconf is 40 bytes: typenum at 20, permanent flags at 28.
+// https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/mount.h
+function darwinFilesystemCheck(): (type: number) => boolean {
+  const library = dlopen("/usr/lib/libSystem.B.dylib", {
+    getvfsbyname: { args: ["ptr", "ptr"], returns: "i32" },
+  });
+  const info = Buffer.alloc(40);
+  const names = [Buffer.from("apfs\0"), Buffer.from("hfs\0")];
+  return (type) => {
+    for (const name of names) {
+      if (
+        library.symbols.getvfsbyname(ptr(name), ptr(info)) === 0 &&
+        info.readInt32LE(20) === type &&
+        (info.readInt32LE(28) & 0x1000) !== 0
+      )
+        return true;
+    }
+    return false;
+  };
+}
+let darwinFilesystem: ((type: number) => boolean) | undefined;
+function supportedFilesystem(type: number): boolean {
+  if (process.platform === "linux") return LOCAL_FILESYSTEMS.has(type >>> 0);
+  if (process.platform !== "darwin") return false;
+  try {
+    darwinFilesystem ??= darwinFilesystemCheck();
+    return darwinFilesystem(type);
+  } catch {
+    throw new CapacityRefusal("recovery_unavailable");
   }
 }
 
@@ -239,7 +273,8 @@ function physicalCapacity(
   scratchDir: string,
   additionalBytes: number,
 ): void {
-  if (process.platform !== "linux") throw new CapacityRefusal("recovery_unavailable");
+  if (process.platform !== "linux" && process.platform !== "darwin")
+    throw new CapacityRefusal("recovery_unavailable");
   const filesystems = new Map<number, FilesystemBudget>();
   const claim = (path: string, remaining: number, inodes: number): void => {
     let existing = path;
@@ -289,7 +324,7 @@ function physicalCapacity(
   claim(resolve(scratchDir), MAX_CHECKPOINT_BYTES, MAX_CHECKPOINT_FILES + 1);
   for (const budget of filesystems.values()) {
     const fs = statfsSync(budget.path);
-    if (!LOCAL_FILESYSTEMS.has(fs.type >>> 0) || fs.bsize <= 0 || fs.bsize > GRANULE)
+    if (!supportedFilesystem(fs.type) || fs.bsize <= 0 || fs.bsize > GRANULE)
       throw new CapacityRefusal("recovery_unavailable");
     if (
       fs.bavail * fs.bsize < budget.remaining + STORAGE_HEADROOM_BYTES ||

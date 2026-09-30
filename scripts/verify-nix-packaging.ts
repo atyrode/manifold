@@ -314,7 +314,8 @@ interface Answer {
 }
 
 type Outcome =
-  { readonly ok: true; readonly result: unknown } | { readonly ok: false; readonly rule: string };
+  | { readonly ok: true; readonly result: unknown }
+  | { readonly ok: false; readonly rule: string; readonly reason?: string };
 
 const hubs = new Set<Hub>();
 
@@ -696,14 +697,28 @@ async function act(at: Fixture, name: string, input: unknown): Promise<Outcome> 
     throw new Error(`Packaged server ${name} returned HTTP ${answer.status}`);
   const outcome = parsed(answer.body, `Packaged server ${name}`);
   if (member(outcome, "ok") === true) return { ok: true, result: member(outcome, "result") };
-  const rule = member(member(outcome, "denial"), "rule");
-  if (member(outcome, "ok") === false && typeof rule === "string") return { ok: false, rule };
+  const denial = member(outcome, "denial");
+  const rule = member(denial, "rule");
+  const message = member(denial, "message");
+  // Only named capacity/decoder refusals are safe diagnostics; never quote arbitrary responses.
+  const reason =
+    typeof message === "string" &&
+    /^(recovery_unavailable|storage_capacity|backup_capacity|database_busy|database_full|unavailable|unsupported|invalid_image|image_too_large|outcome_unknown|integrity)$/.test(
+      message,
+    )
+      ? message
+      : undefined;
+  if (member(outcome, "ok") === false && typeof rule === "string")
+    return { ok: false, rule, ...(reason === undefined ? {} : { reason }) };
   throw new Error(`Packaged server ${name} did not answer an action outcome`);
 }
 
 async function granted(at: Fixture, name: string, input: unknown): Promise<unknown> {
   const outcome = await act(at, name, input);
-  if (!outcome.ok) throw new Error(`Packaged server refused ${name} (${outcome.rule})`);
+  if (!outcome.ok)
+    throw new Error(
+      `Packaged server refused ${name} (${outcome.rule}${outcome.reason ? `: ${outcome.reason}` : ""})`,
+    );
   return outcome.result;
 }
 

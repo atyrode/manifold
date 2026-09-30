@@ -52,7 +52,11 @@ intended preview boundary.
 The application artifact must contain an executable `/app/infra/entrypoint.sh` and a nonempty
 `engines.bun` requirement that the environment's Bun satisfies. Its `/app` is copied with UID/GID
 1000 ownership; no Bun binary, libraries, home or Nix store are copied out of the application
-image.
+image. Native application modules resolve the C++ ABI library already present in the pinned
+development environment through `/usr/local/lib/manifold`; composition requires exactly one
+matching GCC runtime and fails before activation if it is missing or ambiguous. This stable
+loader path is also inherited by admitted plugin isolates. No library is downloaded at activation
+or taken from the application image.
 
 The current application requires Bun >= 1.4.2 for borrowed-descriptor ownership
 ([ADR 0032](../../docs/decisions/0032-bun-descriptor-ownership.md)). Updating a PR's application
