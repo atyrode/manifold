@@ -1307,6 +1307,7 @@ async function customHost(
   defs: readonly ServerPluginDef[],
   options: {
     readonly lifecycleTimeoutMs?: number;
+    readonly jobSettledTimeouts?: Readonly<Record<string, number>>;
     readonly distribution?: ReadonlySet<string>;
     readonly isolates?: IsolateDeps;
     readonly dataDir?: string;
@@ -1512,7 +1513,7 @@ describe("PluginHost lifecycle", () => {
     const host = await customHost(
       fixture,
       [recorder("test.alpha", log, { lifecycle: { onEnable: () => stuck.promise } })],
-      { lifecycleTimeoutMs: 5 },
+      { lifecycleTimeoutMs: 5, jobSettledTimeouts: { "test.alpha": 2_000 } },
     );
     await host.setEnabled("test.alpha", false, "admin");
 

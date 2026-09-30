@@ -4,7 +4,14 @@ import { existsSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import type { JobSettledCtx, LifecycleCtx, PluginStorage } from "@manifold/plugin";
-import type { Cap, EventKind, EventPayload, ManifoldRef, PluginManifest } from "@manifold/protocol";
+import type {
+  Cap,
+  EventKind,
+  EventPayload,
+  ManifoldRef,
+  PluginManifest,
+  SettledJob,
+} from "@manifold/protocol";
 import { AuthService } from "../src/auth.ts";
 import { IsolateDenial, IsolateLoadError, type IsolateState } from "../src/isolate/contract.ts";
 import { IsolateSupervisor, type IsolateSupervisorDeps } from "../src/isolate/supervisor.ts";
@@ -37,6 +44,17 @@ const manifest: PluginManifest = {
     events: [{ id: "echoed", title: "Echoed" }],
   },
   entry: { server: true },
+};
+const settledJob: SettledJob = {
+  jobId: "finished",
+  machineId: "worker",
+  pluginId: PLUGIN_ID,
+  operationId: `${PLUGIN_ID}.run`,
+  state: "exited",
+  exitCode: 0,
+  reason: null,
+  finishedAt: 1,
+  outputs: [],
 };
 
 const principal = { id: "p1", kind: "human" as const, name: "Pat", color: "#123456" };
@@ -161,6 +179,39 @@ function fixture(overrides: Partial<IsolateSupervisorDeps> = {}): Fixture {
   });
   open.push(supervisor);
   return { supervisor, logger, runtime, storage: testStore().pluginStorage(PLUGIN_ID), states };
+}
+function heldHookCtx(storage: PluginStorage, runtime: FakeRuntime, key = "enabled") {
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const completed = Promise.withResolvers<void>();
+  const reads: string[] = [];
+  const ctx: JobSettledCtx = {
+    pluginId: PLUGIN_ID,
+    storage: {
+      ...storage,
+      get: async (name) => {
+        reads.push(name);
+        if (name === key) {
+          entered.resolve();
+          await release.promise;
+        }
+        const result = await storage.get(name);
+        if (name === key) completed.resolve();
+        return result;
+      },
+    },
+    now: () => runtime.now(),
+    emit: () => {},
+    jobs: {} as JobSettledCtx["jobs"],
+    actions: {} as JobSettledCtx["actions"],
+  };
+  return {
+    ctx,
+    entered: entered.promise,
+    completed: completed.promise,
+    release: () => release.resolve(),
+    reads,
+  };
 }
 
 const barriers: string[] = [];
@@ -462,6 +513,40 @@ describe("IsolateSupervisor", () => {
     expect((await f.harness.profileSchema.safeParseAsync("valid")).success).toBe(true);
   });
 
+  test("a host call queued before an early answer cannot use that removed request's ctx", async () => {
+    const f = await harnessFixture({ dispatchDeadlineMs: 2_000 });
+    const release = Promise.withResolvers<void>();
+    const gate = await guestBarrier();
+    let serving = false;
+    const blocked = {
+      ...f.ctx,
+      storage: {
+        ...f.storage,
+        set: async (key: string, value: string) => {
+          serving = true;
+          await release.promise;
+          await f.storage.set(key, value);
+        },
+      },
+    } as ActionCtx;
+    const first = f.harness.sessions(blocked, { machineId: "first" });
+    try {
+      await until(() => serving);
+      // This guest enqueues storage.set, then answers while the first call blocks the queue.
+      const second = f.harness.sessions(f.ctx, { machineId: `queue-and-answer:${gate.dir}` });
+      await gate.entered();
+      await gate.release();
+      await expect(second).rejects.toMatchObject({ rule: "unavailable" });
+      expect(f.supervisor.state(PLUGIN_ID)).toBe("running");
+    } finally {
+      await gate.release();
+      release.resolve();
+    }
+    await first;
+    await f.harness.sessions(f.ctx, { machineId: "after" });
+    expect(await f.storage.get("queued")).toBeNull();
+  });
+
   test.each(["deadline", "disconnect", "replacement"])(
     "validation exclusivity clears after %s",
     async (ending) => {
@@ -719,6 +804,131 @@ describe("IsolateSupervisor", () => {
     );
   });
 
+  test("selected onJobSettled stays live past the ordinary dispatch deadline", async () => {
+    const { supervisor, runtime, storage, logger } = fixture({
+      dispatchDeadlineMs: 120,
+      jobSettledTimeouts: { [PLUGIN_ID]: 2_000 },
+    });
+    const { lifecycle } = await supervisor.load({ pluginId: PLUGIN_ID, manifest, dir: GUEST_DIR });
+    const held = heldHookCtx(storage, runtime);
+    const hook = lifecycle.onJobSettled!(held.ctx, settledJob);
+    try {
+      await held.entered;
+      const ordinary = fixture({ dispatchDeadlineMs: 120 });
+      const other = await ordinary.supervisor.load({
+        pluginId: PLUGIN_ID,
+        manifest,
+        dir: GUEST_DIR,
+      });
+      const ordinaryHeld = heldHookCtx(ordinary.storage, ordinary.runtime);
+      const ordinaryHook = other.lifecycle.onJobSettled!(ordinaryHeld.ctx, settledJob);
+      try {
+        await ordinaryHeld.entered;
+        await expect(ordinaryHook).rejects.toMatchObject({
+          rule: "unavailable",
+          message: "isolate deadline expired",
+        });
+      } finally {
+        ordinaryHeld.release();
+      }
+      expect(supervisor.state(PLUGIN_ID)).toBe("running");
+      expect(logger.lines.filter((line) => line.fields?.reason === "deadline")).toEqual([]);
+    } finally {
+      held.release();
+    }
+    await expect(hook).resolves.toBeUndefined();
+    expect(held.reads).toEqual(["metadataProbe", "enabled"]);
+  });
+
+  test("unselected onJobSettled still expires at the ordinary dispatch deadline", async () => {
+    const { supervisor, runtime, storage, logger } = fixture({
+      dispatchDeadlineMs: 120,
+      jobSettledTimeouts: { "other.plugin": 2_000 },
+    });
+    const { lifecycle } = await supervisor.load({ pluginId: PLUGIN_ID, manifest, dir: GUEST_DIR });
+    const held = heldHookCtx(storage, runtime);
+    const hook = lifecycle.onJobSettled!(held.ctx, settledJob);
+    try {
+      await held.entered;
+      await expect(hook).rejects.toMatchObject({
+        rule: "unavailable",
+        message: "isolate deadline expired",
+      });
+      expect(
+        logger.lines.find((line) => line.fields?.reason === "deadline")?.fields?.deadlineMs,
+      ).toBe(120);
+      await until(() => supervisor.state(PLUGIN_ID) === "stopped");
+    } finally {
+      held.release();
+    }
+  });
+
+  test("selected policy does not extend other hooks or dispatches", async () => {
+    const { supervisor, runtime, storage, logger } = fixture({
+      dispatchDeadlineMs: 120,
+      jobSettledTimeouts: { [PLUGIN_ID]: 2_000 },
+    });
+    const { lifecycle, def } = await supervisor.load({
+      pluginId: PLUGIN_ID,
+      manifest,
+      dir: GUEST_DIR,
+    });
+    const held = heldHookCtx(storage, runtime);
+    const hook = lifecycle.onEnable!(held.ctx);
+    try {
+      await held.entered;
+      await expect(hook).rejects.toMatchObject({
+        rule: "unavailable",
+        message: "isolate deadline expired",
+      });
+      await until(() => supervisor.state(PLUGIN_ID) === "stopped");
+    } finally {
+      held.release();
+    }
+    const { ctx } = actionCtx(storage, runtime);
+    await expect(invoke(def, "hang", ctx, {})).rejects.toMatchObject({
+      rule: "unavailable",
+      message: "isolate deadline expired",
+    });
+    expect(
+      logger.lines
+        .filter((line) => line.fields?.reason === "deadline")
+        .map((line) => line.fields?.deadlineMs),
+    ).toEqual([120, 120]);
+  });
+
+  test("selected expiry kills the child, withdraws the ctx and uses the copied finite bound", async () => {
+    const policy = { [PLUGIN_ID]: 2_000 };
+    const { supervisor, runtime, storage, logger } = fixture({
+      dispatchDeadlineMs: 120,
+      jobSettledTimeouts: policy,
+    });
+    policy[PLUGIN_ID] = 60_000;
+    const { lifecycle } = await supervisor.load({ pluginId: PLUGIN_ID, manifest, dir: GUEST_DIR });
+    await storage.set("metadataProbe", "yes");
+    const held = heldHookCtx(storage, runtime, "metadataProbe");
+    const hook = lifecycle.onJobSettled!(held.ctx, settledJob);
+    try {
+      await held.entered;
+      await expect(hook).rejects.toMatchObject({
+        rule: "unavailable",
+        message: "isolate deadline expired",
+      });
+      expect(
+        logger.lines.find((line) => line.fields?.reason === "deadline")?.fields?.deadlineMs,
+      ).toBe(3_000);
+      await until(() => supervisor.state(PLUGIN_ID) === "stopped");
+      expect(logger.lines.find((line) => line.evt === "isolate_exited")?.fields?.signal).toBe(
+        "SIGKILL",
+      );
+    } finally {
+      held.release();
+    }
+    await held.completed;
+    expect(held.reads).toEqual(["metadataProbe"]);
+    expect(await storage.get("metadataProbeResult")).toBeNull();
+  }, 10_000);
+
   test("strict older guests omit hook metadata and cannot forge its reads; new hooks remain read-only", async () => {
     for (const contract of [1, 9, 11]) {
       const { supervisor, runtime, storage } = fixture();
@@ -746,17 +956,7 @@ describe("IsolateSupervisor", () => {
               jobs: {} as JobSettledCtx["jobs"],
               actions: {} as JobSettledCtx["actions"],
             },
-            {
-              jobId: "finished",
-              machineId: "worker",
-              pluginId: PLUGIN_ID,
-              operationId: `${PLUGIN_ID}.run`,
-              state: "exited",
-              exitCode: 0,
-              reason: null,
-              finishedAt: 1,
-              outputs: [],
-            },
+            settledJob,
           );
         } else await lifecycle.onEnable!(ctx);
         expect(JSON.parse((await storage.get("metadataProbeResult"))!)).toEqual({

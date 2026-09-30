@@ -20,8 +20,11 @@ import type { PluginActionContext, PluginJobContext, PluginServiceContext } from
  * composition hostage — the failure mode every surveyed platform that allows it eventually
  * grows a timeout to escape.
  *
- * The bound is 2 seconds per hook (`LIFECYCLE_TIMEOUT_MS`). Past it the engine stops
- * WAITING; it cannot stop the hook, and pretending otherwise would be a lie in the type. The
+ * The default bound is 2 seconds per hook (`LIFECYCLE_TIMEOUT_MS`). Trusted host startup
+ * policy may extend only selected plugins' `onJobSettled`, within a finite 60-second ceiling.
+ * Transition hooks keep this default. Past the bound the engine stops WAITING; it cannot
+ * stop in-realm code or undo already-admitted effects. A settled-job context loses
+ * authority when its own lease ends. The
  * roster records what happened (`lifecycle: "enable_failed" | "disable_failed"`) so a failed
  * hook is visible rather than swallowed, and a DISABLE always completes regardless: the
  * remedy for a plugin misbehaving on the way out must not be that plugin.

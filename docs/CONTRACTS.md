@@ -2828,10 +2828,15 @@ and an answer without emissions is not rewritten after the fact. A handler that 
 call's refusal returns it as its own. A snapshot of `false` is never fenced: it can only fail
 closed. `auth.allows` stays a live host question.
 
-**Deadlines, the crash budget, eviction (ADR 0016 §6).** A lifecycle hook is bounded at the
-engine's `LIFECYCLE_TIMEOUT_MS` (2 s); a dispatch at `ISOLATE_DISPATCH_DEADLINE_MS` (10 s), past
+**Deadlines, the crash budget, eviction (ADR 0016 §6).** A lifecycle hook defaults to the
+engine's `LIFECYCLE_TIMEOUT_MS` (2 s); a dispatch to `ISOLATE_DISPATCH_DEADLINE_MS` (10 s), past
 which the answer is the ladder's last rung, `unavailable` — "isolate deadline expired" — traced
-like every other rung. `ISOLATE_CRASH_BUDGET` is `{ count: 3, windowMs: 300_000 }`: three exits in
+like every other rung. Trusted startup configuration `MANIFOLD_JOB_SETTLED_TIMEOUTS` may select
+individual plugin ids for a finite `onJobSettled` bound of 2,000–60,000 integer milliseconds.
+Only those settled requests receive that bound plus 1,000 ms of supervisor flush grace; the grace
+does not extend the host context's authority. Other hooks, dispatches and migrations keep their
+existing bounds. Configuration is validated and copied at startup, never selected by a plugin
+manifest or request. `ISOLATE_CRASH_BUDGET` is `{ count: 3, windowMs: 300_000 }`: three exits in
 five minutes and the supervisor stops respawning, the row reads `lifecycle: "isolate_crashed"`
 and every dispatch answers `unavailable` until an operator toggles it (`isolate_starting` is the
 row while a child is being spawned). A child that dies or hangs before answering `load` fails
@@ -4903,11 +4908,18 @@ exitCode, reason, finishedAt, scheduleId?, revision?, outputs }` — the job's o
   `ctx.jobs` on that hook is bound to the job's ORIGINAL credential, restored and rechecked
   at delivery: a revoked or expired credential is not woken at all, and every read still
   discharges caps, grants and that revision's consent. `follow` is not served there. The hook
-  obeys the lifecycle bound and the no-veto rule: nothing waits for it, a throw or overrun is
-  logged and never retried, no lifecycle state is recorded, and a disabled plugin is skipped.
+  obeys the default lifecycle bound or its explicit settlement-only startup override, with the
+  same no-veto rule: nothing waits for it, a throw or overrun is logged and never retried,
+  no lifecycle state is recorded, and a disabled plugin is skipped.
   Its optional read-only `host`, `machines` and `services` metadata slices also use that original job
   credential, never an installer-bound context; live capability/resource checks and the hook
   lifetime apply after every await as described under [Plugins, actions, and the workspace layout](#plugins-actions-and-the-workspace-layout).
+  Storage, database, jobs, emissions, metadata and sibling-action admission are fenced by the
+  callback lease and the original credential. Completion or timeout, credential loss,
+  disable/re-enable, replacement, handle retirement and shutdown cannot lend that retained context
+  fresh authority. A sibling's delayed guest preparation rechecks the lease before admission;
+  queued isolate calls recheck that their request is still live before being served. Effects
+  already admitted are not rolled back or retroactively cancelled.
 - **Carried container authority (ADR 0051).** A GOVERNED door — one whose `caps` include a
   governed capability — may declare `containers:read` or `containers:write` with a
   `requirements` target, and that target must be a container `ManifoldRef`; any other ref is

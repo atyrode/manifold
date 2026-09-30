@@ -674,6 +674,23 @@ Use the corresponding `aarch64-linux` check on that target. QEMU can use CPU emu
 builders without nested virtualization. This lifecycle check complements, rather than
 replaces, the workload, escape-boundary and occupied-owner acceptance above.
 
+## Settled-job callback limits
+
+The hub defaults every plugin lifecycle callback to 2 seconds. For an installed plugin whose
+`onJobSettled` reconciliation legitimately needs longer, trusted server startup configuration may
+set `MANIFOLD_JOB_SETTLED_TIMEOUTS` to a JSON object such as `{"vendor.worker":30000}`. Every key
+must be a valid plugin id and every value an integer from 2,000 through 60,000 milliseconds.
+Malformed configuration refuses startup; omission preserves the defaults. Configure the hub
+service or container's environment explicitly, not a plugin manifest or an action request.
+
+This changes only the named plugins' settled-job callbacks. Enable, disable, purge, other hooks
+and ordinary action deadlines are unchanged. A hardened child's settled request gets 1,000 ms
+of additional response-flush grace, but its host authority still ends at the configured bound.
+The callback continues under the settled job's original credential, never the installer or a
+replacement identity. Revocation, callback completion, timeout, disable, replacement and shutdown
+prevent new uses of that context; effects already admitted are not retroactively cancelled.
+Keep continuation intent durable and idempotent rather than treating a timeout as proof of no work.
+
 ## Container profile
 
 ## Prerequisites

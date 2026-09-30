@@ -228,6 +228,7 @@ import { jobContext, jobDoors, type JobContext } from "./job-doors.ts";
 import type { JobService, SettledJobDelivery } from "./job-service.ts";
 import { serviceContext, serviceDoors, serviceDoorSchemas } from "./service-doors.ts";
 import { machineDoors } from "./machine-doors.ts";
+import { jobSettledTimeouts, type JobSettledTimeouts } from "./settled-job-timeouts.ts";
 
 interface PluginDataLease {
   readonly storage: PluginStorage;
@@ -1518,6 +1519,8 @@ interface DispatchOptions {
   onTrace?: (traceId: number) => void;
   /** Host-only late admission fence, including after isolated argument preparation. */
   admissionFence?: () => AuthContext | null;
+  /** Settled caller lease after awaits; unlike admissionFence, it applies to non-Agent credentials. */
+  beforeAdmission?: () => void;
   onAdmitted?: () => void;
   /** Never a field a request carries: only `actionCalls` sets it. */
   origin?: DispatchOrigin;
@@ -1642,6 +1645,8 @@ export class PluginHost {
    */
   private readonly lifecycleStates = new Map<string, PluginLifecycleState>();
   private readonly lifecycleTimeoutMs: number;
+  private readonly jobSettledTimeouts: ReadonlyMap<string, number>;
+  private readonly settlementEpochs = new Map<string, number>();
   readonly streams = new StreamService(
     () => this.assembled,
     (plugin, node) => this.ownsStreamNode(plugin, node),
@@ -2097,6 +2102,7 @@ export class PluginHost {
     private readonly events: EventHub,
     options: {
       readonly lifecycleTimeoutMs?: number;
+      readonly jobSettledTimeouts?: JobSettledTimeouts;
       readonly distribution?: ReadonlySet<string>;
       readonly isolates?: IsolateDeps;
       readonly dataDir?: string;
@@ -2151,6 +2157,7 @@ export class PluginHost {
             },
           });
     this.lifecycleTimeoutMs = options.lifecycleTimeoutMs ?? LIFECYCLE_TIMEOUT_MS;
+    this.jobSettledTimeouts = jobSettledTimeouts(options.jobSettledTimeouts);
     this.syncDefs();
   }
 
@@ -2182,6 +2189,7 @@ export class PluginHost {
     events: EventHub,
     options: {
       readonly lifecycleTimeoutMs?: number;
+      readonly jobSettledTimeouts?: JobSettledTimeouts;
       readonly distribution?: ReadonlySet<string>;
       readonly isolates?: IsolateDeps;
       /**
@@ -2706,16 +2714,19 @@ export class PluginHost {
     pluginId: string,
     storage: PluginStorage = this.storage(pluginId),
     database: PluginDatabase | null = this.databaseSlice(pluginId) ?? null,
+    checkCurrent?: () => void,
   ): PluginDataLease {
     let open = true;
     const check = (): void => {
       if (!open || this.closed) throw new Error("plugin data request is closed");
+      checkCurrent?.();
     };
     const live = database !== null && this.databases.get(pluginId) === database;
     const checkDatabase = (): void => {
       if (!open || this.closed) throw new PluginDatabaseError("plugin database request is closed");
       if (live && this.databases.get(pluginId) !== database)
         throw new PluginDatabaseError("plugin database request belongs to a retired handle");
+      checkCurrent?.();
     };
     return {
       check,
@@ -2829,7 +2840,12 @@ export class PluginHost {
     return created;
   }
 
+  private revokeSettlements(pluginId: string): void {
+    this.settlementEpochs.set(pluginId, (this.settlementEpochs.get(pluginId) ?? 0) + 1);
+  }
+
   private retireDatabase(pluginId: string): void {
+    this.revokeSettlements(pluginId);
     const database = this.databases.get(pluginId);
     this.databases.delete(pluginId);
     database?.close();
@@ -3124,6 +3140,7 @@ export class PluginHost {
       if (!enabled || this.assembled.enabled(id) || this.assembled.builtin(id))
         return this.setEnabledNow(id, enabled, changedBy);
       this.replacing.add(id);
+      this.revokeSettlements(id);
       try {
         await this.drainDispatches(id);
         // The enable re-extracts the installed bundle into a directory a successor may own.
@@ -3225,6 +3242,7 @@ export class PluginHost {
       this.assembled.roster.filter((row) => row.enabled).map((row) => row.manifest.id),
     );
     this.store.setPluginEnabled(id, enabled, changedBy, this.runtime.now());
+    if (!enabled) this.revokeSettlements(id);
     if (!enabled) this.jobs?.disablePlugin(id);
     // COMMIT FIRST, then tell people. A lifecycle hook has no vote (ADR 0013 §2): the roster
     // every client will render is already the truth by the time any plugin hears about it.
@@ -3606,6 +3624,7 @@ export class PluginHost {
         ]),
       );
     for (const member of members) this.replacing.add(member.id);
+    for (const member of members) this.revokeSettlements(member.id);
     try {
       let prospective!: Assembly;
       try {
@@ -4491,15 +4510,15 @@ export class PluginHost {
   /**
    * One settled job, delivered to the half that started it and to nobody else.
    *
-   * It rides `runHook`'s bound like every other hook and it is the only one nothing waits
-   * for: the job is already over, so a slow or throwing consumer delays nothing and earns a
+   * It rides `runHook`'s bound, with an optional per-plugin settlement-only override.
+   * The job is already over, so a slow or throwing consumer delays nothing and earns a
    * log line rather than a retry or a lifecycle state — a failure here is not an enable or a
    * disable that went wrong. A disabled plugin is skipped: its jobs were cancelled on the way
    * out, and waking a half that is not serving would be creation while disabled (D12).
    */
   private async jobSettled(delivery: SettledJobDelivery): Promise<void> {
     const id = delivery.settled.pluginId;
-    if (this.closed || !this.assembled.enabled(id)) return;
+    if (this.closed || !this.assembled.enabled(id) || this.store.disabledPlugins().has(id)) return;
     const invoke = this.defs.find((def) => def.manifest.id === id)?.lifecycle?.onJobSettled;
     if (invoke === undefined) return;
     const auth = delivery.auth;
@@ -4511,13 +4530,36 @@ export class PluginHost {
       });
       return;
     }
-    // The settled hook is a lifecycle hook, so its data authority ends with the call —
-    // the same lease `runLifecycle` takes, closed whether the hook returned or overran.
-    const lease = this.dataLease(id);
+    // Keep the originating job's authority for every use of the retained context. Neither
+    // an installer nor a later module/enablement may revive an expired settlement.
+    const credential = this.authService.credentialReference(auth);
+    const manifest = this.defs.find((def) => def.manifest.id === id)?.manifest;
+    const installed = this.installed.get(id);
+    const epoch = this.settlementEpochs.get(id) ?? 0;
+    const checkCurrent = (): void => {
+      if (
+        !this.assembled.enabled(id) ||
+        (this.settlementEpochs.get(id) ?? 0) !== epoch ||
+        this.replacing.has(id) ||
+        this.defs.find((def) => def.manifest.id === id)?.manifest !== manifest ||
+        this.installed.get(id) !== installed ||
+        this.authService.restoreCredential(credential) === null
+      )
+        throw new ServiceError("forbidden", "settled job authority unavailable");
+    };
+    // The lease also guards jobs and actions, not merely durable data: a retained hook
+    // context cannot admit NEW work after return, expiry, disable, retirement or shutdown.
+    const lease = this.dataLease(id, undefined, undefined, checkCurrent);
+    const lifecycle = this.lifecycleCtx(id, lease, auth);
     const ctx: JobSettledCtx = {
-      ...this.lifecycleCtx(id, lease, auth),
+      ...lifecycle,
+      emit: (ref, kind, payload) => {
+        lease.check();
+        lifecycle.emit(ref, kind, payload);
+      },
       jobs: jobContext(
         () => {
+          lease.check();
           if (this.jobs === null) throw new ServiceError("forbidden", "job service unavailable");
           return this.jobs;
         },
@@ -4527,11 +4569,27 @@ export class PluginHost {
       ),
       // Both slices are the SETTLED JOB'S credential, not the installer's: the wake belongs
       // to that run, so what it may ask a dependency is what that run could ask.
-      actions: this.actionCalls(id, auth, null, delivery.traceId, [id]),
+      actions: this.actionCalls(id, auth, null, delivery.traceId, [id], lease.check),
     };
     let outcome: HookOutcome;
     try {
-      outcome = await runHook(() => invoke(ctx, delivery.settled), this.lifecycleTimeoutMs);
+      outcome = await runHook(
+        () => {
+          try {
+            const result = invoke(ctx, delivery.settled);
+            if (result === undefined) {
+              lease.close();
+              return;
+            }
+            // Close at the hook's own completion, not a later Promise.race continuation.
+            return Promise.resolve(result).finally(lease.close);
+          } catch (error) {
+            lease.close();
+            throw error;
+          }
+        },
+        this.jobSettledTimeouts.get(id) ?? this.lifecycleTimeoutMs,
+      );
     } finally {
       lease.close();
     }
@@ -4570,9 +4628,11 @@ export class PluginHost {
     session: string | null,
     parentTrace: number | string,
     stack: readonly string[],
+    beforeCall?: () => void,
   ): PluginActionContext {
     return {
       call: async (args) => {
+        beforeCall?.();
         // Parsed here, as every native slice parses (`jobContext`): the frame a hardened
         // guest sends and the object an in-realm handler passes meet the same schema.
         const request = ActionCallArgsSchema.parse(args);
@@ -4683,6 +4743,7 @@ export class PluginHost {
         try {
           outcome = await this.dispatch(auth, door, request.input, session, {
             origin: { plugin: caller, parentTrace, stack },
+            ...(beforeCall === undefined ? {} : { beforeAdmission: beforeCall }),
           });
         } catch {
           /*
@@ -5104,6 +5165,11 @@ export class PluginHost {
       args: unknown,
       preparedTargets?: readonly unknown[],
     ): ActionAdmissionDenial | null => {
+      try {
+        options.beforeAdmission?.();
+      } catch {
+        return new ActionAdmissionDenial("forbidden", "settled job authority unavailable");
+      }
       if (options.admissionFence) {
         const current = options.admissionFence();
         if (current === null)

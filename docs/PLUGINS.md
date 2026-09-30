@@ -942,7 +942,7 @@ hook frames and must be repacked only if they want to use this new API.
 - **These are TRANSITION hooks, not boot hooks.** At boot, everything enabled is simply live: no
   `onEnable` fan-out and no lifecycle state invented for a start nobody triggered. If you need
   "prepare on first use", do it lazily in your handlers, not in a hook that will not run.
-- **Every hook is bounded at 2 seconds, and disable always completes.** If your `onDisable` throws
+- **Transition hooks are bounded at 2 seconds, and disable always completes.** If your `onDisable` throws
   or hangs, the disable still lands; your roster entry is then marked
   `lifecycle: "disable_failed"` (or `"enable_failed"`) and every principal, human or agent, sees
   it at `GET /api/plugins`. A failed teardown is a visible state, never a wedged workspace. The same
@@ -2509,11 +2509,19 @@ background half has: a door needs a caller and a panel needs a reader. The paylo
 NODE, so `ctx.jobs` — bound to the CREDENTIAL THE JOB RAN UNDER, restored and rechecked at
 delivery — reads `outputs`, `journal` or `status` and may start the next job; a revoked or
 expired credential simply has no wake to deliver. `follow` is not on that slice: a live
-subscription belongs to a dispatch. Same bound and same no-veto rule as the other hooks
-(`LIFECYCLE_TIMEOUT_MS`): nothing waits for it, a throw is logged and never retried, delivery
-is at-least-once so the consumer stays idempotent, and a disabled plugin is not woken because
+subscription belongs to a dispatch. It defaults to `LIFECYCLE_TIMEOUT_MS` (2 seconds). An operator
+may configure a finite, plugin-specific `onJobSettled` allowance through
+`MANIFOLD_JOB_SETTLED_TIMEOUTS`; plugins cannot request it in their manifest or widen it at runtime.
+Transition hooks keep their existing bound. The no-veto rule is unchanged: nothing waits for the
+wake, a throw or overrun is logged and never retried, delivery is at-least-once so the consumer
+stays idempotent, and a disabled plugin is not woken because
 its jobs were cancelled rather than delivered. Exit 0 is process success and not your
 postcondition. Do not poll `status` or keep a refresh timer in place of declaring the hook.
+The original job credential and callback lease fence every retained data, job, metadata and
+sibling-action context. Returning, timing out, losing that credential, disabling or replacing the
+plugin or shutting down the host revokes new work, including a sibling still preparing for
+admission. Already-admitted effects may finish; a timeout is neither proof that nothing happened
+nor cancellation of an external operation. Persist idempotent intent before any such operation.
 
 **Hand one container to the work you start (ADR 0051).** A wake runs under the job's
 credential, and that credential holds only what your door lent it — so a wake cannot open a

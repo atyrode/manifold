@@ -3,6 +3,7 @@ import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { resolveBuildIdentity, type BuildIdentity } from "../../../scripts/build-identity.ts";
 import { JobOwnerConfigSchema, normalizeInstanceOrigin, PluginIdSchema } from "@manifold/protocol";
+import { jobSettledTimeouts, type JobSettledTimeouts } from "./settled-job-timeouts.ts";
 
 const HEX_64 = /^[0-9a-f]{64}$/i;
 
@@ -37,6 +38,11 @@ export interface ServerConfig {
    * recipe for, fails the start by name — never a silent in-realm fallback.
    */
   hardenedPlugins?: readonly string[];
+  /**
+   * Trusted per-plugin onJobSettled deadlines from MANIFOLD_JOB_SETTLED_TIMEOUTS.
+   * A JSON object of plugin ids to integer milliseconds, 2,000–60,000; other hooks are unchanged.
+   */
+  jobSettledTimeouts?: JobSettledTimeouts;
   /**
    * `MANIFOLD_FIRST_PARTY_ARTIFACTS=<dir>`: where a packaged hub's own build wrote its trusted
    * first-party artifacts (`scripts/build-first-party.ts`), for a binary that carries no source
@@ -248,6 +254,19 @@ export function loadConfig(
       ? undefined
       : resolve(cwd, configuredAgentPolicyFile);
   const hardenedPlugins = parseHardenedPlugins(env.MANIFOLD_HARDENED_PLUGINS);
+  const configuredSettledTimeouts = env.MANIFOLD_JOB_SETTLED_TIMEOUTS;
+  let settledTimeouts: JobSettledTimeouts | undefined;
+  if (configuredSettledTimeouts !== undefined) {
+    try {
+      settledTimeouts = Object.fromEntries(
+        jobSettledTimeouts(JSON.parse(configuredSettledTimeouts)),
+      );
+    } catch {
+      throw new Error(
+        "MANIFOLD_JOB_SETTLED_TIMEOUTS must be a JSON object mapping plugin ids to integer milliseconds from 2000 to 60000",
+      );
+    }
+  }
   const configuredArtifacts = env.MANIFOLD_FIRST_PARTY_ARTIFACTS?.trim();
   const previewIdentityKey = loadPreviewIdentityKey(dataDir);
   return {
@@ -266,6 +285,7 @@ export function loadConfig(
     announceKey: env.MANIFOLD_ANNOUNCE_KEY === "1",
     pluginDevPaths: env.MANIFOLD_PLUGIN_DEV_PATHS === "1",
     ...(hardenedPlugins.length === 0 ? {} : { hardenedPlugins }),
+    ...(settledTimeouts === undefined ? {} : { jobSettledTimeouts: settledTimeouts }),
     ...(configuredArtifacts === undefined || configuredArtifacts === ""
       ? {}
       : { firstPartyArtifacts: resolve(cwd, configuredArtifacts) }),
