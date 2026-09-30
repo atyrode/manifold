@@ -130,7 +130,7 @@ async function receiveBytes(
 /** Authority is rechecked when Bun pulls the body, not only when headers are constructed. */
 function queuedResponse(
   data: Uint8Array,
-  headers: HeadersInit,
+  headers: Record<string, string>,
   context: ByteCarrierContext,
   release: () => void,
 ): Response {

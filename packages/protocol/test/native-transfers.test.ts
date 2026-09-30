@@ -159,6 +159,7 @@ test("ordinary jobs keep their prior schema and cannot obtain create-child throu
         locations: [{ locationId: "source", access: "read" }],
         outputs: [],
         network: "none",
+        stdin: false,
         limits: { timeoutMs: 1_000, memoryBytes: 1_048_576, processes: 1, outputBytes: 65_536 },
       },
     },
@@ -239,7 +240,7 @@ test("older owners refuse the entire inline policy, never an empty job projectio
     installationRevision: "r1",
     machine,
     artifactSha256: hash,
-  };
+  } as const;
   expect(JobCommandSchema.parse(install)).toEqual(install);
   expect(
     JobCommandSchema.safeParse({ ...install, artifact: { bundleFile: "worker", data: "YQ==" } })
@@ -354,7 +355,7 @@ test("binding and permits bound lifetime, command mode and full caller identity"
     rpcId: "rpc",
     request: { method: "status", transferId: "transfer" },
     permit,
-  };
+  } as const;
   expect(JobCommandSchema.parse(command)).toEqual(command);
   expect(JobCommandSchema.safeParse({ ...command, permit: undefined }).success).toBe(false);
 });
@@ -421,7 +422,7 @@ test("named refusals and unknown outcomes survive the event boundary without sen
         reason: "native_transfer_recovery_unknown",
       },
     },
-  };
+  } as const;
   expect(JobEventSchema.parse(event)).toEqual(event);
   expect(
     NativeTransferResultSchema.safeParse({ ok: false, reason: "/private/path failed" }).success,
@@ -469,8 +470,8 @@ test("publication receipts cannot turn an uncertain or prepared put into success
     bytes: 5,
     sha256: hash,
     committedAt: 100,
-  };
-  const committed = { ...status, mode: "put", state: "committed", receipt };
+  } as const;
+  const committed = { ...status, mode: "put", state: "committed", receipt } as const;
   expect(NativeTransferStatusSchema.parse(committed)).toEqual(committed);
   expect(NativeTransferStatusSchema.safeParse({ ...committed, receipt: undefined }).success).toBe(
     false,
@@ -482,7 +483,7 @@ test("publication receipts cannot turn an uncertain or prepared put into success
       NativeTransferStatusSchema.safeParse({ ...committed, receipt: { ...receipt, ...changed } })
         .success,
     ).toBe(false);
-  const snapshot = { ...status, receipt: { ...receipt, mode: "read" } };
+  const snapshot = { ...status, receipt: { ...receipt, mode: "read" } } as const;
   expect(NativeTransferStatusSchema.parse(snapshot)).toEqual(snapshot);
   expect(NativeTransferStatusSchema.safeParse({ ...snapshot, receipt: undefined }).success).toBe(
     false,
@@ -501,7 +502,7 @@ test("unadmitted evidence cannot claim a native transfer or disclose effect meta
     mode: "put",
     attemptedAt: 1234,
     reason: "installation_changed",
-  };
+  } as const;
   expect(NativeTransferEvidenceBatchSchema.parse([refused])).toEqual([refused]);
   for (const extra of [
     { transferId: "invented" },

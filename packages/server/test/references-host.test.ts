@@ -273,6 +273,7 @@ async function fixture() {
     {
       isOnline: () => false,
       getTerminalExecution: () => null,
+      getPhysicalCoreCount: () => undefined,
       drain: async () => ({ ok: false, reason: "offline" }),
       repository: async () => ({ ok: false, reason: "offline" }),
     },

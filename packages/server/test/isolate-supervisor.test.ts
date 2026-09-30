@@ -1005,7 +1005,12 @@ describe("IsolateSupervisor", () => {
         contributes: {
           ...manifest.contributes,
           byteCarriers: [
-            { id: "bytes", direction: "outgoing", capability: "scenes:read", refKinds: ["file"] },
+            {
+              id: "bytes",
+              direction: "outgoing",
+              capability: "containers:read",
+              refKinds: ["file"],
+            },
           ],
         },
       },

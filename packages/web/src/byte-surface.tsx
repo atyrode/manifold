@@ -18,7 +18,6 @@ import {
 import {
   createByteDownloadHandle,
   createByteImageReadHandle,
-  LocalFileStore,
   type ByteDownloadHandle,
   type ByteImageReadHandle,
 } from "@manifold/sdk";
@@ -35,6 +34,7 @@ import {
 
 import { usePortableElementEdit } from "./portable-element-edit.ts";
 import { BorrowedPanelHost, MountedPanelInput, PanelIntakeGate } from "./borrowed-panels.tsx";
+import { LocalFileStore } from "./local-files.ts";
 /** Shared custody owner for both page React and worker vocabulary mounts. */
 export class MountedByteResources {
   readonly files = new LocalFileStore();

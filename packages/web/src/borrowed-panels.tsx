@@ -6,7 +6,6 @@ import {
   PortablePanelInputSchema,
   validPanelArg,
   type LocalFileDescriptor,
-  type PanelArg,
   type PortablePanelInput,
 } from "@manifold/protocol";
 import { BorrowedPanelProvider, Empty, type BorrowedPanelProps } from "@manifold/ui";

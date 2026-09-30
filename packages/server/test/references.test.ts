@@ -501,14 +501,12 @@ describe("owned-reference publication and ordinary grants", () => {
     f.grantCreate();
     const published = await f.publish();
     const recipient = f.principal();
-    const share = await f
-      .context()
-      .grant({
-        ref: published.ref,
-        principalId: recipient.principal.id,
-        caps: [declaration.readCapability],
-        previousGrantId: null,
-      });
+    const share = await f.context().grant({
+      ref: published.ref,
+      principalId: recipient.principal.id,
+      caps: [declaration.readCapability],
+      previousGrantId: null,
+    });
     const entered = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
     f.state.probe = async () => {
@@ -527,14 +525,12 @@ describe("owned-reference publication and ordinary grants", () => {
       enteredAgain.resolve();
       await releaseAgain.promise;
     };
-    const pendingShare = f
-      .context()
-      .grant({
-        ref: published.ref,
-        principalId: recipient.principal.id,
-        caps: [declaration.readCapability],
-        previousGrantId: share.grantId,
-      });
+    const pendingShare = f.context().grant({
+      ref: published.ref,
+      principalId: recipient.principal.id,
+      caps: [declaration.readCapability],
+      previousGrantId: share.grantId,
+    });
     await enteredAgain.promise;
     f.service.purge("vendor.vault", f.root.principal.id, 99);
     releaseAgain.resolve();
@@ -634,26 +630,22 @@ describe("owned-reference publication and ordinary grants", () => {
     f.grantCreate();
     const published = await f.publish();
     const recipient = f.principal();
-    const share = await f
-      .context()
-      .grant({
-        ref: published.ref,
-        principalId: recipient.principal.id,
-        caps: [declaration.readCapability],
-        previousGrantId: null,
-      });
+    const share = await f.context().grant({
+      ref: published.ref,
+      principalId: recipient.principal.id,
+      caps: [declaration.readCapability],
+      previousGrantId: null,
+    });
     f.state.capacity = false;
     await expect(f.prepare()).rejects.toThrow("backup_capacity");
     const other = f.principal();
     await expect(
-      f
-        .context()
-        .grant({
-          ref: published.ref,
-          principalId: other.principal.id,
-          caps: [declaration.readCapability],
-          previousGrantId: null,
-        }),
+      f.context().grant({
+        ref: published.ref,
+        principalId: other.principal.id,
+        caps: [declaration.readCapability],
+        previousGrantId: null,
+      }),
     ).rejects.toThrow("backup_capacity");
     expect((await f.context().revoke({ ref: published.ref, grantId: share.grantId })).changed).toBe(
       true,
@@ -684,14 +676,12 @@ describe("owned-reference publication and ordinary grants", () => {
     const before = changes;
     f.state.measuredCapacity = false;
     await expect(
-      f
-        .context()
-        .grant({
-          ref: prepared.ref,
-          principalId: recipient.principal.id,
-          caps: [declaration.readCapability],
-          previousGrantId: null,
-        }),
+      f.context().grant({
+        ref: prepared.ref,
+        principalId: recipient.principal.id,
+        caps: [declaration.readCapability],
+        previousGrantId: null,
+      }),
     ).rejects.toThrow("backup_capacity");
     expect(changes).toBe(before);
     expect(f.auth.allowsRef(recipient, declaration.readCapability, prepared.ref)).toBe(false);

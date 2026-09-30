@@ -218,7 +218,7 @@ test("cancel and lifecycle disposal fence an uncooperative late carrier result",
     expect(result.handed).toEqual([]);
     expect(result.statuses).toEqual([
       { state: "downloading", received: 0, total: 1 },
-      ...(method === "cancel" ? [{ state: "unavailable", reason: "cancelled" }] : []),
+      ...(method === "cancel" ? [{ state: "unavailable", reason: "cancelled" } as const] : []),
     ]);
   }
 });

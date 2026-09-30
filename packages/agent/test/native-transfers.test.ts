@@ -44,6 +44,8 @@ import * as nativeRuntime from "../src/job-linux.ts";
 import * as snapshots from "../src/native-transfer-snapshot.ts";
 
 type TransferCommand = Extract<JobCommand, { type: "native_transfer" }>;
+type PutBinding = Extract<NativeTransferRequest, { method: "beginPut" }>["binding"];
+type ReadBinding = Extract<NativeTransferRequest, { method: "beginRead" }>["binding"];
 const supported =
   process.platform === "linux" && (process.arch === "x64" || process.arch === "arm64");
 const hash = (data: Uint8Array | string) => createHash("sha256").update(data).digest("hex");
@@ -120,9 +122,11 @@ function fixture() {
       assertRootAvailable: (fd) => outputs.assertCreateAllowed(fd),
     });
   let owner = makeOwner();
+  function binding(mode: "put", data?: Buffer, actorId?: string): PutBinding;
+  function binding(mode: "read", data?: Buffer, actorId?: string): ReadBinding;
   function binding(
     mode: "put" | "read",
-    data = Buffer.from("native bytes"),
+    data: Buffer = Buffer.from("native bytes"),
     actorId = "actor",
   ): NativeTransferBinding {
     const now = Date.now();
@@ -196,7 +200,7 @@ function fixture() {
     if (parsed.type !== "native_transfer") throw new Error("unexpected_command");
     return NativeTransferResultSchema.parse(await owner.execute(parsed));
   }
-  async function prepare(identity: NativeTransferBinding, bytes: Buffer) {
+  async function prepare(identity: PutBinding, bytes: Buffer) {
     expect((await call(identity, { method: "beginPut", binding: identity })).ok).toBe(true);
     if (bytes.length)
       expect(
@@ -656,7 +660,7 @@ describe.skipIf(!supported)("native owner transfer boundaries", () => {
         resolveManagedTransferRoot(
           f.managedState,
           "fixture.files",
-          { ...declaration, managed: false },
+          { ...declaration, managed: undefined },
           () => {},
         ),
       ).toThrow("invalid_transfer_location");

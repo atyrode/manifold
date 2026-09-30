@@ -505,7 +505,7 @@ test("expired unpublished ready reservations reclaim host-first before replaceme
         privateDb.query("SELECT state,active,charged FROM file_transfers WHERE id=?").get(id),
       ).toEqual({ state: "cancelled", active: 0, charged: 0 });
     const terminal = mainDb
-      .query(
+      .query<{ state: string; terminal_at: number | null; cleanup_pending: number }, [string]>(
         "SELECT state,terminal_at,cleanup_pending FROM reference_publications WHERE actor_principal=? ORDER BY request_id",
       )
       .all(actor.principal.id);

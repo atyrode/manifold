@@ -8,7 +8,6 @@ export {
   type ActionInvocation,
 } from "./action-http.ts";
 export { readByteChunk, writeByteChunk, type ByteHttpOptions } from "./byte-http.ts";
-export { LocalFileStore } from "./local-files.ts";
 export { inspectStaticRaster, type RasterDimensions } from "./raster.ts";
 export {
   createByteImageReadHandle,
