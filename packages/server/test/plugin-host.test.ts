@@ -2377,6 +2377,50 @@ describe("PluginHost database", () => {
     }
   });
 
+  test("a live-image write during staging refuses activation without erasing either committed surface", async () => {
+    const fixture = await hostFixture();
+    const dataDir = mkdtempSync(join(tmpdir(), "manifold-host-db-conflict-"));
+    const livePath = pluginDatabasePath(dataDir, ROWS_ID);
+    const live = openPluginDatabase({ dataDir, pluginId: ROWS_ID });
+    await live.run("CREATE TABLE notes(body TEXT NOT NULL)");
+    await live.run("INSERT INTO notes(body) VALUES ('old')");
+    live.close();
+    const storage = fixture.store.pluginStorage(ROWS_ID);
+    await storage.set("row", "old");
+    await storage.stampDataVersion({ major: 1, minor: 0 });
+    fixture.store.setPluginEnabled(ROWS_ID, false, "admin", 0);
+    const gate = suspension();
+    const host = await customHost(fixture, [suspendingDef(gate, true)], { dataDir });
+    let enabling: Promise<unknown> = Promise.resolve();
+    try {
+      enabling = host.setEnabled(ROWS_ID, true, "admin");
+      await gate.entered.promise;
+      await live.run("INSERT INTO notes(body) VALUES ('concurrent')");
+      live.close();
+      gate.resume.resolve();
+      await expect(enabling).rejects.toThrow("plugin database changed while migration was staged");
+      expect(await storage.get("row")).toBe("old");
+      expect(await storage.get("late")).toBeNull();
+      expect(await storage.dataVersion()).toEqual({ major: 1, minor: 0 });
+      expect(await storage.appliedMigrations()).toEqual([]);
+      expect(fixture.store.disabledPlugins().has(ROWS_ID)).toBe(true);
+      expect(fixture.store.pluginDatabaseJournals()).toEqual([]);
+      expect(existsSync(`${livePath}.stage`)).toBe(false);
+      expect(existsSync(`${livePath}.backup`)).toBe(false);
+      expect(await live.query("SELECT body FROM notes ORDER BY rowid")).toEqual([
+        { body: "old" },
+        { body: "concurrent" },
+      ]);
+    } finally {
+      gate.resume.resolve();
+      await Promise.allSettled([enabling]);
+      live.close();
+      host.close();
+      closeTestStore(fixture.store);
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
   test.each([
     "prepared-before-activation",
     "prepared-between-renames",

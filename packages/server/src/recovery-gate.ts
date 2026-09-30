@@ -9,10 +9,16 @@ export const RECOVERY_LOCK_WAIT_MS = 5_000;
 export const RECOVERY_CAPTURE_TIMEOUT_MS = 30_000;
 interface GateLease {
   readonly root: string;
+  readonly mutation: boolean;
   active: boolean;
+  readonly owner: AbortSignal | undefined;
   release(): void;
 }
 const heldGate = new AsyncLocalStorage<GateLease>();
+// Synchronous mutation entries can share this process's exclusion from capture, even when
+// called from another async context (lazy live reads and shutdown cleanup). Async owners
+// never borrow it, and capture leases are never published here.
+const mutations = new Map<string, GateLease>();
 
 export function sqliteBusy(error: unknown): boolean {
   return (
@@ -30,7 +36,7 @@ class RecoveryGateBusyError extends Error {
 }
 
 /** Kernel locks, not a PID/stale-lock heuristic. Never unlink this file. */
-function tryGate(root: string): GateLease | null {
+function tryGate(root: string, mutation: boolean, owner?: AbortSignal): GateLease | null {
   mkdirSync(root, { recursive: true });
   const db = new Database(join(root, RECOVERY_GATE_FILE), { create: true, strict: true });
   try {
@@ -43,13 +49,17 @@ function tryGate(root: string): GateLease | null {
     db.exec("COMMIT");
     const lease: GateLease = {
       root,
+      mutation,
       active: true,
+      owner,
       release() {
         if (!lease.active) return;
         lease.active = false;
+        if (mutations.get(root) === lease) mutations.delete(root);
         db.close();
       },
     };
+    if (mutation) mutations.set(root, lease);
     return lease;
   } catch (error) {
     db.close();
@@ -58,23 +68,67 @@ function tryGate(root: string): GateLease | null {
   }
 }
 
-export async function withRecoveryGate<T>(
-  dataDir: string,
-  operation: () => Promise<T>,
+async function acquireGate(
+  root: string,
+  mutation: boolean,
+  check: () => void,
+  owner?: AbortSignal,
   deadline = performance.now() + RECOVERY_LOCK_WAIT_MS,
-): Promise<T> {
-  const root = resolve(dataDir);
+): Promise<GateLease> {
   const inherited = heldGate.getStore();
-  if (inherited?.active && inherited.root === root) return operation();
-  let lease: GateLease | null;
-  while ((lease = tryGate(root)) === null) {
+  for (;;) {
+    check();
+    if (inherited?.root === root && inherited.owner?.aborted)
+      throw new Error("the recovery gate owner is closed");
+    const lease = tryGate(root, mutation, owner);
+    if (lease !== null) return lease;
     if (performance.now() >= deadline) throw new RecoveryGateBusyError();
     await Bun.sleep(10);
   }
-  try {
-    return await heldGate.run(lease, operation);
-  } finally {
-    lease.release();
+}
+
+/**
+ * An async mutation owns capture exclusion until settlement or confirmed shutdown cleanup,
+ * not until a retired plugin callback happens to return. A failed close retains the fence.
+ */
+export class RecoveryGateLifetime {
+  private retired = false;
+  private cleanupConfirmed = false;
+  // IPC resources can outlive a normally completed lease. Fence their owner generation,
+  // rather than treating every released lease as a retired host.
+  private readonly revoked = new AbortController();
+  private lease: GateLease | undefined;
+
+  async run<T>(dataDir: string, operation: () => Promise<T>): Promise<T> {
+    const root = resolve(dataDir);
+    const inherited = heldGate.getStore();
+    const check = (): void => {
+      if (this.retired || (inherited?.root === root && inherited.owner?.aborted))
+        throw new Error("the recovery gate owner is closed");
+    };
+    const lease = await acquireGate(root, true, check, this.revoked.signal);
+    this.lease = lease;
+    try {
+      check();
+      return await heldGate.run(lease, operation);
+    } finally {
+      // close() releases only after cleanup succeeds. Neither a late callback nor a failed
+      // cleanup may release a successor's fence or turn unconfirmed retirement into success.
+      if (!this.retired || this.cleanupConfirmed) lease.release();
+      if (!lease.active && this.lease === lease) this.lease = undefined;
+    }
+  }
+
+  close(cleanup: () => void): void {
+    this.retired = true;
+    try {
+      cleanup();
+      this.cleanupConfirmed = true;
+      this.lease?.release();
+    } finally {
+      this.revoked.abort();
+      if (this.lease !== undefined && !this.lease.active) this.lease = undefined;
+    }
   }
 }
 
@@ -82,8 +136,17 @@ export async function withRecoveryGate<T>(
 export function withRecoveryGateSync<T>(dataDir: string, operation: () => T): T {
   const root = resolve(dataDir);
   const inherited = heldGate.getStore();
-  if (inherited?.active && inherited.root === root) return operation();
-  const lease = tryGate(root);
+  if (inherited?.root === root) {
+    if (inherited.owner?.aborted) throw new Error("the recovery gate owner is closed");
+    if (!inherited.mutation) throw new RecoveryGateBusyError();
+    if (inherited.active) return operation();
+  }
+  const borrowed = mutations.get(root);
+  if (borrowed !== undefined) {
+    if (borrowed.owner?.aborted) throw new RecoveryGateBusyError();
+    return heldGate.run(borrowed, operation);
+  }
+  const lease = tryGate(root, true, inherited?.root === root ? inherited.owner : undefined);
   if (lease === null) throw new RecoveryGateBusyError();
   try {
     return heldGate.run(lease, operation);
@@ -95,9 +158,9 @@ export function withRecoveryGateSync<T>(dataDir: string, operation: () => T): T 
 /** Gate before main lock, always. The caller's process watchdog bounds synchronous copy. */
 export async function withRecoveryCaptureFence<T>(dataDir: string, copy: () => T): Promise<T> {
   const deadline = performance.now() + RECOVERY_LOCK_WAIT_MS;
-  return withRecoveryGate(
-    dataDir,
-    async () => {
+  const lease = await acquireGate(resolve(dataDir), false, () => {}, undefined, deadline);
+  try {
+    return await heldGate.run(lease, async () => {
       const fence = new Database(join(dataDir, "manifold.db"), { strict: true });
       try {
         fence.exec("PRAGMA busy_timeout = 0");
@@ -120,9 +183,10 @@ export async function withRecoveryCaptureFence<T>(dataDir: string, copy: () => T
           fence.close();
         }
       }
-    },
-    deadline,
-  );
+    });
+  } finally {
+    lease.release();
+  }
 }
 
 /** Runs in the parent: a blocked child event loop cannot postpone this deadline. */

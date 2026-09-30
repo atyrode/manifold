@@ -226,7 +226,7 @@ import {
   type PluginDatabaseStage,
 } from "./plugin-database.ts";
 import { RecoveryBudget } from "./recovery-budget.ts";
-import { withRecoveryGate } from "./recovery-gate.ts";
+import { RecoveryGateLifetime } from "./recovery-gate.ts";
 import {
   InstallRefusal,
   inspectArtifact,
@@ -1704,6 +1704,7 @@ export class PluginHost {
    * deletes an install's files, publishes a roster or answers.
    */
   private readonly lifetime = new AbortController();
+  private readonly recoveryGate = new RecoveryGateLifetime();
   private get closed(): boolean {
     return this.lifetime.signal.aborted;
   }
@@ -2820,7 +2821,7 @@ export class PluginHost {
     };
     try {
       if (host.dataDir === null) await initialize();
-      else await withRecoveryGate(host.dataDir, initialize);
+      else await host.recoveryGate.run(host.dataDir, initialize);
     } catch (error) {
       host.close();
       throw error;
@@ -3540,9 +3541,10 @@ export class PluginHost {
     // Once only: shutdown may discard first, and a later discard must not remove, by path, a
     // stage image the next host has created since.
     const discard = (): void => {
-      if (!this.stagedMigrations.delete(discard)) return;
+      if (!this.stagedMigrations.has(discard)) return;
       staged.discard();
       image?.discard();
+      this.stagedMigrations.delete(discard);
     };
     this.stagedMigrations.add(discard);
     try {
@@ -3740,7 +3742,7 @@ export class PluginHost {
       // Queued behind a shutdown, a change never starts; outliving one, it never answers.
       this.assertOpen();
       const result =
-        this.dataDir === null ? await change() : await withRecoveryGate(this.dataDir, change);
+        this.dataDir === null ? await change() : await this.recoveryGate.run(this.dataDir, change);
       this.assertOpen();
       return result;
     } finally {
@@ -6835,13 +6837,15 @@ export class PluginHost {
    * answer refused, and the authored loop builds nothing further (#318).
    */
   close(): void {
-    this.lifetime.abort(new Error("the plugin host is closed"));
-    this.referenceService.close();
-    this.updates?.close();
-    this.authored?.close();
-    this.broker.clearRunLaunches();
-    for (const discard of this.stagedMigrations) discard();
-    for (const database of this.databases.values()) database.close();
-    this.databases.clear();
+    this.recoveryGate.close(() => {
+      this.lifetime.abort(new Error("the plugin host is closed"));
+      this.referenceService.close();
+      this.updates?.close();
+      this.authored?.close();
+      this.broker.clearRunLaunches();
+      for (const discard of this.stagedMigrations) discard();
+      for (const database of this.databases.values()) database.close();
+      this.databases.clear();
+    });
   }
 }

@@ -4,6 +4,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
+  RecoveryGateLifetime,
+  RECOVERY_GATE_FILE,
   waitForRecoveryCapture,
   withRecoveryGateSync,
   withRecoveryCaptureFence,
@@ -106,6 +108,203 @@ test("the held main fence permits an independent main snapshot before immutable 
   } finally {
     writer.close();
     plugin.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("capture waits for mutation cleanup and a retired callback cannot borrow the successor's exclusion", async () => {
+  const root = mkdtempSync(join(tmpdir(), "manifold-capture-retirement-"));
+  const main = new Database(join(root, "manifold.db"));
+  const plugin = new Database(join(root, "plugin.db"));
+  main.exec("PRAGMA journal_mode=WAL");
+  main.exec("CREATE TABLE published(value TEXT); INSERT INTO published VALUES ('old')");
+  plugin.exec("CREATE TABLE payload(value TEXT); INSERT INTO payload VALUES ('old')");
+  const old = new RecoveryGateLifetime();
+  const successor = new RecoveryGateLifetime();
+  const entered = Promise.withResolvers<void>();
+  const resume = Promise.withResolvers<void>();
+  const nextEntered = Promise.withResolvers<void>();
+  const nextResume = Promise.withResolvers<void>();
+  let retired: Promise<unknown> = Promise.resolve();
+  let replacing: Promise<unknown> = Promise.resolve();
+  let capturing: Promise<unknown> = Promise.resolve();
+  try {
+    retired = old.run(root, async () => {
+      plugin.exec("UPDATE payload SET value='draft'");
+      entered.resolve();
+      await resume.promise;
+      withRecoveryGateSync(root, () => plugin.exec("UPDATE payload SET value='stale'"));
+    });
+    await entered.promise;
+    // An independent synchronous entry shares mutation exclusion, not ownership authority.
+    expect(
+      withRecoveryGateSync(root, () => main.query("SELECT value FROM published").all()),
+    ).toEqual([{ value: "old" }]);
+    capturing = withRecoveryCaptureFence(root, () => {
+      expect(() =>
+        withRecoveryGateSync(root, () => plugin.exec("UPDATE payload SET value='mixed'")),
+      ).toThrow(/database_busy/);
+      return {
+        published: main.query("SELECT value FROM published").all(),
+        payload: plugin.query("SELECT value FROM payload").all(),
+      };
+    });
+    old.close(() => {
+      withRecoveryGateSync(root, () => plugin.exec("UPDATE payload SET value='old'"));
+    });
+    replacing = successor.run(root, async () => {
+      plugin.exec("UPDATE payload SET value='next'");
+      nextEntered.resolve();
+      await nextResume.promise;
+      main.exec("UPDATE published SET value='next'");
+    });
+    await nextEntered.promise;
+    resume.resolve();
+    await expect(retired).rejects.toThrow("the recovery gate owner is closed");
+    // The retired promise settling must not release the successor's real kernel lock.
+    const contender = new Database(join(root, RECOVERY_GATE_FILE));
+    try {
+      expect(() => contender.exec("BEGIN EXCLUSIVE")).toThrow(/locked/);
+    } finally {
+      contender.close();
+    }
+    nextResume.resolve();
+    await replacing;
+    expect(await capturing).toEqual({
+      published: [{ value: "next" }],
+      payload: [{ value: "next" }],
+    });
+  } finally {
+    resume.resolve();
+    nextResume.resolve();
+    await Promise.allSettled([retired, replacing, capturing]);
+    old.close(() => {});
+    successor.close(() => {});
+    main.close();
+    plugin.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("retirement between acquisition and entry cannot start a mutation or strand capture", async () => {
+  const root = mkdtempSync(join(tmpdir(), "manifold-capture-entry-"));
+  const main = new Database(join(root, "manifold.db"));
+  main.exec("CREATE TABLE published(value TEXT)");
+  const owner = new RecoveryGateLifetime();
+  try {
+    const entering = owner.run(root, async () => {
+      main.exec("INSERT INTO published VALUES ('retired')");
+    });
+    owner.close(() => {});
+    await expect(entering).rejects.toThrow("the recovery gate owner is closed");
+    expect(
+      await withRecoveryCaptureFence(root, () => main.query("SELECT value FROM published").all()),
+    ).toEqual([]);
+  } finally {
+    main.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("unconfirmed cleanup retains capture exclusion even after the retired mutation settles", async () => {
+  const root = mkdtempSync(join(tmpdir(), "manifold-capture-fail-stop-"));
+  const main = new Database(join(root, "manifold.db"));
+  main.exec("CREATE TABLE published(value TEXT); INSERT INTO published VALUES ('retained')");
+  main.close();
+  const child = Bun.spawn(
+    [
+      process.execPath,
+      "-e",
+      `
+    import { Database } from "bun:sqlite";
+    import { RecoveryGateLifetime, withRecoveryGateSync, RECOVERY_GATE_FILE } from
+      ${JSON.stringify(join(import.meta.dir, "recovery-gate.ts"))};
+    const root = ${JSON.stringify(root)};
+    const owner = new RecoveryGateLifetime();
+    const entered = Promise.withResolvers();
+    const resume = Promise.withResolvers();
+    const running = owner.run(root, async () => {
+      entered.resolve();
+      await resume.promise;
+    });
+    await entered.promise;
+    const outcomes = [];
+    try { owner.close(() => { throw new Error("cleanup unknown"); }); }
+    catch (error) { outcomes.push(error.message); }
+    resume.resolve();
+    await running;
+    try { withRecoveryGateSync(root, () => outcomes.push("borrowed")); }
+    catch (error) { outcomes.push(error.code); }
+    const contender = new Database(root + "/" + RECOVERY_GATE_FILE);
+    try { contender.exec("BEGIN EXCLUSIVE"); outcomes.push("captured"); }
+    catch (error) { outcomes.push(error.code); }
+    contender.close();
+    console.log(JSON.stringify(outcomes));
+    process.exit(0);
+  `,
+    ],
+    { stdin: "ignore", stdout: "pipe", stderr: "pipe" },
+  );
+  try {
+    const [code, output, error] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    if (code !== 0) throw new Error(error);
+    expect(JSON.parse(output)).toEqual(["cleanup unknown", "SQLITE_BUSY", "SQLITE_BUSY"]);
+    // Only confirmed process death releases a failed-close fence.
+    expect(
+      await withRecoveryCaptureFence(root, () => {
+        const reader = new Database(join(root, "manifold.db"), { readonly: true });
+        try {
+          return reader.query("SELECT value FROM published").all();
+        } finally {
+          reader.close();
+        }
+      }),
+    ).toEqual([{ value: "retained" }]);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGKILL");
+      await child.exited;
+    }
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a live host's IPC context outlives one gate lease but not the host's retirement", async () => {
+  const root = mkdtempSync(join(tmpdir(), "manifold-capture-context-"));
+  const main = new Database(join(root, "manifold.db"));
+  main.exec("CREATE TABLE published(value TEXT)");
+  const owner = new RecoveryGateLifetime();
+  const live = Promise.withResolvers<void>();
+  const late = Promise.withResolvers<void>();
+  let continued: Promise<unknown> = Promise.resolve();
+  let retired: Promise<unknown> = Promise.resolve();
+  try {
+    await owner.run(root, async () => {
+      continued = live.promise.then(() =>
+        withRecoveryGateSync(root, () => main.exec("INSERT INTO published VALUES ('live')")),
+      );
+      retired = late.promise.then(() =>
+        withRecoveryGateSync(root, () => main.exec("INSERT INTO published VALUES ('retired')")),
+      );
+    });
+    live.resolve();
+    await continued;
+    owner.close(() => {});
+    late.resolve();
+    await expect(retired).rejects.toThrow("the recovery gate owner is closed");
+    expect(
+      await withRecoveryCaptureFence(root, () => main.query("SELECT value FROM published").all()),
+    ).toEqual([{ value: "live" }]);
+  } finally {
+    live.resolve();
+    late.resolve();
+    await Promise.allSettled([continued, retired]);
+    owner.close(() => {});
+    main.close();
     rmSync(root, { recursive: true, force: true });
   }
 });
