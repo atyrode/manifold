@@ -83,7 +83,9 @@ export function NativeFileTransfer({
     } catch (error) {
       if (mounted.current) {
         setFailure(fileFailure(error));
-        setUncertain(!(error instanceof FilesActionError) || error.uncertain);
+        // A later denial says nothing about an earlier unacknowledged effect.
+        // Only an authoritative result or receipt can reconcile that uncertainty.
+        setUncertain((prior) => prior || !(error instanceof FilesActionError) || error.uncertain);
       }
     } finally {
       gate.current = false;
@@ -180,6 +182,7 @@ export function NativeFileTransfer({
       );
       if (mounted.current) {
         setResult(next);
+        setReceipt(null);
         setUncertain(false);
       }
     });

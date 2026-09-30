@@ -295,17 +295,18 @@ function ImageProjection({
     if (ref?.kind !== "file") return;
     // A replacement waits for its predecessor's release: neither cancellation nor
     // the bounded concurrent-read allowance may leak across effect lifetimes.
-    const opening = retired.current.then(() =>
-      imageAction(
+    const opening = retired.current.then(() => {
+      if (!live) return null;
+      return imageAction(
         host,
         `${FILES_ID}.openRead`,
         { ref, requestId: createFileRequestId() },
         OpenFileReadResultSchema,
-      ),
-    );
+      );
+    });
     void opening
       .then((value) => {
-        if (!live) return;
+        if (!live || !value) return;
         const transferId = value.transfer.transferId;
         if (!value.file.image) {
           setProjection({ host, retry, source: null, reason: "unsupported_image" });
@@ -349,12 +350,14 @@ function ImageProjection({
       retired.current = opening
         .then(
           (value) =>
-            imageAction(
-              host,
-              `${FILES_ID}.cancelRead`,
-              { ref, transferId: value.transfer.transferId },
-              FileTransferSchema,
-            ).then(() => undefined),
+            value
+              ? imageAction(
+                  host,
+                  `${FILES_ID}.cancelRead`,
+                  { ref, transferId: value.transfer.transferId },
+                  FileTransferSchema,
+                ).then(() => undefined)
+              : undefined,
           () => undefined,
         )
         .catch(() => {
