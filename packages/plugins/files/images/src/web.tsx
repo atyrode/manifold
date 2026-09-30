@@ -21,7 +21,14 @@ import {
   type PluginOwnedRef,
 } from "@manifold/protocol";
 import { BorrowedPanel, Button, ByteImage, Cluster, Empty, Input, Stack, Text } from "@manifold/ui";
-import { useEffect, useRef, useState, useSyncExternalStore, type ReactElement } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactElement,
+} from "react";
 import { z } from "zod";
 import {
   FileImageElementSchema,
@@ -82,7 +89,7 @@ function ImageIntake({
   const [existing, setExisting] = useState("");
   const [failure, setFailure] = useState<string | null>(null);
   const [intake, setIntake] = useState(0);
-  useEffect(() => () => pending?.dispose(), [pending]);
+  useLayoutEffect(() => () => pending?.dispose(), [pending]);
   if (host.containerId === null)
     return <Empty>Open a canvas and select the Image tool to save or attach an image.</Empty>;
   const containerId = host.containerId;
@@ -224,11 +231,33 @@ function AttachmentReceipt({
 }
 
 export function FileImage({ data, host, edit }: PortableElementProps): ReactElement {
+  const [scope, setScope] = useState({
+    client: host.client,
+    localFiles: host.localFiles,
+    principal: host.principal.id,
+    container: host.containerId,
+    generation: 0,
+  });
+  if (
+    scope.client !== host.client ||
+    scope.localFiles !== host.localFiles ||
+    scope.principal !== host.principal.id ||
+    scope.container !== host.containerId
+  ) {
+    setScope({
+      client: host.client,
+      localFiles: host.localFiles,
+      principal: host.principal.id,
+      container: host.containerId,
+      generation: scope.generation + 1,
+    });
+    return <Empty>Opening the current image source…</Empty>;
+  }
   const checked = FileImageElementSchema.safeParse(data);
   if (!checked.success) return <Empty>Image source unavailable: invalid reference or crop.</Empty>;
   return (
     <ImageProjection
-      key={`${host.principal.id}:${checked.data.file}`}
+      key={`${scope.generation}:${checked.data.file}`}
       host={host}
       file={checked.data.file}
       crop={imageCrop(checked.data)}
@@ -249,23 +278,21 @@ function ImageProjection({
   edit: PortableElementEdit;
 }): ReactElement {
   const [projection, setProjection] = useState<{
-    client: PortableHostServices["client"];
-    source: ByteImageSource;
+    host: PortableHostServices;
+    retry: number;
+    source: ByteImageSource | null;
+    reason: string | null;
   } | null>(null);
-  const source = projection?.client === host.client ? projection.source : null;
-  const [reason, setReason] = useState<string | null>(null);
   const [retry, setRetry] = useState(0);
   const [cropping, setCropping] = useState(false);
+  const current = projection?.host === host && projection.retry === retry ? projection : null;
+  const source = current?.source;
+  const reason = current?.reason;
   const retired = useRef(Promise.resolve());
   useEffect(() => {
     let live = true;
     const ref = parseManifoldUri(file);
-    if (ref?.kind !== "file") {
-      setReason("invalid source");
-      return;
-    }
-    setProjection(null);
-    setReason(null);
+    if (ref?.kind !== "file") return;
     // A replacement waits for its predecessor's release: neither cancellation nor
     // the bounded concurrent-read allowance may leak across effect lifetimes.
     const opening = retired.current.then(() =>
@@ -281,15 +308,22 @@ function ImageProjection({
         if (!live) return;
         const transferId = value.transfer.transferId;
         if (!value.file.image) {
-          setReason("unsupported_image");
+          setProjection({ host, retry, source: null, reason: "unsupported_image" });
           return;
         }
         if (value.transfer.state !== "reading") {
-          setReason(value.transfer.reason ?? value.transfer.state);
+          setProjection({
+            host,
+            retry,
+            source: null,
+            reason: value.transfer.reason ?? value.transfer.state,
+          });
           return;
         }
         setProjection({
-          client: host.client,
+          host,
+          retry,
+          reason: null,
           source: {
             pluginId: FILES_ID,
             carrierId: "read",
@@ -302,7 +336,13 @@ function ImageProjection({
         });
       })
       .catch((error: unknown) => {
-        if (live) setReason(error instanceof Error ? error.message : "unavailable");
+        if (live)
+          setProjection({
+            host,
+            retry,
+            source: null,
+            reason: error instanceof Error ? error.message : "unavailable",
+          });
       });
     return () => {
       live = false;
@@ -321,7 +361,7 @@ function ImageProjection({
           console.warn("Image read release unconfirmed; its bounded lease will expire.");
         });
     };
-  }, [host.client, file, retry]);
+  }, [host, file, retry]);
   return (
     <Stack gap="0.25rem">
       {!cropping ? (

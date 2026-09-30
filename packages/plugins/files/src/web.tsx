@@ -1,7 +1,7 @@
 import type { PortablePanelProps, PortableSectionProps } from "@manifold/plugin";
 import { formatManifoldUri, type PluginOwnedRef } from "@manifold/protocol";
 import { Button, Cluster, Empty, Stack, Text } from "@manifold/ui";
-import { useEffect, useRef, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 import type { z } from "zod";
 import { ListFilesResultSchema, type FileDescriptor } from "./contract.ts";
 import { fileAction, fileFailure } from "./browser-actions.ts";
@@ -16,17 +16,20 @@ export function FilesPanel({ host }: PortablePanelProps): ReactElement {
     client: host.client,
     localFiles: host.localFiles,
     principal: host.principal.id,
+    container: host.containerId,
     generation: 0,
   });
   if (
     scope.client !== host.client ||
     scope.localFiles !== host.localFiles ||
-    scope.principal !== host.principal.id
+    scope.principal !== host.principal.id ||
+    scope.container !== host.containerId
   ) {
     setScope({
       client: host.client,
       localFiles: host.localFiles,
       principal: host.principal.id,
+      container: host.containerId,
       generation: scope.generation + 1,
     });
     return <Text>Closing the previous Files session…</Text>;
@@ -40,55 +43,53 @@ function FilesLibrary({ host }: PortableSectionProps): ReactElement {
   const [previous, setPrevious] = useState<(PluginOwnedRef | undefined)[]>([]);
   const [selected, setSelected] = useState<PluginOwnedRef | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState(true);
   const [download, setDownload] = useState(false);
   const [deliveryFile, setDeliveryFile] = useState<FileDescriptor | null>(null);
   const pending = useRef(false);
   const generation = useRef(0);
 
-  const load = async (
-    after?: PluginOwnedRef,
-    history: (PluginOwnedRef | undefined)[] = [],
-  ): Promise<void> => {
+  const readPage = useCallback(
+    async (after?: PluginOwnedRef, history: (PluginOwnedRef | undefined)[] = []): Promise<void> => {
+      const current = generation.current;
+      try {
+        const value = await fileAction(
+          host,
+          "list",
+          { ...(after ? { after } : {}), limit: 32 },
+          ListFilesResultSchema,
+        );
+        if (generation.current === current) {
+          setPage(value);
+          setCursor(after);
+          setPrevious(history);
+        }
+      } catch (error) {
+        if (generation.current === current) setFailure(fileFailure(error));
+      } finally {
+        if (generation.current === current) {
+          pending.current = false;
+          setBusy(false);
+        }
+      }
+    },
+    [host],
+  );
+  const load = (after?: PluginOwnedRef, history: (PluginOwnedRef | undefined)[] = []): void => {
     if (pending.current) return;
     pending.current = true;
     setBusy(true);
     setFailure(null);
     setPage(null);
-    const current = generation.current;
-    try {
-      const value = await fileAction(
-        host,
-        "list",
-        { ...(after ? { after } : {}), limit: 32 },
-        ListFilesResultSchema,
-      );
-      if (generation.current === current) {
-        setPage(value);
-        setCursor(after);
-        setPrevious(history);
-      }
-    } catch (error) {
-      if (generation.current === current) setFailure(fileFailure(error));
-    } finally {
-      if (generation.current === current) {
-        pending.current = false;
-        setBusy(false);
-      }
-    }
+    void readPage(after, history);
   };
   useEffect(() => {
-    generation.current += 1;
-    pending.current = false;
-    setSelected(null);
-    setCursor(undefined);
-    setPrevious([]);
-    setDownload(false);
-    void load();
+    pending.current = true;
+    void readPage();
     return () => {
       generation.current += 1;
     };
-  }, [host.client]);
+  }, [readPage]);
 
   return (
     <Stack gap="0.9rem">

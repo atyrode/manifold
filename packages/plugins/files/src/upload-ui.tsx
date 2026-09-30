@@ -6,6 +6,7 @@ import {
 } from "@manifold/protocol";
 import { Button, Cluster, FileInput, Stack, Text } from "@manifold/ui";
 import {
+  useCallback,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -33,6 +34,7 @@ export function FileUpload(props: FileUploadProps): ReactElement {
     client: host.client,
     localFiles: host.localFiles,
     principal: host.principal.id,
+    container: host.containerId,
     purpose,
     selection: props.initialSelection?.handle,
     generation: 0,
@@ -41,6 +43,7 @@ export function FileUpload(props: FileUploadProps): ReactElement {
     scope.client !== host.client ||
     scope.localFiles !== host.localFiles ||
     scope.principal !== host.principal.id ||
+    scope.container !== host.containerId ||
     scope.purpose !== purpose ||
     scope.selection !== props.initialSelection?.handle
   ) {
@@ -48,6 +51,7 @@ export function FileUpload(props: FileUploadProps): ReactElement {
       client: host.client,
       localFiles: host.localFiles,
       principal: host.principal.id,
+      container: host.containerId,
       purpose,
       selection: props.initialSelection?.handle,
       generation: scope.generation + 1,
@@ -66,9 +70,25 @@ function FileUploadIntake({
   onPublished,
   onSaved,
 }: FileUploadProps): ReactElement {
-  const [controller, setController] = useState<FileUploadController | null>(null);
+  const [initial] = useState(() => {
+    try {
+      return {
+        controller: initialSelection
+          ? new FileUploadController(host, initialSelection, purpose)
+          : null,
+        failure: null,
+      };
+    } catch {
+      return {
+        controller: null,
+        failure:
+          "This selection exceeds the bounded file intake or has invalid metadata. Nothing was saved.",
+      };
+    }
+  });
+  const [controller, setController] = useState(initial.controller);
   const [opaque, setOpaque] = useState(false);
-  const [failure, setFailure] = useState<string | null>(null);
+  const [failure, setFailure] = useState<string | null>(initial.failure);
   useLayoutEffect(() => () => controller?.dispose(), [controller]);
 
   const choose = (files: readonly LocalFileDescriptor[]): void => {
@@ -99,8 +119,11 @@ function FileUploadIntake({
     }
   };
   useEffect(() => {
-    if (initialSelection) choose([initialSelection]);
-  }, [initialSelection?.handle]);
+    if (initial.failure && initialSelection)
+      void host.localFiles
+        .release(initialSelection.handle)
+        .catch(() => setFailure("Could not release the refused local selection."));
+  }, [host.localFiles, initial.failure, initialSelection]);
 
   return (
     <Stack gap="0.5rem">
@@ -180,24 +203,28 @@ function UploadSelection({
   onChooseOpaque: () => void;
 }): ReactElement {
   const callbacks = useRef({ onPublished, onSaved });
-  callbacks.current = { onPublished, onSaved };
+  useLayoutEffect(() => {
+    callbacks.current = { onPublished, onSaved };
+  }, [onPublished, onSaved]);
   const published = useRef<string | null>(null);
   const described = useRef<string | null>(null);
-  const subscribe = useRef((notify: () => void) =>
-    controller.subscribe(() => {
-      const snapshot = controller.getSnapshot();
-      // This synchronous notification happens at the actual publication receipt, before inspect.
-      if (snapshot.savedRef && published.current !== snapshot.savedRef.fileId) {
-        published.current = snapshot.savedRef.fileId;
-        callbacks.current.onPublished?.(snapshot.savedRef);
-      }
-      if (snapshot.file && described.current !== snapshot.file.ref.fileId) {
-        described.current = snapshot.file.ref.fileId;
-        callbacks.current.onSaved?.(snapshot.file);
-      }
-      notify();
-    }),
-  ).current;
+  const subscribe = useCallback(
+    (notify: () => void) =>
+      controller.subscribe(() => {
+        const snapshot = controller.getSnapshot();
+        // Notify at the publication receipt, before inspect, using only committed callbacks.
+        if (snapshot.savedRef && published.current !== snapshot.savedRef.fileId) {
+          published.current = snapshot.savedRef.fileId;
+          callbacks.current.onPublished?.(snapshot.savedRef);
+        }
+        if (snapshot.file && described.current !== snapshot.file.ref.fileId) {
+          described.current = snapshot.file.ref.fileId;
+          callbacks.current.onSaved?.(snapshot.file);
+        }
+        notify();
+      }),
+    [controller],
+  );
   const state = useSyncExternalStore(subscribe, controller.getSnapshot, controller.getSnapshot);
   const terminal =
     state.phase === "cancelled" ||

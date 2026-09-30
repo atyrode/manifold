@@ -32,7 +32,6 @@ import {
   useEffect,
   useId,
   useLayoutEffect,
-  useMemo,
   useReducer,
   useRef,
   useState,
@@ -123,10 +122,7 @@ export function TerminalView({
   const [clipboardCopy, setClipboardCopy] = useState<TerminalClipboardCopy | null>(null);
   const [fileSelection, setFileSelection] = useState<{
     file: File;
-    hostClient: typeof host.client;
-    client: typeof client;
-    principal: string;
-    terminalId: string;
+    lifetime: object;
   } | null>(null);
   const [selectingClipboardFile, setSelectingClipboardFile] = useState(false);
   const filePendingRef = useRef(false);
@@ -235,52 +231,72 @@ export function TerminalView({
   }, [active, readOnly, isController]);
 
   const filesEnabled = host.assembly.enabled("core.files");
-  const fileLifetime = useMemo(
-    () => ({}),
-    [host.client, host.principal.id, client, terminalId, filesEnabled, readOnly],
-  );
-  const fileLifetimeRef = useRef<object | null>(fileLifetime);
-  fileLifetimeRef.current = fileLifetime;
+  const [fileLifetime, setFileLifetime] = useState({
+    hostClient: host.client,
+    token: host.token,
+    principal: host.principal.id,
+    client,
+    terminalId,
+    filesEnabled,
+    readOnly,
+  });
+  if (
+    fileLifetime.hostClient !== host.client ||
+    fileLifetime.token !== host.token ||
+    fileLifetime.principal !== host.principal.id ||
+    fileLifetime.client !== client ||
+    fileLifetime.terminalId !== terminalId ||
+    fileLifetime.filesEnabled !== filesEnabled ||
+    fileLifetime.readOnly !== readOnly
+  ) {
+    // These event-owned values belong to one authority lifetime, not to the PTY viewer.
+    setFileLifetime({
+      hostClient: host.client,
+      token: host.token,
+      principal: host.principal.id,
+      client,
+      terminalId,
+      filesEnabled,
+      readOnly,
+    });
+    setFileSelection(null);
+    setSelectingClipboardFile(false);
+  }
+  const fileLifetimeRef = useRef<object | null>(null);
   const selectionCurrent =
-    fileSelection !== null &&
-    fileSelection.hostClient === host.client &&
-    fileSelection.client === client &&
-    fileSelection.principal === host.principal.id &&
-    fileSelection.terminalId === terminalId &&
-    filesEnabled &&
-    !readOnly;
+    fileSelection?.lifetime === fileLifetime && filesEnabled && !readOnly;
   useLayoutEffect(() => {
     if (selectionCurrent) fileReviewRef.current?.focus();
   }, [selectionCurrent, fileSelection]);
   useLayoutEffect(() => {
+    fileLifetimeRef.current = fileLifetime;
     filePendingRef.current = false;
     fileOfferedRef.current = false;
-    setSelectingClipboardFile(false);
-    setFileSelection(null);
+    clipboardRef.current?.reset();
+    clipboardRef.current?.setPasteMode(pasteModeRef.current?.enabled ?? false);
     return () => {
       if (fileLifetimeRef.current === fileLifetime) fileLifetimeRef.current = null;
     };
   }, [fileLifetime]);
-  fileOfferRef.current = (file) => {
-    if (!filesEnabled || readOnly) {
-      notifyRef.current(
-        "Save and delivery require the optional Files plugin and a live terminal view.",
-      );
-      return;
-    }
-    if (fileOfferedRef.current || filePendingRef.current) {
-      notifyRef.current("Finish or cancel the current file review before selecting another file.");
-      return;
-    }
-    fileOfferedRef.current = true;
-    setFileSelection({
-      file,
-      hostClient: host.client,
-      client,
-      principal: host.principal.id,
-      terminalId,
-    });
-  };
+  useLayoutEffect(() => {
+    fileOfferRef.current = (file) => {
+      if (fileLifetimeRef.current !== fileLifetime) return;
+      if (!fileLifetime.filesEnabled || fileLifetime.readOnly) {
+        notifyRef.current(
+          "Save and delivery require the optional Files plugin and a live terminal view.",
+        );
+        return;
+      }
+      if (fileOfferedRef.current || filePendingRef.current) {
+        notifyRef.current(
+          "Finish or cancel the current file review before selecting another file.",
+        );
+        return;
+      }
+      fileOfferedRef.current = true;
+      setFileSelection({ file, lifetime: fileLifetime });
+    };
+  }, [fileLifetime]);
   const selectClipboardFile = async (): Promise<void> => {
     if (!filesEnabled || readOnly || fileSelection || filePendingRef.current) return;
     const lifetime = fileLifetime;
