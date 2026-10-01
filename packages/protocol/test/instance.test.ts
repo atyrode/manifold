@@ -6,7 +6,6 @@ import {
   GuestMessageSchema,
   HOST_TO_GUEST_MESSAGE_TYPES,
   HostToGuestMessageSchema,
-  INSTANCE_CHANNEL_PATH,
   MAX_ADVERTISED_TICKETS,
   MintShareRequestSchema,
   PROTOCOL_VERSION,
@@ -236,4 +235,3 @@ describe("share vocabulary", () => {
     ).toBe(false);
   });
 });
-

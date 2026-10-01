@@ -240,9 +240,14 @@ describe("session expiry (ADR 0019 §2)", () => {
     };
     for (const guest of [guestAgent, guestHuman]) {
       expect(() => fix.auth.mintShareTicket(record, guest)).toThrow("recipient_unapproved");
-      fix.auth.approveShareRecipient({
-        shareId: record.id, guestPrincipalId: guest.id, caps: ["containers:read"],
-      }, fix.owner);
+      fix.auth.approveShareRecipient(
+        {
+          shareId: record.id,
+          guestPrincipalId: guest.id,
+          caps: ["containers:read"],
+        },
+        fix.owner,
+      );
     }
     const agent = fix.auth.mintShareTicket(record, { ...guestAgent, kind: "human" });
     const human = fix.auth.mintShareTicket(record, guestHuman);
@@ -254,8 +259,9 @@ describe("session expiry (ADR 0019 §2)", () => {
     expect(agent.principal.kind).toBe("agent");
     fix.runtime.time = agentExpiry - 1;
     expect(fix.auth.authenticate(agent.token).principal.id).toBe(agent.principal.id);
-    expect(fix.auth.resumableShareTicketPrincipals(record.id).sort())
-      .toEqual([agent.principal.id, human.principal.id].sort());
+    expect(fix.auth.resumableShareTicketPrincipals(record.id).toSorted()).toEqual(
+      [agent.principal.id, human.principal.id].sort(),
+    );
     fix.runtime.time += 1;
     expect(refusal(() => fix.auth.authenticate(agent.token)).message).toBe("expired");
     expect(fix.auth.resumableShareTicketPrincipals(record.id)).toEqual([human.principal.id]);

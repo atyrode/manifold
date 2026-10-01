@@ -1842,13 +1842,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       if (credential !== undefined && (!auth || auth.principal.id !== principalId))
         throw new Error("terminal_runtime_admission_refused");
       if (recipe?.runtime || stored.runId !== undefined) {
-        if (
-          !this.jobs ||
-          !machine.terminalHostId ||
-          !credential ||
-          !auth ||
-          traceId === undefined
-        )
+        if (!this.jobs || !machine.terminalHostId || !credential || !auth || traceId === undefined)
           throw new Error("terminal_runtime_unsupported");
         let descriptor = recipe?.runtime;
         let privateEnv;

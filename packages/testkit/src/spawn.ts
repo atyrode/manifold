@@ -498,7 +498,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Tes
     [
       "bun",
       options.controlledTime
-        ? "packages/testkit/src/clocked-server.ts"
+        ? "packages/server/test/clocked-server.ts"
         : "packages/server/src/main.ts",
     ],
     env,
@@ -568,10 +568,14 @@ export async function startServer(options: StartServerOptions = {}): Promise<Tes
             stdin.write(`${JSON.stringify({ id, now })}\n`);
             await stdin.flush();
             try {
-              return await waitFor(() => {
-                observed.assertRunning("server clock advance");
-                return clockAcks.get(id) ?? false;
-              }, READY_TIMEOUT_MS, 10);
+              return await waitFor(
+                () => {
+                  observed.assertRunning("server clock advance");
+                  return clockAcks.get(id) ?? false;
+                },
+                READY_TIMEOUT_MS,
+                10,
+              );
             } finally {
               clockAcks.delete(id);
             }
@@ -1065,7 +1069,10 @@ export async function openDial(
 }
 
 /** The host's ordinary discoverable action lists pending and approved recipients without secrets. */
-export async function listShareRecipients(host: TestServer, shareId: string): Promise<ShareRecipient[]> {
+export async function listShareRecipients(
+  host: TestServer,
+  shareId: string,
+): Promise<ShareRecipient[]> {
   return ShareRecipientSchema.array().parse(
     await ownerAction(host, "core.access.listShareRecipients", { shareId }),
   );
@@ -1079,7 +1086,11 @@ export async function approveShareRecipient(
   caps: readonly Cap[],
 ): Promise<ShareRecipient> {
   return ShareRecipientSchema.parse(
-    await ownerAction(host, "core.access.approveShareRecipient", { shareId, guestPrincipalId, caps }),
+    await ownerAction(host, "core.access.approveShareRecipient", {
+      shareId,
+      guestPrincipalId,
+      caps,
+    }),
   );
 }
 

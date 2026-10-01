@@ -454,7 +454,6 @@ export const accessHandlers = {
     return removed.ok ? removed.value : { refused: removed.message };
   },
 
-
   async dialShare(ctx: AccessCtx, args: DialShareRequest): Promise<Outcome<Dial>> {
     // Blocks on the host's welcome by design (see the action's note): a row that named nothing
     // yet would be a zombie nobody can tell from a live share that happens to be offline.

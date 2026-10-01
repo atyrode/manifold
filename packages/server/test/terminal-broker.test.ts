@@ -1933,6 +1933,62 @@ describe("TerminalBroker pending-open room residency", () => {
 });
 
 describe("TerminalBroker first-viewer tile fit", () => {
+  test("withdrawal between open and measured fit cannot create a remote-derived PTY", () => {
+    const setup = brokerSetup();
+    try {
+      const minted = setup.auth.mintShare(
+        {
+          node: { kind: "container", containerId: setup.container.id },
+          origin: "https://guest.example",
+          caps: ["containers:read", "terminals:spawn", "terminals:write"],
+        },
+        setup.root,
+      );
+      const share = setup.store.getShare(minted.share.id);
+      if (share === null) throw new Error("missing share");
+      const guest = { id: "guest-fit", kind: "human" as const, name: "fit", color: "#2563eb" };
+      expect(() => setup.auth.mintShareTicket(share, guest)).toThrow(ServiceError);
+      setup.auth.approveShareRecipient(
+        { shareId: share.id, guestPrincipalId: guest.id, caps: minted.share.caps },
+        setup.root,
+      );
+      const ticket = setup.auth.mintShareTicket(share, guest);
+      const socket = new FakeSocket();
+      const channel = new SessionChannel(
+        setup.runtime.newId(),
+        socket,
+        setup.auth.authenticate(ticket.token),
+        setup.container.id,
+        "remote-fit",
+      );
+      setup.broker.open(channel, {
+        type: "terminal_open",
+        elementId: "withdrawn-before-fit",
+        placement: "tile",
+      });
+      const terminalId = pendingTerminalId(setup);
+      setup.auth.removeShareRecipient(
+        { shareId: share.id, guestPrincipalId: guest.id },
+        setup.root,
+      );
+      setup.broker.resize(setup.opener, {
+        type: "terminal_resize",
+        terminalId,
+        viewportId: "still-authorized-root-viewer",
+        viewport: { cols: 96, rows: 30 },
+      });
+      expect(setup.machine.sent.some((message) => message.type === "create")).toBe(false);
+      expect(setup.store.getTerminal(terminalId)).toBeNull();
+      expect(setup.broker.hasPendingOpenForContainer(setup.container.id)).toBe(false);
+      expect(setup.rooms.get(setup.container.id)?.homesTerminal(terminalId)).toBe(false);
+      expect(socket.messages()).toContainEqual(
+        expect.objectContaining({ type: "error", code: "forbidden", ref: "withdrawn-before-fit" }),
+      );
+    } finally {
+      setup.store.close();
+    }
+  });
+
   test("only a real writable home viewport births a pending tile, without a controller requirement", () => {
     const setup = brokerSetup();
     setup.broker.open(setup.opener, {
@@ -2516,6 +2572,62 @@ describe("TerminalBroker restart in place", () => {
     await f.broker.drain(f.machine.machineId, true);
     expect(await f.broker.restartById(terminalId, f.root.principal.id)).toBe("machine_draining");
     f.store.close();
+  });
+
+  test("remote default restart preserves exact approval bounds and retires its derived bearer", async () => {
+    const f = brokerFixture();
+    try {
+      const minted = f.auth.mintShare(
+        {
+          node: { kind: "container", containerId: f.container.id },
+          origin: "https://guest.example",
+          caps: ["containers:read", "terminals:write"],
+        },
+        f.root,
+      );
+      const share = f.store.getShare(minted.share.id);
+      if (share === null) throw new Error("missing share");
+      const guest = {
+        id: "guest-restart",
+        kind: "human" as const,
+        name: "restart",
+        color: "#2563eb",
+      };
+      expect(() => f.auth.mintShareTicket(share, guest)).toThrow(ServiceError);
+      f.auth.approveShareRecipient(
+        { shareId: share.id, guestPrincipalId: guest.id, caps: minted.share.caps },
+        f.root,
+      );
+      const ticket = f.auth.mintShareTicket(share, guest);
+      const actor = f.auth.authenticate(ticket.token);
+      const credential = f.auth.credentialReference(actor);
+      const restarted = f.broker.restartById(f.create.terminalId, actor.principal.id, credential);
+      const command = f.machine.sent.find((message) => message.type === "terminal_restart");
+      if (command?.type !== "terminal_restart" || command.create === undefined)
+        throw new Error("missing restart command");
+      const derivedToken = command.create.env.MANIFOLD_TOKEN;
+      if (derivedToken === undefined) throw new Error("missing terminal bearer");
+      expect(f.auth.authenticate(derivedToken).caps).toEqual([
+        "containers:read",
+        "terminals:write",
+      ]);
+      f.broker.onRestarted(f.machine.machineId, {
+        type: "terminal_restarted",
+        terminalId: f.create.terminalId,
+        fallback: "original",
+      });
+      expect(await restarted).toBe("ok");
+      f.auth.removeShareRecipient({ shareId: share.id, guestPrincipalId: guest.id }, f.root);
+      expect(() => f.auth.authenticate(derivedToken)).toThrow(ServiceError);
+      f.machine.clear();
+      expect(await f.broker.restartById(f.create.terminalId, actor.principal.id, credential)).toBe(
+        "terminal_runtime_admission_refused",
+      );
+      expect(f.machine.sent.some((message) => message.type === "terminal_restart")).toBe(false);
+      expect(f.store.getTerminal(f.create.terminalId)?.status).toBe("running");
+    } finally {
+      f.store.close();
+    }
   });
 
   test("legacy rows restart as an explicitly reported shell only on unconfined owners", async () => {

@@ -2259,16 +2259,16 @@ their published vocabulary does not move.
 and minted for a named guest **origin**; a **dial** is the guest's side of one accepted share.
 No new capability: a share hands authority out, so it declares the cap that already means that.
 
-| Action                    | Caps               | Scope     | Args → Result                                                           |
-| ------------------------- | ------------------ | --------- | ----------------------------------------------------------------------- |
-| `core.access.mintShare`   | `tokens:mint`      | container | `{ node, caps, origin }` → `ShareGrant { share, token }` — raw ONCE     |
-| `core.access.revokeShare` | `tokens:mint`      | container | `{ shareId }` → `{ revoked: <tickets severed> }` — **`cleanup: true`**  |
-| `core.access.listShares`  | `tokens:mint`      | container | `{}` → `ShareInventory { shares, dials }` — both directions, no secrets |
-| `core.access.listShareRecipients` | `tokens:mint` | container | `{ shareId }` → `ShareRecipient[]` — pending and last approval, no secrets |
-| `core.access.approveShareRecipient` | `tokens:mint` | container | `{ shareId, guestPrincipalId, caps }` → `ShareRecipient` — host-approved subset |
-| `core.access.removeShareRecipient` | `tokens:mint` | container | `{ shareId, guestPrincipalId }` → `ShareRecipient` — **`cleanup: true`**, withdraw and fence tickets |
-| `core.access.dialShare`   | `containers:write` | workspace | `{ origin, token }` → `Dial`; BLOCKS on the host's welcome              |
-| `core.access.openDial`    | `containers:read`  | workspace | `{ dialId, caps? }` → `DialTicket { origin, ref, caps, token, expiresAt }` |
+| Action                              | Caps               | Scope     | Args → Result                                                                                        |
+| ----------------------------------- | ------------------ | --------- | ---------------------------------------------------------------------------------------------------- |
+| `core.access.mintShare`             | `tokens:mint`      | container | `{ node, caps, origin }` → `ShareGrant { share, token }` — raw ONCE                                  |
+| `core.access.revokeShare`           | `tokens:mint`      | container | `{ shareId }` → `{ revoked: <tickets severed> }` — **`cleanup: true`**                               |
+| `core.access.listShares`            | `tokens:mint`      | container | `{}` → `ShareInventory { shares, dials }` — both directions, no secrets                              |
+| `core.access.listShareRecipients`   | `tokens:mint`      | container | `{ shareId }` → `ShareRecipient[]` — pending and last approval, no secrets                           |
+| `core.access.approveShareRecipient` | `tokens:mint`      | container | `{ shareId, guestPrincipalId, caps }` → `ShareRecipient` — host-approved subset                      |
+| `core.access.removeShareRecipient`  | `tokens:mint`      | container | `{ shareId, guestPrincipalId }` → `ShareRecipient` — **`cleanup: true`**, withdraw and fence tickets |
+| `core.access.dialShare`             | `containers:write` | workspace | `{ origin, token }` → `Dial`; BLOCKS on the host's welcome                                           |
+| `core.access.openDial`              | `containers:read`  | workspace | `{ dialId, caps? }` → `DialTicket { origin, ref, caps, token, expiresAt }`                           |
 
 `node` is a `manifold://` reference, never a bare container id ([Reference nodes](#reference-nodes)); a ref that is not
 a container is refused `only a container can be shared`, which is the one rung these handlers
@@ -2298,13 +2298,26 @@ bearers or hashes. Narrowing and removal durably change approval, retire affecte
 ticket credentials and grant rows, invalidate authority and fence existing sockets; unrelated
 relationships remain live. Removal preserves approval provenance without a permanent principal
 tombstone, so only a new explicit approval can readmit that recipient.
-Ordinary minting, Run/session credential issuance and derived shares retain the exact source
-recipient relationship; approval withdrawal or narrowing cannot be escaped by deriving another
-credential or share. Raw grant administration remains root-only at every bound context ingress.
+Ordinary minting, Run/session credential issuance and derived shares retain exact source
+recipient dependencies. A cross-Agent child Run keeps its issuing credential, the actual
+parent Run credential and the target Agent's standing sponsor; renewal and session rebinding
+preserve the full Run dependency set. Withdrawal settles affected Run subtrees and fences
+every retired descendant principal, including retained descendants without a direct
+recipient row. Another credential or share cannot escape withdrawal or narrowing. Raw grant
+administration remains root-only at every bound context ingress.
+Share-owned ceiling rows are excluded from ordinary principal evaluation; a sibling share at
+the same origin grants no ambient authority. Recipient-derived credentials remain capped by
+their actual literal caps even when a standalone administered grant names that principal or
+origin. Such a standalone grant retains its ordinary meaning for unrelated credentials.
 
-Retained pre-recipient share tickets fail closed before admission: the schema cutover creates
-no approvals and fences old ticket credentials/grants while preserving unrelated identities,
-share origins/ceilings and data. Old instance protocol peers cannot resume around that policy.
+Retained pre-recipient share tickets fail closed before admission. The backed-up schema
+cutover creates no approvals and conservatively retires old remote tickets, potentially
+derived credentials, standalone grants and child shares. Legacy records identify issuing
+principals, not exact issuing credentials: indistinguishable independently issued access may
+also need reissuance. This one-time legacy reset is not an exact-provenance claim. Content,
+terminal records, local identities and owner recovery access are preserved, as are original
+share origins/ceilings. Reapproval and reissuance use ordinary host actions; old instance
+protocol peers cannot resume around that policy.
 The session/instance revision and persistence schema are independent of native and hardened
 renderer contracts; unreleased held branches do not reserve their candidate version numbers.
 Three lifecycle events (`dial_online`, `dial_offline`, `dial_revoked`) are
@@ -2313,15 +2326,15 @@ declared by this plugin and emitted by the floor on `manifold://plugin/core.acce
 
 A share's caps become a GRANT ROW on the shared node at mint (ADR 0011 §Tokens become grant
 references): `{ principal: { kind: "instance", origin }, node: "manifold://container/<id>",
-caps, effect: "allow", reach: "subtree" }`, referenced by `ShareRecord.grant_id`. Ticket
-attenuation is then grant subsetting by construction — each ordinary ticket carries an explicit
-host-approved subset of the share's caps at that node and can never exceed either authority.
-`revokeShare` DELETES that row in the same transaction that marks the share revoked (and nulls
-`grant_id`; the share stays listable and auditable), so a revoked share confers nothing even
-before its tickets are severed. A grant presents no credential, so absence of the row IS its
-revocation — `revoked_at` exists on tokens and shares only because a bearer secret already
-handed over has to keep being refused. This is the field ADR 0011 left inert until wave 3:
-`principal.kind === "instance"` has a real value now.
+caps, effect: "allow", reach: "subtree" }`, referenced by `ShareRecord.grant_id`. Each ordinary
+ticket carries an explicit host-approved subset and its token-bound grant. This share-owned row is an issuance ceiling,
+not an ambient origin grant; every ticket stays within both its share and recipient bounds.
+`revokeShare` is the sole withdrawal path: it deletes that row and marks the share revoked
+transactionally, then retires related credentials and fences sockets. Direct `revokeGrant`
+refuses share-owned rows, just as it refuses token-owned rows. A persisted share lacking its
+ceiling row cannot approve recipients, issue tickets or admit resume, even if its
+`revoked_at` is absent. Standalone administered instance-origin grants remain normal waterfall
+rows and confer only their explicitly administered authority on eligible ordinary credentials.
 
 **Grant administration (`core.access`, ADR 0011).** The rows themselves, through the plugin the
 ADR named. No new capability — `*` and `tokens:mint` already answer "who may hand authority

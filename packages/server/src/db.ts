@@ -1148,6 +1148,16 @@ INSERT INTO share_recipient_delegations(share_id,source_share_id,source_guest_pr
  FROM shares s JOIN tokens issuer ON issuer.principal_id=s.minted_by
  JOIN share_ticket_credentials c ON c.token_id=issuer.id
  WHERE s.id<>c.share_id;
+UPDATE agent_runs
+ SET state='revoked',finished_at=COALESCE(finished_at,CAST(unixepoch('subsec')*1000 AS INTEGER))
+ WHERE state IN ('pending_policy','active','policy_stale')
+ AND (
+   authorizer_token_id IN (SELECT token_id FROM share_ticket_credentials)
+   OR id IN (
+     SELECT t.run_id FROM tokens t JOIN share_ticket_credentials c ON c.token_id=t.id
+     WHERE t.run_id IS NOT NULL
+   )
+ );
 DELETE FROM grants WHERE id IN (
  SELECT grant_id FROM shares WHERE id IN (SELECT share_id FROM share_recipient_delegations)
 );
@@ -1158,6 +1168,14 @@ DELETE FROM grants
  WHERE id IN (
    SELECT t.grant_id FROM tokens t JOIN share_ticket_credentials c ON c.token_id=t.id
    WHERE t.grant_id IS NOT NULL
+ )
+ AND id NOT IN (
+   SELECT t.grant_id FROM tokens t
+   WHERE t.grant_id IS NOT NULL AND t.id NOT IN (SELECT token_id FROM share_ticket_credentials)
+ );
+DELETE FROM grants
+ WHERE created_by IN (
+   SELECT t.principal_id FROM tokens t JOIN share_ticket_credentials c ON c.token_id=t.id
  )
  AND id NOT IN (
    SELECT t.grant_id FROM tokens t

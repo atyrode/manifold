@@ -343,6 +343,7 @@ interface GrantRow {
   created_by: string;
   created_at: number;
   bound: number;
+  share_bound: number;
 }
 
 interface DocRow {
@@ -469,18 +470,19 @@ export interface TokenRevocation {
 }
 
 /**
- * A stored grant, plus the one fact the protocol row cannot carry: whether some TOKEN
- * references it.
+ * A stored grant, plus credential ownership that the protocol row cannot carry.
  *
  * That flag is the whole attenuation rule of the evaluator. A token-referenced row is the
  * synthesized authority of ONE credential and applies only to the credential that holds it —
  * otherwise a principal's narrow token would inherit its own broad token's row, which is both
  * a parity break against the flat model and a live attenuation hole. An UNREFERENCED row is
  * administered authority: it applies to every credential of the principal or class it names,
- * which is what makes a grant door's allow widen and its deny bite.
+ * which is what makes a grant door's allow widen and its deny bite. A share-owned row is
+ * instead an immutable issuance ceiling: it must never become ambient origin authority.
  */
 export interface GrantRecord extends Grant {
   readonly tokenBound: boolean;
+  readonly shareBound: boolean;
 }
 
 /** Latest canonical Yjs document loaded into a room. */
@@ -975,16 +977,17 @@ function toGrant(row: GrantRow): GrantRecord {
       createdAt: row.created_at,
     }),
     tokenBound: row.bound === 1,
+    shareBound: row.share_bound === 1,
   };
 }
 
 /**
- * `bound` is the token reference seen from the grant's side, and it is an EXISTS rather than a
- * join so a row can never be duplicated by the credentials that hold it.
+ * Ownership is read from references, using EXISTS so a row is never duplicated by holders.
  */
 const GRANT_SELECT = `SELECT g.id, g.principal_kind, g.principal_id, g.node, g.caps, g.effect,
           g.reach, g.created_by, g.created_at,
-          EXISTS(SELECT 1 FROM tokens t WHERE t.grant_id = g.id) AS bound
+          EXISTS(SELECT 1 FROM tokens t WHERE t.grant_id = g.id) AS bound,
+          EXISTS(SELECT 1 FROM shares s WHERE s.grant_id = g.id) AS share_bound
    FROM grants g`;
 
 /**
@@ -2438,6 +2441,15 @@ export class ServerStore {
       )
       .get(runId, tokenId, runId);
     if (result === null) throw new Error("agent run credential binding failed");
+    // Renewal retires predecessors first; their exact Run dependencies remain authoritative.
+    this.db
+      .query<void, [string, string, string]>(
+        `INSERT OR IGNORE INTO share_ticket_credentials(token_id,share_id,guest_principal_id)
+         SELECT DISTINCT ?,c.share_id,c.guest_principal_id FROM share_ticket_credentials c
+         JOIN tokens source ON source.id=c.token_id
+         WHERE source.run_id=? AND source.id<>?`,
+      )
+      .run(tokenId, runId, tokenId);
   }
 
   listAgentRuns(agentId: string): AgentRunRecord[] {
@@ -3316,22 +3328,26 @@ export class ServerStore {
   }
 
   hasShareRecipientCredential(tokenId: string): boolean {
-    return this.db
-      .query<{ found: number }, [string]>(
-        "SELECT 1 AS found FROM share_ticket_credentials WHERE token_id=? LIMIT 1",
-      )
-      .get(tokenId) !== null;
+    return (
+      this.db
+        .query<{ found: number }, [string]>(
+          "SELECT 1 AS found FROM share_ticket_credentials WHERE token_id=? LIMIT 1",
+        )
+        .get(tokenId) !== null
+    );
   }
 
   hasShareRecipientPrincipal(principalId: string): boolean {
-    return this.db
-      .query<{ found: number }, [string, string]>(
-        `SELECT 1 AS found FROM share_tickets WHERE principal_id=?
+    return (
+      this.db
+        .query<{ found: number }, [string, string]>(
+          `SELECT 1 AS found FROM share_tickets WHERE principal_id=?
          UNION ALL
          SELECT 1 FROM tokens t JOIN share_ticket_credentials c ON c.token_id=t.id
          WHERE t.principal_id=? LIMIT 1`,
-      )
-      .get(principalId, principalId) !== null;
+        )
+        .get(principalId, principalId) !== null
+    );
   }
 
   /** Retires exactly this relationship's ticket credentials, not a principal's other bearers. */
@@ -3347,7 +3363,6 @@ export class ServerStore {
       at,
     );
   }
-
 
   /** Resume acknowledges only an active approval backed by a live, finite ordinary ticket. */
   resumableShareTicketPrincipals(shareId: string, at: number): string[] {

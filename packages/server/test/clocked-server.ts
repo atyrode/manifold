@@ -1,6 +1,6 @@
 import { defaultRuntime } from "@manifold/protocol";
 import { createInterface } from "node:readline";
-import { startServer } from "../../server/src/main.ts";
+import { startServer } from "../src/main.ts";
 
 // This disposable child changes only the existing RuntimeDeps wall-clock seam. Network,
 // room timers, credential minting and enforcement remain the ordinary server's paths.

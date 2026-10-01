@@ -274,11 +274,16 @@ describe("migration 13: flat caps become grant rows", () => {
 
       expect(askMatrix(auth, contexts)).toEqual(expectedMatrix(retained));
       expect(() => auth.authenticate("e".repeat(64))).toThrow("revoked");
-      expect(auth.listShareRecipients("s-live", auth.authenticate(OWNER_KEY))).toMatchObject([{
-        guestPrincipal: { id: "guest-1", kind: "human" },
-        requestedCaps: ["containers:read", "scenes:write"],
-        caps: [], approvedAt: null, approvedBy: null, removedAt: null,
-      }]);
+      expect(auth.listShareRecipients("s-live", auth.authenticate(OWNER_KEY))).toMatchObject([
+        {
+          guestPrincipal: { id: "guest-1", kind: "human" },
+          requestedCaps: ["containers:read", "scenes:write"],
+          caps: [],
+          approvedAt: null,
+          approvedBy: null,
+          removedAt: null,
+        },
+      ]);
 
       /*
         A matrix of all-false would satisfy the comparison above and prove nothing, so the
@@ -511,9 +516,14 @@ describe("minted credentials answer the same questions as migrated ones", () => 
       origin: GUEST_ORIGIN,
     };
     expect(() => auth.mintShareTicket(record, guest)).toThrow("recipient_unapproved");
-    auth.approveShareRecipient({
-      shareId: record.id, guestPrincipalId: guest.id, caps: shareCaps,
-    }, root);
+    auth.approveShareRecipient(
+      {
+        shareId: record.id,
+        guestPrincipalId: guest.id,
+        caps: shareCaps,
+      },
+      root,
+    );
     const ticket = auth.mintShareTicket(record, guest);
     minted.push({
       name: "ticket",

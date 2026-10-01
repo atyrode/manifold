@@ -162,7 +162,6 @@ describe("the instance dial handshake", () => {
 });
 
 describe("tickets", () => {
-
   test.each(["caps", "expiresAt"] as const)(
     "a ticket missing its %s bound closes as malformed without retaining a resume identity",
     async (missing) => {

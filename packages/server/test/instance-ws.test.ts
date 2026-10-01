@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import {
-  MAX_SESSION_FRAME_BYTES, PROTOCOL_VERSION, type Container, type HostToGuestMessage,
+  MAX_SESSION_FRAME_BYTES,
+  PROTOCOL_VERSION,
+  type Container,
+  type HostToGuestMessage,
 } from "@manifold/protocol";
 import { AuthService } from "../src/auth.ts";
 import { InstanceGateway } from "../src/instance-ws.ts";
@@ -61,7 +64,13 @@ function dial(status: number, protocolVersion = PROTOCOL_VERSION) {
   const socket = new StatusSocket(status);
   return {
     socket,
-    gateway, auth, store, runtime, root, share, container,
+    gateway,
+    auth,
+    store,
+    runtime,
+    root,
+    share,
+    container,
     open: () => {
       gateway.open("connection", socket);
       gateway.message(
@@ -151,21 +160,36 @@ describe("host peer recipient admission", () => {
     const fix = dial(1);
     try {
       fix.open();
-      const request = (caps?: string[]) => fix.gateway.message("connection", JSON.stringify({
-        type: "ticket_request", requestId: "request", principal: GUEST,
-        ...(caps === undefined ? {} : { caps }),
-      }));
+      const request = (caps?: string[]) =>
+        fix.gateway.message(
+          "connection",
+          JSON.stringify({
+            type: "ticket_request",
+            requestId: "request",
+            principal: GUEST,
+            ...(caps === undefined ? {} : { caps }),
+          }),
+        );
       request();
       expect(lastHostMessage(fix.socket)).toEqual({
-        type: "ticket_error", requestId: "request", reason: "recipient_unapproved",
+        type: "ticket_error",
+        requestId: "request",
+        reason: "recipient_unapproved",
       });
       expect(fix.store.shareTicketPrincipals(fix.share.share.id)).toEqual([]);
-      fix.auth.approveShareRecipient({
-        shareId: fix.share.share.id, guestPrincipalId: GUEST.id, caps: ["containers:read"],
-      }, fix.root);
+      fix.auth.approveShareRecipient(
+        {
+          shareId: fix.share.share.id,
+          guestPrincipalId: GUEST.id,
+          caps: ["containers:read"],
+        },
+        fix.root,
+      );
       request(["scenes:write"]);
       expect(lastHostMessage(fix.socket)).toEqual({
-        type: "ticket_error", requestId: "request", reason: "recipient_caps_refused",
+        type: "ticket_error",
+        requestId: "request",
+        reason: "recipient_caps_refused",
       });
       expect(fix.store.shareTicketPrincipals(fix.share.share.id)).toEqual([]);
       request();
@@ -189,9 +213,15 @@ describe("host peer recipient admission", () => {
     const fix = dial(1);
     try {
       fix.open();
-      const request = () => fix.gateway.message("connection", JSON.stringify({
-        type: "ticket_request", requestId: "request", principal: GUEST,
-      }));
+      const request = () =>
+        fix.gateway.message(
+          "connection",
+          JSON.stringify({
+            type: "ticket_request",
+            requestId: "request",
+            principal: GUEST,
+          }),
+        );
       request();
       const input = { shareId: fix.share.share.id, guestPrincipalId: GUEST.id };
       fix.auth.approveShareRecipient({ ...input, caps: ["containers:read"] }, fix.root);
@@ -199,17 +229,28 @@ describe("host peer recipient admission", () => {
       const issued = lastHostMessage(fix.socket);
       if (issued.type !== "ticket") throw new Error("approved recipient was refused");
       // Even another ordinary bearer of that same principal cannot authorize ticket resume.
-      const unrelated = fix.auth.mintToken({
-        principalId: issued.principal.id, caps: ["containers:read"],
-        containerId: fix.container.id,
-      }, fix.root);
+      const unrelated = fix.auth.mintToken(
+        {
+          principalId: issued.principal.id,
+          caps: ["containers:read"],
+          containerId: fix.container.id,
+        },
+        fix.root,
+      );
       fix.auth.removeShareRecipient(input, fix.root);
       const resumed = new StatusSocket(1);
       fix.gateway.open("resumed", resumed);
-      fix.gateway.message("resumed", JSON.stringify({
-        type: "hello", protocolVersion: PROTOCOL_VERSION, origin: GUEST_ORIGIN,
-        instanceVersion: "0.0.0", token: fix.share.token, tickets: [issued.principal.id],
-      }));
+      fix.gateway.message(
+        "resumed",
+        JSON.stringify({
+          type: "hello",
+          protocolVersion: PROTOCOL_VERSION,
+          origin: GUEST_ORIGIN,
+          instanceVersion: "0.0.0",
+          token: fix.share.token,
+          tickets: [issued.principal.id],
+        }),
+      );
       const welcome = lastHostMessage(resumed);
       if (welcome.type !== "welcome") throw new Error("control resume was refused");
       expect(welcome.tickets).toEqual([]);

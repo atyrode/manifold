@@ -361,9 +361,14 @@ describe("bound agent declarations", () => {
       color: "#abcdef",
     };
     expect(() => fix.auth.mintShareTicket(record, guest)).toThrow("recipient_unapproved");
-    fix.auth.approveShareRecipient({
-      shareId: record.id, guestPrincipalId: guest.id, caps: ["containers:read"],
-    }, fix.owner);
+    fix.auth.approveShareRecipient(
+      {
+        shareId: record.id,
+        guestPrincipalId: guest.id,
+        caps: ["containers:read"],
+      },
+      fix.owner,
+    );
     const ticket = fix.auth.mintShareTicket(record, guest);
     const legacy = fix.auth.authenticate(ticket.token);
     expect(legacy.agentRunId).toBeUndefined();
