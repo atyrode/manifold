@@ -2142,6 +2142,7 @@ export class PluginHost {
 
   /** Trusted runtime composition; registered doors refuse until the durable service is ready. */
   setJobs(jobs: JobService): void {
+    requireActionEffects();
     jobs.setLifecycleRecorder((record) => this.store.appendTrace(record));
     jobs.setActionBindingValidator((binding) => {
       if (binding.actionName === undefined) return false;
@@ -3423,8 +3424,10 @@ export class PluginHost {
    * else, so there is exactly one "the plugins changed" signal (docs/CONTRACTS.md §One authoritative implementation).
    */
   onRosterChange(listener: (roster: PluginRoster, developerMode: boolean) => void): () => void {
+    requireActionEffects();
     this.rosterListeners.add(listener);
     return () => {
+      requireActionEffects();
       this.rosterListeners.delete(listener);
     };
   }
@@ -3435,7 +3438,12 @@ export class PluginHost {
    * stop; a host that admits no bundles has nothing to watch and returns a no-op.
    */
   watchAuthored(): () => void {
-    return this.authored?.watch() ?? (() => {});
+    requireActionEffects();
+    const stop = this.authored?.watch();
+    return () => {
+      requireActionEffects();
+      stop?.();
+    };
   }
 
   /**
@@ -3444,7 +3452,12 @@ export class PluginHost {
    * that admits no bundles has nothing to poll and returns a no-op.
    */
   watchUpdates(): () => void {
-    return this.updates?.startPolling() ?? (() => {});
+    requireActionEffects();
+    const stop = this.updates?.startPolling();
+    return () => {
+      requireActionEffects();
+      stop?.();
+    };
   }
 
   private async changeAssembly<T>(change: () => Promise<T>): Promise<T> {
@@ -3498,6 +3511,7 @@ export class PluginHost {
     enabled: boolean,
     changedBy: string,
   ): Promise<ActionRefused | { ok: true }> {
+    requireActionEffects();
     return this.changeAssembly(async () => {
       if (!enabled || this.assembled.enabled(id) || this.assembled.builtin(id))
         return this.setEnabledNow(id, enabled, changedBy);
@@ -3681,6 +3695,7 @@ export class PluginHost {
    * now claim the type deliberately.
    */
   async purge(id: string, purgedBy: string): Promise<ActionRefused | PluginPurgeResult> {
+    requireActionEffects();
     return this.changeAssembly(() => this.purgeNow(id, purgedBy));
   }
 
@@ -3825,6 +3840,7 @@ export class PluginHost {
     installer: CredentialReference | null,
     unpacked?: { readonly id: string },
   ): Promise<ActionRefused | PluginInstallResult> {
+    requireActionEffects();
     return this.changeAssembly(async () => {
       const isolates = this.isolates;
       if (isolates === null) {
@@ -4480,6 +4496,7 @@ export class PluginHost {
    * `developer_mode_off` marks lift, and the next save or authoring call builds again.
    */
   async setDeveloperMode(on: boolean, changedBy: string): Promise<ActionRefused | { ok: true }> {
+    requireActionEffects();
     return this.changeAssembly(() => this.setDeveloperModeNow(on, changedBy));
   }
 
@@ -4519,6 +4536,7 @@ export class PluginHost {
     authoredBy: string,
     credential: CredentialReference,
   ): Promise<ActionRefused | PluginAuthorResult> {
+    requireActionEffects();
     this.assertOpen();
     if (this.authored === null) {
       return installRefused("artifact_unreadable", "this server admits no bundles");
@@ -4557,6 +4575,7 @@ export class PluginHost {
     id: string,
     authority: PluginUpdateAuthority,
   ): Promise<ActionRefused | PluginUpdateReviewResult> {
+    requireActionEffects();
     if (this.updates === null) {
       return installRefused("artifact_unreadable", "this server admits no bundles");
     }
@@ -4571,6 +4590,7 @@ export class PluginHost {
     request: PluginUpdateApplyRequest,
     authority: PluginUpdateAuthority,
   ): Promise<ActionRefused | PluginUpdateApplyResult> {
+    requireActionEffects();
     if (this.updates === null) {
       return installRefused("artifact_unreadable", "this server admits no bundles");
     }
@@ -4694,6 +4714,7 @@ export class PluginHost {
     removedBy: string,
     purge: boolean,
   ): Promise<ActionRefused | { ok: true }> {
+    requireActionEffects();
     return this.changeAssembly(() => this.uninstallNow(id, removedBy, purge));
   }
 
@@ -5304,6 +5325,7 @@ export class PluginHost {
     session: string | null = null,
     options: DispatchOptions = {},
   ): Promise<ActionOutcome> {
+    requireActionEffects();
     const pluginId = this.assembled.actions.get(fullName)?.plugin.id;
     const settled = Promise.withResolvers<void>();
     let active: Set<Promise<void>> | undefined;
@@ -7089,6 +7111,7 @@ export class PluginHost {
    * answer refused, and the authored loop builds nothing further (#318).
    */
   close(): void {
+    requireActionEffects();
     this.lifetime.abort(new Error("the plugin host is closed"));
     this.updates?.close();
     this.authored?.close();

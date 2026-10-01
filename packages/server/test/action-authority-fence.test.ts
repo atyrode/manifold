@@ -15,8 +15,16 @@ import { PLUGIN_UPLOADS_DIR } from "../src/plugin-installs.ts";
 import { openPluginDatabase } from "../src/plugin-database.ts";
 import type { ActionCtx, ServerPluginDef } from "../src/plugin-host.ts";
 import { RoomManager } from "../src/room.ts";
+import { SessionChannel } from "../src/session-channel.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
-import { FakeClock, FakeRuntime, testPluginHost, testStore, testTileTrees } from "./helpers.ts";
+import {
+  FakeClock,
+  FakeRuntime,
+  FakeSocket,
+  testPluginHost,
+  testStore,
+  testTileTrees,
+} from "./helpers.ts";
 
 const OWNER_KEY = "f".repeat(64);
 const PLUGIN_ID = "test.action-fence";
@@ -591,6 +599,9 @@ async function rawHostPreparationFixture(phase: "parser" | "preparer") {
   const canvas = rooms.get("canvas")!;
   const composition = rooms.get("composition")!;
   rooms.flushAll();
+  const socket = new FakeSocket();
+  const peer = new SessionChannel(runtime.newId(), socket, owner, "canvas", "c1");
+  canvas.join(peer);
   const held = Promise.withResolvers<ActionCtx>();
   const finishHandler = Promise.withResolvers<void>();
   let retained: ActionCtx;
@@ -677,11 +688,14 @@ async function rawHostPreparationFixture(phase: "parser" | "preparer") {
   });
   const holding = host.dispatch(owner, "test.raw-preparation.hold", {});
   retained = await held.promise;
+  socket.clear();
   return {
     store,
     rooms,
     canvas,
     composition,
+    peer,
+    socket,
     host,
     owner,
     retained,
@@ -701,6 +715,7 @@ async function rawHostPreparationFixture(phase: "parser" | "preparer") {
       finishHandler.resolve();
       await holding.catch(() => {});
       host.close();
+      rooms.drop("canvas");
       rooms.flushAll();
       store.close();
     },
@@ -747,7 +762,7 @@ test.each(["parser", "preparer"] as const)(
     const storage = f.retained.store.pluginStorage("test.raw-preparation");
     const canvasBefore = f.canvas.elements();
     const layoutBefore = f.composition.tileLayout();
-    const eventsBefore = f.store.listEvents({ type: "container_created" });
+    const eventsBefore = f.store.listEvents({ type: "container_created", limit: 100 });
     const denied = async (effect: () => unknown): Promise<boolean> => {
       try {
         await effect();
@@ -784,6 +799,8 @@ test.each(["parser", "preparer"] as const)(
           f.retained.store.addEvent("canvas", 0, null, "container_created", { suffix }),
         ),
         denied(() => f.retained.store.afterCommit(() => committed++)),
+        denied(() => f.canvas.broadcast({ type: "saved", rev: 999, at: 0 })),
+        denied(() => f.canvas.leave(f.peer)),
         denied(() => f.retained.rooms.get("canvas")!.placePortalElement("composition", 1, 2)),
         denied(() =>
           f.retained.rooms.get("composition")!.placeTile(
@@ -830,18 +847,29 @@ test.each(["parser", "preparer"] as const)(
         expect(f.store.getGrant(`forbidden-${suffix}`)).toBeNull();
       }
       expect(await storage.keys()).toEqual([]);
-      expect(f.store.listEvents({ type: "container_created" })).toEqual(eventsBefore);
+      expect(f.store.listEvents({ type: "container_created", limit: 100 })).toEqual(eventsBefore);
       expect(committed).toBe(0);
       expect(f.rooms.live("canvas")).toBe(f.canvas);
       expect(f.canvas.elements()).toEqual(canvasBefore);
+      expect(f.canvas.hasPrincipal(f.owner.principal.id)).toBe(true);
+      expect(f.socket.messages()).toEqual([]);
+      expect(f.socket.closed).toBeNull();
       expect(f.composition.tileLayout()).toEqual(layoutBefore);
       expect(f.host.enabled("test.raw-bystander")).toBe(true);
       expect(f.disabled()).toBe(0);
-      expect(attempts).toEqual(Array(24).fill(true));
-      expect(later).toEqual(Array(12).fill(true));
+      expect(attempts).toEqual(Array(28).fill(true));
+      expect(later).toEqual(Array(14).fill(true));
       expect(outcome).toMatchObject({ ok: false, denial: { rule: "refused" } });
       expect(f.handlerAdmissions()).toBe(0);
       expect(f.store.getContainer("independent")?.name).toBe("Independent");
+      const swallowedReview = await f.invoke(async () => {
+        expect(
+          await denied(() => f.retained.store.renameContainer("canvas", "Forbidden rename")),
+        ).toBe(true);
+      });
+      expect(swallowedReview).toMatchObject({ ok: false, denial: { rule: "refused" } });
+      expect(f.store.getContainer("canvas")?.name).toBe("canvas");
+      expect(f.handlerAdmissions()).toBe(0);
       f.finishHandler.resolve();
       expect(await f.holding).toEqual({ ok: true, result: {} });
       expect(f.store.getContainer("legitimate")?.name).toBe("Admitted handler");

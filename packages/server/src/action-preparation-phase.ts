@@ -3,6 +3,11 @@ import { ServiceError } from "./auth.ts";
 
 const preparation = new AsyncLocalStorage<{ violated: boolean }>();
 
+/** Cache initialization may stay local, without scheduling effects on a preparation descendant. */
+export function isActionPreparation(): boolean {
+  return preparation.getStore() !== undefined;
+}
+
 /** Preparation descendants never acquire effect authority, even after preparation returns. */
 export function requireActionEffects(): void {
   const phase = preparation.getStore();
