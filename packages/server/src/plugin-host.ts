@@ -16,6 +16,8 @@ import {
   settingRefId,
   settingWriteRefusal,
   type Assembly,
+  type AssemblyAction,
+  type AnyActionDef,
   type AssemblyDelta,
   type AssemblyEnv,
   type EmitEvent,
@@ -1075,6 +1077,61 @@ export type ServerPluginDef = PluginDef & {
   readonly inputValidation?: "guest";
 };
 
+interface CachedActionBinding {
+  readonly fingerprint: string;
+  readonly revision: number;
+  readonly definition: AnyActionDef;
+  readonly declaration: AnyActionDef;
+  readonly manifest: PluginDef["manifest"];
+  readonly manifestCapabilities: PluginDef["manifest"]["capabilities"];
+  readonly manifestCapValues: readonly AuthoredCap[];
+  readonly manifestId: string;
+  readonly manifestVersion: string;
+  readonly machine: PluginDef["manifest"]["machine"];
+  readonly definitions: readonly ServerPluginDef[];
+  readonly pluginDef: ServerPluginDef | undefined;
+  readonly handler: ActionHandler | undefined;
+  readonly caps: AnyActionDef["caps"];
+  readonly delegates: AnyActionDef["delegates"];
+  readonly requirements: AnyActionDef["requirements"];
+  readonly preparation: ActionPreparationDef | undefined;
+  readonly preparer: ActionPreparationDef["prepare"] | undefined;
+  readonly preparedDefinition: ActionPreparationDef | undefined;
+  readonly guestPreparation: IsolatePreparationMetadata[string] | undefined;
+  readonly preparationCapSource: readonly AskableCap[] | undefined;
+  readonly preparationCaps: readonly AskableCap[] | undefined;
+  readonly code: string;
+}
+
+function sameOrderedValues<T>(
+  current: readonly T[] | undefined,
+  captured: readonly T[] | undefined,
+): boolean {
+  if (current === undefined || captured === undefined) return current === captured;
+  if (current.length !== captured.length) return false;
+  for (let index = 0; index < current.length; index++)
+    if (current[index] !== captured[index]) return false;
+  return true;
+}
+
+function sameActionRequirements(
+  current: AnyActionDef["requirements"],
+  captured: AnyActionDef["requirements"],
+): boolean {
+  if (current === undefined || captured === undefined) return current === captured;
+  if (current.length !== captured.length) return false;
+  for (let index = 0; index < current.length; index++) {
+    const requirement = current[index]!;
+    const previous = captured[index]!;
+    if (
+      requirement.cap !== previous.cap ||
+      !sameOrderedValues(requirement.target, previous.target)
+    )
+      return false;
+  }
+  return true;
+}
+
 class ActionAdmissionDenial extends Error {
   constructor(
     readonly rule: Exclude<ActionDenialRule, typeof UNTRACED_DENIAL_RULE>,
@@ -1980,7 +2037,7 @@ export class PluginHost {
         entry === undefined ||
         (!this.assembled.enabled(entry.plugin.id) && entry.def.cleanup !== true) ||
         this.replacing.has(entry.plugin.id) ||
-        this.actionFingerprint(binding.actionName) !== binding.fingerprint
+        this.actionBinding(binding.actionName)?.fingerprint !== binding.fingerprint
       )
         return false;
       const install = this.installed.get(entry.plugin.id);
@@ -5128,44 +5185,136 @@ export class PluginHost {
     };
   }
 
-  private readonly actionFingerprints = new WeakMap<object, string>();
-  private actionFingerprint(name: string): string | null {
+  private readonly actionFingerprints = new WeakMap<AssemblyAction, CachedActionBinding>();
+  private actionBinding(name: string): CachedActionBinding | null {
     const entry = this.assembled.actions.get(name);
     if (entry === undefined) return null;
     const cached = this.actionFingerprints.get(entry);
-    if (cached !== undefined) return cached;
-    const def = this.defs.find((candidate) => candidate.manifest.id === entry.plugin.id);
+    const pluginDef =
+      cached?.definitions === this.defs
+        ? cached.pluginDef
+        : this.defs.find((candidate) => candidate.manifest.id === entry.plugin.id);
     const preparation =
-      def?.prepareActions !== undefined && Object.hasOwn(def.prepareActions, entry.def.name)
-        ? def.prepareActions[entry.def.name]
+      pluginDef?.prepareActions !== undefined &&
+      Object.hasOwn(pluginDef.prepareActions, entry.def.name)
+        ? pluginDef.prepareActions[entry.def.name]
         : undefined;
+    const guestPreparation =
+      pluginDef?.guestPreparation !== undefined &&
+      Object.hasOwn(pluginDef.guestPreparation, entry.def.name)
+        ? pluginDef.guestPreparation[entry.def.name]
+        : undefined;
+    const preparationCaps = preparation?.caps ?? guestPreparation?.caps;
+    const handler = this.handlers.get(entry.plugin.id)?.[entry.def.name];
+    const code =
+      this.installed.get(entry.plugin.id)?.row.sha256 ??
+      this.trusted.get(entry.plugin.id)?.sha256 ??
+      this.builtinCodeIdentity;
+    if (
+      cached !== undefined &&
+      cached.definition === entry.def &&
+      cached.manifest === entry.plugin &&
+      cached.manifestId === entry.plugin.id &&
+      cached.manifestVersion === entry.plugin.version &&
+      cached.machine === entry.plugin.machine &&
+      cached.manifestCapabilities === entry.plugin.capabilities &&
+      sameOrderedValues(entry.plugin.capabilities, cached.manifestCapValues) &&
+      cached.declaration.name === entry.def.name &&
+      cached.declaration.input === entry.def.input &&
+      cached.declaration.result === entry.def.result &&
+      cached.declaration.scope === entry.def.scope &&
+      cached.declaration.cleanup === entry.def.cleanup &&
+      cached.declaration.runAccess === entry.def.runAccess &&
+      cached.declaration.agentJustification === entry.def.agentJustification &&
+      cached.declaration.trace === entry.def.trace &&
+      cached.caps === entry.def.caps &&
+      sameOrderedValues(entry.def.caps, cached.declaration.caps) &&
+      cached.delegates === entry.def.delegates &&
+      sameOrderedValues(entry.def.delegates, cached.declaration.delegates) &&
+      cached.requirements === entry.def.requirements &&
+      sameActionRequirements(entry.def.requirements, cached.declaration.requirements) &&
+      cached.handler === handler &&
+      cached.preparation === preparation &&
+      cached.preparer === preparation?.prepare &&
+      cached.guestPreparation === guestPreparation &&
+      cached.preparationCapSource === preparationCaps &&
+      sameOrderedValues(preparationCaps, cached.preparationCaps) &&
+      cached.code === code
+    )
+      return cached;
+    const declaration: AnyActionDef = {
+      ...entry.def,
+      caps: [...entry.def.caps],
+      ...(entry.def.delegates === undefined ? {} : { delegates: [...entry.def.delegates] }),
+      ...(entry.def.requirements === undefined
+        ? {}
+        : {
+            requirements: entry.def.requirements.map(({ cap, target }) => ({
+              cap,
+              target: [...target],
+            })),
+          }),
+    };
+    const preparedDefinition =
+      preparation === undefined
+        ? undefined
+        : { caps: [...preparation.caps], prepare: preparation.prepare };
+    const capturedPreparationCaps =
+      preparedDefinition?.caps ??
+      (preparationCaps === undefined ? undefined : [...preparationCaps]);
+    // Equal schema/function text is not proof that a replaced in-process binding is
+    // the admitted one. Cold bindings still have a deterministic restart fingerprint.
+    const revision = cached === undefined ? 0 : cached.revision + 1;
     const fingerprint = createHash("sha256")
       .update(
         canonicalJobJson({
           action: name,
-          code: this.installed.get(entry.plugin.id)?.row.sha256 ??
-            this.trusted.get(entry.plugin.id)?.sha256 ?? {
-              code: this.builtinCodeIdentity,
-              handler: String(def?.handlers[entry.def.name]),
-            },
-          input: z.toJSONSchema(entry.def.input, { io: "input" }),
-          result: z.toJSONSchema(entry.def.result, { io: "output" }),
-          caps: entry.def.caps,
-          delegates: entry.def.delegates ?? [],
-          requirements: entry.def.requirements ?? [],
-          preparationCaps:
-            preparation?.caps ??
-            (def?.guestPreparation !== undefined &&
-            Object.hasOwn(def.guestPreparation, entry.def.name)
-              ? def.guestPreparation[entry.def.name]?.caps
-              : undefined) ??
-            [],
+          revision,
+          code,
+          manifest: entry.plugin,
+          handlerCode: String(handler),
+          input: z.toJSONSchema(declaration.input, { io: "input" }),
+          result: z.toJSONSchema(declaration.result, { io: "output" }),
+          caps: declaration.caps,
+          delegates: declaration.delegates ?? [],
+          requirements: declaration.requirements ?? [],
+          scope: declaration.scope ?? "workspace",
+          cleanup: declaration.cleanup ?? false,
+          runAccess: declaration.runAccess ?? null,
+          agentJustification: declaration.agentJustification ?? null,
+          trace: declaration.trace ?? null,
+          preparationCaps: preparationCaps ?? [],
           preparationCode: preparation === undefined ? null : String(preparation.prepare),
         }),
       )
       .digest("hex");
-    this.actionFingerprints.set(entry, fingerprint);
-    return fingerprint;
+    const binding: CachedActionBinding = {
+      fingerprint,
+      revision,
+      definition: entry.def,
+      declaration,
+      manifest: entry.plugin,
+      manifestId: entry.plugin.id,
+      manifestVersion: entry.plugin.version,
+      machine: entry.plugin.machine,
+      manifestCapabilities: entry.plugin.capabilities,
+      manifestCapValues: [...entry.plugin.capabilities],
+      definitions: this.defs,
+      pluginDef,
+      handler,
+      caps: entry.def.caps,
+      delegates: entry.def.delegates,
+      requirements: entry.def.requirements,
+      preparation,
+      preparer: preparation?.prepare,
+      preparedDefinition,
+      guestPreparation,
+      preparationCapSource: preparationCaps,
+      preparationCaps: capturedPreparationCaps,
+      code,
+    };
+    this.actionFingerprints.set(entry, binding);
+    return binding;
   }
 
   /** The same pure path as execution; no handler or effect admission occurs in review. */
@@ -5395,27 +5544,24 @@ export class PluginHost {
     const contextRequirements: readonly ActionAuthorityRequirement[] = actionRequirements;
     // What the handler reads as its container scope: the token's own, or the carried one.
     const handlerScope = auth.containerScope ?? carriedContainer;
+    const binding = this.actionBinding(fullName)!;
+    const handler = binding.handler;
+    const epoch = this.actionEpochs.get(pluginId) ?? 0;
+    const bindingCurrent = (): boolean =>
+      !this.closed &&
+      (this.actionEpochs.get(pluginId) ?? 0) === epoch &&
+      this.actionBinding(fullName) === binding &&
+      this.installed.get(pluginId) === install &&
+      (this.assembled.enabled(pluginId) || binding.declaration.cleanup === true);
     const parsed: { data: unknown } = { data: rawArgs };
     if (guestInput) {
-      const initial = entry.def.input.safeParse(rawArgs);
+      const initial = binding.declaration.input.safeParse(rawArgs);
       if (!initial.success) return refuse("invalid_args", initial.error.message);
       parsed.data = initial.data;
     }
-    const pluginDef = this.defs.find((def) => def.manifest.id === pluginId);
-    const preparation =
-      pluginDef?.prepareActions !== undefined &&
-      Object.hasOwn(pluginDef.prepareActions, entry.def.name)
-        ? pluginDef.prepareActions[entry.def.name]
-        : undefined;
-    const preparationCaps = [
-      ...(preparation?.caps ??
-        (pluginDef?.guestPreparation !== undefined &&
-        Object.hasOwn(pluginDef.guestPreparation, entry.def.name)
-          ? pluginDef.guestPreparation[entry.def.name]?.caps
-          : undefined) ??
-        []),
-    ];
-    const securityFingerprint = this.actionFingerprint(fullName);
+    const preparation = binding.preparedDefinition;
+    const preparationCaps = binding.preparationCaps ?? [];
+    const securityFingerprint = binding.fingerprint;
     let preparedEvidence: ActionPreparationEvidence = {
       originalArgsDigest: argumentDigest(rawArgs),
       targets: [],
@@ -5505,12 +5651,14 @@ export class PluginHost {
     if (!guestInput) {
       try {
         const prepared = await prepareActionInput(
-          entry.def.input,
-          entry.def.requirements ?? [],
+          binding.declaration.input,
+          binding.declaration.requirements ?? [],
           rawArgs,
           preparationContext,
           preparation,
         );
+        if (!bindingCurrent())
+          return refuse("forbidden", "action binding unavailable");
         parsed.data = prepared.args;
         preparedEvidence = prepared;
       } catch (error) {
@@ -5532,6 +5680,8 @@ export class PluginHost {
       preparedTargets?: readonly unknown[],
       additionalRequirements: readonly PreparedRequirement[] = preparedEvidence.additionalRequirements,
     ): ActionAdmissionDenial | null => {
+      if (!bindingCurrent())
+        return new ActionAdmissionDenial("forbidden", "action binding unavailable");
       try {
         options.beforeAdmission?.();
       } catch {
@@ -5681,33 +5831,14 @@ export class PluginHost {
       admittedNativeRequirements = requirements;
       return null;
     };
-    const handler = this.handlers.get(pluginId)?.[entry.def.name];
-    const epoch = this.actionEpochs.get(pluginId) ?? 0;
-    const input = entry.def.input;
-    const resultSchema = entry.def.result;
-    const declaredCaps = entry.def.caps;
-    const declaredDelegates = entry.def.delegates;
-    const declaredRequirements = entry.def.requirements;
     const authorityFence = new ActionAuthorityFence(
       this.authService,
       auth,
       () =>
-        !this.closed &&
-        this.actionFingerprint(fullName) === securityFingerprint &&
+        bindingCurrent() &&
         nativeBindings.every(
           (binding) => this.jobs?.terminalDemandBindingCurrent(binding, false) === true,
         ) &&
-        (this.actionEpochs.get(pluginId) ?? 0) === epoch &&
-        this.assembled.actions.get(fullName)?.def === entry.def &&
-        entry.def.input === input &&
-        entry.def.result === resultSchema &&
-        entry.def.caps === declaredCaps &&
-        entry.def.delegates === declaredDelegates &&
-        entry.def.requirements === declaredRequirements &&
-        this.assembled.actions.get(fullName)?.plugin === entry.plugin &&
-        this.handlers.get(pluginId)?.[entry.def.name] === handler &&
-        this.installed.get(pluginId) === install &&
-        (this.assembled.enabled(pluginId) || entry.def.cleanup === true) &&
         (install === undefined ||
           nativeCaps.every(
             (cap) => GOVERNED_CAPS.includes(cap) || withinCeiling(cap, install.row.grantedCaps),
@@ -5817,7 +5948,7 @@ export class PluginHost {
             targets: preparedEvidence.targets,
             additionalRequirements: preparedEvidence.additionalRequirements,
             requirements: actionRequirements,
-            fingerprint: this.actionFingerprint(fullName),
+            fingerprint: securityFingerprint,
           },
         };
     }
@@ -6379,7 +6510,7 @@ export class PluginHost {
             targets: preparedEvidence.targets,
             additionalRequirements: preparedEvidence.additionalRequirements,
             requirements: actionRequirements,
-            fingerprint: this.actionFingerprint(fullName),
+            fingerprint: securityFingerprint,
           };
         if (guestInput && !guestAdmitted)
           throw new IsolateDenial("unavailable", "isolate returned before admission");
