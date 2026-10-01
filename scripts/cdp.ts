@@ -128,13 +128,15 @@ export class Browser {
   async launch(options: { readonly incognito?: boolean } = {}): Promise<void> {
     const binary = Browser.detect();
     const port = reserveLoopbackPort();
-    // Headless verification needs no desktop bus. Merely deleting inherited addresses
-    // still lets libdbus reach the default system bus or auto-launch a session bus.
-    // A valid address naming a non-socket fails immediately without either fallback.
+    // Chromium's own Linux headless bootstrap uses this sentinel to suppress libdbus
+    // auto-launch, whose fork/exec path can hang a browser startup. Do not point at a
+    // non-socket instead: Chromium preserves a nonempty inherited address and repeatedly
+    // retries its failed connection. Apply the same non-connectable address to the system bus
+    // so a runner cannot leak a separately inherited bus.
     const env = {
       ...process.env,
-      DBUS_SESSION_BUS_ADDRESS: "unix:path=/dev/null",
-      DBUS_SYSTEM_BUS_ADDRESS: "unix:path=/dev/null",
+      DBUS_SESSION_BUS_ADDRESS: "disabled:",
+      DBUS_SYSTEM_BUS_ADDRESS: "disabled:",
     };
     const profile = `/tmp/manifold-verify-${String(port)}-${String(Date.now())}`;
     this.transientProfile = options.incognito ? profile : null;
