@@ -4867,8 +4867,7 @@ async function retainedServiceFixture(dataVersion?: PluginManifest["dataVersion"
     expect((await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, first)).ok).toBe(true);
     const commands: JobCommand[] = [];
     let readRequested:
-      | PromiseWithResolvers<Extract<JobCommand, { type: "service_read" }>>
-      | undefined;
+      PromiseWithResolvers<Extract<JobCommand, { type: "service_read" }>> | undefined;
     const channel = {
       machineId,
       send: ({ command }: { type: "job_command"; command: JobCommand }) => {

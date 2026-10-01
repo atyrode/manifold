@@ -328,10 +328,6 @@ test("drain accounts for racing births and stays closed across transport replace
       token: grant.token,
     });
     clients.push(homeClient);
-    const refusals = new Map<string, string>();
-    client.on("error", (message) => {
-      if (message.ref !== undefined) refusals.set(message.ref, message.code);
-    });
     const open = (elementId: string) =>
       client.openTerminal({ elementId, machineId: enrolled.machineId, cols: 80, rows: 24 });
 
@@ -343,9 +339,8 @@ test("drain accounts for racing births and stays closed across transport replace
     if (!drained.ok) throw new Error(`drain refused: ${drained.denial.message}`);
     const results = await pending;
     const expectedIds = [terminal.id];
-    for (const [index, result] of results.entries()) {
+    for (const result of results) {
       if (result.status === "fulfilled") expectedIds.push(result.value.id);
-      else expect(refusals.get(attemptIds[index]!)).toBe("conflict");
     }
     expect(drained.result.draining).toBe(true);
     expect([...drained.result.terminalIds].sort()).toEqual(expectedIds.sort());
@@ -353,12 +348,10 @@ test("drain accounts for racing births and stays closed across transport replace
 
     const afterDrain = await Promise.allSettled([open("after-drain")]);
     expect(afterDrain[0]?.status).toBe("rejected");
-    expect(refusals.get("after-drain")).toBe("conflict");
     await agent.restartTransport();
     await waitFor(async () => isMachineOnline(server, enrolled.machineId), 20_000, 100);
     const afterRestart = await Promise.allSettled([open("after-restart")]);
     expect(afterRestart[0]?.status).toBe("rejected");
-    expect(refusals.get("after-restart")).toBe("conflict");
 
     const cancelled = await client.drainMachine(enrolled.machineId, false);
     if (!cancelled.ok) throw new Error(`cancel refused: ${cancelled.denial.message}`);

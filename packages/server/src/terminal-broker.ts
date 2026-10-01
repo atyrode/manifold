@@ -1560,6 +1560,13 @@ export class TerminalBroker implements TerminalPlacementPort {
   onCreated(machineId: string, terminalId: string): void {
     const pending = this.pendingOpens.get(terminalId);
     if (pending === undefined || pending.machineId !== machineId) return;
+    if (this.machines.get(machineId)?.terminalHostId !== pending.terminalHostId) {
+      this.rejectPendingOpen(pending, "forbidden", "terminal owner changed");
+      return;
+    }
+    // The owner has committed this ordinary birth. Drain cannot invalidate a create
+    // already sent before its latch; credential, code and continuation guards stay live.
+    if (pending.sent && pending.message.runtime === undefined) pending.fence.commit();
     try {
       pending.auth = pending.fence.checkCurrent();
     } catch (error) {
@@ -1568,10 +1575,6 @@ export class TerminalBroker implements TerminalPlacementPort {
         "forbidden",
         error instanceof Error ? error.message : "terminal authority withdrawn",
       );
-      return;
-    }
-    if (this.machines.get(machineId)?.terminalHostId !== pending.terminalHostId) {
-      this.rejectPendingOpen(pending, "forbidden", "terminal owner changed");
       return;
     }
     this.pendingOpens.delete(terminalId);
@@ -1652,7 +1655,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       arbitratingViewports: false,
       viewportArbitrationPending: false,
     });
-    pending.fence.commit();
+    if (pending.message.runtime !== undefined) pending.fence.commit();
     /*
       The reply carries the home LEAF for a composition opener and the opener's own ref for a
       canvas one, because those are the ids each of them will render under;

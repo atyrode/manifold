@@ -4006,6 +4006,9 @@ Five tones mean `neutral`, `accent`, `muted`, `danger`, `success`, never arbitra
 colours. Text-bearing components take text, not nested markup. Control callbacks
 receive scalars (or no argument), never DOM events. A `Button`'s full action name
 goes in **`data-action`**; its callback actually dispatches through `host.client.action`.
+Buttons keep their natural label size when space permits, then wrap the full label
+within their container instead of clipping it. This intrinsic sizing is shared by
+native and portable rendering; it needs no layout prop or nested `Text`.
 Metadata is limited to `title`, `aria-label`, `data-testid` and
 `role="status" | "alert"`. A frame has at most 32 levels and 2000 nodes, 256
 select options and 500 list rows; ordinary text is limited to 4096 characters.

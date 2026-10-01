@@ -53,6 +53,7 @@ const KNOWN_CLIENT_TYPES: Readonly<Record<string, true>> = Object.fromEntries(
 
 const RESYNC_MIN_INTERVAL_MS = 1_000;
 const JOIN_DEADLINE_MS = 10_000;
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 type SessionCloseCause =
   | "authorization_refused"
@@ -632,6 +633,22 @@ export class SessionGateway {
     connection.socket.send(JSON.stringify(frame));
   }
 
+  /** Long lifetimes use bounded wakes; only the absolute credential deadline closes the socket. */
+  private scheduleCredentialExpiry(connection: SessionConnection, expiresAt: number): void {
+    connection.cancelExpiry = this.timers.schedule(
+      () => {
+        connection.cancelExpiry = null;
+        if (connection.closed) return;
+        if (this.runtime.now() < expiresAt) {
+          this.scheduleCredentialExpiry(connection, expiresAt);
+          return;
+        }
+        this.closeSocket(connection, 4403, "expired", "credential_expired");
+      },
+      Math.min(MAX_TIMER_DELAY_MS, Math.max(0, expiresAt - this.runtime.now())),
+    );
+  }
+
   /** Seats connection-level liveness, expiry, events and streams after either handshake. */
   private admitConnection(connection: SessionConnection, context: AuthContext): void {
     connection.cancelJoinTimeout?.();
@@ -639,15 +656,7 @@ export class SessionGateway {
     if (connection.cancelPing === null) this.schedulePing(connection);
     if (connection.subscriber !== null) return;
     if (connection.cancelExpiry === null && context.expiresAt !== undefined) {
-      connection.cancelExpiry = this.timers.schedule(
-        () => {
-          connection.cancelExpiry = null;
-          if (!connection.closed) {
-            this.closeSocket(connection, 4403, "expired", "credential_expired");
-          }
-        },
-        Math.max(0, context.expiresAt - this.runtime.now()),
-      );
+      this.scheduleCredentialExpiry(connection, context.expiresAt);
     }
     const close = (code: number, reason: string): void => {
       this.closeSocket(connection, code, reason, "transport_overflow");

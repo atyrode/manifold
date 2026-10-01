@@ -6087,11 +6087,7 @@ export class PluginHost {
                 : "forbidden",
             "agent authority unavailable",
           );
-        if (
-          !bindingCurrent() ||
-          !this.assembled.enabled(pluginId) ||
-          this.replacing.has(pluginId)
-        )
+        if (!bindingCurrent() || !this.assembled.enabled(pluginId) || this.replacing.has(pluginId))
           return new ActionAdmissionDenial("unavailable", "action unavailable");
         if (
           auth.authorityScope === undefined &&

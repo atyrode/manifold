@@ -823,10 +823,7 @@ test("the Machines + on a view births a terminal the server places as a tile, an
       elementId: "correlation-only",
       placement: "tile",
     });
-    const [terminal, pendingId] = await Promise.all([
-      opening,
-      fitPendingTerminal(client, 117, 33),
-    ]);
+    const [terminal, pendingId] = await Promise.all([opening, fitPendingTerminal(client, 117, 33)]);
     expect(terminal).toMatchObject({ id: pendingId, cols: 117, rows: 33 });
     expect(terminal.status).toBe("running");
     expect(terminal.containerId).toBe(view.id);

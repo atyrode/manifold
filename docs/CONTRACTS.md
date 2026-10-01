@@ -3400,6 +3400,8 @@ authenticate the socket, seat event/stream subscriptions, arm credential expiry 
 same liveness watchdog. The ten-second deadline applies until one handshake survives. After an
 observer releases, the socket stays admitted while any room channel remains; after its last room
 leaves, it stays admitted while any observer remains. A socket with neither closes.
+Credential expiry is an absolute admitted deadline. Long lifetimes use bounded timer wakes;
+an intermediate wake or a wall-clock rollback never expires a still-valid credential.
 Resume hints (`lastEpoch`/`lastRev`) ride each channel's own join, so a reconnect redials ONE
 socket and re-establishes every observer and channel; a mismatch simply yields a full init.
 `leave { ch }` frees one channel while every other channel and roomless observer keeps streaming.

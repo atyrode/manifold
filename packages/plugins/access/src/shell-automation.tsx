@@ -244,21 +244,11 @@ export function ShellAutomation({
             </label>
             <label>
               Credential expiry date
-              <input
-                name="expiresDate"
-                type="date"
-                required
-                disabled={pending || token !== null}
-              />
+              <input name="expiresDate" type="date" required disabled={pending || token !== null} />
             </label>
             <label>
               Credential expiry time
-              <input
-                name="expiresTime"
-                type="time"
-                required
-                disabled={pending || token !== null}
-              />
+              <input name="expiresTime" type="time" required disabled={pending || token !== null} />
             </label>
             <span className="credential-inspection-note">
               {mode === "workspace"

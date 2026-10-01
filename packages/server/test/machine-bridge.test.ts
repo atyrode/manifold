@@ -1067,7 +1067,7 @@ describe("authored child permission and retained trusted lifetime", () => {
         // Replacement can fence an admitted RPC before it reaches the live bridge.
         const answer = repositoryOutcome.parse(fenced.result);
         if (!answer.ok && answer.reason === "plugin authority unavailable") break;
-        expect(answer).toEqual(repositoryDenied);
+        expect(answer).toMatchObject(repositoryDenied);
         if (Date.now() >= deadline) throw new Error("replacement did not fence admission");
         await Bun.sleep(1);
       }

@@ -4,6 +4,7 @@ import {
   CHANNEL_LIMIT_CLOSE_CODE,
   CURSOR_MIN_INTERVAL_MS,
   DIAL_PING_INTERVAL_MS,
+  MANIFOLD_ROOT_URI,
   MAX_SESSION_CHANNELS_PER_CONNECTION,
   PROTOCOL_VERSION,
   CreateRunCredentialResultSchema,
@@ -46,9 +47,12 @@ interface GatewayFixture {
   readonly plugins: PluginHost;
 }
 
-async function gatewayFixture(logger: Logger = silentLogger): Promise<GatewayFixture> {
+async function gatewayFixture(
+  logger: Logger = silentLogger,
+  Clock: typeof FakeClock = FakeClock,
+): Promise<GatewayFixture> {
   const runtime = new FakeRuntime();
-  const clock = new FakeClock(runtime);
+  const clock = new Clock(runtime);
   const store = testStore();
   const ownerKey = "e".repeat(64);
   const auth = new AuthService(store, ownerKey, runtime);
@@ -1161,6 +1165,58 @@ describe("SessionGateway liveness", () => {
     fixture.gateway.shutdown();
     fixture.store.close();
   });
+
+  for (const rollbackDays of [0, 7]) {
+    test(`a 30-day credential expires at its absolute deadline with ${rollbackDays} days of clock rollback`, async () => {
+      // Match the production platform's overflow behavior, not an unbounded fake timer.
+      class PlatformClock extends FakeClock {
+        override schedule(callback: () => void, delayMs: number): () => void {
+          return super.schedule(callback, delayMs > 2_147_483_647 ? 1 : delayMs);
+        }
+      }
+      const fixture = await gatewayFixture(silentLogger, PlatformClock);
+      let wallOffset = 0;
+      fixture.runtime.now = () => fixture.runtime.time + wallOffset;
+      const day = 24 * 60 * 60_000;
+      const expiresAt = fixture.runtime.now() + 30 * day;
+      const token = fixture.auth.mintTokenV2(
+        {
+          principal: { name: "long session", kind: "human" },
+          scope: [
+            {
+              target: MANIFOLD_ROOT_URI,
+              reach: "subtree",
+              caps: ["containers:read"],
+            },
+          ],
+          expiresAt,
+        },
+        fixture.auth.authenticate(fixture.ownerKey),
+      ).token;
+      const socket = new FakeSocket();
+      try {
+        join(fixture.gateway, "long-session", socket, fixture.container.id, token);
+        const advanceAlive = (duration: number): void => {
+          const until = fixture.runtime.time + duration;
+          while (fixture.runtime.time < until) {
+            fixture.clock.advance(Math.min(DIAL_PING_INTERVAL_MS, until - fixture.runtime.time));
+            fixture.gateway.message("long-session", JSON.stringify({ type: "pong" }));
+            socket.sent.length = 0;
+          }
+        };
+        advanceAlive(24 * day);
+        expect(socket.closed).toBeNull();
+        wallOffset -= rollbackDays * day;
+        advanceAlive((6 + rollbackDays) * day - 1);
+        expect(socket.closed).toBeNull();
+        fixture.clock.advance(1);
+        expect(socket.closed?.code).toBe(4403);
+      } finally {
+        fixture.gateway.shutdown();
+        fixture.store.close();
+      }
+    });
+  }
 
   test("an unanswered ping reaps the socket and the room stops counting it", async () => {
     /*
