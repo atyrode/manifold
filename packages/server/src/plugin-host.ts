@@ -72,6 +72,8 @@ import {
   formatManifoldUri,
   parseManifoldUri,
   canonicalJobJson,
+  machineArtifacts,
+  ISOLATE_HOOKS,
   TRACE_AUTHORITY_OPEN,
   TRACE_AUTHORITY_ROOT,
   SessionRefSchema,
@@ -730,6 +732,7 @@ interface InstallCandidate {
   readonly artifact: VerifiedPluginArtifact;
   readonly grantedCaps: readonly AuthoredCap[];
   readonly hardened: boolean;
+  readonly retainInstallation?: string;
 }
 
 /** Who an installation is attributed to, and what it must keep proving until it commits. */
@@ -760,6 +763,7 @@ interface GroupMember {
   readonly styles: Uint8Array<ArrayBuffer> | null;
   readonly compatibility: PluginBuildCompatibility;
   readonly previous: InstalledPlugin | undefined;
+  readonly retainInstallation?: string;
   readonly previousDef: ServerPluginDef | undefined;
   readonly previousLifecycle: PluginLifecycleState | undefined;
   /** A verified previous module serving now, told `onDisable` before it is replaced. */
@@ -3410,10 +3414,46 @@ export class PluginHost {
       : null;
   }
 
+  /** Retention compares real, serving declarations, never dormant or failed placeholders. */
+  private retainedInstallationRefusal(
+    id: string,
+    durable: PluginInstallRow | undefined,
+  ): InstallRefusal | null {
+    const incumbent = this.installed.get(id);
+    if (incumbent?.bundle == null || durable === undefined)
+      return new InstallRefusal("not_installed", `"${id}" has no verified incumbent installation`);
+    if (incumbent.row.mode === "unpacked" || durable.mode === "unpacked")
+      return new InstallRefusal(
+        "artifact_invalid",
+        `"${id}" is built from this instance's authored directory, which alone updates it`,
+      );
+    const entry = this.assembled.roster.find((row) => row.manifest.id === id);
+    const lifecycle = this.lifecycleStates.get(id);
+    if (
+      this.store.disabledPlugins().has(id) ||
+      entry?.enabled !== true ||
+      entry.held !== undefined ||
+      this.heldUnloaded.has(id) ||
+      !this.installedDefs.has(id) ||
+      // A failed disable notification does not discard the loaded declaration or veto replace.
+      lifecycle === "enable_failed" ||
+      lifecycle === "isolate_starting" ||
+      lifecycle === "isolate_crashed"
+    )
+      return new InstallRefusal(
+        "artifact_invalid",
+        `"${id}" retention requires an enabled, available incumbent with loaded declarations`,
+      );
+    return null;
+  }
+
   /**
    * The install and replacement door. Artifact integrity, assembly and data compatibility
    * are preflighted before committing an installation. A replacement preserves the durable
    * enablement switch, including an intentionally disabled row, and never toggles dependents.
+   * Retaining consent is narrower: only an active, verified bundled incumbent with loaded
+   * declarations can be compared without an explicit review. Disabled, held, failed and
+   * unpacked rows remain behind their ordinary installation or authoring doors.
    *
    * Enabled modules use the same lifecycle as an authored edit: old onDisable, new onEnable.
    * These are module notifications, NOT an operator disable of native authority. Unchanged
@@ -3452,15 +3492,75 @@ export class PluginHost {
         if (error instanceof InstallRefusal) return { refused: error.message };
         throw error;
       }
+      const id = artifact.bundle.manifest.id;
+      const retainedPin = request.retainInstallation?.toLowerCase();
+      const incumbent = this.installed.get(id);
+      if (retainedPin !== undefined) {
+        if (request.replace !== true || request.grant !== undefined || unpacked !== undefined)
+          return installRefused(
+            "artifact_invalid",
+            "retaining an installation requires replacement without a new grant",
+          );
+        const durable = this.store.pluginInstalls().find((row) => row.pluginId === id);
+        const retentionRefusal = this.retainedInstallationRefusal(id, durable);
+        if (retentionRefusal !== null) return { refused: retentionRefusal.message };
+        if (incumbent?.bundle == null)
+          return installRefused("not_installed", `"${id}" has no verified incumbent installation`);
+        if (incumbent.row.sha256 !== retainedPin || durable?.sha256 !== retainedPin)
+          return installRefused(
+            "artifact_invalid",
+            `"${id}" installation changed before replacement`,
+          );
+        if (
+          (incumbent.row.hardened === true) !== (request.hardened === true) ||
+          canonicalJobJson(incumbent.bundle.manifest) !==
+            canonicalJobJson(artifact.bundle.manifest) ||
+          canonicalJobJson(incumbent.bundle.builtAgainst ?? null) !==
+            canonicalJobJson(artifact.bundle.builtAgainst ?? null) ||
+          incumbent.bundle.hardenedContract !== artifact.bundle.hardenedContract
+        )
+          return installRefused(
+            "artifact_invalid",
+            `"${id}" installation declaration changed; explicit review is required`,
+          );
+        for (const member of machineArtifacts(artifact.bundle.manifest.machine))
+          if (
+            member.bundleFile &&
+            artifact.bundle.files[member.bundleFile] !== incumbent.bundle.files[member.bundleFile]
+          )
+            return installRefused(
+              "artifact_invalid",
+              `"${id}" native bytes changed; explicit review is required`,
+            );
+      }
       const outcome = await this.installGroup(
         [
           {
             artifact,
-            grantedCaps: grantFor(artifact.bundle.manifest.capabilities, request.grant),
+            grantedCaps:
+              retainedPin === undefined
+                ? grantFor(artifact.bundle.manifest.capabilities, request.grant)
+                : incumbent!.row.grantedCaps,
             hardened: request.hardened === true,
+            ...(retainedPin === undefined ? {} : { retainInstallation: retainedPin }),
           },
         ],
-        { installedBy, installer, ...(unpacked === undefined ? {} : { unpacked }) },
+        {
+          installedBy,
+          installer,
+          ...(unpacked === undefined ? {} : { unpacked }),
+          ...(retainedPin === undefined
+            ? {}
+            : {
+                assertCurrent: () => {
+                  if (this.installed.get(id)?.row.sha256 !== retainedPin)
+                    throw new InstallRefusal(
+                      "artifact_invalid",
+                      `"${id}" installation changed during replacement`,
+                    );
+                },
+              }),
+        },
       );
       return "refused" in outcome ? outcome : outcome[0]!;
     });
@@ -3584,6 +3684,9 @@ export class PluginHost {
           styles: stylesheetOf(bundle),
           compatibility: pluginBuildCompatibility(bundle),
           previous,
+          ...(candidate.retainInstallation === undefined
+            ? {}
+            : { retainInstallation: candidate.retainInstallation }),
           previousDef: this.installedDefs.get(id),
           previousLifecycle: this.lifecycleStates.get(id),
           live: previous !== undefined && previous.bundle !== null && wasEnabled.has(id),
@@ -3690,6 +3793,27 @@ export class PluginHost {
         prospective = this.preflightGroup(candidateDefs(), await this.env());
         current();
         for (const member of members) {
+          if (member.retainInstallation === undefined) continue;
+          const old = member.previousDef;
+          const next = member.def;
+          const actions =
+            prospective.roster.find((entry) => entry.manifest.id === member.id)?.actions ?? [];
+          if (
+            canonicalJobJson(member.previous?.row.actions ?? []) !== canonicalJobJson(actions) ||
+            ISOLATE_HOOKS.some(
+              (hook) =>
+                (old?.lifecycle?.[hook] !== undefined) !== (next?.lifecycle?.[hook] !== undefined),
+            ) ||
+            (old?.lifecycle?.onPurge !== undefined) !== (next?.lifecycle?.onPurge !== undefined) ||
+            canonicalJobJson((old?.migrations ?? []).map(({ name, to }) => ({ name, to }))) !==
+              canonicalJobJson((next?.migrations ?? []).map(({ name, to }) => ({ name, to })))
+          )
+            throw new InstallRefusal(
+              "artifact_invalid",
+              `"${member.id}" action or lifecycle authority changed; explicit review is required`,
+            );
+        }
+        for (const member of members) {
           if (member.candidateChild && isolates.runner.state(member.id) === "crashed")
             throw new IsolateLoadError(`${member.id}: candidate child crashed during admission`);
         }
@@ -3742,6 +3866,23 @@ export class PluginHost {
           // Native admission can occur while candidate loading or migration awaits.
           const nativeRefusal = this.nativeReplacementRefusal(member.bundle.manifest);
           if (nativeRefusal !== null) throw nativeRefusal;
+          if (member.retainInstallation !== undefined) {
+            const incumbent = this.store.pluginInstalls().find((row) => row.pluginId === member.id);
+            const retentionRefusal = this.retainedInstallationRefusal(member.id, incumbent);
+            if (retentionRefusal !== null) throw retentionRefusal;
+            if (
+              incumbent?.sha256 !== member.retainInstallation ||
+              !prospective.enabled(member.id) ||
+              (incumbent.hardened === true) !== (member.row.hardened === true) ||
+              canonicalJobJson(incumbent.actions) !== canonicalJobJson(member.row.actions)
+            )
+              throw new InstallRefusal(
+                "artifact_invalid",
+                `"${member.id}" installation changed at commit`,
+              );
+            // Read durable consent after every preparation await, inside the synchronous commit.
+            member.row = { ...member.row, grantedCaps: incumbent.grantedCaps };
+          }
         }
         try {
           for (const member of members) member.staged?.activate();

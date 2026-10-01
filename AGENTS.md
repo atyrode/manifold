@@ -134,6 +134,11 @@ For external plugin UI iteration, read
 `bun run --cwd packages/plugin-kit dev --describe` before starting a development session.
 Source development is opt-in and browser-only; installation, native provisioning and release
 publication remain separate authorized operations.
+For an explicitly authorized frontend-and-server workshop, read
+[Development workshops](docs/PLUGINS.md#development-workshops) and inspect
+`bun run --cwd packages/plugin-kit dev --workshop --describe`. This separate operation has
+development installation authority and preserves the incumbent grants; it does not authorize
+native-owner disruption, production promotion or browser-credential transfer.
 
 ## CI performance contract
 

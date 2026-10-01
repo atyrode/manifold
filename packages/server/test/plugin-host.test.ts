@@ -3433,6 +3433,537 @@ describe("PluginHost install doors", () => {
     fixture.store.close();
   });
 
+  test("same-authority replacement preserves both withheld ordinary caps and consented high-risk caps", async () => {
+    const fixture = await installFixture();
+    let host = await customHost(fixture, [], { isolates: fixture.isolates });
+    try {
+      const first = fixture.drop();
+      expect(
+        (
+          await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, {
+            ...first,
+            grant: ["tokens:mint"],
+          })
+        ).ok,
+      ).toBe(true);
+      host.close();
+      const previous = fixture.store.pluginInstalls()[0]!;
+      // Rehydrate a persisted, partially consented installation rather than handing the
+      // replacement a desired grant. Such withheld ceilings survive reviewed updates.
+      fixture.store.putPluginInstall({ ...previous, grantedCaps: ["tokens:mint"] });
+      host = await customHost(fixture, [], { isolates: fixture.isolates });
+      expect(denial(await host.dispatch(fixture.owner, `${SAMPLE_ID}.ping`, {})).rule).toBe(
+        "forbidden",
+      );
+      expect(await host.dispatch(fixture.owner, `${SAMPLE_ID}.mint`, {})).toEqual({
+        ok: true,
+        result: { minted: true },
+      });
+      const next = fixture.drop(SAMPLE_MANIFEST, {
+        "server.js": "export {};",
+        "web.js": "export const web = 2;",
+      });
+      expect(
+        (
+          await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, {
+            ...next,
+            replace: true,
+            retainInstallation: first.sha256,
+          })
+        ).ok,
+      ).toBe(true);
+      expect(installedRow(host, SAMPLE_ID).install?.sha256).toBe(next.sha256);
+      expect(installedRow(host, SAMPLE_ID).install?.grantedCaps).toEqual(["tokens:mint"]);
+      expect(denial(await host.dispatch(fixture.owner, `${SAMPLE_ID}.ping`, {})).rule).toBe(
+        "forbidden",
+      );
+      expect(await host.dispatch(fixture.owner, `${SAMPLE_ID}.mint`, {})).toEqual({
+        ok: true,
+        result: { minted: true },
+      });
+    } finally {
+      host.close();
+      fixture.store.close();
+    }
+  });
+
+  test("retained replacement keeps the lifecycle notification's no-veto contract", async () => {
+    let disables = 0;
+    const fixture = await installFixture((ref) => {
+      const loaded = sampleLoad(ref);
+      return {
+        ...loaded,
+        lifecycle: {
+          ...loaded.lifecycle,
+          onDisable: () => {
+            disables += 1;
+            throw new Error("cleanup notification failed");
+          },
+        },
+      };
+    });
+    const host = await customHost(fixture, [], { isolates: fixture.isolates });
+    try {
+      const first = fixture.drop();
+      expect(
+        (
+          await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, {
+            ...first,
+            grant: ["tokens:mint"],
+          })
+        ).ok,
+      ).toBe(true);
+      const next = fixture.drop(SAMPLE_MANIFEST, {
+        "server.js": "export {};",
+        "web.js": "export const web = 10;",
+      });
+      expect(
+        (
+          await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, {
+            ...next,
+            replace: true,
+            retainInstallation: first.sha256,
+          })
+        ).ok,
+      ).toBe(true);
+      expect(disables).toBe(1);
+      expect(installedRow(host, SAMPLE_ID).install).toMatchObject({
+        sha256: next.sha256,
+        grantedCaps: ["containers:read", "tokens:mint"],
+      });
+      expect(await host.dispatch(fixture.owner, `${SAMPLE_ID}.mint`, {})).toEqual({
+        ok: true,
+        result: { minted: true },
+      });
+    } finally {
+      host.close();
+      fixture.store.close();
+      rmSync(fixture.dataDir, { recursive: true, force: true });
+    }
+  });
+
+  test("retained replacement reads durable consent at commit after a suspended candidate load", async () => {
+    const fixture = await installFixture();
+    const host = await customHost(fixture, [], { isolates: fixture.isolates });
+    const first = fixture.drop();
+    const entered = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    let replacing: Promise<ActionOutcome> | undefined;
+    try {
+      expect(
+        (
+          await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, {
+            ...first,
+            grant: ["tokens:mint"],
+          })
+        ).ok,
+      ).toBe(true);
+      expect(await host.dispatch(fixture.owner, `${SAMPLE_ID}.ping`, {})).toEqual({
+        ok: true,
+        result: { pong: true },
+      });
+      const load = fixture.runner.load.bind(fixture.runner);
+      fixture.runner.load = async (ref) => {
+        entered.resolve();
+        await resume.promise;
+        return load(ref);
+      };
+      const next = fixture.drop(SAMPLE_MANIFEST, {
+        "server.js": "export {};",
+        "web.js": "export const web = 3;",
+      });
+      replacing = host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, {
+        ...next,
+        replace: true,
+        retainInstallation: first.sha256,
+      });
+      await entered.promise;
+      const current = fixture.store.pluginInstalls()[0]!;
+      fixture.store.putPluginInstall({ ...current, grantedCaps: ["tokens:mint"] });
+      resume.resolve();
+      expect((await replacing).ok).toBe(true);
+      expect(installedRow(host, SAMPLE_ID).install?.grantedCaps).toEqual(["tokens:mint"]);
+      expect(denial(await host.dispatch(fixture.owner, `${SAMPLE_ID}.ping`, {})).rule).toBe(
+        "forbidden",
+      );
+      expect(await host.dispatch(fixture.owner, `${SAMPLE_ID}.mint`, {})).toEqual({
+        ok: true,
+        result: { minted: true },
+      });
+    } finally {
+      resume.resolve();
+      await replacing;
+      host.close();
+      fixture.store.close();
+    }
+  });
+
+  test.each(["disabled", "unpacked"] as const)(
+    "retained replacement refuses a durable %s transition during candidate loading",
+    async (boundary) => {
+      const fixture = await installFixture();
+      const host = await customHost(fixture, [], { isolates: fixture.isolates });
+      const entered = Promise.withResolvers<void>();
+      const resume = Promise.withResolvers<void>();
+      let replacing: Promise<ActionOutcome> | undefined;
+      try {
+        const first = fixture.drop();
+        expect((await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, first)).ok).toBe(true);
+        const load = fixture.runner.load.bind(fixture.runner);
+        fixture.runner.load = async (ref) => {
+          entered.resolve();
+          await resume.promise;
+          return load(ref);
+        };
+        const next = fixture.drop(SAMPLE_MANIFEST, {
+          "server.js": "export {};",
+          "web.js": "export const web = 6;",
+        });
+        replacing = host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, {
+          ...next,
+          replace: true,
+          retainInstallation: first.sha256,
+        });
+        await entered.promise;
+        const current = fixture.store.pluginInstalls()[0]!;
+        if (boundary === "disabled")
+          fixture.store.setPluginEnabled(SAMPLE_ID, false, "late-owner", fixture.runtime.now());
+        else fixture.store.putPluginInstall({ ...current, mode: "unpacked" });
+        const durable = fixture.store.pluginInstalls()[0]!;
+        resume.resolve();
+        expect((await replacing).ok).toBe(false);
+        expect(fixture.store.pluginInstalls()).toEqual([durable]);
+        expect(installedRow(host, SAMPLE_ID).install?.sha256).toBe(first.sha256);
+        expect(existsSync(installLayout(fixture.dataDir, SAMPLE_ID, next.sha256).bundlePath)).toBe(
+          false,
+        );
+        if (boundary === "disabled") {
+          expect(fixture.store.disabledPlugins().has(SAMPLE_ID)).toBe(true);
+          expect(installedRow(host, SAMPLE_ID).enabled).toBe(false);
+          expect(denial(await host.dispatch(fixture.owner, `${SAMPLE_ID}.ping`, {})).rule).toBe(
+            "plugin_disabled",
+          );
+        } else expect(fixture.store.pluginInstalls()[0]?.mode).toBe("unpacked");
+      } finally {
+        resume.resolve();
+        await replacing;
+        host.close();
+        fixture.store.close();
+        rmSync(fixture.dataDir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test("retained replacement refuses a disabled incumbent with unchanged hooks before any installation effects", async () => {
+    const hooks: HookLog = { calls: [] };
+    const fixture = await installFixture((ref) => sampleLoad(ref, {}, hooks));
+    const host = await customHost(fixture, [], { isolates: fixture.isolates });
+    try {
+      const first = fixture.drop();
+      expect((await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, first)).ok).toBe(true);
+      expect(await host.setEnabled(SAMPLE_ID, false, "admin")).toEqual({ ok: true });
+      const incumbent = installedRow(host, SAMPLE_ID);
+      const durable = fixture.store.pluginInstalls();
+      const loads = [...fixture.runner.loads];
+      const unloads = [...fixture.runner.unloads];
+      const calls = [...hooks.calls];
+      const published: PluginRoster[] = [];
+      host.onRosterChange((roster) => published.push(roster));
+      const next = fixture.drop(SAMPLE_MANIFEST, {
+        "server.js": "export {};",
+        "web.js": "export const web = 7;",
+      });
+      expect(
+        (
+          await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, {
+            ...next,
+            replace: true,
+            retainInstallation: first.sha256,
+          })
+        ).ok,
+      ).toBe(false);
+      expect(installedRow(host, SAMPLE_ID)).toEqual(incumbent);
+      expect(fixture.store.pluginInstalls()).toEqual(durable);
+      expect(fixture.runner.loads).toEqual(loads);
+      expect(fixture.runner.unloads).toEqual(unloads);
+      expect(hooks.calls).toEqual(calls);
+      expect(published).toEqual([]);
+      expect(fixture.store.disabledPlugins().has(SAMPLE_ID)).toBe(true);
+      expect(existsSync(installLayout(fixture.dataDir, SAMPLE_ID, next.sha256).bundlePath)).toBe(
+        false,
+      );
+    } finally {
+      host.close();
+      fixture.store.close();
+      rmSync(fixture.dataDir, { recursive: true, force: true });
+    }
+  });
+
+  test("dormant declarations cannot conceal removed hooks or migrations from retained replacement", async () => {
+    const fixture = await installFixture();
+    const host = await customHost(fixture, [], { isolates: fixture.isolates });
+    try {
+      const manifest: PluginManifest = {
+        ...SAMPLE_MANIFEST,
+        capabilities: [],
+        dataVersion: { major: 1, minor: 0 },
+      };
+      const first = fixture.drop(manifest, {
+        "server.js": `
+          export default {
+            actions: [], handlers: {},
+            lifecycle: {
+              async onEnable(ctx) { await ctx.storage.set("hook", "enabled"); },
+              async onDisable(ctx) { await ctx.storage.set("hook", "disabled"); },
+            },
+            migrations: [{
+              name: "history", to: { major: 1, minor: 0 },
+              async migrate(storage) { await storage.set("migration", "applied"); },
+            }],
+          };
+        `,
+        "web.js": "export {};",
+      });
+      expect(
+        (await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, { ...first, hardened: false }))
+          .ok,
+      ).toBe(true);
+      expect(await host.setEnabled(SAMPLE_ID, false, "admin")).toEqual({ ok: true });
+      const storage = fixture.store.pluginStorage(SAMPLE_ID);
+      expect(await storage.get("hook")).toBe("disabled");
+      const version = await storage.dataVersion();
+      const migrations = await storage.appliedMigrations();
+      const durable = fixture.store.pluginInstalls();
+      const incumbent = installedRow(host, SAMPLE_ID);
+      const sentinel = join(fixture.dataDir, "retained-candidate-ran");
+      const next = fixture.drop(manifest, {
+        "server.js": `
+          await Bun.write(${JSON.stringify(sentinel)}, "executed");
+          export default { actions: [], handlers: {}, lifecycle: {}, migrations: [] };
+        `,
+        "web.js": "export const web = 8;",
+      });
+      expect(
+        (
+          await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, {
+            ...next,
+            hardened: false,
+            replace: true,
+            retainInstallation: first.sha256,
+          })
+        ).ok,
+      ).toBe(false);
+      expect(existsSync(sentinel)).toBe(false);
+      expect(installedRow(host, SAMPLE_ID)).toEqual(incumbent);
+      expect(fixture.store.pluginInstalls()).toEqual(durable);
+      expect(await storage.get("hook")).toBe("disabled");
+      expect(await storage.dataVersion()).toEqual(version);
+      expect(await storage.appliedMigrations()).toEqual(migrations);
+      expect(existsSync(installLayout(fixture.dataDir, SAMPLE_ID, next.sha256).bundlePath)).toBe(
+        false,
+      );
+    } finally {
+      host.close();
+      fixture.store.close();
+      rmSync(fixture.dataDir, { recursive: true, force: true });
+    }
+  });
+
+  test.each(["held", "failed"] as const)(
+    "retained replacement refuses an enabled-switch incumbent with a %s definition before preparation",
+    async (boundary) => {
+      let unavailable = false;
+      const fixture = await installFixture((ref) => {
+        if (unavailable && boundary === "failed")
+          throw new IsolateLoadError("incumbent import failed");
+        const duplicate = defineAction({
+          name: "ping",
+          title: "Ping",
+          caps: [],
+          input: z.unknown(),
+          result: z.unknown(),
+        });
+        return {
+          def: {
+            manifest: ref.manifest,
+            actions: unavailable ? [duplicate, duplicate] : [],
+            handlers: {},
+          },
+          lifecycle: {},
+        };
+      });
+      let host = await customHost(fixture, [], { isolates: fixture.isolates });
+      try {
+        const first = fixture.drop();
+        expect((await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, first)).ok).toBe(true);
+        host.close();
+        unavailable = true;
+        host = await customHost(fixture, [], { isolates: fixture.isolates });
+        expect(fixture.store.disabledPlugins().has(SAMPLE_ID)).toBe(false);
+        const incumbent = installedRow(host, SAMPLE_ID);
+        if (boundary === "held") expect(incumbent.held).toBeDefined();
+        else expect(incumbent.lifecycle).toBe("enable_failed");
+        unavailable = false;
+        const durable = fixture.store.pluginInstalls();
+        const loads = [...fixture.runner.loads];
+        const unloads = [...fixture.runner.unloads];
+        const published: PluginRoster[] = [];
+        host.onRosterChange((roster) => published.push(roster));
+        const next = fixture.drop(SAMPLE_MANIFEST, {
+          "server.js": "export {};",
+          "web.js": "export const web = 9;",
+        });
+        expect(
+          (
+            await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, {
+              ...next,
+              replace: true,
+              retainInstallation: first.sha256,
+            })
+          ).ok,
+        ).toBe(false);
+        expect(installedRow(host, SAMPLE_ID)).toEqual(incumbent);
+        expect(fixture.store.pluginInstalls()).toEqual(durable);
+        expect(fixture.runner.loads).toEqual(loads);
+        expect(fixture.runner.unloads).toEqual(unloads);
+        expect(published).toEqual([]);
+        expect(existsSync(installLayout(fixture.dataDir, SAMPLE_ID, next.sha256).bundlePath)).toBe(
+          false,
+        );
+      } finally {
+        host.close();
+        fixture.store.close();
+        rmSync(fixture.dataDir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test("retaining installation authority refuses missing, stale, grant-bearing and incompatible replacements without changing the incumbent", async () => {
+    const fixture = await installFixture();
+    const host = await customHost(fixture, [], { isolates: fixture.isolates });
+    try {
+      const first = fixture.drop();
+      expect(
+        (
+          await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, {
+            ...first,
+            replace: true,
+            retainInstallation: "0".repeat(64),
+          })
+        ).ok,
+      ).toBe(false);
+      expect(host.roster().some((row) => row.manifest.id === SAMPLE_ID)).toBe(false);
+      expect(
+        (
+          await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, {
+            ...first,
+            grant: ["tokens:mint"],
+          })
+        ).ok,
+      ).toBe(true);
+      const incumbent = installedRow(host, SAMPLE_ID);
+      const next = fixture.drop(SAMPLE_MANIFEST, {
+        "server.js": "export {};",
+        "web.js": "export const web = 4;",
+      });
+      const changed = fixture.drop({ ...SAMPLE_MANIFEST, version: "1.2.4" });
+      for (const request of [
+        { ...next, replace: true, retainInstallation: "0".repeat(64) },
+        { ...next, retainInstallation: first.sha256 },
+        { ...next, replace: true, retainInstallation: first.sha256, grant: [] },
+        { ...next, replace: true, retainInstallation: first.sha256, hardened: false },
+        { ...changed, replace: true, retainInstallation: first.sha256 },
+      ]) {
+        expect((await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, request)).ok).toBe(false);
+        expect(installedRow(host, SAMPLE_ID)).toEqual(incumbent);
+        expect(await host.dispatch(fixture.owner, `${SAMPLE_ID}.mint`, {})).toEqual({
+          ok: true,
+          result: { minted: true },
+        });
+      }
+      // Ordinary replacement still chooses its ordinary default grant.
+      expect(
+        (await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, { ...next, replace: true })).ok,
+      ).toBe(true);
+      expect(installedRow(host, SAMPLE_ID).install?.grantedCaps).toEqual(["containers:read"]);
+      const advanced = installedRow(host, SAMPLE_ID);
+      expect(
+        (
+          await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, {
+            ...first,
+            replace: true,
+            retainInstallation: first.sha256,
+          })
+        ).ok,
+      ).toBe(false);
+      expect(installedRow(host, SAMPLE_ID)).toEqual(advanced);
+    } finally {
+      host.close();
+      fixture.store.close();
+    }
+  });
+
+  for (const boundary of ["action", "lifecycle"] as const) {
+    test(`retained replacement refuses a same-manifest ${boundary} declaration change`, async () => {
+      const fixture = await installFixture((ref) => {
+        const loaded = sampleLoad(ref);
+        if (!readFileSync(join(ref.dir, "server.js"), "utf8").includes("changed-authority"))
+          return loaded;
+        if (boundary === "lifecycle") return { ...loaded, lifecycle: {} };
+        return {
+          ...loaded,
+          def: {
+            ...loaded.def,
+            actions: [
+              defineAction({
+                name: "ping",
+                title: "Ping",
+                caps: [],
+                input: z.unknown(),
+                result: z.unknown(),
+              }),
+              loaded.def.actions[1]!,
+            ],
+          },
+        };
+      });
+      const host = await customHost(fixture, [], { isolates: fixture.isolates });
+      try {
+        const first = fixture.drop();
+        expect((await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, first)).ok).toBe(true);
+        const outsider = context(fixture, ["machines:read"]);
+        expect(denial(await host.dispatch(outsider, `${SAMPLE_ID}.ping`, {})).rule).toBe(
+          "forbidden",
+        );
+        const incumbent = installedRow(host, SAMPLE_ID);
+        const next = fixture.drop(SAMPLE_MANIFEST, {
+          "server.js": "// changed-authority\nexport {};",
+          "web.js": "export const web = 5;",
+        });
+        expect(
+          (
+            await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, {
+              ...next,
+              replace: true,
+              retainInstallation: first.sha256,
+            })
+          ).ok,
+        ).toBe(false);
+        expect(installedRow(host, SAMPLE_ID).install).toEqual(incumbent.install);
+        expect(denial(await host.dispatch(outsider, `${SAMPLE_ID}.ping`, {})).rule).toBe(
+          "forbidden",
+        );
+        expect(await host.dispatch(fixture.owner, `${SAMPLE_ID}.ping`, {})).toEqual({
+          ok: true,
+          result: { pong: true },
+        });
+      } finally {
+        host.close();
+        fixture.store.close();
+      }
+    });
+  }
+
   test("native delegates remain bounded by the installer's grant even for root callers", async () => {
     const fixture = await installFixture((ref) => ({
       def: {
@@ -5483,6 +6014,65 @@ describe("PluginHost unpacked plugins", () => {
     expect(existsSync(firstBundlePath)).toBe(false);
     expect(host.webModule(UNPACKED_ID)?.sha256).toBe(edited.sha256);
     fixture.store.close();
+  });
+
+  test("retained replacement cannot turn an unpacked incumbent into a bundle or discard developer-mode restrictions", async () => {
+    const { fixture, host } = await unpackedFixture();
+    try {
+      expect(await host.setDeveloperMode(true, "admin")).toEqual({ ok: true });
+      const authored = await host.author(
+        {
+          id: UNPACKED_ID,
+          files: {
+            "manifest.json": unpackedManifest(),
+            "server.ts": unpackedServer("1.0.0"),
+            "web.tsx": "export const web = 1;",
+          },
+        },
+        fixture.owner.principal.id,
+        fixture.auth.credentialReference(fixture.owner),
+      );
+      if ("refused" in authored) throw new Error(authored.refused);
+      const incumbent = installedRow(host, UNPACKED_ID);
+      expect(incumbent).toMatchObject({ enabled: true, install: { mode: "unpacked" } });
+      const durable = fixture.store.pluginInstalls();
+      const hooks = [...hookLog()];
+      const published: PluginRoster[] = [];
+      host.onRosterChange((roster) => published.push(roster));
+      const next = fixture.drop(JSON.parse(unpackedManifest()) as PluginManifest, {
+        "server.js": unpackedServer("1.0.0"),
+        "web.js": "export const web = 2;",
+      });
+      expect(
+        (
+          await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, {
+            ...next,
+            hardened: false,
+            replace: true,
+            retainInstallation: authored.sha256,
+          })
+        ).ok,
+      ).toBe(false);
+      expect(installedRow(host, UNPACKED_ID)).toEqual(incumbent);
+      expect(fixture.store.pluginInstalls()).toEqual(durable);
+      expect(hookLog()).toEqual(hooks);
+      expect(published).toEqual([]);
+      expect(existsSync(installLayout(fixture.dataDir, UNPACKED_ID, next.sha256).bundlePath)).toBe(
+        false,
+      );
+      expect(await host.setDeveloperMode(false, "admin")).toEqual({ ok: true });
+      expect(installedRow(host, UNPACKED_ID)).toMatchObject({
+        enabled: false,
+        install: { mode: "unpacked", sha256: authored.sha256 },
+      });
+      expect(await host.setEnabled(UNPACKED_ID, true, "admin")).toEqual({
+        refused: `developer_mode_off: ${UNPACKED_ID}`,
+      });
+    } finally {
+      host.close();
+      fixture.store.close();
+      rmSync(fixture.dataDir, { recursive: true, force: true });
+    }
   });
 
   test("an edit the assembly refuses rolls back to the previous row and wakes it again", async () => {

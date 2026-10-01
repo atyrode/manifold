@@ -67,6 +67,7 @@ interface SourceInventory {
   readonly sources: Source[];
   readonly metadata: SourceMetadata[];
   readonly unservableFiles: Set<string>;
+  readonly authorPackages: ReadonlySet<string | undefined>;
 }
 
 export interface PluginRefreshOptions {
@@ -74,6 +75,12 @@ export interface PluginRefreshOptions {
   readonly hub: string;
   /** Zero asks the OS for a port. The listener always binds loopback. */
   readonly port?: number;
+  /** Compiler-observed server inputs supplied by the installation-authorized workshop. */
+  readonly backendInputs?: ReadonlySet<string>;
+  /** Exact source directories selected from a validated custom compiler family. */
+  readonly sourceDirectories?: readonly string[];
+  /** Workshop authority must not silently resume a cancelled dependency lease. */
+  readonly onDependencyChange?: () => void;
 }
 
 export interface PluginRefreshHandle {
@@ -91,6 +98,16 @@ function inside(root: string, path: string): boolean {
   return (
     offset === "" || (!isAbsolute(offset) && offset !== ".." && !offset.startsWith(`..${sep}`))
   );
+}
+
+/** Nearest declared package owns a module, even when that package is nested under an author root. */
+export async function sourcePackageRoot(directory: string): Promise<string | undefined> {
+  while (true) {
+    if (await Bun.file(join(directory, "package.json")).exists()) return realpath(directory);
+    const parent = dirname(directory);
+    if (parent === directory) return undefined;
+    directory = parent;
+  }
 }
 
 function denied(path: string): boolean {
@@ -142,20 +159,33 @@ async function backendFiles(root: string, entry: string, files: Set<string>): Pr
   }
 }
 
-async function discoverSources(root: string): Promise<SourceInventory> {
+export async function discoverSources(
+  root: string,
+  backendInputs?: ReadonlySet<string>,
+  sourceDirectories?: readonly string[],
+): Promise<SourceInventory> {
   const found: (Source & { requiredDependencies: readonly string[] })[] = [];
   const metadata: SourceMetadata[] = [];
   const unservableFiles = new Set<string>();
-  const walk = async (dir: string): Promise<void> => {
+  const authorPackages = new Set<string | undefined>([await sourcePackageRoot(root)]);
+  const walk = async (dir: string, recursive: boolean): Promise<void> => {
     const entries = await readdir(dir, { withFileTypes: true });
+    if (!recursive && !entries.some((entry) => entry.isFile() && entry.name === "manifest.json"))
+      throw new PluginRefreshError(
+        "source_boundary",
+        "selected source directory requires a regular manifest.json",
+      );
     if (entries.some((entry) => entry.name === "manifest.json")) {
       const manifestFile = await containedFile(root, join(dir, "manifest.json"));
       const manifest = PluginManifestSchema.parse(await Bun.file(manifestFile).json());
+      authorPackages.add(await sourcePackageRoot(dir));
       const installationFiles = new Set([manifestFile]);
       if (manifest.entry?.server) {
         const backend = await containedFile(root, join(dir, "server.ts"));
         unservableFiles.add(backend);
-        await backendFiles(root, backend, installationFiles);
+        if (backendInputs) {
+          for (const file of backendInputs) installationFiles.add(file);
+        } else await backendFiles(root, backend, installationFiles);
       }
       for (const artifact of machineArtifacts(manifest.machine)) {
         if (!artifact.bundleFile) continue;
@@ -214,15 +244,35 @@ async function discoverSources(root: string): Promise<SourceInventory> {
         });
       }
     }
-    for (const entry of entries) {
-      if (entry.isDirectory() && !SKIPPED[entry.name] && !denied(entry.name))
-        await walk(join(dir, entry.name));
+    if (recursive) {
+      for (const entry of entries) {
+        if (entry.isDirectory() && !SKIPPED[entry.name] && !denied(entry.name))
+          await walk(join(dir, entry.name), true);
+      }
     }
   };
-  await walk(root);
+  if (sourceDirectories === undefined) await walk(root, true);
+  else {
+    const selected = new Set<string>();
+    for (const directory of sourceDirectories) {
+      const dir = await realpath(resolve(directory));
+      if (
+        !inside(root, dir) ||
+        denied(dir) ||
+        !(await stat(dir)).isDirectory() ||
+        selected.has(dir)
+      )
+        throw new PluginRefreshError(
+          "source_boundary",
+          "selected source directories must be unique contained directories",
+        );
+      selected.add(dir);
+      await walk(dir, false);
+    }
+  }
   if (!found.length)
     throw new PluginRefreshError("no_web_sources", "the registered root has no source web entries");
-  return { sources: familyOrder(found), metadata, unservableFiles };
+  return { sources: familyOrder(found), metadata, unservableFiles, authorPackages };
 }
 
 function validateStyles(css: string, id: string): void {
@@ -257,6 +307,7 @@ function visit(node: SyntaxNode, callback: (node: SyntaxNode) => void): void {
 function activeDevelopment(
   root: string,
   inventory: SourceInventory,
+  onDependencyChange?: () => void,
 ): { plugin: Plugin; descriptors: Plugin; stop(): void } {
   const { sources } = inventory;
   let server: ViteDevServer | undefined;
@@ -310,14 +361,9 @@ function activeDevelopment(
     watchers.push(watcher);
   };
   const dependency = async (path: string, ids: Set<string>): Promise<void> => {
-    let directory = dirname(path);
-    while (!(await Bun.file(join(directory, "package.json")).exists())) {
-      const parent = dirname(directory);
-      if (parent === directory)
-        throw new PluginRefreshError("dependency_boundary", "dependency has no package metadata");
-      directory = parent;
-    }
-    directory = await realpath(directory);
+    const directory = await sourcePackageRoot(dirname(path));
+    if (directory === undefined)
+      throw new PluginRefreshError("dependency_boundary", "dependency has no package metadata");
     if (denied(directory) || !inside(directory, path))
       throw new PluginRefreshError(
         "dependency_boundary",
@@ -332,7 +378,14 @@ function activeDevelopment(
     dependencyRoots.set(directory, lease);
     if (server && !server.config.server.fs.allow.includes(directory))
       server.config.server.fs.allow.push(directory);
-    watchDirectory(directory, () => cancel(lease, "installation_required"), true);
+    watchDirectory(
+      directory,
+      () => {
+        onDependencyChange?.();
+        cancel(lease, "installation_required");
+      },
+      true,
+    );
   };
   const safeResolved = async (
     path: string,
@@ -345,7 +398,11 @@ function activeDevelopment(
     const canonical = await realpath(path);
     if (denied(canonical) || !(await stat(canonical)).isFile())
       throw new PluginRefreshError("source_boundary", "source is not a regular public module");
-    if (inside(root, path) && !path.split(sep).includes("node_modules")) {
+    const authorOwned =
+      inside(root, canonical) &&
+      !relative(root, canonical).split(sep).includes("node_modules") &&
+      inventory.authorPackages.has(await sourcePackageRoot(dirname(canonical)));
+    if (authorOwned) {
       await containedFile(root, path);
       if (inventory.unservableFiles.has(path) || inventory.unservableFiles.has(canonical)) {
         throw new PluginRefreshError(
@@ -354,10 +411,18 @@ function activeDevelopment(
         );
       }
     } else {
-      const importedPackage = [...dependencyRoots.keys()].find((directory) =>
-        inside(directory, importer),
-      );
-      if (!bare && (!importedPackage || !inside(importedPackage, canonical)))
+      const importedPackage = await sourcePackageRoot(dirname(importer));
+      const authorImport =
+        inside(root, importer) &&
+        !relative(root, importer).split(sep).includes("node_modules") &&
+        inventory.authorPackages.has(importedPackage);
+      if (
+        !bare &&
+        !(authorImport && inside(root, canonical)) &&
+        (importedPackage === undefined ||
+          !dependencyRoots.has(importedPackage) ||
+          !inside(importedPackage, canonical))
+      )
         throw new PluginRefreshError(
           "source_boundary",
           "relative import escapes the registered source or dependency package",
@@ -426,13 +491,15 @@ function activeDevelopment(
       },
       configResolved(config) {
         config.server.host = "127.0.0.1";
-        config.server.allowedHosts = [];
-        const ws = config.server.ws;
-        config.server.ws = {
-          protocol: "ws",
-          host: "127.0.0.1",
-          ...(ws && ws.server ? { server: ws.server } : {}),
-        };
+        // Vite 8 merges the checkout's public hmr settings into ws before this hook.
+        // Keep that exact whitelist/client transport and the caller-owned socket listener.
+        if (config.server.ws !== false) {
+          config.server.ws = {
+            protocol: "ws",
+            host: "127.0.0.1",
+            ...config.server.ws,
+          };
+        }
       },
       async resolveId(id, importer) {
         if (id === REGISTRY || id === RUNTIME || id.startsWith(BRIDGE) || id.startsWith(STYLE))
@@ -745,7 +812,10 @@ import(${JSON.stringify(source.entry)}).catch(reason => graphError(${JSON.string
               (directory) => {
                 const canonical = join(directory, basename(file));
                 for (const [dependencyRoot, ids] of dependencyRoots)
-                  if (inside(dependencyRoot, canonical)) cancel(ids, "installation_required");
+                  if (inside(dependencyRoot, canonical)) {
+                    onDependencyChange?.();
+                    cancel(ids, "installation_required");
+                  }
               },
               () => cancel(byId.keys(), "source_boundary"),
             );
@@ -896,9 +966,9 @@ export async function startPluginRefresh(
       "source_boundary",
       "the registered source root must be a non-secret directory",
     );
-  const inventory = await discoverSources(root);
+  const inventory = await discoverSources(root, options.backendInputs, options.sourceDirectories);
   const { sources } = inventory;
-  const active = activeDevelopment(root, inventory);
+  const active = activeDevelopment(root, inventory, options.onDependencyChange);
   // The optional checkout-owned Vite toolchain must not be resolved by ordinary kit imports.
   const { createServer } = await import("vite").catch((error: unknown) => {
     throw new PluginRefreshError(
@@ -925,7 +995,6 @@ export async function startPluginRefresh(
         host: "127.0.0.1",
         port,
         strictPort: true,
-        allowedHosts: [],
         ws: { server: listener },
         proxy: Object.fromEntries(
           ["/api", "/ws", "/healthz", "/auth"].map((path) => [
