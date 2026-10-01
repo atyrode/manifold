@@ -65,7 +65,7 @@ case "$1" in
     mkdir -p "$(dirname -- "$unit")"
     {
       printf '%s\n' "$marker" '[Unit]' 'Description=Manifold Code live workshop (retained preview hub)'
-      printf '[Service]\nWorkingDirectory="%s"\n' "$manifold_root"
+      printf '[Service]\nWorkingDirectory=%s\n' "$manifold_root"
       printf 'Environment="PATH=%s"\n' "$PATH"
       printf 'Environment="DOCKER_HOST=%s"\n' "$docker_host"
       printf 'ExecStart="%s" --no-env-file "%s/workshop-run.ts" run "%s/config.json"\n' "$bun" "$here" "$state"

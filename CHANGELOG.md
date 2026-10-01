@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.32.1] - 2026-10-01
+
+### Fixed
+
+- Remote job-service calls no longer abort hub tunnel readiness after a fixed five seconds. They use the operation's existing deadline and cancellation/authority lifetimes, allowing a delayed hub answer to succeed while retaining timeout, cancellation and explicit-refusal behavior. (#841, #989)
+- Job starts refused by the machine owner now retain the owner's reason in their interrupted result, authorized job journal and settled callback instead of reporting `owner_refusal_unknown`. Lifecycle audit metadata remains redacted, and duplicate late refusals do not replace the recorded result. (#926, #987)
+- The persistent development workshop now starts with a systemd-valid working directory, including checkout paths containing spaces. The launcher no longer quotes this path as an ExecStart argument, which caused systemd to refuse the generated user unit before the workshop could start. (#985, #988)
+- Live plugin authoring now keeps anonymous module-format and subpath-entry metadata within its enclosing dependency package. Valid sibling imports in modular dependencies such as Zod no longer cancel source leases and leave stylesheet imports unavailable. Named/private package boundaries, unregistered-file denial, and installation-required dependency edits remain enforced. (#990, #994)
+
 ## [0.32.0] - 2026-10-01
 
 ### Breaking Changes

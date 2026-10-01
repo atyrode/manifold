@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { cpSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { Browser } from "../../../scripts/cdp.ts";
 import { resolveWebDist } from "../../../scripts/gate-dist.ts";
 import { createContainer, ownerAction, startServer, waitFor } from "../src/index.ts";
@@ -383,7 +383,9 @@ test("public Fast Refresh preserves React state and leases CSS; cancellation res
   const webFile = join(eligible, "web.tsx");
   const separateFile = join(eligible, "Separate.tsx");
   const cssFile = join(eligible, "styles.css");
-  const originalWeb = await Bun.file(webFile).text();
+  const originalWeb =
+    'import { z } from "zod";\n' +
+    (await Bun.file(webFile).text()).replace('useState("")', 'useState(z.string().parse(""))');
   const originalSeparate = await Bun.file(separateFile).text();
   let cleanupDist: (() => void) | undefined;
   let server: TestServer | null = null;
@@ -393,6 +395,16 @@ test("public Fast Refresh preserves React state and leases CSS; cancellation res
   let active: RefreshProcess | null = null;
   const failures: unknown[] = [];
   try {
+    mkdirSync(join(scratch, "node_modules"));
+    symlinkSync(
+      dirname(Bun.resolveSync("zod/package.json", ROOT)),
+      join(scratch, "node_modules/zod"),
+    );
+    writeFileSync(
+      join(sourceRoot, "package.json"),
+      JSON.stringify({ private: true, type: "module", dependencies: { zod: "*" } }),
+    );
+    writeFileSync(webFile, originalWeb);
     const dist = resolveWebDist("manifold-plugin-refresh-web-");
     cleanupDist = dist.cleanup;
     server = await startServer({

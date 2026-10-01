@@ -1,6 +1,7 @@
 import { describe, expect, spyOn, test, vi } from "bun:test";
 import { createHash, generateKeyPairSync, randomBytes, sign } from "node:crypto";
 import { gzipSync } from "node:zlib";
+import { createConnection } from "node:net";
 import {
   chmodSync,
   existsSync,
@@ -43,6 +44,7 @@ import { JobBoundInputStore } from "../src/job-bound-inputs.ts";
 import { artifactCacheKey } from "../src/job-artifacts.ts";
 import { LinuxJobRefusal, startLinuxJob, type LinuxJobResult } from "../src/job-linux.ts";
 import * as nativeRuntime from "../src/job-linux.ts";
+import { createServiceTunnel } from "../src/job-service-tunnel.ts";
 
 function tarMember(name: string, contents: Buffer): Buffer {
   const header = Buffer.alloc(512);
@@ -2869,6 +2871,179 @@ test.skipIf(!linux)(
       expect(refusals("inventory")).toMatchObject([{ reason: "service_cancelled" }]);
     } finally {
       await f.close();
+    }
+  },
+);
+
+test.skipIf(!linux)(
+  "a remote job service succeeds when hub tunnel readiness arrives after five seconds",
+  async () => {
+    const f = await reconfiguredServiceOwner();
+    const lifetime = new AbortController();
+    const opened = Promise.withResolvers<Extract<JobEvent, { type: "service_tunnel_open" }>>();
+    let peer: ReturnType<typeof createServiceTunnel> | undefined;
+    let socket: ReturnType<typeof createConnection> | undefined;
+    f.detach();
+    const detach = f.owner.attach((event) => {
+      f.events.push(event);
+      if (event.type === "service_authorize")
+        void f.owner.execute({
+          type: "service_authorized",
+          subject: event.subject,
+          authorizationId: event.authorizationId,
+          allowed: true,
+        });
+      if (event.type === "service_tunnel_open") opened.resolve(event);
+      if (event.type === "service_tunnel_frame") peer?.receive(event.frame);
+      return true;
+    });
+    try {
+      const remote = f.service("delayed", 10_000);
+      const origin = remote.origin!;
+      const sourceDigest = jobDigest(remote);
+      delete remote.origin;
+      delete remote.allowLoopbackHttp;
+      delete remote.operations.update;
+      remote.remote = {
+        machineId: "source-owner",
+        serviceId: remote.serviceId,
+        revision: remote.revision,
+        policySha256: sourceDigest,
+      };
+      await f.configure([remote]);
+      await f.startConsumers([remote]);
+      const endpoint = f.endpoints.get(remote.serviceId)!;
+      const gate = f.gate("/delayed/stream");
+      let answered = false;
+      const response = fetch(`${endpoint.url}/delayed/stream`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${endpoint.bearer}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ prompt: "delayed admission" }),
+      }).then((result) => {
+        answered = true;
+        return result;
+      });
+      const request = await opened.promise;
+      await Bun.sleep(5100);
+      expect(answered).toBe(false);
+      peer = createServiceTunnel({
+        channelId: request.channelId,
+        signal: lifetime.signal,
+        send(frame) {
+          queueMicrotask(() => void f.owner.execute({ type: "service_tunnel_frame", frame }));
+          return true;
+        },
+      });
+      peer.stream.on("error", () => {});
+      socket = createConnection({
+        host: "127.0.0.1",
+        port: Number(new URL(origin).port),
+        signal: lifetime.signal,
+      });
+      const connected = Promise.withResolvers<void>();
+      socket.once("connect", connected.resolve);
+      socket.once("error", connected.reject);
+      await connected.promise;
+      const upstream = socket;
+      const wire = peer;
+      wire.stream.once("close", () => upstream.destroy());
+      upstream.once("close", () => wire.close());
+      wire.stream.pipe(upstream).pipe(wire.stream);
+      await f.owner.execute({
+        type: "service_tunnel_ready",
+        channelId: request.channelId,
+        endpoint: { url: origin, bearer: "x".repeat(32) },
+      });
+      await gate.entered.promise;
+      gate.release.resolve(Response.json({ received: "after five seconds" }));
+      const served = await response;
+      expect(served.status).toBe(200);
+      expect(await served.json()).toEqual({ received: "after five seconds" });
+      expect(f.requests).toEqual(["/delayed/stream"]);
+    } finally {
+      lifetime.abort();
+      peer?.close();
+      socket?.destroy();
+      detach();
+      await f.close();
+    }
+  },
+  15_000,
+);
+
+test.skipIf(!linux)(
+  "remote tunnel admission preserves the call deadline, authority withdrawal and explicit refusal",
+  async () => {
+    for (const mode of ["deadline", "withdrawal", "refusal"] as const) {
+      const f = await reconfiguredServiceOwner();
+      const opened = Promise.withResolvers<Extract<JobEvent, { type: "service_tunnel_open" }>>();
+      f.detach();
+      const detach = f.owner.attach((event) => {
+        f.events.push(event);
+        if (event.type === "service_authorize")
+          void f.owner.execute({
+            type: "service_authorized",
+            subject: event.subject,
+            authorizationId: event.authorizationId,
+            allowed: true,
+          });
+        if (event.type === "service_tunnel_open") opened.resolve(event);
+        return true;
+      });
+      try {
+        const remote = f.service(mode, mode === "deadline" ? 100 : 1000);
+        delete remote.origin;
+        delete remote.allowLoopbackHttp;
+        delete remote.operations.update;
+        remote.remote = {
+          machineId: "source-owner",
+          serviceId: remote.serviceId,
+          revision: remote.revision,
+          policySha256: "a".repeat(64),
+        };
+        await f.configure([remote]);
+        await f.startConsumers([remote]);
+        const endpoint = f.endpoints.get(remote.serviceId)!;
+        const response = fetch(`${endpoint.url}/${remote.serviceId}/stream`, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${endpoint.bearer}`,
+            "content-type": "application/json",
+          },
+          body: "{}",
+        });
+        const request = await opened.promise;
+        if (mode === "withdrawal") await f.configure([]);
+        if (mode === "refusal")
+          await f.owner.execute({
+            type: "service_tunnel_ready",
+            channelId: request.channelId,
+            endpoint: null,
+          });
+        const reason =
+          mode === "deadline"
+            ? "service_timeout"
+            : mode === "withdrawal"
+              ? "service_cancelled"
+              : "service_remote_refused";
+        const refused = await response;
+        expect(refused.status).toBe(503);
+        expect(await refused.json()).toEqual({
+          error: mode === "refusal" ? "service_unavailable" : reason,
+        });
+        expect(
+          f.events.filter(
+            (event) => event.type === "service_refused" && event.serviceId === remote.serviceId,
+          ),
+        ).toMatchObject([{ reason }]);
+        expect(f.requests).toEqual([]);
+      } finally {
+        detach();
+        await f.close();
+      }
     }
   },
 );
