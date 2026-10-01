@@ -5273,7 +5273,7 @@ export class JobService {
     const captured = snapshot.nativeDemand ?? [previous.authoritySnapshot?.native].filter(Boolean);
     const parsed = AuthoritySnapshotSchema.shape.native.unwrap().array().safeParse(captured);
     if (!parsed.success) fail("terminal_runtime_destination_changed");
-    const bindings = parsed.data;
+    const bindings: NativeDemandBinding[] = parsed.data;
     const index = bindings.findIndex(
       (binding) => binding.machineId === machineId && binding.containerId === terminal.containerId,
     );

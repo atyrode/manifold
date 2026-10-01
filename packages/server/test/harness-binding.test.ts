@@ -114,7 +114,7 @@ async function fixture(
   const clock = new FakeClock(runtime);
   const store =
     databasePath === undefined ? testStore() : new ServerStore(openDatabase(databasePath));
-  const auth = new AuthService(store, "a".repeat(64), runtime, {
+  const auth: AuthService = new AuthService(store, "a".repeat(64), runtime, {
     decide: (request) => service.decide(request),
   });
   const root = auth.authenticate("a".repeat(64));
@@ -213,7 +213,7 @@ async function fixture(
   const host = await testPluginHost(store, auth, rooms, broker, runtime, {
     settingsPlugins: dependency ? [definition, dependency] : [definition],
   });
-  const service = new JobService(store, auth, runtime);
+  const service: JobService = new JobService(store, auth, runtime);
   host.setJobs(service);
   broker.setJobs(service);
   service.install(root, {
@@ -1537,7 +1537,7 @@ test.each(["legacy birth", "prepared birth", "restart"] as const)(
         });
         const restart = await admittedMessage(f.firstRestart, pending, "governed terminal restart");
         result(await pending);
-        if (!restart.create.runtime) throw new Error("governed restart missing");
+        if (!restart.create?.runtime) throw new Error("governed restart missing");
         command = restart.create.runtime;
         f.started(command);
       }
@@ -1655,7 +1655,7 @@ test.each(["deny", "transport", "owner", "drain"] as const)(
         terminalId: create.terminalId,
       });
       const restart = await admittedMessage(f.firstRestart, pending, "pending governed restart");
-      if (!restart.create.runtime) throw new Error("governed restart missing");
+      if (!restart.create?.runtime) throw new Error("governed restart missing");
       if (change === "deny") {
         f.auth.grant(
           {
@@ -1812,7 +1812,7 @@ test.each(["deny", "expiry", "sponsor", "action", "installation", "owner", "cons
           expect(f.auth.allowsNode(actor, "machines:run", scope[1]!.target)).toBe(false);
           break;
         case "action":
-          action.input = z.strictObject({});
+          Reflect.set(action, "input", z.strictObject({}));
           break;
         case "installation":
           expect(() =>
@@ -1901,7 +1901,7 @@ test.each(["deny", "expiry", "sponsor", "action", "installation", "owner", "cons
           ),
         ).toBe(true);
     } finally {
-      action.input = originalInput;
+      Reflect.set(action, "input", originalInput);
       f.close();
     }
   },

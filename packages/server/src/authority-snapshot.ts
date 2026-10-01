@@ -35,7 +35,7 @@ export interface NativeDemandBinding {
   readonly ownerId: string;
   readonly ownerGeneration: number;
   readonly terminalHostId: string;
-  readonly inputs?: readonly JobInputBinding[];
+  readonly inputs?: readonly JobInputBinding[] | undefined;
   readonly requirements: readonly PreparedRequirement[];
 }
 

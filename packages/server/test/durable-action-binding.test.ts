@@ -96,8 +96,9 @@ async function fixture(preparerCaps: readonly AuthoredCap[] = ["plugins:manage",
     });
     service = new JobService(store, auth, runtime);
     host.setJobs(service);
+    return auth;
   }
-  await boot();
+  auth = await boot();
   const root = () => auth.authenticate(OWNER_KEY);
   const machineId = auth.enrollMachine("scheduled account", root()).machine.id;
   const channel = {

@@ -5723,11 +5723,12 @@ export class PluginHost {
       },
       (current, requirements) => {
         const additions = validatePreparedRequirements(
-          requirements.map(({ cap, node, ref, reach }) => ({
-            cap,
-            node: node ?? (ref === undefined ? undefined : formatManifoldUri(ref)),
-            reach: reach ?? "node",
-          })),
+          requirements.map(({ cap, node, ref, reach }) => {
+            const target = node ?? (ref === undefined ? undefined : formatManifoldUri(ref));
+            if (cap === "*" || target === undefined)
+              throw new ServiceError("forbidden", "invalid prepared extension requirement");
+            return { cap, node: target, reach: reach ?? "node" };
+          }),
           preparationCaps,
         );
         const nativeRequirements = [...admittedNativeRequirements];

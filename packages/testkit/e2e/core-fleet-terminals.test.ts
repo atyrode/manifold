@@ -180,7 +180,7 @@ for (const hardened of [false, true]) {
       const canvas = await createContainer(hub, "Fleet canvas", "canvas");
       const composition = await createContainer(hub, "Fleet composition", "composition");
       await browser.launch({ incognito: true });
-      await browser.send("Network.enable");
+      await browser.send("Network.enable", {});
       await browser.send("Emulation.setDeviceMetricsOverride", {
         width: 1440,
         height: 1000,

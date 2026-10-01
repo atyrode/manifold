@@ -466,7 +466,7 @@ export function MachinesSection({ host }: PortableSectionProps): ReactElement {
       <Stack gap="0.3rem" data-testid="machines-rail">
         {machines === null ? (
           <Spinner label="Loading machines…" />
-        ) : machines.length === 0 ? (
+        ) : machines.length === 0 && (groups?.hosts.length ?? 0) === 0 ? (
           <Empty>No machines enrolled</Empty>
         ) : (
           <>
