@@ -580,7 +580,6 @@ jobs:
             runner: macos-15
     env:
       MANIFOLD_NIX_SYSTEM: ${{ matrix.system }}
-      MANIFOLD_NIX_PROOF_DIR: ${{ runner.temp }}/nix-evidence
     steps:
       - name: Check out
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -601,6 +600,8 @@ jobs:
       - name: Verify native Nix packaging and Linux profile
         id: nix-proof
         uses: ./.github/actions/gate-slice
+        env:
+          MANIFOLD_NIX_PROOF_DIR: ${{ runner.temp }}/nix-evidence
         with:
           task: nix
       - name: Record exact-system Nix receipt
@@ -608,6 +609,7 @@ jobs:
         shell: bash
         env:
           NIX_RESULT: ${{ steps.nix-proof.outcome }}
+          MANIFOLD_NIX_PROOF_DIR: ${{ runner.temp }}/nix-evidence
         run: |
           profile=not_reached
           [[ $MANIFOLD_NIX_SYSTEM == *-darwin ]] && profile=not_applicable
