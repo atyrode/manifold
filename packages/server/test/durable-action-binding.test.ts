@@ -515,6 +515,9 @@ test.each(["unchanged", "parser", "handler", "preparer", "preparer ceiling", "ma
       });
       expect(await f.store.pluginStorage(PLUGIN_ID).get("recorded")).toBe("binding");
       f.replace(binding);
+      // A new roster publication must neither revoke an unchanged door nor conceal a
+      // same-text executable replacement from the schedule's retained admission.
+      expect(await f.host.setEnabled("core.machines", false, "admin")).toEqual({ ok: true });
       f.runtime.time = 1000;
       f.service.tick();
       if (binding === "unchanged") {

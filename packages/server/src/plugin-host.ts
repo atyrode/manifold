@@ -16,7 +16,6 @@ import {
   settingRefId,
   settingWriteRefusal,
   type Assembly,
-  type AssemblyAction,
   type AnyActionDef,
   type AssemblyDelta,
   type AssemblyEnv,
@@ -48,6 +47,7 @@ import {
   type ActionPreparationEvidence,
 } from "@manifold/plugin-kit/server";
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import { BundleOrderError, familyOrder, requiredDependencyIds } from "@manifold/plugin-kit/install";
 import {
@@ -5519,11 +5519,17 @@ export class PluginHost {
     );
   }
 
-  private readonly actionFingerprints = new WeakMap<AssemblyAction, CachedActionBinding>();
+  // Roster entries and their parsed manifests are rebuilt for unrelated lifecycle changes.
+  // The named door retains custody only while its executable definition and authority agree.
+  private readonly actionFingerprints = new WeakMap<
+    AnyActionDef,
+    Map<string, CachedActionBinding>
+  >();
   private actionBinding(name: string): CachedActionBinding | null {
     const entry = this.assembled.actions.get(name);
     if (entry === undefined) return null;
-    const cached = this.actionFingerprints.get(entry);
+    const bindings = this.actionFingerprints.get(entry.def);
+    const cached = bindings?.get(name);
     const pluginDef =
       cached?.definitions === this.defs
         ? cached.pluginDef
@@ -5547,11 +5553,12 @@ export class PluginHost {
     if (
       cached !== undefined &&
       cached.definition === entry.def &&
-      cached.manifest === entry.plugin &&
+      (cached.manifest === entry.plugin
+        ? cached.machine === entry.plugin.machine &&
+          cached.manifestCapabilities === entry.plugin.capabilities
+        : isDeepStrictEqual(cached.manifest, entry.plugin)) &&
       cached.manifestId === entry.plugin.id &&
       cached.manifestVersion === entry.plugin.version &&
-      cached.machine === entry.plugin.machine &&
-      cached.manifestCapabilities === entry.plugin.capabilities &&
       sameOrderedValues(entry.plugin.capabilities, cached.manifestCapValues) &&
       cached.sourceManifest === pluginDef?.manifest &&
       cached.sourceCapabilities === pluginDef?.manifest.capabilities &&
@@ -5653,7 +5660,8 @@ export class PluginHost {
       preparationCaps: capturedPreparationCaps,
       code,
     };
-    this.actionFingerprints.set(entry, binding);
+    if (bindings === undefined) this.actionFingerprints.set(entry.def, new Map([[name, binding]]));
+    else bindings.set(name, binding);
     return binding;
   }
 
@@ -6067,7 +6075,7 @@ export class PluginHost {
             "agent authority unavailable",
           );
         if (
-          this.assembled.actions.get(fullName) !== entry ||
+          !bindingCurrent() ||
           !this.assembled.enabled(pluginId) ||
           this.replacing.has(pluginId)
         )

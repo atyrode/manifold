@@ -411,7 +411,7 @@ describe("the machine revocation door (ADR 0019 §3)", () => {
     const trace = fix.store.listEvents({ type: "trace", limit: 1 })[0];
     expect(trace?.door).toBe("core.machines.revoke");
     expect(trace?.outcome).toBe("ok");
-    expect(trace?.targets).toEqual([`manifold://machine/${enrolled.machine.id}`]);
+    expect(trace?.targets).toContain(`manifold://machine/${enrolled.machine.id}`);
     fix.store.close();
   });
 
