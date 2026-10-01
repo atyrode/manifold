@@ -1108,7 +1108,14 @@ export class TerminalBroker implements TerminalPlacementPort {
             launchRun?: Parameters<TerminalBroker["restartById"]>[4],
           ) => {
             requireActionEffects();
-            return broker.restartById(terminalId, principalId, credential, traceId, launchRun, fence);
+            return broker.restartById(
+              terminalId,
+              principalId,
+              credential,
+              traceId,
+              launchRun,
+              fence,
+            );
           };
         const value: unknown = Reflect.get(broker, key);
         return typeof value === "function"

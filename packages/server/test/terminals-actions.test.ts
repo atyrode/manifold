@@ -1200,20 +1200,32 @@ describe("ordinary shell creation authority", () => {
       }
       // An unfenced create/restart completes rather than hanging the failing-before case.
       successor.onCreate = (id) => base.broker.onCreated(successor.machineId, id);
-      successor.onRestart = (id) => base.broker.onRestarted(successor.machineId, {
-        type: "terminal_restarted", terminalId: id,
-      });
+      successor.onRestart = (id) =>
+        base.broker.onRestarted(successor.machineId, {
+          type: "terminal_restarted",
+          terminalId: id,
+        });
       try {
-        const outcome = await base.host.dispatch(base.owner, `core.terminals.${action}`,
-          action === "create" ? {
-            containerId: base.container.id, elementId: "changed-owner", placement: "tile",
-            machineId: base.machine.machineId, cols: 80, rows: 24,
-          } : { terminalId },
+        const outcome = await base.host.dispatch(
+          base.owner,
+          `core.terminals.${action}`,
+          action === "create"
+            ? {
+                containerId: base.container.id,
+                elementId: "changed-owner",
+                placement: "tile",
+                machineId: base.machine.machineId,
+                cols: 80,
+                rows: 24,
+              }
+            : { terminalId },
         );
         expect(outcome).toMatchObject({ ok: false });
-        expect(successor.sent.filter((message) =>
-          message.type === "create" || message.type === "terminal_restart",
-        )).toEqual([]);
+        expect(
+          successor.sent.filter(
+            (message) => message.type === "create" || message.type === "terminal_restart",
+          ),
+        ).toEqual([]);
         expect(base.auth.listCredentialsV2(base.owner)).toEqual(credentials);
         expect(base.store.listTerminals()).toEqual(terminals);
         expect(base.rooms.get(base.container.id)?.tileLayout()).toEqual(layout);
@@ -1256,21 +1268,40 @@ describe("ordinary shell creation authority", () => {
         };
       }
       successor.onCreate = (id) => base.broker.onCreated(successor.machineId, id);
-      successor.onRestart = (id) => base.broker.onRestarted(successor.machineId, {
-        type: "terminal_restarted", terminalId: id,
-      });
+      successor.onRestart = (id) =>
+        base.broker.onRestarted(successor.machineId, {
+          type: "terminal_restarted",
+          terminalId: id,
+        });
       try {
-        expect(await base.host.dispatch(base.owner, `core.terminals.${action}`,
-          action === "create" ? {
-            containerId: base.container.id, elementId: "same-owner", placement: "tile",
-            machineId: base.machine.machineId, cols: 80, rows: 24,
-          } : { terminalId },
-        )).toMatchObject({ ok: true });
-        const terminal = base.store.listTerminals().find((row) =>
-          row.id === (terminalId ?? successor.sent.find((message) => message.type === "create")?.terminalId),
-        );
+        expect(
+          await base.host.dispatch(
+            base.owner,
+            `core.terminals.${action}`,
+            action === "create"
+              ? {
+                  containerId: base.container.id,
+                  elementId: "same-owner",
+                  placement: "tile",
+                  machineId: base.machine.machineId,
+                  cols: 80,
+                  rows: 24,
+                }
+              : { terminalId },
+          ),
+        ).toMatchObject({ ok: true });
+        const terminal = base.store
+          .listTerminals()
+          .find(
+            (row) =>
+              row.id ===
+              (terminalId ??
+                successor.sent.find((message) => message.type === "create")?.terminalId),
+          );
         expect(terminal).toMatchObject({
-          machineId: base.machine.machineId, containerId: base.container.id, status: "running",
+          machineId: base.machine.machineId,
+          containerId: base.container.id,
+          status: "running",
         });
       } finally {
         base.gateway.shutdown();

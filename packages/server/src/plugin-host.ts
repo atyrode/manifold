@@ -1957,12 +1957,15 @@ export class PluginHost {
     };
     // Keep the originating door's full ordered authority separate from the harness's
     // native credential. Retained native effects own this fence, not the data lease.
-    base.authorityFence?.dependOnHarness({
-      pluginId,
-      harnessId: id,
-      fingerprint: binding.fingerprint,
-      caps: harnessCaps,
-    }, checkHarnessCurrent);
+    base.authorityFence?.dependOnHarness(
+      {
+        pluginId,
+        harnessId: id,
+        fingerprint: binding.fingerprint,
+        caps: harnessCaps,
+      },
+      checkHarnessCurrent,
+    );
     const authorityFence = base.authorityFence?.retain();
     const checkCurrent = (): void => {
       if (authorityFence === undefined) checkHarnessCurrent();
@@ -2142,11 +2145,7 @@ export class PluginHost {
         this.actionBinding(binding.actionName)?.fingerprint !== binding.fingerprint
       )
         return false;
-      if (
-        binding.terminalOwners?.some(
-          (owner) => !this.broker.terminalOwnerBindingCurrent(owner),
-        )
-      )
+      if (binding.terminalOwners?.some((owner) => !this.broker.terminalOwnerBindingCurrent(owner)))
         return false;
       for (const dependency of binding.harnesses ?? [])
         if (!this.harnessBindingCurrent(dependency)) return false;
@@ -5473,15 +5472,17 @@ export class PluginHost {
       return cached;
     const binding: CachedHarnessBinding = {
       fingerprint: createHash("sha256")
-        .update(canonicalJobJson({
-          code,
-          manifest: def.manifest,
-          profile: z.toJSONSchema(harness.profileSchema, { io: "input" }),
-          launch: String(harness.launch),
-          sessions: String(harness.sessions),
-          resolveSession: String(harness.resolveSession),
-          send: String(harness.send),
-        }))
+        .update(
+          canonicalJobJson({
+            code,
+            manifest: def.manifest,
+            profile: z.toJSONSchema(harness.profileSchema, { io: "input" }),
+            launch: String(harness.launch),
+            sessions: String(harness.sessions),
+            resolveSession: String(harness.resolveSession),
+            send: String(harness.send),
+          }),
+        )
         .digest("hex"),
       manifest: def.manifest,
       manifestVersion: def.manifest.version,

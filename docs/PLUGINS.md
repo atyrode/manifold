@@ -632,6 +632,12 @@ selected prepared requirements; unused alternatives do not consume that ceiling.
 Durable restoration repeats both caller authorization and revision-bound native consent
 for every captured governed requirement, including source-job input reads; recovery does
 not turn a capability grant into consent.
+Harness handoffs keep the originating action credential and ordered requirements conjunctive
+with the harness's attenuated native credential. Captured server-harness dependencies reach
+already retained fences and persist in the private snapshot: cold restoration checks the
+server code, profile validator, manifest and admitted installation ceiling as well as the
+native artifact. Closing the temporary harness data lease does not retire an owned effect;
+using that retained context after return still refuses.
 Trusted harness relaunch may refresh private input only for the exact retained session and
 native identity. The host captures its fresh demand and conjunctively extends the sealed
 fence before reservation, while preserving the original ordered requirements and credential.

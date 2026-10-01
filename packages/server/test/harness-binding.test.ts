@@ -1171,8 +1171,11 @@ test.each(["live", "home-write", "action-binding", "harness-binding", "retired"]
           );
           // Native permission survives; it must not replace the originating home requirement.
           expect(
-            f.auth.allowsNode(actor, "machines:run",
-              `manifold://machine/${f.descriptor.machineId}/operation/${operationId}`),
+            f.auth.allowsNode(
+              actor,
+              "machines:run",
+              `manifold://machine/${f.descriptor.machineId}/operation/${operationId}`,
+            ),
           ).toBe(true);
           break;
         case "action-binding":
@@ -1189,7 +1192,8 @@ test.each(["live", "home-write", "action-binding", "harness-binding", "retired"]
             if (id === pluginId) disabled.resolve();
           };
           retiring = f.host.dispatch(f.root, "engine.plugins.setEnabled", {
-            id: pluginId, enabled: false,
+            id: pluginId,
+            enabled: false,
           });
           await admittedMessage(disabled.promise, retiring, "harness disable committed");
           break;
@@ -1199,34 +1203,49 @@ test.each(["live", "home-write", "action-binding", "harness-binding", "retired"]
       const outcome = await pending;
       if (retiring !== undefined) {
         result(await retiring);
-        result(await f.host.dispatch(f.root, "engine.plugins.setEnabled", {
-          id: pluginId, enabled: true,
-        }));
+        result(
+          await f.host.dispatch(f.root, "engine.plugins.setEnabled", {
+            id: pluginId,
+            enabled: true,
+          }),
+        );
       }
       if (change === "live") {
         expect(outcome).toMatchObject({ ok: true });
         expect(effects.map((effect) => effect.status)).toEqual([
-          "fulfilled", "fulfilled", "fulfilled", "fulfilled",
+          "fulfilled",
+          "fulfilled",
+          "fulfilled",
+          "fulfilled",
         ]);
         expect(await f.store.pluginStorage(pluginId).get("harness-effect")).toBe("live");
         expect(f.service.jobs.get("harness-effect")?.state).toBe("start-committed");
         expect(f.service.jobSchedules.listSchedules().map((entry) => entry.scheduleId)).toEqual([
           "harness-effect",
         ]);
-        expect(f.service.readServiceConfiguration(f.root, {
-          machineId: f.descriptor.machineId,
-        }).configuration.revision).not.toBeNull();
+        expect(
+          f.service.readServiceConfiguration(f.root, {
+            machineId: f.descriptor.machineId,
+          }).configuration.revision,
+        ).not.toBeNull();
       } else {
         expect(outcome).toMatchObject({ ok: false });
         expect(effects.map((effect) => effect.status)).toEqual([
-          "rejected", "rejected", "rejected", "rejected",
+          "rejected",
+          "rejected",
+          "rejected",
+          "rejected",
         ]);
         expect(await f.store.pluginStorage(pluginId).get("harness-effect")).toBeNull();
-        expect(f.store.db.query("SELECT job_id FROM machine_jobs ORDER BY job_id").all()).toEqual(jobsBefore);
+        expect(f.store.db.query("SELECT job_id FROM machine_jobs ORDER BY job_id").all()).toEqual(
+          jobsBefore,
+        );
         expect(f.service.jobSchedules.listSchedules()).toEqual([]);
-        expect(f.service.readServiceConfiguration(f.root, {
-          machineId: f.descriptor.machineId,
-        }).configuration.revision).toBeNull();
+        expect(
+          f.service.readServiceConfiguration(f.root, {
+            machineId: f.descriptor.machineId,
+          }).configuration.revision,
+        ).toBeNull();
         expect(f.sent.filter((message) => message.type === "terminal_restart")).toEqual([]);
         expect(f.store.getTerminal(create.terminalId)).toEqual(before);
         expect(f.sent.filter((message) => message.type === "kill")).toEqual([]);
@@ -1236,13 +1255,15 @@ test.each(["live", "home-write", "action-binding", "harness-binding", "retired"]
       await expect(retained.storage.set("after-return", "forbidden")).rejects.toThrow();
       expect(() => retained!.jobs.execute(harnessJob(f, "after-return"))).toThrow();
       expect(() => retained!.jobs.schedule(harnessSchedule(f, "after-return"))).toThrow();
-      expect(() => retained!.services.configureConfiguration({
-        machineId: f.descriptor.machineId,
-        expectedRevision: f.service.readServiceConfiguration(f.root, {
+      expect(() =>
+        retained!.services.configureConfiguration({
           machineId: f.descriptor.machineId,
-        }).configuration.revision,
-        policies: [],
-      })).toThrow();
+          expectedRevision: f.service.readServiceConfiguration(f.root, {
+            machineId: f.descriptor.machineId,
+          }).configuration.revision,
+          policies: [],
+        }),
+      ).toThrow();
       expect(f.service.jobs.get("after-return")).toBeNull();
     } finally {
       gate.resolve();
@@ -1277,9 +1298,13 @@ test.each(["fresh", "recovered"] as const)(
         ctx.jobs.schedule(harnessSchedule(f, "durable-harness"));
         return launch(ctx, ...args);
       };
-      expect(result(await f.host.dispatch(actor, "core.terminals.restart", {
-        terminalId: create.terminalId,
-      }))).toEqual({});
+      expect(
+        result(
+          await f.host.dispatch(actor, "core.terminals.restart", {
+            terminalId: create.terminalId,
+          }),
+        ),
+      ).toEqual({});
       const native = f.service.jobs.get("durable-harness")!;
       const schedule = f.service.jobSchedules.listSchedules()[0]!;
       for (const snapshot of [native.authoritySnapshot, schedule.authoritySnapshot]) {
@@ -1289,17 +1314,21 @@ test.each(["fresh", "recovered"] as const)(
         expect(snapshot?.action).toMatchObject({
           actionName: "core.terminals.restart",
           originalArgsDigest: createHash("sha256")
-            .update(canonicalJobJson({ terminalId: create.terminalId })).digest("hex"),
+            .update(canonicalJobJson({ terminalId: create.terminalId }))
+            .digest("hex"),
           requirements: [
             { cap: "terminals:write", ref: { kind: "container", containerId: f.containerId } },
-            { cap: "machines:run",
+            {
+              cap: "machines:run",
               node: `manifold://machine/${f.descriptor.machineId}/operation/${operationId}`,
-              reach: "node" },
+              reach: "node",
+            },
           ],
         });
       }
-      const start = f.commands.find((command) =>
-        command.type === "start" && command.request.jobId === native.request.jobId);
+      const start = f.commands.find(
+        (command) => command.type === "start" && command.request.jobId === native.request.jobId,
+      );
       if (start?.type !== "start") throw new Error("harness native effect was not admitted");
       f.started(start);
       let service = f.service;
@@ -1315,8 +1344,16 @@ test.each(["fresh", "recovered"] as const)(
         });
         root = auth.authenticate("a".repeat(64));
         const rooms = new RoomManager(store, f.runtime, f.clock, silentLogger, testTileTrees);
-        const broker = new TerminalBroker(store, auth, rooms, f.runtime, f.clock, silentLogger,
-          () => "http://localhost:7777", testTileTrees);
+        const broker = new TerminalBroker(
+          store,
+          auth,
+          rooms,
+          f.runtime,
+          f.clock,
+          silentLogger,
+          () => "http://localhost:7777",
+          testTileTrees,
+        );
         recoveredHost = await testPluginHost(store, auth, rooms, broker, f.runtime, {
           settingsPlugins: [f.definition],
         });
@@ -1329,15 +1366,23 @@ test.each(["fresh", "recovered"] as const)(
       expect(service.jobs.get(native.request.jobId)?.request).toEqual(native.request);
       expect(service.jobs.cancellation(native.request.jobId)).toBeNull();
       const incumbentCancellation = service.jobs.cancellation(create.runtime!.request.jobId);
-      auth.grant({
-        principal: { kind: "principal", id: actor.principal.id },
-        node: `manifold://container/${f.containerId}`,
-        caps: ["terminals:write"],
-        reach: "node",
-        effect: "deny",
-      }, root);
-      expect(auth.allowsNode(auth.restoreCredential(f.auth.credentialReference(actor))!,
-        "machines:run", `manifold://machine/${f.descriptor.machineId}/operation/${operationId}`)).toBe(true);
+      auth.grant(
+        {
+          principal: { kind: "principal", id: actor.principal.id },
+          node: `manifold://container/${f.containerId}`,
+          caps: ["terminals:write"],
+          reach: "node",
+          effect: "deny",
+        },
+        root,
+      );
+      expect(
+        auth.allowsNode(
+          auth.restoreCredential(f.auth.credentialReference(actor))!,
+          "machines:run",
+          `manifold://machine/${f.descriptor.machineId}/operation/${operationId}`,
+        ),
+      ).toBe(true);
       f.runtime.time = schedule.firstNominalAt;
       service.tick();
       expect(service.jobs.cancellation(native.request.jobId)?.mode).toBe("cancel");
@@ -1347,9 +1392,14 @@ test.each(["fresh", "recovered"] as const)(
         .digest("hex")}`;
       expect(service.jobs.get(occurrenceId)).toBeNull();
       expect(service.jobSchedules.getOccurrence(occurrenceId)).toBeNull();
-      expect(f.commands.filter((command) =>
-        command.type === "start" && command.request.jobId === occurrenceId)).toEqual([]);
-      expect(service.jobs.cancellation(create.runtime!.request.jobId)).toEqual(incumbentCancellation);
+      expect(
+        f.commands.filter(
+          (command) => command.type === "start" && command.request.jobId === occurrenceId,
+        ),
+      ).toEqual([]);
+      expect(service.jobs.cancellation(create.runtime!.request.jobId)).toEqual(
+        incumbentCancellation,
+      );
     } finally {
       recoveredHost?.close();
       recoveredStore?.close();
@@ -1388,11 +1438,15 @@ test.each(["unchanged", "implementation", "profile", "manifest"] as const)(
       };
       const { run } = await f.create();
       const create = await f.openCreated((await f.launch(run.id)).runtime);
-      expect(result(await f.host.dispatch(f.root, "core.terminals.restart", {
-        terminalId: create.terminalId,
-      }))).toEqual({});
-      const replacement = f.sent.find((message) => message.type === "terminal_restart")
-        ?.create?.runtime;
+      expect(
+        result(
+          await f.host.dispatch(f.root, "core.terminals.restart", {
+            terminalId: create.terminalId,
+          }),
+        ),
+      ).toEqual({});
+      const replacement = f.sent.find((message) => message.type === "terminal_restart")?.create
+        ?.runtime;
       if (replacement === undefined) throw new Error("replacement native admission missing");
       const bound = f.service.jobs.get("cold-harness")!;
       const schedule = f.service.jobSchedules.listSchedules()[0]!;
@@ -1400,8 +1454,9 @@ test.each(["unchanged", "implementation", "profile", "manifest"] as const)(
         ...harnessJob(f, "independent"),
       });
       for (const job of [bound, independent]) {
-        const start = f.commands.find((command) =>
-          command.type === "start" && command.request.jobId === job.request.jobId);
+        const start = f.commands.find(
+          (command) => command.type === "start" && command.request.jobId === job.request.jobId,
+        );
         if (start?.type !== "start") throw new Error("native effect was not admitted");
         f.started(start);
       }
@@ -1418,7 +1473,7 @@ test.each(["unchanged", "implementation", "profile", "manifest"] as const)(
       if (change === "implementation") {
         const previous = restoredDefinition.harness!.launch;
         restoredDefinition.harness!.launch = async (ctx, currentRun, agent, target) => ({
-          ...await previous(ctx, currentRun, agent, target),
+          ...(await previous(ctx, currentRun, agent, target)),
           reviewDigest: "b".repeat(64),
         });
       } else if (change === "profile") {
@@ -1447,8 +1502,16 @@ test.each(["unchanged", "implementation", "profile", "manifest"] as const)(
         decide: (request) => service.decide(request),
       });
       const rooms = new RoomManager(store, f.runtime, f.clock, silentLogger, testTileTrees);
-      const broker = new TerminalBroker(store, auth, rooms, f.runtime, f.clock, silentLogger,
-        () => "http://localhost:7777", testTileTrees);
+      const broker = new TerminalBroker(
+        store,
+        auth,
+        rooms,
+        f.runtime,
+        f.clock,
+        silentLogger,
+        () => "http://localhost:7777",
+        testTileTrees,
+      );
       recoveredHost = await testPluginHost(store, auth, rooms, broker, f.runtime, {
         settingsPlugins: [restoredDefinition],
       });
@@ -1464,7 +1527,9 @@ test.each(["unchanged", "implementation", "profile", "manifest"] as const)(
       f.runtime.time = schedule.firstNominalAt;
       service.tick();
       expect(service.jobs.get(bound.request.jobId)?.request).toEqual(bound.request);
-      expect(service.jobs.get(bound.request.jobId)?.authoritySnapshot?.action).toEqual(originalAction);
+      expect(service.jobs.get(bound.request.jobId)?.authoritySnapshot?.action).toEqual(
+        originalAction,
+      );
       expect(service.jobs.cancellation(independent.request.jobId)).toBeNull();
       expect(service.jobs.get(independent.request.jobId)?.state).toBe("started");
       const occurrenceId = `schedule-${createHash("sha256")
@@ -1474,16 +1539,22 @@ test.each(["unchanged", "implementation", "profile", "manifest"] as const)(
         expect(service.jobs.cancellation(bound.request.jobId)).toBeNull();
         expect(service.jobs.cancellation(replacement.request.jobId)).toBeNull();
         expect(service.jobs.get(occurrenceId)?.state).toBe("start-committed");
-        expect(f.commands.filter((command) =>
-          command.type === "start" && command.request.jobId === occurrenceId)).toHaveLength(1);
+        expect(
+          f.commands.filter(
+            (command) => command.type === "start" && command.request.jobId === occurrenceId,
+          ),
+        ).toHaveLength(1);
       } else {
         expect(service.jobs.cancellation(bound.request.jobId)?.mode).toBe("cancel");
         expect(service.jobs.cancellation(replacement.request.jobId)?.mode).toBe("cancel");
         expect(service.jobs.get(occurrenceId)).toBeNull();
         expect(service.jobSchedules.getOccurrence(occurrenceId)).toBeNull();
         expect(service.jobSchedules.listSchedules()).toEqual([]);
-        expect(f.commands.filter((command) =>
-          command.type === "start" && command.request.jobId === occurrenceId)).toEqual([]);
+        expect(
+          f.commands.filter(
+            (command) => command.type === "start" && command.request.jobId === occurrenceId,
+          ),
+        ).toEqual([]);
       }
     } finally {
       recoveredHost?.close();

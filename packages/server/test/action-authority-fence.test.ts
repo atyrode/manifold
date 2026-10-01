@@ -279,11 +279,12 @@ for (const hardened of [false, true]) {
 
     test("an unchanged installation drains admitted work before replacement retires its binding", async () => {
       const f = await fixture(hardened);
-      const invocation = f.host.dispatch(f.actor, `${PLUGIN_ID}.mutate`, {});
+      let invocation: ReturnType<typeof f.host.dispatch> | undefined;
       let replacement: Promise<unknown> | undefined;
       try {
-        await f.entered.promise;
         const candidate = await f.bundle("2.0.0");
+        invocation = f.host.dispatch(f.actor, `${PLUGIN_ID}.mutate`, {});
+        await f.entered.promise;
         replacement = f.host.install(
           { ...candidate, replace: true, grant: ["containers:read"] },
           f.owner.principal.id,
@@ -312,11 +313,11 @@ for (const hardened of [false, true]) {
         expect(await f.records()).toEqual([{ body: "before" }, { body: "run" }, { body: "batch" }]);
       } finally {
         f.resume.resolve();
-        await invocation.catch(() => {});
+        await invocation?.catch(() => {});
         await replacement?.catch(() => {});
         await f.close();
       }
-    });
+    }, 30_000); // Two real packs each have a bounded ten-second registration inspector.
   });
 }
 
@@ -427,7 +428,14 @@ test.each(["parser", "preparer"] as const)(
     const owner = auth.authenticate(OWNER_KEY);
     const rooms = new RoomManager(store, runtime, clock, silentLogger, testTileTrees);
     const broker = new TerminalBroker(
-      store, auth, rooms, runtime, clock, silentLogger, () => "http://localhost:7777", testTileTrees,
+      store,
+      auth,
+      rooms,
+      runtime,
+      clock,
+      silentLogger,
+      () => "http://localhost:7777",
+      testTileTrees,
     );
     const runner = new IsolateSupervisor({ logger: silentLogger, runtime });
     const held = Promise.withResolvers<ActionCtx>();
@@ -452,10 +460,15 @@ test.each(["parser", "preparer"] as const)(
         denied(() => retained.storage.compareAndSet("forbidden-cas", null, "changed")),
         denied(() => retained.storage.delete("preserved")),
         denied(() => retained.database!.run("INSERT INTO records VALUES ('forbidden-run')")),
-        denied(() => retained.database!.batch([{ sql: "INSERT INTO records VALUES ('forbidden-batch')" }])),
-        Promise.resolve(retained.identity.mintToken({
-          principal: { kind: "human", name: "forbidden preparation" }, caps: ["containers:read"],
-        })).then((result) => !result.ok),
+        denied(() =>
+          retained.database!.batch([{ sql: "INSERT INTO records VALUES ('forbidden-batch')" }]),
+        ),
+        Promise.resolve(
+          retained.identity.mintToken({
+            principal: { kind: "human", name: "forbidden preparation" },
+            caps: ["containers:read"],
+          }),
+        ).then((result) => !result.ok),
       ]);
       descendant = releaseDescendant.promise.then(() =>
         denied(() => retained.storage.set("forbidden-descendant", "changed")),
@@ -465,11 +478,16 @@ test.each(["parser", "preparer"] as const)(
       manifest: { ...manifest, id: "test.preparation-custody" },
       actions: [
         defineAction({
-          name: "hold", title: "Hold", caps: ["machines:mint", "tokens:mint"],
-          input: z.strictObject({}), result: z.strictObject({}),
+          name: "hold",
+          title: "Hold",
+          caps: ["machines:mint", "tokens:mint"],
+          input: z.strictObject({}),
+          result: z.strictObject({}),
         }),
         defineAction({
-          name: "review", title: "Review", caps: ["containers:read"],
+          name: "review",
+          title: "Review",
+          caps: ["containers:read"],
           input: z.preprocess((args) => {
             if (phase === "parser" && attempts === undefined) attemptEffects();
             return args;
@@ -505,7 +523,8 @@ test.each(["parser", "preparer"] as const)(
       },
     };
     const host = await testPluginHost(store, auth, rooms, broker, runtime, {
-      settingsPlugins: [def], isolates: { runner, dataDir },
+      settingsPlugins: [def],
+      isolates: { runner, dataDir },
     });
     const holding = host.dispatch(owner, "test.preparation-custody.hold", {});
     let review: Promise<ActionOutcome> | undefined;
@@ -524,10 +543,14 @@ test.each(["parser", "preparer"] as const)(
       expect(auth.listCredentialsV2(owner)).toEqual(credentials);
       expect(await retained.storage.keys()).toEqual(["concurrent", "preserved"]);
       expect(await retained.storage.get("preserved")).toBe("before");
-      expect(await retained.database!.query("SELECT body FROM records")).toEqual([{ body: "before" }]);
+      expect(await retained.database!.query("SELECT body FROM records")).toEqual([
+        { body: "before" },
+      ]);
       finishHandler.resolve();
       expect(await holding).toEqual({ ok: true, result: {} });
-      expect(await store.pluginStorage("test.preparation-custody").get("legitimate")).toBe("committed");
+      expect(await store.pluginStorage("test.preparation-custody").get("legitimate")).toBe(
+        "committed",
+      );
     } finally {
       finishPreparation.resolve();
       releaseDescendant.resolve();
