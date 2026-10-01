@@ -5152,6 +5152,9 @@ after?, limit? })` reads that finished job's durable LIFECYCLE frames — `{ job
 exitCode, reason, finishedAt, scheduleId?, revision?, outputs }` — the job's own terminal
   state and sealed output descriptors, never bytes. It is published after the result and its
   journal frame are durable, delivery is at-least-once, and consumers must be idempotent.
+  An owner's start refusal preserves its supplied reason in the interrupted result, private job
+  journal and settled wake; only an absent reason falls back to `owner_refusal_unknown`.
+  The broader lifecycle audit continues to omit that private reason.
   `ctx.jobs` on that hook is bound to the job's ORIGINAL credential, restored and rechecked
   at delivery: a revoked or expired credential is not woken at all, and every read still
   discharges caps, grants and that revision's consent. `follow` is not served there. The hook
