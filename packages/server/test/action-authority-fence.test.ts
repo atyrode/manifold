@@ -564,3 +564,323 @@ test.each(["parser", "preparer"] as const)(
     }
   },
 );
+
+async function rawHostPreparationFixture(phase: "parser" | "preparer") {
+  const runtime = new FakeRuntime();
+  const clock = new FakeClock(runtime);
+  const store = testStore();
+  const auth = new AuthService(store, OWNER_KEY, runtime);
+  const owner = auth.authenticate(OWNER_KEY);
+  const rooms = new RoomManager(store, runtime, clock, silentLogger, testTileTrees);
+  const broker = new TerminalBroker(
+    store,
+    auth,
+    rooms,
+    runtime,
+    clock,
+    silentLogger,
+    () => "http://localhost:7777",
+    testTileTrees,
+  );
+  for (const [id, discipline] of [
+    ["canvas", "canvas"],
+    ["composition", "composition"],
+    ["cold-composition", "composition"],
+  ] as const)
+    store.createContainer({ id, name: id, createdAt: 0, discipline });
+  const canvas = rooms.get("canvas")!;
+  const composition = rooms.get("composition")!;
+  rooms.flushAll();
+  const held = Promise.withResolvers<ActionCtx>();
+  const finishHandler = Promise.withResolvers<void>();
+  let retained: ActionCtx;
+  let attempt: () => void | Promise<void> = () => {};
+  let attempted = false;
+  let pending: void | Promise<void>;
+  let handlerAdmissions = 0;
+  let disabled = 0;
+  const invokeAttempt = () => {
+    if (attempted) return;
+    attempted = true;
+    pending = attempt();
+  };
+  const def: ServerPluginDef = {
+    manifest: {
+      id: "test.raw-preparation",
+      version: "1.0.0",
+      title: "Raw preparation",
+      description: "",
+      capabilities: ["containers:read"],
+      contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+    },
+    actions: [
+      defineAction({
+        name: "hold",
+        title: "Hold",
+        caps: ["containers:read"],
+        input: z.strictObject({}),
+        result: z.strictObject({}),
+      }),
+      defineAction({
+        name: "review",
+        title: "Review",
+        caps: ["containers:read"],
+        input: z.preprocess((args) => {
+          if (phase === "parser") invokeAttempt();
+          return args;
+        }, z.strictObject({})),
+        result: z.strictObject({}),
+      }),
+    ],
+    prepareActions: {
+      review: {
+        caps: [],
+        prepare: async (_ctx, args) => {
+          if (phase === "preparer") invokeAttempt();
+          await pending;
+          return { args, targets: [] };
+        },
+      },
+    },
+    handlers: {
+      hold: async (ctx) => {
+        held.resolve(ctx);
+        await finishHandler.promise;
+        ctx.store.createContainer({
+          id: "legitimate",
+          name: "Admitted handler",
+          createdAt: 0,
+          discipline: "canvas",
+        });
+        return {};
+      },
+      review: async () => {
+        handlerAdmissions++;
+        return {};
+      },
+    },
+  };
+  const host = await testPluginHost(store, auth, rooms, broker, runtime, {
+    settingsPlugins: [
+      def,
+      {
+        manifest: { ...def.manifest, id: "test.raw-bystander" },
+        actions: [],
+        handlers: {},
+        lifecycle: {
+          onDisable: () => {
+            disabled++;
+          },
+        },
+      },
+    ],
+  });
+  const holding = host.dispatch(owner, "test.raw-preparation.hold", {});
+  retained = await held.promise;
+  return {
+    store,
+    rooms,
+    canvas,
+    composition,
+    host,
+    owner,
+    retained,
+    holding,
+    finishHandler,
+    handlerAdmissions: () => handlerAdmissions,
+    disabled: () => disabled,
+    invoke(effect: () => void | Promise<void>, mode: "review" | "dispatch" = "review") {
+      attempt = effect;
+      attempted = false;
+      pending = undefined;
+      return mode === "review"
+        ? host.prepareActionInput(owner, "test.raw-preparation.review", {})
+        : host.dispatch(owner, "test.raw-preparation.review", {});
+    },
+    async close() {
+      finishHandler.resolve();
+      await holding.catch(() => {});
+      host.close();
+      rooms.flushAll();
+      store.close();
+    },
+  };
+}
+
+test.each(["parser", "preparer"] as const)(
+  "%s refuses direct retained raw store writes before review or handler admission",
+  async (phase) => {
+    const f = await rawHostPreparationFixture(phase);
+    try {
+      for (const mode of ["review", "dispatch"] as const) {
+        const result = await f.invoke(() => {
+          f.retained.store.createContainer({
+            id: `forbidden-${mode}`,
+            name: "Forbidden",
+            createdAt: 0,
+            discipline: "canvas",
+          });
+        }, mode);
+        expect(f.store.getContainer(`forbidden-${mode}`)).toBeNull();
+        expect(result).toMatchObject({ ok: false, denial: { rule: "refused" } });
+        expect(f.handlerAdmissions()).toBe(0);
+      }
+      f.finishHandler.resolve();
+      expect(await f.holding).toEqual({ ok: true, result: {} });
+      expect(f.store.getContainer("legitimate")?.name).toBe("Admitted handler");
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+test.each(["parser", "preparer"] as const)(
+  "%s cannot swallow retained raw host effects or lend them to asynchronous descendants",
+  async (phase) => {
+    const f = await rawHostPreparationFixture(phase);
+    const preparing = Promise.withResolvers<void>();
+    const releasePreparation = Promise.withResolvers<void>();
+    const releaseDescendant = Promise.withResolvers<void>();
+    let descendant: Promise<boolean[]> | undefined;
+    let attempts: boolean[] = [];
+    let committed = 0;
+    const storage = f.retained.store.pluginStorage("test.raw-preparation");
+    const canvasBefore = f.canvas.elements();
+    const layoutBefore = f.composition.tileLayout();
+    const eventsBefore = f.store.listEvents({ type: "container_created" });
+    const denied = async (effect: () => unknown): Promise<boolean> => {
+      try {
+        await effect();
+        return false;
+      } catch {
+        return true;
+      }
+    };
+    const attemptEffects = (suffix: string) =>
+      Promise.all([
+        denied(() =>
+          f.retained.store.createContainer({
+            id: `forbidden-${suffix}`,
+            name: "Forbidden",
+            createdAt: 0,
+            discipline: "canvas",
+          }),
+        ),
+        denied(() =>
+          f.retained.store.createGrant({
+            id: `forbidden-${suffix}`,
+            principal: { kind: "principal", id: f.owner.principal.id },
+            node: "manifold://",
+            caps: ["*"],
+            effect: "allow",
+            reach: "subtree",
+            createdBy: f.owner.principal.id,
+            createdAt: 0,
+          }),
+        ),
+        denied(() => storage.set(`forbidden-${suffix}`, "changed")),
+        denied(() => storage.compareAndSet(`cas-${suffix}`, null, "changed")),
+        denied(() =>
+          f.retained.store.addEvent("canvas", 0, null, "container_created", { suffix }),
+        ),
+        denied(() => f.retained.store.afterCommit(() => committed++)),
+        denied(() => f.retained.rooms.get("canvas")!.placePortalElement("composition", 1, 2)),
+        denied(() =>
+          f.retained.rooms.get("composition")!.placeTile(
+            { kind: "container", containerId: "canvas" },
+            null,
+            null,
+          ),
+        ),
+        denied(() => f.retained.rooms.drop("canvas")),
+        denied(() =>
+          f.retained.placement.place({
+            ref: { kind: "container", containerId: "composition" },
+            destination: { kind: "canvas", containerId: "canvas", x: 3, y: 4 },
+          }),
+        ),
+        denied(() => f.retained.placement.createHome(`home-${suffix}`, "terminal", "Forbidden")),
+        denied(() =>
+          f.retained.host.setEnabled("test.raw-bystander", false, f.owner.principal.id),
+        ),
+      ]);
+    const review = f.invoke(async () => {
+      attempts = await attemptEffects("direct");
+      attempts.push(...(await Promise.resolve().then(() => attemptEffects("microtask"))));
+      descendant = releaseDescendant.promise.then(() => attemptEffects("late"));
+      preparing.resolve();
+      await releasePreparation.promise;
+    }, "dispatch");
+    try {
+      await preparing.promise;
+      // A separately admitted continuation is not poisoned by somebody else's preparation.
+      f.retained.store.createContainer({
+        id: "independent",
+        name: "Independent",
+        createdAt: 0,
+        discipline: "canvas",
+      });
+      releasePreparation.resolve();
+      const outcome = await review;
+      releaseDescendant.resolve();
+      const later = await descendant!;
+      for (const suffix of ["direct", "microtask", "late"]) {
+        expect(f.store.getContainer(`forbidden-${suffix}`)).toBeNull();
+        expect(f.store.getContainer(`home-${suffix}`)).toBeNull();
+        expect(f.store.getGrant(`forbidden-${suffix}`)).toBeNull();
+      }
+      expect(await storage.keys()).toEqual([]);
+      expect(f.store.listEvents({ type: "container_created" })).toEqual(eventsBefore);
+      expect(committed).toBe(0);
+      expect(f.rooms.live("canvas")).toBe(f.canvas);
+      expect(f.canvas.elements()).toEqual(canvasBefore);
+      expect(f.composition.tileLayout()).toEqual(layoutBefore);
+      expect(f.host.enabled("test.raw-bystander")).toBe(true);
+      expect(f.disabled()).toBe(0);
+      expect(attempts).toEqual(Array(24).fill(true));
+      expect(later).toEqual(Array(12).fill(true));
+      expect(outcome).toMatchObject({ ok: false, denial: { rule: "refused" } });
+      expect(f.handlerAdmissions()).toBe(0);
+      expect(f.store.getContainer("independent")?.name).toBe("Independent");
+      f.finishHandler.resolve();
+      expect(await f.holding).toEqual({ ok: true, result: {} });
+      expect(f.store.getContainer("legitimate")?.name).toBe("Admitted handler");
+    } finally {
+      releasePreparation.resolve();
+      releaseDescendant.resolve();
+      await review.catch(() => {});
+      await descendant;
+      await f.close();
+    }
+  },
+);
+
+test.each(["parser", "preparer"] as const)(
+  "%s can read retained raw host state and lazily load a room without effect admission",
+  async (phase) => {
+    const f = await rawHostPreparationFixture(phase);
+    try {
+      expect(f.rooms.live("cold-composition")).toBeNull();
+      const outcome = await f.invoke(async () => {
+        expect(f.retained.store.getContainer("cold-composition")?.discipline).toBe("composition");
+        expect(f.retained.rooms.get("cold-composition")!.tileLayout()).toEqual(
+          f.composition.tileLayout(),
+        );
+        expect(f.retained.rooms.censuses().find((row) => row.containerId === "canvas")?.items).toEqual(
+          [],
+        );
+        expect(f.retained.host.roster().some((row) => row.manifest.id === "test.raw-bystander")).toBe(
+          true,
+        );
+        expect(await f.retained.host.listInstalled()).toEqual({ plugins: [] });
+      });
+      expect(outcome.ok).toBe(true);
+      expect(f.handlerAdmissions()).toBe(0);
+      expect(f.store.latestDoc("cold-composition")).toBeNull();
+      expect(await f.invoke(() => {}, "dispatch")).toEqual({ ok: true, result: {} });
+      expect(f.handlerAdmissions()).toBe(1);
+    } finally {
+      await f.close();
+    }
+  },
+);
