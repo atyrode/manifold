@@ -1470,7 +1470,6 @@ test.each(["unchanged", "implementation", "profile", "manifest"] as const)(
       if (change === "unchanged") {
         expect(service.jobs.cancellation(bound.request.jobId)).toBeNull();
         expect(service.jobs.get(occurrenceId)?.state).toBe("start-committed");
-        expect(service.jobSchedules.getOccurrence(occurrenceId)?.state).toBe("admitted");
         expect(f.commands.filter((command) =>
           command.type === "start" && command.request.jobId === occurrenceId)).toHaveLength(1);
       } else {

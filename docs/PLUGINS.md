@@ -601,6 +601,11 @@ credential, sibling-action, event, stream or machine-administration interface. S
 and transformed secret-bearing arguments never become preparation evidence. A review uses
 this same path and stops before handler admission; an approval is not an execution.
 
+In-realm parsing and preparation also refuse host effects through retained mutable contexts,
+including asynchronous descendants that outlive preparation. Catching an attempted effect
+does not make the preparation admissible. Independently admitted handlers keep their own
+authority; preparation does not globally suspend unrelated work.
+
 Ordinary terminal birth requires `terminals:spawn` at placement C and `machines:shell` at
 the exact enrolled M. A canvas creates an independent home H: before allocating anything it
 requires workspace-root **subtree** container read/write, scene write and terminal spawn/write,
@@ -609,6 +614,10 @@ composition with tile placement instead. Restart uses the stored mode/home/machi
 restart additionally requires home spawn and exact-M shell, while governed restart retains
 fresh native consent without unrelated shell permission. Existing terminal control grants
 remain independent: creation scoped to M1 is not blanket M1-only access to existing PTYs.
+The host privately retains the admitted destination owner before authorization. A replacement
+owner cannot receive a prepared ordinary launch or restart; replacement transport for that
+same owner remains valid. Deferred restoration checks the durable admitted owner when its
+transport is disconnected.
 
 The private effect lease retains the original correlated credential, ordered requirements,
 parser/preparer/code binding and native demand through awaits and acknowledgements. Withdrawal
