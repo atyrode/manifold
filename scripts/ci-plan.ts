@@ -359,6 +359,11 @@ export async function buildDependencyGraph(): Promise<DependencyGraph> {
     seen.add(key);
     const source = sourceAt(modulePath);
     if (source === undefined) return finish(null);
+    // JSON has a default value, not an exported TypeScript declaration. Retain the
+    // data module as a leaf so a binding derived from it keeps its provenance.
+    if ((source.flags & ts.NodeFlags.JsonFile) !== 0) {
+      return finish(exportedName === "default" ? new Set([modulePath]) : null);
+    }
     const imports = new Map<
       string,
       { readonly dependency: string; readonly importedName: string | null }
