@@ -518,7 +518,19 @@ export class JobService {
         captured.some((binding) => !this.terminalDemandBindingCurrent(binding, false)))
     )
       return null;
-    return restoreAuthoritySnapshot(this.auth, snapshot, this.actionBindingValidator);
+    const action = snapshot.action?.actionName ?? "engine.jobs.restore";
+    return restoreAuthoritySnapshot(
+      this.auth,
+      snapshot,
+      this.actionBindingValidator,
+      (context, requirements) =>
+        this.auth.admitGoverned(
+          context,
+          action.slice(0, action.lastIndexOf(".")),
+          action,
+          requirements,
+        ).allowed,
+    );
   }
 
   private restoreJob(job: JobRecord): AuthContext | null {

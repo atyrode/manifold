@@ -8,6 +8,10 @@ import {
   GrantReachSchema,
   ManifoldRefSchema,
   JobInputBindingSchema,
+  GOVERNED_CAPS,
+  isEngineCap,
+  parseManifoldUri,
+  type AuthorityRequirement,
   projectLegacyCaps,
   type PreparedRequirement,
   type JobRequest,
@@ -187,9 +191,14 @@ export function restoreAuthoritySnapshot(
   auth: AuthService,
   snapshot: AuthoritySnapshot,
   actionCurrent?: (binding: ActionAuthoritySnapshotBinding) => boolean,
+  nativeCurrent?: (
+    current: AuthContext,
+    requirements: readonly AuthorityRequirement[],
+  ) => boolean,
 ): AuthContext | null {
   const current = auth.restoreCredential(snapshot.credential);
   if (current === null) return null;
+  const nativeRequirements: AuthorityRequirement[] = [];
   const binding = snapshot.action;
   if (binding !== undefined) {
     if (binding.fingerprint !== undefined && actionCurrent?.(binding) !== true) return null;
@@ -217,10 +226,33 @@ export function restoreAuthoritySnapshot(
               ? auth.allowsRef(actionContext, requirement.cap, requirement.ref)
               : auth.allows(graded, requirement.cap);
       if (!allowed) return null;
+      if (GOVERNED_CAPS.includes(requirement.cap)) {
+        const ref =
+          requirement.ref ??
+          (requirement.node === undefined ? null : parseManifoldUri(requirement.node));
+        if (ref === null || !isEngineCap(requirement.cap)) return null;
+        nativeRequirements.push({ cap: requirement.cap, ref });
+      }
+    }
+    if (
+      nativeRequirements.length > 0 &&
+      nativeCurrent?.(actionContext, nativeRequirements) !== true
+    )
+      return null;
+  }
+  nativeRequirements.length = 0;
+  for (const { cap, node, reach } of snapshot.native?.requirements ?? []) {
+    if (!auth.allowsNode(current, cap, node, reach)) return null;
+    if (GOVERNED_CAPS.includes(cap)) {
+      const ref = parseManifoldUri(node);
+      if (ref === null || !isEngineCap(cap)) return null;
+      nativeRequirements.push({ cap, ref });
     }
   }
-  for (const { cap, node, reach } of snapshot.native?.requirements ?? [])
-    if (!auth.allowsNode(current, cap, node, reach)) return null;
+  // A capability grant is not native consent. Keep both captured credential walks
+  // conjunctive, while ordinary scene/container/terminal rights remain caller-only.
+  if (nativeRequirements.length > 0 && nativeCurrent?.(current, nativeRequirements) !== true)
+    return null;
   return current;
 }
 
