@@ -15,10 +15,10 @@
  * them is a gate that mostly holds.
  *
  *   S1 both assembly files assemble, and the default workspace names panels that exist
- *   S2 import boundary: floor imports no plugin; a plugin imports only the four engine packages
+ *   S2 import boundary: floor imports no plugin; plugins use the public engine and author APIs
  *   S3 every localStorage key is in the device-local register
  *   S4 every `data-action` literal names a composed action
- *   S5 every plugin package is registered, and every composed plugin has a package
+ *   S5 plugin packages are default-composed or explicitly optional authored bundles, never both
  *   S6 registry liveness: every floor glob still matches a file
  *   S7 route allowlist: no bespoke feature route grew beside the action door
  *   S8 every scene element type is a floor kind or a composed contribution
@@ -44,6 +44,7 @@
  * Env: MANIFOLD_CHROMIUM (else system chromium), MANIFOLD_GATE_DIST (shared bundle).
  */
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -111,6 +112,7 @@ import { resolveWebDist } from "./gate-dist.ts";
 import { Browser, type DragPayload } from "./cdp.ts";
 import { checkInto, ownerKeyOf, settles, sleep, teardownServer, until } from "./gate-lib.ts";
 import { DECISIONS_INDEX, readDecisionRecords, renderDecisionsIndex } from "./decisions-index.ts";
+import { classifyPluginPackage, pluginApiImportAllowed } from "./plugin-package-boundary.ts";
 
 const repoRoot = join(import.meta.dir, "..");
 const failures: string[] = [];
@@ -733,22 +735,6 @@ for (const row of registries.floor) {
 
 {
   /**
-   * The packages a plugin may name: the four engine packages, the engine's browser subpaths
-   * `/hooks` (plane mechanism: carry, drop, element host, polling, the tile tree, view state)
-   * and `/ui` (the shared generated action form), plus the design system `@manifold/ui`
-   * (how a plugin LOOKS like manifold: glyphs, the titlebar, the layout algebra, tokens —
-   * ADR 0025 §8, #240). See `REGISTRY.md` §Plugin layer.
-   */
-  const ENGINE: Readonly<Record<string, true>> = {
-    "@manifold/protocol": true,
-    "@manifold/scene": true,
-    "@manifold/sdk": true,
-    "@manifold/plugin": true,
-    "@manifold/plugin/hooks": true,
-    "@manifold/plugin/ui": true,
-    "@manifold/ui": true,
-  };
-  /**
    * A DRAWING IS NOT A DEPENDENCY A PLUGIN MAY NAME. `@manifold/ui` is THE icon
    * vocabulary's one door (`ControlIcon`, `ItemIcon`), and the whole value of that door is
    * that re-drawing the set is a change to one file: a plugin that imports `lucide-react`
@@ -785,6 +771,8 @@ for (const row of registries.floor) {
   }
   let scanned = 0;
   for (const owner of PLUGIN_PACKAGES) {
+    // S5 validates the author manifest and rejects mixed/default-composed identities.
+    const authored = existsSync(join(repoRoot, owner.dir, "manifest.json"));
     for (const path of sourcesMatching(`${owner.dir}/**`)) {
       scanned += 1;
       const part = pluginPart(owner, path);
@@ -817,10 +805,7 @@ for (const row of registries.floor) {
         }
         if (
           isContract &&
-          (ENGINE[text] !== true ||
-            text === "@manifold/plugin/hooks" ||
-            text === "@manifold/plugin/ui" ||
-            text === "@manifold/ui")
+          !pluginApiImportAllowed(text, { authored, contract: true, test: false })
         ) {
           directionOffenders.push(`${path}:${String(specifier.line)} contract imports ${text}`);
         } else if (targetOwner === owner || ownSpecifier) {
@@ -838,7 +823,14 @@ for (const row of registries.floor) {
             );
           }
         }
-        if (text.startsWith("@manifold/") && ENGINE[text] !== true) {
+        if (
+          text.startsWith("@manifold/") &&
+          !pluginApiImportAllowed(text, {
+            authored,
+            contract: false,
+            test: path.includes("/test/"),
+          })
+        ) {
           offenders.push(`${path}:${String(specifier.line)} imports ${text}`);
         }
         if (text === DRAWINGS || text.startsWith(`${DRAWINGS}/`)) {
@@ -853,7 +845,7 @@ for (const row of registries.floor) {
     "S2 plugins import only the engine",
     offenders.length === 0,
     offenders.length === 0
-      ? `${String(scanned)} plugin sources import only protocol/scene/sdk/plugin, and no drawing`
+      ? `${String(scanned)} plugin sources use public engine/author APIs, and no drawing`
       : list(offenders),
   );
   check(
@@ -977,6 +969,7 @@ for (const row of registries.floor) {
 {
   const problems: string[] = [];
   const declaredByPackage = new Map<string, string[]>();
+  const optionalIds = new Set<string>();
   for (const owner of PLUGIN_PACKAGES) {
     const dirName = owner.dir.slice("packages/plugins/".length);
     if (owner.name !== `@manifold-plugin/${dirName}`) {
@@ -1012,11 +1005,18 @@ for (const row of registries.floor) {
         }
       });
     }
-    if (declared.length === 0) problems.push(`${owner.name} declares no manifest`);
-    for (const id of declared) {
-      if (!pluginIds.has(id)) problems.push(`${owner.name} declares ${id}, which nothing composed`);
+    const classification = classifyPluginPackage(
+      join(repoRoot, owner.dir),
+      declared,
+      pluginIds,
+      optionalIds,
+    );
+    problems.push(...classification.problems.map((problem) => `${owner.name}: ${problem}`));
+    if (classification.optional) {
+      for (const id of classification.ids) optionalIds.add(id);
+    } else {
+      declaredByPackage.set(owner.name, declared);
     }
-    declaredByPackage.set(owner.name, declared);
   }
   const packaged = new Set([...declaredByPackage.values()].flat());
   for (const id of pluginIds) {
@@ -1029,7 +1029,7 @@ for (const row of registries.floor) {
     "S5 plugin packages",
     problems.length === 0,
     problems.length === 0
-      ? `${String(PLUGIN_PACKAGES.length)} packages declare all ${String(pluginIds.size)} composed ids, and nothing else`
+      ? `${String(PLUGIN_PACKAGES.length)} packages declare ${String(pluginIds.size)} composed ids and ${String(optionalIds.size)} opt-in authored bundles`
       : list(problems),
   );
 }
