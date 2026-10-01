@@ -504,6 +504,7 @@ export class JobService {
         !owner ||
         owner.ownerId !== native.ownerId ||
         owner.generation !== native.ownerGeneration ||
+        owner.terminalHostId !== native.terminalHostId ||
         (snapshot.terminal !== undefined &&
           snapshot.terminal.terminalHostId !== native.terminalHostId)
       )
@@ -4802,7 +4803,7 @@ export class JobService {
       !owner ||
       owner.ownerId !== demand.ownerId ||
       owner.generation !== demand.ownerGeneration ||
-      (requireLive && live?.owner.terminalHostId !== demand.terminalHostId) ||
+      owner.terminalHostId !== demand.terminalHostId ||
       !install?.enabled ||
       install.purgeRequested ||
       this.heldPlugins.has(demand.pluginId) ||

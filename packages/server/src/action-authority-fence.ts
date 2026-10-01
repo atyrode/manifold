@@ -36,7 +36,11 @@ export class ActionAuthorityFence {
   private requirements: readonly ActionAuthorityRequirement[] | null = null;
   private open = true;
   private binding: Omit<ActionAuthoritySnapshotBinding, "requirements" | "contextScope"> = {};
-  private checks: readonly (() => void)[] = [];
+  private checks: readonly {
+    readonly check: () => void;
+    readonly admissionOnly: boolean;
+    active: boolean;
+  }[] = [];
 
   constructor(
     private readonly authService: AuthService,
@@ -99,9 +103,15 @@ export class ActionAuthorityFence {
     return retained;
   }
 
-  guard(check: () => void): void {
-    this.checks = [...this.checks, check];
+  guard(check: () => void, lifetime: "continuation" | "admission" = "continuation"): void {
+    this.checks = [...this.checks, { check, admissionOnly: lifetime === "admission", active: true }];
     this.checkCurrent();
+  }
+
+  /** A committed effect retires only admission guards, including in its retained leases. */
+  commit(): void {
+    for (const guard of this.checks)
+      if (guard.admissionOnly) guard.active = false;
   }
 
   extend(requirements: readonly ActionAuthorityRequirement[]): void {
@@ -146,7 +156,8 @@ export class ActionAuthorityFence {
     }
     try {
       this.checkAuthority?.(current);
-      for (const check of this.checks) check();
+      for (const guard of this.checks)
+        if (guard.active) guard.check();
     } catch (error) {
       this.close();
       throw error;
