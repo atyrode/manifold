@@ -91,7 +91,7 @@ exit 91
     };
   }
   return {
-    promote: (tag: string, flags: string[] = []) =>
+    promote: (tag: string, flags: readonly string[] = []) =>
       run("promote.ts", [tag, ...flags, "--recovery-receipt", receipt]),
     boundary: (tag: string, adoption: string) =>
       run("promotion-replica-admission.ts", [build, tag, adoption]),
