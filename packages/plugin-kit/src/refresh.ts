@@ -74,6 +74,10 @@ export interface PluginRefreshOptions {
   readonly hub: string;
   /** Zero asks the OS for a port. The listener always binds loopback. */
   readonly port?: number;
+  /** Compiler-observed server inputs supplied by the installation-authorized workshop. */
+  readonly backendInputs?: ReadonlySet<string>;
+  /** Workshop authority must not silently resume a cancelled dependency lease. */
+  readonly onDependencyChange?: () => void;
 }
 
 export interface PluginRefreshHandle {
@@ -142,7 +146,10 @@ async function backendFiles(root: string, entry: string, files: Set<string>): Pr
   }
 }
 
-async function discoverSources(root: string): Promise<SourceInventory> {
+export async function discoverSources(
+  root: string,
+  backendInputs?: ReadonlySet<string>,
+): Promise<SourceInventory> {
   const found: (Source & { requiredDependencies: readonly string[] })[] = [];
   const metadata: SourceMetadata[] = [];
   const unservableFiles = new Set<string>();
@@ -155,7 +162,9 @@ async function discoverSources(root: string): Promise<SourceInventory> {
       if (manifest.entry?.server) {
         const backend = await containedFile(root, join(dir, "server.ts"));
         unservableFiles.add(backend);
-        await backendFiles(root, backend, installationFiles);
+        if (backendInputs) {
+          for (const file of backendInputs) installationFiles.add(file);
+        } else await backendFiles(root, backend, installationFiles);
       }
       for (const artifact of machineArtifacts(manifest.machine)) {
         if (!artifact.bundleFile) continue;
@@ -257,6 +266,7 @@ function visit(node: SyntaxNode, callback: (node: SyntaxNode) => void): void {
 function activeDevelopment(
   root: string,
   inventory: SourceInventory,
+  onDependencyChange?: () => void,
 ): { plugin: Plugin; descriptors: Plugin; stop(): void } {
   const { sources } = inventory;
   let server: ViteDevServer | undefined;
@@ -332,7 +342,10 @@ function activeDevelopment(
     dependencyRoots.set(directory, lease);
     if (server && !server.config.server.fs.allow.includes(directory))
       server.config.server.fs.allow.push(directory);
-    watchDirectory(directory, () => cancel(lease, "installation_required"), true);
+    watchDirectory(directory, () => {
+      onDependencyChange?.();
+      cancel(lease, "installation_required");
+    }, true);
   };
   const safeResolved = async (
     path: string,
@@ -745,7 +758,10 @@ import(${JSON.stringify(source.entry)}).catch(reason => graphError(${JSON.string
               (directory) => {
                 const canonical = join(directory, basename(file));
                 for (const [dependencyRoot, ids] of dependencyRoots)
-                  if (inside(dependencyRoot, canonical)) cancel(ids, "installation_required");
+                  if (inside(dependencyRoot, canonical)) {
+                    onDependencyChange?.();
+                    cancel(ids, "installation_required");
+                  }
               },
               () => cancel(byId.keys(), "source_boundary"),
             );
@@ -896,9 +912,9 @@ export async function startPluginRefresh(
       "source_boundary",
       "the registered source root must be a non-secret directory",
     );
-  const inventory = await discoverSources(root);
+  const inventory = await discoverSources(root, options.backendInputs);
   const { sources } = inventory;
-  const active = activeDevelopment(root, inventory);
+  const active = activeDevelopment(root, inventory, options.onDependencyChange);
   // The optional checkout-owned Vite toolchain must not be resolved by ordinary kit imports.
   const { createServer } = await import("vite").catch((error: unknown) => {
     throw new PluginRefreshError(
@@ -925,7 +941,6 @@ export async function startPluginRefresh(
         host: "127.0.0.1",
         port,
         strictPort: true,
-        allowedHosts: [],
         ws: { server: listener },
         proxy: Object.fromEntries(
           ["/api", "/ws", "/healthz", "/auth"].map((path) => [
