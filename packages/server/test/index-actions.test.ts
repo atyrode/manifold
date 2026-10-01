@@ -4,7 +4,7 @@ import {
   IndexResponseSchema,
   ContainersResponseSchema,
   type ActionOutcome,
-  type Cap,
+  type LegacyCap,
   type Container,
   type IndexEntry,
 } from "@manifold/protocol";
@@ -79,7 +79,7 @@ async function fixture(): Promise<IndexFixture> {
 }
 
 /** A minted token, so authority is exercised through real attenuation. */
-function context(base: IndexFixture, caps: readonly Cap[], containerId?: string): AuthContext {
+function context(base: IndexFixture, caps: readonly LegacyCap[], containerId?: string): AuthContext {
   const grant = base.auth.mintToken(
     {
       principal: { name: "guest", kind: "human" },

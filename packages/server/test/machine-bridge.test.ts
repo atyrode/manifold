@@ -16,6 +16,7 @@ import {
   identityColorFor,
   type ActionOutcome,
   type Cap,
+  type LegacyCap,
   type PluginManifest,
 } from "@manifold/protocol";
 import { z } from "zod";
@@ -232,7 +233,7 @@ afterEach(async () => {
   for (const fix of openFixtures) await close(fix);
 });
 
-function caller(fix: Fixture, caps: readonly Cap[], containerId?: string): AuthContext {
+function caller(fix: Fixture, caps: readonly LegacyCap[], containerId?: string): AuthContext {
   const grant = fix.auth.mintToken(
     {
       principal: { name: "caller", kind: "human" },

@@ -1,6 +1,6 @@
 import "../src/shared-modules.ts";
 import { describe, expect, test } from "bun:test";
-import { MAX_ACTION_CALL_DEPTH, type ActionOutcome, type Cap } from "@manifold/protocol";
+import { MAX_ACTION_CALL_DEPTH, type ActionOutcome, type LegacyCap } from "@manifold/protocol";
 import { defineAction } from "@manifold/plugin";
 import { z } from "zod";
 import { AuthService, type AuthContext } from "../src/auth.ts";
@@ -334,7 +334,7 @@ async function fixture(defs: readonly ServerPluginDef[] = pair()): Promise<Fixtu
 }
 
 /** A minted token, so a narrower principal is real attenuation rather than a hand-built context. */
-function guest(base: Fixture, caps: readonly Cap[]): AuthContext {
+function guest(base: Fixture, caps: readonly LegacyCap[]): AuthContext {
   const grant = base.auth.mintToken(
     { principal: { name: "guest", kind: "human" }, caps: [...caps] },
     base.owner,

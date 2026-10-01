@@ -7,7 +7,7 @@ import {
   PrincipalAccessPauseResultSchema,
   formatManifoldUri,
   type ActionOutcome,
-  type Cap,
+  type LegacyCap,
   type Grant,
   type TokenGrant,
 } from "@manifold/protocol";
@@ -89,7 +89,7 @@ async function fixture(logger: Logger = silentLogger): Promise<Fixture> {
 }
 
 /** A real token, so authority is exercised through real attenuation. */
-function grant(fix: Fixture, caps: readonly Cap[], containerId?: string): TokenGrant {
+function grant(fix: Fixture, caps: readonly LegacyCap[], containerId?: string): TokenGrant {
   return fix.auth.mintToken(
     {
       principal: { name: "guest", kind: "human" },
@@ -100,7 +100,7 @@ function grant(fix: Fixture, caps: readonly Cap[], containerId?: string): TokenG
   );
 }
 
-function context(fix: Fixture, caps: readonly Cap[], containerId?: string): AuthContext {
+function context(fix: Fixture, caps: readonly LegacyCap[], containerId?: string): AuthContext {
   return fix.auth.authenticate(grant(fix, caps, containerId).token);
 }
 

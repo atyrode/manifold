@@ -19,7 +19,7 @@ import {
   ContainerTerminalsResponseSchema,
   TerminalsResponseSchema,
   type ActionOutcome,
-  type AgentRun,
+  type AgentRunAuthority,
   type HarnessTarget,
   type JobCommand,
   type JobOwner,
@@ -118,7 +118,7 @@ async function fixture(
     resourceBindingDigest: createHash("sha256").update("null").digest("hex"),
     input: { mode: "start" },
   };
-  const launches: { run: AgentRun; target: HarnessTarget }[] = [];
+  const launches: { run: AgentRunAuthority; target: HarnessTarget }[] = [];
   const definition: ServerPluginDef = {
     manifest: {
       id: pluginId,

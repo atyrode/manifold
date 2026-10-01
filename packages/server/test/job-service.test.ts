@@ -23,6 +23,7 @@ import {
   type ServicePolicy,
   type ServicePolicyTemplate,
   type Cap,
+  type LegacyCap,
   JobDeploymentRequestSchema,
   JobDeploymentSchema,
   JobDeploymentDescriptionSchema,
@@ -46,7 +47,7 @@ import { projectPluginAuthorFacts } from "../src/log.ts";
 import { ServerStore } from "../src/stores.ts";
 import { FakeRuntime } from "./helpers.ts";
 import { ActionAuthorityFence } from "../src/action-authority-fence.ts";
-import { captureAuthoritySnapshot } from "../src/authority-snapshot.ts";
+import { captureAuthoritySnapshot, projectJobCredential } from "../src/authority-snapshot.ts";
 
 const key = "9".repeat(64);
 const pluginId = "sample.worker";
@@ -2214,7 +2215,7 @@ test("retiring an instance preserves admitted descendants but refuses new descen
         ...base,
         jobId,
         parent: { parentJobId: start.request.jobId, invocationId: jobId },
-        credential: { ...credential, caps: [...credential.caps] },
+        credential: projectJobCredential(credential),
         limits,
       };
       const request: JobRequest = {
@@ -7033,7 +7034,7 @@ describe("reviewed native deployment approvals", () => {
             f.service
               .describe(f.root, { machineId: f.machineId, pluginId: callerPlugin })
               .consents.filter((row) => row.enabled)
-              .map((row) => row.cap)
+              .map((row): Cap => row.cap)
               .sort(),
           ).toEqual(target.consents.map((row) => row.cap).sort());
         }
@@ -7237,7 +7238,7 @@ describe("reviewed native deployment approvals", () => {
       acknowledge();
       // Everything a job credential can legitimately carry, and nothing more: the one
       // governed capability deliberately absent is the one this hop used to demand.
-      const granted: Cap[] = [
+      const granted: LegacyCap[] = [
         "containers:read",
         "containers:write",
         "machines:run",

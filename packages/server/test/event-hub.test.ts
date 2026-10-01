@@ -9,7 +9,7 @@ import {
   ServerMessageSchema,
   formatManifoldUri,
   topicMatches,
-  type Cap,
+  type LegacyCap,
   type Container,
   type ManifoldRef,
   type ServerEvent,
@@ -172,7 +172,7 @@ async function planeFixture(
 }
 
 /** A minted token, so authority is exercised through real attenuation rather than a literal. */
-function context(fixture: PlaneFixture, caps: readonly Cap[], containerId?: string): string {
+function context(fixture: PlaneFixture, caps: readonly LegacyCap[], containerId?: string): string {
   const grant = fixture.auth.mintToken(
     {
       principal: { name: "guest", kind: "human" },

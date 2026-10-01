@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { ActionOutcome, Cap, CredentialsResponse, TokenGrant } from "@manifold/protocol";
+import type { ActionOutcome, LegacyCap, CredentialsResponse, TokenGrant } from "@manifold/protocol";
 import {
   AuthService,
   AUTOMATED_TOKEN_TTL_MS,
@@ -81,7 +81,7 @@ async function fixture(options: { readonly online?: ReadonlySet<string> } = {}):
   };
 }
 
-function mint(fix: Fixture, caps: readonly Cap[]): TokenGrant {
+function mint(fix: Fixture, caps: readonly LegacyCap[]): TokenGrant {
   return fix.auth.mintToken(
     { principal: { name: "guest", kind: "human" }, caps: [...caps] },
     fix.owner,

@@ -9,7 +9,7 @@ import {
   MachinesResponseSchema,
   identityColorFor,
   type ActionOutcome,
-  type Cap,
+  type LegacyCap,
   type MachineEnrollResponse,
 } from "@manifold/protocol";
 import { HARDENED_SOURCE_RECIPES, SERVER_PLUGIN_DEFS } from "../src/assembly.ts";
@@ -135,7 +135,7 @@ async function fixture(
 }
 
 /** A real token, so authority is exercised through attenuation rather than a hand-built context. */
-function context(fix: Fixture, caps: readonly Cap[], containerId?: string): AuthContext {
+function context(fix: Fixture, caps: readonly LegacyCap[], containerId?: string): AuthContext {
   const grant = fix.auth.mintToken(
     {
       principal: { name: "guest", kind: "human" },
