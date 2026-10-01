@@ -103,6 +103,11 @@ export const PluginInstallRequestSchema = z.strictObject({
     .optional(),
   /** Consent to upgrade an id already installed at a different hash; it must be disabled. */
   replace: z.boolean().optional(),
+  /** Replace exactly this incumbent pin without changing its manifest, authority or consent. */
+  retainInstallation: z
+    .string()
+    .regex(/^[0-9a-fA-F]{64}$/)
+    .optional(),
   /** Optional process/Worker isolation; absent means the full in-realm engine API. */
   hardened: z.boolean().optional(),
 });
