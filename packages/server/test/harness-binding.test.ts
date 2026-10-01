@@ -32,7 +32,7 @@ import { openDatabase } from "../src/db.ts";
 import { ServerStore } from "../src/stores.ts";
 import { JobService } from "../src/job-service.ts";
 import { silentLogger } from "../src/log.ts";
-import type { ActionCtx, ServerPluginDef } from "../src/plugin-host.ts";
+import type { ActionCtx, PluginHost, ServerPluginDef } from "../src/plugin-host.ts";
 import { RoomManager } from "../src/room.ts";
 import { SessionChannel } from "../src/session-channel.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
@@ -217,7 +217,11 @@ async function fixture(
   });
   const commands: JobCommand[] = [];
   const sent: ServerToAgentMessage[] = [];
-  const channel = {
+  const firstCreate = Promise.withResolvers<Extract<ServerToAgentMessage, { type: "create" }>>();
+  const firstRestart =
+    Promise.withResolvers<Extract<ServerToAgentMessage, { type: "terminal_restart" }>>();
+  let acknowledgeRestarts = true;
+  let channel = {
     machineId,
     protocolVersion: PROTOCOL_VERSION,
     terminalRestart: true,
@@ -226,7 +230,9 @@ async function fixture(
     send(message: ServerToAgentMessage) {
       sent.push(message);
       if (message.type === "job_command") commands.push(message.command);
-      if (message.type === "terminal_restart")
+      if (message.type === "create") firstCreate.resolve(message);
+      if (message.type === "terminal_restart") firstRestart.resolve(message);
+      if (message.type === "terminal_restart" && acknowledgeRestarts)
         broker.onRestarted(machineId, {
           type: "terminal_restarted",
           terminalId: message.terminalId,
@@ -244,9 +250,18 @@ async function fixture(
     platforms: ["linux-x64"],
     inventoryDigest: "b".repeat(64),
   };
-  const connect = (protocolVersion: number, ownerProtocolVersion: number) => {
+  const connect = (
+    protocolVersion: number,
+    ownerProtocolVersion: number,
+    replaceTransport = false,
+  ) => {
+    if (replaceTransport) {
+      service.offline(channel);
+      channel = { ...channel };
+    }
     channel.protocolVersion = protocolVersion;
     const advertised = { ...owner, protocolVersion: ownerProtocolVersion };
+    channel.terminalHostId = advertised.terminalHostId ?? "terminal-host";
     service.online(channel, advertised, "epoch");
     if (JOB_OWNER_PROTOCOL_COMPAT_VERSIONS.has(ownerProtocolVersion)) {
       const challenge = commands.at(-1);
@@ -366,6 +381,25 @@ async function fixture(
       return create;
     },
     sent,
+    commands,
+    owner,
+    containerId,
+    firstCreate: firstCreate.promise,
+    firstRestart: firstRestart.promise,
+    holdRestartAcknowledgement() {
+      acknowledgeRestarts = false;
+    },
+    replaceTransport: () => connect(PROTOCOL_VERSION, JOB_OWNER_PROTOCOL_VERSION, true),
+    started(command: Extract<JobCommand, { type: "start" }>) {
+      service.event(channel, {
+        type: "state",
+        jobId: command.request.jobId,
+        requestDigest: command.request.requestDigest,
+        ownerId: command.permit.ownerId,
+        ownerGeneration: command.permit.ownerGeneration,
+        state: "started",
+      });
+    },
     connect,
     duplicate: () =>
       testPluginHost(store, auth, rooms, broker, runtime, {
@@ -1272,6 +1306,277 @@ test.each(["draining", "disabled", "withdrawn"] as const)(
       await drain;
     } finally {
       gate.resolve();
+      f.close();
+    }
+  },
+);
+
+interface GovernedTerminalFixture {
+  auth: AuthService;
+  root: AuthContext;
+  host: PluginHost;
+  broker: TerminalBroker;
+  runtime: FakeRuntime;
+  descriptor: TerminalRuntime;
+  containerId: string;
+  firstCreate: Promise<Extract<ServerToAgentMessage, { type: "create" }>>;
+  sent: ServerToAgentMessage[];
+  owner: JobOwner;
+  openCreated(value: TerminalRuntime): Promise<Extract<ServerToAgentMessage, { type: "create" }>>;
+}
+
+async function governedCreated(
+  f: GovernedTerminalFixture,
+  actor: AuthContext = f.root,
+  legacy = false,
+) {
+  if (legacy) return f.openCreated(f.descriptor);
+  const pending = f.host.dispatch(actor, "core.terminals.create", {
+    containerId: f.containerId,
+    elementId: f.runtime.newId(),
+    machineId: f.descriptor.machineId,
+    placement: "tile",
+    cols: 80,
+    rows: 24,
+    runtime: f.descriptor,
+  });
+  const create = await f.firstCreate;
+  f.broker.onCreated(f.descriptor.machineId, create.terminalId);
+  result(await pending);
+  return create;
+}
+
+async function admissionDrain(f: GovernedTerminalFixture, terminalId: string) {
+  const pending = f.broker.drain(f.descriptor.machineId, true);
+  const drain = f.sent.findLast((message) => message.type === "drain");
+  if (!drain) throw new Error("drain request missing");
+  f.broker.onDrainStatus(f.descriptor.machineId, {
+    type: "drain_status",
+    requestId: drain.requestId,
+    terminalHostId: f.owner.terminalHostId!,
+    draining: true,
+    terminalIds: [terminalId],
+  });
+  expect(await pending).toMatchObject({ ok: true, status: { terminalIds: [terminalId] } });
+}
+
+test.each(["legacy birth", "prepared birth", "restart"] as const)(
+  "committed governed %s survives retained-owner transport replacement and admission drain",
+  async (phase) => {
+    const f = await fixture();
+    try {
+      const create = await governedCreated(f, f.root, phase === "legacy birth");
+      if (!create.runtime) throw new Error("governed create missing");
+      let command = create.runtime;
+      f.started(command);
+      if (phase === "restart") {
+        result(await f.host.dispatch(f.root, "core.terminals.restart", {
+          terminalId: create.terminalId,
+        }));
+        const restart = await f.firstRestart;
+        if (!restart.create.runtime) throw new Error("governed restart missing");
+        command = restart.create.runtime;
+        f.started(command);
+      }
+      const jobId = command.request.jobId;
+      expect(f.service.jobs.get(jobId)?.state).toBe("started");
+      f.replaceTransport();
+      f.service.tick();
+      expect(f.service.jobs.cancellation(jobId)).toBeNull();
+      expect(f.commands.filter((entry) => entry.type === "cancel" && entry.jobId === jobId))
+        .toEqual([]);
+      await admissionDrain(f, create.terminalId);
+      f.service.tick();
+      expect(f.service.jobs.get(jobId)?.state).toBe("started");
+      expect(f.service.jobs.cancellation(jobId)).toBeNull();
+      expect(f.commands.filter((entry) => entry.type === "cancel" && entry.jobId === jobId))
+        .toEqual([]);
+      expect(f.store.getTerminal(create.terminalId)?.status).toBe("running");
+      expect(await f.broker.restartById(create.terminalId, f.root.principal.id))
+        .toBe("machine_draining");
+    } finally {
+      f.close();
+    }
+  },
+);
+
+test.each(["deny", "transport", "owner", "drain"] as const)(
+  "pending governed birth refuses a late %s change and cleans only its owned effect",
+  async (change) => {
+    const f = await fixture();
+    try {
+      const minted = f.auth.mintToken({
+        principal: { name: "pending opener", kind: "human" },
+        caps: ["terminals:spawn", "machines:run"],
+      }, f.root);
+      const actor = f.auth.authenticate(minted.token);
+      const pending = f.host.dispatch(actor, "core.terminals.create", {
+        containerId: f.containerId,
+        elementId: f.runtime.newId(),
+        machineId: f.descriptor.machineId,
+        placement: "tile",
+        cols: 80,
+        rows: 24,
+        runtime: f.descriptor,
+      });
+      const create = await f.firstCreate;
+      if (!create.runtime) throw new Error("governed create missing");
+      if (change === "deny") {
+        f.auth.grant({
+          principal: { kind: "principal", id: actor.principal.id },
+          node: `manifold://container/${f.containerId}`,
+          caps: ["terminals:spawn"],
+          effect: "deny",
+          reach: "node",
+        }, f.root);
+      } else if (change === "drain") {
+        await admissionDrain(f, create.terminalId);
+      } else {
+        if (change === "owner") {
+          f.owner.generation++;
+          f.owner.terminalHostId = "replacement-terminal-host";
+        }
+        f.replaceTransport();
+      }
+      f.broker.onCreated(f.descriptor.machineId, create.terminalId);
+      expect((await pending).ok).toBe(false);
+      expect(f.store.getTerminal(create.terminalId)).toBeNull();
+      expect(Object.values(f.rooms.get(f.containerId)?.tileLayout() ?? {})
+        .some((tile) => tile.ref?.kind === "terminal" && tile.ref.terminalId === create.terminalId))
+        .toBe(false);
+      const kills = f.sent.filter((entry) =>
+        entry.type === "kill" && entry.terminalId === create.terminalId);
+      if (change === "owner") expect(kills).toEqual([]);
+      else {
+        expect(kills).toEqual([{ type: "kill", terminalId: create.terminalId }]);
+        expect(f.service.jobs.cancellation(create.runtime.request.jobId)?.mode).toBe("cancel");
+      }
+    } finally {
+      f.close();
+    }
+  },
+);
+
+test.each(["deny", "transport", "owner", "drain"] as const)(
+  "pending governed restart refuses a late %s change without publishing success",
+  async (change) => {
+    const f = await fixture();
+    try {
+      const create = await governedCreated(f);
+      f.holdRestartAcknowledgement();
+      const minted = f.auth.mintToken({
+        principal: { name: "pending restarter", kind: "human" },
+        caps: ["*"],
+      }, f.root);
+      const actor = f.auth.authenticate(minted.token);
+      const pending = f.host.dispatch(actor, "core.terminals.restart", {
+        terminalId: create.terminalId,
+      });
+      const restart = await f.firstRestart;
+      if (!restart.create.runtime) throw new Error("governed restart missing");
+      if (change === "deny") {
+        f.auth.grant({
+          principal: { kind: "principal", id: actor.principal.id },
+          node: `manifold://container/${f.containerId}`,
+          caps: ["terminals:write"],
+          effect: "deny",
+          reach: "node",
+        }, f.root);
+      } else if (change === "drain") {
+        await admissionDrain(f, create.terminalId);
+      } else {
+        if (change === "owner") {
+          f.owner.generation++;
+          f.owner.terminalHostId = "replacement-terminal-host";
+        }
+        f.replaceTransport();
+      }
+      f.broker.onRestarted(f.descriptor.machineId, {
+        type: "terminal_restarted",
+        terminalId: create.terminalId,
+      });
+      expect((await pending).ok).toBe(false);
+      expect(f.store.getTerminal(create.terminalId)?.status).toBe("running");
+      expect(f.store.db.query(
+        "SELECT id FROM events WHERE type='terminal_restarted'",
+      ).all()).toEqual([]);
+      if (change !== "owner")
+        expect(f.service.jobs.cancellation(restart.create.runtime.request.jobId)?.mode)
+          .toBe("cancel");
+      else
+        expect(f.sent.filter((entry) =>
+          entry.type === "kill" && entry.terminalId === create.terminalId)).toEqual([]);
+    } finally {
+      f.close();
+    }
+  },
+);
+
+test.each(["deny", "expiry", "sponsor", "action", "owner", "consent"] as const)(
+  "committed governed effects still cancel on continuing %s authority withdrawal",
+  async (change) => {
+    const f = await fixture();
+    const action = f.host.assembly().actions.get("core.terminals.create")!.def;
+    const originalInput = action.input;
+    try {
+      const sponsor = f.auth.mintToken({
+        principal: { name: "terminal sponsor", kind: "human" },
+        caps: ["*"],
+      }, f.root);
+      const minted = f.auth.mintToken({
+        principal: { name: "continuing opener", kind: "human" },
+        caps: ["terminals:spawn", "machines:run"],
+        expiresAt: f.runtime.now() + 30_000,
+      }, f.auth.authenticate(sponsor.token));
+      const actor = f.auth.authenticate(minted.token);
+      const create = await governedCreated(f, actor);
+      if (!create.runtime) throw new Error("governed create missing");
+      f.started(create.runtime);
+      f.replaceTransport();
+      f.service.tick();
+      expect(f.service.jobs.cancellation(create.runtime.request.jobId)).toBeNull();
+      switch (change) {
+        case "deny":
+          f.auth.grant({
+            principal: { kind: "principal", id: actor.principal.id },
+            node: `manifold://container/${f.containerId}`,
+            caps: ["terminals:spawn"],
+            effect: "deny",
+            reach: "node",
+          }, f.root);
+          break;
+        case "expiry":
+          f.clock.advance(30_001);
+          break;
+        case "sponsor":
+          f.auth.revokePrincipal(sponsor.principal.id, f.root);
+          break;
+        case "action":
+          action.input = z.strictObject({});
+          break;
+        case "owner":
+          f.owner.terminalHostId = "replacement-terminal-host";
+          f.replaceTransport();
+          break;
+        case "consent":
+          f.service.consent(f.root, {
+            machineId: f.descriptor.machineId,
+            pluginId,
+            installationRevision: "r1",
+            artifactSha256: hash,
+            node: `manifold://machine/${f.descriptor.machineId}/operation/${operationId}`,
+            cap: "machines:run",
+            enabled: false,
+          });
+          break;
+      }
+      f.service.tick();
+      expect(f.service.jobs.cancellation(create.runtime.request.jobId)?.mode).toBe("cancel");
+      if (change !== "owner")
+        expect(f.commands.some((entry) =>
+          entry.type === "cancel" && entry.jobId === create.runtime!.request.jobId)).toBe(true);
+    } finally {
+      action.input = originalInput;
       f.close();
     }
   },
