@@ -312,7 +312,12 @@ async function workshopCommand(argv: readonly string[]): Promise<void> {
   let build: ((outputDir: string) => Promise<readonly PackResult[]>) | undefined;
   if (flags.buildModule) {
     const module: unknown = await import(pathToFileURL(flags.buildModule).href);
-    if (typeof module !== "object" || module === null || !("pack" in module) || typeof module.pack !== "function")
+    if (
+      typeof module !== "object" ||
+      module === null ||
+      !("pack" in module) ||
+      typeof module.pack !== "function"
+    )
       throw new Error("--build-module must export an async pack(outputDir) compiler");
     build = module.pack as (outputDir: string) => Promise<readonly PackResult[]>;
   }
@@ -328,19 +333,24 @@ async function workshopCommand(argv: readonly string[]): Promise<void> {
   });
 }
 
-
 if (import.meta.main) {
   try {
     const argv = process.argv.slice(2);
     if (argv.includes("--help") || argv.includes("-h")) {
-      console.log("manifold-dev <plugins-root> --hub <origin> [--fast-refresh | --workshop] [--port <n>]");
+      console.log(
+        "manifold-dev <plugins-root> --hub <origin> [--fast-refresh | --workshop] [--port <n>]",
+      );
       console.log(
         "Ordinary dev packs/installs/watches. --fast-refresh remains credential-free. --workshop uses explicit owner installation authority for same-manifest backend saves plus frontend HMR.",
       );
       console.log(JSON.stringify(PLUGIN_REFRESH_DESCRIPTION, null, 2));
       console.log(JSON.stringify(PLUGIN_WORKSHOP_DESCRIPTION, null, 2));
     } else if (argv.includes("--describe")) {
-      console.log(JSON.stringify(argv.includes("--workshop") ? PLUGIN_WORKSHOP_DESCRIPTION : PLUGIN_REFRESH_DESCRIPTION));
+      console.log(
+        JSON.stringify(
+          argv.includes("--workshop") ? PLUGIN_WORKSHOP_DESCRIPTION : PLUGIN_REFRESH_DESCRIPTION,
+        ),
+      );
     } else if (argv.includes("--workshop")) {
       await workshopCommand(argv);
     } else if (argv.includes("--fast-refresh")) {
@@ -361,7 +371,9 @@ if (import.meta.main) {
     if (process.argv.includes("--fast-refresh") || process.argv.includes("--workshop")) {
       console.error(
         JSON.stringify({
-          event: process.argv.includes("--workshop") ? "plugin-workshop-failed" : "plugin-refresh-failed",
+          event: process.argv.includes("--workshop")
+            ? "plugin-workshop-failed"
+            : "plugin-refresh-failed",
           reason: error instanceof PluginRefreshError ? error.reason : "startup_failed",
           message: error instanceof Error ? error.message : String(error),
         }),

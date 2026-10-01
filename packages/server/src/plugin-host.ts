@@ -3497,32 +3497,50 @@ export class PluginHost {
       const incumbent = this.installed.get(id);
       if (retainedPin !== undefined) {
         if (request.replace !== true || request.grant !== undefined || unpacked !== undefined)
-          return installRefused("artifact_invalid", "retaining an installation requires replacement without a new grant");
+          return installRefused(
+            "artifact_invalid",
+            "retaining an installation requires replacement without a new grant",
+          );
         const durable = this.store.pluginInstalls().find((row) => row.pluginId === id);
         const retentionRefusal = this.retainedInstallationRefusal(id, durable);
         if (retentionRefusal !== null) return { refused: retentionRefusal.message };
         if (incumbent?.bundle == null)
           return installRefused("not_installed", `"${id}" has no verified incumbent installation`);
         if (incumbent.row.sha256 !== retainedPin || durable?.sha256 !== retainedPin)
-          return installRefused("artifact_invalid", `"${id}" installation changed before replacement`);
+          return installRefused(
+            "artifact_invalid",
+            `"${id}" installation changed before replacement`,
+          );
         if (
           (incumbent.row.hardened === true) !== (request.hardened === true) ||
-          canonicalJobJson(incumbent.bundle.manifest) !== canonicalJobJson(artifact.bundle.manifest) ||
-          canonicalJobJson(incumbent.bundle.builtAgainst ?? null) !== canonicalJobJson(artifact.bundle.builtAgainst ?? null) ||
+          canonicalJobJson(incumbent.bundle.manifest) !==
+            canonicalJobJson(artifact.bundle.manifest) ||
+          canonicalJobJson(incumbent.bundle.builtAgainst ?? null) !==
+            canonicalJobJson(artifact.bundle.builtAgainst ?? null) ||
           incumbent.bundle.hardenedContract !== artifact.bundle.hardenedContract
         )
-          return installRefused("artifact_invalid", `"${id}" installation declaration changed; explicit review is required`);
+          return installRefused(
+            "artifact_invalid",
+            `"${id}" installation declaration changed; explicit review is required`,
+          );
         for (const member of machineArtifacts(artifact.bundle.manifest.machine))
-          if (member.bundleFile && artifact.bundle.files[member.bundleFile] !== incumbent.bundle.files[member.bundleFile])
-            return installRefused("artifact_invalid", `"${id}" native bytes changed; explicit review is required`);
+          if (
+            member.bundleFile &&
+            artifact.bundle.files[member.bundleFile] !== incumbent.bundle.files[member.bundleFile]
+          )
+            return installRefused(
+              "artifact_invalid",
+              `"${id}" native bytes changed; explicit review is required`,
+            );
       }
       const outcome = await this.installGroup(
         [
           {
             artifact,
-            grantedCaps: retainedPin === undefined
-              ? grantFor(artifact.bundle.manifest.capabilities, request.grant)
-              : incumbent!.row.grantedCaps,
+            grantedCaps:
+              retainedPin === undefined
+                ? grantFor(artifact.bundle.manifest.capabilities, request.grant)
+                : incumbent!.row.grantedCaps,
             hardened: request.hardened === true,
             ...(retainedPin === undefined ? {} : { retainInstallation: retainedPin }),
           },
@@ -3531,12 +3549,17 @@ export class PluginHost {
           installedBy,
           installer,
           ...(unpacked === undefined ? {} : { unpacked }),
-          ...(retainedPin === undefined ? {} : {
-            assertCurrent: () => {
-              if (this.installed.get(id)?.row.sha256 !== retainedPin)
-                throw new InstallRefusal("artifact_invalid", `"${id}" installation changed during replacement`);
-            },
-          }),
+          ...(retainedPin === undefined
+            ? {}
+            : {
+                assertCurrent: () => {
+                  if (this.installed.get(id)?.row.sha256 !== retainedPin)
+                    throw new InstallRefusal(
+                      "artifact_invalid",
+                      `"${id}" installation changed during replacement`,
+                    );
+                },
+              }),
         },
       );
       return "refused" in outcome ? outcome : outcome[0]!;
@@ -3661,7 +3684,9 @@ export class PluginHost {
           styles: stylesheetOf(bundle),
           compatibility: pluginBuildCompatibility(bundle),
           previous,
-          ...(candidate.retainInstallation === undefined ? {} : { retainInstallation: candidate.retainInstallation }),
+          ...(candidate.retainInstallation === undefined
+            ? {}
+            : { retainInstallation: candidate.retainInstallation }),
           previousDef: this.installedDefs.get(id),
           previousLifecycle: this.lifecycleStates.get(id),
           live: previous !== undefined && previous.bundle !== null && wasEnabled.has(id),
@@ -3771,15 +3796,22 @@ export class PluginHost {
           if (member.retainInstallation === undefined) continue;
           const old = member.previousDef;
           const next = member.def;
-          const actions = prospective.roster.find((entry) => entry.manifest.id === member.id)?.actions ?? [];
+          const actions =
+            prospective.roster.find((entry) => entry.manifest.id === member.id)?.actions ?? [];
           if (
             canonicalJobJson(member.previous?.row.actions ?? []) !== canonicalJobJson(actions) ||
-            ISOLATE_HOOKS.some((hook) => (old?.lifecycle?.[hook] !== undefined) !== (next?.lifecycle?.[hook] !== undefined)) ||
+            ISOLATE_HOOKS.some(
+              (hook) =>
+                (old?.lifecycle?.[hook] !== undefined) !== (next?.lifecycle?.[hook] !== undefined),
+            ) ||
             (old?.lifecycle?.onPurge !== undefined) !== (next?.lifecycle?.onPurge !== undefined) ||
             canonicalJobJson((old?.migrations ?? []).map(({ name, to }) => ({ name, to }))) !==
               canonicalJobJson((next?.migrations ?? []).map(({ name, to }) => ({ name, to })))
           )
-            throw new InstallRefusal("artifact_invalid", `"${member.id}" action or lifecycle authority changed; explicit review is required`);
+            throw new InstallRefusal(
+              "artifact_invalid",
+              `"${member.id}" action or lifecycle authority changed; explicit review is required`,
+            );
         }
         for (const member of members) {
           if (member.candidateChild && isolates.runner.state(member.id) === "crashed")
@@ -3844,7 +3876,10 @@ export class PluginHost {
               (incumbent.hardened === true) !== (member.row.hardened === true) ||
               canonicalJobJson(incumbent.actions) !== canonicalJobJson(member.row.actions)
             )
-              throw new InstallRefusal("artifact_invalid", `"${member.id}" installation changed at commit`);
+              throw new InstallRefusal(
+                "artifact_invalid",
+                `"${member.id}" installation changed at commit`,
+              );
             // Read durable consent after every preparation await, inside the synchronous commit.
             member.row = { ...member.row, grantedCaps: incumbent.grantedCaps };
           }

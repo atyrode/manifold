@@ -171,7 +171,10 @@ export async function discoverSources(
   const walk = async (dir: string, recursive: boolean): Promise<void> => {
     const entries = await readdir(dir, { withFileTypes: true });
     if (!recursive && !entries.some((entry) => entry.isFile() && entry.name === "manifest.json"))
-      throw new PluginRefreshError("source_boundary", "selected source directory requires a regular manifest.json");
+      throw new PluginRefreshError(
+        "source_boundary",
+        "selected source directory requires a regular manifest.json",
+      );
     if (entries.some((entry) => entry.name === "manifest.json")) {
       const manifestFile = await containedFile(root, join(dir, "manifest.json"));
       const manifest = PluginManifestSchema.parse(await Bun.file(manifestFile).json());
@@ -253,8 +256,16 @@ export async function discoverSources(
     const selected = new Set<string>();
     for (const directory of sourceDirectories) {
       const dir = await realpath(resolve(directory));
-      if (!inside(root, dir) || denied(dir) || !(await stat(dir)).isDirectory() || selected.has(dir))
-        throw new PluginRefreshError("source_boundary", "selected source directories must be unique contained directories");
+      if (
+        !inside(root, dir) ||
+        denied(dir) ||
+        !(await stat(dir)).isDirectory() ||
+        selected.has(dir)
+      )
+        throw new PluginRefreshError(
+          "source_boundary",
+          "selected source directories must be unique contained directories",
+        );
       selected.add(dir);
       await walk(dir, false);
     }
@@ -367,10 +378,14 @@ function activeDevelopment(
     dependencyRoots.set(directory, lease);
     if (server && !server.config.server.fs.allow.includes(directory))
       server.config.server.fs.allow.push(directory);
-    watchDirectory(directory, () => {
-      onDependencyChange?.();
-      cancel(lease, "installation_required");
-    }, true);
+    watchDirectory(
+      directory,
+      () => {
+        onDependencyChange?.();
+        cancel(lease, "installation_required");
+      },
+      true,
+    );
   };
   const safeResolved = async (
     path: string,
@@ -383,7 +398,8 @@ function activeDevelopment(
     const canonical = await realpath(path);
     if (denied(canonical) || !(await stat(canonical)).isFile())
       throw new PluginRefreshError("source_boundary", "source is not a regular public module");
-    const authorOwned = inside(root, canonical) &&
+    const authorOwned =
+      inside(root, canonical) &&
       !relative(root, canonical).split(sep).includes("node_modules") &&
       inventory.authorPackages.has(await sourcePackageRoot(dirname(canonical)));
     if (authorOwned) {
@@ -396,11 +412,17 @@ function activeDevelopment(
       }
     } else {
       const importedPackage = await sourcePackageRoot(dirname(importer));
-      const authorImport = inside(root, importer) &&
+      const authorImport =
+        inside(root, importer) &&
         !relative(root, importer).split(sep).includes("node_modules") &&
         inventory.authorPackages.has(importedPackage);
-      if (!bare && !(authorImport && inside(root, canonical)) &&
-        (importedPackage === undefined || !dependencyRoots.has(importedPackage) || !inside(importedPackage, canonical)))
+      if (
+        !bare &&
+        !(authorImport && inside(root, canonical)) &&
+        (importedPackage === undefined ||
+          !dependencyRoots.has(importedPackage) ||
+          !inside(importedPackage, canonical))
+      )
         throw new PluginRefreshError(
           "source_boundary",
           "relative import escapes the registered source or dependency package",
