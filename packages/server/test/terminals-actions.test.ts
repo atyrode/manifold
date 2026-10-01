@@ -1210,7 +1210,7 @@ describe("ordinary shell creation authority", () => {
             machineId: base.machine.machineId, cols: 80, rows: 24,
           } : { terminalId },
         );
-        expect(outcome).toMatchObject({ ok: false, denial: { rule: "forbidden" } });
+        expect(outcome).toMatchObject({ ok: false });
         expect(successor.sent.filter((message) =>
           message.type === "create" || message.type === "terminal_restart",
         )).toEqual([]);

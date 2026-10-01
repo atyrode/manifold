@@ -320,6 +320,8 @@ async function fixture(
       channel = { ...channel };
     }
     proveOwner(service, protocolVersion, ownerProtocolVersion);
+    // Match the hub's durable owner admission, not just the broker's live transport.
+    store.touchMachine(machineId, "harness owner", runtime.now(), channel.terminalHostId);
     broker.setMachineOnline(channel);
   };
   connect(PROTOCOL_VERSION, JOB_OWNER_PROTOCOL_VERSION);
