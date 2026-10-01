@@ -23,6 +23,7 @@ import {
   type TerminalExecution,
   type TerminalExitReason,
   type TerminalSizing,
+  type TokenGrant,
 } from "@manifold/protocol";
 import {
   ServiceError,
@@ -1221,13 +1222,21 @@ export class TerminalBroker implements TerminalPlacementPort {
         return;
       }
     }
-    const grant = runtime
-      ? null
-      : this.auth.mintSessionAgentToken(
+    let grant: TokenGrant | null = null;
+    if (!runtime) {
+      try {
+        grant = this.auth.mintSessionAgentToken(
           pending.terminalId,
           pending.homeId,
           pending.auth.principal.id,
+          pending.auth.tokenId,
         );
+      } catch (error) {
+        if (!(error instanceof ServiceError)) throw error;
+        this.rejectPendingOpen(pending, error.code, error.message);
+        return;
+      }
+    }
     pending.cols = cols;
     pending.rows = rows;
     pending.agentPrincipalId = grant?.principal.id ?? null;
@@ -1829,12 +1838,12 @@ export class TerminalBroker implements TerminalPlacementPort {
     }, CREATE_DEADLINE_MS);
     const prepare = async () => {
       let runtime: Extract<ServerToAgentMessage, { type: "create" }>["runtime"];
+      let auth = credential === undefined ? null : this.auth.restoreCredential(credential);
+      if (credential !== undefined && (!auth || auth.principal.id !== principalId))
+        throw new Error("terminal_runtime_admission_refused");
       if (recipe?.runtime || stored.runId !== undefined) {
-        if (!this.jobs || !machine.terminalHostId || !credential || traceId === undefined)
+        if (!this.jobs || !machine.terminalHostId || !credential || !auth || traceId === undefined)
           throw new Error("terminal_runtime_unsupported");
-        let auth = this.auth.restoreCredential(credential);
-        if (!auth || auth.principal.id !== principalId)
-          throw new Error("terminal_runtime_admission_refused");
         let descriptor = recipe?.runtime;
         let privateEnv;
         if (stored.runId !== undefined) {
@@ -1893,7 +1902,12 @@ export class TerminalBroker implements TerminalPlacementPort {
       }
       const grant = runtime
         ? null
-        : this.auth.mintSessionAgentToken(terminalId, stored.containerId, principalId);
+        : this.auth.mintSessionAgentToken(
+            terminalId,
+            stored.containerId,
+            principalId,
+            auth?.tokenId,
+          );
       pending.agentPrincipalId = grant?.principal.id ?? null;
       pending.dispatched = true;
       // A relative launch cwd belongs in the restart recipe. Only an observed absolute cwd

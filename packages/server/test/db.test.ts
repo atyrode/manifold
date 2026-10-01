@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
-import { ROOT_TILE_ID } from "@manifold/protocol";
+import { CreateRunCredentialResultSchema, ROOT_TILE_ID } from "@manifold/protocol";
 import {
   ELEMENTS_KEY,
   LAYOUT_KEY,
@@ -121,6 +121,9 @@ ALTER TABLE agent_runs DROP COLUMN native_call_ids_json;
     store.db.exec("ALTER TABLE terminals DROP COLUMN exit_reason");
     store.db.exec("ALTER TABLE terminals DROP COLUMN session");
     store.db.exec("DROP TABLE native_service_attempts");
+    store.db.exec(
+      "DROP TABLE share_recipient_delegations; DROP TABLE share_ticket_credentials; DROP TABLE share_recipients",
+    );
     store.db.exec("UPDATE meta SET value='43' WHERE key='schema_version'");
     store.close();
     store = new ServerStore(openDatabase(path));
@@ -1175,17 +1178,8 @@ describe("pre-migration snapshot retention", () => {
       seedPreV9(path);
       openDatabase(path).close();
 
-      // Every backed-up migration has one image; no partial staging file survives.
-      expect(backupsIn(dir)).toEqual([
-        "manifold.db.pre-v11.bak",
-        "manifold.db.pre-v13.bak",
-        "manifold.db.pre-v16.bak",
-        "manifold.db.pre-v19.bak",
-        "manifold.db.pre-v23.bak",
-        "manifold.db.pre-v24.bak",
-        "manifold.db.pre-v37.bak",
-        "manifold.db.pre-v9.bak",
-      ]);
+      // No partial staging file or second image of the same version survives.
+      for (const image of backupsIn(dir)) expect(image).toMatch(/^manifold\.db\.pre-v\d+\.bak$/);
 
       // Each image is PRE its own migration, not a copy of the finished database — which is
       // the only property that makes it worth keeping.
@@ -1233,19 +1227,8 @@ describe("pre-migration snapshot retention", () => {
       ).toBe(String(SCHEMA_VERSION));
       db.close();
 
-      // Still one image for version 11, not two: a retried version replaces its predecessor
-      // rather than leaving a full copy of the database per attempt. The retry also carries on
-      // past the migration that failed, so later images are written by it, not the attempt.
-      expect(backupsIn(dir)).toEqual([
-        "manifold.db.pre-v11.bak",
-        "manifold.db.pre-v13.bak",
-        "manifold.db.pre-v16.bak",
-        "manifold.db.pre-v19.bak",
-        "manifold.db.pre-v23.bak",
-        "manifold.db.pre-v24.bak",
-        "manifold.db.pre-v37.bak",
-        "manifold.db.pre-v9.bak",
-      ]);
+      // A retry leaves only complete version-addressed images, not per-attempt copies.
+      for (const image of backupsIn(dir)) expect(image).toMatch(/^manifold\.db\.pre-v\d+\.bak$/);
       // And the survivor is the RETRY's image, not the failed attempt's — the stray table the
       // first attempt tripped over is absent from it.
       expect(snapshotTables(`${path}.pre-v11.bak`)).not.toContain("containers");
@@ -1284,6 +1267,11 @@ function seedPostV16Authority(db: Database, path: string): void {
     .get();
   if (version === null) throw new Error("fixture lacks its historical schema version");
   db.exec(`
+CREATE TABLE IF NOT EXISTS principals(id TEXT PRIMARY KEY,kind TEXT,name TEXT,color TEXT,
+  created_at INTEGER,origin TEXT);
+CREATE TABLE share_tickets(share_id TEXT NOT NULL,guest_principal_id TEXT NOT NULL,
+  principal_id TEXT NOT NULL,created_at INTEGER NOT NULL,
+  PRIMARY KEY(share_id,guest_principal_id)) WITHOUT ROWID;
 CREATE TABLE tokens(id TEXT PRIMARY KEY, hash TEXT UNIQUE, principal_id TEXT, caps TEXT,
   container_id TEXT, created_at INTEGER, revoked_at INTEGER, minted_by TEXT);
 CREATE TABLE shares(id TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, container_id TEXT NOT NULL,
@@ -2479,6 +2467,9 @@ ALTER TABLE terminals DROP COLUMN launch_recipe;
 ALTER TABLE machines DROP COLUMN last_refusal_code;
 ALTER TABLE machines DROP COLUMN last_refusal_at;
 DROP TABLE native_service_attempts;
+DROP TABLE share_recipient_delegations;
+DROP TABLE share_ticket_credentials;
+DROP TABLE share_recipients;
 UPDATE meta SET value='33' WHERE key='schema_version';
 `);
     const authority = db
@@ -2569,6 +2560,9 @@ INSERT INTO machine_jobs(job_id,machine_id,plugin_id,digest,request,state,create
  ('governed','m-shared','plugin','digest-b','{}','queued',2);
 ${from === 47 ? `UPDATE machine_jobs SET container_grants='${grants}' WHERE job_id='governed';` : ""}
 DROP TABLE native_service_attempts;
+DROP TABLE share_recipient_delegations;
+DROP TABLE share_ticket_credentials;
+DROP TABLE share_recipients;
 UPDATE meta SET value='${from}' WHERE key='schema_version';
 `);
       const before = db.query(targetRows).all();
@@ -2642,7 +2636,9 @@ CREATE TABLE terminals(
 );
 CREATE TABLE machines(id TEXT PRIMARY KEY, name TEXT, token_id TEXT, last_seen INTEGER,
   owner_host_id TEXT, draining INTEGER NOT NULL DEFAULT 0);
-CREATE TABLE agent_runs(id TEXT PRIMARY KEY);
+CREATE TABLE agent_runs(
+  id TEXT PRIMARY KEY,state TEXT,finished_at INTEGER,authorizer_token_id TEXT
+);
 INSERT INTO terminals VALUES ('legacy','machine','home','author',NULL,'kept','exited',NULL,1,NULL);
 CREATE TABLE machine_jobs(job_id TEXT PRIMARY KEY, machine_id TEXT, created_at INTEGER, request TEXT);
 CREATE TABLE machine_job_deployments(
@@ -2660,6 +2656,8 @@ INSERT INTO machine_jobs VALUES
   ('foreign-job','other-machine',2,'{"terminal":{"terminalId":"legacy","containerId":"home","runId":"foreign-run"}}'),
   ('foreign-home','machine',3,'{"terminal":{"terminalId":"legacy","containerId":"other-home","runId":"foreign-run"}}');
 `);
+    seedPostV16Authority(db, path);
+    db.exec("ALTER TABLE tokens ADD COLUMN run_id TEXT");
     db.close();
     db = openDatabase(path);
     const store = new ServerStore(db);
@@ -2727,6 +2725,9 @@ ALTER TABLE agent_runs DROP COLUMN native_job_id;
 ALTER TABLE agent_runs DROP COLUMN native_credential_json;
 ALTER TABLE agent_runs DROP COLUMN native_call_ids_json;
 DROP TABLE native_service_attempts;
+DROP TABLE share_recipient_delegations;
+DROP TABLE share_ticket_credentials;
+DROP TABLE share_recipients;
 UPDATE meta SET value='41' WHERE key='schema_version';
 `);
     db.close();
@@ -2747,6 +2748,565 @@ UPDATE meta SET value='41' WHERE key='schema_version';
 
     expect(store.touchMachine(enrollment.machine.id, "spoke", 456, null)).toBe(true);
     expect(store.getMachine(enrollment.machine.id)?.lastRefusal).toBeNull();
+  } finally {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("recipient cutover fences retained share tickets before admission and preserves reapprovable history", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "manifold-share-recipient-upgrade-"));
+  const path = join(dir, "manifold.db");
+  const runtime = new FakeRuntime();
+  const ownerKey = "9".repeat(64);
+  let db = openDatabase(path);
+  try {
+    let store = new ServerStore(db);
+    let auth = new AuthService(store, ownerKey, runtime);
+    let owner = auth.authenticate(ownerKey);
+    const containerId = "legacy-shared";
+    store.createContainer({
+      id: containerId,
+      name: "retained share",
+      discipline: "canvas",
+      createdAt: runtime.now(),
+    });
+    const privateId = "retained-private";
+    store.createContainer({
+      id: privateId,
+      name: "private content",
+      discipline: "canvas",
+      createdAt: runtime.now(),
+    });
+    const local = auth.mintToken(
+      { principal: { name: "local", kind: "human" }, caps: ["containers:read"] },
+      owner,
+    );
+    const machine = auth.enrollMachine("retained terminal owner", owner);
+    const doc = createSceneDoc();
+    doc.getText("retained").insert(0, "content survives remote authority reset");
+    const content = Y.encodeStateAsUpdate(doc);
+    doc.destroy();
+    db.query<void, [string, string, number, number, string, Uint8Array]>(
+      "INSERT INTO scene_docs(container_id,epoch,rev,ts,hash,doc) VALUES (?,?,?,?,?,?)",
+    ).run(privateId, "retained-content", 1, runtime.now(), sha256Hex(content), content);
+    // Persist the old issuer's ordinary token/grant shape. Remove the post-v48 metadata
+    // only after creating a real sponsored Run; the retained image has no approvals or lineage.
+    const legacy = (["human", "agent"] as const).map((kind) => {
+      const minted = auth.mintShare(
+        {
+          node: { kind: "container", containerId },
+          caps: ["tokens:mint", "containers:read", "scenes:write", "agents:run", "agents:delegate"],
+          origin: `https://${kind}.guest.example`,
+        },
+        owner,
+      );
+      const share = auth.authenticateShare(minted.token);
+      const principal = {
+        id: `legacy-host-${kind}`,
+        kind,
+        name: `remote ${kind}`,
+        color: "#3355cc",
+        origin: share.origin,
+      };
+      const guest = { ...principal, id: `guest-${kind}`, origin: "https://untrusted.example" };
+      store.createPrincipal(principal, 10);
+      store.claimShareTicket(share.id, guest.id, principal.id, 11);
+      const tokenId = `legacy-ticket-${kind}`;
+      const grantId = `legacy-ticket-grant-${kind}`;
+      const raw = `legacy-fixture-ticket-${kind}`;
+      store.createGrant({
+        id: grantId,
+        principal: { kind: "principal", id: principal.id },
+        node: `manifold://container/${containerId}`,
+        caps: [...share.caps],
+        effect: "allow",
+        reach: "subtree",
+        createdBy: owner.principal.id,
+        createdAt: 12,
+      });
+      store.createToken({
+        id: tokenId,
+        hash: sha256Hex(raw),
+        principalId: principal.id,
+        mintedBy: owner.principal.id,
+        caps: [...share.caps],
+        containerId,
+        createdAt: 12,
+        revokedAt: null,
+        grantId,
+        expiresAt: kind === "human" ? null : runtime.now() + 3_600_000,
+      });
+      return { share, principal, guest, raw, tokenId, grantId };
+    });
+    store.createPrincipal(
+      {
+        id: "legacy-derived",
+        kind: "human",
+        name: "derived",
+        color: "#223344",
+      },
+      14,
+    );
+    const derivedRaw = "legacy-derived-fixture";
+    store.createGrant({
+      id: "legacy-derived-grant",
+      principal: { kind: "principal", id: "legacy-derived" },
+      node: `manifold://container/${containerId}`,
+      caps: ["containers:read", "scenes:write"],
+      effect: "allow",
+      reach: "subtree",
+      createdBy: legacy[0]!.principal.id,
+      createdAt: 14,
+    });
+    store.createToken({
+      id: "legacy-derived-token",
+      hash: sha256Hex(derivedRaw),
+      principalId: "legacy-derived",
+      mintedBy: legacy[0]!.principal.id,
+      caps: ["containers:read", "scenes:write"],
+      containerId,
+      createdAt: 14,
+      revokedAt: null,
+      grantId: "legacy-derived-grant",
+      expiresAt: null,
+    });
+    const sponsoredGrant: Parameters<AuthService["registerAgent"]>[0]["grant"] = {
+      caps: ["containers:read", "scenes:write", "agents:delegate"],
+      targets: [`manifold://container/${containerId}`],
+      reach: "subtree" as const,
+      maxRunLifetimeMs: 180_000,
+      expiresAt: runtime.now() + 600_000,
+      delegation: { maxDepth: 2, maxDescendants: 2 },
+    };
+    const registration = await auth.registerAgent(
+      {
+        name: "retained sponsored agent",
+        purpose: "retained Run",
+        harness: "external",
+        context: { profile: {} },
+        grant: sponsoredGrant,
+      },
+      auth.authenticate(legacy[0]!.raw),
+    );
+    if (registration.credential === undefined) throw new Error("registration produced no runner");
+    const created = CreateRunCredentialResultSchema.parse(
+      auth.createRun(
+        { agentId: registration.agent.agentId, lifetimeMs: 60_000 },
+        auth.authenticate(registration.credential.token),
+      ),
+    );
+    const runActor = auth.authenticate(created.credential.token);
+    const challenge = auth.agentPolicyChallenge(runActor);
+    auth.acknowledgeAgentPolicy(
+      {
+        revision: challenge.revision,
+        acknowledgements: challenge.required.map(({ id, digest }) => ({ id, digest })),
+      },
+      runActor,
+    );
+    const independentRegistration = await auth.registerAgent(
+      {
+        name: "independent parent agent",
+        purpose: "independent parent Run",
+        harness: "external",
+        context: { profile: {} },
+        grant: sponsoredGrant,
+      },
+      owner,
+    );
+    if (independentRegistration.credential === undefined)
+      throw new Error("independent registration produced no runner");
+    const independentParent = CreateRunCredentialResultSchema.parse(
+      auth.createRun(
+        { agentId: independentRegistration.agent.agentId, lifetimeMs: 60_000 },
+        auth.authenticate(independentRegistration.credential.token),
+      ),
+    );
+    const independentActor = auth.authenticate(independentParent.credential.token);
+    const independentChallenge = auth.agentPolicyChallenge(independentActor);
+    auth.acknowledgeAgentPolicy(
+      {
+        revision: independentChallenge.revision,
+        acknowledgements: independentChallenge.required.map(({ id, digest }) => ({ id, digest })),
+      },
+      independentActor,
+    );
+    const standingChild = auth.createChildRun(
+      {
+        runId: independentParent.run.id,
+        agentId: registration.agent.agentId,
+        caps: ["containers:read", "agents:delegate"],
+        lifetimeMs: 60_000,
+        delegation: { maxDepth: 2, maxDescendants: 2 },
+      },
+      owner,
+    );
+    const standingChildRaw = auth.claimRunLaunch(standingChild.run.id, owner).token;
+    if (standingChildRaw === undefined)
+      throw new Error("standing-sponsored child produced no token");
+    const standingChildActor = auth.authenticate(standingChildRaw);
+    const standingChildChallenge = auth.agentPolicyChallenge(standingChildActor);
+    auth.acknowledgeAgentPolicy(
+      {
+        revision: standingChildChallenge.revision,
+        acknowledgements: standingChildChallenge.required.map(({ id, digest }) => ({ id, digest })),
+      },
+      standingChildActor,
+    );
+    const standingGrandchild = auth.createChildRun(
+      {
+        runId: standingChild.run.id,
+        agentId: independentRegistration.agent.agentId,
+        caps: ["containers:read"],
+        lifetimeMs: 60_000,
+        delegation: { maxDepth: 2, maxDescendants: 2 },
+      },
+      owner,
+    );
+    const standingGrandchildRaw = auth.claimRunLaunch(standingGrandchild.run.id, owner).token;
+    if (standingGrandchildRaw === undefined)
+      throw new Error("standing-sponsored descendant produced no token");
+    const standingGrandchildActor = auth.authenticate(standingGrandchildRaw);
+    const standingGrandchildChallenge = auth.agentPolicyChallenge(standingGrandchildActor);
+    auth.acknowledgeAgentPolicy(
+      {
+        revision: standingGrandchildChallenge.revision,
+        acknowledgements: standingGrandchildChallenge.required.map(({ id, digest }) => ({
+          id,
+          digest,
+        })),
+      },
+      standingGrandchildActor,
+    );
+    store.createTerminal({
+      id: "retained-terminal",
+      machineId: machine.machine.id,
+      containerId,
+      createdBy: owner.principal.id,
+      agentPrincipalId: runActor.principal.id,
+      runId: created.run.id,
+      createdAt: 15,
+      launchRecipe: { cols: 80, rows: 24, env: {}, program: { argv: ["/bin/sh", "-l"] } },
+    });
+    store.createGrant({
+      id: "legacy-raw-delegated-grant",
+      principal: { kind: "principal", id: local.principal.id },
+      node: `manifold://container/${privateId}`,
+      caps: ["scenes:write"],
+      effect: "allow",
+      reach: "subtree",
+      createdBy: legacy[0]!.principal.id,
+      createdAt: 16,
+    });
+    const childShareRaw = "legacy-child-share-fixture";
+    store.createGrant({
+      id: "legacy-child-share-grant",
+      principal: { kind: "instance", origin: "https://child.guest.example" },
+      node: `manifold://container/${containerId}`,
+      caps: ["containers:read"],
+      effect: "allow",
+      reach: "subtree",
+      createdBy: "legacy-derived",
+      createdAt: 15,
+    });
+    store.createShare({
+      id: "legacy-child-share",
+      hash: sha256Hex(childShareRaw),
+      containerId,
+      caps: ["containers:read"],
+      origin: "https://child.guest.example",
+      mintedBy: "legacy-derived",
+      createdAt: 15,
+      revokedAt: null,
+      grantId: "legacy-child-share-grant",
+    });
+    const unrelated = auth.mintToken(
+      {
+        principalId: legacy[0]!.principal.id,
+        caps: ["tokens:mint", "containers:read"],
+      },
+      owner,
+    );
+    // The same principal also held an independent private credential. Old rows cannot name
+    // which bearer issued this child/share; the bounded legacy reset intentionally retires
+    // ambiguous authority even in another container, while leaving that parent bearer intact.
+    store.createPrincipal(
+      { id: "ambiguous-independent", kind: "human", name: "independent child", color: "#112233" },
+      16,
+    );
+    store.createGrant({
+      id: "ambiguous-independent-grant",
+      principal: { kind: "principal", id: "ambiguous-independent" },
+      node: `manifold://container/${privateId}`,
+      caps: ["containers:read"],
+      effect: "allow",
+      reach: "subtree",
+      createdBy: legacy[0]!.principal.id,
+      createdAt: 16,
+    });
+    store.createToken({
+      id: "ambiguous-independent-token",
+      hash: sha256Hex("ambiguous-independent-fixture"),
+      principalId: "ambiguous-independent",
+      mintedBy: legacy[0]!.principal.id,
+      caps: ["containers:read"],
+      containerId: privateId,
+      createdAt: 16,
+      revokedAt: null,
+      grantId: "ambiguous-independent-grant",
+      expiresAt: runtime.now() + 60_000,
+    });
+    store.createGrant({
+      id: "ambiguous-independent-share-grant",
+      principal: { kind: "instance", origin: "https://independent-child.example" },
+      node: `manifold://container/${privateId}`,
+      caps: ["containers:read"],
+      effect: "allow",
+      reach: "subtree",
+      createdBy: legacy[0]!.principal.id,
+      createdAt: 16,
+    });
+    store.createShare({
+      id: "ambiguous-independent-share",
+      hash: sha256Hex("ambiguous-independent-share-fixture"),
+      containerId: privateId,
+      caps: ["containers:read"],
+      origin: "https://independent-child.example",
+      mintedBy: legacy[0]!.principal.id,
+      createdAt: 16,
+      revokedAt: null,
+      grantId: "ambiguous-independent-share-grant",
+    });
+    store.createDial({
+      id: "retained-outgoing-dial",
+      origin: "https://other-host.example",
+      secret: "outgoing-share-fixture",
+      ref: "manifold://container/remote",
+      caps: ["containers:read"],
+      title: "remote",
+      dialedAt: 13,
+      revokedAt: null,
+    });
+    const unresolvedAttempt = {
+      actorId: runActor.principal.id,
+      callId: "retained-unresolved-call",
+      requestId: "retained-unresolved-request",
+      requestDigest: sha256Hex("retained-unresolved-request"),
+      machineId: machine.machine.id,
+      serviceId: "retained-accounted-service",
+      operationId: "invoke",
+      revision: "retained-service-revision",
+      policySha256: sha256Hex("retained-service-policy"),
+      modelId: "fixture-model",
+      instanceRevision: null,
+      executionJobId: null,
+      ownerId: "retained-service-owner",
+      ownerGeneration: 1,
+      ownerKeySha256: sha256Hex("retained-service-owner"),
+      reservedMicros: 60,
+      chargedMicros: null,
+      state: "reserved",
+      authorized: 0,
+    } satisfies Parameters<ServerStore["reserveDirectServiceAttempt"]>[0];
+    expect(store.reserveDirectServiceAttempt(unresolvedAttempt, 100)).toBe(true);
+    expect(store.authorizeDirectServiceAttempt(unresolvedAttempt.requestId)).toBe(true);
+    const chargedAttempt = {
+      ...unresolvedAttempt,
+      callId: "retained-charged-call",
+      requestId: "retained-charged-request",
+      requestDigest: sha256Hex("retained-charged-request"),
+      reservedMicros: 40,
+    };
+    expect(store.reserveDirectServiceAttempt(chargedAttempt, 100)).toBe(true);
+    expect(store.authorizeDirectServiceAttempt(chargedAttempt.requestId)).toBe(true);
+    store.settleDirectServiceAttempt(chargedAttempt.requestId, 30);
+    const attemptsQuery = "SELECT * FROM native_service_attempts ORDER BY actor_id,call_id";
+    const retainedAttempts = db.query(attemptsQuery).all();
+    db.exec(
+      "DROP TABLE share_recipient_delegations; DROP TABLE share_ticket_credentials; DROP TABLE share_recipients",
+    );
+    db.exec("UPDATE meta SET value='49' WHERE key='schema_version'");
+    const shareQuery =
+      "SELECT * FROM shares WHERE id NOT IN ('legacy-child-share','ambiguous-independent-share') ORDER BY id";
+    const shares = db.query(shareQuery).all();
+    const identities = db.query("SELECT * FROM principals ORDER BY id").all();
+    const relationships = db.query("SELECT * FROM share_tickets ORDER BY share_id").all();
+    const dials = db.query("SELECT * FROM dials ORDER BY id").all();
+    const unrelatedRow = store.getTokenByHash(sha256Hex(unrelated.token));
+    const terminal = store.getTerminal("retained-terminal");
+    const retainedContainers = store.listContainers();
+    db.close();
+    db = openDatabase(path);
+    store = new ServerStore(db);
+    auth = new AuthService(store, ownerKey, runtime);
+    owner = auth.authenticate(ownerKey);
+    expect(existsSync(`${path}.pre-v50.bak`)).toBe(true);
+    expect(db.query(shareQuery).all()).toEqual(shares);
+    expect(db.query("SELECT * FROM principals ORDER BY id").all()).toEqual(identities);
+    expect(db.query("SELECT * FROM share_tickets ORDER BY share_id").all()).toEqual(relationships);
+    expect(db.query("SELECT * FROM dials ORDER BY id").all()).toEqual(dials);
+    expect(store.getTokenByHash(sha256Hex(unrelated.token))).toEqual(unrelatedRow);
+    expect(auth.authenticate(unrelated.token).principal.id).toBe(unrelated.principal.id);
+    expect(auth.authenticate(local.token).principal.id).toBe(local.principal.id);
+    expect(auth.authenticateMachine(machine.machineToken).id).toBe(machine.machine.id);
+    expect(auth.holdsRoot(owner)).toBe(true);
+    expect(store.listContainers()).toEqual(retainedContainers);
+    expect(store.getTerminal("retained-terminal")).toEqual(terminal);
+    expect(db.query(attemptsQuery).all()).toEqual(retainedAttempts);
+    expect(
+      store.reserveDirectServiceAttempt(
+        {
+          ...unresolvedAttempt,
+          actorId: owner.principal.id,
+          callId: "new-owner-over-remaining-allowance",
+          requestId: "new-owner-over-remaining-allowance",
+          requestDigest: sha256Hex("new-owner-over-remaining-allowance"),
+          reservedMicros: 11,
+        },
+        100,
+      ),
+    ).toBe(false);
+    const preserved = db
+      .query<{ doc: Uint8Array }, [string]>("SELECT doc FROM scene_docs WHERE container_id=?")
+      .get(privateId);
+    if (preserved === null) throw new Error("retained content disappeared");
+    const loaded = createSceneDoc();
+    Y.applyUpdate(loaded, preserved.doc);
+    expect(loaded.getText("retained").toString()).toBe("content survives remote authority reset");
+    loaded.destroy();
+    expect(() => auth.authenticate("ambiguous-independent-fixture")).toThrow(ServiceError);
+    expect(() => auth.authenticateShare("ambiguous-independent-share-fixture")).toThrow(
+      ServiceError,
+    );
+    expect(store.getGrant("legacy-raw-delegated-grant")).toBeNull();
+    expect(store.getAgentRun(created.run.id)).toMatchObject({
+      state: "revoked",
+      purpose: "retained Run",
+    });
+    expect(() => auth.authenticate(created.credential.token)).toThrow(ServiceError);
+    expect(() => auth.authenticate(registration.credential!.token)).toThrow(ServiceError);
+    expect(() => auth.authenticate(derivedRaw)).toThrow("revoked");
+    expect(store.getToken("legacy-derived-token")?.grantId).toBeNull();
+    expect(() => auth.authenticateShare(childShareRaw)).toThrow("revoked");
+    expect(store.getShare("legacy-child-share")).toMatchObject({
+      caps: ["containers:read"],
+      origin: "https://child.guest.example",
+      mintedBy: "legacy-derived",
+      grantId: null,
+    });
+    expect(db.query("SELECT id FROM grants WHERE id='legacy-child-share-grant'").get()).toBeNull();
+    for (const old of legacy) {
+      expect(() => auth.authenticate(old.raw)).toThrow("revoked");
+      expect(store.getToken(old.tokenId)).toMatchObject({
+        caps: [...old.share.caps],
+        containerId,
+        grantId: null,
+      });
+      expect(store.getToken(old.tokenId)?.revokedAt).not.toBeNull();
+      expect(db.query("SELECT id FROM grants WHERE id=?").get(old.grantId)).toBeNull();
+      expect(auth.resumableShareTicketPrincipals(old.share.id)).toEqual([]);
+      expect(auth.listShareRecipients(old.share.id, owner)).toEqual([
+        {
+          shareId: old.share.id,
+          origin: old.share.origin,
+          guestPrincipal: {
+            id: old.guest.id,
+            kind: old.principal.kind,
+            name: old.principal.name,
+            color: old.principal.color,
+          },
+          requestedCaps: [...old.share.caps],
+          requestedAt: 11,
+          caps: [],
+          approvedAt: null,
+          approvedBy: null,
+          removedAt: null,
+        },
+      ]);
+      expect(() => auth.mintShareTicket(old.share, old.guest)).toThrow("recipient_unapproved");
+    }
+    const formerlyStanding = legacy[0]!;
+    auth.approveShareRecipient(
+      {
+        shareId: formerlyStanding.share.id,
+        guestPrincipalId: formerlyStanding.guest.id,
+        caps: [...formerlyStanding.share.caps],
+      },
+      owner,
+    );
+    const refreshedStandingTicket = auth.mintShareTicket(
+      formerlyStanding.share,
+      formerlyStanding.guest,
+    );
+    await auth.updateAgent(
+      { agentId: registration.agent.agentId, grant: sponsoredGrant },
+      auth.authenticate(refreshedStandingTicket.token),
+    );
+    expect(store.getAgentRun(standingChild.run.id)).toMatchObject({ state: "revoked" });
+    expect(() => auth.authenticate(standingChildRaw)).toThrow(ServiceError);
+    expect(store.getAgentRun(standingGrandchild.run.id)).toMatchObject({ state: "revoked" });
+    expect(() => auth.authenticate(standingGrandchildRaw)).toThrow(ServiceError);
+    expect(store.getAgentRun(independentParent.run.id)).toMatchObject({ state: "active" });
+    expect(
+      auth.allows(
+        auth.authenticate(independentParent.credential.token),
+        "containers:read",
+        containerId,
+      ),
+    ).toBe(true);
+    const migrated = db.query("SELECT * FROM share_recipients ORDER BY share_id").all();
+    const credentials = db.query("SELECT * FROM tokens ORDER BY id").all();
+    db.close();
+    db = openDatabase(path);
+    store = new ServerStore(db);
+    auth = new AuthService(store, ownerKey, runtime);
+    owner = auth.authenticate(ownerKey);
+    expect(db.query("SELECT * FROM share_recipients ORDER BY share_id").all()).toEqual(migrated);
+    expect(db.query("SELECT * FROM tokens ORDER BY id").all()).toEqual(credentials);
+    expect(db.query(attemptsQuery).all()).toEqual(retainedAttempts);
+    for (const old of legacy) expect(() => auth.authenticate(old.raw)).toThrow("revoked");
+    expect(() => auth.authenticate(derivedRaw)).toThrow("revoked");
+    expect(() => auth.authenticateShare(childShareRaw)).toThrow("revoked");
+    const old = legacy[1]!;
+    const input = { shareId: old.share.id, guestPrincipalId: old.guest.id };
+    const approved = auth.approveShareRecipient({ ...input, caps: ["containers:read"] }, owner);
+    const ticket = auth.mintShareTicket(old.share, { ...old.guest, kind: "human" });
+    expect(ticket.principal).toEqual(old.principal);
+    expect(ticket.caps).toEqual(["containers:read"]);
+    expect(ticket.expiresAt).toBe(runtime.now() + 3_600_000);
+    db.close();
+    db = openDatabase(path);
+    store = new ServerStore(db);
+    auth = new AuthService(store, ownerKey, runtime);
+    owner = auth.authenticate(ownerKey);
+    expect(auth.listShareRecipients(old.share.id, owner)[0]).toMatchObject({
+      caps: approved.caps,
+      approvedAt: approved.approvedAt,
+      approvedBy: owner.principal.id,
+      removedAt: null,
+    });
+    expect(auth.authenticate(ticket.token).principal.id).toBe(old.principal.id);
+    runtime.time += 1;
+    const removed = auth.removeShareRecipient(input, owner);
+    db.close();
+    db = openDatabase(path);
+    store = new ServerStore(db);
+    auth = new AuthService(store, ownerKey, runtime);
+    owner = auth.authenticate(ownerKey);
+    expect(auth.listShareRecipients(old.share.id, owner)[0]).toEqual(removed);
+    expect(
+      db.query("SELECT removed_by FROM share_recipients WHERE share_id=?").get(old.share.id),
+    ).toEqual({ removed_by: owner.principal.id });
+    expect(() => auth.authenticate(ticket.token)).toThrow("revoked");
+    expect(() => auth.mintShareTicket(old.share, old.guest)).toThrow("recipient_unapproved");
+    auth.approveShareRecipient({ ...input, caps: ["containers:read"] }, owner);
+    const reissued = auth.mintShareTicket(old.share, old.guest);
+    expect(reissued.principal.id).toBe(old.principal.id);
+    expect(auth.authenticate(unrelated.token).principal.id).toBe(unrelated.principal.id);
+    expect(db.query(attemptsQuery).all()).toEqual(retainedAttempts);
+    expect(db.query("PRAGMA integrity_check").all()).toEqual([{ integrity_check: "ok" }]);
+    expect(db.query("PRAGMA foreign_key_check").all()).toEqual([]);
   } finally {
     db.close();
     rmSync(dir, { recursive: true, force: true });

@@ -64,6 +64,9 @@ function restorePreCutoverSchema(f: Fixture): void {
   // This fixture has one run per Agent, so restoring legacy principal uniqueness is safe.
   f.store.transaction(() => {
     f.store.db.exec(`
+      DROP TABLE share_recipient_delegations;
+      DROP TABLE share_ticket_credentials;
+      DROP TABLE share_recipients;
       DELETE FROM grants WHERE id IN (SELECT grant_id FROM tokens WHERE runner_agent_id IS NOT NULL);
       DELETE FROM tokens WHERE runner_agent_id IS NOT NULL;
       DROP INDEX tokens_runner_agent;

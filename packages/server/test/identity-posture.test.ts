@@ -226,32 +226,51 @@ describe("session expiry (ADR 0019 §2)", () => {
       fix.owner,
     );
     const record = fix.auth.authenticateShare(share.token);
-    const agent = fix.auth.mintShareTicket(record, {
+    const guestAgent = {
       id: "guest-agent",
-      kind: "agent",
+      kind: "agent" as const,
       name: "remote automation",
       color: "#ea580c",
-    });
-    const human = fix.auth.mintShareTicket(record, {
+    };
+    const guestHuman = {
       id: "guest-human",
-      kind: "human",
+      kind: "human" as const,
       name: "remote human",
       color: "#ea580c",
-    });
+    };
+    for (const guest of [guestAgent, guestHuman]) {
+      expect(() => fix.auth.mintShareTicket(record, guest)).toThrow("recipient_unapproved");
+      fix.auth.approveShareRecipient(
+        {
+          shareId: record.id,
+          guestPrincipalId: guest.id,
+          caps: ["containers:read"],
+        },
+        fix.owner,
+      );
+    }
+    const agent = fix.auth.mintShareTicket(record, { ...guestAgent, kind: "human" });
+    const human = fix.auth.mintShareTicket(record, guestHuman);
     const agentExpiry = fix.runtime.time + AUTOMATED_TOKEN_TTL_MS;
     const humanExpiry = fix.runtime.time + INTERACTIVE_TOKEN_TTL_MS;
 
     expect(agent.expiresAt).toBe(agentExpiry);
     expect(human.expiresAt).toBe(humanExpiry);
+    expect(agent.principal.kind).toBe("agent");
     fix.runtime.time = agentExpiry - 1;
     expect(fix.auth.authenticate(agent.token).principal.id).toBe(agent.principal.id);
+    expect(fix.auth.resumableShareTicketPrincipals(record.id).toSorted()).toEqual(
+      [agent.principal.id, human.principal.id].sort(),
+    );
     fix.runtime.time += 1;
     expect(refusal(() => fix.auth.authenticate(agent.token)).message).toBe("expired");
+    expect(fix.auth.resumableShareTicketPrincipals(record.id)).toEqual([human.principal.id]);
     expect(fix.auth.authenticate(human.token).principal.id).toBe(human.principal.id);
     fix.runtime.time = humanExpiry - 1;
     expect(fix.auth.authenticate(human.token).principal.id).toBe(human.principal.id);
     fix.runtime.time += 1;
     expect(refusal(() => fix.auth.authenticate(human.token)).message).toBe("expired");
+    expect(fix.auth.resumableShareTicketPrincipals(record.id)).toEqual([]);
     fix.store.close();
   });
 

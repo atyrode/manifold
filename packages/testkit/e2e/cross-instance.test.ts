@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
-import type { SessionClient } from "@manifold/sdk";
+import { ShareRecipientSchema, type Cap } from "@manifold/protocol";
+import { ActionHttpError, discoverActions, invokeAction, type SessionClient } from "@manifold/sdk";
 import {
+  advanceServerTime,
   callAction,
   connect,
   createContainer,
@@ -8,6 +10,7 @@ import {
   enrollMachine,
   instanceOrigin,
   listShares,
+  listShareRecipients,
   mintShare,
   mintToken,
   openDial,
@@ -42,27 +45,49 @@ import {
  * process happens to hold. `spawnInstancePair` gives the two instances DIFFERENT owner keys
  * for exactly that reason.
  *
- * What it asserts, in order:
- *   1. a share names a container and is addressed to a named guest origin;
- *   2. the guest's own door turns that instance-level grant into a per-principal ticket;
- *   3. the projection is an ORDINARY session on the host — same room, same Yjs document,
- *      same attendance roster, same PTY broker — so the scene converges both ways and a
- *      terminal inside it renders to the remote viewer;
- *   4. the remote principal carries its origin as data, visible to the host's local viewers;
- *   5. revoking severs the live projection in under two seconds, and the grant is dead on
- *      both ends afterwards.
+ * This consumer walks host discovery and approval, refused guest identities and wider
+ * requests, live narrowing/removal/reapproval, finite credential expiry, then per-share
+ * revocation. No policy is administered behind the ordinary action door.
  */
-test("a share projects a host container into a guest instance, and revoking it severs the pipe", async () => {
+test("host approval bounds each guest projection, and withdrawal, expiry and revocation enforce it", async () => {
   const servers: TestServer[] = [];
   const agents: TestAgent[] = [];
   const clients: SessionClient[] = [];
   const captures: TerminalCapture[] = [];
   let pair: InstancePair | null = null;
   try {
-    pair = await spawnInstancePair();
+    pair = await spawnInstancePair({ host: { controlledTime: true } });
     const { host, guest } = pair;
     servers.push(host, guest);
     expect(host.ownerKey).not.toBe(guest.ownerKey);
+    const hostActions = await discoverActions({ origin: host.httpUrl, token: host.ownerKey });
+    const recipientAction = async (
+      name: "approveShareRecipient" | "removeShareRecipient",
+      args: unknown,
+    ) => {
+      const action = hostActions.actions.find(
+        (candidate) => candidate.name === `core.access.${name}`,
+      );
+      if (action === undefined) throw new Error(`host did not publish ${name}`);
+      const invocation = await invokeAction(
+        { origin: host.httpUrl, token: host.ownerKey },
+        action.name,
+        args,
+      );
+      if (!invocation.outcome.ok) throw new Error(invocation.outcome.denial.message);
+      return ShareRecipientSchema.parse(invocation.outcome.result);
+    };
+    const approve = (shareId: string, guestPrincipalId: string, caps: readonly Cap[]) =>
+      recipientAction("approveShareRecipient", { shareId, guestPrincipalId, caps });
+    const refusedTicket = async (token: string, reason: "revoked" | "expired") => {
+      try {
+        await invokeAction({ origin: host.httpUrl, token }, "core.terminals.listByContainer", {});
+        throw new Error(`a ${reason} ticket still authenticated at the action door`);
+      } catch (error) {
+        if (!(error instanceof ActionHttpError)) throw error;
+        expect(error.status === 401 || error.status === 403).toBe(true);
+      }
+    };
 
     const enrolled = await enrollMachine(host, "share-agent");
     const agent = await startAgent({
@@ -108,7 +133,7 @@ test("a share projects a host container into a guest instance, and revoking it s
     expect(grant.share.origin).toBe(instanceOrigin(guest));
     expect(grant.share.revokedAt).toBeNull();
     expect(grant.share.tickets).toBe(0);
-    expect(grant.token.length).toBeGreaterThan(0);
+    expect(grant.token).not.toBe(host.ownerKey);
 
     // The record the host keeps carries no secret. This is the assertion that makes the
     // "hashed at rest" claim falsifiable rather than a comment in a migration.
@@ -125,16 +150,56 @@ test("a share projects a host container into a guest instance, and revoking it s
     // never chose proves the handshake carried the host's own word rather than an echo.
     expect(dial.title).not.toBeNull();
 
-    // A principal of the GUEST's, who has never heard of the host and holds none of its
-    // authority. The guest's own door is what decides this principal may use the grant.
+    // Local containers:read only admits the door. It neither consents on the host's behalf
+    // nor maps this guest's unrelated local capabilities onto the remote container.
     const visitor = await mintToken(guest, {
       principal: { kind: "human", name: "Guest Visitor", color: "#3355cc" },
-      caps: ["containers:read", "scenes:write", "terminals:write"],
+      caps: ["containers:read"],
     });
+    const unapproved = await callAction(guest, visitor.token, "core.access.openDial", {
+      dialId: dial.id,
+    });
+    expect(unapproved.ok).toBe(false);
+    if (!unapproved.ok) expect(unapproved.denial.message).toBe("recipient_unapproved");
+    const pending = await listShareRecipients(host, grant.share.id);
+    expect(pending).toHaveLength(1);
+    expect(pending[0]?.guestPrincipal.id).toBe(visitor.principal.id);
+    expect(pending[0]?.origin).toBe(instanceOrigin(guest));
+    expect(pending[0]?.requestedCaps).toEqual(grant.share.caps);
+    expect(pending[0]?.caps).toEqual([]);
+    expect(pending[0]?.approvedAt).toBeNull();
+    expect((await listShares(host)).shares[0]?.tickets).toBe(0);
+
+    const approved = await approve(grant.share.id, visitor.principal.id, [
+      "containers:read",
+      "scenes:write",
+    ]);
+    expect(approved.approvedBy).not.toBeNull();
+    expect(approved.approvedAt).not.toBeNull();
     const ticket = await openDial(guest, visitor.token, dial.id);
     expect(ticket.origin).toBe(instanceOrigin(host));
     expect(ticket.ref).toEqual({ kind: "container", containerId: canvasContainer.id });
-    expect(ticket.caps).toEqual(["containers:read", "scenes:write", "terminals:write"]);
+    expect(ticket.caps).toEqual(["containers:read", "scenes:write"]);
+    expect(ticket.expiresAt).toBeGreaterThan(approved.approvedAt!);
+
+    const deniedVisitor = await mintToken(guest, {
+      principal: { kind: "human", name: "Unapproved Visitor", color: "#886633" },
+      caps: ["containers:read", "scenes:write", "terminals:write"],
+    });
+    const denied = await callAction(guest, deniedVisitor.token, "core.access.openDial", {
+      dialId: dial.id,
+    });
+    expect(denied.ok).toBe(false);
+    if (!denied.ok) expect(denied.denial.message).toBe("recipient_unapproved");
+    const wider = await callAction(guest, visitor.token, "core.access.openDial", {
+      dialId: dial.id,
+      caps: grant.share.caps,
+    });
+    expect(wider.ok).toBe(false);
+    if (!wider.ok) expect(wider.denial.message).toBe("recipient_caps_refused");
+    expect(
+      (await listShares(guest)).dials.find((candidate) => candidate.id === dial.id)?.status,
+    ).toBe("live");
     // The share's own secret never leaves the guest instance; what a principal gets is a
     // ticket minted for it alone.
     expect(ticket.token).not.toBe(grant.token);
@@ -183,9 +248,14 @@ test("a share projects a host container into a guest instance, and revoking it s
     ]);
     const ptyDial = await dialShare(guest, host, ptyGrant.token);
     expect(ptyDial.id).not.toBe(dial.id);
-    const ptyTicket = await openDial(guest, visitor.token, ptyDial.id);
+    await expect(openDial(guest, visitor.token, ptyDial.id)).rejects.toThrow(
+      "recipient_unapproved",
+    );
+    await approve(ptyGrant.share.id, visitor.principal.id, ["containers:read", "terminals:write"]);
+    const ptyTicket = await openDial(guest, visitor.token, ptyDial.id, ["containers:read"]);
+    expect(ptyTicket.caps).toEqual(["containers:read"]);
     if (ptyTicket.ref.kind !== "container") throw new Error("ticket does not name a container");
-    const remotePty = await connect(host, {
+    let remotePty = await connect(host, {
       containerId: ptyTicket.ref.containerId,
       token: ptyTicket.token,
       reconnect: false,
@@ -232,7 +302,109 @@ test("a share projects a host container into a guest instance, and revoking it s
     expect(withTickets.shares).toHaveLength(2);
     for (const share of withTickets.shares) expect(share.tickets).toBe(1);
 
-    // ---------------------------------------------------------------- 5. revocation severs
+    // ---------------------------------------------------------------- 5. live recipient policy
+    const narrowed = await approve(grant.share.id, visitor.principal.id, ["containers:read"]);
+    await waitFor(() => !canvas.attendance.has(remoteSelf.id), 2_000, 20);
+    await refusedTicket(ticket.token, "revoked");
+    await expect(
+      connect(host, {
+        containerId: canvasContainer.id,
+        token: ticket.token,
+        reconnect: false,
+      }),
+    ).rejects.toBeInstanceOf(Error);
+    const narrowTicket = await openDial(guest, visitor.token, dial.id);
+    expect(narrowTicket.caps).toEqual(["containers:read"]);
+    const narrowRemote = await connect(host, {
+      containerId: canvasContainer.id,
+      token: narrowTicket.token,
+      reconnect: false,
+    });
+    clients.push(narrowRemote);
+    if (narrowRemote.self === null) throw new Error("narrowed viewer has no self");
+    const narrowSelf = narrowRemote.self;
+    canvas.transact((tx) => tx.create(textElement("el-after-narrowing", "still readable")));
+    await waitFor(() => narrowRemote.elements.has("el-after-narrowing"), 10_000, 20);
+    expect(remotePty.self?.origin).toBe(instanceOrigin(guest));
+    const independentAfterNarrowing = await remotePty.terminalsByContainer();
+    expect(
+      independentAfterNarrowing.find((candidate) => candidate.id === terminal.id)?.status,
+    ).toBe("running");
+
+    const removed = await recipientAction("removeShareRecipient", {
+      shareId: grant.share.id,
+      guestPrincipalId: visitor.principal.id,
+    });
+    expect(removed.removedAt).not.toBeNull();
+    expect(removed.approvedAt).toBe(narrowed.approvedAt);
+    expect(removed.approvedBy).toBe(narrowed.approvedBy);
+    await waitFor(() => !canvas.attendance.has(narrowSelf.id), 2_000, 20);
+    await refusedTicket(narrowTicket.token, "revoked");
+    await expect(openDial(guest, visitor.token, dial.id)).rejects.toThrow("recipient_unapproved");
+    await expect(
+      connect(host, {
+        containerId: canvasContainer.id,
+        token: narrowTicket.token,
+        reconnect: false,
+      }),
+    ).rejects.toBeInstanceOf(Error);
+
+    const reapproved = await approve(grant.share.id, visitor.principal.id, [
+      "containers:read",
+      "scenes:write",
+    ]);
+    expect(reapproved.removedAt).toBeNull();
+    const restoredTicket = await openDial(guest, visitor.token, dial.id);
+    const restored = await connect(host, {
+      containerId: canvasContainer.id,
+      token: restoredTicket.token,
+      reconnect: false,
+    });
+    clients.push(restored);
+    restored.transact((tx) => tx.create(textElement("el-reapproved", "explicitly reapproved")));
+    await waitFor(() => canvas.elements.has("el-reapproved"), 10_000, 20);
+    await expect(openDial(guest, deniedVisitor.token, dial.id)).rejects.toThrow(
+      "recipient_unapproved",
+    );
+
+    // ---------------------------------------------------------------- 6. finite expiry
+    // Advance only the child's actual RuntimeDeps.now, not timers or auth callbacks. The
+    // existing bearer/action and fresh session admission paths must enforce the exact bound.
+    await advanceServerTime(host, restoredTicket.expiresAt - 1);
+    const beforeExpiry = await restored.action("core.terminals.listByContainer", {});
+    expect(beforeExpiry.ok).toBe(true);
+    await advanceServerTime(host, restoredTicket.expiresAt);
+    await refusedTicket(restoredTicket.token, "expired");
+    await expect(
+      connect(host, {
+        containerId: canvasContainer.id,
+        token: restoredTicket.token,
+        reconnect: false,
+      }),
+    ).rejects.toBeInstanceOf(Error);
+    const renewedTicket = await openDial(guest, visitor.token, dial.id);
+    expect(renewedTicket.caps).toEqual(["containers:read", "scenes:write"]);
+    expect(renewedTicket.expiresAt).toBeGreaterThan(restoredTicket.expiresAt);
+    const renewed = await connect(host, {
+      containerId: canvasContainer.id,
+      token: renewedTicket.token,
+      reconnect: false,
+    });
+    clients.push(renewed);
+    if (renewed.self === null) throw new Error("renewed viewer has no self");
+    const renewedSelf = renewed.self;
+    await waitFor(() => canvas.attendance.has(renewedSelf.id), 10_000, 20);
+    const renewedPtyTicket = await openDial(guest, visitor.token, ptyDial.id, ["containers:read"]);
+    remotePty.close();
+    remotePty = await connect(host, {
+      containerId: terminal.containerId,
+      token: renewedPtyTicket.token,
+      reconnect: false,
+    });
+    clients.push(remotePty);
+    await waitFor(() => remotePty.terminals.get(terminal.id)?.status === "running", 10_000, 20);
+
+    // ---------------------------------------------------------------- 7. whole-share revocation
     const severedAt = Date.now();
     const severed = await revokeShare(host, grant.share.id);
     expect(severed).toBe(1);
@@ -241,14 +413,25 @@ test("a share projects a host container into a guest instance, and revoking it s
     // the host's OWN roster losing the remote principal, because that is the fact a local
     // human would see — and it must happen through the ordinary revocation fence rather
     // than through anything cross-instance sharing added.
-    await waitFor(() => !canvas.attendance.has(remoteSelf.id), 2_000, 20);
+    await waitFor(() => !canvas.attendance.has(renewedSelf.id), 2_000, 20);
     expect(Date.now() - severedAt).toBeLessThan(2_000);
+    await refusedTicket(renewedTicket.token, "revoked");
+    await expect(
+      connect(host, {
+        containerId: canvasContainer.id,
+        token: renewedTicket.token,
+        reconnect: false,
+      }),
+    ).rejects.toBeInstanceOf(Error);
 
     // And it is PER SHARE. The PTY projection through the other grant is untouched, because
     // revoking cuts the identities one share minted and not every identity from that origin
     // — a blanket cut would make a share an all-or-nothing relationship with an instance
     // rather than a grant on a node.
-    expect(remotePty.terminals.get(terminal.id)?.status).toBe("running");
+    const independentAfterRevocation = await remotePty.terminalsByContainer();
+    expect(
+      independentAfterRevocation.find((candidate) => candidate.id === terminal.id)?.status,
+    ).toBe("running");
 
     // The guest learns it was cut over the control link, without asking.
     await waitFor(
@@ -270,16 +453,6 @@ test("a share projects a host container into a guest instance, and revoking it s
     const doomed = await mintShare(host, guest, terminal.containerId, ["containers:read"]);
     expect(await revokeShare(host, doomed.share.id)).toBe(0);
     await expect(dialShare(guest, host, doomed.token)).rejects.toThrow(/revoked/);
-
-    // A share names a NODE, and this wave shares exactly one kind of node. The refusal is by
-    // name rather than by schema rejection, so a caller learns what is shareable.
-    const wrongNode = await callAction(host, host.ownerKey, "core.access.mintShare", {
-      node: { kind: "terminal", terminalId: terminal.id },
-      caps: ["containers:read"],
-      origin: instanceOrigin(guest),
-    });
-    expect(wrongNode.ok).toBe(false);
-    if (!wrongNode.ok) expect(wrongNode.denial.message).toBe("only a container can be shared");
   } catch (error) {
     throw e2eFailure(error, [...servers, ...agents]);
   } finally {

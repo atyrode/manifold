@@ -47,6 +47,7 @@ import {
   IndexEntrySchema,
   PluginSettingValuesSchema,
   PrincipalSchema,
+  ShareRecipientSchema,
   TerminalCwdSchema,
   TerminalEnvSchema,
   TerminalExitReasonSchema,
@@ -71,6 +72,7 @@ import {
   type PluginSettingValues,
   type MachineRefusal,
   type Principal,
+  type ShareRecipient,
   type TileLayout,
   type TerminalExitReason,
   type TraceOutcome,
@@ -185,6 +187,18 @@ interface DialRow {
 
 interface TicketRow {
   principal_id: string;
+}
+
+interface ShareRecipientRow {
+  share_id: string;
+  origin: string;
+  guest_principal: string;
+  requested_caps: string;
+  requested_at: number;
+  caps: string;
+  approved_at: number | null;
+  approved_by: string | null;
+  removed_at: number | null;
 }
 
 interface TokenRow {
@@ -329,6 +343,7 @@ interface GrantRow {
   created_by: string;
   created_at: number;
   bound: number;
+  share_bound: number;
 }
 
 interface DocRow {
@@ -455,18 +470,19 @@ export interface TokenRevocation {
 }
 
 /**
- * A stored grant, plus the one fact the protocol row cannot carry: whether some TOKEN
- * references it.
+ * A stored grant, plus credential ownership that the protocol row cannot carry.
  *
  * That flag is the whole attenuation rule of the evaluator. A token-referenced row is the
  * synthesized authority of ONE credential and applies only to the credential that holds it —
  * otherwise a principal's narrow token would inherit its own broad token's row, which is both
  * a parity break against the flat model and a live attenuation hole. An UNREFERENCED row is
  * administered authority: it applies to every credential of the principal or class it names,
- * which is what makes a grant door's allow widen and its deny bite.
+ * which is what makes a grant door's allow widen and its deny bite. A share-owned row is
+ * instead an immutable issuance ceiling: it must never become ambient origin authority.
  */
 export interface GrantRecord extends Grant {
   readonly tokenBound: boolean;
+  readonly shareBound: boolean;
 }
 
 /** Latest canonical Yjs document loaded into a room. */
@@ -553,10 +569,8 @@ export interface PluginInstallRow {
  * `tickets` is the count of guest identities minted under it, computed by the read rather
  * than kept as a denormalized counter that could drift from the rows it claims to count.
  *
- * `grantId` references the grant row this share's caps became at mint (ADR 0011: "a share is
- * a token minted against a subtree grant at the shared node"). The row names the guest
- * INSTANCE, not any one of its principals, which is why a ticket needs no grant of its own to
- * inherit the share's authority — its principal carries the origin the row names.
+ * `grantId` references the instance's ceiling row at the shared node. A ticket's ordinary
+ * token-bound grant attenuates that ceiling to the host-approved recipient subset.
  */
 export interface ShareRecord {
   id: string;
@@ -920,6 +934,24 @@ function toShare(row: ShareRow): ShareRecord {
   };
 }
 
+function toShareRecipient(row: ShareRecipientRow): ShareRecipient {
+  return ShareRecipientSchema.parse({
+    shareId: row.share_id,
+    origin: row.origin,
+    guestPrincipal: JSON.parse(row.guest_principal),
+    requestedCaps: parseCaps(row.requested_caps),
+    requestedAt: row.requested_at,
+    caps: parseCaps(row.caps),
+    approvedAt: row.approved_at,
+    approvedBy: row.approved_by,
+    removedAt: row.removed_at,
+  });
+}
+
+const SHARE_RECIPIENT_SELECT = `SELECT r.share_id,s.origin,r.guest_principal,
+ r.requested_caps,r.requested_at,r.caps,r.approved_at,r.approved_by,r.removed_at
+ FROM share_recipients r JOIN shares s ON s.id=r.share_id`;
+
 /**
  * The three-column principal — kind, plus an id whose meaning the kind selects — read back as
  * the discriminated union the protocol defines. A class row carries no id at all, and a bad
@@ -945,16 +977,17 @@ function toGrant(row: GrantRow): GrantRecord {
       createdAt: row.created_at,
     }),
     tokenBound: row.bound === 1,
+    shareBound: row.share_bound === 1,
   };
 }
 
 /**
- * `bound` is the token reference seen from the grant's side, and it is an EXISTS rather than a
- * join so a row can never be duplicated by the credentials that hold it.
+ * Ownership is read from references, using EXISTS so a row is never duplicated by holders.
  */
 const GRANT_SELECT = `SELECT g.id, g.principal_kind, g.principal_id, g.node, g.caps, g.effect,
           g.reach, g.created_by, g.created_at,
-          EXISTS(SELECT 1 FROM tokens t WHERE t.grant_id = g.id) AS bound
+          EXISTS(SELECT 1 FROM tokens t WHERE t.grant_id = g.id) AS bound,
+          EXISTS(SELECT 1 FROM shares s WHERE s.grant_id = g.id) AS share_bound
    FROM grants g`;
 
 /**
@@ -2408,6 +2441,15 @@ export class ServerStore {
       )
       .get(runId, tokenId, runId);
     if (result === null) throw new Error("agent run credential binding failed");
+    // Renewal retires predecessors first; their exact Run dependencies remain authoritative.
+    this.db
+      .query<void, [string, string, string]>(
+        `INSERT OR IGNORE INTO share_ticket_credentials(token_id,share_id,guest_principal_id)
+         SELECT DISTINCT ?,c.share_id,c.guest_principal_id FROM share_ticket_credentials c
+         JOIN tokens source ON source.id=c.token_id
+         WHERE source.run_id=? AND source.id<>?`,
+      )
+      .run(tokenId, runId, tokenId);
   }
 
   listAgentRuns(agentId: string): AgentRunRecord[] {
@@ -3141,6 +3183,202 @@ export class ServerStore {
         "SELECT principal_id FROM share_tickets WHERE share_id = ? ORDER BY created_at, principal_id",
       )
       .all(shareId)
+      .map((row) => row.principal_id);
+  }
+
+  getShareRecipient(shareId: string, guestPrincipalId: string): ShareRecipient | null {
+    const row = this.db
+      .query<ShareRecipientRow, [string, string]>(
+        `${SHARE_RECIPIENT_SELECT} WHERE r.share_id=? AND r.guest_principal_id=?`,
+      )
+      .get(shareId, guestPrincipalId);
+    return row === null ? null : toShareRecipient(row);
+  }
+
+  listShareRecipients(shareId: string): ShareRecipient[] {
+    return this.db
+      .query<ShareRecipientRow, [string]>(
+        `${SHARE_RECIPIENT_SELECT} WHERE r.share_id=? ORDER BY r.requested_at,r.guest_principal_id`,
+      )
+      .all(shareId)
+      .map(toShareRecipient);
+  }
+
+  /** Requests cannot change host consent or the identity the host was asked to approve. */
+  requestShareRecipient(
+    shareId: string,
+    guest: Principal,
+    caps: readonly Cap[],
+    at: number,
+  ): ShareRecipient {
+    this.db
+      .query<void, [string, string, string, string, number]>(
+        `INSERT INTO share_recipients(
+           share_id,guest_principal_id,guest_principal,requested_caps,requested_at
+         ) VALUES (?,?,?,?,?)
+         ON CONFLICT(share_id,guest_principal_id) DO UPDATE
+           SET requested_caps=excluded.requested_caps,requested_at=excluded.requested_at`,
+      )
+      .run(shareId, guest.id, JSON.stringify(guest), JSON.stringify(caps), at);
+    const recipient = this.getShareRecipient(shareId, guest.id);
+    if (recipient === null) throw new Error("share recipient request was not persisted");
+    return recipient;
+  }
+
+  approveShareRecipient(
+    shareId: string,
+    guestPrincipalId: string,
+    caps: readonly Cap[],
+    at: number,
+    actorId: string,
+  ): void {
+    this.db
+      .query<void, [string, number, string, string, string]>(
+        `UPDATE share_recipients SET caps=?,approved_at=?,approved_by=?,
+         removed_at=NULL,removed_by=NULL WHERE share_id=? AND guest_principal_id=?`,
+      )
+      .run(JSON.stringify(caps), at, actorId, shareId, guestPrincipalId);
+  }
+
+  removeShareRecipient(
+    shareId: string,
+    guestPrincipalId: string,
+    at: number,
+    actorId: string,
+  ): void {
+    this.db
+      .query<void, [number, string, string, string]>(
+        `UPDATE share_recipients SET removed_at=?,removed_by=?
+         WHERE share_id=? AND guest_principal_id=? AND removed_at IS NULL`,
+      )
+      .run(at, actorId, shareId, guestPrincipalId);
+  }
+
+  bindShareTicketCredential(tokenId: string, shareId: string, guestPrincipalId: string): void {
+    this.db
+      .query<void, [string, string, string]>(
+        `INSERT OR IGNORE INTO share_ticket_credentials(token_id,share_id,guest_principal_id)
+         VALUES (?,?,?)`,
+      )
+      .run(tokenId, shareId, guestPrincipalId);
+  }
+
+  /** Copies only the exact issuing credential's recipient dependencies. */
+  inheritShareRecipientCredential(tokenId: string, sourceTokenId: string): void {
+    this.db
+      .query<void, [string, string]>(
+        `INSERT OR IGNORE INTO share_ticket_credentials(token_id,share_id,guest_principal_id)
+         SELECT ?,share_id,guest_principal_id FROM share_ticket_credentials WHERE token_id=?`,
+      )
+      .run(tokenId, sourceTokenId);
+  }
+
+  bindShareRecipientDelegations(shareId: string, sourceTokenId: string): void {
+    this.db
+      .query<void, [string, string]>(
+        `INSERT INTO share_recipient_delegations(
+           share_id,source_share_id,source_guest_principal_id
+         ) SELECT ?,share_id,guest_principal_id FROM share_ticket_credentials WHERE token_id=?`,
+      )
+      .run(shareId, sourceTokenId);
+  }
+
+  inheritShareRecipientDelegations(tokenId: string, shareId: string): void {
+    this.db
+      .query<void, [string, string]>(
+        `INSERT OR IGNORE INTO share_ticket_credentials(token_id,share_id,guest_principal_id)
+         SELECT ?,source_share_id,source_guest_principal_id FROM share_recipient_delegations
+         WHERE share_id=?`,
+      )
+      .run(tokenId, shareId);
+  }
+
+  shareRecipientDelegatedShares(shareId: string, guestPrincipalId: string): ShareRecord[] {
+    return this.db
+      .query<ShareRow, [string, string]>(
+        `${SHARE_SELECT} JOIN share_recipient_delegations d ON d.share_id=s.id
+         WHERE d.source_share_id=? AND d.source_guest_principal_id=? AND s.revoked_at IS NULL`,
+      )
+      .all(shareId, guestPrincipalId)
+      .map(toShare);
+  }
+
+  shareRecipientCredentialPrincipals(shareId: string, guestPrincipalId: string): string[] {
+    return this.db
+      .query<TicketRow, [string, string]>(
+        `SELECT DISTINCT t.principal_id FROM tokens t
+         JOIN share_ticket_credentials c ON c.token_id=t.id
+         WHERE c.share_id=? AND c.guest_principal_id=? AND t.revoked_at IS NULL
+         ORDER BY t.principal_id`,
+      )
+      .all(shareId, guestPrincipalId)
+      .map((row) => row.principal_id);
+  }
+
+  shareRecipientCredentialRuns(shareId: string, guestPrincipalId: string): string[] {
+    return this.db
+      .query<{ run_id: string }, [string, string]>(
+        `SELECT DISTINCT t.run_id FROM tokens t
+         JOIN share_ticket_credentials c ON c.token_id=t.id
+         WHERE c.share_id=? AND c.guest_principal_id=? AND t.run_id IS NOT NULL
+           AND t.revoked_at IS NULL ORDER BY t.run_id`,
+      )
+      .all(shareId, guestPrincipalId)
+      .map((row) => row.run_id);
+  }
+
+  hasShareRecipientCredential(tokenId: string): boolean {
+    return (
+      this.db
+        .query<{ found: number }, [string]>(
+          "SELECT 1 AS found FROM share_ticket_credentials WHERE token_id=? LIMIT 1",
+        )
+        .get(tokenId) !== null
+    );
+  }
+
+  hasShareRecipientPrincipal(principalId: string): boolean {
+    return (
+      this.db
+        .query<{ found: number }, [string, string]>(
+          `SELECT 1 AS found FROM share_tickets WHERE principal_id=?
+         UNION ALL
+         SELECT 1 FROM tokens t JOIN share_ticket_credentials c ON c.token_id=t.id
+         WHERE t.principal_id=? LIMIT 1`,
+        )
+        .get(principalId, principalId) !== null
+    );
+  }
+
+  /** Retires exactly this relationship's ticket credentials, not a principal's other bearers. */
+  revokeShareRecipientTickets(
+    shareId: string,
+    guestPrincipalId: string,
+    at: number,
+  ): TokenRevocation {
+    return this.revokeTokensWhere(
+      `id IN (SELECT token_id FROM share_ticket_credentials
+              WHERE share_id=? AND guest_principal_id=?)`,
+      [shareId, guestPrincipalId],
+      at,
+    );
+  }
+
+  /** Resume acknowledges only an active approval backed by a live, finite ordinary ticket. */
+  resumableShareTicketPrincipals(shareId: string, at: number): string[] {
+    return this.db
+      .query<TicketRow, [string, number]>(
+        `SELECT DISTINCT st.principal_id FROM share_tickets st
+         JOIN share_recipients r
+           ON r.share_id=st.share_id AND r.guest_principal_id=st.guest_principal_id
+         JOIN share_ticket_credentials c
+           ON c.share_id=st.share_id AND c.guest_principal_id=st.guest_principal_id
+         JOIN tokens t ON t.id=c.token_id AND t.principal_id=st.principal_id
+         WHERE st.share_id=? AND r.approved_at IS NOT NULL AND r.removed_at IS NULL
+           AND t.revoked_at IS NULL AND t.expires_at IS NOT NULL AND t.expires_at>?
+         ORDER BY st.principal_id`,
+      )
+      .all(shareId, at)
       .map((row) => row.principal_id);
   }
 

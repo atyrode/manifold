@@ -86,7 +86,13 @@ export interface DialedShare {
  * outlived its deadline, so this never hangs and never throws for an expected outcome.
  */
 export type TicketOutcome =
-  | { readonly ok: true; readonly token: string; readonly principal: Principal }
+  | {
+      readonly ok: true;
+      readonly token: string;
+      readonly principal: Principal;
+      readonly caps: readonly Cap[];
+      readonly expiresAt: number;
+    }
   | { readonly ok: false; readonly reason: TicketRefusal };
 
 export interface InstanceDialOptions {
@@ -205,11 +211,11 @@ export class InstanceDial {
   }
 
   /**
-   * Asks the host for a ticket for one of THIS instance's principals — the second step of the
-   * three (ADR 0014 §3), after the guest's own door decided this principal may use the share.
-   * The answer is an ordinary attenuated token whose principal carries this instance's origin.
+   * Asks the host for a ticket for one of THIS instance's principals. Local door admission
+   * does not imply host consent: the host must approve this recipient and requested subset.
+   * Omitted caps asks for the active host approval, not the advertised share ceiling.
    */
-  requestTicket(principal: Principal): Promise<TicketOutcome> {
+  requestTicket(principal: Principal, caps?: readonly Cap[]): Promise<TicketOutcome> {
     if (this.closed) throw new Error("instance dial is closed");
     const socket = this.socket;
     if (this.statusValue !== "live" || socket === null || socket.readyState !== WebSocket.OPEN) {
@@ -233,7 +239,12 @@ export class InstanceDial {
       () => pending.settle({ ok: false, reason: "unavailable" }),
       this.ticketTimeoutMs,
     );
-    this.send(socket, { type: "ticket_request", requestId, principal });
+    this.send(socket, {
+      type: "ticket_request",
+      requestId,
+      principal,
+      ...(caps === undefined ? {} : { caps: [...caps] }),
+    });
     return promise;
   }
 
@@ -322,12 +333,19 @@ export class InstanceDial {
       case "ping":
         this.send(socket, { type: "pong" });
         return;
-      case "ticket":
+      case "ticket": {
+        const pending = this.pending.get(message.requestId);
+        if (pending === undefined) return;
         this.ticketPrincipals.add(message.principal.id);
-        this.pending
-          .get(message.requestId)
-          ?.settle({ ok: true, token: message.token, principal: message.principal });
+        pending.settle({
+          ok: true,
+          token: message.token,
+          principal: message.principal,
+          caps: message.caps,
+          expiresAt: message.expiresAt,
+        });
         return;
+      }
       case "ticket_error":
         this.pending.get(message.requestId)?.settle({ ok: false, reason: message.reason });
         return;

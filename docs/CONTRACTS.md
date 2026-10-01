@@ -2259,13 +2259,16 @@ their published vocabulary does not move.
 and minted for a named guest **origin**; a **dial** is the guest's side of one accepted share.
 No new capability: a share hands authority out, so it declares the cap that already means that.
 
-| Action                    | Caps               | Scope     | Args → Result                                                           |
-| ------------------------- | ------------------ | --------- | ----------------------------------------------------------------------- |
-| `core.access.mintShare`   | `tokens:mint`      | container | `{ node, caps, origin }` → `ShareGrant { share, token }` — raw ONCE     |
-| `core.access.revokeShare` | `tokens:mint`      | container | `{ shareId }` → `{ revoked: <tickets severed> }` — **`cleanup: true`**  |
-| `core.access.listShares`  | `tokens:mint`      | container | `{}` → `ShareInventory { shares, dials }` — both directions, no secrets |
-| `core.access.dialShare`   | `containers:write` | workspace | `{ origin, token }` → `Dial`; BLOCKS on the host's welcome              |
-| `core.access.openDial`    | `containers:read`  | workspace | `{ dialId }` → `DialTicket { origin, ref, caps, token }`                |
+| Action                              | Caps               | Scope     | Args → Result                                                                                        |
+| ----------------------------------- | ------------------ | --------- | ---------------------------------------------------------------------------------------------------- |
+| `core.access.mintShare`             | `tokens:mint`      | container | `{ node, caps, origin }` → `ShareGrant { share, token }` — raw ONCE                                  |
+| `core.access.revokeShare`           | `tokens:mint`      | container | `{ shareId }` → `{ revoked: <tickets severed> }` — **`cleanup: true`**                               |
+| `core.access.listShares`            | `tokens:mint`      | container | `{}` → `ShareInventory { shares, dials }` — both directions, no secrets                              |
+| `core.access.listShareRecipients`   | `tokens:mint`      | container | `{ shareId }` → `ShareRecipient[]` — pending and last approval, no secrets                           |
+| `core.access.approveShareRecipient` | `tokens:mint`      | container | `{ shareId, guestPrincipalId, caps }` → `ShareRecipient` — host-approved subset                      |
+| `core.access.removeShareRecipient`  | `tokens:mint`      | container | `{ shareId, guestPrincipalId }` → `ShareRecipient` — **`cleanup: true`**, withdraw and fence tickets |
+| `core.access.dialShare`             | `containers:write` | workspace | `{ origin, token }` → `Dial`; BLOCKS on the host's welcome                                           |
+| `core.access.openDial`              | `containers:read`  | workspace | `{ dialId, caps? }` → `DialTicket { origin, ref, caps, token, expiresAt }`                           |
 
 `node` is a `manifold://` reference, never a bare container id ([Reference nodes](#reference-nodes)); a ref that is not
 a container is refused `only a container can be shared`, which is the one rung these handlers
@@ -2276,24 +2279,63 @@ for the host to say what the share names (ten seconds, then `conflict` `host did
 because a `Dial` that named nothing yet would be indistinguishable from a live share that
 happens to be offline; an unanswered attempt is deleted, not revoked.
 
-`openDial` is the guest's own authority question — may THIS principal use this dial — and its
-answer is a per-principal TICKET the host minted, never the share secret. Every admitted
-principal gets the share's full caps this wave; narrowing per remote principal is a grant
-question (ADR 0011). Three lifecycle events (`dial_online`, `dial_offline`, `dial_revoked`) are
+`openDial`'s local `containers:read` check admits the guest door; it is neither host consent nor
+an intersection between local and remote capability names. The **host** approves each
+**share recipient**: the immutable share origin and that guest's local principal id, with a
+selected remote subset. A valid request without active approval records its proposed caps and
+refuses `recipient_unapproved`, without a credential or projection. The host may approve only
+a subset of the proposal and immutable share ceiling, through its share-owner/root visibility,
+container scope and the existing mint attenuation ladder. Another guest principal, origin or
+share cannot inherit that approval.
+
+With active approval, omitted `caps` requests exactly the host-approved subset. An explicit
+request must fit both that subset and the share ceiling or it refuses `recipient_caps_refused`;
+no silent widening or ambient full-share fallback. Successful answers carry actual granted
+caps and a finite ordinary human/automated credential expiry, not the advertised dial ceiling.
+The foreign id remains in the guest namespace; the host uses a distinct stable local principal.
+Approval records expose proposed caps, last approved caps/time/actor and removal time, never
+bearers or hashes. Narrowing and removal durably change approval, retire affected ordinary
+ticket credentials and grant rows, invalidate authority and fence existing sockets; unrelated
+relationships remain live. Removal preserves approval provenance without a permanent principal
+tombstone, so only a new explicit approval can readmit that recipient.
+Ordinary minting, Run/session credential issuance and derived shares retain exact source
+recipient dependencies. A cross-Agent child Run keeps its issuing credential, the actual
+parent Run credential and the target Agent's standing sponsor; renewal and session rebinding
+preserve the full Run dependency set. Withdrawal settles affected Run subtrees and fences
+every retired descendant principal, including retained descendants without a direct
+recipient row. Another credential or share cannot escape withdrawal or narrowing. Raw grant
+administration remains root-only at every bound context ingress.
+Share-owned ceiling rows are excluded from ordinary principal evaluation; a sibling share at
+the same origin grants no ambient authority. Recipient-derived credentials remain capped by
+their actual literal caps even when a standalone administered grant names that principal or
+origin. Such a standalone grant retains its ordinary meaning for unrelated credentials.
+
+Retained pre-recipient share tickets fail closed before admission. The backed-up schema
+cutover creates no approvals and conservatively retires old remote tickets, potentially
+derived credentials, standing-sponsored Agent Runs and their descendants, standalone grants
+and child shares. Legacy records identify issuing principals and standing sponsors, not exact
+issuing credentials: indistinguishable independently issued access may also need reissuance.
+This one-time legacy reset is not an exact-provenance claim. Content, terminal records, local
+identities and owner recovery access are preserved, as are original share origins/ceilings.
+Reapproval and reissuance use ordinary host actions; neither can reactivate a retired legacy
+Run or credential, and old instance protocol peers cannot resume around that policy.
+The session/instance revision and persistence schema are independent of native and hardened
+renderer contracts; unreleased held branches do not reserve their candidate version numbers.
+Three lifecycle events (`dial_online`, `dial_offline`, `dial_revoked`) are
 declared by this plugin and emitted by the floor on `manifold://plugin/core.access`, which is
 `machine_online`'s split: a socket coming up is nobody's commit point.
 
 A share's caps become a GRANT ROW on the shared node at mint (ADR 0011 §Tokens become grant
 references): `{ principal: { kind: "instance", origin }, node: "manifold://container/<id>",
-caps, effect: "allow", reach: "subtree" }`, referenced by `ShareRecord.grant_id`. Ticket
-attenuation is then grant subsetting by construction — a ticket is an ordinary token minted with
-the share's caps at the share's node, so it can never exceed the row its share stands on.
-`revokeShare` DELETES that row in the same transaction that marks the share revoked (and nulls
-`grant_id`; the share stays listable and auditable), so a revoked share confers nothing even
-before its tickets are severed. A grant presents no credential, so absence of the row IS its
-revocation — `revoked_at` exists on tokens and shares only because a bearer secret already
-handed over has to keep being refused. This is the field ADR 0011 left inert until wave 3:
-`principal.kind === "instance"` has a real value now.
+caps, effect: "allow", reach: "subtree" }`, referenced by `ShareRecord.grant_id`. Each ordinary
+ticket carries an explicit host-approved subset and its token-bound grant. This share-owned row is an issuance ceiling,
+not an ambient origin grant; every ticket stays within both its share and recipient bounds.
+`revokeShare` is the sole withdrawal path: it deletes that row and marks the share revoked
+transactionally, then retires related credentials and fences sockets. Direct `revokeGrant`
+refuses share-owned rows, just as it refuses token-owned rows. A persisted share lacking its
+ceiling row cannot approve recipients, issue tickets or admit resume, even if its
+`revoked_at` is absent. Standalone administered instance-origin grants remain normal waterfall
+rows and confer only their explicitly administered authority on eligible ordinary credentials.
 
 **Grant administration (`core.access`, ADR 0011).** The rows themselves, through the plugin the
 ADR named. No new capability — `*` and `tokens:mint` already answer "who may hand authority
@@ -2517,8 +2559,9 @@ dependency. The bundle's optional `builtAgainst` version map is recorded as
 shared builds also record React/package versions. Admission and boot check that stamp against
 the explicit `PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS` set and compare React by major. The
 bundle set is independent of session, machine and instance negotiation: sessions still require
-the current wire version. Protocol 52 admits bundle stamps 47, 48, 51 and 52 because the shared plugin
-ABI is preserved; direct-service accounting adds optional call/result metadata. A prior stamp
+the current wire version. Protocol 53 admits bundle stamps 47, 48, 51, 52 and 53 because the
+shared plugin ABI is preserved; remote recipient admission changes the instance wire, while
+direct-service accounting remains optional call/result metadata. A prior stamp
 may remain only with proof from unchanged released artifacts through candidate assembly and
 loading; an incompatible plugin ABI change resets the set. No numeric range, future version
 or deployment bypass is implied. Known incompatibility refuses fresh admission or holds an
@@ -4021,8 +4064,8 @@ incumbent continuity mismatch, or `supersession damped`). A name conflict is dec
 same atomic write that would admit the hello; it sends no welcome, changes neither machine row,
 and leaves an incumbent connection untouched. Version acceptance uses
 `MACHINE_PROTOCOL_COMPAT_VERSIONS`, currently
-`{30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52}`; session/browser joins remain strictly
-current at protocol 52. An unchanged machine
+`{30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52, 53}`; session/browser joins remain strictly
+current at protocol 53. An unchanged machine
 wire may add a version to the set. A strictly additive-optional change may also add it only
 when old frames still parse and absent fields preserve the old semantics. Other changes
 reset the set and require a coordinated hub/transport upgrade. An admission bound applied
@@ -5344,6 +5387,11 @@ policy/model pins, original-owner fencing, maximum/settled cost and authorizatio
 Startup conservatively changes remaining reservations to unresolved exposure. Policy
 replacement does not reset the service's accumulated exposure; recovery does not replay calls
 or retain private request/result bodies.
+
+Schema 50 adds host-approved share recipients and exact ticket/delegation provenance.
+Its backed-up legacy access reset follows retained standing Agent sponsorship and Run
+descendants while preserving the schema-49 native service attempt ledger: retiring remote
+credentials does not erase settled charges or unresolved exposure.
 
 **One writer per data directory** ([#318](https://github.com/atyrode/manifold/issues/318)). Before
 opening `manifold.db` the server takes `<data>/manifold.writer`, a SQLite file held in exclusive

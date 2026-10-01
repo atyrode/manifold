@@ -10,7 +10,7 @@ import { JOB_SCHEDULE_SCHEMA_SQL } from "./job-schedules.ts";
 import { migrateToDurableAgents } from "./migrate-agents.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 49;
+export const SCHEMA_VERSION = 50;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
@@ -1079,6 +1079,151 @@ CREATE INDEX native_service_attempts_execution ON native_service_attempts(execut
  WHERE execution_job_id IS NOT NULL;
 INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','49');
 `,
+  /**
+   * Host consent is per share and guest principal, never inherited from a retained ticket.
+   * Legacy relationships remain inspectable proposals; their credentials, standing Agent
+   * sponsors, Run descendants and token-bound grant rows are fenced before startup admits a
+   * bearer. The share and local identities remain unchanged, and a later explicit approval may
+   * reuse the same host principal.
+   */
+  50: {
+    backup: true,
+    apply(db) {
+      const agentRunColumns = new Set(
+        db
+          .query<{ name: string }, []>("PRAGMA table_info(agent_runs)")
+          .all()
+          .map(({ name }) => name),
+      );
+      const hasAgents =
+        db
+          .query<{ name: string }, []>(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='agents'",
+          )
+          .get() !== null;
+      const standingSponsorClosure =
+        hasAgents && agentRunColumns.has("agent_id")
+          ? `
+UNION
+ SELECT t.id,i.share_id,i.guest_principal_id,t.principal_id,t.run_id
+ FROM tokens t JOIN agent_runs r ON r.id=t.run_id
+ JOIN agents a ON a.agent_id=r.agent_id
+ JOIN issued i ON json_extract(a.authorization_credential,'$.tokenId')=i.token_id`
+          : "";
+      const descendantRunClosure = agentRunColumns.has("parent_run_id")
+        ? `
+UNION
+ SELECT t.id,i.share_id,i.guest_principal_id,t.principal_id,t.run_id
+ FROM tokens t JOIN agent_runs r ON r.id=t.run_id
+ JOIN issued i ON r.parent_run_id=i.run_id`
+        : "";
+      db.exec(`
+CREATE TABLE share_recipients(
+ share_id TEXT NOT NULL REFERENCES shares(id),
+ guest_principal_id TEXT NOT NULL,
+ guest_principal TEXT NOT NULL,
+ requested_caps TEXT NOT NULL,
+ requested_at INTEGER NOT NULL,
+ caps TEXT NOT NULL DEFAULT '[]',
+ approved_at INTEGER,
+ approved_by TEXT,
+ removed_at INTEGER,
+ removed_by TEXT,
+ PRIMARY KEY(share_id,guest_principal_id),
+ CHECK((approved_at IS NULL AND approved_by IS NULL AND caps='[]')
+       OR (approved_at IS NOT NULL AND approved_by IS NOT NULL))
+) WITHOUT ROWID;
+CREATE TABLE share_ticket_credentials(
+ token_id TEXT NOT NULL REFERENCES tokens(id),
+ share_id TEXT NOT NULL,
+ guest_principal_id TEXT NOT NULL,
+ PRIMARY KEY(token_id,share_id,guest_principal_id),
+ FOREIGN KEY(share_id,guest_principal_id)
+   REFERENCES share_recipients(share_id,guest_principal_id)
+) WITHOUT ROWID;
+CREATE INDEX share_ticket_credentials_recipient
+ ON share_ticket_credentials(share_id,guest_principal_id);
+CREATE TABLE share_recipient_delegations(
+ share_id TEXT NOT NULL REFERENCES shares(id),
+ source_share_id TEXT NOT NULL,
+ source_guest_principal_id TEXT NOT NULL,
+ PRIMARY KEY(share_id,source_share_id,source_guest_principal_id),
+ FOREIGN KEY(source_share_id,source_guest_principal_id)
+   REFERENCES share_recipients(share_id,guest_principal_id)
+) WITHOUT ROWID;
+CREATE INDEX share_recipient_delegations_source
+ ON share_recipient_delegations(source_share_id,source_guest_principal_id);
+INSERT INTO share_recipients(
+ share_id,guest_principal_id,guest_principal,requested_caps,requested_at
+)
+ SELECT st.share_id,st.guest_principal_id,
+        json_object('id',st.guest_principal_id,'kind',p.kind,'name',p.name,'color',p.color),
+        s.caps,st.created_at
+ FROM share_tickets st JOIN shares s ON s.id=st.share_id
+ JOIN principals p ON p.id=st.principal_id;
+WITH RECURSIVE issued(token_id,share_id,guest_principal_id,principal_id,run_id) AS (
+ SELECT t.id,st.share_id,st.guest_principal_id,t.principal_id,t.run_id
+ FROM tokens t JOIN share_tickets st ON st.principal_id=t.principal_id
+ JOIN shares s ON s.id=st.share_id
+ JOIN share_recipients r ON r.share_id=st.share_id AND r.guest_principal_id=st.guest_principal_id
+ WHERE t.container_id=s.container_id AND t.minted_by=s.minted_by
+ UNION
+ SELECT t.id,i.share_id,i.guest_principal_id,t.principal_id,t.run_id
+ FROM tokens t JOIN issued i ON t.minted_by=i.principal_id
+ UNION
+ SELECT t.id,i.share_id,i.guest_principal_id,t.principal_id,t.run_id
+ FROM tokens t JOIN agent_runs r ON r.id=t.run_id
+ JOIN issued i ON r.authorizer_token_id=i.token_id
+${standingSponsorClosure}
+${descendantRunClosure}
+)
+INSERT INTO share_ticket_credentials(token_id,share_id,guest_principal_id)
+ SELECT DISTINCT token_id,share_id,guest_principal_id FROM issued;
+INSERT INTO share_recipient_delegations(share_id,source_share_id,source_guest_principal_id)
+ SELECT DISTINCT s.id,c.share_id,c.guest_principal_id
+ FROM shares s JOIN tokens issuer ON issuer.principal_id=s.minted_by
+ JOIN share_ticket_credentials c ON c.token_id=issuer.id
+ WHERE s.id<>c.share_id;
+UPDATE agent_runs
+ SET state='revoked',finished_at=COALESCE(finished_at,CAST(unixepoch('subsec')*1000 AS INTEGER))
+ WHERE state IN ('pending_policy','active','policy_stale')
+ AND (
+   authorizer_token_id IN (SELECT token_id FROM share_ticket_credentials)
+   OR id IN (
+     SELECT t.run_id FROM tokens t JOIN share_ticket_credentials c ON c.token_id=t.id
+     WHERE t.run_id IS NOT NULL
+   )
+ );
+DELETE FROM grants WHERE id IN (
+ SELECT grant_id FROM shares WHERE id IN (SELECT share_id FROM share_recipient_delegations)
+);
+UPDATE shares
+ SET revoked_at=COALESCE(revoked_at,CAST(unixepoch('subsec')*1000 AS INTEGER)),grant_id=NULL
+ WHERE id IN (SELECT share_id FROM share_recipient_delegations);
+DELETE FROM grants
+ WHERE id IN (
+   SELECT t.grant_id FROM tokens t JOIN share_ticket_credentials c ON c.token_id=t.id
+   WHERE t.grant_id IS NOT NULL
+ )
+ AND id NOT IN (
+   SELECT t.grant_id FROM tokens t
+   WHERE t.grant_id IS NOT NULL AND t.id NOT IN (SELECT token_id FROM share_ticket_credentials)
+ );
+DELETE FROM grants
+ WHERE created_by IN (
+   SELECT t.principal_id FROM tokens t JOIN share_ticket_credentials c ON c.token_id=t.id
+ )
+ AND id NOT IN (
+   SELECT t.grant_id FROM tokens t
+   WHERE t.grant_id IS NOT NULL AND t.id NOT IN (SELECT token_id FROM share_ticket_credentials)
+ );
+UPDATE tokens
+ SET revoked_at=COALESCE(revoked_at,CAST(unixepoch('subsec')*1000 AS INTEGER)),grant_id=NULL
+ WHERE id IN (SELECT token_id FROM share_ticket_credentials);
+INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','50');
+`);
+    },
+  },
 };
 
 interface TableRow {

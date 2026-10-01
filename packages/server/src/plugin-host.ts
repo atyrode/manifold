@@ -85,6 +85,7 @@ import type {
   ActionDenialRule,
   ActionOutcome,
   AgentRun,
+  ApproveShareRecipientRequest,
   HarnessDefinition,
   HarnessTarget,
   SessionRef,
@@ -126,6 +127,7 @@ import type {
   ManifoldRef,
   MintShareRequest,
   MintTokenRequest,
+  OpenDialRequest,
   PluginBuildCompatibility,
   PluginBundle,
   PluginId,
@@ -137,6 +139,7 @@ import type {
   PluginPurgeResult,
   PluginRefusalReason,
   ReloadAgentPolicyResult,
+  RemoveShareRecipientRequest,
   RenewAgentRunRequest,
   RenewAgentRunResult,
   PluginRoster,
@@ -150,6 +153,7 @@ import type {
   RuntimeDeps,
   Share,
   ShareGrant,
+  ShareRecipient,
   TokenGrant,
   UNTRACED_DENIAL_RULE,
 } from "@manifold/protocol";
@@ -362,6 +366,10 @@ export interface IdentityDoor {
   revokeShare(shareId: string): IdentityResult<number>;
   /** Every share the caller is entitled to see. Never a secret, only its record. */
   listShares(): IdentityResult<readonly Share[]>;
+  /** The host's pending and approved guest principals, with no bearer material. */
+  listShareRecipients(shareId: string): IdentityResult<readonly ShareRecipient[]>;
+  approveShareRecipient(input: ApproveShareRecipientRequest): IdentityResult<ShareRecipient>;
+  removeShareRecipient(input: RemoveShareRecipientRequest): IdentityResult<ShareRecipient>;
   /**
    * Writes one authority row (ADR 0011). Root-only in the mechanism, which is where the
    * refusal that no deny row may name the workspace owner lives too — a door and a mechanism
@@ -389,8 +397,8 @@ export interface IdentityDoor {
 export interface DialDoor {
   /** Accepts a share and holds open until the host welcomes it, or refuses with why not. */
   dial(input: DialShareRequest): Promise<IdentityResult<Dial>>;
-  /** THIS instance deciding a local principal may use a grant addressed to the instance. */
-  open(dialId: string): Promise<IdentityResult<DialTicket>>;
+  /** Requests only this caller's host-approved remote authority. */
+  open(input: OpenDialRequest): Promise<IdentityResult<DialTicket>>;
   /** Every dial this instance holds, live status included. */
   list(): IdentityResult<readonly Dial[]>;
 }
@@ -5677,6 +5685,12 @@ export class PluginHost {
         mintShare: (input) => identityCall(() => this.authService.mintShare(input, auth)),
         revokeShare: (shareId) => identityCall(() => this.authService.revokeShare(shareId, auth)),
         listShares: () => identityCall(() => this.authService.listShares(auth)),
+        listShareRecipients: (shareId) =>
+          identityCall(() => this.authService.listShareRecipients(shareId, auth)),
+        approveShareRecipient: (input) =>
+          identityCall(() => this.authService.approveShareRecipient(input, auth)),
+        removeShareRecipient: (input) =>
+          identityCall(() => this.authService.removeShareRecipient(input, auth)),
         grant: (input) => identityCall(() => this.authService.grant(input, auth)),
         revokeGrant: (grantId) => identityCall(() => this.authService.revokeGrant(grantId, auth)),
         listGrants: (filter) => identityCall(() => this.authService.listGrants(filter, auth)),
@@ -5690,7 +5704,8 @@ export class PluginHost {
       */
       dials: {
         dial: (input) => identityCallAsync(() => this.dialer.dial(input)),
-        open: (dialId) => identityCallAsync(() => this.dialer.open(dialId, auth.principal)),
+        open: (input) =>
+          identityCallAsync(() => this.dialer.open(input.dialId, auth.principal, input.caps)),
         list: () => identityCall(() => this.dialer.list()),
       },
       storage: lease.storage,
