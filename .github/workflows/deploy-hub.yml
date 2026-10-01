@@ -222,6 +222,9 @@ jobs:
         run: |
           fail() { echo "::error::$*" >&2; exit 1; }
           configured="$("$CLEVER" env --format json)"
+          # The entrypoint enables replication only when this bucket setting is present.
+          replicated="$(jq -r '[.env[], .fromAddons[].env[], .fromDependencies[].env[]] |
+            any(.name == "MANIFOLD_REPLICA_BUCKET" and .value != "")' <<< "$configured")"
           active="$(jq -r '[.env[], .fromAddons[].env[], .fromDependencies[].env[]] |
             map(select((.name | startswith("MANIFOLD_RECOVERY_")) and .value != "")) | length' <<< "$configured")"
           inherited_path="$(jq -r '[.fromAddons[].env[], .fromDependencies[].env[]] |
@@ -274,7 +277,7 @@ jobs:
           fi
           adopt=false
           [ "${ADOPT_RECOVERY:-false}" != true ] || adopt=true
-          printf 'adopt=%s\nreplica_path=%s\ntakeover=%s\n' "$adopt" "$target_path" "$TAKEOVER_WRITER" >> "$GITHUB_OUTPUT"
+          printf 'adopt=%s\nreplica_path=%s\ntakeover=%s\nreplicated=%s\n' "$adopt" "$target_path" "$TAKEOVER_WRITER" "$replicated" >> "$GITHUB_OUTPUT"
 
       - name: Snapshot live state before the switch
         id: snapshot
@@ -283,6 +286,8 @@ jobs:
           VERIFY_LIVE_TOKEN: ${{ secrets.HUB_INSTALLED_BUNDLES_TOKEN }}
           RECOVERY_BUILD: ${{ inputs.recovery_build }}
           GH_TOKEN: ${{ github.token }}
+          REPLICA_CONFIGURED: ${{ steps.recovery.outputs.replicated }}
+          CLASSIFIED_RECOVERY_ADOPTION: ${{ steps.recovery.outputs.adopt }}
         run: |
           bun scripts/verify-live.ts snapshot "$RUNNER_TEMP/verify-live.json"
           fail() { echo "::error::$*" >&2; exit 1; }
@@ -290,6 +295,13 @@ jobs:
           [[ "$previous_build" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail 'Production rollback requires an exact release build'
           [ "$RECOVERY_BUILD" = "$previous_build" ] ||
             fail 'The checkpoint receipt was not captured from the currently serving release'
+          # Only the proved recovery classification, never the requested input, clears this
+          # historical boundary. Observe the candidate separately in operator-owned custody.
+          case "$REPLICA_CONFIGURED" in
+            true) bun scripts/promotion-replica-admission.ts "$previous_build" "$TAG" "$CLASSIFIED_RECOVERY_ADOPTION" ;;
+            false) ;;
+            *) fail 'The effective replica configuration classification is missing' ;;
+          esac
           proof="$(bun scripts/release-provenance.ts promotion "v$previous_build")"
           previous_image="$(jq -er .image <<< "$proof")"
           # Recovery builds FROM this digest only after a failed switch; prove it still resolves first.

@@ -1833,6 +1833,58 @@ policy and confirms its image still resolves, refuses active recovery settings u
 `--adopt-recovery` reconciles them as described above, and requires one instance with
 zero-downtime deployment disabled.
 
+An ordinary source older than v0.22.0 cannot cross the replica-guard boundary without the
+reviewed offline adoption procedure: refusal is `replica_guard_boundary_requires_adoption`,
+not permission to initialize or hand-seal existing history. The CLI conservatively checks
+the checkpoint's source build before dispatch; the trusted workflow checks the actual live
+build when an effective `MANIFOLD_REPLICA_BUCKET` is configured, before even looking up the
+rollback image. A requested adoption flag is not evidence: only verified serving recovery
+settings and a fresh, matching checkpoint clear this boundary through recovery adoption.
+
+Before stopping the incumbent, rehearse **the exact verified candidate image** against the
+selected replica in operator custody. Use a candidate containing the `observe` entry point,
+trusted `main` tooling and an owner-controlled local Docker daemon. Keep existing authorized
+storage credentials in that custody; neither CI nor a Manifold automation credential receives
+them. For the packaged single-database configuration:
+
+```sh
+candidate_tag=vX.Y.Z
+candidate_proof="$(bun scripts/release-provenance.ts promotion "$candidate_tag")"
+candidate_image="$(jq -er '.image' <<< "$candidate_proof")"
+docker pull "$candidate_image"
+observe_container="manifold-replica-observe-$(bun -e 'console.log(crypto.randomUUID())')"
+docker run --rm --name "$observe_container" --pull=never --read-only \
+  --tmpfs /tmp:rw,nosuid,nodev \
+  --env BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 \
+  --env BUN_OPTIONS=--no-env-file --env MANIFOLD_DATA_DIR=/data \
+  --env MANIFOLD_REPLICA_BUCKET --env MANIFOLD_REPLICA_ENDPOINT \
+  --env MANIFOLD_REPLICA_PATH --env MANIFOLD_REPLICA_TAKEOVER \
+  --env LITESTREAM_ACCESS_KEY_ID --env LITESTREAM_SECRET_ACCESS_KEY \
+  --entrypoint bun "$candidate_image" /app/scripts/replica-guard.ts observe
+```
+
+For an auxiliary database set, read-only mount its operator-owned prospective Litestream
+configuration at `/run/replica-observation.yml` and add
+`--env MANIFOLD_RECOVERY_LITESTREAM_CONFIG=/run/replica-observation.yml`. Include every
+configured database with its candidate `/data` path and exact selected replica location;
+forward any referenced credential variables by name, not value. Do not mount serving
+databases, writer locks or an owner key. The observer runs only restore/list operations,
+validates the same claim, complete sealed file fingerprints and takeover rules as bootstrap,
+and removes its private staging files and children. It never starts a hub or replicator,
+creates a claim, advances a heartbeat, seals or initializes history.
+
+Retain the candidate digest, observation time and terminal `hub_replica_observation`
+record: exit 0 means `admitted`; exit 1 retains the precise refusal. `targetSha256` identifies
+the supplied configuration and referenced environment, not an authenticated checkpoint or
+handoff receipt. Missing or untracked history still requires offline adoption. A live
+heartbeating writer must still refuse as `replica_writer_active`, including when its UUID
+was explicitly selected; do not weaken that rule to make a preflight green. Observation is
+bounded to five minutes and proves neither the later handoff nor boot readiness, freshness
+after subsequent writes, or zero loss. On interrupted/lost Docker control, confirm this named
+container has exited and been removed; if needed stop/remove only `$observe_container` and
+report unconfirmed cleanup. Continue only through the existing owned maintenance/adoption
+procedure with retained preflight evidence, never a blind ordinary restart.
+
 The read-only installed-bundle candidate gate and the actual production switch consume the
 same verified image reference. `infra/release.Dockerfile` is only `ARG`/`FROM`, with no default
 image or application build; the candidate tag supplies this reviewed wrapper, not a new
