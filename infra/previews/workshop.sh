@@ -42,8 +42,16 @@ case "$1" in
     config_path "$2"
     [[ -f $2 ]] || fail 'workshop config is not a regular file'
     bun=$(command -v bun) || fail 'Bun >=1.4.2 is required'
+    "$bun" --no-env-file -e 'if (!Bun.semver.satisfies(Bun.version, ">=1.4.2")) { console.error("workshop: Bun >=1.4.2 is required"); process.exit(1); }'
     config_path "$bun"
     [[ $PATH != *[\"\\%$'\n\r']* ]] || fail 'PATH is not configuration-safe'
+    docker_host=${DOCKER_HOST:-}
+    if [[ -z $docker_host ]]; then
+      docker_host=$(docker context inspect --format '{{.Endpoints.docker.Host}}') ||
+        fail 'cannot resolve the configured Docker transport'
+    fi
+    [[ $docker_host == unix:///* && $docker_host != *[\"\\%$'\n\r']* ]] ||
+      fail 'integrated workshop requires a configuration-safe local Docker Unix socket'
     "$bun" --no-env-file "$here/workshop-run.ts" validate "$2"
     manifold_root=$(jq -er '.manifoldRoot' "$2")
     config_path "$manifold_root"
@@ -59,8 +67,9 @@ case "$1" in
       printf '%s\n' "$marker" '[Unit]' 'Description=Manifold Code live workshop (retained preview hub)'
       printf '[Service]\nWorkingDirectory="%s"\n' "$manifold_root"
       printf 'Environment="PATH=%s"\n' "$PATH"
+      printf 'Environment="DOCKER_HOST=%s"\n' "$docker_host"
       printf 'ExecStart="%s" --no-env-file "%s/workshop-run.ts" run "%s/config.json"\n' "$bun" "$here" "$state"
-      printf 'Restart=on-failure\nRestartSec=3\nKillMode=control-group\nTimeoutStopSec=30\n'
+      printf 'Restart=on-failure\nRestartPreventExitStatus=78\nRestartSec=3\nKillMode=control-group\nTimeoutStopSec=30\n'
       printf '[Install]\nWantedBy=default.target\n'
     } >"$unit"
     systemctl --user daemon-reload

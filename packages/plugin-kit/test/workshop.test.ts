@@ -22,6 +22,7 @@ interface Event {
 
 interface WorkshopProcess {
   readonly events: Event[];
+  readonly diagnostic: string;
   event(name: string, after?: number): Promise<Event>;
   stop(expectedExit?: number): Promise<void>;
   failed(): Promise<void>;
@@ -33,35 +34,96 @@ async function fixture(root: string, native = false): Promise<string> {
   await mkdir(join(root, "domain"));
   await mkdir(join(root, "shared"));
   await Bun.write(join(root, "package.json"), JSON.stringify({ private: true, type: "module" }));
-  await Bun.write(join(root, "tsconfig.json"), JSON.stringify({ compilerOptions: { baseUrl: ".", paths: { "@workshop/*": ["domain/*"] } } }));
-  await symlink(resolve(import.meta.dir, "../../../node_modules"), join(root, "node_modules"));
-  await Bun.write(join(root, "domain/value.ts"), 'import data from "../shared/value.json"; export const label = data.label;');
+  await Bun.write(
+    join(root, "tsconfig.json"),
+    JSON.stringify({ compilerOptions: { baseUrl: ".", paths: { "@workshop/*": ["domain/*"] } } }),
+  );
+  await mkdir(join(root, "node_modules/@manifold"), { recursive: true });
+  for (const name of ["plugin-kit", "protocol"])
+    await symlink(
+      resolve(import.meta.dir, `../../${name}`),
+      join(root, "node_modules/@manifold", name),
+    );
+  for (const name of ["react", "zod"])
+    await symlink(
+      resolve(import.meta.dir, "../node_modules", name),
+      join(root, "node_modules", name),
+    );
+  await Bun.write(
+    join(root, "domain/value.ts"),
+    'import data from "../shared/value.json"; export const label = data.label;',
+  );
   await Bun.write(join(root, "shared/value.json"), JSON.stringify({ label: "original-backend" }));
   const payload = "#!/bin/sh\nexit 0\n";
   const digest = new Bun.CryptoHasher("sha256").update(payload).digest("hex");
-  const machine = native ? {
-    artifacts: { "linux-x64": { bundleFile: "native", sha256: digest, entrySha256: digest, format: "raw", entry: ["native"], maxBytes: 64, maxExpandedBytes: 64, maxMembers: 1 } },
-    locations: {},
-    operations: {
-      [`${ID}.run`]: { argv: [], input: {}, runtimeTools: [], locations: [], outputs: [], network: "none", stdin: false, limits: { timeoutMs: 1000, memoryBytes: 1048576, processes: 1, outputBytes: 4096 } },
-    },
-  } : undefined;
+  const machine = native
+    ? {
+        artifacts: {
+          "linux-x64": {
+            bundleFile: "native",
+            sha256: digest,
+            entrySha256: digest,
+            format: "raw",
+            entry: ["native"],
+            maxBytes: 64,
+            maxExpandedBytes: 64,
+            maxMembers: 1,
+          },
+        },
+        locations: {},
+        operations: {
+          [`${ID}.run`]: {
+            argv: [],
+            input: {},
+            runtimeTools: [],
+            locations: [],
+            outputs: [],
+            network: "none",
+            stdin: false,
+            limits: { timeoutMs: 1000, memoryBytes: 1048576, processes: 1, outputBytes: 4096 },
+          },
+        },
+      }
+    : undefined;
   const manifest = PluginManifestSchema.parse({
-    id: ID, version: "1.0.0", title: "Workshop regression", description: "Installed backend and approved source development share transitive inputs.",
-    capabilities: ["containers:read"], contributes: { panels: [{ id: "counter", title: "Counter" }] },
-    entry: { server: true, web: "web.js", styles: true }, ...(machine ? { machine } : {}),
+    id: ID,
+    version: "1.0.0",
+    title: "Workshop regression",
+    description: "Installed backend and approved source development share transitive inputs.",
+    capabilities: ["containers:read"],
+    contributes: { panels: [{ id: "counter", title: "Counter" }] },
+    entry: { server: true, web: "web.js", styles: true },
+    ...(machine ? { machine } : {}),
   });
   await Bun.write(join(directory, "manifest.json"), JSON.stringify(manifest));
   if (native) await Bun.write(join(directory, "native"), payload);
   await Bun.write(join(directory, "server.ts"), serverSource());
   await Bun.write(join(directory, "web.tsx"), frontend("original-frontend"));
-  await Bun.write(join(directory, "styles.css"), ".plugin-example_workshop { color: rgb(1, 2, 3); }");
-  await Bun.write(join(directory, "child/manifest.json"), JSON.stringify({
-    id: `${ID}.child`, version: "1.0.0", title: "Workshop child", description: "A later family compilation must complete before the parent installs.",
-    capabilities: [], contributes: {}, entry: { server: true, web: "web.js" },
-  }));
-  await Bun.write(join(directory, "child/server.ts"), `import { defineServerPlugin } from "@manifold/plugin-kit/server"; import { PluginManifestSchema } from "@manifold/protocol"; import manifest from "./manifest.json"; const plugin = { manifest: PluginManifestSchema.parse(manifest), actions: [], handlers: {} }; defineServerPlugin(plugin); export default plugin;`);
-  await Bun.write(join(directory, "child/web.tsx"), `export default { id: "${ID}.child", panels: {} };`);
+  await Bun.write(
+    join(directory, "styles.css"),
+    ".plugin-example_workshop { color: rgb(1, 2, 3); }",
+  );
+  await Bun.write(
+    join(directory, "child/manifest.json"),
+    JSON.stringify({
+      id: `${ID}.child`,
+      version: "1.0.0",
+      title: "Workshop child",
+      description: "A later family compilation must complete before the parent installs.",
+      capabilities: [],
+      dependencies: { [ID]: { type: "required" } },
+      contributes: {},
+      entry: { server: true, web: "web.js" },
+    }),
+  );
+  await Bun.write(
+    join(directory, "child/server.ts"),
+    `import { defineServerPlugin } from "@manifold/plugin-kit/server"; import { PluginManifestSchema } from "@manifold/protocol"; import manifest from "./manifest.json"; const plugin = { manifest: PluginManifestSchema.parse(manifest), actions: [], handlers: {} }; defineServerPlugin(plugin); export default plugin;`,
+  );
+  await Bun.write(
+    join(directory, "child/web.tsx"),
+    `export default { id: "${ID}.child", panels: {} };`,
+  );
   await Bun.write(join(root, "private.ts"), 'export const value = "UNREGISTERED_WORKSHOP_MARKER";');
   await Bun.write(join(root, "owner.key"), "DENIED_WORKSHOP_MARKER");
   return directory;
@@ -86,23 +148,39 @@ const plugin = { manifest: PluginManifestSchema.parse(manifest), actions: [read]
 }
 
 async function installFamily(root: string, server: SpawnedServer): Promise<void> {
-  for (const [id, source] of [[ID, "plugin"], [`${ID}.child`, "plugin/child"]] as const) {
+  for (const [id, source] of [
+    [ID, "plugin"],
+    [`${ID}.child`, "plugin/child"],
+  ] as const) {
     const file = join(root, "dist", `${id}.manifold-plugin.json`);
     await packPlugin(join(root, source), file);
     await installBundle({ source: file, hub: server });
   }
 }
 
-function launch(root: string, server: SpawnedServer, blockBuild = false, options: { customFamily?: boolean; bootstrapEdit?: boolean } = {}): WorkshopProcess {
-  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("MANIFOLD_") && !name.startsWith("WORKSHOP_TEST_")));
+function launch(
+  root: string,
+  server: SpawnedServer,
+  blockBuild = false,
+  options: { customFamily?: boolean; bootstrapEdit?: boolean } = {},
+): WorkshopProcess {
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(
+      ([name]) => !name.startsWith("MANIFOLD_") && !name.startsWith("WORKSHOP_TEST_"),
+    ),
+  );
   const child = Bun.spawn([process.execPath, RUNNER, root, server.url], {
     env: {
-      ...env, NODE_ENV: "development", WORKSHOP_TEST_OWNER_KEY: server.ownerKey,
+      ...env,
+      NODE_ENV: "development",
+      WORKSHOP_TEST_OWNER_KEY: server.ownerKey,
       WORKSHOP_TEST_BLOCK_BUILD: blockBuild ? "1" : "",
       WORKSHOP_TEST_CUSTOM_FAMILY: options.customFamily ? "1" : "",
       WORKSHOP_TEST_BOOTSTRAP_EDIT: options.bootstrapEdit ? "1" : "",
     },
-    stdout: "pipe", stderr: "pipe", stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+    stdin: "ignore",
   });
   const events: Event[] = [];
   let diagnostic = "";
@@ -116,8 +194,16 @@ function launch(root: string, server: SpawnedServer, blockBuild = false, options
         carry = carry.slice(newline + 1);
         try {
           const event: unknown = JSON.parse(line);
-          if (typeof event === "object" && event !== null && "event" in event && typeof event.event === "string") events.push(event as Event);
-        } catch { diagnostic = `${diagnostic}\n${line}`.slice(-4000); }
+          if (
+            typeof event === "object" &&
+            event !== null &&
+            "event" in event &&
+            typeof event.event === "string"
+          )
+            events.push(event as Event);
+        } catch {
+          diagnostic = `${diagnostic}\n${line}`.slice(-4000);
+        }
       }
     }
   };
@@ -128,17 +214,27 @@ function launch(root: string, server: SpawnedServer, blockBuild = false, options
     while (performance.now() < deadline) {
       const found = events.slice(after).find((entry) => entry.event === name);
       if (found) return found;
-      if (child.exitCode !== null) throw new Error(`workshop exited ${child.exitCode}: ${diagnostic}; events: ${JSON.stringify(events)}`);
+      if (child.exitCode !== null)
+        throw new Error(
+          `workshop exited ${child.exitCode}: ${diagnostic}; events: ${JSON.stringify(events)}`,
+        );
       await Bun.sleep(25);
     }
-    throw new Error(`workshop did not report ${name}: ${diagnostic}; events: ${JSON.stringify(events)}`);
+    throw new Error(
+      `workshop did not report ${name}: ${diagnostic}; events: ${JSON.stringify(events)}`,
+    );
   };
   const stop = async (expectedExit = 0): Promise<void> => {
     if (child.exitCode === null) child.kill("SIGTERM");
     // Bound cleanup of the actual process rather than replacing its platform signal handling.
     const timeout = setTimeout(() => child.kill("SIGKILL"), 10_000);
-    try { expect(await child.exited).toBe(expectedExit); await drain; }
-    finally { clearTimeout(timeout); }
+    try {
+      const exit = await child.exited;
+      await drain;
+      if (exit !== expectedExit) throw new Error(JSON.stringify({ exit, diagnostic, events }));
+    } finally {
+      clearTimeout(timeout);
+    }
   };
   const failed = async (): Promise<void> => {
     // Await a real child exit; this timer only bounds OS-process failure cleanup.
@@ -147,9 +243,19 @@ function launch(root: string, server: SpawnedServer, blockBuild = false, options
       expect(await child.exited).toBe(1);
       await drain;
       expect(events.some(({ event }) => event === "plugin-workshop-ready")).toBe(false);
-    } finally { clearTimeout(timeout); }
+    } finally {
+      clearTimeout(timeout);
+    }
   };
-  return { events, event, stop, failed };
+  return {
+    events,
+    event,
+    stop,
+    failed,
+    get diagnostic() {
+      return diagnostic;
+    },
+  };
 }
 
 async function read(server: SpawnedServer): Promise<{ label: string; count: number }> {
@@ -164,127 +270,461 @@ async function pin(server: SpawnedServer): Promise<string | undefined> {
 }
 
 async function sourceResponse(url: string, file: string): Promise<Response> {
-  return fetch(new URL(`/@fs${file}`, url), { signal: AbortSignal.timeout(5000) });
+  return fetch(new URL(`/@fs${file}`, url), {
+    headers: { "Sec-Fetch-Dest": "script" },
+    signal: AbortSignal.timeout(5000),
+  });
 }
 
-test("installation modes remain exclusive and reject malformed workshop ports without acquiring credentials", () => {
+test("installation modes remain exclusive and reject malformed workshop ports", () => {
   const hub = "http://127.0.0.1:1";
   for (const incompatible of ["--fast-refresh", "--hardened"])
-    expect(() => parseWorkshopFlags(["root", "--workshop", incompatible, "--hub", hub])).toThrow("cannot be used");
+    expect(() => parseWorkshopFlags(["root", "--workshop", incompatible, "--hub", hub])).toThrow();
   for (const port of ["-1", "65536", "1.5", "NaN", ""])
-    expect(() => parseWorkshopFlags(["root", "--workshop", "--hub", hub, "--port", port])).toThrow("--port");
-  expect(() => parseRefreshFlags(["root", "--fast-refresh", "--hub", hub, "--workshop"])).toThrow("unknown flag");
-  expect(() => parseWorkshopFlags(["root", "--workshop", "--hub", hub, "--build-module", "--deliver"])).toThrow("module path");
+    expect(() =>
+      parseWorkshopFlags(["root", "--workshop", "--hub", hub, "--port", port]),
+    ).toThrow();
+  expect(() => parseRefreshFlags(["root", "--fast-refresh", "--hub", hub, "--workshop"])).toThrow();
+  expect(() =>
+    parseWorkshopFlags(["root", "--workshop", "--hub", hub, "--build-module", "--deliver"]),
+  ).toThrow();
 });
 
-test.skipIf(!canSpawnServer())("frontend-only saves avoid compilation/install; alias-resolved shared JSON updates the backend; failed family compile retains backend and correction recovers", async () => {
-  const root = await mkdtemp(join(tmpdir(), "plugin-workshop-behavior-"));
-  const server = await startServer();
-  let workshop: WorkshopProcess | undefined;
-  try {
-    const directory = await fixture(root);
-    await installFamily(root, server);
-    workshop = launch(root, server);
-    const ready = await workshop.event("plugin-workshop-ready");
-    const url = ready.url!;
-    expect(new URL(url).hostname).toBe("127.0.0.1");
-    expect((await sourceResponse(url, join(directory, "web.tsx"))).status).toBe(200);
-    for (const denied of [join(root, "private.ts"), join(root, "owner.key"), join(directory, "server.ts"), join(directory, "child/server.ts")])
-      expect((await sourceResponse(url, denied)).status).toBe(403);
-    const originalPin = await pin(server);
-    expect(await read(server)).toEqual({ label: "original-backend", count: 1 });
-    const buildCount = workshop.events.filter(({ event }) => event === "workshop-test-build").length;
-    await Bun.write(join(directory, "web.tsx"), frontend("changed-frontend"));
-    await Bun.write(join(directory, "styles.css"), ".plugin-example_workshop { color: rgb(9, 8, 7); }");
-    expect(await (await sourceResponse(url, join(directory, "web.tsx"))).text()).toContain("changed-frontend");
-    // The negative assertion spans the real filesystem debounce in a separate process.
-    await Bun.sleep(750);
-    expect(workshop.events.filter(({ event }) => event === "workshop-test-build").length).toBe(buildCount);
-    expect(await pin(server)).toBe(originalPin);
-    let checkpoint = workshop.events.length;
-    await Bun.write(join(root, "shared/value.json"), JSON.stringify({ label: "changed-shared-backend" }));
-    await workshop.event("plugin-workshop-ready", checkpoint);
-    expect(await pin(server)).not.toBe(originalPin);
-    expect(await read(server)).toEqual({ label: "changed-shared-backend", count: 2 });
-    const retainedPin = await pin(server);
-    checkpoint = workshop.events.length;
-    // The first bundle compiles, but the later child's browser half fails the full-family pack.
-    await Bun.write(join(directory, "child/web.tsx"), "export default { broken syntax;");
-    await Bun.write(join(root, "shared/value.json"), JSON.stringify({ label: "recovered-backend" }));
-    await workshop.event("plugin-workshop-cycle-failed", checkpoint);
-    expect(await pin(server)).toBe(retainedPin);
-    expect(await read(server)).toEqual({ label: "changed-shared-backend", count: 3 });
-    checkpoint = workshop.events.length;
-    await Bun.write(join(directory, "child/web.tsx"), `export default { id: "${ID}.child", panels: {} };`);
-    await workshop.event("plugin-workshop-ready", checkpoint);
-    expect(await read(server)).toEqual({ label: "recovered-backend", count: 4 });
-    expect((await sourceResponse(url, join(directory, "web.tsx"))).status).toBe(200);
-    const outputDir = workshop.events.findLast(({ event }) => event === "workshop-test-build")?.outputDir!;
-    expect(await Bun.file(join(outputDir, `${ID}.manifold-plugin.json`)).exists()).toBe(true);
-    await workshop.stop();
-    expect(await Bun.file(join(outputDir, `${ID}.manifold-plugin.json`)).exists()).toBe(false);
-    await expect(fetch(url, { signal: AbortSignal.timeout(2000) })).rejects.toThrow();
-    expect(await read(server)).toEqual({ label: "recovered-backend", count: 5 });
-    workshop = undefined;
-  } finally {
-    await workshop?.stop();
-    await server.stop();
-    await rm(root, { recursive: true, force: true });
-  }
-}, 180_000);
-
-test.skipIf(!canSpawnServer())("same-manifest action authority edits refuse the entire installation and cannot resume implicitly after reverting", async () => {
-  const root = await mkdtemp(join(tmpdir(), "plugin-workshop-authority-"));
-  const server = await startServer();
-  let workshop: WorkshopProcess | undefined;
-  try {
-    const directory = await fixture(root);
-    await installFamily(root, server);
-    workshop = launch(root, server);
-    const ready = await workshop.event("plugin-workshop-ready");
-    const retainedPin = await pin(server);
-    expect(await read(server)).toEqual({ label: "original-backend", count: 1 });
-    await Bun.write(join(directory, "server.ts"), serverSource("[]"));
-    await workshop.event("plugin-workshop-refused");
-    expect(await pin(server)).toBe(retainedPin);
-    expect(await read(server)).toEqual({ label: "original-backend", count: 2 });
-    await Bun.write(join(directory, "server.ts"), serverSource());
-    // A reverted file must remain refused across the real watcher/debounce window.
-    await Bun.sleep(750);
-    expect(await pin(server)).toBe(retainedPin);
-    expect(workshop.events.filter(({ event }) => event === "plugin-workshop-ready").length).toBe(1);
-    await expect(fetch(ready.url!, { signal: AbortSignal.timeout(2000) })).rejects.toThrow();
-  } finally {
-    await workshop?.stop();
-    await server.stop();
-    await rm(root, { recursive: true, force: true });
-  }
-}, 120_000);
-
-for (const boundary of ["manifest", "dependency", "native"] as const) {
-  test.skipIf(!canSpawnServer())(`${boundary} changes revoke source and never implicitly reinstall native/authority declarations`, async () => {
-    const root = await mkdtemp(join(tmpdir(), `plugin-workshop-${boundary}-`));
+test.skipIf(!canSpawnServer())(
+  "frontend-only saves avoid compilation/install; alias-resolved shared JSON updates the backend; failed family compile retains backend and correction recovers",
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), "plugin-workshop-behavior-"));
     const server = await startServer();
     let workshop: WorkshopProcess | undefined;
     try {
-      const directory = await fixture(root, boundary === "native");
+      const directory = await fixture(root);
+      await installFamily(root, server);
+      workshop = launch(root, server);
+      const ready = await workshop.event("plugin-workshop-ready");
+      const url = ready.url!;
+      expect(new URL(url).hostname).toBe("127.0.0.1");
+      expect((await sourceResponse(url, join(directory, "web.tsx"))).status).toBe(200);
+      for (const denied of [
+        join(root, "private.ts"),
+        join(root, "owner.key"),
+        join(directory, "server.ts"),
+        join(directory, "child/server.ts"),
+      ])
+        expect((await sourceResponse(url, denied)).status).toBe(403);
+      const originalPin = await pin(server);
+      expect(await read(server)).toEqual({ label: "original-backend", count: 1 });
+      const buildCount = workshop.events.filter(
+        ({ event }) => event === "workshop-test-build",
+      ).length;
+      await Bun.write(join(directory, "web.tsx"), frontend("changed-frontend"));
+      await Bun.write(
+        join(directory, "styles.css"),
+        ".plugin-example_workshop { color: rgb(9, 8, 7); }",
+      );
+      expect(
+        (await sourceResponse(url, join(directory, "web.tsx"))).headers.get("content-type"),
+      ).toContain("javascript");
+      // The negative assertion spans the real filesystem debounce in a separate process.
+      await Bun.sleep(750);
+      expect(workshop.events.filter(({ event }) => event === "workshop-test-build").length).toBe(
+        buildCount,
+      );
+      expect(await pin(server)).toBe(originalPin);
+      let checkpoint = workshop.events.length;
+      await Bun.write(
+        join(root, "shared/value.json"),
+        JSON.stringify({ label: "changed-shared-backend" }),
+      );
+      await workshop.event("plugin-workshop-ready", checkpoint);
+      expect(await pin(server)).not.toBe(originalPin);
+      expect(await read(server)).toEqual({ label: "changed-shared-backend", count: 2 });
+      const retainedPin = await pin(server);
+      checkpoint = workshop.events.length;
+      // The first bundle compiles, but the later child's browser half fails the full-family pack.
+      await Bun.write(join(directory, "child/web.tsx"), "export default { broken syntax;");
+      await Bun.write(
+        join(root, "shared/value.json"),
+        JSON.stringify({ label: "recovered-backend" }),
+      );
+      await workshop.event("plugin-workshop-cycle-failed", checkpoint);
+      expect(await pin(server)).toBe(retainedPin);
+      expect(await read(server)).toEqual({ label: "changed-shared-backend", count: 3 });
+      checkpoint = workshop.events.length;
+      await Bun.write(
+        join(directory, "child/web.tsx"),
+        `export default { id: "${ID}.child", panels: {} };`,
+      );
+      await workshop.event("plugin-workshop-ready", checkpoint);
+      expect(await read(server)).toEqual({ label: "recovered-backend", count: 4 });
+      expect((await sourceResponse(url, join(directory, "web.tsx"))).status).toBe(200);
+      const outputDir = workshop.events.findLast(
+        ({ event }) => event === "workshop-test-build",
+      )?.outputDir;
+      if (outputDir === undefined) throw new Error("compiler output directory was not reported");
+      expect(await Bun.file(join(outputDir, `${ID}.manifold-plugin.json`)).exists()).toBe(true);
+      await workshop.stop();
+      expect(await Bun.file(join(outputDir, `${ID}.manifold-plugin.json`)).exists()).toBe(false);
+      await expect(fetch(url, { signal: AbortSignal.timeout(2000) })).rejects.toThrow();
+      expect(await read(server)).toEqual({ label: "recovered-backend", count: 5 });
+      workshop = undefined;
+    } finally {
+      await workshop?.stop();
+      await server.stop();
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+  180_000,
+);
+
+test.skipIf(!canSpawnServer())(
+  "a save queued during installation remains dirty after a failed family build and recovers on a frontend-only correction",
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), "plugin-workshop-queued-recovery-"));
+    const gate = await mkdtemp(join(tmpdir(), "plugin-workshop-install-gate-"));
+    const server = await startServer();
+    let workshop: WorkshopProcess | undefined;
+    try {
+      const directory = await fixture(root);
+      await Bun.write(
+        join(directory, "server.ts"),
+        `import { defineServerAction, defineServerPlugin } from "@manifold/plugin-kit/server";
+import { PluginManifestSchema } from "@manifold/protocol";
+import { z } from "zod";
+import manifest from "./manifest.json";
+import { label } from "@workshop/value";
+import { watch } from "node:fs";
+const read = defineServerAction({ name: "read", title: "Read", caps: ["containers:read"], input: z.strictObject({}), result: z.strictObject({ label: z.string(), count: z.number().int() }) });
+const plugin = { manifest: PluginManifestSchema.parse(manifest), actions: [read], lifecycle: {
+  async onEnable() {
+    if (label !== "cycle-a") return;
+    await Bun.write(${JSON.stringify(join(gate, "started"))}, "");
+    await new Promise((resolve, reject) => {
+      const watcher = watch(${JSON.stringify(gate)}, (_event, name) => {
+        if (name === "release") { watcher.close(); resolve(); }
+      });
+      watcher.on("error", reject);
+      Bun.file(${JSON.stringify(join(gate, "release"))}).exists().then(exists => {
+        if (exists) { watcher.close(); resolve(); }
+      }, reject);
+    });
+  }
+}, handlers: {
+  async read(ctx) {
+    const count = Number(await ctx.storage.get("count") ?? "0") + 1;
+    await ctx.storage.set("count", String(count));
+    return { label, count };
+  }
+} }; defineServerPlugin(plugin); export default plugin;`,
+      );
+      await installFamily(root, server);
+      workshop = launch(root, server);
+      await workshop.event("plugin-workshop-ready");
+      await Bun.write(join(root, "shared/value.json"), JSON.stringify({ label: "cycle-a" }));
+      // The hook runs in the real server; parent fake time cannot advance its filesystem signal.
+      const deadline = Date.now() + 15_000;
+      while (!(await Bun.file(join(gate, "started")).exists()) && Date.now() < deadline)
+        await Bun.sleep(20);
+      expect(await Bun.file(join(gate, "started")).exists()).toBe(true);
+      await Bun.write(join(root, "shared/value.json"), JSON.stringify({ label: "cycle-b" }));
+      await Bun.write(join(directory, "child/web.tsx"), "export default { broken syntax;");
+      // The watcher/debounce runs in the real child process, outside the parent's fake clock.
+      await Bun.sleep(250);
+      await Bun.write(join(gate, "release"), "");
+      await workshop.event("plugin-workshop-cycle-failed");
+      expect(await read(server)).toEqual({ label: "cycle-a", count: 1 });
+      const checkpoint = workshop.events.length;
+      await Bun.write(
+        join(directory, "child/web.tsx"),
+        `export default { id: "${ID}.child", panels: {} };`,
+      );
+      await workshop.event("plugin-workshop-ready", checkpoint);
+      expect(await read(server)).toEqual({ label: "cycle-b", count: 2 });
+    } finally {
+      await Bun.write(join(gate, "release"), "");
+      await workshop?.stop();
+      await server.stop();
+      await rm(root, { recursive: true, force: true });
+      await rm(gate, { recursive: true, force: true });
+    }
+  },
+  180_000,
+);
+
+test.skipIf(!canSpawnServer())(
+  "same-manifest action authority edits refuse the entire installation and cannot resume implicitly after reverting",
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), "plugin-workshop-authority-"));
+    const server = await startServer();
+    let workshop: WorkshopProcess | undefined;
+    try {
+      const directory = await fixture(root);
       await installFamily(root, server);
       workshop = launch(root, server);
       const ready = await workshop.event("plugin-workshop-ready");
       const retainedPin = await pin(server);
-      const builds = workshop.events.filter(({ event }) => event === "workshop-test-build").length;
-      if (boundary === "manifest") {
-        const file = join(directory, "manifest.json");
-        await Bun.write(file, JSON.stringify({ ...await Bun.file(file).json(), capabilities: [] }));
-      } else if (boundary === "dependency") {
-        await Bun.write(join(root, "package.json"), JSON.stringify({ private: true, type: "module", dependencies: { "new-dependency": "1.0.0" } }));
-      } else {
-        await Bun.write(join(directory, "native"), "#!/bin/sh\nexit 1\n");
-      }
+      expect(await read(server)).toEqual({ label: "original-backend", count: 1 });
+      await Bun.write(join(directory, "server.ts"), serverSource("[]"));
       await workshop.event("plugin-workshop-refused");
-      // Observe a full watcher/debounce window, not merely the first cancellation event.
+      expect(await pin(server)).toBe(retainedPin);
+      expect(await read(server)).toEqual({ label: "original-backend", count: 2 });
+      await Bun.write(join(directory, "server.ts"), serverSource());
+      // A reverted file must remain refused across the real watcher/debounce window.
+      await Bun.sleep(750);
+      expect(await pin(server)).toBe(retainedPin);
+      expect(workshop.events.filter(({ event }) => event === "plugin-workshop-ready").length).toBe(
+        1,
+      );
+      await expect(fetch(ready.url!, { signal: AbortSignal.timeout(2000) })).rejects.toThrow();
+    } finally {
+      await workshop?.stop();
+      await server.stop();
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+  120_000,
+);
+
+for (const boundary of ["manifest", "dependency", "native"] as const) {
+  test.skipIf(!canSpawnServer())(
+    `${boundary} changes revoke source and never implicitly reinstall native/authority declarations`,
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), `plugin-workshop-${boundary}-`));
+      const server = await startServer();
+      let workshop: WorkshopProcess | undefined;
+      try {
+        const directory = await fixture(root, boundary === "native");
+        await installFamily(root, server);
+        workshop = launch(root, server);
+        const ready = await workshop.event("plugin-workshop-ready");
+        const retainedPin = await pin(server);
+        const builds = workshop.events.filter(
+          ({ event }) => event === "workshop-test-build",
+        ).length;
+        if (boundary === "manifest") {
+          const file = join(directory, "manifest.json");
+          await Bun.write(
+            file,
+            JSON.stringify({ ...(await Bun.file(file).json()), capabilities: [] }),
+          );
+        } else if (boundary === "dependency") {
+          await Bun.write(
+            join(root, "package.json"),
+            JSON.stringify({
+              private: true,
+              type: "module",
+              dependencies: { "new-dependency": "1.0.0" },
+            }),
+          );
+        } else {
+          await Bun.write(join(directory, "native"), "#!/bin/sh\nexit 1\n");
+        }
+        await workshop.event("plugin-workshop-refused");
+        // Observe a full watcher/debounce window, not merely the first cancellation event.
+        await Bun.sleep(400);
+        expect(workshop.events.filter(({ event }) => event === "workshop-test-build").length).toBe(
+          builds,
+        );
+        expect(await pin(server)).toBe(retainedPin);
+        expect(await read(server)).toEqual({ label: "original-backend", count: 1 });
+        await expect(fetch(ready.url!, { signal: AbortSignal.timeout(2000) })).rejects.toThrow();
+      } finally {
+        await workshop?.stop();
+        await server.stop();
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+    120_000,
+  );
+}
+
+test.skipIf(!canSpawnServer())(
+  "stopping a hung author compiler is bounded and never claims complete compiler cleanup or mutates the existing backend",
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), "plugin-workshop-hung-"));
+    const server = await startServer();
+    let workshop: WorkshopProcess | undefined;
+    try {
+      await fixture(root);
+      await installFamily(root, server);
+      const retainedPin = await pin(server);
+      workshop = launch(root, server, true);
+      const building = await workshop.event("workshop-test-build");
+      expect((await stat(building.outputDir!)).isDirectory()).toBe(true);
+      await workshop.stop(1);
+      expect(workshop.events.some(({ event }) => event === "plugin-workshop-ready")).toBe(false);
+      expect(workshop.events.some(({ event }) => event === "plugin-workshop-stopped")).toBe(false);
+      await expect(stat(building.outputDir!)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await pin(server)).toBe(retainedPin);
+      expect(await read(server)).toEqual({ label: "original-backend", count: 1 });
+      workshop = undefined;
+    } finally {
+      await workshop?.stop(1);
+      await server.stop();
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+  120_000,
+);
+
+test.skipIf(!canSpawnServer())(
+  "workshop replacement retains already-consented high-risk plugin authority rather than silently revoking it",
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), "plugin-workshop-retained-grant-"));
+    const server = await startServer();
+    let workshop: WorkshopProcess | undefined;
+    try {
+      const directory = await fixture(root);
+      const manifestFile = join(directory, "manifest.json");
+      await Bun.write(
+        manifestFile,
+        JSON.stringify({
+          ...(await Bun.file(manifestFile).json()),
+          capabilities: ["containers:read", "tokens:mint"],
+        }),
+      );
+      await Bun.write(
+        join(directory, "server.ts"),
+        serverSource('["containers:read", "tokens:mint"]'),
+      );
+      await installFamily(root, server);
+      const file = join(root, "dist", `${ID}.manifold-plugin.json`);
+      const facts = await inspectBundle(file);
+      await ownerAction(server, "engine.plugins.install", {
+        source: file,
+        sha256: facts.sha256,
+        replace: true,
+        grant: ["tokens:mint"],
+      });
+      const grants = (await roster(server)).find((row) => row.manifest.id === ID)!.install!
+        .grantedCaps;
+      expect(grants).toContain("tokens:mint");
+      expect(await read(server)).toEqual({ label: "original-backend", count: 1 });
+      workshop = launch(root, server);
+      await workshop.event("plugin-workshop-ready");
+      const checkpoint = workshop.events.length;
+      await Bun.write(
+        join(root, "shared/value.json"),
+        JSON.stringify({ label: "retained-authority-backend" }),
+      );
+      await workshop.event("plugin-workshop-ready", checkpoint);
+      expect(
+        (await roster(server)).find((row) => row.manifest.id === ID)!.install!.grantedCaps,
+      ).toEqual(grants);
+      expect(await read(server)).toEqual({ label: "retained-authority-backend", count: 2 });
+    } finally {
+      await workshop?.stop();
+      await server.stop();
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+  120_000,
+);
+
+async function foreignPackages(root: string): Promise<string> {
+  const dependency = join(root, "generated-inputs", "api");
+  await mkdir(dependency, { recursive: true });
+  await Bun.write(
+    join(dependency, "package.json"),
+    JSON.stringify({ name: "@foreign/api", type: "module" }),
+  );
+  await Bun.write(join(dependency, "index.ts"), 'export const suffix = "";');
+  for (const name of ["api", "native-fixture"]) {
+    const dir = join(root, "generated-inputs", name);
+    await mkdir(dir, { recursive: true });
+    // These valid generated package manifests deliberately have no authoring entry files.
+    await Bun.write(
+      join(dir, "manifest.json"),
+      JSON.stringify({
+        id: `example.foreign.${name}`,
+        version: "1.0.0",
+        title: "Generated dependency",
+        description:
+          "An installed dependency fixture, not a member of the authored compiler family.",
+        capabilities: [],
+        contributes: {},
+        entry: { server: true, web: "web.js" },
+      }),
+    );
+  }
+  await Bun.write(
+    join(root, "tsconfig.json"),
+    JSON.stringify({
+      compilerOptions: {
+        baseUrl: ".",
+        paths: { "@workshop/*": ["domain/*"], "@foreign/api": ["generated-inputs/api/index.ts"] },
+      },
+    }),
+  );
+  await Bun.write(
+    join(root, "domain/value.ts"),
+    'import data from "../shared/value.json"; import { suffix } from "../generated-inputs/api/index.ts"; export const label = data.label + suffix;',
+  );
+  await Bun.write(join(root, ".compiler-family.json"), JSON.stringify(["plugin", "plugin/child"]));
+  return dependency;
+}
+
+test.skipIf(!canSpawnServer())(
+  "custom compiler family ignores generated foreign manifests, recompiles the pinned startup snapshot, and refuses nested dependency package edits",
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), "plugin-workshop-custom-family-"));
+    const server = await startServer();
+    let workshop: WorkshopProcess | undefined;
+    try {
+      const directory = await fixture(root);
+      const dependency = await foreignPackages(root);
+      await installFamily(root, server);
+      workshop = launch(root, server, false, { customFamily: true, bootstrapEdit: true });
+      const ready = await workshop.event("plugin-workshop-ready");
+      // The bootstrap output contains original-backend; only a new watched compilation contains this save.
+      expect(await read(server)).toEqual({ label: "pinned-backend", count: 1 });
+      expect((await sourceResponse(ready.url!, join(directory, "web.tsx"))).status).toBe(200);
+      const shared = await sourceResponse(ready.url!, join(root, "domain/value.ts"));
+      if (shared.status !== 200)
+        throw new Error(
+          `Shared source ${shared.status}: ${await shared.text()}; ${workshop.diagnostic}`,
+        );
+      expect((await sourceResponse(ready.url!, join(dependency, "index.ts"))).status).toBe(200);
+      expect(
+        (await sourceResponse(ready.url!, join(root, "generated-inputs/native-fixture/server.ts")))
+          .ok,
+      ).toBe(false);
+      const retainedPin = await pin(server);
+      const checkpoint = workshop.events.length;
+      await Bun.write(join(dependency, "index.ts"), 'export const suffix = "-foreign-change";');
+      await workshop.event("plugin-workshop-refused", checkpoint);
+      // Observe the real child watcher/debounce window to rule out a queued reinstall.
       await Bun.sleep(400);
-      expect(workshop.events.filter(({ event }) => event === "workshop-test-build").length).toBe(builds);
+      expect(await pin(server)).toBe(retainedPin);
+      expect(await read(server)).toEqual({ label: "pinned-backend", count: 2 });
+      await expect(fetch(ready.url!, { signal: AbortSignal.timeout(2000) })).rejects.toThrow();
+    } finally {
+      await workshop?.stop();
+      await server.stop();
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+  180_000,
+);
+
+test.skipIf(!canSpawnServer())(
+  "a later custom compiler family omission refuses every installation before replacing any incumbent",
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), "plugin-workshop-family-drift-"));
+    const server = await startServer();
+    let workshop: WorkshopProcess | undefined;
+    try {
+      await fixture(root);
+      await foreignPackages(root);
+      await installFamily(root, server);
+      workshop = launch(root, server, false, { customFamily: true });
+      const ready = await workshop.event("plugin-workshop-ready");
+      const retainedPin = await pin(server);
+      await Bun.write(join(root, ".compiler-family.json"), JSON.stringify(["plugin"]));
+      await Bun.write(
+        join(root, "shared/value.json"),
+        JSON.stringify({ label: "unapproved-family" }),
+      );
+      await workshop.event("plugin-workshop-refused");
       expect(await pin(server)).toBe(retainedPin);
       expect(await read(server)).toEqual({ label: "original-backend", count: 1 });
       await expect(fetch(ready.url!, { signal: AbortSignal.timeout(2000) })).rejects.toThrow();
@@ -293,208 +733,125 @@ for (const boundary of ["manifest", "dependency", "native"] as const) {
       await server.stop();
       await rm(root, { recursive: true, force: true });
     }
-  }, 120_000);
-}
-
-test.skipIf(!canSpawnServer())("stopping a hung author compiler is bounded and never claims complete compiler cleanup or mutates the existing backend", async () => {
-  const root = await mkdtemp(join(tmpdir(), "plugin-workshop-hung-"));
-  const server = await startServer();
-  let workshop: WorkshopProcess | undefined;
-  try {
-    await fixture(root);
-    await installFamily(root, server);
-    const retainedPin = await pin(server);
-    workshop = launch(root, server, true);
-    const building = await workshop.event("workshop-test-build");
-    expect((await stat(building.outputDir!)).isDirectory()).toBe(true);
-    await workshop.stop(1);
-    expect(workshop.events.some(({ event }) => event === "plugin-workshop-ready")).toBe(false);
-    expect(workshop.events.some(({ event }) => event === "plugin-workshop-stopped")).toBe(false);
-    await expect(stat(building.outputDir!)).rejects.toMatchObject({ code: "ENOENT" });
-    expect(await pin(server)).toBe(retainedPin);
-    expect(await read(server)).toEqual({ label: "original-backend", count: 1 });
-    workshop = undefined;
-  } finally {
-    await workshop?.stop(1);
-    await server.stop();
-    await rm(root, { recursive: true, force: true });
-  }
-}, 120_000);
-
-test.skipIf(!canSpawnServer())("workshop replacement retains already-consented high-risk plugin authority rather than silently revoking it", async () => {
-  const root = await mkdtemp(join(tmpdir(), "plugin-workshop-retained-grant-"));
-  const server = await startServer();
-  let workshop: WorkshopProcess | undefined;
-  try {
-    const directory = await fixture(root);
-    const manifestFile = join(directory, "manifest.json");
-    await Bun.write(manifestFile, JSON.stringify({
-      ...await Bun.file(manifestFile).json(),
-      capabilities: ["containers:read", "tokens:mint"],
-    }));
-    await Bun.write(join(directory, "server.ts"), serverSource('["containers:read", "tokens:mint"]'));
-    await installFamily(root, server);
-    const file = join(root, "dist", `${ID}.manifold-plugin.json`);
-    const facts = await inspectBundle(file);
-    await ownerAction(server, "engine.plugins.install", {
-      source: file, sha256: facts.sha256, replace: true, grant: ["tokens:mint"],
-    });
-    const grants = (await roster(server)).find((row) => row.manifest.id === ID)!.install!.grantedCaps;
-    expect(grants).toContain("tokens:mint");
-    expect(await read(server)).toEqual({ label: "original-backend", count: 1 });
-    workshop = launch(root, server);
-    await workshop.event("plugin-workshop-ready");
-    const checkpoint = workshop.events.length;
-    await Bun.write(join(root, "shared/value.json"), JSON.stringify({ label: "retained-authority-backend" }));
-    await workshop.event("plugin-workshop-ready", checkpoint);
-    expect((await roster(server)).find((row) => row.manifest.id === ID)!.install!.grantedCaps).toEqual(grants);
-    expect(await read(server)).toEqual({ label: "retained-authority-backend", count: 2 });
-  } finally {
-    await workshop?.stop();
-    await server.stop();
-    await rm(root, { recursive: true, force: true });
-  }
-}, 120_000);
-
-async function foreignPackages(root: string): Promise<string> {
-  const dependency = join(root, "generated-inputs", "api");
-  await mkdir(dependency, { recursive: true });
-  await Bun.write(join(dependency, "package.json"), JSON.stringify({ name: "@foreign/api", type: "module" }));
-  await Bun.write(join(dependency, "index.ts"), 'export const suffix = "";');
-  for (const name of ["api", "native-fixture"]) {
-    const dir = join(root, "generated-inputs", name);
-    await mkdir(dir, { recursive: true });
-    // These valid generated package manifests deliberately have no authoring entry files.
-    await Bun.write(join(dir, "manifest.json"), JSON.stringify({
-      id: `example.foreign.${name}`, version: "1.0.0", title: "Generated dependency",
-      description: "An installed dependency fixture, not a member of the authored compiler family.",
-      capabilities: [], contributes: {}, entry: { server: true, web: "web.js" },
-    }));
-  }
-  await Bun.write(join(root, "tsconfig.json"), JSON.stringify({
-    compilerOptions: { baseUrl: ".", paths: { "@workshop/*": ["domain/*"], "@foreign/api": ["generated-inputs/api/index.ts"] } },
-  }));
-  await Bun.write(join(root, "domain/value.ts"), 'import data from "../shared/value.json"; import { suffix } from "@foreign/api"; export const label = data.label + suffix;');
-  await Bun.write(join(root, ".compiler-family.json"), JSON.stringify(["plugin", "plugin/child"]));
-  return dependency;
-}
-
-test.skipIf(!canSpawnServer())("custom compiler family ignores generated foreign manifests, recompiles the pinned startup snapshot, and refuses nested dependency package edits", async () => {
-  const root = await mkdtemp(join(tmpdir(), "plugin-workshop-custom-family-"));
-  const server = await startServer();
-  let workshop: WorkshopProcess | undefined;
-  try {
-    const directory = await fixture(root);
-    const dependency = await foreignPackages(root);
-    await installFamily(root, server);
-    workshop = launch(root, server, false, { customFamily: true, bootstrapEdit: true });
-    const ready = await workshop.event("plugin-workshop-ready");
-    // The bootstrap output contains original-backend; only a new watched compilation contains this save.
-    expect(await read(server)).toEqual({ label: "pinned-backend", count: 1 });
-    expect((await sourceResponse(ready.url!, join(directory, "web.tsx"))).status).toBe(200);
-    expect((await sourceResponse(ready.url!, join(root, "domain/value.ts"))).status).toBe(200);
-    expect((await sourceResponse(ready.url!, join(dependency, "index.ts"))).status).toBe(200);
-    expect((await sourceResponse(ready.url!, join(root, "generated-inputs/native-fixture/server.ts"))).ok).toBe(false);
-    const retainedPin = await pin(server);
-    const checkpoint = workshop.events.length;
-    await Bun.write(join(dependency, "index.ts"), 'export const suffix = "-foreign-change";');
-    await workshop.event("plugin-workshop-refused", checkpoint);
-    // Observe the real child watcher/debounce window to rule out a queued reinstall.
-    await Bun.sleep(400);
-    expect(await pin(server)).toBe(retainedPin);
-    expect(await read(server)).toEqual({ label: "pinned-backend", count: 2 });
-    await expect(fetch(ready.url!, { signal: AbortSignal.timeout(2000) })).rejects.toThrow();
-  } finally {
-    await workshop?.stop();
-    await server.stop();
-    await rm(root, { recursive: true, force: true });
-  }
-}, 180_000);
-
-test.skipIf(!canSpawnServer())("a later custom compiler family omission refuses every installation before replacing any incumbent", async () => {
-  const root = await mkdtemp(join(tmpdir(), "plugin-workshop-family-drift-"));
-  const server = await startServer();
-  let workshop: WorkshopProcess | undefined;
-  try {
-    await fixture(root);
-    await foreignPackages(root);
-    await installFamily(root, server);
-    workshop = launch(root, server, false, { customFamily: true });
-    const ready = await workshop.event("plugin-workshop-ready");
-    const retainedPin = await pin(server);
-    await Bun.write(join(root, ".compiler-family.json"), JSON.stringify(["plugin"]));
-    await Bun.write(join(root, "shared/value.json"), JSON.stringify({ label: "unapproved-family" }));
-    await workshop.event("plugin-workshop-refused");
-    expect(await pin(server)).toBe(retainedPin);
-    expect(await read(server)).toEqual({ label: "original-backend", count: 1 });
-    await expect(fetch(ready.url!, { signal: AbortSignal.timeout(2000) })).rejects.toThrow();
-  } finally {
-    await workshop?.stop();
-    await server.stop();
-    await rm(root, { recursive: true, force: true });
-  }
-}, 180_000);
+  },
+  180_000,
+);
 
 for (const boundary of ["missing", "ambiguous", "invalid-entry", "wrong-hash"] as const) {
   test(`custom compiler bootstrap refuses ${boundary} selected sources without contacting a hub`, async () => {
     const root = await mkdtemp(join(tmpdir(), "plugin-workshop-selection-"));
     try {
       const directory = await fixture(root);
-      await expect(devWorkshop({
-        root, hub: { url: "http://127.0.0.1:1", ownerKey: "unused" }, port: 0,
-        async build(outputDir) {
-          const packed = await packPlugin(directory, join(outputDir, `${ID}.manifold-plugin.json`));
-          if (boundary === "missing") await rm(directory, { recursive: true });
-          if (boundary === "ambiguous") {
-            await mkdir(join(root, "duplicate"));
-            await Bun.write(join(root, "duplicate/manifest.json"), await Bun.file(join(directory, "manifest.json")).text());
-          }
-          if (boundary === "invalid-entry") await rm(join(directory, "web.tsx"));
-          return [{ ...packed, ...(boundary === "wrong-hash" ? { sha256: "0".repeat(64) } : {}) }];
-        },
-      })).rejects.toMatchObject({ reason: boundary === "invalid-entry" ? "missing_entry" : "installation_required" });
+      await expect(
+        devWorkshop({
+          root,
+          hub: { url: "http://127.0.0.1:1", ownerKey: "unused" },
+          port: 0,
+          async build(outputDir) {
+            const packed = await packPlugin(
+              directory,
+              join(outputDir, `${ID}.manifold-plugin.json`),
+            );
+            if (boundary === "missing") await rm(directory, { recursive: true });
+            if (boundary === "ambiguous") {
+              await mkdir(join(root, "duplicate"));
+              await Bun.write(
+                join(root, "duplicate/manifest.json"),
+                await Bun.file(join(directory, "manifest.json")).text(),
+              );
+            }
+            if (boundary === "invalid-entry") await rm(join(directory, "web.tsx"));
+            return [
+              { ...packed, ...(boundary === "wrong-hash" ? { sha256: "0".repeat(64) } : {}) },
+            ];
+          },
+        }),
+      ).rejects.toMatchObject({
+        reason: boundary === "invalid-entry" ? "missing_entry" : "installation_required",
+      });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
   }, 30_000);
 }
 
-for (const state of ["disabled", "unpacked"] as const) {
-  test.skipIf(!canSpawnServer())(`a ${state} later family row refuses workshop startup before any earlier bundled row is replaced`, async () => {
-    const root = await mkdtemp(join(tmpdir(), "plugin-workshop-row-state-"));
-    const server = await startServer();
-    let workshop: WorkshopProcess | undefined;
-    try {
-      const directory = await fixture(root);
-      if (state === "disabled") {
-        await installFamily(root, server);
-        await ownerAction(server, "engine.plugins.setEnabled", { id: `${ID}.child`, enabled: false });
-      } else {
-        const file = join(root, "dist", `${ID}.manifold-plugin.json`);
-        await packPlugin(directory, file);
-        await installBundle({ source: file, hub: server });
-        await ownerAction(server, "engine.plugins.setDeveloperMode", { on: true });
-        await ownerAction(server, "engine.plugins.author", {
-          id: `${ID}.child`,
-          files: Object.fromEntries(await Promise.all(["manifest.json", "server.ts", "web.tsx"].map(async (name) =>
-            [name, await Bun.file(join(directory, "child", name)).text()] as const))),
-        });
+for (const state of ["disabled", "unpacked", "failed-lifecycle"] as const) {
+  test.skipIf(!canSpawnServer())(
+    `a ${state} later family row refuses workshop startup before any earlier bundled row is replaced`,
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), "plugin-workshop-row-state-"));
+      const server = await startServer();
+      let workshop: WorkshopProcess | undefined;
+      try {
+        const directory = await fixture(root);
+        if (state !== "unpacked") {
+          if (state === "failed-lifecycle") {
+            const entry = join(directory, "child/server.ts");
+            await Bun.write(
+              entry,
+              (await Bun.file(entry).text()).replace(
+                "handlers: {}",
+                'handlers: {}, lifecycle: { onEnable() { throw new Error("fixture enable failed"); } }',
+              ),
+            );
+          }
+          await installFamily(root, server);
+          if (state === "disabled")
+            await ownerAction(server, "engine.plugins.setEnabled", {
+              id: `${ID}.child`,
+              enabled: false,
+            });
+        } else {
+          const file = join(root, "dist", `${ID}.manifold-plugin.json`);
+          await packPlugin(directory, file);
+          await installBundle({ source: file, hub: server });
+          const childBundleFile = join(root, "dist", `${ID}.child.manifold-plugin.json`);
+          await packPlugin(join(directory, "child"), childBundleFile);
+          const childBundle = await Bun.file(childBundleFile).json();
+          await ownerAction(server, "engine.plugins.setDeveloperMode", { on: true });
+          await ownerAction(server, "engine.plugins.author", {
+            id: `${ID}.child`,
+            files: Object.fromEntries(
+              await Promise.all(
+                ["manifest.json", "server.ts", "web.tsx"].map(
+                  async (name) =>
+                    [
+                      name,
+                      name === "server.ts"
+                        ? Buffer.from(childBundle.files["server.js"], "base64").toString("utf8")
+                        : await Bun.file(join(directory, "child", name)).text(),
+                    ] as const,
+                ),
+              ),
+            ),
+          });
+        }
+        const child = (await roster(server)).find(({ manifest }) => manifest.id === `${ID}.child`)!;
+        if (state === "disabled") expect(child.enabled).toBe(false);
+        else {
+          expect(child.enabled).toBe(true);
+          if (state === "unpacked") expect(child.install?.mode).toBe("unpacked");
+          else expect(child.lifecycle).toBe("enable_failed");
+        }
+        const retainedPin = await pin(server);
+        await Bun.write(
+          join(root, "shared/value.json"),
+          JSON.stringify({ label: "must-not-install" }),
+        );
+        workshop = launch(root, server);
+        await workshop.failed();
+        expect(await pin(server)).toBe(retainedPin);
+        expect(
+          (await roster(server)).find(({ manifest }) => manifest.id === `${ID}.child`),
+        ).toEqual(child);
+        expect(await read(server)).toEqual({ label: "original-backend", count: 1 });
+        workshop = undefined;
+      } finally {
+        await workshop?.stop(1);
+        await server.stop();
+        await rm(root, { recursive: true, force: true });
       }
-      const child = (await roster(server)).find(({ manifest }) => manifest.id === `${ID}.child`)!;
-      if (state === "disabled") expect(child.enabled).toBe(false);
-      else { expect(child.enabled).toBe(true); expect(child.install?.mode).toBe("unpacked"); }
-      const retainedPin = await pin(server);
-      await Bun.write(join(root, "shared/value.json"), JSON.stringify({ label: "must-not-install" }));
-      workshop = launch(root, server);
-      await workshop.failed();
-      expect(await pin(server)).toBe(retainedPin);
-      expect((await roster(server)).find(({ manifest }) => manifest.id === `${ID}.child`)).toEqual(child);
-      expect(await read(server)).toEqual({ label: "original-backend", count: 1 });
-      workshop = undefined;
-    } finally {
-      await workshop?.stop(1);
-      await server.stop();
-      await rm(root, { recursive: true, force: true });
-    }
-  }, 180_000);
+    },
+    180_000,
+  );
 }

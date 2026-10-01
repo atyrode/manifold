@@ -497,6 +497,8 @@ The frontend/workshop SDK comes from the separately selected current `manifoldRo
 Every source-family row must already be explicitly installed on the hub with matching
 manifest, action declarations and dependency stamps. Workshop startup does not perform
 that initial installation or grant new authority; a missing/mismatched baseline is a hold.
+The hub must advertise `engine.plugins.install`'s retained-installation input; this launcher
+does not upgrade it or fall back to ordinary installation when that API is unavailable.
 `workshop.example.json` records the non-secret configuration contract:
 
 - `manifoldRoot`: absolute current Manifold source checkout with the workshop SDK and
@@ -514,6 +516,9 @@ dotenv loading, clears inherited owner-key overrides and uses the SDK's supporte
 `resolveOwnerKey(undefined, deliver)` against the existing hub container. **Start grants
 plugin installation authority**, unlike source-only Fast Refresh. It does not install a
 native dependency, restart the hub, change its data volume or touch terminals/OMP sessions.
+The unit retains the configured Docker client's non-secret local Unix-socket transport so
+delivery reaches the same daemon outside the terminal. Docker authentication and Manifold
+credentials are not copied into the unit.
 
 After the separately authorized and disruption-reviewed Caddy activation:
 
@@ -526,6 +531,9 @@ bash infra/previews/workshop.sh stop
 
 `start` validates the non-secret config without resolving a credential, then installs,
 enables and restarts only its owned unit; linger makes it survive logout/reboot.
+Terminal configuration and installation-baseline refusals exit with status 78 and prevent
+automatic restart; correct the prerequisite and run `start` again. Compilation errors during
+an admitted workshop retain the previous backend and recover when the source is corrected.
 `status` shows selected service properties and loopback listener availability.
 `stop` disables/removes only that unit, letting the SDK release its watchers, listener,
 children and temporary build resources. Source, saved config, installed bundles and all

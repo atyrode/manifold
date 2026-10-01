@@ -51,35 +51,54 @@ async function absolutePath(value: unknown, field: string, directory: boolean): 
 async function configuration(file: string): Promise<Configuration> {
   const value: unknown = JSON.parse(await Bun.file(file).text());
   const fields: Record<string, true> = {
-    manifoldRoot: true, sourceRoot: true, buildModule: true, hubUrl: true,
-    frontendPort: true, publicHost: true, deliver: true,
+    manifoldRoot: true,
+    sourceRoot: true,
+    buildModule: true,
+    hubUrl: true,
+    frontendPort: true,
+    publicHost: true,
+    deliver: true,
   };
   if (!record(value) || Object.keys(value).some((key) => !Object.hasOwn(fields, key))) {
     throw new Error("workshop config must contain only the documented non-secret fields");
   }
   // This launcher owns the integrated preview only. A different hub, delivery target or
   // public origin needs its own installation-authority and routing review.
-  if (value.hubUrl !== "http://127.0.0.1:7912" || value.frontendPort !== 7913 ||
-      value.publicHost !== "preview.manifold.tyrode.dev" ||
-      value.deliver !== "docker:manifold-dev-manifold-1") {
-    throw new Error("workshop config must select the existing integrated preview and its loopback ports");
+  if (
+    value.hubUrl !== "http://127.0.0.1:7912" ||
+    value.frontendPort !== 7913 ||
+    value.publicHost !== "preview.manifold.tyrode.dev" ||
+    value.deliver !== "docker:manifold-dev-manifold-1"
+  ) {
+    throw new Error(
+      "workshop config must select the existing integrated preview and its loopback ports",
+    );
   }
   const manifoldRoot = await absolutePath(value.manifoldRoot, "manifoldRoot", true);
   const sourceRoot = await absolutePath(value.sourceRoot, "sourceRoot", true);
-  const buildModule = value.buildModule === undefined
-    ? undefined
-    : await absolutePath(value.buildModule, "buildModule", false);
+  const buildModule =
+    value.buildModule === undefined
+      ? undefined
+      : await absolutePath(value.buildModule, "buildModule", false);
   if (buildModule !== undefined) {
     const withinSource = relative(sourceRoot, buildModule);
     if (withinSource === ".." || withinSource.startsWith(`..${sep}`) || isAbsolute(withinSource)) {
       throw new Error("buildModule must belong to sourceRoot");
     }
   }
-  await absolutePath(join(manifoldRoot, "packages/plugin-kit/src/workshop.ts"), "workshop SDK", false);
+  await absolutePath(
+    join(manifoldRoot, "packages/plugin-kit/src/workshop.ts"),
+    "workshop SDK",
+    false,
+  );
   return {
-    manifoldRoot, sourceRoot, ...(buildModule === undefined ? {} : { buildModule }),
-    hubUrl: value.hubUrl, frontendPort: value.frontendPort,
-    publicHost: value.publicHost, deliver: value.deliver,
+    manifoldRoot,
+    sourceRoot,
+    ...(buildModule === undefined ? {} : { buildModule }),
+    hubUrl: value.hubUrl,
+    frontendPort: value.frontendPort,
+    publicHost: value.publicHost,
+    deliver: value.deliver,
   };
 }
 
@@ -120,17 +139,26 @@ async function run(config: Configuration): Promise<void> {
 if (import.meta.main) {
   const [command, file, ...extra] = process.argv.slice(2);
   if ((command !== "validate" && command !== "run") || file === undefined || extra.length !== 0) {
-    console.error("usage: bun --no-env-file infra/previews/workshop-run.ts validate|run CONFIG.json");
+    console.error(
+      "usage: bun --no-env-file infra/previews/workshop-run.ts validate|run CONFIG.json",
+    );
     process.exit(2);
   }
   try {
     const config = await configuration(file);
     if (command === "validate") console.log("workshop configuration valid; no credential resolved");
     else await run(config);
-  } catch {
+  } catch (error) {
     // Author build code and delivery subprocess errors can contain arbitrary values.
     // Never serialize them into the persistent user journal or command output.
-    console.error(`workshop launcher failed stage=${failureStage}; check config, source/SDK dependencies and supported delivery access`);
-    process.exitCode = 1;
+    console.error(
+      `workshop launcher failed stage=${failureStage}; check config, source/SDK dependencies and supported delivery access`,
+    );
+    const terminal =
+      failureStage !== "workshop-runtime" ||
+      (record(error) &&
+        (error.reason === "installation_required" ||
+          error.reason === "installation_api_unavailable"));
+    process.exitCode = terminal ? 78 : 1;
   }
 }
