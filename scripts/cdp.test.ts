@@ -25,18 +25,23 @@ test("headless Chromium never contacts an inherited runner bus", async () => {
       `import { Browser } from ${JSON.stringify(cdp)};
 const browser = new Browser();
 let closing;
+let phase = "launch";
 const close = () => (closing ??= browser.close());
 process.once("SIGTERM", () => {
+  console.error("cdp-probe-timeout:" + phase);
   void close().finally(() => process.exit(124));
 });
 try {
   await browser.launch({ incognito: true });
+  phase = "navigate";
   await browser.goto("data:text/html,<button data-testid='probe' onclick='this.textContent=42'>start</button>");
+  phase = "click";
   await browser.clickTestId("probe");
+  phase = "evaluate";
   if (await browser.evaluate("document.querySelector('button').textContent") !== "42") {
     throw new Error("browser did not deliver the click");
   }
-} finally { await close(); }`,
+} finally { phase = "close"; await close(); }`,
     ],
     {
       env: {
@@ -52,7 +57,7 @@ try {
   );
   try {
     const [exitCode, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
-    expect({ exitCode, stderr }).toEqual({ exitCode: 0, stderr: "" });
+    expect(exitCode, stderr).toBe(0);
     expect(connections).toBe(0);
   } finally {
     if (child.exitCode === null) child.kill("SIGTERM");

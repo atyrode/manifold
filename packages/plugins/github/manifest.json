@@ -1,0 +1,20 @@
+{
+  "id": "atyrode.github",
+  "version": "1.0.0",
+  "title": "GitHub issue publication",
+  "description": "Optional reviewed issue publication through preprovisioned owner-native GitHub services, with durable unknown-effect reconciliation.",
+  "capabilities": [
+    "atyrode.github:configure",
+    "atyrode.github:read",
+    "atyrode.github:prepare",
+    "atyrode.github:publish",
+    "services:configure",
+    "services:read",
+    "services:invoke"
+  ],
+  "dataVersion": { "major": 1, "minor": 0 },
+  "database": { "maxBytes": 33554432 },
+  "contributes": {},
+  "entry": { "server": true },
+  "links": { "repository": "https://github.com/atyrode/manifold" }
+}

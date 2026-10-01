@@ -190,6 +190,19 @@
         "@types/bun": "^1.3.2",
       },
     },
+    "packages/plugins/github": {
+      "name": "@manifold-plugin/github",
+      "version": "1.0.0",
+      "dependencies": {
+        "@manifold/plugin-kit": "workspace:*",
+        "@manifold/protocol": "workspace:*",
+        "zod": "4.4.3",
+      },
+      "devDependencies": {
+        "@manifold/plugin": "workspace:*",
+        "@types/bun": "^1.3.2",
+      },
+    },
     "packages/plugins/index": {
       "name": "@manifold-plugin/index",
       "dependencies": {
@@ -564,6 +577,8 @@
     "@manifold-plugin/debug": ["@manifold-plugin/debug@workspace:packages/plugins/debug"],
 
     "@manifold-plugin/events": ["@manifold-plugin/events@workspace:packages/plugins/events"],
+
+    "@manifold-plugin/github": ["@manifold-plugin/github@workspace:packages/plugins/github"],
 
     "@manifold-plugin/index": ["@manifold-plugin/index@workspace:packages/plugins/index"],
 
