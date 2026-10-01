@@ -1359,6 +1359,137 @@ test.each(["fresh", "recovered"] as const)(
   },
 );
 
+test.each(["unchanged", "implementation", "profile", "manifest"] as const)(
+  "cold harness restoration conjunctively pins server binding while retaining native artifact (%s)",
+  async (change) => {
+    const dir = mkdtempSync(join(tmpdir(), "manifold-cold-harness-binding-"));
+    const path = join(dir, "hub.sqlite");
+    const f = await fixture(undefined, undefined, path);
+    let closed = false;
+    let recoveredStore: ServerStore | undefined;
+    let recoveredHost: PluginHost | undefined;
+    try {
+      // This fixture bypasses MachineGateway; persist the same admitted owner fact.
+      const machineId = f.descriptor.machineId;
+      f.store.touchMachine(
+        machineId,
+        f.store.getMachine(machineId)!.name,
+        f.runtime.now(),
+        f.owner.terminalHostId ?? null,
+      );
+      const harness = f.definition.harness!;
+      const launch = harness.launch;
+      harness.launch = async (ctx, run, agent, target) => {
+        if (run.session !== null) {
+          ctx.jobs.execute(harnessJob(f, "cold-harness"));
+          ctx.jobs.schedule(harnessSchedule(f, "cold-harness"));
+        }
+        return launch.call(harness, ctx, run, agent, target);
+      };
+      const { run } = await f.create();
+      const create = await f.openCreated((await f.launch(run.id)).runtime);
+      expect(result(await f.host.dispatch(f.root, "core.terminals.restart", {
+        terminalId: create.terminalId,
+      }))).toEqual({});
+      const bound = f.service.jobs.get("cold-harness")!;
+      const schedule = f.service.jobSchedules.listSchedules()[0]!;
+      const independent = f.service.execute(f.root, pluginId, "independent", {
+        ...harnessJob(f, "independent"),
+      });
+      for (const job of [bound, independent]) {
+        const start = f.commands.find((command) =>
+          command.type === "start" && command.request.jobId === job.request.jobId);
+        if (start?.type !== "start") throw new Error("native effect was not admitted");
+        f.started(start);
+      }
+      const originalAction = bound.authoritySnapshot!.action!;
+      expect(originalAction.actionName).toBe("core.terminals.restart");
+      expect(originalAction.requirements[0]).toEqual({
+        cap: "terminals:write",
+        ref: { kind: "container", containerId: f.containerId },
+      });
+      let restoredDefinition: ServerPluginDef = {
+        ...f.definition,
+        harness: { ...harness },
+      };
+      if (change === "implementation") {
+        const previous = restoredDefinition.harness!.launch;
+        restoredDefinition.harness!.launch = async (ctx, currentRun, agent, target) => ({
+          ...await previous(ctx, currentRun, agent, target),
+          reviewDigest: "b".repeat(64),
+        });
+      } else if (change === "profile") {
+        restoredDefinition = {
+          ...restoredDefinition,
+          harness: {
+            ...restoredDefinition.harness!,
+            profileSchema: z.strictObject({
+              label: z.string().min(1),
+              reviewedMode: z.literal("interactive").optional(),
+            }),
+          },
+        };
+      } else if (change === "manifest") {
+        restoredDefinition = {
+          ...restoredDefinition,
+          manifest: { ...restoredDefinition.manifest, version: "2.0.0" },
+        };
+      }
+      f.close();
+      closed = true;
+      recoveredStore = new ServerStore(openDatabase(path));
+      const store = recoveredStore;
+      let service: JobService;
+      const auth = new AuthService(store, "a".repeat(64), f.runtime, {
+        decide: (request) => service.decide(request),
+      });
+      const rooms = new RoomManager(store, f.runtime, f.clock, silentLogger, testTileTrees);
+      const broker = new TerminalBroker(store, auth, rooms, f.runtime, f.clock, silentLogger,
+        () => "http://localhost:7777", testTileTrees);
+      recoveredHost = await testPluginHost(store, auth, rooms, broker, f.runtime, {
+        settingsPlugins: [restoredDefinition],
+      });
+      service = new JobService(store, auth, f.runtime);
+      recoveredHost.setJobs(service);
+      broker.setJobs(service);
+      f.proveOwner(service);
+      expect(service.jobs.installation(machineId, pluginId)).toMatchObject({
+        revision: "r1",
+        artifact: hash,
+        enabled: true,
+      });
+      f.runtime.time = schedule.firstNominalAt;
+      service.tick();
+      expect(service.jobs.get(bound.request.jobId)?.request).toEqual(bound.request);
+      expect(service.jobs.get(bound.request.jobId)?.authoritySnapshot?.action).toEqual(originalAction);
+      expect(service.jobs.cancellation(independent.request.jobId)).toBeNull();
+      expect(service.jobs.get(independent.request.jobId)?.state).toBe("started");
+      const occurrenceId = `schedule-${createHash("sha256")
+        .update(canonicalJobJson([schedule.scheduleId, schedule.revision, schedule.firstNominalAt]))
+        .digest("hex")}`;
+      if (change === "unchanged") {
+        expect(service.jobs.cancellation(bound.request.jobId)).toBeNull();
+        expect(service.jobs.get(occurrenceId)?.state).toBe("start-committed");
+        expect(service.jobSchedules.getOccurrence(occurrenceId)?.state).toBe("admitted");
+        expect(f.commands.filter((command) =>
+          command.type === "start" && command.request.jobId === occurrenceId)).toHaveLength(1);
+      } else {
+        expect(service.jobs.cancellation(bound.request.jobId)?.mode).toBe("cancel");
+        expect(service.jobs.get(occurrenceId)).toBeNull();
+        expect(service.jobSchedules.getOccurrence(occurrenceId)).toBeNull();
+        expect(service.jobSchedules.listSchedules()).toEqual([]);
+        expect(f.commands.filter((command) =>
+          command.type === "start" && command.request.jobId === occurrenceId)).toEqual([]);
+      }
+    } finally {
+      recoveredHost?.close();
+      recoveredStore?.close();
+      if (!closed) f.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);
+
 test("restart transport capability cannot override the negotiated protocol floor", async () => {
   const f = await fixture();
   try {
