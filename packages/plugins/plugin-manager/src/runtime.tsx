@@ -1,5 +1,9 @@
 import type { SectionProps } from "@manifold/plugin";
-import { FALLBACK_POLL_MS, MACHINES_RESOURCE, usePolledResource } from "@manifold/plugin/hooks";
+import {
+  FALLBACK_POLL_MS,
+  MACHINES_RESOURCE_OPTIONS,
+  usePolledResource,
+} from "@manifold/plugin/hooks";
 import {
   canonicalJobJson,
   formatManifoldUri,
@@ -1152,12 +1156,10 @@ export function MachineRuntime({
     () => host.client.machines(),
     FALLBACK_POLL_MS,
     {
-      key: MACHINES_RESOURCE,
-      initial: null,
+      ...MACHINES_RESOURCE_OPTIONS,
       enabled: entry.manifest.machine !== undefined,
       topics: host.topics.machines,
       events: host.client,
-      requiresWorkspaceEvents: true,
       onError: (reason) => setFailure(failureMessage(reason)),
     },
   );

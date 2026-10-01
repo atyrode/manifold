@@ -60,6 +60,14 @@ export const CONTAINER_TERMINALS_RESOURCE = "core.terminals.listByContainer";
 export const ATTENDANCE_RESOURCE = "attendance";
 export const MACHINES_RESOURCE = "core.machines.list";
 
+/** A refused inventory is UNKNOWN, never confirmation of the last online/offline rows. */
+export const MACHINES_RESOURCE_OPTIONS = {
+  key: MACHINES_RESOURCE,
+  initial: null,
+  resetOnError: true,
+  requiresWorkspaceEvents: true,
+} as const;
+
 /**
  * THE fallback cadence, and the only reason a number like this still exists (ADR 0012, wave 2).
  *
@@ -135,6 +143,12 @@ export interface PolledResourceOptions<T> {
    */
   readonly equal?: PolledEquality<T>;
   readonly onError?: (reason: unknown) => void;
+  /**
+   * Publish `initial` to every reader when a read fails, and poll until a fresh eligible
+   * catch-up succeeds. Opt-in: other resources retain their last answer on failure.
+   * Readers sharing a key must agree on this policy and the initial value.
+   */
+  readonly resetOnError?: boolean;
   /** Accepted reads, including unchanged answers; lets a reader clear a transient error. */
   readonly onSuccess?: () => void;
   /**
@@ -187,6 +201,8 @@ interface Subscriber {
   readonly binding: Pick<FeedAttachment, "events" | "topics" | "requiresWorkspaceEvents">;
   /** Reading and comparison follow a live reader, never a departed first attachment. */
   readonly fetchFn: () => Promise<unknown>;
+  readonly initial: unknown;
+  readonly resetOnError: boolean;
   readonly equal: PolledEquality<never> | undefined;
   readonly hold: () => boolean | undefined;
   readonly onError: (reason: unknown) => void;
@@ -320,12 +336,12 @@ function scheduleRead(feed: Feed, reason: ReadReason, delayMs = EVENT_SETTLE_MS)
   }, delayMs);
 }
 
-function publish(feed: Feed, incoming: unknown): void {
+function publish(feed: Feed, incoming: unknown, reset = false): void {
   const equal = feed.subscribers.values().next().value?.equal as
     PolledEquality<unknown> | undefined;
   if (
     feed.seeded &&
-    (equal === undefined ? digest(incoming) === feed.stamp : equal(feed.value, incoming))
+    (reset || equal === undefined ? digest(incoming) === feed.stamp : equal(feed.value, incoming))
   ) {
     return;
   }
@@ -369,6 +385,11 @@ function fetchOnce(feed: Feed, reason: ReadReason): void {
     })
     .catch((reason_: unknown) => {
       if (issued !== feed.generation) return;
+      if (reader.resetOnError) {
+        feed.caughtUp = false;
+        publish(feed, reader.initial, true);
+        arm(feed);
+      }
       for (const subscriber of [...feed.subscribers]) subscriber.onError(reason_);
     })
     .finally(() => {
@@ -606,6 +627,7 @@ export interface FeedAttachment {
   readonly equal?: PolledEquality<never> | undefined;
   readonly hold?: (() => boolean | undefined) | undefined;
   readonly onError?: ((reason: unknown) => void) | undefined;
+  readonly resetOnError?: boolean | undefined;
   /** Successful accepted reads, independently of whether the value changed. */
   readonly onSuccess?: (() => void) | undefined;
   /** Called when the published answer CHANGES; never on an equal response. */
@@ -662,6 +684,12 @@ export function attachFeed(attachment: FeedAttachment): () => void {
     intervalMs: attachment.intervalMs,
     binding: attachment,
     fetchFn: attachment.fetchFn,
+    get initial() {
+      return attachment.initial;
+    },
+    get resetOnError() {
+      return attachment.resetOnError ?? false;
+    },
     get equal() {
       return attachment.equal;
     },
@@ -734,6 +762,7 @@ export function usePolledResource<T>(
     hold,
     equal,
     onError,
+    resetOnError = false,
     onSuccess,
     restartKey = null,
     topics = NO_TOPICS,
@@ -760,6 +789,7 @@ export function usePolledResource<T>(
     hold,
     equal,
     onError,
+    resetOnError,
     onSuccess,
     initial,
     events,
@@ -773,6 +803,7 @@ export function usePolledResource<T>(
       hold,
       equal,
       onError,
+      resetOnError,
       onSuccess,
       initial,
       events,
@@ -803,6 +834,9 @@ export function usePolledResource<T>(
         fetchFn: () => current.fetchFn(),
         get equal() {
           return current.equal as PolledEquality<never> | undefined;
+        },
+        get resetOnError() {
+          return current.resetOnError;
         },
         hold: () => current.hold?.(),
         onError: (reason) => current.onError?.(reason),

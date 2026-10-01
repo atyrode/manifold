@@ -38,7 +38,7 @@ import {
 import {
   COMPOSITION_TREE_CLASSES,
   FALLBACK_POLL_MS,
-  MACHINES_RESOURCE,
+  MACHINES_RESOURCE_OPTIONS,
   TilePreviewOverlay,
   TileTree,
   TileZoneDebug,
@@ -254,11 +254,9 @@ export function CompositionView({
     fetchMachines,
     FALLBACK_POLL_MS,
     {
-      key: MACHINES_RESOURCE,
-      initial: null,
+      ...MACHINES_RESOURCE_OPTIONS,
       topics: host.topics.machines,
       events: host.client,
-      requiresWorkspaceEvents: true,
     },
   );
   const [focusedTileId, setFocusedTileId] = useState<string | null>(null);

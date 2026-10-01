@@ -1,4 +1,8 @@
-import { FALLBACK_POLL_MS, MACHINES_RESOURCE, usePolledResource } from "@manifold/plugin/hooks";
+import {
+  FALLBACK_POLL_MS,
+  MACHINES_RESOURCE_OPTIONS,
+  usePolledResource,
+} from "@manifold/plugin/hooks";
 import type { PortableSectionProps } from "@manifold/plugin";
 import type { MachineSummary, UiIcon } from "@manifold/protocol";
 import {
@@ -144,11 +148,9 @@ export function MachinesSection({ host }: PortableSectionProps): ReactElement {
     fetchMachines,
     FALLBACK_POLL_MS,
     {
-      key: MACHINES_RESOURCE,
-      initial: null,
+      ...MACHINES_RESOURCE_OPTIONS,
       topics: host.topics.machines,
       events: host.client,
-      requiresWorkspaceEvents: true,
       onError: (reason) =>
         setInventoryFailure(
           reason instanceof Error ? reason.message : "Could not read machine inventory",
@@ -450,7 +452,7 @@ export function MachinesSection({ host }: PortableSectionProps): ReactElement {
       <Text tone="muted">
         {machines === null
           ? "Machine inventory not yet available"
-          : `${inventoryFailure === null ? "" : "Last-known inventory: "}${inventory.online}/${machines.length} online`}
+          : `${inventory.online}/${machines.length} online`}
       </Text>
       {inventoryFailure === null ? null : (
         <Text tone="danger" wrap role="alert">

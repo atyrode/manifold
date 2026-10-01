@@ -31,7 +31,7 @@ import type { CanvasTool } from "./contract.ts";
 import {
   ContainerOverlayOutlet,
   FALLBACK_POLL_MS,
-  MACHINES_RESOURCE,
+  MACHINES_RESOURCE_OPTIONS,
   ProjectionScopeProvider,
   TitlebarOutlet,
   extendProjectionScope,
@@ -498,11 +498,9 @@ export function CanvasView({
     fetchMachines,
     FALLBACK_POLL_MS,
     {
-      key: MACHINES_RESOURCE,
-      initial: null,
+      ...MACHINES_RESOURCE_OPTIONS,
       topics: host.topics.machines,
       events: host.client,
-      requiresWorkspaceEvents: true,
       onError: (reason) =>
         notify(reason instanceof Error ? reason.message : "Could not load machines", {
           lifetime: "sticky",

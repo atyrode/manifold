@@ -8,6 +8,7 @@ export {
   FALLBACK_POLL_MS,
   INDEX_RESOURCE,
   MACHINES_RESOURCE,
+  MACHINES_RESOURCE_OPTIONS,
   TERMINALS_RESOURCE,
   type PolledResource,
   type PolledResourceOptions,

@@ -3,6 +3,7 @@ import type { ManifoldRef } from "@manifold/protocol";
 import type { FeedEvents, SessionStatus } from "../src/host.ts";
 import {
   attachFeed,
+  MACHINES_RESOURCE_OPTIONS,
   polledFeedReport,
   rebindFeed,
   resetPolledResources,
@@ -347,7 +348,7 @@ describe("a subscription-backed feed", () => {
     index.release();
   });
 
-  test("an unchanged successful read recovers every reader without republishing data", async () => {
+  test("a retaining feed recovers every reader without republishing unchanged data", async () => {
     const socket = fakeSocket("open");
     const failures = new Set<string>();
     let failing = false;
@@ -355,13 +356,13 @@ describe("a subscription-backed feed", () => {
     let notices = 0;
     const attach = (id: string) =>
       attachFeed({
-        feedId: "core.machines.list|null",
+        feedId: "core.index.read|null",
         intervalMs: 2_000,
         initial: null,
         fetchFn: async () => {
           reads += 1;
           if (failing) throw new Error("temporary read failure");
-          return { machines: [{ id: "machine", online: true }] };
+          return { items: [{ id: "container" }] };
         },
         notify: () => {
           notices += 1;
@@ -373,7 +374,7 @@ describe("a subscription-backed feed", () => {
           failures.delete(id);
         },
         events: socket,
-        topics: [MACHINES_TOPIC],
+        topics: [INDEX_TOPIC],
       });
     const releaseFirst = attach("first");
     const releaseSecond = attach("second");
@@ -385,6 +386,8 @@ describe("a subscription-backed feed", () => {
     clock.advance(50);
     await flush();
     expect(failures).toEqual(new Set(["first", "second"]));
+    expect(notices).toBe(2);
+    expect(polledFeedReport()[0]?.mode).toBe("events");
 
     failing = false;
     socket.fire();
@@ -800,6 +803,78 @@ describe("event eligibility and subscription ordering", () => {
     expect(socket.syncWatermarks).toEqual([1]);
     expect(polledFeedReport()[0]?.mode).toBe("events");
     index.release();
+  });
+
+  test("a failed nullable snapshot resumes polling until a fresh eligible catch-up succeeds", async () => {
+    const socket = fakeSocket("open");
+    const refusal = new Error("plugin_disabled");
+    const callbacks: string[] = [];
+    let reads = 0;
+    let response: Promise<unknown> = Promise.resolve([{ id: "machine", online: false }]);
+    const release = attachFeed({
+      ...MACHINES_RESOURCE_OPTIONS,
+      feedId: `${MACHINES_RESOURCE_OPTIONS.key}|null`,
+      intervalMs: 2_000,
+      fetchFn: () => {
+        reads += 1;
+        return response;
+      },
+      // Error invalidation cannot be suppressed by the resource's content comparator.
+      equal: () => true,
+      notify: () => {
+        callbacks.push("published");
+      },
+      onError: (reason) => {
+        expect(reason).toBe(refusal);
+        expect(polledFeedReport()[0]?.mode).toBe("timer");
+        callbacks.push("refused");
+      },
+      onSuccess: () => {
+        callbacks.push("accepted");
+      },
+      events: socket,
+      topics: [MACHINES_TOPIC],
+    });
+    await flush();
+    expect(callbacks).toEqual(["published", "accepted"]);
+    expect(polledFeedReport()[0]?.mode).toBe("events");
+
+    response = Promise.reject(refusal);
+    socket.fire();
+    clock.advance(50);
+    await flush();
+    expect(callbacks).toEqual(["published", "accepted", "published", "refused"]);
+    expect(reads).toBe(2);
+    expect(polledFeedReport()[0]?.intervalMs).toBe(2_000);
+    clock.advance(2_000);
+    await flush();
+    expect(reads).toBe(3);
+    // Repeated refusals remain visible, but UNKNOWN is only published once.
+    expect(callbacks).toEqual(["published", "accepted", "published", "refused", "refused"]);
+
+    const oldCatchUp = Promise.withResolvers<unknown>();
+    response = oldCatchUp.promise;
+    clock.advance(2_000);
+    socket.changeAuthority(false);
+    oldCatchUp.resolve([{ id: "machine", online: true }]);
+    await flush();
+    expect(reads).toBe(4);
+    expect(polledFeedReport()[0]?.mode).toBe("timer");
+
+    const catchUp = Promise.withResolvers<unknown>();
+    response = catchUp.promise;
+    socket.changeAuthority(true);
+    await flush();
+    expect(reads).toBe(5);
+    expect(polledFeedReport()[0]?.mode).toBe("timer");
+    catchUp.resolve([{ id: "machine", online: true }]);
+    await flush();
+    expect(polledFeedReport()[0]?.mode).toBe("events");
+    expect(polledFeedReport()[0]?.intervalMs).toBeNull();
+    clock.advance(60_000);
+    await flush();
+    expect(reads).toBe(5);
+    release();
   });
 
   test("an event during the qualifying read still queues the newer snapshot", async () => {
