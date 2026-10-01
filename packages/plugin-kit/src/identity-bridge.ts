@@ -51,6 +51,7 @@ export type GuestIdentityV2 = {
   readonly [M in IdentityV2Method]: (...args: z.infer<(typeof IdentityV2BridgeSchemas)[M]["args"]>) =>
     Promise<IdentityV2Answer<z.infer<(typeof IdentityV2BridgeSchemas)[M]["result"]>>>;
 };
+// Entries preserve each method's result schema; Object.fromEntries erases that correlation.
 export const IdentityV2AnswerSchemas = Object.fromEntries(
   Object.entries(IdentityV2BridgeSchemas).map(([name, schema]) => [
     name,
@@ -59,4 +60,8 @@ export const IdentityV2AnswerSchemas = Object.fromEntries(
       z.strictObject({ ok: z.literal(false), code: z.string().min(1).max(128), message: z.string().max(2048) }),
     ]),
   ]),
-) as Readonly<Record<IdentityV2Method, z.ZodType>>;
+) as unknown as {
+  readonly [M in IdentityV2Method]: z.ZodType<
+    IdentityV2Answer<z.infer<(typeof IdentityV2BridgeSchemas)[M]["result"]>>
+  >;
+};

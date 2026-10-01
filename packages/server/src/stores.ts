@@ -1051,7 +1051,7 @@ function toPluginInstall(row: PluginInstallDbRow): PluginInstallRow {
     ...(row.mode === "unpacked" ? { mode: "unpacked" as const } : {}),
     ...(row.installer_credential === null
       ? {}
-      : { installer: JobCredentialSchema.parse(JSON.parse(row.installer_credential)) }),
+      : { installer: CredentialReferenceSchema.parse(JSON.parse(row.installer_credential)) }),
   };
 }
 

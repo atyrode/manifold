@@ -985,9 +985,13 @@ export class IsolateSupervisor implements IsolateRunner {
         } else if (frame.method === "prepare.terminals.resolveMachine") {
           if (pending.served.ctx.prepareResolveMachine === undefined)
             throw new Error("machine preparation is not available for this request");
-          result = await pending.served.ctx.prepareResolveMachine(
-            ...IsolatePreparationArgsSchemas[frame.method].parse(frame.args),
-          );
+          const [input] = IsolatePreparationArgsSchemas[frame.method].parse(frame.args);
+          result = await pending.served.ctx.prepareResolveMachine({
+            ...(input.machineId === undefined ? {} : { machineId: input.machineId }),
+            ...(input.runtimeMachineId === undefined
+              ? {}
+              : { runtimeMachineId: input.runtimeMachineId }),
+          });
         } else {
           result = await serveActionPreparation(
             frame.method, frame.args, pending.served.ctx.preparation,

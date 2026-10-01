@@ -1000,10 +1000,20 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
             ...(input.runtime === undefined ? {} : { runtimeMachineId: input.runtime.machineId }),
           }]),
         ),
-      stored: async (terminalId: string) =>
-        IsolatePreparationResultSchemas["prepare.terminals.stored"].parse(
+      stored: async (terminalId: string) => {
+        const stored = IsolatePreparationResultSchemas["prepare.terminals.stored"].parse(
           await call("prepare.terminals.stored", [terminalId]),
-        ),
+        );
+        if (stored === null) return null;
+        return {
+          machineId: stored.machineId,
+          containerId: stored.containerId,
+          governed: stored.governed,
+          ...(stored.nativeRequirements === undefined
+            ? {}
+            : { nativeRequirements: stored.nativeRequirements }),
+        };
+      },
     }),
     containers: Object.freeze({
       placement: async (containerId: string) =>
