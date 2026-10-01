@@ -1090,6 +1090,9 @@ interface CachedActionBinding {
   readonly machine: PluginDef["manifest"]["machine"];
   readonly definitions: readonly ServerPluginDef[];
   readonly pluginDef: ServerPluginDef | undefined;
+  readonly sourceManifest: ServerPluginDef["manifest"] | undefined;
+  readonly sourceCapabilities: readonly AuthoredCap[] | undefined;
+  readonly sourceCapValues: readonly AuthoredCap[] | undefined;
   readonly handler: ActionHandler | undefined;
   readonly caps: AnyActionDef["caps"];
   readonly delegates: AnyActionDef["delegates"];
@@ -1123,10 +1126,7 @@ function sameActionRequirements(
   for (let index = 0; index < current.length; index++) {
     const requirement = current[index]!;
     const previous = captured[index]!;
-    if (
-      requirement.cap !== previous.cap ||
-      !sameOrderedValues(requirement.target, previous.target)
-    )
+    if (requirement.cap !== previous.cap || !sameOrderedValues(requirement.target, previous.target))
       return false;
   }
   return true;
@@ -5219,6 +5219,9 @@ export class PluginHost {
       cached.machine === entry.plugin.machine &&
       cached.manifestCapabilities === entry.plugin.capabilities &&
       sameOrderedValues(entry.plugin.capabilities, cached.manifestCapValues) &&
+      cached.sourceManifest === pluginDef?.manifest &&
+      cached.sourceCapabilities === pluginDef?.manifest.capabilities &&
+      sameOrderedValues(pluginDef?.manifest.capabilities, cached.sourceCapValues) &&
       cached.declaration.name === entry.def.name &&
       cached.declaration.input === entry.def.input &&
       cached.declaration.result === entry.def.result &&
@@ -5301,6 +5304,9 @@ export class PluginHost {
       manifestCapValues: [...entry.plugin.capabilities],
       definitions: this.defs,
       pluginDef,
+      sourceManifest: pluginDef?.manifest,
+      sourceCapabilities: pluginDef?.manifest.capabilities,
+      sourceCapValues: pluginDef === undefined ? undefined : [...pluginDef.manifest.capabilities],
       handler,
       caps: entry.def.caps,
       delegates: entry.def.delegates,
@@ -5657,8 +5663,7 @@ export class PluginHost {
           preparationContext,
           preparation,
         );
-        if (!bindingCurrent())
-          return refuse("forbidden", "action binding unavailable");
+        if (!bindingCurrent()) return refuse("forbidden", "action binding unavailable");
         parsed.data = prepared.args;
         preparedEvidence = prepared;
       } catch (error) {

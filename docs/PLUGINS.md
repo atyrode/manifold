@@ -617,6 +617,9 @@ the birth or restart, not merely after a command is sent. Credential, sponsor, c
 installation, resource, consent and native-owner identity guards remain live. Restored effects
 recheck the current installation against the capabilities actually admitted, including the
 selected prepared requirements; unused alternatives do not consume that ceiling.
+Durable restoration repeats both caller authorization and revision-bound native consent
+for every captured governed requirement, including source-job input reads; recovery does
+not turn a capability grant into consent.
 Trusted harness relaunch may refresh private input only for the exact retained session and
 native identity. The host captures its fresh demand and conjunctively extends the sealed
 fence before reservation, while preserving the original ordered requirements and credential.
@@ -626,6 +629,10 @@ Installed and trusted bindings pin their verified artifact digest. Built-in sour
 also pin a once-per-process digest of actual source dependency bytes; compiled hubs hash their
 executable bytes. Deployment labels and `.dirty` version suffixes are not security identities:
 a changed imported helper makes a new process refuse the old fingerprint-bound continuation.
+Parser, handler, preparer and declaration ceilings are captured before preparation awaits.
+Cached fingerprints reuse unchanged identities and values only. Equal serialized schemas
+or function text do not revive a replaced in-process binding; unchanged cold bindings keep
+deterministic restart fingerprints.
 
 For selected high-impact delegated effects, **`agentJustification: "required"`** publishes a
 bounded declaration requirement in the same action metadata at `GET /api/protocol`.

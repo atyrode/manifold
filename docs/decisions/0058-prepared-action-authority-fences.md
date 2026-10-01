@@ -38,6 +38,12 @@ native demand and extends the same sealed fence conjunctively before reservation
 generic recipes retain their known signed admission, and failed attempts retire only their
 new private credential, never the incumbent Run.
 
+Capture mutable registration identities before awaiting preparation. Cache only unchanged
+parser, handler, preparer and ceiling values; an in-process binding revision retires even
+equal-schema or equal-function-text replacements without destabilizing unchanged cold
+recovery. Restoration rechecks the captured governed requirements' native consent, including
+input-source demand, as well as their original caller authorization.
+
 The living contracts are [Pure conditional preparation](../PLUGINS.md#pure-conditional-preparation),
 [Protocol and compatibility](../CONTRACTS.md#protocol-and-compatibility) and the executable
 inventories in [REGISTRY.md](../../REGISTRY.md). This adds no pillar, hidden door, plugin-specific
