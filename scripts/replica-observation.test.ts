@@ -69,7 +69,9 @@ function harness(auxiliary = false): Harness {
     JSON.stringify({
       dbs: ["manifold.db", ...(auxiliary ? ["plugins/plugin.db"] : [])].map((name) => ({
         path: `\${MANIFOLD_DATA_DIR}/${name}`,
-        replicas: [{ type: "file", path: `\${OBSERVER_TEST_REMOTE}/\${MANIFOLD_REPLICA_PATH}/${name}` }],
+        replicas: [
+          { type: "file", path: `\${OBSERVER_TEST_REMOTE}/\${MANIFOLD_REPLICA_PATH}/${name}` },
+        ],
       })),
     }),
   );
@@ -129,11 +131,14 @@ if (args[0] === "restore") {
     calls,
     config,
     launch(overrides: Record<string, string> = {}) {
-      const child = Bun.spawn([process.execPath, join(import.meta.dir, "replica-guard.ts"), "observe"], {
-        env: { ...env, ...overrides },
-        stdout: "pipe",
-        stderr: "pipe",
-      });
+      const child = Bun.spawn(
+        [process.execPath, join(import.meta.dir, "replica-guard.ts"), "observe"],
+        {
+          env: { ...env, ...overrides },
+          stdout: "pipe",
+          stderr: "pipe",
+        },
+      );
       const result = Promise.all([
         child.exited,
         new Response(child.stdout).text(),
@@ -144,11 +149,7 @@ if (args[0] === "restore") {
   };
 }
 
-function history(
-  path: string,
-  state?: "active" | "sealed",
-  databases: unknown[] = [],
-): void {
+function history(path: string, state?: "active" | "sealed", databases: unknown[] = []): void {
   mkdirSync(dirname(path), { recursive: true });
   const database = new Database(path);
   try {
@@ -157,9 +158,9 @@ function history(
     database.run("INSERT INTO entries VALUES ('replicated, not retained-local')");
     database.run("INSERT INTO meta VALUES ('schema_version', '1')");
     if (state !== undefined)
-      database.query("INSERT INTO meta VALUES ('replica-writer', ?)").run(
-        JSON.stringify({ version: 1, epoch: 3, id: WRITER, state, databases }),
-      );
+      database
+        .query("INSERT INTO meta VALUES ('replica-writer', ?)")
+        .run(JSON.stringify({ version: 1, epoch: 3, id: WRITER, state, databases }));
   } finally {
     database.close();
   }
@@ -167,9 +168,9 @@ function history(
 
 function terminal(result: Result): Terminal {
   const lines = `${result.out}\n${result.err}`.trim().split("\n").filter(Boolean);
-  const value = lines.map((line) => JSON.parse(line) as Terminal).findLast(
-    (line) => line.state === "admitted" || line.state === "refused",
-  );
+  const value = lines
+    .map((line) => JSON.parse(line) as Terminal)
+    .findLast((line) => line.state === "admitted" || line.state === "refused");
   if (value === undefined) throw new Error("observer did not return a terminal result");
   return value;
 }
@@ -203,44 +204,54 @@ test("sealed observation admits remote history without publishing local serving 
   checkCustody(run, selected);
 });
 
-test.each(["absent", "untracked"] as const)("%s history refuses without initialization", async (kind) => {
-  const run = harness();
-  if (kind === "untracked") history(join(run.remote, "manifold.db"));
-  const result = await run.launch().result;
-  expect(result.code).toBe(1);
-  expect(terminal(result).reason).toBe("replica_freshness_unestablished");
-  checkCustody(run, result);
-});
+test.each(["absent", "untracked"] as const)(
+  "%s history refuses without initialization",
+  async (kind) => {
+    const run = harness();
+    if (kind === "untracked") history(join(run.remote, "manifold.db"));
+    const result = await run.launch().result;
+    expect(result.code).toBe(1);
+    expect(terminal(result).reason).toBe("replica_freshness_unestablished");
+    checkCustody(run, result);
+  },
+);
 
-test.each(["", OTHER])("legacy unsealed history retains the exact writer authorization requirement", async (setting) => {
-  const run = harness();
-  const source = join(run.remote, "manifold.db");
-  history(source, "active");
-  const before = readFileSync(source);
-  const result = await run.launch({ MANIFOLD_REPLICA_TAKEOVER: setting }).result;
-  expect(result.code).toBe(1);
-  expect(terminal(result).reason).toBe("replica_writer_unsealed");
-  expect(readFileSync(source)).toEqual(before);
-  checkCustody(run, result);
-});
+test.each(["", OTHER])(
+  "legacy unsealed history retains the exact writer authorization requirement",
+  async (setting) => {
+    const run = harness();
+    const source = join(run.remote, "manifold.db");
+    history(source, "active");
+    const before = readFileSync(source);
+    const result = await run.launch({ MANIFOLD_REPLICA_TAKEOVER: setting }).result;
+    expect(result.code).toBe(1);
+    expect(terminal(result).reason).toBe("replica_writer_unsealed");
+    expect(readFileSync(source)).toEqual(before);
+    checkCustody(run, result);
+  },
+);
 
-test.each(["matching", "older", "absent", "unconfigured"] as const)("a %s auxiliary set preserves sealed complete-set admission", async (kind) => {
-  const run = harness(kind !== "unconfigured");
-  const auxiliary = join(run.remote, "plugins/plugin.db");
-  history(auxiliary);
-  const sha256 = new Bun.CryptoHasher("sha256").update(readFileSync(auxiliary)).digest("hex");
-  history(join(run.remote, "manifold.db"), "sealed", [{ path: "plugins/plugin.db", sha256 }]);
-  if (kind === "older") {
-    const database = new Database(auxiliary);
-    database.run("UPDATE entries SET body = 'different replica generation'");
-    database.close();
-  } else if (kind === "absent") rmSync(auxiliary);
-  const result = await run.launch().result;
-  expect(result.code).toBe(kind === "matching" ? 0 : 1);
-  expect(terminal(result).state).toBe(kind === "matching" ? "admitted" : "refused");
-  if (kind !== "matching") expect(terminal(result).reason).toBe("replica_database_set_incomplete");
-  checkCustody(run, result);
-});
+test.each(["matching", "older", "absent", "unconfigured"] as const)(
+  "a %s auxiliary set preserves sealed complete-set admission",
+  async (kind) => {
+    const run = harness(kind !== "unconfigured");
+    const auxiliary = join(run.remote, "plugins/plugin.db");
+    history(auxiliary);
+    const sha256 = new Bun.CryptoHasher("sha256").update(readFileSync(auxiliary)).digest("hex");
+    history(join(run.remote, "manifold.db"), "sealed", [{ path: "plugins/plugin.db", sha256 }]);
+    if (kind === "older") {
+      const database = new Database(auxiliary);
+      database.run("UPDATE entries SET body = 'different replica generation'");
+      database.close();
+    } else if (kind === "absent") rmSync(auxiliary);
+    const result = await run.launch().result;
+    expect(result.code).toBe(kind === "matching" ? 0 : 1);
+    expect(terminal(result).state).toBe(kind === "matching" ? "admitted" : "refused");
+    if (kind !== "matching")
+      expect(terminal(result).reason).toBe("replica_database_set_incomplete");
+    checkCustody(run, result);
+  },
+);
 
 test("child failure is secret-free and cleans the private restore", async () => {
   const run = harness();

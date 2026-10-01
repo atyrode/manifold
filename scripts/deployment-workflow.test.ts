@@ -363,7 +363,7 @@ printf '%s\\n' docker >> "$FIXTURE_CALLS"
     ];
     const check = ({
       servingBuild = "1.2.3",
-      build = servingBuild,
+      build = "1.2.3",
       tag = "v1.2.4",
       vars = [] as Variable[],
       inherited = [] as Variable[],
@@ -411,17 +411,21 @@ printf '%s\\n' docker >> "$FIXTURE_CALLS"
         });
       const classification = run(classify, classified);
       const outputs = Object.fromEntries(
-        readFileSync(classified, "utf8").trim().split("\n").map((line) => {
-          const equal = line.indexOf("=");
-          return [line.slice(0, equal), line.slice(equal + 1)];
-        }),
+        readFileSync(classified, "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => {
+            const equal = line.indexOf("=");
+            return [line.slice(0, equal), line.slice(equal + 1)];
+          }),
       );
-      const result = classification.exitCode === 0
-        ? run(snapshot, snapshotted, {
-            REPLICA_CONFIGURED: outputs.replicated ?? "",
-            CLASSIFIED_RECOVERY_ADOPTION: outputs.adopt ?? "",
-          })
-        : classification;
+      const result =
+        classification.exitCode === 0
+          ? run(snapshot, snapshotted, {
+              REPLICA_CONFIGURED: outputs.replicated ?? "",
+              CLASSIFIED_RECOVERY_ADOPTION: outputs.adopt ?? "",
+            })
+          : classification;
       return {
         code: result.exitCode,
         error: result.stderr.toString(),
@@ -493,7 +497,7 @@ printf '%s\\n' docker >> "$FIXTURE_CALLS"
         ? { ...variable, value: "0.18.0" }
         : variable,
     );
-    const preGuard = { servingBuild: "0.18.0", tag: "v0.24.0" };
+    const preGuard = { servingBuild: "0.18.0", build: "0.18.0", tag: "v0.24.0" };
     const boundary = check({ ...preGuard, vars: replicated });
     refused(boundary);
     expect(boundary.error).toContain("replica_guard_boundary_requires_adoption:");

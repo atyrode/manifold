@@ -42,7 +42,11 @@ if (import.meta.main) {
     process.exit(1);
   }
   try {
-    const refusal = promotionReplicaBoundary(incumbentBuild, candidateTag, classifiedAdoption === "true");
+    const refusal = promotionReplicaBoundary(
+      incumbentBuild,
+      candidateTag,
+      classifiedAdoption === "true",
+    );
     if (refusal !== null) {
       console.error(refusal);
       process.exit(1);
