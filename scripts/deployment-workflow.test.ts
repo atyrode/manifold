@@ -316,11 +316,15 @@ fi
     writeFileSync(
       join(bin, "bun"),
       `#!/usr/bin/env bash
+printf '%s\\n' "$1" >> "$FIXTURE_CALLS"
 case "$1 $2" in
-  "scripts/verify-live.ts snapshot") printf '{"build":"1.2.3"}\\n' > "$3" ;;
+  "scripts/verify-live.ts snapshot") printf '{"build":"%s"}\\n' "$FIXTURE_SERVING_BUILD" > "$3" ;;
   "scripts/release-provenance.ts promotion")
-    [[ "$3" == v1.2.3 && "$FIXTURE_PROVENANCE" == true ]] || exit 1
+    [[ "$3" == "v$FIXTURE_SERVING_BUILD" && "$FIXTURE_PROVENANCE" == true ]] || exit 1
     printf '{"image":"ghcr.io/owner/manifold@sha256:${"b".repeat(64)}"}\\n' ;;
+  scripts/promotion-replica-admission.ts*)
+    shift
+    exec "$FIXTURE_REAL_BUN" "$FIXTURE_BOUNDARY" "$@" ;;
   *) exit 1 ;;
 esac
 `,
@@ -329,12 +333,14 @@ esac
     writeFileSync(
       join(bin, "docker"),
       `#!/usr/bin/env bash
+printf '%s\\n' docker >> "$FIXTURE_CALLS"
 [[ "$1 $2 $3" == "manifest inspect ghcr.io/owner/manifold@sha256:${"b".repeat(64)}" && "$FIXTURE_ROLLBACK_IMAGE" == true ]]
 `,
       { mode: 0o700 },
     );
     const classified = join(root, "classified");
     const snapshotted = join(root, "snapshotted");
+    const calls = join(root, "calls");
     interface Variable {
       name: string;
       value: string;
@@ -343,6 +349,8 @@ esac
       code: number | null;
       classified: string;
       snapshotted: string;
+      error: string;
+      calls: string[];
     }
     const serving: Variable[] = [
       { name: "MANIFOLD_RECOVERY_CHECKPOINT", value: "serving-checkpoint" },
@@ -354,7 +362,9 @@ esac
       },
     ];
     const check = ({
+      servingBuild = "1.2.3",
       build = "1.2.3",
+      tag = "v1.2.4",
       vars = [] as Variable[],
       inherited = [] as Variable[],
       provenance = true,
@@ -366,6 +376,7 @@ esac
     } = {}): Admission => {
       writeFileSync(classified, "");
       writeFileSync(snapshotted, "");
+      writeFileSync(calls, "");
       const env = {
         ...process.env,
         PATH: `${bin}:${process.env.PATH}`,
@@ -375,6 +386,11 @@ esac
         RECOVERY_BUILD: build,
         RECOVERY_CHECKPOINT: checkpoint,
         RELEASE_SHA: release,
+        TAG: tag,
+        FIXTURE_SERVING_BUILD: servingBuild,
+        FIXTURE_REAL_BUN: process.execPath,
+        FIXTURE_BOUNDARY: join(import.meta.dir, "promotion-replica-admission.ts"),
+        FIXTURE_CALLS: calls,
         FIXTURE_PATH_SUPPORT: String(pathSupport),
         FIXTURE_PROVENANCE: String(provenance),
         FIXTURE_ROLLBACK_IMAGE: String(rollbackImage),
@@ -387,15 +403,33 @@ esac
         GITHUB_REPOSITORY: "owner/manifold",
       };
       // Separate steps receive separate output files in Actions.
-      const run = (script: string, output: string) =>
+      const run = (script: string, output: string, stepEnv: Record<string, string> = {}) =>
         Bun.spawnSync(["bash", "-e", "-o", "pipefail", "-c", script], {
-          env: { ...env, GITHUB_OUTPUT: output },
+          env: { ...env, ...stepEnv, GITHUB_OUTPUT: output },
           stdout: "pipe",
           stderr: "pipe",
-        }).exitCode;
-      const code = run(classify, classified);
+        });
+      const classification = run(classify, classified);
+      const outputs = Object.fromEntries(
+        readFileSync(classified, "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => {
+            const equal = line.indexOf("=");
+            return [line.slice(0, equal), line.slice(equal + 1)];
+          }),
+      );
+      const result =
+        classification.exitCode === 0
+          ? run(snapshot, snapshotted, {
+              REPLICA_CONFIGURED: outputs.replicated ?? "",
+              CLASSIFIED_RECOVERY_ADOPTION: outputs.adopt ?? "",
+            })
+          : classification;
       return {
-        code: code === 0 ? run(snapshot, snapshotted) : code,
+        code: result.exitCode,
+        error: result.stderr.toString(),
+        calls: readFileSync(calls, "utf8").trim().split("\n"),
         classified: readFileSync(classified, "utf8"),
         snapshotted: readFileSync(snapshotted, "utf8"),
       };
@@ -412,7 +446,6 @@ esac
 
     const ordinary = check();
     expect(ordinary.code).toBe(0);
-    expect(ordinary.classified).toBe("adopt=false\nreplica_path=\ntakeover=\n");
     refused(check({ build: "1.2.2" }));
     refused(check({ provenance: false }));
     // A rollback image the registry no longer serves is found before the switch, not after it.
@@ -425,16 +458,10 @@ esac
 
     const adopted = check({ vars: serving, adopt: true });
     expect(adopted.code).toBe(0);
-    expect(adopted.classified).toBe(
-      "adopt=true\nreplica_path=manifold-recovery/serving-checkpoint/manifold.db\ntakeover=\n",
-    );
     // A pre-heartbeat writer is named exactly, and only for an adopted recovery history.
     const writer = "0f1e2d3c-4b5a-4968-8776-a5b4c3d2e1f0";
     const takeover = check({ vars: serving, adopt: true, takeover: writer });
     expect(takeover.code).toBe(0);
-    expect(takeover.classified).toBe(
-      `adopt=true\nreplica_path=manifold-recovery/serving-checkpoint/manifold.db\ntakeover=${writer}\n`,
-    );
     refused(check({ takeover: writer }));
     refused(check({ vars: adoptedPathFor("serving-checkpoint"), takeover: writer }));
     for (const value of [writer.toUpperCase(), `${writer}\nadopt=false`, "not-a-writer"]) {
@@ -464,9 +491,23 @@ esac
     const adoptedPath = adoptedPathFor("serving-checkpoint");
     const forward = check({ vars: adoptedPath });
     expect(forward.code).toBe(0);
-    expect(forward.classified).toBe(
-      "adopt=false\nreplica_path=manifold-recovery/serving-checkpoint/manifold.db\ntakeover=\n",
+    const replicated = [{ name: "MANIFOLD_REPLICA_BUCKET", value: "disposable-only" }];
+    const oldServing = serving.map((variable) =>
+      variable.name === "MANIFOLD_RECOVERY_EXPECTED_BUILD"
+        ? { ...variable, value: "0.18.0" }
+        : variable,
     );
+    const preGuard = { servingBuild: "0.18.0", build: "0.18.0", tag: "v0.24.0" };
+    const boundary = check({ ...preGuard, vars: replicated });
+    refused(boundary);
+    expect(boundary.error).toContain("replica_guard_boundary_requires_adoption:");
+    // Guard refusal precedes even rollback lookup, not merely the later provider switch.
+    expect(boundary.calls).not.toContain("scripts/release-provenance.ts");
+    expect(boundary.calls).not.toContain("docker");
+    expect(check({ ...preGuard, vars: [...replicated, ...oldServing], adopt: true }).code).toBe(0);
+    refused(check({ ...preGuard, vars: replicated, adopt: true }));
+    // Version alone is not a claim that this incumbent has a replica.
+    expect(check(preGuard).code).toBe(0);
     refused(check({ vars: adoptedPath, pathSupport: false }));
     refused(check({ inherited: adoptedPath }));
     // A malformed configured path fails closed instead of reaching step outputs, where an

@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { $ } from "bun";
 import { releaseRepository, verifyPromotionRelease } from "./release-provenance.ts";
+import { promotionReplicaBoundary } from "./promotion-replica-admission.ts";
 
 /*
  * PROMOTION IS ITS OWN VERB (ADR 0022, amended by #244; docs/SELF-HOST.md §Environments).
@@ -76,6 +77,17 @@ if (
   throw new Error(
     "Recovery receipt is missing its exact checkpoint id, source build or encrypted-object SHA-256",
   );
+
+// The receipt is a conservative local source-build check, not live replica evidence.
+// A requested recovery adoption remains subject to the workflow's authoritative
+// classification; the CLI cannot validate serving recovery state or exempt a history.
+if (!adoptRecovery) {
+  const refusal = promotionReplicaBoundary(recovery.sourceBuild, tag, false);
+  if (refusal !== null) {
+    console.error(refusal);
+    process.exit(1);
+  }
+}
 
 const repository = await releaseRepository();
 await verifyPromotionRelease(repository, tag);

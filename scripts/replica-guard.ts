@@ -15,7 +15,9 @@ import { Database } from "bun:sqlite";
 import {
   closeSync,
   constants,
+  fstatSync,
   lstatSync,
+  mkdirSync,
   mkdtempSync,
   openSync,
   readFileSync,
@@ -294,22 +296,32 @@ async function quietTakeover(owner: ActiveWriter, io: TakeoverIO): Promise<numbe
  * handoff is admitted at once. An active writer that stopped without sealing is taken over, losing
  * only writes it never replicated; a legacy one without a heartbeat needs the operator's setting.
  */
-export async function admitRestoredHistory(path: string, io: TakeoverIO): Promise<void> {
-  const deadline = Date.now() + START_TIMEOUT_MS;
+export function admitRestoredHistory(path: string, io: TakeoverIO): Promise<void> {
+  return admitHistory(path, io, "hub_replica_boot");
+}
+
+async function admitHistory(
+  path: string,
+  io: TakeoverIO,
+  evt: "hub_replica_boot" | "hub_replica_observation",
+  deadline = Date.now() + START_TIMEOUT_MS,
+): Promise<void> {
   const setting = takeoverSetting();
   const { writer: previous, heartbeat } = readWriter(path);
   if (previous === null) throw new ReplicaGuardRefusal("replica_freshness_unestablished");
   if (previous.state === "sealed") {
-    if (setting !== undefined) event("replica_takeover_setting_unused");
+    if (setting !== undefined)
+      console.log(JSON.stringify({ evt, state: "replica_takeover_setting_unused" }));
     requireFiles(dirname(path), previous.databases, deadline);
     return;
   }
   const legacy = !heartbeat;
   if (legacy && setting !== previous.id) throw new ReplicaGuardRefusal("replica_writer_unsealed");
-  if (!legacy && setting !== undefined) event("replica_takeover_setting_unused");
+  if (!legacy && setting !== undefined)
+    console.log(JSON.stringify({ evt, state: "replica_takeover_setting_unused" }));
   console.log(
     JSON.stringify({
-      evt: "hub_replica_boot",
+      evt,
       state: "replica_takeover_waiting",
       epoch: previous.epoch,
       legacy,
@@ -318,7 +330,7 @@ export async function admitRestoredHistory(path: string, io: TakeoverIO): Promis
   const quietMs = await quietTakeover(previous, io);
   console.log(
     JSON.stringify({
-      evt: "hub_replica_boot",
+      evt,
       state: "replica_takeover",
       epoch: previous.epoch,
       legacy,
@@ -352,6 +364,7 @@ function configuration(
   source: string,
   root: string,
   db: string,
+  requireLocalFiles = true,
 ): { databases: string[]; main: string } {
   const value: unknown = Bun.YAML.parse(source);
   if (
@@ -398,7 +411,7 @@ function configuration(
     ) {
       throw new ReplicaGuardRefusal("replica_database_path_invalid");
     }
-    containedFile(root, name);
+    if (requireLocalFiles) containedFile(root, name);
     databases.push(name);
   }
   if (main === undefined) throw new ReplicaGuardRefusal("replica_configuration_invalid");
@@ -545,13 +558,21 @@ async function exitBefore(child: Bun.Subprocess, deadline: number): Promise<void
   }
 }
 
+/** An observation owns every read-only subprocess until it has exited. */
+interface ReadOnlyScope {
+  check(): void;
+  track(child: Bun.Subprocess): () => void;
+}
+
 /** An absent replica leaves no output, like the entrypoints' `-if-replica-exists` restores. */
 async function restoreTo(
   db: string,
   config: string,
   output: string,
   deadline: number,
+  scope?: ReadOnlyScope,
 ): Promise<boolean> {
+  scope?.check();
   const child = Bun.spawn(
     [
       "litestream",
@@ -567,8 +588,18 @@ async function restoreTo(
     ],
     { env: { ...process.env }, stdin: new Blob([config]), stdout: "ignore", stderr: "ignore" },
   );
-  await exitBefore(child, deadline);
-  return exists(output);
+  const untrack = scope?.track(child);
+  try {
+    await exitBefore(child, deadline);
+    scope?.check();
+    return exists(output);
+  } finally {
+    if (scope !== undefined && child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGKILL");
+      await child.exited;
+    }
+    untrack?.();
+  }
 }
 
 /** Private restores never replace authoritative local files. Calls reuse owned staging serially. */
@@ -602,37 +633,57 @@ async function restoredRecord(
  * The replica's position: the maximum TXID over every compaction level of each database, as
  * listed by `litestream ltx -level all -json`. Compaction keeps it; only a new write advances it.
  */
-export async function replicaPosition(
+export function replicaPosition(
   databases: readonly string[],
   config: string,
   deadline: number,
 ): Promise<string> {
+  return listedReplicaPosition(databases, config, deadline);
+}
+
+async function listedReplicaPosition(
+  databases: readonly string[],
+  config: string,
+  deadline: number,
+  scope?: ReadOnlyScope,
+): Promise<string> {
   const positions: string[] = [];
   for (const db of databases) {
+    scope?.check();
     const child = Bun.spawn(
       ["litestream", "ltx", "-config", "/dev/stdin", "-level", "all", "-json", db],
       { env: { ...process.env }, stdin: new Blob([config]), stdout: "pipe", stderr: "ignore" },
     );
-    const [listing] = await Promise.all([
-      new Response(child.stdout).text(),
-      exitBefore(child, deadline),
-    ]);
-    const files: unknown = JSON.parse(listing);
-    if (!Array.isArray(files)) throw new ReplicaGuardRefusal("replica_unavailable");
-    let maximum = 0n;
-    for (const file of files as unknown[]) {
-      if (
-        typeof file !== "object" ||
-        file === null ||
-        !("max_txid" in file) ||
-        typeof file.max_txid !== "string" ||
-        !/^[0-9a-f]{16}$/.test(file.max_txid)
-      )
-        throw new ReplicaGuardRefusal("replica_unavailable");
-      const txid = BigInt(`0x${file.max_txid}`);
-      if (txid > maximum) maximum = txid;
+    const untrack = scope?.track(child);
+    try {
+      const [listing] = await Promise.all([
+        new Response(child.stdout).text(),
+        exitBefore(child, deadline),
+      ]);
+      scope?.check();
+      const files: unknown = JSON.parse(listing);
+      if (!Array.isArray(files)) throw new ReplicaGuardRefusal("replica_unavailable");
+      let maximum = 0n;
+      for (const file of files as unknown[]) {
+        if (
+          typeof file !== "object" ||
+          file === null ||
+          !("max_txid" in file) ||
+          typeof file.max_txid !== "string" ||
+          !/^[0-9a-f]{16}$/.test(file.max_txid)
+        )
+          throw new ReplicaGuardRefusal("replica_unavailable");
+        const txid = BigInt(`0x${file.max_txid}`);
+        if (txid > maximum) maximum = txid;
+      }
+      positions.push(maximum.toString(16));
+    } finally {
+      if (scope !== undefined && child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGKILL");
+        await child.exited;
+      }
+      untrack?.();
     }
-    positions.push(maximum.toString(16));
   }
   return JSON.stringify(positions);
 }
@@ -761,7 +812,172 @@ async function stop(child: Bun.Subprocess, timeoutMs: number): Promise<boolean> 
   }
 }
 
+/**
+ * An exact-image admission rehearsal, not bootstrap: only restore/ltx children are reachable.
+ * All restored bytes (including auxiliary databases) belong to this run and are discarded.
+ * A successful observation says nothing about a future handoff from a still-serving writer.
+ */
+async function observeReplica(): Promise<void> {
+  const deadline = Date.now() + START_TIMEOUT_MS;
+  const staging = mkdtempSync(join(tmpdir(), "manifold-replica-observation-"));
+  const children = new Set<Bun.Subprocess>();
+  const { promise: interrupted, resolve: wakeInterrupted } = Promise.withResolvers<void>();
+  let requestedStop = false;
+  let targetSha256: string | undefined;
+  let reason: string | undefined;
+  const onSignal = (): void => {
+    requestedStop = true;
+    for (const child of children) child.kill("SIGKILL");
+    wakeInterrupted();
+  };
+  const scope: ReadOnlyScope = {
+    check() {
+      if (requestedStop) throw new ReplicaGuardRefusal("replica_observation_interrupted");
+      if (Date.now() >= deadline) throw new ReplicaGuardRefusal("replica_freshness_timeout");
+    },
+    track(child) {
+      children.add(child);
+      return () => children.delete(child);
+    },
+  };
+  process.on("SIGTERM", onSignal);
+  process.on("SIGINT", onSignal);
+  try {
+    takeoverSetting();
+    const root = resolve(process.env.MANIFOLD_DATA_DIR || "/data");
+    process.env.MANIFOLD_DATA_DIR = root;
+    ordinaryReplicaPath();
+    const db = join(root, "manifold.db");
+    const configPath =
+      process.env.MANIFOLD_RECOVERY_LITESTREAM_CONFIG ||
+      resolve(import.meta.dir, "../infra/litestream.yml");
+    // Open first, then classify/read that descriptor: a pathname check can race a FIFO/symlink.
+    let configFile: number;
+    try {
+      configFile = openSync(
+        configPath,
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      );
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ELOOP")
+        throw new ReplicaGuardRefusal("replica_configuration_invalid");
+      throw error;
+    }
+    let config: string;
+    try {
+      if (!fstatSync(configFile).isFile())
+        throw new ReplicaGuardRefusal("replica_configuration_invalid");
+      config = readFileSync(configFile, "utf8");
+    } finally {
+      closeSync(configFile);
+    }
+    const configured = configuration(config, root, db, false);
+    const databases = [...configured.databases.map((name) => join(root, name)), db];
+    // Bind the exact config and its environment expansion without disclosing any input value.
+    // This is a target fingerprint, not a credential or an authentication receipt.
+    const hash = new Bun.CryptoHasher("sha256").update(config);
+    for (const match of config.matchAll(
+      /\$(?:\{([^}]+)\}|([0-9*#$@!?-])|([A-Za-z_][A-Za-z0-9_]*))/g,
+    )) {
+      const name = match[1] ?? match[2] ?? match[3]!;
+      hash.update(JSON.stringify([name, process.env[name] ?? ""]));
+    }
+    targetSha256 = hash.digest("hex");
+    const main = join(staging, "manifold.db");
+    const restoreMain = async (): Promise<string> => {
+      for (const suffix of ["", "-wal", "-shm", "-journal"])
+        rmSync(`${main}${suffix}`, { force: true });
+      if (!(await restoreTo(db, config, main, deadline, scope)))
+        throw new ReplicaGuardRefusal("replica_writer_changed");
+      return main;
+    };
+    if (!(await restoreTo(db, config, main, deadline, scope)))
+      throw new ReplicaGuardRefusal("replica_freshness_unestablished");
+    const requireConfiguredSet = (): void => {
+      const writer = readRecord(main);
+      const names =
+        writer?.state === "sealed"
+          ? writer.databases.map((file) => file.path)
+          : (writer?.databases ?? []);
+      if (names.some((name) => !configured.databases.includes(name)))
+        throw new ReplicaGuardRefusal("replica_database_set_incomplete");
+    };
+    const restoreAuxiliary = async (): Promise<void> => {
+      requireConfiguredSet();
+      for (const name of configured.databases) {
+        const output = join(staging, name);
+        mkdirSync(dirname(output), { recursive: true, mode: 0o700 });
+        for (const suffix of ["", "-wal", "-shm", "-journal"])
+          rmSync(`${output}${suffix}`, { force: true });
+        if (!(await restoreTo(join(root, name), config, output, deadline, scope)))
+          throw new ReplicaGuardRefusal("replica_database_set_incomplete");
+      }
+    };
+    // A seal checks every auxiliary fingerprint. A legacy unsealed claim must retain its
+    // immediate authoritative refusal before any quiet-window or auxiliary work is attempted.
+    if (readRecord(main)?.state === "sealed") await restoreAuxiliary();
+    await admitHistory(
+      main,
+      {
+        now: () => Date.now(),
+        sleep: async (ms) => {
+          scope.check();
+          const { promise: elapsed, resolve: wakeSleep } = Promise.withResolvers<void>();
+          const timer = setTimeout(wakeSleep, Math.min(ms, deadline - Date.now()));
+          try {
+            await Promise.race([elapsed, interrupted]);
+            scope.check();
+          } finally {
+            clearTimeout(timer);
+          }
+        },
+        position: (pollDeadline) =>
+          listedReplicaPosition(databases, config, Math.min(deadline, pollDeadline), scope),
+        restore: async () => {
+          await restoreAuxiliary();
+          await restoreMain();
+          requireConfiguredSet();
+          return main;
+        },
+      },
+      "hub_replica_observation",
+      deadline,
+    );
+    scope.check();
+  } catch (error) {
+    reason = requestedStop
+      ? "replica_observation_interrupted"
+      : Date.now() >= deadline
+        ? "replica_freshness_timeout"
+        : error instanceof ReplicaGuardRefusal
+          ? error.reason
+          : "replica_unavailable";
+  } finally {
+    for (const child of children) child.kill("SIGKILL");
+    await Promise.all([...children].map((child) => child.exited));
+    rmSync(staging, { recursive: true, force: true });
+    process.off("SIGTERM", onSignal);
+    process.off("SIGINT", onSignal);
+  }
+  const result = {
+    evt: "hub_replica_observation",
+    state: reason === undefined ? "admitted" : "refused",
+    ...(targetSha256 === undefined ? {} : { targetSha256 }),
+    ...(reason === undefined ? {} : { reason }),
+  };
+  if (reason === undefined) console.log(JSON.stringify(result));
+  else {
+    console.error(JSON.stringify(result));
+    process.exitCode = 1;
+  }
+}
+
 async function main(): Promise<void> {
+  if (process.argv[2] === "observe") {
+    if (process.argv.length !== 3) throw new ReplicaGuardRefusal("usage_replica_observation");
+    await observeReplica();
+    return;
+  }
   if (process.argv.length === 4 && process.argv[2] === "validate-restored") {
     const path = process.argv[3]!;
     await admitRestoredHistory(path, recoveryTakeover(path));
@@ -914,7 +1130,7 @@ if (import.meta.main) {
   } catch (error) {
     console.error(
       JSON.stringify({
-        evt: "hub_replica_boot",
+        evt: process.argv[2] === "observe" ? "hub_replica_observation" : "hub_replica_boot",
         state: "refused",
         reason: error instanceof ReplicaGuardRefusal ? error.reason : "replica_unavailable",
       }),
