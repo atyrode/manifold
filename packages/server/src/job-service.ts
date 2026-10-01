@@ -22,6 +22,7 @@ import { z } from "zod";
 import {
   formatManifoldUri,
   parseManifoldUri,
+  projectLegacyCaps,
   JOB_OWNER_PROTOCOL_COMPAT_VERSIONS,
   jobOwnerSupports,
   MACHINE_SELF_PROVIDER_PROTOCOL_VERSION,
@@ -31,6 +32,7 @@ import {
   readsOperatorAnchor,
   type ManifoldRef,
   type Cap,
+  type PreparedRequirement,
   type RuntimeDeps,
   type PluginBundle,
   type JobArtifactDelivery,
@@ -127,6 +129,16 @@ import type { ServerStore, TraceRecord } from "./stores.ts";
 import { JobInvocationRefusal, JobSchedules, type JobScheduleSpec } from "./job-schedules.ts";
 import { JobDeployments } from "./job-deployments.ts";
 import { InstanceServiceStore, type InstanceServiceRecord } from "./instance-service-store.ts";
+import type { ActionAuthorityFence, ActionAuthoritySnapshotBinding } from "./action-authority-fence.ts";
+import {
+  captureAuthoritySnapshot,
+  AuthoritySnapshotSchema,
+  cloneAuthoritySnapshot,
+  projectJobCredential,
+  restoreAuthoritySnapshot,
+  type AuthoritySnapshot,
+  type NativeDemandBinding,
+} from "./authority-snapshot.ts";
 export type { JobRecord } from "./job-store.ts";
 import { deliveredArtifact } from "@manifold/plugin-kit/artifacts";
 interface JobFollower {
@@ -229,6 +241,11 @@ export interface SettledJobDelivery {
   readonly traceId: string;
 }
 
+interface BoundInputSource {
+  readonly node: Extract<ManifoldRef, { kind: "job" }>;
+  readonly output: InspectJobInputsResult["inputs"][number];
+}
+
 const executionLimitKeys = ["timeoutMs", "memoryBytes", "processes", "outputBytes"] as const;
 const inferenceLimitKeys = ["calls", "inputTokens", "outputTokens", "costMicros"] as const;
 /**
@@ -259,6 +276,7 @@ export class JobService {
       request: AgentToolRequest,
       signal: AbortSignal,
       admitted: () => void,
+      legacy?: boolean,
     ): Promise<AgentToolReply>;
   } | null = null;
   private readonly agentCalls = new Map<
@@ -399,7 +417,7 @@ export class JobService {
     void this.agentTools!.call(restore, parsed.data, controller.signal, () => {
       restore();
       pending.admitted = true;
-    }).then(
+    }, job.authoritySnapshot === undefined).then(
       (value) => pending.finish(value),
       () =>
         pending.finish(
@@ -453,6 +471,45 @@ export class JobService {
     this.machinePresence = presence;
   }
 
+  private actionBindingValidator?: (binding: ActionAuthoritySnapshotBinding) => boolean;
+  setActionBindingValidator(validator: (binding: ActionAuthoritySnapshotBinding) => boolean): void {
+    this.actionBindingValidator = validator;
+  }
+  private readonly effectFences = new Map<string, ActionAuthorityFence>();
+
+  private restoreSnapshot(snapshot: AuthoritySnapshot): AuthContext | null {
+    const native = snapshot.native;
+    if (native !== undefined) {
+      const install = this.jobs.installation(native.machineId, native.pluginId);
+      const owner = this.jobs.owner(native.machineId);
+      if (!install?.enabled || install.purgeRequested ||
+        this.heldPlugins.has(native.pluginId) || this.store.disabledPlugins().has(native.pluginId) ||
+        install.revision !== native.installationRevision || install.artifact !== native.artifactSha256 ||
+        digest(this.operationBindings(install, native.operationId) ?? null) !== native.resourceBindingDigest ||
+        !owner || owner.ownerId !== native.ownerId || owner.generation !== native.ownerGeneration ||
+        (snapshot.terminal !== undefined && snapshot.terminal.terminalHostId !== native.terminalHostId))
+        return null;
+    }
+    const captured = snapshot.action?.nativeDemand;
+    if (captured !== undefined &&
+      (!Array.isArray(captured) || captured.some((binding) => !this.terminalDemandBindingCurrent(binding, false))))
+      return null;
+    return restoreAuthoritySnapshot(this.auth, snapshot, this.actionBindingValidator);
+  }
+
+  private restoreJob(job: JobRecord): AuthContext | null {
+    const fence = this.effectFences.get(job.request.jobId);
+    if (fence !== undefined) {
+      try {
+        fence.checkCurrent();
+      } catch {
+        return null;
+      }
+    }
+    return job.authoritySnapshot === undefined
+      ? this.auth.restoreCredential(this.jobCredential(job))
+      : this.restoreSnapshot(job.authoritySnapshot);
+  }
   private readonly directServiceCalls = new Map<
     string,
     {
@@ -460,6 +517,8 @@ export class JobService {
       channel: JobChannel;
       args: ServiceReadArgs;
       credential: CredentialReference;
+      authoritySnapshot: AuthoritySnapshot;
+      authorityFence?: ActionAuthorityFence;
       callerPluginId: string;
       traceId: string;
       authorized: boolean;
@@ -557,7 +616,8 @@ export class JobService {
     if (this.store.getMachine(record.machineId)?.draining) return "machine_draining";
     const live = this.channels.get(record.machineId);
     if (!live?.proved) return "resource_owner_unavailable";
-    if (!record.credential || !this.auth.restoreCredential(record.credential))
+    if (!record.credential || !(record.authoritySnapshot === undefined
+      ? this.auth.restoreCredential(record.credential) : this.restoreSnapshot(record.authoritySnapshot)))
       return "credential_revoked_or_expired";
     const ready = this.instanceReadiness.get(record.serviceId);
     if (
@@ -745,8 +805,9 @@ export class JobService {
     args: ConfigureInstanceServiceArgs,
     callerPluginId = "engine.services",
     traceId = "native-services",
+    authorityFence?: ActionAuthorityFence,
   ): Promise<InstanceServiceDescription> {
-    this.applyInstanceServiceConfiguration(auth, args, callerPluginId, traceId);
+    this.applyInstanceServiceConfiguration(auth, args, callerPluginId, traceId, authorityFence);
     return this.instanceDescription(
       this.instanceServices.get(args.serviceId),
       args.serviceId,
@@ -763,7 +824,9 @@ export class JobService {
     args: ConfigureInstanceServiceArgs,
     callerPluginId: string,
     traceId: string,
+    authorityFence?: ActionAuthorityFence,
   ): string {
+    authorityFence?.checkCurrent();
     const previous = this.instanceServices.get(args.serviceId);
     if ((previous?.revision ?? null) !== args.expectedRevision)
       throw new ServiceError("conflict", "instance_service_configuration_changed");
@@ -781,6 +844,7 @@ export class JobService {
       : null;
     const requirements = template ? this.requirements(template) : [];
     const result = this.store.transaction(() => {
+      authorityFence?.checkCurrent();
       const result = this.instanceServices.configure(
         current,
         args,
@@ -807,6 +871,7 @@ export class JobService {
         revision: result.current.revision,
         enabled: result.current.enabled,
       });
+      authorityFence?.checkCurrent();
       return result;
     });
     if (result.previous?.revision !== result.current.revision) {
@@ -848,16 +913,18 @@ export class JobService {
     args: InstanceServiceReadArgs,
     callerPluginId = "engine.services",
     traceId = "native-services",
+    authorityFence?: ActionAuthorityFence,
   ): Promise<ServiceReply> {
-    return this.readService(auth, this.instanceServiceReadArgs(args), callerPluginId, traceId);
+    return this.readService(auth, this.instanceServiceReadArgs(args), callerPluginId, traceId, authorityFence);
   }
   invokeInstanceService(
     auth: AuthContext,
     args: InstanceServiceReadArgs,
     callerPluginId = "engine.services",
     traceId = "native-services",
+    authorityFence?: ActionAuthorityFence,
   ): Promise<ServiceReply> {
-    return this.invokeService(auth, this.instanceServiceReadArgs(args), callerPluginId, traceId);
+    return this.invokeService(auth, this.instanceServiceReadArgs(args), callerPluginId, traceId, authorityFence);
   }
   /**
    * Why a settled instance-service workload may be replaced under the SAME revision, or null
@@ -958,7 +1025,9 @@ export class JobService {
     }
     this.instanceStarts.delete(serviceId);
     try {
-      const current = record.credential ? this.auth.restoreCredential(record.credential) : null;
+      const current = record.authoritySnapshot === undefined
+        ? record.credential ? this.auth.restoreCredential(record.credential) : null
+        : this.restoreSnapshot(record.authoritySnapshot);
       if (!current) fail("credential_revoked_or_expired");
       const base = this.instanceRuntimeRequest(
         current,
@@ -982,9 +1051,9 @@ export class JobService {
           throw new ServiceError("conflict", "instance_service_configuration_changed");
         // A native service credential is minted for its runtime by a root configurer, and root
         // is never confined, so it carries no container grants (ADR 0051).
-        this.jobs.reserve(request, this.runtime.now(), undefined);
+        this.jobs.reserve(request, this.runtime.now(), undefined, captureAuthoritySnapshot(this.auth, current));
         const decision = this.decide({
-          credential: request.credential,
+          credential: this.auth.credentialReference(current),
           pluginId: request.pluginId,
           action: "engine.services.configureInstance",
           evidence: this.requirements(request).map((requirement) =>
@@ -1067,7 +1136,9 @@ export class JobService {
     args: { machineId: string; expectedRevision: string | null; policies: ServicePolicy[] },
     callerPluginId = "engine.services",
     traceId = "native-services",
+    authorityFence?: ActionAuthorityFence,
   ): ServiceConfiguration {
+    authorityFence?.checkCurrent();
     const current = this.configurationAuthority(auth, args.machineId);
     if (
       args.policies.some(
@@ -1083,6 +1154,7 @@ export class JobService {
       policies: args.policies,
     });
     this.store.transaction(() => {
+      authorityFence?.checkCurrent();
       if (this.configuration(args.machineId).revision !== args.expectedRevision)
         throw new ServiceError("conflict", "service_configuration_changed");
       this.serviceTrace(current, callerPluginId, traceId, "configure", {
@@ -1101,8 +1173,10 @@ export class JobService {
         )
         .run(args.machineId, configuration.revision!, canonicalJobJson(configuration));
       this.effectiveServices.clear();
+      authorityFence?.checkCurrent();
     });
     const live = this.channels.get(args.machineId);
+    authorityFence?.checkCurrent();
     if (live?.proved && !this.synchronizeServices(live.channel)) this.offline(live.channel);
     this.reconcileAuthority();
     this.accessChanged();
@@ -1273,8 +1347,12 @@ export class JobService {
     args: ServiceReadArgs,
     channel: JobChannel,
     mode: "read" | "invoke",
+    authoritySnapshot?: AuthoritySnapshot,
+    authorityFence?: ActionAuthorityFence,
   ) {
-    const current = this.auth.restoreCredential(credential);
+    authorityFence?.checkCurrent();
+    const current = authoritySnapshot === undefined
+      ? this.auth.restoreCredential(credential) : this.restoreSnapshot(authoritySnapshot);
     const live = this.channels.get(args.machineId);
     if (!current || !live?.proved || live.channel !== channel) fail("service_unauthorized");
     const machine = this.store.getMachine(args.machineId);
@@ -1355,6 +1433,8 @@ export class JobService {
       channel: JobChannel;
       args: ServiceReadArgs;
       credential: CredentialReference;
+      authoritySnapshot: AuthoritySnapshot;
+      authorityFence?: ActionAuthorityFence;
       callerPluginId: string;
       traceId: string;
     },
@@ -1367,6 +1447,8 @@ export class JobService {
         pending.args,
         pending.channel,
         pending.mode,
+        pending.authoritySnapshot,
+        pending.authorityFence,
       );
       const decision = this.decide({
         credential: pending.credential,
@@ -1400,6 +1482,7 @@ export class JobService {
     raw: ServiceReadArgs,
     callerPluginId = "engine.services",
     traceId = "native-services",
+    authorityFence?: ActionAuthorityFence,
   ): Promise<ServiceReply> {
     return this.directService(
       auth,
@@ -1407,6 +1490,7 @@ export class JobService {
       "read",
       callerPluginId,
       traceId,
+      authorityFence,
     );
   }
   async invokeService(
@@ -1414,6 +1498,7 @@ export class JobService {
     raw: ServiceInvokeArgs,
     callerPluginId = "engine.services",
     traceId = "native-services",
+    authorityFence?: ActionAuthorityFence,
   ): Promise<ServiceReply> {
     return this.directService(
       auth,
@@ -1421,6 +1506,7 @@ export class JobService {
       "invoke",
       callerPluginId,
       traceId,
+      authorityFence,
     );
   }
   private directService(
@@ -1429,11 +1515,17 @@ export class JobService {
     mode: "read" | "invoke",
     callerPluginId: string,
     traceId: string,
+    authorityFence?: ActionAuthorityFence,
   ): Promise<ServiceReply> {
     const live = this.channels.get(args.machineId);
     if (!live?.proved) return Promise.reject(new ServiceError("conflict", "service_unavailable"));
-    const credential = this.auth.credentialReference(auth);
-    const { operation } = this.directServiceAuthority(credential, args, live.channel, mode);
+    authorityFence?.checkCurrent();
+    const authoritySnapshot = captureAuthoritySnapshot(this.auth, auth,
+      authorityFence === undefined ? {} : {
+        action: authorityFence.snapshot(), actionCredential: authorityFence.credentialReference(),
+      });
+    const credential = authoritySnapshot.credential;
+    const { operation } = this.directServiceAuthority(credential, args, live.channel, mode, authoritySnapshot, authorityFence);
     if (this.directServiceCalls.size >= 256)
       return Promise.reject(new ServiceError("conflict", "service_busy"));
     const requestId = randomUUID();
@@ -1447,6 +1539,8 @@ export class JobService {
       channel: live.channel,
       args,
       credential,
+      authoritySnapshot,
+      ...(authorityFence === undefined ? {} : { authorityFence: authorityFence.retain() }),
       callerPluginId,
       traceId,
       authorized: false,
@@ -1454,6 +1548,7 @@ export class JobService {
         if (this.directServiceCalls.get(requestId) !== pending) return;
         this.directServiceCalls.delete(requestId);
         clearTimeout(timer);
+        pending.authorityFence?.close();
         if (error) {
           try {
             live.channel.send({
@@ -1476,6 +1571,7 @@ export class JobService {
       if (!this.synchronizeServices(live.channel))
         throw new ServiceError("conflict", "service_unavailable");
       this.authorizeDirectService(pending, requestId, "dispatch");
+      pending.authorityFence?.checkCurrent();
       if (
         !live.channel.send({
           type: "job_command",
@@ -1825,6 +1921,17 @@ export class JobService {
     machineId: string,
     binding: JobInputBinding,
   ): InspectJobInputsResult["inputs"][number] | string {
+    const source = this.inputSourceMetadata(pluginId, machineId, binding);
+    if (typeof source === "string") return source;
+    if (this.jobCapRefusal(context, source.node, "jobs:read") !== null)
+      return "input_authority_refused";
+    return source.output;
+  }
+  private inputSourceMetadata(
+    pluginId: string,
+    machineId: string,
+    binding: JobInputBinding,
+  ): BoundInputSource | string {
     const source = this.jobs.get(binding.from.jobId);
     const output = source?.result?.outputs.find((value) => value.name === binding.from.output);
     if (!source || source.request.machineId !== machineId || active.has(source.state) || !output)
@@ -1843,8 +1950,7 @@ export class JobService {
       )
     )
       return "input_not_exported";
-    if (this.jobCapRefusal(context, node, "jobs:read") !== null) return "input_authority_refused";
-    return { ...binding, sha256: output.sha256, bytes: output.bytes, files: output.files };
+    return { node, output: { ...binding, sha256: output.sha256, bytes: output.bytes, files: output.files } };
   }
   inspectInputs(
     auth: AuthContext,
@@ -2137,7 +2243,7 @@ export class JobService {
         ? this.jobs.get(ancestor.request.parent.parentJobId)
         : null;
     }
-    const current = this.auth.restoreCredential(job.request.credential);
+    const current = this.restoreJob(job);
     const requirement: AuthorityRequirement = {
       cap: "services:invoke",
       ref: {
@@ -2161,7 +2267,7 @@ export class JobService {
     return this.store.transaction(() => {
       const decision = this.decide(
         {
-          credential: job.request.credential,
+          credential: this.jobCredential(job),
           pluginId: job.request.pluginId,
           action: "engine.services.invoke",
           evidence: requirements.map((requirement) =>
@@ -2201,7 +2307,8 @@ export class JobService {
       requestId: string;
       seq: number;
       authorized: boolean;
-      auth: AuthContext;
+      authoritySnapshot: AuthoritySnapshot;
+      authorityFence?: ActionAuthorityFence;
       node: ManifoldRef;
       callerPluginId: string;
       finish(error?: Error): void;
@@ -2393,17 +2500,17 @@ export class JobService {
           : {}),
         outputs: result.outputs,
       },
-      auth: this.auth.restoreCredential(this.jobCredential(job)),
+      auth: this.restoreJob(job),
       traceId: job.request.traceId,
     };
   }
   /**
-   * A job's whole lineage: the signed request's credential and, beside it, the container
-   * confinement the hub kept off the owner's wire (ADR 0051). Every restore of a job's
-   * authority that is handed onward — a wake, a start, an invocation child — reads this, never
-   * the request's credential alone.
+   * Faithful hub lineage, never restored from the closed native compatibility projection.
+   * Only released snapshot-less records reconstruct from their unchanged signed credential
+   * plus the retained ADR 0051 confinement.
    */
   private jobCredential(job: JobRecord): CredentialReference {
+    if (job.authoritySnapshot !== undefined) return job.authoritySnapshot.credential;
     return job.containerGrants === undefined
       ? job.request.credential
       : { ...job.request.credential, containerGrants: job.containerGrants };
@@ -2670,17 +2777,18 @@ export class JobService {
               purgeRequested: install.purgeRequested,
               ...(install.resourceBindings ? { resourceBindings: install.resourceBindings } : {}),
             },
-      consents: rows.map(
-        ({ node, cap, revision, enabled: consentEnabled, installation_revision, artifact }) => ({
+      consents: rows.flatMap(
+        ({ node, cap, revision, enabled: consentEnabled, installation_revision, artifact }) =>
+          projectLegacyCaps([cap]).map((legacyCap) => ({
           node,
-          cap,
+          cap: legacyCap,
           revision,
           enabled:
             enabled &&
             consentEnabled === 1 &&
             install?.revision === installation_revision &&
             install.artifact === artifact,
-        }),
+        })),
       ),
     };
   }
@@ -2720,8 +2828,18 @@ export class JobService {
       : null;
   }
 
-  private reauthorizeDeferred(request: JobRequest, retiring = false): string | null {
-    const context = this.auth.restoreCredential(request.credential);
+  private reauthorizeDeferred(
+    request: JobRequest,
+    retiring = false,
+    authoritySnapshot?: AuthoritySnapshot,
+  ): string | null {
+    const job = this.jobs.get(request.jobId);
+    const snapshot = authoritySnapshot ?? job?.authoritySnapshot;
+    const context = job?.authoritySnapshot !== undefined
+      ? this.restoreJob(job)
+      : snapshot !== undefined
+        ? this.restoreSnapshot(snapshot)
+        : this.auth.restoreCredential(job === null ? request.credential : this.jobCredential(job));
     if (!context) return "credential_revoked_or_expired";
     try {
       if (request.agentRunId) {
@@ -2765,9 +2883,10 @@ export class JobService {
     auth: AuthContext,
     pluginId: string,
     traceId: string,
-    args: JobExecution & Omit<JobScheduleSpec, "request" | "containerGrants">,
+    args: JobExecution & Omit<JobScheduleSpec, "request" | "containerGrants" | "authoritySnapshot">,
     callerPluginId = pluginId,
     beforeEffect?: () => void,
+    authorityFence?: ActionAuthorityFence,
   ): JobScheduleSpec {
     const {
       scheduleId,
@@ -2798,6 +2917,8 @@ export class JobService {
       expiresAt,
       offlinePolicy,
       request,
+      authoritySnapshot: captureAuthoritySnapshot(this.auth, auth, authorityFence === undefined
+        ? {} : { action: authorityFence.snapshot(), actionCredential: authorityFence.credentialReference() }),
       // Every occurrence keeps the registering lineage's container authority (ADR 0051).
       ...(auth.containerGrants === undefined ? {} : { containerGrants: [...auth.containerGrants] }),
     };
@@ -2820,7 +2941,7 @@ export class JobService {
         !this.auth.holdsRoot(auth)
       )
         fail("schedule_owner_mismatch");
-      const refusal = this.reauthorizeDeferred(request);
+      const refusal = this.reauthorizeDeferred(request, false, spec.authoritySnapshot);
       if (refusal) fail(refusal);
       this.jobSchedules.putSchedule(spec, beforeEffect);
       this.store.db
@@ -2897,10 +3018,10 @@ export class JobService {
   tick(): void {
     this.reconcileAuthority();
     this.jobSchedules.tick(this.runtime.now(), {
-      reauthorize: (request) => this.reauthorizeDeferred(request),
+      reauthorize: (request, snapshot) => this.reauthorizeDeferred(request, false, snapshot),
       isOnline: (machineId) => this.channels.get(machineId)?.proved === true,
-      enqueue: (request, containerGrants) => {
-        this.jobs.reserve(request, this.runtime.now(), containerGrants);
+      enqueue: (request, containerGrants, snapshot) => {
+        this.jobs.reserve(request, this.runtime.now(), containerGrants, snapshot);
       },
     });
     for (const job of this.jobs.active()) if (job.state === "queued") this.start(job);
@@ -2927,6 +3048,8 @@ export class JobService {
           pending.args,
           pending.channel,
           pending.mode,
+          pending.authoritySnapshot,
+          pending.authorityFence,
         );
       } catch {
         pending.finish(new ServiceError("forbidden", "service_unauthorized"));
@@ -3384,7 +3507,7 @@ export class JobService {
     if (!stored?.enabled) fail("invocation_edge_missing");
     const edge = JSON.parse(stored.edge) as JobInvocationEdge;
     // A child is the parent's lineage, confinement included (ADR 0051).
-    const context = this.auth.restoreCredential(this.jobCredential(parent));
+    const context = this.restoreJob(parent);
     if (!context) fail("invocation_credential_revoked");
     const template = this.build(
       context,
@@ -3418,17 +3541,19 @@ export class JobService {
           state: parent.state,
           ownerId: parent.permit.ownerId,
           ownerGeneration: parent.permit.ownerGeneration,
+          ...(parent.authoritySnapshot === undefined ? {} : { authoritySnapshot: parent.authoritySnapshot }),
         },
         host: { machineId, ownerId: live.owner.ownerId, ownerGeneration: live.owner.generation },
         child,
+        ...(parent.authoritySnapshot === undefined ? {} : { authoritySnapshot: cloneAuthoritySnapshot(parent.authoritySnapshot) }),
         edge,
         resources,
         now: this.runtime.now(),
       },
       {
-        reauthorize: (request) => this.reauthorizeDeferred(request),
-        enqueue: (request) => {
-          this.jobs.reserve(request, this.runtime.now(), context.containerGrants);
+        reauthorize: (request, snapshot) => this.reauthorizeDeferred(request, false, snapshot),
+        enqueue: (request, containerGrants, snapshot) => {
+          this.jobs.reserve(request, this.runtime.now(), containerGrants ?? context.containerGrants, snapshot);
         },
       },
     );
@@ -3632,6 +3757,10 @@ export class JobService {
       this.jobs.appendJournal(jobId, seq, this.runtime.now(), event);
     this.retainJobEvent(jobId, seq, event, reason !== null);
     if (event.type === "result") this.wakeOwner(jobId);
+    if (event.type === "result" || event.type === "refusal") {
+      this.effectFences.get(jobId)?.close();
+      this.effectFences.delete(jobId);
+    }
     if (this.followQueue.length >= 64) {
       for (const follower of [...this.followers]) this.closeFollower(follower, "limit");
       this.followQueue.length = 0;
@@ -4435,7 +4564,7 @@ export class JobService {
             record.revision !== request.service.revision ||
             record.policy.runtime?.operationId !== request.operationId ||
             digest(this.instancePolicy(record)) !== request.service.policySha256 ||
-            digest(record.credential) !== digest(request.credential))) ||
+            digest(record.credential === null ? null : projectJobCredential(record.credential)) !== digest(request.credential))) ||
         request.limits.timeoutMs !== 0 ||
         request.parent ||
         request.terminal
@@ -4554,15 +4683,117 @@ export class JobService {
     }
     return Object.keys(input).some((key) => !Object.hasOwn(op.input, key)) ? "invalid_input" : null;
   }
-  private build(
-    auth: AuthContext,
+  /** Read-only, nonsecret native demand. No job ID, decision, consent or token is reserved. */
+  terminalDemand(
+    runtime: TerminalRuntime,
+    machineId: string,
+    containerId: string,
+  ): readonly PreparedRequirement[] {
+    return this.terminalDemandBinding(runtime, machineId, containerId).requirements;
+  }
+
+  private terminalInputDemand(
+    install: JobInstallation,
+    operationId: string,
+    inputs: readonly JobInputBinding[],
+  ): PreparedRequirement[] {
+    if (new Set(inputs.map((binding) => binding.name)).size !== inputs.length) fail("duplicate_input");
+    const operation = install.machine.operations[operationId];
+    if (!operation) fail("unknown_operation");
+    return inputs.map((binding) => {
+      if (!(operation.inputs ?? []).includes(binding.name)) fail(`unknown_input:${binding.name.slice(0, 64)}`);
+      const source = this.inputSourceMetadata(install.pluginId, install.machineId, binding);
+      if (typeof source === "string") fail(`${source}:${binding.name.slice(0, 64)}`);
+      return { cap: "jobs:read", node: formatManifoldUri(source.node), reach: "node" };
+    });
+  }
+
+  /** Live host-only validation of captured native facts, including owner and resource revisions. */
+  terminalDemandBindingCurrent(binding: unknown, requireLive = true): boolean {
+    const parsed = AuthoritySnapshotSchema.shape.native.unwrap().safeParse(binding);
+    if (!parsed.success) return false;
+    const demand = parsed.data;
+    const live = this.channels.get(demand.machineId);
+    const install = this.jobs.installation(demand.machineId, demand.pluginId);
+    const owner = requireLive ? live?.owner : this.jobs.owner(demand.machineId);
+    if ((requireLive && !live?.proved) || !owner || owner.ownerId !== demand.ownerId ||
+      owner.generation !== demand.ownerGeneration ||
+      (requireLive && live?.owner.terminalHostId !== demand.terminalHostId) ||
+      !install?.enabled || install.purgeRequested || this.heldPlugins.has(demand.pluginId) ||
+      this.store.disabledPlugins().has(demand.pluginId) ||
+      (requireLive && !install.ready) || install.revision !== demand.installationRevision ||
+      install.artifact !== demand.artifactSha256 ||
+      digest(this.operationBindings(install, demand.operationId) ?? null) !== demand.resourceBindingDigest)
+      return false;
+    try {
+      return (!requireLive || this.operationRefusal(install, demand.operationId) === null) &&
+        digest(demand.requirements) === digest([
+          ...this.operationRequirements(install, demand.operationId)
+            .map(({ cap, ref }) => ({ cap, node: formatManifoldUri(ref), reach: "node" })),
+          ...this.terminalInputDemand(install, demand.operationId, demand.inputs ?? []),
+        ]);
+    } catch {
+      return false;
+    }
+  }
+
+  /** The host captures this binding itself; a preparer cannot manufacture native evidence. */
+  terminalDemandBinding(
+    runtime: TerminalRuntime,
+    machineId: string,
+    containerId: string,
+  ): NativeDemandBinding {
+    if (runtime.machineId !== machineId) fail("terminal_runtime_destination_changed");
+    if (runtime.session !== undefined && runtime.session.machineId !== machineId)
+      fail("terminal_runtime_session_destination_changed");
+    const live = this.channels.get(machineId);
+    if (!live?.proved || !live.owner.terminalHostId ||
+      !live.owner.platforms.some((platform) => platform.startsWith("linux-")))
+      fail("terminal_runtime_host_unsupported");
+    const { install, op } = this.discoverExecution(runtime.pluginId, {
+      machineId,
+      operationId: runtime.operationId,
+      installationRevision: runtime.installationRevision,
+      artifactSha256: runtime.artifactSha256,
+      resourceBindingDigest: runtime.resourceBindingDigest,
+      input: runtime.input,
+      inputs: runtime.inputs,
+    });
+    if (this.heldPlugins.has(runtime.pluginId)) fail("plugin_held");
+    if (!install.ready || !install.enabled || install.purgeRequested ||
+      this.store.disabledPlugins().has(runtime.pluginId))
+      fail("installation_changed");
+    if (!op.stdin) fail("terminal_operation_requires_stdin");
+    const protocolReason = jobOwnerOperationRefusal(live.owner.protocolVersion, op, install.machine);
+    if (protocolReason) fail(protocolReason);
+    return {
+      machineId,
+      containerId,
+      pluginId: runtime.pluginId,
+      operationId: runtime.operationId,
+      installationRevision: install.revision,
+      artifactSha256: install.artifact,
+      resourceBindingDigest: digest(this.operationBindings(install, runtime.operationId) ?? null),
+      runtimeDigest: digest(runtime),
+      ownerId: live.owner.ownerId,
+      ownerGeneration: live.owner.generation,
+      terminalHostId: live.owner.terminalHostId,
+      ...(runtime.inputs === undefined ? {} : { inputs: runtime.inputs }),
+      requirements: [
+        ...this.operationRequirements(install, runtime.operationId).map(({ cap, ref }) => ({
+          cap, node: formatManifoldUri(ref), reach: "node" as const,
+        })),
+        ...this.terminalInputDemand(install, runtime.operationId, runtime.inputs ?? []),
+      ],
+    };
+  }
+
+  /** Pure declaration/resource/input discovery shared by preparation and real admission. */
+  private discoverExecution(
     pluginId: string,
-    traceId: string,
-    args: JobExecution,
-    outputParent?: JobRequest,
-    terminal?: JobRequest["terminal"],
-    agentRun?: { runId: string; expiresAt: number },
-  ): JobRequest {
+    args: Omit<JobExecution, "jobId" | "outputs" | "agentRun">,
+    agentRun?: { expiresAt: number },
+  ) {
     const install = this.jobs.installation(args.machineId, pluginId);
     const op = install?.machine.operations[args.operationId];
     if (!install || !op) fail("unknown_operation");
@@ -4602,6 +4833,19 @@ export class JobService {
     // An input ceiling defaults to what this operation may itself produce, and only lowers.
     const inputCeiling = ceiling.inputBytes ?? ceiling.outputBytes;
     if (limits.inputBytes !== undefined && limits.inputBytes > inputCeiling) fail("limit_exceeded");
+    return { install, op, resourceBindings, limits, inputCeiling };
+  }
+  private build(
+    auth: AuthContext,
+    pluginId: string,
+    traceId: string,
+    args: JobExecution,
+    outputParent?: JobRequest,
+    terminal?: JobRequest["terminal"],
+    agentRun?: { runId: string; expiresAt: number },
+  ): JobRequest {
+    const { install, op, resourceBindings, limits, inputCeiling } =
+      this.discoverExecution(pluginId, args, agentRun);
     const inputs = args.inputs ?? [];
     const inputReason = this.inputRefusal(auth, pluginId, args.machineId, op, inputs);
     if (inputReason) fail(inputReason);
@@ -4661,7 +4905,7 @@ export class JobService {
       parent: null,
       ...(inputs.length ? { inputs } : {}),
       // The owner's wire parses this strictly; the confinement stays with the hub (ADR 0051).
-      credential: this.auth.credentialReference({ ...auth, containerGrants: undefined }),
+      credential: projectJobCredential(this.auth.credentialReference(auth)),
       ...(terminal ? { terminal } : {}),
       ...(agentRun ? { agentRunId: agentRun.runId, agentRunExpiresAt: agentRun.expiresAt } : {}),
     };
@@ -4676,9 +4920,11 @@ export class JobService {
     traceId: string,
     args: JobExecution,
     beforeEffect?: () => void,
+    authorityFence?: ActionAuthorityFence,
   ): JobRecord {
     if ("terminal" in args) fail("native_terminal_admission_required");
     if ("service" in args) fail("native_service_admission_required");
+    authorityFence?.checkCurrent();
     const context = this.auth.restoreCredential(this.auth.credentialReference(auth));
     if (!context) fail("credential_revoked_or_expired");
     const binding =
@@ -4733,7 +4979,10 @@ export class JobService {
         this.concurrencyRefusal(request),
         beforeEffect,
       );
-      const reserved = this.jobs.reserve(request, this.runtime.now(), context.containerGrants);
+      authorityFence?.checkCurrent();
+      const reserved = this.jobs.reserve(request, this.runtime.now(), context.containerGrants,
+        captureAuthoritySnapshot(this.auth, context, authorityFence === undefined
+          ? {} : { action: authorityFence.snapshot(), actionCredential: authorityFence.credentialReference() }));
       this.jobs.decision(request.jobId, decision.decisionId);
       const allowed = decision.allowed;
       if (!allowed) {
@@ -4759,6 +5008,8 @@ export class JobService {
       }
       return this.jobs.get(request.jobId)!;
     });
+    if (job.state === "queued" && authorityFence !== undefined)
+      this.effectFences.set(job.request.jobId, authorityFence.retain());
     this.changed(job.request);
     if (job.state === "queued") this.start(job);
     return this.jobs.get(request.jobId)!;
@@ -4804,7 +5055,9 @@ export class JobService {
     terminal: NonNullable<JobRequest["terminal"]>,
     traceId: number,
     privateEnv?: Extract<JobCommand, { type: "start" }>["privateEnv"],
+    authorityFence?: ActionAuthorityFence,
   ): Extract<JobCommand, { type: "start" }> {
+    authorityFence?.checkCurrent();
     if (runtime.machineId !== machineId) fail("terminal_runtime_destination_changed");
     if (runtime.session !== undefined && runtime.session.machineId !== runtime.machineId)
       fail("terminal_runtime_session_destination_changed");
@@ -4887,9 +5140,29 @@ export class JobService {
       undefined,
       terminal,
     );
-    const job = this.store.transaction(() =>
-      this.jobs.reserve(pinned, this.runtime.now(), context.containerGrants),
-    );
+    const native = this.terminalDemandBinding(runtime, machineId, terminal.containerId);
+    const captured = authorityFence?.snapshot().nativeDemand;
+    if (captured !== undefined) {
+      if (!Array.isArray(captured) || !captured.some((binding) => {
+        const parsed = AuthoritySnapshotSchema.shape.native.unwrap().safeParse(binding);
+        return parsed.success && parsed.data.machineId === machineId &&
+          parsed.data.runtimeDigest === native.runtimeDigest &&
+          parsed.data.operationId === native.operationId &&
+          this.terminalDemandBindingCurrent(parsed.data);
+      }))
+        fail("terminal_runtime_destination_changed");
+    }
+    const job = this.store.transaction(() => {
+      authorityFence?.checkCurrent();
+      return this.jobs.reserve(pinned, this.runtime.now(), context.containerGrants,
+        captureAuthoritySnapshot(this.auth, context, {
+          native, terminal,
+          ...(authorityFence === undefined ? {} : {
+            action: authorityFence.snapshot(), actionCredential: authorityFence.credentialReference(),
+          }),
+        }));
+    });
+    if (authorityFence !== undefined) this.effectFences.set(job.request.jobId, authorityFence.retain());
     const command = this.start(job, false);
     if (!command) {
       this.jobs.state(pinned.jobId, "refused");
@@ -4897,6 +5170,7 @@ export class JobService {
       fail("terminal_runtime_admission_refused");
     }
     this.changed(pinned);
+    authorityFence?.checkCurrent();
     return privateEnv ? { ...command, privateEnv } : command;
   }
   private start(
@@ -4930,7 +5204,7 @@ export class JobService {
       if (!install.ready && !protocolReason) return null;
       const operationReason = protocolReason ?? this.operationRefusal(install, request.operationId);
       const credential = this.jobCredential(current);
-      const context = this.auth.restoreCredential(credential);
+      const context = this.restoreJob(current);
       let runRefusal: string | null = null;
       if (request.agentRunId) {
         try {
@@ -5008,6 +5282,7 @@ export class JobService {
           "base64",
         ),
       };
+      this.effectFences.get(request.jobId)?.checkCurrent();
       this.jobs.state(request.jobId, "admitted", permit);
       this.jobs.state(request.jobId, "start-committed", permit);
       return permit;
@@ -5023,6 +5298,7 @@ export class JobService {
     }
     if (permit) {
       const command = { type: "start" as const, request, permit };
+      this.effectFences.get(request.jobId)?.checkCurrent();
       if (dispatch) live.channel.send({ type: "job_command", command });
       return command;
     }
@@ -5109,7 +5385,7 @@ export class JobService {
   private serviceTunnelCurrent(tunnel: HubServiceTunnel): boolean {
     const job = this.jobs.get(tunnel.request.jobId);
     const record = this.instanceServices.get(tunnel.policy.serviceId);
-    const current = job && this.auth.restoreCredential(job.request.credential);
+    const current = job && this.restoreJob(job);
     const consumer = this.channels.get(tunnel.consumer.machineId);
     const producer = this.channels.get(tunnel.producer.machineId);
     if (
@@ -5603,7 +5879,7 @@ export class JobService {
       if (event.subject.kind !== "job") return;
       const job = this.jobs.get(event.subject.jobId);
       if (!job || !this.inputOwner(job, channel)) return;
-      const current = this.auth.restoreCredential(job.request.credential);
+      const current = this.restoreJob(job);
       if (!current) return;
       this.serviceTrace(
         current,
@@ -5665,13 +5941,18 @@ export class JobService {
             pending.authorized
           )
             fail("job_input_request_missing");
-          context = this.auth.restoreCredential(this.auth.credentialReference(pending.auth))!;
-          this.authorizedJob(pending.auth, pending.node, "jobs:input", pending.callerPluginId);
+          pending.authorityFence?.checkCurrent();
+          const restored = this.restoreSnapshot(pending.authoritySnapshot);
+          if (restored === null) fail("credential_revoked_or_expired");
+          context = restored;
+          this.authorizedJob(context, pending.node, "jobs:input", pending.callerPluginId);
           requirements = [{ cap: "jobs:input", ref: pending.node }];
         } else {
           if (job.request.parent?.parentJobId !== event.parentJobId || pending)
             fail("job_input_parent_mismatch");
-          context = this.auth.restoreCredential(job.request.credential)!;
+          const restored = this.restoreJob(job);
+          if (restored === null) fail("credential_revoked_or_expired");
+          context = restored;
           requirements = this.requirements(job.request);
           if (
             !this.jobs.reserveInput(
@@ -5680,6 +5961,7 @@ export class JobService {
               event.seq,
               context.principal.id,
               job.request.traceId,
+              job.authoritySnapshot,
             )
           )
             fail("job_input_request_replayed");
@@ -5750,7 +6032,10 @@ export class JobService {
       )
         return;
       try {
-        this.authorizedJob(pending.auth, pending.node, "jobs:input", pending.callerPluginId);
+        pending.authorityFence?.checkCurrent();
+        const current = this.restoreSnapshot(pending.authoritySnapshot);
+        if (current === null) fail("credential_revoked_or_expired");
+        this.authorizedJob(current, pending.node, "jobs:input", pending.callerPluginId);
         this.inputAuthority(job);
         if (!event.accepted || !pending.authorized)
           throw new ServiceError("conflict", event.reason ?? "job_input_unconfirmed");
@@ -6117,7 +6402,9 @@ export class JobService {
     eof: boolean,
     callerPluginId = "engine.jobs",
     traceId = "native-input",
+    authorityFence?: ActionAuthorityFence,
   ): Promise<void> {
+    authorityFence?.checkCurrent();
     const job = this.authorizedJob(auth, node, "jobs:input", callerPluginId);
     if (job.request.terminal?.runId) this.auth.authorizeRunInput(job.request.terminal.runId, auth);
     this.inputAuthority(job);
@@ -6136,12 +6423,18 @@ export class JobService {
       data,
       eof,
     });
-    if (!this.jobs.reserveInput(job, requestId, seq, auth.principal.id, traceId))
+    const authoritySnapshot = captureAuthoritySnapshot(this.auth, auth,
+      authorityFence === undefined ? {} : {
+        action: authorityFence.snapshot(), actionCredential: authorityFence.credentialReference(),
+      });
+    authorityFence?.checkCurrent();
+    if (!this.jobs.reserveInput(job, requestId, seq, auth.principal.id, traceId, authoritySnapshot))
       throw new ServiceError("conflict", "job_input_request_replayed");
     const { promise, resolve, reject } = Promise.withResolvers<void>();
     const finish = (error?: Error) => {
       if (this.inputs.get(job.request.jobId)?.requestId !== requestId) return;
       clearTimeout(timer);
+      this.inputs.get(job.request.jobId)?.authorityFence?.close();
       this.inputs.delete(job.request.jobId);
       if (error) {
         // Transport errors cannot establish whether stdin consumed any bytes.
@@ -6163,12 +6456,14 @@ export class JobService {
       requestId,
       seq,
       authorized: false,
-      auth: structuredClone(auth),
+      authoritySnapshot,
+      ...(authorityFence === undefined ? {} : { authorityFence: authorityFence.retain() }),
       node: structuredClone(node),
       callerPluginId,
       finish,
     });
     try {
+      authorityFence?.checkCurrent();
       if (!live.channel.send({ type: "job_command", command }))
         finish(new ServiceError("conflict", "job_input_delivery_unknown"));
     } catch {

@@ -1138,7 +1138,7 @@ describe("TerminalBroker viewport arbitration", () => {
           }),
         ).toBe(true);
       } else {
-        const outcome = fixture.broker.restartById(terminalId, fixture.root.principal.id);
+        const outcome = fixture.broker.restartById(terminalId, fixture.root.principal.id, fixture.auth.credentialReference(fixture.root));
         fixture.broker.onRestarted(fixture.machine.machineId, {
           type: "terminal_restarted",
           terminalId,
@@ -2389,7 +2389,7 @@ describe("TerminalBroker restart in place", () => {
     expect(broker.listForContainer(before!.containerId)).toMatchObject([
       { id: terminalId, status: "exited", exitCode: null, exitReason: "owner_lost" },
     ]);
-    const result = broker.restartById(terminalId, f.root.principal.id);
+    const result = broker.restartById(terminalId, f.root.principal.id, f.auth.credentialReference(f.root));
     const command = replacement.sent.find((message) => message.type === "terminal_restart");
     if (!command || command.type !== "terminal_restart" || !command.create)
       throw new Error("missing restart");
@@ -2453,7 +2453,7 @@ describe("TerminalBroker restart in place", () => {
       testTileTrees,
     );
     broker.setMachineOnline(replacement);
-    const result = broker.restartById(create.terminalId, f.root.principal.id);
+    const result = broker.restartById(create.terminalId, f.root.principal.id, f.auth.credentialReference(f.root));
     const command = replacement.sent.find((message) => message.type === "terminal_restart");
     if (command?.type !== "terminal_restart") throw new Error("missing restart");
     expect(command.cwd).toBeUndefined();
@@ -2485,7 +2485,7 @@ describe("TerminalBroker restart in place", () => {
       data: encoded("old tail"),
     });
     f.socket.clear();
-    const result = f.broker.restartById(terminalId, f.root.principal.id);
+    const result = f.broker.restartById(terminalId, f.root.principal.id, f.auth.credentialReference(f.root));
     expect(f.auth.authenticate(sessionToken(f.create)).principal.kind).toBe("agent");
     f.broker.onRestarted(f.machine.machineId, {
       type: "terminal_restarted",
@@ -2534,8 +2534,8 @@ describe("TerminalBroker restart in place", () => {
   test("bounded refusal revokes only the new credential and preserves the original process", async () => {
     const f = brokerFixture();
     const terminalId = f.create.terminalId;
-    const pending = f.broker.restartById(terminalId, f.root.principal.id);
-    expect(await f.broker.restartById(terminalId, f.root.principal.id)).toBe("restart_pending");
+    const pending = f.broker.restartById(terminalId, f.root.principal.id, f.auth.credentialReference(f.root));
+    expect(await f.broker.restartById(terminalId, f.root.principal.id, f.auth.credentialReference(f.root))).toBe("restart_pending");
     const command = f.machine.sent.find((message) => message.type === "terminal_restart");
     if (command?.type !== "terminal_restart") throw new Error("missing restart");
     const token = command.create!.env.MANIFOLD_TOKEN!;
@@ -2544,7 +2544,7 @@ describe("TerminalBroker restart in place", () => {
     expect(await pending).toBe("restart_timeout");
     expect(() => f.auth.authenticate(token)).toThrow(ServiceError);
     expect(f.auth.authenticate(sessionToken(f.create)).principal.kind).toBe("agent");
-    const refused = f.broker.restartById(terminalId, f.root.principal.id);
+    const refused = f.broker.restartById(terminalId, f.root.principal.id, f.auth.credentialReference(f.root));
     f.broker.onRestartError(f.machine.machineId, terminalId, "restart_failed");
     expect(await refused).toBe("restart_failed");
     expect(f.store.getTerminal(terminalId)?.status).toBe("running");
@@ -2555,11 +2555,11 @@ describe("TerminalBroker restart in place", () => {
       send: (message) => f.machine.send(message),
     });
     f.machine.clear();
-    expect(await f.broker.restartById(terminalId, f.root.principal.id)).toBe("unsupported");
+    expect(await f.broker.restartById(terminalId, f.root.principal.id, f.auth.credentialReference(f.root))).toBe("unsupported");
     expect(f.machine.sent).toEqual([]);
     f.broker.setMachineOnline(f.machine);
     await f.broker.drain(f.machine.machineId, true);
-    expect(await f.broker.restartById(terminalId, f.root.principal.id)).toBe("machine_draining");
+    expect(await f.broker.restartById(terminalId, f.root.principal.id, f.auth.credentialReference(f.root))).toBe("machine_draining");
     f.store.close();
   });
 
@@ -2587,7 +2587,7 @@ describe("TerminalBroker restart in place", () => {
       testTileTrees,
     );
     broker.setMachineOnline(f.machine);
-    const result = broker.restartById(terminalId, f.root.principal.id);
+    const result = broker.restartById(terminalId, f.root.principal.id, f.auth.credentialReference(f.root));
     const command = f.machine.sent.find((message) => message.type === "terminal_restart");
     expect(command).toMatchObject({
       type: "terminal_restart",
@@ -2608,7 +2608,7 @@ describe("TerminalBroker restart in place", () => {
     });
     expect(await result).toBe("ok");
     broker.setMachineOnline(new FakeMachine(f.machine.machineId, null, "governed"));
-    expect(await broker.restartById(terminalId, f.root.principal.id)).toBe("no_recipe");
+    expect(await broker.restartById(terminalId, f.root.principal.id, f.auth.credentialReference(f.root))).toBe("no_recipe");
     f.store.close();
   });
 });

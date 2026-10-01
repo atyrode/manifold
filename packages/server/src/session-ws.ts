@@ -24,7 +24,7 @@ import {
 import { ServiceError, type AuthContext, type AuthService } from "./auth.ts";
 import type { EventHub, EventSubscriber } from "./event-hub.ts";
 import type { Logger } from "./log.ts";
-import type { PluginHost } from "./plugin-host.ts";
+import type { DispatchOptions, PluginHost } from "./plugin-host.ts";
 import type { Room, RoomManager, RoomTimers } from "./room.ts";
 import {
   SessionChannel,
@@ -33,6 +33,7 @@ import {
   type RawSocket,
 } from "./session-channel.ts";
 import type { TerminalBroker } from "./terminal-broker.ts";
+import type { ActionAuthorityFence } from "./action-authority-fence.ts";
 
 type ClassifiedFrame =
   | { kind: "message"; message: ClientMessage }
@@ -1002,10 +1003,11 @@ export class SessionGateway {
     action: string,
     ref: string,
     args: Record<string, unknown>,
+    options?: DispatchOptions,
   ): Promise<Extract<ActionOutcome, { ok: true }> | null> {
     let outcome: ActionOutcome;
     try {
-      outcome = await this.plugins.dispatch(peer.auth, action, args, connection.id);
+      outcome = await this.plugins.dispatch(peer.auth, action, args, connection.id, options);
     } catch {
       peer.send({ type: "error", code: "conflict", message: `${action} failed`, ref });
       return null;
@@ -1081,7 +1083,8 @@ export class SessionGateway {
       case "resync_request":
         this.sendResyncIfDue(connection, channel);
         return;
-      case "terminal_open":
+      case "terminal_open": {
+        let prepared: { message: Extract<ClientMessage, { type: "terminal_open" }>; fence: ActionAuthorityFence; traceId: number } | undefined;
         /*
           POLICY THROUGH THE LADDER. Whether a terminal may be born here, now, by this
           principal — and running WHAT — is `core.terminals`' question, and it is asked
@@ -1113,17 +1116,23 @@ export class SessionGateway {
           ...(message.program === undefined ? {} : { program: message.program }),
           ...(message.env === undefined ? {} : { env: message.env }),
           ...(message.runtime === undefined ? {} : { runtime: message.runtime }),
+        }, {
+          onPrepared: (_args, fence, traceId) => {
+            const machineId = fence.snapshot().machineId;
+            if (machineId === undefined) {
+              fence.close();
+              throw new ServiceError("forbidden", "terminal destination unavailable");
+            }
+            prepared = { message: { ...message, machineId }, fence, traceId };
+          },
         }).then((allowed) => {
-          if (allowed) {
-            const result = allowed.result;
-            const traceId =
-              result !== null && typeof result === "object"
-                ? Reflect.get(result, "traceId")
-                : undefined;
-            this.broker.open(peer, message, typeof traceId === "number" ? traceId : undefined);
+          if (allowed && prepared !== undefined) {
+            this.broker.open(peer, prepared.message, prepared.traceId, prepared.fence);
           }
+          prepared?.fence.close();
         });
         return;
+      }
       case "terminal_attach":
         this.broker.attach(peer, message);
         return;

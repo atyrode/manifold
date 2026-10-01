@@ -3,6 +3,9 @@ import { AsyncResource } from "node:async_hooks";
 import {
   MAX_ISOLATE_EMITS,
   HARDENED_CONTRACT_VERSION,
+  ManifoldRefSchema,
+  type PreparedRequirement,
+  TerminalRuntimeSchema,
   type Agent,
   type AgentRun,
   type SessionRef,
@@ -16,6 +19,7 @@ import { z } from "zod";
 import { ActionCallError, HostCallError } from "../src/errors.ts";
 import {
   attachServerGuest,
+  argumentDigest,
   defineServerAction,
   type GuestCtx,
   type GuestDatabase,
@@ -78,7 +82,7 @@ interface FakeHost {
   exited(): number | null;
 }
 
-function host(def: ServerPluginDef): FakeHost {
+function host(def: ServerPluginDef, autoAdmit = true): FakeHost {
   const sent: IsolateChildFrame[] = [];
   const queue: IsolateChildFrame[] = [];
   const waiting: ((frame: IsolateChildFrame) => void)[] = [];
@@ -87,7 +91,7 @@ function host(def: ServerPluginDef): FakeHost {
   let exited: number | null = null;
   attachServerGuest(def, {
     send: (frame) => {
-      if (frame.t === "prepared") {
+      if (frame.t === "prepared" && autoAdmit) {
         listener({ t: "admitted", id: frame.id, allowed: true });
         return;
       }
@@ -1519,4 +1523,124 @@ describe("named storage migrations", () => {
       }
     },
   );
+});
+
+describe("sealed action preparation", () => {
+  const preparedManifest: PluginManifest = {
+    ...manifest,
+    capabilities: ["containers:read", "machines:read"],
+  };
+  const target = { kind: "container" as const, containerId: "approved" };
+  const requirement: PreparedRequirement = {
+    cap: "machines:read", node: "manifold://machine/exact", reach: "node",
+  };
+
+  test("parses, prepares through only fact RPC, reparses and retains normalized secrets until admission", async () => {
+    let parses = 0;
+    let handlerSecret: string | undefined;
+    let effects = 0;
+    const action = defineServerAction({
+      name: "open", title: "Open", caps: ["containers:read"],
+      requirements: [{ cap: "containers:read", target: ["target"] }],
+      input: z.strictObject({ target: ManifoldRefSchema, secret: z.string(), machineId: z.string().optional() })
+        .transform((args) => { parses += 1; return { ...args, secret: `${args.secret}!` }; }),
+      result: z.strictObject({ machineId: z.string() }),
+    });
+    const fake = host({
+      manifest: preparedManifest, actions: [action],
+      prepareActions: { open: { caps: ["machines:read"], prepare: async (ctx, args: {
+        target: typeof target; secret: string; machineId?: string;
+      }) => {
+        expect(args.secret).toBe("transport-secret!");
+        expect(Object.keys(ctx)).toEqual(["terminals", "containers", "native"]);
+        const machine = await ctx.terminals.resolveMachine({});
+        return { args: { ...args, secret: "normalized-secret", machineId: machine.machineId },
+          targets: [target], additionalRequirements: [requirement] };
+      } } },
+      handlers: { open: async (_ctx, args: { secret: string; machineId: string }) => {
+        effects += 1; handlerSecret = args.secret; return { machineId: args.machineId };
+      } },
+    }, false);
+    fake.send({ t: "load", pluginId: manifest.id, manifest: preparedManifest, dir: ".", hardenedContract: 12 });
+    expect(await fake.next()).toMatchObject({ t: "loaded", prepareActions: { open: { caps: ["machines:read"] } } });
+    fake.send({ t: "dispatch", id: "prepare", action: "open", args: {
+      target, secret: "transport-secret",
+    }, ctx: ctxOf() });
+    const fact = await serve(fake, { machineId: "exact", terminalHostId: "owner", terminalExecution: "unconfined" });
+    expect(fact).toMatchObject({ method: "prepare.terminals.resolveMachine", args: [{}] });
+    expect(await fake.next()).toEqual({ t: "prepared", id: "prepare", targets: [target],
+      additionalRequirements: [requirement] });
+    expect(parses).toBe(2);
+    expect(effects).toBe(0);
+    fake.send({ t: "admitted", id: "prepare", allowed: true });
+    expect(await fake.next()).toEqual({ t: "dispatched", id: "prepare",
+      outcome: { ok: true, result: { machineId: "exact" }, emits: [] } });
+    expect(handlerSecret).toBe("normalized-secret!");
+    expect(effects).toBe(1);
+
+    fake.send({ t: "dispatch", id: "review", action: "open", args: {
+      target, secret: "transport-secret",
+    }, ctx: ctxOf() });
+    await serve(fake, { machineId: "exact", terminalHostId: "owner", terminalExecution: "unconfined" });
+    await fake.next();
+    fake.send({ t: "admitted", id: "review", allowed: false });
+    await Promise.resolve();
+    expect(effects).toBe(1);
+  });
+
+  test.each(["normalized-input", "fixed-target-count", "additional-ceiling"] as const)(
+    "refuses %s before publishing preparation or running effects",
+    async (failure) => {
+      let effects = 0;
+      const action = defineServerAction({
+        name: "open", title: "Open", caps: ["containers:read"],
+        requirements: [{ cap: "containers:read", target: ["target"] }],
+        input: z.strictObject({ target: ManifoldRefSchema, secret: z.string().min(1) }),
+        result: z.null(),
+      });
+      const fake = host({
+        manifest: preparedManifest, actions: [action],
+        prepareActions: { open: { caps: [], prepare: async () => ({
+          args: { target, secret: failure === "normalized-input" ? "" : "secret" },
+          targets: failure === "fixed-target-count" ? [] : [target],
+          ...(failure === "additional-ceiling" ? { additionalRequirements: [requirement] } : {}),
+        }) } },
+        handlers: { open: async () => { effects += 1; return null; } },
+      }, false);
+      fake.send({ t: "load", pluginId: manifest.id, manifest: preparedManifest, dir: ".", hardenedContract: 12 });
+      await fake.next();
+      fake.send({ t: "dispatch", id: "invalid", action: "open", args: { target, secret: "secret" }, ctx: ctxOf() });
+      expect(await fake.next()).toMatchObject({ t: "dispatched", outcome: { ok: false, rule: "invalid_args" } });
+      expect(effects).toBe(0);
+      expect(fake.sent.some((frame) => frame.t === "prepared")).toBe(false);
+    },
+  );
+  test("runtime fact RPC carries destination and digest only, never transformed secret input", async () => {
+    const runtime = TerminalRuntimeSchema.parse({
+      machineId: "exact", pluginId: "example.native", operationId: "shell",
+      installationRevision: "revision", artifactSha256: "a".repeat(64),
+      resourceBindingDigest: "b".repeat(64), input: { secret: "native-input-secret" },
+    });
+    const fake = host({
+      manifest: preparedManifest,
+      actions: [{ name: "native", title: "Native", caps: [], input: z.null(), result: z.null() }],
+      prepareActions: { native: { caps: [], prepare: async (ctx) => {
+        await ctx.terminals.resolveMachine({ runtime });
+        await ctx.native.demand(runtime, "exact", "approved");
+        return { args: null, targets: [] };
+      } } },
+      handlers: { native: async () => null },
+    }, false);
+    fake.send({ t: "load", pluginId: manifest.id, manifest: preparedManifest, dir: ".", hardenedContract: 12 });
+    await fake.next();
+    fake.send({ t: "dispatch", id: "digest", action: "native", args: null, ctx: ctxOf() });
+    const machine = await serve(fake, { machineId: "exact", terminalHostId: "owner", terminalExecution: "governed" });
+    expect(machine.args).toEqual([{ runtimeMachineId: "exact" }]);
+    const native = await serve(fake, []);
+    expect(native).toMatchObject({ method: "prepare.native.demand",
+      args: [argumentDigest(runtime), "exact", "approved"] });
+    expect(JSON.stringify(fake.sent)).not.toContain("native-input-secret");
+    expect(await fake.next()).toEqual({ t: "prepared", id: "digest", targets: [], additionalRequirements: [] });
+    fake.send({ t: "admitted", id: "digest", allowed: false });
+  });
 });

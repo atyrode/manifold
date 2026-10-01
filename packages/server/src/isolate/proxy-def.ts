@@ -28,10 +28,15 @@ import {
   PlaceRequestSchema,
   ListJobRunsArgsSchema,
   InspectJobInputsArgsSchema,
-  IsolateHarnessRequestSchema,
   IsolateHarnessResultSchemas,
   HarnessDefinitionSchema,
   MachineBridgeArgsSchemas,
+  IsolatePreparationArgsSchemas,
+  IsolatePreparationResultSchemas,
+  type ActionPreparationCtx,
+  type IsolatePreparationMethod,
+  type AgentAuthority,
+  type AgentRunAuthority,
   type IsolateHarnessRequest,
   type ActionSummary,
   type IsolateChildFrame,
@@ -42,6 +47,12 @@ import {
 } from "@manifold/protocol";
 import { z } from "zod";
 import { isDeepStrictEqual } from "node:util";
+import {
+  IdentityV2BridgeSchemas,
+  IdentityV2MethodSchema,
+  IdentityV2AnswerSchemas,
+  isIdentityV2Method,
+} from "@manifold/plugin-kit/server";
 import type { ActionCtx, ActionHandler } from "../plugin-host.ts";
 import { IsolateDenial, IsolateLoadError, type IsolateLoadResult } from "./contract.ts";
 import { JobExecuteArgsSchema, JobScheduleArgsSchema, jobDoorSchemas } from "../job-doors.ts";
@@ -59,6 +70,17 @@ import { machineDoorSchemas } from "../machine-doors.ts";
 type LoadedFrame = Extract<IsolateChildFrame, { t: "loaded" }>;
 export type IsolateDispatchOutcome = Extract<IsolateChildFrame, { t: "dispatched" }>["outcome"];
 
+/** Host-only snapshots stay faithful until the supervisor builds the guest's wire frame. */
+export type IsolateHarnessInput =
+  | Exclude<IsolateHarnessRequest, { method: "launch" | "send" }>
+  | (Omit<Extract<IsolateHarnessRequest, { method: "launch" }>, "run" | "agent"> & {
+      readonly run: AgentRunAuthority;
+      readonly agent: AgentAuthority;
+    })
+  | (Omit<Extract<IsolateHarnessRequest, { method: "send" }>, "run"> & {
+      readonly run: AgentRunAuthority;
+    });
+
 /**
  * One round trip into the child, as a proxy asks for it. `dispatch` answers with the child's
  * own verdict; both reject with {@link IsolateDenial} `unavailable` when the child is not
@@ -66,7 +88,7 @@ export type IsolateDispatchOutcome = Extract<IsolateChildFrame, { t: "dispatched
  */
 export interface IsolateTransport {
   dispatch(action: string, args: unknown, ctx: ActionCtx): Promise<IsolateDispatchOutcome>;
-  harness(request: IsolateHarnessRequest, ctx?: ActionCtx): Promise<IsolateDispatchOutcome>;
+  harness(request: IsolateHarnessInput, ctx?: ActionCtx): Promise<IsolateDispatchOutcome>;
   hook(hook: IsolateHook, ctx: LifecycleCtx, delta?: AssemblyDelta): Promise<void>;
   /** `onJobSettled` alone: its own ctx (the job slice rides it) and its own argument. */
   settled(ctx: JobSettledCtx, job: SettledJob): Promise<void>;
@@ -171,19 +193,18 @@ export function buildIsolateDef(
       ? { onJobSettled: (ctx, job) => transport.settled(ctx, job) }
       : {}),
   };
-  let harness: ServerHarness<ActionCtx> | undefined;
+  let harness: ServerHarness<ActionCtx, AgentRunAuthority, AgentAuthority> | undefined;
   if (loaded.harness !== undefined) {
     const metadata = HarnessDefinitionSchema.parse(loaded.harness);
     if (!isDeepStrictEqual(metadata, manifest.contributes?.harness))
       throw new IsolateLoadError("loaded harness does not match its manifest declaration");
     const invoke = async <M extends IsolateHarnessRequest["method"]>(
-      request: IsolateHarnessRequest & { method: M },
+      request: IsolateHarnessInput & { method: M },
       ctx?: ActionCtx,
     ): Promise<z.infer<(typeof IsolateHarnessResultSchemas)[M]>> => {
-      const parsed = IsolateHarnessRequestSchema.parse(request);
-      if ((parsed.method === "validateProfile") !== (ctx === undefined))
+      if ((request.method === "validateProfile") !== (ctx === undefined))
         throw new IsolateDenial("unavailable", "invalid harness caller context");
-      const outcome = await transport.harness(parsed, ctx);
+      const outcome = await transport.harness(request, ctx);
       if (!outcome.ok) {
         if (outcome.rule === "invalid_args")
           throw new IsolateDenial("invalid_args", outcome.message);
@@ -222,6 +243,7 @@ export function buildIsolateDef(
       inputValidation: "guest",
       actions,
       handlers,
+      ...(loaded.prepareActions === undefined ? {} : { guestPreparation: loaded.prepareActions }),
       lifecycle,
       ...(harness === undefined ? {} : { harness }),
       migrations: migrations.map((migration) => ({
@@ -253,6 +275,24 @@ export type ServedCtx =
       readonly kind: "migration";
       readonly ctx: { readonly storage: PluginStorage; readonly database?: PluginDatabase };
     };
+
+/** No ActionCtx member is reachable from this read-only pre-admission RPC server. */
+export async function serveActionPreparation(
+  method: Exclude<IsolatePreparationMethod, "prepare.native.demand" | "prepare.terminals.resolveMachine">,
+  args: readonly unknown[],
+  context: ActionPreparationCtx,
+): Promise<unknown> {
+  let result: unknown;
+  switch (method) {
+    case "prepare.terminals.stored":
+      result = await context.terminals.stored(...IsolatePreparationArgsSchemas[method].parse(args));
+      break;
+    case "prepare.containers.placement":
+      result = await context.containers.placement(...IsolatePreparationArgsSchemas[method].parse(args));
+      break;
+  }
+  return IsolatePreparationResultSchemas[method].parse(result);
+}
 
 /** The positional argument at `index`, which the served method needs to be a string. */
 function stringArg(args: readonly unknown[], index: number, method: IsolateCtxMethod): string {
@@ -515,6 +555,15 @@ export async function serveCtxCall(
   args: readonly unknown[],
   served: ServedCtx,
 ): Promise<unknown> {
+  if (isIdentityV2Method(method)) {
+    if (served.kind !== "dispatch") throw new Error(`slice_unavailable: ${method}`);
+    const name = IdentityV2MethodSchema.parse(method.slice("identity.".length));
+    const schema = IdentityV2BridgeSchemas[name];
+    const values = schema.args.parse(args);
+    const invoke = served.ctx.identity[name] as (...input: never[]) => unknown;
+    const result = await invoke(...values as never[]);
+    return IdentityV2AnswerSchemas[name].parse(result);
+  }
   switch (method) {
     case "streams.open":
     case "streams.publish":

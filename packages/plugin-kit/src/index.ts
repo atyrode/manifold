@@ -23,6 +23,13 @@ export type {
   TerminalRuntime,
 } from "@manifold/plugin";
 export type {
+  ActionPreparationCtx,
+  ActionPreparationDef,
+  ActionPreparer,
+  PreparedActionInput,
+  PreparedRequirement,
+} from "@manifold/protocol";
+export type {
   GuestActions,
   GuestAuth,
   GuestCtx,

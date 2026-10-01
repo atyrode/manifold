@@ -1,4 +1,4 @@
-import type { AuthoredCap, ManifoldRef } from "@manifold/protocol";
+import type { AuthoredCap, GrantNode, GrantReach, ManifoldRef } from "@manifold/protocol";
 import {
   ServiceError,
   type AuthContext,
@@ -10,6 +10,20 @@ import {
 export interface ActionAuthorityRequirement {
   readonly cap: AuthoredCap;
   readonly ref?: ManifoldRef;
+  readonly node?: GrantNode;
+  readonly reach?: GrantReach;
+}
+
+/** Serializable, hub-only effect evidence. Never put this on an owner or terminal frame. */
+export interface ActionAuthoritySnapshotBinding {
+  readonly requirements: readonly ActionAuthorityRequirement[];
+  readonly contextScope: string | null;
+  readonly actionName?: string;
+  readonly fingerprint?: string;
+  readonly originalArgsDigest?: string;
+  readonly machineId?: string;
+  readonly containerId?: string;
+  readonly nativeDemand?: unknown;
 }
 
 /**
@@ -21,16 +35,24 @@ export class ActionAuthorityFence {
   private readonly credential: CredentialReference;
   private requirements: readonly ActionAuthorityRequirement[] | null = null;
   private open = true;
+  private binding: Omit<ActionAuthoritySnapshotBinding, "requirements" | "contextScope"> = {};
+  private checks: readonly (() => void)[] = [];
 
   constructor(
     private readonly authService: AuthService,
     auth: AuthContext,
     private readonly isCurrent: () => boolean,
     private readonly contextScope: string | null,
+    private readonly checkAuthority?: (current: AuthContext) => void,
   ) {
     const credential = authService.credentialReference(auth);
     this.credential = {
       ...credential,
+      ...(credential.authorityScope === undefined ? {} : {
+        authorityScope: credential.authorityScope.map(({ target, reach, caps }) => ({
+          target, reach, caps: [...caps],
+        })),
+      }),
       ...(credential.containerGrants === undefined
         ? {}
         : {
@@ -44,10 +66,51 @@ export class ActionAuthorityFence {
 
   admit(requirements: readonly ActionAuthorityRequirement[]): void {
     if (this.requirements !== null) this.refuse("action already admitted");
-    this.requirements = requirements.map(({ cap, ref }) => ({
+    this.requirements = requirements.map(({ cap, ref, node, reach }) => ({
       cap,
       ...(ref === undefined ? {} : { ref: { ...ref } }),
+      ...(node === undefined ? {} : { node }),
+      ...(reach === undefined ? {} : { reach }),
     }));
+  }
+
+  bind(binding: Omit<ActionAuthoritySnapshotBinding, "requirements" | "contextScope">): void {
+    if (!this.open) this.refuse("action authority unavailable");
+    this.binding = structuredClone(binding);
+  }
+
+  /** A pending effect owns its lease independently of the dispatch which prepared it. */
+  retain(): ActionAuthorityFence {
+    const current = this.checkCurrent();
+    const retained = new ActionAuthorityFence(
+      this.authService, current, this.isCurrent, this.contextScope, this.checkAuthority,
+    );
+    retained.admit(this.requirements!);
+    retained.bind(this.binding);
+    retained.checks = this.checks;
+    return retained;
+  }
+
+  guard(check: () => void): void {
+    this.checks = [...this.checks, check];
+    this.checkCurrent();
+  }
+
+  extend(requirements: readonly ActionAuthorityRequirement[]): void {
+    this.checkCurrent();
+    this.requirements = [...this.requirements!, ...requirements.map((value) => structuredClone(value))];
+    this.checkCurrent();
+  }
+
+  snapshot(): ActionAuthoritySnapshotBinding {
+    if (this.requirements === null) this.refuse("action not admitted");
+    return structuredClone({
+      ...this.binding, requirements: this.requirements, contextScope: this.contextScope,
+    });
+  }
+
+  credentialReference(): CredentialReference {
+    return structuredClone(this.credential);
   }
 
   checkCurrent(): AuthContext {
@@ -57,14 +120,23 @@ export class ActionAuthorityFence {
     if (current === null) this.refuse("caller authority unavailable");
     const graded =
       this.contextScope === null ? current : { ...current, containerScope: this.contextScope };
-    for (const { cap, ref } of this.requirements) {
+    for (const { cap, ref, node, reach } of this.requirements) {
       const held =
         cap === "*"
           ? this.authService.holdsRoot(current)
-          : ref === undefined
-            ? this.authService.allows(graded, cap)
-            : this.authService.allowsRef(current, cap, ref);
+          : node !== undefined
+            ? this.authService.allowsNode(current, cap, node, reach ?? "node")
+            : ref === undefined
+              ? this.authService.allows(graded, cap)
+              : this.authService.allowsRef(current, cap, ref);
       if (!held) this.refuse(`${cap} capability required`);
+    }
+    try {
+      this.checkAuthority?.(current);
+      for (const check of this.checks) check();
+    } catch (error) {
+      this.close();
+      throw error;
     }
     return current;
   }

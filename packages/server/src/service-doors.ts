@@ -20,6 +20,7 @@ import { z } from "zod";
 import { ServiceError, type AuthContext } from "./auth.ts";
 import type { JobService } from "./job-service.ts";
 import type { ActionCtx, ServerPluginDef } from "./plugin-host.ts";
+import type { ActionAuthorityFence } from "./action-authority-fence.ts";
 
 const machine = ServiceReadArgsSchema.pick({ machineId: true });
 export const serviceDoorSchemas = {
@@ -69,6 +70,7 @@ export function serviceContext(
   pluginId: string,
   traceId: number,
   mode: "read" | "invoke",
+  authorityFence?: ActionAuthorityFence,
 ): PluginServiceContext {
   return {
     describe: (args) => service().describeServices(auth, machine.parse(args), pluginId),
@@ -79,9 +81,10 @@ export function serviceContext(
         serviceDoorSchemas.configureConfiguration.parse(args),
         pluginId,
         String(traceId),
+        authorityFence,
       ),
     read: (args) =>
-      service().readService(auth, ServiceReadArgsSchema.parse(args), pluginId, String(traceId)),
+      service().readService(auth, ServiceReadArgsSchema.parse(args), pluginId, String(traceId), authorityFence),
     invoke: (args) => {
       if (mode !== "invoke")
         return Promise.reject(new ServiceError("forbidden", "service_unauthorized"));
@@ -90,6 +93,7 @@ export function serviceContext(
         ServiceInvokeArgsSchema.parse(args),
         pluginId,
         String(traceId),
+        authorityFence,
       );
     },
     describeInstance: (args) =>
@@ -106,6 +110,7 @@ export function serviceContext(
         ConfigureInstanceServiceArgsSchema.parse(args),
         pluginId,
         String(traceId),
+        authorityFence,
       ),
     readInstance: (args) =>
       service().readInstanceService(
@@ -113,6 +118,7 @@ export function serviceContext(
         InstanceServiceReadArgsSchema.parse(args),
         pluginId,
         String(traceId),
+        authorityFence,
       ),
     invokeInstance: (args) => {
       if (mode !== "invoke")
@@ -122,6 +128,7 @@ export function serviceContext(
         InstanceServiceReadArgsSchema.parse(args),
         pluginId,
         String(traceId),
+        authorityFence,
       );
     },
   };

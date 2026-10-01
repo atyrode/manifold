@@ -1,4 +1,4 @@
-import { formatManifoldUri } from "@manifold/protocol";
+import { formatManifoldUri, MANIFOLD_ROOT_URI } from "@manifold/protocol";
 import type {
   Cap,
   ContainerTerminalSummary,
@@ -12,6 +12,10 @@ import type {
   TerminalInfo,
   TerminalSummary,
   ManifoldRef,
+  ActionPreparationCtx,
+  ActionPreparationDef,
+  PreparedRequirement,
+  AskableCap,
 } from "@manifold/protocol";
 
 /** A durable terminal row, as this plugin needs to read it. */
@@ -143,6 +147,72 @@ function creationRefusal(
     ? { refused: "runtime excludes cwd, program, and environment overrides" }
     : null;
 }
+
+const workingCaps = ["containers:write", "containers:read", "scenes:write", "terminals:spawn", "terminals:write"] as const;
+const preparationCaps: readonly AskableCap[] = [
+  ...workingCaps, "machines:shell", "machines:run", "jobs:read", "jobs:input", "jobs:cancel",
+  "locations:read", "locations:write", "locations:create", "operations:invoke",
+  "services:invoke", "network:host",
+];
+
+async function prepareCreation(ctx: ActionPreparationCtx, args: TerminalCreationArgs) {
+  const hasCols = args.cols !== undefined;
+  const hasRows = args.rows !== undefined;
+  if (hasCols !== hasRows) throw new Error("cols and rows must be supplied together");
+  if (args.placement !== "tile" && !hasCols) throw new Error("element placement requires cols and rows");
+  if (args.runtime !== undefined && (args.cwd !== undefined || args.program !== undefined || args.env !== undefined))
+    throw new Error("runtime excludes cwd, program, and environment overrides");
+  const placement = await ctx.containers.placement(args.containerId);
+  if ((args.placement ?? "element") !== placement)
+    throw new Error(placement === "tile" ? 'this container places terminals server-side: send placement "tile"' : 'placement "tile" requires a container that holds a tile tree');
+  const machine = await ctx.terminals.resolveMachine({
+    ...(args.machineId === undefined ? {} : { machineId: args.machineId }),
+    ...(args.runtime === undefined ? {} : { runtime: args.runtime }),
+  });
+  const additionalRequirements: PreparedRequirement[] = [];
+  if (placement === "element") for (const cap of workingCaps)
+    additionalRequirements.push({ cap, node: MANIFOLD_ROOT_URI, reach: "subtree" });
+  if (args.runtime === undefined) {
+    if (machine.terminalExecution !== "unconfined")
+      throw new Error(machine.terminalExecution === "governed" ? "machine requires a declared terminal runtime" : "terminal owner has not declared unconfined terminal support");
+    additionalRequirements.push({
+      cap: "machines:shell", node: formatManifoldUri({ kind: "machine", machineId: machine.machineId }), reach: "node",
+    });
+  } else {
+    additionalRequirements.push(...await ctx.native.demand(args.runtime, machine.machineId, args.containerId));
+  }
+  return {
+    args: { ...args, machineId: machine.machineId },
+    targets: [{ kind: "container" as const, containerId: args.containerId }],
+    additionalRequirements,
+  };
+}
+
+/** Conditional policy lives with the terminal plugin, never in the generic host. */
+export const terminalsPreparers: Readonly<Record<string, ActionPreparationDef>> = {
+  open: { caps: preparationCaps, prepare: prepareCreation },
+  create: { caps: preparationCaps, prepare: prepareCreation },
+  restart: {
+    caps: preparationCaps,
+    prepare: async (ctx, args: { terminalId: string }) => {
+      const stored = await ctx.terminals.stored(args.terminalId);
+      if (stored === null) throw new Error("terminal not found");
+      const machine = await ctx.terminals.resolveMachine({ machineId: stored.machineId });
+      const home = formatManifoldUri({ kind: "container", containerId: stored.containerId });
+      const additionalRequirements: PreparedRequirement[] = [];
+      if (stored.governed) {
+        additionalRequirements.push(...stored.nativeRequirements ?? []);
+      } else {
+        if (machine.terminalExecution !== "unconfined") throw new Error("terminal_runtime_required");
+        additionalRequirements.push(
+          { cap: "terminals:spawn", node: home, reach: "node" },
+          { cap: "machines:shell", node: formatManifoldUri({ kind: "machine", machineId: stored.machineId }), reach: "node" },
+        );
+      }
+      return { args, targets: [{ kind: "container", containerId: stored.containerId }], additionalRequirements };
+    },
+  },
+};
 
 export const terminalsHandlers = {
   /**

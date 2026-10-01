@@ -9,6 +9,14 @@ import {
 import type { ContainerGrant } from "./auth.ts";
 import type { ServerStore } from "./stores.ts";
 import { JobOutputRuleSchema } from "../../protocol/src/jobs.ts";
+import {
+  cloneAuthoritySnapshot,
+  initializeAuthoritySnapshots,
+  projectJobCredential,
+  readAuthoritySnapshot,
+  storeAuthoritySnapshot,
+  type AuthoritySnapshot,
+} from "./authority-snapshot.ts";
 
 export const JOB_SCHEDULE_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS job_schedules (
@@ -37,6 +45,7 @@ CREATE TABLE IF NOT EXISTS job_invocation_edges (
 
 export interface JobScheduleSpec extends JobScheduleTiming {
   request: JobRequest;
+  authoritySnapshot?: AuthoritySnapshot;
   /**
    * The registering lineage's carried container authority (ADR 0051), beside the signed
    * request rather than inside it; absent on every schedule that carries none.
@@ -45,9 +54,9 @@ export interface JobScheduleSpec extends JobScheduleTiming {
 }
 export interface JobScheduleCallbacks {
   /** Common authority evaluator; null permits, otherwise a durable refusal reason. */
-  reauthorize(request: JobRequest): string | null;
+  reauthorize(request: JobRequest, authoritySnapshot?: AuthoritySnapshot): string | null;
   /** Persist the job in this same SQLite transaction. Do not dispatch network I/O here. */
-  enqueue(request: JobRequest, containerGrants?: readonly ContainerGrant[]): void;
+  enqueue(request: JobRequest, containerGrants?: readonly ContainerGrant[], authoritySnapshot?: AuthoritySnapshot): void;
   isOnline(machineId: string): boolean;
 }
 interface ScheduleRow {
@@ -67,10 +76,11 @@ export interface JobOccurrence {
 }
 export interface JobInvocationSpec {
   /** Loaded by the hub from its durable job row, never supplied by the child. */
-  parent: { request: JobRequest; state: string; ownerId: string; ownerGeneration: number };
+  parent: { request: JobRequest; state: string; ownerId: string; ownerGeneration: number; authoritySnapshot?: AuthoritySnapshot };
   /** Authenticated and proof-verified owner connection delivering the invocation event. */
   host: { machineId: string; ownerId: string; ownerGeneration: number };
   child: JobRequest;
+  authoritySnapshot?: AuthoritySnapshot;
   /** Exact explicit edge from current policy, not an edge claimed by the invoking workload. */
   edge: JobInvocationEdge;
   resources: JobInvocationEdge["resources"];
@@ -114,6 +124,7 @@ function integer(value: number, positive = false): void {
 /** All durable reservations and admission callbacks share the ServerStore transaction. */
 export class JobSchedules {
   constructor(private readonly store: ServerStore) {
+    initializeAuthoritySnapshots(store);
     // Every tick reads each enabled schedule's pending occurrences. Without this index that
     // read walks the schedule's whole occurrence history under its primary key (#841).
     store.db.exec(
@@ -137,6 +148,11 @@ export class JobSchedules {
 
   putSchedule(spec: JobScheduleSpec, beforeEffect?: () => void): void {
     validateRequest(spec.request);
+    if (spec.authoritySnapshot !== undefined) {
+      spec = { ...spec, authoritySnapshot: cloneAuthoritySnapshot(spec.authoritySnapshot) };
+      if (!equal(projectJobCredential(spec.authoritySnapshot!.credential), spec.request.credential))
+        throw new Error("schedule-credential-ceiling");
+    }
     if (
       !spec.scheduleId ||
       spec.scheduleId.length > 256 ||
@@ -242,7 +258,7 @@ export class JobSchedules {
           this.disableSchedule(spec.scheduleId, spec.revision, "schedule-expired");
           continue;
         }
-        const denial = callbacks.reauthorize(spec.request);
+        const denial = callbacks.reauthorize(spec.request, spec.authoritySnapshot);
         if (denial) {
           this.disableSchedule(spec.scheduleId, spec.revision, denial);
           continue;
@@ -305,12 +321,12 @@ export class JobSchedules {
             this.changed(pending.job_id);
           } else if (online) {
             const request = JSON.parse(pending.request) as JobRequest;
-            const reason = callbacks.reauthorize(request);
+            const reason = callbacks.reauthorize(request, spec.authoritySnapshot);
             if (reason) {
               this.disableSchedule(spec.scheduleId, spec.revision, reason);
               break;
             }
-            callbacks.enqueue(request, spec.containerGrants);
+            callbacks.enqueue(request, spec.containerGrants, spec.authoritySnapshot);
             this.store.db
               .query("UPDATE job_schedule_occurrences SET state='enqueued' WHERE job_id=?")
               .run(pending.job_id);
@@ -341,6 +357,7 @@ export class JobSchedules {
       throw new JobInvocationRefusal("invocation-parent-not-host-bound");
     if (
       !equal(child.credential, parent.request.credential) ||
+      !equal(spec.authoritySnapshot ?? null, parent.authoritySnapshot ?? null) ||
       spec.now >= (child.credential.expiresAt ?? Number.MAX_SAFE_INTEGER)
     )
       throw new JobInvocationRefusal("invocation-credential-ceiling");
@@ -381,7 +398,8 @@ export class JobSchedules {
       if (existing) {
         if (
           existing.request !== canonicalJobJson(child) ||
-          existing.edge !== canonicalJobJson(edge)
+          existing.edge !== canonicalJobJson(edge) ||
+          !equal(readAuthoritySnapshot(this.store, "invocation", child.jobId) ?? null, spec.authoritySnapshot ?? null)
         )
           throw new JobInvocationRefusal("invocation-identity-conflict");
         return "duplicate";
@@ -420,7 +438,8 @@ export class JobSchedules {
             throw new JobInvocationRefusal("invocation-aggregate-limit");
         }
       }
-      const denial = callbacks.reauthorize(parent.request) ?? callbacks.reauthorize(child);
+      const denial = callbacks.reauthorize(parent.request, parent.authoritySnapshot) ??
+        callbacks.reauthorize(child, spec.authoritySnapshot);
       if (denial) throw new JobInvocationRefusal(denial);
       this.store.db
         .query(
@@ -435,7 +454,8 @@ export class JobSchedules {
           canonicalJobJson(child),
           canonicalJobJson(edge),
         );
-      callbacks.enqueue(child);
+      storeAuthoritySnapshot(this.store, "invocation", child.jobId, spec.authoritySnapshot);
+      callbacks.enqueue(child, spec.authoritySnapshot?.credential.containerGrants, spec.authoritySnapshot);
       return "reserved";
     });
   }

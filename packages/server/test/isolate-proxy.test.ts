@@ -980,4 +980,29 @@ describe("serveCtxCall", () => {
       store.close();
     }
   });
+  test("malformed scoped mint inputs cannot reach issuance, and invalid grant responses are not delivered", async () => {
+    let issuances = 0;
+    const principal = { id: "issuer", kind: "human" as const, name: "Issuer", color: "#123456" };
+    const ctx = { identity: { mintTokenV2: () => {
+      issuances += 1;
+      return { ok: true, value: {
+        token: "secret", principal, scope: [], caps: ["machines:shell"],
+        containerId: null, expiresAt: 1000,
+      } };
+    } } } as unknown as ActionCtx;
+    await expect(serveCtxCall("identity.mintTokenV2", [{
+      principalId: principal.id, scope: [{
+        target: "manifold://machine/m1", reach: "node", caps: ["*"],
+      }], expiresAt: 1000,
+    }], { kind: "dispatch", ctx })).rejects.toThrow();
+    expect(issuances).toBe(0);
+    await expect(serveCtxCall("identity.mintTokenV2", [{
+      principalId: principal.id, scope: [], expiresAt: Number.POSITIVE_INFINITY,
+    }], { kind: "dispatch", ctx })).rejects.toThrow();
+    expect(issuances).toBe(0);
+    await expect(serveCtxCall("identity.mintTokenV2", [{
+      principalId: principal.id, scope: [], expiresAt: 1000,
+    }], { kind: "dispatch", ctx })).rejects.toThrow();
+    expect(issuances).toBe(1);
+  });
 });

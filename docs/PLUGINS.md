@@ -580,6 +580,44 @@ export const archive = defineAction({
 effect: "allow", reach: "subtree" }` is then the whole administration: one principal, one
 machine, one verb.
 
+### Pure conditional preparation
+
+A server definition may register `prepareActions[localName] = { caps, prepare }`.
+The real action parser runs first, the preparer receives its parsed arguments, and the
+same parser validates the normalized result. The preparer returns `{ args, targets,
+additionalRequirements? }`. Fixed targets retain the declared count, capability and order;
+additional `{ cap, node, reach }` requirements are conjunctive, bounded to 64, and must be
+inside both the sealed preparer ceiling and the manifest. Only requirements actually used
+consume the installation/effect ceiling; a governed alternative does not require ordinary
+shell permission.
+
+Preparation receives a newly constructed read-only context: exact terminal destination and
+admitted owner facts, declared container placement, nonsecret stored home/machine/mode facts,
+and pure native demand extraction. It has no storage, database, lifecycle mint, launch,
+credential, sibling-action, event, stream or machine-administration interface. Stored recipes
+and transformed secret-bearing arguments never become preparation evidence. A review uses
+this same path and stops before handler admission; an approval is not an execution.
+
+Ordinary terminal birth requires `terminals:spawn` at placement C and `machines:shell` at
+the exact enrolled M. A canvas creates an independent home H: before allocating anything it
+requires workspace-root **subtree** container read/write, scene write and terminal spawn/write,
+then checks exact H again before send and commit. C-only automation should open its approved
+composition with tile placement instead. Restart uses the stored mode/home/machine; ordinary
+restart additionally requires home spawn and exact-M shell, while governed restart retains
+fresh native consent without unrelated shell permission. Existing terminal control grants
+remain independent: creation scoped to M1 is not blanket M1-only access to existing PTYs.
+
+The private effect lease retains the original correlated credential, ordered requirements,
+parser/preparer/code binding and native demand through awaits and acknowledgements. Withdrawal
+before commit refuses success and settles only the pending owned effect. Native jobs retain a
+hub-only faithful authority snapshot; signed owner requests keep their released vocabulary
+and omit ordinary-only capabilities. Snapshot-less retained jobs use their legacy restore path.
+Installed and trusted bindings pin their verified artifact digest. Built-in source bindings
+also pin a once-per-process digest of actual source dependency bytes; compiled hubs hash their
+executable bytes. Deployment labels and `.dirty` version suffixes are not security identities:
+a changed imported helper makes a new process refuse the old fingerprint-bound continuation.
+
+
 For selected high-impact delegated effects, **`agentJustification: "required"`** publishes a
 bounded declaration requirement in the same action metadata at `GET /api/protocol`.
 An active accountable run supplies `x-manifold-agent-justification` through the shared action
@@ -3721,11 +3759,16 @@ served across a process boundary (`docs/CONTRACTS.md` §Hardened plugins, `ISOLA
 
 Two rungs of the ladder are graded IN YOUR PROCESS (`ISOLATE_GUEST_DENIAL_RULES`): the runtime
 parses arguments against your action's own Zod `input` (`invalid_args`) and your handler's
-`{ refused }` is `refused`. Host policy/scope/capability checks precede invocation. After the
-guest's one real parse, its runtime sends `prepared` with only the declared authority targets;
-transformed arguments remain in the guest, including non-JSON values. The host evaluates its
-own requirements and agent declaration, then answers `admitted`. Context calls and successful
-results are forbidden before that admission, and a refused preparation never invokes the handler.
+`{ refused }` is `refused`. Host policy/scope/capability checks precede invocation. Contract 12
+adds the same real parser → pure preparer → real parser path as in-realm. The guest's
+`prepared` frame carries only canonical targets and bounded conjunctive requirements; its
+additional-capability ceiling is sealed in the verified artifact, never trusted from the reply.
+Transformed arguments remain guest-owned, including secret-bearing and non-JSON values.
+Before `admitted`, only the read-only preparation methods are served: resolver calls send
+machine identities and native-demand calls send a digest, not runtime input. Storage, ordinary
+context calls and successful execution results remain forbidden. Review returns preparation
+evidence and answers `admitted: false`, so the handler never runs. Older bindings without a
+preparer keep their released target-extraction and admission contract.
 The `result` schema is enforced on the way out too; the roster publishes both schemas from
 the `loaded` frame. Repack existing self-contained guests with the current kit for this mandatory
 handshake; there is no old-runtime validation fallback or second public action door.
@@ -3949,9 +3992,11 @@ require an accepted contract of at least 9, not the newest stamp. Contract 10 ad
 physical-core metadata; older strict consumers retain the old machine-list shape through
 nested server calls and both Worker machine-reading routes. Contract 11 adds credential-bound
 read-only lifecycle metadata. Contract 12 adds live workspace authority hints, bounded
-subscription ordering, explicit client-binding retirement, readonly inputs and disclosure
-buttons; older strict Workers retain their original contexts and ordinary controls. Older
-admitted artifacts keep their declared behavior rather than acquiring these facilities.
+subscription ordering, explicit client-binding retirement, readonly inputs, disclosure buttons
+and sealed pure action preparation; older strict Workers and server isolates retain their
+original contexts and truthful legacy authority projections. An unrepresentable correlated
+Agent/Run snapshot refuses as `scoped_authority_requires_v2` before posting; a coarse hint is
+never used to restore hub authority. Older admitted artifacts do not acquire new facilities.
 Missing stamps require a genuine repack, not an assumed contract 1;
 `repack_required` holds incompatible incumbents before import or spawn.
 

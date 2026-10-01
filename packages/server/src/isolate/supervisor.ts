@@ -20,7 +20,12 @@ import {
   isMachineBridgeMethod,
   IsolateHarnessRequestSchema,
   IsolateHarnessResultSchemas,
-  type IsolateHarnessRequest,
+  IsolatePreparationArgsSchemas,
+  IsolatePreparationResultSchemas,
+  type IsolatePreparationMethod,
+  projectLegacyCaps,
+  projectLegacyAgent,
+  projectLegacyRun,
   type IsolateDispatchCtx,
   type IsolateChildFrame,
   type IsolateCtxMethod,
@@ -46,7 +51,9 @@ import {
   buildIsolateDef,
   serveCtxCall,
   serveLifecycleMetadata,
+  serveActionPreparation,
   type IsolateDispatchOutcome,
+  type IsolateHarnessInput,
   type IsolateTransport,
   type ServedCtx,
 } from "./proxy-def.ts";
@@ -86,11 +93,23 @@ const SETTLED_FLUSH_GRACE_MS = 1_000;
 const ROOT_AUTHORITY_WITHDRAWN = "root_authority_withdrawn";
 
 /** Correlated calls that release a request's resources rather than exercise authority. */
-const ROOT_FENCE_EXEMPT: Partial<Record<IsolateCtxMethod, true>> = {
+const ROOT_FENCE_EXEMPT: Partial<Record<IsolateCtxMethod | IsolatePreparationMethod, true>> = {
   "jobs.ack": true,
   "jobs.unfollow": true,
   "streams.close": true,
 };
+
+const PREPARATION_METHODS: Record<IsolatePreparationMethod, true> = {
+  "prepare.terminals.resolveMachine": true,
+  "prepare.terminals.stored": true,
+  "prepare.containers.placement": true,
+  "prepare.native.demand": true,
+};
+function isPreparationMethod(
+  method: IsolateCtxMethod | IsolatePreparationMethod,
+): method is IsolatePreparationMethod {
+  return Object.hasOwn(PREPARATION_METHODS, method);
+}
 
 type LoadedFrame = Extract<IsolateChildFrame, { t: "loaded" }>;
 type AnsweredFrame = Extract<
@@ -292,7 +311,9 @@ export class IsolateSupervisor implements IsolateRunner {
       ...((this.isolates.get(pluginId)?.ref.hardenedContract ?? 0) >= 8
         ? { callerPlugin: ctx.callerPlugin }
         : {}),
-      caps: [...ctx.auth.caps],
+      caps: (this.isolates.get(pluginId)?.ref.hardenedContract ?? 1) < 12
+        ? projectLegacyCaps(ctx.auth.caps)
+        : [...ctx.auth.caps],
       isRoot: ctx.auth.isRoot,
       containerScope: ctx.containerScope,
       ...((this.isolates.get(pluginId)?.ref.hardenedContract ?? 0) >= 6
@@ -304,7 +325,7 @@ export class IsolateSupervisor implements IsolateRunner {
 
   private async harness(
     isolate: Isolate,
-    request: IsolateHarnessRequest,
+    request: IsolateHarnessInput,
     ctx?: ActionCtx,
   ): Promise<IsolateDispatchOutcome> {
     const { pluginId } = isolate.ref;
@@ -314,7 +335,13 @@ export class IsolateSupervisor implements IsolateRunner {
       isolate.loaded?.harness === undefined
     )
       throw new IsolateDenial("unavailable", "harness unavailable");
-    const parsed = IsolateHarnessRequestSchema.parse(request);
+    // The released harness lane remains V1; never parse away scope before projection.
+    const projected = request.method === "launch"
+      ? { ...request, run: projectLegacyRun(request.run), agent: projectLegacyAgent(request.agent) }
+      : request.method === "send"
+        ? { ...request, run: projectLegacyRun(request.run) }
+        : request;
+    const parsed = IsolateHarnessRequestSchema.parse(projected);
     if ((parsed.method === "validateProfile") !== (ctx === undefined))
       throw new IsolateDenial("unavailable", "invalid harness caller context");
     const frame = await this.request(
@@ -565,6 +592,19 @@ export class IsolateSupervisor implements IsolateRunner {
           reject(new IsolateLoadError("isolate exited before load"));
         }
       });
+      const preparation = loaded.prepareActions ?? {};
+      if (Object.keys(preparation).length > 0 && (isolate.ref.hardenedContract ?? 1) < 12)
+        throw new IsolateLoadError("action preparation requires hardened contract 12");
+      if (!isDeepStrictEqual(preparation, isolate.ref.serverBinding?.prepareActions ?? {}))
+        throw new IsolateLoadError("loaded action preparers do not match the sealed artifact binding");
+      for (const [name, definition] of Object.entries(preparation)) {
+        if (!loaded.actions.some((action) => action.name === `${pluginId}.${name}`) ||
+            definition.caps.some((cap) => !manifest.capabilities.includes(cap)))
+          throw new IsolateLoadError("invalid loaded action preparer declaration");
+      }
+      if (isolate.loaded !== null &&
+          !isDeepStrictEqual(isolate.loaded.prepareActions ?? {}, preparation))
+        throw new IsolateLoadError("respawn changed action preparation metadata");
       if ((isolate.ref.hardenedContract ?? 1) < 7 && loaded.harness !== undefined)
         throw new IsolateLoadError("harness requires hardened contract 7");
       if (
@@ -732,7 +772,30 @@ export class IsolateSupervisor implements IsolateRunner {
         try {
           if (pending.served.ctx.admitPrepared === undefined)
             throw new IsolateDenial("unavailable", "isolate has no admission continuation");
-          pending.served.ctx.admitPrepared(frame.targets);
+          const declarations = isolate.ref.serverBinding?.prepareActions ?? {};
+          const preparation = Object.hasOwn(declarations, pending.request.action)
+            ? declarations[pending.request.action] : undefined;
+          if (frame.additionalRequirements !== undefined && preparation === undefined)
+            throw new IsolateDenial("unavailable", "undeclared action preparation evidence");
+          if (preparation !== undefined &&
+              (frame.targets.some((target) => target === null) ||
+               (frame.additionalRequirements ?? []).some((requirement) =>
+                 !preparation.caps.includes(requirement.cap))))
+            throw new IsolateDenial("unavailable", "action preparation exceeds sealed binding");
+          pending.served.ctx.admitPrepared(frame.targets, frame.additionalRequirements);
+          if (pending.served.ctx.preparationMode === "review") {
+            child.send({ t: "admitted", id: frame.id, allowed: false });
+            pending.answer({
+              t: "dispatched",
+              id: frame.id,
+              outcome: { ok: true, result: {
+                targets: frame.targets,
+                additionalRequirements: frame.additionalRequirements ?? [],
+              }, emits: [] },
+            });
+            isolate.pending.delete(frame.id);
+            return;
+          }
           pending.admitted = true;
           child.send({ t: "admitted", id: frame.id, allowed: true });
         } catch (error) {
@@ -767,8 +830,7 @@ export class IsolateSupervisor implements IsolateRunner {
         if (
           frame.t !== expected ||
           (frame.t === "dispatched" &&
-            !pending.admitted &&
-            (frame.outcome.ok || frame.outcome.rule !== "invalid_args")) ||
+            !pending.admitted && frame.outcome.ok) ||
           (pending.request.t === "harness" &&
             (pending.serving !== 0 ||
               (frame.t === "harnessed" &&
@@ -905,6 +967,38 @@ export class IsolateSupervisor implements IsolateRunner {
       // Calls wait behind earlier host work; a captured ctx is not authority after teardown.
       if (pending !== undefined && isolate.pending.get(pending.request.id) !== pending)
         throw new Error("no such request");
+      if (isPreparationMethod(frame.method)) {
+        if ((isolate.ref.hardenedContract ?? 1) < 12 ||
+            pending?.request.t !== "dispatch" ||
+            pending.served?.kind !== "dispatch" ||
+            pending.admitted ||
+            !Object.hasOwn(isolate.ref.serverBinding?.prepareActions ?? {}, pending.request.action) ||
+            pending.served.ctx.preparation === undefined)
+          throw new Error("action preparation is not available for this request");
+        let result: unknown;
+        if (frame.method === "prepare.native.demand") {
+          if (pending.served.ctx.prepareNativeDemand === undefined)
+            throw new Error("native preparation is not available for this request");
+          result = await pending.served.ctx.prepareNativeDemand(
+            ...IsolatePreparationArgsSchemas[frame.method].parse(frame.args),
+          );
+        } else if (frame.method === "prepare.terminals.resolveMachine") {
+          if (pending.served.ctx.prepareResolveMachine === undefined)
+            throw new Error("machine preparation is not available for this request");
+          result = await pending.served.ctx.prepareResolveMachine(
+            ...IsolatePreparationArgsSchemas[frame.method].parse(frame.args),
+          );
+        } else {
+          result = await serveActionPreparation(
+            frame.method, frame.args, pending.served.ctx.preparation,
+          );
+        }
+        result = IsolatePreparationResultSchemas[frame.method].parse(result);
+        if (isolate.child === child && isolate.pending.get(pending.request.id) === pending &&
+            !pending.admitted)
+          child.send({ t: "reply", id: frame.id, ok: true, result });
+        return;
+      }
       if (
         pending?.served?.kind === "dispatch" &&
         (!pending.admitted ||
@@ -912,6 +1006,9 @@ export class IsolateSupervisor implements IsolateRunner {
           isolate.pending.get(pending.request.id) !== pending)
       )
         throw new Error("dispatch has not been admitted");
+      if (frame.method.startsWith("identity.") && frame.method.endsWith("V2") &&
+          (isolate.ref.hardenedContract ?? 1) < 12)
+        throw new Error(`slice_unavailable: ${frame.method}`);
       if (
         pending !== undefined &&
         ROOT_FENCE_EXEMPT[frame.method] !== true &&

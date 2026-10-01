@@ -919,3 +919,17 @@ describe("the packed server half, as a real isolate", () => {
     }
   });
 });
+
+describe("sealed preparer artifacts", () => {
+  test("compiled registration binds its ceiling and cannot be relabeled as an old contract", async () => {
+    const compiled = await compilePlugin(`${KIT}/test/fixtures/prepared`, { shared: false });
+    const packed = PluginBundleSchema.parse(JSON.parse(new TextDecoder().decode(compiled.bytes)));
+    expect(packed.serverBinding).toEqual({
+      prepareActions: { open: { caps: ["machines:read"] } },
+    });
+    expect(() => PluginBundleSchema.parse({ ...packed, hardenedContract: 11 })).toThrow();
+    expect(() => PluginBundleSchema.parse({
+      ...packed, serverBinding: { prepareActions: { open: { caps: ["tokens:mint"] } } },
+    })).toThrow();
+  });
+});

@@ -1,0 +1,1 @@
+{"id":"example.prepared","version":"1.0.0","title":"Prepared","description":"","capabilities":["containers:read","machines:read"],"contributes":{"panels":[],"sections":[],"elements":[],"tools":[],"events":[]},"entry":{"server":true}}

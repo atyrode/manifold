@@ -24,6 +24,12 @@ import {
   IsolateChildFrameSchema,
   IsolateHostFrameSchema,
   IsolateHostEnvelopeSchema,
+  IsolatePreparationMetadataSchema,
+  IsolatePreparationResultSchemas,
+  type IsolatePreparationMethod,
+  type IsolatePreparationMetadata,
+  type ActionPreparationCtx,
+  type ActionPreparationDef,
   GuestMigrationDeclarationsSchema,
   HarnessDefinitionSchema,
   IsolateHarnessResultSchemas,
@@ -101,6 +107,29 @@ import { connect, type Socket } from "node:net";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
+import { ActionPreparationError, argumentDigest, prepareActionInput } from "./action-preparation.ts";
+import {
+  IdentityV2BridgeSchemas,
+  IdentityV2AnswerSchemas,
+  type GuestIdentityV2,
+  type IdentityV2Method,
+} from "./identity-bridge.ts";
+export { IdentityV2BridgeSchemas, IdentityV2MethodSchema, IdentityV2AnswerSchemas, isIdentityV2Method } from "./identity-bridge.ts";
+export type { GuestIdentityV2, IdentityV2Method, IdentityV2Answer } from "./identity-bridge.ts";
+export {
+  ActionPreparationError,
+  argumentDigest,
+  prepareActionInput,
+  validatePreparedRequirements,
+  type ActionPreparationEvidence,
+} from "./action-preparation.ts";
+export type {
+  ActionPreparationCtx,
+  ActionPreparationDef,
+  ActionPreparer,
+  PreparedActionInput,
+  PreparedRequirement,
+} from "@manifold/protocol";
 
 import {
   ActionCallError,
@@ -108,6 +137,8 @@ import {
   IsolateSliceUnavailable,
   PluginDatabaseError,
 } from "./errors.ts";
+
+const identityV2Entries = Object.entries(IdentityV2BridgeSchemas);
 
 /** Bun accepts an inherited socketpair fd here; Node's ambient overload omits that form. */
 const connectDescriptor = connect as unknown as (options: { readonly fd: number }) => Socket;
@@ -423,7 +454,7 @@ export interface GuestCtx {
    * caller AND this door's declared ceiling, names machines by id and re-resolves them, and
    * answers public identity, a count, at most one raw token, or a refusal as data.
    */
-  readonly identity: {
+  readonly identity: GuestIdentityV2 & {
     /** One host-side find-or-create by name; a token only when this call minted the machine. */
     enrollMachine(name: string): Promise<MachineBridgeAnswer<MachineEnrollmentOutcome>>;
     rotateMachineToken(machineId: string): Promise<MachineBridgeAnswer<MachineCredentialGrant>>;
@@ -487,6 +518,7 @@ export interface ServerPluginDef {
   readonly manifest: PluginManifest;
   readonly actions: readonly ServerActionDef[];
   readonly handlers: Readonly<Record<string, ServerHandler>>;
+  readonly prepareActions?: Readonly<Record<string, ActionPreparationDef>>;
   readonly lifecycle?: GuestLifecycle | undefined;
   readonly migrations?: readonly ServerMigration[] | undefined;
   readonly harness?: ServerHarness<GuestCtx>;
@@ -842,7 +874,8 @@ function sqlParamsToWire(params: readonly GuestSqlParam[]): readonly unknown[] {
 const UNSERVED_SLICES = ["store", "rooms", "broker", "dials"] as const;
 
 /** One request's calls: `<requestId>:<n>`, so the host finds the dispatch a call belongs to. */
-type Call = (method: IsolateCtxMethod, args: readonly unknown[]) => Promise<unknown>;
+type HostMethod = IsolateCtxMethod | IsolatePreparationMethod;
+type Call = (method: HostMethod, args: readonly unknown[]) => Promise<unknown>;
 
 /** Every emission is checked as it is staged, so a `dispatched` frame is valid by construction. */
 const EmissionSchema = z.strictObject({
@@ -869,7 +902,7 @@ function issueText(error: z.ZodError): string {
 export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTransport): void {
   const pending = new Map<
     string,
-    { readonly method: IsolateCtxMethod; resolve(value: unknown): void; reject(error: Error): void }
+    { readonly method: HostMethod; resolve(value: unknown): void; reject(error: Error): void }
   >();
   const admissions = new Map<string, (allowed: boolean) => void>();
   const actions = new Map(def.actions.map((action) => [action.name, action] as const));
@@ -878,6 +911,8 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
   );
   let loaded = false;
   let harnessMetadata: HarnessDefinition | undefined;
+  let preparationMetadata: IsolatePreparationMetadata | undefined;
+  const preparing = new AsyncLocalStorage<{ violated: boolean }>();
   interface ProfileValidation {
     readonly id: string;
     violated: boolean;
@@ -888,6 +923,11 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
   // ALS additionally fences callbacks inherited from a validation after that phase ends.
   const profileValidation = new AsyncLocalStorage<ProfileValidation>();
   const requireAuthority = (): void => {
+    const inheritedPreparation = preparing.getStore();
+    if (inheritedPreparation !== undefined) {
+      inheritedPreparation.violated = true;
+      throw new IsolateSliceUnavailable("action preparation has no mutable host context");
+    }
     const inheritedValidation = profileValidation.getStore();
     if (activeProfileValidation === undefined && inheritedValidation === undefined) return;
     if (activeProfileValidation !== undefined) activeProfileValidation.violated = true;
@@ -912,13 +952,18 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
   };
 
   /** A call factory bound to one request id; closed once that request has answered. */
-  const callsFor = (requestId: string): { call: Call; close(): void } => {
+  const callsFor = (
+    requestId: string,
+    preparation = false,
+  ): { call: Call; close(): void } => {
     let seq = 0;
     let open = true;
     return {
       call: (method, args) => {
         try {
-          requireAuthority();
+          if (!preparation) requireAuthority();
+          if (method.startsWith("prepare.") !== preparation)
+            throw new IsolateSliceUnavailable(method);
         } catch (error) {
           return Promise.reject(error);
         }
@@ -929,7 +974,7 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
         }
         if (pending.size >= 256) return Promise.reject(new Error("too many pending host calls"));
         seq += 1;
-        const id = `${requestId}:${String(seq)}`;
+        const id = `${requestId}:${preparation ? "p" : ""}${String(seq)}`;
         const { promise, resolve, reject } = Promise.withResolvers<unknown>();
         pending.set(id, { method, resolve, reject });
         post({ t: "call", id, method, args: [...args] });
@@ -945,6 +990,34 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       },
     };
   };
+
+  const preparationCtx = (call: Call): ActionPreparationCtx => Object.freeze({
+    terminals: Object.freeze({
+      resolveMachine: async (input: Parameters<ActionPreparationCtx["terminals"]["resolveMachine"]>[0]) =>
+        IsolatePreparationResultSchemas["prepare.terminals.resolveMachine"].parse(
+          await call("prepare.terminals.resolveMachine", [{
+            ...(input.machineId === undefined ? {} : { machineId: input.machineId }),
+            ...(input.runtime === undefined ? {} : { runtimeMachineId: input.runtime.machineId }),
+          }]),
+        ),
+      stored: async (terminalId: string) =>
+        IsolatePreparationResultSchemas["prepare.terminals.stored"].parse(
+          await call("prepare.terminals.stored", [terminalId]),
+        ),
+    }),
+    containers: Object.freeze({
+      placement: async (containerId: string) =>
+        IsolatePreparationResultSchemas["prepare.containers.placement"].parse(
+          await call("prepare.containers.placement", [containerId]),
+        ),
+    }),
+    native: Object.freeze({
+      demand: async (...args: Parameters<ActionPreparationCtx["native"]["demand"]>) =>
+        IsolatePreparationResultSchemas["prepare.native.demand"].parse(
+          await call("prepare.native.demand", [argumentDigest(args[0]), args[1], args[2]]),
+        ),
+    }),
+  });
 
   // This channel carries only producer IDs. It cannot revive a completed dispatch's authority.
   const producerCalls = callsFor("producer");
@@ -1308,6 +1381,14 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
           ),
       },
       identity: {
+        ...Object.fromEntries(
+          identityV2Entries.map(([name, schema]) => [
+            name,
+            async (...args: unknown[]) => IdentityV2AnswerSchemas[name as IdentityV2Method].parse(
+              await call(`identity.${name}` as IsolateCtxMethod, schema.args.parse(args)),
+            ),
+          ]),
+        ) as GuestIdentityV2,
         enrollMachine: async (name) =>
           MachineBridgeResultSchemas["identity.enrollMachine"].parse(
             await call("identity.enrollMachine", [name]),
@@ -1439,6 +1520,19 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       )
         throw new Error("bundle contract does not match its packed guest runtime; repack");
       summaries = describe(frame.pluginId);
+      if (Object.keys(def.prepareActions ?? {}).length > 0) {
+        if ((frame.hardenedContract ?? 1) < 12)
+          throw new Error("action preparation requires hardened contract 12");
+        preparationMetadata = IsolatePreparationMetadataSchema.parse(
+          Object.fromEntries(Object.entries(def.prepareActions ?? {}).map(([name, definition]) => {
+            if (!actions.has(name) || typeof definition.prepare !== "function")
+              throw new Error(`preparer "${name}" has no declared action or callback`);
+            if (definition.caps.some((cap) => !frame.manifest.capabilities.includes(cap)))
+              throw new Error(`preparer "${name}" exceeds its manifest capability declaration`);
+            return [name, { caps: [...definition.caps].sort() }];
+          })),
+        );
+      }
       GuestMigrationDeclarationsSchema.parse({
         dataVersion: frame.manifest.dataVersion,
         migrations: (def.migrations ?? []).map(({ name, to }) => ({ name, to })),
@@ -1483,6 +1577,7 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       },
       migrations: (def.migrations ?? []).map(({ name, to }) => ({ name, to })),
       ...(harnessMetadata === undefined ? {} : { harness: harnessMetadata }),
+      ...(preparationMetadata === undefined ? {} : { prepareActions: preparationMetadata }),
     });
   };
 
@@ -1496,26 +1591,64 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       refuse("refused", `no such action "${frame.action}"`);
       return;
     }
-    const parsed = action.input.safeParse(frame.args);
-    if (!parsed.success) {
-      refuse("invalid_args", issueText(parsed.error));
-      return;
+    let handlerArgs: unknown;
+    let targets: (ManifoldRef | null)[];
+    let additionalRequirements: Extract<IsolateChildFrame, { t: "prepared" }>["additionalRequirements"];
+    const preparation = Object.hasOwn(def.prepareActions ?? {}, frame.action)
+      ? def.prepareActions?.[frame.action] : undefined;
+    if (preparation !== undefined) {
+      const requests = callsFor(frame.id, true);
+      const phase = { violated: false };
+      try {
+        const prepared = await preparing.run(phase, () =>
+          prepareActionInput(
+            action.input,
+            action.requirements ?? [],
+            frame.args,
+            preparationCtx(requests.call),
+            preparation,
+          ),
+        );
+        if (phase.violated)
+          throw new IsolateSliceUnavailable("action preparation attempted mutable host access");
+        handlerArgs = prepared.args;
+        targets = [...prepared.targets];
+        additionalRequirements = [...prepared.additionalRequirements];
+      } catch (error) {
+        refuse(error instanceof ActionPreparationError || error instanceof z.ZodError
+          ? "invalid_args" : "refused", errorText(error));
+        return;
+      } finally {
+        requests.close();
+      }
+    } else {
+      // Retained no-preparer bundles keep their released one-parser target extraction.
+      const parsed = action.input.safeParse(frame.args);
+      if (!parsed.success) {
+        refuse("invalid_args", issueText(parsed.error));
+        return;
+      }
+      handlerArgs = parsed.data;
+      targets = (action.requirements ?? []).map((requirement) => {
+        let value: unknown = parsed.data;
+        for (const segment of requirement.target) {
+          value =
+            value !== null && typeof value === "object" && Object.hasOwn(value, segment)
+              ? Reflect.get(value, segment)
+              : undefined;
+        }
+        const target = ManifoldRefSchema.safeParse(value);
+        return target.success ? target.data : null;
+      });
     }
-    // Keep the real parsed value here: transforms/refinements run once, never on replay.
     const admission = Promise.withResolvers<boolean>();
     admissions.set(frame.id, admission.resolve);
-    const targets = (action.requirements ?? []).map((requirement) => {
-      let value: unknown = parsed.data;
-      for (const segment of requirement.target) {
-        value =
-          value !== null && typeof value === "object" && Object.hasOwn(value, segment)
-            ? Reflect.get(value, segment)
-            : undefined;
-      }
-      const target = ManifoldRefSchema.safeParse(value);
-      return target.success ? target.data : null;
+    post({
+      t: "prepared",
+      id: frame.id,
+      targets,
+      ...(additionalRequirements === undefined ? {} : { additionalRequirements }),
     });
-    post({ t: "prepared", id: frame.id, targets });
     if (!(await admission.promise)) return;
     const requests = callsFor(frame.id);
     const staged: Emission[] = [];
@@ -1523,7 +1656,7 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
     const invoke = handler as (ctx: GuestCtx, args: unknown) => Promise<unknown>;
     let produced: unknown;
     try {
-      produced = await invoke(ctx, parsed.data);
+      produced = await invoke(ctx, handlerArgs);
     } catch (error) {
       requests.close();
       // A slice the boundary does not serve, a host call the host refused, or the handler's
@@ -1783,6 +1916,23 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
  * starts serving; imported anywhere else (a test, a tool, `pack`) it is inert.
  */
 export function defineServerPlugin(def: ServerPluginDef): void {
+  if (process.env.MANIFOLD_PLUGIN_BINDING === "1") {
+    let listener: ((frame: unknown) => void) | undefined;
+    attachServerGuest(def, {
+      send: (frame) => process.stdout.write(`${JSON.stringify(frame)}\n`),
+      onMessage: (receive) => { listener = receive; },
+      exit: (code) => process.exit(code),
+      warn: (line) => process.stderr.write(`${line}\n`),
+    });
+    void new Response(Bun.stdin.stream()).json().then((manifest: unknown) => {
+      listener?.({ t: "load", pluginId: def.manifest.id, manifest, dir: ".",
+        hardenedContract: HARDENED_CONTRACT_VERSION });
+    }).catch((error: unknown) => {
+      process.stderr.write(`${errorText(error)}\n`);
+      process.exitCode = 1;
+    });
+    return;
+  }
   const transport = processTransport();
   if (transport === null) return;
   attachServerGuest(def, transport);

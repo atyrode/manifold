@@ -38,6 +38,9 @@ import {
 } from "@manifold/plugin";
 import type { SqlParam, SqlRow, SqlStatement } from "@manifold/plugin";
 import type { ServerMigration as GuestMigration } from "@manifold/plugin-kit/server";
+import { ActionPreparationError, prepareActionInput, validatePreparedRequirements, argumentDigest, type ActionPreparationEvidence } from "@manifold/plugin-kit/server";
+import { createHash } from "node:crypto";
+import { z } from "zod";
 import { BundleOrderError, familyOrder, requiredDependencyIds } from "@manifold/plugin-kit/install";
 import {
   ActionCallArgsSchema,
@@ -60,6 +63,9 @@ import {
   hasCap,
   isEngineCap,
   ManifoldRefSchema,
+  MANIFOLD_ROOT_URI,
+  projectLegacyAgent,
+  projectLegacyRun,
   CORE_NAMESPACE_PREFIX,
   ENGINE_NAMESPACE_PREFIX,
   PLUGIN_BUNDLE_SERVER_FILE,
@@ -75,6 +81,7 @@ import {
   TRACE_AUTHORITY_OPEN,
   TRACE_AUTHORITY_ROOT,
   SessionRefSchema,
+  type TerminalRuntime,
   TerminalRuntimeSchema,
   HarnessTargetSchema,
   LaunchRunResultSchema,
@@ -85,6 +92,8 @@ import type {
   ActionDenialRule,
   ActionOutcome,
   AgentRun,
+  AgentRunAuthority,
+  AgentAuthority,
   HarnessDefinition,
   HarnessTarget,
   SessionRef,
@@ -97,6 +106,12 @@ import type {
   AcknowledgeAgentPolicyResult,
   AgentPolicyChallenge,
   AskableCap,
+  ActionPreparationCtx,
+  ActionPreparationDef,
+  IsolatePreparationMetadata,
+  PreparedRequirement,
+  GrantNode,
+  GrantReach,
   AuthoredCap,
   Cap,
   RegisterAgentRequest,
@@ -142,6 +157,23 @@ import type {
   PluginRoster,
   PluginUpdateApplyRequest,
   PluginUpdateApplyResult,
+  MintTokenV2Request,
+  TokenGrantV2,
+  RegisterAgentV2Request,
+  RegisterAgentV2Result,
+  GetAgentV2Result,
+  ListAgentsV2Result,
+  UpdateAgentV2Request,
+  CreateRunV2Request,
+  CreateChildRunV2Request,
+  CreateRunV2Result,
+  InspectRunV2Result,
+  ListRunsV2Result,
+  ReportRunActivityV2Result,
+  AcknowledgeAgentPolicyV2Result,
+  RenewAgentRunV2Result,
+  FinishAgentRunV2Result,
+  PrincipalCredentialsV2,
   PluginUpdateReviewResult,
   Principal,
   PrincipalCredentials,
@@ -155,6 +187,7 @@ import type {
 } from "@manifold/protocol";
 import { isContainerGrantCap, ServiceError } from "./auth.ts";
 import { ActionAuthorityFence, type ActionAuthorityRequirement } from "./action-authority-fence.ts";
+import { builtinCodeIdentity } from "./builtin-code-identity.ts";
 import type {
   AuthContext,
   AuthService,
@@ -252,6 +285,7 @@ export interface ActionAuth {
   readonly isRoot: boolean;
   /** One evaluator question: the engine's capabilities, or this plugin's own (ADR 0035). */
   allows(cap: AskableCap, ref?: ManifoldRef): boolean;
+  allowsNode(cap: AskableCap, node: GrantNode, reach?: GrantReach): boolean;
 }
 
 /**
@@ -282,6 +316,23 @@ export interface IdentityDoor {
   createPrincipal(input: BootstrapPrincipalRequest): IdentityResult<TokenGrant>;
   /** Mints authority no broader than the caller's own, within the caller's container scope. */
   mintToken(input: MintTokenRequest): IdentityResult<TokenGrant>;
+  mintTokenV2(input: MintTokenV2Request): IdentityResult<TokenGrantV2>;
+  registerAgentV2(input: RegisterAgentV2Request): Promise<IdentityResult<RegisterAgentV2Result>>;
+  getAgentV2(input: AgentRequest): IdentityResult<GetAgentV2Result>;
+  listAgentsV2(): IdentityResult<ListAgentsV2Result>;
+  updateAgentV2(input: UpdateAgentV2Request): Promise<IdentityResult<GetAgentV2Result>>;
+  disableAgentV2(input: AgentRequest): IdentityResult<GetAgentV2Result>;
+  enableAgentV2(input: AgentRequest): IdentityResult<GetAgentV2Result>;
+  retireAgentV2(input: AgentRequest): IdentityResult<GetAgentV2Result>;
+  createRunV2(input: CreateRunV2Request): IdentityResult<CreateRunV2Result>;
+  createChildRunV2(input: CreateChildRunV2Request): IdentityResult<CreateRunV2Result>;
+  inspectRunV2(input: InspectRunRequest): IdentityResult<InspectRunV2Result>;
+  listRunsV2(input: ListRunsRequest): IdentityResult<ListRunsV2Result>;
+  reportRunActivityV2(input: ReportRunActivityRequest): IdentityResult<ReportRunActivityV2Result>;
+  acknowledgeAgentPolicyV2(input: AcknowledgeAgentPolicyRequest): IdentityResult<AcknowledgeAgentPolicyV2Result>;
+  renewAgentRunV2(input: RenewAgentRunRequest): IdentityResult<RenewAgentRunV2Result>;
+  finishAgentRunV2(input: FinishAgentRunRequest): IdentityResult<FinishAgentRunV2Result>;
+  listCredentialsV2(): IdentityResult<PrincipalCredentialsV2[]>;
   registerAgent(input: RegisterAgentRequest): Promise<IdentityResult<RegisterAgentResult>>;
   getAgent(input: AgentRequest): IdentityResult<GetAgentResult>;
   listAgents(): IdentityResult<ListAgentsResult>;
@@ -404,6 +455,8 @@ function identityCall<T>(run: () => T): IdentityResult<T> {
     if (error instanceof ServiceError) {
       return { ok: false, code: error.code, message: error.message };
     }
+    if (error instanceof Error && error.message === "scoped_authority_requires_v2")
+      return { ok: false, code: "forbidden", message: error.message };
     throw error;
   }
 }
@@ -421,6 +474,8 @@ async function identityCallAsync<T>(run: () => Promise<T>): Promise<IdentityResu
     if (error instanceof ServiceError) {
       return { ok: false, code: error.code, message: error.message };
     }
+    if (error instanceof Error && error.message === "scoped_authority_requires_v2")
+      return { ok: false, code: "forbidden", message: error.message };
     throw error;
   }
 }
@@ -840,7 +895,13 @@ export interface ActionCtx {
   readonly credential: CredentialReference;
   readonly admission: GovernedAdmissionDecision | null;
   /** Host-only continuation after the isolate's real input parse; not a guest ctx slice. */
-  readonly admitPrepared?: (targets: readonly unknown[]) => void;
+  readonly admitPrepared?: (targets: readonly unknown[], additionalRequirements?: readonly PreparedRequirement[]) => void;
+  readonly preparation?: ActionPreparationCtx;
+  readonly preparationMode?: "review";
+  readonly prepareNativeDemand?: (runtimeDigest: string, machineId: string, containerId: string) => Promise<readonly PreparedRequirement[]>;
+  readonly prepareResolveMachine?: (input: { readonly machineId?: string; readonly runtimeMachineId?: string }) => Promise<{ readonly machineId: string; readonly terminalHostId: string | null; readonly terminalExecution: TerminalExecution | null }>;
+  /** Private effect lease; never part of a plugin wire context. */
+  readonly authorityFence?: ActionAuthorityFence;
   readonly streams: PluginStreamContext;
   readonly jobs: JobContext;
   readonly services: PluginServiceContext;
@@ -984,7 +1045,9 @@ export type ActionHandler = (ctx: ActionCtx, args: never) => Promise<unknown>;
 /** A plugin's server half: what it declares, plus a handler per declared action. */
 export type ServerPluginDef = PluginDef & {
   readonly handlers: Readonly<Record<string, ActionHandler>>;
-  readonly harness?: ServerHarness<ActionCtx>;
+  readonly harness?: ServerHarness<ActionCtx, AgentRunAuthority, AgentAuthority>;
+  readonly prepareActions?: Readonly<Record<string, ActionPreparationDef>>;
+  readonly guestPreparation?: IsolatePreparationMetadata;
   /** Set only by the isolate bridge: real parsing precedes the host admission continuation. */
   readonly inputValidation?: "guest";
 };
@@ -1514,7 +1577,7 @@ interface DispatchOrigin {
 }
 
 /** What a caller may say about a dispatch beyond the four arguments every dispatch has. */
-interface DispatchOptions {
+export interface DispatchOptions {
   agentJustification?: string;
   resultProjectionDigest?: string;
   onTrace?: (traceId: number) => void;
@@ -1523,6 +1586,10 @@ interface DispatchOptions {
   /** Settled caller lease after awaits; unlike admissionFence, it applies to non-Agent credentials. */
   beforeAdmission?: () => void;
   onAdmitted?: () => void;
+  /** Hub-owned socket handoff, never a serialized action result. */
+  onPrepared?: (args: unknown, fence: ActionAuthorityFence, traceId: number) => void;
+  /** Pure preparation for future permission review, never handler admission. */
+  reviewOnly?: boolean;
   /** Never a field a request carries: only `actionCalls` sets it. */
   origin?: DispatchOrigin;
 }
@@ -1641,6 +1708,7 @@ export class PluginHost {
    * set from it would let any manifest authorize its own `core.` id.
    */
   private readonly distribution: ReadonlySet<string> | undefined;
+  private readonly builtinCodeIdentity: string;
   /**
    * The outcome of the last lifecycle fan-out per plugin. In MEMORY, deliberately: it
    * describes this process's attempt to tell a plugin about a transition, not a durable
@@ -1684,7 +1752,7 @@ export class PluginHost {
     return problems;
   }
 
-  private harnessDefinition(id: string): ServerPluginDef & { harness: ServerHarness<ActionCtx> } {
+  private harnessDefinition(id: string): ServerPluginDef & { harness: ServerHarness<ActionCtx, AgentRunAuthority, AgentAuthority> } {
     const def = this.defs.find(
       (def) =>
         this.assembled.enabled(def.manifest.id) && def.manifest.contributes.harness?.id === id,
@@ -1715,21 +1783,24 @@ export class PluginHost {
     id: string,
     session: string | null,
     stack: readonly string[],
-    invoke: (harness: ServerHarness<ActionCtx>, ctx: ActionCtx, pluginId: string) => Promise<T>,
+    invoke: (harness: ServerHarness<ActionCtx, AgentRunAuthority, AgentAuthority>, ctx: ActionCtx, pluginId: string) => Promise<T>,
   ): Promise<T> {
     const def = this.harnessDefinition(id);
     const pluginId = def.manifest.id;
     const install = this.installed.get(pluginId);
     const current = this.authService.restoreCredential(this.authService.credentialReference(actor));
     if (!current) throw new ServiceError("forbidden", "harness caller unavailable");
+    const harnessCaps = CAPS.filter((cap) =>
+      withinCeiling(cap, current.caps) && withinCeiling(cap, def.manifest.capabilities) &&
+      (!install || GOVERNED_CAPS.includes(cap) || withinCeiling(cap, install.row.grantedCaps)));
     const nativeAuth = {
       ...current,
-      caps: CAPS.filter(
-        (cap) =>
-          withinCeiling(cap, current.caps) &&
-          withinCeiling(cap, def.manifest.capabilities) &&
-          (!install || GOVERNED_CAPS.includes(cap) || withinCeiling(cap, install.row.grantedCaps)),
-      ),
+      caps: harnessCaps,
+      ...(current.authorityScope === undefined ? {} : {
+        authorityScope: current.authorityScope.map((entry) => ({
+          ...entry, caps: entry.caps.filter((cap) => withinCeiling(cap, harnessCaps)),
+        })).filter((entry) => entry.caps.length > 0),
+      }),
     };
     const lease = this.dataLease(pluginId);
     const settled = Promise.withResolvers<void>();
@@ -1819,7 +1890,10 @@ export class PluginHost {
         session,
         stack,
         async (harness, ctx, pluginId) => {
-          const prepared = await harness.launch(ctx, claim.run, claim.agent, target.data);
+          const guest = this.guestInputPlugins.has(pluginId);
+          const prepared = await harness.launch(ctx,
+            guest ? claim.run : projectLegacyRun(claim.run),
+            guest ? claim.agent : projectLegacyAgent(claim.agent), target.data);
           const runtime = TerminalRuntimeSchema.parse(prepared.runtime);
           const session = SessionRefSchema.parse(prepared.session);
           if (
@@ -1859,6 +1933,14 @@ export class PluginHost {
   /** Trusted runtime composition; registered doors refuse until the durable service is ready. */
   setJobs(jobs: JobService): void {
     jobs.setLifecycleRecorder((record) => this.store.appendTrace(record));
+    jobs.setActionBindingValidator((binding) => {
+      if (binding.actionName === undefined) return false;
+      const entry = this.assembled.actions.get(binding.actionName);
+      return entry !== undefined &&
+        (this.assembled.enabled(entry.plugin.id) || entry.def.cleanup === true) &&
+        !this.replacing.has(entry.plugin.id) &&
+        this.actionFingerprint(binding.actionName) === binding.fingerprint;
+    });
     jobs.setAgentTools({
       harnessPlugin: (agent) => {
         // One-shot jobs consume their separately reviewed native inputs, not the
@@ -1866,8 +1948,8 @@ export class PluginHost {
         // harness launch; synchronous native fences resolve the live owner only.
         return this.harnessDefinition(agent.harness).manifest.id;
       },
-      call: (restore, request, signal, admitted) =>
-        this.agentToolCall(restore, request, signal, admitted),
+      call: (restore, request, signal, admitted, legacy) =>
+        this.agentToolCall(restore, request, signal, admitted, legacy),
     });
     jobs.setManifestResolver((pluginId) => {
       if (!this.assembled.enabled(pluginId)) return null;
@@ -1946,6 +2028,7 @@ export class PluginHost {
     request: AgentToolRequest,
     signal: AbortSignal,
     admitted: () => void,
+    legacy = false,
   ): Promise<AgentToolReply> {
     const authority = restore();
     if (request.type === "describe") {
@@ -1979,7 +2062,9 @@ export class PluginHost {
     if (selected && !selected.ok) return { type: "refused", code: selected.reason, traceId: null };
     const approval = selected?.ok ? selected.approval : undefined;
     const entry = selected?.ok ? selected.entry : undefined;
-    const door = request.type === "ack" ? "core.access.acknowledgeAgentPolicy" : request.door;
+    const door = request.type === "ack"
+      ? legacy ? "core.access.acknowledgeAgentPolicy" : "core.access.acknowledgeAgentPolicyV2"
+      : request.door;
     let traceId: number | null = null;
     let began = false;
     const fence = (): AuthContext | null => {
@@ -2110,11 +2195,13 @@ export class PluginHost {
       readonly isolates?: IsolateDeps;
       readonly dataDir?: string;
     },
+    builtinCodeIdentity: string,
   ) {
     this.firstParty = [...ENGINE_BUILTIN_DEFS, ...defs];
     this.defs = this.firstParty;
     this.builtins = new Set(ENGINE_BUILTIN_DEFS.map((def) => def.manifest.id));
     this.distribution = options.distribution;
+    this.builtinCodeIdentity = builtinCodeIdentity;
     this.isolates = options.isolates ?? null;
     this.dataDir = options.dataDir ?? options.isolates?.dataDir ?? null;
     this.authored =
@@ -2223,6 +2310,7 @@ export class PluginHost {
       logger,
       events,
       options,
+      await builtinCodeIdentity(),
     );
     if (host.dataDir !== null) recoverPluginDatabases(host.dataDir, store);
     await host.loadTrusted(options.trusted ?? []);
@@ -2279,6 +2367,7 @@ export class PluginHost {
           manifest: registered.manifest,
           dir: extractTrustedBuild(isolates.dataDir, build),
           hardenedContract: HARDENED_CONTRACT_VERSION,
+          ...(build.bundle.serverBinding === undefined ? {} : { serverBinding: build.bundle.serverBinding }),
         },
       });
       await this.startTrusted(id);
@@ -2462,6 +2551,11 @@ export class PluginHost {
           dataVersion: bundle.manifest.dataVersion,
           migrations: migrations.map(({ name, to }) => ({ name, to })),
         });
+        const actualPreparation = Object.fromEntries(Object.entries(def.prepareActions ?? {}).map(
+          ([name, value]) => [name, { caps: [...(value as ActionPreparationDef).caps] }],
+        ));
+        if (canonicalJobJson(actualPreparation) !== canonicalJobJson(bundle.serverBinding?.prepareActions ?? {}))
+          throw new Error("server preparer binding differs from verified artifact");
         const adapted = declarations.migrations.map((metadata, index): PluginMigration => {
           const migration = migrations[index];
           if (migration === undefined || typeof migration.migrate !== "function")
@@ -2498,6 +2592,7 @@ export class PluginHost {
       manifest: bundle.manifest,
       dir,
       hardenedContract: bundle.hardenedContract,
+      ...(bundle.serverBinding === undefined ? {} : { serverBinding: bundle.serverBinding }),
     });
     return { ...loaded.def, lifecycle: loaded.lifecycle };
   }
@@ -2510,6 +2605,12 @@ export class PluginHost {
     for (const def of this.defs) {
       this.handlers.set(def.manifest.id, def.handlers);
       if (def.inputValidation === "guest") this.guestInputPlugins.add(def.manifest.id);
+      for (const [name, preparation] of Object.entries(def.prepareActions ?? {})) {
+        if (!def.actions.some((action) => action.name === name) ||
+          preparation.caps.length > 128 ||
+          preparation.caps.some((cap) => !withinCeiling(cap, def.manifest.capabilities)))
+          throw new Error(`${def.manifest.id}: invalid action preparation ceiling`);
+      }
     }
   }
 
@@ -4958,6 +5059,39 @@ export class PluginHost {
     };
   }
 
+  private readonly actionFingerprints = new WeakMap<object, string>();
+  private actionFingerprint(name: string): string | null {
+    const entry = this.assembled.actions.get(name);
+    if (entry === undefined) return null;
+    const cached = this.actionFingerprints.get(entry);
+    if (cached !== undefined) return cached;
+    const def = this.defs.find((candidate) => candidate.manifest.id === entry.plugin.id);
+    const preparation = def?.prepareActions !== undefined && Object.hasOwn(def.prepareActions, entry.def.name)
+      ? def.prepareActions[entry.def.name] : undefined;
+    const fingerprint = createHash("sha256").update(canonicalJobJson({
+      action: name,
+      code: this.installed.get(entry.plugin.id)?.row.sha256 ??
+        this.trusted.get(entry.plugin.id)?.sha256 ??
+        { code: this.builtinCodeIdentity, handler: String(def?.handlers[entry.def.name]) },
+      input: z.toJSONSchema(entry.def.input, { io: "input" }),
+      result: z.toJSONSchema(entry.def.result, { io: "output" }),
+      caps: entry.def.caps,
+      delegates: entry.def.delegates ?? [],
+      requirements: entry.def.requirements ?? [],
+      preparationCaps: preparation?.caps ??
+        (def?.guestPreparation !== undefined && Object.hasOwn(def.guestPreparation, entry.def.name)
+          ? def.guestPreparation[entry.def.name]?.caps : undefined) ?? [],
+      preparationCode: preparation === undefined ? null : String(preparation.prepare),
+    })).digest("hex");
+    this.actionFingerprints.set(entry, fingerprint);
+    return fingerprint;
+  }
+
+  /** The same pure path as execution; no handler or effect admission occurs in review. */
+  prepareActionInput(auth: AuthContext, name: string, args: unknown): Promise<ActionOutcome> {
+    return this.run(auth, name, args, null, { reviewOnly: true });
+  }
+
   private async run(
     auth: AuthContext,
     fullName: string,
@@ -5057,6 +5191,9 @@ export class PluginHost {
       fullName === "core.access.createRun" ||
       fullName === "core.access.createChildRun" ||
       fullName === "core.access.renewAgentRun" ||
+      fullName === "core.access.createRunV2" ||
+      fullName === "core.access.createChildRunV2" ||
+      fullName === "core.access.renewAgentRunV2" ||
       fullName === "engine.jobs.execute" ||
       fullName === "engine.jobs.schedule";
     if (runPolicyState === "expired") {
@@ -5102,7 +5239,7 @@ export class PluginHost {
       handler's contractual obligation.
     */
     const scope = entry.def.scope ?? "workspace";
-    if (auth.containerScope !== null && scope !== "container" && runAccess === undefined) {
+    if (!options.reviewOnly && auth.authorityScope === undefined && auth.containerScope !== null && scope !== "container" && runAccess === undefined) {
       return refuse("forbidden", "scoped tokens cannot invoke workspace actions");
     }
     /*
@@ -5144,7 +5281,10 @@ export class PluginHost {
           cap === "agents:delegate" &&
           (fullName === "core.access.createRun" ||
             fullName === "core.access.createChildRun" ||
-            fullName === "core.access.renewAgentRun")
+            fullName === "core.access.renewAgentRun" ||
+            fullName === "core.access.createRunV2" ||
+            fullName === "core.access.createChildRunV2" ||
+            fullName === "core.access.renewAgentRunV2")
         )
           continue;
         if (GOVERNED_CAPS.includes(cap))
@@ -5155,29 +5295,110 @@ export class PluginHost {
         const held =
           cap === "*"
             ? this.authService.holdsRoot(auth)
-            : this.authService.allows(auth, cap) ||
+            : (scope === "workspace"
+              ? this.authService.allowsNode(auth, cap, MANIFOLD_ROOT_URI)
+              : this.authService.allows(auth, cap)) ||
               (isContainerGrantCap(cap) && carriedContainer !== null);
-        if (!held) return refuse("forbidden", `${cap} capability required`);
-        actionRequirements.push({ cap });
+        if (!options.reviewOnly && !held) return refuse("forbidden", `${cap} capability required`);
+        actionRequirements.push(scope === "workspace" ? { cap, node: MANIFOLD_ROOT_URI, reach: "node" } : { cap });
       }
     }
     // What the handler reads as its container scope: the token's own, or the carried one.
     const handlerScope = auth.containerScope ?? carriedContainer;
-    const parsed = entry.def.input.safeParse(rawArgs);
-    if (!parsed.success) {
-      const detail = parsed.error.issues
-        .map((issue) => `${issue.path.map(String).join(".") || "(root)"} ${issue.message}`)
-        .join("; ");
-      return refuse("invalid_args", detail);
+    const parsed: { data: unknown } = { data: rawArgs };
+    if (guestInput) {
+      const initial = entry.def.input.safeParse(rawArgs);
+      if (!initial.success) return refuse("invalid_args", initial.error.message);
+      parsed.data = initial.data;
+    }
+    const pluginDef = this.defs.find((def) => def.manifest.id === pluginId);
+    const preparation = pluginDef?.prepareActions !== undefined && Object.hasOwn(pluginDef.prepareActions, entry.def.name)
+      ? pluginDef.prepareActions[entry.def.name] : undefined;
+    const preparationCaps = [...(preparation?.caps ??
+      (pluginDef?.guestPreparation !== undefined && Object.hasOwn(pluginDef.guestPreparation, entry.def.name)
+        ? pluginDef.guestPreparation[entry.def.name]?.caps : undefined) ?? [])];
+    const securityFingerprint = this.actionFingerprint(fullName);
+    let preparedEvidence: ActionPreparationEvidence = {
+      originalArgsDigest: argumentDigest(rawArgs), targets: [], additionalRequirements: [],
+    };
+    let resolvedMachineId: string | undefined;
+    let resolvedContainerId: string | undefined;
+    const nativeBindings: unknown[] = [];
+    const preparationContext: ActionPreparationCtx = Object.freeze({
+      terminals: Object.freeze({
+        resolveMachine: async (input: { readonly machineId?: string; readonly runtime?: TerminalRuntime }) => {
+          const resolved = this.broker.resolveTerminalMachine(input.machineId, input.runtime?.machineId);
+          resolvedMachineId = resolved.machineId;
+          return Object.freeze({ ...resolved });
+        },
+        stored: async (terminalId: string) => {
+          const terminal = this.store.getTerminal(terminalId);
+          if (terminal === null) return null;
+          resolvedMachineId = terminal.machineId;
+          resolvedContainerId = terminal.containerId;
+          return Object.freeze({
+            governed: terminal.launchRecipe?.runtime !== undefined || terminal.runId !== undefined,
+            machineId: terminal.machineId,
+            containerId: terminal.containerId,
+            ...(terminal.launchRecipe?.runtime === undefined ? {} : (() => {
+              if (this.jobs === null) throw new ServiceError("forbidden", "terminal runtime unavailable");
+              const runtime = terminal.launchRecipe.runtime;
+              nativeBindings.push(this.jobs.terminalDemandBinding(runtime, terminal.machineId, terminal.containerId));
+              return { nativeRequirements: this.jobs.terminalDemand(runtime, terminal.machineId, terminal.containerId) };
+            })()),
+          });
+        },
+      }),
+      containers: Object.freeze({
+        placement: async (containerId: string) => {
+          const container = this.store.getContainer(containerId);
+          if (container === null) throw new ServiceError("not_found", "terminal placement unavailable");
+          resolvedContainerId = containerId;
+          return this.broker.terminalPlacement(containerId);
+        },
+      }),
+      native: Object.freeze({
+        demand: async (runtime: TerminalRuntime, machineId: string, containerId: string) => {
+          if (this.jobs === null) throw new ServiceError("forbidden", "terminal runtime unavailable");
+          const requirements = this.jobs.terminalDemand(runtime, machineId, containerId);
+          nativeBindings.push(this.jobs.terminalDemandBinding(runtime, machineId, containerId));
+          return structuredClone(requirements);
+        },
+      }),
+    });
+    const prepareNativeDemand = async (digest: string, machineId: string, containerId: string): Promise<readonly PreparedRequirement[]> => {
+      // Lookup original transported input by digest. No transformed secret crosses from a guest.
+      const candidates: unknown[] = [rawArgs];
+      for (let index = 0; index < candidates.length; index++) {
+        const value = candidates[index];
+        const runtime = TerminalRuntimeSchema.safeParse(value);
+        if (runtime.success && argumentDigest(runtime.data) === digest)
+          return preparationContext.native.demand(runtime.data, machineId, containerId);
+        if (value !== null && typeof value === "object") {
+          candidates.push(...Object.values(value));
+          if (candidates.length > 4096) throw new ServiceError("forbidden", "native preparation input limit");
+        }
+      }
+      throw new ServiceError("forbidden", "native preparation input changed");
+    };
+    if (!guestInput) {
+      try {
+        const prepared = await prepareActionInput(entry.def.input, entry.def.requirements ?? [], rawArgs, preparationContext, preparation);
+        parsed.data = prepared.args;
+        preparedEvidence = prepared;
+      } catch (error) {
+        return refuse(error instanceof ActionPreparationError || error instanceof z.ZodError ? "invalid_args" : "refused", error instanceof Error ? error.message : "action preparation refused");
+      }
     }
     let admission: GovernedAdmissionDecision | null = null;
-    const governed = entry.def.caps.some((cap) => GOVERNED_CAPS.includes(cap));
+    let governed = entry.def.caps.some((cap) => GOVERNED_CAPS.includes(cap));
     // What this dispatch's admission discharged at containers, for its native bridge (ADR 0051).
     let carried: readonly ContainerGrant[] | undefined;
     let admittedNativeRequirements: readonly AuthorityRequirement[] = [];
     const admitInput = (
       args: unknown,
       preparedTargets?: readonly unknown[],
+      additionalRequirements: readonly PreparedRequirement[] = preparedEvidence.additionalRequirements,
     ): ActionAdmissionDenial | null => {
       try {
         options.beforeAdmission?.();
@@ -5205,7 +5426,7 @@ export class PluginHost {
           this.replacing.has(pluginId)
         )
           return new ActionAdmissionDenial("unavailable", "action unavailable");
-        if (auth.containerScope !== null && scope !== "container" && runAccess === undefined)
+        if (auth.authorityScope === undefined && auth.containerScope !== null && scope !== "container" && runAccess === undefined)
           return new ActionAdmissionDenial("forbidden", "scope unavailable");
         const installed = this.installed.get(pluginId);
         if (
@@ -5226,6 +5447,20 @@ export class PluginHost {
       const declaredRequirements = entry.def.requirements ?? [];
       if (preparedTargets !== undefined && preparedTargets.length !== declaredRequirements.length)
         return new ActionAdmissionDenial("invalid_args", "invalid authority targets");
+      let additions: readonly PreparedRequirement[];
+      try {
+        additions = validatePreparedRequirements(additionalRequirements, preparationCaps);
+      } catch (error) {
+        return new ActionAdmissionDenial("invalid_args", error instanceof Error ? error.message : "invalid preparation");
+      }
+      for (const requirement of additions) {
+        if (!withinCeiling(requirement.cap, entry.plugin.capabilities))
+          return new ActionAdmissionDenial("invalid_args", "preparer requirement not declared by plugin");
+        if (install !== undefined && !GOVERNED_CAPS.includes(requirement.cap) &&
+          !withinCeiling(requirement.cap, install.row.grantedCaps))
+          return new ActionAdmissionDenial("forbidden", `${requirement.cap} not granted to plugin ${pluginId}`);
+      }
+      governed = governed || additions.some(({ cap }) => GOVERNED_CAPS.includes(cap));
       const requirements: AuthorityRequirement[] = [];
       const fixedRequirements: ActionAuthorityRequirement[] = [];
       const carrying: { readonly containerId: string; readonly caps: ContainerGrantCap[] }[] = [];
@@ -5260,7 +5495,7 @@ export class PluginHost {
           if (grant === undefined) carrying.push({ containerId, caps: [declared.cap] });
           else if (!grant.caps.includes(declared.cap)) grant.caps.push(declared.cap);
         }
-        if (!this.authService.allowsRef(auth, declared.cap, ref.data))
+        if (!options.reviewOnly && !this.authService.allowsRef(auth, declared.cap, ref.data))
           return new ActionAdmissionDenial(
             "forbidden",
             `${declared.cap} capability required at target`,
@@ -5269,13 +5504,24 @@ export class PluginHost {
         // Only engine capabilities have native revision-bound admission evidence.
         if (isEngineCap(declared.cap)) requirements.push({ cap: declared.cap, ref: ref.data });
       }
-      if (governed) {
+      for (const requirement of additions) {
+        if (!options.reviewOnly && !this.authService.allowsNode(auth, requirement.cap, requirement.node, requirement.reach))
+          return new ActionAdmissionDenial("forbidden", `${requirement.cap} capability required at ${requirement.node}`);
+        fixedRequirements.push(requirement);
+        if (!nativeCaps.includes(requirement.cap)) nativeCaps.push(requirement.cap);
+        const ref = parseManifoldUri(requirement.node);
+        if (ref !== null && isEngineCap(requirement.cap) && requirement.cap !== "machines:shell")
+          requirements.push({ cap: requirement.cap, ref });
+      }
+      if (governed && !options.reviewOnly) {
         admission = this.authService.admitGoverned(auth, pluginId, fullName, requirements);
         if (!admission.allowed)
           return new ActionAdmissionDenial("forbidden", "explicit version-bound consent required");
         if (carrying.length > 0) carried = carrying;
       }
-      if (entry.def.requirements !== undefined) actionRequirements = fixedRequirements;
+      actionRequirements = entry.def.requirements === undefined
+        ? [...actionRequirements.filter(({ node }) => node === undefined), ...fixedRequirements]
+        : fixedRequirements;
       admittedNativeRequirements = requirements;
       return null;
     };
@@ -5291,6 +5537,8 @@ export class PluginHost {
       auth,
       () =>
         !this.closed &&
+        this.actionFingerprint(fullName) === securityFingerprint &&
+        nativeBindings.every((binding) => this.jobs?.terminalDemandBindingCurrent(binding, false) === true) &&
         (this.actionEpochs.get(pluginId) ?? 0) === epoch &&
         this.assembled.actions.get(fullName)?.def === entry.def &&
         entry.def.input === input &&
@@ -5307,7 +5555,20 @@ export class PluginHost {
             (cap) => GOVERNED_CAPS.includes(cap) || withinCeiling(cap, install.row.grantedCaps),
           )),
       handlerScope,
+      (current) => {
+        if (governed && !this.authService.admitGoverned(current, pluginId, fullName, admittedNativeRequirements).allowed)
+          throw new ServiceError("forbidden", "explicit version-bound consent required");
+      },
+      // Host-captured demand bindings, not a guest assertion.
     );
+    authorityFence.bind({
+      originalArgsDigest: preparedEvidence.originalArgsDigest,
+      actionName: fullName,
+      ...(securityFingerprint === null ? {} : { fingerprint: securityFingerprint }),
+      ...(resolvedMachineId === undefined ? {} : { machineId: resolvedMachineId }),
+      ...(resolvedContainerId === undefined ? {} : { containerId: resolvedContainerId }),
+      ...(nativeBindings.length === 0 ? {} : { nativeDemand: nativeBindings }),
+    });
     const checkActionAuthority = (): AuthContext => {
       try {
         options.beforeAdmission?.();
@@ -5339,11 +5600,18 @@ export class PluginHost {
         ? new ActionAdmissionDenial("invalid_args", "result projection request is unavailable")
         : null;
     if (!guestInput) {
-      const denial = admitInput(parsed.data);
+      const denial = admitInput(parsed.data, preparedEvidence.targets);
       if (denial !== null) return refuse(denial.rule, denial.message);
       if (!nativeEffectAdmission && declarationDenial !== null)
         return refuse(declarationDenial.rule, declarationDenial.message);
       if (projectionDenial !== null) return refuse(projectionDenial.rule, projectionDenial.message);
+      if (options.reviewOnly) return { ok: true, result: {
+        originalArgsDigest: preparedEvidence.originalArgsDigest,
+        targets: preparedEvidence.targets,
+        additionalRequirements: preparedEvidence.additionalRequirements,
+        requirements: actionRequirements,
+        fingerprint: this.actionFingerprint(fullName),
+      } };
     }
     /*
       THE STAGING BUFFER, one per dispatch. `ctx.emit` appends here and nothing leaves until
@@ -5402,12 +5670,16 @@ export class PluginHost {
         ? auth
         : {
             ...auth,
-            caps: CAPS.filter(
-              (cap) =>
-                withinCeiling(cap, auth.caps) &&
-                withinCeiling(cap, nativeCaps) &&
-                !(governed && isContainerGrantCap(cap)),
-            ),
+            get caps() {
+              return CAPS.filter((cap) =>
+                withinCeiling(cap, auth.caps) && withinCeiling(cap, nativeCaps) &&
+                !(governed && isContainerGrantCap(cap)));
+            },
+            get authorityScope() {
+              return auth.authorityScope?.map((entry) => ({
+                ...entry, caps: entry.caps.filter((cap) => withinCeiling(cap, nativeCaps)),
+              })).filter((entry) => entry.caps.length > 0);
+            },
             // Read at use: an isolated guest is admitted only after this bridge is built.
             get containerGrants() {
               return carried ?? lent;
@@ -5415,7 +5687,7 @@ export class PluginHost {
           };
     let lease: PluginDataLease;
     try {
-      lease = this.dataLease(pluginId, undefined, undefined, checkActionAuthority);
+      lease = this.dataLease(pluginId, undefined, options.reviewOnly ? null : undefined, checkActionAuthority);
     } catch (error) {
       this.store.settleTrace(traceId, "failed", []);
       throw error;
@@ -5468,9 +5740,9 @@ export class PluginHost {
         live === null ||
         graded === null ||
         !(node === undefined
-          ? this.authService.allows(graded, cap)
+          ? workspace ? this.authService.allowsNode(graded, cap, MANIFOLD_ROOT_URI) : this.authService.allows(graded, cap)
           : this.authService.allowsRef(graded, cap, node)) ||
-        (workspace && live.containerScope !== null)
+        (workspace && live.authorityScope === undefined && live.containerScope !== null)
       )
         throw new ServiceError("forbidden", `${cap} capability required`);
       return live;
@@ -5502,19 +5774,47 @@ export class PluginHost {
       },
       ...(guestInput
         ? {
-            admitPrepared: (targets: readonly unknown[]): void => {
+            admitPrepared: (targets: readonly unknown[], additionalRequirements?: readonly PreparedRequirement[]): void => {
               if (guestAdmitted) throw new IsolateDenial("unavailable", "isolate admitted twice");
-              const denial = admitInput(undefined, targets);
+              const denial = admitInput(undefined, targets, additionalRequirements ?? []);
               if (denial !== null) throw denial;
+              preparedEvidence = {
+                originalArgsDigest: argumentDigest(rawArgs),
+                targets: ManifoldRefSchema.array().parse(targets),
+                additionalRequirements: validatePreparedRequirements(additionalRequirements, preparationCaps),
+              };
+              authorityFence.bind({
+                actionName: fullName,
+                originalArgsDigest: preparedEvidence.originalArgsDigest,
+                fingerprint: this.actionFingerprint(fullName) ?? undefined,
+                ...(resolvedMachineId === undefined ? {} : { machineId: resolvedMachineId }),
+                ...(resolvedContainerId === undefined ? {} : { containerId: resolvedContainerId }),
+                ...(nativeBindings.length === 0 ? {} : { nativeDemand: nativeBindings }),
+              });
+              if (options.reviewOnly) return;
               enforceDeclaration();
               if (projectionDenial !== null) throw projectionDenial;
               authorityFence.admit(actionRequirements);
               checkActionAuthority();
               guestAdmitted = true;
               options.onAdmitted?.();
+              if (options.onPrepared !== undefined) options.onPrepared(
+                resolvedMachineId === undefined || parsed.data === null || typeof parsed.data !== "object"
+                  ? parsed.data : { ...parsed.data, machineId: resolvedMachineId },
+                authorityFence.retain(), traceId,
+              );
             },
           }
         : {}),
+      preparation: preparationContext,
+      prepareNativeDemand,
+      prepareResolveMachine: async (input) => {
+        const resolved = this.broker.resolveTerminalMachine(input.machineId, input.runtimeMachineId);
+        resolvedMachineId = resolved.machineId;
+        return resolved;
+      },
+      ...(options.reviewOnly ? { preparationMode: "review" as const } : {}),
+      authorityFence,
       jobs: jobContext(
         () => {
           if (this.jobs === null) throw new ServiceError("forbidden", "job service unavailable");
@@ -5524,6 +5824,7 @@ export class PluginHost {
         pluginId,
         traceId,
         nativeEffectAdmission ? enforceDeclaration : undefined,
+        authorityFence,
       ),
       services: serviceContext(
         () => {
@@ -5538,6 +5839,7 @@ export class PluginHost {
           withinCeiling("services:invoke", nativeCaps)
           ? "invoke"
           : "read",
+        authorityFence,
       ),
       /*
         THE SIBLING VERB, bound to the CALLER'S OWN `auth` rather than to `nativeAuth` (ADR
@@ -5617,15 +5919,22 @@ export class PluginHost {
             ? this.authService.allows(graded, cap)
             : this.authService.allowsRef(graded, cap, ref);
         },
+        allowsNode: (cap, node, reach = "node") => this.authService.allowsNode(auth, cap, node, reach),
       },
       containerScope: handlerScope,
-      outsideScope: (containerId) =>
-        handlerScope !== null && containerId !== handlerScope
-          ? { refused: OUTSIDE_SCOPE_REFUSAL }
-          : null,
+      outsideScope: (containerId) => {
+        if (auth.authorityScope === undefined)
+          return handlerScope !== null && containerId !== handlerScope ? { refused: OUTSIDE_SCOPE_REFUSAL } : null;
+        const caps = entry.def.requirements === undefined
+          ? entry.def.caps
+          : actionRequirements.map(({ cap }) => cap).filter(isContainerGrantCap);
+        return caps.every((cap) => cap === "*" ? this.authService.holdsRoot(auth)
+          : this.authService.allowsNode(auth, cap, `manifold://container/${containerId}`))
+          ? null : { refused: OUTSIDE_SCOPE_REFUSAL };
+      },
       store: this.store,
       rooms: this.rooms,
-      broker: this.broker,
+      broker: this.broker.withAuthorityFence(authorityFence),
       machines: {
         isOnline: (machineId) => this.machines.isOnline(machineId),
         getTerminalExecution: (machineId) => this.machines.getTerminalExecution(machineId),
@@ -5667,7 +5976,8 @@ export class PluginHost {
               agent.harness,
               session,
               actionStack,
-              (harness, bound) => harness.send(bound, run, input.input),
+              (harness, bound, pluginId) => harness.send(bound,
+                this.guestInputPlugins.has(pluginId) ? run : projectLegacyRun(run), input.input),
             );
             return {};
           }),
@@ -5711,6 +6021,23 @@ export class PluginHost {
         createPrincipal: (input) =>
           identityCall(() => this.authService.bootstrapPrincipal(input, auth)),
         mintToken: (input) => identityCall(() => this.authService.mintToken(input, auth)),
+        mintTokenV2: (input) => identityCall(() => this.authService.mintTokenV2(input, auth)),
+        registerAgentV2: (input) => identityCallAsync(() => this.authService.registerAgentV2(input, auth)),
+        getAgentV2: (input) => identityCall(() => this.authService.getAgentV2(input, auth)),
+        listAgentsV2: () => identityCall(() => this.authService.listAgentsV2(auth)),
+        updateAgentV2: (input) => identityCallAsync(() => this.authService.updateAgentV2(input, auth)),
+        disableAgentV2: (input) => identityCall(() => this.authService.disableAgentV2(input, auth)),
+        enableAgentV2: (input) => identityCall(() => this.authService.enableAgentV2(input, auth)),
+        retireAgentV2: (input) => identityCall(() => this.authService.retireAgentV2(input, auth)),
+        createRunV2: (input) => identityCall(() => this.authService.createRunV2(input, auth, enforceDeclaration)),
+        createChildRunV2: (input) => identityCall(() => this.authService.createChildRunV2(input, auth, enforceDeclaration)),
+        inspectRunV2: (input) => identityCall(() => this.authService.inspectRunV2(input, auth)),
+        listRunsV2: (input) => identityCall(() => this.authService.listRunsV2(input, auth)),
+        reportRunActivityV2: (input) => identityCall(() => this.authService.reportRunActivityV2(input, auth)),
+        acknowledgeAgentPolicyV2: (input) => identityCall(() => this.authService.acknowledgeAgentPolicyV2(input, auth)),
+        renewAgentRunV2: (input) => identityCall(() => this.authService.renewAgentRunV2(input, auth, enforceDeclaration)),
+        finishAgentRunV2: (input) => identityCall(() => this.authService.finishAgentRunV2(input, auth)),
+        listCredentialsV2: () => identityCall(() => this.authService.listCredentialsV2(auth)),
         registerAgent: (input) =>
           identityCallAsync(() => this.authService.registerAgent(input, auth)),
         getAgent: (input) => identityCall(() => this.authService.getAgent(input, auth)),
@@ -5781,14 +6108,22 @@ export class PluginHost {
         const invoke = handler as (ctx: ActionCtx, args: unknown) => Promise<unknown>;
         if (!guestInput) {
           if (options.admissionFence) {
-            const denial = admitInput(parsed.data);
+            const denial = admitInput(parsed.data, preparedEvidence.targets);
             if (denial !== null) throw denial;
           }
           authorityFence.admit(actionRequirements);
           checkActionAuthority();
           options.onAdmitted?.();
+          if (options.onPrepared !== undefined) options.onPrepared(parsed.data, authorityFence.retain(), traceId);
         }
         const answer = await invoke(ctx, parsed.data);
+        if (guestInput && options.reviewOnly) return {
+          originalArgsDigest: preparedEvidence.originalArgsDigest,
+          targets: preparedEvidence.targets,
+          additionalRequirements: preparedEvidence.additionalRequirements,
+          requirements: actionRequirements,
+          fingerprint: this.actionFingerprint(fullName),
+        };
         if (guestInput && !guestAdmitted)
           throw new IsolateDenial("unavailable", "isolate returned before admission");
         // Shutdown revoked this dispatch: nothing it staged may be announced as committed.
@@ -5827,6 +6162,10 @@ export class PluginHost {
       // it with the same word.
       this.store.settleTrace(traceId, "failed", traceTargets(targets));
       throw error;
+    }
+    if (options.reviewOnly) {
+      this.store.settleTrace(traceId, "ok", []);
+      return { ok: true, result: produced };
     }
     streamAdmissionOpen = false;
     if (produced !== null && typeof produced === "object") {

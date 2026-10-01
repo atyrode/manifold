@@ -3,6 +3,7 @@ import { CapSchema } from "./capabilities.ts";
 import { EventKindSchema, EventPayloadSchema } from "./events.ts";
 import {
   ActionSummarySchema,
+  AskableCapSchema,
   LocalNameSchema,
   PluginEntrySchema,
   PluginIdSchema,
@@ -18,6 +19,8 @@ import { AgentSchema, HarnessDefinitionSchema, HarnessTargetSchema } from "./age
 import { AgentRunSchema, SendRunInputRequestSchema } from "./agent-runs.ts";
 import { SessionRefSchema } from "./session-ref.ts";
 import { TerminalRuntimeSchema } from "./jobs.ts";
+import { GrantNodeSchema, GrantReachSchema } from "./grants.ts";
+import { TerminalExecutionSchema } from "./machine.ts";
 import { PanelArgSchema, validPanelArg } from "./layout.ts";
 
 /**
@@ -489,6 +492,23 @@ export const ISOLATE_CTX_METHODS = [
   "identity.rotateMachineToken",
   "identity.revokeMachine",
   "identity.forgetMachine",
+  "identity.mintTokenV2",
+  "identity.registerAgentV2",
+  "identity.getAgentV2",
+  "identity.listAgentsV2",
+  "identity.updateAgentV2",
+  "identity.disableAgentV2",
+  "identity.enableAgentV2",
+  "identity.retireAgentV2",
+  "identity.createRunV2",
+  "identity.createChildRunV2",
+  "identity.inspectRunV2",
+  "identity.listRunsV2",
+  "identity.renewAgentRunV2",
+  "identity.finishAgentRunV2",
+  "identity.reportRunActivityV2",
+  "identity.acknowledgeAgentPolicyV2",
+  "identity.listCredentialsV2",
   "placement.place",
   "host.roster",
   "host.enabled",
@@ -528,6 +548,65 @@ export const ISOLATE_CTX_METHODS = [
 ] as const;
 export const IsolateCtxMethodSchema = z.enum(ISOLATE_CTX_METHODS);
 export type IsolateCtxMethod = (typeof ISOLATE_CTX_METHODS)[number];
+
+/** Contract 12: the only host methods available while an action is preparing. */
+export const ISOLATE_PREPARATION_METHODS = [
+  "prepare.terminals.resolveMachine",
+  "prepare.terminals.stored",
+  "prepare.containers.placement",
+  "prepare.native.demand",
+] as const;
+export type IsolatePreparationMethod = (typeof ISOLATE_PREPARATION_METHODS)[number];
+export const PreparedRequirementSchema = z.strictObject({
+  cap: AskableCapSchema,
+  node: GrantNodeSchema,
+  reach: GrantReachSchema,
+});
+export const PreparedRequirementsSchema = PreparedRequirementSchema.array().max(64);
+export const IsolatePreparationMetadataSchema = z
+  .record(
+    LocalNameSchema,
+    z.strictObject({
+      caps: AskableCapSchema.array().max(128).refine(
+        (caps) => new Set(caps).size === caps.length,
+        { message: "duplicate preparation capability" },
+      ),
+    }),
+  )
+  .refine((actions) => Object.keys(actions).length <= 128, {
+    message: "too many action preparers",
+  });
+export type IsolatePreparationMetadata = z.infer<typeof IsolatePreparationMetadataSchema>;
+export const IsolatePreparationArgsSchemas = {
+  "prepare.terminals.resolveMachine": z.tuple([
+    z.strictObject({
+      machineId: z.string().min(1).max(128).optional(),
+      runtimeMachineId: z.string().min(1).max(128).optional(),
+    }),
+  ]),
+  "prepare.terminals.stored": z.tuple([z.string().min(1).max(128)]),
+  "prepare.containers.placement": z.tuple([z.string().min(1).max(128)]),
+  "prepare.native.demand": z.tuple([
+    z.string().regex(/^[a-f0-9]{64}$/),
+    z.string().min(1).max(128),
+    z.string().min(1).max(128),
+  ]),
+} as const;
+export const IsolatePreparationResultSchemas = {
+  "prepare.terminals.resolveMachine": z.strictObject({
+    machineId: z.string().min(1).max(128),
+    terminalHostId: z.string().min(1).max(128).nullable(),
+    terminalExecution: TerminalExecutionSchema.nullable(),
+  }),
+  "prepare.terminals.stored": z.strictObject({
+    machineId: z.string().min(1).max(128),
+    containerId: z.string().min(1).max(128),
+    governed: z.boolean(),
+    nativeRequirements: PreparedRequirementsSchema.optional(),
+  }).nullable(),
+  "prepare.containers.placement": z.enum(["element", "tile"]),
+  "prepare.native.demand": PreparedRequirementsSchema,
+} as const;
 
 /** The four lifecycle hooks a server half may declare; `purge` never crosses (it is the host's). */
 export const ISOLATE_HOOKS = [
@@ -789,6 +868,8 @@ export const IsolateChildFrameSchema = z.discriminatedUnion("t", [
     }),
     migrations: IsolateMigrationsSchema.optional(),
     harness: HarnessDefinitionSchema.optional(),
+    /** Must equal the artifact's sealed server binding. */
+    prepareActions: IsolatePreparationMetadataSchema.optional(),
   }),
   z.strictObject({ t: z.literal("load_failed"), error: errorText }),
   /** Only declared authority targets cross; transformed handler arguments stay in the guest. */
@@ -796,6 +877,7 @@ export const IsolateChildFrameSchema = z.discriminatedUnion("t", [
     t: z.literal("prepared"),
     id: frameId,
     targets: z.array(ManifoldRefSchema.nullable()).max(64),
+    additionalRequirements: PreparedRequirementsSchema.optional(),
   }),
   z.strictObject({
     t: z.literal("dispatched"),
@@ -825,7 +907,7 @@ export const IsolateChildFrameSchema = z.discriminatedUnion("t", [
   z.strictObject({
     t: z.literal("call"),
     id: frameId,
-    method: IsolateCtxMethodSchema,
+    method: z.union([IsolateCtxMethodSchema, z.enum(ISOLATE_PREPARATION_METHODS)]),
     args: callArgs,
   }),
 ]);
@@ -997,9 +1079,9 @@ export const PLUGIN_BUNDLE_FORMAT = 1;
  *    for older admitted guests, whose strict inventory parser predates the field.
  * 10 -> 11: Additive-optional hook.metadata announces read-only lifecycle host/fleet/service
  *    metadata. Older packed strict guests retain their original hook frames.
- * 11 -> 12: Additive-optional live workspace authority in Worker contexts and bounded
- *    subscription-ordering fences. Hosts omit new context fields for older strict guests;
- *    using the new transport-only sync method requires contract 12.
+ * 11 -> 12: Live workspace authority, subscription-ordering fences, scoped identity RPC
+ *    and sealed read-only action preparation. Older guests retain their released frames
+ *    and legacy capability vocabulary.
  */
 export const HARDENED_CONTRACT_VERSION = 12;
 export const HARDENED_CONTRACT_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
@@ -1049,6 +1131,10 @@ export const PluginBundleSchema = z
     format: z.literal(PLUGIN_BUNDLE_FORMAT),
     /** Absent on legacy artifacts so assembly can hold them with repacking guidance. */
     hardenedContract: z.number().int().positive().optional(),
+    /** Included in the artifact hash and checked against every loaded registration. */
+    serverBinding: z.strictObject({
+      prepareActions: IsolatePreparationMetadataSchema,
+    }).optional(),
     /*
       `safeExtend`, not `extend`: the manifest carries a refinement of its own (a capability
       must be the engine's or the declaring plugin's, ADR 0035), and zod refuses to overwrite
@@ -1073,6 +1159,26 @@ export const PluginBundleSchema = z
   })
   .check((ctx) => {
     const files = ctx.value.files;
+    if (ctx.value.serverBinding !== undefined) {
+      if ((ctx.value.hardenedContract ?? 0) < 12 || ctx.value.manifest.entry.server !== true) {
+        ctx.issues.push({
+          code: "custom",
+          input: ctx.value,
+          path: ["serverBinding"],
+          message: "sealed action preparation requires a server half and hardened contract 12",
+        });
+      }
+      for (const [name, preparation] of Object.entries(ctx.value.serverBinding.prepareActions)) {
+        if (preparation.caps.some((cap) => !ctx.value.manifest.capabilities.includes(cap))) {
+          ctx.issues.push({
+            code: "custom",
+            input: ctx.value,
+            path: ["serverBinding", "prepareActions", name, "caps"],
+            message: "preparation capability is not declared by the manifest",
+          });
+        }
+      }
+    }
     if (
       Object.values(files).reduce((bytes, data) => bytes + data.length, 0) >
       ISOLATE_MAX_ARTIFACT_BYTES

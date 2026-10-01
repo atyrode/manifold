@@ -5,9 +5,10 @@ import {
   TERMINAL_RESTART_PROTOCOL_VERSION,
   MAX_TERMINAL_VIEWPORTS,
   TERMINAL_VIEWPORT_LEASE_MS,
+  MANIFOLD_ROOT_URI,
+  formatManifoldUri,
   type LaunchRunRequest,
   type LaunchRunResult,
-  type AgentRun,
   type TerminalRuntime,
   type AdvertisedTerminal,
   type AgentMessage,
@@ -42,6 +43,7 @@ import {
 } from "./session-channel.ts";
 import type { ServerStore, TerminalLaunchRecipe } from "./stores.ts";
 import type { JobService } from "./job-service.ts";
+import { ActionAuthorityFence, type ActionAuthorityRequirement } from "./action-authority-fence.ts";
 
 /**
  * The broker answers a CHANNEL, and a channel IS one room view, so its payload types are
@@ -159,7 +161,10 @@ interface PendingOpen {
   launchRecipe: TerminalLaunchRecipe | null;
   placementId: string | null;
   dispatched: boolean;
+  sent: boolean;
   runId?: string;
+  fence: ActionAuthorityFence;
+  terminalHostId: string | null;
 }
 
 interface PendingRestart {
@@ -168,6 +173,8 @@ interface PendingRestart {
   agentPrincipalId: string | null;
   jobId: string | null;
   dispatched: boolean;
+  fence: ActionAuthorityFence;
+  terminalHostId: string | null;
   resolve: (outcome: string) => void;
   cancelDeadline: (() => void) | null;
 }
@@ -220,7 +227,7 @@ export class TerminalBroker implements TerminalPlacementPort {
 
   bindRunLaunch(
     runtime: TerminalRuntime,
-    run: AgentRun,
+    run: { readonly id: string; readonly expiresAt: number },
     token: string,
     actor: AuthContext,
     containerId?: string,
@@ -292,6 +299,7 @@ export class TerminalBroker implements TerminalPlacementPort {
   }
 
   private abandonOpen(pending: PendingOpen): void {
+    pending.fence.close();
     if (pending.agentPrincipalId !== null)
       this.auth.revokeIssuedPrincipal(pending.agentPrincipalId, pending.createdBy);
     this.jobs?.cancelTerminal(pending.terminalId);
@@ -992,6 +1000,42 @@ export class TerminalBroker implements TerminalPlacementPort {
     if (this.machines.size !== 1) return null;
     return this.machines.values().next().value ?? null;
   }
+
+  /** Pure resolution, once, before authorization. An explicit endpoint is never replaced. */
+  resolveTerminalMachine(machineId?: string, runtimeMachineId?: string): Pick<MachineChannel, "machineId" | "terminalHostId" | "terminalExecution"> {
+    if (machineId !== undefined && runtimeMachineId !== undefined && machineId !== runtimeMachineId)
+      throw new ServiceError("conflict", "terminal_runtime_destination_changed");
+    const exact = machineId ?? runtimeMachineId;
+    const machine = this.selectMachine(exact);
+    if (machine === null) throw new ServiceError("not_found", exact === undefined ? "no unambiguous online machine" : "machine_offline");
+    const enrolled = this.store.getMachine(machine.machineId);
+    if (enrolled === null || this.store.revokedMachineIds().has(machine.machineId))
+      throw new ServiceError("forbidden", "machine_unavailable");
+    if (this.draining.has(machine.machineId)) throw new ServiceError("conflict", "machine_draining");
+    return { machineId: machine.machineId, terminalHostId: machine.terminalHostId, terminalExecution: machine.terminalExecution };
+  }
+
+  terminalPlacement(containerId: string): "element" | "tile" {
+    const container = this.store.getContainer(containerId);
+    if (container === null) throw new ServiceError("not_found", "terminal placement unavailable");
+    return this.holdsTileTree(container.discipline) ? "tile" : "element";
+  }
+
+  /** ActionCtx lends this dispatch's private authority only to broker birth effects. */
+  withAuthorityFence(fence: ActionAuthorityFence): TerminalBroker {
+    return new Proxy(this, {
+      get: (broker, key) => {
+        if (key === "create") return (credential: CredentialReference, containerId: string, message: TerminalOpen, traceId?: number) =>
+          broker.create(credential, containerId, message, traceId, fence);
+        if (key === "restartById") return (
+          terminalId: string, principalId: string, credential?: CredentialReference, traceId?: number,
+          launchRun?: Parameters<TerminalBroker["restartById"]>[4],
+        ) => broker.restartById(terminalId, principalId, credential, traceId, launchRun, fence);
+        const value: unknown = Reflect.get(broker, key);
+        return typeof value === "function" ? value.bind(broker) : value;
+      },
+    });
+  }
   private answerOpen(
     opener: SessionChannel | null,
     resolve: (outcome: TerminalCreateOutcome) => void,
@@ -1008,8 +1052,8 @@ export class TerminalBroker implements TerminalPlacementPort {
    * `core.terminals.create`. Policy remains in the plugin; this is the one mechanism for
    * placement, machine selection, acknowledgement, durable commit and compensation.
    */
-  open(channel: SessionChannel, message: TerminalOpen, traceId?: number): void {
-    this.beginOpen(channel.auth, channel.containerId, channel, message, () => {}, traceId);
+  open(channel: SessionChannel, message: TerminalOpen, traceId?: number, fence?: ActionAuthorityFence): void {
+    this.beginOpen(channel.auth, channel.containerId, channel, message, () => {}, traceId, fence);
   }
 
   /**
@@ -1022,12 +1066,13 @@ export class TerminalBroker implements TerminalPlacementPort {
     containerId: string,
     message: TerminalOpen,
     traceId?: number,
+    fence?: ActionAuthorityFence,
   ): Promise<TerminalCreateOutcome> {
     const auth = this.auth.restoreCredential(credential);
     if (auth === null)
       return Promise.resolve({ ok: false, reason: "credential expired or revoked" });
     const completion = Promise.withResolvers<TerminalCreateOutcome>();
-    this.beginOpen(auth, containerId, null, message, completion.resolve, traceId);
+    this.beginOpen(auth, containerId, null, message, completion.resolve, traceId, fence);
     return completion.promise;
   }
 
@@ -1038,6 +1083,7 @@ export class TerminalBroker implements TerminalPlacementPort {
     message: TerminalOpen,
     resolve: (outcome: TerminalCreateOutcome) => void,
     traceId?: number,
+    admittedFence?: ActionAuthorityFence,
   ): void {
     const refuse = (code: ErrorCode, reason: string): void =>
       this.answerOpen(opener, resolve, code, reason, message.elementId);
@@ -1076,9 +1122,14 @@ export class TerminalBroker implements TerminalPlacementPort {
       refuse("forbidden", "element placement requires cols and rows");
       return;
     }
-    const machine = this.selectMachine(message.machineId);
-    if (machine === null) {
-      refuse("no_machine", "no unambiguous online machine");
+    let machine: MachineChannel;
+    try {
+      const resolved = this.resolveTerminalMachine(message.machineId, message.runtime?.machineId);
+      machine = this.machines.get(resolved.machineId)!;
+      message = { ...message, machineId: resolved.machineId };
+    } catch (error) {
+      refuse("no_machine", error instanceof Error ? error.message : "machine unavailable");
+      admittedFence?.close();
       return;
     }
     if (this.draining.has(machine.machineId)) {
@@ -1098,6 +1149,34 @@ export class TerminalBroker implements TerminalPlacementPort {
       return;
     }
 
+    let fence: ActionAuthorityFence;
+    try {
+      if (admittedFence !== undefined) {
+        fence = admittedFence.retain();
+      } else {
+        // Legacy internal callers still pass the same live resource requirements.
+        fence = new ActionAuthorityFence(this.auth, auth, () => this.machines.get(machine.machineId) === machine, containerId);
+        const requirements: ActionAuthorityRequirement[] = [
+          { cap: "terminals:spawn", node: formatManifoldUri({ kind: "container", containerId }), reach: "node" },
+          ...(message.runtime ? [] : [{ cap: "machines:shell" as const, node: formatManifoldUri({ kind: "machine", machineId: machine.machineId }), reach: "node" as const }]),
+        ];
+        if (placement === "element") for (const cap of ["containers:write", "containers:read", "scenes:write", "terminals:spawn", "terminals:write"] as const)
+          requirements.push({ cap, node: MANIFOLD_ROOT_URI, reach: "subtree" });
+        fence.admit(requirements);
+      }
+      fence.guard(() => {
+        if (this.machines.get(machine.machineId) !== machine ||
+          this.draining.has(machine.machineId) ||
+          this.store.revokedMachineIds().has(machine.machineId))
+          throw new ServiceError("forbidden", "terminal destination unavailable");
+        if (this.terminalPlacement(containerId) !== placement)
+          throw new ServiceError("conflict", "terminal placement changed");
+      });
+      fence.checkCurrent();
+    } catch (error) {
+      refuse("forbidden", placement === "element" ? "Independent terminal homes require workspace-subtree working authority. Open the approved composition instead." : error instanceof Error ? error.message : "terminal authority unavailable");
+      return;
+    }
     const terminalId = this.runtime.newId();
     /*
       The home is decided before the PTY exists because both its credential and
@@ -1106,6 +1185,19 @@ export class TerminalBroker implements TerminalPlacementPort {
       real viewer supplies the dimensions required to create the PTY.
     */
     const homeId = placement === "tile" ? containerId : this.runtime.newId();
+    try {
+      if (placement === "element") fence.extend(
+        (["containers:write", "containers:read", "scenes:write", "terminals:spawn", "terminals:write"] as const).map((cap) => ({
+          cap, node: formatManifoldUri({ kind: "container", containerId: homeId }), reach: "node" as const,
+        })),
+      );
+      fence.bind({ ...fence.snapshot(), machineId: machine.machineId, containerId: homeId });
+      fence.checkCurrent();
+    } catch (error) {
+      fence.close();
+      refuse("forbidden", error instanceof Error ? error.message : "terminal home authority unavailable");
+      return;
+    }
     const placementId =
       placement === "tile"
         ? (this.rooms.get(homeId)?.placeTerminalTile(terminalId, null, null) ?? null)
@@ -1116,6 +1208,8 @@ export class TerminalBroker implements TerminalPlacementPort {
     }
     const pending: PendingOpen = {
       terminalId,
+      fence,
+      terminalHostId: machine.terminalHostId,
       containerId,
       homeId,
       ref: message.elementId,
@@ -1135,13 +1229,14 @@ export class TerminalBroker implements TerminalPlacementPort {
       launchRecipe: null,
       placementId,
       dispatched: false,
+      sent: false,
     };
     this.pendingOpens.set(terminalId, pending);
     pending.cancelDeadline = this.timers.schedule(() => {
       pending.cancelDeadline = null;
       if (this.pendingOpens.get(terminalId) !== pending) return;
       this.pendingOpens.delete(terminalId);
-      if (pending.dispatched)
+      if (pending.sent)
         this.machines.get(pending.machineId)?.send({ type: "kill", terminalId });
       this.abandonOpen(pending);
       this.answerOpen(
@@ -1167,6 +1262,7 @@ export class TerminalBroker implements TerminalPlacementPort {
     if (this.pendingOpens.get(pending.terminalId) !== pending) return;
     pending.cancelDeadline?.();
     this.pendingOpens.delete(pending.terminalId);
+    if (pending.sent) this.machines.get(pending.machineId)?.send({ type: "kill", terminalId: pending.terminalId });
     this.abandonOpen(pending);
     this.answerOpen(pending.opener, pending.resolve, code, reason, pending.ref);
     this.rooms.evictIfIdle(pending.containerId);
@@ -1180,9 +1276,13 @@ export class TerminalBroker implements TerminalPlacementPort {
    */
   private dispatchOpen(pending: PendingOpen, cols: number, rows: number): void {
     if (pending.dispatched || this.pendingOpens.get(pending.terminalId) !== pending) return;
+    try { pending.auth = pending.fence.checkCurrent(); } catch (error) {
+      this.rejectPendingOpen(pending, "forbidden", error instanceof Error ? error.message : "terminal authority unavailable");
+      return;
+    }
     pending.dispatched = true;
     const machine = this.machines.get(pending.machineId);
-    if (machine === undefined) {
+    if (machine === undefined || machine.terminalHostId !== pending.terminalHostId || this.draining.has(pending.machineId)) {
       this.rejectPendingOpen(pending, "no_machine", "machine connection unavailable");
       return;
     }
@@ -1214,23 +1314,24 @@ export class TerminalBroker implements TerminalPlacementPort {
           },
           pending.traceId,
           privateEnv,
+          pending.fence,
         );
       } catch (error) {
         this.rejectPendingOpen(
           pending,
           "forbidden",
-          error instanceof ServiceError &&
-            (error.message === "run_launch_protocol_unsupported" ||
-              error.message === "run_launch_owner_unavailable")
-            ? error.message
-            : "terminal runtime admission refused",
+          error instanceof Error ? error.message : "terminal runtime admission refused",
         );
         return;
       }
     }
+    try { pending.auth = pending.fence.checkCurrent(); } catch (error) {
+      this.rejectPendingOpen(pending, "forbidden", error instanceof Error ? error.message : "terminal authority unavailable");
+      return;
+    }
     const grant = runtime
       ? null
-      : this.auth.mintSessionAgentToken(
+      : this.auth.mintTerminalLifecycleToken(
           pending.terminalId,
           pending.homeId,
           pending.auth.principal.id,
@@ -1238,6 +1339,10 @@ export class TerminalBroker implements TerminalPlacementPort {
     pending.cols = cols;
     pending.rows = rows;
     pending.agentPrincipalId = grant?.principal.id ?? null;
+    try { pending.auth = pending.fence.checkCurrent(); } catch (error) {
+      this.rejectPendingOpen(pending, "forbidden", error instanceof Error ? error.message : "terminal authority unavailable");
+      return;
+    }
     pending.launchRecipe = {
       cols,
       rows,
@@ -1249,6 +1354,7 @@ export class TerminalBroker implements TerminalPlacementPort {
     };
     if (runtime?.request.terminal?.runId !== undefined)
       pending.runId = runtime.request.terminal.runId;
+    pending.sent = true;
     const sent = machine.send({
       type: "create",
       terminalId: pending.terminalId,
@@ -1267,7 +1373,10 @@ export class TerminalBroker implements TerminalPlacementPort {
       ...(message.program === undefined ? {} : { program: message.program }),
       ...(runtime ? { runtime } : {}),
     });
-    if (!sent) this.rejectPendingOpen(pending, "no_machine", "machine connection unavailable");
+    if (!sent) {
+      pending.sent = false;
+      this.rejectPendingOpen(pending, "no_machine", "machine connection unavailable");
+    }
   }
 
   /**
@@ -1281,6 +1390,14 @@ export class TerminalBroker implements TerminalPlacementPort {
   onCreated(machineId: string, terminalId: string): void {
     const pending = this.pendingOpens.get(terminalId);
     if (pending === undefined || pending.machineId !== machineId) return;
+    try { pending.auth = pending.fence.checkCurrent(); } catch (error) {
+      this.rejectPendingOpen(pending, "forbidden", error instanceof Error ? error.message : "terminal authority withdrawn");
+      return;
+    }
+    if (this.machines.get(machineId)?.terminalHostId !== pending.terminalHostId) {
+      this.rejectPendingOpen(pending, "forbidden", "terminal owner changed");
+      return;
+    }
     this.pendingOpens.delete(terminalId);
     pending.cancelDeadline?.();
     const cols = pending.cols;
@@ -1390,6 +1507,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       machineId,
       elementId: home,
     });
+    pending.fence.close();
     pending.resolve({ ok: true, terminal: info });
     this.rooms.evictIfIdle(pending.containerId);
     if (pending.homeId !== pending.containerId) this.rooms.evictIfIdle(pending.homeId);
@@ -1799,6 +1917,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       | { readonly ok: true; readonly value: LaunchRunResult }
       | { readonly ok: false; readonly message: string }
     >,
+    admittedFence?: ActionAuthorityFence,
   ): Promise<string> {
     const terminal = this.terminals.get(terminalId);
     const stored = this.store.getTerminal(terminalId);
@@ -1820,8 +1939,43 @@ export class TerminalBroker implements TerminalPlacementPort {
       if (recipe !== undefined && !recipe.runtime && machine.terminalExecution !== "unconfined")
         return Promise.resolve("terminal_runtime_required");
     }
+    let fence: ActionAuthorityFence;
+    try {
+      if (admittedFence !== undefined) fence = admittedFence.retain();
+      else {
+        const current = credential === undefined ? null : this.auth.restoreCredential(credential);
+        if (current === null) throw new ServiceError("forbidden", "terminal restart authority unavailable");
+        fence = new ActionAuthorityFence(this.auth, current, () => this.machines.get(machine.machineId) === machine, stored.containerId);
+        const requirements: ActionAuthorityRequirement[] = [{ cap: "terminals:write", node: formatManifoldUri({ kind: "container", containerId: stored.containerId }), reach: "node" }];
+        if (!recipe?.runtime && stored.runId === undefined) requirements.push(
+          { cap: "terminals:spawn", node: formatManifoldUri({ kind: "container", containerId: stored.containerId }), reach: "node" },
+          { cap: "machines:shell", node: formatManifoldUri({ kind: "machine", machineId: stored.machineId }), reach: "node" },
+        );
+        fence.admit(requirements);
+      }
+      const recipeDigest = createHash("sha256").update(canonicalJobJson(recipe ?? null)).digest("hex");
+      fence.guard(() => {
+        const current = this.store.getTerminal(terminalId);
+        if (current === null || current.machineId !== stored.machineId ||
+          current.containerId !== stored.containerId ||
+          current.runId !== stored.runId ||
+          createHash("sha256").update(canonicalJobJson(current.launchRecipe ?? null)).digest("hex") !== recipeDigest ||
+          this.machines.get(machine.machineId) !== machine ||
+          this.draining.has(machine.machineId) ||
+          this.store.revokedMachineIds().has(machine.machineId))
+          throw new ServiceError("forbidden", "terminal restart binding changed");
+        const live = this.auth.restoreCredential(fence.credentialReference());
+        if (live === null || (current.status === "running" && current.controller !== live.principal.id && !this.auth.holdsRoot(live)))
+          throw new ServiceError("forbidden", "terminal control changed during restart");
+      });
+      fence.checkCurrent();
+    } catch (error) {
+      return Promise.resolve(error instanceof Error ? error.message : "terminal restart authority unavailable");
+    }
     const completion = Promise.withResolvers<string>();
     const pending: PendingRestart = {
+      fence,
+      terminalHostId: machine.terminalHostId,
       machineId: machine.machineId,
       principalId,
       agentPrincipalId: null,
@@ -1835,6 +1989,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       this.finishRestart(terminalId, "restart_timeout");
     }, CREATE_DEADLINE_MS);
     const prepare = async () => {
+      pending.fence.checkCurrent();
       let runtime: Extract<ServerToAgentMessage, { type: "create" }>["runtime"];
       if (recipe?.runtime || stored.runId !== undefined) {
         if (!this.jobs || !machine.terminalHostId || !credential || traceId === undefined)
@@ -1850,6 +2005,7 @@ export class TerminalBroker implements TerminalPlacementPort {
             target: { machineId: machine.machineId, containerId: stored.containerId },
           });
           if (this.pendingRestarts.get(terminalId) !== pending) return;
+          pending.fence.checkCurrent();
           if (!launched.ok) throw new ServiceError("forbidden", launched.message);
           auth = this.auth.restoreCredential(credential);
           const current = this.store.getTerminal(terminalId);
@@ -1895,13 +2051,16 @@ export class TerminalBroker implements TerminalPlacementPort {
           },
           traceId,
           privateEnv,
+          pending.fence,
         );
         pending.jobId = runtime.request.jobId;
       }
+      pending.fence.checkCurrent();
       const grant = runtime
         ? null
-        : this.auth.mintSessionAgentToken(terminalId, stored.containerId, principalId);
+        : this.auth.mintTerminalLifecycleToken(terminalId, stored.containerId, principalId);
       pending.agentPrincipalId = grant?.principal.id ?? null;
+      pending.fence.checkCurrent();
       pending.dispatched = true;
       // A relative launch cwd belongs in the restart recipe. Only an observed absolute cwd
       // may occupy the precedence field older agents already parse as MachinePathSchema.
@@ -1933,9 +2092,9 @@ export class TerminalBroker implements TerminalPlacementPort {
       });
       if (!sent) this.finishRestart(terminalId, "machine_unavailable");
     };
-    void prepare().catch(() => {
+    void prepare().catch((error: unknown) => {
       if (this.pendingRestarts.get(terminalId) === pending)
-        this.finishRestart(terminalId, "terminal_runtime_admission_refused");
+        this.finishRestart(terminalId, error instanceof Error ? error.message : "terminal_runtime_admission_refused");
     });
     return completion.promise;
   }
@@ -1945,6 +2104,7 @@ export class TerminalBroker implements TerminalPlacementPort {
     if (pending === undefined) return;
     this.pendingRestarts.delete(terminalId);
     pending.cancelDeadline?.();
+    pending.fence.close();
     if (outcome !== "ok") {
       if (pending.agentPrincipalId !== null)
         this.auth.revokeIssuedPrincipal(pending.agentPrincipalId, pending.principalId);
@@ -2009,6 +2169,17 @@ export class TerminalBroker implements TerminalPlacementPort {
       !pending.dispatched
     )
       return;
+    try { pending.fence.checkCurrent(); } catch (error) {
+      // The acknowledgement proves this is the newly restarted effect, not the incumbent.
+      if (this.machines.get(machineId)?.terminalHostId === pending.terminalHostId)
+        this.machines.get(machineId)?.send({ type: "kill", terminalId: message.terminalId });
+      this.finishRestart(message.terminalId, error instanceof Error ? error.message : "terminal restart authority withdrawn");
+      return;
+    }
+    if (this.machines.get(machineId)?.terminalHostId !== pending.terminalHostId) {
+      this.finishRestart(message.terminalId, "terminal owner changed");
+      return;
+    }
     const stored = this.store.getTerminal(message.terminalId);
     if (stored?.agentPrincipalId && pending.agentPrincipalId !== null)
       this.auth.revokeIssuedPrincipal(stored.agentPrincipalId, pending.principalId);
@@ -2261,7 +2432,7 @@ export class TerminalBroker implements TerminalPlacementPort {
     if (pending !== undefined) {
       pending.cancelDeadline?.();
       this.pendingOpens.delete(terminalId);
-      if (pending.dispatched)
+      if (pending.sent)
         this.machines.get(pending.machineId)?.send({ type: "kill", terminalId });
       this.abandonOpen(pending);
       this.answerOpen(

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { CapSchema } from "./capabilities.ts";
+import { LegacyCapSchema } from "./legacy-authority.ts";
 import { SessionRefSchema } from "./session-ref.ts";
 import {
   ServiceAuthoritySubjectSchema,
@@ -625,7 +625,7 @@ export const JobCredentialSchema = z.strictObject({
   principalId: id,
   tokenId: id.nullable(),
   grantId: id.nullable(),
-  caps: z.array(CapSchema).max(128),
+  caps: z.array(LegacyCapSchema).max(128),
   containerScope: id.nullable(),
   expiresAt: count.optional(),
 });
@@ -910,7 +910,7 @@ export const JobDescriptionSchema = z.strictObject({
   consents: z.array(
     z.strictObject({
       node: z.string(),
-      cap: CapSchema,
+      cap: LegacyCapSchema,
       enabled: z.boolean(),
       revision: id,
     }),
@@ -954,7 +954,7 @@ export const JobAuthoritySchema = z.strictObject({
       grants: z.array(
         z.strictObject({
           node: z.string(),
-          cap: CapSchema,
+          cap: LegacyCapSchema,
           allowed: z.boolean(),
           grantId: id.nullable(),
           authorizer: id.nullable(),

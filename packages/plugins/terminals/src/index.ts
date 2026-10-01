@@ -7,6 +7,7 @@ import {
   TerminalRuntimeSchema,
   TerminalInfoSchema,
   TerminalSummarySchema,
+  GOVERNED_CAPS,
   type PluginManifest,
 } from "@manifold/protocol";
 import { z } from "zod";
@@ -32,7 +33,7 @@ export const terminalsManifest: PluginManifest = {
   version: "1.0.0",
   title: "Terminals",
   description: "Owns terminal creation policy, naming, restart, killing, and the terminal indexes.",
-  capabilities: ["containers:read", "terminals:spawn", "terminals:write"],
+  capabilities: ["containers:read", "containers:write", "scenes:write", "terminals:spawn", "terminals:write", "machines:shell", ...GOVERNED_CAPS],
   contributes: {
     panels: [],
     sections: [],
@@ -92,9 +93,9 @@ const optionalGeometry = {
  * authority the replaced ref enforced rather than to look tidy:
  *
  * - `open` is the session frame's policy gate and `create` is the bearer-reachable birth door.
- *   Both carry `terminals:spawn` at `scope: "container"` because a terminal is born INSIDE one
- *   container and the per-terminal agent token minted for it is container-scoped with that cap.
- *   The broker is their one mechanism; `create` additionally waits for its durable commit.
+ *   Both fix `terminals:spawn` at placement C; pure preparation adds exact-M ordinary shell
+ *   authority or the governed native demand. Lifecycle credentials retain local control,
+ *   not shell birth authority. The broker is their one mechanism and fences durable commit.
  * - `rename`, `take`, `restart` and `kill` carry `terminals:write` at `scope: "container"`: the authority the
  *   terminal channel's `terminal_kill` verb has always enforced, and the one the browser's own
  *   `canKill` rule is computed from. The deleted `PATCH/DELETE /api/terminals/:id` routes
@@ -125,6 +126,7 @@ export const terminalsActions = [
     name: "open",
     title: "Authorize a new terminal in a container",
     caps: ["terminals:spawn"],
+    requirements: [{ cap: "terminals:spawn", target: ["containerId"] }],
     scope: "container",
     input: z.strictObject({
       /** The container the terminal is born in: the channel's own container. */
@@ -159,6 +161,7 @@ export const terminalsActions = [
     name: "create",
     title: "Create a terminal and wait for its durable reference",
     caps: ["terminals:spawn"],
+    requirements: [{ cap: "terminals:spawn", target: ["containerId"] }],
     scope: "container",
     input: z.strictObject({
       containerId: z.string().min(1),
@@ -224,6 +227,7 @@ export const terminalsActions = [
     name: "restart",
     title: "Restart a terminal in place",
     caps: ["terminals:write"],
+    requirements: [{ cap: "terminals:write", target: ["terminalId"] }],
     scope: "container",
     input: z.strictObject({ terminalId: z.string().min(1) }),
     result: z.strictObject({}),
