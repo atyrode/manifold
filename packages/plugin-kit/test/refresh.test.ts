@@ -214,12 +214,28 @@ test("real external package imports are registered narrowly and dependency edits
         name: "external-ui",
         version: "1.0.0",
         type: "module",
-        exports: "./index.tsx",
+        exports: "./v4/classic/index.tsx",
       }),
     );
+    const entry = join(packageRoot, "v4/classic/index.tsx");
+    const core = join(packageRoot, "v4/core/value.ts");
+    for (const scope of ["classic", "core"]) {
+      await mkdir(join(packageRoot, "v4", scope), { recursive: true });
+      await Bun.write(
+        join(packageRoot, "v4", scope, "package.json"),
+        JSON.stringify({
+          type: "module",
+          main: "./index.cjs",
+          module: "./index.js",
+          types: "./index.d.cts",
+          sideEffects: false,
+        }),
+      );
+    }
+    await Bun.write(core, "export const initial = 7;");
     await Bun.write(
-      join(packageRoot, "index.tsx"),
-      'import { useState } from "react"; export function Counter() { const [n] = useState(7); return <span>{n}</span>; }',
+      entry,
+      'import { useState } from "react"; import { initial } from "../core/value.ts"; export function Counter() { const [n] = useState(initial); return <span>{n}</span>; }',
     );
     await Bun.write(
       join(packageRoot, "private.ts"),
@@ -231,14 +247,13 @@ test("real external package imports are registered narrowly and dependency edits
       'import { Counter } from "external-ui"; export default { id: "example.refresh", panels: { counter: Counter } };',
     );
     handle = await startPluginRefresh({ root, hub: HUB, port: 0 });
-    expect((await request(handle, join(packageRoot, "index.tsx"))).status).toBe(403);
+    expect((await request(handle, entry)).status).toBe(403);
     expect((await request(handle, join(directory, "web.tsx"))).status).toBe(200);
-    expect((await request(handle, join(packageRoot, "index.tsx"))).status).toBe(200);
+    expect((await request(handle, entry)).status).toBe(200);
+    expect((await request(handle, core)).status).toBe(200);
+    expect((await request(handle, join(directory, "styles.css"))).status).toBe(200);
     expect((await request(handle, join(packageRoot, "private.ts"))).status).toBe(403);
-    await Bun.write(
-      join(packageRoot, "index.tsx"),
-      "export function Counter() { return <span>changed dependency</span>; }",
-    );
+    await Bun.write(core, "export const initial = 8;");
     expect((await cancelled(handle, join(directory, "web.tsx"))).status).toBe(410);
   } finally {
     await handle?.close();

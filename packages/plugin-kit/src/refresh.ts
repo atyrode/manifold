@@ -38,6 +38,14 @@ const LOCKFILES: Record<string, true> = {
   "pnpm-lock.yaml": true,
   "yarn.lock": true,
 };
+const MODULE_SCOPE_FIELDS: Record<string, true> = {
+  type: true,
+  main: true,
+  module: true,
+  types: true,
+  typings: true,
+  sideEffects: true,
+};
 const STYLESHEETS: Record<string, true> = { ".css": true };
 const PREPROCESSORS: Record<string, true> = {
   ".pcss": true,
@@ -100,12 +108,39 @@ function inside(root: string, path: string): boolean {
   );
 }
 
-/** Nearest declared package owns a module, even when that package is nested under an author root. */
+/** Anonymous module-format descriptors inherit their enclosing package's dependency boundary. */
 export async function sourcePackageRoot(directory: string): Promise<string | undefined> {
+  let nearestScope: string | undefined;
   while (true) {
-    if (await Bun.file(join(directory, "package.json")).exists()) return realpath(directory);
+    const metadataFile = Bun.file(join(directory, "package.json"));
+    if (await metadataFile.exists()) {
+      const metadata: unknown = await metadataFile.json();
+      let moduleScope = false;
+      if (
+        typeof metadata === "object" &&
+        metadata !== null &&
+        !Array.isArray(metadata) &&
+        "type" in metadata &&
+        (metadata.type === "module" || metadata.type === "commonjs")
+      ) {
+        moduleScope = true;
+        for (const field in metadata) {
+          if (Object.hasOwn(metadata, field) && !Object.hasOwn(MODULE_SCOPE_FIELDS, field)) {
+            moduleScope = false;
+            break;
+          }
+        }
+      }
+      const parent = dirname(directory);
+      const installedRoot =
+        basename(parent) === "node_modules" ||
+        (basename(parent).startsWith("@") && basename(dirname(parent)) === "node_modules");
+      if (!moduleScope || installedRoot) return realpath(directory);
+      nearestScope ??= directory;
+    }
     const parent = dirname(directory);
-    if (parent === directory) return undefined;
+    if (parent === directory)
+      return nearestScope === undefined ? undefined : realpath(nearestScope);
     directory = parent;
   }
 }
