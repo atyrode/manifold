@@ -3,6 +3,7 @@ import { watch } from "node:fs";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
+import { pathToFileURL } from "node:url";
 import { PluginManifestSchema } from "@manifold/protocol";
 import type { Hub } from "./hub.ts";
 import {
@@ -13,12 +14,15 @@ import {
   parseHubFlags,
   requiredDependencyIds,
   resolveOwnerKey,
-  type BundleFacts,
-  type Delivery,
-  type InstallOutcome,
 } from "./install.ts";
-import { packPlugin, type PackResult } from "./pack.ts";
-import { PLUGIN_REFRESH_DESCRIPTION, PluginRefreshError } from "./refresh-options.ts";
+import type { BundleFacts, Delivery, HubFlags, InstallOutcome } from "./install.ts";
+import { packPlugin } from "./pack.ts";
+import type { PackResult } from "./pack.ts";
+import {
+  PLUGIN_REFRESH_DESCRIPTION,
+  PLUGIN_WORKSHOP_DESCRIPTION,
+  PluginRefreshError,
+} from "./refresh-options.ts";
 import type { PluginRefreshHandle } from "./refresh.ts";
 
 /**
@@ -77,20 +81,24 @@ export async function discoverPlugins(
   return familyOrder(found);
 }
 
-interface DevOptions {
+export interface DevOptions {
   readonly root: string;
   readonly hub: Hub;
   readonly deliver?: Delivery;
   readonly hardened?: boolean;
   readonly packDir: string;
   readonly build?: (packDir: string) => Promise<readonly PackResult[]>;
+  /** Validate the entire compiled family before the first installation. */
+  readonly beforeInstall?: (bundles: readonly (PackResult & BundleFacts)[]) => Promise<void>;
+  readonly signal?: AbortSignal;
+  readonly preserveGrant?: boolean;
 }
 
 /**
  * One cycle: pack everything, install what moved. `last` is the sha each id was installed at
  * by a previous cycle; a bundle that packs to the same bytes is not even mentioned to the hub.
  */
-async function cycle(
+export async function devCycle(
   options: DevOptions,
   last: Map<string, string>,
   number: number,
@@ -117,12 +125,14 @@ async function cycle(
         const facts = await inspectBundle(packed.file);
         if (facts.sha256 !== packed.sha256)
           throw new Error(`${packed.file}: changed after compilation`);
-        return { ...packed, id: facts.id, requiredDependencies: facts.requiredDependencies };
+        return { ...packed, ...facts };
       }),
     ),
   );
+  await options.beforeInstall?.(bundles);
   // A failed compiler must leave every installed part at its previous version.
   for (const packed of bundles) {
+    options.signal?.throwIfAborted();
     if (last.get(packed.id) === packed.sha256) {
       plugins.push({ id: packed.id, sha256: packed.sha256, outcome: "unchanged" });
       continue;
@@ -133,6 +143,7 @@ async function cycle(
       sha256: packed.sha256,
       hardened: options.hardened === true,
       ...(options.deliver === undefined ? {} : { deliver: options.deliver }),
+      ...(options.preserveGrant === true ? { preserveGrant: true } : {}),
     });
     last.set(packed.id, packed.sha256);
     plugins.push({ id: packed.id, sha256: packed.sha256, outcome: report.outcome });
@@ -157,7 +168,7 @@ export async function devLoop(options: Omit<DevOptions, "packDir">): Promise<nev
       pending = false;
       number++;
       try {
-        console.log(JSON.stringify(await cycle(full, last, number)));
+        console.log(JSON.stringify(await devCycle(full, last, number)));
       } catch (error) {
         console.error(
           `dev: cycle ${String(number)}: ${error instanceof Error ? error.message : String(error)}`,
@@ -184,7 +195,7 @@ export async function devLoop(options: Omit<DevOptions, "packDir">): Promise<nev
 
 function usage(): never {
   console.error(
-    "usage: manifold-dev <plugins-root> --hub <url> [--fast-refresh [--port <n>] | --hardened] [--deliver path | docker:<container>] [--owner-key-file <path>]",
+    "usage: manifold-dev <plugins-root> --hub <url> [--fast-refresh [--port <n>] | --workshop [--port <n>] [--build-module <path>] | --hardened] [--deliver path | docker:<container>] [--owner-key-file <path>]",
   );
   process.exit(2);
 }
@@ -260,18 +271,78 @@ async function refreshCommand(argv: readonly string[]): Promise<void> {
     process.removeListener("SIGTERM", close);
   }
 }
+export function parseWorkshopFlags(argv: readonly string[]): HubFlags & {
+  root: string;
+  port?: number;
+  buildModule?: string;
+} {
+  const ordinary: string[] = [];
+  let port: number | undefined;
+  let buildModule: string | undefined;
+  for (let at = 0; at < argv.length; at++) {
+    const word = argv[at];
+    if (word === "--workshop") continue;
+    if (word === "--fast-refresh" || word === "--hardened")
+      throw new Error(`${word} cannot be used with --workshop`);
+    if (word === "--port") {
+      const value = argv[++at];
+      if (value === undefined || !/^\d+$/.test(value) || Number(value) > 65535)
+        throw new Error("--port must be an integer from 0 through 65535");
+      port = Number(value);
+    } else if (word === "--build-module") {
+      const value = argv[++at];
+      if (!value || value.startsWith("--")) throw new Error("--build-module needs a module path");
+      buildModule = resolve(value);
+    } else if (word !== undefined) ordinary.push(word);
+  }
+  const flags = parseHubFlags(ordinary, false);
+  const [root] = flags.positionals;
+  if (root === undefined || flags.positionals.length !== 1)
+    throw new Error("--workshop requires exactly one plugins-root");
+  return {
+    ...flags,
+    root: resolve(root),
+    ...(port === undefined ? {} : { port }),
+    ...(buildModule === undefined ? {} : { buildModule }),
+  };
+}
+
+async function workshopCommand(argv: readonly string[]): Promise<void> {
+  const flags = parseWorkshopFlags(argv);
+  let build: ((outputDir: string) => Promise<readonly PackResult[]>) | undefined;
+  if (flags.buildModule) {
+    const module: unknown = await import(pathToFileURL(flags.buildModule).href);
+    if (typeof module !== "object" || module === null || !("pack" in module) || typeof module.pack !== "function")
+      throw new Error("--build-module must export an async pack(outputDir) compiler");
+    build = module.pack as (outputDir: string) => Promise<readonly PackResult[]>;
+  }
+  const ownerKey = await resolveOwnerKey(flags.ownerKeyFile, flags.deliver);
+  // Ordinary standalone kit commands must not resolve the checkout-only source coordinator.
+  const { devWorkshop } = await import("./workshop.ts");
+  await devWorkshop({
+    root: flags.root,
+    hub: { url: flags.hub, ownerKey },
+    ...(flags.deliver === undefined ? {} : { deliver: flags.deliver }),
+    ...(flags.port === undefined ? {} : { port: flags.port }),
+    ...(build === undefined ? {} : { build }),
+  });
+}
+
 
 if (import.meta.main) {
   try {
     const argv = process.argv.slice(2);
     if (argv.includes("--help") || argv.includes("-h")) {
-      console.log("manifold-dev <plugins-root> --hub <origin> [--fast-refresh [--port <n>]]");
+      console.log("manifold-dev <plugins-root> --hub <origin> [--fast-refresh | --workshop] [--port <n>]");
       console.log(
-        "Without --fast-refresh: pack/install/watch; --hardened, --deliver and --owner-key-file retain their ordinary meanings.",
+        "Ordinary dev packs/installs/watches. --fast-refresh remains credential-free. --workshop uses explicit owner installation authority for same-manifest backend saves plus frontend HMR.",
       );
       console.log(JSON.stringify(PLUGIN_REFRESH_DESCRIPTION, null, 2));
+      console.log(JSON.stringify(PLUGIN_WORKSHOP_DESCRIPTION, null, 2));
     } else if (argv.includes("--describe")) {
-      console.log(JSON.stringify(PLUGIN_REFRESH_DESCRIPTION));
+      console.log(JSON.stringify(argv.includes("--workshop") ? PLUGIN_WORKSHOP_DESCRIPTION : PLUGIN_REFRESH_DESCRIPTION));
+    } else if (argv.includes("--workshop")) {
+      await workshopCommand(argv);
     } else if (argv.includes("--fast-refresh")) {
       await refreshCommand(argv);
     } else {
@@ -287,10 +358,10 @@ if (import.meta.main) {
       });
     }
   } catch (error) {
-    if (process.argv.includes("--fast-refresh")) {
+    if (process.argv.includes("--fast-refresh") || process.argv.includes("--workshop")) {
       console.error(
         JSON.stringify({
-          event: "plugin-refresh-failed",
+          event: process.argv.includes("--workshop") ? "plugin-workshop-failed" : "plugin-refresh-failed",
           reason: error instanceof PluginRefreshError ? error.reason : "startup_failed",
           message: error instanceof Error ? error.message : String(error),
         }),

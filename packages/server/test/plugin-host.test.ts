@@ -3433,6 +3433,144 @@ describe("PluginHost install doors", () => {
     fixture.store.close();
   });
 
+  test("same-authority replacement preserves both withheld ordinary caps and consented high-risk caps", async () => {
+    const fixture = await installFixture();
+    let host = await customHost(fixture, [], { isolates: fixture.isolates });
+    try {
+      const first = fixture.drop();
+      expect((await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, { ...first, grant: ["tokens:mint"] })).ok).toBe(true);
+      host.close();
+      const previous = fixture.store.pluginInstalls()[0]!;
+      // Rehydrate a persisted, partially consented installation rather than handing the
+      // replacement a desired grant. Such withheld ceilings survive reviewed updates.
+      fixture.store.putPluginInstall({ ...previous, grantedCaps: ["tokens:mint"] });
+      host = await customHost(fixture, [], { isolates: fixture.isolates });
+      expect(denial(await host.dispatch(fixture.owner, `${SAMPLE_ID}.ping`, {})).rule).toBe("forbidden");
+      expect(await host.dispatch(fixture.owner, `${SAMPLE_ID}.mint`, {})).toEqual({ ok: true, result: { minted: true } });
+      const next = fixture.drop(SAMPLE_MANIFEST, { "server.js": "export {};", "web.js": "export const web = 2;" });
+      expect((await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, {
+        ...next, replace: true, retainInstallation: first.sha256,
+      })).ok).toBe(true);
+      expect(installedRow(host, SAMPLE_ID).install?.sha256).toBe(next.sha256);
+      expect(installedRow(host, SAMPLE_ID).install?.grantedCaps).toEqual(["tokens:mint"]);
+      expect(denial(await host.dispatch(fixture.owner, `${SAMPLE_ID}.ping`, {})).rule).toBe("forbidden");
+      expect(await host.dispatch(fixture.owner, `${SAMPLE_ID}.mint`, {})).toEqual({ ok: true, result: { minted: true } });
+    } finally {
+      host.close();
+      fixture.store.close();
+    }
+  });
+
+  test("retained replacement reads durable consent at commit after a suspended candidate load", async () => {
+    const fixture = await installFixture();
+    const host = await customHost(fixture, [], { isolates: fixture.isolates });
+    const first = fixture.drop();
+    const entered = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    let replacing: Promise<ActionOutcome> | undefined;
+    try {
+      expect((await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, { ...first, grant: ["tokens:mint"] })).ok).toBe(true);
+      expect(await host.dispatch(fixture.owner, `${SAMPLE_ID}.ping`, {})).toEqual({ ok: true, result: { pong: true } });
+      const load = fixture.runner.load.bind(fixture.runner);
+      fixture.runner.load = async (ref) => {
+        entered.resolve();
+        await resume.promise;
+        return load(ref);
+      };
+      const next = fixture.drop(SAMPLE_MANIFEST, { "server.js": "export {};", "web.js": "export const web = 3;" });
+      replacing = host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, { ...next, replace: true, retainInstallation: first.sha256 });
+      await entered.promise;
+      const current = fixture.store.pluginInstalls()[0]!;
+      fixture.store.putPluginInstall({ ...current, grantedCaps: ["tokens:mint"] });
+      resume.resolve();
+      expect((await replacing).ok).toBe(true);
+      expect(installedRow(host, SAMPLE_ID).install?.grantedCaps).toEqual(["tokens:mint"]);
+      expect(denial(await host.dispatch(fixture.owner, `${SAMPLE_ID}.ping`, {})).rule).toBe("forbidden");
+      expect(await host.dispatch(fixture.owner, `${SAMPLE_ID}.mint`, {})).toEqual({ ok: true, result: { minted: true } });
+    } finally {
+      resume.resolve();
+      await replacing;
+      host.close();
+      fixture.store.close();
+    }
+  });
+
+  test("retaining installation authority refuses missing, stale, grant-bearing and incompatible replacements without changing the incumbent", async () => {
+    const fixture = await installFixture();
+    const host = await customHost(fixture, [], { isolates: fixture.isolates });
+    try {
+      const first = fixture.drop();
+      expect((await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, {
+        ...first, replace: true, retainInstallation: "0".repeat(64),
+      })).ok).toBe(false);
+      expect(host.roster().some((row) => row.manifest.id === SAMPLE_ID)).toBe(false);
+      expect((await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, { ...first, grant: ["tokens:mint"] })).ok).toBe(true);
+      const incumbent = installedRow(host, SAMPLE_ID);
+      const next = fixture.drop(SAMPLE_MANIFEST, { "server.js": "export {};", "web.js": "export const web = 4;" });
+      const changed = fixture.drop({ ...SAMPLE_MANIFEST, version: "1.2.4" });
+      for (const request of [
+        { ...next, replace: true, retainInstallation: "0".repeat(64) },
+        { ...next, retainInstallation: first.sha256 },
+        { ...next, replace: true, retainInstallation: first.sha256, grant: [] },
+        { ...next, replace: true, retainInstallation: first.sha256, hardened: false },
+        { ...changed, replace: true, retainInstallation: first.sha256 },
+      ]) {
+        expect((await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, request)).ok).toBe(false);
+        expect(installedRow(host, SAMPLE_ID)).toEqual(incumbent);
+        expect(await host.dispatch(fixture.owner, `${SAMPLE_ID}.mint`, {})).toEqual({ ok: true, result: { minted: true } });
+      }
+      // Ordinary replacement still chooses its ordinary default grant.
+      expect((await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, { ...next, replace: true })).ok).toBe(true);
+      expect(installedRow(host, SAMPLE_ID).install?.grantedCaps).toEqual(["containers:read"]);
+      const advanced = installedRow(host, SAMPLE_ID);
+      expect((await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, {
+        ...first, replace: true, retainInstallation: first.sha256,
+      })).ok).toBe(false);
+      expect(installedRow(host, SAMPLE_ID)).toEqual(advanced);
+    } finally {
+      host.close();
+      fixture.store.close();
+    }
+  });
+
+  for (const boundary of ["action", "lifecycle"] as const) {
+    test(`retained replacement refuses a same-manifest ${boundary} declaration change`, async () => {
+      const fixture = await installFixture((ref) => {
+        const loaded = sampleLoad(ref);
+        if (!readFileSync(join(ref.dir, "server.js"), "utf8").includes("changed-authority")) return loaded;
+        if (boundary === "lifecycle") return { ...loaded, lifecycle: {} };
+        return {
+          ...loaded,
+          def: {
+            ...loaded.def,
+            actions: [
+              defineAction({ name: "ping", title: "Ping", caps: [], input: z.unknown(), result: z.unknown() }),
+              loaded.def.actions[1]!,
+            ],
+          },
+        };
+      });
+      const host = await customHost(fixture, [], { isolates: fixture.isolates });
+      try {
+        const first = fixture.drop();
+        expect((await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, first)).ok).toBe(true);
+        const outsider = context(fixture, []);
+        expect(denial(await host.dispatch(outsider, `${SAMPLE_ID}.ping`, {})).rule).toBe("forbidden");
+        const incumbent = installedRow(host, SAMPLE_ID);
+        const next = fixture.drop(SAMPLE_MANIFEST, { "server.js": "// changed-authority\nexport {};", "web.js": "export const web = 5;" });
+        expect((await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, {
+          ...next, replace: true, retainInstallation: first.sha256,
+        })).ok).toBe(false);
+        expect(installedRow(host, SAMPLE_ID).install).toEqual(incumbent.install);
+        expect(denial(await host.dispatch(outsider, `${SAMPLE_ID}.ping`, {})).rule).toBe("forbidden");
+        expect(await host.dispatch(fixture.owner, `${SAMPLE_ID}.ping`, {})).toEqual({ ok: true, result: { pong: true } });
+      } finally {
+        host.close();
+        fixture.store.close();
+      }
+    });
+  }
+
   test("native delegates remain bounded by the installer's grant even for root callers", async () => {
     const fixture = await installFixture((ref) => ({
       def: {
