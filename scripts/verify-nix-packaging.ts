@@ -219,6 +219,7 @@ async function nativeProfile(): Promise<void> {
   }
   const started = performance.now();
   try {
+    // Nix serializes an attrset with outPath as a store-path string, not a JSON object.
     const paths: unknown = JSON.parse(
       await command(
         [
@@ -227,14 +228,14 @@ async function nativeProfile(): Promise<void> {
           "--json",
           "--no-update-lock-file",
           "--apply",
-          "drv: { inherit (drv) drvPath outPath; }",
+          "drv: { derivation = drv.drvPath; output = drv.outPath; }",
           `${flake}#${check}`,
         ],
         5 * 60_000,
       ),
     );
-    const derivation = member(paths, "drvPath");
-    const output = member(paths, "outPath");
+    const derivation = member(paths, "derivation");
+    const output = member(paths, "output");
     if (
       typeof derivation !== "string" ||
       !derivation.startsWith("/nix/store/") ||

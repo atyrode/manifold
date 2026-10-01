@@ -25,8 +25,8 @@
  * session channel instead of running timers, so a steady workspace asks nothing. A table of
  * zeroes is the easiest table in the world to pass by breaking the feature, so the zero is not
  * measured alone — before the window this gate reads the feeds' own report seam and requires
- * each declared row to have a LIVE, subscription-backed feed with an initial read behind it and
- * no armed timer. A dead feed and a subscribed one are both silent on the network; only the feed
+ * each declared row to have a LIVE, subscription-backed feed with a synchronized catch-up
+ * read behind it and no armed timer. A dead feed and a subscribed one are both silent; only the feed
  * can tell them apart, so it is asked.
  */
 import { mkdtempSync, readFileSync } from "node:fs";
@@ -330,9 +330,9 @@ try {
     "canvas nodes painted",
   );
   /*
-    Settle: boot fetches, each feed's ONE initial read (plus its catch-up read if the socket
-    reached open after the mount read), and the terminal's attach and snapshot all land here.
-    What the budget governs is the STEADY state after that, which is now zero.
+    Settle: boot fetches, each feed's synchronized catch-up read, and the terminal's attach
+    and snapshot all land here. A manual refresh can seed a feed before its subscription
+    fence completes. What the budget governs is the STEADY state after that, which is zero.
   */
   await sleep(8_000);
 
@@ -342,6 +342,8 @@ try {
     meaningful if every declared row still has a live feed behind it. `mode: "events"` and a
     null interval are the same statement said twice on purpose — the first is the feed's own
     verdict, the second is the absence of the machinery that would make it false.
+    Event mode already requires a qualifying read after the current subscription fence;
+    the diagnostic reason for that read is not a consumer-observable readiness condition.
   */
   /*
     The seam's absence ANSWERS instead of throwing. A pre-swap bundle has no feed report at
@@ -373,11 +375,11 @@ try {
     const feed = pick(settled, row.feed);
     const subscribed =
       feed !== undefined &&
+      feed.subscribers > 0 &&
       feed.mode === "events" &&
       feed.live &&
       feed.intervalMs === null &&
-      feed.topics.length > 0 &&
-      feed.reads.initial >= 1;
+      feed.topics.length > 0;
     check(
       `budget ${row.resource} is subscribed`,
       subscribed,
