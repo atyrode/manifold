@@ -19,7 +19,10 @@ import { JOB_SCHEDULE_SCHEMA_SQL } from "../src/job-schedules.ts";
 import { migrateToGrantRows } from "../src/migrate-grants.ts";
 import { ServerStore, sha256Hex } from "../src/stores.ts";
 import { FakeRuntime } from "./helpers.ts";
-import { AUTHORITY_V37_FIXTURE_SQL, removeScopedAuthority } from "./authority-migration-fixtures.ts";
+import {
+  AUTHORITY_V37_FIXTURE_SQL,
+  removeScopedAuthority,
+} from "./authority-migration-fixtures.ts";
 
 const LEGACY_TOKEN_COLUMNS =
   "id, hash, principal_id, caps, container_id, created_at, revoked_at, minted_by, grant_id, expires_at";
@@ -3122,7 +3125,6 @@ test("recipient cutover fences retained share tickets before admission and prese
     store.settleDirectServiceAttempt(chargedAttempt.requestId, 30);
     const attemptsQuery = "SELECT * FROM native_service_attempts ORDER BY actor_id,call_id";
     const retainedAttempts = db.query(attemptsQuery).all();
-    removeScopedAuthority(db);
     db.exec(
       "DROP TABLE share_recipient_delegations; DROP TABLE share_ticket_credentials; DROP TABLE share_recipients",
     );
@@ -3136,6 +3138,7 @@ test("recipient cutover fences retained share tickets before admission and prese
     const unrelatedRow = store.getTokenByHash(sha256Hex(unrelated.token));
     const terminal = store.getTerminal("retained-terminal");
     const retainedContainers = store.listContainers();
+    removeScopedAuthority(db);
     db.close();
     db = openDatabase(path);
     store = new ServerStore(db);

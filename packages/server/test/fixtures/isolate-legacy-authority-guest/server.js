@@ -67,7 +67,7 @@ async function receive(frame) {
     waiting.delete(frame.id);
     if (frame.ok) pending.resolve(frame.result);
     else pending.reject(new Error(frame.error));
-  } else if (frame.t === "shutdown") process.exit(0);
+  } else if (frame.t === "shutdown") globalThis.process.exit(0);
 }
 let carry = "";
 protocol.setEncoding("utf8");

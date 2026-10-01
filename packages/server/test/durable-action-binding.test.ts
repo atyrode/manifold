@@ -94,8 +94,14 @@ async function fixture(
     const clock = new FakeClock(runtime);
     const rooms = new RoomManager(store, runtime, clock, silentLogger, testTileTrees);
     const broker = new TerminalBroker(
-      store, auth, rooms, runtime, clock, silentLogger,
-      () => "http://localhost:7777", testTileTrees,
+      store,
+      auth,
+      rooms,
+      runtime,
+      clock,
+      silentLogger,
+      () => "http://localhost:7777",
+      testTileTrees,
     );
     runner = new IsolateSupervisor({ logger: silentLogger, runtime });
     host = await testPluginHost(store, auth, rooms, broker, runtime, {
@@ -124,10 +130,14 @@ async function fixture(
     service.event(channel, {
       type: "owner_proof",
       ...body,
-      signature: sign(null, Buffer.from(canonicalJobJson(body)), pair.privateKey).toString("base64"),
+      signature: sign(null, Buffer.from(canonicalJobJson(body)), pair.privateKey).toString(
+        "base64",
+      ),
     });
     service.event(channel, {
-      type: "installed", pluginId: PLUGIN_ID, installationRevision: "one",
+      type: "installed",
+      pluginId: PLUGIN_ID,
+      installationRevision: "one",
       artifactSha256: ARTIFACT_HASH,
     });
   };
@@ -147,7 +157,9 @@ async function fixture(
   mkdirSync(authorDir);
   mkdirSync(join(dataDir, PLUGIN_UPLOADS_DIR));
   writeFileSync(join(authorDir, "manifest.json"), JSON.stringify(manifest));
-  writeFileSync(join(authorDir, "server.ts"), `
+  writeFileSync(
+    join(authorDir, "server.ts"),
+    `
 import { z } from ${JSON.stringify(fileURLToPath(import.meta.resolve("zod")))};
 import { defineServerAction, defineServerPlugin } from ${JSON.stringify(fileURLToPath(import.meta.resolve("@manifold/plugin-kit/server")))};
 const input = z.strictObject({
@@ -199,28 +211,52 @@ const definition = {
 };
 defineServerPlugin(definition);
 export default definition;
-`);
-  const packed = await packPlugin(authorDir, join(dataDir, PLUGIN_UPLOADS_DIR, "binding.manifold-plugin.json"));
+`,
+  );
+  const packed = await packPlugin(
+    authorDir,
+    join(dataDir, PLUGIN_UPLOADS_DIR, "binding.manifold-plugin.json"),
+  );
   const request = { source: packed.file, sha256: packed.sha256, hardened: false };
   return {
-    get store() { return store; },
-    get host() { return host; },
-    get service() { return service; },
-    runtime, root, commands, machineId, prove,
+    get store() {
+      return store;
+    },
+    get host() {
+      return host;
+    },
+    get service() {
+      return service;
+    },
+    runtime,
+    root,
+    commands,
+    machineId,
+    prove,
     async install(grant: AuthoredCap[], replace = false) {
-      return host.install({ ...request, grant, replace }, root().principal.id, auth.credentialReference(root()));
+      return host.install(
+        { ...request, grant, replace },
+        root().principal.id,
+        auth.credentialReference(root()),
+      );
     },
     installNative() {
       service.install(root(), {
-        machineId, pluginId: PLUGIN_ID, installationRevision: "one",
-        artifactSha256: ARTIFACT_HASH, machine,
+        machineId,
+        pluginId: PLUGIN_ID,
+        installationRevision: "one",
+        artifactSha256: ARTIFACT_HASH,
+        machine,
       });
       for (const cap of ["machines:run", "operations:invoke"] as const)
         service.consent(root(), {
-          machineId, pluginId: PLUGIN_ID, installationRevision: "one",
+          machineId,
+          pluginId: PLUGIN_ID,
+          installationRevision: "one",
           artifactSha256: ARTIFACT_HASH,
           node: formatManifoldUri({ kind: "operation", machineId, operationId: OPERATION_ID }),
-          cap, enabled: true,
+          cap,
+          enabled: true,
         });
       prove();
     },
@@ -241,15 +277,23 @@ export default definition;
 }
 
 function occurrenceId(scheduleId: string) {
-  return `schedule-${createHash("sha256").update(canonicalJobJson([scheduleId, "one", 1000])).digest("hex")}`;
+  return `schedule-${createHash("sha256")
+    .update(canonicalJobJson([scheduleId, "one", 1000]))
+    .digest("hex")}`;
 }
 
 test("a real packed multi-cap preparer installs in-realm and executes its normalized effect", async () => {
   const f = await fixture(["tokens:mint", "plugins:manage"]);
   try {
     expect(await f.install(["tokens:mint"])).toMatchObject({ id: PLUGIN_ID });
-    expect(await f.host.dispatch(f.root(), `${PLUGIN_ID}.record`, { value: "  admitted  ", extra: true })).toEqual({
-      ok: true, result: { value: "admitted" },
+    expect(
+      await f.host.dispatch(f.root(), `${PLUGIN_ID}.record`, {
+        value: "  admitted  ",
+        extra: true,
+      }),
+    ).toEqual({
+      ok: true,
+      result: { value: "admitted" },
     });
     expect(await f.store.pluginStorage(PLUGIN_ID).get("recorded")).toBe("admitted");
   } finally {
@@ -269,17 +313,25 @@ for (const reopen of [false, true]) {
         ["prepared", "prepared", true],
         ["prepared", "unused-mode", false],
       ] as const) {
-        expect(await f.host.dispatch(f.root(), `${PLUGIN_ID}.${action}`, {
-          operation: { kind: "operation", machineId: f.machineId, operationId: OPERATION_ID },
-          scheduleId, extra,
-        })).toEqual({ ok: true, result: {} });
+        expect(
+          await f.host.dispatch(f.root(), `${PLUGIN_ID}.${action}`, {
+            operation: { kind: "operation", machineId: f.machineId, operationId: OPERATION_ID },
+            scheduleId,
+            extra,
+          }),
+        ).toEqual({ ok: true, result: {} });
       }
       expect(await f.host.dispatch(f.root(), "engine.jobs.schedules", {})).toMatchObject({
         ok: true,
-        result: ["declared", "delegated", "prepared", "unused-mode"].map((scheduleId) => ({ scheduleId })),
+        result: ["declared", "delegated", "prepared", "unused-mode"].map((scheduleId) => ({
+          scheduleId,
+        })),
       });
       // Same bytes and native consent; only the installer-withheld ordinary ceiling changes.
-      expect(await f.install([], true)).toMatchObject({ id: PLUGIN_ID, grantedCaps: ["machines:read"] });
+      expect(await f.install([], true)).toMatchObject({
+        id: PLUGIN_ID,
+        grantedCaps: ["machines:read"],
+      });
       if (reopen) await f.reopen();
       f.runtime.time = 1000;
       f.service.tick();
@@ -294,9 +346,11 @@ for (const reopen of [false, true]) {
       // Ordinary delegated defaults and an unselected preparer mode remain admitted.
       for (const scheduleId of ["delegated", "unused-mode"])
         expect(f.service.jobs.get(occurrenceId(scheduleId))?.state).toBe("start-committed");
-      expect(f.commands.filter((command) => command.type === "start").map((command) => command.request.jobId)).toEqual([
-        occurrenceId("delegated"), occurrenceId("unused-mode"),
-      ]);
+      expect(
+        f.commands
+          .filter((command) => command.type === "start")
+          .map((command) => command.request.jobId),
+      ).toEqual([occurrenceId("delegated"), occurrenceId("unused-mode")]);
     } finally {
       await f.close();
     }
@@ -333,41 +387,44 @@ async function registeredFixture(pausePreparation: boolean) {
   type Input = z.infer<typeof input>;
   const preparationCaps: AskableCap[] = ["tokens:mint", "plugins:manage"];
   const makePreparer = () => async (_ctx: ActionPreparationCtx, raw: unknown) => {
-      const args = input.parse(raw);
-      if (pausePreparation) {
-        entered.resolve();
-        await resume.promise;
-      }
-      return {
-        args,
-        targets: [args.operation],
-        additionalRequirements: args.extra
-          ? [{ cap: "tokens:mint" as const, node: "manifold://" as const, reach: "node" as const }]
-          : [],
-      };
+    const args = input.parse(raw);
+    if (pausePreparation) {
+      entered.resolve();
+      await resume.promise;
+    }
+    return {
+      args,
+      targets: [args.operation],
+      additionalRequirements: args.extra
+        ? [{ cap: "tokens:mint" as const, node: "manifold://" as const, reach: "node" as const }]
+        : [],
+    };
   };
   const preparation = { caps: preparationCaps, prepare: makePreparer() };
   const makeHandler = () => async (ctx: ActionCtx, args: Input) => {
-      await ctx.storage.set("recorded", args.scheduleId);
-      await ctx.jobs.schedule({
-        jobId: `template-${args.scheduleId}`,
-        machineId: args.operation.machineId,
-        operationId: args.operation.operationId,
-        input: { value: args.scheduleId },
-        outputs: [],
-        scheduleId: args.scheduleId,
-        revision: "one",
-        firstNominalAt: 1000,
-        intervalMs: 60000,
-        deadlineMs: 30000,
-        expiresAt: 60000,
-        offlinePolicy: "coalesce-one",
-      });
-      return {};
+    await ctx.storage.set("recorded", args.scheduleId);
+    await ctx.jobs.schedule({
+      jobId: `template-${args.scheduleId}`,
+      machineId: args.operation.machineId,
+      operationId: args.operation.operationId,
+      input: { value: args.scheduleId },
+      outputs: [],
+      scheduleId: args.scheduleId,
+      revision: "one",
+      firstNominalAt: 1000,
+      intervalMs: 60000,
+      deadlineMs: 30000,
+      expiresAt: 60000,
+      offlinePolicy: "coalesce-one",
+    });
+    return {};
   };
   const handlers = { prepared: makeHandler() };
   const capabilities: AuthoredCap[] = [
-    "machines:run", "machines:read", "tokens:mint", "plugins:manage",
+    "machines:run",
+    "machines:read",
+    "tokens:mint",
+    "plugins:manage",
   ];
   const registration: ServerPluginDef = {
     manifest: {
@@ -431,7 +488,8 @@ test.each(["parser", "handler", "preparer"])(
       expect(await invocation).toMatchObject({ ok: false, denial: { rule: "forbidden" } });
       expect(await f.store.pluginStorage(PLUGIN_ID).get("recorded")).toBeNull();
       expect(await f.host.dispatch(f.root(), "engine.jobs.schedules", {})).toEqual({
-        ok: true, result: [],
+        ok: true,
+        result: [],
       });
       f.runtime.time = 1000;
       f.service.tick();
@@ -452,7 +510,8 @@ test.each(["unchanged", "parser", "handler", "preparer", "preparer ceiling", "ma
     const f = await registeredFixture(false);
     try {
       expect(await f.host.dispatch(f.root(), `${PLUGIN_ID}.prepared`, f.args)).toEqual({
-        ok: true, result: {},
+        ok: true,
+        result: {},
       });
       expect(await f.store.pluginStorage(PLUGIN_ID).get("recorded")).toBe("binding");
       f.replace(binding);
@@ -460,9 +519,11 @@ test.each(["unchanged", "parser", "handler", "preparer", "preparer ceiling", "ma
       f.service.tick();
       if (binding === "unchanged") {
         expect(f.service.jobs.get(occurrenceId("binding"))?.state).toBe("start-committed");
-        expect(f.commands.filter((command) => command.type === "start").map((command) => command.request.jobId)).toEqual([
-          occurrenceId("binding"),
-        ]);
+        expect(
+          f.commands
+            .filter((command) => command.type === "start")
+            .map((command) => command.request.jobId),
+        ).toEqual([occurrenceId("binding")]);
       } else {
         expect(f.service.jobs.get(occurrenceId("binding"))).toBeNull();
         expect(f.service.jobSchedules.getOccurrence(occurrenceId("binding"))).toBeNull();

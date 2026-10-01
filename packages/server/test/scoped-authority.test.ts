@@ -143,7 +143,8 @@ describe("correlated ordinary-shell authority", () => {
       expect(restored.containerScope).toBe(f.c);
       expect(f.auth.allowsNode(restored, "machines:shell", f.m1)).toBe(true);
       expect(f.auth.allowsNode(restored, "machines:shell", f.m2)).toBe(false);
-      const { authorityScope: _scope, ...omitted } = reference;
+      const omitted = { ...reference };
+      Reflect.deleteProperty(omitted, "authorityScope");
       expect(f.auth.restoreCredential(omitted)).toBeNull();
       expect(
         f.auth.restoreCredential({

@@ -681,7 +681,7 @@ describe("migration 51: durable account-shell compatibility", () => {
       expect(rows(db, "grants")).toEqual(beforeGrants);
       expect(rows(db, "tokens")).toEqual(beforeTokens);
       expect(db.query("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({
-        value: "48",
+        value: "50",
       });
       expect(db.query("SELECT name FROM sqlite_master WHERE name='token_grants'").get()).toBeNull();
       db.exec("DROP TRIGGER fail_shell_migration");

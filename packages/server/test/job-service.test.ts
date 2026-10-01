@@ -306,12 +306,12 @@ test("a persisted scoped job cannot borrow unrelated live machine grants after d
       },
       f.root,
     );
-    const signed = {
+    const body = {
       ...first.request,
       jobId: "substituted-operation",
       operationId: otherOperationId,
     };
-    const { requestDigest: _digest, ...body } = signed;
+    Reflect.deleteProperty(body, "requestDigest");
     const changed = {
       ...body,
       requestDigest: createHash("sha256").update(canonicalJobJson(body)).digest("hex"),

@@ -40,7 +40,9 @@ defineServerPlugin({
         if (args.mode === "mutate") {
           try {
             await captured.storage.set("preparation-effect", "forbidden");
-          } catch {}
+          } catch {
+            // The retained mutable context must refuse effects during preparation.
+          }
         }
         const destination = await ctx.terminals.resolveMachine({});
         return {

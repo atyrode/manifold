@@ -390,20 +390,20 @@ function CredentialSessions({ host }: SectionProps): ReactElement {
         </span>
         {row.sessions.some((session) => session.authorityScope !== undefined) ? (
           <Stack className="credential-inspection" gap="0.25rem">
-          <InspectionFold title="Credential authority scopes">
-            {row.sessions.map((session) => (
-              <Stack key={session.id} gap="0.25rem">
-                <span className="credential-inspection-note">
-                  {session.id} · {expiryLabel(session.expiresAt, Date.now())}
-                </span>
-                {session.authorityScope === undefined ? (
-                  <span>Legacy single-scope credential</span>
-                ) : (
-                  <AuthorityScopeDetails host={host} scope={session.authorityScope} />
-                )}
-              </Stack>
-            ))}
-          </InspectionFold>
+            <InspectionFold title="Credential authority scopes">
+              {row.sessions.map((session) => (
+                <Stack key={session.id} gap="0.25rem">
+                  <span className="credential-inspection-note">
+                    {session.id} · {expiryLabel(session.expiresAt, Date.now())}
+                  </span>
+                  {session.authorityScope === undefined ? (
+                    <span>Legacy single-scope credential</span>
+                  ) : (
+                    <AuthorityScopeDetails host={host} scope={session.authorityScope} />
+                  )}
+                </Stack>
+              ))}
+            </InspectionFold>
           </Stack>
         ) : null}
       </div>

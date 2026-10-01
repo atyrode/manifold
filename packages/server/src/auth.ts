@@ -2261,10 +2261,9 @@ export class AuthService {
     const result = this.inspectRunV2(input, actor);
     const record = this.store.getAgentRun(input.runId)!;
     const legacy = this.legacyRunResult({ run: this.presentAgentRun(record) }).run;
-    const { scope: _scope, ...run } = result.run;
     return AgentRunInspectionSchema.parse({
       ...result,
-      run: { ...run, caps: legacy.caps },
+      run: legacy,
       credentials: result.credentials.map(({ authorityScope: _authorityScope, ...credential }) => ({
         ...credential,
         grant:

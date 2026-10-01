@@ -2312,9 +2312,12 @@ describe("TerminalBroker drain (issue #278)", () => {
       ok: true,
       status: { terminalHostId: "host-A", draining: true, terminalIds: [create.terminalId] },
     });
-    // The in-flight create still commits: closing admission is not killing work.
+    // Until the owner acknowledges birth, the readiness guard is still admission authority.
     setup.broker.onCreated(setup.machine.machineId, create.terminalId);
-    expect(setup.store.getTerminal(create.terminalId)?.status).toBe("running");
+    expect(setup.store.getTerminal(create.terminalId)).toBeNull();
+    expect(setup.machine.sent.filter((message) => message.type === "kill")).toEqual([
+      { type: "kill", terminalId: create.terminalId },
+    ]);
 
     // Cancel is the only thing that reopens it.
     const cancel = setup.broker.drain(setup.machine.machineId, false);
@@ -2652,7 +2655,6 @@ describe("TerminalBroker restart in place", () => {
     ).toBe("machine_draining");
     f.store.close();
   });
-
 
   test("legacy rows restart as an explicitly reported shell only on unconfined owners", async () => {
     const f = brokerSetup();

@@ -61,7 +61,6 @@ export function ShellAutomation({
   if (lastMayMint !== mayMint) {
     setLastMayMint(mayMint);
     if (!mayMint) {
-      epoch.current++;
       setToken(null);
       setPending(false);
       setOpen(false);
@@ -99,7 +98,7 @@ export function ShellAutomation({
       epoch.current++;
       off();
     };
-  }, [host.client]);
+  }, [host.client, mayMint]);
   if (!mayMint) return null;
   const compositions =
     containers.state === "ready"

@@ -191,10 +191,7 @@ export function restoreAuthoritySnapshot(
   auth: AuthService,
   snapshot: AuthoritySnapshot,
   actionCurrent?: (binding: ActionAuthoritySnapshotBinding) => boolean,
-  nativeCurrent?: (
-    current: AuthContext,
-    requirements: readonly AuthorityRequirement[],
-  ) => boolean,
+  nativeCurrent?: (current: AuthContext, requirements: readonly AuthorityRequirement[]) => boolean,
 ): AuthContext | null {
   const current = auth.restoreCredential(snapshot.credential);
   if (current === null) return null;
@@ -226,7 +223,7 @@ export function restoreAuthoritySnapshot(
               ? auth.allowsRef(actionContext, requirement.cap, requirement.ref)
               : auth.allows(graded, requirement.cap);
       if (!allowed) return null;
-      if (GOVERNED_CAPS.includes(requirement.cap)) {
+      if (requirement.cap !== "*" && GOVERNED_CAPS.includes(requirement.cap)) {
         const ref =
           requirement.ref ??
           (requirement.node === undefined ? null : parseManifoldUri(requirement.node));
