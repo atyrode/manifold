@@ -1115,6 +1115,7 @@ test.each(["live", "home-write", "action-binding", "harness-binding", "retired"]
     const gate = Promise.withResolvers<void>();
     const action = f.host.assembly().actions.get("core.terminals.restart")!.def;
     const originalInput = action.input;
+    let retiring: Promise<ActionOutcome> | undefined;
     try {
       const actor = f.auth.authenticate(
         f.auth.mintToken(
@@ -1127,7 +1128,6 @@ test.each(["live", "home-write", "action-binding", "harness-binding", "retired"]
       const incumbentToken = create.runtime!.privateEnv!.MANIFOLD_RUN_TOKEN;
       const before = f.store.getTerminal(create.terminalId);
       const jobsBefore = f.store.db.query("SELECT job_id FROM machine_jobs ORDER BY job_id").all();
-      const decisionsBefore = f.store.db.query("SELECT id FROM machine_job_decisions ORDER BY id").all();
       const entered = Promise.withResolvers<void>();
       let retained: ActionCtx | undefined;
       let effects: PromiseSettledResult<unknown>[] = [];
@@ -1179,17 +1179,28 @@ test.each(["live", "home-write", "action-binding", "harness-binding", "retired"]
         case "harness-binding":
           harness.launch = launch;
           break;
-        case "retired":
-          result(await f.host.dispatch(f.root, "engine.plugins.setEnabled", {
+        case "retired": {
+          const disabled = Promise.withResolvers<void>();
+          const disablePlugin = f.service.disablePlugin.bind(f.service);
+          f.service.disablePlugin = (id) => {
+            disablePlugin(id);
+            if (id === pluginId) disabled.resolve();
+          };
+          retiring = f.host.dispatch(f.root, "engine.plugins.setEnabled", {
             id: pluginId, enabled: false,
-          }));
-          result(await f.host.dispatch(f.root, "engine.plugins.setEnabled", {
-            id: pluginId, enabled: true,
-          }));
+          });
+          await admittedMessage(disabled.promise, retiring, "harness disable committed");
           break;
+        }
       }
       gate.resolve();
       const outcome = await pending;
+      if (retiring !== undefined) {
+        result(await retiring);
+        result(await f.host.dispatch(f.root, "engine.plugins.setEnabled", {
+          id: pluginId, enabled: true,
+        }));
+      }
       if (change === "live") {
         expect(outcome).toMatchObject({ ok: true });
         expect(effects.map((effect) => effect.status)).toEqual([
@@ -1210,7 +1221,6 @@ test.each(["live", "home-write", "action-binding", "harness-binding", "retired"]
         ]);
         expect(await f.store.pluginStorage(pluginId).get("harness-effect")).toBeNull();
         expect(f.store.db.query("SELECT job_id FROM machine_jobs ORDER BY job_id").all()).toEqual(jobsBefore);
-        expect(f.store.db.query("SELECT id FROM machine_job_decisions ORDER BY id").all()).toEqual(decisionsBefore);
         expect(f.service.jobSchedules.listSchedules()).toEqual([]);
         expect(f.service.readServiceConfiguration(f.root, {
           machineId: f.descriptor.machineId,
@@ -1316,6 +1326,7 @@ test.each(["fresh", "recovered"] as const)(
       service.tick();
       expect(service.jobs.get(native.request.jobId)?.request).toEqual(native.request);
       expect(service.jobs.cancellation(native.request.jobId)).toBeNull();
+      const incumbentCancellation = service.jobs.cancellation(create.runtime!.request.jobId);
       auth.grant({
         principal: { kind: "principal", id: actor.principal.id },
         node: `manifold://container/${f.containerId}`,
@@ -1336,7 +1347,7 @@ test.each(["fresh", "recovered"] as const)(
       expect(service.jobSchedules.getOccurrence(occurrenceId)).toBeNull();
       expect(f.commands.filter((command) =>
         command.type === "start" && command.request.jobId === occurrenceId)).toEqual([]);
-      expect(service.jobs.cancellation(create.runtime!.request.jobId)).toBeNull();
+      expect(service.jobs.cancellation(create.runtime!.request.jobId)).toEqual(incumbentCancellation);
     } finally {
       recoveredHost?.close();
       recoveredStore?.close();

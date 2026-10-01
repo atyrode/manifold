@@ -1171,7 +1171,7 @@ describe("ordinary shell creation authority", () => {
       const base = await fixture("owner-A");
       const successor = new FakeMachine(base.machine.machineId, "owner-B");
       const terminalId = action === "restart" ? liveTerminal(base) : undefined;
-      if (terminalId !== undefined) base.broker.onExited(base.machine.machineId, terminalId, 0);
+      if (terminalId !== undefined) base.broker.onExited(base.machine.machineId, terminalId, 7);
       base.machine.clear();
       const credentials = base.auth.listCredentialsV2(base.owner);
       const terminals = base.store.listTerminals();
@@ -1232,7 +1232,7 @@ describe("ordinary shell creation authority", () => {
       const base = await fixture("owner-A");
       const successor = new FakeMachine(base.machine.machineId, "owner-A");
       const terminalId = action === "restart" ? liveTerminal(base) : undefined;
-      if (terminalId !== undefined) base.broker.onExited(base.machine.machineId, terminalId, 0);
+      if (terminalId !== undefined) base.broker.onExited(base.machine.machineId, terminalId, 7);
       const resolve = base.broker.resolveTerminalMachine.bind(base.broker);
       const stored = base.store.getTerminal.bind(base.store);
       let armed = true;
