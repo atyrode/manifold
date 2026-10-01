@@ -1116,6 +1116,7 @@ interface CachedHarnessBinding {
 interface CachedActionBinding {
   readonly fingerprint: string;
   readonly revision: number;
+  readonly installation: InstalledPlugin | undefined;
   readonly definition: AnyActionDef;
   readonly declaration: AnyActionDef;
   readonly manifest: PluginDef["manifest"];
@@ -2621,6 +2622,7 @@ export class PluginHost {
     this.firstParty = this.firstParty.map((existing) =>
       existing.manifest.id === id ? def : existing,
     );
+    this.resetActionBindingHistory(id);
     this.retiredTrusted.delete(id);
     this.syncDefs();
   }
@@ -2708,6 +2710,7 @@ export class PluginHost {
           row.hardened === true,
         ),
       );
+      this.resetActionBindingHistory(row.pluginId);
     } catch (error) {
       this.installedDefs.set(row.pluginId, {
         manifest: bundle.manifest,
@@ -3189,6 +3192,12 @@ export class PluginHost {
     this.actionEpochs.set(pluginId, (this.actionEpochs.get(pluginId) ?? 0) + 1);
   }
 
+  /** Only verified executable publication or uninstall resets the cold binding baseline. */
+  private resetActionBindingHistory(pluginId: string): void {
+    for (const [name, binding] of this.actionFingerprints)
+      if (binding.manifestId === pluginId) this.actionFingerprints.delete(name);
+  }
+
   private retireDatabase(pluginId: string): void {
     this.revokeSettlements(pluginId);
     this.revokeActionAuthority(pluginId);
@@ -3540,6 +3549,7 @@ export class PluginHost {
         if (!verdict.ok) return installRefused(verdict.refusal, verdict.detail);
         try {
           this.installedDefs.set(id, await this.loadBundle(verdict.bundle, verdict.dir, false));
+          this.resetActionBindingHistory(id);
           this.heldUnloaded.delete(id);
           this.syncDefs();
         } catch (error) {
@@ -4295,6 +4305,7 @@ export class PluginHost {
             ? this.dormantDef(member.row, member.bundle)
             : member.def!,
         );
+        this.resetActionBindingHistory(member.id);
         this.lifecycleStates.delete(member.id);
         this.heldUnloaded.delete(member.id);
       }
@@ -4526,6 +4537,7 @@ export class PluginHost {
         const verdict = verifyInstalledBundle(previous.row);
         if (!verdict.ok) throw new InstallRefusal(verdict.refusal, verdict.detail);
         this.installedDefs.set(id, await this.loadBundle(verdict.bundle, verdict.dir, true));
+        this.resetActionBindingHistory(id);
       } else {
         // Keep dormant, never-loaded incumbents dormant, and reuse in-realm definitions.
         this.installedDefs.set(id, previousDef);
@@ -4720,6 +4732,7 @@ export class PluginHost {
     this.store.clearPluginEnablement(id);
     this.installed.delete(id);
     this.installedDefs.delete(id);
+    this.resetActionBindingHistory(id);
     this.heldUnloaded.delete(id);
     this.lifecycleStates.delete(id);
     // The row is gone, so the handle onto its file is too. The BYTES stay unless a purge took
@@ -5521,15 +5534,12 @@ export class PluginHost {
 
   // Roster entries and their parsed manifests are rebuilt for unrelated lifecycle changes.
   // The named door retains custody only while its executable definition and authority agree.
-  private readonly actionFingerprints = new WeakMap<
-    AnyActionDef,
-    Map<string, CachedActionBinding>
-  >();
+  private readonly actionFingerprints = new Map<string, CachedActionBinding>();
   private actionBinding(name: string): CachedActionBinding | null {
     const entry = this.assembled.actions.get(name);
     if (entry === undefined) return null;
-    const bindings = this.actionFingerprints.get(entry.def);
-    const cached = bindings?.get(name);
+    const cached = this.actionFingerprints.get(name);
+    const installation = this.installed.get(entry.plugin.id);
     const pluginDef =
       cached?.definitions === this.defs
         ? cached.pluginDef
@@ -5547,11 +5557,12 @@ export class PluginHost {
     const preparationCaps = preparation?.caps ?? guestPreparation?.caps;
     const handler = this.handlers.get(entry.plugin.id)?.[entry.def.name];
     const code =
-      this.installed.get(entry.plugin.id)?.row.sha256 ??
+      installation?.row.sha256 ??
       this.trusted.get(entry.plugin.id)?.sha256 ??
       this.builtinCodeIdentity;
     if (
       cached !== undefined &&
+      cached.installation === installation &&
       cached.definition === entry.def &&
       (cached.manifest === entry.plugin
         ? cached.machine === entry.plugin.machine &&
@@ -5606,8 +5617,10 @@ export class PluginHost {
     const capturedPreparationCaps =
       preparedDefinition?.caps ??
       (preparationCaps === undefined ? undefined : [...preparationCaps]);
-    // Equal schema/function text is not proof that a replaced in-process binding is
-    // the admitted one. Cold bindings still have a deterministic restart fingerprint.
+    // Keep per-door history even when the entire definition is replaced or restored:
+    // equal schema/function text cannot recycle a settled dispatch's fingerprint.
+    // Verified publication explicitly clears history; ordinary object/code changes do not.
+    // Thus genuine reloads use the cold baseline while live grants remain conjunctive.
     const revision = cached === undefined ? 0 : cached.revision + 1;
     const fingerprint = createHash("sha256")
       .update(
@@ -5635,6 +5648,7 @@ export class PluginHost {
     const binding: CachedActionBinding = {
       fingerprint,
       revision,
+      installation,
       definition: entry.def,
       declaration,
       manifest: entry.plugin,
@@ -5660,8 +5674,7 @@ export class PluginHost {
       preparationCaps: capturedPreparationCaps,
       code,
     };
-    if (bindings === undefined) this.actionFingerprints.set(entry.def, new Map([[name, binding]]));
-    else bindings.set(name, binding);
+    this.actionFingerprints.set(name, binding);
     return binding;
   }
 

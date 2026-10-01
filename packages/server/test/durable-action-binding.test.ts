@@ -426,6 +426,7 @@ async function registeredFixture(pausePreparation: boolean) {
     "tokens:mint",
     "plugins:manage",
   ];
+  const actions = [action];
   const registration: ServerPluginDef = {
     manifest: {
       id: PLUGIN_ID,
@@ -439,7 +440,7 @@ async function registeredFixture(pausePreparation: boolean) {
       entry: { server: true },
       machine,
     },
-    actions: [action],
+    actions,
     prepareActions: { prepared: preparation },
     handlers,
   };
@@ -456,6 +457,13 @@ async function registeredFixture(pausePreparation: boolean) {
     },
     replace(binding: string) {
       switch (binding) {
+        case "definition":
+        case "restored definition":
+          actions[0] = { ...action };
+          break;
+        case "restore definition":
+          actions[0] = action;
+          break;
         case "parser":
           action.input = scheduleInput();
           break;
@@ -504,7 +512,16 @@ test.each(["parser", "handler", "preparer"])(
   },
 );
 
-test.each(["unchanged", "parser", "handler", "preparer", "preparer ceiling", "manifest ceiling"])(
+test.each([
+  "unchanged",
+  "parser",
+  "handler",
+  "preparer",
+  "preparer ceiling",
+  "manifest ceiling",
+  "definition",
+  "restored definition",
+])(
   "an admitted schedule checks its %s action binding before creating an occurrence",
   async (binding) => {
     const f = await registeredFixture(false);
@@ -518,6 +535,13 @@ test.each(["unchanged", "parser", "handler", "preparer", "preparer ceiling", "ma
       // A new roster publication must neither revoke an unchanged door nor conceal a
       // same-text executable replacement from the schedule's retained admission.
       expect(await f.host.setEnabled("core.machines", false, "admin")).toEqual({ ok: true });
+      if (binding === "restored definition") {
+        expect(
+          await f.host.prepareActionInput(f.root(), `${PLUGIN_ID}.prepared`, f.args),
+        ).toMatchObject({ ok: true });
+        f.replace("restore definition");
+        expect(await f.host.setEnabled("core.machines", true, "admin")).toEqual({ ok: true });
+      }
       f.runtime.time = 1000;
       f.service.tick();
       if (binding === "unchanged") {
