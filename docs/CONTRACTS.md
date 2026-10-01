@@ -3003,6 +3003,13 @@ as `isolate_output`, capped. Log events: `isolate_spawned`, `isolate_exited`, `i
 `plugin_uninstalled`, `plugin_authored`, `plugin_authored_build_failed`,
 `developer_mode_changed`, `web_isolate_fault`.
 
+Host calls stay FIFO within one child, with at most 256 queued calls and twice
+`ISOLATE_MAX_FRAME_BYTES` of queued frames. Each spawn owns a fresh queue: an unfinished host
+call from a killed or evicted child cannot delay its replacement. Old completions retire only
+their own queue accounting; queued old calls cannot enter a replacement's context, and replies
+from retired requests or children are discarded. This does not cancel an already-entered host
+operation or change its own authority and effect rules.
+
 **Web isolate — page ↔ Worker (`WebIsolateHostFrameSchema` /
 `WebIsolateWorkerFrameSchema`).** `postMessage` frames are discriminated on `t`:
 

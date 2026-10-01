@@ -102,10 +102,21 @@ The parallel full gate currently has a separate package list in `scripts/gate.ts
 new package there too. Contribution-specific registry obligations (terms, CSS families and
 device-local keys) are listed in §8, not additional runtime registration files.
 
+**Optional authored packages are different.** A package under `packages/plugins/*` may instead
+carry the ordinary author-channel root `manifest.json` and `server.ts`/`web.tsx` entries. Its
+non-core identity is packed and installed explicitly; do **not** add host dependencies, assembly
+imports or a required/default roster row. Workspace membership provides source/check coverage,
+not activation. S5 rejects an authored identity mixed into the default composition. Include it
+in `scripts/gate.ts` and `scripts/ci-plan.ts`; the existing CI type shards and unit task consume
+that registry. `packages/plugins/github` is this opt-in shape, not a shipped `core.github` seat.
+
 Your dependency budget is the three named layers (ADR 0025 §8): the SDK — `@manifold/protocol`,
 `@manifold/sdk` and `@manifold/scene`, talking to the hub; the engine API — `@manifold/plugin`,
 being a plugin; and the design system — `@manifold/ui`, looking like manifold. Importing anything
 else from the tree — server internals, web internals, another plugin — fails the gate.
+Optional authored packages may use the existing plugin-kit public author entries instead of
+in-realm adapters. Their tests may use the kit's pack/install/hub tools; neither the shipped
+package budget nor the platform-free parent/part-contract budget changes.
 
 `@manifold/plugin` has three entries, and which one you reach for is a real distinction:
 
@@ -3657,7 +3668,9 @@ are the checks that will fail _your_ plugin:
   the default workspace layout exists.
 - **Import boundary** (walked with the TypeScript parser, not regex): floor files must not
   import `@manifold-plugin/*` — the two `assembly.ts` files are the only exceptions — and
-  plugin packages may import only `@manifold/{protocol,scene,sdk,plugin}`.
+  plugin packages may import the permitted public SDK, engine and design-system entries.
+  Optional authored packages may also use existing plugin-kit author entries, with its
+  pack/install/hub tooling restricted to their tests. Shipped and parent-contract budgets stay unchanged.
 - **Import direction follows the plugin tree** (S18): a parent never imports a
   part, a part imports only its parent's `contract` subpath, and the `contract` module imports only
   the four floor packages (§1, "A part lives inside its parent's package").
@@ -4019,6 +4032,170 @@ DOM ref or page-only `@manifold/ui` component crosses the Worker boundary.
 The host paints the same design-system components under its own `mf-vocab` family.
 In-realm bundles may ship a stylesheet under the §10 ownership rule; a Worker
 never receives CSS, even when its page entry imports the sheet.
+
+### Optional reviewed GitHub issue provider
+
+`packages/plugins/github` packs **`atyrode.github`**, an optional server-only authored plugin.
+Install its bundle through the ordinary install door, selecting either supported in-realm or
+hardened execution. Nothing imports it into the default server/web assembly. It requires no
+Babel, Code or Files installation; direct authorized humans (including generated door forms)
+and SDK clients use the same six doors.
+
+```sh
+bun run --cwd packages/plugin-kit pack /absolute/manifold/packages/plugins/github \
+  --out /disposable/atyrode.github.manifold-plugin.json
+bun run --cwd packages/plugin-kit install:bundle /disposable/atyrode.github.manifold-plugin.json \
+  --hub http://127.0.0.1:7777 --owner-key-file /disposable/hub/owner.key --hardened
+```
+
+The local paths above are operator-selected disposable paths, not provider endpoints or
+credential enrollment. Omit `--hardened` only to select ordinary execution explicitly. The
+provider's production origin cannot be overridden.
+
+#### Owner-native provisioning and registration
+
+The first supported credential mode is **`owner-user-token`**: an already provisioned
+owner-native credential reference supporting GitHub `GET /user`. Token entry, GitHub App/OAuth
+onboarding, local `gh` caches and Code/model credentials are not supported here. Missing native
+support, credentials, grant or consent refuses; no fallback account or destination is selected.
+
+`@manifold-plugin/github/policy` exports `githubServicePolicy` as a provisioning aid for the
+existing native service owner. It takes `{serviceId,serviceRevision,owner,repository}` plus a
+native-owned symbolic credential reference and returns the exact supported policy. Hash the
+actual policy with SHA-256 over `canonicalJobJson(policy)` for its `policySha256`. Provisioning
+and native approval remain the service owner's existing workflow; the plugin never configures,
+replaces or clears native policies. Its root-only `configureConnection` reads an existing
+configuration, validates the exact policy and available reference, and stores **only** the
+nonsecret metadata below, never the reference, a credential value or the native policy.
+
+The supported policy fixes `https://api.github.com`, `Authorization: Bearer` credential
+injection by the owner, `User-Agent: manifold-atyrode-github` and `X-GitHub-Api-Version:
+2026-03-10`. The native transport supplies `Accept: application/json` (raw Markdown bodies) and
+JSON content type; callers cannot set headers. Each service has concurrency four, 15-second
+requests, a 65,536-byte request ceiling, 1-MiB upstream response ceiling and 96-KiB projected
+result ceiling. Exactly these operations exist, with no proxy or global search:
+
+| Native operation | Fixed request and projection                                                                                                |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `account`        | `GET /user`; canonical user node/numeric identity, login, type and URL only                                                 |
+| `repository`     | `GET /repos/<owner>/<repository>`; canonical node/numeric identity, owner, name, URL, visibility, archive/issues flags only |
+| `create`         | `POST /repos/<owner>/<repository>/issues`; JSON `title` and `body` only                                                     |
+| `list`           | `GET` the same `/issues`; required `state=all`, `sort=created`, `direction=desc`, `per_page=2`, bounded `page=1..10`        |
+| `issue`          | `GET` the same `/issues/{issueNumber}`; a validated positive safe integer passed as a decimal string                        |
+
+Issue projections contain only issue node/numeric identity, number, canonical HTML/repository
+URLs, title/body and creator identity; `pull_request.url` exists solely to exclude PRs. Unused
+fields, runtime/proxy policies, loopback/alternate origins, extra operations and metering are
+not supported. Registration and continuations verify the selected account is a canonical
+`User`, the repository has the expected node/owner/name, issues are enabled, it is not archived,
+and visibility agrees with its private flag. A readable repository is **not** proof of create
+permission: GitHub remains authoritative at POST.
+
+#### Closed v1 doors
+
+`@manifold-plugin/github` exports `DOORS`, `CAPS`, all input/result schemas and their inferred
+types. Full action names are `atyrode.github.<door>`. Every input is a strict object; there are
+no private-context, caller-origin, credential, target-URL, headers or proxy fields.
+
+| Door                      | Input                                                                                                                                                                                         | Current provider capability                                       |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `configureConnection`     | `{connectionId,expectedRevision,machineId,serviceId,serviceRevision,policySha256,owner,repository,ownerNodeId,repositoryNodeId,accountLogin,accountNodeId,credentialMode:"owner-user-token"}` | `atyrode.github:configure`, root, and native `services:configure` |
+| `readConnections`         | `{}`                                                                                                                                                                                          | `atyrode.github:read`                                             |
+| `prepareIssuePublication` | `{consumerRef,connectionId,publicTitle,publicBody}`                                                                                                                                           | `atyrode.github:prepare`                                          |
+| `publishIssue`            | `{operationId,reviewedDigest}`                                                                                                                                                                | `atyrode.github:publish`                                          |
+| `readPublication`         | `{operationId}`                                                                                                                                                                               | `atyrode.github:read`                                             |
+| `reconcilePublication`    | `{operationId,issueNumber?}`                                                                                                                                                                  | `atyrode.github:read`                                             |
+
+Native reads require current `services:read` at each exact service operation; publication
+also requires `services:invoke` at `create` and its current owner consent. The host rechecks
+actual native calls; descriptions, stored grants, caller attribution and a root snapshot are
+not authority. Every continuation rechecks current provider authority, installation and
+connection pins. Changed/withdrawn credentials, service revision/digest, installation,
+account or destination cannot silently reuse a review.
+After an installation pin changes, root must re-register the native connection before preparing
+new operations; old reviewed operations remain stale rather than inheriting the new artifact.
+
+`expectedRevision` is null for an absent connection or its current `connectionRevision`.
+An identical registration returns the same revision; other stale updates refuse. Connection
+results are `{version:1,connection}` and `{version:1,connections}`. `ConnectionSchema` contains
+the registered metadata plus `connectionRevision`; unavailable/unauthorized destinations are
+not included by `readConnections`. A known destination's prepare/configure refusal names a
+bounded safe category, never raw native diagnostics.
+
+The four publication doors return `PublicationSchema`:
+`{version:1,operationId,state,reviewedDigest,connection,publicTitle,publicBody,marker,receipt,
+candidateIssueNumber,reconciliation}`. Nullable fields are explicit. `operationId` is random
+32-character hex. Title is nonblank, well-formed Unicode and at most 256 UTF-8 bytes. The final
+body, **including** the provider's `\n\n<!-- manifold-github:<random-48-hex> -->` suffix, is
+at most 32,768 UTF-8 bytes; encoded JSON plus the fixed request target must fit 65,536 bytes.
+The marker contains
+no consumer/capture/session/evidence reference. Preparation returns these **exact final bytes
+before review**; publish accepts neither replacement text nor another destination.
+
+The reviewed digest is SHA-256 of canonical JSON
+`{version:1,operationId,connection,publicTitle,publicBody,marker}`. The connection revision
+additionally binds the installation artifact SHA-256 and installation time. A consumer must
+present the returned destination/title/body/marker for explicit review, then submit the exact
+operation/digest. Proposal acceptance, analysis or a read/prepare call never POSTs.
+
+The durable logical key is stable requester kind/id/home-origin, host-attested immediate
+caller plugin (including null direct entry), and `consumerRef`. The bounded symbolic ref is
+at most 128 ASCII name characters. Same-key exact retries return the original operation;
+changed bytes/destination/pins conflict rather than allocate a fresh create. Caller attribution
+is a namespace, not an ACL: an authorized same-requester direct human/SDK can read or publish
+a known operation prepared through another plugin. Another principal cannot obtain its text
+or receipt by guessing its ID.
+
+#### Durable effect and explicit recovery
+
+SQLite, not a KV lock across network awaits, owns `ready -> dispatching -> published |
+outcome_unknown`. Only the atomic `ready` winner enters native invoke. Any refusal, lost
+response, malformed projection or local uncertainty after invoke entry is nonretryable unknown;
+no undocumented GitHub idempotency header or automatic second POST is assumed. A validated
+response commits its receipt atomically. If that write cannot be confirmed, a bounded known
+issue candidate is retained where the database remains available, otherwise the dispatch fence
+survives and recovery requires explicit lookup.
+
+Enable, disable and restart recovery fence **both ready and dispatching** records, including
+restored ready images that could precede an external effect. No lifecycle hook POSTs. Stored
+call slots are cleared only at lifecycle recovery, not by expiry; a revoked call unable to
+release a slot can require re-enable. There are at most 16 connections, 1,000 retained
+operations, 16 MiB reserved operation/receipt data, four concurrent calls, and a 32-MiB private
+database. Capacity refuses before effects, never evicts unknown evidence.
+
+Explicit reconciliation never creates. A ready operation is fenced before lookup; an active
+dispatch is not reconciled prematurely. A bounded list must exhaust a short page within ten
+two-entry pages, with no repeated identities, and contain exactly one eligible marker whose
+title/body/digest/account/repository/node/number/canonical URLs match. PRs cannot confirm.
+Empty, multiple, malformed, changed or incomplete evidence stays unknown/conflicting. Bodies
+that exceed the native projected-byte bound (or deleted-user shapes the native projection
+cannot represent) also refuse rather than imply complete evidence. A supplied exact issue
+number may confirm beyond the list bound through the fixed-repository `issue` read; it is not
+an arbitrary URL or permission to trust a caller's receipt.
+
+A published receipt is monotonic evidence of observed creation, not a promise the issue is
+still unedited or undeleted. Further publish/reconcile calls return that receipt under current
+authority; external edit/delete is out of scope. `ReceiptSchema` carries real
+`{operationId,reviewedDigest,repositoryNodeId,issueNodeId,issueId,issueNumber,url,accountNodeId}`.
+All external numbers must be positive safe integers. A later optional Code handoff failure
+leaves that issue and operation unchanged; the receipt works without Code.
+
+The private database retains only reviewed **public** bytes, stable attribution, pins, bounded
+state and receipts. It is not a private-evidence sidecar. All six action inputs have opaque
+diagnostic traces, errors are safe categories, and the provider emits no content-bearing
+events. Ordinary explicit destructive plugin-data purge destroys local evidence; this plugin
+does not perform it, provide a purge/retry hook, delete an external issue or recommend purge as
+reconciliation.
+
+Source tests exercise disposable synthetic credentials, SQLite and a loopback receiver.
+Test-process transport interception asserts the fixed production GitHub URLs before routing
+I/O locally; it is not a production origin option. This proves neither real GitHub/TLS behavior
+nor credential provisioning or fleet activation. Those remain separately authorized boundaries.
+Run `bun packages/plugins/github/test/publication-packed.proof.ts` for the isolated packed
+ordinary/hardened public-door receiver scenario, or `bun test packages/plugins/github` for it
+plus retained policy/state regressions. `bun test scripts/plugin-package-boundary.test.ts`
+checks distinct accepted/rejected optional-author and shipped-package consumers. These commands
+require the repository-supported Bun runtime and disposable local resources only.
 
 ### Packing
 

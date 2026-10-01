@@ -139,6 +139,13 @@ interface JobObserver {
   readonly unacknowledged: number[];
 }
 
+/** FIFO and backpressure belong to one child, including its late host-call completions. */
+interface CallQueue {
+  tail: Promise<void>;
+  calls: number;
+  bytes: number;
+}
+
 /** Everything the supervisor keeps per loaded plugin. */
 class Isolate {
   state: IsolateState = "stopped";
@@ -150,9 +157,7 @@ class Isolate {
   /** The child's first report; a respawn's is not consulted, the bundle is pinned by hash. */
   loaded: LoadedFrame | null = null;
   readonly pending = new Map<string, Pending>();
-  callTail: Promise<void> = Promise.resolve();
-  queuedCalls = 0;
-  queuedCallBytes = 0;
+  callQueue: CallQueue | null = null;
   migration: { readonly id: string; readonly calls: Set<string> } | null = null;
   /** A context-free validation owns the drained guest until its request settles. */
   validation: { readonly id: string; violated: boolean } | null = null;
@@ -252,6 +257,7 @@ export class IsolateSupervisor implements IsolateRunner {
     this.clearIdle(isolate);
     const child = isolate.child;
     isolate.child = null;
+    isolate.callQueue = null;
     isolate.handshake?.reject(new IsolateLoadError("isolate unloaded during load"));
     this.failAll(isolate, new IsolateDenial("unavailable", "isolate unloaded"));
     if (child !== null) await this.retire(child);
@@ -494,7 +500,7 @@ export class IsolateSupervisor implements IsolateRunner {
       isolate.migration !== null ||
       ((served === null || served.kind === "migration") &&
         (isolate.pending.size !== 0 ||
-          isolate.queuedCalls !== 0 ||
+          (isolate.callQueue?.calls ?? 0) !== 0 ||
           isolate.producers.size !== 0 ||
           isolate.jobObservers.size !== 0))
     )
@@ -576,6 +582,7 @@ export class IsolateSupervisor implements IsolateRunner {
       throw error;
     }
     isolate.child = child;
+    isolate.callQueue = { tail: Promise.resolve(), calls: 0, bytes: 0 };
     this.logger.info("isolate_spawned", { plugin: pluginId, pid: child.pid, respawn });
     let cancelDeadline = (): void => {};
     try {
@@ -632,6 +639,7 @@ export class IsolateSupervisor implements IsolateRunner {
       if (isolate.child === child) {
         // Still attached: the child is alive but not a plugin. Its exit must not count twice.
         isolate.child = null;
+        isolate.callQueue = null;
         this.retired.add(child);
         child.kill();
         if (respawn)
@@ -674,6 +682,7 @@ export class IsolateSupervisor implements IsolateRunner {
     this.logger.warn("isolate_exited", { ...fields, asked: false });
     if (isolate.child !== child) return;
     isolate.child = null;
+    isolate.callQueue = null;
     this.clearIdle(isolate);
     const detail = signal === null ? `exit code ${String(code)}` : `signal ${signal}`;
     this.failAll(isolate, new IsolateDenial("unavailable", `isolate exited (${detail})`));
@@ -739,7 +748,8 @@ export class IsolateSupervisor implements IsolateRunner {
   // ---------------------------------------------------------------- inbound frames
 
   private onFrame(isolate: Isolate, child: IsolateChild, frame: IsolateChildFrame): void {
-    if (isolate.child !== child) return;
+    const queue = isolate.callQueue;
+    if (isolate.child !== child || queue === null) return;
     // A violating child stays fenced until exit fails its validation. In particular, a
     // buffered answer cannot release the phase between SIGKILL and the drained exit event.
     if (isolate.validation?.violated) return;
@@ -896,14 +906,11 @@ export class IsolateSupervisor implements IsolateRunner {
           return;
         }
         const bytes = Buffer.byteLength(JSON.stringify(frame));
-        if (
-          isolate.queuedCalls >= 256 ||
-          isolate.queuedCallBytes + bytes > ISOLATE_MAX_FRAME_BYTES * 2
-        ) {
+        if (queue.calls >= 256 || queue.bytes + bytes > ISOLATE_MAX_FRAME_BYTES * 2) {
           this.logger.warn("isolate_protocol_backpressure", {
             plugin: isolate.ref.pluginId,
-            queuedCalls: isolate.queuedCalls,
-            queuedCallBytes: isolate.queuedCallBytes,
+            queuedCalls: queue.calls,
+            queuedCallBytes: queue.bytes,
           });
           child.kill();
           return;
@@ -912,18 +919,18 @@ export class IsolateSupervisor implements IsolateRunner {
         const pending =
           separator === -1 ? undefined : isolate.pending.get(frame.id.slice(0, separator));
         if (pending !== undefined) pending.serving += 1;
-        isolate.queuedCalls += 1;
-        isolate.queuedCallBytes += bytes;
+        queue.calls += 1;
+        queue.bytes += bytes;
         const serve = async (): Promise<void> => {
           try {
             if (isolate.child === child) await this.serve(isolate, child, frame, pending);
           } finally {
             if (pending !== undefined && pending.serving > 0) pending.serving -= 1;
-            isolate.queuedCalls -= 1;
-            isolate.queuedCallBytes -= bytes;
+            queue.calls -= 1;
+            queue.bytes -= bytes;
           }
         };
-        isolate.callTail = isolate.callTail.then(serve, serve);
+        queue.tail = queue.tail.then(serve, serve);
         return;
       }
       default: {
@@ -1242,6 +1249,7 @@ export class IsolateSupervisor implements IsolateRunner {
       idleMs: this.idleEvictMs,
     });
     isolate.child = null;
+    isolate.callQueue = null;
     this.transition(isolate, "stopped", "idle");
     void this.retire(child);
   }

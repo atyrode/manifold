@@ -74,6 +74,7 @@ const packages = [
   "plugins/compositions",
   "plugins/arrange",
   "plugins/commands",
+  "plugins/github",
 ] as const;
 
 function fixed(...command: string[]): () => readonly string[] {
