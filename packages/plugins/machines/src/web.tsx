@@ -31,7 +31,7 @@ import {
   MACHINES_SET_HOST_VIEW_ACTION,
 } from "./names.ts";
 import { HostViewsSchema, type HostView, type HostViews } from "./host-views.ts";
-import { HostViewEditor } from "./host-view-editor.tsx";
+import { HostViewEditor, type HostViewDraft } from "./host-view-editor.tsx";
 
 /**
  * The Machines section's browser half. Self-contained by construction: it asks the workspace
@@ -190,7 +190,7 @@ export function MachinesSection({ host }: PortableSectionProps): ReactElement {
   const [pendingKey, setPendingKey] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
-  const [editing, setEditing] = useState<HostView | null | undefined>(undefined);
+  const [editing, setEditing] = useState<HostViewDraft | undefined>(undefined);
   const [chooser, setChooser] = useState<{ hostId: string; machineId: string | null } | null>(null);
   const [setupOpen, setSetupOpen] = useState(false);
   const [enrollmentName, setEnrollmentName] = useState("");
@@ -265,6 +265,17 @@ export function MachinesSection({ host }: PortableSectionProps): ReactElement {
   const inventoryUsable = machines !== null && inventoryFailure === null;
   const canGroup = mayAdminister && groups !== null && inventoryUsable;
   const authoring = host.authoring;
+  const editGrouping = (view: HostView | null): void => {
+    if (!canGroup || groups === null) return;
+    setEditing({
+      revision: groups.revision,
+      id: view?.id ?? crypto.randomUUID(),
+      existing: view !== null,
+      name: view?.name ?? "",
+      members: view?.members ?? [],
+      addId: null,
+    });
+  };
   const perform = async (
     key: string,
     action: string,
@@ -279,6 +290,7 @@ export function MachinesSection({ host }: PortableSectionProps): ReactElement {
       if (epoch !== mutationEpoch.current) return false;
       if (!outcome.ok) {
         setFailure(outcome.denial.message);
+        if (key === "grouping") refreshHostViews();
         return false;
       }
       accept?.(outcome.result);
@@ -523,7 +535,7 @@ export function MachinesSection({ host }: PortableSectionProps): ReactElement {
                       New terminal
                     </Button>
                     {canGroup ? (
-                      <Button disabled={busy} onClick={() => setEditing(view)}>
+                      <Button disabled={busy} onClick={() => editGrouping(view)}>
                         Edit grouping
                       </Button>
                     ) : null}
@@ -619,17 +631,18 @@ export function MachinesSection({ host }: PortableSectionProps): ReactElement {
           >
             Enroll shell account
           </Button>
-          <Button disabled={busy || !canGroup} onClick={() => setEditing(null)}>
+          <Button disabled={busy || !canGroup} onClick={() => editGrouping(null)}>
             Create host grouping
           </Button>
         </Cluster>
       ) : null}
       {editing === undefined || !canGroup || groups === null || machines === null ? null : (
         <HostViewEditor
-          key={`${binding.ordinal}:${editing?.id ?? "new"}`}
+          key={`${binding.ordinal}:${editing.id}`}
           registry={groups}
           machines={machines}
           editing={editing}
+          change={setEditing}
           busy={busy}
           save={(view, expectedRevision) =>
             perform(

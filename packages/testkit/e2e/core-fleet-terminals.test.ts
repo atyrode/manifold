@@ -2,8 +2,6 @@ import { expect, test } from "bun:test";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import {
-  ClientMessageSchema,
-  ServerMessageSchema,
   ContainersResponseSchema,
   CredentialsResponseV2Schema,
   MANIFOLD_ROOT_URI,
@@ -31,12 +29,24 @@ import {
 import { attachedCapture, closeClients, openTerminalAt, type TerminalCapture } from "./helpers.ts";
 
 /** Trusted pointer events exercise the same disclosure and account controls as a human. */
-async function click(browser: Browser, selector: string): Promise<void> {
+async function click(browser: Browser, selector: string, text?: string): Promise<void> {
   const point = await browser.evaluate<{ x: number; y: number } | null>(`(() => {
-    const element = document.querySelector(${JSON.stringify(selector)});
+    let element = document.querySelector(${JSON.stringify(selector)});
+    if (${JSON.stringify(text ?? null)} !== null) {
+      element = null;
+      for (const candidate of document.querySelectorAll(${JSON.stringify(selector)})) {
+        if (candidate.textContent.trim() === ${JSON.stringify(text ?? null)}) {
+          element = candidate;
+          break;
+        }
+      }
+    }
     if (!(element instanceof HTMLElement) || element.matches(':disabled') || !element.checkVisibility()) return null;
+    element.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
     const rect = element.getBoundingClientRect();
-    return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+    const point = { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+    const hit = document.elementFromPoint(point.x, point.y);
+    return hit !== null && element.contains(hit) ? point : null;
   })()`);
   if (point === null) throw new Error(`No enabled fleet control: ${selector}`);
   await browser.send("Input.dispatchMouseEvent", {
@@ -83,63 +93,9 @@ async function terminalCommand(browser: Browser, command: string): Promise<void>
   });
 }
 
-/** Wait for the portal's occupant snapshot, not its already-painted spectator preview. */
-function writableSnapshots(browser: Browser) {
-  const occupantChannels = new Set<string>();
-  const terminals = new Map<string, number>();
-  const offSent = browser.on("Network.webSocketFrameSent", (params) => {
-    const response = params["response"];
-    if (
-      response === null ||
-      typeof response !== "object" ||
-      !("payloadData" in response) ||
-      typeof response.payloadData !== "string"
-    )
-      return;
-    const parsed = ClientMessageSchema.safeParse(JSON.parse(response.payloadData));
-    if (!parsed.success) return;
-    const frame = parsed.data;
-    const channel = `${String(params["requestId"])}:${"ch" in frame ? frame.ch : ""}`;
-    if (frame.type === "join" && frame.spectator !== true) occupantChannels.add(channel);
-    if (frame.type === "leave") occupantChannels.delete(channel);
-  });
-  const offReceived = browser.on("Network.webSocketFrameReceived", (params) => {
-    const response = params["response"];
-    if (
-      response === null ||
-      typeof response !== "object" ||
-      !("payloadData" in response) ||
-      typeof response.payloadData !== "string"
-    )
-      return;
-    const parsed = ServerMessageSchema.safeParse(JSON.parse(response.payloadData));
-    if (!parsed.success || parsed.data.type !== "terminal_snapshot") return;
-    const frame = parsed.data;
-    if (occupantChannels.has(`${String(params["requestId"])}:${frame.ch}`))
-      terminals.set(frame.terminalId, (terminals.get(frame.terminalId) ?? 0) + 1);
-  });
-  return {
-    terminals,
-    dispose: () => {
-      offSent();
-      offReceived();
-    },
-  };
-}
-
-async function engageTerminal(
-  browser: Browser,
-  writable: ReturnType<typeof writableSnapshots>,
-  terminalId: string,
-): Promise<void> {
-  const inactive = await visible(browser, ".xterm-host--inactive");
-  const previous = writable.terminals.get(terminalId) ?? 0;
-  await click(browser, ".xterm-host");
-  await waitFor(
-    () => (writable.terminals.get(terminalId) ?? 0) > (inactive ? previous : 0),
-    10_000,
-    50,
-  );
+async function engageTerminal(browser: Browser): Promise<void> {
+  await click(browser, ".terminal-frame");
+  await waitFor(() => visible(browser, ".xterm-host:not(.xterm-host--inactive)"), 10_000, 50);
   await browser.evaluate(
     "(() => { const {promise,resolve}=Promise.withResolvers(); requestAnimationFrame(()=>requestAnimationFrame(resolve)); return promise; })()",
   );
@@ -155,16 +111,14 @@ for (const hardened of [false, true]) {
   test(`bare-core ${hardened ? "packed" : "native"} account launch and mounted fleet continuity`, async () => {
     const dist = resolveWebDist("manifold-core-fleet-web-");
     const browser = new Browser();
-    const writable = writableSnapshots(browser);
     let server: TestServer | undefined;
     const agents: TestAgent[] = [];
+    const serverEnv = {
+      MANIFOLD_WEB_DIST: dist.distDir,
+      MANIFOLD_HARDENED_PLUGINS: hardened ? "core.machines" : "",
+    };
     try {
-      server = await startServer({
-        env: {
-          MANIFOLD_WEB_DIST: dist.distDir,
-          MANIFOLD_HARDENED_PLUGINS: hardened ? "core.machines" : "",
-        },
-      });
+      server = await startServer({ env: serverEnv });
       const hub = server;
       const alpha = await enrollMachine(hub, "fleet-account-alpha");
       const beta = await enrollMachine(hub, "fleet-account-beta");
@@ -192,6 +146,109 @@ for (const hardened of [false, true]) {
       await browser.typeInto("#identity-name", "Fleet browser");
       await browser.clickTestId("identity-enter");
       await waitFor(async () => !(await visible(browser, "#identity-name")), 10_000, 50);
+
+      // Another administrator wins while the first browser owns a private draft.
+      // Registry catch-up must neither erase that draft nor silently rebase its CAS.
+      await browser.goto(`${hub.httpUrl}/p/${canvas.id}`);
+      await openSidebar(browser);
+      const groupingId = crypto.randomUUID();
+      const originalHost = {
+        id: groupingId,
+        name: "Original grouping",
+        members: [{ machineId: alpha.machineId, accountLabel: "Original account" }],
+      };
+      await ownerAction(hub, "core.machines.setHostView", {
+        expectedRevision: 0,
+        host: originalHost,
+      });
+      const grouping = `[data-testid="host-view-${groupingId}"]`;
+      const editor = '[data-testid="host-view-editor"]';
+      const editorButtons = `${editor} button`;
+      const nameInput = `${editor} input`;
+      const save = `${editor} button[data-action="core.machines.setHostView"]`;
+      const values = (): Promise<string[]> =>
+        browser.evaluate<string[]>(
+          `Array.from(document.querySelectorAll(${JSON.stringify(`${editor} input`)}), input => input.value)`,
+        );
+      await waitFor(() => visible(browser, grouping), 10_000, 50);
+      await click(browser, `${grouping} button`, "Edit grouping");
+      await waitFor(() => visible(browser, editor), 10_000, 50);
+      await browser.evaluate(`document.querySelector(${JSON.stringify(nameInput)}).select()`);
+      await browser.typeInto(nameInput, "Unsaved grouping draft");
+      const winningHost = {
+        ...originalHost,
+        name: "Winning grouping",
+        members: [{ machineId: alpha.machineId, accountLabel: "Winning account" }],
+      };
+      await ownerAction(hub, "core.machines.setHostView", {
+        expectedRevision: 1,
+        host: winningHost,
+      });
+      await waitFor(
+        () =>
+          browser.evaluate<boolean>(
+            `document.querySelector(${JSON.stringify(save)})?.disabled === true`,
+          ),
+        10_000,
+        50,
+      );
+      expect(await values()).toEqual(["Unsaved grouping draft", "Original account"]);
+      await hub.stop();
+      await waitFor(async () => !(await visible(browser, editor)), 10_000, 50);
+      server = await startServer({
+        dataDir: hub.dataDir,
+        port: hub.port,
+        ownerKey: hub.ownerKey,
+        env: serverEnv,
+      });
+      await waitFor(
+        () =>
+          browser.evaluate<boolean>(
+            `document.querySelector(${JSON.stringify(save)})?.disabled === true`,
+          ),
+        15_000,
+        50,
+      );
+      expect(await values()).toEqual(["Unsaved grouping draft", "Original account"]);
+      await click(browser, editorButtons, "Reload current grouping");
+      await waitFor(
+        async () => {
+          const current = await values();
+          return current[0] === "Winning grouping" && current[1] === "Winning account";
+        },
+        10_000,
+        50,
+      );
+      expect(await values()).toEqual(["Winning grouping", "Winning account"]);
+      await browser.evaluate(`document.querySelector(${JSON.stringify(nameInput)}).select()`);
+      await browser.typeInto(nameInput, "Reviewed grouping");
+      await click(browser, save);
+      await waitFor(async () => !(await visible(browser, editor)), 10_000, 50);
+      expect(await ownerAction(hub, "core.machines.listHostViews", {})).toEqual({
+        revision: 3,
+        hosts: [{ ...winningHost, name: "Reviewed grouping" }],
+      });
+      await click(browser, `${grouping} button`, "Edit grouping");
+      await waitFor(() => visible(browser, editor), 10_000, 50);
+      await ownerAction(hub, "core.machines.removeHostView", {
+        expectedRevision: 3,
+        hostId: groupingId,
+      });
+      await waitFor(
+        () =>
+          browser.evaluate<boolean>(
+            `document.querySelector(${JSON.stringify(save)})?.disabled === true`,
+          ),
+        10_000,
+        50,
+      );
+      expect(await values()).toEqual(["Reviewed grouping", "Winning account"]);
+      await click(browser, editorButtons, "Close removed grouping");
+      await waitFor(async () => !(await visible(browser, editor)), 10_000, 50);
+      expect(await ownerAction(hub, "core.machines.listHostViews", {})).toEqual({
+        revision: 4,
+        hosts: [],
+      });
 
       for (const container of [canvas, composition]) {
         const existing = new Set((await listTerminals(hub)).map((terminal) => terminal.id));
@@ -232,7 +289,7 @@ for (const hardened of [false, true]) {
           50,
         );
         const marker = `CORE-FLEET-${hardened ? "PACKED" : "NATIVE"}-${container.discipline.toUpperCase()}`;
-        await engageTerminal(browser, writable, terminal.id);
+        await engageTerminal(browser);
         await terminalCommand(
           browser,
           `printf '%s%s\\n' 'CORE-' 'FLEET-${hardened ? "PACKED" : "NATIVE"}-${container.discipline.toUpperCase()}'`,
@@ -245,7 +302,10 @@ for (const hardened of [false, true]) {
           10_000,
           50,
         );
-        await engageTerminal(browser, writable, terminal.id);
+        await engageTerminal(browser);
+        const collapsed = `${marker}-COLLAPSED`;
+        await terminalCommand(browser, `printf '%s%s\\n' '${marker}-' 'COLLAPSED'`);
+        await waitFor(() => rowPresent(browser, collapsed), 10_000, 50);
         await browser.evaluate<void>(`(() => {
           const frame = document.querySelector('.terminal-frame');
           const xterm = frame.querySelector('.xterm');
@@ -308,7 +368,6 @@ for (const hardened of [false, true]) {
       const faults = browser.drainMessages().filter((message) => message.kind === "exception");
       expect(faults).toEqual([]);
     } finally {
-      writable.dispose();
       await browser.close();
       for (const agent of agents) await agent.stop();
       if (server !== undefined) {

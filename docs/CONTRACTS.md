@@ -2123,8 +2123,13 @@ metadata until explicitly removed and never rebind by name. Removal deletes meta
 The manifest declares data version 1.0 and storage purging; successful CAS emits the
 revision-only `host_views_changed` at the machine plugin node.
 
-The core Machines section edits that registry with CAS and preserves a stale edit draft on
-refusal. Grouping is optional presentation: read failure falls back to individual accounts.
+The core Machines section edits that registry with CAS. The private draft and its original
+revision survive temporary authority uncertainty and editor remounts together. A changed registry
+disables Save and Remove without silently rebasing the draft; explicit reload discards it and
+loads the current grouping for review. A removed grouping must be explicitly closed, never
+recreated by a stale save. Conflict refusal refreshes the registry without retrying the mutation.
+Client replacement or proven administration withdrawal closes the draft.
+Grouping is optional presentation: read failure falls back to individual accounts.
 Multi-member launch requires explicit exact-account choice, and an unavailable selected
 member is never replaced. Positive unconfined declaration, online/nonrevoked/nonpaused
 state and current placement are independent prerequisites, not inferred from host rollup.
@@ -3341,8 +3346,11 @@ is a state read (ADR 0012 rule 5).
 only when `holdsRoot` succeeds. Container/machine-only scopes have no root caps. Event
 eligibility reuses EventHub's workspace-event predicate. This is the caller's coarse hint,
 not a per-topic verdict or action authorization; mounted `containerId` and `selfCaps` cannot
-substitute for it. The SDK caches/replays the snapshot before late-handle readiness and clears
-it on physical retirement. Gaining workspace event access re-declares retained interests.
+substitute for it. The SDK installs a late pooled handle and its retained pre-connect interests
+before publishing readiness, replaying the current authority snapshot first. Synchronous readiness
+listeners may declare additional interests and request an ordering fence. Physical retirement
+clears authority without clearing a successor attachment created by a retirement callback.
+Gaining workspace event access re-declares retained interests.
 
 `sync_subscriptions { id }` receives only `subscriptions_synced { id }` after preceding
 subscribe/unsubscribe declarations have been processed on that authenticated socket. IDs are
@@ -3351,8 +3359,9 @@ it reveals no topics, counts, existence, admission or delivery result and does n
 unrelated terminal/action effects. `SessionClient.syncSubscriptions(): Promise<boolean>` tracks
 physical generation, authority epoch and declaration watermark, with at most one in-flight fence
 and one queued later watermark. An old reply cannot cover newer interests. The cached coverage
-is retired with authority/transport changes; waits expire after five seconds and settle false
-on retirement. Failed synchronization retains polling until the next normal activation,
+is retired with authority/transport changes; each wait expires five seconds after its invocation,
+including time queued behind an earlier watermark, and promotion never extends that deadline.
+Retirement settles false. Failed synchronization retains polling until the next normal activation,
 rebind, reconnect or authority transition, never an unbounded retry loop.
 
 **Which subscription hears which event** is `topicMatches(subscribed, topic)`, published by

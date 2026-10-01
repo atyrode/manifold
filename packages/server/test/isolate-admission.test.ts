@@ -186,8 +186,9 @@ test.each(["transform", "preprocess"] as const)(
       },
     };
     const jobs: Pick<ActionCtx["jobs"], "cancel"> = {
-      cancel: async (node) => {
+      cancel: (node) => {
         cancelled.push(node.jobId);
+        return { accepted: true };
       },
     };
     const ctx = {
@@ -227,7 +228,7 @@ test.each(["transform", "preprocess"] as const)(
         pluginId: declared.id,
         manifest: declared,
         dir: resolve(import.meta.dir, "fixtures/isolate-legacy-parser-guest"),
-        hardenedContract: 11,
+        hardenedContract: 12,
       });
       holding = def.handlers.hold!(ctx, null as never);
       void holding.catch(() => {});
@@ -235,10 +236,12 @@ test.each(["transform", "preprocess"] as const)(
       for (const mode of ["direct", "microtask", "descendant"] as const) {
         const key = `${parser}-${mode}`;
         const before = reviewed.length;
-        const outcome = await def.handlers[parser]!(
-          reviewCtx,
-          { mode, key, text: "secret", target } as never,
-        );
+        const outcome = await def.handlers[parser]!(reviewCtx, {
+          mode,
+          key,
+          text: "secret",
+          target,
+        } as never);
         if (mode === "descendant") {
           expect(outcome).toEqual({ targets: [target], additionalRequirements: [] });
           expect(reviewed).toEqual([[target]]);
@@ -257,10 +260,12 @@ test.each(["transform", "preprocess"] as const)(
       }
       expect(await storage.keys()).toEqual([]);
       expect(
-        await def.handlers[parser]!(
-          ctx,
-          { mode: "pure", key: "ordinary", text: "child-owned", target } as never,
-        ),
+        await def.handlers[parser]!(ctx, {
+          mode: "pure",
+          key: "ordinary",
+          text: "child-owned",
+          target,
+        } as never),
       ).toEqual({ text: "child-owned!", blocked: [false, false, false] });
       expect(await storage.get("ordinary")).toBe("child-owned!");
       expect(store.getMachineByName("ordinary")).toMatchObject({ name: "ordinary" });

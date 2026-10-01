@@ -1115,6 +1115,9 @@ in
       virtualisation.cores = 2;
       virtualisation.memorySize = 2048;
       virtualisation.useNixStoreImage = true;
+      # Registering the guest's store paths and account profile needs a VM-local overlay,
+      # just as in the governed guests; the backing store image remains immutable.
+      virtualisation.writableStore = true;
     };
     coexist = { ... }: {
       imports = [ common shellAccount ];

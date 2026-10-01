@@ -1597,7 +1597,6 @@ describe("legacy action preparation", () => {
   test("target extraction cannot stage emissions through a still-admitted context", async () => {
     const captured = Promise.withResolvers<GuestCtx>();
     const release = Promise.withResolvers<void>();
-    let retained: GuestCtx;
     let handled = 0;
     const fake = host(
       {
@@ -1641,7 +1640,7 @@ describe("legacy action preparation", () => {
     fake.send({ t: "dispatch", id: "held", action: "hold", args: null, ctx: ctxOf() });
     expect(await fake.next()).toMatchObject({ t: "prepared", id: "held" });
     fake.send({ t: "admitted", id: "held", allowed: true });
-    retained = await captured.promise;
+    const retained = await captured.promise;
     try {
       fake.send({ t: "dispatch", id: "review", action: "review", args: {}, ctx: ctxOf() });
       expect(await fake.next()).toMatchObject({

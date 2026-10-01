@@ -127,13 +127,17 @@ for its actual physical connection credential. `workspaceEventsAvailable()` repo
 workspace-event eligibility. Unknown/disconnected authority is empty/false; room `selfCaps()`
 and the mounted container do not answer either question. `onAuthorityChange(callback)`
 returns its release and calls back after current getters update, without replacing the client.
-Late room/observer handles inherit the current snapshot before readiness.
+Late room/observer handles inherit the current snapshot before readiness. A pooled handle and
+its pre-connect subscriptions are installed before synchronous readiness listeners run, so those
+listeners may safely add interests and request a fence. Retirement callbacks may reconnect the
+handle without the retired attachment clearing its successor's authority.
 
 After `subscribe(topics, handler)`, await `syncSubscriptions(): Promise<boolean>` before the
-catch-up read that switches a feed to event-only mode. It is a five-second socket ordering
-fence, not a subscription acknowledgement: the server replies identically for accepted and
-refused topics and reveals no per-topic admission. The physical pool coalesces requests by
-generation, authority epoch and declaration watermark; an earlier reply cannot cover later
+catch-up read that switches a feed to event-only mode. Its five-second deadline starts at invocation,
+including time queued behind an earlier watermark; queue promotion does not extend it. This is a
+socket ordering fence, not a subscription acknowledgement: the server replies identically for
+accepted and refused topics and reveals no per-topic admission. The physical pool coalesces
+requests by generation, authority epoch and declaration watermark; an earlier reply cannot cover later
 interests. False means retain fallback polling. Rebind/disconnect/authority retirement clears
 the proof, and gaining workspace-event access re-declares all retained interests.
 

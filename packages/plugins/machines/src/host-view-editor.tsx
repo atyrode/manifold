@@ -1,13 +1,24 @@
 import type { MachineSummary } from "@manifold/protocol";
 import { Button, Cluster, Input, Select, Stack, Text } from "@manifold/ui";
-import { useMemo, useState, type ReactElement } from "react";
+import { useMemo, type ReactElement } from "react";
 import type { HostView, HostViewMember, HostViews } from "./host-views.ts";
 import { MACHINES_REMOVE_HOST_VIEW_ACTION, MACHINES_SET_HOST_VIEW_ACTION } from "./names.ts";
+
+/** The private draft and its CAS revision survive temporary authority/inventory hiding together. */
+export interface HostViewDraft {
+  readonly revision: number;
+  readonly id: string;
+  readonly existing: boolean;
+  readonly name: string;
+  readonly members: readonly HostViewMember[];
+  readonly addId: string | null;
+}
 
 interface HostViewEditorProps {
   readonly registry: HostViews;
   readonly machines: readonly MachineSummary[];
-  readonly editing: HostView | null;
+  readonly editing: HostViewDraft;
+  readonly change: (draft: HostViewDraft) => void;
   readonly busy: boolean;
   readonly save: (host: HostView, expectedRevision: number) => Promise<boolean>;
   readonly remove: (hostId: string, expectedRevision: number) => Promise<boolean>;
@@ -20,15 +31,28 @@ export function HostViewEditor({
   machines,
   editing,
   busy,
+  change,
   save,
   remove,
   close,
 }: HostViewEditorProps): ReactElement {
-  const [revision] = useState(registry.revision);
-  const [id] = useState(() => editing?.id ?? crypto.randomUUID());
-  const [name, setName] = useState(editing?.name ?? "");
-  const [members, setMembers] = useState<readonly HostViewMember[]>(editing?.members ?? []);
-  const [addId, setAddId] = useState<string | null>(null);
+  const { revision, id, existing, name, members, addId } = editing;
+  const outdated = registry.revision !== revision;
+  const current = registry.hosts.find((host) => host.id === id);
+  const removed = existing && current === undefined;
+  const reload = (): void => {
+    if (removed) {
+      close();
+      return;
+    }
+    change({
+      ...editing,
+      revision: registry.revision,
+      name: current?.name ?? "",
+      members: current?.members ?? [],
+      addId: null,
+    });
+  };
   const machineById = useMemo(() => {
     const byId = new Map<string, MachineSummary>();
     for (const machine of machines) byId.set(machine.id, machine);
@@ -46,11 +70,12 @@ export function HostViewEditor({
       options.push({ value: machine.id, label: `${machine.name} · ${machine.id}` });
   }
   const updateLabel = (machineId: string, accountLabel: string): void => {
-    setMembers((current) =>
-      current.map((member) =>
+    change({
+      ...editing,
+      members: members.map((member) =>
         member.machineId === machineId ? { machineId, accountLabel } : member,
       ),
-    );
+    });
   };
   const valid =
     name.trim().length > 0 &&
@@ -61,12 +86,29 @@ export function HostViewEditor({
     );
   return (
     <Stack gap="0.35rem" data-testid="host-view-editor">
-      <Text strong>{editing === null ? "Create host grouping" : "Edit host grouping"}</Text>
+      <Text strong>{existing ? "Edit host grouping" : "Create host grouping"}</Text>
       <Text tone="muted" wrap>
         Grouping is display metadata only. Each enrollment remains its own account, credential and
         shell authority.
       </Text>
-      <Input label="Host display name" value={name} onChange={setName} disabled={busy} />
+      {outdated ? (
+        <Stack gap="0.25rem">
+          <Text tone="muted" wrap role="status">
+            {removed
+              ? "This grouping was removed elsewhere. Close this draft before creating a new grouping."
+              : "Host groupings changed elsewhere. Reload the current grouping to review it; reloading discards this draft."}
+          </Text>
+          <Button disabled={busy} onClick={reload}>
+            {removed ? "Close removed grouping" : "Reload current grouping"}
+          </Button>
+        </Stack>
+      ) : null}
+      <Input
+        label="Host display name"
+        value={name}
+        onChange={(name) => change({ ...editing, name })}
+        disabled={busy}
+      />
       {members.map((member) => (
         <Stack key={member.machineId} gap="0.15rem">
           <Text tone="muted" wrap>
@@ -81,9 +123,10 @@ export function HostViewEditor({
           <Button
             disabled={busy}
             onClick={() =>
-              setMembers((current) =>
-                current.filter((candidate) => candidate.machineId !== member.machineId),
-              )
+              change({
+                ...editing,
+                members: members.filter((candidate) => candidate.machineId !== member.machineId),
+              })
             }
           >
             Remove account from draft
@@ -94,7 +137,7 @@ export function HostViewEditor({
         label="Existing account enrollment"
         value={addId}
         options={options}
-        onChange={setAddId}
+        onChange={(addId) => change({ ...editing, addId })}
         disabled={busy || members.length >= 64}
       />
       <Button
@@ -102,11 +145,11 @@ export function HostViewEditor({
         onClick={() => {
           const machine = addId === null ? undefined : machineById.get(addId);
           if (machine === undefined || assigned.has(machine.id)) return;
-          setMembers((current) => [
-            ...current,
-            { machineId: machine.id, accountLabel: machine.name },
-          ]);
-          setAddId(null);
+          change({
+            ...editing,
+            members: [...members, { machineId: machine.id, accountLabel: machine.name }],
+            addId: null,
+          });
         }}
       >
         Add account
@@ -115,7 +158,7 @@ export function HostViewEditor({
         <Button
           tone="accent"
           data-action={MACHINES_SET_HOST_VIEW_ACTION}
-          disabled={busy || !valid}
+          disabled={busy || !valid || outdated}
           onClick={() => {
             void save(
               {
@@ -132,11 +175,11 @@ export function HostViewEditor({
         >
           Save grouping
         </Button>
-        {editing === null ? null : (
+        {!existing ? null : (
           <Button
             tone="danger"
             data-action={MACHINES_REMOVE_HOST_VIEW_ACTION}
-            disabled={busy}
+            disabled={busy || outdated}
             onClick={() => {
               void remove(id, revision);
             }}

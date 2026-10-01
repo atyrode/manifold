@@ -557,7 +557,7 @@ export class SessionClient {
   }
 
   close(): void {
-    this.attachmentEpoch += 1;
+    const retiredEpoch = ++this.attachmentEpoch;
     this.closeError = null;
     const channel = this.channel;
     this.channel = null;
@@ -571,7 +571,7 @@ export class SessionClient {
     // Releasing drops this room or observer and closes the socket only when no pooled handle remains.
     channel?.release();
     this.setStatus("closed");
-    this.updateWorkspaceAuthority(null);
+    if (this.attachmentEpoch === retiredEpoch) this.updateWorkspaceAuthority(null);
   }
 
   /** The join THIS room wants, rebuilt per attempt so resume hints are current. */
@@ -607,13 +607,13 @@ export class SessionClient {
       if (this.attachmentEpoch !== attachmentEpoch) return;
       this.connectionIdState = null;
       this.setStatus(phase);
-      this.updateWorkspaceAuthority(null);
+      if (this.attachmentEpoch === attachmentEpoch) this.updateWorkspaceAuthority(null);
     };
     const transportClosed = (
       failure: { readonly code: number; readonly reason: string } | null,
     ): void => {
       if (this.attachmentEpoch !== attachmentEpoch) return;
-      this.attachmentEpoch += 1;
+      const retiredEpoch = ++this.attachmentEpoch;
       const channelId = this.channelId;
       this.forgetSubscriptions();
       this.channel = null;
@@ -627,7 +627,7 @@ export class SessionClient {
               failure.reason,
             );
       this.setStatus("closed");
-      this.updateWorkspaceAuthority(null);
+      if (this.attachmentEpoch === retiredEpoch) this.updateWorkspaceAuthority(null);
     };
     const channel =
       this.opts.containerId === null
@@ -654,7 +654,7 @@ export class SessionClient {
                 this.setStatus("reconnecting");
                 return;
               }
-              this.attachmentEpoch += 1;
+              const retiredEpoch = ++this.attachmentEpoch;
               const channelId = this.channelId;
               this.releaseSubscriptions();
               this.channel = null;
@@ -665,7 +665,7 @@ export class SessionClient {
                 reason,
               );
               this.setStatus("closed");
-              this.updateWorkspaceAuthority(null);
+              if (this.attachmentEpoch === retiredEpoch) this.updateWorkspaceAuthority(null);
             },
             transportClosed,
           });

@@ -658,10 +658,14 @@ Installed and trusted bindings pin their verified artifact digest. Built-in sour
 also pin a once-per-process digest of actual source dependency bytes; compiled hubs hash their
 executable bytes. Deployment labels and `.dirty` version suffixes are not security identities:
 a changed imported helper makes a new process refuse the old fingerprint-bound continuation.
-Parser, handler, preparer and declaration ceilings are captured before preparation awaits.
-Cached fingerprints reuse unchanged identities and values only. Equal serialized schemas
-or function text do not revive a replaced in-process binding; unchanged cold bindings keep
-deterministic restart fingerprints.
+Parser objects and their actual parsing methods, handlers, preparers and declaration ceilings
+are captured before preparation awaits. Every roster publication observes action and harness
+binding changes and disappearance, even without an intervening action query. Restoring an earlier
+object or an equal serialized schema/function does not revive a retired binding.
+Harness revisions cover callable implementations and the profile object and asynchronous validator,
+and persist in private continuation fingerprints. Temporary trusted hold/release preserves that
+history; verified installation replacement establishes a new artifact boundary.
+Unchanged cold bindings keep deterministic restart fingerprints.
 
 For selected high-impact delegated effects, **`agentJustification: "required"`** publishes a
 bounded declaration requirement in the same action metadata at `GET /api/protocol`.
@@ -3834,8 +3838,10 @@ Transformed arguments remain guest-owned, including secret-bearing and non-JSON 
 Before `admitted`, only the read-only preparation methods are served: resolver calls send
 machine identities and native-demand calls send a digest, not runtime input. Storage, ordinary
 context calls and successful execution results remain forbidden. Review returns preparation
-evidence and answers `admitted: false`, so the handler never runs. Older bindings without a
-preparer keep their released target-extraction and admission contract.
+evidence and answers `admitted: false`, so the handler never runs. Bindings without a preparer
+retain their released single-parse, transformed-argument and target-extraction contract, but parsing
+and target extraction also run in the read-only preparation phase. Asynchronous descendants retain
+that phase after review completes; captured mutable contexts cannot turn review into an effect.
 The `result` schema is enforced on the way out too; the roster publishes both schemas from
 the `loaded` frame. Repack existing self-contained guests with the current kit for this mandatory
 handshake; there is no old-runtime validation fallback or second public action door.

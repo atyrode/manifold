@@ -711,9 +711,8 @@ describe("shared transport", () => {
         if (status === "open") opened.push(late.workspaceEventsAvailable());
       });
       const connection = late.connect();
-      const rejected = expect(connection).rejects.toThrow("observer closed before admission");
       late.close();
-      await rejected;
+      await expect(connection).rejects.toThrow("observer closed before admission");
       await Promise.resolve();
       expect(late.status).toBe("closed");
       expect(late.transportId).toBeNull();
@@ -726,6 +725,48 @@ describe("shared transport", () => {
       await late.connect();
       expect(opened).toEqual([true]);
       expect(late.transportId).toBe(first.transportId);
+    } finally {
+      late.close();
+      first.close();
+    }
+  });
+
+  test("synchronous reconnect from closed status retains the successor observer's authority", async () => {
+    const { first, late, socket } = await admittedObservers();
+    try {
+      const machines = { kind: "plugin" as const, pluginId: "core.machines" };
+      const updates: string[] = [];
+      late.subscribe([machines], (event) => updates.push(event.kind));
+      await late.connect();
+      let replacement: Promise<void> | undefined;
+      const off = late.on("status", (status) => {
+        if (status !== "closed") return;
+        off();
+        replacement = late.connect();
+      });
+      late.close();
+      if (replacement === undefined) throw new Error("Closed callback did not reconnect");
+      await replacement;
+      expect(late.status).toBe("open");
+      expect(late.transportId).toBe(first.transportId);
+      expect(late.workspaceCaps()).toEqual(["containers:read", "machines:mint"]);
+      expect(late.workspaceEventsAvailable()).toBe(true);
+      const fence = late.syncSubscriptions();
+      synchronized(socket, syncIds(socket).at(-1)!);
+      expect(await fence).toBe(true);
+      socket.receive(
+        JSON.stringify({
+          type: "event",
+          topic: machines,
+          plugin: "core.machines",
+          kind: "machine_online",
+          at: 1,
+          actor: "p1",
+          payload: {},
+        }),
+      );
+      expect(updates).toEqual(["machine_online"]);
+      expect(socket.closedWith).toBeNull();
     } finally {
       late.close();
       first.close();

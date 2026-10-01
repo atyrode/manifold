@@ -1125,6 +1125,7 @@ interface CachedActionBinding {
   readonly installation: InstalledPlugin | undefined;
   readonly definition: AnyActionDef;
   readonly declaration: AnyActionDef;
+  readonly parser: z.ZodType["safeParse"];
   readonly manifest: PluginDef["manifest"];
   readonly manifestCapabilities: PluginDef["manifest"]["capabilities"];
   readonly manifestCapValues: readonly AuthoredCap[];
@@ -5612,6 +5613,7 @@ export class PluginHost {
       sameOrderedValues(pluginDef?.manifest.capabilities, cached.sourceCapValues) &&
       cached.declaration.name === entry.def.name &&
       cached.declaration.input === entry.def.input &&
+      cached.parser === entry.def.input.safeParse &&
       cached.declaration.result === entry.def.result &&
       cached.declaration.scope === entry.def.scope &&
       cached.declaration.cleanup === entry.def.cleanup &&
@@ -5686,6 +5688,7 @@ export class PluginHost {
       installation,
       definition: entry.def,
       declaration,
+      parser: entry.def.input.safeParse,
       manifest: entry.plugin,
       manifestId: entry.plugin.id,
       manifestVersion: entry.plugin.version,

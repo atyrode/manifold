@@ -116,6 +116,8 @@ async function webModule(server: TestServer): Promise<Response> {
   });
 }
 
+// This includes hub startup, multiple real builds, three bounded roster catch-ups and cleanup.
+// The five-second Bun default cannot contain the existing fifteen-second catch-up deadlines.
 test("a plugin authored on the instance reaches a joined view, remounts on edit, and obeys the switch", async () => {
   const servers: TestServer[] = [];
   const clients: SessionClient[] = [];
@@ -254,4 +256,4 @@ test("a plugin authored on the instance reaches a joined view, remounts on edit,
       for (const server of servers) rmSync(server.dataDir, { recursive: true, force: true });
     }
   }
-});
+}, 60_000);

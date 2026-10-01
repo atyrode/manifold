@@ -161,7 +161,7 @@ async function fixture(
             harness: {
               id: "durable-binding",
               title: "Durable binding",
-              profileSchema: { type: "object" },
+              profileSchema: z.toJSONSchema(z.strictObject({}), { io: "input" }),
               sessionRef: "typed" as const,
             },
           }
@@ -462,6 +462,7 @@ async function registeredFixture(pausePreparation: boolean) {
   const entered = Promise.withResolvers<void>();
   const resume = Promise.withResolvers<void>();
   const input = scheduleInput();
+  const parser = input.safeParse;
   const action = {
     ...defineAction({
       name: "prepared",
@@ -554,6 +555,9 @@ async function registeredFixture(pausePreparation: boolean) {
         case "parser":
           action.input = scheduleInput();
           break;
+        case "parser method":
+          action.input.safeParse = (raw, params) => parser(raw, params);
+          break;
         case "handler":
           handlers.prepared = makeHandler();
           break;
@@ -579,6 +583,9 @@ async function registeredFixture(pausePreparation: boolean) {
           break;
         case "parser":
           action.input = input;
+          break;
+        case "parser method":
+          input.safeParse = parser;
           break;
         case "handler":
           handlers.prepared = handler;
@@ -629,6 +636,8 @@ test.each([
   ["unchanged", false],
   ["parser", false],
   ["parser", true],
+  ["parser method", false],
+  ["parser method", true],
   ["handler", false],
   ["handler", true],
   ["preparer", false],
