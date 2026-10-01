@@ -294,6 +294,7 @@ export class SessionClient {
     SessionClientOptions;
   /** This handle's room channel or roomless observer; null before connect and after close. */
   private channel: PooledSession | null = null;
+  private attachmentEpoch = 0;
   private listeners = new Map<EventKey, Set<Handler>>();
   private outbox: ClientMessageBody[] = [];
   private closeError: SessionConnectionError | null = null;
@@ -556,6 +557,7 @@ export class SessionClient {
   }
 
   close(): void {
+    this.attachmentEpoch += 1;
     this.closeError = null;
     const channel = this.channel;
     this.channel = null;
@@ -588,6 +590,7 @@ export class SessionClient {
 
   /** Acquires this handle on the pooled connection its (url, token) names. */
   private attach(): void {
+    const attachmentEpoch = ++this.attachmentEpoch;
     const options = {
       url: this.opts.url,
       token: this.opts.token,
@@ -598,9 +601,10 @@ export class SessionClient {
         : {}),
     };
     const connectionFrame = (body: ConnectionFrame): void => {
-      this.handleConnection(body);
+      if (this.attachmentEpoch === attachmentEpoch) this.handleConnection(body);
     };
     const transportPhase = (phase: ConnectionStatus): void => {
+      if (this.attachmentEpoch !== attachmentEpoch) return;
       this.connectionIdState = null;
       this.setStatus(phase);
       this.updateWorkspaceAuthority(null);
@@ -608,6 +612,8 @@ export class SessionClient {
     const transportClosed = (
       failure: { readonly code: number; readonly reason: string } | null,
     ): void => {
+      if (this.attachmentEpoch !== attachmentEpoch) return;
+      this.attachmentEpoch += 1;
       const channelId = this.channelId;
       this.forgetSubscriptions();
       this.channel = null;
@@ -623,28 +629,32 @@ export class SessionClient {
       this.setStatus("closed");
       this.updateWorkspaceAuthority(null);
     };
-    this.channel =
+    const channel =
       this.opts.containerId === null
         ? acquireObserver(options, {
             connectionFrame,
             transportPhase,
             observed: () => {
-              this.setStatus("open");
+              if (this.attachmentEpoch === attachmentEpoch && this.channel?.isOpen()) {
+                this.setStatus("open");
+              }
             },
             transportClosed,
           })
         : acquireChannel(options, {
             joinBody: () => this.joinBody(),
             receive: (body) => {
-              this.handle(body);
+              if (this.attachmentEpoch === attachmentEpoch) this.handle(body);
             },
             connectionFrame,
             transportPhase,
             channelClosed: (code, reason, terminal) => {
+              if (this.attachmentEpoch !== attachmentEpoch) return;
               if (!terminal) {
                 this.setStatus("reconnecting");
                 return;
               }
+              this.attachmentEpoch += 1;
               const channelId = this.channelId;
               this.releaseSubscriptions();
               this.channel = null;
@@ -659,7 +669,13 @@ export class SessionClient {
             },
             transportClosed,
           });
-    for (const record of this.subscriptions) record.release = this.channel.subscribe(record.topics);
+    // Replayed state can synchronously close or replace this handle before acquisition returns.
+    if (this.attachmentEpoch !== attachmentEpoch) {
+      channel.release();
+      return;
+    }
+    this.channel = channel;
+    for (const record of this.subscriptions) record.release = channel.subscribe(record.topics);
   }
 
   /**

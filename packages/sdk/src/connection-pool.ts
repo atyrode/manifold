@@ -301,6 +301,7 @@ class PooledConnection {
   private socket: WebSocket | null = null;
   private readonly channels = new Map<string, ChannelRecord>();
   private readonly observers = new Set<ObserverSink>();
+  private readonly pendingObserverAdmissions = new Set<ObserverSink>();
   private observerSent = false;
   private observerAdmitted = false;
   private readonly connectionState: ConnectionState = {
@@ -441,8 +442,8 @@ class PooledConnection {
     if (this.socket !== null && this.socket.readyState === 1) {
       this.sendObserve();
       // Observation belongs to the socket. If a prior observer released while a room kept
-      // that socket alive, a later observer inherits the still-live admission immediately.
-      if (this.observerAdmitted) sink.observed();
+      // that socket alive, a later observer inherits admission without another handshake.
+      if (this.observerAdmitted) this.deferObserverAdmission(sink);
     } else if (this.socket === null && !this.backoff.pending) {
       this.dial();
     }
@@ -457,9 +458,31 @@ class PooledConnection {
       },
       release: () => {
         if (!this.observers.delete(sink)) return;
+        this.pendingObserverAdmissions.delete(sink);
         if (this.observers.size === 0 && this.channels.size === 0) this.teardown(1000, null);
       },
     };
+  }
+
+  private deferObserverAdmission(sink: ObserverSink): void {
+    const generation = this.physicalGeneration;
+    const authorityEpoch = this.authorityEpoch;
+    this.pendingObserverAdmissions.add(sink);
+    // A late observer inherits admission while acquireObserver is still on the stack.
+    // Publish only after its caller installs the handle and pre-connect declarations.
+    queueMicrotask(() => {
+      if (
+        generation !== this.physicalGeneration ||
+        authorityEpoch !== this.authorityEpoch ||
+        !this.pendingObserverAdmissions.delete(sink) ||
+        !this.observers.has(sink) ||
+        this.socket?.readyState !== 1 ||
+        !this.observerAdmitted
+      ) {
+        return;
+      }
+      sink.observed();
+    });
   }
 
   private sendObserve(): void {
@@ -646,6 +669,13 @@ class PooledConnection {
       resolve,
       cancelTimeout: null,
     };
+    // A queued batch owes its callers the same invocation-time bound as the in-flight one.
+    const timeout = setTimeout(() => {
+      if (this.subscriptionSync === batch || this.queuedSubscriptionSync === batch) {
+        this.retireSubscriptionSync();
+      }
+    }, SUBSCRIPTION_SYNC_TIMEOUT_MS);
+    batch.cancelTimeout = () => clearTimeout(timeout);
     if (this.subscriptionSync === null) this.sendSubscriptionSync(batch);
     else this.queuedSubscriptionSync = batch;
     return promise;
@@ -653,10 +683,6 @@ class PooledConnection {
 
   private sendSubscriptionSync(batch: SubscriptionSyncBatch): void {
     this.subscriptionSync = batch;
-    const timeout = setTimeout(() => {
-      if (this.subscriptionSync === batch) this.retireSubscriptionSync();
-    }, SUBSCRIPTION_SYNC_TIMEOUT_MS);
-    batch.cancelTimeout = () => clearTimeout(timeout);
     if (!this.writeConnection({ type: "sync_subscriptions", id: batch.id })) {
       this.retireSubscriptionSync();
     }
@@ -688,12 +714,14 @@ class PooledConnection {
     this.queuedSubscriptionSync = null;
     current?.cancelTimeout?.();
     current?.resolve(false);
+    queued?.cancelTimeout?.();
     queued?.resolve(false);
   }
 
   private retireConnectionAuthority(): void {
     this.physicalGeneration += 1;
     this.authorityEpoch += 1;
+    this.pendingObserverAdmissions.clear();
     this.connectionState.authority_context = null;
     this.declarationWatermark = 0;
     this.coveredWatermark = -1;
@@ -855,7 +883,7 @@ class PooledConnection {
     if (frame.type === "observed") {
       this.observerAdmitted = true;
       this.backoff.reset();
-      for (const sink of [...this.observers]) sink.observed();
+      for (const sink of this.observers) this.deferObserverAdmission(sink);
       return;
     }
     if (frame.type === "subscriptions_synced") {
@@ -943,6 +971,8 @@ class PooledConnection {
             [...this.topics.values()].map((held) => held.ref),
           );
         }
+        // Retire the queued snapshot without stranding an otherwise admitted observer.
+        for (const sink of this.pendingObserverAdmissions) this.deferObserverAdmission(sink);
         break;
       }
       case "event":
