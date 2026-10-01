@@ -114,7 +114,9 @@ async function fixture(
   const clock = new FakeClock(runtime);
   const store =
     databasePath === undefined ? testStore() : new ServerStore(openDatabase(databasePath));
-  const auth = new AuthService(store, "a".repeat(64), runtime);
+  const auth = new AuthService(store, "a".repeat(64), runtime, {
+    decide: (request) => service.decide(request),
+  });
   const root = auth.authenticate("a".repeat(64));
   const machineId = auth.enrollMachine("harness owner", root).machine.id;
   const containerId = runtime.newId();
