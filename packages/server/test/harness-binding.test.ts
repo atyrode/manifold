@@ -105,6 +105,10 @@ async function fixture(
   profileSchema: z.ZodType = z.strictObject({ label: z.string().min(1) }),
   baseMachine: MachineHalf = machine,
   extraHarnessCaps: Cap[] = [],
+  configureHarness?: (
+    harness: NonNullable<ServerPluginDef["harness"]>,
+    effects: HarnessEffectFixture,
+  ) => void,
 ) {
   const declaredMachine: MachineHalf =
     inputs === undefined
@@ -205,6 +209,7 @@ async function fixture(
       },
     },
   };
+  configureHarness?.(definition.harness!, { descriptor, runtime });
   const rooms = new RoomManager(store, runtime, clock, silentLogger, testTileTrees);
   const broker = new TerminalBroker(
     store,
@@ -1278,7 +1283,24 @@ test.each(["fresh", "recovered"] as const)(
   async (recovery) => {
     const dir = mkdtempSync(join(tmpdir(), "manifold-harness-effect-custody-"));
     const path = join(dir, "hub.sqlite");
-    const f = await fixture(undefined, undefined, path);
+    const f = await fixture(
+      undefined,
+      undefined,
+      path,
+      undefined,
+      undefined,
+      [],
+      (harness, effects) => {
+        const launch = harness.launch;
+        harness.launch = async (ctx, ...args) => {
+          if (args[0].session !== null) {
+            ctx.jobs.execute(harnessJob(effects, "durable-harness"));
+            ctx.jobs.schedule(harnessSchedule(effects, "durable-harness"));
+          }
+          return launch(ctx, ...args);
+        };
+      },
+    );
     let closed = false;
     let recoveredStore: ServerStore | undefined;
     let recoveredHost: PluginHost | undefined;
@@ -1291,13 +1313,6 @@ test.each(["fresh", "recovered"] as const)(
       );
       const { run } = await f.create();
       const create = await f.openCreated((await f.launch(run.id)).runtime);
-      const harness = f.definition.harness!;
-      const launch = harness.launch;
-      harness.launch = async (ctx, ...args) => {
-        ctx.jobs.execute(harnessJob(f, "durable-harness"));
-        ctx.jobs.schedule(harnessSchedule(f, "durable-harness"));
-        return launch(ctx, ...args);
-      };
       expect(
         result(
           await f.host.dispatch(actor, "core.terminals.restart", {
@@ -1409,12 +1424,134 @@ test.each(["fresh", "recovered"] as const)(
   },
 );
 
+test.each([
+  ["unchanged", false],
+  ["implementation", false],
+  ["implementation", true],
+  ["launch", false],
+  ["launch", true],
+  ["sessions", false],
+  ["sessions", true],
+  ["resolveSession", false],
+  ["resolveSession", true],
+  ["send", false],
+  ["send", true],
+  ["profile", false],
+  ["profile", true],
+  ["profile validator", false],
+  ["profile validator", true],
+  ["missing harness", true],
+] as const)(
+  "published harness %s retires captured schedules without an intervening query (restored: %s)",
+  async (change, restored) => {
+    const f = await fixture();
+    try {
+      const original = f.definition.harness!;
+      const makeHarness = (): NonNullable<ServerPluginDef["harness"]> => ({
+        profileSchema: z.strictObject({ label: z.string().min(1) }),
+        async launch(ctx, run, agent, target) {
+          ctx.jobs.schedule(harnessSchedule(f, "published-harness"));
+          return original.launch(ctx, run, agent, target);
+        },
+        async sessions(ctx, target) {
+          return original.sessions(ctx, target);
+        },
+        async resolveSession(ctx, ref) {
+          return original.resolveSession(ctx, ref);
+        },
+        async send(ctx, run, input) {
+          return original.send(ctx, run, input);
+        },
+      });
+      const harness = makeHarness();
+      Reflect.set(f.definition, "harness", harness);
+      const captured = { ...harness };
+      const profileValidator = harness.profileSchema.safeParseAsync;
+      const { run } = await f.create();
+      await f.launch(run.id);
+      const schedule = f.service.jobSchedules.listSchedules()[0]!;
+      expect(schedule.scheduleId).toBe("published-harness");
+      expect(f.commands.filter((command) => command.type === "start")).toEqual([]);
+      switch (change) {
+        case "implementation":
+          Reflect.set(f.definition, "harness", makeHarness());
+          break;
+        case "launch":
+        case "sessions":
+        case "resolveSession":
+        case "send":
+          Reflect.set(harness, change, makeHarness()[change]);
+          break;
+        case "profile":
+          Reflect.set(harness, "profileSchema", makeHarness().profileSchema);
+          break;
+        case "profile validator":
+          harness.profileSchema.safeParseAsync = makeHarness().profileSchema.safeParseAsync;
+          break;
+        case "missing harness":
+          Reflect.deleteProperty(f.definition, "harness");
+          break;
+      }
+      expect(await f.host.setEnabled("core.machines", false, "admin")).toEqual({ ok: true });
+      if (restored) {
+        Object.assign(harness, captured);
+        harness.profileSchema.safeParseAsync = profileValidator;
+        Reflect.set(f.definition, "harness", harness);
+      }
+      expect(await f.host.setEnabled("core.machines", true, "admin")).toEqual({ ok: true });
+      // Keep the same exact native installation and consent; only the server binding moved.
+      expect(f.service.jobs.installation(f.descriptor.machineId, pluginId)).toMatchObject({
+        revision: "r1",
+        artifact: hash,
+        enabled: true,
+      });
+      const occurrenceId = `schedule-${createHash("sha256")
+        .update(canonicalJobJson([schedule.scheduleId, schedule.revision, schedule.firstNominalAt]))
+        .digest("hex")}`;
+      f.runtime.time = schedule.firstNominalAt;
+      f.service.tick();
+      if (change === "unchanged") {
+        expect(f.service.jobs.get(occurrenceId)?.state).toBe("start-committed");
+        expect(
+          f.commands
+            .filter((command) => command.type === "start")
+            .map((command) => command.request.jobId),
+        ).toEqual([occurrenceId]);
+      } else {
+        expect(f.service.jobs.get(occurrenceId)).toBeNull();
+        expect(f.service.jobSchedules.getOccurrence(occurrenceId)).toBeNull();
+        expect(f.service.jobSchedules.listSchedules()).toEqual([]);
+        expect(f.commands.filter((command) => command.type === "start")).toEqual([]);
+      }
+    } finally {
+      f.close();
+    }
+  },
+);
+
 test.each(["unchanged", "implementation", "profile", "manifest"] as const)(
   "cold harness restoration conjunctively pins server binding while retaining native artifact (%s)",
   async (change) => {
     const dir = mkdtempSync(join(tmpdir(), "manifold-cold-harness-binding-"));
     const path = join(dir, "hub.sqlite");
-    const f = await fixture(undefined, undefined, path);
+    const f = await fixture(
+      undefined,
+      undefined,
+      path,
+      undefined,
+      undefined,
+      [],
+      (harness, effects) => {
+        const launch = harness.launch;
+        harness.launch = async (ctx, run, agent, target) => {
+          if (run.session !== null) {
+            ctx.jobs.execute(harnessJob(effects, "cold-harness"));
+            ctx.jobs.schedule(harnessSchedule(effects, "cold-harness"));
+          }
+          return launch.call(harness, ctx, run, agent, target);
+        };
+      },
+    );
     let closed = false;
     let recoveredStore: ServerStore | undefined;
     let recoveredHost: PluginHost | undefined;
@@ -1428,14 +1565,6 @@ test.each(["unchanged", "implementation", "profile", "manifest"] as const)(
         f.owner.terminalHostId ?? null,
       );
       const harness = f.definition.harness!;
-      const launch = harness.launch;
-      harness.launch = async (ctx, run, agent, target) => {
-        if (run.session !== null) {
-          ctx.jobs.execute(harnessJob(f, "cold-harness"));
-          ctx.jobs.schedule(harnessSchedule(f, "cold-harness"));
-        }
-        return launch.call(harness, ctx, run, agent, target);
-      };
       const { run } = await f.create();
       const create = await f.openCreated((await f.launch(run.id)).runtime);
       expect(

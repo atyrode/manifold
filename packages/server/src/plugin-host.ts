@@ -1097,6 +1097,12 @@ export type ServerPluginDef = PluginDef & {
   readonly inputValidation?: "guest";
 };
 
+interface BindingHistory<T> {
+  readonly pluginId: string;
+  readonly revision: number;
+  current: T | null;
+}
+
 interface CachedHarnessBinding {
   readonly fingerprint: string;
   readonly manifest: ServerPluginDef["manifest"];
@@ -1107,6 +1113,7 @@ interface CachedHarnessBinding {
   readonly code: string;
   readonly harness: NonNullable<ServerPluginDef["harness"]>;
   readonly profileSchema: z.ZodType;
+  readonly profileValidator: z.ZodType["safeParseAsync"];
   readonly launch: NonNullable<ServerPluginDef["harness"]>["launch"];
   readonly sessions: NonNullable<ServerPluginDef["harness"]>["sessions"];
   readonly resolveSession: NonNullable<ServerPluginDef["harness"]>["resolveSession"];
@@ -1115,7 +1122,6 @@ interface CachedHarnessBinding {
 
 interface CachedActionBinding {
   readonly fingerprint: string;
-  readonly revision: number;
   readonly installation: InstalledPlugin | undefined;
   readonly definition: AnyActionDef;
   readonly declaration: AnyActionDef;
@@ -2622,7 +2628,6 @@ export class PluginHost {
     this.firstParty = this.firstParty.map((existing) =>
       existing.manifest.id === id ? def : existing,
     );
-    this.resetActionBindingHistory(id);
     this.retiredTrusted.delete(id);
     this.syncDefs();
   }
@@ -2710,7 +2715,7 @@ export class PluginHost {
           row.hardened === true,
         ),
       );
-      this.resetActionBindingHistory(row.pluginId);
+      this.resetBindingHistory(row.pluginId);
     } catch (error) {
       this.installedDefs.set(row.pluginId, {
         manifest: bundle.manifest,
@@ -3193,9 +3198,10 @@ export class PluginHost {
   }
 
   /** Only verified executable publication or uninstall resets the cold binding baseline. */
-  private resetActionBindingHistory(pluginId: string): void {
-    for (const [name, binding] of this.actionFingerprints)
-      if (binding.manifestId === pluginId) this.actionFingerprints.delete(name);
+  private resetBindingHistory(pluginId: string): void {
+    for (const [name, history] of this.actionFingerprints)
+      if (history.pluginId === pluginId) this.actionFingerprints.delete(name);
+    this.harnessFingerprints.delete(pluginId);
   }
 
   private retireDatabase(pluginId: string): void {
@@ -3549,7 +3555,7 @@ export class PluginHost {
         if (!verdict.ok) return installRefused(verdict.refusal, verdict.detail);
         try {
           this.installedDefs.set(id, await this.loadBundle(verdict.bundle, verdict.dir, false));
-          this.resetActionBindingHistory(id);
+          this.resetBindingHistory(id);
           this.heldUnloaded.delete(id);
           this.syncDefs();
         } catch (error) {
@@ -4305,7 +4311,7 @@ export class PluginHost {
             ? this.dormantDef(member.row, member.bundle)
             : member.def!,
         );
-        this.resetActionBindingHistory(member.id);
+        this.resetBindingHistory(member.id);
         this.lifecycleStates.delete(member.id);
         this.heldUnloaded.delete(member.id);
       }
@@ -4537,7 +4543,7 @@ export class PluginHost {
         const verdict = verifyInstalledBundle(previous.row);
         if (!verdict.ok) throw new InstallRefusal(verdict.refusal, verdict.detail);
         this.installedDefs.set(id, await this.loadBundle(verdict.bundle, verdict.dir, true));
-        this.resetActionBindingHistory(id);
+        this.resetBindingHistory(id);
       } else {
         // Keep dormant, never-loaded incumbents dormant, and reuse in-realm definitions.
         this.installedDefs.set(id, previousDef);
@@ -4732,7 +4738,7 @@ export class PluginHost {
     this.store.clearPluginEnablement(id);
     this.installed.delete(id);
     this.installedDefs.delete(id);
-    this.resetActionBindingHistory(id);
+    this.resetBindingHistory(id);
     this.heldUnloaded.delete(id);
     this.lifecycleStates.delete(id);
     // The row is gone, so the handle onto its file is too. The BYTES stay unless a purge took
@@ -5103,6 +5109,7 @@ export class PluginHost {
 
   private publish(): void {
     if (this.closed) return;
+    this.observeBindingPublication();
     this.streams.reconcile();
     const developerMode = this.store.developerMode();
     const roster = this.roster();
@@ -5448,9 +5455,26 @@ export class PluginHost {
     };
   }
 
-  private readonly harnessFingerprints = new Map<string, CachedHarnessBinding>();
+  /**
+   * Observe every published binding, not just queried doors. Tombstones retain a named
+   * binding's history across disappearance and restoration without retaining its code.
+   */
+  private observeBindingPublication(): void {
+    for (const name of this.actionFingerprints.keys()) this.actionBinding(name);
+    for (const name of this.assembled.actions.keys())
+      if (!this.actionFingerprints.has(name)) this.actionBinding(name);
+    for (const pluginId of this.harnessFingerprints.keys()) this.harnessBinding(pluginId);
+    for (const def of this.defs)
+      if (def.harness !== undefined && !this.harnessFingerprints.has(def.manifest.id))
+        this.harnessBinding(def.manifest.id);
+  }
+
+  private readonly harnessFingerprints = new Map<string, BindingHistory<CachedHarnessBinding>>();
 
   private harnessBinding(pluginId: string): CachedHarnessBinding | null {
+    // A pending replacement is a fence, not a publication retiring the incumbent.
+    if (this.replacing.has(pluginId)) return null;
+    const history = this.harnessFingerprints.get(pluginId);
     const def = this.defs.find((entry) => entry.manifest.id === pluginId);
     const harness = def?.harness;
     const declaration = def?.manifest.contributes.harness;
@@ -5458,17 +5482,19 @@ export class PluginHost {
       def === undefined ||
       harness === undefined ||
       declaration === undefined ||
-      !this.assembled.enabled(pluginId) ||
-      this.replacing.has(pluginId)
-    )
+      !this.assembled.enabled(pluginId)
+    ) {
+      if (history !== undefined) history.current = null;
       return null;
+    }
     const code =
       this.installed.get(pluginId)?.row.sha256 ??
       this.trusted.get(pluginId)?.sha256 ??
       this.builtinCodeIdentity;
-    const cached = this.harnessFingerprints.get(pluginId);
+    const cached = history?.current;
     if (
       cached !== undefined &&
+      cached !== null &&
       cached.manifest === def.manifest &&
       cached.manifestVersion === def.manifest.version &&
       cached.declaration === declaration &&
@@ -5477,17 +5503,21 @@ export class PluginHost {
       cached.code === code &&
       cached.harness === harness &&
       cached.profileSchema === harness.profileSchema &&
+      cached.profileValidator === harness.profileSchema.safeParseAsync &&
       cached.launch === harness.launch &&
       cached.sessions === harness.sessions &&
       cached.resolveSession === harness.resolveSession &&
       cached.send === harness.send
     )
       return cached;
+    const revision = history === undefined ? 0 : history.revision + 1;
     const binding: CachedHarnessBinding = {
       fingerprint: createHash("sha256")
         .update(
           canonicalJobJson({
             code,
+            // Preserve the released cold hash; live replacements add a nonzero revision.
+            ...(revision === 0 ? {} : { revision }),
             manifest: def.manifest,
             profile: z.toJSONSchema(harness.profileSchema, { io: "input" }),
             launch: String(harness.launch),
@@ -5505,12 +5535,13 @@ export class PluginHost {
       code,
       harness,
       profileSchema: harness.profileSchema,
+      profileValidator: harness.profileSchema.safeParseAsync,
       launch: harness.launch,
       sessions: harness.sessions,
       resolveSession: harness.resolveSession,
       send: harness.send,
     };
-    this.harnessFingerprints.set(pluginId, binding);
+    this.harnessFingerprints.set(pluginId, { pluginId, revision, current: binding });
     return binding;
   }
 
@@ -5534,11 +5565,15 @@ export class PluginHost {
 
   // Roster entries and their parsed manifests are rebuilt for unrelated lifecycle changes.
   // The named door retains custody only while its executable definition and authority agree.
-  private readonly actionFingerprints = new Map<string, CachedActionBinding>();
+  private readonly actionFingerprints = new Map<string, BindingHistory<CachedActionBinding>>();
   private actionBinding(name: string): CachedActionBinding | null {
     const entry = this.assembled.actions.get(name);
-    if (entry === undefined) return null;
-    const cached = this.actionFingerprints.get(name);
+    const history = this.actionFingerprints.get(name);
+    if (entry === undefined) {
+      if (history !== undefined) history.current = null;
+      return null;
+    }
+    const cached = history?.current;
     const installation = this.installed.get(entry.plugin.id);
     const pluginDef =
       cached?.definitions === this.defs
@@ -5562,6 +5597,7 @@ export class PluginHost {
       this.builtinCodeIdentity;
     if (
       cached !== undefined &&
+      cached !== null &&
       cached.installation === installation &&
       cached.definition === entry.def &&
       (cached.manifest === entry.plugin
@@ -5621,7 +5657,7 @@ export class PluginHost {
     // equal schema/function text cannot recycle a settled dispatch's fingerprint.
     // Verified publication explicitly clears history; ordinary object/code changes do not.
     // Thus genuine reloads use the cold baseline while live grants remain conjunctive.
-    const revision = cached === undefined ? 0 : cached.revision + 1;
+    const revision = history === undefined ? 0 : history.revision + 1;
     const fingerprint = createHash("sha256")
       .update(
         canonicalJobJson({
@@ -5647,7 +5683,6 @@ export class PluginHost {
       .digest("hex");
     const binding: CachedActionBinding = {
       fingerprint,
-      revision,
       installation,
       definition: entry.def,
       declaration,
@@ -5674,7 +5709,7 @@ export class PluginHost {
       preparationCaps: capturedPreparationCaps,
       code,
     };
-    this.actionFingerprints.set(name, binding);
+    this.actionFingerprints.set(name, { pluginId: entry.plugin.id, revision, current: binding });
     return binding;
   }
 

@@ -67,6 +67,7 @@ const machine: MachineHalf = {
 async function fixture(
   preparerCaps: readonly AuthoredCap[] = ["plugins:manage", "tokens:mint"],
   registration?: ServerPluginDef,
+  withHarness = false,
 ) {
   const dataDir = mkdtempSync(join(tmpdir(), "manifold-durable-binding-"));
   const path = join(dataDir, "hub.sqlite");
@@ -149,7 +150,23 @@ async function fixture(
     capabilities: ["machines:run", "machines:read", "tokens:mint", "plugins:manage"],
     dataVersion: { major: 1, minor: 0 },
     purges: ["storage"],
-    contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+    contributes: {
+      panels: [],
+      sections: [],
+      elements: [],
+      tools: [],
+      events: [],
+      ...(withHarness
+        ? {
+            harness: {
+              id: "durable-binding",
+              title: "Durable binding",
+              profileSchema: { type: "object" },
+              sessionRef: "typed" as const,
+            },
+          }
+        : {}),
+    },
     entry: { server: true },
     machine,
   };
@@ -208,6 +225,37 @@ const definition = {
       return { value: args.value };
     },
   },
+  ${
+    withHarness
+      ? `harness: {
+    profileSchema: z.strictObject({}),
+    async launch(_ctx, run, _agent, target) {
+      return {
+        runtime: {
+          machineId: target.machineId, pluginId: ${JSON.stringify(PLUGIN_ID)},
+          operationId: ${JSON.stringify(OPERATION_ID)}, installationRevision: "one",
+          artifactSha256: ${JSON.stringify(ARTIFACT_HASH)}, input: { value: run.id },
+        },
+        session: { harness: "durable-binding", machineId: target.machineId, sessionId: run.id },
+        reviewDigest: ${JSON.stringify(ARTIFACT_HASH)},
+      };
+    },
+    async sessions(ctx, target) {
+      await register(ctx, {
+        operation: { machineId: target.machineId, operationId: ${JSON.stringify(OPERATION_ID)} },
+        scheduleId: "harness-binding",
+      });
+      return [{ harness: "durable-binding", machineId: target.machineId, sessionId: "harness-binding" }];
+    },
+    async resolveSession(_ctx, ref) {
+      return ref.sessionId === "harness-binding" ? ref : null;
+    },
+    async send(ctx, _run, input) {
+      await ctx.storage.set("harness-input", input);
+    },
+  },`
+      : ""
+  }
 };
 defineServerPlugin(definition);
 export default definition;
@@ -357,6 +405,47 @@ for (const reopen of [false, true]) {
   });
 }
 
+test.each([false, true])(
+  "same-artifact verified harness reload retains admitted native schedules (reopen: %s)",
+  async (reopen) => {
+    const f = await fixture([], undefined, true);
+    try {
+      expect(await f.install([])).toMatchObject({ id: PLUGIN_ID });
+      f.installNative();
+      expect(
+        await f.host.dispatch(f.root(), "core.access.listHarnessSessions", {
+          harness: "durable-binding",
+          target: { machineId: f.machineId },
+        }),
+      ).toEqual({
+        ok: true,
+        result: {
+          sessions: [
+            { harness: "durable-binding", machineId: f.machineId, sessionId: "harness-binding" },
+          ],
+          truncated: false,
+        },
+      });
+      const before = f.service.jobSchedules.listSchedules()[0]!;
+      expect(before.authoritySnapshot?.action?.harnesses).toMatchObject([
+        { pluginId: PLUGIN_ID, harnessId: "durable-binding" },
+      ]);
+      expect(await f.install([], true)).toMatchObject({ id: PLUGIN_ID });
+      if (reopen) await f.reopen();
+      f.runtime.time = 1000;
+      f.service.tick();
+      expect(f.service.jobs.get(occurrenceId("harness-binding"))?.state).toBe("start-committed");
+      expect(
+        f.commands
+          .filter((command) => command.type === "start")
+          .map((command) => command.request.jobId),
+      ).toEqual([occurrenceId("harness-binding")]);
+    } finally {
+      await f.close();
+    }
+  },
+);
+
 function scheduleInput() {
   return z.strictObject({
     operation: z.strictObject({
@@ -400,7 +489,8 @@ async function registeredFixture(pausePreparation: boolean) {
         : [],
     };
   };
-  const preparation = { caps: preparationCaps, prepare: makePreparer() };
+  const prepare = makePreparer();
+  const preparation = { caps: preparationCaps, prepare };
   const makeHandler = () => async (ctx: ActionCtx, args: Input) => {
     await ctx.storage.set("recorded", args.scheduleId);
     await ctx.jobs.schedule({
@@ -419,7 +509,8 @@ async function registeredFixture(pausePreparation: boolean) {
     });
     return {};
   };
-  const handlers = { prepared: makeHandler() };
+  const handler = makeHandler();
+  const handlers = { prepared: handler };
   const capabilities: AuthoredCap[] = [
     "machines:run",
     "machines:read",
@@ -458,11 +549,7 @@ async function registeredFixture(pausePreparation: boolean) {
     replace(binding: string) {
       switch (binding) {
         case "definition":
-        case "restored definition":
           actions[0] = { ...action };
-          break;
-        case "restore definition":
-          actions[0] = action;
           break;
         case "parser":
           action.input = scheduleInput();
@@ -478,6 +565,32 @@ async function registeredFixture(pausePreparation: boolean) {
           break;
         case "manifest ceiling":
           capabilities.pop();
+          break;
+        case "missing action":
+          actions.length = 0;
+          break;
+      }
+    },
+    restore(binding: string) {
+      switch (binding) {
+        case "definition":
+        case "missing action":
+          actions[0] = action;
+          break;
+        case "parser":
+          action.input = input;
+          break;
+        case "handler":
+          handlers.prepared = handler;
+          break;
+        case "preparer":
+          preparation.prepare = prepare;
+          break;
+        case "preparer ceiling":
+          preparationCaps.push("plugins:manage");
+          break;
+        case "manifest ceiling":
+          capabilities.push("plugins:manage");
           break;
       }
     },
@@ -513,17 +626,23 @@ test.each(["parser", "handler", "preparer"])(
 );
 
 test.each([
-  "unchanged",
-  "parser",
-  "handler",
-  "preparer",
-  "preparer ceiling",
-  "manifest ceiling",
-  "definition",
-  "restored definition",
-])(
-  "an admitted schedule checks its %s action binding before creating an occurrence",
-  async (binding) => {
+  ["unchanged", false],
+  ["parser", false],
+  ["parser", true],
+  ["handler", false],
+  ["handler", true],
+  ["preparer", false],
+  ["preparer", true],
+  ["preparer ceiling", false],
+  ["preparer ceiling", true],
+  ["manifest ceiling", false],
+  ["manifest ceiling", true],
+  ["definition", false],
+  ["definition", true],
+  ["missing action", true],
+] as const)(
+  "an admitted schedule checks its published %s action binding (restored: %s)",
+  async (binding, restored) => {
     const f = await registeredFixture(false);
     try {
       expect(await f.host.dispatch(f.root(), `${PLUGIN_ID}.prepared`, f.args)).toEqual({
@@ -535,13 +654,9 @@ test.each([
       // A new roster publication must neither revoke an unchanged door nor conceal a
       // same-text executable replacement from the schedule's retained admission.
       expect(await f.host.setEnabled("core.machines", false, "admin")).toEqual({ ok: true });
-      if (binding === "restored definition") {
-        expect(
-          await f.host.prepareActionInput(f.root(), `${PLUGIN_ID}.prepared`, f.args),
-        ).toMatchObject({ ok: true });
-        f.replace("restore definition");
-        expect(await f.host.setEnabled("core.machines", true, "admin")).toEqual({ ok: true });
-      }
+      if (restored) f.restore(binding);
+      // No preparation/query observes the intervening replacement or disappearance.
+      expect(await f.host.setEnabled("core.machines", true, "admin")).toEqual({ ok: true });
       f.runtime.time = 1000;
       f.service.tick();
       if (binding === "unchanged") {
