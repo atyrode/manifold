@@ -1,4 +1,5 @@
-{ self, pkgs }:
+{ self, pkgs, role }:
+assert builtins.elem role [ "shellonly" "coexist" "machine" "credential" "anchors" ];
 let
   # Generate fixtures through the real packer: hand-built unstamped bundles must stay held.
   packFixture = pkgs.runCommand "manifold-native-profile-packer" {
@@ -882,7 +883,7 @@ let
     pkgs.writeText "manifold-account-shell-evaluations" "full toplevel evaluated; invalid custody refused\n";
 in
 {
-  name = "manifold-native-profile";
+  name = "manifold-native-profile-${role}";
   hostPkgs = pkgs;
   # The VM also runs on builders without nested virtualization, using QEMU's CPU emulation.
   requiredFeatures.kvm = false;
@@ -990,7 +991,7 @@ in
     virtualisation.additionalPaths = [ shellFixture packFixture pkgs.python3 ];
     system.stateVersion = "26.05";
   };
-  in {
+  in pkgs.lib.getAttrs [ role ] {
     machine = common;
     credential = { pkgs, ... }: {
       imports = [ common ];
@@ -1159,14 +1160,18 @@ in
 
     # Operator anchor evaluation refusals: ${anchorEvaluations}
     # Complete account-shell toplevel evaluation and custody refusals: ${shellEvaluations}
-    # Independent scenarios run one guest at a time so retained-owner proof remains
-    # bounded on an executor; serial log backlog is not guest-shell readiness.
+  '' + pkgs.lib.optionalString (builtins.elem role [ "shellonly" "coexist" ]) ''
+    # Each independently bounded derivation retains its complete scenario and shutdown.
 
     # The ordinary role is exercised independently and beside the unchanged governed
     # role. All secret values remain in private guest files and HTTP bearer headers.
+    profile_role = "${role}"
     for node, hub_unit, key_file in [
-        (shellonly, "shell-fixture-hub.service", "/srv/shell-fixture-hub/owner.key"),
-        (coexist, "manifold-server.service", "/var/lib/manifold/owner.key"),
+        (
+            ${role},
+            "${if role == "shellonly" then "shell-fixture-hub.service" else "manifold-server.service"}",
+            "${if role == "shellonly" then "/srv/shell-fixture-hub/owner.key" else "/var/lib/manifold/owner.key"}",
+        ),
     ]:
         node.start()
         node.connect()
@@ -1199,7 +1204,7 @@ in
         for path in [token, socket_path]:
             assert node.succeed(f"stat -c '%a %U %G' {path}").strip() == "600 account-shell shell-primary"
         node.succeed(f"test ! -L {token} && test -f {token} && test -S {socket_path}")
-        if node == shellonly:
+        if profile_role == "shellonly":
             node.fail("getent passwd manifold")
             node.fail("getent group manifold")
             for unit in ["manifold-server", "manifold-owner", "manifold-transport", "manifold-operator-anchors"]:
@@ -1274,7 +1279,7 @@ in
         node.succeed(f"test -L {credential_root} && test ! -L {token_parent} && test ! -L {token} && test -f {token}")
         assert node.succeed(f"stat -c '%a %U %G' {token_parent}").strip() == "700 account-shell shell-primary"
         assert node.succeed(f"stat -c '%a %U %G' {token}").strip() == "600 account-shell shell-primary"
-        if node == coexist:
+        if profile_role == "coexist":
             node.succeed("runuser -u manifold -- test -r /run/manifold-anchors/shell-fixture/credentials/private/token")
         metadata_command = f"stat -c '%d:%i:%u:%g:%a:%s:%Y:%Z' {credential_root} {token_parent} {token}"
         aliased_metadata = node.succeed(metadata_command)
@@ -1322,7 +1327,7 @@ in
         node.succeed(f"test -L {owner_root} && test ! -L {state} && test ! -L {socket_parent} && test ! -e {socket_path}")
         for path in [state, socket_parent]:
             assert node.succeed(f"stat -c '%a %U %G' {path}").strip() == "700 account-shell shell-primary"
-        if node == coexist:
+        if profile_role == "coexist":
             node.succeed("runuser -u manifold -- test -x /run/manifold-anchors/shell-fixture/owner/state/terminal-host")
         metadata_command = f"stat -c '%d:%i:%u:%g:%a:%s:%Y:%Z' {owner_root} {state} {socket_parent}"
         aliased_metadata = node.succeed(metadata_command)
@@ -1335,7 +1340,7 @@ in
         node.succeed(f"test ! -e {socket_path}")
         assert node.succeed(metadata_command) == aliased_metadata, "startup repaired aliased owner state"
 
-        if node == coexist:
+        if profile_role == "coexist":
             assert node.succeed("systemctl show -p MainPID --value manifold-owner.service").strip() == native_owner
             assert node.succeed("sha256sum /var/lib/manifold/owner-template.json /var/lib/manifold/job-owner/config.json") == native_configuration
             node.succeed(fixture_command + "custody-result")
@@ -1354,6 +1359,7 @@ in
                     node.succeed("systemctl stop " + unit)
             assert node.succeed("systemctl show -p MainPID --value manifold-owner.service").strip() == native_owner
         node.shutdown()
+  '' + pkgs.lib.optionalString (role == "machine") ''
     machine.start()
     machine.connect()
     machine.wait_for_unit("manifold-server.service", timeout=180)
@@ -1435,6 +1441,7 @@ in
     machine.wait_until_succeeds("${inspectCommand} result module-native-recovered", timeout=180)
 
     machine.shutdown()
+  '' + pkgs.lib.optionalString (role == "credential") ''
     credential.start()
     credential.connect()
 
@@ -1518,6 +1525,7 @@ in
     credential.succeed("${inspectCommand} result module-credential-restarted")
 
     credential.shutdown()
+  '' + pkgs.lib.optionalString (role == "anchors") ''
     anchors.start()
     anchors.connect()
 

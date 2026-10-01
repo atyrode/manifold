@@ -10,6 +10,7 @@ import {
   openSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   rmSync,
   writeFileSync,
   writeSync,
@@ -190,50 +191,75 @@ async function build(name: string, rebuild = false): Promise<string> {
 }
 
 const NATIVE_PROFILE_TIMEOUT_MS = 15 * 60_000;
+const NATIVE_PROFILE_ROLES = ["shellonly", "coexist", "machine", "credential", "anchors"] as const;
 
-/** A successful package smoke never stands in for finishing the full Linux VM check. */
+/** A successful package or individual role never stands in for the complete Linux profile. */
 async function nativeProfile(): Promise<void> {
+  const applicable = system.endsWith("-linux");
   const check = `checks.${system}.native-profile`;
+  const roles = applicable
+    ? NATIVE_PROFILE_ROLES.map((role) => ({
+        role,
+        system,
+        revision,
+        sourceHash,
+        check: `${check}-${role}`,
+        timeoutMs: NATIVE_PROFILE_TIMEOUT_MS,
+        result: "not_started",
+        startedAt: null as string | null,
+        elapsedMs: 0,
+        execution: "not_started",
+        derivation: null as string | null,
+        output: null as string | null,
+        failure: null as string | null,
+      }))
+    : [];
   const receipt = {
     system,
     revision,
     sourceHash,
     check,
     timeoutMs: NATIVE_PROFILE_TIMEOUT_MS,
-    result: system.endsWith("-linux") ? "running" : "not_applicable",
+    timeoutScope: "per_build",
+    result: applicable ? "running" : "not_applicable",
     startedAt: new Date().toISOString(),
     elapsedMs: 0,
-    execution: system.endsWith("-linux") ? "not_started" : "not_applicable",
+    execution: applicable ? "not_started" : "not_applicable",
     derivation: null as string | null,
     output: null as string | null,
     failure: null as string | null,
+    roles,
   };
-  const record = () =>
+  const record = () => {
     writeFileSync(join(evidence, "native-profile.json"), JSON.stringify(receipt, null, 2) + "\n", {
       mode: 0o600,
     });
+    for (const role of roles) {
+      writeFileSync(
+        join(evidence, `native-profile-${role.role}.json`),
+        JSON.stringify(role, null, 2) + "\n",
+        { mode: 0o600 },
+      );
+    }
+  };
   record();
-  if (!system.endsWith("-linux")) {
+  if (!applicable) {
     console.log(`Nix native-profile: ${system} not applicable (Linux NixOS VM check)`);
     return;
   }
   const started = performance.now();
-  try {
-    // Nix serializes an attrset with outPath as a store-path string, not a JSON object.
-    const paths: unknown = JSON.parse(
-      await command(
-        [
-          nix!,
-          "eval",
-          "--json",
-          "--no-update-lock-file",
-          "--apply",
-          "drv: { derivation = drv.drvPath; output = drv.outPath; }",
-          `${flake}#${check}`,
-        ],
-        5 * 60_000,
-      ),
-    );
+
+  async function buildProfile(
+    state: {
+      check: string;
+      derivation: string | null;
+      output: string | null;
+      execution: string;
+    },
+    paths: unknown,
+    logName: string,
+    retainCachedLog: boolean,
+  ): Promise<void> {
     const derivation = member(paths, "derivation");
     const output = member(paths, "output");
     if (
@@ -243,12 +269,12 @@ async function nativeProfile(): Promise<void> {
       typeof output !== "string" ||
       !output.startsWith("/nix/store/")
     ) {
-      throw new Error("Nix native-profile did not report its derivation and output");
+      throw new Error(`Nix ${state.check} did not report its derivation and output`);
     }
-    receipt.derivation = derivation;
-    receipt.execution = existsSync(output) ? "cached" : "not_started";
+    state.derivation = derivation;
+    state.execution = existsSync(output) ? "cached" : "not_started";
     record();
-    console.log(`Nix native-profile: ${system} ${check}`);
+    console.log(`Nix native-profile: ${system} ${state.check}`);
     const built = await command(
       [
         nix!,
@@ -259,13 +285,15 @@ async function nativeProfile(): Promise<void> {
         "internal-json",
         "--print-out-paths",
         "--no-update-lock-file",
-        `${flake}#${check}`,
+        "--max-jobs",
+        "1",
+        `${flake}#${state.check}`,
       ],
       NATIVE_PROFILE_TIMEOUT_MS,
       repoRoot,
       process.env,
       0,
-      join(evidence, "native-profile.log"),
+      join(evidence, `${logName}.log`),
       (line) => {
         let event: unknown;
         try {
@@ -279,8 +307,8 @@ async function nativeProfile(): Promise<void> {
         const fields = member(event, "fields");
         // Nix's activity protocol: actBuild=105, actSubstitute=108.
         if (action === "start" && Array.isArray(fields)) {
-          if (type === 105 && fields[0] === derivation) receipt.execution = "executed";
-          if (type === 108 && fields[0] === output) receipt.execution = "cached";
+          if (type === 105 && fields[0] === derivation) state.execution = "executed";
+          if (type === 108 && fields[0] === output) state.execution = "cached";
         }
         const text =
           action === "msg"
@@ -291,12 +319,98 @@ async function nativeProfile(): Promise<void> {
         if (typeof text === "string" && text !== "") console.error(text);
       },
     );
-    if (built !== output) throw new Error("Nix native-profile returned an unexpected output");
-    if (receipt.execution === "not_started") receipt.execution = "unobserved";
-    receipt.output = built;
+    if (built !== output) throw new Error(`Nix ${state.check} returned an unexpected output`);
+    if (state.execution !== "executed" && state.execution !== "cached") {
+      state.execution = "unobserved";
+      throw new Error(`Nix ${state.check} did not establish executed or cached build evidence`);
+    }
+    if (retainCachedLog && state.execution === "cached") {
+      // A warm output is only exact-derivation reuse, never a fresh VM execution.
+      // Retain its successful driver's assertions and shutdown, not just a cache-hit line.
+      const cachedLog = await command([nix!, "log", derivation], 30_000);
+      writeFileSync(join(evidence, `${logName}.cached.log`), cachedLog + "\n", { mode: 0o600 });
+    }
+    state.output = built;
+  }
+
+  try {
+    // Evaluate the aggregate and its complete role set from one immutable source.
+    // A role name alone cannot nominate another head, platform or derivation.
+    const paths: unknown = JSON.parse(
+      await command(
+        [
+          nix!,
+          "eval",
+          "--json",
+          "--no-update-lock-file",
+          "--apply",
+          "drv: { derivation = drv.drvPath; output = drv.outPath; roles = builtins.mapAttrs (_: role: { derivation = role.drvPath; output = role.outPath; }) drv.roles; }",
+          `${flake}#${check}`,
+        ],
+        5 * 60_000,
+      ),
+    );
+    const rolePaths = member(paths, "roles");
+    if (
+      typeof rolePaths !== "object" ||
+      rolePaths === null ||
+      Array.isArray(rolePaths) ||
+      Object.keys(rolePaths).sort().join("\n") !== [...NATIVE_PROFILE_ROLES].sort().join("\n")
+    ) {
+      throw new Error("Nix native-profile did not declare exactly all five required roles");
+    }
+    // One guest and one bounded Nix command at a time, including on TCG-only ARM hosts.
+    // No role's bootstrap, PTY, custody, lifecycle or shutdown assertions are shortened.
+    for (const role of roles) {
+      const roleStarted = performance.now();
+      role.startedAt = new Date().toISOString();
+      role.result = "running";
+      record();
+      try {
+        await buildProfile(role, member(rolePaths, role.role), `native-profile-${role.role}`, true);
+        role.result = "success";
+        console.log(`PASS  Nix native-profile role: ${system} ${role.role}, ${role.execution}`);
+      } catch (error) {
+        role.result = interrupted.signal.aborted ? "interrupted" : "failure";
+        role.failure = error instanceof Error ? error.message : "Nix native-profile role failed";
+        throw error;
+      } finally {
+        role.elapsedMs = Math.round(performance.now() - roleStarted);
+        record();
+      }
+    }
+    if (
+      roles.some(
+        (role) =>
+          role.result !== "success" ||
+          role.system !== system ||
+          role.revision !== revision ||
+          role.sourceHash !== sourceHash ||
+          role.derivation !== member(member(rolePaths, role.role), "derivation") ||
+          role.output !== member(member(rolePaths, role.role), "output"),
+      )
+    ) {
+      throw new Error("Nix native-profile lacks exact-source successful evidence for every role");
+    }
+    // The all-role output itself must build successfully and point only at these exact
+    // successful role outputs. Evaluation or the first passing role cannot complete it.
+    await buildProfile(receipt, paths, "native-profile", false);
+    const output = receipt.output;
+    if (
+      output === null ||
+      readdirSync(output).sort().join("\n") !== [...NATIVE_PROFILE_ROLES].sort().join("\n") ||
+      roles.some((role) => readlinkSync(join(output, role.role)) !== role.output)
+    ) {
+      throw new Error("Nix native-profile aggregate does not contain the exact five role outputs");
+    }
+    receipt.execution = roles.every((role) => role.execution === "executed")
+      ? "executed"
+      : roles.every((role) => role.execution === "cached")
+        ? "cached"
+        : "mixed";
     receipt.result = "success";
     console.log(
-      `PASS  Nix native-profile: ${system}, revision ${revision ?? "uncommitted"}, ${receipt.execution}, ${built}`,
+      `PASS  Nix native-profile: ${system}, revision ${revision ?? "uncommitted"}, all five roles ${receipt.execution}, ${output}`,
     );
   } catch (error) {
     receipt.result = interrupted.signal.aborted ? "interrupted" : "failure";
