@@ -214,6 +214,15 @@ bindings still use `manifold-action-runner` and exact policy acknowledgement.
 `manifold context` supplies point-of-use instructions and `manifold doctor` distinguishes
 missing bindings, admission failures and incompatible session protocols without printing
 credentials. The terminal plugin owns this consumer, not a second floor transport.
+`manifold context --json` is a local, secret-free eligibility probe, not an authentication or
+network check. The optional filesystem-native OMP `manifold_ssh` tool uses that probe only
+to decide registration, then invokes the same installed CLI with one literal command and a
+private receipt file. Missing, invalid, Agent/Run or mixed carriers omit the tool; they never
+select a replacement identity. OMP's restricted sessions do not discover filesystem tools;
+SDK custom-tool opt-in still requires both `allowRestrictedCustomTools` and explicit tool
+selection. This artifact is neither the Run-bound native `manifold` tool nor another transport.
+Unknown/offline SSH targets may include only caller-visible online, nonrevoked machine IDs
+and names in the receipt. That visibility roster is not proof of shell launch authority.
 
 Registration and context updates await the selected harness's original profile validator, including
 asynchronous refinements, before publishing any identity change. Caller and standing sponsor/grant

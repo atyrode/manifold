@@ -562,6 +562,9 @@ identities; workspace/check membership is not runtime roster membership (#979).
 The terminal plugin also owns the installed `manifold` command and its point-of-use skill.
 They are SDK consumers of discovered core doors, not floor additions or a separate terminal
 transport; package executable metadata and the compiled Nix output carry the entrypoint.
+The same package exports `share/omp-tools/manifold-ssh.ts`, an opt-in filesystem-native OMP
+factory that delegates to that installed CLI. It adds neither a core action door nor a default
+OMP configuration, SDK transport, credential source or runtime roster seat.
 
 A plugin package holds a manifest, its actions (server half) and its contributions (web half),
 and it imports only the three named layers (ADR 0025 §8, #240): the SDK — `@manifold/protocol`,

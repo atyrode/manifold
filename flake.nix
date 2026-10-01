@@ -273,6 +273,8 @@
             extraInstall = ''
               install -Dm644 packages/plugins/terminals/terminal-skill.md \
                 "$out/share/agent-skills/manifold-terminal/SKILL.md"
+              install -Dm644 packages/plugins/terminals/omp/manifold-ssh.ts \
+                "$out/share/omp-tools/manifold-ssh.ts"
             '';
           };
 
