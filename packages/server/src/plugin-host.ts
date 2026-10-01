@@ -1975,12 +1975,26 @@ export class PluginHost {
     jobs.setActionBindingValidator((binding) => {
       if (binding.actionName === undefined) return false;
       const entry = this.assembled.actions.get(binding.actionName);
-      return (
-        entry !== undefined &&
-        (this.assembled.enabled(entry.plugin.id) || entry.def.cleanup === true) &&
-        !this.replacing.has(entry.plugin.id) &&
-        this.actionFingerprint(binding.actionName) === binding.fingerprint
-      );
+      if (
+        entry === undefined ||
+        (!this.assembled.enabled(entry.plugin.id) && entry.def.cleanup !== true) ||
+        this.replacing.has(entry.plugin.id) ||
+        this.actionFingerprint(binding.actionName) !== binding.fingerprint
+      )
+        return false;
+      const install = this.installed.get(entry.plugin.id);
+      if (install === undefined) return true;
+      const granted = install.row.grantedCaps;
+      for (const cap of entry.def.caps)
+        if (!GOVERNED_CAPS.includes(cap) && !withinCeiling(cap, granted)) return false;
+      if (entry.def.delegates !== undefined)
+        for (const cap of entry.def.delegates)
+          if (!GOVERNED_CAPS.includes(cap) && !withinCeiling(cap, granted)) return false;
+      // Retained requirements contain only the preparer mode actually admitted.
+      // Governed capabilities still use their separate revision-bound native consent.
+      for (const { cap } of binding.requirements)
+        if (!GOVERNED_CAPS.includes(cap) && !withinCeiling(cap, granted)) return false;
+      return true;
     });
     jobs.setAgentTools({
       harnessPlugin: (agent) => {
@@ -2600,7 +2614,7 @@ export class PluginHost {
         const actualPreparation = Object.fromEntries(
           Object.entries(def.prepareActions ?? {}).map(([name, value]) => [
             name,
-            { caps: [...(value as ActionPreparationDef).caps] },
+            { caps: [...(value as ActionPreparationDef).caps].sort() },
           ]),
         );
         if (
