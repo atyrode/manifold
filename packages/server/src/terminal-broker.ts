@@ -2154,6 +2154,8 @@ export class TerminalBroker implements TerminalPlacementPort {
         let descriptor = recipe?.runtime;
         let privateEnv;
         if (stored.runId !== undefined) {
+          const session = this.store.getAgentRun(stored.runId)?.session;
+          if (session == null) throw new Error("run_launch_unavailable");
           const launched = await launchRun!({
             runId: stored.runId,
             target: { machineId: machine.machineId, containerId: stored.containerId },
@@ -2188,9 +2190,26 @@ export class TerminalBroker implements TerminalPlacementPort {
           )
             throw new Error("unsupported");
           descriptor = launched.value.runtime;
+          if (
+            canonicalJobJson(launched.value.session) !== canonicalJobJson(session) ||
+            (descriptor.session !== undefined &&
+              canonicalJobJson(descriptor.session) !== canonicalJobJson(session))
+          )
+            throw new Error("terminal_restart_recipe_changed");
           privateEnv = this.consumeRunLaunch(descriptor, auth, stored.containerId, terminalId);
           if (privateEnv?.MANIFOLD_RUN_ID !== stored.runId)
             throw new Error("run_launch_unavailable");
+          this.jobs.refreshTerminalDemand(
+            descriptor,
+            machine.machineId,
+            {
+              terminalId,
+              terminalHostId: machine.terminalHostId,
+              containerId: stored.containerId,
+              runId: stored.runId,
+            },
+            pending.fence,
+          );
         }
         if (descriptor === undefined) throw new Error("terminal_runtime_required");
         runtime = this.jobs.admitTerminal(

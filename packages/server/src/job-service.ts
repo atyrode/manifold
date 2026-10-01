@@ -5172,6 +5172,91 @@ export class JobService {
     if (!live.proved || live.retirementOnly) fail("run_launch_owner_unavailable");
   }
 
+  private terminalNativeJob(
+    machineId: string,
+    terminal: NonNullable<JobRequest["terminal"]>,
+  ): JobRecord | null {
+    const latest = this.store.db
+      .query<{ jobId: string }, [string, string, string, string]>(
+        `SELECT job_id AS jobId FROM machine_jobs
+         WHERE machine_id=? AND json_extract(request,'$.terminal.terminalId')=?
+           AND json_extract(request,'$.terminal.containerId')=?
+           AND json_extract(request,'$.terminal.runId')=?
+         ORDER BY created_at DESC, job_id DESC LIMIT 1`,
+      )
+      .get(machineId, terminal.terminalId, terminal.containerId, terminal.runId ?? "");
+    return latest === null ? null : this.jobs.get(latest.jobId);
+  }
+
+  /**
+   * A trusted relaunch changes resume input and private launch custody, not its native identity.
+   * Capture the actual demand again before reservation, preserving every original requirement.
+   */
+  refreshTerminalDemand(
+    runtime: TerminalRuntime,
+    machineId: string,
+    terminal: NonNullable<JobRequest["terminal"]>,
+    authorityFence: ActionAuthorityFence,
+  ): void {
+    authorityFence.checkCurrent();
+    const stored = this.store.getTerminal(terminal.terminalId);
+    const previous = this.terminalNativeJob(machineId, terminal);
+    const native = this.terminalDemandBinding(runtime, machineId, terminal.containerId);
+    if (
+      stored?.machineId !== machineId ||
+      stored.containerId !== terminal.containerId ||
+      stored.runId === undefined ||
+      stored.runId !== terminal.runId ||
+      previous === null ||
+      previous.request.pluginId !== native.pluginId ||
+      previous.request.operationId !== native.operationId ||
+      previous.request.installationRevision !== native.installationRevision ||
+      previous.request.artifactSha256 !== native.artifactSha256 ||
+      digest(previous.request.resourceBindings ?? null) !== native.resourceBindingDigest ||
+      previous.permit?.ownerId !== native.ownerId ||
+      previous.permit.ownerGeneration !== native.ownerGeneration ||
+      previous.request.terminal?.terminalHostId !== native.terminalHostId
+    )
+      fail("terminal_restart_recipe_changed");
+    const snapshot = authorityFence.snapshot();
+    const captured = snapshot.nativeDemand ?? [previous.authoritySnapshot?.native].filter(Boolean);
+    const parsed = AuthoritySnapshotSchema.shape.native.unwrap().array().safeParse(captured);
+    if (!parsed.success) fail("terminal_runtime_destination_changed");
+    const bindings = parsed.data;
+    const index = bindings.findIndex(
+      (binding) =>
+        binding.machineId === machineId && binding.containerId === terminal.containerId,
+    );
+    if (index !== -1) {
+      const binding = bindings[index]!;
+      if (
+        binding.pluginId !== native.pluginId ||
+        binding.operationId !== native.operationId ||
+        binding.installationRevision !== native.installationRevision ||
+        binding.artifactSha256 !== native.artifactSha256 ||
+        binding.resourceBindingDigest !== native.resourceBindingDigest ||
+        binding.ownerId !== native.ownerId ||
+        binding.ownerGeneration !== native.ownerGeneration ||
+        binding.terminalHostId !== native.terminalHostId ||
+        !this.terminalDemandBindingCurrent(binding)
+      )
+        fail("terminal_runtime_destination_changed");
+    } else if (snapshot.nativeDemand !== undefined) {
+      fail("terminal_runtime_destination_changed");
+    }
+    authorityFence.extendPrepared(native.requirements);
+    if (index === -1) bindings.push(native);
+    else bindings[index] = native;
+    authorityFence.bind({ ...snapshot, nativeDemand: bindings });
+    authorityFence.guard(() => {
+      if (!this.terminalDemandBindingCurrent(native, false))
+        fail("terminal_runtime_destination_changed");
+    });
+    authorityFence.guard(() => {
+      if (!this.terminalDemandBindingCurrent(native)) fail("terminal_runtime_destination_changed");
+    }, "admission");
+  }
+
   /** Immediate native admission; unavailable/refused terminals never become retryable jobs. */
   admitTerminal(
     auth: AuthContext,
@@ -5206,15 +5291,7 @@ export class JobService {
         stored?.launchRecipe?.runtime ??
         (stored?.runId === undefined
           ? null
-          : this.store.db
-              .query<{ pluginId: string; operationId: string }, [string, string, string, string]>(
-                `SELECT plugin_id AS pluginId, json_extract(request,'$.operationId') AS operationId FROM machine_jobs
-             WHERE machine_id=? AND json_extract(request,'$.terminal.terminalId')=?
-               AND json_extract(request,'$.terminal.containerId')=?
-               AND json_extract(request,'$.terminal.runId')=?
-             ORDER BY created_at DESC, job_id DESC LIMIT 1`,
-              )
-              .get(machineId, terminal.terminalId, terminal.containerId, stored.runId));
+          : this.terminalNativeJob(machineId, terminal)?.request);
       if (
         target?.terminalId !== terminal.terminalId ||
         stored?.machineId !== machineId ||

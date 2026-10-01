@@ -48,6 +48,10 @@ export class ActionAuthorityFence {
     private readonly isCurrent: () => boolean,
     private readonly contextScope: string | null,
     private readonly checkAuthority?: (current: AuthContext) => void,
+    private readonly admitAdditional?: (
+      current: AuthContext,
+      requirements: readonly ActionAuthorityRequirement[],
+    ) => void,
   ) {
     const credential = authService.credentialReference(auth);
     this.credential = {
@@ -96,6 +100,7 @@ export class ActionAuthorityFence {
       this.isCurrent,
       this.contextScope,
       this.checkAuthority,
+      this.admitAdditional,
     );
     retained.admit(this.requirements!);
     retained.bind(this.binding);
@@ -121,6 +126,21 @@ export class ActionAuthorityFence {
       ...requirements.map((value) => structuredClone(value)),
     ];
     this.checkCurrent();
+  }
+
+  /** Fresh host-resolved demand remains conjunctive and inside the sealed preparer ceiling. */
+  extendPrepared(requirements: readonly ActionAuthorityRequirement[]): void {
+    const current = this.checkCurrent();
+    if (this.admitAdditional === undefined) this.refuse("action preparation unavailable");
+    const additions = requirements.map((value) => structuredClone(value));
+    try {
+      this.admitAdditional(current, additions);
+      this.requirements = [...this.requirements!, ...additions];
+      this.checkCurrent();
+    } catch (error) {
+      this.close();
+      throw error;
+    }
   }
 
   snapshot(): ActionAuthoritySnapshotBinding {

@@ -693,6 +693,8 @@ test("harness restart refuses a freshly bound unavailable input without replacin
     const launched = await f.launch(run.id);
     const create = await f.openCreated(launched.runtime);
     const before = f.store.getTerminal(create.terminalId);
+    const layout = f.rooms.get(before!.containerId)!.tileLayout();
+    const jobs = f.store.db.query("SELECT job_id FROM machine_jobs ORDER BY job_id").all();
     f.descriptor.inputs = [
       { name: "material", from: { jobId: "missing-producer", output: "material" } },
     ];
@@ -700,11 +702,38 @@ test("harness restart refuses a freshly bound unavailable input without replacin
       terminalId: create.terminalId,
     });
     expect(refused.ok).toBe(false);
+    if (refused.ok) throw new Error("unavailable input admitted");
+    expect(refused.denial.message).toContain("input_source_unavailable:material");
     expect(f.sent.filter((message) => message.type === "terminal_restart")).toEqual([]);
     expect(f.store.getTerminal(create.terminalId)).toEqual(before);
+    expect(f.rooms.get(before!.containerId)!.tileLayout()).toEqual(layout);
+    expect(f.store.db.query("SELECT job_id FROM machine_jobs ORDER BY job_id").all()).toEqual(jobs);
+    expect(f.sent.filter((message) => message.type === "kill")).toEqual([]);
     // A new harness launch may review a different descriptor; an old recipe does
     // not authorize a missing source, and a refusal does not strand the terminal.
     delete f.descriptor.inputs;
+    const original = { ...f.descriptor };
+    for (const changed of [
+      { machineId: "forged-destination" },
+      { operationId: `${operationId}.forged` },
+      { installationRevision: "changed-revision" },
+      { artifactSha256: "b".repeat(64) },
+      { resourceBindingDigest: "c".repeat(64) },
+      { session: { ...launched.session, sessionId: "changed-session" } },
+    ]) {
+      Object.assign(f.descriptor, changed);
+      const outcome = await f.host.dispatch(f.root, "core.terminals.restart", {
+        terminalId: create.terminalId,
+      });
+      expect(outcome.ok).toBe(false);
+      expect(f.sent.filter((message) => message.type === "terminal_restart")).toEqual([]);
+      expect(f.sent.filter((message) => message.type === "kill")).toEqual([]);
+      expect(f.store.getTerminal(create.terminalId)).toEqual(before);
+      expect(f.rooms.get(before!.containerId)!.tileLayout()).toEqual(layout);
+      expect(f.store.db.query("SELECT job_id FROM machine_jobs ORDER BY job_id").all()).toEqual(jobs);
+      Object.assign(f.descriptor, original);
+      delete f.descriptor.session;
+    }
     expect(
       result(
         await f.host.dispatch(f.root, "core.terminals.restart", {
@@ -774,11 +803,40 @@ test("run terminal restart relaunches its harness session with fresh private sig
       expiresAt: run.expiresAt,
       renewals: 0,
     });
+    const initialSnapshot = f.service.jobs.get(create.runtime!.request.jobId)!.authoritySnapshot!;
+    const replacementSnapshot = f.service.jobs.get(replacement.request.jobId)!.authoritySnapshot!;
+    expect(replacementSnapshot.native).toMatchObject({
+      machineId: before.machineId,
+      containerId: before.containerId,
+      pluginId,
+      operationId,
+      installationRevision: f.descriptor.installationRevision,
+      artifactSha256: f.descriptor.artifactSha256,
+      resourceBindingDigest: f.descriptor.resourceBindingDigest,
+      ownerId: f.owner.ownerId,
+      ownerGeneration: f.owner.generation,
+      terminalHostId: f.owner.terminalHostId,
+    });
+    expect(replacementSnapshot.native!.runtimeDigest).not.toBe(initialSnapshot.native!.runtimeDigest);
+    expect(replacementSnapshot.action).toMatchObject({
+      actionName: "core.terminals.restart",
+      nativeDemand: [replacementSnapshot.native],
+      requirements: [
+        { cap: "terminals:write", ref: { kind: "container", containerId: before.containerId } },
+        ...initialSnapshot.native!.requirements,
+        ...replacementSnapshot.native!.requirements,
+      ],
+    });
+    expect(replacementSnapshot.action!.originalArgsDigest).toBe(
+      createHash("sha256").update(canonicalJobJson({ terminalId })).digest("hex"),
+    );
+    expect(replacementSnapshot.actionCredential).toMatchObject(f.auth.credentialReference(f.root));
     const publicState = JSON.stringify([
       outcome,
       f.store.listTerminals(),
       f.store.db.query("SELECT payload FROM events").all(),
       replacement.request,
+      replacementSnapshot,
     ]);
     expect(publicState).not.toContain(token);
     expect(publicState).not.toContain(oldToken);
