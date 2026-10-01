@@ -5,7 +5,7 @@
  * Gate polling timing lives in `gate-lib.ts` with the rest of the gate bootstrap; this file is
  * the driver and owns bounded protocol-operation deadlines.
  */
-import { rmSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { reserveLoopbackPort, sleep } from "./gate-lib.ts";
 
 interface CdpFrame {
@@ -70,6 +70,8 @@ function describeRemoteObject(value: unknown): string {
 export class Browser {
   private socket: WebSocket | null = null;
   private proc: Bun.Subprocess | null = null;
+  private privateBus: Bun.Subprocess | null = null;
+  private privateBusSocket: string | null = null;
   private transientProfile: string | null = null;
   private nextId = 1;
   /** DevTools protocol session (a CDP connection — canon "session", never a PTY). */
@@ -120,6 +122,65 @@ export class Browser {
   }
 
   /**
+   * Chromium's D-Bus client auto-launches a session bus when no usable address exists. That
+   * fork/exec path has stalled headless startup on hosted Linux, while an invalid address is
+   * retried by current Chromium. Give each browser a real, disposable bus instead.
+   */
+  private async startPrivateBus(port: number): Promise<string | null> {
+    if (process.platform !== "linux") return null;
+    const daemon = Bun.which("dbus-daemon");
+    if (daemon === null) throw new Error("no dbus-daemon available for isolated Chromium launch");
+
+    const socket = `/tmp/manifold-verify-dbus-${String(port)}-${String(Date.now())}`;
+    rmSync(socket, { force: true });
+    const bus = Bun.spawn(
+      [daemon, "--session", "--nofork", "--nopidfile", `--address=unix:path=${socket}`],
+      { stdout: "ignore", stderr: "pipe" },
+    );
+    this.privateBus = bus;
+    this.privateBusSocket = socket;
+    const stderr = new Response(bus.stderr).text();
+    const deadline = Date.now() + 2_000;
+    try {
+      while (!existsSync(socket)) {
+        if (bus.exitCode !== null) {
+          throw new Error(
+            `dbus-daemon exited with code ${String(bus.exitCode)} before its private socket came up: ${(
+              await stderr
+            ).slice(-4096)}`,
+          );
+        }
+        if (Date.now() > deadline) {
+          throw new Error("timed out waiting for dbus-daemon private socket");
+        }
+        await sleep(10);
+      }
+      return `unix:path=${socket}`;
+    } catch (error) {
+      await this.closePrivateBus();
+      throw error;
+    }
+  }
+
+  private async closePrivateBus(): Promise<void> {
+    const bus = this.privateBus;
+    this.privateBus = null;
+    if (bus !== null && bus.exitCode === null) {
+      bus.kill();
+      const timer = setTimeout(() => bus.kill("SIGKILL"), 5_000);
+      try {
+        await bus.exited;
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    if (this.privateBusSocket !== null) {
+      rmSync(this.privateBusSocket, { force: true });
+      this.privateBusSocket = null;
+    }
+  }
+
+  /**
    * Spawns a headless Chromium on a devtools port the kernel just confirmed free
    * ({@link reserveLoopbackPort}). No caller picks the port: the fixed per-gate bands and
    * the random picks that preceded this collided the moment two checkouts ran the gate at
@@ -128,13 +189,14 @@ export class Browser {
   async launch(options: { readonly incognito?: boolean } = {}): Promise<void> {
     const binary = Browser.detect();
     const port = reserveLoopbackPort();
-    // Headless verification needs no desktop bus. Merely deleting inherited addresses
-    // still lets libdbus reach the default system bus or auto-launch a session bus.
-    // A valid address naming a non-socket fails immediately without either fallback.
+    const busAddress = await this.startPrivateBus(port);
+    // Do not inherit runner buses or give Chromium an invalid endpoint. A private D-Bus daemon
+    // prevents libdbus auto-launch while letting its clients fail missing-service requests
+    // normally. Non-Linux launchers retain the previous non-connectable sentinel.
     const env = {
       ...process.env,
-      DBUS_SESSION_BUS_ADDRESS: "unix:path=/dev/null",
-      DBUS_SYSTEM_BUS_ADDRESS: "unix:path=/dev/null",
+      DBUS_SESSION_BUS_ADDRESS: busAddress ?? "unix:path=/dev/null",
+      DBUS_SYSTEM_BUS_ADDRESS: busAddress ?? "unix:path=/dev/null",
     };
     const profile = `/tmp/manifold-verify-${String(port)}-${String(Date.now())}`;
     this.transientProfile = options.incognito ? profile : null;
@@ -588,5 +650,6 @@ export class Browser {
       rmSync(this.transientProfile, { recursive: true, force: true });
       this.transientProfile = null;
     }
+    await this.closePrivateBus();
   }
 }
