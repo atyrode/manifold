@@ -5,6 +5,7 @@ import {
   AgentToolReplySchema,
   NativeAgentRunBindingSchema,
   MACHINE_AGENT_TOOLS_PROTOCOL_VERSION,
+  GOVERNED_CAPS,
   type AgentToolRequest,
   type AgentToolReply,
 } from "@manifold/protocol";
@@ -4304,15 +4305,9 @@ export class JobService {
             servicePolicies.set(ref.machineId, policies);
           }
         }
-        // Nothing is installed at a container, so there is no revision to consent to: a
-        // terminal the presser spawns or writes there, and the container authority a governed
-        // door hands the work it starts (ADR 0051), discharge against the caller alone.
-        const containerAuthority =
-          (cap === "terminals:spawn" ||
-            cap === "terminals:write" ||
-            cap === "containers:read" ||
-            cap === "containers:write") &&
-          ref.kind === "container";
+        // Ordinary workspace/container requirements discharge against the live caller.
+        // Only the closed native capability subset needs separate artifact-bound consent.
+        const callerAuthority = !GOVERNED_CAPS.includes(cap);
         const install = ref.kind === "service" ? null : this.resolve(ref);
         const fresh = context
           ? this.auth.explain(context, prior.requirement)
@@ -4322,12 +4317,12 @@ export class JobService {
           (install ? this.consentFor(install, ref, cap) : null);
         const discharged =
           context !== null &&
-          (containerAuthority ||
+          (callerAuthority ||
             install !== null ||
             (ref.kind === "service" && consent !== null)) &&
           this.auth.ceilingAdmits(context, cap, ref) &&
           fresh.allowed &&
-          (containerAuthority || consent !== null);
+          (callerAuthority || consent !== null);
         if (!discharged) allowed = false;
         const observedConsent =
           consent ?? (install ? this.consentFor(install, ref, cap, false) : null);

@@ -60,7 +60,7 @@ const machine: MachineHalf = {
   locations: {},
 };
 
-async function fixture(preparerCaps: readonly AuthoredCap[] = ["tokens:mint", "plugins:manage"]) {
+async function fixture(preparerCaps: readonly AuthoredCap[] = ["plugins:manage", "tokens:mint"]) {
   const dataDir = mkdtempSync(join(tmpdir(), "manifold-durable-binding-"));
   const path = join(dataDir, "hub.sqlite");
   const runtime = new FakeRuntime();
@@ -149,8 +149,8 @@ const input = z.strictObject({
   scheduleId: z.string(), extra: z.boolean(),
 });
 const scheduleAction = (name, caps, delegates) => defineServerAction({
-  name, title: name, caps, delegates, input, result: z.strictObject({}),
-  requirements: [{ cap: "machines:run", target: ["operation"] }],
+  name, title: name, caps: ["machines:run", ...caps], delegates, input, result: z.strictObject({}),
+  requirements: ["machines:run", ...caps].map(cap => ({ cap, target: ["operation"] })),
 });
 const prepare = async (_ctx, args) => ({
   args, targets: args.operation === undefined ? [] : [args.operation],
@@ -165,7 +165,7 @@ const register = async (ctx, args) => {
   });
   return {};
 };
-defineServerPlugin({
+const definition = {
   manifest: ${JSON.stringify(manifest)},
   actions: [
     scheduleAction("declared", ["tokens:mint"], ["machines:run"]),
@@ -187,7 +187,9 @@ defineServerPlugin({
       return { value: args.value };
     },
   },
-});
+};
+defineServerPlugin(definition);
+export default definition;
 `);
   const packed = await packPlugin(authorDir, join(dataDir, PLUGIN_UPLOADS_DIR, "binding.manifold-plugin.json"));
   const request = { source: packed.file, sha256: packed.sha256, hardened: false };

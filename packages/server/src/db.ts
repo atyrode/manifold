@@ -1153,7 +1153,7 @@ WHERE t.container_id IS NULL
 CREATE TEMP TABLE stage2_global_spawn_agents AS
 SELECT a.agent_id FROM agents a
 WHERE json_extract(a.grant_json,'$.reach')='subtree'
-  AND json_extract(a.grant_json,'$.targets')=json_array('manifold://')
+  AND EXISTS(SELECT 1 FROM json_each(a.grant_json,'$.targets') WHERE value='manifold://')
   AND json_type(a.grant_json,'$.authorityScope') IS NULL
   AND EXISTS(SELECT 1 FROM json_each(a.grant_json,'$.caps') WHERE value='terminals:spawn')
   AND json_extract(a.authorization_credential,'$.containerScope') IS NULL

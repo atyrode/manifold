@@ -86,7 +86,7 @@ async function terminalCommand(browser: Browser, command: string): Promise<void>
 /** Wait for the portal's occupant snapshot, not its already-painted spectator preview. */
 function writableSnapshots(browser: Browser) {
   const occupantChannels = new Set<string>();
-  const terminals = new Set<string>();
+  const terminals = new Map<string, number>();
   const offSent = browser.on("Network.webSocketFrameSent", (params) => {
     const response = params["response"];
     if (
@@ -116,7 +116,7 @@ function writableSnapshots(browser: Browser) {
     if (!parsed.success || parsed.data.type !== "terminal_snapshot") return;
     const frame = parsed.data;
     if (occupantChannels.has(`${String(params["requestId"])}:${frame.ch}`))
-      terminals.add(frame.terminalId);
+      terminals.set(frame.terminalId, (terminals.get(frame.terminalId) ?? 0) + 1);
   });
   return {
     terminals,
@@ -125,6 +125,24 @@ function writableSnapshots(browser: Browser) {
       offReceived();
     },
   };
+}
+
+async function engageTerminal(
+  browser: Browser,
+  writable: ReturnType<typeof writableSnapshots>,
+  terminalId: string,
+): Promise<void> {
+  const inactive = await visible(browser, ".xterm-host--inactive");
+  const previous = writable.terminals.get(terminalId) ?? 0;
+  await click(browser, ".xterm-host");
+  await waitFor(
+    () => (writable.terminals.get(terminalId) ?? 0) > (inactive ? previous : 0),
+    10_000,
+    50,
+  );
+  await browser.evaluate(
+    "(() => { const {promise,resolve}=Promise.withResolvers(); requestAnimationFrame(()=>requestAnimationFrame(resolve)); return promise; })()",
+  );
 }
 
 async function openSidebar(browser: Browser): Promise<void> {
@@ -214,11 +232,7 @@ for (const hardened of [false, true]) {
           50,
         );
         const marker = `CORE-FLEET-${hardened ? "PACKED" : "NATIVE"}-${container.discipline.toUpperCase()}`;
-        await click(browser, ".xterm-host");
-        await waitFor(() => writable.terminals.has(terminal.id), 10_000, 50);
-        await browser.evaluate(
-          "(() => { const {promise,resolve}=Promise.withResolvers(); requestAnimationFrame(()=>requestAnimationFrame(resolve)); return promise; })()",
-        );
+        await engageTerminal(browser, writable, terminal.id);
         await terminalCommand(
           browser,
           `printf '%s%s\\n' 'CORE-' 'FLEET-${hardened ? "PACKED" : "NATIVE"}-${container.discipline.toUpperCase()}'`,
@@ -231,6 +245,7 @@ for (const hardened of [false, true]) {
           10_000,
           50,
         );
+        await engageTerminal(browser, writable, terminal.id);
         await browser.evaluate<void>(`(() => {
           const frame = document.querySelector('.terminal-frame');
           const xterm = frame.querySelector('.xterm');

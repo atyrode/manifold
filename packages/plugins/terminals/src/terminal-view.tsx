@@ -636,12 +636,19 @@ export function TerminalView({
       if (message.terminalId !== terminalId) return;
       const generation = ++streamGeneration;
       const settled = (): void => settle(generation);
+      // A retained owner's unchanged watermark is already painted. Rewriting identical
+      // stream state on a transport handoff would clear the user's live selection.
+      const alreadyPainted =
+        snapshotSeq !== null && paintedRef.current && message.seq === lastWrittenSeq;
       clipboardRef.current?.reset();
       clipboardLiveRef.current = false;
       syncViewportRef.current?.();
-      pasteModeRef.current?.reset();
-      // Whatever is on screen — painted by this socket or by the one it replaced — is
-      // REPLACED by the snapshot, never appended to.
+      if (alreadyPainted) {
+        clipboardRef.current?.setPasteMode(pasteModeRef.current?.enabled ?? false);
+      } else {
+        pasteModeRef.current?.reset();
+      }
+      // Changed stream state replaces the screen; it is never appended to.
       snapshotSeq = message.seq;
       lastWrittenSeq = message.seq;
       paintedRef.current = true;
@@ -649,10 +656,14 @@ export function TerminalView({
         .filter(([seq]) => seq > message.seq)
         .sort(([left], [right]) => left - right);
       bufferedOutputs.clear();
-      graphicsRef.current?.writeSnapshot(
-        base64ToBytes(message.data),
-        queued.length === 0 ? settled : undefined,
-      );
+      if (alreadyPainted) {
+        if (queued.length === 0) settled();
+      } else {
+        graphicsRef.current?.writeSnapshot(
+          base64ToBytes(message.data),
+          queued.length === 0 ? settled : undefined,
+        );
+      }
       queued.forEach(([seq, data], index) => {
         terminal.write(base64ToBytes(data), index === queued.length - 1 ? settled : undefined);
         lastWrittenSeq = seq;

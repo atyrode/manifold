@@ -484,7 +484,11 @@ export class TerminalBroker implements TerminalPlacementPort {
         continue;
       }
       terminal.snapshotRequestOutstanding = false;
+      // Mounted LIVE views belong to their room channels, not this replaceable transport.
+      // Adoption will fence a fresh owner snapshot before forwarding any resumed output.
+      this.clearViewportIntents(terminal);
       for (const [viewerChannel, viewer] of terminal.viewers) {
+        if (viewer.state === "LIVE") continue;
         this.failViewer(
           terminal,
           viewerChannel,
@@ -493,6 +497,7 @@ export class TerminalBroker implements TerminalPlacementPort {
           "terminal machine disconnected",
         );
       }
+      this.arbitrateViewports(terminal);
     }
   }
 

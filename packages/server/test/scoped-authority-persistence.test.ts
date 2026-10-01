@@ -307,7 +307,13 @@ CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT);
 INSERT INTO meta VALUES ('schema_version','48');
 ${AUTHORITY_V37_FIXTURE_SQL}
 CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT,container_id TEXT,ts INTEGER,
-  principal_id TEXT,type TEXT,payload TEXT);
+  principal_id TEXT,type TEXT,payload TEXT,door TEXT,authority TEXT,targets TEXT,outcome TEXT,session TEXT,
+  run_id TEXT,credential_id TEXT);
+CREATE TABLE principal_access_pauses(
+  principal_id TEXT PRIMARY KEY REFERENCES principals(id) ON DELETE CASCADE,
+  paused_at INTEGER NOT NULL,
+  paused_by TEXT NOT NULL
+);
 ALTER TABLE agent_runs ADD COLUMN tools_json TEXT;
 ALTER TABLE agent_runs ADD COLUMN launch_target_json TEXT;
 ALTER TABLE agent_runs ADD COLUMN native_job_id TEXT;
@@ -466,6 +472,45 @@ function rows(db: Database, table: string): Record<string, unknown>[] {
 }
 
 describe("migration 49: durable account-shell compatibility", () => {
+  test("retains a live global Run when its legacy Agent has redundant root-covered targets", () => {
+    const dir = mkdtempSync(join(tmpdir(), "manifold-redundant-global-migration-"));
+    const path = join(dir, "state.sqlite");
+    seedV48(path);
+    const old = new Database(path, { strict: true });
+    const principalId = "global-agent-principal";
+    try {
+      old.query("INSERT INTO principals VALUES (?,'agent','Retained','#112233',1,NULL)").run(principalId);
+      old.query("UPDATE agents SET grant_json=json_set(grant_json,'$.targets',json(?)),status='enabled' WHERE agent_id='global-agent'")
+        .run(JSON.stringify([root, home]));
+      old.query("UPDATE agent_runs SET principal_id=?,state='active',activity='idle',finished_at=NULL,cleanup_failure=NULL,cleanup_revoked_credentials=0,cleanup_revoked_grants=0 WHERE id='global-run'").run(principalId);
+      old.query("UPDATE tokens SET principal_id=? WHERE id='global-run-token'").run(principalId);
+      old.query("UPDATE grants SET principal_id=? WHERE id='global-run-grant'").run(principalId);
+    } finally {
+      old.close();
+    }
+    let store: ServerStore | undefined;
+    try {
+      for (let boot = 0; boot < 2; boot++) {
+        store = new ServerStore(openDatabase(path));
+        const auth = new AuthService(store, "f".repeat(64), new FakeRuntime());
+        const retained = auth.authenticate("global-run-token");
+        const policy = auth.agentPolicyChallenge(retained);
+        auth.acknowledgeAgentPolicyV2({
+          revision: policy.revision,
+          acknowledgements: policy.required.map(({ id, digest }) => ({ id, digest })),
+        }, retained);
+        expect(auth.allowsNode(retained, "machines:shell", machineA)).toBe(true);
+        expect(auth.allowsNode(retained, "terminals:spawn", home)).toBe(true);
+        expect(store.getAgent("global-agent")?.grant.targets).toEqual([root, home]);
+        store.close();
+        store = undefined;
+      }
+    } finally {
+      store?.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("extends only old global subtree spawn grants and faithfully associated unconfined ceilings once", () => {
     const dir = mkdtempSync(join(tmpdir(), "manifold-shell-migration-"));
     const path = join(dir, "state.sqlite");
