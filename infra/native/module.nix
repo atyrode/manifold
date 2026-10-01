@@ -373,6 +373,19 @@ let
       exit 1
     fi
   '';
+  # Lexical disjointness is only meaningful without aliases into protected trees.
+  # The owner checks only its socket/state path: token custody belongs to transport.
+  checkShellPaths = paths: ''
+    for path in ${lib.escapeShellArgs paths}; do
+      while test "$path" != /; do
+        if test -L "$path"; then
+          echo 'Manifold shell private path contains a symbolic link; refusing startup' >&2
+          exit 1
+        fi
+        path="$(${pkgs.coreutils}/bin/dirname "$path")"
+      done
+    done
+  '';
   shellService = {
     User = shellAccount.name;
     Group = shellAccount.group;
@@ -465,8 +478,8 @@ in
       machineName = mkOption { type = types.str; default = ""; description = "Explicit enrollment name for this OS account's shell endpoint, distinct from native execution."; };
       user = mkOption { type = types.str; default = ""; description = "Existing configured OS account whose ordinary home, login shell, primary and NSS supplementary groups authorize every shell. This is an account-authority grant, not a sandbox or OS-root grant."; };
       serverUrl = mkOption { type = types.str; default = ""; description = "Explicit hub origin, including when the hub is local."; };
-      tokenFile = mkOption { type = types.nullOr types.str; default = null; description = "Quoted absolute runtime path to the account's regular nonsymlink 0600 enrollment token, in a 0700 parent owned by that same account. Never secret bytes or a Nix path literal; provisioning refuses unsafe custody rather than repairing, enrolling or rotating it."; };
-      stateDirectory = mkOption { type = types.str; default = ""; description = "Private normalized absolute runtime state directory owned by the selected account. Must not overlap native storage, credentials, operator sources/views, kernel interfaces or the Nix store."; };
+      tokenFile = mkOption { type = types.nullOr types.str; default = null; description = "Quoted absolute runtime path to the account's regular 0600 enrollment token, in a 0700 parent owned by that same account, with no symbolic link in any path component. Never secret bytes or a Nix path literal; provisioning refuses unsafe custody rather than repairing, enrolling or rotating it."; };
+      stateDirectory = mkOption { type = types.str; default = ""; description = "Private normalized absolute runtime state directory owned by the selected account, with no symbolic link in any state or socket path component. Must not overlap native storage, credentials, operator sources/views, kernel interfaces or the Nix store."; };
     };
   };
 
@@ -665,7 +678,7 @@ in
       unitConfig.RefuseManualStop = true;
       enableDefaultPath = false;
       environment = shellUnitEnvironment shellEnvironment;
-      preStart = checkShellIdentity;
+      preStart = checkShellIdentity + checkShellPaths [ shellSocket ];
       serviceConfig = shellService // {
         ExecStart = "${packages.manifold-agent}/bin/manifold-agent --terminal-host";
         OOMPolicy = "continue";
@@ -684,7 +697,7 @@ in
         MANIFOLD_MACHINE_NAME = cfg.shell.machineName;
         MANIFOLD_MACHINE_TOKEN_FILE = cfg.shell.tokenFile;
       });
-      preStart = checkShellIdentity + checkPrivateToken cfg.shell.tokenFile;
+      preStart = checkShellIdentity + checkShellPaths shellPaths + checkPrivateToken cfg.shell.tokenFile;
       serviceConfig = shellService // {
         ExecStart = "${packages.manifold-agent}/bin/manifold-agent";
         Restart = "always";
