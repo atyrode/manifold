@@ -494,6 +494,9 @@ their frozen lockfiles. Keep the stable tool checkout and the approved source ch
 in place; this tool does not fetch, update or delete either. Code's existing custom
 `plugins/pack.ts` export compiles the family using its own pinned sibling Manifold checkout.
 The frontend/workshop SDK comes from the separately selected current `manifoldRoot`.
+Every source-family row must already be explicitly installed on the hub with matching
+manifest, action declarations and dependency stamps. Workshop startup does not perform
+that initial installation or grant new authority; a missing/mismatched baseline is a hold.
 `workshop.example.json` records the non-secret configuration contract:
 
 - `manifoldRoot`: absolute current Manifold source checkout with the workshop SDK and
