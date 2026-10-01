@@ -1497,7 +1497,6 @@ test.each(["unchanged", "implementation", "profile", "manifest"] as const)(
       closed = true;
       recoveredStore = new ServerStore(openDatabase(path));
       const store = recoveredStore;
-      let service: JobService;
       const auth = new AuthService(store, "a".repeat(64), f.runtime, {
         decide: (request) => service.decide(request),
       });
@@ -1515,7 +1514,7 @@ test.each(["unchanged", "implementation", "profile", "manifest"] as const)(
       recoveredHost = await testPluginHost(store, auth, rooms, broker, f.runtime, {
         settingsPlugins: [restoredDefinition],
       });
-      service = new JobService(store, auth, f.runtime);
+      const service: JobService = new JobService(store, auth, f.runtime);
       recoveredHost.setJobs(service);
       broker.setJobs(service);
       f.proveOwner(service);
