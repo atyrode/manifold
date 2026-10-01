@@ -9138,6 +9138,132 @@ describe("reviewed same-plugin instance-service bootstrap", () => {
     }
   });
 
+  test("one reviewed provider and consumer request re-admits an unchanged instance installation (#910)", () => {
+    const f = bootstrap();
+    try {
+      const first = apply(f, proposal("bootstrap-readmission-first", f.machineId));
+      acknowledge(f, first.target.installationRevision!);
+      const previousProvider = startProvider(f);
+      advertise(f, first.entry.policy);
+      const previous = f.service.instanceServices.get(serviceId)!;
+      expect(
+        f.service.readDeployment(f.root, { deploymentId: "bootstrap-readmission-first" })
+          .targets[0]!.state,
+      ).toBe("ready");
+
+      f.store.setPluginEnabled(selfPlugin, false, "test", f.runtime.now());
+      f.service.disablePlugin(selfPlugin);
+      expect(f.service.jobs.cancellation(previousProvider.request.jobId)?.reason).toBe(
+        "plugin_disabled",
+      );
+      settle(f, previousProvider);
+      f.owner.resources = { tools: {}, anchors: {}, services: {}, serviceDefinitions: {} };
+      f.service.event(f.channel, { type: "resources", resources: f.owner.resources });
+      acknowledge(f, first.target.installationRevision!);
+      f.store.setPluginEnabled(selfPlugin, true, "test", f.runtime.now());
+      f.service.tick();
+      expect(f.service.describeInstanceService(f.root, { serviceId })).toMatchObject({
+        state: "unavailable",
+        reason: "installation_disabled",
+      });
+      f.commands.length = 0;
+
+      const value = proposal("bootstrap-readmission", f.machineId, template, previous.revision);
+      const review = f.service.reviewDeployment(f.root, value);
+      const target = review.targets[0]!;
+      expect(target).toMatchObject({
+        approvable: true,
+        reason: null,
+        installationRevision: first.target.installationRevision,
+        artifactSha256: first.target.artifactSha256,
+        resourceBindings: first.target.resourceBindings,
+      });
+      expect(target.instanceServices![0]!.policy).toEqual(first.entry.policy);
+      expect(f.service.jobs.installation(f.machineId, selfPlugin)?.enabled).toBe(false);
+      expect(f.commands).toEqual([]);
+
+      const deployment = f.service.applyDeployment(
+        f.root,
+        { request: value, reviewDigest: review.reviewDigest },
+        "readmission-trace",
+      );
+      expect(deployment.targets[0]).toMatchObject({
+        state: "installing",
+        reason: "owner_acknowledgement_pending",
+      });
+      expect(f.service.jobs.installation(f.machineId, selfPlugin)?.ready).toBe(false);
+      expect(f.commands.some((command) => command.type === "start")).toBe(false);
+      acknowledge(f, target.installationRevision!);
+      const provider = startProvider(f);
+      expect(provider.request.jobId).not.toBe(previousProvider.request.jobId);
+      expect(provider.request.installationRevision).toBe(first.target.installationRevision!);
+      advertise(f, target.instanceServices![0]!.policy);
+      expect(
+        f.service.readDeployment(f.root, { deploymentId: value.deploymentId }).targets[0],
+      ).toMatchObject({ state: "ready", reason: null });
+      const consumer = f.service.execute(f.root, selfPlugin, "readmitted-consumer", {
+        jobId: "readmitted-consumer",
+        machineId: f.machineId,
+        operationId: use,
+        input: { value: "safe" },
+        outputs: [],
+      });
+      expect(consumer.state).toBe("start-committed");
+      expect(consumer.request.installationRevision).toBe(first.target.installationRevision!);
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test.each(["unselected", "plugin-disabled", "purging"] as const)(
+    "an unchanged instance installation remains refused when %s (#910)",
+    (variant) => {
+      const f = bootstrap();
+      try {
+        const first = apply(f, proposal("bootstrap-denied-first", f.machineId));
+        acknowledge(f, first.target.installationRevision!);
+        const provider = startProvider(f);
+        advertise(f, first.entry.policy);
+        const previous = f.service.instanceServices.get(serviceId)!;
+        f.store.setPluginEnabled(selfPlugin, false, "test", f.runtime.now());
+        f.service.disablePlugin(selfPlugin);
+        settle(f, provider);
+        acknowledge(f, first.target.installationRevision!);
+        if (variant !== "plugin-disabled")
+          f.store.setPluginEnabled(selfPlugin, true, "test", f.runtime.now());
+        if (variant === "purging") f.service.purgePlugin(selfPlugin);
+        f.commands.length = 0;
+
+        const value =
+          variant === "unselected"
+            ? {
+                deploymentId: "bootstrap-unselected",
+                pluginId: selfPlugin,
+                targets: [{ machineId: f.machineId, platform: "linux-x64" as const }],
+                operationIds: [use],
+              }
+            : proposal("bootstrap-disabled", f.machineId, template, previous.revision);
+        const review = f.service.reviewDeployment(f.root, value);
+        expect(review.targets[0]).toMatchObject({
+          approvable: false,
+          reason: variant === "plugin-disabled" ? "plugin_disabled" : "service_runtime_changed",
+          installationRevision: first.target.installationRevision,
+        });
+        expect(() =>
+          f.service.applyDeployment(
+            f.root,
+            { request: value, reviewDigest: review.reviewDigest },
+            "denied-trace",
+          ),
+        ).toThrow("deployment_unapprovable");
+        expect(f.service.jobs.installation(f.machineId, selfPlugin)?.enabled).toBe(false);
+        expect(f.commands.some((command) => command.type === "start")).toBe(false);
+      } finally {
+        f.store.close();
+      }
+    },
+  );
+
   test("native acknowledgement may precede availability of the proposed service", () => {
     const f = bootstrap();
     try {
