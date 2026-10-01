@@ -21,6 +21,14 @@ export interface ActionAuthorityRequirement {
   readonly reach?: GrantReach;
 }
 
+/** Exact server harness dependency; native artifact identity cannot stand in for this. */
+export interface HarnessAuthoritySnapshotBinding {
+  readonly pluginId: string;
+  readonly harnessId: string;
+  readonly fingerprint: string;
+  readonly caps: readonly AuthoredCap[];
+}
+
 /** Serializable, hub-only effect evidence. Never put this on an owner or terminal frame. */
 export interface ActionAuthoritySnapshotBinding {
   readonly requirements: readonly ActionAuthorityRequirement[];
@@ -31,6 +39,7 @@ export interface ActionAuthoritySnapshotBinding {
   readonly machineId?: string;
   readonly containerId?: string;
   readonly terminalOwners?: readonly TerminalOwnerBinding[];
+  readonly harnesses?: readonly HarnessAuthoritySnapshotBinding[];
   readonly nativeDemand?: unknown;
 }
 
@@ -49,6 +58,14 @@ export class ActionAuthorityFence {
     readonly admissionOnly: boolean;
     active: boolean;
   }[] = [];
+  // A broker may retain its pending fence before entering a harness. Dependencies
+  // discovered there stay conjunctive for every already-retained continuation.
+  private harnessDependencies: {
+    entries: readonly {
+      readonly binding: HarnessAuthoritySnapshotBinding;
+      readonly check: () => void;
+    }[];
+  } = { entries: [] };
 
   constructor(
     private readonly authService: AuthService,
@@ -113,6 +130,7 @@ export class ActionAuthorityFence {
     retained.admit(this.requirements!);
     retained.bind(this.binding);
     retained.checks = this.checks;
+    retained.harnessDependencies = this.harnessDependencies;
     return retained;
   }
 
@@ -120,6 +138,17 @@ export class ActionAuthorityFence {
     this.checks = [
       ...this.checks,
       { check, admissionOnly: lifetime === "admission", active: true },
+    ];
+    this.checkCurrent();
+  }
+
+  dependOnHarness(binding: HarnessAuthoritySnapshotBinding, check: () => void): void {
+    this.checkCurrent();
+    if (this.harnessDependencies.entries.length >= 64)
+      this.refuse("harness dependency capacity exceeded");
+    this.harnessDependencies.entries = [
+      ...this.harnessDependencies.entries,
+      { binding: structuredClone(binding), check },
     ];
     this.checkCurrent();
   }
@@ -157,6 +186,9 @@ export class ActionAuthorityFence {
     if (this.requirements === null) this.refuse("action not admitted");
     return structuredClone({
       ...this.binding,
+      ...(this.harnessDependencies.entries.length === 0
+        ? {}
+        : { harnesses: this.harnessDependencies.entries.map(({ binding }) => binding) }),
       requirements: this.requirements,
       contextScope: this.contextScope,
     });
@@ -188,6 +220,7 @@ export class ActionAuthorityFence {
     try {
       this.checkAuthority?.(current);
       for (const guard of this.checks) if (guard.active) guard.check();
+      for (const dependency of this.harnessDependencies.entries) dependency.check();
     } catch (error) {
       this.close();
       throw error;

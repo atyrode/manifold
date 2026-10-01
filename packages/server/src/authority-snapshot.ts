@@ -95,6 +95,12 @@ export const AuthoritySnapshotSchema = z.strictObject({
         machineId: id,
         terminalHostId: id.nullable(),
       })).max(64).optional(),
+      harnesses: z.array(z.strictObject({
+        pluginId: id,
+        harnessId: id,
+        fingerprint: hash,
+        caps: z.array(AuthoredCapSchema).max(128),
+      })).max(64).optional(),
       nativeDemand: z.unknown().optional(),
     })
     .optional(),
@@ -153,6 +159,7 @@ export function normalizeAuthoritySnapshot(
             ...(action.machineId === undefined ? {} : { machineId: action.machineId }),
             ...(action.containerId === undefined ? {} : { containerId: action.containerId }),
             ...(action.terminalOwners === undefined ? {} : { terminalOwners: action.terminalOwners }),
+            ...(action.harnesses === undefined ? {} : { harnesses: action.harnesses }),
             ...(action.nativeDemand === undefined ? {} : { nativeDemand: action.nativeDemand }),
           },
         }),
@@ -204,7 +211,9 @@ export function restoreAuthoritySnapshot(
   const binding = snapshot.action;
   if (binding !== undefined) {
     if (
-      (binding.fingerprint !== undefined || binding.terminalOwners !== undefined) &&
+      (binding.fingerprint !== undefined ||
+        binding.terminalOwners !== undefined ||
+        binding.harnesses !== undefined) &&
       actionCurrent?.(binding) !== true
     )
       return null;

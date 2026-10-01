@@ -203,6 +203,7 @@ import { isContainerGrantCap, ServiceError } from "./auth.ts";
 import {
   ActionAuthorityFence,
   type ActionAuthorityRequirement,
+  type HarnessAuthoritySnapshotBinding,
   type TerminalOwnerBinding,
 } from "./action-authority-fence.ts";
 import { requireActionEffects, runActionPreparation } from "./action-preparation-phase.ts";
@@ -1096,6 +1097,22 @@ export type ServerPluginDef = PluginDef & {
   readonly inputValidation?: "guest";
 };
 
+interface CachedHarnessBinding {
+  readonly fingerprint: string;
+  readonly manifest: ServerPluginDef["manifest"];
+  readonly manifestVersion: string;
+  readonly declaration: ServerPluginDef["manifest"]["contributes"]["harness"];
+  readonly harnessId: string;
+  readonly caps: readonly AuthoredCap[];
+  readonly code: string;
+  readonly harness: NonNullable<ServerPluginDef["harness"]>;
+  readonly profileSchema: z.ZodType;
+  readonly launch: NonNullable<ServerPluginDef["harness"]>["launch"];
+  readonly sessions: NonNullable<ServerPluginDef["harness"]>["sessions"];
+  readonly resolveSession: NonNullable<ServerPluginDef["harness"]>["resolveSession"];
+  readonly send: NonNullable<ServerPluginDef["harness"]>["send"];
+}
+
 interface CachedActionBinding {
   readonly fingerprint: string;
   readonly revision: number;
@@ -1916,32 +1933,20 @@ export class PluginHost {
           }),
     };
     const credential = this.authService.credentialReference(nativeAuth);
+    const binding = this.harnessBinding(pluginId);
+    if (binding === null) throw new ServiceError("forbidden", "harness authority unavailable");
     const harness = def.harness;
-    const profileSchema = harness.profileSchema;
     const launch = harness.launch;
-    const sessions = harness.sessions;
-    const resolveSession = harness.resolveSession;
-    const send = harness.send;
     const epoch = this.actionEpochs.get(pluginId) ?? 0;
     const checkHarnessCurrent = (): void => {
-      const currentDef = this.defs.find((entry) => entry.manifest.id === pluginId);
       if (
         this.closed ||
-        !this.assembled.enabled(pluginId) ||
-        this.replacing.has(pluginId) ||
         (this.actionEpochs.get(pluginId) ?? 0) !== epoch ||
-        currentDef === undefined ||
-        currentDef.manifest !== def.manifest ||
-        currentDef.harness !== harness ||
-        harness.profileSchema !== profileSchema ||
-        harness.launch !== launch ||
-        harness.sessions !== sessions ||
-        harness.resolveSession !== resolveSession ||
-        harness.send !== send ||
+        this.harnessBinding(pluginId) !== binding ||
         this.installed.get(pluginId) !== install ||
         harnessCaps.some(
           (cap) =>
-            !withinCeiling(cap, currentDef.manifest.capabilities) ||
+            !withinCeiling(cap, def.manifest.capabilities) ||
             (install !== undefined &&
               !GOVERNED_CAPS.includes(cap) &&
               !withinCeiling(cap, install.row.grantedCaps)),
@@ -1952,7 +1957,12 @@ export class PluginHost {
     };
     // Keep the originating door's full ordered authority separate from the harness's
     // native credential. Retained native effects own this fence, not the data lease.
-    base.authorityFence?.guard(checkHarnessCurrent);
+    base.authorityFence?.dependOnHarness({
+      pluginId,
+      harnessId: id,
+      fingerprint: binding.fingerprint,
+      caps: harnessCaps,
+    }, checkHarnessCurrent);
     const authorityFence = base.authorityFence?.retain();
     const checkCurrent = (): void => {
       if (authorityFence === undefined) checkHarnessCurrent();
@@ -2138,6 +2148,8 @@ export class PluginHost {
         )
       )
         return false;
+      for (const dependency of binding.harnesses ?? [])
+        if (!this.harnessBindingCurrent(dependency)) return false;
       const install = this.installed.get(entry.plugin.id);
       if (install === undefined) return true;
       const granted = install.row.grantedCaps;
@@ -5422,6 +5434,88 @@ export class PluginHost {
         },
       },
     };
+  }
+
+  private readonly harnessFingerprints = new Map<string, CachedHarnessBinding>();
+
+  private harnessBinding(pluginId: string): CachedHarnessBinding | null {
+    const def = this.defs.find((entry) => entry.manifest.id === pluginId);
+    const harness = def?.harness;
+    const declaration = def?.manifest.contributes.harness;
+    if (
+      def === undefined ||
+      harness === undefined ||
+      declaration === undefined ||
+      !this.assembled.enabled(pluginId) ||
+      this.replacing.has(pluginId)
+    )
+      return null;
+    const code =
+      this.installed.get(pluginId)?.row.sha256 ??
+      this.trusted.get(pluginId)?.sha256 ??
+      this.builtinCodeIdentity;
+    const cached = this.harnessFingerprints.get(pluginId);
+    if (
+      cached !== undefined &&
+      cached.manifest === def.manifest &&
+      cached.manifestVersion === def.manifest.version &&
+      cached.declaration === declaration &&
+      cached.harnessId === declaration.id &&
+      sameOrderedValues(def.manifest.capabilities, cached.caps) &&
+      cached.code === code &&
+      cached.harness === harness &&
+      cached.profileSchema === harness.profileSchema &&
+      cached.launch === harness.launch &&
+      cached.sessions === harness.sessions &&
+      cached.resolveSession === harness.resolveSession &&
+      cached.send === harness.send
+    )
+      return cached;
+    const binding: CachedHarnessBinding = {
+      fingerprint: createHash("sha256")
+        .update(canonicalJobJson({
+          code,
+          manifest: def.manifest,
+          profile: z.toJSONSchema(harness.profileSchema, { io: "input" }),
+          launch: String(harness.launch),
+          sessions: String(harness.sessions),
+          resolveSession: String(harness.resolveSession),
+          send: String(harness.send),
+        }))
+        .digest("hex"),
+      manifest: def.manifest,
+      manifestVersion: def.manifest.version,
+      declaration,
+      harnessId: declaration.id,
+      caps: [...def.manifest.capabilities],
+      code,
+      harness,
+      profileSchema: harness.profileSchema,
+      launch: harness.launch,
+      sessions: harness.sessions,
+      resolveSession: harness.resolveSession,
+      send: harness.send,
+    };
+    this.harnessFingerprints.set(pluginId, binding);
+    return binding;
+  }
+
+  private harnessBindingCurrent(dependency: HarnessAuthoritySnapshotBinding): boolean {
+    const binding = this.harnessBinding(dependency.pluginId);
+    if (
+      binding === null ||
+      binding.harnessId !== dependency.harnessId ||
+      binding.fingerprint !== dependency.fingerprint
+    )
+      return false;
+    const install = this.installed.get(dependency.pluginId);
+    return dependency.caps.every(
+      (cap) =>
+        withinCeiling(cap, binding.caps) &&
+        (install === undefined ||
+          GOVERNED_CAPS.includes(cap) ||
+          withinCeiling(cap, install.row.grantedCaps)),
+    );
   }
 
   private readonly actionFingerprints = new WeakMap<AssemblyAction, CachedActionBinding>();

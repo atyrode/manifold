@@ -1391,6 +1391,9 @@ test.each(["unchanged", "implementation", "profile", "manifest"] as const)(
       expect(result(await f.host.dispatch(f.root, "core.terminals.restart", {
         terminalId: create.terminalId,
       }))).toEqual({});
+      const replacement = f.sent.find((message) => message.type === "terminal_restart")
+        ?.create?.runtime;
+      if (replacement === undefined) throw new Error("replacement native admission missing");
       const bound = f.service.jobs.get("cold-harness")!;
       const schedule = f.service.jobSchedules.listSchedules()[0]!;
       const independent = f.service.execute(f.root, pluginId, "independent", {
@@ -1469,11 +1472,13 @@ test.each(["unchanged", "implementation", "profile", "manifest"] as const)(
         .digest("hex")}`;
       if (change === "unchanged") {
         expect(service.jobs.cancellation(bound.request.jobId)).toBeNull();
+        expect(service.jobs.cancellation(replacement.request.jobId)).toBeNull();
         expect(service.jobs.get(occurrenceId)?.state).toBe("start-committed");
         expect(f.commands.filter((command) =>
           command.type === "start" && command.request.jobId === occurrenceId)).toHaveLength(1);
       } else {
         expect(service.jobs.cancellation(bound.request.jobId)?.mode).toBe("cancel");
+        expect(service.jobs.cancellation(replacement.request.jobId)?.mode).toBe("cancel");
         expect(service.jobs.get(occurrenceId)).toBeNull();
         expect(service.jobSchedules.getOccurrence(occurrenceId)).toBeNull();
         expect(service.jobSchedules.listSchedules()).toEqual([]);
