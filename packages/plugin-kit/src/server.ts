@@ -1627,54 +1627,55 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
     const preparation = Object.hasOwn(def.prepareActions ?? {}, frame.action)
       ? def.prepareActions?.[frame.action]
       : undefined;
-    if (preparation !== undefined) {
-      const requests = callsFor(frame.id, true);
-      const phase = { violated: false };
-      try {
-        const prepared = await preparing.run(phase, () =>
-          prepareActionInput(
-            action.input,
-            action.requirements ?? [],
-            frame.args,
-            preparationCtx(requests.call),
-            preparation,
-          ),
-        );
-        if (phase.violated)
-          throw new IsolateSliceUnavailable("action preparation attempted mutable host access");
-        handlerArgs = prepared.args;
-        targets = [...prepared.targets];
-        additionalRequirements = [...prepared.additionalRequirements];
-      } catch (error) {
-        refuse(
-          error instanceof ActionPreparationError || error instanceof z.ZodError
-            ? "invalid_args"
-            : "refused",
-          errorText(error),
-        );
-        return;
-      } finally {
-        requests.close();
-      }
-    } else {
-      // Retained no-preparer bundles keep their released one-parser target extraction.
-      const parsed = action.input.safeParse(frame.args);
-      if (!parsed.success) {
-        refuse("invalid_args", issueText(parsed.error));
-        return;
-      }
-      handlerArgs = parsed.data;
-      targets = (action.requirements ?? []).map((requirement) => {
-        let value: unknown = parsed.data;
-        for (const segment of requirement.target) {
-          value =
-            value !== null && typeof value === "object" && Object.hasOwn(value, segment)
-              ? Reflect.get(value, segment)
-              : undefined;
+    const phase = { violated: false };
+    try {
+      if (preparation !== undefined) {
+        const requests = callsFor(frame.id, true);
+        try {
+          const prepared = await preparing.run(phase, () =>
+            prepareActionInput(
+              action.input,
+              action.requirements ?? [],
+              frame.args,
+              preparationCtx(requests.call),
+              preparation,
+            ),
+          );
+          handlerArgs = prepared.args;
+          targets = [...prepared.targets];
+          additionalRequirements = [...prepared.additionalRequirements];
+        } finally {
+          requests.close();
         }
-        const target = ManifoldRefSchema.safeParse(value);
-        return target.success ? target.data : null;
-      });
+      } else {
+        // Keep legacy one-parser target extraction inside the same read-only phase.
+        targets = await preparing.run(phase, () => {
+          const parsed = action.input.safeParse(frame.args);
+          if (!parsed.success) throw new ActionPreparationError(issueText(parsed.error));
+          handlerArgs = parsed.data;
+          return (action.requirements ?? []).map((requirement) => {
+            let value: unknown = parsed.data;
+            for (const segment of requirement.target) {
+              value =
+                value !== null && typeof value === "object" && Object.hasOwn(value, segment)
+                  ? Reflect.get(value, segment)
+                  : undefined;
+            }
+            const target = ManifoldRefSchema.safeParse(value);
+            return target.success ? target.data : null;
+          });
+        });
+      }
+      if (phase.violated)
+        throw new IsolateSliceUnavailable("action preparation attempted mutable host access");
+    } catch (error) {
+      refuse(
+        error instanceof ActionPreparationError || error instanceof z.ZodError
+          ? "invalid_args"
+          : "refused",
+        errorText(error),
+      );
+      return;
     }
     const admission = Promise.withResolvers<boolean>();
     admissions.set(frame.id, admission.resolve);

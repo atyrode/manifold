@@ -1525,6 +1525,145 @@ describe("named storage migrations", () => {
   );
 });
 
+describe("legacy action preparation", () => {
+  test("parses once, retains child-owned values and extracts nullable targets before admission", async () => {
+    const target = { kind: "container" as const, containerId: "approved" };
+    let parses = 0;
+    let handled = 0;
+    const fake = host(
+      {
+        manifest,
+        actions: [
+          {
+            name: "open",
+            title: "Open",
+            caps: ["containers:read"],
+            requirements: [{ cap: "containers:read", target: ["destination", "ref"] }],
+            input: z
+              .strictObject({ containerId: z.string().optional(), secret: z.string() })
+              .transform(({ containerId, secret }) => {
+                parses += 1;
+                return {
+                  destination:
+                    containerId === undefined
+                      ? undefined
+                      : { ref: { kind: "container" as const, containerId } },
+                  secret: new TextEncoder().encode(`${secret}!`),
+                };
+              }),
+            result: z.string(),
+          },
+        ],
+        handlers: {
+          open: async (_ctx, args: { secret: Uint8Array }) => {
+            handled += 1;
+            return new TextDecoder().decode(args.secret);
+          },
+        },
+      },
+      false,
+    );
+    load(fake);
+    await fake.next();
+    fake.send({
+      t: "dispatch",
+      id: "missing",
+      action: "open",
+      args: { secret: "not-admitted" },
+      ctx: ctxOf(),
+    });
+    expect(await fake.next()).toEqual({ t: "prepared", id: "missing", targets: [null] });
+    fake.send({ t: "admitted", id: "missing", allowed: false });
+    expect(handled).toBe(0);
+    fake.send({
+      t: "dispatch",
+      id: "present",
+      action: "open",
+      args: { containerId: target.containerId, secret: "child-owned" },
+      ctx: ctxOf(),
+    });
+    expect(await fake.next()).toEqual({ t: "prepared", id: "present", targets: [target] });
+    expect(parses).toBe(2);
+    expect(handled).toBe(0);
+    fake.send({ t: "admitted", id: "present", allowed: true });
+    expect(await fake.next()).toEqual({
+      t: "dispatched",
+      id: "present",
+      outcome: { ok: true, result: "child-owned!", emits: [] },
+    });
+    expect(handled).toBe(1);
+  });
+
+  test("target extraction cannot stage emissions through a still-admitted context", async () => {
+    const captured = Promise.withResolvers<GuestCtx>();
+    const release = Promise.withResolvers<void>();
+    let retained: GuestCtx;
+    let handled = 0;
+    const fake = host(
+      {
+        manifest,
+        actions: [
+          { name: "hold", title: "Hold", caps: [], input: z.null(), result: z.null() },
+          {
+            name: "review",
+            title: "Review",
+            caps: ["containers:read"],
+            requirements: [{ cap: "containers:read", target: ["target"] }],
+            input: z.strictObject({}).transform(() => ({
+              get target() {
+                try {
+                  retained.emit({ kind: "plugin", pluginId: manifest.id }, "thing_happened");
+                } catch {
+                  // A swallowed attempt must still refuse preparation.
+                }
+                return { kind: "container", containerId: "approved" };
+              },
+            })),
+            result: z.null(),
+          },
+        ],
+        handlers: {
+          hold: async (ctx) => {
+            captured.resolve(ctx);
+            await release.promise;
+            return null;
+          },
+          review: async () => {
+            handled += 1;
+            return null;
+          },
+        },
+      },
+      false,
+    );
+    load(fake);
+    await fake.next();
+    fake.send({ t: "dispatch", id: "held", action: "hold", args: null, ctx: ctxOf() });
+    expect(await fake.next()).toMatchObject({ t: "prepared", id: "held" });
+    fake.send({ t: "admitted", id: "held", allowed: true });
+    retained = await captured.promise;
+    try {
+      fake.send({ t: "dispatch", id: "review", action: "review", args: {}, ctx: ctxOf() });
+      expect(await fake.next()).toMatchObject({
+        t: "dispatched",
+        id: "review",
+        outcome: { ok: false, rule: "refused" },
+      });
+      expect(handled).toBe(0);
+      expect(fake.sent.some((frame) => frame.t === "prepared" && frame.id === "review")).toBe(
+        false,
+      );
+    } finally {
+      release.resolve();
+    }
+    expect(await fake.next()).toEqual({
+      t: "dispatched",
+      id: "held",
+      outcome: { ok: true, result: null, emits: [] },
+    });
+  });
+});
+
 describe("sealed action preparation", () => {
   const preparedManifest: PluginManifest = {
     ...manifest,

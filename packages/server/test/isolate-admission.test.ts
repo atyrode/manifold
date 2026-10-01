@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import type { PluginManifest } from "@manifold/protocol";
 import type { ActionPreparationCtx, PreparedRequirement } from "@manifold/protocol";
 import { AgentSchema, AgentRunSchema, type AgentRunAuthority } from "@manifold/protocol";
+import { AuthService } from "../src/auth.ts";
 import { IsolateDenial } from "../src/isolate/contract.ts";
 import { IsolateSupervisor } from "../src/isolate/supervisor.ts";
 import { silentLogger } from "../src/log.ts";
@@ -154,6 +155,126 @@ test("sealed preparation keeps child normalization private, denies mutations and
     store.close();
   }
 });
+
+test.each(["transform", "preprocess"] as const)(
+  "legacy %s review cannot borrow a live dispatch's storage, identity or job authority",
+  async (parser) => {
+    const runtime = new FakeRuntime();
+    const store = testStore();
+    const supervisor = new IsolateSupervisor({ logger: silentLogger, runtime });
+    const declared: PluginManifest = {
+      ...manifest,
+      id: "test.legacyparser",
+      capabilities: ["containers:read", "machines:mint", "jobs:cancel"],
+    };
+    const storage = store.pluginStorage(declared.id);
+    const ownerKey = "a".repeat(64);
+    const auth = new AuthService(store, ownerKey, runtime);
+    const owner = auth.authenticate(ownerKey);
+    const cancelled: string[] = [];
+    const identity: Pick<ActionCtx["identity"], "enrollMachine"> = {
+      enrollMachine: (name) => {
+        const { machine, machineToken } = auth.enrollMachine(name, owner);
+        return {
+          ok: true,
+          value: {
+            created: true,
+            machine: { id: machine.id, name: machine.name },
+            machineToken,
+          },
+        };
+      },
+    };
+    const jobs: Pick<ActionCtx["jobs"], "cancel"> = {
+      cancel: async (node) => {
+        cancelled.push(node.jobId);
+      },
+    };
+    const ctx = {
+      traceId: 1,
+      callerPlugin: null,
+      agentRun: null,
+      principal: owner.principal,
+      auth: {
+        principal: owner.principal,
+        caps: ["*"],
+        isRoot: true,
+        containerScope: null,
+        allows: () => true,
+      },
+      containerScope: null,
+      storage,
+      identity,
+      jobs,
+      now: () => runtime.now(),
+      admitPrepared: () => {},
+      emit: () => {
+        throw new Error("no emissions declared");
+      },
+    } as unknown as ActionCtx;
+    const target = { kind: "container" as const, containerId: "approved" };
+    const reviewed: (readonly unknown[])[] = [];
+    const reviewCtx: ActionCtx = {
+      ...ctx,
+      preparationMode: "review",
+      admitPrepared: (targets) => {
+        reviewed.push(targets);
+      },
+    };
+    let holding: Promise<unknown> | undefined;
+    try {
+      const { def } = await supervisor.load({
+        pluginId: declared.id,
+        manifest: declared,
+        dir: resolve(import.meta.dir, "fixtures/isolate-legacy-parser-guest"),
+        hardenedContract: 11,
+      });
+      holding = def.handlers.hold!(ctx, null as never);
+      void holding.catch(() => {});
+      await def.handlers.ready!(ctx, null as never);
+      for (const mode of ["direct", "microtask", "descendant"] as const) {
+        const key = `${parser}-${mode}`;
+        const before = reviewed.length;
+        const outcome = await def.handlers[parser]!(
+          reviewCtx,
+          { mode, key, text: "secret", target } as never,
+        );
+        if (mode === "descendant") {
+          expect(outcome).toEqual({ targets: [target], additionalRequirements: [] });
+          expect(reviewed).toEqual([[target]]);
+        } else {
+          expect(outcome).toMatchObject({ refused: expect.any(String) });
+          expect(reviewed.length).toBe(before);
+        }
+        // The checkpoint releases and drains a parser descendant only AFTER review answered.
+        expect(await def.handlers.checkpoint!(ctx, null as never)).toEqual({
+          handled: 0,
+          blocked: [true, true, true],
+        });
+        expect(await storage.get(key)).toBeNull();
+        expect(store.getMachineByName(key)).toBeNull();
+        expect(cancelled).toEqual([]);
+      }
+      expect(await storage.keys()).toEqual([]);
+      expect(
+        await def.handlers[parser]!(
+          ctx,
+          { mode: "pure", key: "ordinary", text: "child-owned", target } as never,
+        ),
+      ).toEqual({ text: "child-owned!", blocked: [false, false, false] });
+      expect(await storage.get("ordinary")).toBe("child-owned!");
+      expect(store.getMachineByName("ordinary")).toMatchObject({ name: "ordinary" });
+      expect(cancelled).toEqual(["ordinary"]);
+      await def.handlers.finish!(ctx, null as never);
+      expect(await holding).toBeNull();
+      expect(await storage.get("retained-after-review")).toBe("admitted");
+    } finally {
+      await supervisor.close();
+      await holding?.catch(() => {});
+      store.close();
+    }
+  },
+);
 
 test("a guest cannot add or replace its preparer ceiling at load", async () => {
   const supervisor = new IsolateSupervisor({ logger: silentLogger, runtime: new FakeRuntime() });
