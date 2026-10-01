@@ -19,9 +19,10 @@ let
     exec ${pkgs.gitMinimal}/bin/git hash-object --stdin < ${closureMessage}
   '';
   shellHome = "/home/account shell";
-  shellState = "/srv/account shell/state";
-  shellToken = "/srv/account shell/credentials/token";
+  shellState = "/srv/account shell/owner/state";
+  shellToken = "/srv/account shell/credentials/private/token";
   shellSocket = "${shellState}/terminal-host/host.sock";
+  shellOperatorAnchor = "/srv/shell-fixture/operator-anchor";
   shellProfile = pkgs.writeShellScriptBin "user-profile-only" ''
     printf 'user-profile:%s\n' "$USER"
   '';
@@ -950,6 +951,7 @@ in
       script = ''
         set -eu
         install -d -o root -g root -m 0755 /srv/shell-fixture
+        install -d -o account-shell -g shell-primary -m 0700 '${shellOperatorAnchor}'
         install -d -o root -g shell-access -m 0750 /srv/shell-fixture/group
         printf group-access > /srv/shell-fixture/group/readable
         chown root:shell-access /srv/shell-fixture/group/readable
@@ -1122,12 +1124,17 @@ in
     coexist = { ... }: {
       imports = [ common shellAccount ];
       services.manifold.execution = {
+        operatorAnchors.shell-fixture.path = shellOperatorAnchor;
         runtimeTools.python = [{
           source = "${nativePython}/bin/python3";
           target = "/usr/bin/python3";
           kind = "file";
         }];
         runtimeToolClosures.python = [ pkgs.python3 ];
+      };
+      systemd.services.shell-fixture-files = {
+        before = [ "manifold-operator-anchors.service" ];
+        requiredBy = [ "manifold-operator-anchors.service" ];
       };
       systemd.services.shell-fixture-enrollment = {
         after = [ "manifold-server.service" "manifold-transport.service" ];
@@ -1184,7 +1191,7 @@ in
                 "manifold-shell-transport.service", hub_unit, "manifold-owner.service",
             ]), (field, dependencies)
         token = shlex.quote("${shellToken}")
-        token_parent = shlex.quote("/srv/account shell/credentials")
+        token_parent = shlex.quote("${builtins.dirOf shellToken}")
         state = shlex.quote("${shellState}")
         socket_path = shlex.quote("${shellSocket}")
         for path in [state, shlex.quote("${shellState}/terminal-host"), token_parent]:
@@ -1258,6 +1265,31 @@ in
             node.wait_until_succeeds(client_command + " ready", timeout=180)
             assert json.loads(node.succeed(client_command + " io")) == initial
 
+        # A real private basename and parent do not make an aliased ancestor safe.
+        # Beside native execution the target is already a held, idmapped operator view.
+        credential_root = shlex.quote("/srv/account shell/credentials")
+        exposed_credentials = shlex.quote("${shellOperatorAnchor}/credentials")
+        node.succeed("systemctl stop manifold-shell-transport.service")
+        node.succeed(f"mv {credential_root} {exposed_credentials} && ln -s {exposed_credentials} {credential_root}")
+        node.succeed(f"test -L {credential_root} && test ! -L {token_parent} && test ! -L {token} && test -f {token}")
+        assert node.succeed(f"stat -c '%a %U %G' {token_parent}").strip() == "700 account-shell shell-primary"
+        assert node.succeed(f"stat -c '%a %U %G' {token}").strip() == "600 account-shell shell-primary"
+        if node == coexist:
+            node.succeed("runuser -u manifold -- test -r /run/manifold-anchors/shell-fixture/credentials/private/token")
+        metadata_command = f"stat -c '%d:%i:%u:%g:%a:%s:%Y:%Z' {credential_root} {token_parent} {token}"
+        aliased_metadata = node.succeed(metadata_command)
+        node.fail("systemctl start manifold-shell-transport.service")
+        assert node.succeed("systemctl show -p MainPID --value manifold-shell-transport.service").strip() == "0"
+        node.succeed("systemctl stop manifold-shell-transport.service")
+        assert node.succeed(metadata_command) == aliased_metadata, "transport repaired aliased credential custody"
+        assert node.succeed("systemctl show -p MainPID --value manifold-shell-owner.service").strip() == shell_owner
+        assert node.succeed("systemctl show -p NRestarts --value manifold-shell-owner.service").strip() == owner_restarts
+        node.succeed(f"rm {credential_root} && mv {exposed_credentials} {credential_root}")
+        node.succeed("systemctl reset-failed manifold-shell-transport.service")
+        node.succeed("systemctl start manifold-shell-transport.service")
+        node.wait_until_succeeds(client_command + " ready", timeout=180)
+        assert json.loads(node.succeed(client_command + " io")) == initial
+
         admission = dict(hub="http://127.0.0.1:7777", machine_id=initial["machineId"], owner_key_file=key_file)
         shutdown = dict(socket="${shellSocket}", terminal_host_id=initial["terminalHostId"])
         drained = maintenance(node, "drain", **admission)
@@ -1277,6 +1309,32 @@ in
         node.succeed("sleep 5")
         assert node.succeed("systemctl show -p MainPID --value manifold-shell-owner.service").strip() == "0"
         assert node.succeed("systemctl show -p NRestarts --value manifold-shell-owner.service").strip() == owner_restarts
+
+        # Only after exact-owner shutdown may this fixture alter its private state.
+        # The state and socket parent themselves remain real 0700 account directories.
+        # Keep the alias in place until guest teardown, so automatic retries cannot
+        # accidentally start a new owner between the refusal and shutdown assertions.
+        node.succeed("systemctl stop manifold-shell-transport.service")
+        owner_root = shlex.quote("/srv/account shell/owner")
+        exposed_owner = shlex.quote("${shellOperatorAnchor}/owner")
+        socket_parent = shlex.quote("${shellState}/terminal-host")
+        node.succeed(f"mv {owner_root} {exposed_owner} && ln -s {exposed_owner} {owner_root}")
+        node.succeed(f"test -L {owner_root} && test ! -L {state} && test ! -L {socket_parent} && test ! -e {socket_path}")
+        for path in [state, socket_parent]:
+            assert node.succeed(f"stat -c '%a %U %G' {path}").strip() == "700 account-shell shell-primary"
+        if node == coexist:
+            node.succeed("runuser -u manifold -- test -x /run/manifold-anchors/shell-fixture/owner/state/terminal-host")
+        metadata_command = f"stat -c '%d:%i:%u:%g:%a:%s:%Y:%Z' {owner_root} {state} {socket_parent}"
+        aliased_metadata = node.succeed(metadata_command)
+        for unit in ["manifold-shell-owner.service", "manifold-shell-transport.service"]:
+            node.succeed("systemctl reset-failed " + unit)
+            node.fail("systemctl start " + unit)
+            assert node.succeed("systemctl show -p MainPID --value " + unit).strip() == "0"
+            if unit == "manifold-shell-transport.service":
+                node.succeed("systemctl stop " + unit)
+        node.succeed(f"test ! -e {socket_path}")
+        assert node.succeed(metadata_command) == aliased_metadata, "startup repaired aliased owner state"
+
         if node == coexist:
             assert node.succeed("systemctl show -p MainPID --value manifold-owner.service").strip() == native_owner
             assert node.succeed("sha256sum /var/lib/manifold/owner-template.json /var/lib/manifold/job-owner/config.json") == native_configuration
