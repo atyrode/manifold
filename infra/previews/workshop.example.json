@@ -1,0 +1,9 @@
+{
+  "manifoldRoot": "/home/alex/manifold-dev",
+  "sourceRoot": "/home/alex/code-workshop/code/plugins",
+  "buildModule": "/home/alex/code-workshop/code/plugins/pack.ts",
+  "hubUrl": "http://127.0.0.1:7912",
+  "frontendPort": 7913,
+  "publicHost": "preview.manifold.tyrode.dev",
+  "deliver": "docker:manifold-dev-manifold-1"
+}
