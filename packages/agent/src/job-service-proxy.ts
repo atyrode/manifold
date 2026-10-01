@@ -14,6 +14,11 @@ import {
   ServiceBindingSchema,
   ServicePolicySchema,
   guestServiceRefusal,
+  readServiceUsage,
+  serviceModelName as modelName,
+  serviceModelPrice as priceOf,
+  serviceCallCost as callCost,
+  type ServiceMeteredUsage as MeteredUsage,
   type JobEvent,
   type JobRequest,
   type JobResult,
@@ -26,7 +31,6 @@ import { ServiceFailure } from "./job-services.ts";
 import type { AuthorizeServiceCall, ResolveServiceCredential } from "./job-services.ts";
 
 type ProxyOperation = Extract<ServicePolicy["operations"][string], { kind: "http-proxy" }>;
-type ModelPrice = NonNullable<ServicePolicy["prices"]>["models"][string];
 /** Which provider wire a metered operation speaks; the policy states it, the proxy never guesses. */
 type MeterKind = NonNullable<ProxyOperation["meter"]>["kind"];
 /** Totals and ceilings as the protocol states them; the proxy owns neither, it reads both. */
@@ -240,102 +244,6 @@ const DATA_FIELD = Buffer.from("data:");
 /** What the caller is answered, and what the call is reported as, when a metered 2xx states no
  * usage the meter can read: a refusal, not a success that happened to cost nothing. */
 const UNREADABLE_USAGE = 502;
-type MeteredUsage = {
-  model: string | undefined;
-  inputTokens: number;
-  outputTokens: number;
-  cachedInputTokens: number;
-  /** Set when the wire's own terminal frame states the turn failed: the numbers are still the
-   * bill, but the status to journal is this one, never the 2xx such a stream began with. */
-  failedStatus?: number;
-};
-function tokenCount(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
-}
-function modelName(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 && value.length <= 256 ? value : undefined;
-}
-/** The provider's own numbers under either OpenAI spelling: chat completions report
- * `prompt_tokens`/`completion_tokens`, the responses API `input_tokens`/`output_tokens` and
- * wraps a streamed completion in `response`. Nothing but `usage` and `model` is read. */
-function readUsage(value: unknown): MeteredUsage | undefined {
-  if (typeof value !== "object" || value === null) return undefined;
-  const body = value as Record<string, unknown>;
-  const nested =
-    typeof body.response === "object" && body.response !== null
-      ? (body.response as Record<string, unknown>)
-      : undefined;
-  const reported = body.usage ?? nested?.usage;
-  if (typeof reported !== "object" || reported === null) return undefined;
-  const usage = reported as Record<string, unknown>;
-  const inputTokens = tokenCount(usage.prompt_tokens ?? usage.input_tokens);
-  const outputTokens = tokenCount(usage.completion_tokens ?? usage.output_tokens);
-  if (inputTokens === undefined || outputTokens === undefined) return undefined;
-  const detail = usage.prompt_tokens_details ?? usage.input_tokens_details;
-  const cached =
-    typeof detail === "object" && detail !== null
-      ? tokenCount((detail as Record<string, unknown>).cached_tokens)
-      : undefined;
-  return {
-    model: modelName(body.model) ?? modelName(nested?.model),
-    inputTokens,
-    outputTokens,
-    cachedInputTokens: Math.min(cached ?? 0, inputTokens),
-  };
-}
-/** Pi-ai's own wire, where a turn's numbers live on the canonical assistant message the terminal
- * frame carries - `done`'s `message`, `error`'s `error`, or the whole body of a non-streamed
- * answer - never on a delta's rolling `partial`, which is not the turn's bill. `input` is the
- * fresh input bucket, `cacheRead` the cached one, and `cacheWrite` additional physical input.
- * The protocol counts all three as input, with cached reads named as a subset. With no
- * dedicated cache-write price, writes use the existing fresh-input rate.
- * An `error` terminal is a turn that failed or was aborted - which is how this wire projects every
- * upstream failure, on a stream it has already begun with a 2xx - so its numbers are read like any
- * other turn's and the call is marked failed: what it cost is still spent, but it did not
- * complete. */
-function readPiNativeUsage(value: unknown): MeteredUsage | undefined {
-  if (typeof value !== "object" || value === null) return undefined;
-  const body = value as Record<string, unknown>;
-  const answer =
-    typeof body.message === "object" && body.message !== null
-      ? (body.message as Record<string, unknown>)
-      : undefined;
-  const failed =
-    !answer && typeof body.error === "object" && body.error !== null
-      ? (body.error as Record<string, unknown>)
-      : undefined;
-  const reported = body.usage ?? answer?.usage ?? failed?.usage;
-  if (typeof reported !== "object" || reported === null) return undefined;
-  const usage = reported as Record<string, unknown>;
-  const input = tokenCount(usage.input);
-  const output = tokenCount(usage.output);
-  if (input === undefined || output === undefined) return undefined;
-  const cached = tokenCount(usage.cacheRead) ?? 0;
-  const written = tokenCount(usage.cacheWrite) ?? 0;
-  // A failed turn is journaled with the status that message states - `errorStatus` is the
-  // provider's own, set by every provider's catch block on this wire - and with a bad gateway
-  // when it states none or states a success, which is not an outcome a failure may report.
-  const stated = failed?.errorStatus;
-  const failedStatus =
-    typeof stated === "number" && Number.isInteger(stated) && stated >= 400 && stated <= 599
-      ? stated
-      : UNREADABLE_USAGE;
-  return {
-    // The model is the one the request named: this wire reports no model id of its own, and the
-    // operator who chose it must read back what they chose.
-    model: undefined,
-    inputTokens: input + cached + written,
-    outputTokens: output,
-    cachedInputTokens: cached,
-    ...(failed ? { failedStatus } : {}),
-  };
-}
-/** One reader per kind, exhaustive by construction: a new kind is a new entry here, never a
- * silent fallthrough to another provider's spelling. */
-const USAGE_READERS: Record<MeterKind, (value: unknown) => MeteredUsage | undefined> = {
-  "openai-usage": readUsage,
-  "pi-native-usage": readPiNativeUsage,
-};
 /** Relays every byte the instant it arrives and keeps only what a usage read needs: an event
  * stream's current frame, or a JSON body already bounded by `maxResponseBytes`. A 2xx whose
  * usage it cannot read ends the caller's stream: an unreadable frame is not a free call. */
@@ -483,24 +391,6 @@ function meteredRequest(body: Buffer, kind: MeterKind): { model: string; forward
     model,
     forward: Buffer.from(JSON.stringify({ ...call, stream_options: options }), "utf8"),
   };
-}
-function priceOf(policy: ServicePolicy, model: string): ModelPrice | undefined {
-  const prices = policy.prices;
-  if (!prices) return undefined;
-  return Object.hasOwn(prices.models, model) ? prices.models[model] : prices.default;
-}
-/** Integer micro-dollars rounded to the nearest, in exact arithmetic: tokens times a
- * per-million price leaves the safe-integer range long before either factor does. */
-function callCost(price: ModelPrice | undefined, usage: MeteredUsage): number {
-  if (!price) return 0;
-  const cached = BigInt(usage.cachedInputTokens);
-  const fresh = BigInt(usage.inputTokens) - cached;
-  const total =
-    fresh * BigInt(price.inputPerMillion) +
-    cached * BigInt(price.cachedInputPerMillion ?? price.inputPerMillion) +
-    BigInt(usage.outputTokens) * BigInt(price.outputPerMillion);
-  const micros = (total + 500000n) / 1000000n;
-  return micros > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(micros);
 }
 /** At the ceiling, not past it: the call that would reach `calls` is the one refused. */
 function reachedCeiling(
@@ -1089,7 +979,7 @@ export async function createJobServiceProxy(
       const bounded = new BoundedBody(operation.maxResponseBytes, secret);
       if (metering)
         meter = new UsageMeter(
-          USAGE_READERS[metering.kind],
+          (value) => readServiceUsage(metering.kind, value),
           mime === "text/event-stream",
           operation.maxResponseBytes,
           status >= 200 && status < 300,

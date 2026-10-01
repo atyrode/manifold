@@ -10,7 +10,7 @@ import { JOB_SCHEDULE_SCHEMA_SQL } from "./job-schedules.ts";
 import { migrateToDurableAgents } from "./migrate-agents.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 48;
+export const SCHEMA_VERSION = 49;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
@@ -1058,6 +1058,26 @@ CREATE UNIQUE INDEX machine_job_deployment_pending
  ON machine_job_deployment_targets(machine_id,plugin_id)
  WHERE phase NOT IN ('needs_review','cancelled') AND phase<>final_phase;
 INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','48');
+`,
+  49: `
+CREATE TABLE native_service_attempts(
+ actor_id TEXT NOT NULL, call_id TEXT NOT NULL,
+ request_id TEXT NOT NULL UNIQUE, request_digest TEXT NOT NULL,
+ machine_id TEXT NOT NULL, service_id TEXT NOT NULL, operation_id TEXT NOT NULL,
+ revision TEXT NOT NULL, policy_sha256 TEXT NOT NULL, model_id TEXT NOT NULL,
+ instance_revision TEXT, execution_job_id TEXT,
+ owner_id TEXT NOT NULL, owner_generation INTEGER NOT NULL, owner_key_sha256 TEXT NOT NULL,
+ reserved_micros INTEGER NOT NULL CHECK(reserved_micros BETWEEN 0 AND 9007199254740991),
+ charged_micros INTEGER CHECK(charged_micros BETWEEN 0 AND reserved_micros),
+ state TEXT NOT NULL CHECK(state IN ('reserved','unresolved','settled')),
+ authorized INTEGER NOT NULL DEFAULT 0 CHECK(authorized IN (0,1)),
+ PRIMARY KEY(actor_id,call_id),
+ CHECK((state='settled')=(charged_micros IS NOT NULL))
+);
+CREATE INDEX native_service_attempts_allowance ON native_service_attempts(machine_id,service_id);
+CREATE INDEX native_service_attempts_execution ON native_service_attempts(execution_job_id)
+ WHERE execution_job_id IS NOT NULL;
+INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','49');
 `,
 };
 

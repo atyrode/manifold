@@ -5152,6 +5152,7 @@ export class PluginHost {
     const handlerScope = auth.containerScope ?? carriedContainer;
     const parsed = entry.def.input.safeParse(rawArgs);
     if (!parsed.success) {
+      if (opaque) return refuse("invalid_args", "invalid action arguments");
       const detail = parsed.error.issues
         .map((issue) => `${issue.path.map(String).join(".") || "(root)"} ${issue.message}`)
         .join("; ");
@@ -5465,7 +5466,8 @@ export class PluginHost {
         nativeAuth,
         pluginId,
         traceId,
-        (pluginId === "engine.services" && entry.def.name === "invoke") ||
+        (pluginId === "engine.services" &&
+          (entry.def.name === "invoke" || entry.def.name === "invokeInstance")) ||
           withinCeiling("services:invoke", nativeCaps)
           ? "invoke"
           : "read",

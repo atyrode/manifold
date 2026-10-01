@@ -2184,6 +2184,26 @@ until whole-workload emptiness is proved, and its replacement cannot start early
 cancellation and authority revocation still force termination. See
 [instance-service retirement](CONTRACTS.md#governed-machine-jobs).
 
+**Opt-in monetary bounds for direct calls.** `ctx.services.invoke` and `invokeInstance`
+may add `accounting: { callId, maxCostMicros, receiptOnly? }`. First inspect the authorized
+operation's `accounting` quote and supply a stable call ID for one intended effect.
+The owner must have installed exact-model pricing, a hard whole-request context bound,
+a direct-service allowance and a supported nonstreamed fixed-model wire; both machine
+transport 52 and owner RPC 44 are required.
+Byte limits or caller estimates are not monetary bounds.
+
+The hub reserves the quoted maximum atomically before dispatch and the native owner verifies
+it independently. Raw usage is charged before projection, including charged failures, with
+conservative whole-micro-dollar rounding so positive fractional spend is never free.
+An unknown outcome retains its maximum, not zero. Same-ID exact recovery and `receiptOnly`
+return a metadata receipt with `result: null`, never a second call or retained answer.
+Keep the original input/policy/ceiling pins to recover it; changed pins refuse, and current
+source authority still applies. Do not automatically retry an unknown effect with a new ID.
+The receipt's settled charge is nullable until proven. Legacy invocations remain unchanged,
+and bounded executions mixing metered proxies with direct accounting refuse rather than
+claim a shared hard ceiling. See [Bounded direct-service money](CONTRACTS.md#governed-machine-jobs)
+for supported wires, pricing trust, recovery and privacy boundaries.
+
 **A metered service operation, and what a job may spend through it.** A proxy operation may
 declare a `meter` ([ADR 0038](decisions/0038-brokered-inference.md)), which is the only thing that
 ever reads a body: the provider's own `usage` object and the model the call names, from a JSON

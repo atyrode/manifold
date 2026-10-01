@@ -120,6 +120,7 @@ ALTER TABLE agent_runs DROP COLUMN native_call_ids_json;
 `);
     store.db.exec("ALTER TABLE terminals DROP COLUMN exit_reason");
     store.db.exec("ALTER TABLE terminals DROP COLUMN session");
+    store.db.exec("DROP TABLE native_service_attempts");
     store.db.exec("UPDATE meta SET value='43' WHERE key='schema_version'");
     store.close();
     store = new ServerStore(openDatabase(path));
@@ -2477,6 +2478,7 @@ ALTER TABLE terminals DROP COLUMN cwd;
 ALTER TABLE terminals DROP COLUMN launch_recipe;
 ALTER TABLE machines DROP COLUMN last_refusal_code;
 ALTER TABLE machines DROP COLUMN last_refusal_at;
+DROP TABLE native_service_attempts;
 UPDATE meta SET value='33' WHERE key='schema_version';
 `);
     const authority = db
@@ -2566,6 +2568,7 @@ INSERT INTO machine_jobs(job_id,machine_id,plugin_id,digest,request,state,create
  ('ungoverned','m-shared','plugin','digest-a','{}','started',1),
  ('governed','m-shared','plugin','digest-b','{}','queued',2);
 ${from === 47 ? `UPDATE machine_jobs SET container_grants='${grants}' WHERE job_id='governed';` : ""}
+DROP TABLE native_service_attempts;
 UPDATE meta SET value='${from}' WHERE key='schema_version';
 `);
       const before = db.query(targetRows).all();
@@ -2723,6 +2726,7 @@ ALTER TABLE agent_runs DROP COLUMN launch_target_json;
 ALTER TABLE agent_runs DROP COLUMN native_job_id;
 ALTER TABLE agent_runs DROP COLUMN native_credential_json;
 ALTER TABLE agent_runs DROP COLUMN native_call_ids_json;
+DROP TABLE native_service_attempts;
 UPDATE meta SET value='41' WHERE key='schema_version';
 `);
     db.close();

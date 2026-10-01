@@ -106,7 +106,7 @@ must never be taught one.
         "packages/server/src/migrate-grants.ts"
       ],
       "litmus": ["bootstrap", "neutrality", "arbitration"],
-      "verdict": "the SQLite substrate: schema, migrations, and the row-level accessors the engine's own bookkeeping needs (enablement, layout, plugin storage namespaces, ownership tombstones, migration ledgers). Plugin-domain rows reach it only through ctx.storage, which is why the substrate stays neutral and a purge can be exact.",
+      "verdict": "the SQLite substrate: schema, migrations, and the row-level accessors the engine's own bookkeeping needs (enablement, layout, plugin storage namespaces, ownership tombstones, migration ledgers, and bounded direct-service monetary reservations and once-only settlements). Financial rows arbitrate owner-reviewed service/execution allowances and retain only identity, digest, policy/model pins and exposure, never product input/output. Plugin-domain rows reach it only through ctx.storage, which is why the substrate stays neutral and a purge can be exact.",
       "adr": "docs/decisions/0013-plugin-behavioral-contract.md"
     },
     {
@@ -130,7 +130,7 @@ must never be taught one.
         "packages/agent/src/**"
       ],
       "litmus": ["bootstrap", "neutrality", "arbitration"],
-      "verdict": "the pipes: channel multiplexing and connection-level frames, machine enrolment and version negotiation, instance dialling in BOTH directions (the host gateway and the outbound dialer share the machine channel's one liveness discipline), the PTY broker's attach state machine and no-gap invariant, terminal-host ownership and its private IPC seam with the replaceable transport, continuity admission and drain-latch enforcement, and the structured log that discharges the self-description obligation. Bytes are floor, POLICY is a plugin (ADR 0013 §14) — core.machines owns the drain action; the transport moves bytes and stops knowing why.",
+      "verdict": "the pipes: channel multiplexing and connection-level frames, machine enrolment and version negotiation, instance dialling in BOTH directions (the host gateway and the outbound dialer share the machine channel's one liveness discipline), the PTY broker's attach state machine and no-gap invariant, terminal-host ownership and its private IPC seam with the replaceable transport, continuity admission and drain-latch enforcement, owner-quoted direct-service monetary admission and authenticated settlement, and the structured log that discharges the self-description obligation. Direct metering names generic installed wires and pricing, not a provider or product; shared allowance arbitration is floor while allowance/price selection remains owner policy. Bytes are floor, POLICY is a plugin (ADR 0013 §14) — core.machines owns the drain action; the transport moves bytes and stops knowing why.",
       "adr": "docs/decisions/0013-plugin-behavioral-contract.md"
     },
     {
@@ -275,7 +275,7 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     },
     {
       "glob": "packages/server/src/stores.ts",
-      "why": "persistence: containers, tokens, terminals, plugin enablement, per-principal workspace layout"
+      "why": "persistence: containers, tokens, terminals, plugin enablement, per-principal workspace layout, and atomic metadata-only direct-service monetary reservations/settlements"
     },
     {
       "glob": "packages/server/src/room.ts",
@@ -295,7 +295,7 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     },
     {
       "glob": "packages/server/src/job-service.ts",
-      "why": "ADR 0033 governed machine execution: common revision-bound admission, owner proof, signed start permits, private output authority and honest lifecycle"
+      "why": "ADR 0033 governed machine execution: common revision-bound admission, owner proof, signed start permits, private output authority and honest lifecycle; owner-quoted bounded direct-service calls share atomic allowance admission, current-authority receipt recovery and original-owner settlement"
     },
     {
       "glob": "packages/server/src/job-store.ts",

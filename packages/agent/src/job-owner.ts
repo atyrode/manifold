@@ -293,6 +293,8 @@ export class MachineJobOwner {
       controller: AbortController;
     }
   >();
+  /** Generation-local tombstones for possibly paid calls; no inputs, answers or money ledger. */
+  private readonly attemptedDirectAccounting = new Set<string>();
   /** Unreserved preparations whose refusal could not be recorded either, each with temporary
    * roots nothing ran in: the owner's, never deleted, until a durable refusal of that identity. */
   private readonly unrecordedScratch = new Set<OwnedJob>();
@@ -984,13 +986,36 @@ export class MachineJobOwner {
     command: Extract<JobCommand, { type: "service_read" | "service_invoke" }>,
   ): Promise<void> {
     const kind = command.type === "service_read" ? "read" : "invoke";
+    const accounting = command.type === "service_invoke" ? command.accounting : undefined;
+    const previouslyAttempted = this.attemptedDirectAccounting.has(command.requestId);
     const resultType =
       command.type === "service_read" ? "service_read_result" : "service_invoke_result";
     const refuse = (refusal: Extract<ServiceReply, { ok: false }>["refusal"]) =>
       this.emit({
         type: resultType,
         requestId: command.requestId,
-        reply: { type: "service_result", requestId: command.requestId, ok: false, refusal },
+        reply: {
+          type: "service_result",
+          requestId: command.requestId,
+          ok: false,
+          refusal,
+          ...(accounting
+            ? {
+                charge: {
+                  callId: accounting.callId,
+                  reservedMicros: accounting.reservedMicros,
+                  status:
+                    previouslyAttempted || this.directServiceCalls.has(command.requestId)
+                      ? ("unknown" as const)
+                      : ("not_dispatched" as const),
+                  costMicros:
+                    previouslyAttempted || this.directServiceCalls.has(command.requestId)
+                      ? null
+                      : 0,
+                },
+              }
+            : {}),
+        },
       });
     // Four unrelated facts, one per word: a call addressed to another machine, a request id
     // already in flight, the ceiling on concurrent direct calls, and an owner with no hub seat
@@ -998,7 +1023,7 @@ export class MachineJobOwner {
     const entry: ServiceRefusal | null =
       command.machineId !== this.options.machineId
         ? "service_machine_mismatch"
-        : this.directServiceCalls.has(command.requestId)
+        : previouslyAttempted || this.directServiceCalls.has(command.requestId)
           ? "service_invalid_request"
           : this.directServiceCalls.size >= 64
             ? "service_busy"
@@ -1038,6 +1063,7 @@ export class MachineJobOwner {
     const controller = new AbortController();
     const seat = this.sink;
     this.directServiceCalls.set(command.requestId, { command, controller });
+    let provenNonattempt = false;
     try {
       const reply = await this.serviceRunner.call(
         {
@@ -1060,9 +1086,12 @@ export class MachineJobOwner {
             signal,
           ),
         AbortSignal.any([controller.signal, this.seatController.signal]),
+        accounting,
       );
+      provenNonattempt = reply.charge?.status === "not_dispatched";
       if (this.sink === seat) this.emit({ type: resultType, requestId: command.requestId, reply });
     } finally {
+      if (accounting && !provenNonattempt) this.attemptedDirectAccounting.add(command.requestId);
       controller.abort();
       this.directServiceCalls.delete(command.requestId);
     }

@@ -12,6 +12,13 @@ import {
   compileJsonProjection,
   projectJson,
   servicePolicyCredentialRefs,
+  quoteDirectService,
+  directServiceUsage,
+  directServiceCallCost,
+  type ServiceDirectAccounting,
+  type ServiceCharge,
+  type NativeServiceReply,
+  type ServiceModelPrice,
   type JsonProjection,
   type ServiceBinding,
   type ServiceCall,
@@ -43,7 +50,9 @@ export interface JobServiceRunner {
     binding: ServiceBinding,
     authorize: AuthorizeServiceCall,
     signal?: AbortSignal,
-  ): Promise<ServiceReply>;
+    /** Trusted direct native command only, never copied from worker IPC. */
+    accounting?: ServiceDirectAccounting,
+  ): Promise<NativeServiceReply>;
   /** Replace the configured policies and return the service ids whose policy changed or was
    * removed. Their active requests are aborted; a policy byte-identical in the new set keeps its
    * active requests, which finish under the policy they were admitted with, and its concurrency. */
@@ -236,7 +245,8 @@ async function transport(
   headers: Record<string, string>,
   signal: AbortSignal,
   socket?: Socket,
-): Promise<Buffer> {
+  accounting = false,
+): Promise<{ bytes: Buffer; status: number }> {
   signal.throwIfAborted();
   let response: IncomingMessage | undefined;
   let runtimeAgent: Agent | undefined;
@@ -271,10 +281,12 @@ async function transport(
     req.once("error", reject);
     req.end(body);
     response = await promise;
-    // No redirects, error bodies, headers, compression or automatic decompression cross the boundary.
+    const status = response.statusCode ?? 0;
+    // Bounded accounting may read a charged failure, but never forwards its body. Legacy
+    // calls keep rejecting error bodies before reading them; redirects remain forbidden.
     if (
-      (response.statusCode ?? 0) < 200 ||
-      (response.statusCode ?? 0) >= 300 ||
+      status < 200 ||
+      (status >= 300 && (status < 400 || !accounting)) ||
       (response.headers["content-encoding"] && response.headers["content-encoding"] !== "identity")
     )
       throw new ServiceFailure("service_upstream_refused");
@@ -300,7 +312,7 @@ async function transport(
       if (size > operation.maxResponseBytes) throw new ServiceFailure("service_response_limit");
       chunks.push(bytes);
     }
-    return Buffer.concat(chunks, size);
+    return { bytes: Buffer.concat(chunks, size), status };
   } finally {
     response?.destroy();
     runtimeAgent?.destroy();
@@ -397,19 +409,29 @@ export function createJobServiceRunner(options: {
       for (const entry of policies.values())
         for (const controller of entry.active) controller.abort();
     },
-    async call(raw, rawBinding, authorize, callerSignal) {
+    async call(raw, rawBinding, authorize, callerSignal, accounting) {
       const parsed = ServiceCallSchema.safeParse(raw);
       // Invalid envelopes cannot echo arbitrary request IDs (or attacker-injected material).
       const requestId = parsed.success ? parsed.data.requestId : "invalid";
-      const refusal = (code: ServiceRefusal): ServiceReply => ({
+      let charge: ServiceCharge | undefined = accounting && {
+        callId: accounting.callId,
+        reservedMicros: accounting.reservedMicros,
+        status: "not_dispatched",
+        costMicros: 0,
+      };
+      const refusal = (code: ServiceRefusal): NativeServiceReply => ({
         type: "service_result",
         requestId,
         ok: false,
         refusal: code,
+        ...(charge ? { charge } : {}),
       });
       if (!parsed.success) return refusal("service_invalid_request");
       if (closed) return refusal("service_closed");
-      if (callerSignal?.aborted) return refusal("service_cancelled");
+      if (callerSignal?.aborted) {
+        if (charge) charge = { ...charge, status: "unknown", costMicros: null };
+        return refusal("service_cancelled");
+      }
       const request = parsed.data;
       const entry = policies.get(request.serviceId);
       if (!entry) return refusal("service_unavailable");
@@ -448,6 +470,19 @@ export function createJobServiceRunner(options: {
       const destroyRuntime = () => runtimeSocket?.destroy();
       controller.signal.addEventListener("abort", destroyRuntime, { once: true });
       try {
+        let price: ServiceModelPrice | undefined;
+        if (accounting) {
+          const quote = quoteDirectService(entry.policy, request.operationId);
+          if (!quote.ok) throw new ServiceFailure(quote.refusal);
+          if (quote.reservedMicros !== accounting.reservedMicros)
+            throw new ServiceFailure("service_accounting_mismatch");
+          if (
+            quote.reservedMicros > accounting.maxCostMicros ||
+            quote.reservedMicros > entry.policy.directCostCeilingMicros!
+          )
+            throw new ServiceFailure("service_ceiling_exceeded");
+          price = entry.policy.prices!.models[quote.modelId]!;
+        }
         const prepared = prepareRequest(operation, request.input);
         const authority = Object.freeze({
           serviceId: request.serviceId,
@@ -543,13 +578,15 @@ export function createJobServiceRunner(options: {
         const url = new URL(prepared.path, origin);
         if (url.origin !== origin || url.pathname + url.search !== prepared.path)
           throw new ServiceFailure("service_input_invalid");
-        const bytes = await transport(
+        if (charge) charge = { ...charge, status: "unknown", costMicros: null };
+        const { bytes, status } = await transport(
           url,
           operation,
           body,
           headers,
           controller.signal,
           runtimeSocket,
+          accounting !== undefined,
         );
         let result: unknown;
         if (operation.response.kind === "bytes") {
@@ -563,6 +600,16 @@ export function createJobServiceRunner(options: {
             json = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
           } catch {
             throw new ServiceFailure("service_response_invalid");
+          }
+          if (charge && price) {
+            const usage = directServiceUsage(operation, price, json);
+            if (!usage) throw new ServiceFailure("service_accounting_violation");
+            const costMicros = directServiceCallCost(price, usage);
+            if (costMicros > charge.reservedMicros)
+              throw new ServiceFailure("service_accounting_violation");
+            charge = { ...charge, status: "known", costMicros };
+            if (status >= 400 || usage.failedStatus !== undefined)
+              throw new ServiceFailure("service_upstream_refused");
           }
           result =
             operation.response.kind === "projected-json"
@@ -586,12 +633,15 @@ export function createJobServiceRunner(options: {
           requestId,
           ok: true as const,
           result: result as Extract<ServiceReply, { ok: true }>["result"],
+          ...(charge ? { charge } : {}),
         };
         if (Buffer.byteLength(JSON.stringify(reply)) + 1 > SERVICE_FRAME_BYTES)
           throw new ServiceFailure("service_response_limit");
         return reply;
       } catch (error) {
-        if (controller.signal.aborted)
+        if (controller.signal.aborted) {
+          if (charge?.status === "not_dispatched")
+            charge = { ...charge, status: "unknown", costMicros: null };
           // A request whose policy a reconfiguration replaced was closed by it, not cancelled.
           return refusal(
             closed || policies.get(request.serviceId) !== entry
@@ -600,6 +650,7 @@ export function createJobServiceRunner(options: {
                 ? "service_timeout"
                 : "service_cancelled",
           );
+        }
         return refusal(
           error instanceof JsonProjectionError
             ? error.code === "limit"

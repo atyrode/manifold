@@ -9,6 +9,7 @@ import {
   formatManifoldUri,
   PluginBundleSchema,
   JOB_OWNER_PROTOCOL_VERSION,
+  PROTOCOL_VERSION,
   MACHINE_SELF_PROVIDER_PROTOCOL_VERSION,
   MACHINE_AGENT_TOOLS_PROTOCOL_VERSION,
   JobCommandSchema,
@@ -20,6 +21,8 @@ import {
   MachineOperationLimitsSchema,
   JobStartCommandSchema,
   JobRequestSchema,
+  ServiceReplySchema,
+  type InstanceServiceInvokeArgs,
   type ServicePolicy,
   type ServicePolicyTemplate,
   type Cap,
@@ -42,9 +45,11 @@ import { AuthService, type AuthContext } from "../src/auth.ts";
 import { openDatabase } from "../src/db.ts";
 import { JobService, type JobRecord, type SettledJobDelivery } from "../src/job-service.ts";
 import { jobContext } from "../src/job-doors.ts";
-import { projectPluginAuthorFacts } from "../src/log.ts";
+import { projectPluginAuthorFacts, silentLogger } from "../src/log.ts";
+import { RoomManager } from "../src/room.ts";
+import { TerminalBroker } from "../src/terminal-broker.ts";
 import { ServerStore } from "../src/stores.ts";
-import { FakeRuntime } from "./helpers.ts";
+import { FakeClock, FakeRuntime, testPluginHost, testTileTrees } from "./helpers.ts";
 
 const key = "9".repeat(64);
 const pluginId = "sample.worker";
@@ -284,6 +289,7 @@ async function instanceFixture(
   path = ":memory:",
   protocolVersion = JOB_OWNER_PROTOCOL_VERSION,
   operations?: ServicePolicy["operations"],
+  accounting?: Pick<ServicePolicy, "prices" | "directCostCeilingMicros">,
 ) {
   const provider: MachineHalf = {
     ...machine,
@@ -293,6 +299,7 @@ async function instanceFixture(
   };
   const f = fixture(path, provider);
   f.owner.protocolVersion = protocolVersion;
+  if (accounting) f.channel.protocolVersion = PROTOCOL_VERSION;
   consent(f, "machines:run");
   consent(f, "jobs:cancel");
   prove(f);
@@ -300,6 +307,7 @@ async function instanceFixture(
     serviceId: `${pluginId}.broker`,
     revision: "one",
     maxConcurrent: 1,
+    ...accounting,
     runtime: {
       scope: "instance",
       pluginId,
@@ -1614,6 +1622,7 @@ ALTER TABLE agent_runs DROP COLUMN launch_target_json;
 ALTER TABLE agent_runs DROP COLUMN native_job_id;
 ALTER TABLE agent_runs DROP COLUMN native_credential_json;
 ALTER TABLE agent_runs DROP COLUMN native_call_ids_json;
+DROP TABLE native_service_attempts;
 UPDATE meta SET value='37' WHERE key='schema_version';
 `);
     f.service.offline(f.channel);
@@ -8406,6 +8415,7 @@ ALTER TABLE terminals DROP COLUMN launch_recipe;
 ALTER TABLE terminals DROP COLUMN created_by_run_id;
 ALTER TABLE terminals DROP COLUMN exit_reason;
 ALTER TABLE terminals DROP COLUMN session;
+DROP TABLE native_service_attempts;
 UPDATE meta SET value='33' WHERE key='schema_version';
 `);
       f.store.close();
@@ -9917,4 +9927,193 @@ describe("a job input bound to an earlier job's sealed output", () => {
       f.store.close();
     }
   });
+});
+
+test("instance invocation carries accounting and recovers the original receipt after configuration replacement", async () => {
+  const { f, policy, start, revision } = await instanceFixture(
+    ":memory:",
+    JOB_OWNER_PROTOCOL_VERSION,
+    {
+      inspect: {
+        method: "POST",
+        invocable: true,
+        path: "/v1/responses",
+        input: {},
+        query: {},
+        body: [
+          { path: ["model"], value: { literal: "fixture/model" } },
+          { path: ["input"], value: { literal: "private-service-prompt" } },
+        ],
+        meter: { kind: "openai-usage", modelId: "fixture/model" },
+        timeoutMs: 1000,
+        maxRequestBytes: 1024,
+        maxResponseBytes: 4096,
+        maxResultBytes: 2048,
+        response: { kind: "projected-json", fields: [["state"]], maxArrayItems: 16 },
+      },
+    },
+    {
+      directCostCeilingMicros: 20,
+      prices: {
+        models: {
+          "fixture/model": {
+            contextTokens: 10,
+            inputPerMillion: 1_000_000,
+            outputPerMillion: 1_000_000,
+          },
+        },
+      },
+    },
+  );
+  try {
+    const policySha256 = createHash("sha256").update(canonicalJobJson(policy)).digest("hex");
+    f.owner.resources = {
+      tools: {},
+      anchors: {},
+      services: { [policy.serviceId]: policySha256 },
+      serviceDefinitions: {
+        [policy.serviceId]: { revision: policy.revision, operationIds: ["inspect"] },
+      },
+    };
+    f.service.event(f.channel, { type: "resources", resources: f.owner.resources });
+    f.service.event(f.channel, {
+      type: "state",
+      jobId: start.request.jobId,
+      requestDigest: start.request.requestDigest,
+      ownerId: f.owner.ownerId,
+      ownerGeneration: f.owner.generation,
+      state: "started",
+    });
+    f.service.event(f.channel, {
+      type: "service_ready",
+      jobId: start.request.jobId,
+      service: start.request.service!,
+    });
+    const actor = f.auth.authenticate(
+      f.auth.mintToken(
+        {
+          principal: { kind: "human", name: "limited instance caller" },
+          caps: ["services:invoke"],
+        },
+        f.root,
+      ).token,
+    );
+    const clock = new FakeClock(f.runtime);
+    const rooms = new RoomManager(f.store, f.runtime, clock, silentLogger, testTileTrees);
+    const broker = new TerminalBroker(
+      f.store,
+      f.auth,
+      rooms,
+      f.runtime,
+      clock,
+      silentLogger,
+      () => "http://localhost:7777",
+      testTileTrees,
+    );
+    const host = await testPluginHost(f.store, f.auth, rooms, broker, f.runtime);
+    host.setJobs(f.service);
+    const invoke = async (args: InstanceServiceInvokeArgs) => {
+      const outcome = await host.dispatch(actor, "engine.services.invokeInstance", args);
+      if (!outcome.ok)
+        throw Object.assign(new Error("Instance service invocation refused"), {
+          denial: outcome.denial,
+        });
+      return ServiceReplySchema.parse(outcome.result);
+    };
+    const args = {
+      serviceId: policy.serviceId,
+      expectedRevision: revision,
+      operationId: "inspect",
+      input: {},
+      accounting: { callId: "instance-call", maxCostMicros: 20 },
+    };
+    const started = Promise.withResolvers<Extract<JobCommand, { type: "service_invoke" }>>();
+    const send = f.channel.send;
+    f.channel.send = (message) => {
+      if (message.command.type === "service_invoke") started.resolve(message.command);
+      return send(message);
+    };
+    const pending = invoke(args);
+    const command = await Promise.race([
+      started.promise,
+      pending.then(() => {
+        throw new Error("instance door settled before native dispatch");
+      }),
+    ]);
+    f.service.event(f.channel, {
+      type: "service_authorize",
+      subject: { kind: "invoke", requestId: command.requestId },
+      authorizationId: "instance-auth",
+      serviceId: command.serviceId,
+      revision: command.revision,
+      policySha256: command.policySha256,
+      operationId: command.operationId,
+    });
+    const replacement = await f.service.configureInstanceService(f.root, {
+      serviceId: policy.serviceId,
+      expectedRevision: revision,
+      policy: { ...policy, revision: "two" },
+      enabled: true,
+    });
+    await expect(pending).rejects.toMatchObject({
+      denial: { rule: "refused" },
+    });
+    const receiptArgs = { ...args, accounting: { ...args.accounting, receiptOnly: true } };
+    expect(await invoke(receiptArgs)).toMatchObject({
+      result: null,
+      accounting: { requestId: command.requestId, revision: "one", state: "unresolved" },
+    });
+    await expect(
+      invoke({
+        ...receiptArgs,
+        expectedRevision: replacement.configuration!.revision,
+      }),
+    ).rejects.toMatchObject({ denial: { rule: "refused" } });
+    f.service.event(f.channel, {
+      type: "service_invoke_result",
+      requestId: command.requestId,
+      reply: {
+        type: "service_result",
+        requestId: command.requestId,
+        ok: true,
+        result: { state: "done" },
+        charge: { callId: "instance-call", reservedMicros: 20, status: "known", costMicros: 7 },
+      },
+    });
+    expect(await invoke(receiptArgs)).toMatchObject({
+      result: null,
+      accounting: { state: "settled", chargedMicros: 7 },
+    });
+    await expect(
+      invoke({
+        ...args,
+        accounting: { callId: "new-call", maxCostMicros: 20 },
+      }),
+    ).rejects.toMatchObject({ denial: { rule: "refused" } });
+    expect(f.commands.filter((command) => command.type === "service_invoke")).toHaveLength(1);
+    f.auth.grant(
+      {
+        principal: { kind: "principal", id: actor.principal.id },
+        node: formatManifoldUri({
+          kind: "service",
+          machineId: f.machineId,
+          serviceId: policy.serviceId,
+          operationId: "inspect",
+        }),
+        caps: ["services:invoke"],
+        reach: "node",
+        effect: "deny",
+      },
+      f.root,
+    );
+    await expect(
+      invoke({
+        ...receiptArgs,
+        expectedRevision: "not-the-original-revision",
+      }),
+    ).rejects.toMatchObject({ denial: { rule: "refused" } });
+  } finally {
+    f.service.offline(f.channel);
+    f.store.close();
+  }
 });

@@ -19,6 +19,8 @@ import type {
   ServiceConfigurationRead,
   ServicePolicy,
   ServiceProxyOperationPolicy,
+  ServiceOperationPolicy,
+  ServiceDirectQuote,
   ServiceReadArgs,
   ServiceInvokeArgs,
   ServiceReply,
@@ -27,6 +29,7 @@ import type {
   InstanceServicesDescription,
   InstanceServiceConfigurationRead,
   InstanceServiceReadArgs,
+  InstanceServiceInvokeArgs,
 } from "@manifold/protocol";
 export type { ServiceConfigurationRead } from "@manifold/protocol";
 
@@ -125,7 +128,8 @@ export interface ServiceDescription {
       invocable: boolean;
       ready: boolean;
       reason: string | null;
-      meter?: ServiceProxyOperationPolicy["meter"];
+      meter?: ServiceProxyOperationPolicy["meter"] | ServiceOperationPolicy["meter"];
+      accounting?: ServiceDirectQuote | undefined;
       prices?: ServicePolicy["prices"];
     }[];
   }[];
@@ -147,7 +151,7 @@ export interface PluginServiceContext {
   readInstanceConfiguration(args: { serviceId: string }): InstanceServiceConfigurationRead;
   configureInstance(args: ConfigureInstanceServiceArgs): Promise<InstanceServiceDescription>;
   readInstance(args: InstanceServiceReadArgs): Promise<ServiceReply>;
-  invokeInstance(args: InstanceServiceReadArgs): Promise<ServiceReply>;
+  invokeInstance(args: InstanceServiceInvokeArgs): Promise<ServiceReply>;
 }
 
 /**

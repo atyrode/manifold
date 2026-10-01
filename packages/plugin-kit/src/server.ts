@@ -84,6 +84,7 @@ import {
   type MachineRepositoryQuery,
   type InstanceServiceConfigurationRead,
   type InstanceServiceReadArgs,
+  type InstanceServiceInvokeArgs,
 } from "@manifold/protocol";
 import {
   JobFollowSnapshotSchema,
@@ -371,7 +372,7 @@ export interface GuestServices {
   readInstanceConfiguration(args: { serviceId: string }): Promise<InstanceServiceConfigurationRead>;
   configureInstance(args: ConfigureInstanceServiceArgs): Promise<InstanceServiceDescription>;
   readInstance(args: InstanceServiceReadArgs): Promise<ServiceReply>;
-  invokeInstance(args: InstanceServiceReadArgs): Promise<ServiceReply>;
+  invokeInstance(args: InstanceServiceInvokeArgs): Promise<ServiceReply>;
 }
 
 export interface GuestCtx {
