@@ -27,6 +27,9 @@ core plugins; `packages/plugins/*` and the roster do.
 For rapid UI iteration, use [Fast Refresh](#fast-refresh): its `--help` and `--describe`
 commands disclose the opt-in source workflow without credentials. This is the existing
 development lens, not a plugin-specific host; normal artifact installation remains separate.
+For a persistent frontend-and-server loop, use [Development workshops](#development-workshops).
+That separate mode has explicit development installation authority; it is not the
+credential-free source-only command.
 
 Everything above the foundation floor is a plugin. The floor is a machine-readable registry in
 `REGISTRY.md` (fenced JSON, checked in both directions by `bun run verify:axioms`), not a
@@ -4593,6 +4596,56 @@ capability, dependency and native-resource changes still require the ordinary pa
 install/review path. After accepting frontend changes, stop source development, validate the
 normal artifacts and publish through the existing release workflow; a development URL is not
 a release.
+
+### Development workshops
+
+A workshop combines the source frontend with the existing server-plugin compilation and
+installation path. Use it only on an explicitly authorized development hub. Every source
+family row must already be installed, enabled and available in-realm as a bundled installation
+with matching manifests and authority. Disabled, held, failed and unpacked rows require their
+explicit installation or authoring workflow; starting a workshop grants no absent capabilities.
+
+```sh
+# Discovery needs no credentials, source directory or running hub.
+bun run --cwd packages/plugin-kit dev --workshop --describe
+
+# This mode resolves development installation authority through the ordinary delivery tool.
+MANIFOLD_DEV_HOST=preview.example.com bun run --cwd packages/plugin-kit dev \
+  /path/to/plugin-sources --workshop --hub http://127.0.0.1:7912 \
+  --deliver docker:development-hub --port 7913
+
+# An author with an existing custom compiler can provide its pack(outputDirectory) export.
+# The compiler remains in the author repository; source is never copied into a staging tree.
+bun run --cwd packages/plugin-kit dev /path/to/plugin-sources --workshop \
+  --hub http://127.0.0.1:7912 --deliver docker:development-hub \
+  --build-module /path/to/plugin-sources/pack.ts --port 7913
+```
+
+An existing custom compiler's validated output defines the authored family. Each returned
+manifest must match exactly one source directory; unrelated fixture manifests are not enrolled.
+Nested dependency packages remain pinned dependencies, even beneath the source directory.
+
+Frontend-only edits use Vite and React Refresh without replacing installed bundles. The
+backend input graph determines which shared or server modules require compilation; a
+filename extension is not a frontend/backend boundary. A server edit compiles the entire
+family before installation and replaces only changed bundles while preserving the exact incumbent
+installation consent. A failed build leaves the running backend intact; correcting the source
+resumes the loop. Backend replacement can reset plugin memory and remount the frontend, unlike a
+compatible frontend-only edit.
+Durable storage, unrelated plugins, running terminals and native sessions are not restarted.
+
+Manifest, action-authority, dependency and native-resource changes require explicit
+installation/review; the watcher must not silently expand its grant. Source-only
+`--fast-refresh` still acquires no installation credential, and ordinary `dev` retains its
+pack-and-replace behavior.
+
+For a browser-reachable workshop behind TLS, keep the source listener on loopback and
+configure the exact hostname through the existing `MANIFOLD_DEV_HOST` setting. The frontend
+must use an origin already admitted by the hub's normal sign-in. Proxy hub API, authentication,
+health and hub WebSockets directly to the existing backend; route frontend assets and Vite
+HMR to the development listener. No owner key or browser session belongs in a development
+URL. The integrated preview's supervised lifecycle and installed-build fallback are documented
+in [Preview operations](../infra/previews/README.md).
 
 ### Unpacked plugins: the hub holds the kit
 

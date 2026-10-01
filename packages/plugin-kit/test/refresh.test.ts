@@ -523,3 +523,105 @@ test("source descriptors accept local default specifiers and default re-exports"
     await rm(root, { recursive: true, force: true });
   }
 }, 30000);
+
+test("selected sources retain shared author modules but lease a nested foreign package as immutable dependency inputs", async () => {
+  const root = await mkdtemp(join(tmpdir(), "plugin-refresh-package-ownership-"));
+  let handle: PluginRefreshHandle | undefined;
+  try {
+    const directory = await source(root, "plugin", "example.refresh");
+    const foreign = await source(root, "generated/foreign", "example.foreign");
+    await Bun.write(join(root, "package.json"), JSON.stringify({ private: true, type: "module" }));
+    await Bun.write(
+      join(foreign, "package.json"),
+      JSON.stringify({ name: "foreign-input", type: "module" }),
+    );
+    await Bun.write(join(foreign, "styles.css"), "body { color: red; }");
+    await Bun.write(join(foreign, "value.ts"), 'export const value = "pinned-dependency";');
+    await Bun.write(
+      join(root, "shared.ts"),
+      'import { value } from "./generated/foreign/value.ts"; export const shared = value;',
+    );
+    await Bun.write(
+      join(directory, "web.tsx"),
+      `import { shared } from "../shared.ts"; export const value = shared; export default { id: "example.refresh", panels: {} };`,
+    );
+    handle = await startPluginRefresh({ root, hub: HUB, port: 0, sourceDirectories: [directory] });
+    expect(handle.plugins).toEqual(["example.refresh"]);
+    expect((await request(handle, join(directory, "web.tsx"))).status).toBe(200);
+    expect((await request(handle, join(root, "shared.ts"))).status).toBe(200);
+    expect((await request(handle, join(foreign, "value.ts"))).status).toBe(200);
+    expect((await request(handle, join(foreign, "web.tsx"))).status).toBe(403);
+    await Bun.write(join(foreign, "value.ts"), 'export const value = "changed-dependency";');
+    expect((await cancelled(handle, join(directory, "web.tsx"))).status).toBe(410);
+  } finally {
+    await handle?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+}, 30000);
+
+test("the public source listener preserves its exact Host admission and TLS HMR client endpoint while using its owned loopback socket", async () => {
+  const root = await mkdtemp(join(tmpdir(), "plugin-refresh-public-transport-"));
+  const previousHost = process.env.MANIFOLD_DEV_HOST;
+  const publicHost = "preview.manifold.example";
+  let handle: PluginRefreshHandle | undefined;
+  let socket: WebSocket | undefined;
+  try {
+    process.env.MANIFOLD_DEV_HOST = publicHost;
+    const directory = await source(root, "plugin", "example.refresh");
+    handle = await startPluginRefresh({ root, hub: HUB, port: 0 });
+    const entryUrl = new URL(`/@fs${join(directory, "web.tsx")}`, handle.url);
+    expect((await fetch(entryUrl, { headers: { Host: publicHost } })).status).toBe(200);
+    expect((await fetch(entryUrl, { headers: { Host: "unlisted.manifold.example" } })).status).toBe(
+      403,
+    );
+    expect((await fetch(entryUrl, { headers: { Host: `subdomain.${publicHost}` } })).status).toBe(
+      403,
+    );
+    const response = await fetch(new URL("/@vite/client", handle.url), {
+      headers: { Host: publicHost },
+    });
+    expect(response.status).toBe(200);
+    const client = await response.text();
+    // Execute the actual served client's endpoint calculation, rather than checking a config copy.
+    const declarations = client.match(
+      /const socketProtocol =[\s\S]*?(?=const forwardConsole =)/,
+    )?.[0];
+    if (!declarations)
+      throw new Error("Vite client has no executable websocket transport declarations");
+    const { endpoint, token } = new Function(
+      "importMetaUrl",
+      `${declarations}; return { endpoint: socketProtocol + "://" + socketHost, token: wsToken };`,
+    )(new URL("/@vite/client", handle.url)) as { endpoint: string; token: string };
+    expect(endpoint).toBe(`wss://${publicHost}:443/`);
+    // The TLS router is external to this fixture; exercise the same supplied socket on loopback.
+    const local = new URL(endpoint);
+    local.protocol = "ws:";
+    local.hostname = "127.0.0.1";
+    local.port = new URL(handle.url).port;
+    local.searchParams.set("token", token);
+    socket = new WebSocket(local, "vite-hmr");
+    const connected = Promise.withResolvers<unknown>();
+    const deadline = AbortSignal.timeout(5000);
+    // This handshake crosses a real OS socket; deterministic timers cannot deliver its frame.
+    deadline.addEventListener(
+      "abort",
+      () => connected.reject(new Error("source HMR socket did not connect")),
+      { once: true },
+    );
+    socket.addEventListener(
+      "error",
+      () => connected.reject(new Error("source HMR socket failed")),
+      { once: true },
+    );
+    socket.addEventListener("message", ({ data }) => connected.resolve(JSON.parse(String(data))), {
+      once: true,
+    });
+    expect(await connected.promise).toEqual({ type: "connected" });
+  } finally {
+    socket?.close();
+    await handle?.close();
+    if (previousHost === undefined) delete process.env.MANIFOLD_DEV_HOST;
+    else process.env.MANIFOLD_DEV_HOST = previousHost;
+    await rm(root, { recursive: true, force: true });
+  }
+}, 30000);

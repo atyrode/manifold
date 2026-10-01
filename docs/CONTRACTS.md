@@ -3226,6 +3226,37 @@ reported as non-secret facts, never inferred from a process exit.
 The foundation and dependency reasoning is recorded in
 [the dated decision](decisions/2026-09-30-external-plugin-fast-refresh.md).
 
+### Development workshops
+
+The explicit `dev <plugins-root> --workshop` operation combines source frontend iteration
+with development installation authority (#972). It is distinct from credential-free
+`--fast-refresh`: owner authority stays in the existing delivery/installer tool and never
+enters the source URL, registry, browser or persistent workshop configuration. Startup requires
+the matching bundled, installed, enabled and available in-realm family; discovery does not
+authorize installation. Disabled, held, failed and unpacked rows are not workshop incumbents.
+
+The compiler-derived server input graph separates frontend-only edits from backend edits.
+Frontend-only saves must not replace an installed row. A backend save compiles the whole
+family before replacing changed bundles through the existing installation door; a failed
+compilation leaves the admitted backend standing. Replacement may reset backend memory
+and frontend component state, but does not restart the hub, native owner, terminals or
+agent sessions. Manifest, action-authority, dependency and native-resource changes require
+explicit installation/review rather than automatic authority expansion.
+The custom compiler's verified artifacts select its authored family; each manifest resolves
+to exactly one source directory. Foreign nested packages remain pinned dependencies, not
+additional author plugins. The replacement-only `retainInstallation` argument pins the exact
+incumbent and refuses declaration or provenance changes; its synchronous commit rereads durable
+installation consent after every preparation await. The watcher must neither widen nor discard
+that consent.
+
+A supervised workshop remains loopback-only behind an explicitly configured TLS hostname.
+Existing browser admission and preview audiences remain authoritative. The integrated
+preview keeps API, authentication, health and hub WebSocket traffic on its existing backend,
+while frontend/HMR traffic prefers the workshop listener and falls back to that backend's
+installed build when the listener is absent. This is an explicit development workspace,
+not a release artifact or production promotion. Its lifecycle removes only owned source
+watchers, frontend resources and temporary compilation artifacts.
+
 ## WS /ws/session — session channel (JSON text frames)
 
 **Frame grammar (v35).** One socket per tab, many rooms or one roomless observer. Every frame is
