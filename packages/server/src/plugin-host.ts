@@ -3414,10 +3414,46 @@ export class PluginHost {
       : null;
   }
 
+  /** Retention compares real, serving declarations, never dormant or failed placeholders. */
+  private retainedInstallationRefusal(
+    id: string,
+    durable: PluginInstallRow | undefined,
+  ): InstallRefusal | null {
+    const incumbent = this.installed.get(id);
+    if (incumbent?.bundle == null || durable === undefined)
+      return new InstallRefusal("not_installed", `"${id}" has no verified incumbent installation`);
+    if (incumbent.row.mode === "unpacked" || durable.mode === "unpacked")
+      return new InstallRefusal(
+        "artifact_invalid",
+        `"${id}" is built from this instance's authored directory, which alone updates it`,
+      );
+    const entry = this.assembled.roster.find((row) => row.manifest.id === id);
+    const lifecycle = this.lifecycleStates.get(id);
+    if (
+      this.store.disabledPlugins().has(id) ||
+      entry?.enabled !== true ||
+      entry.held !== undefined ||
+      this.heldUnloaded.has(id) ||
+      !this.installedDefs.has(id) ||
+      // A failed disable notification does not discard the loaded declaration or veto replace.
+      lifecycle === "enable_failed" ||
+      lifecycle === "isolate_starting" ||
+      lifecycle === "isolate_crashed"
+    )
+      return new InstallRefusal(
+        "artifact_invalid",
+        `"${id}" retention requires an enabled, available incumbent with loaded declarations`,
+      );
+    return null;
+  }
+
   /**
    * The install and replacement door. Artifact integrity, assembly and data compatibility
    * are preflighted before committing an installation. A replacement preserves the durable
    * enablement switch, including an intentionally disabled row, and never toggles dependents.
+   * Retaining consent is narrower: only an active, verified bundled incumbent with loaded
+   * declarations can be compared without an explicit review. Disabled, held, failed and
+   * unpacked rows remain behind their ordinary installation or authoring doors.
    *
    * Enabled modules use the same lifecycle as an authored edit: old onDisable, new onEnable.
    * These are module notifications, NOT an operator disable of native authority. Unchanged
@@ -3462,9 +3498,12 @@ export class PluginHost {
       if (retainedPin !== undefined) {
         if (request.replace !== true || request.grant !== undefined || unpacked !== undefined)
           return installRefused("artifact_invalid", "retaining an installation requires replacement without a new grant");
+        const durable = this.store.pluginInstalls().find((row) => row.pluginId === id);
+        const retentionRefusal = this.retainedInstallationRefusal(id, durable);
+        if (retentionRefusal !== null) return { refused: retentionRefusal.message };
         if (incumbent?.bundle == null)
           return installRefused("not_installed", `"${id}" has no verified incumbent installation`);
-        if (incumbent.row.sha256 !== retainedPin)
+        if (incumbent.row.sha256 !== retainedPin || durable?.sha256 !== retainedPin)
           return installRefused("artifact_invalid", `"${id}" installation changed before replacement`);
         if (
           (incumbent.row.hardened === true) !== (request.hardened === true) ||
@@ -3797,8 +3836,11 @@ export class PluginHost {
           if (nativeRefusal !== null) throw nativeRefusal;
           if (member.retainInstallation !== undefined) {
             const incumbent = this.store.pluginInstalls().find((row) => row.pluginId === member.id);
+            const retentionRefusal = this.retainedInstallationRefusal(member.id, incumbent);
+            if (retentionRefusal !== null) throw retentionRefusal;
             if (
               incumbent?.sha256 !== member.retainInstallation ||
+              !prospective.enabled(member.id) ||
               (incumbent.hardened === true) !== (member.row.hardened === true) ||
               canonicalJobJson(incumbent.actions) !== canonicalJobJson(member.row.actions)
             )
