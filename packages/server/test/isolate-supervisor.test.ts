@@ -1083,6 +1083,112 @@ describe("IsolateSupervisor", () => {
     expect(await invoke(def, "echo", ctx, { text: "after" })).toEqual({ text: "after", count: 1 });
   });
 
+  test("a replacement serves new calls while its killed predecessor's host read is unfinished", async () => {
+    const { supervisor, runtime, storage, logger } = fixture({ dispatchDeadlineMs: 500 });
+    const { def } = await supervisor.load({ pluginId: PLUGIN_ID, manifest, dir: GUEST_DIR });
+    const release = Promise.withResolvers<void>();
+    let entered = false;
+    let completed = false;
+    const heldStorage: PluginStorage = {
+      ...storage,
+      get: async (key) => {
+        entered = true;
+        await release.promise;
+        const value = await storage.get(key);
+        completed = true;
+        return value;
+      },
+    };
+    const old = actionCtx(heldStorage, runtime);
+    const fresh = actionCtx(storage, runtime);
+    const expired = invoke(def, "echo", old.ctx, { text: "old" }).catch((error: unknown) => error);
+    try {
+      await until(() => entered);
+      expect(await expired).toMatchObject({ rule: "unavailable" });
+      await until(() => supervisor.state(PLUGIN_ID) === "stopped");
+      expect(completed).toBe(false);
+      expect(await invoke(def, "echo", fresh.ctx, { text: "replacement" })).toEqual({
+        text: "replacement",
+        count: 1,
+      });
+      expect(completed).toBe(false);
+      release.resolve();
+      await until(() => completed);
+      expect(await invoke(def, "echo", fresh.ctx, { text: "after late completion" })).toEqual({
+        text: "after late completion",
+        count: 2,
+      });
+      expect(old.emitted).toEqual([]);
+      expect(supervisor.state(PLUGIN_ID)).toBe("running");
+      expect(logger.count("isolate_spawned")).toBe(2);
+    } finally {
+      release.resolve();
+    }
+  });
+
+  test("a late old completion cannot drain a replacement's still-serving host call", async () => {
+    const f = await harnessFixture({ dispatchDeadlineMs: 500 });
+    const oldRelease = Promise.withResolvers<void>();
+    const freshRelease = Promise.withResolvers<void>();
+    const gate = await guestBarrier();
+    let oldEntered = false;
+    let oldCompleted = false;
+    let freshEntered = false;
+    let freshCompleted = false;
+    const old = actionCtx(
+      {
+        ...f.storage,
+        get: async (key) => {
+          oldEntered = true;
+          await oldRelease.promise;
+          const value = await f.storage.get(key);
+          oldCompleted = true;
+          return value;
+        },
+      },
+      f.runtime,
+    );
+    const expired = invoke(f.def, "echo", old.ctx, { text: "old" }).catch(
+      (error: unknown) => error,
+    );
+    try {
+      await until(() => oldEntered);
+      expect(await expired).toMatchObject({ rule: "unavailable" });
+      await until(() => f.supervisor.state(PLUGIN_ID) === "stopped");
+      const fresh = {
+        ...f.ctx,
+        storage: {
+          ...f.storage,
+          set: async (key: string, value: string) => {
+            freshEntered = true;
+            await freshRelease.promise;
+            await f.storage.set(key, value);
+            freshCompleted = true;
+          },
+        },
+      } as ActionCtx;
+      const answered = f.harness
+        .sessions(fresh, { machineId: `queue-and-answer:${gate.dir}` })
+        .catch((error: unknown) => error);
+      await until(() => freshEntered);
+      await gate.release();
+      expect(await answered).toBeInstanceOf(IsolateDenial);
+      oldRelease.resolve();
+      await until(() => oldCompleted);
+      expect(freshCompleted).toBe(false);
+      await expect(f.harness.profileSchema.safeParseAsync("valid")).rejects.toMatchObject({
+        rule: "unavailable",
+      });
+      freshRelease.resolve();
+      await until(() => freshCompleted);
+      expect((await f.harness.profileSchema.safeParseAsync("valid")).success).toBe(true);
+    } finally {
+      oldRelease.resolve();
+      freshRelease.resolve();
+      await gate.release();
+    }
+  });
+
   test("an idle child is evicted and the next dispatch spawns it again", async () => {
     const { supervisor, runtime, storage, logger } = fixture({ idleEvictMs: 100 });
     const { def } = await supervisor.load({ pluginId: PLUGIN_ID, manifest, dir: GUEST_DIR });
