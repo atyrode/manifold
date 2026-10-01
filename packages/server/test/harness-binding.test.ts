@@ -234,6 +234,7 @@ async function fixture(
   });
   const commands: JobCommand[] = [];
   const sent: ServerToAgentMessage[] = [];
+  const createWaiters = new Map<string, () => void>();
   const firstCreate = Promise.withResolvers<Extract<ServerToAgentMessage, { type: "create" }>>();
   const firstRestart =
     Promise.withResolvers<Extract<ServerToAgentMessage, { type: "terminal_restart" }>>();
@@ -247,7 +248,10 @@ async function fixture(
     send(message: ServerToAgentMessage) {
       sent.push(message);
       if (message.type === "job_command") commands.push(message.command);
-      if (message.type === "create") firstCreate.resolve(message);
+      if (message.type === "create") {
+        firstCreate.resolve(message);
+        createWaiters.get(message.terminalId)?.();
+      }
       if (message.type === "terminal_restart") firstRestart.resolve(message);
       if (message.type === "terminal_restart" && acknowledgeRestarts)
         broker.onRestarted(machineId, {
@@ -339,6 +343,15 @@ async function fixture(
     );
   const open = async (value: TerminalRuntime, actor: AuthContext = root) => {
     const socket = new FakeSocket();
+    const finished = Promise.withResolvers<void>();
+    const send = socket.send.bind(socket);
+    socket.send = (data) => {
+      const bytes = send(data);
+      const frame: unknown = JSON.parse(data);
+      if (frame !== null && typeof frame === "object" && "type" in frame &&
+          (frame.type === "terminal_error" || frame.type === "error")) finished.resolve();
+      return bytes;
+    };
     const peer = new SessionChannel(runtime.newId(), socket, actor, containerId, "c1");
     const request = {
       elementId: runtime.newId(),
@@ -365,12 +378,18 @@ async function fixture(
     );
     if (tile?.dir !== null || tile.ref?.kind !== "terminal")
       throw new Error("pending terminal tile missing");
-    broker.resize(peer, {
-      type: "terminal_resize",
-      terminalId: tile.ref.terminalId,
-      viewportId: "fixture",
-      viewport: { cols: 80, rows: 24 },
-    });
+    createWaiters.set(tile.ref.terminalId, finished.resolve);
+    try {
+      broker.resize(peer, {
+        type: "terminal_resize",
+        terminalId: tile.ref.terminalId,
+        viewportId: "fixture",
+        viewport: { cols: 80, rows: 24 },
+      });
+      await finished.promise;
+    } finally {
+      createWaiters.delete(tile.ref.terminalId);
+    }
     return socket;
   };
   return {
@@ -585,11 +604,11 @@ test("cross-machine session references and refused native admission leave no cor
         1,
       ),
     ).toThrow("terminal_runtime_session_destination_changed");
-    await f.open({
+    await expect(f.open({
       ...f.descriptor,
       installationRevision: "stale",
       session: { ...session, machineId: f.descriptor.machineId },
-    });
+    })).rejects.toThrow();
     expect(f.sent.filter((message) => message.type === "create")).toEqual([]);
     expect(f.store.listTerminals()).toEqual([]);
   } finally {
@@ -614,8 +633,8 @@ test("browser descriptors bind distinct runs without returning or journaling the
       },
       f.root,
     );
-    await f.open(a.runtime, f.auth.authenticate(other.token));
-    await f.open({ ...a.runtime, input: { changed: true } });
+    await expect(f.open(a.runtime, f.auth.authenticate(other.token))).rejects.toThrow();
+    await expect(f.open({ ...a.runtime, input: { changed: true } })).rejects.toThrow();
     expect(f.sent.filter((message) => message.type === "create")).toEqual([]);
     await f.open(a.runtime);
     const firstCreate = f.sent.find((message) => message.type === "create");
@@ -653,7 +672,7 @@ test("harness launch bindings reject input removal and unavailable sources never
     expect(f.sent.filter((message) => message.type === "create")).toEqual([]);
     // The unmodified descriptor is bound correctly, but its source is unavailable.
     const unavailable = await f.launch((await f.create()).run.id);
-    await f.open(unavailable.runtime);
+    await expect(f.open(unavailable.runtime)).rejects.toThrow();
     expect(f.sent.filter((message) => message.type === "create")).toEqual([]);
     delete f.descriptor.inputs;
     const plain = await f.create();

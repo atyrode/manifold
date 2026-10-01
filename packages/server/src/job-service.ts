@@ -492,6 +492,7 @@ export class JobService {
     if (native !== undefined) {
       const install = this.jobs.installation(native.machineId, native.pluginId);
       const owner = this.jobs.owner(native.machineId);
+      const live = this.channels.get(native.machineId);
       if (
         !install?.enabled ||
         install.purgeRequested ||
@@ -504,7 +505,7 @@ export class JobService {
         !owner ||
         owner.ownerId !== native.ownerId ||
         owner.generation !== native.ownerGeneration ||
-        owner.terminalHostId !== native.terminalHostId ||
+        (live?.proved === true && live.owner.terminalHostId !== native.terminalHostId) ||
         (snapshot.terminal !== undefined &&
           snapshot.terminal.terminalHostId !== native.terminalHostId)
       )
@@ -4803,7 +4804,7 @@ export class JobService {
       !owner ||
       owner.ownerId !== demand.ownerId ||
       owner.generation !== demand.ownerGeneration ||
-      owner.terminalHostId !== demand.terminalHostId ||
+      (live?.proved === true && live.owner.terminalHostId !== demand.terminalHostId) ||
       !install?.enabled ||
       install.purgeRequested ||
       this.heldPlugins.has(demand.pluginId) ||

@@ -389,6 +389,7 @@ function CredentialSessions({ host }: SectionProps): ReactElement {
           ) : null}
         </span>
         {row.sessions.some((session) => session.authorityScope !== undefined) ? (
+          <Stack className="credential-inspection" gap="0.25rem">
           <InspectionFold title="Credential authority scopes">
             {row.sessions.map((session) => (
               <Stack key={session.id} gap="0.25rem">
@@ -403,6 +404,7 @@ function CredentialSessions({ host }: SectionProps): ReactElement {
               </Stack>
             ))}
           </InspectionFold>
+          </Stack>
         ) : null}
       </div>
     );
