@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { packPlugin } from "@manifold/plugin-kit/pack";
 import { defineAction, type PluginStorage } from "@manifold/plugin";
-import { formatManifoldUri, type PluginManifest } from "@manifold/protocol";
+import { formatManifoldUri, type ActionOutcome, type PluginManifest } from "@manifold/protocol";
 import { z } from "zod";
 import { AuthService } from "../src/auth.ts";
 import { IsolateSupervisor } from "../src/isolate/supervisor.ts";
@@ -412,6 +412,132 @@ test.each(["parser", "handler", "before admission"])(
       await invocation.catch(() => {});
       host.close();
       store.close();
+    }
+  },
+);
+
+test.each(["parser", "preparer"] as const)(
+  "%s cannot spend a retained admitted context, including its later asynchronous descendants",
+  async (phase) => {
+    const dataDir = mkdtempSync(join(tmpdir(), "manifold-preparation-custody-"));
+    const runtime = new FakeRuntime();
+    const clock = new FakeClock(runtime);
+    const store = testStore();
+    const auth = new AuthService(store, OWNER_KEY, runtime);
+    const owner = auth.authenticate(OWNER_KEY);
+    const rooms = new RoomManager(store, runtime, clock, silentLogger, testTileTrees);
+    const broker = new TerminalBroker(
+      store, auth, rooms, runtime, clock, silentLogger, () => "http://localhost:7777", testTileTrees,
+    );
+    const runner = new IsolateSupervisor({ logger: silentLogger, runtime });
+    const held = Promise.withResolvers<ActionCtx>();
+    const finishHandler = Promise.withResolvers<void>();
+    const preparing = Promise.withResolvers<void>();
+    const finishPreparation = Promise.withResolvers<void>();
+    const releaseDescendant = Promise.withResolvers<void>();
+    let attempts: Promise<boolean[]> | undefined;
+    let descendant: Promise<boolean> | undefined;
+    let retained: ActionCtx;
+    const denied = async (effect: () => unknown): Promise<boolean> => {
+      try {
+        await effect();
+        return false;
+      } catch {
+        return true;
+      }
+    };
+    const attemptEffects = () => {
+      attempts = Promise.all([
+        denied(() => retained.storage.set("forbidden-set", "changed")),
+        denied(() => retained.storage.compareAndSet("forbidden-cas", null, "changed")),
+        denied(() => retained.storage.delete("preserved")),
+        denied(() => retained.database!.run("INSERT INTO records VALUES ('forbidden-run')")),
+        denied(() => retained.database!.batch([{ sql: "INSERT INTO records VALUES ('forbidden-batch')" }])),
+        Promise.resolve(retained.identity.mintToken({
+          principal: { kind: "human", name: "forbidden preparation" }, caps: ["containers:read"],
+        })).then((result) => !result.ok),
+      ]);
+      descendant = releaseDescendant.promise.then(() =>
+        denied(() => retained.storage.set("forbidden-descendant", "changed")),
+      );
+    };
+    const def: ServerPluginDef = {
+      manifest: { ...manifest, id: "test.preparation-custody" },
+      actions: [
+        defineAction({
+          name: "hold", title: "Hold", caps: ["machines:mint", "tokens:mint"],
+          input: z.strictObject({}), result: z.strictObject({}),
+        }),
+        defineAction({
+          name: "review", title: "Review", caps: ["containers:read"],
+          input: z.preprocess((args) => {
+            if (phase === "parser" && attempts === undefined) attemptEffects();
+            return args;
+          }, z.strictObject({})),
+          result: z.strictObject({}),
+        }),
+      ],
+      prepareActions: {
+        review: {
+          caps: [],
+          prepare: async (_ctx, args) => {
+            if (phase === "preparer") attemptEffects();
+            await attempts;
+            preparing.resolve();
+            await finishPreparation.promise;
+            return { args, targets: [] };
+          },
+        },
+      },
+      handlers: {
+        hold: async (ctx: ActionCtx) => {
+          await ctx.database!.run("CREATE TABLE records(body TEXT NOT NULL)");
+          await ctx.database!.run("INSERT INTO records VALUES ('before')");
+          await ctx.storage.set("preserved", "before");
+          held.resolve(ctx);
+          await finishHandler.promise;
+          await ctx.storage.set("legitimate", "committed");
+          return {};
+        },
+        review: async () => {
+          throw new Error("review must not admit a handler");
+        },
+      },
+    };
+    const host = await testPluginHost(store, auth, rooms, broker, runtime, {
+      settingsPlugins: [def], isolates: { runner, dataDir },
+    });
+    const holding = host.dispatch(owner, "test.preparation-custody.hold", {});
+    let review: Promise<ActionOutcome> | undefined;
+    try {
+      retained = await held.promise;
+      const credentials = auth.listCredentialsV2(owner);
+      review = host.prepareActionInput(owner, "test.preparation-custody.review", {});
+      await preparing.promise;
+      // This continuation is outside preparation, while the preparer is still awaiting.
+      await retained.storage.set("concurrent", "admitted");
+      finishPreparation.resolve();
+      expect((await review).ok).toBe(false);
+      expect(await attempts).toEqual([true, true, true, true, true, true]);
+      releaseDescendant.resolve();
+      expect(await descendant).toBe(true);
+      expect(auth.listCredentialsV2(owner)).toEqual(credentials);
+      expect(await retained.storage.keys()).toEqual(["concurrent", "preserved"]);
+      expect(await retained.storage.get("preserved")).toBe("before");
+      expect(await retained.database!.query("SELECT body FROM records")).toEqual([{ body: "before" }]);
+      finishHandler.resolve();
+      expect(await holding).toEqual({ ok: true, result: {} });
+      expect(await store.pluginStorage("test.preparation-custody").get("legitimate")).toBe("committed");
+    } finally {
+      finishPreparation.resolve();
+      releaseDescendant.resolve();
+      finishHandler.resolve();
+      await review?.catch(() => {});
+      await holding.catch(() => {});
+      host.close();
+      await runner.close();
+      store.close();
+      rmSync(dataDir, { recursive: true, force: true });
     }
   },
 );

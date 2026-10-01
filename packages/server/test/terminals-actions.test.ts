@@ -47,10 +47,12 @@ class FakeMachine implements MachineChannel {
   readonly terminalRestart = true;
   readonly protocolVersion = PROTOCOL_VERSION;
   readonly sent: ServerToAgentMessage[] = [];
-  readonly terminalHostId: string | null = null;
   onRestart: ((terminalId: string) => void) | null = null;
   onCreate: ((terminalId: string) => void) | null = null;
-  constructor(readonly machineId: string) {}
+  constructor(
+    readonly machineId: string,
+    readonly terminalHostId: string | null = null,
+  ) {}
 
   send(message: ServerToAgentMessage): boolean {
     this.sent.push(ServerToAgentMessageSchema.parse(message));
@@ -84,7 +86,7 @@ interface TerminalsFixture {
  * container the opener is already looking at, which keeps the containment questions these
  * cases are about readable.
  */
-async function fixture(): Promise<TerminalsFixture> {
+async function fixture(terminalHostId: string | null = null): Promise<TerminalsFixture> {
   const runtime = new FakeRuntime();
   const clock = new FakeClock(runtime);
   const store = testStore();
@@ -124,7 +126,7 @@ async function fixture(): Promise<TerminalsFixture> {
     ),
   );
   const enrollment = auth.enrollMachine("fake", owner);
-  const machine = new FakeMachine(enrollment.machine.id);
+  const machine = new FakeMachine(enrollment.machine.id, terminalHostId);
   broker.setMachineOnline(machine);
   let host: PluginHost | null = null;
   const events = testEventHub(
@@ -1163,6 +1165,122 @@ describe("session channel terminal verbs speak the ladder", () => {
 });
 
 describe("ordinary shell creation authority", () => {
+  test.each(["create", "restart"] as const)(
+    "%s refuses a different prepared owner before any lifecycle or machine effect",
+    async (action) => {
+      const base = await fixture("owner-A");
+      const successor = new FakeMachine(base.machine.machineId, "owner-B");
+      const terminalId = action === "restart" ? liveTerminal(base) : undefined;
+      if (terminalId !== undefined) base.broker.onExited(base.machine.machineId, terminalId, 0);
+      base.machine.clear();
+      const credentials = base.auth.listCredentialsV2(base.owner);
+      const terminals = base.store.listTerminals();
+      const layout = base.rooms.get(base.container.id)?.tileLayout();
+      const resolve = base.broker.resolveTerminalMachine.bind(base.broker);
+      const stored = base.store.getTerminal.bind(base.store);
+      let armed = true;
+      if (action === "create") {
+        base.broker.resolveTerminalMachine = (...args) => {
+          const destination = resolve(...args);
+          if (armed) {
+            armed = false;
+            queueMicrotask(() => base.broker.setMachineOnline(successor));
+          }
+          return destination;
+        };
+      } else {
+        base.store.getTerminal = (id) => {
+          const terminal = stored(id);
+          if (armed && id === terminalId) {
+            armed = false;
+            queueMicrotask(() => base.broker.setMachineOnline(successor));
+          }
+          return terminal;
+        };
+      }
+      // An unfenced create/restart completes rather than hanging the failing-before case.
+      successor.onCreate = (id) => base.broker.onCreated(successor.machineId, id);
+      successor.onRestart = (id) => base.broker.onRestarted(successor.machineId, {
+        type: "terminal_restarted", terminalId: id,
+      });
+      try {
+        const outcome = await base.host.dispatch(base.owner, `core.terminals.${action}`,
+          action === "create" ? {
+            containerId: base.container.id, elementId: "changed-owner", placement: "tile",
+            machineId: base.machine.machineId, cols: 80, rows: 24,
+          } : { terminalId },
+        );
+        expect(outcome).toMatchObject({ ok: false, denial: { rule: "forbidden" } });
+        expect(successor.sent.filter((message) =>
+          message.type === "create" || message.type === "terminal_restart",
+        )).toEqual([]);
+        expect(base.auth.listCredentialsV2(base.owner)).toEqual(credentials);
+        expect(base.store.listTerminals()).toEqual(terminals);
+        expect(base.rooms.get(base.container.id)?.tileLayout()).toEqual(layout);
+      } finally {
+        base.gateway.shutdown();
+        base.broker.setMachineOffline(successor);
+        base.host.close();
+        base.store.close();
+      }
+    },
+  );
+
+  test.each(["create", "restart"] as const)(
+    "%s accepts a replacement transport for the same prepared owner",
+    async (action) => {
+      const base = await fixture("owner-A");
+      const successor = new FakeMachine(base.machine.machineId, "owner-A");
+      const terminalId = action === "restart" ? liveTerminal(base) : undefined;
+      if (terminalId !== undefined) base.broker.onExited(base.machine.machineId, terminalId, 0);
+      const resolve = base.broker.resolveTerminalMachine.bind(base.broker);
+      const stored = base.store.getTerminal.bind(base.store);
+      let armed = true;
+      if (action === "create") {
+        base.broker.resolveTerminalMachine = (...args) => {
+          const destination = resolve(...args);
+          if (armed) {
+            armed = false;
+            queueMicrotask(() => base.broker.setMachineOnline(successor));
+          }
+          return destination;
+        };
+      } else {
+        base.store.getTerminal = (id) => {
+          const terminal = stored(id);
+          if (armed && id === terminalId) {
+            armed = false;
+            queueMicrotask(() => base.broker.setMachineOnline(successor));
+          }
+          return terminal;
+        };
+      }
+      successor.onCreate = (id) => base.broker.onCreated(successor.machineId, id);
+      successor.onRestart = (id) => base.broker.onRestarted(successor.machineId, {
+        type: "terminal_restarted", terminalId: id,
+      });
+      try {
+        expect(await base.host.dispatch(base.owner, `core.terminals.${action}`,
+          action === "create" ? {
+            containerId: base.container.id, elementId: "same-owner", placement: "tile",
+            machineId: base.machine.machineId, cols: 80, rows: 24,
+          } : { terminalId },
+        )).toMatchObject({ ok: true });
+        const terminal = base.store.listTerminals().find((row) =>
+          row.id === (terminalId ?? successor.sent.find((message) => message.type === "create")?.terminalId),
+        );
+        expect(terminal).toMatchObject({
+          machineId: base.machine.machineId, containerId: base.container.id, status: "running",
+        });
+      } finally {
+        base.gateway.shutdown();
+        base.broker.setMachineOffline(successor);
+        base.host.close();
+        base.store.close();
+      }
+    },
+  );
+
   const working = [
     "containers:write",
     "containers:read",
