@@ -1115,6 +1115,36 @@ export interface PluginDatabaseJournal {
   readonly next: string | null;
 }
 
+/** Durable monetary identity only: request and response bodies never enter this ledger. */
+export interface DirectServiceAttempt {
+  actorId: string;
+  callId: string;
+  requestId: string;
+  requestDigest: string;
+  machineId: string;
+  serviceId: string;
+  operationId: string;
+  revision: string;
+  policySha256: string;
+  modelId: string;
+  instanceRevision: string | null;
+  executionJobId: string | null;
+  ownerId: string;
+  ownerGeneration: number;
+  ownerKeySha256: string;
+  reservedMicros: number;
+  chargedMicros: number | null;
+  state: "reserved" | "unresolved" | "settled";
+  authorized: 0 | 1;
+}
+const directServiceAttemptColumns = `
+ actor_id AS actorId, call_id AS callId, request_id AS requestId, request_digest AS requestDigest,
+ machine_id AS machineId, service_id AS serviceId, operation_id AS operationId,
+ revision, policy_sha256 AS policySha256, model_id AS modelId, instance_revision AS instanceRevision,
+ execution_job_id AS executionJobId, owner_id AS ownerId, owner_generation AS ownerGeneration,
+ owner_key_sha256 AS ownerKeySha256, reserved_micros AS reservedMicros,
+ charged_micros AS chargedMicros, state, authorized`;
+
 /** Synchronous repository over the server-owned SQLite schema. */
 export class ServerStore {
   private readonly eventCountByContainer = new Map<string, number>();
@@ -1152,6 +1182,113 @@ export class ServerStore {
       for (const effect of effects) effect();
     }
     return result;
+  }
+  directServiceAttempt(actorId: string, callId: string): DirectServiceAttempt | null {
+    return this.db
+      .query<DirectServiceAttempt, [string, string]>(
+        `SELECT ${directServiceAttemptColumns} FROM native_service_attempts
+         WHERE actor_id=? AND call_id=?`,
+      )
+      .get(actorId, callId);
+  }
+
+  directServiceAttemptByRequest(requestId: string): DirectServiceAttempt | null {
+    return this.db
+      .query<DirectServiceAttempt, [string]>(
+        `SELECT ${directServiceAttemptColumns} FROM native_service_attempts WHERE request_id=?`,
+      )
+      .get(requestId);
+  }
+
+  /** The allowance belongs to the service identity, never to a policy revision. */
+  reserveDirectServiceAttempt(
+    attempt: DirectServiceAttempt,
+    allowanceMicros: number,
+    executionCeilingMicros?: number,
+  ): boolean {
+    return this.transaction(() => {
+      const exposure = this.db
+        .query<{ micros: number }, [string, string]>(
+          `SELECT COALESCE(SUM(COALESCE(charged_micros,reserved_micros)),0) AS micros
+           FROM native_service_attempts WHERE machine_id=? AND service_id=?`,
+        )
+        .get(attempt.machineId, attempt.serviceId)!.micros;
+      if (exposure > allowanceMicros - attempt.reservedMicros) return false;
+      if (executionCeilingMicros !== undefined) {
+        const executionExposure = this.db
+          .query<{ micros: number }, [string | null]>(
+            `SELECT COALESCE(SUM(COALESCE(charged_micros,reserved_micros)),0) AS micros
+             FROM native_service_attempts WHERE execution_job_id=?`,
+          )
+          .get(attempt.executionJobId)!.micros;
+        if (executionExposure > executionCeilingMicros - attempt.reservedMicros) return false;
+      }
+      this.db
+        .query(
+          `INSERT INTO native_service_attempts(
+           actor_id,call_id,request_id,request_digest,machine_id,service_id,operation_id,
+           revision,policy_sha256,model_id,instance_revision,execution_job_id,
+           owner_id,owner_generation,owner_key_sha256,reserved_micros,charged_micros,state,authorized)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,'reserved',0)`,
+        )
+        .run(
+          attempt.actorId,
+          attempt.callId,
+          attempt.requestId,
+          attempt.requestDigest,
+          attempt.machineId,
+          attempt.serviceId,
+          attempt.operationId,
+          attempt.revision,
+          attempt.policySha256,
+          attempt.modelId,
+          attempt.instanceRevision,
+          attempt.executionJobId,
+          attempt.ownerId,
+          attempt.ownerGeneration,
+          attempt.ownerKeySha256,
+          attempt.reservedMicros,
+        );
+      return true;
+    });
+  }
+
+  /** Commit before permission to perform any upstream effect, including a lost approval. */
+  authorizeDirectServiceAttempt(requestId: string): boolean {
+    return (
+      this.db
+        .query(
+          `UPDATE native_service_attempts SET state='unresolved',authorized=1
+         WHERE request_id=? AND state<>'settled'`,
+        )
+        .run(requestId).changes > 0
+    );
+  }
+
+  /** Hub-local proof: no approval was ever sent for this reserved attempt. */
+  releaseDirectServiceAttempt(requestId: string): void {
+    this.db
+      .query(
+        `UPDATE native_service_attempts SET state='settled',charged_micros=0
+         WHERE request_id=? AND state='reserved' AND authorized=0`,
+      )
+      .run(requestId);
+  }
+
+  /** First final owner outcome wins. Unknown outcomes can later become proven charges. */
+  settleDirectServiceAttempt(requestId: string, chargedMicros: number | null): void {
+    this.db
+      .query(
+        `UPDATE native_service_attempts SET state=?,charged_micros=?
+         WHERE request_id=? AND state<>'settled'`,
+      )
+      .run(chargedMicros === null ? "unresolved" : "settled", chargedMicros, requestId);
+  }
+
+  recoverDirectServiceAttempts(): void {
+    this.db
+      .query("UPDATE native_service_attempts SET state='unresolved' WHERE state='reserved'")
+      .run();
   }
 
   /** Nested transactions may announce committed state only after the outer commit succeeds. */

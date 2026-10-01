@@ -1,5 +1,9 @@
 import { z } from "zod";
-import { ServicePolicySchema, ServiceReadArgsSchema } from "./services.ts";
+import {
+  ServicePolicySchema,
+  ServiceReadArgsSchema,
+  ServiceInvokeAccountingSchema,
+} from "./services.ts";
 
 const name = ServiceReadArgsSchema.shape.serviceId;
 const revision = ServiceReadArgsSchema.shape.revision;
@@ -47,6 +51,9 @@ export const InstanceServiceReadArgsSchema = z.strictObject({
   operationId: ServiceReadArgsSchema.shape.operationId,
   input: ServiceReadArgsSchema.shape.input,
 });
+export const InstanceServiceInvokeArgsSchema = InstanceServiceReadArgsSchema.extend({
+  accounting: ServiceInvokeAccountingSchema.optional(),
+});
 export type InstanceServiceOwner = z.infer<typeof InstanceServiceOwnerSchema>;
 export type InstanceServiceDescription = z.infer<typeof InstanceServiceDescriptionSchema>;
 export type InstanceServicesDescription = z.infer<typeof InstanceServicesDescriptionSchema>;
@@ -55,3 +62,4 @@ export type InstanceServiceConfigurationRead = z.infer<
 >;
 export type ConfigureInstanceServiceArgs = z.infer<typeof ConfigureInstanceServiceArgsSchema>;
 export type InstanceServiceReadArgs = z.infer<typeof InstanceServiceReadArgsSchema>;
+export type InstanceServiceInvokeArgs = z.infer<typeof InstanceServiceInvokeArgsSchema>;

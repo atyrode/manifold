@@ -7,9 +7,11 @@ import {
   ServiceConfigurationSchema,
   ServicePolicySchema,
   ServiceReadArgsSchema,
-  ServiceInvokeArgsSchema,
+  ServiceDirectAccountingSchema,
   ServiceRefusalSchema,
+  NativeServiceReplySchema,
   ServiceReplySchema,
+  type ServicePolicy,
 } from "./services.ts";
 import { ServiceTunnelFrameSchema } from "./services.ts";
 import {
@@ -19,13 +21,19 @@ import {
   MachineAnchorSchema,
   readsOperatorAnchor,
 } from "./job-resources.ts";
+import {
+  MACHINE_DIRECT_SERVICE_ACCOUNTING_PROTOCOL_VERSION,
+  MACHINE_PROTOCOL_COMPAT_VERSIONS,
+} from "./version.ts";
 
 /** Feature floor after v41 agent tools; v38 and v39 stay reserved by drafts. */
 const ISOLATED_JOB_PROTOCOL_VERSION = 42;
 /** Disposable per-job output scratch; older owners would retain its raw bytes. */
 const TEMPORARY_LOCATIONS_PROTOCOL_VERSION = 43;
+/** Owner-quoted single-call direct monetary reservations. */
+const DIRECT_SERVICE_ACCOUNTING_PROTOCOL_VERSION = 44;
 /** Native owner RPC changes independently of hub, session, and transport releases. */
-export const JOB_OWNER_PROTOCOL_VERSION = TEMPORARY_LOCATIONS_PROTOCOL_VERSION;
+export const JOB_OWNER_PROTOCOL_VERSION = DIRECT_SERVICE_ACCOUNTING_PROTOCOL_VERSION;
 
 /**
  * Native owners outlive hub deploys. An unchanged or strictly additive-optional RPC change
@@ -45,6 +53,8 @@ export const JOB_OWNER_PROTOCOL_VERSION = TEMPORARY_LOCATIONS_PROTOCOL_VERSION;
  * ordinary requests retain their accepted older owners. v43 adds the optional machine location
  * `temporary` lifetime: an older strict owner never receives such a declaration, used or not,
  * and every operation using one is omitted from its install projection rather than retained.
+ * v44 adds opt-in bounded direct service accounting and installed model context bounds.
+ * Policies carrying these fields and monetary invokes require the explicit capability.
  * v38 and v39 were reserved by drafts and are never accepted: capability checks compare
  * revisions, so a later change must not reuse them. Revision-pinned policies and ordinary
  * admissions remain unchanged; contextual policies are sent only to owners and machine
@@ -59,6 +69,7 @@ export const JOB_OWNER_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
   41,
   ISOLATED_JOB_PROTOCOL_VERSION,
   TEMPORARY_LOCATIONS_PROTOCOL_VERSION,
+  DIRECT_SERVICE_ACCOUNTING_PROTOCOL_VERSION,
 ]);
 
 export type JobOwnerCapability =
@@ -70,7 +81,8 @@ export type JobOwnerCapability =
   | "agentTools"
   | "serviceBindings"
   | "outputOnlyLocations"
-  | "temporaryLocations";
+  | "temporaryLocations"
+  | "directServiceAccounting";
 const jobOwnerCapabilityVersions: Readonly<Record<JobOwnerCapability, number>> = {
   privateEnv: 35,
   launchBinding: 35,
@@ -81,6 +93,7 @@ const jobOwnerCapabilityVersions: Readonly<Record<JobOwnerCapability, number>> =
   serviceBindings: ISOLATED_JOB_PROTOCOL_VERSION,
   outputOnlyLocations: ISOLATED_JOB_PROTOCOL_VERSION,
   temporaryLocations: TEMPORARY_LOCATIONS_PROTOCOL_VERSION,
+  directServiceAccounting: DIRECT_SERVICE_ACCOUNTING_PROTOCOL_VERSION,
 };
 
 /** Capability support never grants execution authority to an owner outside the accepted set. */
@@ -89,6 +102,32 @@ export function jobOwnerSupports(protocolVersion: number, capability: JobOwnerCa
     JOB_OWNER_PROTOCOL_COMPAT_VERSIONS.has(protocolVersion) &&
     protocolVersion >= jobOwnerCapabilityVersions[capability]
   );
+}
+
+/** Neither an older strict owner nor an intervening transport receives weakened money policy. */
+export function servicePolicyProtocolRefusal(
+  ownerProtocolVersion: number,
+  transportProtocolVersion: number | undefined,
+  policy: ServicePolicy,
+): string | null {
+  if (!JOB_OWNER_PROTOCOL_COMPAT_VERSIONS.has(ownerProtocolVersion))
+    return "owner_protocol_unsupported";
+  const monetary =
+    policy.directCostCeilingMicros !== undefined ||
+    Object.values(policy.operations).some(
+      (operation) => !("kind" in operation) && operation.meter !== undefined,
+    ) ||
+    policy.prices?.default?.contextTokens !== undefined ||
+    Object.values(policy.prices?.models ?? {}).some((price) => price.contextTokens !== undefined);
+  if (
+    monetary &&
+    (!jobOwnerSupports(ownerProtocolVersion, "directServiceAccounting") ||
+      transportProtocolVersion === undefined ||
+      !MACHINE_PROTOCOL_COMPAT_VERSIONS.has(transportProtocolVersion) ||
+      transportProtocolVersion < MACHINE_DIRECT_SERVICE_ACCOUNTING_PROTOCOL_VERSION)
+  )
+    return "service_accounting_protocol_unsupported";
+  return null;
 }
 
 export const AGENT_TOOL_MAX_REQUEST_BYTES = 65_536;
@@ -1190,7 +1229,8 @@ export const JobCommandSchema = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("service_invoke"),
     requestId: id,
-    ...ServiceInvokeArgsSchema.shape,
+    ...ServiceReadArgsSchema.shape,
+    accounting: ServiceDirectAccountingSchema.optional(),
   }),
   z.strictObject({ type: z.literal("service_invoke_cancel"), requestId: id }),
   z.strictObject({
@@ -1418,7 +1458,7 @@ export const JobEventSchema = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("service_invoke_result"),
     requestId: id,
-    reply: ServiceReplySchema,
+    reply: NativeServiceReplySchema,
   }),
   z.strictObject({
     type: z.literal("resources"),

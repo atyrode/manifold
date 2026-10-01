@@ -2517,8 +2517,8 @@ dependency. The bundle's optional `builtAgainst` version map is recorded as
 shared builds also record React/package versions. Admission and boot check that stamp against
 the explicit `PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS` set and compare React by major. The
 bundle set is independent of session, machine and instance negotiation: sessions still require
-the current wire version. Protocol 48 admits bundle stamps 47 and 48 because the shared plugin
-ABI is preserved, including the older hardened machine-inventory projection. A prior stamp
+the current wire version. Protocol 52 admits bundle stamps 47, 48, 51 and 52 because the shared plugin
+ABI is preserved; direct-service accounting adds optional call/result metadata. A prior stamp
 may remain only with proof from unchanged released artifacts through candidate assembly and
 loading; an incompatible plugin ABI change resets the set. No numeric range, future version
 or deployment bypass is implied. Known incompatibility refuses fresh admission or holds an
@@ -4021,13 +4021,18 @@ incumbent continuity mismatch, or `supersession damped`). A name conflict is dec
 same atomic write that would admit the hello; it sends no welcome, changes neither machine row,
 and leaves an incumbent connection untouched. Version acceptance uses
 `MACHINE_PROTOCOL_COMPAT_VERSIONS`, currently
-`{30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48}`; session/browser joins remain strictly
-current at protocol 48. An unchanged machine
+`{30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52}`; session/browser joins remain strictly
+current at protocol 52. An unchanged machine
 wire may add a version to the set. A strictly additive-optional change may also add it only
 when old frames still parse and absent fields preserve the old semantics. Other changes
 reset the set and require a coordinated hub/transport upgrade. An admission bound applied
 identically at every accepted version, leaving compliant frames byte-identical, changes
 neither the version nor the set.
+
+Protocol 52's monetary service policies, invocation context and native charge replies require
+both machine transport 52 and owner RPC 44. An older admitted transport keeps its ordinary
+work, receives no incompatible monetary policy, and cannot admit a bounded direct call.
+Owner capability alone does not attest the intervening strict parser.
 
 **Live physical topology (#939, protocol 48).** The transport observes `physicalCoreCount`
 afresh while constructing each hello, including every reconnect. On Linux it reads
@@ -4084,8 +4089,8 @@ separate native owner proof and admitted resource/runtime bindings.
 
 ### Native job owner RPC
 
-Native owner RPC has its own `JOB_OWNER_PROTOCOL_VERSION`, currently 43, and
-`JOB_OWNER_PROTOCOL_COMPAT_VERSIONS = {34, 35, 36, 37, 40, 41, 42, 43}`. It is independent of machine and session
+Native owner RPC has its own `JOB_OWNER_PROTOCOL_VERSION`, currently 44, and
+`JOB_OWNER_PROTOCOL_COMPAT_VERSIONS = {34, 35, 36, 37, 40, 41, 42, 43, 44}`. It is independent of machine and session
 protocols. An additive-optional change **adds** its new version to the acceptance set; a
 breaking change **resets** the set and requires a coordinated drained owner upgrade.
 Compatibility never substitutes for owner proof, current execution consent or resource
@@ -4103,22 +4108,24 @@ construction, and the owner inventory's `anchorDefinitions` (#839, ADR 0049). Th
 40 → 41 change adds the optional, signed Run binding and its ephemeral tool
 request/cancel/result relay (#769); existing unbound jobs remain unchanged. The additive 41 → 42
 change adds signed request `serviceBindings` and operation location `outputOnly`. The additive
-42 → 43 change adds the machine location lifetime `temporary` (#933). Versions 38
-and 39 were reserved by drafts and are never accepted; because capability checks compare
-revisions, a later capability takes a version above 43 rather than reusing them.
+42 → 43 change adds the machine location lifetime `temporary` (#933). The additive
+43 → 44 change adds opt-in owner-quoted direct-service monetary accounting (#937).
+Versions 38 and 39 were reserved by drafts and are never accepted; because capability
+checks compare revisions, a later capability takes a version above 44 rather than reusing them.
 These are optional operations, not permission to orphan every already-running job or instance service.
 
 The hub sends only fields the negotiated owner parses. Private launch and `launchBinding`
 require 35; bound inputs require 36; self-provider service runtimes require 37; operator
 anchors require 40; Run-bound tools require 41 and machine protocol 43; explicit instance
 references (`serviceBindings`) and output-only backing locations (`outputOnlyLocations`)
-require 42; temporary locations (`temporaryLocations`) require 43. An older accepted owner
+require 42; temporary locations (`temporaryLocations`) require 43; bounded direct-service
+accounting (`directServiceAccounting`) and its new policy fields require 44. An older accepted owner
 keeps serving its compatible jobs and instance services;
 only the newer use is refused by name (`run_launch_protocol_unsupported`,
 `bound_inputs_protocol_unsupported`, `service_runtime_unsupported`,
 `operator_anchors_protocol_unsupported`, `agent_tools_protocol_unsupported`,
-`service_bindings_protocol_unsupported`, `output_only_locations_protocol_unsupported` or
-`temporary_locations_protocol_unsupported`).
+`service_bindings_protocol_unsupported`, `output_only_locations_protocol_unsupported`,
+`temporary_locations_protocol_unsupported` or `service_accounting_protocol_unsupported`).
 Unsupported
 operation declarations are omitted from that owner's install projection rather than
 weakening them, and signed admissions are never rewritten. A location declaration an older
@@ -4903,6 +4910,71 @@ policySha256, jobId }` or null), the expected revision, the resolved policy and 
   partial post-upgrade sum. The owner's settled `usage.inference` retains its existing five-counter
   result shape and authority. Spend is read from these server/owner records, never from what the
   workload reports about itself.
+- **Bounded direct-service money** ([#937](https://github.com/atyrode/manifold/issues/937)).
+  `engine.services.invoke` and `invokeInstance`, including their `ctx.services` equivalents,
+  accept optional `accounting: { callId, maxCostMicros, receiptOnly? }`. Ordinary invocations,
+  reads and worker service envelopes do not acquire this guarantee. Authorized operation
+  descriptions publish an available `{ modelId, reservedMicros }` quote, not configuration
+  or credential references. The hub and native owner each recompute the installed quote;
+  a caller can lower its acceptable maximum, never provide pricing or a smaller reservation.
+  Missing exact-model pricing, a missing hard context bound or allowance, an unsupported
+  wire, or an unsupported transport/owner accounting capability refuses before upstream dispatch.
+
+  A supported policy declares `directCostCeilingMicros`, an exact `prices.models[modelId]`
+  entry with `contextTokens`, and a direct operation's `meter: { kind, modelId }`.
+  The model is an installed literal, the path is static, the method is POST, query mapping
+  is empty and the reply is bounded projected JSON. `openai-usage` supports one nonstreamed
+  text turn using `messages` or `input`; `pi-native-usage` supports a nonstreamed
+  `modelId`/`context.messages` text turn. Explicit streaming, multiple completions, tool
+  loops, dynamic models and batch/routing controls are unsupported.
+  Provider-neutral `json-usage` supports installed scalar-leaf mappings such as
+  `state`/`model`/`questions`, with top-level exact `model` and aggregate
+  `usage.input_tokens`/`output_tokens`. Its context bound covers the **whole request**,
+  not each question. This is an owner-reviewed upstream contract, not a token estimate
+  or an inference about arbitrary JSON semantics.
+
+  With integer micro-dollar rates, reservation is
+  `ceil(contextTokens * (max(inputPerMillion, cachedInputPerMillion ?? inputPerMillion) + outputPerMillion) / 1_000_000)`.
+  Overflow refuses; explicit zero pricing is valid. Input and charged output usage must
+  satisfy the installed context bound. Only `json-usage` with an explicit zero output rate
+  permits output beyond that bound: free output adds no monetary exposure. Direct settlement
+  rounds measured cost **up** to whole micro-dollars, so positive fractional exposure never
+  becomes a reusable free allowance. Legacy proxy nearest-micro-dollar rounding is unchanged.
+  Pi cache writes retain the existing fresh-input rate. The guarantee is relative to correctly installed hard upstream bounds
+  and prices, not a provider-invoice attestation.
+
+  The existing SQLite store atomically reserves cumulative exposure for the
+  `(machineId, serviceId)` identity across actors, instances and policy revisions.
+  If the caller has a persisted native Run/job binding with a finite
+  `limits.inference.costMicros`, bounded direct calls also reserve against that execution.
+  A bounded execution with metered proxy authority or recorded proxy usage refuses
+  `service_accounting_execution_mixed_lanes`: the two accounting lanes do not share
+  an atomic reservation. The direct allowance covers **only opted-in bounded calls**,
+  not legacy direct/proxy spending or a whole mixed execution.
+
+  Before sending native authorization, the hub durably marks the maximum as possibly
+  spent. The owner measures raw provider usage before consumer projection, including
+  charged failures. A valid original-owner outcome settles once to the measured charge;
+  a proven nonattempt settles to zero. Timeout, cancellation, unreadable usage, lost
+  approval/channel or restart never invents a zero charge: unresolved exposure retains
+  the full maximum. The original authenticated owner/generation/key may settle later,
+  even after the pending map is gone; replacement-owner evidence cannot. An outcome
+  that was never delivered stays unresolved, without automatic execution replay.
+  The native owner retains generation-local identity tombstones for possibly paid envelopes;
+  a completed/unknown call's delayed duplicate cannot execute again or manufacture a new
+  nonattempt proof for the original exposure.
+
+  The public reply adds a bounded receipt with `callId`, owner request ID, exact
+  policy revision/hash, operation/model, accounting state, reserved maximum and nullable
+  settled charge. Reusing the same actor's call ID with exact input/policy/ceiling pins,
+  or requesting `receiptOnly`, returns `result: null` plus that receipt and never executes
+  again. Changed content refuses. Recovery rechecks current original-source authority
+  and admission policy, including after instance configuration replacement; no root
+  bypass exposes another actor's receipt. The ledger stores metadata and request digest,
+  never request/result bodies, endpoints, credentials or copied policies. Native charge
+  evidence is private protocol data, not a public result. Upgrade through the existing
+  drained-owner procedure; protocol support is not permission to activate a live policy.
+
 - **Output and privacy.** `child_exit` is execution observation with `outputsSealed: false`,
   not a final result, writer-drain acknowledgement or closure proof. Sealing waits for the
   execution tree to be empty and authorized overlapping writers to release, including
@@ -5266,6 +5338,12 @@ write locks, including Litestream's short checkpoint locks, before returning `SQ
 synchronization makes the plugin-image journal durable before filesystem activation.
 `packages/server/src/db.ts` remains the authoritative migration source; the handwritten
 inventory below records selected durable fields rather than acting as a second runner.
+
+Schema 49 adds `native_service_attempts` for bounded direct-service reservation identity,
+policy/model pins, original-owner fencing, maximum/settled cost and authorization/state.
+Startup conservatively changes remaining reservations to unresolved exposure. Policy
+replacement does not reset the service's accumulated exposure; recovery does not replay calls
+or retain private request/result bodies.
 
 **One writer per data directory** ([#318](https://github.com/atyrode/manifold/issues/318)). Before
 opening `manifold.db` the server takes `<data>/manifold.writer`, a SQLite file held in exclusive

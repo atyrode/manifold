@@ -24,7 +24,10 @@ import {
   parseManifoldUri,
   JOB_OWNER_PROTOCOL_COMPAT_VERSIONS,
   jobOwnerSupports,
+  servicePolicyProtocolRefusal,
+  quoteDirectService,
   MACHINE_SELF_PROVIDER_PROTOCOL_VERSION,
+  MACHINE_DIRECT_SERVICE_ACCOUNTING_PROTOCOL_VERSION,
   jobOwnerOperationRefusal,
   jobOwnerMachine,
   jobOwnerRequestRefusal,
@@ -41,6 +44,8 @@ import {
   type InstanceServiceDescription,
   type InstanceServiceOwner,
   type InstanceServiceReadArgs,
+  type InstanceServiceInvokeArgs,
+  InstanceServiceInvokeArgsSchema,
   type InstanceServicesDescription,
   type ServiceTunnelFrame,
 } from "@manifold/protocol";
@@ -97,6 +102,7 @@ import {
   ServiceReadArgsSchema,
   ServiceInvokeArgsSchema,
   ServiceReplySchema,
+  NativeServiceReplySchema,
   servicePolicyCredentialRefs,
   type ServiceConfiguration,
   type ServicePolicy,
@@ -123,7 +129,7 @@ import {
   type JobInstallation,
   type JobRunPosition,
 } from "./job-store.ts";
-import type { ServerStore, TraceRecord } from "./stores.ts";
+import type { ServerStore, TraceRecord, DirectServiceAttempt } from "./stores.ts";
 import { JobInvocationRefusal, JobSchedules, type JobScheduleSpec } from "./job-schedules.ts";
 import { JobDeployments } from "./job-deployments.ts";
 import { InstanceServiceStore, type InstanceServiceRecord } from "./instance-service-store.ts";
@@ -458,7 +464,7 @@ export class JobService {
     {
       mode: "read" | "invoke";
       channel: JobChannel;
-      args: ServiceReadArgs;
+      args: ServiceInvokeArgs;
       credential: CredentialReference;
       callerPluginId: string;
       traceId: string;
@@ -851,13 +857,58 @@ export class JobService {
   ): Promise<ServiceReply> {
     return this.readService(auth, this.instanceServiceReadArgs(args), callerPluginId, traceId);
   }
-  invokeInstanceService(
+  async invokeInstanceService(
     auth: AuthContext,
-    args: InstanceServiceReadArgs,
+    raw: InstanceServiceInvokeArgs,
     callerPluginId = "engine.services",
     traceId = "native-services",
   ): Promise<ServiceReply> {
-    return this.invokeService(auth, this.instanceServiceReadArgs(args), callerPluginId, traceId);
+    const parsed = InstanceServiceInvokeArgsSchema.safeParse(raw);
+    if (!parsed.success) fail("service_input_invalid");
+    const args = parsed.data;
+    const credential = this.auth.credentialReference(auth);
+    const current = this.auth.restoreCredential(credential);
+    if (!current) fail("service_unauthorized");
+    const prior = args.accounting
+      ? this.store.directServiceAttempt(current.principal.id, args.accounting.callId)
+      : null;
+    if (prior) {
+      this.directServiceAccess(credential, prior);
+      if (
+        prior.instanceRevision !== args.expectedRevision ||
+        prior.serviceId !== args.serviceId ||
+        prior.operationId !== args.operationId
+      )
+        fail("service_accounting_mismatch");
+      return this.directService(
+        auth,
+        {
+          machineId: prior.machineId,
+          serviceId: args.serviceId,
+          revision: prior.revision,
+          policySha256: prior.policySha256,
+          operationId: args.operationId,
+          input: args.input,
+          accounting: args.accounting,
+        },
+        "invoke",
+        callerPluginId,
+        traceId,
+        args.expectedRevision,
+      );
+    }
+    if (args.accounting?.receiptOnly) fail("service_accounting_unavailable");
+    return this.directService(
+      auth,
+      {
+        ...this.instanceServiceReadArgs(args),
+        ...(args.accounting ? { accounting: args.accounting } : {}),
+      },
+      "invoke",
+      callerPluginId,
+      traceId,
+      args.expectedRevision,
+    );
   }
   /**
    * Why a settled instance-service workload may be replaced under the SAME revision, or null
@@ -1111,16 +1162,20 @@ export class JobService {
   private synchronizeServices(channel: JobChannel): boolean {
     try {
       const canonical = this.effectiveConfiguration(channel.machineId);
-      let configuration = canonical;
-      if (!this.supportsSelfServiceRuntime(channel.machineId)) {
-        let policies: ServicePolicy[] | undefined;
-        for (let index = 0; index < canonical.policies.length; index++) {
-          const policy = canonical.policies[index]!;
-          if (this.contextualRuntime(policy)) policies ??= canonical.policies.slice(0, index);
-          else policies?.push(policy);
-        }
-        if (policies) configuration = { revision: digest(policies), policies };
+      const owner = this.channels.get(channel.machineId)?.owner;
+      let policies: ServicePolicy[] | undefined;
+      for (let index = 0; index < canonical.policies.length; index++) {
+        const policy = canonical.policies[index]!;
+        if (
+          (this.contextualRuntime(policy) && !this.supportsSelfServiceRuntime(channel.machineId)) ||
+          (owner &&
+            servicePolicyProtocolRefusal(owner.protocolVersion, channel.protocolVersion, policy) !==
+              null)
+        )
+          policies ??= canonical.policies.slice(0, index);
+        else policies?.push(policy);
       }
+      const configuration = policies ? { revision: digest(policies), policies } : canonical;
       return channel.send({
         type: "job_command",
         command: {
@@ -1162,6 +1217,10 @@ export class JobService {
           const reason =
             this.serviceAvailability(policy, args.machineId, [operationId]) ??
             this.runtimeServiceRefusal(policy, args.machineId);
+          const quote =
+            policy.directCostCeilingMicros === undefined
+              ? null
+              : quoteDirectService(policy, operationId);
           return [
             {
               operationId,
@@ -1169,11 +1228,14 @@ export class JobService {
               invocable: !("kind" in operation) && operation.invocable === true,
               ready: reason === null,
               reason,
-              ...("kind" in operation && operation.meter !== undefined
+              ...(operation.meter !== undefined
                 ? {
                     meter: operation.meter,
                     ...(policy.prices === undefined ? {} : { prices: policy.prices }),
                   }
+                : {}),
+              ...(quote?.ok
+                ? { accounting: { modelId: quote.modelId, reservedMicros: quote.reservedMicros } }
                 : {}),
             },
           ];
@@ -1247,6 +1309,12 @@ export class JobService {
   ): string | null {
     const live = this.channels.get(machineId);
     if (!live?.proved) return "resource_owner_unavailable";
+    const accountingSupport = servicePolicyProtocolRefusal(
+      live.owner.protocolVersion,
+      live.channel.protocolVersion,
+      policy,
+    );
+    if (accountingSupport) return accountingSupport;
     const support = this.serviceRuntimeSupportRefusal(policy, machineId);
     if (support) return support;
     if (!prospective && live.owner.resources?.services[policy.serviceId] !== digest(policy))
@@ -1274,50 +1342,25 @@ export class JobService {
     channel: JobChannel,
     mode: "read" | "invoke",
   ) {
-    const current = this.auth.restoreCredential(credential);
+    const { current, requirement, operation, policy } = this.directServiceAccess(
+      credential,
+      args,
+      mode,
+    );
     const live = this.channels.get(args.machineId);
-    if (!current || !live?.proved || live.channel !== channel) fail("service_unauthorized");
+    if (!live?.proved || live.channel !== channel) fail("service_unauthorized");
     const machine = this.store.getMachine(args.machineId);
     if (!machine || this.store.getToken(machine.tokenId)?.revokedAt !== null)
       fail("service_unavailable");
-    const policy = this.effectiveConfiguration(args.machineId).policies.find(
-      (policy) => policy.serviceId === args.serviceId,
-    );
-    const operation = policy?.operations[args.operationId];
     if (
-      !policy ||
       policy.revision !== args.revision ||
       digest(policy) !== args.policySha256 ||
       live.owner.resources?.services[args.serviceId] !== args.policySha256
     )
       fail("service_binding_mismatch");
-    if (
-      !operation ||
-      "kind" in operation ||
-      operation.response.kind !== "projected-json" ||
-      (mode === "read"
-        ? operation.readable !== true || operation.method !== "GET"
-        : operation.invocable !== true)
-    )
-      fail("service_unauthorized");
     const availability = this.serviceAvailability(policy, args.machineId, [args.operationId]);
     if (availability) fail(availability);
-    const requirement: AuthorityRequirement = {
-      cap: mode === "read" ? "services:read" : "services:invoke",
-      ref: {
-        kind: "service",
-        machineId: args.machineId,
-        serviceId: args.serviceId,
-        operationId: args.operationId,
-      },
-    };
-    if (
-      (!current.caps.includes("*") && !current.caps.includes(requirement.cap)) ||
-      !this.auth.allowsRef(current, requirement.cap, requirement.ref) ||
-      !this.serviceConsent(requirement.ref, requirement.cap)
-    )
-      fail("service_unauthorized");
-    return { current, requirement, operation };
+    return { current, requirement, operation, policy };
   }
   private serviceTrace(
     current: AuthContext,
@@ -1353,7 +1396,7 @@ export class JobService {
     pending: {
       mode: "read" | "invoke";
       channel: JobChannel;
-      args: ServiceReadArgs;
+      args: ServiceInvokeArgs;
       credential: CredentialReference;
       callerPluginId: string;
       traceId: string;
@@ -1393,6 +1436,11 @@ export class JobService {
         pending.mode,
       );
       if (!decision.allowed) fail("service_unauthorized");
+      if (pending.args.accounting && phase === "authorize") {
+        this.directServiceExecutionBudget(current);
+        if (!this.store.authorizeDirectServiceAttempt(requestId))
+          fail("service_accounting_unavailable");
+      }
     });
   }
   async readService(
@@ -1415,28 +1463,230 @@ export class JobService {
     callerPluginId = "engine.services",
     traceId = "native-services",
   ): Promise<ServiceReply> {
-    return this.directService(
-      auth,
-      ServiceInvokeArgsSchema.parse(raw),
-      "invoke",
-      callerPluginId,
-      traceId,
-    );
+    const parsed = ServiceInvokeArgsSchema.safeParse(raw);
+    if (!parsed.success) fail("service_input_invalid");
+    return this.directService(auth, parsed.data, "invoke", callerPluginId, traceId);
   }
+  private directServiceAccess(
+    credential: CredentialReference,
+    args: Pick<ServiceReadArgs, "machineId" | "serviceId" | "operationId">,
+    mode: "read" | "invoke" = "invoke",
+  ) {
+    const current = this.auth.restoreCredential(credential);
+    const requirement: AuthorityRequirement = {
+      cap: mode === "read" ? "services:read" : "services:invoke",
+      ref: {
+        kind: "service",
+        machineId: args.machineId,
+        serviceId: args.serviceId,
+        operationId: args.operationId,
+      },
+    };
+    if (
+      !current ||
+      (!current.caps.includes("*") && !current.caps.includes(requirement.cap)) ||
+      !this.auth.allowsRef(current, requirement.cap, requirement.ref)
+    )
+      fail("service_unauthorized");
+    const policy = this.effectiveConfiguration(args.machineId).policies.find(
+      (policy) => policy.serviceId === args.serviceId,
+    );
+    const operation = policy?.operations[args.operationId];
+    if (
+      !policy ||
+      !operation ||
+      "kind" in operation ||
+      (mode === "read"
+        ? operation.readable !== true || operation.method !== "GET"
+        : operation.invocable !== true) ||
+      operation.response.kind !== "projected-json" ||
+      !this.serviceConsent(requirement.ref, requirement.cap)
+    )
+      fail("service_unauthorized");
+    return { current, requirement, operation, policy };
+  }
+
+  private directServiceRequestDigest(args: ServiceInvokeArgs, instanceRevision: string | null) {
+    return digest({
+      machineId: args.machineId,
+      serviceId: args.serviceId,
+      revision: args.revision,
+      policySha256: args.policySha256,
+      operationId: args.operationId,
+      input: args.input,
+      maxCostMicros: args.accounting!.maxCostMicros,
+      instanceRevision,
+    });
+  }
+
+  private directServiceReceipt(
+    attempt: DirectServiceAttempt,
+  ): NonNullable<ServiceReply["accounting"]> {
+    return {
+      callId: attempt.callId,
+      requestId: attempt.requestId,
+      revision: attempt.revision,
+      policySha256: attempt.policySha256,
+      operationId: attempt.operationId,
+      modelId: attempt.modelId,
+      state: attempt.state,
+      reservedMicros: attempt.reservedMicros,
+      chargedMicros: attempt.chargedMicros,
+    };
+  }
+
+  /**
+   * Only a persisted native Run binding can contribute an execution ceiling. A metered proxy
+   * spends outside this reservation transaction, so mixed lanes cannot promise that ceiling.
+   */
+  private directServiceExecutionBudget(current: AuthContext): {
+    jobId: string | null;
+    ceilingMicros?: number;
+  } {
+    const binding = current.agentRunId
+      ? this.store.getAgentRun(current.agentRunId)?.nativeJob
+      : undefined;
+    if (!binding) return { jobId: null };
+    const job = this.jobs.get(binding.jobId);
+    if (
+      !job ||
+      job.request.agentRunId !== current.agentRunId ||
+      job.state !== "started" ||
+      job.ownerClosed ||
+      this.jobs.cancellation(binding.jobId)
+    )
+      fail("service_accounting_execution_unavailable");
+    const ceilingMicros = job.request.limits.inference?.costMicros;
+    if (ceilingMicros === undefined) return { jobId: binding.jobId };
+    const install = this.jobs.installation(
+      job.request.machineId,
+      job.request.pluginId,
+      job.request.installationRevision,
+    );
+    const operation = install?.machine.operations[job.request.operationId];
+    if (!install || !operation) fail("service_accounting_execution_unavailable");
+    for (const binding of operation.services ?? []) {
+      const policy = this.boundServicePolicy(install, binding);
+      if (!policy) fail("service_accounting_execution_unavailable");
+      if (
+        binding.operationIds.some((id) => {
+          const operation = policy.operations[id];
+          return operation && "kind" in operation && operation.meter !== undefined;
+        })
+      )
+        fail("service_accounting_execution_mixed_lanes");
+    }
+    if (
+      this.store.db
+        .query<{ found: number }, [string]>(
+          "SELECT 1 AS found FROM machine_job_inference_usage WHERE job_id=?",
+        )
+        .get(binding.jobId)
+    )
+      fail("service_accounting_execution_mixed_lanes");
+    return { jobId: binding.jobId, ceilingMicros };
+  }
+
   private directService(
     auth: AuthContext,
-    args: ServiceReadArgs,
+    args: ServiceInvokeArgs,
     mode: "read" | "invoke",
     callerPluginId: string,
     traceId: string,
+    instanceRevision: string | null = null,
   ): Promise<ServiceReply> {
+    const credential = this.auth.credentialReference(auth);
+    const accounting = args.accounting;
+    if (accounting) {
+      const { current, requirement } = this.directServiceAccess(credential, args);
+      const prior = this.store.directServiceAttempt(current.principal.id, accounting.callId);
+      if (prior) {
+        this.directServiceAccess(credential, prior);
+        if (prior.requestDigest !== this.directServiceRequestDigest(args, instanceRevision))
+          fail("service_accounting_mismatch");
+        this.store.transaction(() => {
+          const decision = this.decide({
+            credential,
+            pluginId: callerPluginId,
+            action: "engine.services.invoke",
+            evidence: [this.auth.explain(current, requirement)],
+          });
+          this.serviceTrace(
+            current,
+            callerPluginId,
+            traceId,
+            "receipt",
+            { requestId: prior.requestId, callId: prior.callId },
+            decision.allowed,
+            "invoke",
+          );
+          if (!decision.allowed) fail("service_unauthorized");
+        });
+        return Promise.resolve({
+          type: "service_result",
+          requestId: prior.requestId,
+          ok: true,
+          result: null,
+          accounting: this.directServiceReceipt(prior),
+        });
+      }
+      if (accounting.receiptOnly) fail("service_accounting_unavailable");
+    }
     const live = this.channels.get(args.machineId);
     if (!live?.proved) return Promise.reject(new ServiceError("conflict", "service_unavailable"));
-    const credential = this.auth.credentialReference(auth);
-    const { operation } = this.directServiceAuthority(credential, args, live.channel, mode);
+    if (
+      accounting &&
+      (!jobOwnerSupports(live.owner.protocolVersion, "directServiceAccounting") ||
+        (live.channel.protocolVersion ?? 0) < MACHINE_DIRECT_SERVICE_ACCOUNTING_PROTOCOL_VERSION)
+    )
+      fail("service_accounting_protocol_unsupported");
+    const { operation, policy, current } = this.directServiceAuthority(
+      credential,
+      args,
+      live.channel,
+      mode,
+    );
     if (this.directServiceCalls.size >= 256)
       return Promise.reject(new ServiceError("conflict", "service_busy"));
     const requestId = randomUUID();
+    let attempt: DirectServiceAttempt | undefined;
+    if (accounting) {
+      if (mode !== "invoke") fail("service_unauthorized");
+      const quote = quoteDirectService(policy, args.operationId);
+      if (!quote.ok) fail(quote.refusal);
+      if (policy.directCostCeilingMicros === undefined) fail("service_accounting_bound_unknown");
+      if (quote.reservedMicros > accounting.maxCostMicros) fail("service_ceiling_exceeded");
+      const execution = this.directServiceExecutionBudget(current);
+      attempt = {
+        actorId: current.principal.id,
+        callId: accounting.callId,
+        requestId,
+        requestDigest: this.directServiceRequestDigest(args, instanceRevision),
+        machineId: args.machineId,
+        serviceId: args.serviceId,
+        operationId: args.operationId,
+        revision: args.revision,
+        policySha256: args.policySha256,
+        modelId: quote.modelId,
+        instanceRevision,
+        executionJobId: execution.jobId,
+        ownerId: live.owner.ownerId,
+        ownerGeneration: live.owner.generation,
+        ownerKeySha256: digest(live.owner.publicKey),
+        reservedMicros: quote.reservedMicros,
+        chargedMicros: null,
+        state: "reserved",
+        authorized: 0,
+      };
+      if (
+        !this.store.reserveDirectServiceAttempt(
+          attempt,
+          policy.directCostCeilingMicros,
+          execution.ceilingMicros,
+        )
+      )
+        fail("service_ceiling_exceeded");
+    }
     const { promise, resolve, reject } = Promise.withResolvers<ServiceReply>();
     const timer = setTimeout(
       () => pending.finish(new ServiceError("conflict", "service_timeout")),
@@ -1455,6 +1705,7 @@ export class JobService {
         this.directServiceCalls.delete(requestId);
         clearTimeout(timer);
         if (error) {
+          if (accounting) this.store.releaseDirectServiceAttempt(requestId);
           try {
             live.channel.send({
               type: "job_command",
@@ -1476,16 +1727,32 @@ export class JobService {
       if (!this.synchronizeServices(live.channel))
         throw new ServiceError("conflict", "service_unavailable");
       this.authorizeDirectService(pending, requestId, "dispatch");
-      if (
-        !live.channel.send({
-          type: "job_command",
-          command: {
-            type: mode === "read" ? "service_read" : "service_invoke",
-            requestId,
-            ...args,
-          },
-        })
-      )
+      const call = {
+        machineId: args.machineId,
+        serviceId: args.serviceId,
+        revision: args.revision,
+        policySha256: args.policySha256,
+        operationId: args.operationId,
+        input: args.input,
+      };
+      const command: JobCommand =
+        mode === "read"
+          ? { type: "service_read", requestId, ...call }
+          : {
+              type: "service_invoke",
+              requestId,
+              ...call,
+              ...(attempt && accounting
+                ? {
+                    accounting: {
+                      callId: accounting.callId,
+                      maxCostMicros: accounting.maxCostMicros,
+                      reservedMicros: attempt.reservedMicros,
+                    },
+                  }
+                : {}),
+            };
+      if (!live.channel.send({ type: "job_command", command }))
         pending.finish(new ServiceError("conflict", "service_unavailable"));
     } catch (error) {
       pending.finish(
@@ -3712,6 +3979,7 @@ export class JobService {
     readonly runtime: RuntimeDeps,
     serviceOwnerMachineId?: string,
   ) {
+    this.store.recoverDirectServiceAttempts();
     this.jobs = new JobStore(store, (job, phase) => this.lifecycle(job, phase));
     this.instanceServices = new InstanceServiceStore(store, auth, runtime, serviceOwnerMachineId);
     this.deployments = new JobDeployments(this, {
@@ -5626,6 +5894,43 @@ export class JobService {
     }
     if (event.type === "service_read_result" || event.type === "service_invoke_result") {
       const pending = this.directServiceCalls.get(event.requestId);
+      const native = NativeServiceReplySchema.safeParse(event.reply);
+      let attempt =
+        event.type === "service_invoke_result"
+          ? this.store.directServiceAttemptByRequest(event.requestId)
+          : null;
+      if (attempt) {
+        if (
+          attempt.machineId !== channel.machineId ||
+          attempt.ownerId !== live.owner.ownerId ||
+          attempt.ownerGeneration !== live.owner.generation ||
+          attempt.ownerKeySha256 !== digest(live.owner.publicKey)
+        )
+          return;
+        const charge =
+          native.success && native.data.requestId === event.requestId
+            ? native.data.charge
+            : undefined;
+        let cost: number | null = null;
+        if (
+          charge &&
+          charge.callId === attempt.callId &&
+          charge.reservedMicros === attempt.reservedMicros
+        ) {
+          if (charge.status === "not_dispatched") cost = 0;
+          else if (
+            charge.status === "known" &&
+            attempt.authorized === 1 &&
+            charge.costMicros !== null &&
+            charge.costMicros <= attempt.reservedMicros
+          )
+            cost = charge.costMicros;
+        }
+        this.store.settleDirectServiceAttempt(event.requestId, cost);
+        attempt = this.store.directServiceAttemptByRequest(event.requestId);
+      }
+      // Accounting is owner settlement, not result disclosure. It survives pending-map loss
+      // and authority/policy changes; reading the receipt still passes current source authority.
       if (
         !pending ||
         pending.channel !== channel ||
@@ -5633,11 +5938,22 @@ export class JobService {
       )
         return;
       try {
-        const reply = ServiceReplySchema.parse(event.reply);
+        if (!native.success) fail("service_response_invalid");
+        const reply = native.data;
         if ((reply.ok && !pending.authorized) || reply.requestId !== event.requestId)
           fail("service_unconfirmed");
         this.authorizeDirectService(pending, event.requestId, "disclose");
-        pending.finish(undefined, reply);
+        pending.finish(
+          undefined,
+          ServiceReplySchema.parse({
+            type: "service_result",
+            requestId: event.requestId,
+            ...(reply.ok
+              ? { ok: true, result: reply.result }
+              : { ok: false, refusal: reply.refusal }),
+            ...(attempt ? { accounting: this.directServiceReceipt(attempt) } : {}),
+          }),
+        );
       } catch (error) {
         pending.finish(
           error instanceof ServiceError
