@@ -1608,7 +1608,6 @@ export class MachineJobOwner {
     );
     const ready = Promise.withResolvers<JobServiceEndpoint | null>();
     tunnel.ready = ready.resolve;
-    const timer = setTimeout(() => tunnel.controller.abort(), 5000);
     try {
       if (
         !this.sink?.({
@@ -1620,17 +1619,16 @@ export class MachineJobOwner {
           policySha256: jobDigest(policy),
         })
       )
-        tunnel.controller.abort();
+        throw new ServiceFailure("service_owner_unavailable");
       const endpoint = await ready.promise;
-      delete tunnel.ready;
-      if (!endpoint) throw new ServiceFailure("service_remote_refused");
       if (tunnel.signal.aborted) throw new ServiceFailure("service_tunnel_closed");
+      if (!endpoint) throw new ServiceFailure("service_remote_refused");
       return { ...endpoint, signal: tunnel.signal, socket: tunnel.wire.stream };
     } catch (error) {
       tunnel.controller.abort();
       throw error instanceof ServiceFailure ? error : new ServiceFailure("service_remote_refused");
     } finally {
-      clearTimeout(timer);
+      delete tunnel.ready;
     }
   }
 

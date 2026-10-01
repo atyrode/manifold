@@ -4933,6 +4933,12 @@ policySha256, jobId }` or null), the expected revision, the resolved policy and 
   (an operator cancel or plugin disable) never replaces a force-cancel reason already
   recorded on a still-running job, so a later disable cannot revive a revoked or
   consent-refused workload; a final reason recorded later still replaces a readmittable one.
+- **Remote service tunnel admission** (#841). A proxied job call waits for hub tunnel readiness
+  within the operation's existing request deadline and parent-job, service-authority and owner-seat
+  lifetimes, never a separate fixed five-second cutoff. A delayed readiness answer may still serve
+  the call while those bounds remain live. Request expiry reports retryable `service_timeout`;
+  withdrawal reports `service_cancelled`. An explicit remote refusal keeps its precise owner/hub
+  reason and the existing coarser workload projection; a failed local enqueue is owner unavailability.
 - **Metered inference** ([ADR 0038](decisions/0038-brokered-inference.md)). A job that drives a
   model never holds the model's credential: inference is an Instance Service whose origin is a
   provider and whose credential only the machine owner resolves, and the job is handed a loopback
