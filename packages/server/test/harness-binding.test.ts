@@ -102,13 +102,17 @@ async function fixture(
   inputs?: string[],
   databasePath?: string,
   profileSchema: z.ZodType = z.strictObject({ label: z.string().min(1) }),
+  baseMachine: MachineHalf = machine,
 ) {
   const declaredMachine: MachineHalf =
     inputs === undefined
-      ? machine
+      ? baseMachine
       : {
-          ...machine,
-          operations: { [operationId]: { ...machine.operations[operationId]!, inputs } },
+          ...baseMachine,
+          operations: {
+            ...baseMachine.operations,
+            [operationId]: { ...baseMachine.operations[operationId]!, inputs },
+          },
         };
   const runtime = new FakeRuntime();
   const clock = new FakeClock(runtime);
@@ -271,19 +275,15 @@ async function fixture(
     platforms: ["linux-x64"],
     inventoryDigest: "b".repeat(64),
   };
-  const connect = (
-    protocolVersion: number,
-    ownerProtocolVersion: number,
-    replaceTransport = false,
+  const proveOwner = (
+    target: JobService,
+    protocolVersion = PROTOCOL_VERSION,
+    ownerProtocolVersion = JOB_OWNER_PROTOCOL_VERSION,
   ) => {
-    if (replaceTransport) {
-      service.offline(channel);
-      channel = { ...channel };
-    }
     channel.protocolVersion = protocolVersion;
     const advertised = { ...owner, protocolVersion: ownerProtocolVersion };
     channel.terminalHostId = advertised.terminalHostId ?? "terminal-host";
-    service.online(channel, advertised, "epoch");
+    target.online(channel, advertised, "epoch");
     if (JOB_OWNER_PROTOCOL_COMPAT_VERSIONS.has(ownerProtocolVersion)) {
       const challenge = commands.at(-1);
       if (challenge?.type !== "owner_challenge") throw new Error("owner challenge missing");
@@ -293,20 +293,31 @@ async function fixture(
         machineId,
         owner: advertised,
       };
-      service.event(channel, {
+      target.event(channel, {
         type: "owner_proof",
         ...proof,
         signature: sign(null, Buffer.from(canonicalJobJson(proof)), pair.privateKey).toString(
           "base64",
         ),
       });
-      service.event(channel, {
+      target.event(channel, {
         type: "installed",
         pluginId,
         installationRevision: "r1",
         artifactSha256: hash,
       });
     }
+  };
+  const connect = (
+    protocolVersion: number,
+    ownerProtocolVersion: number,
+    replaceTransport = false,
+  ) => {
+    if (replaceTransport) {
+      service.offline(channel);
+      channel = { ...channel };
+    }
+    proveOwner(service, protocolVersion, ownerProtocolVersion);
     broker.setMachineOnline(channel);
   };
   connect(PROTOCOL_VERSION, JOB_OWNER_PROTOCOL_VERSION);
@@ -442,6 +453,8 @@ async function fixture(
       });
     },
     connect,
+    proveOwner,
+    channel: () => channel,
     duplicate: () =>
       testPluginHost(store, auth, rooms, broker, runtime, {
         settingsPlugins: [
@@ -1903,6 +1916,195 @@ test.each(["deny", "expiry", "sponsor", "action", "installation", "owner", "cons
     } finally {
       Reflect.set(action, "input", originalInput);
       f.close();
+    }
+  },
+);
+
+test.each(["fresh", "recovered"] as const)(
+  "%s governed terminal cancels only its bound effect when source-input consent is withdrawn",
+  async (recovery) => {
+    const dir = mkdtempSync(join(tmpdir(), "manifold-native-source-consent-"));
+    const path = join(dir, "manifold.db");
+    const producerId = `${pluginId}.produce`;
+    const locationId = `${pluginId}.sealed`;
+    const producing: MachineHalf = {
+      ...machine,
+      locations: {
+        [locationId]: {
+          anchor: "runtime",
+          components: ["sealed"],
+          revision: "1",
+          kind: "directory",
+        },
+      },
+      operations: {
+        ...machine.operations,
+        [producerId]: {
+          ...machine.operations[operationId]!,
+          stdin: false,
+          locations: [{ locationId, access: "write" }],
+          outputs: ["material"],
+        },
+      },
+    };
+    const f = await fixture(undefined, ["material"], path, undefined, producing);
+    let closed = false;
+    let recoveredStore: ServerStore | undefined;
+    let recoveredHost: PluginHost | undefined;
+    try {
+      const machineId = f.descriptor.machineId;
+      for (const [node, cap] of [
+        [`manifold://machine/${machineId}/operation/${producerId}`, "machines:run"],
+        [`manifold://machine/${machineId}/operation/${producerId}`, "jobs:read"],
+        [`manifold://machine/${machineId}/location/${locationId}`, "locations:write"],
+      ] as const)
+        f.service.consent(f.root, {
+          machineId,
+          pluginId,
+          installationRevision: "r1",
+          artifactSha256: hash,
+          node,
+          cap,
+          enabled: true,
+        });
+      const producer = f.service.execute(f.root, pluginId, "trace-produce", {
+        jobId: "producer",
+        machineId,
+        operationId: producerId,
+        input: { mode: "produce" },
+        outputs: [{ name: "material", locationId, components: ["material"] }],
+      });
+      f.service.event(f.channel(), {
+        type: "result",
+        result: {
+          jobId: producer.request.jobId,
+          requestDigest: producer.request.requestDigest,
+          ownerId: f.owner.ownerId,
+          ownerGeneration: f.owner.generation,
+          state: "exited",
+          exitCode: 0,
+          reason: null,
+          startedAt: 0,
+          finishedAt: f.runtime.now(),
+          usage: { elapsedMs: 1, memoryBytes: 1, processes: 1, outputBytes: 2048 },
+          limits: producer.request.limits,
+          outputs: [
+            { outputId: "sealed-material", name: "material", sha256: hash, bytes: 2048, files: 1 },
+          ],
+        },
+      });
+      f.descriptor.inputs = [
+        { name: "material", from: { jobId: producer.request.jobId, output: "material" } },
+      ];
+      const scope: AuthorityScope = [
+        ...governedTerminalScope(f).map((entry) => ({
+          ...entry,
+          target:
+            entry.target === "manifold://" ? `manifold://container/${f.containerId}` : entry.target,
+        })),
+        {
+          target: `manifold://machine/${machineId}/operation/${producerId}/job/${producer.request.jobId}`,
+          reach: "node",
+          caps: ["jobs:read"],
+        },
+      ];
+      const actor = f.auth.authenticate(
+        f.auth.mintTokenV2(
+          {
+            principal: { name: "bound-input opener", kind: "human" },
+            scope,
+            containerId: f.containerId,
+            expiresAt: f.runtime.now() + 60_000,
+          },
+          f.root,
+        ).token,
+      );
+      const create = await governedCreated(f, actor);
+      if (!create.runtime) throw new Error("bound-input terminal missing native admission");
+      f.started(create.runtime);
+      const boundId = create.runtime.request.jobId;
+      const unrelated = f.service.execute(f.root, pluginId, "trace-unrelated", {
+        jobId: "unrelated",
+        machineId,
+        operationId,
+        input: { mode: "independent" },
+        outputs: [],
+      });
+      const unrelatedStart = f.commands.findLast(
+        (command) => command.type === "start" && command.request.jobId === unrelated.request.jobId,
+      );
+      if (unrelatedStart?.type !== "start") throw new Error("unrelated effect not admitted");
+      f.started(unrelatedStart);
+      const signedRequest = create.runtime.request;
+      let service = f.service;
+      let root = f.root;
+      let store = f.store;
+      service.offline(f.channel());
+      if (recovery === "recovered") {
+        f.close();
+        closed = true;
+        recoveredStore = new ServerStore(openDatabase(path));
+        store = recoveredStore;
+        const auth = new AuthService(store, "a".repeat(64), f.runtime, {
+          decide: (request) => service.decide(request),
+        });
+        root = auth.authenticate("a".repeat(64));
+        const rooms = new RoomManager(store, f.runtime, f.clock, silentLogger, testTileTrees);
+        const broker = new TerminalBroker(
+          store,
+          auth,
+          rooms,
+          f.runtime,
+          f.clock,
+          silentLogger,
+          () => "http://localhost:7777",
+          testTileTrees,
+        );
+        recoveredHost = await testPluginHost(store, auth, rooms, broker, f.runtime, {
+          settingsPlugins: [f.definition],
+        });
+        service = new JobService(store, auth, f.runtime);
+        recoveredHost.setJobs(service);
+        broker.setJobs(service);
+      }
+      service.tick();
+      expect(service.jobs.get(boundId)?.request).toEqual(signedRequest);
+      expect(service.jobs.get(boundId)?.state).toBe("started");
+      expect(service.jobs.cancellation(boundId)).toBeNull();
+      expect(service.jobs.get(unrelated.request.jobId)?.state).toBe("started");
+      expect(service.jobs.cancellation(unrelated.request.jobId)).toBeNull();
+      // Loss of transport/readiness is not withdrawal of an acknowledged owner's authority.
+      expect(store.getTerminal(create.terminalId)?.status).toBe("running");
+      service.consent(root, {
+        machineId,
+        pluginId,
+        installationRevision: "r1",
+        artifactSha256: hash,
+        node: `manifold://machine/${machineId}/operation/${producerId}`,
+        cap: "jobs:read",
+        enabled: false,
+      });
+      service.tick();
+      expect(service.jobs.cancellation(boundId)?.mode).toBe("cancel");
+      expect(service.jobs.cancellation(unrelated.request.jobId)).toBeNull();
+      expect(service.jobs.get(unrelated.request.jobId)?.state).toBe("started");
+      expect(service.jobs.cancellation(producer.request.jobId)).toBeNull();
+      expect(service.jobs.get(producer.request.jobId)?.result?.outputs).toEqual([
+        { outputId: "sealed-material", name: "material", sha256: hash, bytes: 2048, files: 1 },
+      ]);
+      f.proveOwner(service);
+      expect(
+        new Set(
+          f.commands.filter((command) => command.type === "cancel").map((command) => command.jobId),
+        ),
+      ).toEqual(new Set([boundId]));
+      expect(f.sent.filter((message) => message.type === "kill")).toEqual([]);
+      expect(f.sent.filter((message) => message.type === "create")).toEqual([create]);
+    } finally {
+      recoveredHost?.close();
+      recoveredStore?.close();
+      if (!closed) f.close();
+      rmSync(dir, { recursive: true, force: true });
     }
   },
 );
