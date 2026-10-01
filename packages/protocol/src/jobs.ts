@@ -33,7 +33,7 @@ const TEMPORARY_LOCATIONS_PROTOCOL_VERSION = 43;
 /** Owner-quoted single-call direct monetary reservations. */
 const DIRECT_SERVICE_ACCOUNTING_PROTOCOL_VERSION = 44;
 /** Native owner RPC changes independently of hub, session, and transport releases. */
-export const JOB_OWNER_PROTOCOL_VERSION = TEMPORARY_LOCATIONS_PROTOCOL_VERSION;
+export const JOB_OWNER_PROTOCOL_VERSION = DIRECT_SERVICE_ACCOUNTING_PROTOCOL_VERSION;
 
 /**
  * Native owners outlive hub deploys. An unchanged or strictly additive-optional RPC change
@@ -69,6 +69,7 @@ export const JOB_OWNER_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
   41,
   ISOLATED_JOB_PROTOCOL_VERSION,
   TEMPORARY_LOCATIONS_PROTOCOL_VERSION,
+  DIRECT_SERVICE_ACCOUNTING_PROTOCOL_VERSION,
 ]);
 
 export type JobOwnerCapability =
