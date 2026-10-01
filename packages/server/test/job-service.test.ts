@@ -5,10 +5,12 @@ import { createHash, generateKeyPairSync, sign, type KeyObject } from "node:cryp
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeScopedAuthority } from "./authority-migration-fixtures.ts";
 import {
   formatManifoldUri,
   PluginBundleSchema,
   JOB_OWNER_PROTOCOL_VERSION,
+  PROTOCOL_VERSION,
   MACHINE_SELF_PROVIDER_PROTOCOL_VERSION,
   MACHINE_AGENT_TOOLS_PROTOCOL_VERSION,
   JobCommandSchema,
@@ -20,6 +22,8 @@ import {
   MachineOperationLimitsSchema,
   JobStartCommandSchema,
   JobRequestSchema,
+  ServiceReplySchema,
+  type InstanceServiceInvokeArgs,
   type ServicePolicy,
   type ServicePolicyTemplate,
   type Cap,
@@ -43,9 +47,11 @@ import { AuthService, type AuthContext } from "../src/auth.ts";
 import { openDatabase } from "../src/db.ts";
 import { JobService, type JobRecord, type SettledJobDelivery } from "../src/job-service.ts";
 import { jobContext } from "../src/job-doors.ts";
-import { projectPluginAuthorFacts } from "../src/log.ts";
+import { projectPluginAuthorFacts, silentLogger } from "../src/log.ts";
+import { RoomManager } from "../src/room.ts";
+import { TerminalBroker } from "../src/terminal-broker.ts";
 import { ServerStore } from "../src/stores.ts";
-import { FakeRuntime } from "./helpers.ts";
+import { FakeClock, FakeRuntime, testPluginHost, testTileTrees } from "./helpers.ts";
 import { ActionAuthorityFence } from "../src/action-authority-fence.ts";
 import { captureAuthoritySnapshot, projectJobCredential } from "../src/authority-snapshot.ts";
 
@@ -100,7 +106,10 @@ interface Fixture {
 function fixture(path = ":memory:", manifest: MachineHalf = machine): Fixture {
   const store = new ServerStore(openDatabase(path));
   const runtime = new FakeRuntime();
-  const auth = new AuthService(store, key, runtime);
+  let f: Fixture;
+  const auth = new AuthService(store, key, runtime, {
+    decide: (request) => f.service.decide(request),
+  });
   const root = auth.authenticate(key);
   const machineId = auth.enrollMachine("worker", root).machine.id;
   const service = new JobService(store, auth, runtime);
@@ -130,7 +139,7 @@ function fixture(path = ":memory:", manifest: MachineHalf = machine): Fixture {
     artifactSha256: hash,
     machine: manifest,
   });
-  return {
+  return (f = {
     store,
     auth,
     root,
@@ -141,7 +150,7 @@ function fixture(path = ":memory:", manifest: MachineHalf = machine): Fixture {
     channel,
     owner,
     privateKey: pair.privateKey,
-  };
+  });
 }
 function prove(f: Fixture, wrongNonce = false): void {
   f.service.online(f.channel, f.owner, "epoch");
@@ -546,6 +555,7 @@ async function instanceFixture(
   path = ":memory:",
   protocolVersion = JOB_OWNER_PROTOCOL_VERSION,
   operations?: ServicePolicy["operations"],
+  accounting?: Pick<ServicePolicy, "prices" | "directCostCeilingMicros">,
 ) {
   const provider: MachineHalf = {
     ...machine,
@@ -555,6 +565,7 @@ async function instanceFixture(
   };
   const f = fixture(path, provider);
   f.owner.protocolVersion = protocolVersion;
+  if (accounting) f.channel.protocolVersion = PROTOCOL_VERSION;
   consent(f, "machines:run");
   consent(f, "jobs:cancel");
   prove(f);
@@ -562,6 +573,7 @@ async function instanceFixture(
     serviceId: `${pluginId}.broker`,
     revision: "one",
     maxConcurrent: 1,
+    ...accounting,
     runtime: {
       scope: "instance",
       pluginId,
@@ -1173,7 +1185,9 @@ test.each(["same build", "rollback"] as const)(
       f.service.offline(f.channel);
       f.store.close();
       f.store = new ServerStore(openDatabase(path));
-      f.auth = new AuthService(f.store, key, f.runtime);
+      f.auth = new AuthService(f.store, key, f.runtime, {
+        decide: (request) => f.service.decide(request),
+      });
       f.root = f.auth.authenticate(key);
       f.service = new JobService(f.store, f.auth, f.runtime);
       f.service.setLifecycleRecorder((record) => f.store.appendTrace(record));
@@ -1771,7 +1785,9 @@ test.each(["running", "exited", "awaiting-empty", "awaiting-result"] as const)(
       f.service.offline(f.channel);
       f.store.close();
       f.store = new ServerStore(openDatabase(path));
-      f.auth = new AuthService(f.store, key, f.runtime);
+      f.auth = new AuthService(f.store, key, f.runtime, {
+        decide: (request) => f.service.decide(request),
+      });
       f.root = f.auth.authenticate(key);
       f.service = new JobService(f.store, f.auth, f.runtime);
       f.service.setLifecycleRecorder((record) => f.store.appendTrace(record));
@@ -1863,6 +1879,7 @@ test("data-only credential migration and author audit projection preserve enable
     f.store.db
       .query("UPDATE principals SET kind='agent' WHERE id=?")
       .run(start.request.credential.principalId);
+    removeScopedAuthority(f.store.db);
     f.store.db.exec(`
 ALTER TABLE terminals DROP COLUMN cwd;
 ALTER TABLE terminals DROP COLUMN launch_recipe;
@@ -1876,12 +1893,18 @@ ALTER TABLE agent_runs DROP COLUMN launch_target_json;
 ALTER TABLE agent_runs DROP COLUMN native_job_id;
 ALTER TABLE agent_runs DROP COLUMN native_credential_json;
 ALTER TABLE agent_runs DROP COLUMN native_call_ids_json;
+DROP TABLE native_service_attempts;
+DROP TABLE share_recipient_delegations;
+DROP TABLE share_ticket_credentials;
+DROP TABLE share_recipients;
 UPDATE meta SET value='37' WHERE key='schema_version';
 `);
     f.service.offline(f.channel);
     f.store.close();
     f.store = new ServerStore(openDatabase(path));
-    f.auth = new AuthService(f.store, key, f.runtime);
+    f.auth = new AuthService(f.store, key, f.runtime, {
+      decide: (request) => f.service.decide(request),
+    });
     f.root = f.auth.authenticate(key);
     f.service = new JobService(f.store, f.auth, f.runtime);
     f.service.setLifecycleRecorder((record) => f.store.appendTrace(record));
@@ -2737,7 +2760,9 @@ test("replacement replays retirement across restart and waits for confirmed old 
     f.service.offline(f.channel);
     f.store.close();
     f.store = new ServerStore(openDatabase(path));
-    f.auth = new AuthService(f.store, key, f.runtime);
+    f.auth = new AuthService(f.store, key, f.runtime, {
+      decide: (request) => f.service.decide(request),
+    });
     f.root = f.auth.authenticate(key);
     f.service = new JobService(f.store, f.auth, f.runtime);
     f.service.setLifecycleRecorder((record) => f.store.appendTrace(record));
@@ -5207,8 +5232,10 @@ describe("durable job authority", () => {
       expect(f.commands.filter((c) => c.type === "start")).toHaveLength(1);
       f.store.close();
       reopened = new ServerStore(openDatabase(path));
-      const auth = new AuthService(reopened, key, f.runtime);
-      const service = new JobService(reopened, auth, f.runtime);
+      const auth: AuthService = new AuthService(reopened, key, f.runtime, {
+        decide: (request) => service.decide(request),
+      });
+      const service: JobService = new JobService(reopened, auth, f.runtime);
       service.setLifecycleRecorder((record) => reopened!.appendTrace(record));
       service.setManifestResolver((id) => (id === pluginId ? machine : null));
       const resumed = {
@@ -5483,7 +5510,9 @@ describe("durable job authority", () => {
       f.service.offline(f.channel);
       f.store.close();
       f.store = new ServerStore(openDatabase(path));
-      f.auth = new AuthService(f.store, key, f.runtime);
+      f.auth = new AuthService(f.store, key, f.runtime, {
+        decide: (request) => f.service.decide(request),
+      });
       f.root = f.auth.authenticate(key);
       f.service = new JobService(f.store, f.auth, f.runtime);
       f.service.setLifecycleRecorder((record) => f.store.appendTrace(record));
@@ -8564,7 +8593,9 @@ describe("reviewed native deployment approvals", () => {
       // Compact replay fences outlive the process, unlike an in-memory retired-ID cache.
       f.store.close();
       f.store = new ServerStore(openDatabase(path));
-      f.auth = new AuthService(f.store, key, f.runtime);
+      f.auth = new AuthService(f.store, key, f.runtime, {
+        decide: (request) => f.service.decide(request),
+      });
       f.root = f.auth.authenticate(key);
       f.service = new JobService(f.store, f.auth, f.runtime);
       f.service.setLifecycleRecorder((record) => f.store.appendTrace(record));
@@ -8681,6 +8712,7 @@ describe("reviewed native deployment approvals", () => {
         .query("UPDATE machine_job_deployments SET approval=? WHERE deployment_id=?")
         .run(canonicalJobJson(legacy), value.deploymentId);
       // Remove every post-v33 addition so migration 35 recreates the pre-v37 run schema.
+      removeScopedAuthority(f.store.db);
       f.store.db.exec(`
 UPDATE machine_job_deployment_targets SET receipt=json_extract(receipt,'$.consents');
 ALTER TABLE job_invocation_edges DROP COLUMN revision;
@@ -8707,11 +8739,17 @@ ALTER TABLE terminals DROP COLUMN launch_recipe;
 ALTER TABLE terminals DROP COLUMN created_by_run_id;
 ALTER TABLE terminals DROP COLUMN exit_reason;
 ALTER TABLE terminals DROP COLUMN session;
+DROP TABLE native_service_attempts;
+DROP TABLE share_recipient_delegations;
+DROP TABLE share_ticket_credentials;
+DROP TABLE share_recipients;
 UPDATE meta SET value='33' WHERE key='schema_version';
 `);
       f.store.close();
       f.store = new ServerStore(openDatabase(path));
-      f.auth = new AuthService(f.store, key, f.runtime);
+      f.auth = new AuthService(f.store, key, f.runtime, {
+        decide: (request) => f.service.decide(request),
+      });
       f.root = f.auth.authenticate(key);
       f.service = new JobService(f.store, f.auth, f.runtime);
       f.service.setLifecycleRecorder((record) => f.store.appendTrace(record));
@@ -8765,7 +8803,9 @@ UPDATE meta SET value='33' WHERE key='schema_version';
         .run(interrupted.deploymentId);
       f.store.close();
       f.store = new ServerStore(openDatabase(path));
-      f.auth = new AuthService(f.store, key, f.runtime);
+      f.auth = new AuthService(f.store, key, f.runtime, {
+        decide: (request) => f.service.decide(request),
+      });
       f.root = f.auth.authenticate(key);
       f.service = new JobService(f.store, f.auth, f.runtime);
       f.service.setLifecycleRecorder((record) => f.store.appendTrace(record));
@@ -9572,7 +9612,9 @@ describe("reviewed same-plugin instance-service bootstrap", () => {
         .run(value.deploymentId);
       f.store.close();
       f.store = new ServerStore(openDatabase(path));
-      f.auth = new AuthService(f.store, key, f.runtime);
+      f.auth = new AuthService(f.store, key, f.runtime, {
+        decide: (request) => f.service.decide(request),
+      });
       f.root = f.auth.authenticate(key);
       f.service = new JobService(f.store, f.auth, f.runtime);
       f.service.setLifecycleRecorder((record) => f.store.appendTrace(record));
@@ -10282,4 +10324,193 @@ describe("a job input bound to an earlier job's sealed output", () => {
       f.store.close();
     }
   });
+});
+
+test("instance invocation carries accounting and recovers the original receipt after configuration replacement", async () => {
+  const { f, policy, start, revision } = await instanceFixture(
+    ":memory:",
+    JOB_OWNER_PROTOCOL_VERSION,
+    {
+      inspect: {
+        method: "POST",
+        invocable: true,
+        path: "/v1/responses",
+        input: {},
+        query: {},
+        body: [
+          { path: ["model"], value: { literal: "fixture/model" } },
+          { path: ["input"], value: { literal: "private-service-prompt" } },
+        ],
+        meter: { kind: "openai-usage", modelId: "fixture/model" },
+        timeoutMs: 1000,
+        maxRequestBytes: 1024,
+        maxResponseBytes: 4096,
+        maxResultBytes: 2048,
+        response: { kind: "projected-json", fields: [["state"]], maxArrayItems: 16 },
+      },
+    },
+    {
+      directCostCeilingMicros: 20,
+      prices: {
+        models: {
+          "fixture/model": {
+            contextTokens: 10,
+            inputPerMillion: 1_000_000,
+            outputPerMillion: 1_000_000,
+          },
+        },
+      },
+    },
+  );
+  try {
+    const policySha256 = createHash("sha256").update(canonicalJobJson(policy)).digest("hex");
+    f.owner.resources = {
+      tools: {},
+      anchors: {},
+      services: { [policy.serviceId]: policySha256 },
+      serviceDefinitions: {
+        [policy.serviceId]: { revision: policy.revision, operationIds: ["inspect"] },
+      },
+    };
+    f.service.event(f.channel, { type: "resources", resources: f.owner.resources });
+    f.service.event(f.channel, {
+      type: "state",
+      jobId: start.request.jobId,
+      requestDigest: start.request.requestDigest,
+      ownerId: f.owner.ownerId,
+      ownerGeneration: f.owner.generation,
+      state: "started",
+    });
+    f.service.event(f.channel, {
+      type: "service_ready",
+      jobId: start.request.jobId,
+      service: start.request.service!,
+    });
+    const actor = f.auth.authenticate(
+      f.auth.mintToken(
+        {
+          principal: { kind: "human", name: "limited instance caller" },
+          caps: ["services:invoke"],
+        },
+        f.root,
+      ).token,
+    );
+    const clock = new FakeClock(f.runtime);
+    const rooms = new RoomManager(f.store, f.runtime, clock, silentLogger, testTileTrees);
+    const broker = new TerminalBroker(
+      f.store,
+      f.auth,
+      rooms,
+      f.runtime,
+      clock,
+      silentLogger,
+      () => "http://localhost:7777",
+      testTileTrees,
+    );
+    const host = await testPluginHost(f.store, f.auth, rooms, broker, f.runtime);
+    host.setJobs(f.service);
+    const invoke = async (args: InstanceServiceInvokeArgs) => {
+      const outcome = await host.dispatch(actor, "engine.services.invokeInstance", args);
+      if (!outcome.ok)
+        throw Object.assign(new Error("Instance service invocation refused"), {
+          denial: outcome.denial,
+        });
+      return ServiceReplySchema.parse(outcome.result);
+    };
+    const args = {
+      serviceId: policy.serviceId,
+      expectedRevision: revision,
+      operationId: "inspect",
+      input: {},
+      accounting: { callId: "instance-call", maxCostMicros: 20 },
+    };
+    const started = Promise.withResolvers<Extract<JobCommand, { type: "service_invoke" }>>();
+    const send = f.channel.send;
+    f.channel.send = (message) => {
+      if (message.command.type === "service_invoke") started.resolve(message.command);
+      return send(message);
+    };
+    const pending = invoke(args);
+    const command = await Promise.race([
+      started.promise,
+      pending.then(() => {
+        throw new Error("instance door settled before native dispatch");
+      }),
+    ]);
+    f.service.event(f.channel, {
+      type: "service_authorize",
+      subject: { kind: "invoke", requestId: command.requestId },
+      authorizationId: "instance-auth",
+      serviceId: command.serviceId,
+      revision: command.revision,
+      policySha256: command.policySha256,
+      operationId: command.operationId,
+    });
+    const replacement = await f.service.configureInstanceService(f.root, {
+      serviceId: policy.serviceId,
+      expectedRevision: revision,
+      policy: { ...policy, revision: "two" },
+      enabled: true,
+    });
+    await expect(pending).rejects.toMatchObject({
+      denial: { rule: "refused" },
+    });
+    const receiptArgs = { ...args, accounting: { ...args.accounting, receiptOnly: true } };
+    expect(await invoke(receiptArgs)).toMatchObject({
+      result: null,
+      accounting: { requestId: command.requestId, revision: "one", state: "unresolved" },
+    });
+    await expect(
+      invoke({
+        ...receiptArgs,
+        expectedRevision: replacement.configuration!.revision,
+      }),
+    ).rejects.toMatchObject({ denial: { rule: "refused" } });
+    f.service.event(f.channel, {
+      type: "service_invoke_result",
+      requestId: command.requestId,
+      reply: {
+        type: "service_result",
+        requestId: command.requestId,
+        ok: true,
+        result: { state: "done" },
+        charge: { callId: "instance-call", reservedMicros: 20, status: "known", costMicros: 7 },
+      },
+    });
+    expect(await invoke(receiptArgs)).toMatchObject({
+      result: null,
+      accounting: { state: "settled", chargedMicros: 7 },
+    });
+    await expect(
+      invoke({
+        ...args,
+        accounting: { callId: "new-call", maxCostMicros: 20 },
+      }),
+    ).rejects.toMatchObject({ denial: { rule: "refused" } });
+    expect(f.commands.filter((command) => command.type === "service_invoke")).toHaveLength(1);
+    f.auth.grant(
+      {
+        principal: { kind: "principal", id: actor.principal.id },
+        node: formatManifoldUri({
+          kind: "service",
+          machineId: f.machineId,
+          serviceId: policy.serviceId,
+          operationId: "inspect",
+        }),
+        caps: ["services:invoke"],
+        reach: "node",
+        effect: "deny",
+      },
+      f.root,
+    );
+    await expect(
+      invoke({
+        ...receiptArgs,
+        expectedRevision: "not-the-original-revision",
+      }),
+    ).rejects.toMatchObject({ denial: { rule: "refused" } });
+  } finally {
+    f.service.offline(f.channel);
+    f.store.close();
+  }
 });

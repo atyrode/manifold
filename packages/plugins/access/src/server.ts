@@ -20,6 +20,7 @@ import type {
   AcknowledgeAgentPolicyResult,
   AgentPolicyChallenge,
   AgentRequest,
+  ApproveShareRecipientRequest,
   BootstrapPrincipalRequest,
   CreateGrantRequest,
   CreateChildRunRequest,
@@ -45,6 +46,7 @@ import type {
   ListHarnessSessionsResult,
   ListRunsRequest,
   ListRunsResult,
+  ListShareRecipientsRequest,
   MintShareRequest,
   MintTokenRequest,
   OpenDialRequest,
@@ -63,12 +65,14 @@ import type {
   RenewAgentRunRequest,
   RenewAgentRunResult,
   RevokeShareRequest,
+  RemoveShareRecipientRequest,
   SendRunInputRequest,
   SendRunInputResult,
   SessionRef,
   Share,
   ShareGrant,
   ShareInventory,
+  ShareRecipient,
   TokenGrant,
   UpdateAgentRequest,
 } from "@manifold/protocol";
@@ -162,15 +166,18 @@ interface AccessCtx {
     */
     listCredentials(): IdentityAnswer<readonly PrincipalCredentials[]>;
     /*
-      The share trio sits on the identity door because a share IS a token bound to a node: the
-      attenuation ladder it runs is `mintToken`'s, and putting it anywhere else would be a
+      Share delegation and recipient approval sit on the identity door because a share is a
+      token bound to a node; their attenuation is `mintToken`'s, and putting them elsewhere is a
       second place authority is handed out (docs/CONTRACTS.md §One authoritative implementation).
     */
     mintShare(input: MintShareRequest): IdentityAnswer<ShareGrant>;
     revokeShare(shareId: string): IdentityAnswer<number>;
     listShares(): IdentityAnswer<readonly Share[]>;
+    listShareRecipients(shareId: string): IdentityAnswer<readonly ShareRecipient[]>;
+    approveShareRecipient(input: ApproveShareRecipientRequest): IdentityAnswer<ShareRecipient>;
+    removeShareRecipient(input: RemoveShareRecipientRequest): IdentityAnswer<ShareRecipient>;
     /*
-      The grant trio sits here for the share trio's reason and one more: a grant is what a token
+      The grant trio sits here for the same reason and one more: a grant is what a token
       REFERENCES (ADR 0011), so writing one and minting one are the same act at different
       granularities, and the attenuation the mechanism runs is the same ladder. A separate
       `grants` surface beside `identity` would say the workspace has two authorities.
@@ -186,7 +193,7 @@ interface AccessCtx {
   */
   readonly dials: {
     dial(input: DialShareRequest): Promise<IdentityAnswer<Dial>>;
-    open(dialId: string): Promise<IdentityAnswer<DialTicket>>;
+    open(input: OpenDialRequest): Promise<IdentityAnswer<DialTicket>>;
     list(): IdentityAnswer<readonly Dial[]>;
   };
 }
@@ -560,6 +567,29 @@ export const accessHandlers = {
     if (!dials.ok) return { refused: dials.message };
     return { shares: [...shares.value], dials: [...dials.value] };
   },
+  async listShareRecipients(
+    ctx: AccessCtx,
+    args: ListShareRecipientsRequest,
+  ): Promise<Outcome<readonly ShareRecipient[]>> {
+    const recipients = ctx.identity.listShareRecipients(args.shareId);
+    return recipients.ok ? recipients.value : { refused: recipients.message };
+  },
+
+  async approveShareRecipient(
+    ctx: AccessCtx,
+    args: ApproveShareRecipientRequest,
+  ): Promise<Outcome<ShareRecipient>> {
+    const approved = ctx.identity.approveShareRecipient(args);
+    return approved.ok ? approved.value : { refused: approved.message };
+  },
+
+  async removeShareRecipient(
+    ctx: AccessCtx,
+    args: RemoveShareRecipientRequest,
+  ): Promise<Outcome<ShareRecipient>> {
+    const removed = ctx.identity.removeShareRecipient(args);
+    return removed.ok ? removed.value : { refused: removed.message };
+  },
 
   async dialShare(ctx: AccessCtx, args: DialShareRequest): Promise<Outcome<Dial>> {
     // Blocks on the host's welcome by design (see the action's note): a row that named nothing
@@ -576,7 +606,7 @@ export const accessHandlers = {
       what the caller receives is a per-principal token the HOST minted, which is what makes a
       remote viewer attributable and revocable one principal at a time.
     */
-    const opened = await ctx.dials.open(args.dialId);
+    const opened = await ctx.dials.open(args);
     return opened.ok ? opened.value : { refused: opened.message };
   },
 

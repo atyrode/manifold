@@ -891,7 +891,7 @@ sole retirement path and deletes it atomically only with the targeted token.
 **Tokens own their grant rows.** `token_grants` binds each credential to its canonical rows;
 another credential of the same principal cannot borrow them. `TokenRecord.grant_id` remains the
 released placement/context anchor, and `ShareRecord.grant_id` retains its single-row meaning.
-Migration 13 converted flat ceilings to one root/container subtree row; migration 49 backfills
+Migration 13 converted flat ceilings to one root/container subtree row; migration 51 backfills
 that membership before introducing scoped credentials. Credential withdrawal removes every
 membership and exclusively owned row atomically, retaining a row still owned by another live
 credential. Authentication restores the stored credential scope, never principal-wide rows.
@@ -2356,13 +2356,16 @@ their published vocabulary does not move.
 and minted for a named guest **origin**; a **dial** is the guest's side of one accepted share.
 No new capability: a share hands authority out, so it declares the cap that already means that.
 
-| Action                    | Caps               | Scope     | Args → Result                                                           |
-| ------------------------- | ------------------ | --------- | ----------------------------------------------------------------------- |
-| `core.access.mintShare`   | `tokens:mint`      | container | `{ node, caps, origin }` → `ShareGrant { share, token }` — raw ONCE     |
-| `core.access.revokeShare` | `tokens:mint`      | container | `{ shareId }` → `{ revoked: <tickets severed> }` — **`cleanup: true`**  |
-| `core.access.listShares`  | `tokens:mint`      | container | `{}` → `ShareInventory { shares, dials }` — both directions, no secrets |
-| `core.access.dialShare`   | `containers:write` | workspace | `{ origin, token }` → `Dial`; BLOCKS on the host's welcome              |
-| `core.access.openDial`    | `containers:read`  | workspace | `{ dialId }` → `DialTicket { origin, ref, caps, token }`                |
+| Action                              | Caps               | Scope     | Args → Result                                                                                        |
+| ----------------------------------- | ------------------ | --------- | ---------------------------------------------------------------------------------------------------- |
+| `core.access.mintShare`             | `tokens:mint`      | container | `{ node, caps, origin }` → `ShareGrant { share, token }` — raw ONCE                                  |
+| `core.access.revokeShare`           | `tokens:mint`      | container | `{ shareId }` → `{ revoked: <tickets severed> }` — **`cleanup: true`**                               |
+| `core.access.listShares`            | `tokens:mint`      | container | `{}` → `ShareInventory { shares, dials }` — both directions, no secrets                              |
+| `core.access.listShareRecipients`   | `tokens:mint`      | container | `{ shareId }` → `ShareRecipient[]` — pending and last approval, no secrets                           |
+| `core.access.approveShareRecipient` | `tokens:mint`      | container | `{ shareId, guestPrincipalId, caps }` → `ShareRecipient` — host-approved subset                      |
+| `core.access.removeShareRecipient`  | `tokens:mint`      | container | `{ shareId, guestPrincipalId }` → `ShareRecipient` — **`cleanup: true`**, withdraw and fence tickets |
+| `core.access.dialShare`             | `containers:write` | workspace | `{ origin, token }` → `Dial`; BLOCKS on the host's welcome                                           |
+| `core.access.openDial`              | `containers:read`  | workspace | `{ dialId, caps? }` → `DialTicket { origin, ref, caps, token, expiresAt }`                           |
 
 `node` is a `manifold://` reference, never a bare container id ([Reference nodes](#reference-nodes)); a ref that is not
 a container is refused `only a container can be shared`, which is the one rung these handlers
@@ -2373,24 +2376,63 @@ for the host to say what the share names (ten seconds, then `conflict` `host did
 because a `Dial` that named nothing yet would be indistinguishable from a live share that
 happens to be offline; an unanswered attempt is deleted, not revoked.
 
-`openDial` is the guest's own authority question — may THIS principal use this dial — and its
-answer is a per-principal TICKET the host minted, never the share secret. Every admitted
-principal gets the share's full caps this wave; narrowing per remote principal is a grant
-question (ADR 0011). Three lifecycle events (`dial_online`, `dial_offline`, `dial_revoked`) are
+`openDial`'s local `containers:read` check admits the guest door; it is neither host consent nor
+an intersection between local and remote capability names. The **host** approves each
+**share recipient**: the immutable share origin and that guest's local principal id, with a
+selected remote subset. A valid request without active approval records its proposed caps and
+refuses `recipient_unapproved`, without a credential or projection. The host may approve only
+a subset of the proposal and immutable share ceiling, through its share-owner/root visibility,
+container scope and the existing mint attenuation ladder. Another guest principal, origin or
+share cannot inherit that approval.
+
+With active approval, omitted `caps` requests exactly the host-approved subset. An explicit
+request must fit both that subset and the share ceiling or it refuses `recipient_caps_refused`;
+no silent widening or ambient full-share fallback. Successful answers carry actual granted
+caps and a finite ordinary human/automated credential expiry, not the advertised dial ceiling.
+The foreign id remains in the guest namespace; the host uses a distinct stable local principal.
+Approval records expose proposed caps, last approved caps/time/actor and removal time, never
+bearers or hashes. Narrowing and removal durably change approval, retire affected ordinary
+ticket credentials and grant rows, invalidate authority and fence existing sockets; unrelated
+relationships remain live. Removal preserves approval provenance without a permanent principal
+tombstone, so only a new explicit approval can readmit that recipient.
+Ordinary minting, Run/session credential issuance and derived shares retain exact source
+recipient dependencies. A cross-Agent child Run keeps its issuing credential, the actual
+parent Run credential and the target Agent's standing sponsor; renewal and session rebinding
+preserve the full Run dependency set. Withdrawal settles affected Run subtrees and fences
+every retired descendant principal, including retained descendants without a direct
+recipient row. Another credential or share cannot escape withdrawal or narrowing. Raw grant
+administration remains root-only at every bound context ingress.
+Share-owned ceiling rows are excluded from ordinary principal evaluation; a sibling share at
+the same origin grants no ambient authority. Recipient-derived credentials remain capped by
+their actual literal caps even when a standalone administered grant names that principal or
+origin. Such a standalone grant retains its ordinary meaning for unrelated credentials.
+
+Retained pre-recipient share tickets fail closed before admission. The backed-up schema
+cutover creates no approvals and conservatively retires old remote tickets, potentially
+derived credentials, standing-sponsored Agent Runs and their descendants, standalone grants
+and child shares. Legacy records identify issuing principals and standing sponsors, not exact
+issuing credentials: indistinguishable independently issued access may also need reissuance.
+This one-time legacy reset is not an exact-provenance claim. Content, terminal records, local
+identities and owner recovery access are preserved, as are original share origins/ceilings.
+Reapproval and reissuance use ordinary host actions; neither can reactivate a retired legacy
+Run or credential, and old instance protocol peers cannot resume around that policy.
+The session/instance revision and persistence schema are independent of native and hardened
+renderer contracts; unreleased held branches do not reserve their candidate version numbers.
+Three lifecycle events (`dial_online`, `dial_offline`, `dial_revoked`) are
 declared by this plugin and emitted by the floor on `manifold://plugin/core.access`, which is
 `machine_online`'s split: a socket coming up is nobody's commit point.
 
 A share's caps become a GRANT ROW on the shared node at mint (ADR 0011 §Tokens become grant
 references): `{ principal: { kind: "instance", origin }, node: "manifold://container/<id>",
-caps, effect: "allow", reach: "subtree" }`, referenced by `ShareRecord.grant_id`. Ticket
-attenuation is then grant subsetting by construction — a ticket is an ordinary token minted with
-the share's caps at the share's node, so it can never exceed the row its share stands on.
-`revokeShare` DELETES that row in the same transaction that marks the share revoked (and nulls
-`grant_id`; the share stays listable and auditable), so a revoked share confers nothing even
-before its tickets are severed. A grant presents no credential, so absence of the row IS its
-revocation — `revoked_at` exists on tokens and shares only because a bearer secret already
-handed over has to keep being refused. This is the field ADR 0011 left inert until wave 3:
-`principal.kind === "instance"` has a real value now.
+caps, effect: "allow", reach: "subtree" }`, referenced by `ShareRecord.grant_id`. Each ordinary
+ticket carries an explicit host-approved subset and its token-bound grant. This share-owned row is an issuance ceiling,
+not an ambient origin grant; every ticket stays within both its share and recipient bounds.
+`revokeShare` is the sole withdrawal path: it deletes that row and marks the share revoked
+transactionally, then retires related credentials and fences sockets. Direct `revokeGrant`
+refuses share-owned rows, just as it refuses token-owned rows. A persisted share lacking its
+ceiling row cannot approve recipients, issue tickets or admit resume, even if its
+`revoked_at` is absent. Standalone administered instance-origin grants remain normal waterfall
+rows and confer only their explicitly administered authority on eligible ordinary credentials.
 
 **Grant administration (`core.access`, ADR 0011).** The rows themselves, through the plugin the
 ADR named. No new capability — `*` and `tokens:mint` already answer "who may hand authority
@@ -2614,8 +2656,9 @@ dependency. The bundle's optional `builtAgainst` version map is recorded as
 shared builds also record React/package versions. Admission and boot check that stamp against
 the explicit `PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS` set and compare React by major. The
 bundle set is independent of session, machine and instance negotiation: sessions still require
-the current wire version. Protocol 48 admits bundle stamps 47 and 48 because the shared plugin
-ABI is preserved, including the older hardened machine-inventory projection. A prior stamp
+the current wire version. Protocol 53 admits bundle stamps 47, 48, 51, 52 and 53 because the
+shared plugin ABI is preserved; remote recipient admission changes the instance wire, while
+direct-service accounting remains optional call/result metadata. A prior stamp
 may remain only with proof from unchanged released artifacts through candidate assembly and
 loading; an incompatible plugin ABI change resets the set. No numeric range, future version
 or deployment bypass is implied. Known incompatibility refuses fresh admission or holds an
@@ -3253,7 +3296,7 @@ socket's event queue); past it, the event is dropped and logged as `socket_backp
 with `connectionId` and `topic` while the socket and its subscriptions stay live, and catch-up
 is a state read (ADR 0012 rule 5).
 
-**Live workspace authority and transport ordering (v49, #956).** An accepted connection receives
+**Live workspace authority and transport ordering (v54, #956).** An accepted connection receives
 `authority_context { workspaceCaps: Cap[], workspaceEvents: boolean }` before `observed` or room
 `init`, and changed snapshots follow live authority changes. Caps are evaluated at
 `MANIFOLD_ROOT_URI` for the actual first authenticated physical credential; `*` is included
@@ -4166,13 +4209,18 @@ incumbent continuity mismatch, or `supersession damped`). A name conflict is dec
 same atomic write that would admit the hello; it sends no welcome, changes neither machine row,
 and leaves an incumbent connection untouched. Version acceptance uses
 `MACHINE_PROTOCOL_COMPAT_VERSIONS`, currently
-`{30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48}`; session/browser joins remain strictly
-current at protocol 48. An unchanged machine
+`{30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52, 53}`; session/browser joins remain strictly
+current at protocol 53. An unchanged machine
 wire may add a version to the set. A strictly additive-optional change may also add it only
 when old frames still parse and absent fields preserve the old semantics. Other changes
 reset the set and require a coordinated hub/transport upgrade. An admission bound applied
 identically at every accepted version, leaving compliant frames byte-identical, changes
 neither the version nor the set.
+
+Protocol 52's monetary service policies, invocation context and native charge replies require
+both machine transport 52 and owner RPC 44. An older admitted transport keeps its ordinary
+work, receives no incompatible monetary policy, and cannot admit a bounded direct call.
+Owner capability alone does not attest the intervening strict parser.
 
 **Live physical topology (#939, protocol 48).** The transport observes `physicalCoreCount`
 afresh while constructing each hello, including every reconnect. On Linux it reads
@@ -4229,8 +4277,8 @@ separate native owner proof and admitted resource/runtime bindings.
 
 ### Native job owner RPC
 
-Native owner RPC has its own `JOB_OWNER_PROTOCOL_VERSION`, currently 43, and
-`JOB_OWNER_PROTOCOL_COMPAT_VERSIONS = {34, 35, 36, 37, 40, 41, 42, 43}`. It is independent of machine and session
+Native owner RPC has its own `JOB_OWNER_PROTOCOL_VERSION`, currently 44, and
+`JOB_OWNER_PROTOCOL_COMPAT_VERSIONS = {34, 35, 36, 37, 40, 41, 42, 43, 44}`. It is independent of machine and session
 protocols. An additive-optional change **adds** its new version to the acceptance set; a
 breaking change **resets** the set and requires a coordinated drained owner upgrade.
 Compatibility never substitutes for owner proof, current execution consent or resource
@@ -4248,22 +4296,24 @@ construction, and the owner inventory's `anchorDefinitions` (#839, ADR 0049). Th
 40 → 41 change adds the optional, signed Run binding and its ephemeral tool
 request/cancel/result relay (#769); existing unbound jobs remain unchanged. The additive 41 → 42
 change adds signed request `serviceBindings` and operation location `outputOnly`. The additive
-42 → 43 change adds the machine location lifetime `temporary` (#933). Versions 38
-and 39 were reserved by drafts and are never accepted; because capability checks compare
-revisions, a later capability takes a version above 43 rather than reusing them.
+42 → 43 change adds the machine location lifetime `temporary` (#933). The additive
+43 → 44 change adds opt-in owner-quoted direct-service monetary accounting (#937).
+Versions 38 and 39 were reserved by drafts and are never accepted; because capability
+checks compare revisions, a later capability takes a version above 44 rather than reusing them.
 These are optional operations, not permission to orphan every already-running job or instance service.
 
 The hub sends only fields the negotiated owner parses. Private launch and `launchBinding`
 require 35; bound inputs require 36; self-provider service runtimes require 37; operator
 anchors require 40; Run-bound tools require 41 and machine protocol 43; explicit instance
 references (`serviceBindings`) and output-only backing locations (`outputOnlyLocations`)
-require 42; temporary locations (`temporaryLocations`) require 43. An older accepted owner
+require 42; temporary locations (`temporaryLocations`) require 43; bounded direct-service
+accounting (`directServiceAccounting`) and its new policy fields require 44. An older accepted owner
 keeps serving its compatible jobs and instance services;
 only the newer use is refused by name (`run_launch_protocol_unsupported`,
 `bound_inputs_protocol_unsupported`, `service_runtime_unsupported`,
 `operator_anchors_protocol_unsupported`, `agent_tools_protocol_unsupported`,
-`service_bindings_protocol_unsupported`, `output_only_locations_protocol_unsupported` or
-`temporary_locations_protocol_unsupported`).
+`service_bindings_protocol_unsupported`, `output_only_locations_protocol_unsupported`,
+`temporary_locations_protocol_unsupported` or `service_accounting_protocol_unsupported`).
 Unsupported
 operation declarations are omitted from that owner's install projection rather than
 weakening them, and signed admissions are never rewritten. A location declaration an older
@@ -5050,6 +5100,71 @@ policySha256, jobId }` or null), the expected revision, the resolved policy and 
   partial post-upgrade sum. The owner's settled `usage.inference` retains its existing five-counter
   result shape and authority. Spend is read from these server/owner records, never from what the
   workload reports about itself.
+- **Bounded direct-service money** ([#937](https://github.com/atyrode/manifold/issues/937)).
+  `engine.services.invoke` and `invokeInstance`, including their `ctx.services` equivalents,
+  accept optional `accounting: { callId, maxCostMicros, receiptOnly? }`. Ordinary invocations,
+  reads and worker service envelopes do not acquire this guarantee. Authorized operation
+  descriptions publish an available `{ modelId, reservedMicros }` quote, not configuration
+  or credential references. The hub and native owner each recompute the installed quote;
+  a caller can lower its acceptable maximum, never provide pricing or a smaller reservation.
+  Missing exact-model pricing, a missing hard context bound or allowance, an unsupported
+  wire, or an unsupported transport/owner accounting capability refuses before upstream dispatch.
+
+  A supported policy declares `directCostCeilingMicros`, an exact `prices.models[modelId]`
+  entry with `contextTokens`, and a direct operation's `meter: { kind, modelId }`.
+  The model is an installed literal, the path is static, the method is POST, query mapping
+  is empty and the reply is bounded projected JSON. `openai-usage` supports one nonstreamed
+  text turn using `messages` or `input`; `pi-native-usage` supports a nonstreamed
+  `modelId`/`context.messages` text turn. Explicit streaming, multiple completions, tool
+  loops, dynamic models and batch/routing controls are unsupported.
+  Provider-neutral `json-usage` supports installed scalar-leaf mappings such as
+  `state`/`model`/`questions`, with top-level exact `model` and aggregate
+  `usage.input_tokens`/`output_tokens`. Its context bound covers the **whole request**,
+  not each question. This is an owner-reviewed upstream contract, not a token estimate
+  or an inference about arbitrary JSON semantics.
+
+  With integer micro-dollar rates, reservation is
+  `ceil(contextTokens * (max(inputPerMillion, cachedInputPerMillion ?? inputPerMillion) + outputPerMillion) / 1_000_000)`.
+  Overflow refuses; explicit zero pricing is valid. Input and charged output usage must
+  satisfy the installed context bound. Only `json-usage` with an explicit zero output rate
+  permits output beyond that bound: free output adds no monetary exposure. Direct settlement
+  rounds measured cost **up** to whole micro-dollars, so positive fractional exposure never
+  becomes a reusable free allowance. Legacy proxy nearest-micro-dollar rounding is unchanged.
+  Pi cache writes retain the existing fresh-input rate. The guarantee is relative to correctly installed hard upstream bounds
+  and prices, not a provider-invoice attestation.
+
+  The existing SQLite store atomically reserves cumulative exposure for the
+  `(machineId, serviceId)` identity across actors, instances and policy revisions.
+  If the caller has a persisted native Run/job binding with a finite
+  `limits.inference.costMicros`, bounded direct calls also reserve against that execution.
+  A bounded execution with metered proxy authority or recorded proxy usage refuses
+  `service_accounting_execution_mixed_lanes`: the two accounting lanes do not share
+  an atomic reservation. The direct allowance covers **only opted-in bounded calls**,
+  not legacy direct/proxy spending or a whole mixed execution.
+
+  Before sending native authorization, the hub durably marks the maximum as possibly
+  spent. The owner measures raw provider usage before consumer projection, including
+  charged failures. A valid original-owner outcome settles once to the measured charge;
+  a proven nonattempt settles to zero. Timeout, cancellation, unreadable usage, lost
+  approval/channel or restart never invents a zero charge: unresolved exposure retains
+  the full maximum. The original authenticated owner/generation/key may settle later,
+  even after the pending map is gone; replacement-owner evidence cannot. An outcome
+  that was never delivered stays unresolved, without automatic execution replay.
+  The native owner retains generation-local identity tombstones for possibly paid envelopes;
+  a completed/unknown call's delayed duplicate cannot execute again or manufacture a new
+  nonattempt proof for the original exposure.
+
+  The public reply adds a bounded receipt with `callId`, owner request ID, exact
+  policy revision/hash, operation/model, accounting state, reserved maximum and nullable
+  settled charge. Reusing the same actor's call ID with exact input/policy/ceiling pins,
+  or requesting `receiptOnly`, returns `result: null` plus that receipt and never executes
+  again. Changed content refuses. Recovery rechecks current original-source authority
+  and admission policy, including after instance configuration replacement; no root
+  bypass exposes another actor's receipt. The ledger stores metadata and request digest,
+  never request/result bodies, endpoints, credentials or copied policies. Native charge
+  evidence is private protocol data, not a public result. Upgrade through the existing
+  drained-owner procedure; protocol support is not permission to activate a live policy.
+
 - **Output and privacy.** `child_exit` is execution observation with `outputsSealed: false`,
   not a final result, writer-drain acknowledgement or closure proof. Sealing waits for the
   execution tree to be empty and authorized overlapping writers to release, including
@@ -5417,6 +5532,17 @@ write locks, including Litestream's short checkpoint locks, before returning `SQ
 synchronization makes the plugin-image journal durable before filesystem activation.
 `packages/server/src/db.ts` remains the authoritative migration source; the handwritten
 inventory below records selected durable fields rather than acting as a second runner.
+
+Schema 49 adds `native_service_attempts` for bounded direct-service reservation identity,
+policy/model pins, original-owner fencing, maximum/settled cost and authorization/state.
+Startup conservatively changes remaining reservations to unresolved exposure. Policy
+replacement does not reset the service's accumulated exposure; recovery does not replay calls
+or retain private request/result bodies.
+
+Schema 50 adds host-approved share recipients and exact ticket/delegation provenance.
+Its backed-up legacy access reset follows retained standing Agent sponsorship and Run
+descendants while preserving the schema-49 native service attempt ledger: retiring remote
+credentials does not erase settled charges or unresolved exposure.
 
 **One writer per data directory** ([#318](https://github.com/atyrode/manifold/issues/318)). Before
 opening `manifold.db` the server takes `<data>/manifold.writer`, a SQLite file held in exclusive

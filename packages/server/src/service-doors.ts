@@ -5,7 +5,10 @@ import {
   ServiceReadArgsSchema,
   ServiceInvokeArgsSchema,
   ServiceReplySchema,
+  ServiceRefusalSchema,
+  ServiceDirectQuoteSchema,
   ServiceProxyOperationPolicySchema,
+  ServiceOperationPolicySchema,
   ServicePolicySchema,
 } from "@manifold/protocol";
 import {
@@ -15,6 +18,7 @@ import {
   InstanceServiceConfigurationReadSchema,
   ConfigureInstanceServiceArgsSchema,
   InstanceServiceReadArgsSchema,
+  InstanceServiceInvokeArgsSchema,
 } from "@manifold/protocol";
 import { z } from "zod";
 import { ServiceError, type AuthContext } from "./auth.ts";
@@ -38,7 +42,7 @@ export const serviceDoorSchemas = {
   readInstanceConfiguration: InstanceServiceTargetSchema,
   configureInstance: ConfigureInstanceServiceArgsSchema,
   readInstance: InstanceServiceReadArgsSchema,
-  invokeInstance: InstanceServiceReadArgsSchema,
+  invokeInstance: InstanceServiceInvokeArgsSchema,
 };
 const description: z.ZodType<ServiceDescription> = z.strictObject({
   machineId: ServiceReadArgsSchema.shape.machineId,
@@ -55,8 +59,14 @@ const description: z.ZodType<ServiceDescription> = z.strictObject({
           invocable: z.boolean(),
           ready: z.boolean(),
           reason: z.string().nullable(),
-          meter: ServiceProxyOperationPolicySchema.shape.meter,
+          meter: z
+            .union([
+              ServiceProxyOperationPolicySchema.shape.meter.unwrap(),
+              ServiceOperationPolicySchema.shape.meter.unwrap(),
+            ])
+            .optional(),
           prices: ServicePolicySchema.shape.prices,
+          accounting: ServiceDirectQuoteSchema.optional(),
         }),
       ),
     }),
@@ -94,13 +104,7 @@ export function serviceContext(
     invoke: (args) => {
       if (mode !== "invoke")
         return Promise.reject(new ServiceError("forbidden", "service_unauthorized"));
-      return service().invokeService(
-        auth,
-        ServiceInvokeArgsSchema.parse(args),
-        pluginId,
-        String(traceId),
-        authorityFence,
-      );
+      return service().invokeService(auth, args, pluginId, String(traceId), authorityFence);
     },
     describeInstance: (args) =>
       service().describeInstanceService(auth, InstanceServiceTargetSchema.parse(args)),
@@ -129,22 +133,21 @@ export function serviceContext(
     invokeInstance: (args) => {
       if (mode !== "invoke")
         return Promise.reject(new ServiceError("forbidden", "service_unauthorized"));
-      return service().invokeInstanceService(
-        auth,
-        InstanceServiceReadArgsSchema.parse(args),
-        pluginId,
-        String(traceId),
-        authorityFence,
-      );
+      return service().invokeInstanceService(auth, args, pluginId, String(traceId), authorityFence);
     },
   };
 }
 
-async function call(run: () => unknown) {
+async function call(run: () => unknown, accounting = false) {
   try {
     return await run();
   } catch (error) {
-    if (error instanceof ServiceError) return { refused: `${error.code}: service request refused` };
+    if (error instanceof ServiceError) {
+      const reason = accounting ? ServiceRefusalSchema.safeParse(error.message) : null;
+      return {
+        refused: `${error.code}: ${reason?.success ? reason.data : "service request refused"}`,
+      };
+    }
     throw error;
   }
 }
@@ -201,7 +204,7 @@ export const serviceDoors: ServerPluginDef = {
     read: (ctx: ActionCtx, args: z.infer<typeof ServiceReadArgsSchema>) =>
       call(() => ctx.services.read(args)),
     invoke: (ctx: ActionCtx, args: z.infer<typeof ServiceInvokeArgsSchema>) =>
-      call(() => ctx.services.invoke(args)),
+      call(() => ctx.services.invoke(args), args.accounting !== undefined),
     describeInstance: (ctx: ActionCtx, args: z.infer<typeof InstanceServiceTargetSchema>) =>
       call(() => ctx.services.describeInstance(args)),
     listInstances: (ctx: ActionCtx, args: Record<string, never>) =>
@@ -214,7 +217,7 @@ export const serviceDoors: ServerPluginDef = {
       call(() => ctx.services.configureInstance(args)),
     readInstance: (ctx: ActionCtx, args: z.infer<typeof InstanceServiceReadArgsSchema>) =>
       call(() => ctx.services.readInstance(args)),
-    invokeInstance: (ctx: ActionCtx, args: z.infer<typeof InstanceServiceReadArgsSchema>) =>
-      call(() => ctx.services.invokeInstance(args)),
+    invokeInstance: (ctx: ActionCtx, args: z.infer<typeof InstanceServiceInvokeArgsSchema>) =>
+      call(() => ctx.services.invokeInstance(args), args.accounting !== undefined),
   },
 };

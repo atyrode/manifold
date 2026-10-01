@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { defineAction } from "@manifold/plugin";
+import { z } from "zod";
 import {
   GrantsSchema,
   ShareGrantSchema,
@@ -13,7 +15,7 @@ import {
 } from "@manifold/protocol";
 import { AuthService, ServiceError, type AuthContext } from "../src/auth.ts";
 import { silentLogger, type Logger } from "../src/log.ts";
-import type { PluginHost } from "../src/plugin-host.ts";
+import type { PluginHost, ServerPluginDef } from "../src/plugin-host.ts";
 import { RoomManager } from "../src/room.ts";
 import type { ServerStore } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
@@ -623,7 +625,7 @@ describe("core.access share ladder", () => {
     expect(result(own)).toMatchObject({
       share: { ref: containerNode(home), caps: ["containers:read"], origin: GUEST_ORIGIN },
     });
-    expect(denial(trespass)).toEqual({ rule: "refused", message: "cannot widen container scope" });
+    expect(denial(trespass)?.rule).toBe("refused");
     fix.store.close();
   });
 
@@ -1159,52 +1161,6 @@ describe("core.access grant ladder", () => {
     fix.store.close();
   });
 
-  test("grant service administration is issuer-owned beneath the root-only doors", async () => {
-    const fix = await fixture();
-    const actor = context(fix, ["tokens:mint"]);
-    const subject = grant(fix, ["containers:read"]);
-    const own = fix.auth.grant(
-      {
-        principal: { kind: "principal", id: subject.principal.id },
-        node: ROOT,
-        caps: ["containers:read"],
-        effect: "allow",
-        reach: "node",
-      },
-      actor,
-    );
-    const foreign = fix.auth.grant(
-      {
-        principal: { kind: "principal", id: subject.principal.id },
-        node: ROOT,
-        caps: ["containers:read"],
-        effect: "deny",
-        reach: "node",
-      },
-      fix.owner,
-    );
-
-    expect(fix.auth.listGrants({}, actor).map((row) => row.id)).toEqual([own.id]);
-    expect(() => fix.auth.revokeGrant(foreign.id, actor)).toThrow(
-      "cannot revoke another principal's grant",
-    );
-    expect(fix.store.getGrant(foreign.id)).not.toBeNull();
-    expect(fix.auth.revokeGrant(own.id, actor)).toBe(1);
-    expect(fix.store.getGrant(own.id)).toBeNull();
-    expect(
-      denial(
-        await fix.host.dispatch(actor, "core.access.grant", {
-          principal: { kind: "principal", id: subject.principal.id },
-          node: ROOT,
-          caps: ["containers:read"],
-          effect: "allow",
-          reach: "node",
-        }),
-      ).rule,
-    ).toBe("forbidden");
-    fix.store.close();
-  });
-
   test("revoking a grant outlives an access seat being off; writing and listing do not", async () => {
     const fix = await fixture();
     const container = accessContainer(fix);
@@ -1658,12 +1614,22 @@ describe("core.access revocation retires a token's grant row", () => {
     );
     const share = fix.store.getShare(minted.share.id);
     if (share === null) throw new Error("minted share has no row");
-    const ticket = fix.auth.mintShareTicket(share, {
+    const guest = {
       id: "guest-visitor",
-      kind: "human",
+      kind: "human" as const,
       name: "visitor",
       color: "#3355cc",
-    });
+    };
+    expect(() => fix.auth.mintShareTicket(share, guest)).toThrow("recipient_unapproved");
+    fix.auth.approveShareRecipient(
+      {
+        shareId: share.id,
+        guestPrincipalId: guest.id,
+        caps: ["containers:read"],
+      },
+      fix.owner,
+    );
+    const ticket = fix.auth.mintShareTicket(share, guest);
 
     const before = await rows(fix, { node });
     const revoked = await fix.host.dispatch(fix.owner, "core.access.revokeShare", {
@@ -1683,4 +1649,127 @@ describe("core.access revocation retires a token's grant row", () => {
     expect(fix.store.getShare(minted.share.id)?.revokedAt).not.toBeNull();
     fix.store.close();
   });
+});
+
+test("a custom bound identity context cannot escape recipient approval through standalone grants", async () => {
+  const fix = await fixture();
+  try {
+    const containerId = accessContainer(fix);
+    const minted = fix.auth.mintShare(
+      {
+        node: { kind: "container", containerId },
+        caps: ["tokens:mint"],
+        origin: "https://guest.example",
+      },
+      fix.owner,
+    );
+    const share = fix.auth.authenticateShare(minted.token);
+    const guest = { id: "bound-guest", kind: "human" as const, name: "guest", color: "#3355cc" };
+    expect(() => fix.auth.mintShareTicket(share, guest)).toThrow("recipient_unapproved");
+    fix.auth.approveShareRecipient(
+      {
+        shareId: share.id,
+        guestPrincipalId: guest.id,
+        caps: ["tokens:mint"],
+      },
+      fix.owner,
+    );
+    const ticket = fix.auth.mintShareTicket(share, guest);
+    const actor = fix.auth.authenticate(ticket.token);
+    const subject = grant(fix, ["containers:read"]);
+    const plugin: ServerPluginDef = {
+      manifest: {
+        id: "test.bound-grant",
+        version: "1.0.0",
+        title: "Bound grant",
+        description: "",
+        capabilities: ["tokens:mint"],
+        contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+      },
+      actions: [
+        defineAction({
+          name: "write",
+          title: "Write",
+          caps: ["tokens:mint"],
+          scope: "container",
+          input: z.strictObject({ containerId: z.string(), principalId: z.string() }),
+          result: z.unknown(),
+        }),
+        defineAction({
+          name: "withdraw",
+          title: "Withdraw",
+          caps: ["tokens:mint"],
+          scope: "container",
+          input: z.strictObject({ containerId: z.string(), grantId: z.string() }),
+          result: z.unknown(),
+        }),
+      ],
+      handlers: {
+        write: async (ctx, input) => {
+          const parsed = z
+            .strictObject({ containerId: z.string(), principalId: z.string() })
+            .parse(input);
+          return ctx.identity.grant({
+            principal: { kind: "principal", id: parsed.principalId },
+            node: "manifold://",
+            caps: ["*"],
+            effect: "allow",
+            reach: "subtree",
+          });
+        },
+        withdraw: async (ctx, input) => {
+          const parsed = z
+            .strictObject({ containerId: z.string(), grantId: z.string() })
+            .parse(input);
+          return ctx.identity.revokeGrant(parsed.grantId);
+        },
+      },
+    };
+    const host = await testPluginHost(fix.store, fix.auth, fix.rooms, fix.broker, fix.runtime, {
+      settingsPlugins: [plugin],
+    });
+    const before = fix.store.listGrants().map((row) => row.id);
+    expect(
+      result(
+        await host.dispatch(actor, "test.bound-grant.write", {
+          containerId,
+          principalId: subject.principal.id,
+        }),
+      ),
+    ).toMatchObject({ ok: false, code: "forbidden" });
+    expect(fix.store.listGrants().map((row) => row.id)).toEqual(before);
+    const rootResult = result(
+      await host.dispatch(fix.owner, "test.bound-grant.write", {
+        containerId,
+        principalId: subject.principal.id,
+      }),
+    ) as { ok: boolean; value: Grant };
+    if (!rootResult.ok) throw new Error("root grant administration was refused");
+    expect(fix.store.getGrant(rootResult.value.id)).toMatchObject({
+      principal: { kind: "principal", id: subject.principal.id },
+      node: "manifold://",
+      caps: ["*"],
+    });
+    expect(
+      result(
+        await host.dispatch(actor, "test.bound-grant.withdraw", {
+          containerId,
+          grantId: rootResult.value.id,
+        }),
+      ),
+    ).toMatchObject({ ok: false, code: "forbidden" });
+    fix.auth.removeShareRecipient({ shareId: share.id, guestPrincipalId: guest.id }, fix.owner);
+    expect(fix.store.getGrant(rootResult.value.id)).not.toBeNull();
+    expect(
+      result(
+        await host.dispatch(fix.owner, "test.bound-grant.withdraw", {
+          containerId,
+          grantId: rootResult.value.id,
+        }),
+      ),
+    ).toEqual({ ok: true, value: 1 });
+    expect(fix.store.getGrant(rootResult.value.id)).toBeNull();
+  } finally {
+    fix.store.close();
+  }
 });

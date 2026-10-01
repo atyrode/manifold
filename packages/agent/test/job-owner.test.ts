@@ -2319,13 +2319,15 @@ async function reconfiguredServiceOwner() {
     string,
     { entered: PromiseWithResolvers<void>; release: PromiseWithResolvers<Response> }
   >();
+  const requests: string[] = [];
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
     fetch(request) {
+      requests.push(new URL(request.url).pathname);
       const gate = gates.get(new URL(request.url).pathname)!;
       gate.entered.resolve();
-      return gate.release.promise;
+      return gate.release.promise.then((response) => response.clone());
     },
   });
   const endpoints = new Map<string, { url: string; bearer: string }>();
@@ -2429,6 +2431,8 @@ async function reconfiguredServiceOwner() {
     owner,
     events,
     endpoints,
+    requests,
+    detach,
     /** A service with one direct operation and one proxied route, each its own upstream path. */
     service(serviceId: string, timeoutMs = 5000): ServicePolicy {
       return {
@@ -2652,6 +2656,167 @@ test.skipIf(!linux)(
       await removedGate.entered.promise;
       await f.configure([f.service("ledger", 6000)]);
       expect(await removed).toMatchObject({ reply: { ok: false, refusal: "service_closed" } });
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+test.skipIf(!linux)(
+  "native monetary invokes quote before authority, settle raw usage once and retain unknown interrupted exposure",
+  async () => {
+    const f = await reconfiguredServiceOwner();
+    try {
+      const spec = f.service("inference");
+      spec.directCostCeilingMicros = 1000;
+      spec.prices = {
+        models: {
+          "fixed-model": {
+            inputPerMillion: 1_000_000,
+            outputPerMillion: 2_000_000,
+            contextTokens: 100,
+          },
+        },
+      };
+      spec.operations.update = {
+        method: "POST",
+        invocable: true,
+        path: "/inference/update",
+        meter: { kind: "openai-usage", modelId: "fixed-model" },
+        input: { prompt: { type: "string", required: true, maxBytes: 128 } },
+        query: {},
+        body: [
+          { path: ["model"], value: { literal: "fixed-model" } },
+          { path: ["input"], value: { input: "prompt" } },
+        ],
+        timeoutMs: 5000,
+        maxRequestBytes: 1024,
+        maxResponseBytes: 4096,
+        maxResultBytes: 1024,
+        response: { kind: "projected-json", fields: [["answer"]], maxArrayItems: 1 },
+      };
+      await f.configure([spec]);
+      const command = {
+        type: "service_invoke" as const,
+        requestId: "bounded-1",
+        machineId: "machine",
+        serviceId: spec.serviceId,
+        revision: spec.revision,
+        policySha256: jobDigest(spec),
+        operationId: "update",
+        input: { prompt: "private input" },
+        accounting: { callId: "call-1", maxCostMicros: 300, reservedMicros: 300 },
+      };
+      await f.owner.execute({
+        ...command,
+        accounting: { ...command.accounting, maxCostMicros: 299 },
+      });
+      expect(f.events.at(-1)).toMatchObject({
+        type: "service_invoke_result",
+        reply: {
+          ok: false,
+          refusal: "service_ceiling_exceeded",
+          charge: { status: "not_dispatched", costMicros: 0 },
+        },
+      });
+      expect(f.events.some((event) => event.type === "service_authorize")).toBe(false);
+      expect(f.requests).toEqual([]);
+      const gate = f.gate("/inference/update");
+      const pending = f.owner.execute(command);
+      await gate.entered.promise;
+      await f.owner.execute(command);
+      // A duplicate envelope must not release the first call's already-authorized reserve.
+      expect(f.events.at(-1)).toMatchObject({
+        type: "service_invoke_result",
+        reply: {
+          ok: false,
+          refusal: "service_invalid_request",
+          charge: { status: "unknown", costMicros: null },
+        },
+      });
+      gate.release.resolve(
+        Response.json({
+          model: "fixed-model",
+          usage: { input_tokens: 10, output_tokens: 5 },
+          answer: "visible",
+          private: "hidden",
+        }),
+      );
+      await pending;
+      expect(f.events.at(-1)).toMatchObject({
+        type: "service_invoke_result",
+        reply: {
+          ok: true,
+          result: { answer: "visible" },
+          charge: {
+            callId: "call-1",
+            reservedMicros: 300,
+            status: "known",
+            costMicros: 20,
+          },
+        },
+      });
+      expect(f.requests).toEqual(["/inference/update"]);
+      await f.owner.execute(command);
+      expect(f.events.at(-1)).toMatchObject({
+        type: "service_invoke_result",
+        reply: {
+          ok: false,
+          refusal: "service_invalid_request",
+          charge: { status: "unknown", costMicros: null },
+        },
+      });
+      expect(f.requests).toEqual(["/inference/update"]);
+      const cancelledGate = f.gate("/inference/update");
+      const cancelled = f.owner.execute({
+        ...command,
+        requestId: "bounded-2",
+        accounting: { ...command.accounting, callId: "call-2" },
+      });
+      await cancelledGate.entered.promise;
+      await f.owner.execute({ type: "service_invoke_cancel", requestId: "bounded-2" });
+      await cancelled;
+      expect(f.events.at(-1)).toMatchObject({
+        type: "service_invoke_result",
+        requestId: "bounded-2",
+        reply: {
+          ok: false,
+          refusal: "service_cancelled",
+          charge: { status: "unknown", costMicros: null },
+        },
+      });
+      cancelledGate.release.resolve(Response.json({}));
+      await f.configure([{ ...spec, revision: "replacement" }]);
+      await f.owner.execute({
+        ...command,
+        requestId: "bounded-2",
+        accounting: { ...command.accounting, callId: "call-2" },
+      });
+      expect(f.events.at(-1)).toMatchObject({
+        type: "service_invoke_result",
+        reply: {
+          ok: false,
+          refusal: "service_invalid_request",
+          charge: { status: "unknown", costMicros: null },
+        },
+      });
+      expect(f.requests).toEqual(["/inference/update", "/inference/update"]);
+      await f.configure([spec]);
+      const lostGate = f.gate("/inference/update");
+      const lost = f.owner.execute({
+        ...command,
+        requestId: "bounded-3",
+        accounting: { ...command.accounting, callId: "call-3" },
+      });
+      await lostGate.entered.promise;
+      f.detach();
+      await lost;
+      expect(
+        f.events.some(
+          (event) => event.type === "service_invoke_result" && event.requestId === "bounded-3",
+        ),
+      ).toBe(false);
+      lostGate.release.resolve(Response.json({}));
     } finally {
       await f.close();
     }

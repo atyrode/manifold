@@ -108,7 +108,7 @@ must never be taught one.
         "packages/server/src/migrate-grants.ts"
       ],
       "litmus": ["bootstrap", "neutrality", "arbitration"],
-      "verdict": "the SQLite substrate: schema, migrations, and the row-level accessors the engine's own bookkeeping needs (enablement, layout, plugin storage namespaces, ownership tombstones, migration ledgers). Plugin-domain rows reach it only through ctx.storage, which is why the substrate stays neutral and a purge can be exact.",
+      "verdict": "the SQLite substrate: schema, migrations, and the row-level accessors the engine's own bookkeeping needs (enablement, layout, plugin storage namespaces, ownership tombstones, migration ledgers, and bounded direct-service monetary reservations and once-only settlements). Financial rows arbitrate owner-reviewed service/execution allowances and retain only identity, digest, policy/model pins and exposure, never product input/output. Plugin-domain rows reach it only through ctx.storage, which is why the substrate stays neutral and a purge can be exact.",
       "adr": "docs/decisions/0013-plugin-behavioral-contract.md"
     },
     {
@@ -133,7 +133,7 @@ must never be taught one.
         "packages/agent/src/**"
       ],
       "litmus": ["bootstrap", "neutrality", "arbitration"],
-      "verdict": "the pipes: channel multiplexing and connection-level frames, machine enrolment and version negotiation, instance dialling in BOTH directions (the host gateway and the outbound dialer share the machine channel's one liveness discipline), the PTY broker's attach state machine and no-gap invariant, terminal-host ownership and its private IPC seam with the replaceable transport, continuity admission and drain-latch enforcement, and the structured log that discharges the self-description obligation. Bytes are floor, POLICY is a plugin (ADR 0013 §14) — core.machines owns the drain action; the transport moves bytes and stops knowing why.",
+      "verdict": "the pipes: channel multiplexing and connection-level frames, machine enrolment and version negotiation, instance dialling in BOTH directions (the host gateway and the outbound dialer share the machine channel's one liveness discipline), the PTY broker's attach state machine and no-gap invariant, terminal-host ownership and its private IPC seam with the replaceable transport, continuity admission and drain-latch enforcement, owner-quoted direct-service monetary admission and authenticated settlement, and the structured log that discharges the self-description obligation. Direct metering names generic installed wires and pricing, not a provider or product; shared allowance arbitration is floor while allowance/price selection remains owner policy. Bytes are floor, POLICY is a plugin (ADR 0013 §14) — core.machines owns the drain action; the transport moves bytes and stops knowing why.",
       "adr": "docs/decisions/0013-plugin-behavioral-contract.md"
     },
     {
@@ -278,7 +278,7 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     },
     {
       "glob": "packages/server/src/stores.ts",
-      "why": "persistence: containers, tokens, terminals, plugin enablement, per-principal workspace layout"
+      "why": "persistence: containers, tokens, terminals, plugin enablement, per-principal workspace layout, and atomic metadata-only direct-service monetary reservations/settlements"
     },
     {
       "glob": "packages/server/src/room.ts",
@@ -298,7 +298,7 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     },
     {
       "glob": "packages/server/src/job-service.ts",
-      "why": "ADR 0033 governed machine execution: common revision-bound admission, owner proof, signed start permits, private output authority and honest lifecycle"
+      "why": "ADR 0033 governed machine execution: common revision-bound admission, owner proof, signed start permits, private output authority and honest lifecycle; owner-quoted bounded direct-service calls share atomic allowance admission, current-authority receipt recovery and original-owner settlement"
     },
     {
       "glob": "packages/server/src/authority-snapshot.ts",
@@ -326,11 +326,11 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     },
     {
       "glob": "packages/server/src/instance-ws.ts",
-      "why": "instance transport, host half: share authentication, origin binding, version negotiation, liveness, the ticket hop"
+      "why": "instance transport, host half: share authentication, immutable origin binding, host-approved per-recipient ticket bounds and finite expiry, version negotiation and liveness"
     },
     {
       "glob": "packages/server/src/instance-dialer.ts",
-      "why": "instance transport, guest half: the dial rows this instance holds, their outbound sockets, and the door that turns one into a per-principal ticket"
+      "why": "instance transport, guest half: retained outbound dial rows, local admission without remote consent, and the door that returns a host-approved per-principal ticket with actual bounds and expiry"
     },
     {
       "glob": "packages/server/src/terminal-broker.ts",
@@ -1382,6 +1382,12 @@ applied to vocabulary: one door onto "what do we call this kind".
       "allow": []
     },
     {
+      "term": "share recipient",
+      "means": "the host's approval relationship for one share's immutable guest origin and one guest-local principal: proposed remote caps, an explicitly approved subset and durable approval/removal provenance, never a bearer",
+      "banned": [],
+      "allow": []
+    },
+    {
       "term": "dial",
       "means": "a long-lived outbound pipe from a process to an instance, and the guest-side row for one accepted share: the machine channel and the instance channel are both dials",
       "banned": [],
@@ -1401,7 +1407,7 @@ applied to vocabulary: one door onto "what do we call this kind".
     },
     {
       "term": "ticket",
-      "means": "the per-principal token a host mints under a share, carrying the guest's origin: an ordinary attenuated token, never a second credential kind",
+      "means": "the finite per-principal token a host mints under an active share recipient approval, carrying the guest's origin and actual approved remote subset: an ordinary attenuated token, never a second credential kind",
       "banned": [],
       "allow": []
     },

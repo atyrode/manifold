@@ -46,6 +46,14 @@ export const ServiceRefusalSchema = z.enum([
   "service_response_limit",
   "service_ceiling_exceeded",
   "service_price_unknown",
+  "service_accounting_unsupported",
+  "service_accounting_bound_unknown",
+  "service_accounting_mismatch",
+  "service_accounting_violation",
+  "service_accounting_protocol_unsupported",
+  "service_accounting_unavailable",
+  "service_accounting_execution_unavailable",
+  "service_accounting_execution_mixed_lanes",
   "service_machine_mismatch",
   "service_owner_unavailable",
   "service_owner_draining",
@@ -105,22 +113,84 @@ const GUEST_REFUSALS = new Set<ServiceRefusal>([
 export function guestServiceRefusal(refusal: ServiceRefusal): ServiceRefusal {
   return GUEST_REFUSALS.has(refusal) ? refusal : "service_unavailable";
 }
+const micros = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+export const ServiceInvokeAccountingSchema = z.strictObject({
+  callId: name,
+  maxCostMicros: micros,
+  receiptOnly: z.boolean().optional(),
+});
+/** Hub-reserved context, never accepted on a worker's ServiceCall or a public invoke. */
+export const ServiceDirectAccountingSchema = z.strictObject({
+  callId: name,
+  maxCostMicros: micros,
+  reservedMicros: micros,
+});
+export const ServiceDirectQuoteSchema = z.strictObject({
+  modelId: z.string().min(1).max(256),
+  reservedMicros: micros,
+});
+export type ServiceDirectQuote = z.infer<typeof ServiceDirectQuoteSchema>;
+export const ServiceAccountingReceiptSchema = z
+  .strictObject({
+    callId: name,
+    requestId: name,
+    revision: name,
+    policySha256: z.string().regex(/^[a-f0-9]{64}$/),
+    operationId: name,
+    modelId: z.string().min(1).max(256),
+    state: z.enum(["reserved", "unresolved", "settled"]),
+    reservedMicros: micros,
+    chargedMicros: micros.nullable(),
+  })
+  .refine((receipt) =>
+    receipt.state === "settled"
+      ? receipt.chargedMicros !== null && receipt.chargedMicros <= receipt.reservedMicros
+      : receipt.chargedMicros === null,
+  );
+/** Only the authenticated native owner produces charge evidence; unknown is never zero. */
+export const ServiceChargeSchema = z
+  .strictObject({
+    callId: name,
+    reservedMicros: micros,
+    status: z.enum(["known", "unknown", "not_dispatched"]),
+    costMicros: micros.nullable(),
+  })
+  .refine((charge) =>
+    charge.status === "unknown"
+      ? charge.costMicros === null
+      : charge.costMicros !== null &&
+        charge.costMicros <= charge.reservedMicros &&
+        (charge.status !== "not_dispatched" || charge.costMicros === 0),
+  );
+export type ServiceInvokeAccounting = z.infer<typeof ServiceInvokeAccountingSchema>;
+export type ServiceDirectAccounting = z.infer<typeof ServiceDirectAccountingSchema>;
+export type ServiceAccountingReceipt = z.infer<typeof ServiceAccountingReceiptSchema>;
+export type ServiceCharge = z.infer<typeof ServiceChargeSchema>;
+const serviceSuccess = z.strictObject({
+  type: z.literal("service_result"),
+  requestId: name,
+  ok: z.literal(true),
+  result: z.json(),
+});
+const serviceFailure = z.strictObject({
+  type: z.literal("service_result"),
+  requestId: name,
+  ok: z.literal(false),
+  refusal: ServiceRefusalSchema,
+});
 export const ServiceReplySchema = z
   .discriminatedUnion("ok", [
-    z.strictObject({
-      type: z.literal("service_result"),
-      requestId: name,
-      ok: z.literal(true),
-      result: z.json(),
-    }),
-    z.strictObject({
-      type: z.literal("service_result"),
-      requestId: name,
-      ok: z.literal(false),
-      refusal: ServiceRefusalSchema,
-    }),
+    serviceSuccess.extend({ accounting: ServiceAccountingReceiptSchema.optional() }),
+    serviceFailure.extend({ accounting: ServiceAccountingReceiptSchema.optional() }),
   ])
   .refine((value) => encodedBytes(value) + 1 <= SERVICE_FRAME_BYTES);
+export const NativeServiceReplySchema = z
+  .discriminatedUnion("ok", [
+    serviceSuccess.extend({ charge: ServiceChargeSchema.optional() }),
+    serviceFailure.extend({ charge: ServiceChargeSchema.optional() }),
+  ])
+  .refine((value) => encodedBytes(value) + 1 <= SERVICE_FRAME_BYTES);
+export type NativeServiceReply = z.infer<typeof NativeServiceReplySchema>;
 
 /** Native resource binding, never interpreted as a second grant or policy store. */
 export const ServiceBindingSchema = z.strictObject({
@@ -322,6 +392,14 @@ export const ServiceOperationPolicySchema = z
     readable: z.boolean().optional(),
     /** Absent means denied; only bounded, projected responses may be directly invoked. */
     invocable: z.boolean().optional(),
+    /** Opt-in direct accounting only. json-usage declares a reviewed single-call JSON wire
+     * with literal root model and whole-request input_tokens/output_tokens evidence. */
+    meter: z
+      .strictObject({
+        kind: z.enum(["openai-usage", "pi-native-usage", "json-usage"]),
+        modelId: z.string().min(1).max(256),
+      })
+      .optional(),
     path: z
       .string()
       .max(4096)
@@ -463,6 +541,8 @@ export const ServiceModelPriceSchema = z.strictObject({
   inputPerMillion: z.number().int().nonnegative().max(1_000_000_000_000),
   outputPerMillion: z.number().int().nonnegative().max(1_000_000_000_000),
   cachedInputPerMillion: z.number().int().nonnegative().max(1_000_000_000_000).optional(),
+  /** Reviewed hard upstream context bound, never a byte/token estimate. */
+  contextTokens: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
 });
 export type ServiceModelPrice = z.infer<typeof ServiceModelPriceSchema>;
 
@@ -625,6 +705,8 @@ const ServicePolicyObjectSchema = z.strictObject({
     })
     .optional(),
   maxConcurrent: z.number().int().positive().max(64),
+  /** Cumulative owner allowance for bounded direct invokes, across policy revisions. */
+  directCostCeilingMicros: micros.optional(),
   operations: z
     .record(name, z.union([ServiceOperationPolicySchema, ServiceProxyOperationPolicySchema]))
     .refine((value) => Object.keys(value).length > 0 && Object.keys(value).length <= 64),
@@ -764,8 +846,11 @@ export const ServiceReadArgsSchema = z.strictObject({
   operationId: name,
   input: ServiceInputSchema,
 });
-/** Separate entry point and authority despite the same exact policy-bound input shape. */
-export const ServiceInvokeArgsSchema = z.strictObject({ ...ServiceReadArgsSchema.shape });
+/** Read calls cannot request accounting or recover a monetary invoke. */
+export const ServiceInvokeArgsSchema = z.strictObject({
+  ...ServiceReadArgsSchema.shape,
+  accounting: ServiceInvokeAccountingSchema.optional(),
+});
 export const ServiceAuthoritySubjectSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("job"), jobId: name }),
   z.strictObject({ kind: z.literal("read"), requestId: name }),

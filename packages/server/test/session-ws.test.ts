@@ -1803,3 +1803,258 @@ describe("SessionGateway scene writes", () => {
     fixture.store.close();
   });
 });
+
+test("recipient narrowing and removal fence only retired ticket sockets and allow reapproved joins", async () => {
+  const fix = await gatewayFixture();
+  try {
+    const owner = fix.auth.authenticate(fix.ownerKey);
+    const minted = fix.auth.mintShare(
+      {
+        node: { kind: "container", containerId: fix.container.id },
+        caps: ["tokens:mint", "containers:read", "scenes:write"],
+        origin: "https://guest.example",
+      },
+      owner,
+    );
+    const share = fix.auth.authenticateShare(minted.token);
+    const guest = { id: "guest-local", kind: "human" as const, name: "guest", color: "#3355cc" };
+    const input = { shareId: share.id, guestPrincipalId: guest.id };
+    expect(() => fix.auth.mintShareTicket(share, guest)).toThrow("recipient_unapproved");
+    fix.auth.approveShareRecipient(
+      {
+        ...input,
+        caps: ["tokens:mint", "containers:read", "scenes:write"],
+      },
+      owner,
+    );
+    const first = fix.auth.mintShareTicket(share, guest);
+    const second = fix.auth.mintShareTicket(share, guest);
+    const source = fix.auth.authenticate(first.token);
+    const child = fix.auth.mintToken(
+      {
+        principal: { name: "derived socket", kind: "human" },
+        caps: ["containers:read", "scenes:write"],
+      },
+      source,
+    );
+    const terminal = fix.auth.mintTerminalLifecycleToken(
+      "derived-session-socket",
+      fix.container.id,
+      source.principal.id,
+      source.tokenId,
+    );
+    const unrelated = fix.auth.mintToken(
+      {
+        principalId: first.principal.id,
+        caps: ["containers:read"],
+        containerId: fix.container.id,
+      },
+      owner,
+    );
+    const firstSocket = new FakeSocket();
+    const secondSocket = new FakeSocket();
+    const unrelatedSocket = new FakeSocket();
+    const childSocket = new FakeSocket();
+    const terminalSocket = new FakeSocket();
+    join(fix.gateway, "recipient-first", firstSocket, fix.container.id, first.token);
+    join(fix.gateway, "recipient-second", secondSocket, fix.container.id, second.token);
+    join(fix.gateway, "recipient-unrelated", unrelatedSocket, fix.container.id, unrelated.token);
+    join(fix.gateway, "recipient-derived", childSocket, fix.container.id, child.token);
+    join(fix.gateway, "recipient-terminal", terminalSocket, fix.container.id, terminal.token);
+    fix.auth.approveShareRecipient({ ...input, caps: ["containers:read"] }, owner);
+    expect(firstSocket.closed?.code).toBe(4403);
+    expect(secondSocket.closed?.code).toBe(4403);
+    expect(childSocket.closed?.code).toBe(4403);
+    expect(terminalSocket.closed?.code).toBe(4403);
+    expect(unrelatedSocket.closed).toBeNull();
+    const narrowed = fix.auth.mintShareTicket(share, guest);
+    const narrowedSocket = new FakeSocket();
+    join(fix.gateway, "recipient-narrowed", narrowedSocket, fix.container.id, narrowed.token);
+    expect(narrowedSocket.closed).toBeNull();
+    fix.auth.removeShareRecipient(input, owner);
+    expect(narrowedSocket.closed?.code).toBe(4403);
+    expect(unrelatedSocket.closed).toBeNull();
+    expect(() => fix.auth.mintShareTicket(share, guest)).toThrow("recipient_unapproved");
+    fix.auth.approveShareRecipient({ ...input, caps: ["containers:read"] }, owner);
+    const reapproved = fix.auth.mintShareTicket(share, guest);
+    const reapprovedSocket = new FakeSocket();
+    join(fix.gateway, "recipient-reapproved", reapprovedSocket, fix.container.id, reapproved.token);
+    expect(reapprovedSocket.closed).toBeNull();
+    expect(reapproved.principal.id).toBe(first.principal.id);
+    fix.auth.revokeShare(share.id, owner);
+    expect(reapprovedSocket.closed?.code).toBe(4403);
+    expect(unrelatedSocket.closed).toBeNull();
+  } finally {
+    fix.gateway.shutdown();
+    fix.store.close();
+  }
+});
+
+for (const scenario of [
+  {
+    name: "owner-sponsored cross-Agent descendant",
+    recipientSponsorsParent: true,
+    refresh: "none",
+  },
+  { name: "renewed standing-sponsored child", recipientSponsorsParent: false, refresh: "renew" },
+  {
+    name: "session-rebound child and its terminal identity",
+    recipientSponsorsParent: true,
+    refresh: "rebind",
+  },
+] as const) {
+  test(`recipient withdrawal fences ${scenario.name} without retiring independent authority`, async () => {
+    const fix = await gatewayFixture();
+    try {
+      const owner = fix.auth.authenticate(fix.ownerKey);
+      const minted = fix.auth.mintShare(
+        {
+          node: { kind: "container", containerId: fix.container.id },
+          caps: ["tokens:mint", "agents:run", "agents:delegate", "containers:read"],
+          origin: "https://run-guest.example",
+        },
+        owner,
+      );
+      const share = fix.auth.authenticateShare(minted.token);
+      const guest = { id: "run-guest", kind: "human" as const, name: "guest", color: "#3355cc" };
+      const recipient = { shareId: share.id, guestPrincipalId: guest.id };
+      expect(() => fix.auth.mintShareTicket(share, guest)).toThrow("recipient_unapproved");
+      fix.auth.approveShareRecipient(
+        { ...recipient, caps: ["tokens:mint", "agents:run", "agents:delegate", "containers:read"] },
+        owner,
+      );
+      const ticket = fix.auth.authenticate(fix.auth.mintShareTicket(share, guest).token);
+      const register = (name: string, sponsor: typeof owner) =>
+        fix.auth.registerAgent(
+          {
+            name,
+            purpose: "Inspect the delegated container",
+            harness: "external",
+            context: { profile: {} },
+            grant: {
+              caps: ["containers:read", "agents:delegate"],
+              targets: [`manifold://container/${fix.container.id}`],
+              reach: "subtree",
+              maxRunLifetimeMs: 600_000,
+              delegation: { maxDepth: 1, maxDescendants: 1 },
+              expiresAt: fix.runtime.now() + 600_000,
+            },
+          },
+          sponsor,
+        );
+      const parentAgent = await register(
+        "parent",
+        scenario.recipientSponsorsParent ? ticket : owner,
+      );
+      const childAgent = await register("child", scenario.recipientSponsorsParent ? owner : ticket);
+      if (parentAgent.credential === undefined || childAgent.credential === undefined)
+        throw new Error("registration produced no runner");
+      const parent = CreateRunCredentialResultSchema.parse(
+        fix.auth.createRun(
+          { agentId: parentAgent.agent.agentId, lifetimeMs: 180_000 },
+          fix.auth.authenticate(parentAgent.credential.token),
+        ),
+      );
+      const acknowledge = (token: string): void => {
+        const actor = fix.auth.authenticate(token);
+        const policy = fix.auth.agentPolicyChallenge(actor);
+        fix.auth.acknowledgeAgentPolicy(
+          {
+            revision: policy.revision,
+            acknowledgements: policy.required.map(({ id, digest }) => ({ id, digest })),
+          },
+          actor,
+        );
+      };
+      acknowledge(parent.credential.token);
+      const child = fix.auth.createChildRun(
+        { runId: parent.run.id, agentId: childAgent.agent.agentId, lifetimeMs: 60_000 },
+        owner,
+      );
+      let childToken = fix.auth.claimRunLaunch(child.run.id, owner).token;
+      if (childToken === undefined) throw new Error("child produced no launch credential");
+      acknowledge(childToken);
+      let terminalSocket: FakeSocket | undefined;
+      let terminalToken: string | undefined;
+      if (scenario.refresh === "renew") {
+        childToken = fix.auth.renewAgentRun(
+          { runId: child.run.id, lifetimeMs: 120_000 },
+          fix.auth.authenticate(childAgent.credential.token),
+        ).credential.token;
+      } else if (scenario.refresh === "rebind") {
+        const session = { harness: "external", machineId: "fixture-machine", sessionId: "child" };
+        fix.auth.bindRunSession(child.run.id, session, owner);
+        fix.store.createTerminal({
+          id: fix.runtime.newId(),
+          machineId: session.machineId,
+          containerId: fix.container.id,
+          createdBy: owner.principal.id,
+          agentPrincipalId: child.run.principal.id,
+          runId: child.run.id,
+          session,
+          createdAt: fix.runtime.now(),
+          launchRecipe: { cols: 80, rows: 24, env: {}, program: { argv: ["/bin/sh", "-l"] } },
+        });
+        childToken = fix.auth.bindRunSession(child.run.id, session, owner);
+        const childActor = fix.auth.authenticate(childToken);
+        terminalToken = fix.auth.mintTerminalLifecycleToken(
+          "rebound-child-terminal",
+          fix.container.id,
+          childActor.principal.id,
+          childActor.tokenId,
+        ).token;
+        terminalSocket = new FakeSocket();
+        join(fix.gateway, "cross-agent-terminal", terminalSocket, fix.container.id, terminalToken);
+        expect(
+          fix.auth.allows(fix.auth.authenticate(terminalToken), "scenes:write", fix.container.id),
+        ).toBe(false);
+      }
+      const boundChildToken = childToken;
+      if (scenario.refresh === "none") {
+        // Retained owner-issued descendants can lack a direct recipient row.
+        const credential = fix.auth.authenticate(boundChildToken);
+        fix.store.db
+          .query<void, [string | null]>("DELETE FROM share_ticket_credentials WHERE token_id=?")
+          .run(credential.tokenId);
+      }
+      const parentSocket = new FakeSocket();
+      const childSocket = new FakeSocket();
+      const ownerSocket = new FakeSocket();
+      join(
+        fix.gateway,
+        "cross-agent-parent",
+        parentSocket,
+        fix.container.id,
+        parent.credential.token,
+      );
+      join(fix.gateway, "cross-agent-child", childSocket, fix.container.id, boundChildToken);
+      join(fix.gateway, "cross-agent-owner", ownerSocket, fix.container.id, fix.ownerKey);
+      fix.auth.removeShareRecipient(recipient, owner);
+      expect(childSocket.closed).toEqual({ code: 4403, reason: "revoked" });
+      expect(() => fix.auth.authenticate(boundChildToken)).toThrow("revoked");
+      expect(fix.store.getAgentRun(child.run.id)?.state).toBe("revoked");
+      if (scenario.recipientSponsorsParent) {
+        expect(parentSocket.closed).toEqual({ code: 4403, reason: "revoked" });
+        expect(fix.store.getAgentRun(parent.run.id)?.state).toBe("revoked");
+      } else {
+        expect(parentSocket.closed).toBeNull();
+        expect(fix.store.getAgentRun(parent.run.id)?.state).toBe("active");
+        expect(
+          fix.auth.allows(
+            fix.auth.authenticate(parent.credential.token),
+            "containers:read",
+            fix.container.id,
+          ),
+        ).toBe(true);
+      }
+      if (terminalSocket !== undefined && terminalToken !== undefined) {
+        expect(terminalSocket.closed).toEqual({ code: 4403, reason: "revoked" });
+        expect(() => fix.auth.authenticate(terminalToken)).toThrow("revoked");
+      }
+      expect(ownerSocket.closed).toBeNull();
+    } finally {
+      fix.gateway.shutdown();
+      fix.store.close();
+    }
+  });
+}

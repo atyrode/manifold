@@ -1,6 +1,9 @@
 import "../src/shared-modules.ts";
 import { expect, test } from "bun:test";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { z } from "zod";
 import { attachServerGuest, defineServerAction } from "../../plugin-kit/src/server.ts";
 import {
@@ -10,12 +13,15 @@ import {
   IsolateCtxMethodSchema,
   JobEventSchema,
   JOB_OWNER_PROTOCOL_VERSION,
+  PROTOCOL_VERSION,
   type JobCommand,
   MACHINE_SELF_PROVIDER_PROTOCOL_VERSION,
   type JobOwner,
   type MachineHalf,
   type ServicePolicy,
   type ServiceReadArgs,
+  type ServiceInvokeArgs,
+  type ServiceCharge,
   type JobResourceBindings,
   type Cap,
   type IsolateChildFrame,
@@ -40,6 +46,7 @@ import { TerminalBroker } from "../src/terminal-broker.ts";
 import { silentLogger } from "../src/log.ts";
 import { ActionAuthorityFence } from "../src/action-authority-fence.ts";
 
+import { createExternalRun } from "./agent-fixtures.ts";
 const hash = (value: unknown) => createHash("sha256").update(canonicalJobJson(value)).digest("hex");
 const policy: ServicePolicy = {
   serviceId: "native.metadata",
@@ -66,9 +73,9 @@ const policy: ServicePolicy = {
     },
   },
 };
-function fixture(servicePolicy = policy, mode: "read" | "invoke" = "read") {
+function fixture(servicePolicy = policy, mode: "read" | "invoke" = "read", path = ":memory:") {
   const policy = servicePolicy;
-  const store = new ServerStore(openDatabase(":memory:"));
+  const store = new ServerStore(openDatabase(path));
   const runtime = new FakeRuntime();
   const key = "9".repeat(64);
   const auth = new AuthService(store, key, runtime);
@@ -109,12 +116,12 @@ function fixture(servicePolicy = policy, mode: "read" | "invoke" = "read") {
       return true;
     },
   };
-  const prove = () => {
-    service.online(channel, owner, "epoch");
+  const prove = (target = service) => {
+    target.online(channel, owner, "epoch");
     const challenge = commands.at(-1);
     if (challenge?.type !== "owner_challenge") throw new Error("missing challenge");
     const body = { nonce: challenge.nonce, serverEpoch: challenge.serverEpoch, machineId, owner };
-    service.event(channel, {
+    target.event(channel, {
       type: "owner_proof",
       ...body,
       signature: sign(null, Buffer.from(canonicalJobJson(body)), pair.privateKey).toString(
@@ -770,20 +777,30 @@ test("foreign-channel, unbound and revoked service authorizations cannot disclos
   }
 });
 
-function install(f: {
-  service: JobService;
-  root: AuthContext;
-  machineId: string;
-  channel: {
+function install(
+  f: {
+    service: JobService;
+    root: AuthContext;
     machineId: string;
-    send(message: { type: "job_command"; command: JobCommand }): boolean;
-  };
-}) {
+    channel: {
+      machineId: string;
+      send(message: { type: "job_command"; command: JobCommand }): boolean;
+    };
+  },
+  servicePolicy = policy,
+  inference?: { costMicros: number },
+) {
   const artifactSha256 = "d".repeat(64);
   const pluginId = "native.worker";
   const operationId = `${pluginId}.service`;
   const independent = `${pluginId}.independent`;
-  const limits = { timeoutMs: 1000, memoryBytes: 1048576, processes: 1, outputBytes: 65536 };
+  const limits = {
+    timeoutMs: 1000,
+    memoryBytes: 1048576,
+    processes: 1,
+    outputBytes: 65536,
+    ...(inference ? { inference } : {}),
+  };
   const base = {
     argv: [{ literal: "worker" }],
     input: {},
@@ -813,7 +830,11 @@ function install(f: {
         ...base,
         runtimeTools: ["helper"],
         services: [
-          { serviceId: policy.serviceId, revision: policy.revision, operationIds: ["inspect"] },
+          {
+            serviceId: servicePolicy.serviceId,
+            revision: servicePolicy.revision,
+            operationIds: Object.keys(servicePolicy.operations),
+          },
         ],
       },
       [independent]: base,
@@ -822,7 +843,7 @@ function install(f: {
   };
   const resourceBindings: JobResourceBindings = {
     tools: { helper: "b".repeat(64) },
-    services: { [policy.serviceId]: hash(policy) },
+    services: { [servicePolicy.serviceId]: hash(servicePolicy) },
     anchors: {},
   };
   f.service.setManifestResolver((id) => (id === pluginId ? machine : null));
@@ -1719,6 +1740,810 @@ test("body source disappearance revokes pending invocations without affecting me
     expect(operations.find((operation) => operation.operationId === "inspect")?.ready).toBe(true);
     expect(operations.find((operation) => operation.operationId === "enroll")?.ready).toBe(false);
   } finally {
+    f.store.close();
+  }
+});
+
+function accountingPolicy(ceiling = 30): ServicePolicy {
+  const original = policy.operations.inspect!;
+  if ("kind" in original) throw new Error("wrong fixture operation");
+  return {
+    ...policy,
+    directCostCeilingMicros: ceiling,
+    prices: {
+      models: {
+        "fixture/model": {
+          contextTokens: 10,
+          inputPerMillion: 1_000_000,
+          outputPerMillion: 1_000_000,
+        },
+      },
+    },
+    operations: {
+      inspect: {
+        ...original,
+        method: "POST",
+        readable: false,
+        invocable: true,
+        path: "/v1/chat/completions",
+        query: {},
+        body: [
+          { path: ["model"], value: { literal: "fixture/model" } },
+          { path: ["messages", 0, "role"], value: { literal: "user" } },
+          { path: ["messages", 0, "content"], value: { input: "query" } },
+        ],
+        meter: { kind: "openai-usage", modelId: "fixture/model" },
+      },
+    },
+  };
+}
+
+function accountingFixture(servicePolicy = accountingPolicy(), path = ":memory:") {
+  const f = fixture(servicePolicy, "invoke", path);
+  f.channel.protocolVersion = PROTOCOL_VERSION;
+  f.prove();
+  const args: ServiceInvokeArgs = {
+    ...f.args,
+    accounting: { callId: "call-a", maxCostMicros: 20 },
+  };
+  const outcome = (
+    requestId: string,
+    charge: ServiceCharge | undefined,
+    target = f.service,
+    ok = true,
+    channel = f.channel,
+  ) =>
+    target.event(
+      channel,
+      JobEventSchema.parse({
+        type: "service_invoke_result",
+        requestId,
+        reply: {
+          type: "service_result",
+          requestId,
+          ...(ok
+            ? { ok: true, result: { remaining: 12 } }
+            : { ok: false, refusal: "service_upstream_refused" }),
+          ...(charge ? { charge } : {}),
+        },
+      }),
+    );
+  const known = (callId = args.accounting!.callId, costMicros = 7): ServiceCharge => ({
+    callId,
+    reservedMicros: 20,
+    status: "known",
+    costMicros,
+  });
+  return { ...f, args, outcome, known, policy: servicePolicy };
+}
+
+interface AccountingExecutionFixture {
+  service: JobService;
+  auth: AuthService;
+  root: AuthContext;
+  runtime: FakeRuntime;
+  machineId: string;
+  owner: JobOwner;
+  policy: ServicePolicy;
+  channel: {
+    machineId: string;
+    protocolVersion?: number;
+    send(message: { type: "job_command"; command: JobCommand }): boolean;
+  };
+}
+
+function replaceAccountingPolicy(f: AccountingExecutionFixture, next: ServicePolicy) {
+  const current = f.service.readServiceConfiguration(f.root, { machineId: f.machineId });
+  f.service.configureServiceConfiguration(f.root, {
+    machineId: f.machineId,
+    expectedRevision: current.configuration.revision,
+    policies: [next],
+  });
+  f.owner.resources = {
+    ...f.owner.resources!,
+    services: { [next.serviceId]: hash(next) },
+    serviceDefinitions: {
+      [next.serviceId]: { revision: next.revision, operationIds: Object.keys(next.operations) },
+    },
+  };
+  f.service.event(f.channel, { type: "resources", resources: f.owner.resources });
+}
+
+test("bounded calls reserve concurrently, recover without replay, and charge once", async () => {
+  const f = accountingFixture();
+  try {
+    const first = f.service.invokeService(f.reader, f.args);
+    const requestId = f.pendingCommand().requestId;
+    const secondArgs = { ...f.args, accounting: { callId: "call-b", maxCostMicros: 20 } };
+    await expect(f.service.invokeService(f.reader, secondArgs)).rejects.toThrow(
+      "service_ceiling_exceeded",
+    );
+    expect(await f.service.invokeService(f.reader, f.args)).toMatchObject({
+      ok: true,
+      result: null,
+      accounting: { state: "reserved", reservedMicros: 20, chargedMicros: null },
+    });
+    f.authorize(requestId);
+    f.outcome(requestId, f.known());
+    expect(await first).toMatchObject({
+      ok: true,
+      result: { remaining: 12 },
+      accounting: { requestId, state: "settled", reservedMicros: 20, chargedMicros: 7 },
+    });
+    f.outcome(requestId, f.known("call-a", 1));
+    const recovered = await f.service.invokeService(f.reader, {
+      ...f.args,
+      accounting: { ...f.args.accounting!, receiptOnly: true },
+    });
+    expect(recovered).toMatchObject({ result: null, accounting: { chargedMicros: 7 } });
+    expect(recovered).not.toHaveProperty("charge");
+    const second = f.service.invokeService(f.reader, secondArgs);
+    const secondId = f.pendingCommand().requestId;
+    f.authorize(secondId);
+    f.outcome(secondId, f.known("call-b", 20));
+    await second;
+    await expect(
+      f.service.invokeService(f.reader, {
+        ...f.args,
+        accounting: { callId: "call-c", maxCostMicros: 20 },
+      }),
+    ).rejects.toThrow("service_ceiling_exceeded");
+    expect(f.commands.filter((command) => command.type === "service_invoke")).toHaveLength(2);
+    const retained = JSON.stringify(
+      f.store.db.query("SELECT * FROM native_service_attempts").all(),
+    );
+    expect(retained).not.toContain("private-source-input");
+    expect(retained).not.toContain("remaining");
+    expect(retained).not.toContain("https://");
+    expect(retained).not.toContain("native-account");
+  } finally {
+    f.service.offline(f.channel);
+    f.store.close();
+  }
+});
+
+test("bounded invocation rejects lower ceilings, caller prices, and changed exact-call identity", async () => {
+  const f = accountingFixture();
+  try {
+    await expect(
+      f.service.invokeService(f.reader, {
+        ...f.args,
+        accounting: { ...f.args.accounting!, maxCostMicros: 19 },
+      }),
+    ).rejects.toThrow("service_ceiling_exceeded");
+    const host = await orchestratorHost(f);
+    for (const forged of [
+      { ...f.args, accounting: { ...f.args.accounting, reservedMicros: 0 } },
+      { ...f.args, accounting: { ...f.args.accounting, "private-price-source": 0 } },
+      { ...f.args, prices: { inputPerMillion: 0 } },
+    ]) {
+      const refused = await host.dispatch(f.reader, "engine.services.invoke", forged);
+      expect(refused).toMatchObject({ ok: false, denial: { rule: "invalid_args" } });
+      expect(JSON.stringify(refused)).not.toContain("private-price-source");
+      expect(JSON.stringify(refused)).not.toContain("private-source-input");
+    }
+    expect(f.commands.some((command) => command.type === "service_invoke")).toBe(false);
+    const pending = f.service.invokeService(f.reader, f.args);
+    const requestId = f.pendingCommand().requestId;
+    for (const changed of [
+      { ...f.args, input: { query: "different prompt" } },
+      { ...f.args, revision: "another-policy" },
+      { ...f.args, policySha256: "c".repeat(64) },
+      { ...f.args, accounting: { ...f.args.accounting!, maxCostMicros: 21 } },
+    ])
+      await expect(f.service.invokeService(f.reader, changed)).rejects.toThrow(
+        "service_accounting_mismatch",
+      );
+    f.authorize(requestId);
+    f.outcome(requestId, f.known());
+    await pending;
+    expect(f.commands.filter((command) => command.type === "service_invoke")).toHaveLength(1);
+  } finally {
+    f.service.offline(f.channel);
+    f.store.close();
+  }
+});
+
+test.each(["disconnect", "lost-approval", "lost-result", "policy"] as const)(
+  "bounded %s preserves maximum exposure and accepts original late settlement",
+  async (failure) => {
+    const f = accountingFixture(accountingPolicy(20));
+    try {
+      const pending = f.service.invokeService(f.reader, f.args);
+      const requestId = f.pendingCommand().requestId;
+      const send = f.channel.send;
+      if (failure === "lost-approval")
+        f.channel.send = (message) =>
+          message.command.type === "service_authorized" && message.command.allowed
+            ? false
+            : send(message);
+      f.authorize(requestId);
+      if (failure === "disconnect") f.service.offline(f.channel);
+      if (failure === "policy") replaceAccountingPolicy(f, { ...f.policy, revision: "r2" });
+      await expect(pending).rejects.toThrow(
+        failure === "lost-result"
+          ? "service_timeout"
+          : failure === "disconnect"
+            ? "service_unavailable"
+            : "service_unauthorized",
+      );
+      f.channel.send = send;
+      const receiptArgs = { ...f.args, accounting: { ...f.args.accounting!, receiptOnly: true } };
+      expect(await f.service.invokeService(f.reader, receiptArgs)).toMatchObject({
+        result: null,
+        accounting: { state: "unresolved", reservedMicros: 20, chargedMicros: null },
+      });
+      if (failure === "disconnect") f.prove();
+      const nextArgs = {
+        ...f.args,
+        ...(failure === "policy"
+          ? { revision: "r2", policySha256: hash({ ...f.policy, revision: "r2" }) }
+          : {}),
+        accounting: { callId: "call-b", maxCostMicros: 20 },
+      };
+      await expect(f.service.invokeService(f.reader, nextArgs)).rejects.toThrow(
+        "service_ceiling_exceeded",
+      );
+      if (failure === "policy")
+        await expect(
+          f.service.invokeService(f.reader, {
+            ...f.args,
+            accounting: { callId: "stale-new-call", maxCostMicros: 20 },
+          }),
+        ).rejects.toThrow("service_binding_mismatch");
+      f.outcome(requestId, f.known());
+      expect(await f.service.invokeService(f.reader, receiptArgs)).toMatchObject({
+        accounting: { state: "settled", chargedMicros: 7 },
+      });
+      expect(f.commands.filter((command) => command.type === "service_invoke")).toHaveLength(1);
+    } finally {
+      f.service.offline(f.channel);
+      f.store.close();
+    }
+  },
+  10000,
+);
+
+test("native charge forgery stays unresolved, while valid charged failures and nonattempts settle", async () => {
+  const f = accountingFixture(accountingPolicy(20));
+  try {
+    const refused = f.service.invokeService(f.reader, f.args);
+    const refusedId = f.pendingCommand().requestId;
+    f.outcome(
+      refusedId,
+      {
+        callId: "call-a",
+        reservedMicros: 20,
+        status: "not_dispatched",
+        costMicros: 0,
+      },
+      f.service,
+      false,
+    );
+    expect(await refused).toMatchObject({
+      ok: false,
+      accounting: { state: "settled", chargedMicros: 0 },
+    });
+    const args = { ...f.args, accounting: { callId: "call-b", maxCostMicros: 20 } };
+    const pending = f.service.invokeService(f.reader, args);
+    const requestId = f.pendingCommand().requestId;
+    f.authorize(requestId);
+    f.outcome(requestId, { ...f.known("call-b", 1), reservedMicros: 1 });
+    expect(await pending).toMatchObject({
+      accounting: { state: "unresolved", chargedMicros: null },
+    });
+    await expect(
+      f.service.invokeService(f.reader, {
+        ...args,
+        accounting: { callId: "call-c", maxCostMicros: 20 },
+      }),
+    ).rejects.toThrow("service_ceiling_exceeded");
+    f.outcome(requestId, f.known("wrong-call", 0));
+    expect(await f.service.invokeService(f.reader, args)).toMatchObject({
+      accounting: { state: "unresolved", chargedMicros: null },
+    });
+    f.outcome(requestId, f.known("call-b", 7), f.service, false);
+    expect(await f.service.invokeService(f.reader, args)).toMatchObject({
+      result: null,
+      accounting: { state: "settled", chargedMicros: 7 },
+    });
+  } finally {
+    f.service.offline(f.channel);
+    f.store.close();
+  }
+});
+
+test("receipt recovery uses the original actor and current service authority, never root visibility", async () => {
+  const f = accountingFixture(accountingPolicy(100));
+  try {
+    const pending = f.service.invokeService(f.reader, f.args);
+    const requestId = f.pendingCommand().requestId;
+    f.authorize(requestId);
+    const receiptArgs = { ...f.args, accounting: { ...f.args.accounting!, receiptOnly: true } };
+    await expect(f.service.invokeService(f.root, receiptArgs)).rejects.toThrow(
+      "service_accounting_unavailable",
+    );
+    expect(() =>
+      f.service.readServiceConfiguration(f.reader, { machineId: f.machineId }),
+    ).toThrow();
+    f.auth.revokePrincipal(f.reader.principal.id, f.root);
+    await expect(pending).rejects.toThrow("service_unauthorized");
+    f.outcome(requestId, f.known());
+    await expect(f.service.invokeService(f.reader, receiptArgs)).rejects.toThrow(
+      "service_unauthorized",
+    );
+    expect(f.store.directServiceAttempt(f.reader.principal.id, "call-a")).toMatchObject({
+      state: "settled",
+      chargedMicros: 7,
+    });
+    const independent = f.service.invokeService(f.root, f.args);
+    const independentId = f.pendingCommand().requestId;
+    expect(independentId).not.toBe(requestId);
+    f.authorize(independentId);
+    f.outcome(independentId, f.known());
+    expect(await independent).toMatchObject({ accounting: { requestId: independentId } });
+  } finally {
+    f.service.offline(f.channel);
+    f.store.close();
+  }
+});
+
+test("reopening SQLite preserves exposure, exact-id recovery, and authenticated late settlement", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "manifold-direct-accounting-"));
+  const path = join(directory, "hub.sqlite");
+  const f = accountingFixture(accountingPolicy(20), path);
+  let reopened: ServerStore | undefined;
+  try {
+    const pending = f.service.invokeService(f.reader, f.args);
+    const requestId = f.pendingCommand().requestId;
+    f.authorize(requestId);
+    f.service.offline(f.channel);
+    await expect(pending).rejects.toThrow("service_unavailable");
+    f.store.close();
+    reopened = new ServerStore(openDatabase(path));
+    const auth = new AuthService(reopened, "9".repeat(64), f.runtime);
+    const restarted = new JobService(reopened, auth, f.runtime);
+    restarted.setLifecycleRecorder((record) => reopened!.appendTrace(record));
+    const args = { ...f.args, accounting: { ...f.args.accounting!, receiptOnly: true } };
+    expect(await restarted.invokeService(f.reader, args)).toMatchObject({
+      accounting: { requestId, state: "unresolved", chargedMicros: null },
+    });
+    f.prove(restarted);
+    await expect(
+      restarted.invokeService(f.reader, {
+        ...f.args,
+        accounting: { callId: "after-restart", maxCostMicros: 20 },
+      }),
+    ).rejects.toThrow("service_ceiling_exceeded");
+    f.outcome(requestId, f.known(), restarted, true, { ...f.channel });
+    expect(await restarted.invokeService(f.reader, args)).toMatchObject({
+      accounting: { state: "unresolved" },
+    });
+    f.outcome(requestId, f.known(), restarted);
+    f.outcome(requestId, f.known("call-a", 0), restarted);
+    expect(await restarted.invokeService(f.reader, f.args)).toMatchObject({
+      result: null,
+      accounting: { state: "settled", chargedMicros: 7 },
+    });
+    expect(f.commands.filter((command) => command.type === "service_invoke")).toHaveLength(1);
+    restarted.offline(f.channel);
+  } finally {
+    if (reopened) reopened.close();
+    else f.store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("bounded quotes need explicit installed prices and modern owners; ordinary invocation remains unmetered", async () => {
+  for (const scenario of [
+    "unpriced",
+    "default-price",
+    "unbounded",
+    "unmetered",
+    "legacy-owner",
+    "legacy-transport",
+    "ordinary",
+  ] as const) {
+    const definition = accountingPolicy();
+    if (scenario === "unpriced") delete definition.prices;
+    if (scenario === "unbounded") delete definition.prices!.models["fixture/model"]!.contextTokens;
+    if (scenario === "default-price")
+      definition.prices = { models: {}, default: definition.prices!.models["fixture/model"]! };
+    if (scenario === "unmetered") {
+      const operation = definition.operations.inspect!;
+      if ("kind" in operation) throw new Error("wrong fixture operation");
+      delete operation.meter;
+    }
+    const f = accountingFixture(definition);
+    try {
+      if (scenario === "legacy-owner") {
+        f.owner.protocolVersion = 43;
+        f.prove();
+        const configured = f.commands.findLast((command) => command.type === "configure_services");
+        expect(configured).toMatchObject({ configuration: { policies: [] } });
+      }
+      if (scenario === "legacy-transport") {
+        f.channel.protocolVersion = 51;
+        f.prove();
+        expect(
+          f.service
+            .describeServices(f.reader, { machineId: f.machineId })
+            .services[0]!.operations.find((operation) => operation.operationId === "inspect"),
+        ).toMatchObject({
+          ready: false,
+          reason: "service_accounting_protocol_unsupported",
+        });
+      }
+      if (scenario === "ordinary") {
+        const args = {
+          machineId: f.args.machineId,
+          serviceId: f.args.serviceId,
+          revision: f.args.revision,
+          policySha256: f.args.policySha256,
+          operationId: f.args.operationId,
+          input: f.args.input,
+        };
+        const pending = f.service.invokeService(f.reader, args);
+        const requestId = f.pendingCommand().requestId;
+        f.authorize(requestId);
+        f.outcome(requestId, undefined);
+        expect(await pending).toEqual({
+          type: "service_result",
+          requestId,
+          ok: true,
+          result: { remaining: 12 },
+        });
+        expect(f.store.directServiceAttempt(f.reader.principal.id, "call-a")).toBeNull();
+      } else {
+        await expect(f.service.invokeService(f.reader, f.args)).rejects.toThrow(
+          scenario === "unpriced" || scenario === "default-price"
+            ? "service_price_unknown"
+            : scenario === "unbounded"
+              ? "service_accounting_bound_unknown"
+              : scenario === "unmetered"
+                ? "service_accounting_unsupported"
+                : "service_accounting_protocol_unsupported",
+        );
+        expect(f.commands.some((command) => command.type === "service_invoke")).toBe(false);
+      }
+    } finally {
+      f.service.offline(f.channel);
+      f.store.close();
+    }
+  }
+});
+
+async function accountingExecution(f: AccountingExecutionFixture) {
+  const installed = install(f, f.policy, { costMicros: 30 });
+  f.service.consent(f.root, {
+    machineId: f.machineId,
+    pluginId: installed.pluginId,
+    installationRevision: "r1",
+    artifactSha256: installed.artifactSha256,
+    node: formatManifoldUri({
+      kind: "operation",
+      machineId: f.machineId,
+      operationId: installed.operationId,
+    }),
+    cap: "machines:run",
+    enabled: true,
+  });
+  f.service.setAgentTools({
+    harnessPlugin: () => installed.pluginId,
+    call: async () => {
+      throw new Error("no agent tool transport required");
+    },
+  });
+  f.channel.protocolVersion = PROTOCOL_VERSION;
+  const run = await createExternalRun(
+    { auth: f.auth, runtime: f.runtime, owner: f.root },
+    {
+      name: "accounting execution",
+      purpose: "Use the governed direct service",
+      target: "manifold://",
+      reach: "subtree",
+      caps: ["services:invoke"],
+    },
+  );
+  const actor = f.auth.authenticate(run.credential.token);
+  const challenge = f.auth.agentPolicyChallenge(actor);
+  f.auth.acknowledgeAgentPolicy(
+    {
+      revision: challenge.revision,
+      acknowledgements: challenge.required.map(({ id, digest }) => ({ id, digest })),
+    },
+    actor,
+  );
+  const job = f.service.execute(f.root, installed.pluginId, "accounting-execution", {
+    jobId: "accounting-execution",
+    machineId: f.machineId,
+    operationId: installed.operationId,
+    input: {},
+    outputs: [],
+    agentRun: {
+      runId: run.run.id,
+      sessionId: "accounting-session",
+      target: { machineId: f.machineId },
+    },
+  });
+  f.service.event(f.channel, {
+    type: "state",
+    jobId: job.request.jobId,
+    requestDigest: job.request.requestDigest,
+    ownerId: f.owner.ownerId,
+    ownerGeneration: f.owner.generation,
+    state: "started",
+  });
+  return actor;
+}
+
+test("persisted native execution ceilings reserve concurrent direct calls independently of service allowance", async () => {
+  const f = accountingFixture(accountingPolicy(100));
+  try {
+    const actor = await accountingExecution(f);
+    const first = f.service.invokeService(actor, f.args);
+    const requestId = f.pendingCommand().requestId;
+    const secondArgs = { ...f.args, accounting: { callId: "call-b", maxCostMicros: 20 } };
+    await expect(f.service.invokeService(actor, secondArgs)).rejects.toThrow(
+      "service_ceiling_exceeded",
+    );
+    f.authorize(requestId);
+    f.outcome(requestId, f.known());
+    await first;
+    const second = f.service.invokeService(actor, secondArgs);
+    const secondId = f.pendingCommand().requestId;
+    f.authorize(secondId);
+    f.outcome(secondId, f.known("call-b", 20));
+    await second;
+    await expect(
+      f.service.invokeService(actor, {
+        ...f.args,
+        accounting: { callId: "call-c", maxCostMicros: 20 },
+      }),
+    ).rejects.toThrow("service_ceiling_exceeded");
+  } finally {
+    f.service.offline(f.channel);
+    f.store.close();
+  }
+});
+
+test("a native execution with metered proxy authority refuses a direct monetary guarantee, not ordinary calls", async () => {
+  const definition = accountingPolicy(100);
+  definition.operations.proxy = {
+    kind: "http-proxy",
+    method: "POST",
+    path: "/v1/chat/completions",
+    request: { kind: "json", disclosure: "full" },
+    response: {
+      kind: "stream",
+      disclosure: "full",
+      contentTypes: ["application/json"],
+      headers: [],
+    },
+    timeoutMs: 1000,
+    maxRequestBytes: 4096,
+    maxResponseBytes: 4096,
+    meter: { kind: "openai-usage" },
+  };
+  const f = accountingFixture(definition);
+  try {
+    const actor = await accountingExecution(f);
+    await expect(f.service.invokeService(actor, f.args)).rejects.toThrow(
+      "service_accounting_execution_mixed_lanes",
+    );
+    const ordinary = {
+      machineId: f.args.machineId,
+      serviceId: f.args.serviceId,
+      revision: f.args.revision,
+      policySha256: f.args.policySha256,
+      operationId: f.args.operationId,
+      input: f.args.input,
+    };
+    const pending = f.service.invokeService(actor, ordinary);
+    const requestId = f.pendingCommand().requestId;
+    f.authorize(requestId);
+    f.outcome(requestId, undefined);
+    expect(await pending).toMatchObject({ ok: true, result: { remaining: 12 } });
+  } finally {
+    f.service.offline(f.channel);
+    f.store.close();
+  }
+});
+
+test("the public service door offers a bounded quote and exact receipt without configuration authority", async () => {
+  const f = accountingFixture();
+  try {
+    const host = await orchestratorHost(f);
+    expect(
+      await host.dispatch(f.reader, "engine.services.describe", { machineId: f.machineId }),
+    ).toMatchObject({
+      ok: true,
+      result: {
+        services: [
+          {
+            serviceId: f.args.serviceId,
+            policySha256: f.args.policySha256,
+            operations: [
+              {
+                operationId: "inspect",
+                meter: { kind: "openai-usage", modelId: "fixture/model" },
+                accounting: { modelId: "fixture/model", reservedMicros: 20 },
+              },
+            ],
+          },
+        ],
+      },
+    });
+    const lower = await host.dispatch(f.reader, "engine.services.invoke", {
+      ...f.args,
+      accounting: { ...f.args.accounting, maxCostMicros: 19 },
+    });
+    expect(lower).toMatchObject({ ok: false });
+    expect(JSON.stringify(lower)).toContain("service_ceiling_exceeded");
+    expect(
+      await host.dispatch(f.reader, "engine.services.readConfiguration", {
+        machineId: f.machineId,
+      }),
+    ).toMatchObject({ ok: false });
+    const started = Promise.withResolvers<string>();
+    const send = f.channel.send;
+    f.channel.send = (message) => {
+      if (message.command.type === "service_invoke") started.resolve(message.command.requestId);
+      return send(message);
+    };
+    const pending = host.dispatch(f.reader, "engine.services.invoke", f.args);
+    const requestId = await Promise.race([
+      started.promise,
+      pending.then(() => {
+        throw new Error("bounded door settled before dispatch");
+      }),
+    ]);
+    f.authorize(requestId);
+    f.outcome(requestId, f.known(), f.service, false);
+    expect(await pending).toMatchObject({
+      ok: true,
+      result: { ok: false, refusal: "service_upstream_refused", accounting: { chargedMicros: 7 } },
+    });
+    const receipt = await host.dispatch(f.reader, "engine.services.invoke", {
+      ...f.args,
+      accounting: { ...f.args.accounting, receiptOnly: true },
+    });
+    expect(receipt).toMatchObject({
+      ok: true,
+      result: {
+        ok: true,
+        result: null,
+        accounting: { requestId, state: "settled", chargedMicros: 7 },
+      },
+    });
+    expect(JSON.stringify(receipt)).not.toContain("private-source-input");
+    expect(JSON.stringify(receipt)).not.toContain("native-account");
+    expect(JSON.stringify(receipt)).not.toContain("https://");
+    expect(f.commands.filter((command) => command.type === "service_invoke")).toHaveLength(1);
+  } finally {
+    f.service.offline(f.channel);
+    f.store.close();
+  }
+});
+
+test("a changed installed model cannot replace an unresolved original or reset its allowance", async () => {
+  const f = accountingFixture(accountingPolicy(20));
+  try {
+    const pending = f.service.invokeService(f.reader, f.args);
+    const requestId = f.pendingCommand().requestId;
+    f.authorize(requestId);
+    const next = accountingPolicy(20);
+    next.revision = "model-replacement";
+    next.prices = { models: { "fixture/new-model": next.prices!.models["fixture/model"]! } };
+    const operation = next.operations.inspect!;
+    if ("kind" in operation) throw new Error("wrong fixture operation");
+    operation.meter = { kind: "openai-usage", modelId: "fixture/new-model" };
+    operation.body[0] = { path: ["model"], value: { literal: "fixture/new-model" } };
+    replaceAccountingPolicy(f, next);
+    await expect(pending).rejects.toThrow("service_unauthorized");
+    const replaced = { ...f.args, revision: next.revision, policySha256: hash(next) };
+    await expect(f.service.invokeService(f.reader, replaced)).rejects.toThrow(
+      "service_accounting_mismatch",
+    );
+    await expect(
+      f.service.invokeService(f.reader, {
+        ...replaced,
+        accounting: { callId: "new-model-call", maxCostMicros: 20 },
+      }),
+    ).rejects.toThrow("service_ceiling_exceeded");
+    f.outcome(requestId, f.known());
+    expect(await f.service.invokeService(f.reader, f.args)).toMatchObject({
+      result: null,
+      accounting: { modelId: "fixture/model", state: "settled", chargedMicros: 7 },
+    });
+    expect(f.commands.filter((command) => command.type === "service_invoke")).toHaveLength(1);
+  } finally {
+    f.service.offline(f.channel);
+    f.store.close();
+  }
+});
+
+test("a replacement owner generation cannot settle an original generation's unknown exposure", async () => {
+  const f = accountingFixture(accountingPolicy(20));
+  try {
+    const pending = f.service.invokeService(f.reader, f.args);
+    const requestId = f.pendingCommand().requestId;
+    f.authorize(requestId);
+    f.service.offline(f.channel);
+    await expect(pending).rejects.toThrow("service_unavailable");
+    f.owner.generation++;
+    f.prove();
+    f.outcome(requestId, f.known("call-a", 0));
+    expect(await f.service.invokeService(f.reader, f.args)).toMatchObject({
+      result: null,
+      accounting: { state: "unresolved", reservedMicros: 20, chargedMicros: null },
+    });
+    await expect(
+      f.service.invokeService(f.reader, {
+        ...f.args,
+        accounting: { callId: "after-owner-restart", maxCostMicros: 20 },
+      }),
+    ).rejects.toThrow("service_ceiling_exceeded");
+  } finally {
+    f.service.offline(f.channel);
+    f.store.close();
+  }
+});
+
+test("generic JSON-usage mappings share the installed quote, atomic allowance, and bounded receipt", async () => {
+  const definition = accountingPolicy(20);
+  const operation = definition.operations.inspect!;
+  if ("kind" in operation) throw new Error("wrong fixture operation");
+  operation.meter = { kind: "json-usage", modelId: "fixture/model" };
+  operation.body = [
+    { path: ["model"], value: { literal: "fixture/model" } },
+    { path: ["state"], value: { input: "query" } },
+    { path: ["questions", 0, "id"], value: { literal: "question" } },
+    { path: ["questions", 0, "text"], value: { input: "query" } },
+  ];
+  operation.response = { kind: "projected-json", fields: [["answers"]], maxArrayItems: 16 };
+  const f = accountingFixture(definition);
+  try {
+    const pending = f.service.invokeService(f.reader, f.args);
+    const requestId = f.pendingCommand().requestId;
+    await expect(
+      f.service.invokeService(f.reader, {
+        ...f.args,
+        accounting: { callId: "parallel-json-call", maxCostMicros: 20 },
+      }),
+    ).rejects.toThrow("service_ceiling_exceeded");
+    f.authorize(requestId);
+    f.service.event(
+      f.channel,
+      JobEventSchema.parse({
+        type: "service_invoke_result",
+        requestId,
+        reply: {
+          type: "service_result",
+          requestId,
+          ok: true,
+          result: { answers: { question: "answer" } },
+          charge: f.known(),
+        },
+      }),
+    );
+    expect(await pending).toMatchObject({
+      ok: true,
+      result: { answers: { question: "answer" } },
+      accounting: {
+        modelId: "fixture/model",
+        state: "settled",
+        reservedMicros: 20,
+        chargedMicros: 7,
+      },
+    });
+    expect(await f.service.invokeService(f.reader, f.args)).toMatchObject({
+      result: null,
+      accounting: { state: "settled", chargedMicros: 7 },
+    });
+    expect(f.commands.filter((command) => command.type === "service_invoke")).toHaveLength(1);
+  } finally {
+    f.service.offline(f.channel);
     f.store.close();
   }
 });

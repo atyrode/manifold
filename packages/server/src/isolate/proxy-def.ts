@@ -718,8 +718,11 @@ export async function serveCtxCall(
       );
     case "services.read":
       return ctx.services.read(serviceDoorSchemas.read.parse(args[0]));
-    case "services.invoke":
-      return ctx.services.invoke(serviceDoorSchemas.invoke.parse(args[0]));
+    case "services.invoke": {
+      const parsed = serviceDoorSchemas.invoke.safeParse(args[0]);
+      if (!parsed.success) throw new IsolateDenial("invalid_args", "invalid service arguments");
+      return ctx.services.invoke(parsed.data);
+    }
     case "services.describeInstance":
       return ctx.services.describeInstance(serviceDoorSchemas.describeInstance.parse(args[0]));
     case "services.listInstances":
@@ -732,8 +735,11 @@ export async function serveCtxCall(
       return ctx.services.configureInstance(serviceDoorSchemas.configureInstance.parse(args[0]));
     case "services.readInstance":
       return ctx.services.readInstance(serviceDoorSchemas.readInstance.parse(args[0]));
-    case "services.invokeInstance":
-      return ctx.services.invokeInstance(serviceDoorSchemas.invokeInstance.parse(args[0]));
+    case "services.invokeInstance": {
+      const parsed = serviceDoorSchemas.invokeInstance.safeParse(args[0]);
+      if (!parsed.success) throw new IsolateDenial("invalid_args", "invalid service arguments");
+      return ctx.services.invokeInstance(parsed.data);
+    }
     case "auth.allows": {
       /*
         The ASKABLE vocabulary: the engine's capabilities without the wildcard, plus a plugin's

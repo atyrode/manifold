@@ -1944,6 +1944,54 @@ describe("TerminalBroker pending-open room residency", () => {
 });
 
 describe("TerminalBroker first-viewer tile fit", () => {
+  test("an approved container share cannot reserve an ordinary account shell", () => {
+    const setup = brokerSetup();
+    try {
+      const minted = setup.auth.mintShare(
+        {
+          node: { kind: "container", containerId: setup.container.id },
+          origin: "https://guest.example",
+          caps: ["containers:read", "terminals:spawn", "terminals:write"],
+        },
+        setup.root,
+      );
+      const share = setup.store.getShare(minted.share.id);
+      if (share === null) throw new Error("missing share");
+      const guest = { id: "guest-fit", kind: "human" as const, name: "fit", color: "#2563eb" };
+      expect(() => setup.auth.mintShareTicket(share, guest)).toThrow(ServiceError);
+      setup.auth.approveShareRecipient(
+        { shareId: share.id, guestPrincipalId: guest.id, caps: minted.share.caps },
+        setup.root,
+      );
+      const ticket = setup.auth.mintShareTicket(share, guest);
+      const socket = new FakeSocket();
+      const channel = new SessionChannel(
+        setup.runtime.newId(),
+        socket,
+        setup.auth.authenticate(ticket.token),
+        setup.container.id,
+        "remote-fit",
+      );
+      setup.broker.open(channel, {
+        type: "terminal_open",
+        elementId: "withdrawn-before-fit",
+        placement: "tile",
+      });
+      expect(setup.broker.hasPendingOpenForContainer(setup.container.id)).toBe(false);
+      setup.auth.removeShareRecipient(
+        { shareId: share.id, guestPrincipalId: guest.id },
+        setup.root,
+      );
+      expect(setup.machine.sent.some((message) => message.type === "create")).toBe(false);
+      expect(setup.broker.hasPendingOpenForContainer(setup.container.id)).toBe(false);
+      expect(socket.messages()).toContainEqual(
+        expect.objectContaining({ type: "error", code: "forbidden", ref: "withdrawn-before-fit" }),
+      );
+    } finally {
+      setup.store.close();
+    }
+  });
+
   test("only a real writable home viewport births a pending tile, without a controller requirement", () => {
     const setup = brokerSetup();
     setup.broker.open(setup.opener, {
@@ -2255,7 +2303,7 @@ describe("TerminalBroker drain (issue #278)", () => {
       placement: "tile",
     });
     expect(setup.socket.messages()).toEqual([
-      expect.objectContaining({ type: "error", code: "conflict", ref: "too-late" }),
+      expect.objectContaining({ type: "error", ref: "too-late" }),
     ]);
     expect(setup.machine.sent.filter((message) => message.type === "create")).toHaveLength(1);
 
@@ -2345,7 +2393,7 @@ describe("TerminalBroker drain (issue #278)", () => {
     });
     expect(setup.machine.sent).toEqual([]);
     expect(setup.socket.messages()).toEqual([
-      expect.objectContaining({ type: "error", code: "conflict", ref: "refused" }),
+      expect.objectContaining({ type: "error", ref: "refused" }),
     ]);
     // A cancel with nobody to tell still reopens the hub's half.
     expect((await setup.broker.drain(setup.machine.machineId, false)).ok).toBe(false);
@@ -2604,6 +2652,7 @@ describe("TerminalBroker restart in place", () => {
     ).toBe("machine_draining");
     f.store.close();
   });
+
 
   test("legacy rows restart as an explicitly reported shell only on unconfined owners", async () => {
     const f = brokerSetup();

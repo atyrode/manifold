@@ -471,7 +471,7 @@ function rows(db: Database, table: string): Record<string, unknown>[] {
   return db.query<Record<string, unknown>, []>(`SELECT * FROM ${table} ORDER BY 1`).all();
 }
 
-describe("migration 49: durable account-shell compatibility", () => {
+describe("migration 51: durable account-shell compatibility", () => {
   test("retains a live global Run when its legacy Agent has redundant root-covered targets", () => {
     const dir = mkdtempSync(join(tmpdir(), "manifold-redundant-global-migration-"));
     const path = join(dir, "state.sqlite");
@@ -479,10 +479,19 @@ describe("migration 49: durable account-shell compatibility", () => {
     const old = new Database(path, { strict: true });
     const principalId = "global-agent-principal";
     try {
-      old.query("INSERT INTO principals VALUES (?,'agent','Retained','#112233',1,NULL)").run(principalId);
-      old.query("UPDATE agents SET grant_json=json_set(grant_json,'$.targets',json(?)),status='enabled' WHERE agent_id='global-agent'")
+      old
+        .query("INSERT INTO principals VALUES (?,'agent','Retained','#112233',1,NULL)")
+        .run(principalId);
+      old
+        .query(
+          "UPDATE agents SET grant_json=json_set(grant_json,'$.targets',json(?)),status='enabled' WHERE agent_id='global-agent'",
+        )
         .run(JSON.stringify([root, home]));
-      old.query("UPDATE agent_runs SET principal_id=?,state='active',activity='idle',finished_at=NULL,cleanup_failure=NULL,cleanup_revoked_credentials=0,cleanup_revoked_grants=0 WHERE id='global-run'").run(principalId);
+      old
+        .query(
+          "UPDATE agent_runs SET principal_id=?,state='active',activity='idle',finished_at=NULL,cleanup_failure=NULL,cleanup_revoked_credentials=0,cleanup_revoked_grants=0 WHERE id='global-run'",
+        )
+        .run(principalId);
       old.query("UPDATE tokens SET principal_id=? WHERE id='global-run-token'").run(principalId);
       old.query("UPDATE grants SET principal_id=? WHERE id='global-run-grant'").run(principalId);
     } finally {
@@ -495,10 +504,13 @@ describe("migration 49: durable account-shell compatibility", () => {
         const auth = new AuthService(store, "f".repeat(64), new FakeRuntime());
         const retained = auth.authenticate("global-run-token");
         const policy = auth.agentPolicyChallenge(retained);
-        auth.acknowledgeAgentPolicyV2({
-          revision: policy.revision,
-          acknowledgements: policy.required.map(({ id, digest }) => ({ id, digest })),
-        }, retained);
+        auth.acknowledgeAgentPolicyV2(
+          {
+            revision: policy.revision,
+            acknowledgements: policy.required.map(({ id, digest }) => ({ id, digest })),
+          },
+          retained,
+        );
         expect(auth.allowsNode(retained, "machines:shell", machineA)).toBe(true);
         expect(auth.allowsNode(retained, "terminals:spawn", home)).toBe(true);
         expect(store.getAgent("global-agent")?.grant.targets).toEqual([root, home]);
@@ -526,9 +538,9 @@ describe("migration 49: durable account-shell compatibility", () => {
       db.close();
       db = openDatabase(path);
       const store = new ServerStore(db);
-      expect(store.getMeta("schema_version")).toBe("49");
-      expect(existsSync(`${path}.pre-v49.bak`)).toBe(true);
-      const backup = new Database(`${path}.pre-v49.bak`, { readonly: true });
+      expect(store.getMeta("schema_version")).toBe("51");
+      expect(existsSync(`${path}.pre-v51.bak`)).toBe(true);
+      const backup = new Database(`${path}.pre-v51.bak`, { readonly: true });
       try {
         expect(rows(backup, "grants")).toEqual(beforeGrants);
         expect(rows(backup, "tokens")).toEqual(beforeTokens);

@@ -11,7 +11,6 @@ import {
   GOVERNED_CAPS,
   isEngineCap,
   parseManifoldUri,
-  type AuthorityRequirement,
   projectLegacyCaps,
   type PreparedRequirement,
   type JobRequest,
@@ -22,6 +21,7 @@ import {
   type AuthContext,
   type AuthService,
   type CredentialReference,
+  type AuthorityRequirement,
 } from "./auth.ts";
 import type { ActionAuthoritySnapshotBinding } from "./action-authority-fence.ts";
 import type { ServerStore } from "./stores.ts";

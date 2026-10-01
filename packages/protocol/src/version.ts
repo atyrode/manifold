@@ -1,9 +1,9 @@
 /** Wire revision; session joins require the current version (close 4409 otherwise). */
-export const PROTOCOL_VERSION = 52;
+export const PROTOCOL_VERSION = 54;
 
 /**
  * Explicit bundle build compatibility, not session or machine-channel negotiation.
- * Protocol 52 retains the prior bundle ABI through explicit compatibility projections.
+ * Protocol 54 retains the prior bundle ABI through explicit compatibility projections.
  * Session authority, correlated scopes and subscription ordering require the current SDK.
  * Retain a prior stamp only after proving its unchanged artifacts against the host;
  * reset on an incompatible plugin ABI change. Do not infer a numeric version range.
@@ -13,6 +13,8 @@ export const PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<string> = new S
   "48",
   "51",
   "52",
+  "53",
+  "54",
 ]);
 
 /**
@@ -463,17 +465,25 @@ export const PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<string> = new S
  * v51: smallest active terminal viewports (issue #877). Session resize carries a mounted
  * viewport identity and desired geometry (null withdraws); transient sizing attribution
  * carries only connection references. Machine, native-owner and instance wires are unchanged.
- * Versions 49/50 are reserved by held Text/Files branches, not integrated session revisions.
+ * Held Text/Files candidates are not reservations of integrated session revisions.
  *
- * v52: CORRELATED ACCOUNT-SHELL AUTHORITY AND LIVE WORKSPACE FEEDS (issues #956/#957).
+ * v52: bounded direct-service money (issue #937). New monetary policy, invocation and charge
+ * fields require both machine transport 52 and native owner RPC 44. Older transports remain
+ * admitted for legacy work, but receive none of those policies or calls.
+ *
+ * v53: host-approved remote share recipients (issue #412). Tickets carry the actual
+ * approved/requested remote subset and finite expiry; instance compatibility resets.
+ * Machine frames and native-owner/terminal-host wires remain unchanged.
+ *
+ * v54: CORRELATED ACCOUNT-SHELL AUTHORITY AND LIVE WORKSPACE FEEDS (issues #956/#957).
  * Session connections publish authority_context for their actual credential and support
  * ID-only sync_subscriptions/subscriptions_synced ordering fences. Hardened contract 12
  * forwards those facts and the bounded fence to portable feeds; older strict Workers
  * retain their exact context projection. Machine, instance and retained-owner IPC are
- * unchanged, so their compatibility sets add 52 without requiring a fleet restart.
+ * unchanged, so their compatibility sets add 54 without requiring a fleet restart.
  */
 export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52,
+  30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52, 53, 54,
 ]);
 
 /**
@@ -491,6 +501,9 @@ export const MACHINE_SELF_PROVIDER_PROTOCOL_VERSION = 41;
 
 /** Tool requests require the actual machine transport as well as owner RPC 41. */
 export const MACHINE_AGENT_TOOLS_PROTOCOL_VERSION = 43;
+
+/** Strict transport parsers must understand the optional monetary policy/command/reply fields. */
+export const MACHINE_DIRECT_SERVICE_ACCOUNTING_PROTOCOL_VERSION = 52;
 
 /**
  * Instance-channel acceptance set, and a SEPARATE set on purpose (ADR 0014).
@@ -525,10 +538,11 @@ export const MACHINE_AGENT_TOOLS_PROTOCOL_VERSION = 43;
  * v26: image-aware terminal viewers; instance frames remain unchanged.
  * v27: governed jobs expand the closed share resource/capability vocabularies (ADR 0033);
  * instance compatibility resets to protocol 27. v28 through v48, v51 and v52 leave that wire unchanged.
+ * v53 requires explicit host-recipient admission and ticket subset/expiry fields; reset
+ * the instance set so old ambient-admission peers cannot resume through the new contract.
+ * v54 adds scoped session authority and leaves that host-recipient instance wire unchanged.
  */
-export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52,
-]);
+export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([53, 54]);
 
 /**
  * Liveness cadence for every DIALED pipe (CONTRACTS.md): the machine channel, the
