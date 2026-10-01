@@ -21,6 +21,7 @@ import {
   type ActionOutcome,
   type AgentRunAuthority,
   type AuthorityScope,
+  type Cap,
   type HarnessTarget,
   type JobCommand,
   type JobOwner,
@@ -103,6 +104,7 @@ async function fixture(
   databasePath?: string,
   profileSchema: z.ZodType = z.strictObject({ label: z.string().min(1) }),
   baseMachine: MachineHalf = machine,
+  extraHarnessCaps: Cap[] = [],
 ) {
   const declaredMachine: MachineHalf =
     inputs === undefined
@@ -146,7 +148,7 @@ async function fixture(
       version: "1.0.0",
       title: "Test harness",
       description: "Binding boundary fixture",
-      capabilities: ["machines:run", "jobs:read", "jobs:input"],
+      capabilities: ["machines:run", "jobs:read", "jobs:input", ...extraHarnessCaps],
       ...(dependency
         ? { dependencies: { [dependency.manifest.id]: { type: "required" as const } } }
         : {}),
@@ -1073,6 +1075,276 @@ test("an awaited harness launch holds the restart guard and rechecks home author
     f.close();
   }
 });
+
+interface HarnessEffectFixture {
+  descriptor: TerminalRuntime;
+  runtime: FakeRuntime;
+}
+
+function harnessJob(f: HarnessEffectFixture, jobId: string) {
+  return {
+    jobId,
+    machineId: f.descriptor.machineId,
+    operationId,
+    installationRevision: "r1",
+    artifactSha256: hash,
+    input: { mode: "harness-effect" },
+    outputs: [],
+  };
+}
+
+function harnessSchedule(f: HarnessEffectFixture, scheduleId: string) {
+  return {
+    ...harnessJob(f, `template-${scheduleId}`),
+    scheduleId,
+    revision: "one",
+    firstNominalAt: f.runtime.now() + 1000,
+    intervalMs: 60_000,
+    deadlineMs: 30_000,
+    expiresAt: f.runtime.now() + 60_000,
+    offlinePolicy: "coalesce-one" as const,
+  };
+}
+
+test.each(["live", "home-write", "action-binding", "harness-binding", "retired"] as const)(
+  "a late harness restart keeps its originating authority for every effect (%s)",
+  async (change) => {
+    const f = await fixture(undefined, undefined, undefined, undefined, undefined, [
+      "services:configure",
+    ]);
+    const gate = Promise.withResolvers<void>();
+    const action = f.host.assembly().actions.get("core.terminals.restart")!.def;
+    const originalInput = action.input;
+    try {
+      const actor = f.auth.authenticate(
+        f.auth.mintToken(
+          { principal: { name: "harness restart administrator", kind: "human" }, caps: ["*"] },
+          f.root,
+        ).token,
+      );
+      const { run } = await f.create();
+      const create = await f.openCreated((await f.launch(run.id)).runtime);
+      const incumbentToken = create.runtime!.privateEnv!.MANIFOLD_RUN_TOKEN;
+      const before = f.store.getTerminal(create.terminalId);
+      const jobsBefore = f.store.db.query("SELECT job_id FROM machine_jobs ORDER BY job_id").all();
+      const decisionsBefore = f.store.db.query("SELECT id FROM machine_job_decisions ORDER BY id").all();
+      const entered = Promise.withResolvers<void>();
+      let retained: ActionCtx | undefined;
+      let effects: PromiseSettledResult<unknown>[] = [];
+      const harness = f.definition.harness!;
+      const launch = harness.launch;
+      harness.launch = async (ctx, ...args) => {
+        retained = ctx;
+        entered.resolve();
+        await gate.promise;
+        effects = await Promise.allSettled([
+          Promise.resolve().then(() => ctx.storage.set("harness-effect", change)),
+          Promise.resolve().then(() => ctx.jobs.execute(harnessJob(f, "harness-effect"))),
+          Promise.resolve().then(() => ctx.jobs.schedule(harnessSchedule(f, "harness-effect"))),
+          Promise.resolve().then(() =>
+            ctx.services.configureConfiguration({
+              machineId: f.descriptor.machineId,
+              expectedRevision: null,
+              policies: [],
+            }),
+          ),
+        ]);
+        return launch(ctx, ...args);
+      };
+      const pending = f.host.dispatch(actor, "core.terminals.restart", {
+        terminalId: create.terminalId,
+      });
+      await admittedMessage(entered.promise, pending, "captured harness restart");
+      switch (change) {
+        case "home-write":
+          f.auth.grant(
+            {
+              principal: { kind: "principal", id: actor.principal.id },
+              node: `manifold://container/${f.containerId}`,
+              caps: ["terminals:write"],
+              reach: "node",
+              effect: "deny",
+            },
+            f.root,
+          );
+          // Native permission survives; it must not replace the originating home requirement.
+          expect(
+            f.auth.allowsNode(actor, "machines:run",
+              `manifold://machine/${f.descriptor.machineId}/operation/${operationId}`),
+          ).toBe(true);
+          break;
+        case "action-binding":
+          Reflect.set(action, "input", z.strictObject({}));
+          break;
+        case "harness-binding":
+          harness.launch = launch;
+          break;
+        case "retired":
+          result(await f.host.dispatch(f.root, "engine.plugins.setEnabled", {
+            id: pluginId, enabled: false,
+          }));
+          result(await f.host.dispatch(f.root, "engine.plugins.setEnabled", {
+            id: pluginId, enabled: true,
+          }));
+          break;
+      }
+      gate.resolve();
+      const outcome = await pending;
+      if (change === "live") {
+        expect(outcome).toMatchObject({ ok: true });
+        expect(effects.map((effect) => effect.status)).toEqual([
+          "fulfilled", "fulfilled", "fulfilled", "fulfilled",
+        ]);
+        expect(await f.store.pluginStorage(pluginId).get("harness-effect")).toBe("live");
+        expect(f.service.jobs.get("harness-effect")?.state).toBe("start-committed");
+        expect(f.service.jobSchedules.listSchedules().map((entry) => entry.scheduleId)).toEqual([
+          "harness-effect",
+        ]);
+        expect(f.service.readServiceConfiguration(f.root, {
+          machineId: f.descriptor.machineId,
+        }).configuration.revision).not.toBeNull();
+      } else {
+        expect(outcome).toMatchObject({ ok: false });
+        expect(effects.map((effect) => effect.status)).toEqual([
+          "rejected", "rejected", "rejected", "rejected",
+        ]);
+        expect(await f.store.pluginStorage(pluginId).get("harness-effect")).toBeNull();
+        expect(f.store.db.query("SELECT job_id FROM machine_jobs ORDER BY job_id").all()).toEqual(jobsBefore);
+        expect(f.store.db.query("SELECT id FROM machine_job_decisions ORDER BY id").all()).toEqual(decisionsBefore);
+        expect(f.service.jobSchedules.listSchedules()).toEqual([]);
+        expect(f.service.readServiceConfiguration(f.root, {
+          machineId: f.descriptor.machineId,
+        }).configuration.revision).toBeNull();
+        expect(f.sent.filter((message) => message.type === "terminal_restart")).toEqual([]);
+        expect(f.store.getTerminal(create.terminalId)).toEqual(before);
+        expect(f.sent.filter((message) => message.type === "kill")).toEqual([]);
+        expect(f.auth.authenticate(incumbentToken).agentRunId).toBe(run.id);
+      }
+      if (retained === undefined) throw new Error("harness context was not captured");
+      await expect(retained.storage.set("after-return", "forbidden")).rejects.toThrow();
+      expect(() => retained!.jobs.execute(harnessJob(f, "after-return"))).toThrow();
+      expect(() => retained!.jobs.schedule(harnessSchedule(f, "after-return"))).toThrow();
+      expect(() => retained!.services.configureConfiguration({
+        machineId: f.descriptor.machineId,
+        expectedRevision: f.service.readServiceConfiguration(f.root, {
+          machineId: f.descriptor.machineId,
+        }).configuration.revision,
+        policies: [],
+      })).toThrow();
+      expect(f.service.jobs.get("after-return")).toBeNull();
+    } finally {
+      gate.resolve();
+      Reflect.set(action, "input", originalInput);
+      f.close();
+    }
+  },
+);
+
+test.each(["fresh", "recovered"] as const)(
+  "harness native effects and schedules retain the original action credential on %s restore",
+  async (recovery) => {
+    const dir = mkdtempSync(join(tmpdir(), "manifold-harness-effect-custody-"));
+    const path = join(dir, "hub.sqlite");
+    const f = await fixture(undefined, undefined, path);
+    let closed = false;
+    let recoveredStore: ServerStore | undefined;
+    let recoveredHost: PluginHost | undefined;
+    try {
+      const actor = f.auth.authenticate(
+        f.auth.mintToken(
+          { principal: { name: "durable harness administrator", kind: "human" }, caps: ["*"] },
+          f.root,
+        ).token,
+      );
+      const { run } = await f.create();
+      const create = await f.openCreated((await f.launch(run.id)).runtime);
+      const harness = f.definition.harness!;
+      const launch = harness.launch;
+      harness.launch = async (ctx, ...args) => {
+        ctx.jobs.execute(harnessJob(f, "durable-harness"));
+        ctx.jobs.schedule(harnessSchedule(f, "durable-harness"));
+        return launch(ctx, ...args);
+      };
+      expect(result(await f.host.dispatch(actor, "core.terminals.restart", {
+        terminalId: create.terminalId,
+      }))).toEqual({});
+      const native = f.service.jobs.get("durable-harness")!;
+      const schedule = f.service.jobSchedules.listSchedules()[0]!;
+      for (const snapshot of [native.authoritySnapshot, schedule.authoritySnapshot]) {
+        expect(snapshot?.actionCredential).toEqual(f.auth.credentialReference(actor));
+        expect(snapshot?.credential.caps).toContain("machines:run");
+        expect(snapshot?.credential.caps).not.toContain("terminals:write");
+        expect(snapshot?.action).toMatchObject({
+          actionName: "core.terminals.restart",
+          originalArgsDigest: createHash("sha256")
+            .update(canonicalJobJson({ terminalId: create.terminalId })).digest("hex"),
+          requirements: [
+            { cap: "terminals:write", ref: { kind: "container", containerId: f.containerId } },
+            { cap: "machines:run",
+              node: `manifold://machine/${f.descriptor.machineId}/operation/${operationId}`,
+              reach: "node" },
+          ],
+        });
+      }
+      const start = f.commands.find((command) =>
+        command.type === "start" && command.request.jobId === native.request.jobId);
+      if (start?.type !== "start") throw new Error("harness native effect was not admitted");
+      f.started(start);
+      let service = f.service;
+      let auth = f.auth;
+      let root = f.root;
+      if (recovery === "recovered") {
+        f.close();
+        closed = true;
+        recoveredStore = new ServerStore(openDatabase(path));
+        const store = recoveredStore;
+        auth = new AuthService(store, "a".repeat(64), f.runtime, {
+          decide: (request) => service.decide(request),
+        });
+        root = auth.authenticate("a".repeat(64));
+        const rooms = new RoomManager(store, f.runtime, f.clock, silentLogger, testTileTrees);
+        const broker = new TerminalBroker(store, auth, rooms, f.runtime, f.clock, silentLogger,
+          () => "http://localhost:7777", testTileTrees);
+        recoveredHost = await testPluginHost(store, auth, rooms, broker, f.runtime, {
+          settingsPlugins: [f.definition],
+        });
+        service = new JobService(store, auth, f.runtime);
+        recoveredHost.setJobs(service);
+        broker.setJobs(service);
+        f.proveOwner(service);
+      }
+      service.tick();
+      expect(service.jobs.get(native.request.jobId)?.request).toEqual(native.request);
+      expect(service.jobs.cancellation(native.request.jobId)).toBeNull();
+      auth.grant({
+        principal: { kind: "principal", id: actor.principal.id },
+        node: `manifold://container/${f.containerId}`,
+        caps: ["terminals:write"],
+        reach: "node",
+        effect: "deny",
+      }, root);
+      expect(auth.allowsNode(auth.restoreCredential(f.auth.credentialReference(actor))!,
+        "machines:run", `manifold://machine/${f.descriptor.machineId}/operation/${operationId}`)).toBe(true);
+      f.runtime.time = schedule.firstNominalAt;
+      service.tick();
+      expect(service.jobs.cancellation(native.request.jobId)?.mode).toBe("cancel");
+      expect(service.jobSchedules.listSchedules()).toEqual([]);
+      const occurrenceId = `schedule-${createHash("sha256")
+        .update(canonicalJobJson([schedule.scheduleId, schedule.revision, schedule.firstNominalAt]))
+        .digest("hex")}`;
+      expect(service.jobs.get(occurrenceId)).toBeNull();
+      expect(service.jobSchedules.getOccurrence(occurrenceId)).toBeNull();
+      expect(f.commands.filter((command) =>
+        command.type === "start" && command.request.jobId === occurrenceId)).toEqual([]);
+      expect(service.jobs.cancellation(create.runtime!.request.jobId)).toBeNull();
+    } finally {
+      recoveredHost?.close();
+      recoveredStore?.close();
+      if (!closed) f.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);
 
 test("restart transport capability cannot override the negotiated protocol floor", async () => {
   const f = await fixture();
