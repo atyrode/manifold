@@ -15,6 +15,7 @@ import { Database } from "bun:sqlite";
 import {
   closeSync,
   constants,
+  fstatSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -850,10 +851,26 @@ async function observeReplica(): Promise<void> {
     const configPath =
       process.env.MANIFOLD_RECOVERY_LITESTREAM_CONFIG ||
       resolve(import.meta.dir, "../infra/litestream.yml");
-    // Do not block on a FIFO or consume a supplied config's exec directive.
-    if (!lstatSync(configPath).isFile())
-      throw new ReplicaGuardRefusal("replica_configuration_invalid");
-    const config = readFileSync(configPath, "utf8");
+    // Open first, then classify/read that descriptor: a pathname check can race a FIFO/symlink.
+    let configFile: number;
+    try {
+      configFile = openSync(
+        configPath,
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      );
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ELOOP")
+        throw new ReplicaGuardRefusal("replica_configuration_invalid");
+      throw error;
+    }
+    let config: string;
+    try {
+      if (!fstatSync(configFile).isFile())
+        throw new ReplicaGuardRefusal("replica_configuration_invalid");
+      config = readFileSync(configFile, "utf8");
+    } finally {
+      closeSync(configFile);
+    }
     const configured = configuration(config, root, db, false);
     const databases = [...configured.databases.map((name) => join(root, name)), db];
     // Bind the exact config and its environment expansion without disclosing any input value.

@@ -1872,6 +1872,9 @@ databases, writer locks or an owner key. The observer runs only restore/list ope
 validates the same claim, complete sealed file fingerprints and takeover rules as bootstrap,
 and removes its private staging files and children. It never starts a hub or replicator,
 creates a claim, advances a heartbeat, seals or initializes history.
+The supplied configuration must be a regular file, not a symlink or FIFO. The observer opens
+it nonblocking without following symlinks, then classifies and reads that same descriptor;
+an invalid file type or an `exec` directive refuses before starting a replica child.
 
 Retain the candidate digest, observation time and terminal `hub_replica_observation`
 record: exit 0 means `admitted`; exit 1 retains the precise refusal. `targetSha256` identifies
