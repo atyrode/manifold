@@ -327,6 +327,42 @@ The setup panel links the Linux, Darwin and NixOS instructions above. Enrollment
 create an OS account, install/start its owner or establish ordinary-shell authority. Provision
 the selected existing account and wait for the shared fleet inventory's positive declaration.
 
+## Delegate ordinary shell automation
+
+An ordinary terminal's inherited lifecycle credential can inspect and control its existing
+terminal; it does not authorize creating or restarting a remote shell. `manifold doctor`
+reports remote shell launch as `not_probed` and never creates a terminal to test authority.
+`manifold ssh` and `manifold exec` with lifecycle-only authority refuse as
+`shell_spawn_not_delegated`. Keep the original terminal binding private; do not replace it
+with an owner key, borrow another credential or register an Agent merely to run a command.
+
+A human with live `tokens:mint` and the requested working authority can open **Sessions →
+Delegate shell automation**. Choose the exact enrolled ordinary-account endpoint ID, a
+finite expiry, and either:
+
+- **One existing composition:** the working scope is that composition subtree. This supports
+  its terminal tiles, not an independent terminal home created through a canvas.
+- **Workspace compositions and canvas homes:** the working scope is the workspace subtree,
+  with no composition ceiling. A later initial composition is a launch target, not a claim
+  that its ID represents workspace-wide authority.
+
+Both selections grant `containers:read`, `containers:write`, `scenes:write`,
+`terminals:spawn` and `terminals:write` only at the chosen placement scope, and separately
+grant `machines:shell` at the exact selected machine node. Endpoint display names and host
+groupings confer no authority. Governed execution continues to require its separate native
+operation/resource consent; this form does not substitute an ordinary shell for it.
+
+The credential appears once in a selectable read-only field. Provision it through the
+automation launcher's own supported credential flow; no token-bearing command or URL is
+generated. Hiding it, unmounting, replacing the client or losing live issuance authority
+retires the reveal. Modern external automation uses the compatible SDK and V2
+`core.access.mintTokenV2` contract, not a flattened V1 cap/target product.
+
+This is a creation/restart boundary, not blanket machine isolation: placement-scoped
+`terminals:write` can still control an existing terminal on another account within that
+scope. Processes retain the selected OS account's normal filesystem authority. Credential
+withdrawal fences future access and tracked cleanup; it cannot undo prior filesystem effects.
+
 ## Notes
 
 - Losing a token is recoverable: re-POST the same `name` with

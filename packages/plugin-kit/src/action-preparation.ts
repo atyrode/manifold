@@ -1,6 +1,17 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { canonicalJobJson, ManifoldRefSchema, GrantNodeSchema, GrantReachSchema, AuthoredCapSchema, type ActionPreparationCtx, type ActionPreparationDef, type AskableCap, type ManifoldRef, type PreparedRequirement } from "@manifold/protocol";
+import {
+  canonicalJobJson,
+  ManifoldRefSchema,
+  GrantNodeSchema,
+  GrantReachSchema,
+  AuthoredCapSchema,
+  type ActionPreparationCtx,
+  type ActionPreparationDef,
+  type AskableCap,
+  type ManifoldRef,
+  type PreparedRequirement,
+} from "@manifold/protocol";
 
 export class ActionPreparationError extends Error {}
 
@@ -17,15 +28,21 @@ export interface ActionPreparationEvidence {
 }
 
 export function argumentDigest(args: unknown): string {
-  return createHash("sha256").update(canonicalJobJson(args) ?? "undefined").digest("hex");
+  return createHash("sha256")
+    .update(canonicalJobJson(args) ?? "undefined")
+    .digest("hex");
 }
 
 export function validatePreparedRequirements(
   values: readonly PreparedRequirement[] | undefined,
   ceiling: readonly AskableCap[],
 ): readonly PreparedRequirement[] {
-  const parsed = requirement.array().max(64).safeParse(values ?? []);
-  if (!parsed.success) throw new ActionPreparationError("invalid additional authority requirements");
+  const parsed = requirement
+    .array()
+    .max(64)
+    .safeParse(values ?? []);
+  if (!parsed.success)
+    throw new ActionPreparationError("invalid additional authority requirements");
   for (const value of parsed.data) {
     if (!ceiling.includes(value.cap as AskableCap))
       throw new ActionPreparationError("additional requirement exceeds preparer ceiling");
@@ -33,15 +50,17 @@ export function validatePreparedRequirements(
   return parsed.data as PreparedRequirement[];
 }
 
-
 function parseActionArgs(input: z.ZodType, args: unknown): unknown {
   try {
     const parsed = input.safeParse(args);
     if (!parsed.success) throw new ActionPreparationError(parsed.error.message);
     return parsed.data;
   } catch (error) {
-    throw error instanceof ActionPreparationError ? error
-      : new ActionPreparationError(error instanceof Error ? error.message : "invalid action arguments");
+    throw error instanceof ActionPreparationError
+      ? error
+      : new ActionPreparationError(
+          error instanceof Error ? error.message : "invalid action arguments",
+        );
   }
 }
 /** Shared execution/review path. This receives a new read-only context, never ActionCtx. */
@@ -57,12 +76,19 @@ export async function prepareActionInput(
     const targets = fixed.map(({ target }) => {
       let value: unknown = first;
       for (const segment of target) {
-        value = value !== null && typeof value === "object" && Object.hasOwn(value, segment)
-          ? Reflect.get(value, segment) : undefined;
+        value =
+          value !== null && typeof value === "object" && Object.hasOwn(value, segment)
+            ? Reflect.get(value, segment)
+            : undefined;
       }
       return ManifoldRefSchema.parse(value);
     });
-    return { args: first, targets, additionalRequirements: [], originalArgsDigest: argumentDigest(rawArgs) };
+    return {
+      args: first,
+      targets,
+      additionalRequirements: [],
+      originalArgsDigest: argumentDigest(rawArgs),
+    };
   }
   const prepared = await preparation.prepare(context, first as never);
   if (prepared === null || typeof prepared !== "object")
@@ -74,7 +100,10 @@ export async function prepareActionInput(
   return {
     args: second,
     targets: targets.data,
-    additionalRequirements: validatePreparedRequirements(prepared.additionalRequirements, preparation.caps),
+    additionalRequirements: validatePreparedRequirements(
+      prepared.additionalRequirements,
+      preparation.caps,
+    ),
     originalArgsDigest: argumentDigest(rawArgs),
   };
 }

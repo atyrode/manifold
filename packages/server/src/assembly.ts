@@ -98,7 +98,12 @@ export const SERVER_PLUGIN_DEFS: readonly ServerPluginDef[] = [
   */
   { manifest: brandManifest, actions: [], handlers: {} },
   { manifest: keysManifest, actions: keysActions, handlers: keysHandlers },
-  { manifest: terminalsManifest, actions: terminalsActions, handlers: terminalsHandlers, prepareActions: terminalsPreparers },
+  {
+    manifest: terminalsManifest,
+    actions: terminalsActions,
+    handlers: terminalsHandlers,
+    prepareActions: terminalsPreparers,
+  },
   { manifest: presenceManifest, actions: presenceActions, handlers: presenceHandlers },
   { manifest: accessManifest, actions: accessActions, handlers: accessHandlers },
   /*

@@ -135,7 +135,11 @@ describe("durable correlated authority", () => {
     const path = join(dir, "state.sqlite");
     let store = new ServerStore(openDatabase(path));
     try {
-      const scopedToken = { ...token("scoped", null, ["containers:read", "machines:shell"]), containerId: "home", authorityScope: scope };
+      const scopedToken = {
+        ...token("scoped", null, ["containers:read", "machines:shell"]),
+        containerId: "home",
+        authorityScope: scope,
+      };
       const emptyToken = { ...token("empty", null, []), authorityScope: [] };
       const legacyToken = token("legacy", null, ["containers:read"]);
       store.createToken(scopedToken);
@@ -145,7 +149,11 @@ describe("durable correlated authority", () => {
       const emptyAgent: AgentRecord = {
         ...agent("empty-agent"),
         grant: { ...scopedAgent.grant, caps: [], authorityScope: [] },
-        authorizationCredential: { ...scopedAgent.authorizationCredential, caps: [], authorityScope: [] },
+        authorizationCredential: {
+          ...scopedAgent.authorizationCredential,
+          caps: [],
+          authorityScope: [],
+        },
       };
       store.createAgent(scopedAgent);
       store.createAgent(emptyAgent);
@@ -181,7 +189,9 @@ describe("durable correlated authority", () => {
       expect(store.getAgentRun(scopedRun.id)).toEqual(scopedRun);
       expect(store.getAgentRun(emptyRun.id)).toEqual(emptyRun);
       expect(store.getAgentRun(nativeRun.id)).toEqual({
-        ...nativeRun, session: nativeSession, nativeJob: { jobId: "native-job", credential: nativeCredential },
+        ...nativeRun,
+        session: nativeSession,
+        nativeJob: { jobId: "native-job", credential: nativeCredential },
       });
       const sponsor = { ...scopedRun.authorizationCredential, authorityScope: [] };
       expect(store.renewAgentRun(scopedRun.id, expiry + 60_000, sponsor)).toBe(true);
@@ -209,8 +219,13 @@ describe("durable correlated authority", () => {
       store.createGrant(grant("left-machine", machineA, ["machines:shell"]));
       store.createGrant(grant("left-container", home, ["containers:read"]));
       store.createGrant(grant("right-machine", machineB, ["machines:shell"]));
-      const ceiling: AuthorityScope = [{ target: root, reach: "subtree", caps: ["machines:shell", "containers:read"] }];
-      store.createToken({ ...token("left", "left-machine", ["machines:shell", "containers:read"]), authorityScope: ceiling });
+      const ceiling: AuthorityScope = [
+        { target: root, reach: "subtree", caps: ["machines:shell", "containers:read"] },
+      ];
+      store.createToken({
+        ...token("left", "left-machine", ["machines:shell", "containers:read"]),
+        authorityScope: ceiling,
+      });
       store.bindTokenGrant("left", "left-container");
       store.bindTokenGrant("left", "left-container");
       store.createToken({ ...token("right", "right-machine"), authorityScope: ceiling });
@@ -234,13 +249,19 @@ describe("durable correlated authority", () => {
       expect(store.getGrant("left-machine")).toBeNull();
       expect(store.getGrant("left-container")).toBeNull();
       expect(store.tokenOwnsGrant("left", "left-container")).toBe(false);
-      expect(store.getToken("left")).toMatchObject({ revokedAt: 100, grantId: null, authorityScope: ceiling });
+      expect(store.getToken("left")).toMatchObject({
+        revokedAt: 100,
+        grantId: null,
+        authorityScope: ceiling,
+      });
       expect(store.getGrant("right-machine")).toMatchObject({ tokenBound: true });
       store.close();
       store = new ServerStore(openDatabase(path));
       const restartedAuth = new AuthService(store, "f".repeat(64), new FakeRuntime());
       expect(() => restartedAuth.authenticate("left")).toThrow();
-      expect(restartedAuth.allowsNode(restartedAuth.authenticate("right"), "machines:shell", machineB)).toBe(true);
+      expect(
+        restartedAuth.allowsNode(restartedAuth.authenticate("right"), "machines:shell", machineB),
+      ).toBe(true);
       expect(store.tokenOwnsGrant("left", "left-machine")).toBe(false);
     } finally {
       store.close();
@@ -285,6 +306,8 @@ function seedV48(path: string): void {
 CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT);
 INSERT INTO meta VALUES ('schema_version','48');
 ${AUTHORITY_V37_FIXTURE_SQL}
+CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT,container_id TEXT,ts INTEGER,
+  principal_id TEXT,type TEXT,payload TEXT);
 ALTER TABLE agent_runs ADD COLUMN tools_json TEXT;
 ALTER TABLE agent_runs ADD COLUMN launch_target_json TEXT;
 ALTER TABLE agent_runs ADD COLUMN native_job_id TEXT;
@@ -306,7 +329,10 @@ END;
 `);
     const spawn = JSON.stringify(["terminals:spawn"]);
     for (const [id, kind] of [
-      ["human", "human"], ["denied", "human"], ["node-denied", "human"], ["worker", "agent"],
+      ["human", "human"],
+      ["denied", "human"],
+      ["node-denied", "human"],
+      ["worker", "agent"],
     ] as const)
       db.query("INSERT INTO principals VALUES (?,?,?,'#112233',1,NULL)").run(id, kind, id);
     for (const [id, node, reach, effect, principal] of [
@@ -327,7 +353,12 @@ END;
       ["revoked-grant", root, "subtree", "allow", "human"],
     ] as const) {
       db.query("INSERT INTO grants VALUES (?,'principal',?,?,?,?,?,'issuer',7)").run(
-        id, principal, node, id === "wildcard-grant" ? '["*"]' : spawn, effect, reach,
+        id,
+        principal,
+        node,
+        id === "wildcard-grant" ? '["*"]' : spawn,
+        effect,
+        reach,
       );
     }
     for (const [id, grantId, containerId, runId, principalId, caps] of [
@@ -345,24 +376,41 @@ END;
       ["wildcard-token", "wildcard-grant", null, null, "human", '["*"]'],
       ["revoked-token", "revoked-grant", null, null, "human", spawn],
     ] as const) {
-      db.query(`INSERT INTO tokens(id,hash,principal_id,caps,container_id,created_at,revoked_at,
-        minted_by,grant_id,expires_at,run_id) VALUES (?,?,?,?,?,11,NULL,'issuer',?,?,?)`).run(
-        id, sha256Hex(id), principalId, caps, containerId, grantId, expiry, runId,
-      );
+      db.query(
+        `INSERT INTO tokens(id,hash,principal_id,caps,container_id,created_at,revoked_at,
+        minted_by,grant_id,expires_at,run_id) VALUES (?,?,?,?,?,11,NULL,'issuer',?,?,?)`,
+      ).run(id, sha256Hex(id), principalId, caps, containerId, grantId, expiry, runId);
     }
     db.exec("UPDATE tokens SET revoked_at=31 WHERE id='revoked-token'");
-    const sponsor = { tokenId: "sponsor", grantId: "sponsor-grant", caps: ["terminals:spawn"], containerScope: null, expiresAt: expiry };
+    const sponsor = {
+      tokenId: "sponsor",
+      grantId: "sponsor-grant",
+      caps: ["terminals:spawn"],
+      containerScope: null,
+      expiresAt: expiry,
+    };
     for (const [id, target, reach] of [
       ["global-agent", root, "subtree"],
       ["container-agent", home, "subtree"],
       ["node-agent", root, "node"],
       ["machine-agent", machineA, "subtree"],
     ] as const) {
-      db.query("INSERT INTO agents VALUES (?,?,'human',?,'retain legacy authority','external',?,'{\"profile\":null}',?,'disabled','principal',?,13,17)").run(
-        id, `${id}-principal`, id,
-        JSON.stringify({ caps: ["terminals:spawn"], targets: [target], reach, maxRunLifetimeMs: 120_000,
-          delegation: { maxDepth: 2, maxDescendants: 4 }, expiresAt: expiry }),
-        revision, JSON.stringify(sponsor),
+      db.query(
+        "INSERT INTO agents VALUES (?,?,'human',?,'retain legacy authority','external',?,'{\"profile\":null}',?,'disabled','principal',?,13,17)",
+      ).run(
+        id,
+        `${id}-principal`,
+        id,
+        JSON.stringify({
+          caps: ["terminals:spawn"],
+          targets: [target],
+          reach,
+          maxRunLifetimeMs: 120_000,
+          delegation: { maxDepth: 2, maxDescendants: 4 },
+          expiresAt: expiry,
+        }),
+        revision,
+        JSON.stringify(sponsor),
       );
     }
     for (const [id, target, nativeJobId] of [
@@ -370,24 +418,43 @@ END;
       ["container-run", home, null],
       ["native-run", root, "native-job"],
     ] as const) {
-      db.query(`INSERT INTO agent_runs(id,principal_id,root_run_id,authorized_by_principal_id,
+      db.query(
+        `INSERT INTO agent_runs(id,principal_id,root_run_id,authorized_by_principal_id,
         authorization_path,authorizer_token_id,authorizer_grant_id,authorizer_caps,authorizer_expires_at,
         purpose,target,reach,caps,created_at,expires_at,renewals,max_depth,max_descendants,depth,
         cleanup_owner_principal_id,state,policy_revision,acknowledged_policy_revision,
         cleanup_revoked_credentials,cleanup_revoked_grants,finished_at,cleanup_failure,agent_id,activity,
         native_job_id,native_credential_json)
         VALUES (?,'worker',?,'human','principal','sponsor','sponsor-grant',?,?,'retain legacy authority',
-          ?,'subtree',?,19,?,3,2,4,0,'human','completed',?,?,2,1,29,'retained receipt','global-agent','done',?,?)`).run(
-        id, id, spawn, expiry, target, spawn, expiry, revision, revision, nativeJobId,
+          ?,'subtree',?,19,?,3,2,4,0,'human','completed',?,?,2,1,29,'retained receipt','global-agent','done',?,?)`,
+      ).run(
+        id,
+        id,
+        spawn,
+        expiry,
+        target,
+        spawn,
+        expiry,
+        revision,
+        revision,
+        nativeJobId,
         nativeJobId === null ? null : JSON.stringify({ principalId: "human", ...sponsor }),
       );
       db.query("INSERT INTO agent_run_policy_snapshots VALUES (?,?, '[]',19,20)").run(id, revision);
     }
-    const nativeRequest = '{"credential":{"principalId":"human","tokenId":"sponsor","grantId":"sponsor-grant","caps":["terminals:spawn"],"containerScope":null},"terminal":{"terminalId":"kept"}}';
-    db.query("INSERT INTO machine_jobs VALUES (?,'a',?,'signed-digest','finished','signed-permit','retained-result',23,?)").run("native-job", nativeRequest, null);
-    const carriedRequest = '{"credential":{"principalId":"human","tokenId":"sponsor","grantId":"sponsor-grant","caps":[],"containerScope":null},"terminal":{"terminalId":"kept"}}';
-    db.query("INSERT INTO machine_jobs VALUES (?,'a',?,'carried-digest','queued',NULL,NULL,24,?)").run(
-      "carried-job", carriedRequest, JSON.stringify([{ containerId: "home", caps: ["terminals:spawn"] }]),
+    const nativeRequest =
+      '{"credential":{"principalId":"human","tokenId":"sponsor","grantId":"sponsor-grant","caps":["terminals:spawn"],"containerScope":null},"terminal":{"terminalId":"kept"}}';
+    db.query(
+      "INSERT INTO machine_jobs VALUES (?,'a',?,'signed-digest','finished','signed-permit','retained-result',23,?)",
+    ).run("native-job", nativeRequest, null);
+    const carriedRequest =
+      '{"credential":{"principalId":"human","tokenId":"sponsor","grantId":"sponsor-grant","caps":[],"containerScope":null},"terminal":{"terminalId":"kept"}}';
+    db.query(
+      "INSERT INTO machine_jobs VALUES (?,'a',?,'carried-digest','queued',NULL,NULL,24,?)",
+    ).run(
+      "carried-job",
+      carriedRequest,
+      JSON.stringify([{ containerId: "home", caps: ["terminals:spawn"] }]),
     );
   } finally {
     db.close();
@@ -423,46 +490,82 @@ describe("migration 49: durable account-shell compatibility", () => {
       } finally {
         backup.close();
       }
-      const upgraded = (raw: unknown): string => JSON.stringify([...JSON.parse(String(raw)), "machines:shell"]);
-      expect(rows(db, "grants")).toEqual(beforeGrants.map((row) => ({
-        ...row,
-        caps: row.node === root && row.reach === "subtree" && row.id !== "wildcard-grant"
-          ? upgraded(row.caps) : row.caps,
-      })));
+      const upgraded = (raw: unknown): string =>
+        JSON.stringify([...JSON.parse(String(raw)), "machines:shell"]);
+      expect(rows(db, "grants")).toEqual(
+        beforeGrants.map((row) => ({
+          ...row,
+          caps:
+            row.node === root && row.reach === "subtree" && row.id !== "wildcard-grant"
+              ? upgraded(row.caps)
+              : row.caps,
+        })),
+      );
       const translatedTokens: Readonly<Record<string, true>> = {
-        sponsor: true, "global-run-token": true, "revoked-token": true,
+        sponsor: true,
+        "global-run-token": true,
+        "revoked-token": true,
       };
-      expect(rows(db, "tokens")).toEqual(beforeTokens.map((row) => ({
-        ...row,
-        caps: translatedTokens[String(row.id)] === true ? upgraded(row.caps) : row.caps,
-        authority_scope: null,
-      })));
-      expect(rows(db, "agents")).toEqual(beforeAgents.map((row) => {
-        if (row.agent_id !== "global-agent") return row;
-        const storedGrant = JSON.parse(String(row.grant_json));
-        const sponsor = JSON.parse(String(row.authorization_credential));
-        return { ...row,
-          grant_json: JSON.stringify({ ...storedGrant, caps: [...storedGrant.caps, "machines:shell"] }),
-          authorization_credential: JSON.stringify({ ...sponsor, caps: [...sponsor.caps, "machines:shell"] }),
-        };
-      }));
-      expect(rows(db, "agent_runs")).toEqual(beforeRuns.map((row) => ({
-        ...row,
-        caps: row.id === "global-run" ? upgraded(row.caps) : row.caps,
-        authorizer_caps: row.id === "global-run" ? upgraded(row.authorizer_caps) : row.authorizer_caps,
-        authority_scope: null,
-        authorizer_authority_scope: null,
-      })));
-      expect(store.getGrant("global-deny")).toMatchObject({ effect: "deny", caps: ["terminals:spawn", "machines:shell"], createdBy: "issuer", createdAt: 7 });
-      expect(store.getAgent("global-agent")?.grant.caps).toEqual(["terminals:spawn", "machines:shell"]);
-      expect(store.getAgentRun("global-run")?.authorizationCredential.caps).toEqual(["terminals:spawn", "machines:shell"]);
+      expect(rows(db, "tokens")).toEqual(
+        beforeTokens.map((row) => ({
+          ...row,
+          caps: translatedTokens[String(row.id)] === true ? upgraded(row.caps) : row.caps,
+          authority_scope: null,
+        })),
+      );
+      expect(rows(db, "agents")).toEqual(
+        beforeAgents.map((row) => {
+          if (row.agent_id !== "global-agent") return row;
+          const storedGrant = JSON.parse(String(row.grant_json));
+          const sponsor = JSON.parse(String(row.authorization_credential));
+          return {
+            ...row,
+            grant_json: JSON.stringify({
+              ...storedGrant,
+              caps: [...storedGrant.caps, "machines:shell"],
+            }),
+            authorization_credential: JSON.stringify({
+              ...sponsor,
+              caps: [...sponsor.caps, "machines:shell"],
+            }),
+          };
+        }),
+      );
+      expect(rows(db, "agent_runs")).toEqual(
+        beforeRuns.map((row) => ({
+          ...row,
+          caps: row.id === "global-run" ? upgraded(row.caps) : row.caps,
+          authorizer_caps:
+            row.id === "global-run" ? upgraded(row.authorizer_caps) : row.authorizer_caps,
+          authority_scope: null,
+          authorizer_authority_scope: null,
+        })),
+      );
+      expect(store.getGrant("global-deny")).toMatchObject({
+        effect: "deny",
+        caps: ["terminals:spawn", "machines:shell"],
+        createdBy: "issuer",
+        createdAt: 7,
+      });
+      expect(store.getAgent("global-agent")?.grant.caps).toEqual([
+        "terminals:spawn",
+        "machines:shell",
+      ]);
+      expect(store.getAgentRun("global-run")?.authorizationCredential.caps).toEqual([
+        "terminals:spawn",
+        "machines:shell",
+      ]);
       for (const oldToken of beforeTokens) {
         expect(store.tokenOwnsGrant(String(oldToken.id), String(oldToken.grant_id))).toBe(true);
-        expect(store.getToken(String(oldToken.id))?.grantId).toBe(oldToken.grant_id);
+        expect(store.getToken(String(oldToken.id))?.grantId).toBe(String(oldToken.grant_id));
       }
       expect(rows(db, "machine_jobs")).toEqual(signedJobs);
       expect(rows(db, "agent_run_policy_snapshots")).toEqual(policies);
-      const migrated = Object.fromEntries(["grants", "tokens", "agents", "agent_runs", "token_grants", "machine_job_revisions"].map((table) => [table, rows(db, table)]));
+      const migrated = Object.fromEntries(
+        ["grants", "tokens", "agents", "agent_runs", "token_grants", "machine_job_revisions"].map(
+          (table) => [table, rows(db, table)],
+        ),
+      );
       store.createGrant(grant("new-spawn", root, ["terminals:spawn"]));
       store.createToken(token("new-token", "new-spawn", ["terminals:spawn"]));
       db.close();
@@ -471,10 +574,34 @@ describe("migration 49: durable account-shell compatibility", () => {
       expect(restarted.getGrant("new-spawn")?.caps).toEqual(["terminals:spawn"]);
       expect(restarted.getToken("new-token")?.caps).toEqual(["terminals:spawn"]);
       for (const [table, expected] of Object.entries(migrated)) {
-        expect(rows(db, table).filter((row) => row.id !== "new-spawn" && row.id !== "new-token"
-          && row.token_id !== "new-token")).toEqual(expected);
+        expect(
+          rows(db, table).filter(
+            (row) =>
+              row.id !== "new-spawn" && row.id !== "new-token" && row.token_id !== "new-token",
+          ),
+        ).toEqual(expected);
       }
       expect(rows(db, "machine_jobs")).toEqual(signedJobs);
+    } finally {
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a weaker class deny does not suppress migration of a winning principal-specific shell ceiling", () => {
+    const dir = mkdtempSync(join(tmpdir(), "manifold-shell-migration-specificity-"));
+    const path = join(dir, "state.sqlite");
+    seedV48(path);
+    let db = new Database(path, { strict: true });
+    try {
+      db.exec(`INSERT INTO grants VALUES
+        ('class-deny','any-human',NULL,'manifold://','["terminals:spawn"]','deny','subtree','issuer',9)`);
+      db.close();
+      db = openDatabase(path);
+      const store = new ServerStore(db);
+      expect(store.getToken("sponsor")?.caps).toContain("machines:shell");
+      expect(store.getAgent("global-agent")?.grant.caps).toContain("machines:shell");
+      expect(store.getAgentRun("global-run")?.caps).toContain("machines:shell");
     } finally {
       db.close();
       rmSync(dir, { recursive: true, force: true });
@@ -496,12 +623,17 @@ describe("migration 49: durable account-shell compatibility", () => {
       db = new Database(path, { strict: true });
       expect(rows(db, "grants")).toEqual(beforeGrants);
       expect(rows(db, "tokens")).toEqual(beforeTokens);
-      expect(db.query("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({ value: "48" });
+      expect(db.query("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({
+        value: "48",
+      });
       expect(db.query("SELECT name FROM sqlite_master WHERE name='token_grants'").get()).toBeNull();
       db.exec("DROP TRIGGER fail_shell_migration");
       db.close();
       db = openDatabase(path);
-      expect(new ServerStore(db).getToken("sponsor")?.caps).toEqual(["terminals:spawn", "machines:shell"]);
+      expect(new ServerStore(db).getToken("sponsor")?.caps).toEqual([
+        "terminals:spawn",
+        "machines:shell",
+      ]);
     } finally {
       db.close();
       rmSync(dir, { recursive: true, force: true });

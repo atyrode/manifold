@@ -48,11 +48,15 @@ export class ActionAuthorityFence {
     const credential = authService.credentialReference(auth);
     this.credential = {
       ...credential,
-      ...(credential.authorityScope === undefined ? {} : {
-        authorityScope: credential.authorityScope.map(({ target, reach, caps }) => ({
-          target, reach, caps: [...caps],
-        })),
-      }),
+      ...(credential.authorityScope === undefined
+        ? {}
+        : {
+            authorityScope: credential.authorityScope.map(({ target, reach, caps }) => ({
+              target,
+              reach,
+              caps: [...caps],
+            })),
+          }),
       ...(credential.containerGrants === undefined
         ? {}
         : {
@@ -83,7 +87,11 @@ export class ActionAuthorityFence {
   retain(): ActionAuthorityFence {
     const current = this.checkCurrent();
     const retained = new ActionAuthorityFence(
-      this.authService, current, this.isCurrent, this.contextScope, this.checkAuthority,
+      this.authService,
+      current,
+      this.isCurrent,
+      this.contextScope,
+      this.checkAuthority,
     );
     retained.admit(this.requirements!);
     retained.bind(this.binding);
@@ -98,14 +106,19 @@ export class ActionAuthorityFence {
 
   extend(requirements: readonly ActionAuthorityRequirement[]): void {
     this.checkCurrent();
-    this.requirements = [...this.requirements!, ...requirements.map((value) => structuredClone(value))];
+    this.requirements = [
+      ...this.requirements!,
+      ...requirements.map((value) => structuredClone(value)),
+    ];
     this.checkCurrent();
   }
 
   snapshot(): ActionAuthoritySnapshotBinding {
     if (this.requirements === null) this.refuse("action not admitted");
     return structuredClone({
-      ...this.binding, requirements: this.requirements, contextScope: this.contextScope,
+      ...this.binding,
+      requirements: this.requirements,
+      contextScope: this.contextScope,
     });
   }
 

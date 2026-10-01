@@ -14,7 +14,7 @@ import {
   TRACE_OUTCOMES,
   TRACED_DENIAL_RULES,
   UNTRACED_DENIAL_RULE,
-  type Cap,
+  type LegacyCap,
 } from "@manifold/protocol";
 import { tileIdForRef } from "@manifold/scene";
 import { z } from "zod";
@@ -112,7 +112,11 @@ async function fixture(policyFile?: string): Promise<Fixture> {
 }
 
 /** A real token, so authority is exercised through attenuation rather than a hand-built context. */
-function tokenContext(base: Fixture, caps: readonly Cap[], containerId?: string): AuthContext {
+function tokenContext(
+  base: Fixture,
+  caps: readonly LegacyCap[],
+  containerId?: string,
+): AuthContext {
   const grant = base.auth.mintToken(
     {
       principal: { name: "guest", kind: "human" },

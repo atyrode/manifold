@@ -1,13 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import type { Agent, PrincipalCredentials } from "@manifold/protocol";
+import type { AgentV2, PrincipalCredentialsV2 } from "@manifold/protocol";
 
 import { partitionAgents, partitionCredentials } from "../src/rows.ts";
 
 function row(
   id: string,
   sessions: number,
-  kind: PrincipalCredentials["principal"]["kind"] = "human",
-): PrincipalCredentials {
+  kind: PrincipalCredentialsV2["principal"]["kind"] = "human",
+): PrincipalCredentialsV2 {
   return {
     principal: { id, kind, name: id, color: "#ea580c" },
     createdAt: 0,
@@ -58,7 +58,7 @@ describe("partitionCredentials (#145)", () => {
   });
 });
 
-function agent(id: string, state: Agent["state"]): Agent {
+function agent(id: string, state: AgentV2["state"]): AgentV2 {
   return {
     agentId: id,
     principalId: `principal-${id}`,
@@ -67,9 +67,7 @@ function agent(id: string, state: Agent["state"]): Agent {
     purpose: "Review",
     harness: "external",
     grant: {
-      caps: [],
-      targets: [],
-      reach: "subtree",
+      scope: [],
       maxRunLifetimeMs: 60_000,
       delegation: { maxDepth: 0, maxDescendants: 0 },
       expiresAt: 0,

@@ -1,15 +1,16 @@
 import type { SectionProps } from "@manifold/plugin";
 import { Chip, Disclosure, KeyValueList, KeyValueRow, Stack } from "@manifold/ui";
 import {
-  InspectRunResultSchema,
+  InspectRunV2ResultSchema,
   formatManifoldUri,
   parseManifoldUri,
-  type InspectRunResult,
+  type InspectRunV2Result,
+  type AuthorityScope,
   type AgentRunTraceSummary,
   type InspectRunRequest,
 } from "@manifold/protocol";
 import { useState, type ReactElement, type ReactNode } from "react";
-import { ACCESS_INSPECT_RUN_ACTION } from "./index.ts";
+import { ACCESS_INSPECT_RUN_V2_ACTION } from "./index.ts";
 import { useAccessRead } from "./reads.ts";
 
 export function inspectionTime(at: number | null): string {
@@ -68,6 +69,27 @@ export function NativeReference({
     </Chip>
   );
 }
+export function AuthorityScopeDetails({
+  host,
+  scope,
+}: SectionProps & { readonly scope: AuthorityScope }): ReactElement {
+  return (
+    <Stack gap="0.25rem" data-testid="authority-scope">
+      {scope.length === 0 ? (
+        <span>No ordinary authority</span>
+      ) : (
+        scope.map((entry) => (
+          <Stack key={`${entry.target}:${entry.reach}`} gap="0.1rem">
+            <span>
+              <NativeReference host={host} uri={entry.target} /> · {entry.reach}
+            </span>
+            <span className="credential-inspection-note">{entry.caps.join(", ")}</span>
+          </Stack>
+        ))
+      )}
+    </Stack>
+  );
+}
 
 function traceStatus(trace: AgentRunTraceSummary): string {
   if (trace.settlement === "pending_or_crashed") return "pending_or_crashed · outcome unknown";
@@ -86,7 +108,7 @@ function ExactTrace({
   readonly runId: string;
   readonly traceId: string;
 }): ReactElement {
-  const read = useAccessRead(host, ACCESS_INSPECT_RUN_ACTION, InspectRunResultSchema, {
+  const read = useAccessRead(host, ACCESS_INSPECT_RUN_V2_ACTION, InspectRunV2ResultSchema, {
     runId,
     traceId,
     limit: 1,
@@ -163,7 +185,7 @@ function RunSnapshot({
   olderPage,
 }: {
   readonly host: SectionProps["host"];
-  readonly result: InspectRunResult;
+  readonly result: InspectRunV2Result;
   readonly inspect: (request: InspectRunRequest) => void;
   readonly olderPage: boolean;
 }): ReactElement {
@@ -202,10 +224,12 @@ function RunSnapshot({
         {run.taskRef === undefined ? null : (
           <KeyValueRow label="Legacy external task">{run.taskRef}</KeyValueRow>
         )}
-        <KeyValueRow label="Scope">
+        <KeyValueRow label="Context target">
           <NativeReference host={host} uri={run.target} /> · {run.reach}
         </KeyValueRow>
-        <KeyValueRow label="Capabilities">{run.caps.join(", ")}</KeyValueRow>
+        <KeyValueRow label="Authority scope">
+          <AuthorityScopeDetails host={host} scope={run.scope} />
+        </KeyValueRow>
         <KeyValueRow label="Authorization">{run.authorizationPath}</KeyValueRow>
         <KeyValueRow label="Created">{inspectionTime(run.createdAt)}</KeyValueRow>
         <KeyValueRow label="Expiry">{inspectionTime(run.expiresAt)}</KeyValueRow>
@@ -412,7 +436,7 @@ function InspectionSnapshot({
   readonly request: InspectRunRequest;
   readonly inspect: (request: InspectRunRequest) => void;
 }): ReactElement {
-  const read = useAccessRead(host, ACCESS_INSPECT_RUN_ACTION, InspectRunResultSchema, request);
+  const read = useAccessRead(host, ACCESS_INSPECT_RUN_V2_ACTION, InspectRunV2ResultSchema, request);
   if (read.state === "loading") return <p role="status">Loading agent run…</p>;
   if (read.state === "failed")
     return (

@@ -15,9 +15,19 @@ manifold context
 manifold doctor
 manifold actions
 manifold machines
-manifold ssh <machine-id-or-exact-name> uname -srm
-manifold ssh <machine-id-or-exact-name> 'wc -c' < local-file
-manifold exec --machine <machine-id-or-exact-name> -- /bin/sh -c 'printf "remote output\n"'
+```
+
+An ordinary terminal lifecycle binding retains local inspection and terminal control, but
+does **not** authorize another shell. For remote automation, an authorized human uses
+Access → Sessions to mint a finite V2 credential with working placement rights and
+`machines:shell` at one exact enrolled machine/account. Its trusted launcher provisions
+the binding through the owning tool, never argv, prompts, a copied browser token or an
+Agent identity workaround. Then:
+
+```sh
+manifold ssh <explicitly-delegated-machine-id> uname -srm
+manifold ssh <explicitly-delegated-machine-id> 'wc -c' < local-file
+manifold exec --machine <explicitly-delegated-machine-id> -- /bin/sh -c 'printf "remote output\n"'
 ```
 
 The client privately consumes the ordinary terminal's inherited `MANIFOLD_URL`,
@@ -69,6 +79,14 @@ diagnose the selected machine's suitability. A missing harness-specific tool doe
 establish that core access is unavailable. Terminal access is not Windows desktop or game
 control.
 
+`doctor` reports remote shell launch as `not_probed`; it never creates a terminal to test
+delegation. A lifecycle binding's `ssh`/`exec` refusal is `shell_spawn_not_delegated`,
+requiring `terminals:spawn` at placement and `machines:shell` at the exact account.
+Workspace working authority supports composition and independent canvas homes; one-C
+authority supports only that existing composition's tile path. Terminal control is separate:
+a workspace `terminals:write` grant may reach an existing PTY on another machine, so an
+M1 creation grant is not blanket “M1-only machine access.”
+
 The package installs its product-owned skill at
 `share/agent-skills/manifold-terminal/SKILL.md`. A machine's configuration owner should
 install the executable and expose that same skill through its managed harness loaders.
@@ -118,6 +136,7 @@ refused topics and reveals no per-topic admission. The physical pool coalesces r
 generation, authority epoch and declaration watermark; an earlier reply cannot cover later
 interests. False means retain fallback polling. Rebind/disconnect/authority retirement clears
 the proof, and gaining workspace-event access re-declares all retained interests.
+
 ## Trusted launcher
 
 Use the repository's supported Bun (at least 1.4.2) and installed workspace dependencies:

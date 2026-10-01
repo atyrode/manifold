@@ -135,28 +135,35 @@ export const TokenGrantSchema = z.strictObject({
 });
 export type TokenGrant = z.infer<typeof TokenGrantSchema>;
 
-export const MintTokenV2RequestSchema = z.strictObject({
-  principalId: z.string().min(1).optional(),
-  principal: BootstrapPrincipalRequestSchema.optional(),
-  scope: AuthorityScopeSchema,
-  /** A context anchor, not a product with the capability summary. */
-  containerId: z.string().min(1).optional(),
-  expiresAt: z.number().int().positive(),
-}).refine((value) => (value.principalId === undefined) !== (value.principal === undefined), {
-  message: "exactly one of principalId | principal is required",
-});
+export const MintTokenV2RequestSchema = z
+  .strictObject({
+    principalId: z.string().min(1).optional(),
+    principal: BootstrapPrincipalRequestSchema.optional(),
+    scope: AuthorityScopeSchema,
+    /** A context anchor, not a product with the capability summary. */
+    containerId: z.string().min(1).optional(),
+    expiresAt: z.number().int().positive(),
+  })
+  .refine((value) => (value.principalId === undefined) !== (value.principal === undefined), {
+    message: "exactly one of principalId | principal is required",
+  });
 export type MintTokenV2Request = z.infer<typeof MintTokenV2RequestSchema>;
-export const TokenGrantV2Schema = z.strictObject({
-  token: z.string().min(1),
-  principal: PrincipalSchema,
-  scope: AuthorityScopeSchema,
-  caps: z.array(CapSchema.exclude(["*"])).max(128),
-  containerId: z.string().nullable(),
-  expiresAt: z.number().int().positive(),
-}).refine((grant) => {
-  const expected = new Set(grant.scope.flatMap((entry) => entry.caps.filter(isEngineCap)));
-  return grant.caps.length === expected.size && grant.caps.every((cap) => expected.has(cap));
-}, { message: "token capability summary must match its scope", path: ["caps"] });
+export const TokenGrantV2Schema = z
+  .strictObject({
+    token: z.string().min(1),
+    principal: PrincipalSchema,
+    scope: AuthorityScopeSchema,
+    caps: z.array(CapSchema.exclude(["*"])).max(128),
+    containerId: z.string().nullable(),
+    expiresAt: z.number().int().positive(),
+  })
+  .refine(
+    (grant) => {
+      const expected = new Set(grant.scope.flatMap((entry) => entry.caps.filter(isEngineCap)));
+      return grant.caps.length === expected.size && grant.caps.every((cap) => expected.has(cap));
+    },
+    { message: "token capability summary must match its scope", path: ["caps"] },
+  );
 export type TokenGrantV2 = z.infer<typeof TokenGrantV2Schema>;
 export const MintTokenV2ResultSchema = TokenGrantV2Schema;
 export type MintTokenV2Result = z.infer<typeof MintTokenV2ResultSchema>;

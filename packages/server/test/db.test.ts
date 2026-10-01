@@ -1133,7 +1133,6 @@ describe("migration 11: the lexicon cut", () => {
   });
 });
 
-
 /** A snapshot is a whole database; these read it back to prove WHICH state it captured. */
 function snapshotVersion(file: string): string | undefined {
   const db = new Database(file, { strict: true });
@@ -1165,7 +1164,6 @@ describe("pre-migration snapshot retention", () => {
     try {
       seedPreV9(path);
       openDatabase(path).close();
-
 
       // Each image is PRE its own migration, not a copy of the finished database — which is
       // the only property that makes it worth keeping.

@@ -321,7 +321,10 @@ describe("IsolateSupervisor", () => {
         payload: { caller: principal.id },
       },
     ]);
-    const deniedCtx = { ...ctx, auth: { ...ctx.auth, allows: () => false, allowsNode: () => false } };
+    const deniedCtx = {
+      ...ctx,
+      auth: { ...ctx.auth, allows: () => false, allowsNode: () => false },
+    };
     expect(await def.harness.sessions(deniedCtx, { machineId: "m1" })).toEqual([]);
     const ref = { harness: "test", machineId: "m1", sessionId: "s1" };
     expect(await def.harness.resolveSession(ctx, ref)).toEqual(ref);

@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
-import type { Agent } from "@manifold/protocol";
+import type { AgentV2 } from "@manifold/protocol";
 import {
   AccessBrowser,
   admittedRun,
@@ -21,7 +21,7 @@ afterEach(() => {
 afterAll(() => ui.close());
 
 test("Agent state controls distinguish reusable, disabled and permanently retired profiles", async () => {
-  const states: readonly Agent[] = [
+  const states: readonly AgentV2[] = [
     agent,
     { ...agent, agentId: "working", name: "Working agent", state: "running", activeRuns: 2 },
     { ...agent, agentId: "disabled", name: "Disabled agent", state: "disabled" },
@@ -49,7 +49,7 @@ test("Agent state controls distinguish reusable, disabled and permanently retire
   await ui.text("Enable");
   expect(
     await ui.browser.evaluate<boolean>(
-      `document.querySelector('[data-action="core.access.createRun"]').disabled`,
+      `document.querySelector('[data-action="core.access.createRunV2"]').disabled`,
     ),
   ).toBe(true);
   await ui.click("1 retired Agent");
@@ -69,7 +69,7 @@ test("Agent state controls distinguish reusable, disabled and permanently retire
   ).toBe(true);
   expect(
     await ui.browser.evaluate<boolean>(
-      `document.querySelector('[data-action="core.access.enableAgent"]') === null`,
+      `document.querySelector('[data-action="core.access.enableAgentV2"]') === null`,
     ),
   ).toBe(true);
   await ui.detail(agent);
@@ -78,11 +78,11 @@ test("Agent state controls distinguish reusable, disabled and permanently retire
   await ui.text("Confirm retire");
   expect(
     await ui.browser.evaluate<boolean>(
-      'window.accessFixture.requests.some(request => request.action === "core.access.retireAgent")',
+      'window.accessFixture.requests.some(request => request.action === "core.access.retireAgentV2")',
     ),
   ).toBe(false);
   await ui.click("Confirm retire");
-  await ui.outcome("core.access.retireAgent", {
+  await ui.outcome("core.access.retireAgentV2", {
     ok: false,
     denial: { rule: "refused", message: "Sponsor authority was withdrawn" },
   });
@@ -114,13 +114,13 @@ test("a retired-only workspace keeps its Agents inside the closed fold and expos
 
 test("human and legacy Sessions remain logins while linked Agent principals expose native cross-links", async () => {
   await ui.reset("sessions");
-  await ui.answer("core.access.listCredentials", credentials);
-  await ui.answer("core.access.listAgents", {
+  await ui.answer("core.access.listCredentialsV2", credentials);
+  await ui.answer("core.access.listAgentsV2", {
     agents: [agent],
     truncated: false,
     canRegister: true,
   });
-  await ui.answer("core.access.listRuns", inventory);
+  await ui.answer("core.access.listRunsV2", inventory);
   await ui.text("Human reader");
   expect(
     await ui.browser.evaluate<string>(
@@ -166,18 +166,18 @@ test("human and legacy Sessions remain logins while linked Agent principals expo
 
 test("delegated Sessions requires confirmation and removes withdrawn credentials after refresh", async () => {
   await ui.reset("sessions");
-  await ui.answer("core.access.listCredentials", credentials);
-  await ui.answer("core.access.listAgents", {
+  await ui.answer("core.access.listCredentialsV2", credentials);
+  await ui.answer("core.access.listAgentsV2", {
     agents: [agent],
     truncated: false,
     canRegister: true,
   });
-  await ui.answer("core.access.listRuns", inventory);
+  await ui.answer("core.access.listRunsV2", inventory);
 
   await ui.browser.evaluate<void>(
     'window.accessFixture.replaceViewer("delegate", ["tokens:mint"])',
   );
-  await ui.answer("core.access.listCredentials", {
+  await ui.answer("core.access.listCredentialsV2", {
     principals: [
       {
         ...credentials.principals[1]!,
@@ -188,12 +188,12 @@ test("delegated Sessions requires confirmation and removes withdrawn credentials
       },
     ],
   });
-  await ui.answer("core.access.listAgents", {
+  await ui.answer("core.access.listAgentsV2", {
     agents: [],
     truncated: false,
     canRegister: false,
   });
-  await ui.answer("core.access.listRuns", { ...inventory, runs: [] });
+  await ui.answer("core.access.listRunsV2", { ...inventory, runs: [] });
 
   await ui.browser.evaluate<void>(
     'document.querySelector("[data-principal=human-one] [data-action=\\"core.access.revoke\\"]").click()',
@@ -208,13 +208,13 @@ test("delegated Sessions requires confirmation and removes withdrawn credentials
     'document.querySelector("[data-principal=human-one] [data-action=\\"core.access.revoke\\"]").click()',
   );
   await ui.outcome("core.access.revoke", { ok: true, result: { revoked: 1 } });
-  await ui.answer("core.access.listCredentials", { principals: [] });
-  await ui.answer("core.access.listAgents", {
+  await ui.answer("core.access.listCredentialsV2", { principals: [] });
+  await ui.answer("core.access.listAgentsV2", {
     agents: [],
     truncated: false,
     canRegister: false,
   });
-  await ui.answer("core.access.listRuns", { ...inventory, runs: [] });
+  await ui.answer("core.access.listRunsV2", { ...inventory, runs: [] });
   expect(
     await ui.browser.evaluate<boolean>(
       'document.querySelector("[data-principal=human-one]") === null',
@@ -224,30 +224,30 @@ test("delegated Sessions requires confirmation and removes withdrawn credentials
 
 test("Sessions pause and resume the same principal without destructive confirmation", async () => {
   await ui.reset("sessions");
-  await ui.answer("core.access.listCredentials", credentials);
-  await ui.answer("core.access.listAgents", {
+  await ui.answer("core.access.listCredentialsV2", credentials);
+  await ui.answer("core.access.listAgentsV2", {
     agents: [agent],
     truncated: false,
     canRegister: true,
   });
-  await ui.answer("core.access.listRuns", inventory);
+  await ui.answer("core.access.listRunsV2", inventory);
 
   await ui.click("Pause access for Human reader");
   await ui.outcome("core.access.pause", {
     ok: true,
     result: { principalId: "human-one", pausedAt: at + 1_000 },
   });
-  await ui.answer("core.access.listCredentials", {
+  await ui.answer("core.access.listCredentialsV2", {
     principals: credentials.principals.map((row) =>
       row.principal.id === "human-one" ? { ...row, pausedAt: at + 1_000 } : row,
     ),
   });
-  await ui.answer("core.access.listAgents", {
+  await ui.answer("core.access.listAgentsV2", {
     agents: [agent],
     truncated: false,
     canRegister: true,
   });
-  await ui.answer("core.access.listRuns", inventory);
+  await ui.answer("core.access.listRunsV2", inventory);
   expect(
     await ui.browser.evaluate<string>(
       'document.querySelector("[data-principal=human-one]").innerText',
@@ -260,13 +260,13 @@ test("Sessions pause and resume the same principal without destructive confirmat
     ok: true,
     result: { principalId: "human-one", pausedAt: null },
   });
-  await ui.answer("core.access.listCredentials", credentials);
-  await ui.answer("core.access.listAgents", {
+  await ui.answer("core.access.listCredentialsV2", credentials);
+  await ui.answer("core.access.listAgentsV2", {
     agents: [agent],
     truncated: false,
     canRegister: true,
   });
-  await ui.answer("core.access.listRuns", inventory);
+  await ui.answer("core.access.listRunsV2", inventory);
   expect(
     await ui.browser.evaluate<string>(
       'document.querySelector("[data-principal=human-one]").innerText',
@@ -277,11 +277,11 @@ test("Sessions pause and resume the same principal without destructive confirmat
 
 test("native service Sessions identify their owner, open their plugin and never expose Agent or revoke controls", async () => {
   await ui.reset("sessions");
-  await ui.answer("core.access.listCredentials", {
+  await ui.answer("core.access.listCredentialsV2", {
     principals: [nativeService, ...credentials.principals],
   });
   // A stale Agent index must not turn a service back into an Agent session.
-  await ui.answer("core.access.listAgents", {
+  await ui.answer("core.access.listAgentsV2", {
     agents: [
       agent,
       { ...agent, agentId: "service-profile", principalId: "service-one", name: "Not an Agent" },
@@ -289,7 +289,7 @@ test("native service Sessions identify their owner, open their plugin and never 
     truncated: false,
     canRegister: true,
   });
-  await ui.answer("core.access.listRuns", inventory);
+  await ui.answer("core.access.listRunsV2", inventory);
   await ui.text("Native service · native.accounts.broker · owned by machine-one");
   await ui.answer("engine.services.describeInstance", nativeServiceDescription);
   await ui.text("Native service · native.accounts.broker · owned by Preview hub");
@@ -330,11 +330,11 @@ test("native service Sessions identify their owner, open their plugin and never 
 
 test("inactive service Sessions retain their machine identity when Plugins inspection is refused", async () => {
   await ui.reset("sessions");
-  await ui.answer("core.access.listCredentials", {
+  await ui.answer("core.access.listCredentialsV2", {
     principals: [{ ...nativeService, sessions: [] }],
   });
-  await ui.answer("core.access.listAgents", { agents: [], truncated: false, canRegister: true });
-  await ui.answer("core.access.listRuns", { ...inventory, runs: [] });
+  await ui.answer("core.access.listAgentsV2", { agents: [], truncated: false, canRegister: true });
+  await ui.answer("core.access.listRunsV2", { ...inventory, runs: [] });
   await ui.text("No live credentials");
   expect(
     await ui.browser.evaluate<boolean>(
@@ -368,16 +368,16 @@ test("replacement viewers cannot see retained privileged rows or late inspection
     'window.accessFixture.replaceViewer("unrelated", ["containers:read"])',
   );
   expect(await ui.browser.evaluate<string>("document.body.innerText")).not.toContain(agent.purpose);
-  await ui.outcome("core.access.listAgents", {
+  await ui.outcome("core.access.listAgentsV2", {
     ok: false,
     denial: { rule: "refused", message: "Agent history is unavailable to this principal" },
   });
   await ui.text("Agent history is unavailable to this principal");
-  await ui.answer("core.access.inspectRun", inspection);
+  await ui.answer("core.access.inspectRunV2", inspection);
   expect(await ui.browser.evaluate<string>("document.body.innerText")).not.toContain(agent.purpose);
   expect(
     await ui.browser.evaluate<boolean>(
-      `document.querySelector('[data-action="core.access.registerAgent"]') === null`,
+      `document.querySelector('[data-action="core.access.registerAgentV2"]') === null`,
     ),
   ).toBe(true);
 }, 60_000);
@@ -387,7 +387,7 @@ test("a refused harness launch stays visible with explicit cancellation instead 
   await ui.detail();
   await ui.browser.typeInto(".credential-agent-field input", "machine-one");
   await ui.click("Start run");
-  await ui.answer("core.access.createRun", { run: admittedRun });
+  await ui.answer("core.access.createRunV2", { run: admittedRun });
   await ui.outcome("core.access.launchRun", {
     ok: false,
     denial: { rule: "refused", message: "Harness host is offline" },
@@ -396,11 +396,11 @@ test("a refused harness launch stays visible with explicit cancellation instead 
   await ui.text("admitted-run");
   expect(
     await ui.browser.evaluate<boolean>(
-      `document.querySelector('[data-action="core.access.createRun"]').disabled`,
+      `document.querySelector('[data-action="core.access.createRunV2"]').disabled`,
     ),
   ).toBe(true);
   await ui.click("Cancel unconfirmed run");
-  await ui.outcome("core.access.finishAgentRun", {
+  await ui.outcome("core.access.finishAgentRunV2", {
     ok: false,
     denial: { rule: "refused", message: "Run cleanup could not be confirmed" },
   });
@@ -413,10 +413,10 @@ test("registration discloses the one-time runner credential and hides it irrever
   await ui.boot();
   await ui.click("Register");
   await ui.browser.evaluate<void>(
-    `(() => { const form = document.querySelector('form[aria-label="Register Agent"]'); form.querySelector('input[name=name]').value = 'Handoff agent'; form.querySelector('input[name=name]').dispatchEvent(new Event('input', { bubbles: true })); form.querySelector('textarea[name=purpose]').value = 'Run the maintenance review loop'; form.querySelector('textarea[name=purpose]').dispatchEvent(new Event('input', { bubbles: true })); form.querySelector('textarea[name=caps]').value = 'containers:read'; form.querySelector('textarea[name=caps]').dispatchEvent(new Event('input', { bubbles: true })); form.querySelector('textarea[name=targets]').value = 'manifold://container/review'; form.querySelector('textarea[name=targets]').dispatchEvent(new Event('input', { bubbles: true })); form.querySelector('input[name=expires]').value = '2030-01-01T00:00'; form.querySelector('input[name=expires]').dispatchEvent(new Event('input', { bubbles: true })); })()`,
+    `(() => { const form = document.querySelector('form[aria-label="Register Agent"]'); form.querySelector('input[name=name]').value = 'Handoff agent'; form.querySelector('textarea[name=purpose]').value = 'Run the maintenance review loop'; form.querySelector('textarea[name=scope]').value = JSON.stringify([{target:'manifold://container/review',reach:'subtree',caps:['containers:read']}]); form.querySelector('input[name=expires]').value = '2030-01-01T00:00'; })()`,
   );
   await ui.click("Register Agent");
-  await ui.answer("core.access.registerAgent", {
+  await ui.answer("core.access.registerAgentV2", {
     agent: { ...agent, agentId: "handed-off", name: "Handoff agent" },
     credential: { token: "runner-token-once", expiresAt: at + 3_600_000 },
     created: true,
@@ -429,7 +429,7 @@ test("registration discloses the one-time runner credential and hides it irrever
   ).toBe("runner-token-once");
   expect(
     await ui.browser.evaluate<boolean>(
-      'document.querySelector("[data-action=\\"core.access.registerAgent\\"]") === null',
+      'document.querySelector("[data-action=\\"core.access.registerAgentV2\\"]") === null',
     ),
   ).toBe(true);
   await ui.browser.evaluate<void>(
@@ -446,7 +446,7 @@ test("registration discloses the one-time runner credential and hides it irrever
   ).toBe(true);
   expect(
     await ui.browser.evaluate<boolean>(
-      'document.querySelector("[data-action=\\"core.access.registerAgent\\"]") === null',
+      'document.querySelector("[data-action=\\"core.access.registerAgentV2\\"]") === null',
     ),
   ).toBe(false);
 }, 60_000);
@@ -455,14 +455,14 @@ test("a repeat registration without a credential keeps the Agent view credential
   await ui.boot();
   await ui.click("Register");
   await ui.browser.evaluate<void>(
-    `(() => { const form = document.querySelector('form[aria-label="Register Agent"]'); form.querySelector('input[name=name]').value = 'Repeat agent'; form.querySelector('input[name=name]').dispatchEvent(new Event('input', { bubbles: true })); form.querySelector('textarea[name=purpose]').value = 'Already registered'; form.querySelector('textarea[name=purpose]').dispatchEvent(new Event('input', { bubbles: true })); form.querySelector('textarea[name=caps]').value = 'containers:read'; form.querySelector('textarea[name=caps]').dispatchEvent(new Event('input', { bubbles: true })); form.querySelector('textarea[name=targets]').value = 'manifold://container/review'; form.querySelector('textarea[name=targets]').dispatchEvent(new Event('input', { bubbles: true })); form.querySelector('input[name=expires]').value = '2030-01-01T00:00'; form.querySelector('input[name=expires]').dispatchEvent(new Event('input', { bubbles: true })); })()`,
+    `(() => { const form = document.querySelector('form[aria-label="Register Agent"]'); form.querySelector('input[name=name]').value = 'Repeat agent'; form.querySelector('textarea[name=purpose]').value = 'Already registered'; form.querySelector('textarea[name=scope]').value = JSON.stringify([{target:'manifold://container/review',reach:'subtree',caps:['containers:read']}]); form.querySelector('input[name=expires]').value = '2030-01-01T00:00'; })()`,
   );
   await ui.click("Register Agent");
-  await ui.answer("core.access.registerAgent", {
+  await ui.answer("core.access.registerAgentV2", {
     agent: { ...agent, agentId: "handed-off", name: "Repeat agent" },
     created: false,
   });
-  await ui.answer("core.access.listAgents", {
+  await ui.answer("core.access.listAgentsV2", {
     agents: [{ ...agent, agentId: "handed-off", name: "Repeat agent" }],
     truncated: false,
     canRegister: true,
@@ -485,21 +485,85 @@ test("workspace authority hints govern profile controls without a joined room", 
   await ui.text("Disable");
   expect(
     await ui.browser.evaluate<boolean>(
-      `document.querySelector('[data-action="core.access.createRun"]').disabled`,
+      `document.querySelector('[data-action="core.access.createRunV2"]').disabled`,
     ),
   ).toBe(true);
   await ui.browser.evaluate<void>("window.accessFixture.emitAccess()");
-  await ui.answer("core.access.listAgents", {
+  await ui.answer("core.access.listAgentsV2", {
     agents: [agent],
     truncated: false,
     canRegister: false,
   });
-  await ui.answer("core.access.getAgent", { agent, canManage: false });
+  await ui.answer("core.access.getAgentV2", { agent, canManage: false });
   await ui.text("Only the sponsor can manage this Agent.");
   expect(
     await ui.browser.evaluate<boolean>(
       `document.querySelector('form[aria-label="Register Agent"]') === null &&
-       document.querySelector('[data-action="core.access.disableAgent"]') === null`,
+       document.querySelector('[data-action="core.access.disableAgentV2"]') === null`,
+    ),
+  ).toBe(true);
+}, 60_000);
+
+test("live workspace mint withdrawal retires a revealed token despite cached room selfCaps", async () => {
+  await ui.browser.evaluate<void>("window.accessFixture.mount('sessions')");
+  await ui.answer("core.access.listCredentialsV2", credentials);
+  await ui.answer("core.access.listAgentsV2", {
+    agents: [agent],
+    truncated: false,
+    canRegister: true,
+  });
+  await ui.answer("core.access.listRunsV2", inventory);
+  await ui.click("Delegate shell automation");
+  await ui.browser.evaluate<void>(`(() => {
+    const form = document.querySelector('form[aria-label="Delegate shell automation"]');
+    const mode = form.querySelector('select');
+    mode.value = 'workspace'; mode.dispatchEvent(new Event('change', {bubbles:true}));
+    const account = [...form.querySelectorAll('label')].find(label => label.textContent.includes('Exact enrolled account')).querySelector('select');
+    account.value = 'machine-one'; account.dispatchEvent(new Event('change', {bubbles:true}));
+    form.querySelector('input[name=expires]').value = '2030-01-01T00:00';
+  })()`);
+  await ui.click("Mint finite automation credential");
+  await ui.answer("core.access.mintTokenV2", {
+    token: "privacy-fixture-token",
+    principal: { id: "viewer", kind: "human", name: "Viewer", color: "#74c0fc" },
+    scope: [
+      {
+        target: "manifold://",
+        reach: "subtree",
+        caps: [
+          "containers:read",
+          "containers:write",
+          "scenes:write",
+          "terminals:spawn",
+          "terminals:write",
+        ],
+      },
+      { target: "manifold://machine/machine-one", reach: "node", caps: ["machines:shell"] },
+    ],
+    caps: [
+      "containers:read",
+      "containers:write",
+      "scenes:write",
+      "terminals:spawn",
+      "terminals:write",
+      "machines:shell",
+    ],
+    containerId: null,
+    expiresAt: Date.UTC(2030, 0, 1),
+  });
+  await ui.text("Automation credential");
+  await ui.browser.evaluate<void>("window.accessFixture.withdrawWorkspace()");
+  await ui.browser.evaluate<void>(
+    "(() => { const frame = Promise.withResolvers(); requestAnimationFrame(() => requestAnimationFrame(frame.resolve)); return frame.promise; })()",
+  );
+  expect(
+    await ui.browser.evaluate<boolean>(
+      `document.querySelector('[data-testid="shell-automation-credential"]') === null`,
+    ),
+  ).toBe(true);
+  expect(
+    await ui.browser.evaluate<boolean>(
+      `window.accessFixture.requests.filter(request => request.action === "core.access.mintTokenV2").length === 1`,
     ),
   ).toBe(true);
 }, 60_000);

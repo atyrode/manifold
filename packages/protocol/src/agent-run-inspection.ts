@@ -5,7 +5,12 @@ import { AuthorityScopeSchema, GrantReachSchema } from "./grants.ts";
 import { LegacyAuthoredCapSchema } from "./legacy-authority.ts";
 import { JobStateSchema } from "./jobs.ts";
 import { TraceOutcomeSchema } from "./trace.ts";
-import { AgentAuthorityScopeSchema, AgentIdSchema, RunModelSchema, RunActivitySchema } from "./agents.ts";
+import {
+  AgentAuthorityScopeSchema,
+  AgentIdSchema,
+  RunModelSchema,
+  RunActivitySchema,
+} from "./agents.ts";
 import { SessionRefSchema } from "./session-ref.ts";
 
 export const AGENT_JUSTIFICATION_MAX_LENGTH = 512;
@@ -185,16 +190,23 @@ export type InspectRunResult = z.infer<typeof InspectRunResultSchema>;
 
 /** Scope is evidence; the inventory's other fields remain observations, not authority factors. */
 export const AgentRunInventoryV2Schema = AgentRunInventorySchema.extend({
-  runs: z.array(AgentRunInventorySchema.shape.runs.element.extend({
-    scope: AgentAuthorityScopeSchema,
-  })).max(100),
+  runs: z
+    .array(
+      AgentRunInventorySchema.shape.runs.element.extend({
+        scope: AgentAuthorityScopeSchema,
+      }),
+    )
+    .max(100),
 });
 export type AgentRunInventoryV2 = z.infer<typeof AgentRunInventoryV2Schema>;
 const inspectionCredentialV2 = AgentRunInspectionSchema.shape.credentials.element.extend({
   authorityScope: AuthorityScopeSchema.optional(),
-  grant: AgentRunInspectionSchema.shape.credentials.element.shape.grant.unwrap().extend({
-    caps: z.array(AuthoredCapSchema).max(128),
-  }).nullable(),
+  grant: AgentRunInspectionSchema.shape.credentials.element.shape.grant
+    .unwrap()
+    .extend({
+      caps: z.array(AuthoredCapSchema).max(128),
+    })
+    .nullable(),
 });
 export const AgentRunInspectionV2Schema = AgentRunInspectionSchema.extend({
   run: AgentRunInspectionSchema.shape.run.extend({

@@ -1070,24 +1070,44 @@ INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','48');
    */
   49: {
     backup: true,
-    sql: `
+    apply(db) {
+      // Batched exec can lose an intermediate SQLite step error. Each statement must
+      // throw into the migration runner's single enclosing transaction.
+      const statements = [
+        `
 ALTER TABLE tokens ADD COLUMN authority_scope TEXT;
+`,
+        `
 ALTER TABLE agent_runs ADD COLUMN authority_scope TEXT;
+`,
+        `
 ALTER TABLE agent_runs ADD COLUMN authorizer_authority_scope TEXT;
+`,
+        `
 CREATE TABLE token_grants(
   token_id TEXT NOT NULL REFERENCES tokens(id),
   grant_id TEXT NOT NULL REFERENCES grants(id),
   PRIMARY KEY(token_id,grant_id)
 ) WITHOUT ROWID;
+`,
+        `
 CREATE INDEX token_grants_grant ON token_grants(grant_id,token_id);
+`,
+        `
 INSERT INTO token_grants(token_id,grant_id)
   SELECT t.id,g.id FROM tokens t JOIN grants g ON g.id=t.grant_id;
+`,
+        `
 CREATE TRIGGER token_grants_delete_grant AFTER DELETE ON grants BEGIN
   DELETE FROM token_grants WHERE grant_id=OLD.id;
 END;
+`,
+        `
 CREATE TRIGGER token_grants_delete_token AFTER DELETE ON tokens BEGIN
   DELETE FROM token_grants WHERE token_id=OLD.id;
 END;
+`,
+        `
 
 -- Capture OLD admission before extending any row. Wildcard evidence already admits
 -- ordinary spawn, but needs no added cap. Node-only and descendant rows are not global.
@@ -1095,6 +1115,8 @@ CREATE TEMP TABLE stage2_global_spawn_grants AS
 SELECT g.id,g.effect FROM grants g
 WHERE g.node='manifold://' AND g.reach='subtree'
   AND EXISTS(SELECT 1 FROM json_each(g.caps) WHERE value IN ('terminals:spawn','*'));
+`,
+        `
 CREATE TEMP TABLE stage2_global_spawn_tokens AS
 SELECT t.id FROM tokens t JOIN grants g ON g.id=t.grant_id
 JOIN stage2_global_spawn_grants old ON old.id=g.id AND old.effect='allow'
@@ -1119,9 +1141,15 @@ WHERE t.container_id IS NULL
       OR d.principal_kind='instance' AND d.principal_id=p.origin)
       AND d.node='manifold://' AND d.effect='deny'
       AND EXISTS(SELECT 1 FROM json_each(d.caps) WHERE value IN ('terminals:spawn','*'))
+      AND (CASE d.principal_kind WHEN 'principal' THEN 3
+        WHEN 'any-human' THEN 2 WHEN 'any-agent' THEN 2 WHEN 'instance' THEN 1 END)
+        >= (CASE g.principal_kind WHEN 'principal' THEN 3
+          WHEN 'any-human' THEN 2 WHEN 'any-agent' THEN 2 WHEN 'instance' THEN 1 END)
       AND (NOT EXISTS(SELECT 1 FROM token_grants bound WHERE bound.grant_id=d.id)
         OR EXISTS(SELECT 1 FROM token_grants mine WHERE mine.grant_id=d.id AND mine.token_id=t.id))
   );
+`,
+        `
 CREATE TEMP TABLE stage2_global_spawn_agents AS
 SELECT a.agent_id FROM agents a
 WHERE json_extract(a.grant_json,'$.reach')='subtree'
@@ -1143,6 +1171,8 @@ WHERE json_extract(a.grant_json,'$.reach')='subtree'
         AND t.principal_id=a.sponsor_principal_id
         AND t.grant_id IS json_extract(a.authorization_credential,'$.grantId'))
   );
+`,
+        `
 CREATE TEMP TABLE stage2_global_spawn_runs AS
 SELECT r.id FROM agent_runs r
 WHERE r.target='manifold://' AND r.reach='subtree' AND r.native_job_id IS NULL
@@ -1158,37 +1188,62 @@ WHERE r.target='manifold://' AND r.reach='subtree' AND r.native_job_id IS NULL
       WHERE t.id=r.authorizer_token_id AND t.principal_id=r.authorized_by_principal_id
         AND t.grant_id IS r.authorizer_grant_id)
   );
+`,
+        `
 
 UPDATE grants SET caps=json_insert(caps,'$[#]','machines:shell')
 WHERE id IN (SELECT id FROM stage2_global_spawn_grants)
   AND EXISTS(SELECT 1 FROM json_each(caps) WHERE value='terminals:spawn')
   AND NOT EXISTS(SELECT 1 FROM json_each(caps) WHERE value='machines:shell');
+`,
+        `
 UPDATE tokens SET caps=json_insert(caps,'$[#]','machines:shell')
 WHERE id IN (SELECT id FROM stage2_global_spawn_tokens)
   AND EXISTS(SELECT 1 FROM json_each(caps) WHERE value='terminals:spawn')
   AND NOT EXISTS(SELECT 1 FROM json_each(caps) WHERE value='machines:shell');
+`,
+        `
 UPDATE agents SET grant_json=json_set(grant_json,'$.caps',
   json_insert(json_extract(grant_json,'$.caps'),'$[#]','machines:shell'))
 WHERE agent_id IN (SELECT agent_id FROM stage2_global_spawn_agents)
   AND NOT EXISTS(SELECT 1 FROM json_each(grant_json,'$.caps') WHERE value='machines:shell');
+`,
+        `
 UPDATE agents SET authorization_credential=json_set(authorization_credential,'$.caps',
   json_insert(json_extract(authorization_credential,'$.caps'),'$[#]','machines:shell'))
 WHERE agent_id IN (SELECT agent_id FROM stage2_global_spawn_agents)
   AND EXISTS(SELECT 1 FROM json_each(authorization_credential,'$.caps') WHERE value='terminals:spawn')
   AND NOT EXISTS(SELECT 1 FROM json_each(authorization_credential,'$.caps') WHERE value='machines:shell');
+`,
+        `
 UPDATE agent_runs SET caps=json_insert(caps,'$[#]','machines:shell')
 WHERE id IN (SELECT id FROM stage2_global_spawn_runs)
   AND NOT EXISTS(SELECT 1 FROM json_each(caps) WHERE value='machines:shell');
+`,
+        `
 UPDATE agent_runs SET authorizer_caps=json_insert(authorizer_caps,'$[#]','machines:shell')
 WHERE id IN (SELECT id FROM stage2_global_spawn_runs)
   AND EXISTS(SELECT 1 FROM json_each(authorizer_caps) WHERE value='terminals:spawn')
   AND NOT EXISTS(SELECT 1 FROM json_each(authorizer_caps) WHERE value='machines:shell');
+`,
+        `
 DROP TABLE stage2_global_spawn_runs;
+`,
+        `
 DROP TABLE stage2_global_spawn_agents;
+`,
+        `
 DROP TABLE stage2_global_spawn_tokens;
+`,
+        `
 DROP TABLE stage2_global_spawn_grants;
+`,
+        `
 INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','49');
 `,
+      ];
+      for (const statement of statements) db.query(statement).run();
+    },
   },
 };
 

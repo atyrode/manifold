@@ -13,6 +13,7 @@ import {
   TerminalRuntimeSchema,
   WebHostContextSchema,
   StreamOpenSchema,
+  projectLegacyCaps,
   type Cap,
   type MachineSummary,
   type PlacementDestination,
@@ -275,7 +276,7 @@ export class WorkerHost {
         t: "init",
         pluginId,
         principal: this.deps.principal,
-        caps: [...this.deps.caps],
+        caps: projectLegacyCaps(this.deps.caps),
         containerId: this.deps.containerId,
       });
     };
@@ -433,7 +434,7 @@ export class WorkerHost {
     const { host } = entry;
     return WebHostContextSchema.parse({
       principal: host.principal,
-      caps: host.client.selfCaps(),
+      caps: this.contract < 12 ? projectLegacyCaps(host.client.selfCaps()) : host.client.selfCaps(),
       ...(this.contract < 12
         ? {}
         : {

@@ -138,10 +138,13 @@ function ctxWith(
         allowed.push([cap, ref]);
         return cap === "scenes:write";
       },
-      allowsNode: (cap, node, reach = "node") => scopeAdmits(
-        [{ target: "manifold://container/c1", reach: "subtree", caps: ["scenes:write"] }],
-        node, cap, reach,
-      ),
+      allowsNode: (cap, node, reach = "node") =>
+        scopeAdmits(
+          [{ target: "manifold://container/c1", reach: "subtree", caps: ["scenes:write"] }],
+          node,
+          cap,
+          reach,
+        ),
     },
     containerScope: "c1",
     outsideScope: (containerId) => (containerId === "c1" ? null : { refused: "outside" }),
@@ -420,7 +423,11 @@ describe("serveCtxCall", () => {
           },
           send: (frame) => {
             if (frame.t === "call") {
-              void serveCtxCall(IsolateCtxMethodSchema.parse(frame.method), frame.args, served).then(
+              void serveCtxCall(
+                IsolateCtxMethodSchema.parse(frame.method),
+                frame.args,
+                served,
+              ).then(
                 (result) => receive({ t: "reply", id: frame.id, ok: true, result }),
                 (error: unknown) =>
                   receive({
@@ -838,26 +845,71 @@ describe("serveCtxCall", () => {
   test("malformed scoped mint inputs cannot reach issuance, and invalid grant responses are not delivered", async () => {
     let issuances = 0;
     const principal = { id: "issuer", kind: "human" as const, name: "Issuer", color: "#123456" };
-    const ctx = { identity: { mintTokenV2: () => {
-      issuances += 1;
-      return { ok: true, value: {
-        token: "secret", principal, scope: [], caps: ["machines:shell"],
-        containerId: null, expiresAt: 1000,
-      } };
-    } } } as unknown as ActionCtx;
-    await expect(serveCtxCall("identity.mintTokenV2", [{
-      principalId: principal.id, scope: [{
-        target: "manifold://machine/m1", reach: "node", caps: ["*"],
-      }], expiresAt: 1000,
-    }], { kind: "dispatch", ctx })).rejects.toThrow();
+    const ctx = {
+      identity: {
+        mintTokenV2: () => {
+          issuances += 1;
+          return {
+            ok: true,
+            value: {
+              token: "secret",
+              principal,
+              scope: [],
+              caps: ["machines:shell"],
+              containerId: null,
+              expiresAt: 1000,
+            },
+          };
+        },
+      },
+    } as unknown as ActionCtx;
+    await expect(
+      serveCtxCall(
+        "identity.mintTokenV2",
+        [
+          {
+            principalId: principal.id,
+            scope: [
+              {
+                target: "manifold://machine/m1",
+                reach: "node",
+                caps: ["*"],
+              },
+            ],
+            expiresAt: 1000,
+          },
+        ],
+        { kind: "dispatch", ctx },
+      ),
+    ).rejects.toThrow();
     expect(issuances).toBe(0);
-    await expect(serveCtxCall("identity.mintTokenV2", [{
-      principalId: principal.id, scope: [], expiresAt: Number.POSITIVE_INFINITY,
-    }], { kind: "dispatch", ctx })).rejects.toThrow();
+    await expect(
+      serveCtxCall(
+        "identity.mintTokenV2",
+        [
+          {
+            principalId: principal.id,
+            scope: [],
+            expiresAt: Number.POSITIVE_INFINITY,
+          },
+        ],
+        { kind: "dispatch", ctx },
+      ),
+    ).rejects.toThrow();
     expect(issuances).toBe(0);
-    await expect(serveCtxCall("identity.mintTokenV2", [{
-      principalId: principal.id, scope: [], expiresAt: 1000,
-    }], { kind: "dispatch", ctx })).rejects.toThrow();
+    await expect(
+      serveCtxCall(
+        "identity.mintTokenV2",
+        [
+          {
+            principalId: principal.id,
+            scope: [],
+            expiresAt: 1000,
+          },
+        ],
+        { kind: "dispatch", ctx },
+      ),
+    ).rejects.toThrow();
     expect(issuances).toBe(1);
   });
 });

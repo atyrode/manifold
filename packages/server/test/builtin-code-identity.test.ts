@@ -12,7 +12,8 @@ test("unchanged entry/build labels cannot restore admission after an imported he
   const relocated = mkdtempSync(join(tmpdir(), "manifold-builtin-code-copy-"));
   const store = testStore();
   try {
-    const main = 'import { authority } from "./helper.ts"; import "node:fs"; export const allowed = authority;\n';
+    const main =
+      '#!/usr/bin/env bun\nimport { authority } from "./helper.ts"; import "node:fs"; export const allowed = authority;\n';
     const helper = "export const authority = false;\n";
     for (const directory of [root, relocated]) {
       writeFileSync(join(directory, "main.ts"), main);
@@ -23,13 +24,23 @@ test("unchanged entry/build labels cannot restore admission after an imported he
     const auth = new AuthService(store, "builtin-code-owner", new FakeRuntime());
     const owner = auth.authenticate("builtin-code-owner");
     const snapshot = captureAuthoritySnapshot(auth, owner, {
-      action: { actionName: "core.terminals.create", fingerprint: first, contextScope: null, requirements: [] },
+      action: {
+        actionName: "core.terminals.create",
+        fingerprint: first,
+        contextScope: null,
+        requirements: [],
+      },
     });
-    expect(restoreAuthoritySnapshot(auth, snapshot, (binding) => binding.fingerprint === first)?.principal.id).toBe(owner.principal.id);
+    expect(
+      restoreAuthoritySnapshot(auth, snapshot, (binding) => binding.fingerprint === first)
+        ?.principal.id,
+    ).toBe(owner.principal.id);
     writeFileSync(join(root, "helper.ts"), "export const authority = true;\n");
     const current = await sourceCodeIdentity([join(root, "main.ts")], root);
     expect(current).not.toBe(first);
-    expect(restoreAuthoritySnapshot(auth, snapshot, (binding) => binding.fingerprint === current)).toBeNull();
+    expect(
+      restoreAuthoritySnapshot(auth, snapshot, (binding) => binding.fingerprint === current),
+    ).toBeNull();
   } finally {
     store.close();
     rmSync(root, { recursive: true, force: true });

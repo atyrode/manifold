@@ -68,43 +68,53 @@ export const CredentialReferenceSchema = z.strictObject({
 export const AuthoritySnapshotSchema = z.strictObject({
   credential: CredentialReferenceSchema,
   actionCredential: CredentialReferenceSchema.optional(),
-  action: z.strictObject({
-    requirements: z.array(z.strictObject({
-      cap: AuthoredCapSchema,
-      ref: ManifoldRefSchema.optional(),
-      node: GrantNodeSchema.optional(),
-      reach: GrantReachSchema.optional(),
-    })).max(256),
-    contextScope: id.nullable(),
-    fingerprint: z.string().min(1).max(4096).optional(),
-    originalArgsDigest: hash.optional(),
-    actionName: id.optional(),
-    pluginId: id.optional(),
-    machineId: id.optional(),
-    containerId: id.optional(),
-    nativeDemand: z.unknown().optional(),
-  }).optional(),
-  native: z.strictObject({
-    machineId: id,
-    containerId: id,
-    pluginId: id,
-    operationId: id,
-    installationRevision: id,
-    artifactSha256: hash,
-    resourceBindingDigest: hash,
-    runtimeDigest: hash,
-    ownerId: id,
-    ownerGeneration: z.number().int().nonnegative(),
-    terminalHostId: id,
-    inputs: z.array(JobInputBindingSchema).max(16).optional(),
-    requirements: z.array(preparedRequirement).max(256),
-  }).optional(),
-  terminal: z.strictObject({
-    terminalId: id,
-    terminalHostId: id,
-    containerId: id,
-    runId: id.optional(),
-  }).optional(),
+  action: z
+    .strictObject({
+      requirements: z
+        .array(
+          z.strictObject({
+            cap: AuthoredCapSchema,
+            ref: ManifoldRefSchema.optional(),
+            node: GrantNodeSchema.optional(),
+            reach: GrantReachSchema.optional(),
+          }),
+        )
+        .max(256),
+      contextScope: id.nullable(),
+      fingerprint: z.string().min(1).max(4096).optional(),
+      originalArgsDigest: hash.optional(),
+      actionName: id.optional(),
+      pluginId: id.optional(),
+      machineId: id.optional(),
+      containerId: id.optional(),
+      nativeDemand: z.unknown().optional(),
+    })
+    .optional(),
+  native: z
+    .strictObject({
+      machineId: id,
+      containerId: id,
+      pluginId: id,
+      operationId: id,
+      installationRevision: id,
+      artifactSha256: hash,
+      resourceBindingDigest: hash,
+      runtimeDigest: hash,
+      ownerId: id,
+      ownerGeneration: z.number().int().nonnegative(),
+      terminalHostId: id,
+      inputs: z.array(JobInputBindingSchema).max(16).optional(),
+      requirements: z.array(preparedRequirement).max(256),
+    })
+    .optional(),
+  terminal: z
+    .strictObject({
+      terminalId: id,
+      terminalHostId: id,
+      containerId: id,
+      runId: id.optional(),
+    })
+    .optional(),
 });
 
 /** Keep schema-accepted optional undefined values absent in the durable authority contract. */
@@ -115,30 +125,36 @@ export function normalizeAuthoritySnapshot(
   return {
     credential,
     ...(actionCredential === undefined ? {} : { actionCredential }),
-    ...(action === undefined ? {} : {
-      action: {
-        contextScope: action.contextScope,
-        requirements: action.requirements.map(({ cap, ref, node, reach }) => ({
-          cap,
-          ...(ref === undefined ? {} : { ref }),
-          ...(node === undefined ? {} : { node }),
-          ...(reach === undefined ? {} : { reach }),
-        })),
-        ...(action.fingerprint === undefined ? {} : { fingerprint: action.fingerprint }),
-        ...(action.originalArgsDigest === undefined ? {} : { originalArgsDigest: action.originalArgsDigest }),
-        ...(action.actionName === undefined ? {} : { actionName: action.actionName }),
-        ...(action.pluginId === undefined ? {} : { pluginId: action.pluginId }),
-        ...(action.machineId === undefined ? {} : { machineId: action.machineId }),
-        ...(action.containerId === undefined ? {} : { containerId: action.containerId }),
-        ...(action.nativeDemand === undefined ? {} : { nativeDemand: action.nativeDemand }),
-      },
-    }),
-    ...(native === undefined ? {} : {
-      native: (() => {
-        const { inputs, ...binding } = native;
-        return { ...binding, ...(inputs === undefined ? {} : { inputs }) };
-      })(),
-    }),
+    ...(action === undefined
+      ? {}
+      : {
+          action: {
+            contextScope: action.contextScope,
+            requirements: action.requirements.map(({ cap, ref, node, reach }) => ({
+              cap,
+              ...(ref === undefined ? {} : { ref }),
+              ...(node === undefined ? {} : { node }),
+              ...(reach === undefined ? {} : { reach }),
+            })),
+            ...(action.fingerprint === undefined ? {} : { fingerprint: action.fingerprint }),
+            ...(action.originalArgsDigest === undefined
+              ? {}
+              : { originalArgsDigest: action.originalArgsDigest }),
+            ...(action.actionName === undefined ? {} : { actionName: action.actionName }),
+            ...(action.pluginId === undefined ? {} : { pluginId: action.pluginId }),
+            ...(action.machineId === undefined ? {} : { machineId: action.machineId }),
+            ...(action.containerId === undefined ? {} : { containerId: action.containerId }),
+            ...(action.nativeDemand === undefined ? {} : { nativeDemand: action.nativeDemand }),
+          },
+        }),
+    ...(native === undefined
+      ? {}
+      : {
+          native: (() => {
+            const { inputs, ...binding } = native;
+            return { ...binding, ...(inputs === undefined ? {} : { inputs }) };
+          })(),
+        }),
     ...(terminal === undefined ? {} : { terminal }),
   };
 }
@@ -177,20 +193,29 @@ export function restoreAuthoritySnapshot(
   const binding = snapshot.action;
   if (binding !== undefined) {
     if (binding.fingerprint !== undefined && actionCurrent?.(binding) !== true) return null;
-    const actionContext = snapshot.actionCredential === undefined
-      ? current : auth.restoreCredential(snapshot.actionCredential);
+    const actionContext =
+      snapshot.actionCredential === undefined
+        ? current
+        : auth.restoreCredential(snapshot.actionCredential);
     if (actionContext === null) return null;
-    const graded = binding.contextScope === null
-      ? actionContext
-      : { ...actionContext, containerScope: binding.contextScope };
+    const graded =
+      binding.contextScope === null
+        ? actionContext
+        : { ...actionContext, containerScope: binding.contextScope };
     for (const requirement of binding.requirements) {
-      const allowed = requirement.cap === "*"
-        ? auth.holdsRoot(actionContext)
-        : requirement.node !== undefined
-          ? auth.allowsNode(actionContext, requirement.cap, requirement.node, requirement.reach ?? "node")
-          : requirement.ref !== undefined
-            ? auth.allowsRef(actionContext, requirement.cap, requirement.ref)
-            : auth.allows(graded, requirement.cap);
+      const allowed =
+        requirement.cap === "*"
+          ? auth.holdsRoot(actionContext)
+          : requirement.node !== undefined
+            ? auth.allowsNode(
+                actionContext,
+                requirement.cap,
+                requirement.node,
+                requirement.reach ?? "node",
+              )
+            : requirement.ref !== undefined
+              ? auth.allowsRef(actionContext, requirement.cap, requirement.ref)
+              : auth.allows(graded, requirement.cap);
       if (!allowed) return null;
     }
   }
@@ -214,7 +239,8 @@ export function storeAuthoritySnapshot(
   snapshot: AuthoritySnapshot | undefined,
 ): void {
   if (snapshot === undefined) return;
-  store.db.query("INSERT INTO native_authority_snapshots(kind,id,snapshot) VALUES(?,?,?)")
+  store.db
+    .query("INSERT INTO native_authority_snapshots(kind,id,snapshot) VALUES(?,?,?)")
     .run(kind, id, JSON.stringify(cloneAuthoritySnapshot(snapshot)));
 }
 
@@ -223,8 +249,12 @@ export function readAuthoritySnapshot(
   kind: "job" | "input" | "invocation",
   id: string,
 ): AuthoritySnapshot | undefined {
-  const row = store.db.query<{ snapshot: string }, [string, string]>(
-    "SELECT snapshot FROM native_authority_snapshots WHERE kind=? AND id=?",
-  ).get(kind, id);
-  return row === null ? undefined : normalizeAuthoritySnapshot(AuthoritySnapshotSchema.parse(JSON.parse(row.snapshot)));
+  const row = store.db
+    .query<{ snapshot: string }, [string, string]>(
+      "SELECT snapshot FROM native_authority_snapshots WHERE kind=? AND id=?",
+    )
+    .get(kind, id);
+  return row === null
+    ? undefined
+    : normalizeAuthoritySnapshot(AuthoritySnapshotSchema.parse(JSON.parse(row.snapshot)));
 }

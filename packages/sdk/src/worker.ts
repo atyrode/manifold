@@ -392,7 +392,9 @@ class NativeWorkerContext implements WorkerContext {
             ? reply.type !== "policy"
             : reply.type !== "result" ||
               (agent.request.type === "invoke" && reply.door !== agent.request.door) ||
-              (agent.request.type === "ack" && reply.door !== "core.access.acknowledgeAgentPolicy"))
+              (agent.request.type === "ack" &&
+                reply.door !== "core.access.acknowledgeAgentPolicy" &&
+                reply.door !== "core.access.acknowledgeAgentPolicyV2"))
       )
         throw new WorkerError("worker_protocol_error");
       this.#pending.delete(chunk.requestId);

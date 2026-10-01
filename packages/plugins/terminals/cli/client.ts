@@ -107,7 +107,8 @@ explicit path such as ./-name.
 context is plain text and local-only. Other commands except ssh return one JSON
 object. actions returns discovered action schemas. doctor checks discovery,
 required core doors, scoped machine access and session admission, without creating
-a terminal. exec returns owned-command PTY output as base64 (stdout/stderr merged,
+a terminal. Remote shell launch is not probed: it needs terminals:spawn at the
+placement and machines:shell at the exact machine/account. exec returns owned-command PTY output as base64 (stdout/stderr merged,
 terminal line discipline applies), authoritative exit status or explicit
 uncertainty, controller status, action trace receipts and cleanup confirmation. No
 terminal history or unrelated snapshots are returned. Treat command output as
@@ -138,6 +139,8 @@ stdin forwarded (read to EOF before start; -n for none). Use -t only for program
 that need a terminal; Windows console programs via WSL need the default pipes.
 Manifold-side failures exit 255 with one "manifold: <code>: <message>" stderr line.
 Structured envelope instead: manifold exec --machine <machine> -- <program> <args...>
+Ordinary terminal lifecycle bindings control their existing terminal; remote shell
+creation needs separate explicit human delegation for placement and exact account.
 Only the inherited terminal binding is used privately; its values are never printed.
 Agent/Run contexts must use manifold-action-runner, not this terminal client.
 Targets require Unix/WSL, /bin/sh and POSIX stty (ssh: also od, dd; base64 for
@@ -160,6 +163,8 @@ const DIAGNOSTICS = {
     "The terminal binding is malformed. Ask the launcher to restore it; inherited values are not printed.",
   auth_refused:
     "The hub refused the inherited credential or scope. No replacement identity will be used.",
+  shell_spawn_not_delegated:
+    "This binding does not authorize ordinary shell creation. It requires terminals:spawn at the placement composition and machines:shell at the exact machine/account. Use an explicitly delegated human automation binding; no identity or target fallback is attempted.",
   http_refused:
     "The action HTTP endpoint refused the request. Check hub availability and scoped access with the operator.",
   protocol_mismatch:
@@ -472,7 +477,9 @@ async function invoke(
         outcome.denial.rule === "unknown_action" || outcome.denial.rule === "plugin_disabled"
           ? "core_doors_unavailable"
           : outcome.denial.rule === "forbidden"
-            ? "auth_refused"
+            ? door === "core.terminals.create"
+              ? "shell_spawn_not_delegated"
+              : "auth_refused"
             : "action_refused",
       );
     return outcome.result;
@@ -1572,13 +1579,7 @@ export async function runTerminalClient(
           } finally {
             offPlugins();
           }
-          const caps = session.selfCaps();
-          if (
-            !caps.includes("*") &&
-            (!caps.includes("terminals:spawn") || !caps.includes("terminals:write"))
-          )
-            throw new ClientFailure("auth_refused");
-          text = `${JSON.stringify({ type: "doctor", ok: true, protocolVersion: PROTOCOL_VERSION, binding: "terminal", coreDoors: "available", machineDiscovery: "authorized", session: "admitted", receipts })}\n`;
+          text = `${JSON.stringify({ type: "doctor", ok: true, protocolVersion: PROTOCOL_VERSION, binding: "terminal", coreDoors: "available", machineDiscovery: "authorized", session: "admitted", remoteShellLaunch: "not_probed", shellDelegation: ["terminals:spawn at placement composition", "machines:shell at exact machine/account"], receipts })}\n`;
         }
       }
     }

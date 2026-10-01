@@ -193,7 +193,11 @@ async function hostFixture(): Promise<HostFixture> {
 }
 
 /** A token, so authority is exercised through real attenuation rather than a hand-built context. */
-function context(fixture: HostFixture, caps: readonly LegacyCap[], containerId?: string): AuthContext {
+function context(
+  fixture: HostFixture,
+  caps: readonly LegacyCap[],
+  containerId?: string,
+): AuthContext {
   const grant = fixture.auth.mintToken(
     {
       principal: { name: "guest", kind: "human" },

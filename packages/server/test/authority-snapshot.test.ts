@@ -27,14 +27,26 @@ function fixture() {
     { target: containerNode, reach: "subtree", caps: ["containers:write"] },
     { target: machineNode, reach: "node", caps: ["machines:shell"] },
   ];
-  const minted = auth.mintTokenV2({
-    principal: { name: "correlated-native-caller", kind: "human" },
-    containerId: "approved",
-    scope,
-    expiresAt: runtime.now() + 60_000,
-  }, owner);
-  return { store, runtime, auth, owner, machine, other, containerNode, machineNode,
-    caller: auth.authenticate(minted.token) };
+  const minted = auth.mintTokenV2(
+    {
+      principal: { name: "correlated-native-caller", kind: "human" },
+      containerId: "approved",
+      scope,
+      expiresAt: runtime.now() + 60_000,
+    },
+    owner,
+  );
+  return {
+    store,
+    runtime,
+    auth,
+    owner,
+    machine,
+    other,
+    containerNode,
+    machineNode,
+    caller: auth.authenticate(minted.token),
+  };
 }
 
 test("hub snapshots preserve correlated C-plus-M authority while the native credential omits shell", () => {
@@ -53,40 +65,64 @@ test("hub snapshots preserve correlated C-plus-M authority while the native cred
     expect(f.auth.allowsNode(restored, "machines:shell", f.machineNode)).toBe(true);
     expect(f.auth.allowsNode(restored, "containers:write", f.machineNode)).toBe(false);
     expect(f.auth.allowsNode(restored, "machines:shell", f.containerNode)).toBe(false);
-    expect(f.auth.allowsNode(restored, "machines:shell",
-      formatManifoldUri({ kind: "machine", machineId: f.other }))).toBe(false);
-  } finally { f.store.close(); }
+    expect(
+      f.auth.allowsNode(
+        restored,
+        "machines:shell",
+        formatManifoldUri({ kind: "machine", machineId: f.other }),
+      ),
+    ).toBe(false);
+  } finally {
+    f.store.close();
+  }
 });
 
 test("a persisted action demand rechecks exact node, subtree reach and live denies", () => {
   const f = fixture();
   try {
     const snapshot = captureAuthoritySnapshot(f.auth, f.caller, {
-      action: { contextScope: "approved", requirements: [
-        { cap: "containers:write", node: f.containerNode, reach: "subtree" },
-        { cap: "machines:shell", node: f.machineNode, reach: "node" },
-      ] },
+      action: {
+        contextScope: "approved",
+        requirements: [
+          { cap: "containers:write", node: f.containerNode, reach: "subtree" },
+          { cap: "machines:shell", node: f.machineNode, reach: "node" },
+        ],
+      },
     });
     expect(restoreAuthoritySnapshot(f.auth, snapshot)).not.toBeNull();
-    const subtreeMachine = cloneAuthoritySnapshot({ ...snapshot, action: {
-      ...snapshot.action!, requirements: [{ cap: "machines:shell", node: f.machineNode, reach: "subtree" }],
-    } });
+    const subtreeMachine = cloneAuthoritySnapshot({
+      ...snapshot,
+      action: {
+        ...snapshot.action!,
+        requirements: [{ cap: "machines:shell", node: f.machineNode, reach: "subtree" }],
+      },
+    });
     expect(restoreAuthoritySnapshot(f.auth, subtreeMachine)).toBeNull();
-    f.auth.grant({
-      principal: { kind: "principal", id: f.caller.principal.id },
-      node: f.machineNode, reach: "node", caps: ["machines:shell"], effect: "deny",
-    }, f.owner);
+    f.auth.grant(
+      {
+        principal: { kind: "principal", id: f.caller.principal.id },
+        node: f.machineNode,
+        reach: "node",
+        caps: ["machines:shell"],
+        effect: "deny",
+      },
+      f.owner,
+    );
     expect(restoreAuthoritySnapshot(f.auth, snapshot)).toBeNull();
-  } finally { f.store.close(); }
+  } finally {
+    f.store.close();
+  }
 });
 
 test("a fingerprint-bound continuation refuses unavailable installation binding and expires faithfully", () => {
   const f = fixture();
   try {
     const snapshot = captureAuthoritySnapshot(f.auth, f.caller, {
-      action: { contextScope: "approved", fingerprint: "installed-action", requirements: [
-        { cap: "machines:shell", node: f.machineNode, reach: "node" },
-      ] },
+      action: {
+        contextScope: "approved",
+        fingerprint: "installed-action",
+        requirements: [{ cap: "machines:shell", node: f.machineNode, reach: "node" }],
+      },
     });
     expect(restoreAuthoritySnapshot(f.auth, snapshot)).toBeNull();
     let installed = true;
@@ -97,7 +133,9 @@ test("a fingerprint-bound continuation refuses unavailable installation binding 
     installed = true;
     f.runtime.time = snapshot.credential.expiresAt! + 1;
     expect(restoreAuthoritySnapshot(f.auth, snapshot, current)).toBeNull();
-  } finally { f.store.close(); }
+  } finally {
+    f.store.close();
+  }
 });
 
 test("explicit empty scoped authority cannot regain permissions from its coarse native summary", () => {
@@ -108,7 +146,9 @@ test("explicit empty scoped authority cannot regain permissions from its coarse 
     expect(restored.authorityScope).toEqual([]);
     expect(f.auth.allowsNode(restored, "machines:shell", f.machineNode)).toBe(false);
     expect(f.auth.allowsNode(restored, "containers:write", f.containerNode)).toBe(false);
-  } finally { f.store.close(); }
+  } finally {
+    f.store.close();
+  }
 });
 
 test("action evidence uses the original credential without widening the native effect credential", () => {
@@ -117,15 +157,26 @@ test("action evidence uses the original credential without widening the native e
     const native = { ...f.caller, caps: ["containers:write" as const] };
     const snapshot = captureAuthoritySnapshot(f.auth, native, {
       actionCredential: f.auth.credentialReference(f.caller),
-      action: { contextScope: "approved", requirements: [
-        { cap: "machines:shell", node: f.machineNode, reach: "node" },
-      ] },
+      action: {
+        contextScope: "approved",
+        requirements: [{ cap: "machines:shell", node: f.machineNode, reach: "node" }],
+      },
     });
     const restored = restoreAuthoritySnapshot(f.auth, cloneAuthoritySnapshot(snapshot))!;
     expect(restored.caps).toEqual(["containers:write"]);
     expect(f.auth.allowsNode(restored, "machines:shell", f.machineNode)).toBe(false);
-    f.auth.grant({ principal: { kind: "principal", id: f.caller.principal.id },
-      node: f.machineNode, reach: "node", caps: ["machines:shell"], effect: "deny" }, f.owner);
+    f.auth.grant(
+      {
+        principal: { kind: "principal", id: f.caller.principal.id },
+        node: f.machineNode,
+        reach: "node",
+        caps: ["machines:shell"],
+        effect: "deny",
+      },
+      f.owner,
+    );
     expect(restoreAuthoritySnapshot(f.auth, snapshot)).toBeNull();
-  } finally { f.store.close(); }
+  } finally {
+    f.store.close();
+  }
 });

@@ -3,7 +3,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
-import { CAPS, MANIFOLD_ROOT_URI, formatManifoldUri, type Cap, type LegacyCap } from "@manifold/protocol";
+import {
+  CAPS,
+  MANIFOLD_ROOT_URI,
+  formatManifoldUri,
+  type Cap,
+  type LegacyCap,
+} from "@manifold/protocol";
 import { AuthService, ServiceError, type AuthContext } from "../src/auth.ts";
 import { openDatabase } from "../src/db.ts";
 import { ServerStore, sha256Hex } from "../src/stores.ts";
@@ -470,7 +476,12 @@ describe("minted credentials answer the same questions as migrated ones", () => 
       containerScope: null,
     });
 
-    const scopedCaps: LegacyCap[] = ["containers:read", "scenes:write", "terminals:write", "tokens:mint"];
+    const scopedCaps: LegacyCap[] = [
+      "containers:read",
+      "scenes:write",
+      "terminals:write",
+      "tokens:mint",
+    ];
     const scoped = auth.mintToken(
       {
         principal: { name: "builder", kind: "human" },

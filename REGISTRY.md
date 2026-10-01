@@ -71,6 +71,7 @@ must never be taught one.
         "packages/plugin/src/**",
         "packages/server/src/plugin-host.ts",
         "packages/server/src/action-authority-fence.ts",
+        "packages/server/src/builtin-code-identity.ts",
         "packages/server/src/plugin-installs.ts",
         "packages/server/src/plugin-releases.ts",
         "packages/server/src/plugin-updates.ts",
@@ -87,14 +88,14 @@ must never be taught one.
         "packages/server/src/index.ts"
       ],
       "litmus": ["bootstrap", "neutrality", "arbitration"],
-      "verdict": "the registry itself plus the doors it dispatches through, including the engine-owned enablement door (engine.plugins, a builtin roster row) and the isolation runner (ADR 0016 §9, R7: joined here rather than seated as its own pillar — the thing that loads a plugin's code is the same loader, one process boundary further out). Plugins presuppose the loader; it refuses collisions, resolves dependencies and order, and intersects capabilities — arbitration by definition. It ASSEMBLES the roster; it never renders a composition. Mounted projection scopes, optional titlebar contributions and the single tile-motion owner are neutral renderer contracts admitted by ADR 0024, not plugin policy.",
+      "verdict": "the registry itself plus the doors it dispatches through, including the engine-owned enablement door (engine.plugins, a builtin roster row) and the isolation runner (ADR 0016 §9, R7: joined here rather than seated as its own pillar — the thing that loads a plugin's code is the same loader, one process boundary further out). Plugins presuppose the loader; it refuses collisions, resolves dependencies and order, and intersects capabilities — arbitration by definition. Server-only action preparers declare conjunctive requirements inside an admitted ceiling; the shared read-only preparation and exact-code live effect fence are neutral arbitration, not terminal policy. It ASSEMBLES the roster; it never renders a composition. Mounted projection scopes, optional titlebar contributions and the single tile-motion owner are neutral renderer contracts admitted by ADR 0024, not plugin policy.",
       "adr": "docs/decisions/0010-plugin-engine-and-action-plane.md"
     },
     {
       "id": "identity-caps",
       "globs": ["packages/server/src/auth.ts", "packages/web/src/identity.tsx"],
       "litmus": ["bootstrap", "neutrality", "arbitration"],
-      "verdict": "who is asking and what they may do, plus this device's token custody. Every door presupposes it, it knows no domain noun, and it is the one call surface the A5 evaluator replaces. Administration of principals and tokens is NOT here: those verbs are core.access.",
+      "verdict": "who is asking and what they may do, plus this device's token custody. Every door presupposes it, it knows no domain noun, and it is the one call surface the A5 evaluator replaces. Correlated target/reach/capability scopes, credential-owned grant membership and live lineage constrain the same evaluator; a capability union is discovery, never a caps-times-targets grant. Administration of principals and tokens is NOT here: those verbs are core.access.",
       "adr": "docs/decisions/0011-permission-waterfall.md"
     },
     {
@@ -118,6 +119,7 @@ must never be taught one.
         "packages/server/src/stream-service.ts",
         "packages/server/src/machine-ws.ts",
         "packages/server/src/job-service.ts",
+        "packages/server/src/authority-snapshot.ts",
         "packages/server/src/job-store.ts",
         "packages/server/src/job-schedules.ts",
         "packages/server/src/job-deployments.ts",
@@ -299,6 +301,10 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
       "why": "ADR 0033 governed machine execution: common revision-bound admission, owner proof, signed start permits, private output authority and honest lifecycle"
     },
     {
+      "glob": "packages/server/src/authority-snapshot.ts",
+      "why": "ADR 0058 hub-only deferred authority carrier in the transport pillar: bootstrap because effects need retained hub authority before execution; neutral because it preserves protocol ceilings and binding without selecting plugin policy; arbitration because action/native attenuation and delayed effects cannot trust receiver claims"
+    },
+    {
       "glob": "packages/server/src/job-store.ts",
       "why": "ADR 0033 durable immutable request reservations, owner fencing, installation evidence and replay tombstones"
     },
@@ -337,6 +343,14 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     {
       "glob": "packages/server/src/plugin-host.ts",
       "why": "action dispatch: the denial ladder, capability intersection, enablement, roster change fan-out"
+    },
+    {
+      "glob": "packages/server/src/action-authority-fence.ts",
+      "why": "ADR 0058 invocation-private live fence in the assembly-engine pillar: bootstrap because handler effects need host admission first; neutral because requirements and targets are authored data; arbitration because a handler cannot judge its own continued authority or code binding"
+    },
+    {
+      "glob": "packages/server/src/builtin-code-identity.ts",
+      "why": "ADR 0058 executable preparation identity in the assembly-engine pillar: bootstrap because admission needs code identity before handler execution; neutral because it hashes executable dependencies rather than feature names; arbitration because a plugin cannot assert identity for a different executing implementation"
     },
     {
       "glob": "packages/server/src/shared-modules.ts",

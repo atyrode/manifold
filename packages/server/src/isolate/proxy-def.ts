@@ -278,7 +278,10 @@ export type ServedCtx =
 
 /** No ActionCtx member is reachable from this read-only pre-admission RPC server. */
 export async function serveActionPreparation(
-  method: Exclude<IsolatePreparationMethod, "prepare.native.demand" | "prepare.terminals.resolveMachine">,
+  method: Exclude<
+    IsolatePreparationMethod,
+    "prepare.native.demand" | "prepare.terminals.resolveMachine"
+  >,
   args: readonly unknown[],
   context: ActionPreparationCtx,
 ): Promise<unknown> {
@@ -288,7 +291,9 @@ export async function serveActionPreparation(
       result = await context.terminals.stored(...IsolatePreparationArgsSchemas[method].parse(args));
       break;
     case "prepare.containers.placement":
-      result = await context.containers.placement(...IsolatePreparationArgsSchemas[method].parse(args));
+      result = await context.containers.placement(
+        ...IsolatePreparationArgsSchemas[method].parse(args),
+      );
       break;
   }
   return IsolatePreparationResultSchemas[method].parse(result);
@@ -561,7 +566,7 @@ export async function serveCtxCall(
     const schema = IdentityV2BridgeSchemas[name];
     const values = schema.args.parse(args);
     const invoke = served.ctx.identity[name] as (...input: never[]) => unknown;
-    const result = await invoke(...values as never[]);
+    const result = await invoke(...(values as never[]));
     return IdentityV2AnswerSchemas[name].parse(result);
   }
   switch (method) {

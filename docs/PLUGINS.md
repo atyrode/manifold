@@ -617,7 +617,6 @@ also pin a once-per-process digest of actual source dependency bytes; compiled h
 executable bytes. Deployment labels and `.dirty` version suffixes are not security identities:
 a changed imported helper makes a new process refuse the old fingerprint-bound continuation.
 
-
 For selected high-impact delegated effects, **`agentJustification: "required"`** publishes a
 bounded declaration requirement in the same action metadata at `GET /api/protocol`.
 An active accountable run supplies `x-manifold-agent-justification` through the shared action

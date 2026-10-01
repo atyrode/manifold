@@ -33,7 +33,15 @@ export const terminalsManifest: PluginManifest = {
   version: "1.0.0",
   title: "Terminals",
   description: "Owns terminal creation policy, naming, restart, killing, and the terminal indexes.",
-  capabilities: ["containers:read", "containers:write", "scenes:write", "terminals:spawn", "terminals:write", "machines:shell", ...GOVERNED_CAPS],
+  capabilities: [
+    "containers:read",
+    "containers:write",
+    "scenes:write",
+    "terminals:spawn",
+    "terminals:write",
+    "machines:shell",
+    ...GOVERNED_CAPS,
+  ],
   contributes: {
     panels: [],
     sections: [],

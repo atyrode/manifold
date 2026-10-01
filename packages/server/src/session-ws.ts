@@ -1084,7 +1084,13 @@ export class SessionGateway {
         this.sendResyncIfDue(connection, channel);
         return;
       case "terminal_open": {
-        let prepared: { message: Extract<ClientMessage, { type: "terminal_open" }>; fence: ActionAuthorityFence; traceId: number } | undefined;
+        let prepared:
+          | {
+              message: Extract<ClientMessage, { type: "terminal_open" }>;
+              fence: ActionAuthorityFence;
+              traceId: number;
+            }
+          | undefined;
         /*
           POLICY THROUGH THE LADDER. Whether a terminal may be born here, now, by this
           principal — and running WHAT — is `core.terminals`' question, and it is asked
@@ -1105,27 +1111,34 @@ export class SessionGateway {
           plugin refuses it at rung 2, while `kill` is declared `cleanup` and outlives the
           disable — nobody is locked out of removing what already exists (D12).
          */
-        void this.dispatchPolicy(connection, peer, "core.terminals.open", message.elementId, {
-          containerId: peer.containerId,
-          elementId: message.elementId,
-          ...(message.cols === undefined ? {} : { cols: message.cols }),
-          ...(message.rows === undefined ? {} : { rows: message.rows }),
-          ...(message.cwd === undefined ? {} : { cwd: message.cwd }),
-          ...(message.machineId === undefined ? {} : { machineId: message.machineId }),
-          ...(message.placement === undefined ? {} : { placement: message.placement }),
-          ...(message.program === undefined ? {} : { program: message.program }),
-          ...(message.env === undefined ? {} : { env: message.env }),
-          ...(message.runtime === undefined ? {} : { runtime: message.runtime }),
-        }, {
-          onPrepared: (_args, fence, traceId) => {
-            const machineId = fence.snapshot().machineId;
-            if (machineId === undefined) {
-              fence.close();
-              throw new ServiceError("forbidden", "terminal destination unavailable");
-            }
-            prepared = { message: { ...message, machineId }, fence, traceId };
+        void this.dispatchPolicy(
+          connection,
+          peer,
+          "core.terminals.open",
+          message.elementId,
+          {
+            containerId: peer.containerId,
+            elementId: message.elementId,
+            ...(message.cols === undefined ? {} : { cols: message.cols }),
+            ...(message.rows === undefined ? {} : { rows: message.rows }),
+            ...(message.cwd === undefined ? {} : { cwd: message.cwd }),
+            ...(message.machineId === undefined ? {} : { machineId: message.machineId }),
+            ...(message.placement === undefined ? {} : { placement: message.placement }),
+            ...(message.program === undefined ? {} : { program: message.program }),
+            ...(message.env === undefined ? {} : { env: message.env }),
+            ...(message.runtime === undefined ? {} : { runtime: message.runtime }),
           },
-        }).then((allowed) => {
+          {
+            onPrepared: (_args, fence, traceId) => {
+              const machineId = fence.snapshot().machineId;
+              if (machineId === undefined) {
+                fence.close();
+                throw new ServiceError("forbidden", "terminal destination unavailable");
+              }
+              prepared = { message: { ...message, machineId }, fence, traceId };
+            },
+          },
+        ).then((allowed) => {
           if (allowed && prepared !== undefined) {
             this.broker.open(peer, prepared.message, prepared.traceId, prepared.fence);
           }

@@ -325,16 +325,20 @@ test("faithful authority survives reopen without changing the signed request or 
   const f = fixture();
   const snapshot: AuthoritySnapshot = {
     credential: {
-      principalId: "principal", tokenId: "private-token", grantId: null,
-      caps: ["containers:write", "machines:shell"], containerScope: "approved",
+      principalId: "principal",
+      tokenId: "private-token",
+      grantId: null,
+      caps: ["containers:write", "machines:shell"],
+      containerScope: "approved",
       authorityScope: [
         { target: "manifold://container/approved", reach: "subtree", caps: ["containers:write"] },
         { target: "manifold://machine/machine", reach: "node", caps: ["machines:shell"] },
       ],
     },
-    action: { contextScope: "approved", requirements: [
-      { cap: "machines:shell", node: "manifold://machine/machine", reach: "node" },
-    ] },
+    action: {
+      contextScope: "approved",
+      requirements: [{ cap: "machines:shell", node: "manifold://machine/machine", reach: "node" }],
+    },
   };
   const signed = request("scoped", { credential: projectJobCredential(snapshot.credential) });
   const encoded = canonicalJobJson(signed);
@@ -345,20 +349,33 @@ test("faithful authority survives reopen without changing the signed request or 
   expect(canonicalJobJson(f.jobs.get("scoped")!.request)).toBe(encoded);
   expect(f.jobs.get("legacy")).not.toHaveProperty("authoritySnapshot");
   const changed = { ...snapshot, credential: { ...snapshot.credential, authorityScope: [] } };
-  expect(() => f.jobs.reserve(signed, 3, undefined, changed)).toThrow("job_authority_snapshot_conflict");
+  expect(() => f.jobs.reserve(signed, 3, undefined, changed)).toThrow(
+    "job_authority_snapshot_conflict",
+  );
   expect(f.jobs.get("scoped")?.authoritySnapshot).toEqual(snapshot);
 });
 
 test("native input keeps its caller snapshot and cannot replace it on request replay", () => {
   const f = fixture();
   const job = f.jobs.reserve(request("input-snapshot"), 1, undefined);
-  const snapshot: AuthoritySnapshot = { credential: {
-    ...job.request.credential, caps: ["jobs:input", "machines:shell"],
-    authorityScope: [{ target: "manifold://machine/machine", reach: "subtree", caps: ["jobs:input"] }],
-  } };
+  const snapshot: AuthoritySnapshot = {
+    credential: {
+      ...job.request.credential,
+      caps: ["jobs:input", "machines:shell"],
+      authorityScope: [
+        { target: "manifold://machine/machine", reach: "subtree", caps: ["jobs:input"] },
+      ],
+    },
+  };
   expect(f.jobs.reserveInput(job, "one-input", 0, "principal", "trace", snapshot)).toBe(true);
   f.reopen();
-  expect(f.jobs.reserveInput(f.jobs.get(job.request.jobId)!, "one-input", 0, "principal", "trace",
-    { ...snapshot, credential: { ...snapshot.credential, authorityScope: [] } })).toBe(false);
-  expect(readAuthoritySnapshot(f.store, "input", JSON.stringify([job.request.jobId, "one-input"]))).toEqual(snapshot);
+  expect(
+    f.jobs.reserveInput(f.jobs.get(job.request.jobId)!, "one-input", 0, "principal", "trace", {
+      ...snapshot,
+      credential: { ...snapshot.credential, authorityScope: [] },
+    }),
+  ).toBe(false);
+  expect(
+    readAuthoritySnapshot(f.store, "input", JSON.stringify([job.request.jobId, "one-input"])),
+  ).toEqual(snapshot);
 });

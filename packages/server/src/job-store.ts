@@ -120,7 +120,8 @@ export class JobStore {
         "SELECT request,state,permit,result,audit_origin,decision_id,next_input_seq,stdin_closed,owner_closed,container_grants FROM machine_jobs WHERE job_id=?",
       )
       .get(jobId);
-    const authoritySnapshot = r === null ? undefined : readAuthoritySnapshot(this.store, "job", jobId);
+    const authoritySnapshot =
+      r === null ? undefined : readAuthoritySnapshot(this.store, "job", jobId);
     return r
       ? {
           request: JobRequestSchema.parse(JSON.parse(r.request)),
@@ -156,14 +157,20 @@ export class JobStore {
     authoritySnapshot?: AuthoritySnapshot,
   ): boolean {
     return this.store.transaction(() => {
-      const inserted = this.store.db
-        .query(
-          `INSERT INTO machine_job_inputs(job_id,request_id,seq,actor,trace_id,decision_id,state)
+      const inserted =
+        this.store.db
+          .query(
+            `INSERT INTO machine_job_inputs(job_id,request_id,seq,actor,trace_id,decision_id,state)
        VALUES(?,?,?,?,?,?,'pending') ON CONFLICT(job_id,request_id) DO NOTHING`,
-        )
-        .run(job.request.jobId, requestId, seq, actor, traceId, job.decisionId).changes === 1;
+          )
+          .run(job.request.jobId, requestId, seq, actor, traceId, job.decisionId).changes === 1;
       if (inserted)
-        storeAuthoritySnapshot(this.store, "input", JSON.stringify([job.request.jobId, requestId]), authoritySnapshot);
+        storeAuthoritySnapshot(
+          this.store,
+          "input",
+          JSON.stringify([job.request.jobId, requestId]),
+          authoritySnapshot,
+        );
       return inserted;
     });
   }
@@ -196,13 +203,19 @@ export class JobStore {
     return this.store.transaction(() => {
       const previous = this.reservation(request);
       if (previous !== null) {
-        if (previous.authoritySnapshot !== undefined && authoritySnapshot !== undefined &&
-          canonicalJobJson(previous.authoritySnapshot) !== canonicalJobJson(authoritySnapshot))
+        if (
+          previous.authoritySnapshot !== undefined &&
+          authoritySnapshot !== undefined &&
+          canonicalJobJson(previous.authoritySnapshot) !== canonicalJobJson(authoritySnapshot)
+        )
           throw new Error("job_authority_snapshot_conflict");
         return previous;
       }
-      if (authoritySnapshot !== undefined &&
-        canonicalJobJson(projectJobCredential(authoritySnapshot.credential)) !== canonicalJobJson(request.credential))
+      if (
+        authoritySnapshot !== undefined &&
+        canonicalJobJson(projectJobCredential(authoritySnapshot.credential)) !==
+          canonicalJobJson(request.credential)
+      )
         throw new Error("job_authority_snapshot_mismatch");
       this.store.db
         .query(
@@ -533,13 +546,14 @@ export class JobStore {
               refusal: evidence.refusal,
               grants: evidence.requirements.flatMap(({ requirement, winner, revision, allowed }) =>
                 projectLegacyCaps([requirement.cap]).map((cap) => ({
-                node: formatManifoldUri(requirement.ref),
-                cap,
-                allowed,
-                grantId: winner?.id ?? null,
-                authorizer: winner?.createdBy ?? null,
-                revision,
-              }))),
+                  node: formatManifoldUri(requirement.ref),
+                  cap,
+                  allowed,
+                  grantId: winner?.id ?? null,
+                  authorizer: winner?.createdBy ?? null,
+                  revision,
+                })),
+              ),
               consents: JSON.parse(row.consents),
             }
           : null,

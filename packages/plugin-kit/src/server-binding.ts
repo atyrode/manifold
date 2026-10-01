@@ -2,7 +2,12 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
-import { ISOLATE_MAX_FRAME_BYTES, IsolateChildFrameSchema, type PluginBundle, type PluginManifest } from "@manifold/protocol";
+import {
+  ISOLATE_MAX_FRAME_BYTES,
+  IsolateChildFrameSchema,
+  type PluginBundle,
+  type PluginManifest,
+} from "@manifold/protocol";
 
 /** Inspect the compiled registration, not source syntax or an author-supplied cap assertion. */
 export async function inspectServerBinding(
@@ -47,10 +52,13 @@ export async function inspectServerBinding(
     ]);
     if (code !== 0) throw new Error(`server binding inspection failed: ${stderr.slice(0, 2048)}`);
     const lines = stdout.trim().split("\n");
-    if (lines.length !== 1) throw new Error("server binding inspection did not return one registration");
+    if (lines.length !== 1)
+      throw new Error("server binding inspection did not return one registration");
     const frame = IsolateChildFrameSchema.parse(JSON.parse(lines[0]!));
-    if (frame.t === "load_failed") throw new Error(`server binding inspection failed: ${frame.error}`);
-    if (frame.t !== "loaded") throw new Error("server binding inspection did not return a loaded registration");
+    if (frame.t === "load_failed")
+      throw new Error(`server binding inspection failed: ${frame.error}`);
+    if (frame.t !== "loaded")
+      throw new Error("server binding inspection did not return a loaded registration");
     if (frame.prepareActions === undefined) return undefined;
     return { prepareActions: frame.prepareActions };
   } finally {

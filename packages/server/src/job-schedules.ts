@@ -56,7 +56,11 @@ export interface JobScheduleCallbacks {
   /** Common authority evaluator; null permits, otherwise a durable refusal reason. */
   reauthorize(request: JobRequest, authoritySnapshot?: AuthoritySnapshot): string | null;
   /** Persist the job in this same SQLite transaction. Do not dispatch network I/O here. */
-  enqueue(request: JobRequest, containerGrants?: readonly ContainerGrant[], authoritySnapshot?: AuthoritySnapshot): void;
+  enqueue(
+    request: JobRequest,
+    containerGrants?: readonly ContainerGrant[],
+    authoritySnapshot?: AuthoritySnapshot,
+  ): void;
   isOnline(machineId: string): boolean;
 }
 interface ScheduleRow {
@@ -76,7 +80,13 @@ export interface JobOccurrence {
 }
 export interface JobInvocationSpec {
   /** Loaded by the hub from its durable job row, never supplied by the child. */
-  parent: { request: JobRequest; state: string; ownerId: string; ownerGeneration: number; authoritySnapshot?: AuthoritySnapshot };
+  parent: {
+    request: JobRequest;
+    state: string;
+    ownerId: string;
+    ownerGeneration: number;
+    authoritySnapshot?: AuthoritySnapshot;
+  };
   /** Authenticated and proof-verified owner connection delivering the invocation event. */
   host: { machineId: string; ownerId: string; ownerGeneration: number };
   child: JobRequest;
@@ -399,7 +409,10 @@ export class JobSchedules {
         if (
           existing.request !== canonicalJobJson(child) ||
           existing.edge !== canonicalJobJson(edge) ||
-          !equal(readAuthoritySnapshot(this.store, "invocation", child.jobId) ?? null, spec.authoritySnapshot ?? null)
+          !equal(
+            readAuthoritySnapshot(this.store, "invocation", child.jobId) ?? null,
+            spec.authoritySnapshot ?? null,
+          )
         )
           throw new JobInvocationRefusal("invocation-identity-conflict");
         return "duplicate";
@@ -438,7 +451,8 @@ export class JobSchedules {
             throw new JobInvocationRefusal("invocation-aggregate-limit");
         }
       }
-      const denial = callbacks.reauthorize(parent.request, parent.authoritySnapshot) ??
+      const denial =
+        callbacks.reauthorize(parent.request, parent.authoritySnapshot) ??
         callbacks.reauthorize(child, spec.authoritySnapshot);
       if (denial) throw new JobInvocationRefusal(denial);
       this.store.db
@@ -455,7 +469,11 @@ export class JobSchedules {
           canonicalJobJson(edge),
         );
       storeAuthoritySnapshot(this.store, "invocation", child.jobId, spec.authoritySnapshot);
-      callbacks.enqueue(child, spec.authoritySnapshot?.credential.containerGrants, spec.authoritySnapshot);
+      callbacks.enqueue(
+        child,
+        spec.authoritySnapshot?.credential.containerGrants,
+        spec.authoritySnapshot,
+      );
       return "reserved";
     });
   }

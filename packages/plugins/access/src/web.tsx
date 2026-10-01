@@ -2,26 +2,28 @@ import "./styles.css";
 import type { SectionProps } from "@manifold/plugin";
 import { Chip, ControlIcon, Disclosure, Stack } from "@manifold/ui";
 import {
-  ListRunsResultSchema,
-  CredentialsResponseSchema,
+  ListRunsV2ResultSchema,
+  CredentialsResponseV2Schema,
   InstanceServiceDescriptionSchema,
-  ListAgentsResultSchema,
+  ListAgentsV2ResultSchema,
   PrincipalAccessPauseResultSchema,
   RevokeResultSchema,
   formatManifoldUri,
-  type PrincipalCredentials,
+  type PrincipalCredentialsV2,
 } from "@manifold/protocol";
 import { useState, type ReactElement } from "react";
 import {
-  ACCESS_LIST_AGENTS_ACTION,
-  ACCESS_LIST_CREDENTIALS_ACTION,
-  ACCESS_LIST_RUNS_ACTION,
+  ACCESS_LIST_AGENTS_V2_ACTION,
+  ACCESS_LIST_CREDENTIALS_V2_ACTION,
+  ACCESS_LIST_RUNS_V2_ACTION,
   ACCESS_PAUSE_ACTION,
   ACCESS_RESUME_ACTION,
   ACCESS_REVOKE_ACTION,
 } from "./index.ts";
 import { useAccessRead } from "./reads.ts";
 import { partitionCredentials } from "./rows.ts";
+import { ShellAutomation } from "./shell-automation.tsx";
+import { AuthorityScopeDetails, InspectionFold } from "./runs.tsx";
 export { AgentsSection } from "./agents.tsx";
 
 const ROW_ICON = { size: 14, strokeWidth: 1.75, absoluteStrokeWidth: true } as const;
@@ -33,7 +35,7 @@ function expiryLabel(expiresAt: number | undefined, now: number): string {
   return days === 1 ? "expires tomorrow" : `expires in ${String(days)} days`;
 }
 
-function metaLine(row: PrincipalCredentials, now: number): string {
+function metaLine(row: PrincipalCredentialsV2, now: number): string {
   const parts: string[] = [row.principal.kind];
   if (row.principal.origin !== undefined) parts.push(row.principal.origin);
   parts.push(`since ${new Date(row.createdAt).toLocaleDateString()}`);
@@ -144,19 +146,25 @@ function CredentialSessions({ host }: SectionProps): ReactElement {
   const [revision, setRevision] = useState(0);
   const read = useAccessRead(
     host,
-    ACCESS_LIST_CREDENTIALS_ACTION,
-    CredentialsResponseSchema,
+    ACCESS_LIST_CREDENTIALS_V2_ACTION,
+    CredentialsResponseV2Schema,
     {},
     revision,
   );
   const agents = useAccessRead(
     host,
-    ACCESS_LIST_AGENTS_ACTION,
-    ListAgentsResultSchema,
+    ACCESS_LIST_AGENTS_V2_ACTION,
+    ListAgentsV2ResultSchema,
     {},
     revision,
   );
-  const runs = useAccessRead(host, ACCESS_LIST_RUNS_ACTION, ListRunsResultSchema, {}, revision);
+  const runs = useAccessRead(
+    host,
+    ACCESS_LIST_RUNS_V2_ACTION,
+    ListRunsV2ResultSchema,
+    {},
+    revision,
+  );
   const [failure, setFailure] = useState<string | null>(null);
   // Revocation fences live sockets, so the first press must disclose what the second does.
   const [armedId, setArmedId] = useState<string | null>(null);
@@ -185,7 +193,7 @@ function CredentialSessions({ host }: SectionProps): ReactElement {
       setArmedId(null);
     }
   };
-  const setAccessPaused = async (row: PrincipalCredentials): Promise<void> => {
+  const setAccessPaused = async (row: PrincipalCredentialsV2): Promise<void> => {
     const pausing = row.pausedAt === undefined;
     setPendingAccessId(row.principal.id);
     setFailure(null);
@@ -223,7 +231,7 @@ function CredentialSessions({ host }: SectionProps): ReactElement {
   const rows = read.state === "ready" ? read.result.principals : [];
   const parts = partitionCredentials(rows);
   const live = rows.reduce((total, row) => total + row.sessions.length, 0);
-  const renderRow = (row: PrincipalCredentials): ReactElement => {
+  const renderRow = (row: PrincipalCredentialsV2): ReactElement => {
     const self = row.principal.id === host.principal.id;
     const armed = armedId === row.principal.id;
     const withdrawalTarget =
@@ -380,6 +388,22 @@ function CredentialSessions({ host }: SectionProps): ReactElement {
             </button>
           ) : null}
         </span>
+        {row.sessions.some((session) => session.authorityScope !== undefined) ? (
+          <InspectionFold title="Credential authority scopes">
+            {row.sessions.map((session) => (
+              <Stack key={session.id} gap="0.25rem">
+                <span className="credential-inspection-note">
+                  {session.id} · {expiryLabel(session.expiresAt, Date.now())}
+                </span>
+                {session.authorityScope === undefined ? (
+                  <span>Legacy single-scope credential</span>
+                ) : (
+                  <AuthorityScopeDetails host={host} scope={session.authorityScope} />
+                )}
+              </Stack>
+            ))}
+          </InspectionFold>
+        ) : null}
       </div>
     );
   };
@@ -390,12 +414,13 @@ function CredentialSessions({ host }: SectionProps): ReactElement {
           {live}/{rows.length} live
         </span>
         <Chip
-          data-action={ACCESS_LIST_CREDENTIALS_ACTION}
+          data-action={ACCESS_LIST_CREDENTIALS_V2_ACTION}
           onClick={() => setRevision((current) => current + 1)}
         >
           Refresh
         </Chip>
       </div>
+      <ShellAutomation host={host} changed={() => setRevision((current) => current + 1)} />
       {failure === null ? null : (
         <span className="credential-failure" role="alert">
           {failure}

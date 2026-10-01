@@ -107,14 +107,23 @@ import { connect, type Socket } from "node:net";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
-import { ActionPreparationError, argumentDigest, prepareActionInput } from "./action-preparation.ts";
+import {
+  ActionPreparationError,
+  argumentDigest,
+  prepareActionInput,
+} from "./action-preparation.ts";
 import {
   IdentityV2BridgeSchemas,
   IdentityV2AnswerSchemas,
   type GuestIdentityV2,
   type IdentityV2Method,
 } from "./identity-bridge.ts";
-export { IdentityV2BridgeSchemas, IdentityV2MethodSchema, IdentityV2AnswerSchemas, isIdentityV2Method } from "./identity-bridge.ts";
+export {
+  IdentityV2BridgeSchemas,
+  IdentityV2MethodSchema,
+  IdentityV2AnswerSchemas,
+  isIdentityV2Method,
+} from "./identity-bridge.ts";
 export type { GuestIdentityV2, IdentityV2Method, IdentityV2Answer } from "./identity-bridge.ts";
 export {
   ActionPreparationError,
@@ -952,10 +961,7 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
   };
 
   /** A call factory bound to one request id; closed once that request has answered. */
-  const callsFor = (
-    requestId: string,
-    preparation = false,
-  ): { call: Call; close(): void } => {
+  const callsFor = (requestId: string, preparation = false): { call: Call; close(): void } => {
     let seq = 0;
     let open = true;
     return {
@@ -991,43 +997,50 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
     };
   };
 
-  const preparationCtx = (call: Call): ActionPreparationCtx => Object.freeze({
-    terminals: Object.freeze({
-      resolveMachine: async (input: Parameters<ActionPreparationCtx["terminals"]["resolveMachine"]>[0]) =>
-        IsolatePreparationResultSchemas["prepare.terminals.resolveMachine"].parse(
-          await call("prepare.terminals.resolveMachine", [{
-            ...(input.machineId === undefined ? {} : { machineId: input.machineId }),
-            ...(input.runtime === undefined ? {} : { runtimeMachineId: input.runtime.machineId }),
-          }]),
-        ),
-      stored: async (terminalId: string) => {
-        const stored = IsolatePreparationResultSchemas["prepare.terminals.stored"].parse(
-          await call("prepare.terminals.stored", [terminalId]),
-        );
-        if (stored === null) return null;
-        return {
-          machineId: stored.machineId,
-          containerId: stored.containerId,
-          governed: stored.governed,
-          ...(stored.nativeRequirements === undefined
-            ? {}
-            : { nativeRequirements: stored.nativeRequirements }),
-        };
-      },
-    }),
-    containers: Object.freeze({
-      placement: async (containerId: string) =>
-        IsolatePreparationResultSchemas["prepare.containers.placement"].parse(
-          await call("prepare.containers.placement", [containerId]),
-        ),
-    }),
-    native: Object.freeze({
-      demand: async (...args: Parameters<ActionPreparationCtx["native"]["demand"]>) =>
-        IsolatePreparationResultSchemas["prepare.native.demand"].parse(
-          await call("prepare.native.demand", [argumentDigest(args[0]), args[1], args[2]]),
-        ),
-    }),
-  });
+  const preparationCtx = (call: Call): ActionPreparationCtx =>
+    Object.freeze({
+      terminals: Object.freeze({
+        resolveMachine: async (
+          input: Parameters<ActionPreparationCtx["terminals"]["resolveMachine"]>[0],
+        ) =>
+          IsolatePreparationResultSchemas["prepare.terminals.resolveMachine"].parse(
+            await call("prepare.terminals.resolveMachine", [
+              {
+                ...(input.machineId === undefined ? {} : { machineId: input.machineId }),
+                ...(input.runtime === undefined
+                  ? {}
+                  : { runtimeMachineId: input.runtime.machineId }),
+              },
+            ]),
+          ),
+        stored: async (terminalId: string) => {
+          const stored = IsolatePreparationResultSchemas["prepare.terminals.stored"].parse(
+            await call("prepare.terminals.stored", [terminalId]),
+          );
+          if (stored === null) return null;
+          return {
+            machineId: stored.machineId,
+            containerId: stored.containerId,
+            governed: stored.governed,
+            ...(stored.nativeRequirements === undefined
+              ? {}
+              : { nativeRequirements: stored.nativeRequirements }),
+          };
+        },
+      }),
+      containers: Object.freeze({
+        placement: async (containerId: string) =>
+          IsolatePreparationResultSchemas["prepare.containers.placement"].parse(
+            await call("prepare.containers.placement", [containerId]),
+          ),
+      }),
+      native: Object.freeze({
+        demand: async (...args: Parameters<ActionPreparationCtx["native"]["demand"]>) =>
+          IsolatePreparationResultSchemas["prepare.native.demand"].parse(
+            await call("prepare.native.demand", [argumentDigest(args[0]), args[1], args[2]]),
+          ),
+      }),
+    });
 
   // This channel carries only producer IDs. It cannot revive a completed dispatch's authority.
   const producerCalls = callsFor("producer");
@@ -1391,14 +1404,15 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
           ),
       },
       identity: {
-        ...Object.fromEntries(
+        ...(Object.fromEntries(
           identityV2Entries.map(([name, schema]) => [
             name,
-            async (...args: unknown[]) => IdentityV2AnswerSchemas[name as IdentityV2Method].parse(
-              await call(`identity.${name}` as IsolateCtxMethod, schema.args.parse(args)),
-            ),
+            async (...args: unknown[]) =>
+              IdentityV2AnswerSchemas[name as IdentityV2Method].parse(
+                await call(`identity.${name}` as IsolateCtxMethod, schema.args.parse(args)),
+              ),
           ]),
-        ) as GuestIdentityV2,
+        ) as GuestIdentityV2),
         enrollMachine: async (name) =>
           MachineBridgeResultSchemas["identity.enrollMachine"].parse(
             await call("identity.enrollMachine", [name]),
@@ -1534,13 +1548,15 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
         if ((frame.hardenedContract ?? 1) < 12)
           throw new Error("action preparation requires hardened contract 12");
         preparationMetadata = IsolatePreparationMetadataSchema.parse(
-          Object.fromEntries(Object.entries(def.prepareActions ?? {}).map(([name, definition]) => {
-            if (!actions.has(name) || typeof definition.prepare !== "function")
-              throw new Error(`preparer "${name}" has no declared action or callback`);
-            if (definition.caps.some((cap) => !frame.manifest.capabilities.includes(cap)))
-              throw new Error(`preparer "${name}" exceeds its manifest capability declaration`);
-            return [name, { caps: [...definition.caps].sort() }];
-          })),
+          Object.fromEntries(
+            Object.entries(def.prepareActions ?? {}).map(([name, definition]) => {
+              if (!actions.has(name) || typeof definition.prepare !== "function")
+                throw new Error(`preparer "${name}" has no declared action or callback`);
+              if (definition.caps.some((cap) => !frame.manifest.capabilities.includes(cap)))
+                throw new Error(`preparer "${name}" exceeds its manifest capability declaration`);
+              return [name, { caps: [...definition.caps].sort() }];
+            }),
+          ),
         );
       }
       GuestMigrationDeclarationsSchema.parse({
@@ -1603,9 +1619,13 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
     }
     let handlerArgs: unknown;
     let targets: (ManifoldRef | null)[];
-    let additionalRequirements: Extract<IsolateChildFrame, { t: "prepared" }>["additionalRequirements"];
+    let additionalRequirements: Extract<
+      IsolateChildFrame,
+      { t: "prepared" }
+    >["additionalRequirements"];
     const preparation = Object.hasOwn(def.prepareActions ?? {}, frame.action)
-      ? def.prepareActions?.[frame.action] : undefined;
+      ? def.prepareActions?.[frame.action]
+      : undefined;
     if (preparation !== undefined) {
       const requests = callsFor(frame.id, true);
       const phase = { violated: false };
@@ -1625,8 +1645,12 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
         targets = [...prepared.targets];
         additionalRequirements = [...prepared.additionalRequirements];
       } catch (error) {
-        refuse(error instanceof ActionPreparationError || error instanceof z.ZodError
-          ? "invalid_args" : "refused", errorText(error));
+        refuse(
+          error instanceof ActionPreparationError || error instanceof z.ZodError
+            ? "invalid_args"
+            : "refused",
+          errorText(error),
+        );
         return;
       } finally {
         requests.close();
@@ -1930,17 +1954,27 @@ export function defineServerPlugin(def: ServerPluginDef): void {
     let listener: ((frame: unknown) => void) | undefined;
     attachServerGuest(def, {
       send: (frame) => process.stdout.write(`${JSON.stringify(frame)}\n`),
-      onMessage: (receive) => { listener = receive; },
+      onMessage: (receive) => {
+        listener = receive;
+      },
       exit: (code) => process.exit(code),
       warn: (line) => process.stderr.write(`${line}\n`),
     });
-    void new Response(Bun.stdin.stream()).json().then((manifest: unknown) => {
-      listener?.({ t: "load", pluginId: def.manifest.id, manifest, dir: ".",
-        hardenedContract: HARDENED_CONTRACT_VERSION });
-    }).catch((error: unknown) => {
-      process.stderr.write(`${errorText(error)}\n`);
-      process.exitCode = 1;
-    });
+    void new Response(Bun.stdin.stream())
+      .json()
+      .then((manifest: unknown) => {
+        listener?.({
+          t: "load",
+          pluginId: def.manifest.id,
+          manifest,
+          dir: ".",
+          hardenedContract: HARDENED_CONTRACT_VERSION,
+        });
+      })
+      .catch((error: unknown) => {
+        process.stderr.write(`${errorText(error)}\n`);
+        process.exitCode = 1;
+      });
     return;
   }
   const transport = processTransport();

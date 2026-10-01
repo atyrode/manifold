@@ -362,30 +362,68 @@ describe("event plane subscription authority", () => {
       const machine = formatManifoldUri({ kind: "machine", machineId: "account" });
       const container = formatManifoldUri({ kind: "container", containerId: fixture.container.id });
       const cases = [
-        { id: "machine-only", scope: [{ target: machine, reach: "node" as const, caps: ["machines:shell" as const] }], eligible: false },
-        { id: "composition-machine", scope: [{ target: container, reach: "subtree" as const, caps: ["containers:read" as const] }, { target: machine, reach: "node" as const, caps: ["machines:shell" as const] }], eligible: false },
-        { id: "workspace-machine", scope: [{ target: "manifold://", reach: "subtree" as const, caps: ["containers:read" as const] }, { target: machine, reach: "node" as const, caps: ["machines:shell" as const] }], eligible: true },
+        {
+          id: "machine-only",
+          scope: [{ target: machine, reach: "node" as const, caps: ["machines:shell" as const] }],
+          eligible: false,
+        },
+        {
+          id: "composition-machine",
+          scope: [
+            { target: container, reach: "subtree" as const, caps: ["containers:read" as const] },
+            { target: machine, reach: "node" as const, caps: ["machines:shell" as const] },
+          ],
+          eligible: false,
+        },
+        {
+          id: "workspace-machine",
+          scope: [
+            {
+              target: "manifold://",
+              reach: "subtree" as const,
+              caps: ["containers:read" as const],
+            },
+            { target: machine, reach: "node" as const, caps: ["machines:shell" as const] },
+          ],
+          eligible: true,
+        },
       ];
       const sockets: { socket: FakeSocket; eligible: boolean }[] = [];
       for (const item of cases) {
-        const credential = fixture.auth.mintTokenV2({
-          principal: { name: item.id, kind: "human" },
-          scope: item.scope,
-          expiresAt: fixture.runtime.now() + 120_000,
-        }, fixture.owner);
+        const credential = fixture.auth.mintTokenV2(
+          {
+            principal: { name: item.id, kind: "human" },
+            scope: item.scope,
+            expiresAt: fixture.runtime.now() + 120_000,
+          },
+          fixture.owner,
+        );
         const actor = fixture.auth.authenticate(credential.token);
         expect(actor.containerScope).toBeNull();
         expect(fixture.events.workspaceEventsAvailable(actor)).toBe(item.eligible);
         const socket = new FakeSocket();
         fixture.gateway.open(item.id, socket);
-        fixture.gateway.message(item.id, JSON.stringify({ type: "observe", token: credential.token, protocolVersion: PROTOCOL_VERSION }));
+        fixture.gateway.message(
+          item.id,
+          JSON.stringify({
+            type: "observe",
+            token: credential.token,
+            protocolVersion: PROTOCOL_VERSION,
+          }),
+        );
         socket.clear();
         subscribe(fixture, item.id, [{ kind: "plugin", pluginId: FLOOR_EVENT_OWNERS.machines }]);
         sockets.push({ socket, eligible: item.eligible });
       }
-      fixture.events.emitCollection("machines", "machine_inventory_changed", fixture.owner.principal.id);
+      fixture.events.emitCollection(
+        "machines",
+        "machine_inventory_changed",
+        fixture.owner.principal.id,
+      );
       for (const { socket, eligible } of sockets)
-        expect(eventsOn(socket).map((event) => event.kind)).toEqual(eligible ? ["machine_inventory_changed"] : []);
+        expect(eventsOn(socket).map((event) => event.kind)).toEqual(
+          eligible ? ["machine_inventory_changed"] : [],
+        );
     } finally {
       fixture.gateway.shutdown();
       fixture.store.close();

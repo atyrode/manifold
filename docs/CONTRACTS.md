@@ -980,10 +980,11 @@ The existing Agent exclusions remain (`*`, `tokens:mint`, `machines:mint`, `plug
 
 Released V1 DTOs retain their strict vocabulary and are explicitly constructed. V1 may preserve
 scope on context/purpose/lifecycle changes but cannot replace it through legacy caps/targets.
-A conservative projection is returned only when the supported rights fit the actual V1 anchor
-and cap/target product. Empty-minimum or unrepresentable results refuse as
-`scoped_authority_requires_v2`, including whole authorized lists; no omitted rows or sentinel
-caps. Legacy coarse hints omit `machines:shell`; these hints never restore authority. The
+A conservative projection is returned only when every authority-bearing right fits the actual
+V1 vocabulary, anchor and cap/target product. A `machines:shell` leg, empty-minimum or other
+unrepresentable result refuses as `scoped_authority_requires_v2`, including whole authorized
+lists; no omitted rights, rows or sentinel caps. Legacy coarse hints omit `machines:shell`;
+these hints never restore authority. The
 coordinated current session protocol requires a matching SDK; V1 payload preservation does not
 make an old SDK binary compatible.
 
@@ -1011,7 +1012,6 @@ machine/operation/native-bound and container-targeted ceilings are not widened. 
 issuance never implies shell permission. Existing PTYs and retained signed governed jobs remain
 unchanged; new hub-only authority snapshots preserve full scope while governed wire credentials
 keep their released closed vocabulary.
-
 
 **Root-class authority is asked live, and any effective deny withdraws it (#411).** A declared
 `*` door, and every root-only service verb, asks `AuthService.holdsRoot(context)` at the moment

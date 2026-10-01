@@ -285,14 +285,16 @@ export function jobContext(
       service()
         .schedules(auth, pluginId)
         // The carried container authority is the hub's, never a schedule fact (ADR 0051).
-        .map(({ request, containerGrants: _carried, authoritySnapshot: _snapshot, ...metadata }) => ({
-          ...metadata,
-          machineId: request.machineId,
-          pluginId: request.pluginId,
-          operationId: request.operationId,
-          installationRevision: request.installationRevision,
-          artifactSha256: request.artifactSha256,
-        })),
+        .map(
+          ({ request, containerGrants: _carried, authoritySnapshot: _snapshot, ...metadata }) => ({
+            ...metadata,
+            machineId: request.machineId,
+            pluginId: request.pluginId,
+            operationId: request.operationId,
+            installationRevision: request.installationRevision,
+            artifactSha256: request.artifactSha256,
+          }),
+        ),
     disableSchedule: (args: z.infer<typeof schemas.disableSchedule>) => {
       const a = schemas.disableSchedule.parse(args);
       service().disableSchedule(auth, a.scheduleId, a.revision, pluginId);

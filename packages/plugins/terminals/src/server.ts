@@ -148,38 +148,70 @@ function creationRefusal(
     : null;
 }
 
-const workingCaps = ["containers:write", "containers:read", "scenes:write", "terminals:spawn", "terminals:write"] as const;
+const workingCaps = [
+  "containers:write",
+  "containers:read",
+  "scenes:write",
+  "terminals:spawn",
+  "terminals:write",
+] as const;
 const preparationCaps: readonly AskableCap[] = [
-  ...workingCaps, "machines:shell", "machines:run", "jobs:read", "jobs:input", "jobs:cancel",
-  "locations:read", "locations:write", "locations:create", "operations:invoke",
-  "services:invoke", "network:host",
+  ...workingCaps,
+  "machines:shell",
+  "machines:run",
+  "jobs:read",
+  "jobs:input",
+  "jobs:cancel",
+  "locations:read",
+  "locations:write",
+  "locations:create",
+  "operations:invoke",
+  "services:invoke",
+  "network:host",
 ];
 
 async function prepareCreation(ctx: ActionPreparationCtx, args: TerminalCreationArgs) {
   const hasCols = args.cols !== undefined;
   const hasRows = args.rows !== undefined;
   if (hasCols !== hasRows) throw new Error("cols and rows must be supplied together");
-  if (args.placement !== "tile" && !hasCols) throw new Error("element placement requires cols and rows");
-  if (args.runtime !== undefined && (args.cwd !== undefined || args.program !== undefined || args.env !== undefined))
+  if (args.placement !== "tile" && !hasCols)
+    throw new Error("element placement requires cols and rows");
+  if (
+    args.runtime !== undefined &&
+    (args.cwd !== undefined || args.program !== undefined || args.env !== undefined)
+  )
     throw new Error("runtime excludes cwd, program, and environment overrides");
   const placement = await ctx.containers.placement(args.containerId);
   if ((args.placement ?? "element") !== placement)
-    throw new Error(placement === "tile" ? 'this container places terminals server-side: send placement "tile"' : 'placement "tile" requires a container that holds a tile tree');
+    throw new Error(
+      placement === "tile"
+        ? 'this container places terminals server-side: send placement "tile"'
+        : 'placement "tile" requires a container that holds a tile tree',
+    );
   const machine = await ctx.terminals.resolveMachine({
     ...(args.machineId === undefined ? {} : { machineId: args.machineId }),
     ...(args.runtime === undefined ? {} : { runtime: args.runtime }),
   });
   const additionalRequirements: PreparedRequirement[] = [];
-  if (placement === "element") for (const cap of workingCaps)
-    additionalRequirements.push({ cap, node: MANIFOLD_ROOT_URI, reach: "subtree" });
+  if (placement === "element")
+    for (const cap of workingCaps)
+      additionalRequirements.push({ cap, node: MANIFOLD_ROOT_URI, reach: "subtree" });
   if (args.runtime === undefined) {
     if (machine.terminalExecution !== "unconfined")
-      throw new Error(machine.terminalExecution === "governed" ? "machine requires a declared terminal runtime" : "terminal owner has not declared unconfined terminal support");
+      throw new Error(
+        machine.terminalExecution === "governed"
+          ? "machine requires a declared terminal runtime"
+          : "terminal owner has not declared unconfined terminal support",
+      );
     additionalRequirements.push({
-      cap: "machines:shell", node: formatManifoldUri({ kind: "machine", machineId: machine.machineId }), reach: "node",
+      cap: "machines:shell",
+      node: formatManifoldUri({ kind: "machine", machineId: machine.machineId }),
+      reach: "node",
     });
   } else {
-    additionalRequirements.push(...await ctx.native.demand(args.runtime, machine.machineId, args.containerId));
+    additionalRequirements.push(
+      ...(await ctx.native.demand(args.runtime, machine.machineId, args.containerId)),
+    );
   }
   return {
     args: { ...args, machineId: machine.machineId },
@@ -201,15 +233,24 @@ export const terminalsPreparers: Readonly<Record<string, ActionPreparationDef>> 
       const home = formatManifoldUri({ kind: "container", containerId: stored.containerId });
       const additionalRequirements: PreparedRequirement[] = [];
       if (stored.governed) {
-        additionalRequirements.push(...stored.nativeRequirements ?? []);
+        additionalRequirements.push(...(stored.nativeRequirements ?? []));
       } else {
-        if (machine.terminalExecution !== "unconfined") throw new Error("terminal_runtime_required");
+        if (machine.terminalExecution !== "unconfined")
+          throw new Error("terminal_runtime_required");
         additionalRequirements.push(
           { cap: "terminals:spawn", node: home, reach: "node" },
-          { cap: "machines:shell", node: formatManifoldUri({ kind: "machine", machineId: stored.machineId }), reach: "node" },
+          {
+            cap: "machines:shell",
+            node: formatManifoldUri({ kind: "machine", machineId: stored.machineId }),
+            reach: "node",
+          },
         );
       }
-      return { args, targets: [{ kind: "container", containerId: stored.containerId }], additionalRequirements };
+      return {
+        args,
+        targets: [{ kind: "container", containerId: stored.containerId }],
+        additionalRequirements,
+      };
     },
   },
 };

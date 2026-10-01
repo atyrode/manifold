@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { resolve } from "node:path";
 import type { PluginManifest } from "@manifold/protocol";
 import type { ActionPreparationCtx, PreparedRequirement } from "@manifold/protocol";
-import { AgentSchema, AgentRunSchema, TerminalRuntimeSchema, type AgentRunAuthority } from "@manifold/protocol";
+import { AgentSchema, AgentRunSchema, type AgentRunAuthority } from "@manifold/protocol";
 import { IsolateDenial } from "../src/isolate/contract.ts";
 import { IsolateSupervisor } from "../src/isolate/supervisor.ts";
 import { silentLogger } from "../src/log.ts";
@@ -69,36 +69,61 @@ test("sealed preparation keeps child normalization private, denies mutations and
   const runtime = new FakeRuntime();
   const store = testStore();
   const supervisor = new IsolateSupervisor({ logger: silentLogger, runtime });
-  const preparedManifest: PluginManifest = { ...manifest, id: "test.preparationguest",
-    capabilities: ["containers:read", "machines:read"] };
+  const preparedManifest: PluginManifest = {
+    ...manifest,
+    id: "test.preparationguest",
+    capabilities: ["containers:read", "machines:read"],
+  };
   const storage = store.pluginStorage(preparedManifest.id);
   const target = { kind: "container" as const, containerId: "approved" };
-  const demand: PreparedRequirement = { cap: "machines:read", node: "manifold://machine/exact", reach: "node" };
+  const demand: PreparedRequirement = {
+    cap: "machines:read",
+    node: "manifold://machine/exact",
+    reach: "node",
+  };
   const principal = { id: "fixture", kind: "human" as const, name: "Fixture", color: "#123456" };
   let facts = 0;
   const preparation: ActionPreparationCtx = {
     terminals: {
-      resolveMachine: async () => { facts += 1; return {
-        machineId: "exact", terminalHostId: "owner", terminalExecution: "unconfined",
-      }; },
+      resolveMachine: async () => {
+        facts += 1;
+        return {
+          machineId: "exact",
+          terminalHostId: "owner",
+          terminalExecution: "unconfined",
+        };
+      },
       stored: async () => null,
     },
     containers: { placement: async () => "tile" },
     native: { demand: async () => [] },
   };
-  const captured: { targets: readonly unknown[]; requirements: readonly PreparedRequirement[] }[] = [];
+  const captured: { targets: readonly unknown[]; requirements: readonly PreparedRequirement[] }[] =
+    [];
   const ctx = {
-    traceId: 1, callerPlugin: null, agentRun: null, principal,
+    traceId: 1,
+    callerPlugin: null,
+    agentRun: null,
+    principal,
     auth: { principal, caps: [], isRoot: false, containerScope: null, allows: () => false },
-    containerScope: null, storage, preparation,
+    containerScope: null,
+    storage,
+    preparation,
     prepareResolveMachine: preparation.terminals.resolveMachine,
     now: () => runtime.now(),
-    admitPrepared: (targets: readonly unknown[], requirements: readonly PreparedRequirement[] = []) =>
-      { captured.push({ targets, requirements }); },
-    emit: () => { throw new Error("no emissions declared"); },
+    admitPrepared: (
+      targets: readonly unknown[],
+      requirements: readonly PreparedRequirement[] = [],
+    ) => {
+      captured.push({ targets, requirements });
+    },
+    emit: () => {
+      throw new Error("no emissions declared");
+    },
   } as unknown as ActionCtx;
   const ref = {
-    pluginId: preparedManifest.id, manifest: preparedManifest,
+    pluginId: preparedManifest.id,
+    manifest: preparedManifest,
     dir: resolve(import.meta.dir, "fixtures/isolate-preparation-guest"),
     hardenedContract: 12,
     serverBinding: { prepareActions: { open: { caps: ["machines:read" as const] } } },
@@ -108,7 +133,8 @@ test("sealed preparation keeps child normalization private, denies mutations and
     await def.handlers.capture!(ctx, null as never);
     const args = { target, secret: "transport-secret", mode: "review" };
     expect(await def.handlers.open!({ ...ctx, preparationMode: "review" }, args as never)).toEqual({
-      targets: [target], additionalRequirements: [demand],
+      targets: [target],
+      additionalRequirements: [demand],
     });
     expect(await storage.get("handler-effect")).toBeNull();
     expect(captured.at(-1)).toEqual({ targets: [target], requirements: [demand] });
@@ -118,7 +144,8 @@ test("sealed preparation keeps child normalization private, denies mutations and
     expect(await storage.get("preparation-effect")).toBeNull();
     expect(await storage.get("handler-effect")).toBeNull();
     expect(await def.handlers.open!(ctx, { ...args, mode: "execute" } as never)).toEqual({
-      machineId: "exact", preparationClosed: true,
+      machineId: "exact",
+      preparationClosed: true,
     });
     expect(await storage.get("handler-effect")).toBe("exact");
     expect(facts).toBe(3);
@@ -131,12 +158,19 @@ test("sealed preparation keeps child normalization private, denies mutations and
 test("a guest cannot add or replace its preparer ceiling at load", async () => {
   const supervisor = new IsolateSupervisor({ logger: silentLogger, runtime: new FakeRuntime() });
   try {
-    await expect(supervisor.load({
-      pluginId: "test.preparationguest", manifest: { ...manifest, id: "test.preparationguest",
-        capabilities: ["containers:read", "machines:read"] },
-      dir: resolve(import.meta.dir, "fixtures/isolate-preparation-guest"), hardenedContract: 12,
-      serverBinding: { prepareActions: { open: { caps: [] } } },
-    })).rejects.toThrow("sealed artifact binding");
+    await expect(
+      supervisor.load({
+        pluginId: "test.preparationguest",
+        manifest: {
+          ...manifest,
+          id: "test.preparationguest",
+          capabilities: ["containers:read", "machines:read"],
+        },
+        dir: resolve(import.meta.dir, "fixtures/isolate-preparation-guest"),
+        hardenedContract: 12,
+        serverBinding: { prepareActions: { open: { caps: [] } } },
+      }),
+    ).rejects.toThrow("sealed artifact binding");
   } finally {
     await supervisor.close();
   }
@@ -147,63 +181,121 @@ test("legacy harness consumers receive faithful nested caps or refuse before pos
   const store = testStore();
   const supervisor = new IsolateSupervisor({ logger: silentLogger, runtime });
   const declared: PluginManifest = {
-    ...manifest, id: "test.legacyauthority", contributes: { ...manifest.contributes,
-      harness: { id: "legacy", title: "Legacy", profileSchema: {}, sessionRef: "typed" } },
+    ...manifest,
+    id: "test.legacyauthority",
+    contributes: {
+      ...manifest.contributes,
+      harness: { id: "legacy", title: "Legacy", profileSchema: {}, sessionRef: "typed" },
+    },
   };
   const storage = store.pluginStorage(declared.id);
   const principal = { id: "fixture", kind: "agent" as const, name: "Fixture", color: "#123456" };
   const ctx = {
-    traceId: 1, callerPlugin: null, agentRun: null, principal, containerScope: null, storage,
-    auth: { principal, caps: ["scenes:write", "machines:shell"], isRoot: false, allows: () => true },
-    now: () => runtime.now(), emit: () => {},
+    traceId: 1,
+    callerPlugin: null,
+    agentRun: null,
+    principal,
+    containerScope: null,
+    storage,
+    auth: {
+      principal,
+      caps: ["scenes:write", "machines:shell"],
+      isRoot: false,
+      allows: () => true,
+    },
+    now: () => runtime.now(),
+    emit: () => {},
   } as unknown as ActionCtx;
   const run = AgentRunSchema.parse({
-    id: "r1", agentId: "a1", session: null, activity: "idle", principal,
-    rootRunId: "r1", parentRunId: null, authorizedByPrincipalId: principal.id,
-    authorizationPath: "principal", authorizationCredential: {
-      tokenId: null, grantId: null, caps: ["scenes:write"], containerScope: null,
+    id: "r1",
+    agentId: "a1",
+    session: null,
+    activity: "idle",
+    principal,
+    rootRunId: "r1",
+    parentRunId: null,
+    authorizedByPrincipalId: principal.id,
+    authorizationPath: "principal",
+    authorizationCredential: {
+      tokenId: null,
+      grantId: null,
+      caps: ["scenes:write"],
+      containerScope: null,
     },
-    purpose: "test", target: "manifold://", reach: "subtree", caps: ["scenes:write"],
-    createdAt: 1, expiresAt: 1000, renewals: 0, maxDepth: 0, maxDescendants: 0, depth: 0,
-    cleanupOwnerPrincipalId: principal.id, state: "active", policyRevision: "a".repeat(64),
+    purpose: "test",
+    target: "manifold://",
+    reach: "subtree",
+    caps: ["scenes:write"],
+    createdAt: 1,
+    expiresAt: 1000,
+    renewals: 0,
+    maxDepth: 0,
+    maxDescendants: 0,
+    depth: 0,
+    cleanupOwnerPrincipalId: principal.id,
+    state: "active",
+    policyRevision: "a".repeat(64),
     cleanup: { revokedCredentials: 0, revokedGrants: 0 },
   });
-  const terminalRuntime = TerminalRuntimeSchema.parse({
-    machineId: "m1", pluginId: "example.native", operationId: "shell",
-    installationRevision: "revision", artifactSha256: "a".repeat(64),
-    resourceBindingDigest: "b".repeat(64), input: {},
-  });
   const agent = AgentSchema.parse({
-    agentId: "a1", principalId: principal.id, sponsorPrincipalId: "sponsor", name: "Legacy",
-    purpose: "test", harness: "legacy", grant: {
-      caps: ["scenes:write"], targets: ["manifold://"], reach: "subtree",
-      maxRunLifetimeMs: 60000, delegation: { maxDepth: 0, maxDescendants: 0 }, expiresAt: 1000,
+    agentId: "a1",
+    principalId: principal.id,
+    sponsorPrincipalId: "sponsor",
+    name: "Legacy",
+    purpose: "test",
+    harness: "legacy",
+    grant: {
+      caps: ["scenes:write"],
+      targets: ["manifold://"],
+      reach: "subtree",
+      maxRunLifetimeMs: 60000,
+      delegation: { maxDepth: 0, maxDescendants: 0 },
+      expiresAt: 1000,
     },
-    context: { runtime: terminalRuntime }, state: "idle", activeRuns: 0, createdAt: 1, updatedAt: 1,
+    context: { profile: {} },
+    state: "idle",
+    activeRuns: 0,
+    createdAt: 1,
+    updatedAt: 1,
   });
   try {
     const { def } = await supervisor.load({
-      pluginId: declared.id, manifest: declared,
-      dir: resolve(import.meta.dir, "fixtures/isolate-legacy-authority-guest"), hardenedContract: 7,
+      pluginId: declared.id,
+      manifest: declared,
+      dir: resolve(import.meta.dir, "fixtures/isolate-legacy-authority-guest"),
+      hardenedContract: 7,
     });
     const harness = def.harness!;
-    await harness.launch(ctx, {
-      ...run, caps: ["scenes:write", "machines:shell"],
-      authorizationCredential: { ...run.authorizationCredential, caps: ["scenes:write", "machines:shell"] },
-    }, { ...agent, grant: { ...agent.grant, caps: ["scenes:write", "machines:shell"] } }, { machineId: "m1" });
-    const posted = JSON.parse((await storage.get("legacy-received"))!);
-    expect(posted.run.caps).toEqual(["scenes:write"]);
-    expect(posted.run.authorizationCredential.caps).toEqual(["scenes:write"]);
-    expect(posted.agent.grant.caps).toEqual(["scenes:write"]);
-    await storage.delete("legacy-received");
-    const scoped: AgentRunAuthority = { ...run, authorityScope: [
-      { target: "manifold://container/approved", reach: "subtree", caps: ["scenes:write"] },
-      { target: "manifold://machine/m1", reach: "node", caps: ["machines:shell"] },
-    ] };
-    await expect(harness.send(ctx, scoped, "hello")).rejects.toThrow("scoped_authority_requires_v2");
+    await expect(
+      harness.launch(
+        ctx,
+        {
+          ...run,
+          caps: ["scenes:write", "machines:shell"],
+          authorizationCredential: {
+            ...run.authorizationCredential,
+            caps: ["scenes:write", "machines:shell"],
+          },
+        },
+        { ...agent, grant: { ...agent.grant, caps: ["scenes:write", "machines:shell"] } },
+        { machineId: "m1" },
+      ),
+    ).rejects.toThrow("scoped_authority_requires_v2");
     expect(await storage.get("legacy-received")).toBeNull();
-    await expect(harness.send(ctx, { ...run, caps: ["machines:shell"] }, "hello"))
-      .rejects.toThrow("scoped_authority_requires_v2");
+    const scoped: AgentRunAuthority = {
+      ...run,
+      authorityScope: [
+        { target: "manifold://container/approved", reach: "subtree", caps: ["scenes:write"] },
+        { target: "manifold://machine/m1", reach: "node", caps: ["machines:read"] },
+      ],
+    };
+    await expect(harness.send(ctx, scoped, "hello")).rejects.toThrow(
+      "scoped_authority_requires_v2",
+    );
+    expect(await storage.get("legacy-received")).toBeNull();
+    await expect(harness.send(ctx, { ...run, caps: ["machines:shell"] }, "hello")).rejects.toThrow(
+      "scoped_authority_requires_v2",
+    );
     expect(await storage.get("legacy-received")).toBeNull();
   } finally {
     await supervisor.close();

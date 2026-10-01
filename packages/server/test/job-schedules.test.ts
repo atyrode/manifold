@@ -13,8 +13,11 @@ import {
   type JobScheduleSpec,
 } from "../src/job-schedules.ts";
 import {
-  projectJobCredential, readAuthoritySnapshot, captureAuthoritySnapshot,
-  restoreAuthoritySnapshot, type AuthoritySnapshot,
+  projectJobCredential,
+  readAuthoritySnapshot,
+  captureAuthoritySnapshot,
+  restoreAuthoritySnapshot,
+  type AuthoritySnapshot,
 } from "../src/authority-snapshot.ts";
 import { AuthService } from "../src/auth.ts";
 import { FakeRuntime } from "./helpers.ts";
@@ -71,7 +74,9 @@ function fixture() {
     },
   };
   return {
-    get store() { return store; },
+    get store() {
+      return store;
+    },
     get jobs() {
       return new JobSchedules(store);
     },
@@ -370,20 +375,28 @@ test("schedule restart reauthorizes faithful scope and a live deny prevents futu
   const owner = auth.authenticate("schedule-owner");
   const machineId = auth.enrollMachine("scheduled-account", owner).machine.id;
   const target = `manifold://machine/${machineId}`;
-  const minted = auth.mintTokenV2({
-    principal: { name: "scoped-schedule", kind: "human" },
-    scope: [{ target, reach: "subtree", caps: ["machines:run"] }],
-    expiresAt: runtime.now() + 60_000,
-  }, owner);
+  const minted = auth.mintTokenV2(
+    {
+      principal: { name: "scoped-schedule", kind: "human" },
+      scope: [{ target, reach: "subtree", caps: ["machines:run"] }],
+      expiresAt: runtime.now() + 60_000,
+    },
+    owner,
+  );
   const caller = auth.authenticate(minted.token);
   const snapshot = captureAuthoritySnapshot(auth, caller);
-  const spec = schedule({ authoritySnapshot: snapshot,
-    request: signed({ machineId, credential: projectJobCredential(snapshot.credential) }) });
-  const callbacks = { ...f.callbacks,
+  const spec = schedule({
+    authoritySnapshot: snapshot,
+    request: signed({ machineId, credential: projectJobCredential(snapshot.credential) }),
+  });
+  const callbacks = {
+    ...f.callbacks,
     reauthorize: (_request: JobRequest, authoritySnapshot?: AuthoritySnapshot) => {
-      const current = authoritySnapshot === undefined ? null : restoreAuthoritySnapshot(auth, authoritySnapshot);
+      const current =
+        authoritySnapshot === undefined ? null : restoreAuthoritySnapshot(auth, authoritySnapshot);
       return current !== null && auth.allowsNode(current, "machines:run", target, "subtree")
-        ? null : "scope-withdrawn";
+        ? null
+        : "scope-withdrawn";
     },
   };
   f.jobs.putSchedule(spec);
@@ -394,9 +407,16 @@ test("schedule restart reauthorizes faithful scope and a live deny prevents futu
   const first = f.requests()[0]!;
   expect(f.jobs.getOccurrence(first.jobId)?.state).toBe("enqueued");
   expect(first.credential).not.toHaveProperty("authorityScope");
-  auth.grant({ principal: { kind: "principal", id: caller.principal.id },
-    node: target, reach: "subtree", caps: ["machines:run"], effect: "deny" },
-    auth.authenticate("schedule-owner"));
+  auth.grant(
+    {
+      principal: { kind: "principal", id: caller.principal.id },
+      node: target,
+      reach: "subtree",
+      caps: ["machines:run"],
+      effect: "deny",
+    },
+    auth.authenticate("schedule-owner"),
+  );
   f.jobs.tick(210, callbacks);
   expect(f.jobs.listSchedules()).toEqual([]);
   expect(f.requests()).toEqual([first]);
@@ -405,13 +425,19 @@ test("schedule restart reauthorizes faithful scope and a live deny prevents futu
 test("invocation persistence retains full parent scope and refuses a child that drops it", () => {
   const f = fixture();
   const base = invocation();
-  const snapshot: AuthoritySnapshot = { credential: { ...base.parent.request.credential,
-    authorityScope: [{ target: "manifold://machine/machine", reach: "subtree", caps: ["jobs:input"] }],
-  } };
+  const snapshot: AuthoritySnapshot = {
+    credential: {
+      ...base.parent.request.credential,
+      authorityScope: [
+        { target: "manifold://machine/machine", reach: "subtree", caps: ["jobs:input"] },
+      ],
+    },
+  };
   const parent = { ...base.parent, authoritySnapshot: snapshot };
   const spec = { ...base, parent, authoritySnapshot: snapshot };
-  expect(() => f.jobs.reserveInvocation({ ...base, parent }, f.callbacks))
-    .toThrow("invocation-credential-ceiling");
+  expect(() => f.jobs.reserveInvocation({ ...base, parent }, f.callbacks)).toThrow(
+    "invocation-credential-ceiling",
+  );
   expect(f.jobs.reserveInvocation(spec, f.callbacks)).toBe("reserved");
   f.restart();
   expect(readAuthoritySnapshot(f.store, "invocation", spec.child.jobId)).toEqual(snapshot);

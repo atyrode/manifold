@@ -79,7 +79,11 @@ async function fixture(): Promise<IndexFixture> {
 }
 
 /** A minted token, so authority is exercised through real attenuation. */
-function context(base: IndexFixture, caps: readonly LegacyCap[], containerId?: string): AuthContext {
+function context(
+  base: IndexFixture,
+  caps: readonly LegacyCap[],
+  containerId?: string,
+): AuthContext {
   const grant = base.auth.mintToken(
     {
       principal: { name: "guest", kind: "human" },

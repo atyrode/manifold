@@ -844,7 +844,11 @@ function toAgentRun(row: AgentRunRow): AgentRunRecord {
     caps: AgentRunAuthoritySchema.shape.caps.parse(JSON.parse(row.caps)),
     ...(row.authority_scope === null
       ? {}
-      : { authorityScope: AgentRunAuthoritySchema.shape.authorityScope.unwrap().parse(JSON.parse(row.authority_scope)) }),
+      : {
+          authorityScope: AgentRunAuthoritySchema.shape.authorityScope
+            .unwrap()
+            .parse(JSON.parse(row.authority_scope)),
+        }),
     ...(row.tools_json === null
       ? {}
       : { tools: ActionResultApprovalsSchema.parse(JSON.parse(row.tools_json)) }),
@@ -2585,7 +2589,16 @@ export class ServerStore {
       this.db
         .query<
           void,
-          [number, string | null, string | null, string, string | null, number | null, string | null, string]
+          [
+            number,
+            string | null,
+            string | null,
+            string,
+            string | null,
+            number | null,
+            string | null,
+            string,
+          ]
         >(
           `UPDATE agent_runs
            SET expires_at=?,renewals=renewals+1,authorizer_token_id=?,authorizer_grant_id=?,

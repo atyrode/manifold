@@ -24,6 +24,8 @@ export function resolveWebDist(prefix: string): {
   const distDir = join(parent, "dist");
   const build = Bun.spawnSync(["bun", "run", "build:web", "--outDir", distDir, "--emptyOutDir"], {
     cwd: repoRoot,
+    // Bun tests inherit NODE_ENV=test; standalone browser proofs target the shipped bundle.
+    env: { ...process.env, NODE_ENV: "production" },
     stdout: "ignore",
     stderr: "inherit",
   });

@@ -84,7 +84,13 @@ export function serviceContext(
         authorityFence,
       ),
     read: (args) =>
-      service().readService(auth, ServiceReadArgsSchema.parse(args), pluginId, String(traceId), authorityFence),
+      service().readService(
+        auth,
+        ServiceReadArgsSchema.parse(args),
+        pluginId,
+        String(traceId),
+        authorityFence,
+      ),
     invoke: (args) => {
       if (mode !== "invoke")
         return Promise.reject(new ServiceError("forbidden", "service_unauthorized"));

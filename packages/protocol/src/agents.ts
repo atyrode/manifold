@@ -56,7 +56,10 @@ export const AgentRunAuthorityCapsSchema = z
 export const AgentAuthorityScopeSchema = z
   .lazy(() => AuthorityScopeSchema)
   .refine(
-    (scope) => scope.every((entry) => entry.caps.every((cap) => AgentRunAuthorityCapSchema.safeParse(cap).success)),
+    (scope) =>
+      scope.every((entry) =>
+        entry.caps.every((cap) => AgentRunAuthorityCapSchema.safeParse(cap).success),
+      ),
     "agent scope cannot grant runner, wildcard, legacy token, fleet, or plugin administration",
   );
 export const AgentDelegationSchema = z.strictObject({
@@ -82,9 +85,13 @@ export const AgentGrantAuthoritySchema = AgentGrantSchema.extend({
   caps: AgentRunAuthorityCapsSchema,
   targets: z.array(z.lazy(() => GrantNodeSchema)).max(64),
   authorityScope: AgentAuthorityScopeSchema.optional(),
-}).refine((grant) => grant.authorityScope !== undefined || (grant.caps.length > 0 && grant.targets.length > 0), {
-  message: "legacy agent authority requires capabilities and targets",
-});
+}).refine(
+  (grant) =>
+    grant.authorityScope !== undefined || (grant.caps.length > 0 && grant.targets.length > 0),
+  {
+    message: "legacy agent authority requires capabilities and targets",
+  },
+);
 export type AgentGrantAuthority = z.infer<typeof AgentGrantAuthoritySchema>;
 export const AgentGrantV2Schema = AgentGrantSchema.omit({
   caps: true,
@@ -170,7 +177,9 @@ export const RegisterAgentV2RequestSchema = AgentV2Schema.pick({
   context: true,
 });
 export type RegisterAgentV2Request = z.infer<typeof RegisterAgentV2RequestSchema>;
-export const RegisterAgentV2ResultSchema = RegisterAgentResultSchema.extend({ agent: AgentV2Schema });
+export const RegisterAgentV2ResultSchema = RegisterAgentResultSchema.extend({
+  agent: AgentV2Schema,
+});
 export type RegisterAgentV2Result = z.infer<typeof RegisterAgentV2ResultSchema>;
 export const GetAgentV2RequestSchema = AgentRequestSchema;
 export type GetAgentV2Request = z.infer<typeof GetAgentV2RequestSchema>;

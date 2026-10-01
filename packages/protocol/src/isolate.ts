@@ -567,10 +567,11 @@ export const IsolatePreparationMetadataSchema = z
   .record(
     LocalNameSchema,
     z.strictObject({
-      caps: AskableCapSchema.array().max(128).refine(
-        (caps) => new Set(caps).size === caps.length,
-        { message: "duplicate preparation capability" },
-      ),
+      caps: AskableCapSchema.array()
+        .max(128)
+        .refine((caps) => new Set(caps).size === caps.length, {
+          message: "duplicate preparation capability",
+        }),
     }),
   )
   .refine((actions) => Object.keys(actions).length <= 128, {
@@ -598,12 +599,14 @@ export const IsolatePreparationResultSchemas = {
     terminalHostId: z.string().min(1).max(128).nullable(),
     terminalExecution: TerminalExecutionSchema.nullable(),
   }),
-  "prepare.terminals.stored": z.strictObject({
-    machineId: z.string().min(1).max(128),
-    containerId: z.string().min(1).max(128),
-    governed: z.boolean(),
-    nativeRequirements: PreparedRequirementsSchema.optional(),
-  }).nullable(),
+  "prepare.terminals.stored": z
+    .strictObject({
+      machineId: z.string().min(1).max(128),
+      containerId: z.string().min(1).max(128),
+      governed: z.boolean(),
+      nativeRequirements: PreparedRequirementsSchema.optional(),
+    })
+    .nullable(),
   "prepare.containers.placement": z.enum(["element", "tile"]),
   "prepare.native.demand": PreparedRequirementsSchema,
 } as const;
@@ -1132,9 +1135,11 @@ export const PluginBundleSchema = z
     /** Absent on legacy artifacts so assembly can hold them with repacking guidance. */
     hardenedContract: z.number().int().positive().optional(),
     /** Included in the artifact hash and checked against every loaded registration. */
-    serverBinding: z.strictObject({
-      prepareActions: IsolatePreparationMetadataSchema,
-    }).optional(),
+    serverBinding: z
+      .strictObject({
+        prepareActions: IsolatePreparationMetadataSchema,
+      })
+      .optional(),
     /*
       `safeExtend`, not `extend`: the manifest carries a refinement of its own (a capability
       must be the engine's or the declaring plugin's, ADR 0035), and zod refuses to overwrite

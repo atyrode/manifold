@@ -9,13 +9,17 @@ const call = (id, method, args) => {
   return new Promise((resolve, reject) => waiting.set(callId, { resolve, reject }));
 };
 const legacyCaps = (caps) => {
-  if (caps.includes("machines:shell")) throw new Error("strict legacy consumer rejected machines:shell");
+  if (caps.includes("machines:shell"))
+    throw new Error("strict legacy consumer rejected machines:shell");
 };
 async function receive(frame) {
   if (frame.t === "load") {
-    send({ t: "loaded", actions: [],
+    send({
+      t: "loaded",
+      actions: [],
       hooks: { onEnable: false, onDisable: false, onAssemblyChanged: false, onJobSettled: false },
-      harness: frame.manifest.contributes.harness });
+      harness: frame.manifest.contributes.harness,
+    });
   } else if (frame.t === "harness") {
     try {
       legacyCaps(frame.ctx.caps);
@@ -23,7 +27,10 @@ async function receive(frame) {
         const { run } = frame.request;
         legacyCaps(run.caps);
         legacyCaps(run.authorizationCredential.caps);
-        if (Object.hasOwn(run, "authorityScope") || Object.hasOwn(run.authorizationCredential, "authorityScope"))
+        if (
+          Object.hasOwn(run, "authorityScope") ||
+          Object.hasOwn(run.authorizationCredential, "authorityScope")
+        )
           throw new Error("strict legacy Run rejected scoped fields");
         if (frame.request.method === "launch") {
           legacyCaps(frame.request.agent.grant.caps);
@@ -32,18 +39,34 @@ async function receive(frame) {
         }
         await call(frame.id, "storage.set", ["legacy-received", JSON.stringify(frame.request)]);
       }
-      send({ t: "harnessed", id: frame.id, outcome: { ok: true,
-        result: frame.request.method === "launch" ? {
-          runtime: frame.request.agent.context.runtime,
-          session: { harness: "legacy", machineId: "m1", sessionId: "s1" }, reviewDigest: "a".repeat(64),
-        } : null, emits: [] } });
+      send({
+        t: "harnessed",
+        id: frame.id,
+        outcome: {
+          ok: true,
+          result:
+            frame.request.method === "launch"
+              ? {
+                  runtime: frame.request.agent.context.runtime,
+                  session: { harness: "legacy", machineId: "m1", sessionId: "s1" },
+                  reviewDigest: "a".repeat(64),
+                }
+              : null,
+          emits: [],
+        },
+      });
     } catch (error) {
-      send({ t: "harnessed", id: frame.id, outcome: { ok: false, rule: "refused", message: String(error) } });
+      send({
+        t: "harnessed",
+        id: frame.id,
+        outcome: { ok: false, rule: "refused", message: String(error) },
+      });
     }
   } else if (frame.t === "reply") {
     const pending = waiting.get(frame.id);
     waiting.delete(frame.id);
-    if (frame.ok) pending.resolve(frame.result); else pending.reject(new Error(frame.error));
+    if (frame.ok) pending.resolve(frame.result);
+    else pending.reject(new Error(frame.error));
   } else if (frame.t === "shutdown") process.exit(0);
 }
 let carry = "";

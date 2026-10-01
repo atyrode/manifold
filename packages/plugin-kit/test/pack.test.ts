@@ -928,8 +928,11 @@ describe("sealed preparer artifacts", () => {
       prepareActions: { open: { caps: ["machines:read"] } },
     });
     expect(() => PluginBundleSchema.parse({ ...packed, hardenedContract: 11 })).toThrow();
-    expect(() => PluginBundleSchema.parse({
-      ...packed, serverBinding: { prepareActions: { open: { caps: ["tokens:mint"] } } },
-    })).toThrow();
+    expect(() =>
+      PluginBundleSchema.parse({
+        ...packed,
+        serverBinding: { prepareActions: { open: { caps: ["tokens:mint"] } } },
+      }),
+    ).toThrow();
   });
 });

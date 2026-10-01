@@ -419,7 +419,10 @@ async function metadataGuest(ctx: LifecycleCtx, run: (ctx: MetadataHook) => Prom
       },
       send: (frame) => {
         if (frame.t === "call") {
-          void serveCtxCall(IsolateCtxMethodSchema.parse(frame.method), frame.args, { kind: "hook", ctx }).then(
+          void serveCtxCall(IsolateCtxMethodSchema.parse(frame.method), frame.args, {
+            kind: "hook",
+            ctx,
+          }).then(
             (result) => receive({ t: "reply", id: frame.id, ok: true, result }),
             (error: unknown) =>
               receive({

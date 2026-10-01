@@ -65,9 +65,12 @@ function record(row: InstanceServiceRow): InstanceServiceRecord {
     pluginId: row.plugin_id,
     policy: configuration.policy,
     enabled: configuration.enabled,
-    credential: configuration.authoritySnapshot?.credential ??
+    credential:
+      configuration.authoritySnapshot?.credential ??
       (row.credential === null ? null : JobCredentialSchema.parse(JSON.parse(row.credential))),
-    ...(configuration.authoritySnapshot === undefined ? {} : { authoritySnapshot: configuration.authoritySnapshot }),
+    ...(configuration.authoritySnapshot === undefined
+      ? {}
+      : { authoritySnapshot: configuration.authoritySnapshot }),
     jobId: row.job_id,
     configuredBy: row.configured_by,
     configuredAt: row.configured_at,
@@ -173,7 +176,8 @@ export class InstanceServiceStore {
             requirements,
           )
         : null;
-      const authoritySnapshot = credential === null ? undefined : cloneAuthoritySnapshot({ credential });
+      const authoritySnapshot =
+        credential === null ? undefined : cloneAuthoritySnapshot({ credential });
       // A sent admission still owns its old lifetime. Keep its dedicated authority
       // until the owner proves empty; external revocation remains an independent fence.
       const retiring = previous?.jobId
@@ -213,8 +217,12 @@ export class InstanceServiceStore {
           current.revision,
           machineId,
           current.pluginId,
-          canonicalJobJson({ policy, enabled: args.enabled, traceId,
-            ...(authoritySnapshot === undefined ? {} : { authoritySnapshot }) }),
+          canonicalJobJson({
+            policy,
+            enabled: args.enabled,
+            traceId,
+            ...(authoritySnapshot === undefined ? {} : { authoritySnapshot }),
+          }),
           credential === null ? null : canonicalJobJson(credential),
           current.configuredBy,
           current.configuredAt,
@@ -261,9 +269,17 @@ export class InstanceServiceStore {
         .query(
           "UPDATE native_instance_services SET credential=?,configuration=?,job_id=NULL WHERE service_id=? AND revision=?",
         )
-        .run(canonicalJobJson(credential),
-          canonicalJobJson({ policy: current.policy, enabled: current.enabled, traceId: current.traceId, authoritySnapshot }),
-          serviceId, revision);
+        .run(
+          canonicalJobJson(credential),
+          canonicalJobJson({
+            policy: current.policy,
+            enabled: current.enabled,
+            traceId: current.traceId,
+            authoritySnapshot,
+          }),
+          serviceId,
+          revision,
+        );
       this.store.addEvent(
         null,
         this.runtime.now(),

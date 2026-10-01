@@ -126,9 +126,12 @@ export function assertTrustedBinding(def: ServerPluginDef, build: TrustedBuild):
   if (!isDeepStrictEqual(manifest, registered))
     refuse("its manifest is not the registered manifest");
   const preparation = IsolatePreparationMetadataSchema.parse(
-    Object.fromEntries(Object.entries(def.prepareActions ?? {}).map(([name, definition]) =>
-      [name, { caps: [...definition.caps].sort() }],
-    )),
+    Object.fromEntries(
+      Object.entries(def.prepareActions ?? {}).map(([name, definition]) => [
+        name,
+        { caps: [...definition.caps].sort() },
+      ]),
+    ),
   );
   if (!isDeepStrictEqual(preparation, build.bundle.serverBinding?.prepareActions ?? {}))
     refuse("its action preparers are not the registered preparers");
@@ -167,9 +170,12 @@ export function assertLoadedBinding(def: ServerPluginDef, loaded: ServerPluginDe
     !isDeepStrictEqual(def.actions.map(published), loaded.actions.map(published)) ||
     (def.harness === undefined) !== (loaded.harness === undefined) ||
     !isDeepStrictEqual(
-      Object.fromEntries(Object.entries(def.prepareActions ?? {}).map(([name, definition]) =>
-        [name, { caps: [...definition.caps].sort() }],
-      )),
+      Object.fromEntries(
+        Object.entries(def.prepareActions ?? {}).map(([name, definition]) => [
+          name,
+          { caps: [...definition.caps].sort() },
+        ]),
+      ),
       loaded.guestPreparation ?? {},
     )
   )

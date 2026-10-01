@@ -1,4 +1,4 @@
-import type { Agent, PrincipalCredentials } from "@manifold/protocol";
+import type { AgentV2, PrincipalCredentialsV2 } from "@manifold/protocol";
 
 /**
  * The Sessions section's one policy decision, as a pure function (#145).
@@ -17,16 +17,16 @@ import type { Agent, PrincipalCredentials } from "@manifold/protocol";
  */
 export interface PartitionedCredentials {
   /** Principals holding at least one live credential — the rows that can still act. */
-  readonly live: readonly PrincipalCredentials[];
+  readonly live: readonly PrincipalCredentialsV2[];
   /** Credential-less principals: the audit trail, folded shut by default. */
-  readonly inactive: readonly PrincipalCredentials[];
+  readonly inactive: readonly PrincipalCredentialsV2[];
 }
 
 export function partitionCredentials(
-  rows: readonly PrincipalCredentials[],
+  rows: readonly PrincipalCredentialsV2[],
 ): PartitionedCredentials {
-  const live: PrincipalCredentials[] = [];
-  const inactive: PrincipalCredentials[] = [];
+  const live: PrincipalCredentialsV2[] = [];
+  const inactive: PrincipalCredentialsV2[] = [];
   for (const row of rows) {
     (row.sessions.length > 0 ? live : inactive).push(row);
   }
@@ -34,12 +34,12 @@ export function partitionCredentials(
 }
 
 /** Keep the server's order within each half of the Agents rail. */
-export function partitionAgents(rows: readonly Agent[]): {
-  readonly live: readonly Agent[];
-  readonly retired: readonly Agent[];
+export function partitionAgents(rows: readonly AgentV2[]): {
+  readonly live: readonly AgentV2[];
+  readonly retired: readonly AgentV2[];
 } {
-  const live: Agent[] = [];
-  const retired: Agent[] = [];
+  const live: AgentV2[] = [];
+  const retired: AgentV2[] = [];
   for (const row of rows) {
     (row.state === "retired" ? retired : live).push(row);
   }
