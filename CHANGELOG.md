@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.32.1] - 2026-10-01
+
+### Fixed
+
+- Job starts refused by the machine owner now retain the owner's reason in their interrupted result, authorized job journal and settled callback instead of reporting `owner_refusal_unknown`. Lifecycle audit metadata remains redacted, and duplicate late refusals do not replace the recorded result. (#926, #987)
+
 ## [0.32.0] - 2026-10-01
 
 ### Breaking Changes
