@@ -1,14 +1,18 @@
 #!/usr/bin/env bun
-/** Verify native Nix outputs without a workspace install or a live machine owner. */
+/** Verify native Nix packages and, on Linux, the complete disposable NixOS profile. */
 import { createHash } from "node:crypto";
 import {
   chmodSync,
+  closeSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readdirSync,
   readFileSync,
   rmSync,
+  writeFileSync,
+  writeSync,
 } from "node:fs";
 import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
 import { tmpdir } from "node:os";
@@ -45,9 +49,48 @@ async function command(
   cwd = repoRoot,
   env: Record<string, string | undefined> = process.env,
   expectedExitCode = 0,
+  stderrLog?: string,
+  onStderrLine?: (line: string) => void,
 ): Promise<string> {
   interrupted.signal.throwIfAborted();
-  const proc = Bun.spawn(argv, { cwd, env, stdin: "ignore", stdout: "pipe", stderr: "inherit" });
+  const log = stderrLog === undefined ? undefined : openSync(stderrLog, "wx", 0o600);
+  const proc = Bun.spawn(argv, {
+    cwd,
+    env,
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: log === undefined ? "inherit" : "pipe",
+  });
+  const logged = (async () => {
+    if (log === undefined || !(proc.stderr instanceof ReadableStream)) return;
+    const reader = proc.stderr.getReader();
+    const decoder = new TextDecoder();
+    let buffered = "";
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        writeSync(log, value);
+        if (onStderrLine === undefined) {
+          process.stderr.write(value);
+        } else {
+          buffered += decoder.decode(value, { stream: true });
+          for (;;) {
+            const end = buffered.indexOf("\n");
+            if (end < 0) break;
+            onStderrLine(buffered.slice(0, end));
+            buffered = buffered.slice(end + 1);
+          }
+        }
+      }
+      if (onStderrLine !== undefined) {
+        buffered += decoder.decode();
+        if (buffered !== "") onStderrLine(buffered);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  })();
   let timedOut = false;
   const kill = () => proc.kill("SIGKILL");
   interrupted.signal.addEventListener("abort", kill, { once: true });
@@ -56,7 +99,7 @@ async function command(
     kill();
   }, timeoutMs);
   try {
-    const [out, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
+    const [out, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited, logged]);
     interrupted.signal.throwIfAborted();
     if (timedOut) throw new Error(`${argv[0]} exceeded its ${timeoutMs / 1000}s deadline`);
     if (code !== expectedExitCode)
@@ -66,6 +109,7 @@ async function command(
     clearTimeout(timer);
     interrupted.signal.removeEventListener("abort", kill);
     await stop(proc);
+    if (log !== undefined) closeSync(log);
   }
 }
 
@@ -88,6 +132,42 @@ if (expectedSystem !== undefined && expectedSystem !== system) {
   );
 }
 
+// The receipt records Nix's source hash, not just the surrounding Git worktree.
+// Clean CI builds use the locked reference so self.rev stays exact; local dirty
+// work is explicitly recorded as uncommitted, never as a passing commit proof.
+const metadata: unknown = JSON.parse(
+  await command([nix, "flake", "metadata", "--json", "--no-update-lock-file", "."], 60_000),
+);
+const source = member(metadata, "path");
+const sourceHash = member(member(metadata, "locked"), "narHash");
+const revision = member(metadata, "revision") ?? null;
+if (
+  typeof source !== "string" ||
+  !source.startsWith("/nix/store/") ||
+  typeof sourceHash !== "string" ||
+  !sourceHash.startsWith("sha256-") ||
+  (revision !== null && (typeof revision !== "string" || !/^[a-f0-9]{40}$/.test(revision)))
+) {
+  throw new Error("Nix did not report an immutable source path, hash and revision");
+}
+if (process.env["GITHUB_SHA"] !== undefined && revision !== process.env["GITHUB_SHA"]) {
+  throw new Error("Nix source revision does not match the exact CI checkout");
+}
+const flake = revision === null ? "." : member(metadata, "url");
+if (typeof flake !== "string") throw new Error("Nix did not report its locked flake reference");
+const evidence =
+  process.env["MANIFOLD_NIX_PROOF_DIR"] ?? mkdtempSync(join(tmpdir(), "manifold-nix-evidence-"));
+mkdirSync(evidence, { recursive: true, mode: 0o700 });
+chmodSync(evidence, 0o700);
+writeFileSync(
+  join(evidence, "source.json"),
+  JSON.stringify({ system, revision, sourceHash, source }, null, 2) + "\n",
+  { mode: 0o600 },
+);
+console.log(
+  `Nix proof: ${system}, revision ${revision ?? "uncommitted"}, source ${sourceHash}; evidence ${evidence}`,
+);
+
 async function build(name: string, rebuild = false): Promise<string> {
   console.log(`Nix packaging: ${system} ${name}${rebuild ? " --rebuild" : ""}`);
   const output = await command(
@@ -97,8 +177,9 @@ async function build(name: string, rebuild = false): Promise<string> {
       "--no-link",
       "--print-build-logs",
       "--print-out-paths",
+      "--no-update-lock-file",
       ...(rebuild ? ["--rebuild"] : []),
-      `.#packages.${system}.${name}`,
+      `${flake}#packages.${system}.${name}`,
     ],
     10 * 60_000,
   );
@@ -106,6 +187,124 @@ async function build(name: string, rebuild = false): Promise<string> {
     throw new Error(`Nix did not report exactly one output path for ${name}`);
   }
   return output;
+}
+
+const NATIVE_PROFILE_TIMEOUT_MS = 15 * 60_000;
+
+/** A successful package smoke never stands in for finishing the full Linux VM check. */
+async function nativeProfile(): Promise<void> {
+  const check = `checks.${system}.native-profile`;
+  const receipt = {
+    system,
+    revision,
+    sourceHash,
+    check,
+    timeoutMs: NATIVE_PROFILE_TIMEOUT_MS,
+    result: system.endsWith("-linux") ? "running" : "not_applicable",
+    startedAt: new Date().toISOString(),
+    elapsedMs: 0,
+    execution: system.endsWith("-linux") ? "not_started" : "not_applicable",
+    derivation: null as string | null,
+    output: null as string | null,
+    failure: null as string | null,
+  };
+  const record = () =>
+    writeFileSync(join(evidence, "native-profile.json"), JSON.stringify(receipt, null, 2) + "\n", {
+      mode: 0o600,
+    });
+  record();
+  if (!system.endsWith("-linux")) {
+    console.log(`Nix native-profile: ${system} not applicable (Linux NixOS VM check)`);
+    return;
+  }
+  const started = performance.now();
+  try {
+    const paths: unknown = JSON.parse(
+      await command(
+        [
+          nix!,
+          "eval",
+          "--json",
+          "--no-update-lock-file",
+          "--apply",
+          "drv: { inherit (drv) drvPath outPath; }",
+          `${flake}#${check}`,
+        ],
+        5 * 60_000,
+      ),
+    );
+    const derivation = member(paths, "drvPath");
+    const output = member(paths, "outPath");
+    if (
+      typeof derivation !== "string" ||
+      !derivation.startsWith("/nix/store/") ||
+      !derivation.endsWith(".drv") ||
+      typeof output !== "string" ||
+      !output.startsWith("/nix/store/")
+    ) {
+      throw new Error("Nix native-profile did not report its derivation and output");
+    }
+    receipt.derivation = derivation;
+    receipt.execution = existsSync(output) ? "cached" : "not_started";
+    record();
+    console.log(`Nix native-profile: ${system} ${check}`);
+    const built = await command(
+      [
+        nix!,
+        "build",
+        "--no-link",
+        "--print-build-logs",
+        "--log-format",
+        "internal-json",
+        "--print-out-paths",
+        "--no-update-lock-file",
+        `${flake}#${check}`,
+      ],
+      NATIVE_PROFILE_TIMEOUT_MS,
+      repoRoot,
+      process.env,
+      0,
+      join(evidence, "native-profile.log"),
+      (line) => {
+        let event: unknown;
+        try {
+          event = JSON.parse(line.startsWith("@nix ") ? line.slice(5) : line);
+        } catch {
+          console.error(line);
+          return;
+        }
+        const action = member(event, "action");
+        const type = member(event, "type");
+        const fields = member(event, "fields");
+        // Nix's activity protocol: actBuild=105, actSubstitute=108.
+        if (action === "start" && Array.isArray(fields)) {
+          if (type === 105 && fields[0] === derivation) receipt.execution = "executed";
+          if (type === 108 && fields[0] === output) receipt.execution = "cached";
+        }
+        const text =
+          action === "msg"
+            ? member(event, "msg")
+            : action === "result" && type === 101 && Array.isArray(fields)
+              ? fields[0]
+              : member(event, "text");
+        if (typeof text === "string" && text !== "") console.error(text);
+      },
+    );
+    if (built !== output) throw new Error("Nix native-profile returned an unexpected output");
+    if (receipt.execution === "not_started") receipt.execution = "unobserved";
+    receipt.output = built;
+    receipt.result = "success";
+    console.log(
+      `PASS  Nix native-profile: ${system}, revision ${revision ?? "uncommitted"}, ${receipt.execution}, ${built}`,
+    );
+  } catch (error) {
+    receipt.result = interrupted.signal.aborted ? "interrupted" : "failure";
+    receipt.failure = error instanceof Error ? error.message : "Nix native-profile failed";
+    throw error;
+  } finally {
+    receipt.elapsedMs = Math.round(performance.now() - started);
+    record();
+  }
 }
 
 const deps = await build("bun-deps");
@@ -116,7 +315,7 @@ const agentOutput = await build("manifold-agent");
 const serverOutput = await build("manifold-server");
 const clientOutput = await build("manifold");
 const manifest: unknown = JSON.parse(
-  readFileSync(join(repoRoot, "packages/web/package.json"), "utf8"),
+  readFileSync(join(source, "packages/web/package.json"), "utf8"),
 );
 if (
   typeof manifest !== "object" ||
@@ -834,3 +1033,5 @@ try {
     rmSync(root, { recursive: true, force: true });
   }
 }
+
+await nativeProfile();

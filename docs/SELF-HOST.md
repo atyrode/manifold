@@ -116,14 +116,20 @@ disposable machine records; disable refuses ordinary doors and the Worker,
 while the cleanup revoke remains available, and re-enable restores service.
 Unknown or recipe-less selections must refuse before a child/listener starts,
 with the plugin named. The verifier shuts down its own processes and deletes
-only its own temporary data. CI is configured for native Linux and macOS,
-x64 and arm64; a warm dependency store path alone is not proof of a pinned hash.
+only its own temporary data. CI keeps all four native Linux/macOS x64/arm64 packaging
+jobs; a warm dependency store path alone is not proof of a pinned hash. On Linux,
+the same required `nix` gate additionally finishes `checks.<system>.native-profile`,
+including every VM scenario and guest shutdown. macOS reports that Linux-only check
+as not applicable, while still running all dependency and compiled-package assertions.
+CI verifies the flake revision against its exact checkout and builds that locked
+reference. Local dirty-tree receipts are explicitly uncommitted, not commit evidence.
 
 When dependency inputs change, derive replacement hashes from fresh installs
 and retain the independent rebuild. Explicit `--os`/`--cpu` can measure another
-target's dependency bytes, not execute that target's binary. This packaged
-smoke does not enroll or activate a native machine owner and does not establish
-kernel containment, production credentials or persistent deployment readiness.
+target's dependency bytes, not execute that target's binary. The packaged hub
+smoke alone does not activate a native machine owner or establish kernel containment;
+the separate Linux VM check below exercises disposable owners. Neither proof establishes
+production credentials or persistent deployment readiness.
 
 ### Terminal-local command
 
@@ -731,15 +737,36 @@ after boot is read by the next job. Absent and link-reached sources get no view 
 only their operation unavailable. The check's build also evaluates the module's refusals,
 and the first node proves that declaring no anchor leaves the owner configuration unchanged.
 
-Run all packaged scenarios:
+The full verifier includes this check on both native Linux targets:
 
 ```sh
-nix build .#checks.x86_64-linux.native-profile
+bun scripts/verify-nix-packaging.ts
 ```
 
-Use the corresponding `aarch64-linux` check on that target. QEMU can use CPU emulation on
-builders without nested virtualization. This lifecycle check complements, rather than
-replaces, the workload, escape-boundary and occupied-owner acceptance above.
+For a direct VM-only run, use
+`nix build --no-link --print-build-logs .#checks.x86_64-linux.native-profile`
+or the corresponding `aarch64-linux` check on that target. The verifier allows five
+minutes for check evaluation and bounds its build/whole VM run to 15 minutes after
+the existing packaging proof, within the unchanged 45-minute CI job deadline.
+The exact-source check may reuse a trusted Nix result; its receipt distinguishes
+cached results from observed execution of the VM check derivation. The normal cold
+dependency build and independent dependency reproducibility check remain unchanged.
+The declared VM supports QEMU CPU emulation without nested virtualization; CI advertises
+the `nixos-test` builder feature but does not claim or require KVM availability.
+
+The verifier prints its private evidence directory (or uses `MANIFOLD_NIX_PROOF_DIR`).
+`source.json` records native system, revision and source hash; `native-profile.json`
+records the exact check derivation, output, result, cached-versus-executed status,
+elapsed time and deadline. `native-profile.log` retains Nix's structured build activity
+and test-driver output, including guest serial diagnostics; readable messages also
+stream to the CI log on success, failure and timeout.
+CI publishes an exact-system/head summary and one-day `nix-evidence-<system>-<sha>`
+artifacts on success and failure. It does not upload guest disks, owner data,
+configuration or credential files. A missing, incomplete or failed VM receipt is
+not a profile pass; successful package compilation is not substituted for it.
+This lifecycle check complements, rather than replaces, the workload, escape-boundary
+and occupied-owner acceptance above. These are configured verification paths, not a
+claim that either Linux system has passed at the current revision.
 
 ## Settled-job callback limits
 
