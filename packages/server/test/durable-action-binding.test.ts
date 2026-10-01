@@ -6,11 +6,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { packPlugin } from "@manifold/plugin-kit/pack";
+import { defineAction } from "@manifold/plugin";
 import {
   canonicalJobJson,
   formatManifoldUri,
   JOB_OWNER_PROTOCOL_VERSION,
   type AuthoredCap,
+  type ActionPreparationCtx,
   type JobCommand,
   type JobOwner,
   type MachineHalf,
@@ -22,11 +24,12 @@ import { IsolateSupervisor } from "../src/isolate/supervisor.ts";
 import { JobService } from "../src/job-service.ts";
 import { silentLogger } from "../src/log.ts";
 import { PLUGIN_UPLOADS_DIR } from "../src/plugin-installs.ts";
-import type { PluginHost } from "../src/plugin-host.ts";
+import type { ActionCtx, PluginHost, ServerPluginDef } from "../src/plugin-host.ts";
 import { RoomManager } from "../src/room.ts";
 import { ServerStore } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
 import { FakeClock, FakeRuntime, testPluginHost, testTileTrees } from "./helpers.ts";
+import { z } from "zod";
 
 const OWNER_KEY = "d".repeat(64);
 const PLUGIN_ID = "test.durable-binding";
@@ -60,7 +63,10 @@ const machine: MachineHalf = {
   locations: {},
 };
 
-async function fixture(preparerCaps: readonly AuthoredCap[] = ["plugins:manage", "tokens:mint"]) {
+async function fixture(
+  preparerCaps: readonly AuthoredCap[] = ["plugins:manage", "tokens:mint"],
+  registration?: ServerPluginDef,
+) {
   const dataDir = mkdtempSync(join(tmpdir(), "manifold-durable-binding-"));
   const path = join(dataDir, "hub.sqlite");
   const runtime = new FakeRuntime();
@@ -93,6 +99,7 @@ async function fixture(preparerCaps: readonly AuthoredCap[] = ["plugins:manage",
     runner = new IsolateSupervisor({ logger: silentLogger, runtime });
     host = await testPluginHost(store, auth, rooms, broker, runtime, {
       isolates: { runner, dataDir },
+      ...(registration === undefined ? {} : { settingsPlugins: [registration] }),
     });
     service = new JobService(store, auth, runtime);
     host.setJobs(service);
@@ -294,3 +301,181 @@ for (const reopen of [false, true]) {
     }
   });
 }
+
+function scheduleInput() {
+  return z.strictObject({
+    operation: z.strictObject({
+      kind: z.literal("operation"),
+      machineId: z.string(),
+      operationId: z.literal(OPERATION_ID),
+    }),
+    scheduleId: z.string(),
+    extra: z.boolean(),
+  });
+}
+
+async function registeredFixture(pausePreparation: boolean) {
+  const entered = Promise.withResolvers<void>();
+  const resume = Promise.withResolvers<void>();
+  const input = scheduleInput();
+  const action = {
+    ...defineAction({
+      name: "prepared",
+      title: "Prepared",
+      caps: ["machines:run"],
+      delegates: ["machines:run"],
+      requirements: [{ cap: "machines:run", target: ["operation"] }],
+      input,
+      result: z.strictObject({}),
+    }),
+  };
+  type Input = z.infer<typeof input>;
+  const preparationCaps: AuthoredCap[] = ["tokens:mint", "plugins:manage"];
+  const preparation = {
+    caps: preparationCaps,
+    prepare: async (_ctx: ActionPreparationCtx, raw: unknown) => {
+      const args = input.parse(raw);
+      if (pausePreparation) {
+        entered.resolve();
+        await resume.promise;
+      }
+      return {
+        args,
+        targets: [args.operation],
+        additionalRequirements: args.extra
+          ? [{ cap: "tokens:mint" as const, node: "manifold://" as const, reach: "node" as const }]
+          : [],
+      };
+    },
+  };
+  const handlers = {
+    prepared: async (ctx: ActionCtx, args: Input) => {
+      await ctx.storage.set("recorded", args.scheduleId);
+      await ctx.jobs.schedule({
+        jobId: `template-${args.scheduleId}`,
+        machineId: args.operation.machineId,
+        operationId: args.operation.operationId,
+        input: { value: args.scheduleId },
+        outputs: [],
+        scheduleId: args.scheduleId,
+        revision: "one",
+        firstNominalAt: 1000,
+        intervalMs: 60000,
+        deadlineMs: 30000,
+        expiresAt: 60000,
+        offlinePolicy: "coalesce-one",
+      });
+      return {};
+    },
+  };
+  const capabilities: AuthoredCap[] = [
+    "machines:run", "machines:read", "tokens:mint", "plugins:manage",
+  ];
+  const registration: ServerPluginDef = {
+    manifest: {
+      id: PLUGIN_ID,
+      version: "1.0.0",
+      title: "Durable binding",
+      description: "",
+      capabilities,
+      dataVersion: { major: 1, minor: 0 },
+      purges: ["storage"],
+      contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+      entry: { server: true },
+      machine,
+    },
+    actions: [action],
+    prepareActions: { prepared: preparation },
+    handlers,
+  };
+  const f = await fixture([], registration);
+  f.installNative();
+  return {
+    ...f,
+    entered,
+    resume,
+    args: {
+      operation: { kind: "operation" as const, machineId: f.machineId, operationId: OPERATION_ID },
+      scheduleId: "binding",
+      extra: false,
+    },
+    replace(binding: string) {
+      switch (binding) {
+        case "parser":
+          action.input = scheduleInput();
+          break;
+        case "handler": {
+          const previous = handlers.prepared;
+          handlers.prepared = async (ctx, args) => previous(ctx, args);
+          break;
+        }
+        case "preparer": {
+          const previous = preparation.prepare;
+          preparation.prepare = async (ctx, args) => previous(ctx, args);
+          break;
+        }
+        case "preparer ceiling":
+          preparationCaps.pop();
+          break;
+        case "manifest ceiling":
+          capabilities.pop();
+          break;
+      }
+    },
+  };
+}
+
+test.each(["parser", "handler", "preparer"])(
+  "%s replacement during awaited preparation refuses before storage or native scheduling",
+  async (binding) => {
+    const f = await registeredFixture(true);
+    const invocation = f.host.dispatch(f.root(), `${PLUGIN_ID}.prepared`, f.args);
+    try {
+      await f.entered.promise;
+      f.replace(binding);
+      f.resume.resolve();
+      expect(await invocation).toMatchObject({ ok: false, denial: { rule: "forbidden" } });
+      expect(await f.store.pluginStorage(PLUGIN_ID).get("recorded")).toBeNull();
+      expect(await f.host.dispatch(f.root(), "engine.jobs.schedules", {})).toEqual({
+        ok: true, result: [],
+      });
+      f.runtime.time = 1000;
+      f.service.tick();
+      expect(f.service.jobs.active()).toEqual([]);
+      expect(f.service.jobSchedules.getOccurrence(occurrenceId("binding"))).toBeNull();
+      expect(f.commands.filter((command) => command.type === "start")).toEqual([]);
+    } finally {
+      f.resume.resolve();
+      await invocation.catch(() => {});
+      await f.close();
+    }
+  },
+);
+
+test.each(["unchanged", "parser", "handler", "preparer", "preparer ceiling", "manifest ceiling"])(
+  "an admitted schedule checks its %s action binding before creating an occurrence",
+  async (binding) => {
+    const f = await registeredFixture(false);
+    try {
+      expect(await f.host.dispatch(f.root(), `${PLUGIN_ID}.prepared`, f.args)).toEqual({
+        ok: true, result: {},
+      });
+      expect(await f.store.pluginStorage(PLUGIN_ID).get("recorded")).toBe("binding");
+      f.replace(binding);
+      f.runtime.time = 1000;
+      f.service.tick();
+      if (binding === "unchanged") {
+        expect(f.service.jobs.get(occurrenceId("binding"))?.state).toBe("start-committed");
+        expect(f.commands.filter((command) => command.type === "start").map((command) => command.request.jobId)).toEqual([
+          occurrenceId("binding"),
+        ]);
+      } else {
+        expect(f.service.jobs.get(occurrenceId("binding"))).toBeNull();
+        expect(f.service.jobSchedules.getOccurrence(occurrenceId("binding"))).toBeNull();
+        expect(f.commands.filter((command) => command.type === "start")).toEqual([]);
+      }
+    } finally {
+      await f.close();
+    }
+  },
+);
