@@ -2150,11 +2150,14 @@ export class JobService {
             ? caller
             : this.jobs.installation(machineId, runtime.pluginId, caller.revision)
           : null
-        : // An installation that already carries the pinned revision answers for itself. Only
-          // when it does not does an exact pin fall through to the installation a review is
-          // proposing — the one case a first bootstrap could not otherwise be evaluated at
-          // all, and unambiguous because that revision is a digest of the reviewed request.
-          installed?.revision === runtime.installationRevision
+        : // A reviewed instance proposal may re-admit its selected provider at the same pin.
+          // Otherwise an installation already carrying that pin answers for itself, including
+          // disabled or purging providers this request does not re-admit.
+          installed?.revision === runtime.installationRevision &&
+            (installed.enabled ||
+              installed.purgeRequested ||
+              !this.prospectivePolicy(policy, machineId, proposed) ||
+              !proposed?.operationIds.includes(runtime.operationId))
           ? installed
           : proposed?.installation.machineId === machineId &&
               proposed.installation.pluginId === runtime.pluginId &&
