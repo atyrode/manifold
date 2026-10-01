@@ -5,6 +5,13 @@ import {
   type AuthService,
   type CredentialReference,
 } from "./auth.ts";
+import { requireActionEffects } from "./action-preparation-phase.ts";
+
+/** The admitted retained owner, not its replaceable transport. Hub-private evidence only. */
+export interface TerminalOwnerBinding {
+  readonly machineId: string;
+  readonly terminalHostId: string | null;
+}
 
 /** Hub-only admission evidence. Context requirements use the dispatch's admitted scope. */
 export interface ActionAuthorityRequirement {
@@ -23,6 +30,7 @@ export interface ActionAuthoritySnapshotBinding {
   readonly originalArgsDigest?: string;
   readonly machineId?: string;
   readonly containerId?: string;
+  readonly terminalOwners?: readonly TerminalOwnerBinding[];
   readonly nativeDemand?: unknown;
 }
 
@@ -159,6 +167,7 @@ export class ActionAuthorityFence {
   }
 
   checkCurrent(): AuthContext {
+    requireActionEffects();
     if (!this.open || this.requirements === null || !this.isCurrent())
       this.refuse("action authority unavailable");
     const current = this.authService.restoreCredential(this.credential);

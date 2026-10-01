@@ -44,7 +44,12 @@ import {
 } from "./session-channel.ts";
 import type { ServerStore, TerminalLaunchRecipe } from "./stores.ts";
 import type { JobService } from "./job-service.ts";
-import { ActionAuthorityFence, type ActionAuthorityRequirement } from "./action-authority-fence.ts";
+import {
+  ActionAuthorityFence,
+  type ActionAuthorityRequirement,
+  type TerminalOwnerBinding,
+} from "./action-authority-fence.ts";
+import { requireActionEffects } from "./action-preparation-phase.ts";
 
 /**
  * The broker answers a CHANNEL, and a channel IS one room view, so its payload types are
@@ -1063,6 +1068,17 @@ export class TerminalBroker implements TerminalPlacementPort {
     };
   }
 
+  /** Retained-owner continuity survives a transport disconnect or same-owner replacement. */
+  terminalOwnerBindingCurrent(binding: TerminalOwnerBinding): boolean {
+    const enrolled = this.store.getMachine(binding.machineId);
+    if (enrolled === null || this.store.revokedMachineIds().has(binding.machineId)) return false;
+    const machine = this.machines.get(binding.machineId);
+    return (
+      (machine === undefined ? enrolled.ownerHostId : machine.terminalHostId) ===
+      binding.terminalHostId
+    );
+  }
+
   terminalPlacement(containerId: string): "element" | "tile" {
     const container = this.store.getContainer(containerId);
     if (container === null) throw new ServiceError("not_found", "terminal placement unavailable");
@@ -1079,7 +1095,10 @@ export class TerminalBroker implements TerminalPlacementPort {
             containerId: string,
             message: TerminalOpen,
             traceId?: number,
-          ) => broker.create(credential, containerId, message, traceId, fence);
+          ) => {
+            requireActionEffects();
+            return broker.create(credential, containerId, message, traceId, fence);
+          };
         if (key === "restartById")
           return (
             terminalId: string,
@@ -1087,9 +1106,17 @@ export class TerminalBroker implements TerminalPlacementPort {
             credential?: CredentialReference,
             traceId?: number,
             launchRun?: Parameters<TerminalBroker["restartById"]>[4],
-          ) => broker.restartById(terminalId, principalId, credential, traceId, launchRun, fence);
+          ) => {
+            requireActionEffects();
+            return broker.restartById(terminalId, principalId, credential, traceId, launchRun, fence);
+          };
         const value: unknown = Reflect.get(broker, key);
-        return typeof value === "function" ? value.bind(broker) : value;
+        return typeof value === "function"
+          ? (...args: unknown[]) => {
+              requireActionEffects();
+              return Reflect.apply(value, broker, args);
+            }
+          : value;
       },
     });
   }

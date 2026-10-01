@@ -91,6 +91,10 @@ export const AuthoritySnapshotSchema = z.strictObject({
       pluginId: id.optional(),
       machineId: id.optional(),
       containerId: id.optional(),
+      terminalOwners: z.array(z.strictObject({
+        machineId: id,
+        terminalHostId: id.nullable(),
+      })).max(64).optional(),
       nativeDemand: z.unknown().optional(),
     })
     .optional(),
@@ -148,6 +152,7 @@ export function normalizeAuthoritySnapshot(
             ...(action.pluginId === undefined ? {} : { pluginId: action.pluginId }),
             ...(action.machineId === undefined ? {} : { machineId: action.machineId }),
             ...(action.containerId === undefined ? {} : { containerId: action.containerId }),
+            ...(action.terminalOwners === undefined ? {} : { terminalOwners: action.terminalOwners }),
             ...(action.nativeDemand === undefined ? {} : { nativeDemand: action.nativeDemand }),
           },
         }),
@@ -198,7 +203,11 @@ export function restoreAuthoritySnapshot(
   const nativeRequirements: AuthorityRequirement[] = [];
   const binding = snapshot.action;
   if (binding !== undefined) {
-    if (binding.fingerprint !== undefined && actionCurrent?.(binding) !== true) return null;
+    if (
+      (binding.fingerprint !== undefined || binding.terminalOwners !== undefined) &&
+      actionCurrent?.(binding) !== true
+    )
+      return null;
     const actionContext =
       snapshot.actionCredential === undefined
         ? current

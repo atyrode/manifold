@@ -200,7 +200,12 @@ import type {
   UNTRACED_DENIAL_RULE,
 } from "@manifold/protocol";
 import { isContainerGrantCap, ServiceError } from "./auth.ts";
-import { ActionAuthorityFence, type ActionAuthorityRequirement } from "./action-authority-fence.ts";
+import {
+  ActionAuthorityFence,
+  type ActionAuthorityRequirement,
+  type TerminalOwnerBinding,
+} from "./action-authority-fence.ts";
+import { requireActionEffects, runActionPreparation } from "./action-preparation-phase.ts";
 import { builtinCodeIdentity } from "./builtin-code-identity.ts";
 import type {
   AuthContext,
@@ -471,6 +476,7 @@ export interface DialDoor {
 /** Runs one mechanism call, turning its expected refusal into data and nothing else. */
 function identityCall<T>(run: () => T): IdentityResult<T> {
   try {
+    requireActionEffects();
     return { ok: true, value: run() };
   } catch (error) {
     if (error instanceof ServiceError) {
@@ -490,6 +496,7 @@ function identityCall<T>(run: () => T): IdentityResult<T> {
  */
 async function identityCallAsync<T>(run: () => Promise<T>): Promise<IdentityResult<T>> {
   try {
+    requireActionEffects();
     return { ok: true, value: await run() };
   } catch (error) {
     if (error instanceof ServiceError) {
@@ -2052,6 +2059,12 @@ export class PluginHost {
         this.actionBinding(binding.actionName)?.fingerprint !== binding.fingerprint
       )
         return false;
+      if (
+        binding.terminalOwners?.some(
+          (owner) => !this.broker.terminalOwnerBindingCurrent(owner),
+        )
+      )
+        return false;
       const install = this.installed.get(entry.plugin.id);
       if (install === undefined) return true;
       const granted = install.row.grantedCaps;
@@ -2960,11 +2973,13 @@ export class PluginHost {
   ): PluginDataLease {
     let open = true;
     const check = (): void => {
+      requireActionEffects();
       if (!open || this.closed) throw new Error("plugin data request is closed");
       checkCurrent?.();
     };
     const live = database !== null && this.databases.get(pluginId) === database;
     const checkDatabase = (): void => {
+      requireActionEffects();
       if (!open || this.closed) throw new PluginDatabaseError("plugin database request is closed");
       if (live && this.databases.get(pluginId) !== database)
         throw new PluginDatabaseError("plugin database request belongs to a retired handle");
@@ -4758,6 +4773,7 @@ export class PluginHost {
         of whatever the plugin chooses to announce about its own state afterwards.
        */
       emit: (ref, kind, payload) => {
+        requireActionEffects();
         this.events.emit(pluginId, ref, kind, null, payload ?? {});
       },
       ...(auth === null
@@ -5019,6 +5035,7 @@ export class PluginHost {
   ): PluginActionContext {
     return {
       call: async (args) => {
+        requireActionEffects();
         beforeCall?.();
         // Parsed here, as every native slice parses (`jobContext`): the frame a hardened
         // guest sends and the object an in-realm handler passes meet the same schema.
@@ -5726,6 +5743,21 @@ export class PluginHost {
     let resolvedMachineId: string | undefined;
     let resolvedContainerId: string | undefined;
     const nativeBindings: unknown[] = [];
+    const terminalOwners: TerminalOwnerBinding[] = [];
+    const captureTerminalOwner = (resolved: TerminalOwnerBinding): void => {
+      const prior = terminalOwners.find(({ machineId }) => machineId === resolved.machineId);
+      if (prior !== undefined) {
+        if (prior.terminalHostId !== resolved.terminalHostId)
+          throw new ServiceError("forbidden", "terminal destination owner changed");
+        return;
+      }
+      if (terminalOwners.length >= 64)
+        throw new ServiceError("forbidden", "terminal preparation destination limit");
+      terminalOwners.push({
+        machineId: resolved.machineId,
+        terminalHostId: resolved.terminalHostId,
+      });
+    };
     const preparationContext: ActionPreparationCtx = Object.freeze({
       terminals: Object.freeze({
         resolveMachine: async (input: {
@@ -5737,6 +5769,7 @@ export class PluginHost {
             input.runtime?.machineId,
           );
           resolvedMachineId = resolved.machineId;
+          captureTerminalOwner(resolved);
           return Object.freeze({ ...resolved });
         },
         stored: async (terminalId: string) => {
@@ -5755,6 +5788,8 @@ export class PluginHost {
               throw new ServiceError("forbidden", "terminal runtime unavailable");
             nativeBindings.push(native);
           }
+          if (!governed)
+            captureTerminalOwner(this.broker.resolveTerminalMachine(terminal.machineId));
           return Object.freeze({
             governed,
             machineId: terminal.machineId,
@@ -5806,12 +5841,14 @@ export class PluginHost {
     };
     if (!guestInput) {
       try {
-        const prepared = await prepareActionInput(
-          binding.declaration.input,
-          binding.declaration.requirements ?? [],
-          rawArgs,
-          preparationContext,
-          preparation,
+        const prepared = await runActionPreparation(() =>
+          prepareActionInput(
+            binding.declaration.input,
+            binding.declaration.requirements ?? [],
+            rawArgs,
+            preparationContext,
+            preparation,
+          ),
         );
         if (!bindingCurrent()) return refuse("forbidden", "action binding unavailable");
         parsed.data = prepared.args;
@@ -5998,6 +6035,7 @@ export class PluginHost {
         nativeBindings.every(
           (binding) => this.jobs?.terminalDemandBindingCurrent(binding, false) === true,
         ) &&
+        terminalOwners.every((binding) => this.broker.terminalOwnerBindingCurrent(binding)) &&
         (install === undefined ||
           nativeCaps.every(
             (cap) => GOVERNED_CAPS.includes(cap) || withinCeiling(cap, install.row.grantedCaps),
@@ -6061,9 +6099,11 @@ export class PluginHost {
       ...(securityFingerprint === null ? {} : { fingerprint: securityFingerprint }),
       ...(resolvedMachineId === undefined ? {} : { machineId: resolvedMachineId }),
       ...(resolvedContainerId === undefined ? {} : { containerId: resolvedContainerId }),
+      ...(terminalOwners.length === 0 ? {} : { terminalOwners }),
       ...(nativeBindings.length === 0 ? {} : { nativeDemand: nativeBindings }),
     });
     const checkActionAuthority = (): AuthContext => {
+      requireActionEffects();
       try {
         options.beforeAdmission?.();
         const current = authorityFence.checkCurrent();
@@ -6306,6 +6346,7 @@ export class PluginHost {
                 ...(securityFingerprint === null ? {} : { fingerprint: securityFingerprint }),
                 ...(resolvedMachineId === undefined ? {} : { machineId: resolvedMachineId }),
                 ...(resolvedContainerId === undefined ? {} : { containerId: resolvedContainerId }),
+                ...(terminalOwners.length === 0 ? {} : { terminalOwners }),
                 ...(nativeBindings.length === 0 ? {} : { nativeDemand: nativeBindings }),
               });
               if (options.reviewOnly) return;
@@ -6336,12 +6377,14 @@ export class PluginHost {
           input.runtimeMachineId,
         );
         resolvedMachineId = resolved.machineId;
+        captureTerminalOwner(resolved);
         return resolved;
       },
       ...(options.reviewOnly ? { preparationMode: "review" as const } : {}),
       authorityFence,
       jobs: jobContext(
         () => {
+          requireActionEffects();
           if (this.jobs === null) throw new ServiceError("forbidden", "job service unavailable");
           return this.jobs;
         },
@@ -6353,6 +6396,7 @@ export class PluginHost {
       ),
       services: serviceContext(
         () => {
+          requireActionEffects();
           if (this.jobs === null)
             throw new ServiceError("forbidden", "service authority unavailable");
           return this.jobs;
@@ -6382,6 +6426,7 @@ export class PluginHost {
       actions: this.actionCalls(pluginId, auth, session, traceId, actionStack),
       streams: {
         open: (kind, node) => {
+          requireActionEffects();
           if (!streamAdmissionOpen) throw new Error("stream open requires an active action");
           const descriptor = this.assembled.streams.get(kind)?.descriptor;
           if (
@@ -6417,7 +6462,28 @@ export class PluginHost {
             });
           });
           openedStreams.push(producer);
-          return producer;
+          return {
+            epoch: producer.epoch,
+            get closed() {
+              return producer.closed;
+            },
+            publish: (body) => {
+              requireActionEffects();
+              producer.publish(body);
+            },
+            close: () => {
+              requireActionEffects();
+              producer.close();
+            },
+            onClose: (listener) => {
+              requireActionEffects();
+              const stop = producer.onClose(listener);
+              return () => {
+                requireActionEffects();
+                stop();
+              };
+            },
+          };
         },
       },
       principal: auth.principal,
@@ -6646,11 +6712,16 @@ export class PluginHost {
       // only of its type — and what the isolate proxy answers `slice_unavailable` for.
       ...(database === undefined ? {} : { database }),
       now: () => this.runtime.now(),
-      newId: () => this.runtime.newId(),
+      newId: () => {
+        requireActionEffects();
+        return this.runtime.newId();
+      },
       target: (ref) => {
+        requireActionEffects();
         if (!opaque) targets.push(ref);
       },
       emit: (ref, kind, payload) => {
+        requireActionEffects();
         staged.push({ ref, kind, payload: payload ?? {} });
         if (!opaque) targets.push(ref);
       },
