@@ -20,6 +20,7 @@ import {
   TerminalsResponseSchema,
   type ActionOutcome,
   type AgentRunAuthority,
+  type AuthorityScope,
   type HarnessTarget,
   type JobCommand,
   type JobOwner,
@@ -80,6 +81,20 @@ function result(outcome: ActionOutcome): unknown {
   if (!outcome.ok)
     throw new Error(`action refused: ${outcome.denial.rule}: ${outcome.denial.message}`);
   return outcome.result;
+}
+
+async function admittedMessage<T>(
+  message: Promise<T>,
+  pending: Promise<ActionOutcome>,
+  phase: string,
+): Promise<T> {
+  return Promise.race([
+    message,
+    pending.then((outcome) => {
+      result(outcome);
+      throw new Error(`action settled before ${phase}`);
+    }),
+  ]);
 }
 
 async function fixture(
@@ -889,7 +904,7 @@ test("an awaited harness launch holds the restart guard and rechecks home author
     const pending = f.host.dispatch(actor, "core.terminals.restart", {
       terminalId: create.terminalId,
     });
-    await entered.promise;
+    await admittedMessage(entered.promise, pending, "harness restart launch");
     f.broker.onRestarted(f.descriptor.machineId, {
       type: "terminal_restarted",
       terminalId: create.terminalId,
@@ -1009,7 +1024,7 @@ test.each(["profile_changed", "run_revoked"] as const)(
       const created = await f.create();
       validatingLaunch = true;
       pending = f.host.dispatch(f.root, "core.access.launchRun", { runId: created.run.id });
-      await entered.promise;
+      await admittedMessage(entered.promise, pending, "harness profile validation");
       validatingLaunch = false;
       if (change === "profile_changed")
         await f.auth.updateAgent(
@@ -1281,7 +1296,7 @@ test.each(["draining", "disabled", "withdrawn"] as const)(
       const pending = f.host.dispatch(f.root, "core.terminals.restart", {
         terminalId: create.terminalId,
       });
-      await entered.promise;
+      await admittedMessage(entered.promise, pending, "harness restart launch");
       let drain: Promise<unknown> | undefined;
       switch (change) {
         case "draining":
@@ -1325,6 +1340,27 @@ interface GovernedTerminalFixture {
   openCreated(value: TerminalRuntime): Promise<Extract<ServerToAgentMessage, { type: "create" }>>;
 }
 
+function governedTerminalScope(f: GovernedTerminalFixture): AuthorityScope {
+  return [
+    {
+      target: "manifold://",
+      reach: "subtree",
+      caps: [
+        "containers:read",
+        "containers:write",
+        "scenes:write",
+        "terminals:spawn",
+        "terminals:write",
+      ],
+    },
+    {
+      target: `manifold://machine/${f.descriptor.machineId}/operation/${f.descriptor.operationId}`,
+      reach: "node",
+      caps: ["machines:run"],
+    },
+  ];
+}
+
 async function governedCreated(
   f: GovernedTerminalFixture,
   actor: AuthContext = f.root,
@@ -1340,7 +1376,7 @@ async function governedCreated(
     rows: 24,
     runtime: f.descriptor,
   });
-  const create = await f.firstCreate;
+  const create = await admittedMessage(f.firstCreate, pending, "governed terminal create");
   f.broker.onCreated(f.descriptor.machineId, create.terminalId);
   result(await pending);
   return create;
@@ -1370,10 +1406,11 @@ test.each(["legacy birth", "prepared birth", "restart"] as const)(
       let command = create.runtime;
       f.started(command);
       if (phase === "restart") {
-        result(await f.host.dispatch(f.root, "core.terminals.restart", {
+        const pending = f.host.dispatch(f.root, "core.terminals.restart", {
           terminalId: create.terminalId,
-        }));
-        const restart = await f.firstRestart;
+        });
+        const restart = await admittedMessage(f.firstRestart, pending, "governed terminal restart");
+        result(await pending);
         if (!restart.create.runtime) throw new Error("governed restart missing");
         command = restart.create.runtime;
         f.started(command);
@@ -1405,9 +1442,11 @@ test.each(["deny", "transport", "owner", "drain"] as const)(
   async (change) => {
     const f = await fixture();
     try {
-      const minted = f.auth.mintToken({
+      const minted = f.auth.mintTokenV2({
         principal: { name: "pending opener", kind: "human" },
-        caps: ["terminals:spawn", "machines:run"],
+        scope: governedTerminalScope(f),
+        containerId: f.containerId,
+        expiresAt: f.runtime.now() + 60_000,
       }, f.root);
       const actor = f.auth.authenticate(minted.token);
       const pending = f.host.dispatch(actor, "core.terminals.create", {
@@ -1419,7 +1458,7 @@ test.each(["deny", "transport", "owner", "drain"] as const)(
         rows: 24,
         runtime: f.descriptor,
       });
-      const create = await f.firstCreate;
+      const create = await admittedMessage(f.firstCreate, pending, "pending governed create");
       if (!create.runtime) throw new Error("governed create missing");
       if (change === "deny") {
         f.auth.grant({
@@ -1462,17 +1501,19 @@ test.each(["deny", "transport", "owner", "drain"] as const)(
   async (change) => {
     const f = await fixture();
     try {
-      const create = await governedCreated(f);
-      f.holdRestartAcknowledgement();
-      const minted = f.auth.mintToken({
+      const minted = f.auth.mintTokenV2({
         principal: { name: "pending restarter", kind: "human" },
-        caps: ["*"],
+        scope: governedTerminalScope(f),
+        containerId: f.containerId,
+        expiresAt: f.runtime.now() + 60_000,
       }, f.root);
       const actor = f.auth.authenticate(minted.token);
+      const create = await governedCreated(f, actor);
+      f.holdRestartAcknowledgement();
       const pending = f.host.dispatch(actor, "core.terminals.restart", {
         terminalId: create.terminalId,
       });
-      const restart = await f.firstRestart;
+      const restart = await admittedMessage(f.firstRestart, pending, "pending governed restart");
       if (!restart.create.runtime) throw new Error("governed restart missing");
       if (change === "deny") {
         f.auth.grant({
@@ -1512,20 +1553,26 @@ test.each(["deny", "transport", "owner", "drain"] as const)(
   },
 );
 
-test.each(["deny", "expiry", "sponsor", "action", "owner", "consent"] as const)(
+test.each(["deny", "expiry", "sponsor", "action", "installation", "owner", "consent"] as const)(
   "committed governed effects still cancel on continuing %s authority withdrawal",
   async (change) => {
     const f = await fixture();
     const action = f.host.assembly().actions.get("core.terminals.create")!.def;
     const originalInput = action.input;
     try {
-      const sponsor = f.auth.mintToken({
+      const sponsor = f.auth.mintTokenV2({
         principal: { name: "terminal sponsor", kind: "human" },
-        caps: ["*"],
+        scope: governedTerminalScope(f).map((entry) => ({
+          ...entry,
+          caps: [...entry.caps, "tokens:mint"],
+        })),
+        containerId: f.containerId,
+        expiresAt: f.runtime.now() + 60_000,
       }, f.root);
-      const minted = f.auth.mintToken({
+      const minted = f.auth.mintTokenV2({
         principal: { name: "continuing opener", kind: "human" },
-        caps: ["terminals:spawn", "machines:run"],
+        scope: governedTerminalScope(f),
+        containerId: f.containerId,
         expiresAt: f.runtime.now() + 30_000,
       }, f.auth.authenticate(sponsor.token));
       const actor = f.auth.authenticate(minted.token);
@@ -1553,6 +1600,15 @@ test.each(["deny", "expiry", "sponsor", "action", "owner", "consent"] as const)(
           break;
         case "action":
           action.input = z.strictObject({});
+          break;
+        case "installation":
+          f.service.install(f.root, {
+            machineId: f.descriptor.machineId,
+            pluginId,
+            installationRevision: "r2",
+            artifactSha256: hash,
+            machine,
+          });
           break;
         case "owner":
           f.owner.terminalHostId = "replacement-terminal-host";
