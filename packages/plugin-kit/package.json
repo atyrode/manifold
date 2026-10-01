@@ -12,7 +12,8 @@
     "./install": "./src/install.ts",
     "./artifacts": "./src/artifacts.ts",
     "./refresh": "./src/refresh.ts",
-    "./refresh-vite": "./src/refresh-vite.ts"
+    "./refresh-vite": "./src/refresh-vite.ts",
+    "./workshop": "./src/workshop.ts"
   },
   "bin": {
     "manifold-pack": "./src/pack.ts",

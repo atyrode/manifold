@@ -38,6 +38,8 @@ export interface InstallOptions {
   readonly hardened?: boolean;
   /** The expected pin; the command refuses before touching the hub when the bytes disagree. */
   readonly sha256?: string;
+  /** Replace only a current same-authority installation, retaining its exact consent. */
+  readonly preserveGrant?: boolean;
 }
 
 export type InstallOutcome = "installed" | "replaced" | "unchanged";
@@ -297,6 +299,8 @@ export async function installBundle(options: InstallOptions): Promise<InstallRep
 
   const rows = await roster(hub);
   const row = rows.find((entry) => entry.manifest.id === facts.id);
+  if (options.preserveGrant === true && row?.install === undefined)
+    throw new Error(`${facts.id}: preserving consent requires an existing installed row`);
   if (
     row?.install?.sha256 === facts.sha256 &&
     (row.install.hardened === true) === (options.hardened === true)
@@ -317,6 +321,7 @@ export async function installBundle(options: InstallOptions): Promise<InstallRep
     sha256: facts.sha256,
     replace: true,
     hardened: options.hardened === true,
+    ...(options.preserveGrant === true ? { retainInstallation: row.install!.sha256 } : {}),
   });
   return report("replaced");
 }
