@@ -60,7 +60,7 @@ const machine: MachineHalf = {
   locations: {},
 };
 
-async function fixture(preparerCaps: readonly AuthoredCap[] = ["plugins:manage", "tokens:mint"]) {
+async function fixture(preparerCaps: readonly AuthoredCap[] = ["tokens:mint", "plugins:manage"]) {
   const dataDir = mkdtempSync(join(tmpdir(), "manifold-durable-binding-"));
   const path = join(dataDir, "hub.sqlite");
   const runtime = new FakeRuntime();
@@ -81,7 +81,9 @@ async function fixture(preparerCaps: readonly AuthoredCap[] = ["plugins:manage",
   let host: PluginHost;
   async function boot() {
     store = new ServerStore(openDatabase(path));
-    auth = new AuthService(store, OWNER_KEY, runtime);
+    auth = new AuthService(store, OWNER_KEY, runtime, {
+      decide: (request) => service.decide(request),
+    });
     const clock = new FakeClock(runtime);
     const rooms = new RoomManager(store, runtime, clock, silentLogger, testTileTrees);
     const broker = new TerminalBroker(
@@ -125,7 +127,7 @@ async function fixture(preparerCaps: readonly AuthoredCap[] = ["plugins:manage",
     version: "1.0.0",
     title: "Durable binding",
     description: "",
-    capabilities: ["machines:run", "tokens:mint", "plugins:manage"],
+    capabilities: ["machines:run", "machines:read", "tokens:mint", "plugins:manage"],
     dataVersion: { major: 1, minor: 0 },
     purges: ["storage"],
     contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
@@ -139,18 +141,25 @@ async function fixture(preparerCaps: readonly AuthoredCap[] = ["plugins:manage",
   writeFileSync(join(authorDir, "server.ts"), `
 import { z } from ${JSON.stringify(fileURLToPath(import.meta.resolve("zod")))};
 import { defineServerAction, defineServerPlugin } from ${JSON.stringify(fileURLToPath(import.meta.resolve("@manifold/plugin-kit/server")))};
-const input = z.strictObject({ machineId: z.string(), scheduleId: z.string(), extra: z.boolean() });
+const input = z.strictObject({
+  operation: z.strictObject({
+    kind: z.literal("operation"), machineId: z.string(),
+    operationId: z.literal(${JSON.stringify(OPERATION_ID)}),
+  }),
+  scheduleId: z.string(), extra: z.boolean(),
+});
 const scheduleAction = (name, caps, delegates) => defineServerAction({
   name, title: name, caps, delegates, input, result: z.strictObject({}),
+  requirements: [{ cap: "machines:run", target: ["operation"] }],
 });
 const prepare = async (_ctx, args) => ({
-  args, targets: [],
+  args, targets: args.operation === undefined ? [] : [args.operation],
   additionalRequirements: args.extra ? [{ cap: "tokens:mint", node: "manifold://", reach: "node" }] : [],
 });
 const register = async (ctx, args) => {
   await ctx.jobs.schedule({
-    jobId: "template-" + args.scheduleId, machineId: args.machineId,
-    operationId: ${JSON.stringify(OPERATION_ID)}, input: { value: args.scheduleId }, outputs: [],
+    jobId: "template-" + args.scheduleId, machineId: args.operation.machineId,
+    operationId: args.operation.operationId, input: { value: args.scheduleId }, outputs: [],
     scheduleId: args.scheduleId, revision: "one", firstNominalAt: 1000,
     intervalMs: 60000, deadlineMs: 30000, expiresAt: 60000, offlinePolicy: "coalesce-one",
   });
@@ -160,7 +169,7 @@ defineServerPlugin({
   manifest: ${JSON.stringify(manifest)},
   actions: [
     scheduleAction("declared", ["tokens:mint"], ["machines:run"]),
-    scheduleAction("delegated", [], ["machines:run", "tokens:mint"]),
+    scheduleAction("delegated", [], ["machines:run", "machines:read"]),
     scheduleAction("prepared", [], ["machines:run"]),
     defineServerAction({ name: "record", title: "Record", caps: [],
       input: z.strictObject({ value: z.string().trim(), extra: z.boolean() }),
@@ -195,12 +204,13 @@ defineServerPlugin({
         machineId, pluginId: PLUGIN_ID, installationRevision: "one",
         artifactSha256: ARTIFACT_HASH, machine,
       });
-      service.consent(root(), {
-        machineId, pluginId: PLUGIN_ID, installationRevision: "one",
-        artifactSha256: ARTIFACT_HASH,
-        node: formatManifoldUri({ kind: "operation", machineId, operationId: OPERATION_ID }),
-        cap: "machines:run", enabled: true,
-      });
+      for (const cap of ["machines:run", "operations:invoke"] as const)
+        service.consent(root(), {
+          machineId, pluginId: PLUGIN_ID, installationRevision: "one",
+          artifactSha256: ARTIFACT_HASH,
+          node: formatManifoldUri({ kind: "operation", machineId, operationId: OPERATION_ID }),
+          cap, enabled: true,
+        });
       prove();
     },
     async reopen() {
@@ -249,26 +259,32 @@ for (const reopen of [false, true]) {
         ["prepared", "unused-mode", false],
       ] as const) {
         expect(await f.host.dispatch(f.root(), `${PLUGIN_ID}.${action}`, {
-          machineId: f.machineId, scheduleId, extra,
+          operation: { kind: "operation", machineId: f.machineId, operationId: OPERATION_ID },
+          scheduleId, extra,
         })).toEqual({ ok: true, result: {} });
       }
-      expect(f.service.jobSchedules.listSchedules().map((spec) => spec.scheduleId)).toEqual([
-        "declared", "delegated", "prepared", "unused-mode",
-      ]);
+      expect(await f.host.dispatch(f.root(), "engine.jobs.schedules", {})).toMatchObject({
+        ok: true,
+        result: ["declared", "delegated", "prepared", "unused-mode"].map((scheduleId) => ({ scheduleId })),
+      });
       // Same bytes and native consent; only the installer-withheld ordinary ceiling changes.
-      expect(await f.install([], true)).toMatchObject({ id: PLUGIN_ID, grantedCaps: [] });
+      expect(await f.install([], true)).toMatchObject({ id: PLUGIN_ID, grantedCaps: ["machines:read"] });
       if (reopen) await f.reopen();
       f.runtime.time = 1000;
       f.service.tick();
-      for (const scheduleId of ["declared", "delegated", "prepared"]) {
+      for (const scheduleId of ["declared", "prepared"]) {
         expect(f.service.jobs.get(occurrenceId(scheduleId))).toBeNull();
         expect(f.service.jobSchedules.getOccurrence(occurrenceId(scheduleId))).toBeNull();
       }
-      expect(f.service.jobSchedules.listSchedules().map((spec) => spec.scheduleId)).toEqual(["unused-mode"]);
-      // An unselected preparer mode was never admitted and must not fence this cadence.
-      expect(f.service.jobs.get(occurrenceId("unused-mode"))?.state).toBe("start-committed");
+      expect(await f.host.dispatch(f.root(), "engine.jobs.schedules", {})).toMatchObject({
+        ok: true,
+        result: [{ scheduleId: "delegated" }, { scheduleId: "unused-mode" }],
+      });
+      // Ordinary delegated defaults and an unselected preparer mode remain admitted.
+      for (const scheduleId of ["delegated", "unused-mode"])
+        expect(f.service.jobs.get(occurrenceId(scheduleId))?.state).toBe("start-committed");
       expect(f.commands.filter((command) => command.type === "start").map((command) => command.request.jobId)).toEqual([
-        occurrenceId("unused-mode"),
+        occurrenceId("delegated"), occurrenceId("unused-mode"),
       ]);
     } finally {
       await f.close();
