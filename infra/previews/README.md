@@ -2,7 +2,7 @@
 
 | Address            | Runs                                                                   |
 | ------------------ | ---------------------------------------------------------------------- |
-| `preview.<domain>` | Integrated `main` (existing dev stack on port 7912)                    |
+| `preview.<domain>` | Existing integrated hub on 7912; optional Code source workshop on 7913 |
 | `<N>.<domain>`     | PR N's last explicitly deployed SHA in `manifold-pr-N`; machine `pr-N` |
 | `<name>.<domain>`  | Live host worktree: Vite HMR and Bun watch                             |
 
@@ -477,6 +477,68 @@ journals contain no pre-auth URL.
 Observe live processes with `journalctl --user -u manifold-live-feature` and restart
 with `systemctl --user restart manifold-live-feature`. Install worktree dependencies
 with `bun install --frozen-lockfile` before `live`; source changes update without redeploy.
+
+### Persistent Code workshop on the integrated preview
+
+`workshop.sh` owns one `manifold-code-workshop.service` user unit, not another hub,
+native supervisor or deployment receiver verb. It uses the reviewed SDK `devWorkshop`
+loop: frontend CSS and compatible React/JS changes use HMR without reinstalling a bundle;
+applicable same-manifest server-plugin changes compile/install/reload serially. A backend
+replacement can remount the frontend and reset backend memory. Dependency, manifest,
+native requirement or installation-authority changes require explicit installation/review,
+not an automatic grant expansion. Source-only `--fast-refresh` remains credential-free
+and separate.
+
+Before the first start, install the selected Manifold and Code source dependencies with
+their frozen lockfiles. Keep the stable tool checkout and the approved source checkout
+in place; this tool does not fetch, update or delete either. Code's existing custom
+`plugins/pack.ts` export compiles the family using its own pinned sibling Manifold checkout.
+The frontend/workshop SDK comes from the separately selected current `manifoldRoot`.
+`workshop.example.json` records the non-secret configuration contract:
+
+- `manifoldRoot`: absolute current Manifold source checkout with the workshop SDK and
+  installed frontend toolchain.
+- `sourceRoot`: `/home/alex/code-workshop/code/plugins`.
+- `buildModule`: `/home/alex/code-workshop/code/plugins/pack.ts`, optional for other
+  source families using the SDK's ordinary packer.
+- `hubUrl`, `frontendPort`, `publicHost`, `deliver`: fixed to
+  `http://127.0.0.1:7912`, `7913`, `preview.manifold.tyrode.dev` and
+  `docker:manifold-dev-manifold-1`. Other origins/authority targets require their own review.
+
+Copy the example to `$PREVIEW_HOME/workshop.json` and adjust only the checkout paths.
+No owner key belongs in this file, a unit, argv or environment. The launcher disables
+dotenv loading, clears inherited owner-key overrides and uses the SDK's supported
+`resolveOwnerKey(undefined, deliver)` against the existing hub container. **Start grants
+plugin installation authority**, unlike source-only Fast Refresh. It does not install a
+native dependency, restart the hub, change its data volume or touch terminals/OMP sessions.
+
+After the separately authorized and disruption-reviewed Caddy activation:
+
+```sh
+bash infra/previews/workshop.sh start "$HOME/manifold-previews/workshop.json"
+bash infra/previews/workshop.sh status
+journalctl --user -u manifold-code-workshop.service
+bash infra/previews/workshop.sh stop
+```
+
+`start` validates the non-secret config without resolving a credential, then installs,
+enables and restarts only its owned unit; linger makes it survive logout/reboot.
+`status` shows selected service properties and loopback listener availability.
+`stop` disables/removes only that unit, letting the SDK release its watchers, listener,
+children and temporary build resources. Source, saved config, installed bundles and all
+hub/native data remain. A port already owned by another process is not reclaimed.
+
+Dotfiles owns the public preview Caddy vhost: `/api`, `/auth`, `/ws`, `/healthz` and their
+subpaths always go to the retained hub on 7912. Other frontend traffic and Vite HMR
+prefer loopback 7913, with bounded connection-failure fallback to that same hub's installed
+frontend. Vite HMR uses its frontend path, not the hub's `/ws` namespace.
+`MANIFOLD_DEV_HOST` is exactly the configured TLS hostname; neither global host admission
+nor new browser credentials/audiences are added. Selected frontend development assets
+are same-origin public code, not authority to serve arbitrary host files: the SDK's
+registered source-graph and secret-path denials still apply. The listener binds only
+`127.0.0.1`; never publish it directly or open port 7913 in the firewall.
+Stopping or losing the workshop does not require another proxy activation. Initial Caddy
+activation remains separate from committing or starting this service.
 
 ### Retire an old development spoke before native activation
 
