@@ -4,7 +4,7 @@ import {
   PROTOCOL_VERSION,
   ServerToAgentMessageSchema,
   type ActionOutcome,
-  type Cap,
+  type LegacyCap,
   type Container,
   type ServerToAgentMessage,
   type TerminalProgram,
@@ -163,7 +163,7 @@ async function fixture(): Promise<TerminalsFixture> {
 }
 
 /** A minted token, so authority is exercised through real attenuation. */
-function context(base: TerminalsFixture, caps: readonly Cap[], containerId?: string): AuthContext {
+function context(base: TerminalsFixture, caps: readonly LegacyCap[], containerId?: string): AuthContext {
   const grant = base.auth.mintToken(
     {
       principal: { name: "guest", kind: "human" },
@@ -1142,9 +1142,9 @@ describe("ordinary shell creation authority", () => {
 
   test("an exact M leg permits composition birth but never another account", async () => {
     const base = await fixture();
+    const second = new FakeMachine(base.auth.enrollMachine("second account", base.owner).machine.id);
     try {
       const actor = scoped(base, `manifold://container/${base.container.id}`, base.machine.machineId);
-      const second = new FakeMachine(base.auth.enrollMachine("second account", base.owner).machine.id);
       base.broker.setMachineOnline(second);
       const input = { containerId: base.container.id, placement: "tile", cols: 80, rows: 24 } as const;
       expect(await base.host.dispatch(actor, "core.terminals.create", { ...input, elementId: "wrong", machineId: second.machineId })).toMatchObject({ ok: false, denial: { rule: "forbidden" } });
@@ -1156,7 +1156,13 @@ describe("ordinary shell creation authority", () => {
       const terminalId = await sent.promise;
       base.broker.onCreated(base.machine.machineId, terminalId);
       expect(await create).toMatchObject({ ok: true, result: { terminal: { id: terminalId, machineId: base.machine.machineId, containerId: base.container.id } } });
-    } finally { base.gateway.close(); base.host.close(); base.store.close(); }
+    } finally {
+      base.gateway.shutdown();
+      base.broker.setMachineOffline(second);
+      base.broker.setMachineOffline(base.machine);
+      base.host.close();
+      base.store.close();
+    }
   });
 
   test("C-only working authority cannot allocate an independent canvas home", async () => {
@@ -1177,7 +1183,12 @@ describe("ordinary shell creation authority", () => {
       expect(base.machine.sent.filter((message) => message.type === "create")).toEqual([]);
       expect(base.store.listTerminals()).toEqual([]);
       expect(base.auth.listCredentialsV2(base.owner)).toEqual(before);
-    } finally { base.gateway.close(); base.host.close(); base.store.close(); }
+    } finally {
+      base.gateway.shutdown();
+      base.broker.setMachineOffline(base.machine);
+      base.host.close();
+      base.store.close();
+    }
   });
 
   test("root-node working rights do not authorize an independent canvas subtree", async () => {
@@ -1198,7 +1209,12 @@ describe("ordinary shell creation authority", () => {
       expect(base.machine.sent).toEqual([]);
       expect(base.store.listTerminals()).toEqual([]);
       expect(base.auth.listCredentialsV2(base.owner)).toEqual(before);
-    } finally { base.gateway.close(); base.host.close(); base.store.close(); }
+    } finally {
+      base.gateway.shutdown();
+      base.broker.setMachineOffline(base.machine);
+      base.host.close();
+      base.store.close();
+    }
   });
 
   test("withdrawal after send prevents commit and tears down only the pending PTY", async () => {
@@ -1217,7 +1233,12 @@ describe("ordinary shell creation authority", () => {
       expect(base.store.getTerminal(terminalId)).toBeNull();
       expect(base.machine.sent.filter((message) => message.type === "kill")).toEqual([{ type: "kill", terminalId }]);
       expect(() => base.auth.authenticate(command.env.MANIFOLD_TOKEN!)).toThrow();
-    } finally { base.gateway.close(); base.host.close(); base.store.close(); }
+    } finally {
+      base.gateway.shutdown();
+      base.broker.setMachineOffline(base.machine);
+      base.host.close();
+      base.store.close();
+    }
   });
 
   test("lifecycle control cannot create or restart a shell; fresh two-leg authority can", async () => {
@@ -1247,6 +1268,11 @@ describe("ordinary shell creation authority", () => {
       expect(base.store.getTerminal(terminalId)?.status).toBe("exited");
       expect(base.machine.sent.filter((message) => message.type === "create")).toHaveLength(1);
       expect(base.machine.sent.filter((message) => message.type === "kill")).toEqual([{ type: "kill", terminalId }]);
-    } finally { base.gateway.close(); base.host.close(); base.store.close(); }
+    } finally {
+      base.gateway.shutdown();
+      base.broker.setMachineOffline(base.machine);
+      base.host.close();
+      base.store.close();
+    }
   });
 });

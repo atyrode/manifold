@@ -22,7 +22,7 @@ async function fixture(preparation: ActionPreparationDef) {
     manifest: {
       id: "test.prepare", version: "1.0.0", title: "Prepare", description: "",
       capabilities: ["containers:read", "machines:shell"],
-      contributes: { panels: [], sections: [], elements: [], tools: [] },
+      contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
     },
     actions: [defineAction({
       name: "apply", title: "Apply", caps: ["containers:read"],

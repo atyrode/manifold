@@ -5,6 +5,7 @@ import {
   RenewAgentRunResultSchema,
   PublicJobSchema,
   formatManifoldUri,
+  IsolateCtxMethodSchema,
   type ActionOutcome,
   type CreateChildRunRequest,
   type CreateRunCredentialResult,
@@ -553,7 +554,7 @@ async function transformingGuest() {
         } else if (frame.t === "call") {
           const dispatch = pending.get(frame.id.slice(0, frame.id.lastIndexOf(":")));
           if (dispatch?.admitted !== true) throw new Error("effect attempted before admission");
-          void serveCtxCall(frame.method, frame.args, { kind: "dispatch", ctx: dispatch.ctx }).then(
+          void serveCtxCall(IsolateCtxMethodSchema.parse(frame.method), frame.args, { kind: "dispatch", ctx: dispatch.ctx }).then(
             (result) => receive({ t: "reply", id: frame.id, ok: true, result }),
             (error: unknown) => dispatch.reject(error),
           );

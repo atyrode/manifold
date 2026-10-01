@@ -408,8 +408,9 @@ test("invocation persistence retains full parent scope and refuses a child that 
   const snapshot: AuthoritySnapshot = { credential: { ...base.parent.request.credential,
     authorityScope: [{ target: "manifold://machine/machine", reach: "subtree", caps: ["jobs:input"] }],
   } };
-  const spec = { ...base, parent: { ...base.parent, authoritySnapshot: snapshot }, authoritySnapshot: snapshot };
-  expect(() => f.jobs.reserveInvocation({ ...spec, authoritySnapshot: undefined }, f.callbacks))
+  const parent = { ...base.parent, authoritySnapshot: snapshot };
+  const spec = { ...base, parent, authoritySnapshot: snapshot };
+  expect(() => f.jobs.reserveInvocation({ ...base, parent }, f.callbacks))
     .toThrow("invocation-credential-ceiling");
   expect(f.jobs.reserveInvocation(spec, f.callbacks)).toBe("reserved");
   f.restart();

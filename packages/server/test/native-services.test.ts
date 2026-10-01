@@ -7,6 +7,7 @@ import {
   canonicalJobJson,
   formatManifoldUri,
   JobCommandSchema,
+  IsolateCtxMethodSchema,
   JobEventSchema,
   JOB_OWNER_PROTOCOL_VERSION,
   type JobCommand,
@@ -1247,7 +1248,7 @@ async function orchestratorHost(f: {
           }
         } else if (frame.t === "call") {
           if (!active) throw new Error("host call outside dispatch");
-          void serveCtxCall(frame.method, frame.args, { kind: "dispatch", ctx: active }).then(
+          void serveCtxCall(IsolateCtxMethodSchema.parse(frame.method), frame.args, { kind: "dispatch", ctx: active }).then(
             (result) =>
               receive({ t: "reply", id: frame.id, ok: true, result } satisfies IsolateHostFrame),
             (error: unknown) =>

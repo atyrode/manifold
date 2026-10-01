@@ -5,7 +5,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import type { JobSettledCtx, LifecycleCtx, PluginStorage } from "@manifold/plugin";
 import type {
-  Cap,
+  LegacyCap,
   EventKind,
   EventPayload,
   ManifoldRef,
@@ -134,6 +134,7 @@ function actionCtx(
       containerScope: null,
       isRoot: false,
       allows: () => true,
+      allowsNode: (cap) => cap === "scenes:write",
     },
     containerScope: null,
     outsideScope: () => null,
@@ -320,7 +321,7 @@ describe("IsolateSupervisor", () => {
         payload: { caller: principal.id },
       },
     ]);
-    const deniedCtx = { ...ctx, auth: { ...ctx.auth, allows: () => false } };
+    const deniedCtx = { ...ctx, auth: { ...ctx.auth, allows: () => false, allowsNode: () => false } };
     expect(await def.harness.sessions(deniedCtx, { machineId: "m1" })).toEqual([]);
     const ref = { harness: "test", machineId: "m1", sessionId: "s1" };
     expect(await def.harness.resolveSession(ctx, ref)).toEqual(ref);
@@ -736,7 +737,7 @@ describe("IsolateSupervisor", () => {
       guest's `auth.allows` call is where the test lands a real deny on the caller: between the
       dispatch frame (which carried the class as data) and the handler's next ctx call.
     */
-    const caller = (caps: Cap[]) => {
+    const caller = (caps: LegacyCap[]) => {
       const context = auth.authenticate(
         auth.mintToken({ principal: { name: "caller", kind: "human" }, caps }, owner).token,
       );
@@ -748,6 +749,7 @@ describe("IsolateSupervisor", () => {
           get isRoot(): boolean {
             return auth.holdsRoot(context);
           },
+          allowsNode: (cap, node, reach) => auth.allowsNode(context, cap, node, reach),
           allows: () => {
             auth.grant(
               {
