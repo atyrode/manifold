@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { tileIdForRef } from "@manifold/scene";
+import { formatManifoldUri } from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
 import {
   connect,
@@ -7,7 +8,7 @@ import {
   enrollMachine,
   isMachineOnline,
   listTerminals,
-  mintToken,
+  mintTokenV2,
   startAgent,
   startServer,
   waitFor,
@@ -50,9 +51,27 @@ test("a workload survives a transport crash and replacement with the same proces
       name: "continuity-agent",
     });
     agents.push(agent);
-    const grant = await mintToken(server, {
+    const grant = await mintTokenV2(server, {
       principal: { kind: "human", name: "Continuity User", color: "#5e48c7" },
-      caps: ["containers:read", "scenes:write", "terminals:spawn", "terminals:write"],
+      scope: [
+        {
+          target: "manifold://",
+          reach: "subtree",
+          caps: [
+            "containers:read",
+            "containers:write",
+            "scenes:write",
+            "terminals:spawn",
+            "terminals:write",
+          ],
+        },
+        {
+          target: formatManifoldUri({ kind: "machine", machineId: enrolled.machineId }),
+          reach: "node",
+          caps: ["machines:shell"],
+        },
+      ],
+      expiresAt: Date.now() + 600_000,
     });
     const client = await connect(server, { containerId: container.id, token: grant.token });
     clients.push(client);
@@ -148,9 +167,27 @@ test("transport replacement preserves the process; owner loss keeps a restartabl
       name: "lifetimes-agent",
     });
     agents.push(agent);
-    const grant = await mintToken(server, {
+    const grant = await mintTokenV2(server, {
       principal: { kind: "human", name: "Lifetimes User", color: "#5e48c7" },
-      caps: ["containers:read", "scenes:write", "terminals:spawn", "terminals:write"],
+      scope: [
+        {
+          target: "manifold://",
+          reach: "subtree",
+          caps: [
+            "containers:read",
+            "containers:write",
+            "scenes:write",
+            "terminals:spawn",
+            "terminals:write",
+          ],
+        },
+        {
+          target: formatManifoldUri({ kind: "machine", machineId: enrolled.machineId }),
+          reach: "node",
+          caps: ["machines:shell"],
+        },
+      ],
+      expiresAt: Date.now() + 600_000,
     });
     const client = await connect(server, { containerId: container.id, token: grant.token });
     clients.push(client);
@@ -261,15 +298,28 @@ test("drain accounts for racing births and stays closed across transport replace
       name: "drain-agent",
     });
     agents.push(agent);
-    const grant = await mintToken(server, {
+    const grant = await mintTokenV2(server, {
       principal: { kind: "human", name: "Maintenance User", color: "#5e48c7" },
-      caps: [
-        "containers:read",
-        "scenes:write",
-        "terminals:spawn",
-        "terminals:write",
-        "machines:mint",
+      scope: [
+        {
+          target: "manifold://",
+          reach: "subtree",
+          caps: [
+            "containers:read",
+            "containers:write",
+            "scenes:write",
+            "terminals:spawn",
+            "terminals:write",
+            "machines:mint",
+          ],
+        },
+        {
+          target: formatManifoldUri({ kind: "machine", machineId: enrolled.machineId }),
+          reach: "node",
+          caps: ["machines:shell"],
+        },
       ],
+      expiresAt: Date.now() + 600_000,
     });
     const client = await connect(server, { containerId: container.id, token: grant.token });
     clients.push(client);

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import type { TileLayout } from "@manifold/protocol";
+import { formatManifoldUri, type TileLayout } from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
 import {
   connect,
@@ -7,7 +7,7 @@ import {
   enrollMachine,
   listContainers,
   listTerminals,
-  mintToken,
+  mintTokenV2,
   startAgent,
   startServer,
   waitFor,
@@ -60,15 +60,27 @@ test("client.place() unplaces one real terminal and then merges it into a compos
     agents.push(agent);
     // Workspace-scoped: a placement crosses containers, so a container-scoped grant cannot make
     // one — the endpoint refuses it with 403 before any legality question is asked.
-    const owner = await mintToken(server, {
+    const owner = await mintTokenV2(server, {
       principal: { kind: "human", name: "Placement Owner", color: "#3fa46b" },
-      caps: [
-        "containers:read",
-        "containers:write",
-        "scenes:write",
-        "terminals:spawn",
-        "terminals:write",
+      scope: [
+        {
+          target: "manifold://",
+          reach: "subtree",
+          caps: [
+            "containers:read",
+            "containers:write",
+            "scenes:write",
+            "terminals:spawn",
+            "terminals:write",
+          ],
+        },
+        {
+          target: formatManifoldUri({ kind: "machine", machineId: enrolled.machineId }),
+          reach: "node",
+          caps: ["machines:shell"],
+        },
       ],
+      expiresAt: Date.now() + 600_000,
     });
 
     const canvas = await connect(server, {

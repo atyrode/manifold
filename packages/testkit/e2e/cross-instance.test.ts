@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { ShareRecipientSchema, type Cap } from "@manifold/protocol";
+import { ShareRecipientSchema, formatManifoldUri, type Cap } from "@manifold/protocol";
 import { ActionHttpError, discoverActions, invokeAction, type SessionClient } from "@manifold/sdk";
 import {
   advanceServerTime,
@@ -13,6 +13,7 @@ import {
   listShareRecipients,
   mintShare,
   mintToken,
+  mintTokenV2,
   openDial,
   revokeShare,
   spawnInstancePair,
@@ -101,9 +102,28 @@ test("host approval bounds each guest projection, and withdrawal, expiry and rev
     // the terminal was born into, because that is where a terminal actually lives and
     // "somebody else's terminal, live" is the hardest thing a projection has to carry.
     const canvasContainer = await createContainer(host, "host canvas");
-    const owner = await mintToken(host, {
+    const owner = await mintTokenV2(host, {
       principal: { kind: "human", name: "Host Owner", color: "#aa3344" },
-      caps: ["containers:read", "scenes:write", "terminals:spawn", "terminals:write"],
+      scope: [
+        {
+          target: "manifold://",
+          reach: "subtree",
+          caps: [
+            "containers:read",
+            "containers:write",
+            "scenes:write",
+            "terminals:spawn",
+            "terminals:write",
+          ],
+        },
+        {
+          target: formatManifoldUri({ kind: "machine", machineId: enrolled.machineId }),
+          reach: "node",
+          caps: ["machines:shell"],
+        },
+      ],
+      // The expiry phase advances the host beyond an interactive guest ticket's lifetime.
+      expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1_000,
     });
     const canvas = await connect(host, { containerId: canvasContainer.id, token: owner.token });
     clients.push(canvas);

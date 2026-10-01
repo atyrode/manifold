@@ -26,14 +26,14 @@ test("Agents lead to delegated run trees, safe snapshots and native trace refere
   ).toBe(true);
   await ui.text("3 actions · 1 refusals");
   await ui.click("Inspect run run-one");
-  await ui.answer("core.access.inspectRun", inspection);
+  await ui.answer("core.access.inspectRunV2", inspection);
   await ui.text(agent.purpose);
   await ui.text("conversation-one");
   await ui.text("review-model");
   await ui.text("cleanup_failed");
   await ui.text("pending_or_crashed");
   await ui.click("Trace 9007199254740993");
-  await ui.answer("core.access.inspectRun", { ...inspection, requestedTrace: "available" });
+  await ui.answer("core.access.inspectRunV2", { ...inspection, requestedTrace: "available" });
   await ui.text("Checking retained workspace facts");
   expect(
     await ui.browser.evaluate<boolean>(
@@ -43,19 +43,33 @@ test("Agents lead to delegated run trees, safe snapshots and native trace refere
   await ui.click("Jobs · 1");
   await ui.text("unconfirmed");
   await ui.click("Trace 9007199254740997");
-  await ui.answer("core.access.inspectRun", {
+  await ui.answer("core.access.inspectRunV2", {
     ...inspection,
     traces: [],
     requestedTrace: "unavailable",
   });
-  await ui.text("Its outcome is not known");
+  expect(
+    await ui.browser.evaluate<{ identifiesTrace: boolean; loading: boolean; hasOutcome: boolean }>(
+      `(() => {
+        const trigger = [...document.querySelectorAll("button")].find(
+          button => button.textContent.trim() === "Trace 9007199254740997",
+        );
+        const body = document.getElementById(trigger.getAttribute("aria-controls"));
+        return {
+          identifiesTrace: body.innerText.includes("9007199254740997"),
+          loading: body.querySelector('[role="status"]') !== null,
+          hasOutcome: body.querySelector("dl") !== null,
+        };
+      })()`,
+    ),
+  ).toEqual({ identifiesTrace: true, loading: false, hasOutcome: false });
   await ui.click("Open manifold://terminal/terminal-one");
   expect(await ui.browser.evaluate<string[]>("window.accessFixture.navigations")).toEqual([
     "manifold://terminal/terminal-one",
   ]);
   await ui.click("Run lineage · 2");
   await ui.click("Inspect run Parent run");
-  await ui.outcome("core.access.inspectRun", {
+  await ui.outcome("core.access.inspectRunV2", {
     ok: false,
     denial: { rule: "refused", message: "Run inspection unavailable" },
   });
@@ -72,7 +86,7 @@ test("changing runs discards a late snapshot and renders the exact refusal of th
   await ui.click("Inspect run run-one");
   await ui.click("Inspect run run-root");
   const pending = await ui.browser.evaluate<readonly { id: number; args: { runId: string } }[]>(
-    'window.accessFixture.pending().filter(request => request.action === "core.access.inspectRun")',
+    'window.accessFixture.pending().filter(request => request.action === "core.access.inspectRunV2")',
   );
   const root = pending.find((request) => request.args.runId === "run-root");
   const previous = pending.find((request) => request.args.runId === "run-one");
@@ -95,11 +109,11 @@ test("changing runs discards a late snapshot and renders the exact refusal of th
 test("run notifications refresh activity without closing the open inspection", async () => {
   await ui.detail();
   await ui.click("Inspect run run-one");
-  await ui.answer("core.access.inspectRun", inspection);
+  await ui.answer("core.access.inspectRunV2", inspection);
   await ui.click("Jobs · 1");
   await ui.text("unconfirmed");
   await ui.browser.evaluate<void>("window.accessFixture.emitAccess()");
-  await ui.answer("core.access.inspectRun", {
+  await ui.answer("core.access.inspectRunV2", {
     ...inspection,
     run: { ...inspection.run, activity: "done" },
   });

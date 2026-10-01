@@ -19,6 +19,7 @@ export {
   listTerminals,
   mintShare,
   mintToken,
+  mintTokenV2,
   openDial,
   ownerAction,
   ownerFetch,

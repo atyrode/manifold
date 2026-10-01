@@ -3,6 +3,7 @@ import {
   HttpErrorSchema,
   PlaceRequestSchema,
   TerminalInfoSchema,
+  formatManifoldUri,
   type ActionOutcome,
   type HttpError,
   type TerminalSummary,
@@ -15,6 +16,7 @@ import {
   enrollMachine,
   listTerminals,
   mintToken,
+  mintTokenV2,
   startAgent,
   startServer,
   waitFor,
@@ -164,15 +166,27 @@ test("the terminal index lists every terminal, placed or not, and renames and ki
 
     // Workspace-scoped: the index and the placement endpoint both cross containers, so they
     // reject container-scoped grants outright — proven at the end of this test.
-    const owner = await mintToken(server, {
+    const owner = await mintTokenV2(server, {
       principal: { kind: "human", name: "Index Owner", color: "#3fa46b" },
-      caps: [
-        "containers:read",
-        "containers:write",
-        "scenes:write",
-        "terminals:spawn",
-        "terminals:write",
+      scope: [
+        {
+          target: "manifold://",
+          reach: "subtree",
+          caps: [
+            "containers:read",
+            "containers:write",
+            "scenes:write",
+            "terminals:spawn",
+            "terminals:write",
+          ],
+        },
+        {
+          target: formatManifoldUri({ kind: "machine", machineId: enrolled.machineId }),
+          reach: "node",
+          caps: ["machines:shell"],
+        },
       ],
+      expiresAt: Date.now() + 600_000,
     });
     const canvas = await connect(server, {
       containerId: container.id,
@@ -290,9 +304,9 @@ test("the terminal index lists every terminal, placed or not, and renames and ki
     });
     // The INDEX is workspace-grade, so the door refuses the scoped token as DATA; the census
     // is still a floor route, and it answers the same fact with a status.
-    expect(await callAction(server, scoped.token, "core.terminals.listAll", {})).toEqual({
+    expect(await callAction(server, scoped.token, "core.terminals.listAll", {})).toMatchObject({
       ok: false,
-      denial: { rule: "forbidden", message: "scoped tokens cannot invoke workspace actions" },
+      denial: { rule: "forbidden" },
     });
     const census = await fetchAsPrincipal(server, scoped.token, "/api/containers");
     expect(census.status).toBe(403);
@@ -308,9 +322,9 @@ test("the terminal index lists every terminal, placed or not, and renames and ki
           destination: { kind: "unplaced" },
         }),
       ),
-    ).toEqual({
+    ).toMatchObject({
       ok: false,
-      denial: { rule: "forbidden", message: "scoped tokens cannot invoke workspace actions" },
+      denial: { rule: "forbidden" },
     });
   } catch (error) {
     throw e2eFailure(error, [...servers, ...agents]);

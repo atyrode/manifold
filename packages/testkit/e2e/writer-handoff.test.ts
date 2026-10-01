@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { rmSync } from "node:fs";
-import { ActionOutcomeSchema, HealthResponseSchema } from "@manifold/protocol";
+import { ActionOutcomeSchema, HealthResponseSchema, formatManifoldUri } from "@manifold/protocol";
 import type { ConnectionStatus, SessionClient } from "@manifold/sdk";
 import {
   connect,
@@ -8,7 +8,7 @@ import {
   enrollMachine,
   isMachineOnline,
   listContainers,
-  mintToken,
+  mintTokenV2,
   startAgent,
   startServer,
   waitFor,
@@ -113,9 +113,27 @@ test("a fenced handoff keeps one writer, acknowledged writes, sessions and the P
     });
     agents.push(agent);
     const container = await createContainer(first, "handoff canvas");
-    const grant = await mintToken(first, {
+    const grant = await mintTokenV2(first, {
       principal: { kind: "human", name: "Handoff User", color: "#2f7d6d" },
-      caps: ["containers:read", "scenes:write", "terminals:spawn", "terminals:write"],
+      scope: [
+        {
+          target: "manifold://",
+          reach: "subtree",
+          caps: [
+            "containers:read",
+            "containers:write",
+            "scenes:write",
+            "terminals:spawn",
+            "terminals:write",
+          ],
+        },
+        {
+          target: formatManifoldUri({ kind: "machine", machineId: enrolled.machineId }),
+          reach: "node",
+          caps: ["machines:shell"],
+        },
+      ],
+      expiresAt: Date.now() + 600_000,
     });
     const canvas = await connect(first, { containerId: container.id, token: grant.token });
     clients.push(canvas);

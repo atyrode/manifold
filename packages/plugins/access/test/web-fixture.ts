@@ -7,6 +7,7 @@ import type {
   AgentV2,
   AgentRunV2,
   InspectRunV2Result,
+  ListRunsV2Result,
   CredentialsResponseV2,
   InstanceServiceDescription,
   PrincipalCredentialsV2,
@@ -199,7 +200,7 @@ export const inspection: InspectRunV2Result = {
   terminals: [],
   nativeTruncated: true,
 };
-export const inventory = {
+export const inventory: ListRunsV2Result = {
   observedAt: at,
   truncated: false,
   runs: [

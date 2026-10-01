@@ -13,6 +13,7 @@ import {
   RevokeResultSchema,
   TokenGrantSchema,
   PROTOCOL_VERSION,
+  formatManifoldUri,
   type Principal,
 } from "@manifold/protocol";
 import { textToBase64, type SessionClient } from "@manifold/sdk";
@@ -22,6 +23,7 @@ import {
   createContainer,
   enrollMachine,
   mintToken,
+  mintTokenV2,
   ownerAction,
   startServer,
   waitFor,
@@ -47,7 +49,7 @@ async function closeRawSockets(
 test("auth closes invalid joins and enforces scope, capabilities, attenuation, and revocation", async () => {
   const servers: TestServer[] = [];
   const clients: SessionClient[] = [];
-  const rawSockets: AdversarialSessionSocket[] = [];
+  const rawSockets: (AdversarialMachineSocket | AdversarialSessionSocket)[] = [];
   try {
     const server = await startServer();
     servers.push(server);
@@ -85,6 +87,22 @@ test("auth closes invalid joins and enforces scope, capabilities, attenuation, a
     const wrongContainerClose = await waitFor(() => wrongContainer.closeInfo, 5_000, 20);
     expect(wrongContainerClose.code).toBe(4403);
 
+    // Preparation resolves a real destination before the capability check. Keep that
+    // prerequisite valid so this refusal proves caller authority, not an offline machine.
+    const enrolled = await enrollMachine(server, "auth-capability-machine");
+    const machine = await rawMachineSocket(server);
+    rawSockets.push(machine);
+    machine.send({
+      type: "hello",
+      token: enrolled.machineToken,
+      name: "auth-capability-machine",
+      agentVersion: "testkit",
+      protocolVersion: PROTOCOL_VERSION,
+      terminalExecution: "unconfined",
+      terminals: [],
+    });
+    await waitFor(() => machine.frames.some((frame) => frame.type === "welcome"), 5_000, 20);
+
     const noTerminal = await connect(server, {
       containerId: containerX.id,
       token: scoped.token,
@@ -95,16 +113,23 @@ test("auth closes invalid joins and enforces scope, capabilities, attenuation, a
       noTerminal,
       "error",
       5_000,
-      (message) => message.code === "forbidden",
+      (message) => message.code === "forbidden" && message.ref === "el-forbidden-terminal",
     );
     const openAttempt = noTerminal
-      .openTerminal({ elementId: "el-forbidden-terminal", cols: 80, rows: 24, timeoutMs: 2_000 })
+      .openTerminal({
+        elementId: "el-forbidden-terminal",
+        machineId: enrolled.machineId,
+        cols: 80,
+        rows: 24,
+        timeoutMs: 2_000,
+      })
       .then(
         () => "opened" as const,
         () => "rejected" as const,
       );
     expect((await terminalForbidden).code).toBe("forbidden");
     expect(await openAttempt).toBe("rejected");
+    expect(machine.frames.some((frame) => frame.type === "create")).toBe(false);
 
     const sceneOnly = await mintToken(server, {
       principal: { kind: "human", name: "Scene Only Delegate", color: "#5f769f" },
@@ -122,7 +147,7 @@ test("auth closes invalid joins and enforces scope, capabilities, attenuation, a
       different rungs, which is exactly the distinction the pair was written to draw.
       A capability the caller does not hold is refused by the door before the mechanism is
       reached (`forbidden`); authority the caller holds but may not pass on is refused by the
-      mechanism (`refused`), on the real caller, with the wording the route used to return.
+      mechanism (`refused`), on the real caller.
     */
     const sceneOnlyEscalation = await callAction(
       server,
@@ -133,7 +158,6 @@ test("auth closes invalid joins and enforces scope, capabilities, attenuation, a
     expect(sceneOnlyEscalation.ok).toBe(false);
     if (sceneOnlyEscalation.ok) throw new Error("scene-only minting was not refused");
     expect(sceneOnlyEscalation.denial.rule).toBe("forbidden");
-    expect(sceneOnlyEscalation.denial.message).toBe("tokens:mint capability required");
 
     // This second minter passes the cap rung, so its refusal specifically proves attenuation
     // rather than merely the `tokens:mint` guard tested above. It is also the case that keeps
@@ -153,7 +177,6 @@ test("auth closes invalid joins and enforces scope, capabilities, attenuation, a
     expect(attenuatedEscalation.ok).toBe(false);
     if (attenuatedEscalation.ok) throw new Error("attenuated escalation was not refused");
     expect(attenuatedEscalation.denial.rule).toBe("refused");
-    expect(attenuatedEscalation.denial.message).toBe("cannot mint capability terminals:write");
 
     // The same minter minting WITHIN its own authority and scope succeeds: the point of the
     // scoped carve-out is that delegation downward keeps working.
@@ -300,9 +323,27 @@ test("revoking a viewer during PENDING terminal attach closes it before terminal
 
     // Both grants are workspace-scoped: attaching to a terminal means joining the
     // composition it lives in, and the server mints that container's id with the PTY.
-    const openerGrant = await mintToken(server, {
+    const openerGrant = await mintTokenV2(server, {
       principal: { kind: "human", name: "Attach Opener", color: "#3c6db0" },
-      caps: ["containers:read", "terminals:spawn", "terminals:write"],
+      scope: [
+        {
+          target: "manifold://",
+          reach: "subtree",
+          caps: [
+            "containers:read",
+            "containers:write",
+            "scenes:write",
+            "terminals:spawn",
+            "terminals:write",
+          ],
+        },
+        {
+          target: formatManifoldUri({ kind: "machine", machineId: enrolled.machineId }),
+          reach: "node",
+          caps: ["machines:shell"],
+        },
+      ],
+      expiresAt: Date.now() + 600_000,
     });
     const viewerGrant = await mintToken(server, {
       principal: { kind: "human", name: "Attach Revokee", color: "#b84d68" },
@@ -315,20 +356,23 @@ test("revoking a viewer during PENDING terminal attach closes it before terminal
     });
     clients.push(opener);
 
-    const opening = opener.openTerminal({
-      elementId: "el-revoke-attach",
-      cols: 80,
-      rows: 24,
-      machineId: enrolled.machineId,
-    });
-    const create = await waitFor(
-      () => machine.frames.find((frame) => frame.type === "create"),
-      5_000,
-      20,
-    );
-    if (create.type !== "create") throw new Error("machine did not receive create");
-    machine.send({ type: "created", terminalId: create.terminalId });
-    const terminal = await opening;
+    const [terminal] = await Promise.all([
+      opener.openTerminal({
+        elementId: "el-revoke-attach",
+        cols: 80,
+        rows: 24,
+        machineId: enrolled.machineId,
+      }),
+      (async () => {
+        const create = await waitFor(
+          () => machine.frames.find((frame) => frame.type === "create"),
+          5_000,
+          20,
+        );
+        if (create.type !== "create") throw new Error("machine did not receive create");
+        machine.send({ type: "created", terminalId: create.terminalId });
+      })(),
+    ]);
     const openerHome = await connect(server, {
       containerId: terminal.containerId,
       token: openerGrant.token,

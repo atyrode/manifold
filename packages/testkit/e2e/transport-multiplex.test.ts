@@ -1,10 +1,11 @@
 import { expect, test } from "bun:test";
+import { formatManifoldUri } from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
 import {
   connect,
   createContainer,
   enrollMachine,
-  mintToken,
+  mintTokenV2,
   startAgent,
   startServer,
   type TestAgent,
@@ -48,9 +49,27 @@ test("the rooms of one tab share a single connection and stream PTYs independent
 
     // One token: one principal, one tab, both rooms — exactly what a canvas plus a portal
     // portal looks like in the browser. The pool keys by (url, token), so this is one socket.
-    const operator = await mintToken(server, {
+    const operator = await mintTokenV2(server, {
       principal: { kind: "human", name: "Multiplex Operator", color: "#4477dd" },
-      caps: ["containers:read", "scenes:write", "terminals:spawn", "terminals:write"],
+      scope: [
+        {
+          target: "manifold://",
+          reach: "subtree",
+          caps: [
+            "containers:read",
+            "containers:write",
+            "scenes:write",
+            "terminals:spawn",
+            "terminals:write",
+          ],
+        },
+        {
+          target: formatManifoldUri({ kind: "machine", machineId: enrolled.machineId }),
+          reach: "node",
+          caps: ["machines:shell"],
+        },
+      ],
+      expiresAt: Date.now() + 600_000,
     });
 
     const inCanvas = await connect(server, { containerId: canvas.id, token: operator.token });

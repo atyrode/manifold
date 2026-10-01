@@ -1,11 +1,12 @@
 import { expect, test } from "bun:test";
+import { formatManifoldUri } from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
 import {
   connect,
   createContainer,
   enrollMachine,
   isMachineOnline,
-  mintToken,
+  mintTokenV2,
   startAgent,
   startServer,
   waitFor,
@@ -45,9 +46,27 @@ test("standalone agent and PTY survive a fixed-port server restart and are adopt
     agents.push(agent);
     // Workspace-scoped: the terminal is born into a composition of its own, whose id is
     // minted by the server, so a container-scoped grant could never join the room that holds it.
-    const grant = await mintToken(firstServer, {
+    const grant = await mintTokenV2(firstServer, {
       principal: { kind: "human", name: "Restart User", color: "#5e48c7" },
-      caps: ["containers:read", "scenes:write", "terminals:spawn", "terminals:write"],
+      scope: [
+        {
+          target: "manifold://",
+          reach: "subtree",
+          caps: [
+            "containers:read",
+            "containers:write",
+            "scenes:write",
+            "terminals:spawn",
+            "terminals:write",
+          ],
+        },
+        {
+          target: formatManifoldUri({ kind: "machine", machineId: enrolled.machineId }),
+          reach: "node",
+          caps: ["machines:shell"],
+        },
+      ],
+      expiresAt: Date.now() + 600_000,
     });
     const client = await connect(firstServer, { containerId: container.id, token: grant.token });
     clients.push(client);
@@ -69,13 +88,17 @@ test("standalone agent and PTY survive a fixed-port server restart and are adopt
       15_000,
       (message) => message.rev >= secondSavedRev,
     );
-    const { terminal, homeClient } = await openTerminalAt(client, firstServer, {
-      elementId: "el-survive-terminal",
-      token: grant.token,
-      portalAt: { x: 240, y: 160 },
-    });
-    clients.push(homeClient);
-    await secondSaved;
+    const [{ terminal, homeClient }] = await Promise.all([
+      openTerminalAt(client, firstServer, {
+        elementId: "el-survive-terminal",
+        token: grant.token,
+        portalAt: { x: 240, y: 160 },
+      }).then((opened) => {
+        clients.push(opened.homeClient);
+        return opened;
+      }),
+      secondSaved,
+    ]);
 
     const beforeRestartScene = sortedScene(client);
     const capture = await attachedCapture(homeClient, terminal.id);
