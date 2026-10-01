@@ -37,7 +37,40 @@ CREATE TABLE machine_job_revisions(kind TEXT NOT NULL,identity TEXT NOT NULL,rev
   digest TEXT NOT NULL,PRIMARY KEY(kind,identity));
 CREATE TABLE terminals(id TEXT PRIMARY KEY,machine_id TEXT,container_id TEXT,run_id TEXT);
 CREATE TABLE machine_jobs(job_id TEXT PRIMARY KEY,machine_id TEXT,created_at INTEGER,request TEXT);
-CREATE TABLE agent_runs(id TEXT PRIMARY KEY);
+CREATE TABLE agents(
+  agent_id TEXT PRIMARY KEY,principal_id TEXT NOT NULL UNIQUE,sponsor_principal_id TEXT NOT NULL,
+  name TEXT NOT NULL,purpose TEXT NOT NULL,harness TEXT NOT NULL,grant_json TEXT NOT NULL,
+  context_json TEXT NOT NULL,policy_revision_acknowledged TEXT,
+  status TEXT NOT NULL CHECK(status IN ('enabled','disabled','retired')),
+  authorization_path TEXT NOT NULL CHECK(authorization_path IN ('owner_key','principal')),
+  authorization_credential TEXT NOT NULL,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,
+  UNIQUE(sponsor_principal_id,name)
+);
+CREATE TABLE agent_runs(
+  id TEXT PRIMARY KEY,principal_id TEXT NOT NULL,root_run_id TEXT NOT NULL,parent_run_id TEXT,
+  authorized_by_principal_id TEXT NOT NULL,
+  authorization_path TEXT NOT NULL CHECK(authorization_path IN ('owner_key','principal')),
+  authorizer_token_id TEXT,authorizer_grant_id TEXT,authorizer_caps TEXT NOT NULL,
+  authorizer_container_scope TEXT,authorizer_expires_at INTEGER,purpose TEXT NOT NULL,task_ref TEXT,
+  target TEXT NOT NULL,reach TEXT NOT NULL CHECK(reach IN ('node','subtree')),caps TEXT NOT NULL,
+  created_at INTEGER NOT NULL,expires_at INTEGER NOT NULL,renewals INTEGER NOT NULL,
+  max_depth INTEGER NOT NULL,max_descendants INTEGER NOT NULL,depth INTEGER NOT NULL,
+  cleanup_owner_principal_id TEXT NOT NULL,
+  state TEXT NOT NULL CHECK(state IN ('pending_policy','active','policy_stale','completed','failed',
+    'cancelled','abandoned','expired','revoked','cleanup_failed')),
+  policy_revision TEXT NOT NULL,acknowledged_policy_revision TEXT,
+  cleanup_revoked_credentials INTEGER NOT NULL DEFAULT 0,cleanup_revoked_grants INTEGER NOT NULL DEFAULT 0,
+  finished_at INTEGER,cleanup_failure TEXT,
+  agent_id TEXT NOT NULL REFERENCES agents(agent_id),session_harness TEXT,session_id TEXT,
+  session_machine_id TEXT,model TEXT,
+  activity TEXT NOT NULL CHECK(activity IN ('working','blocked','done','idle','unknown')),
+  CHECK((session_harness IS NULL AND session_id IS NULL AND session_machine_id IS NULL) OR
+    (session_harness IS NOT NULL AND session_id IS NOT NULL AND session_machine_id IS NOT NULL))
+);
+CREATE INDEX agent_runs_root_depth ON agent_runs(root_run_id,depth,id);
+CREATE INDEX agent_runs_parent ON agent_runs(parent_run_id,id);
+CREATE INDEX agent_runs_agent ON agent_runs(agent_id,created_at,id);
+CREATE INDEX agent_runs_principal ON agent_runs(principal_id,id);
 CREATE TABLE machine_job_deployments(
   deployment_id TEXT PRIMARY KEY,plugin_id TEXT NOT NULL,revision INTEGER NOT NULL,
   approved_at INTEGER NOT NULL,cancelled INTEGER NOT NULL DEFAULT 0 CHECK(cancelled IN (0,1)),approval TEXT NOT NULL);

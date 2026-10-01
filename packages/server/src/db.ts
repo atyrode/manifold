@@ -1081,13 +1081,43 @@ INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','49');
 `,
   /**
    * Host consent is per share and guest principal, never inherited from a retained ticket.
-   * Legacy relationships remain inspectable proposals; their credentials and token-bound
-   * grant rows are fenced before startup admits a bearer. The share and local identities
-   * remain unchanged, and a later explicit approval may reuse the same host principal.
+   * Legacy relationships remain inspectable proposals; their credentials, standing Agent
+   * sponsors, Run descendants and token-bound grant rows are fenced before startup admits a
+   * bearer. The share and local identities remain unchanged, and a later explicit approval may
+   * reuse the same host principal.
    */
   50: {
     backup: true,
-    sql: `
+    apply(db) {
+      const agentRunColumns = new Set(
+        db
+          .query<{ name: string }, []>("PRAGMA table_info(agent_runs)")
+          .all()
+          .map(({ name }) => name),
+      );
+      const hasAgents =
+        db
+          .query<{ name: string }, []>(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='agents'",
+          )
+          .get() !== null;
+      const standingSponsorClosure =
+        hasAgents && agentRunColumns.has("agent_id")
+          ? `
+UNION
+ SELECT t.id,i.share_id,i.guest_principal_id,t.principal_id,t.run_id
+ FROM tokens t JOIN agent_runs r ON r.id=t.run_id
+ JOIN agents a ON a.agent_id=r.agent_id
+ JOIN issued i ON json_extract(a.authorization_credential,'$.tokenId')=i.token_id`
+          : "";
+      const descendantRunClosure = agentRunColumns.has("parent_run_id")
+        ? `
+UNION
+ SELECT t.id,i.share_id,i.guest_principal_id,t.principal_id,t.run_id
+ FROM tokens t JOIN agent_runs r ON r.id=t.run_id
+ JOIN issued i ON r.parent_run_id=i.run_id`
+        : "";
+      db.exec(`
 CREATE TABLE share_recipients(
  share_id TEXT NOT NULL REFERENCES shares(id),
  guest_principal_id TEXT NOT NULL,
@@ -1131,15 +1161,21 @@ INSERT INTO share_recipients(
         s.caps,st.created_at
  FROM share_tickets st JOIN shares s ON s.id=st.share_id
  JOIN principals p ON p.id=st.principal_id;
-WITH RECURSIVE issued(token_id,share_id,guest_principal_id,principal_id) AS (
- SELECT t.id,st.share_id,st.guest_principal_id,t.principal_id
+WITH RECURSIVE issued(token_id,share_id,guest_principal_id,principal_id,run_id) AS (
+ SELECT t.id,st.share_id,st.guest_principal_id,t.principal_id,t.run_id
  FROM tokens t JOIN share_tickets st ON st.principal_id=t.principal_id
  JOIN shares s ON s.id=st.share_id
  JOIN share_recipients r ON r.share_id=st.share_id AND r.guest_principal_id=st.guest_principal_id
  WHERE t.container_id=s.container_id AND t.minted_by=s.minted_by
  UNION
- SELECT t.id,i.share_id,i.guest_principal_id,t.principal_id
+ SELECT t.id,i.share_id,i.guest_principal_id,t.principal_id,t.run_id
  FROM tokens t JOIN issued i ON t.minted_by=i.principal_id
+ UNION
+ SELECT t.id,i.share_id,i.guest_principal_id,t.principal_id,t.run_id
+ FROM tokens t JOIN agent_runs r ON r.id=t.run_id
+ JOIN issued i ON r.authorizer_token_id=i.token_id
+${standingSponsorClosure}
+${descendantRunClosure}
 )
 INSERT INTO share_ticket_credentials(token_id,share_id,guest_principal_id)
  SELECT DISTINCT token_id,share_id,guest_principal_id FROM issued;
@@ -1185,7 +1221,8 @@ UPDATE tokens
  SET revoked_at=COALESCE(revoked_at,CAST(unixepoch('subsec')*1000 AS INTEGER)),grant_id=NULL
  WHERE id IN (SELECT token_id FROM share_ticket_credentials);
 INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','50');
-`,
+`);
+    },
   },
 };
 

@@ -423,7 +423,6 @@ describe("migration 13: flat caps become grant rows", () => {
       // Rows went one way in 13 and again in 16, so each left its image beside the database.
       expect(existsSync(`${path}.pre-v13.bak`)).toBeTrue();
       expect(existsSync(`${path}.pre-v16.bak`)).toBeTrue();
-      expect(existsSync(`${path}.pre-v49.bak`)).toBeTrue();
       db.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });

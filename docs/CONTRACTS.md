@@ -2312,12 +2312,13 @@ origin. Such a standalone grant retains its ordinary meaning for unrelated crede
 
 Retained pre-recipient share tickets fail closed before admission. The backed-up schema
 cutover creates no approvals and conservatively retires old remote tickets, potentially
-derived credentials, standalone grants and child shares. Legacy records identify issuing
-principals, not exact issuing credentials: indistinguishable independently issued access may
-also need reissuance. This one-time legacy reset is not an exact-provenance claim. Content,
-terminal records, local identities and owner recovery access are preserved, as are original
-share origins/ceilings. Reapproval and reissuance use ordinary host actions; old instance
-protocol peers cannot resume around that policy.
+derived credentials, standing-sponsored Agent Runs and their descendants, standalone grants
+and child shares. Legacy records identify issuing principals and standing sponsors, not exact
+issuing credentials: indistinguishable independently issued access may also need reissuance.
+This one-time legacy reset is not an exact-provenance claim. Content, terminal records, local
+identities and owner recovery access are preserved, as are original share origins/ceilings.
+Reapproval and reissuance use ordinary host actions; neither can reactivate a retired legacy
+Run or credential, and old instance protocol peers cannot resume around that policy.
 The session/instance revision and persistence schema are independent of native and hardened
 renderer contracts; unreleased held branches do not reserve their candidate version numbers.
 Three lifecycle events (`dial_online`, `dial_offline`, `dial_revoked`) are
@@ -2558,8 +2559,9 @@ dependency. The bundle's optional `builtAgainst` version map is recorded as
 shared builds also record React/package versions. Admission and boot check that stamp against
 the explicit `PLUGIN_BUNDLE_PROTOCOL_COMPAT_VERSIONS` set and compare React by major. The
 bundle set is independent of session, machine and instance negotiation: sessions still require
-the current wire version. Protocol 52 admits bundle stamps 47, 48, 51 and 52 because the shared plugin
-ABI is preserved; direct-service accounting adds optional call/result metadata. A prior stamp
+the current wire version. Protocol 53 admits bundle stamps 47, 48, 51, 52 and 53 because the
+shared plugin ABI is preserved; remote recipient admission changes the instance wire, while
+direct-service accounting remains optional call/result metadata. A prior stamp
 may remain only with proof from unchanged released artifacts through candidate assembly and
 loading; an incompatible plugin ABI change resets the set. No numeric range, future version
 or deployment bypass is implied. Known incompatibility refuses fresh admission or holds an
@@ -4062,8 +4064,8 @@ incumbent continuity mismatch, or `supersession damped`). A name conflict is dec
 same atomic write that would admit the hello; it sends no welcome, changes neither machine row,
 and leaves an incumbent connection untouched. Version acceptance uses
 `MACHINE_PROTOCOL_COMPAT_VERSIONS`, currently
-`{30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52}`; session/browser joins remain strictly
-current at protocol 52. An unchanged machine
+`{30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52, 53}`; session/browser joins remain strictly
+current at protocol 53. An unchanged machine
 wire may add a version to the set. A strictly additive-optional change may also add it only
 when old frames still parse and absent fields preserve the old semantics. Other changes
 reset the set and require a coordinated hub/transport upgrade. An admission bound applied
@@ -5385,6 +5387,11 @@ policy/model pins, original-owner fencing, maximum/settled cost and authorizatio
 Startup conservatively changes remaining reservations to unresolved exposure. Policy
 replacement does not reset the service's accumulated exposure; recovery does not replay calls
 or retain private request/result bodies.
+
+Schema 50 adds host-approved share recipients and exact ticket/delegation provenance.
+Its backed-up legacy access reset follows retained standing Agent sponsorship and Run
+descendants while preserving the schema-49 native service attempt ledger: retiring remote
+credentials does not erase settled charges or unresolved exposure.
 
 **One writer per data directory** ([#318](https://github.com/atyrode/manifold/issues/318)). Before
 opening `manifold.db` the server takes `<data>/manifold.writer`, a SQLite file held in exclusive

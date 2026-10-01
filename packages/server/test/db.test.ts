@@ -2754,7 +2754,7 @@ UPDATE meta SET value='41' WHERE key='schema_version';
   }
 });
 
-test("schema 49 fences retained share tickets before admission and preserves reapprovable history", async () => {
+test("recipient cutover fences retained share tickets before admission and preserves reapprovable history", async () => {
   const dir = mkdtempSync(join(tmpdir(), "manifold-share-recipient-upgrade-"));
   const path = join(dir, "manifold.db");
   const runtime = new FakeRuntime();
@@ -2871,20 +2871,21 @@ test("schema 49 fences retained share tickets before admission and preserves rea
       grantId: "legacy-derived-grant",
       expiresAt: null,
     });
+    const sponsoredGrant: Parameters<AuthService["registerAgent"]>[0]["grant"] = {
+      caps: ["containers:read", "scenes:write", "agents:delegate"],
+      targets: [`manifold://container/${containerId}`],
+      reach: "subtree" as const,
+      maxRunLifetimeMs: 180_000,
+      expiresAt: runtime.now() + 600_000,
+      delegation: { maxDepth: 2, maxDescendants: 2 },
+    };
     const registration = await auth.registerAgent(
       {
         name: "retained sponsored agent",
         purpose: "retained Run",
         harness: "external",
         context: { profile: {} },
-        grant: {
-          caps: ["containers:read", "scenes:write"],
-          targets: [`manifold://container/${containerId}`],
-          reach: "subtree",
-          maxRunLifetimeMs: 180_000,
-          expiresAt: runtime.now() + 600_000,
-          delegation: { maxDepth: 0, maxDescendants: 0 },
-        },
+        grant: sponsoredGrant,
       },
       auth.authenticate(legacy[0]!.raw),
     );
@@ -2903,6 +2904,80 @@ test("schema 49 fences retained share tickets before admission and preserves rea
         acknowledgements: challenge.required.map(({ id, digest }) => ({ id, digest })),
       },
       runActor,
+    );
+    const independentRegistration = await auth.registerAgent(
+      {
+        name: "independent parent agent",
+        purpose: "independent parent Run",
+        harness: "external",
+        context: { profile: {} },
+        grant: sponsoredGrant,
+      },
+      owner,
+    );
+    if (independentRegistration.credential === undefined)
+      throw new Error("independent registration produced no runner");
+    const independentParent = CreateRunCredentialResultSchema.parse(
+      auth.createRun(
+        { agentId: independentRegistration.agent.agentId, lifetimeMs: 60_000 },
+        auth.authenticate(independentRegistration.credential.token),
+      ),
+    );
+    const independentActor = auth.authenticate(independentParent.credential.token);
+    const independentChallenge = auth.agentPolicyChallenge(independentActor);
+    auth.acknowledgeAgentPolicy(
+      {
+        revision: independentChallenge.revision,
+        acknowledgements: independentChallenge.required.map(({ id, digest }) => ({ id, digest })),
+      },
+      independentActor,
+    );
+    const standingChild = auth.createChildRun(
+      {
+        runId: independentParent.run.id,
+        agentId: registration.agent.agentId,
+        caps: ["containers:read", "agents:delegate"],
+        lifetimeMs: 60_000,
+        delegation: { maxDepth: 2, maxDescendants: 2 },
+      },
+      owner,
+    );
+    const standingChildRaw = auth.claimRunLaunch(standingChild.run.id, owner).token;
+    if (standingChildRaw === undefined)
+      throw new Error("standing-sponsored child produced no token");
+    const standingChildActor = auth.authenticate(standingChildRaw);
+    const standingChildChallenge = auth.agentPolicyChallenge(standingChildActor);
+    auth.acknowledgeAgentPolicy(
+      {
+        revision: standingChildChallenge.revision,
+        acknowledgements: standingChildChallenge.required.map(({ id, digest }) => ({ id, digest })),
+      },
+      standingChildActor,
+    );
+    const standingGrandchild = auth.createChildRun(
+      {
+        runId: standingChild.run.id,
+        agentId: independentRegistration.agent.agentId,
+        caps: ["containers:read"],
+        lifetimeMs: 60_000,
+        delegation: { maxDepth: 2, maxDescendants: 2 },
+      },
+      owner,
+    );
+    const standingGrandchildRaw = auth.claimRunLaunch(standingGrandchild.run.id, owner).token;
+    if (standingGrandchildRaw === undefined)
+      throw new Error("standing-sponsored descendant produced no token");
+    const standingGrandchildActor = auth.authenticate(standingGrandchildRaw);
+    const standingGrandchildChallenge = auth.agentPolicyChallenge(standingGrandchildActor);
+    auth.acknowledgeAgentPolicy(
+      {
+        revision: standingGrandchildChallenge.revision,
+        acknowledgements: standingGrandchildChallenge.required.map(({ id, digest }) => ({
+          id,
+          digest,
+        })),
+      },
+      standingGrandchildActor,
     );
     store.createTerminal({
       id: "retained-terminal",
@@ -3013,10 +3088,45 @@ test("schema 49 fences retained share tickets before admission and preserves rea
       dialedAt: 13,
       revokedAt: null,
     });
+    const unresolvedAttempt = {
+      actorId: runActor.principal.id,
+      callId: "retained-unresolved-call",
+      requestId: "retained-unresolved-request",
+      requestDigest: sha256Hex("retained-unresolved-request"),
+      machineId: machine.machine.id,
+      serviceId: "retained-accounted-service",
+      operationId: "invoke",
+      revision: "retained-service-revision",
+      policySha256: sha256Hex("retained-service-policy"),
+      modelId: "fixture-model",
+      instanceRevision: null,
+      executionJobId: null,
+      ownerId: "retained-service-owner",
+      ownerGeneration: 1,
+      ownerKeySha256: sha256Hex("retained-service-owner"),
+      reservedMicros: 60,
+      chargedMicros: null,
+      state: "reserved",
+      authorized: 0,
+    } satisfies Parameters<ServerStore["reserveDirectServiceAttempt"]>[0];
+    expect(store.reserveDirectServiceAttempt(unresolvedAttempt, 100)).toBe(true);
+    expect(store.authorizeDirectServiceAttempt(unresolvedAttempt.requestId)).toBe(true);
+    const chargedAttempt = {
+      ...unresolvedAttempt,
+      callId: "retained-charged-call",
+      requestId: "retained-charged-request",
+      requestDigest: sha256Hex("retained-charged-request"),
+      reservedMicros: 40,
+    };
+    expect(store.reserveDirectServiceAttempt(chargedAttempt, 100)).toBe(true);
+    expect(store.authorizeDirectServiceAttempt(chargedAttempt.requestId)).toBe(true);
+    store.settleDirectServiceAttempt(chargedAttempt.requestId, 30);
+    const attemptsQuery = "SELECT * FROM native_service_attempts ORDER BY actor_id,call_id";
+    const retainedAttempts = db.query(attemptsQuery).all();
     db.exec(
       "DROP TABLE share_recipient_delegations; DROP TABLE share_ticket_credentials; DROP TABLE share_recipients",
     );
-    db.exec("UPDATE meta SET value='48' WHERE key='schema_version'");
+    db.exec("UPDATE meta SET value='49' WHERE key='schema_version'");
     const shareQuery =
       "SELECT * FROM shares WHERE id NOT IN ('legacy-child-share','ambiguous-independent-share') ORDER BY id";
     const shares = db.query(shareQuery).all();
@@ -3031,7 +3141,7 @@ test("schema 49 fences retained share tickets before admission and preserves rea
     store = new ServerStore(db);
     auth = new AuthService(store, ownerKey, runtime);
     owner = auth.authenticate(ownerKey);
-    expect(existsSync(`${path}.pre-v49.bak`)).toBe(true);
+    expect(existsSync(`${path}.pre-v50.bak`)).toBe(true);
     expect(db.query(shareQuery).all()).toEqual(shares);
     expect(db.query("SELECT * FROM principals ORDER BY id").all()).toEqual(identities);
     expect(db.query("SELECT * FROM share_tickets ORDER BY share_id").all()).toEqual(relationships);
@@ -3043,6 +3153,20 @@ test("schema 49 fences retained share tickets before admission and preserves rea
     expect(auth.holdsRoot(owner)).toBe(true);
     expect(store.listContainers()).toEqual(retainedContainers);
     expect(store.getTerminal("retained-terminal")).toEqual(terminal);
+    expect(db.query(attemptsQuery).all()).toEqual(retainedAttempts);
+    expect(
+      store.reserveDirectServiceAttempt(
+        {
+          ...unresolvedAttempt,
+          actorId: owner.principal.id,
+          callId: "new-owner-over-remaining-allowance",
+          requestId: "new-owner-over-remaining-allowance",
+          requestDigest: sha256Hex("new-owner-over-remaining-allowance"),
+          reservedMicros: 11,
+        },
+        100,
+      ),
+    ).toBe(false);
     const preserved = db
       .query<{ doc: Uint8Array }, [string]>("SELECT doc FROM scene_docs WHERE container_id=?")
       .get(privateId);
@@ -3102,6 +3226,35 @@ test("schema 49 fences retained share tickets before admission and preserves rea
       ]);
       expect(() => auth.mintShareTicket(old.share, old.guest)).toThrow("recipient_unapproved");
     }
+    const formerlyStanding = legacy[0]!;
+    auth.approveShareRecipient(
+      {
+        shareId: formerlyStanding.share.id,
+        guestPrincipalId: formerlyStanding.guest.id,
+        caps: [...formerlyStanding.share.caps],
+      },
+      owner,
+    );
+    const refreshedStandingTicket = auth.mintShareTicket(
+      formerlyStanding.share,
+      formerlyStanding.guest,
+    );
+    await auth.updateAgent(
+      { agentId: registration.agent.agentId, grant: sponsoredGrant },
+      auth.authenticate(refreshedStandingTicket.token),
+    );
+    expect(store.getAgentRun(standingChild.run.id)).toMatchObject({ state: "revoked" });
+    expect(() => auth.authenticate(standingChildRaw)).toThrow(ServiceError);
+    expect(store.getAgentRun(standingGrandchild.run.id)).toMatchObject({ state: "revoked" });
+    expect(() => auth.authenticate(standingGrandchildRaw)).toThrow(ServiceError);
+    expect(store.getAgentRun(independentParent.run.id)).toMatchObject({ state: "active" });
+    expect(
+      auth.allows(
+        auth.authenticate(independentParent.credential.token),
+        "containers:read",
+        containerId,
+      ),
+    ).toBe(true);
     const migrated = db.query("SELECT * FROM share_recipients ORDER BY share_id").all();
     const credentials = db.query("SELECT * FROM tokens ORDER BY id").all();
     db.close();
@@ -3111,6 +3264,7 @@ test("schema 49 fences retained share tickets before admission and preserves rea
     owner = auth.authenticate(ownerKey);
     expect(db.query("SELECT * FROM share_recipients ORDER BY share_id").all()).toEqual(migrated);
     expect(db.query("SELECT * FROM tokens ORDER BY id").all()).toEqual(credentials);
+    expect(db.query(attemptsQuery).all()).toEqual(retainedAttempts);
     for (const old of legacy) expect(() => auth.authenticate(old.raw)).toThrow("revoked");
     expect(() => auth.authenticate(derivedRaw)).toThrow("revoked");
     expect(() => auth.authenticateShare(childShareRaw)).toThrow("revoked");
@@ -3150,6 +3304,7 @@ test("schema 49 fences retained share tickets before admission and preserves rea
     const reissued = auth.mintShareTicket(old.share, old.guest);
     expect(reissued.principal.id).toBe(old.principal.id);
     expect(auth.authenticate(unrelated.token).principal.id).toBe(unrelated.principal.id);
+    expect(db.query(attemptsQuery).all()).toEqual(retainedAttempts);
     expect(db.query("PRAGMA integrity_check").all()).toEqual([{ integrity_check: "ok" }]);
     expect(db.query("PRAGMA foreign_key_check").all()).toEqual([]);
   } finally {
