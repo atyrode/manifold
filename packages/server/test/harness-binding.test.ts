@@ -1668,6 +1668,52 @@ test.each(["deny", "transport", "owner", "drain"] as const)(
   },
 );
 
+async function continuingGovernedRun(f: GovernedTerminalFixture, scope: AuthorityScope) {
+  const minted = f.auth.mintTokenV2({
+    principal: { name: "terminal sponsor", kind: "human" },
+    scope: scope.map((entry) => ({
+      ...entry,
+      caps: [...entry.caps, "agents:delegate"],
+    })),
+    containerId: f.containerId,
+    expiresAt: f.runtime.now() + 120_000,
+  }, f.root);
+  const sponsor = f.auth.authenticate(minted.token);
+  const registered = await f.auth.registerAgentV2({
+    name: "continuing native opener",
+    purpose: "Retain only the sponsored composition and native operation",
+    harness: "test-harness",
+    context: { profile: { label: "reviewed" } },
+    grant: {
+      scope,
+      maxRunLifetimeMs: 60_000,
+      delegation: { maxDepth: 0, maxDescendants: 0 },
+      expiresAt: f.runtime.now() + 120_000,
+    },
+  }, sponsor);
+  if (registered.credential === undefined) throw new Error("fixture Agent must be new");
+  const created = f.auth.createRunV2({
+    agentId: registered.agent.agentId,
+    target: { containerId: f.containerId, machineId: f.descriptor.machineId },
+    lifetimeMs: 60_000,
+  }, f.auth.authenticate(registered.credential.token));
+  if (created.credential === undefined) throw new Error("fixture Run must have custody");
+  const issued = f.auth.authenticate(created.credential.token);
+  const challenge = f.auth.agentPolicyChallenge(issued);
+  f.auth.acknowledgeAgentPolicyV2({
+    revision: challenge.revision,
+    acknowledgements: challenge.required.map(({ id, digest }) => ({ id, digest })),
+  }, issued);
+  const actor = f.auth.restoreCredential(f.auth.credentialReference(issued));
+  if (actor === null) throw new Error("fixture Run credential must restore");
+  expect(registered.agent.sponsorPrincipalId).toBe(sponsor.principal.id);
+  expect(actor.agentRunId).toBe(created.run.id);
+  expect(actor.containerScope).toBe(f.containerId);
+  expect(actor.authorityScope).toEqual(created.run.scope);
+  expect(created.run.scope).toEqual(registered.agent.grant.scope);
+  return { actor, sponsor };
+}
+
 test.each(["deny", "expiry", "sponsor", "action", "installation", "owner", "consent"] as const)(
   "committed governed effects still cancel on continuing %s authority withdrawal",
   async (change) => {
@@ -1675,22 +1721,19 @@ test.each(["deny", "expiry", "sponsor", "action", "installation", "owner", "cons
     const action = f.host.assembly().actions.get("core.terminals.create")!.def;
     const originalInput = action.input;
     try {
-      const sponsor = f.auth.mintTokenV2({
-        principal: { name: "terminal sponsor", kind: "human" },
-        scope: governedTerminalScope(f).map((entry) => ({
-          ...entry,
-          caps: [...entry.caps, "tokens:mint"],
-        })),
-        containerId: f.containerId,
-        expiresAt: f.runtime.now() + 60_000,
-      }, f.root);
-      const minted = f.auth.mintTokenV2({
+      const scope = governedTerminalScope(f).map((entry) => ({
+        ...entry,
+        target: entry.target === "manifold://"
+          ? `manifold://container/${f.containerId}`
+          : entry.target,
+      }));
+      const sponsored = change === "sponsor" ? await continuingGovernedRun(f, scope) : undefined;
+      const actor = sponsored?.actor ?? f.auth.authenticate(f.auth.mintTokenV2({
         principal: { name: "continuing opener", kind: "human" },
-        scope: governedTerminalScope(f),
+        scope,
         containerId: f.containerId,
         expiresAt: f.runtime.now() + 30_000,
-      }, f.auth.authenticate(sponsor.token));
-      const actor = f.auth.authenticate(minted.token);
+      }, f.root).token);
       const create = await governedCreated(f, actor);
       if (!create.runtime) throw new Error("governed create missing");
       f.started(create.runtime);
@@ -1711,19 +1754,62 @@ test.each(["deny", "expiry", "sponsor", "action", "installation", "owner", "cons
           f.clock.advance(30_001);
           break;
         case "sponsor":
-          f.auth.revokePrincipal(sponsor.principal.id, f.root);
+          if (sponsored === undefined) throw new Error("fixture sponsor missing");
+          f.auth.revokePrincipal(sponsored.sponsor.principal.id, f.root);
+          expect(f.auth.allowsNode(actor, "terminals:spawn", scope[0]!.target)).toBe(false);
+          expect(f.auth.allowsNode(actor, "machines:run", scope[1]!.target)).toBe(false);
           break;
         case "action":
           action.input = z.strictObject({});
           break;
         case "installation":
-          f.service.install(f.root, {
+          expect(() => f.service.install(f.root, {
             machineId: f.descriptor.machineId,
             pluginId,
             installationRevision: "r2",
             artifactSha256: hash,
             machine,
+          })).toThrow("active_installation");
+          f.service.tick();
+          expect(f.service.jobs.get(create.runtime.request.jobId)?.state).toBe("started");
+          expect(f.service.jobs.cancellation(create.runtime.request.jobId)).toBeNull();
+          expect(f.service.jobs.installation(f.descriptor.machineId, pluginId)).toMatchObject({
+            revision: "r1",
+            artifact: hash,
+            enabled: true,
           });
+          expect(f.commands.filter((entry) =>
+            entry.type === "install" && entry.installationRevision === "r2")).toEqual([]);
+          result(await f.host.dispatch(f.root, "engine.plugins.setEnabled", {
+            id: pluginId,
+            enabled: false,
+          }));
+          expect(f.service.jobs.installation(f.descriptor.machineId, pluginId)).toMatchObject({
+            revision: "r1",
+            artifact: hash,
+            enabled: false,
+          });
+          expect(f.commands).toContainEqual(expect.objectContaining({
+            type: "install",
+            action: "disable",
+            pluginId,
+            installationRevision: "r1",
+            artifactSha256: hash,
+          }));
+          expect(f.service.jobs.cancellation(create.runtime.request.jobId)).toEqual({
+            mode: "cancel",
+            reason: "plugin_disabled",
+          });
+          expect((await f.host.dispatch(actor, "core.terminals.create", {
+            containerId: f.containerId,
+            elementId: f.runtime.newId(),
+            machineId: f.descriptor.machineId,
+            placement: "tile",
+            cols: 80,
+            rows: 24,
+            runtime: f.descriptor,
+          })).ok).toBe(false);
+          expect(f.sent.filter((entry) => entry.type === "create")).toEqual([create]);
           break;
         case "owner":
           f.owner.terminalHostId = "replacement-terminal-host";
