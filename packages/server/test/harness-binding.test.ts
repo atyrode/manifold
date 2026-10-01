@@ -695,6 +695,14 @@ test("harness restart refuses a freshly bound unavailable input without replacin
     const before = f.store.getTerminal(create.terminalId);
     const layout = f.rooms.get(before!.containerId)!.tileLayout();
     const jobs = f.store.db.query("SELECT job_id FROM machine_jobs ORDER BY job_id").all();
+    const liveRunTokens = () =>
+      f.store
+        .listTokensForAgentRun(run.id)
+        .filter((token) => token.revokedAt === null)
+        .map((token) => token.id)
+        .sort();
+    const originalTokens = liveRunTokens();
+    const incumbentToken = create.runtime!.privateEnv!.MANIFOLD_RUN_TOKEN;
     f.descriptor.inputs = [
       { name: "material", from: { jobId: "missing-producer", output: "material" } },
     ];
@@ -709,6 +717,8 @@ test("harness restart refuses a freshly bound unavailable input without replacin
     expect(f.rooms.get(before!.containerId)!.tileLayout()).toEqual(layout);
     expect(f.store.db.query("SELECT job_id FROM machine_jobs ORDER BY job_id").all()).toEqual(jobs);
     expect(f.sent.filter((message) => message.type === "kill")).toEqual([]);
+    expect(liveRunTokens()).toEqual(originalTokens);
+    expect(f.auth.authenticate(incumbentToken).agentRunId).toBe(run.id);
     // A new harness launch may review a different descriptor; an old recipe does
     // not authorize a missing source, and a refusal does not strand the terminal.
     delete f.descriptor.inputs;
@@ -731,9 +741,35 @@ test("harness restart refuses a freshly bound unavailable input without replacin
       expect(f.store.getTerminal(create.terminalId)).toEqual(before);
       expect(f.rooms.get(before!.containerId)!.tileLayout()).toEqual(layout);
       expect(f.store.db.query("SELECT job_id FROM machine_jobs ORDER BY job_id").all()).toEqual(jobs);
+      expect(liveRunTokens()).toEqual(originalTokens);
+      expect(f.auth.authenticate(incumbentToken).agentRunId).toBe(run.id);
       Object.assign(f.descriptor, original);
       delete f.descriptor.session;
     }
+    // A retained signed admission is still known native authority when its generic recipe
+    // is absent. Home control alone must refuse before harness/private credential effects.
+    f.store.db.query("UPDATE terminals SET launch_recipe=NULL WHERE id=?").run(create.terminalId);
+    const retained = f.store.getTerminal(create.terminalId);
+    const homeOnly = f.auth.mintToken(
+      {
+        principal: { name: "Home controller", kind: "human" },
+        caps: ["terminals:write"],
+        containerId: before!.containerId,
+      },
+      f.root,
+    );
+    const launchesBefore = f.launches.length;
+    const unavailable = await f.host.dispatch(
+      f.auth.authenticate(homeOnly.token),
+      "core.terminals.restart",
+      { terminalId: create.terminalId },
+    );
+    if (unavailable.ok) throw new Error("home control admitted native relaunch");
+    expect(unavailable.denial.message).toContain("machines:run capability required");
+    expect(f.launches).toHaveLength(launchesBefore);
+    expect(liveRunTokens()).toEqual(originalTokens);
+    expect(f.store.getTerminal(create.terminalId)).toEqual(retained);
+    expect(f.store.db.query("SELECT job_id FROM machine_jobs ORDER BY job_id").all()).toEqual(jobs);
     expect(
       result(
         await f.host.dispatch(f.root, "core.terminals.restart", {

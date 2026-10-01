@@ -172,6 +172,7 @@ interface PendingRestart {
   principalId: string;
   agentPrincipalId: string | null;
   jobId: string | null;
+  runLaunch: { bindingId: string; runId: string; token: string } | null;
   dispatched: boolean;
   fence: ActionAuthorityFence;
   terminalHostId: string | null;
@@ -262,7 +263,7 @@ export class TerminalBroker implements TerminalPlacementPort {
     this.runLaunches.clear();
   }
 
-  private consumeRunLaunch(
+  private boundRunLaunch(
     runtime: TerminalRuntime,
     actor: AuthContext,
     containerId: string,
@@ -279,7 +280,18 @@ export class TerminalBroker implements TerminalPlacementPort {
       binding.digest !== createHash("sha256").update(canonicalJobJson(runtime)).digest("hex")
     )
       throw new ServiceError("forbidden", "run launch binding refused");
-    this.runLaunches.delete(runtime.launchBinding);
+    return binding;
+  }
+
+  private consumeRunLaunch(
+    runtime: TerminalRuntime,
+    actor: AuthContext,
+    containerId: string,
+    terminalId?: string,
+  ) {
+    const binding = this.boundRunLaunch(runtime, actor, containerId, terminalId);
+    if (binding === undefined) return undefined;
+    this.runLaunches.delete(runtime.launchBinding!);
     binding.cancelExpiry();
     if (
       binding.expiresAt <= this.runtime.now() ||
@@ -292,6 +304,18 @@ export class TerminalBroker implements TerminalPlacementPort {
       MANIFOLD_RUN_ID: binding.runId,
       MANIFOLD_ORIGIN: this.publicUrl(),
     };
+  }
+
+  private retireRestartRunLaunch(pending: PendingRestart): void {
+    const launch = pending.runLaunch;
+    if (launch === null) return;
+    pending.runLaunch = null;
+    const binding = this.runLaunches.get(launch.bindingId);
+    if (binding?.token === launch.token) {
+      binding.cancelExpiry();
+      this.runLaunches.delete(launch.bindingId);
+    }
+    this.auth.revokeRunLaunchCredential(launch.runId, launch.token, pending.principalId);
   }
 
   setJobs(jobs: JobService): void {
@@ -2134,6 +2158,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       principalId,
       agentPrincipalId: null,
       jobId: null,
+      runLaunch: null,
       dispatched: false,
       resolve: completion.resolve,
       cancelDeadline: null,
@@ -2156,11 +2181,42 @@ export class TerminalBroker implements TerminalPlacementPort {
         if (stored.runId !== undefined) {
           const session = this.store.getAgentRun(stored.runId)?.session;
           if (session == null) throw new Error("run_launch_unavailable");
+          const prior = this.jobs.storedTerminalDemandBinding(terminalId);
+          if (prior === null) throw new Error("terminal_restart_recipe_changed");
+          const admitted = pending.fence.snapshot().requirements;
+          const missing = prior.requirements.filter(
+            (required) =>
+              !admitted.some(
+                (held) =>
+                  held.cap === required.cap &&
+                  held.node === required.node &&
+                  (held.reach ?? "node") === required.reach,
+              ),
+          );
+          if (missing.length > 0) pending.fence.extendPrepared(missing);
           const launched = await launchRun!({
             runId: stored.runId,
             target: { machineId: machine.machineId, containerId: stored.containerId },
           });
-          if (this.pendingRestarts.get(terminalId) !== pending) return;
+          if (launched.ok) {
+            const binding = this.boundRunLaunch(
+              launched.value.runtime,
+              auth,
+              stored.containerId,
+              terminalId,
+            );
+            if (binding === undefined || binding.runId !== stored.runId)
+              throw new Error("run_launch_unavailable");
+            pending.runLaunch = {
+              bindingId: launched.value.runtime.launchBinding!,
+              runId: binding.runId,
+              token: binding.token,
+            };
+          }
+          if (this.pendingRestarts.get(terminalId) !== pending) {
+            this.retireRestartRunLaunch(pending);
+            return;
+          }
           pending.fence.checkCurrent();
           if (!launched.ok) throw new ServiceError("forbidden", launched.message);
           auth = this.auth.restoreCredential(credential);
@@ -2282,6 +2338,7 @@ export class TerminalBroker implements TerminalPlacementPort {
     pending.cancelDeadline?.();
     pending.fence.close();
     if (outcome !== "ok") {
+      this.retireRestartRunLaunch(pending);
       if (pending.agentPrincipalId !== null)
         this.auth.revokeIssuedPrincipal(pending.agentPrincipalId, pending.principalId);
       if (pending.jobId !== null) this.jobs?.cancelTerminal(terminalId, pending.jobId);

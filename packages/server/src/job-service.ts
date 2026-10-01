@@ -5174,7 +5174,7 @@ export class JobService {
 
   private terminalNativeJob(
     machineId: string,
-    terminal: NonNullable<JobRequest["terminal"]>,
+    terminal: Pick<NonNullable<JobRequest["terminal"]>, "terminalId" | "containerId" | "runId">,
   ): JobRecord | null {
     const latest = this.store.db
       .query<{ jobId: string }, [string, string, string, string]>(
@@ -5186,6 +5186,59 @@ export class JobService {
       )
       .get(machineId, terminal.terminalId, terminal.containerId, terminal.runId ?? "");
     return latest === null ? null : this.jobs.get(latest.jobId);
+  }
+
+  /** Pure retained recipe facts, including signed native admission when the recipe is absent. */
+  storedTerminalDemandBinding(terminalId: string): NativeDemandBinding | null {
+    const stored = this.store.getTerminal(terminalId);
+    if (stored === null) return null;
+    if (stored.launchRecipe?.runtime !== undefined)
+      return this.terminalDemandBinding(
+        stored.launchRecipe.runtime,
+        stored.machineId,
+        stored.containerId,
+      );
+    if (stored.runId === undefined) return null;
+    const previous = this.terminalNativeJob(stored.machineId, {
+      terminalId,
+      containerId: stored.containerId,
+      runId: stored.runId,
+    });
+    if (previous === null) fail("terminal_restart_recipe_changed");
+    // Released jobs may lack the hub snapshot. Reconstruct internally from their signed
+    // request; only the opaque runtime digest and nonsecret native demand leave this method.
+    const request = previous.request;
+    const native =
+      previous.authoritySnapshot?.native ??
+      this.terminalDemandBinding(
+        {
+          machineId: request.machineId,
+          pluginId: request.pluginId,
+          operationId: request.operationId,
+          installationRevision: request.installationRevision,
+          artifactSha256: request.artifactSha256,
+          resourceBindingDigest: digest(request.resourceBindings ?? null),
+          input: request.input,
+          ...(request.inputs === undefined ? {} : { inputs: request.inputs }),
+        },
+        stored.machineId,
+        stored.containerId,
+      );
+    if (
+      native.machineId !== stored.machineId ||
+      native.containerId !== stored.containerId ||
+      native.pluginId !== request.pluginId ||
+      native.operationId !== request.operationId ||
+      native.installationRevision !== request.installationRevision ||
+      native.artifactSha256 !== request.artifactSha256 ||
+      native.resourceBindingDigest !== digest(request.resourceBindings ?? null) ||
+      previous.permit?.ownerId !== native.ownerId ||
+      previous.permit.ownerGeneration !== native.ownerGeneration ||
+      request.terminal?.terminalHostId !== native.terminalHostId ||
+      !this.terminalDemandBindingCurrent(native)
+    )
+      fail("terminal_restart_recipe_changed");
+    return structuredClone(native);
   }
 
   /**
