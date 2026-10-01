@@ -5786,7 +5786,7 @@ export class PluginHost {
               authorityFence.bind({
                 actionName: fullName,
                 originalArgsDigest: preparedEvidence.originalArgsDigest,
-                fingerprint: this.actionFingerprint(fullName) ?? undefined,
+                ...(securityFingerprint === null ? {} : { fingerprint: securityFingerprint }),
                 ...(resolvedMachineId === undefined ? {} : { machineId: resolvedMachineId }),
                 ...(resolvedContainerId === undefined ? {} : { containerId: resolvedContainerId }),
                 ...(nativeBindings.length === 0 ? {} : { nativeDemand: nativeBindings }),

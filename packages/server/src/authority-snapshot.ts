@@ -107,8 +107,44 @@ export const AuthoritySnapshotSchema = z.strictObject({
   }).optional(),
 });
 
+/** Keep schema-accepted optional undefined values absent in the durable authority contract. */
+export function normalizeAuthoritySnapshot(
+  snapshot: z.output<typeof AuthoritySnapshotSchema>,
+): AuthoritySnapshot {
+  const { credential, actionCredential, action, native, terminal } = snapshot;
+  return {
+    credential,
+    ...(actionCredential === undefined ? {} : { actionCredential }),
+    ...(action === undefined ? {} : {
+      action: {
+        contextScope: action.contextScope,
+        requirements: action.requirements.map(({ cap, ref, node, reach }) => ({
+          cap,
+          ...(ref === undefined ? {} : { ref }),
+          ...(node === undefined ? {} : { node }),
+          ...(reach === undefined ? {} : { reach }),
+        })),
+        ...(action.fingerprint === undefined ? {} : { fingerprint: action.fingerprint }),
+        ...(action.originalArgsDigest === undefined ? {} : { originalArgsDigest: action.originalArgsDigest }),
+        ...(action.actionName === undefined ? {} : { actionName: action.actionName }),
+        ...(action.pluginId === undefined ? {} : { pluginId: action.pluginId }),
+        ...(action.machineId === undefined ? {} : { machineId: action.machineId }),
+        ...(action.containerId === undefined ? {} : { containerId: action.containerId }),
+        ...(action.nativeDemand === undefined ? {} : { nativeDemand: action.nativeDemand }),
+      },
+    }),
+    ...(native === undefined ? {} : {
+      native: (() => {
+        const { inputs, ...binding } = native;
+        return { ...binding, ...(inputs === undefined ? {} : { inputs }) };
+      })(),
+    }),
+    ...(terminal === undefined ? {} : { terminal }),
+  };
+}
+
 export function cloneAuthoritySnapshot(snapshot: AuthoritySnapshot): AuthoritySnapshot {
-  return AuthoritySnapshotSchema.parse(structuredClone(snapshot));
+  return normalizeAuthoritySnapshot(AuthoritySnapshotSchema.parse(structuredClone(snapshot)));
 }
 
 export function captureAuthoritySnapshot(
@@ -190,5 +226,5 @@ export function readAuthoritySnapshot(
   const row = store.db.query<{ snapshot: string }, [string, string]>(
     "SELECT snapshot FROM native_authority_snapshots WHERE kind=? AND id=?",
   ).get(kind, id);
-  return row === null ? undefined : AuthoritySnapshotSchema.parse(JSON.parse(row.snapshot));
+  return row === null ? undefined : normalizeAuthoritySnapshot(AuthoritySnapshotSchema.parse(JSON.parse(row.snapshot)));
 }

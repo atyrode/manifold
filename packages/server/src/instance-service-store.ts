@@ -18,6 +18,7 @@ import type { ServerStore } from "./stores.ts";
 import {
   AuthoritySnapshotSchema,
   cloneAuthoritySnapshot,
+  normalizeAuthoritySnapshot,
   type AuthoritySnapshot,
 } from "./authority-snapshot.ts";
 
@@ -52,7 +53,7 @@ const storedConfiguration = z.strictObject({
   policy: ServicePolicySchema,
   enabled: z.boolean(),
   traceId: z.string().min(1).max(256),
-  authoritySnapshot: AuthoritySnapshotSchema.optional(),
+  authoritySnapshot: AuthoritySnapshotSchema.transform(normalizeAuthoritySnapshot).optional(),
 });
 
 function record(row: InstanceServiceRow): InstanceServiceRecord {

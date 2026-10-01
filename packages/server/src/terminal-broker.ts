@@ -1956,7 +1956,8 @@ export class TerminalBroker implements TerminalPlacementPort {
       const recipeDigest = createHash("sha256").update(canonicalJobJson(recipe ?? null)).digest("hex");
       fence.guard(() => {
         const current = this.store.getTerminal(terminalId);
-        if (current === null || current.machineId !== stored.machineId ||
+        if (this.terminals.get(terminalId) !== terminal ||
+          current === null || current.machineId !== stored.machineId ||
           current.containerId !== stored.containerId ||
           current.runId !== stored.runId ||
           createHash("sha256").update(canonicalJobJson(current.launchRecipe ?? null)).digest("hex") !== recipeDigest ||
@@ -1965,7 +1966,7 @@ export class TerminalBroker implements TerminalPlacementPort {
           this.store.revokedMachineIds().has(machine.machineId))
           throw new ServiceError("forbidden", "terminal restart binding changed");
         const live = this.auth.restoreCredential(fence.credentialReference());
-        if (live === null || (current.status === "running" && current.controller !== live.principal.id && !this.auth.holdsRoot(live)))
+        if (live === null || (terminal.info.status === "running" && terminal.info.controllerId !== live.principal.id && !this.auth.holdsRoot(live)))
           throw new ServiceError("forbidden", "terminal control changed during restart");
       });
       fence.checkCurrent();
