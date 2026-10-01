@@ -1216,12 +1216,7 @@ export class TerminalBroker implements TerminalPlacementPort {
         fence = admittedFence.retain();
       } else {
         // Legacy internal callers still pass the same live resource requirements.
-        fence = new ActionAuthorityFence(
-          this.auth,
-          auth,
-          () => true,
-          containerId,
-        );
+        fence = new ActionAuthorityFence(this.auth, auth, () => true, containerId);
         const requirements: ActionAuthorityRequirement[] = [
           {
             cap: "terminals:spawn",
@@ -2085,12 +2080,7 @@ export class TerminalBroker implements TerminalPlacementPort {
         const current = credential === undefined ? null : this.auth.restoreCredential(credential);
         if (current === null)
           throw new ServiceError("forbidden", "terminal restart authority unavailable");
-        fence = new ActionAuthorityFence(
-          this.auth,
-          current,
-          () => true,
-          stored.containerId,
-        );
+        fence = new ActionAuthorityFence(this.auth, current, () => true, stored.containerId);
         const requirements: ActionAuthorityRequirement[] = [
           {
             cap: "terminals:write",

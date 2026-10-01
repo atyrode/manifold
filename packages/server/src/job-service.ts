@@ -4319,9 +4319,7 @@ export class JobService {
           (install ? this.consentFor(install, ref, cap) : null);
         const discharged =
           context !== null &&
-          (callerAuthority ||
-            install !== null ||
-            (ref.kind === "service" && consent !== null)) &&
+          (callerAuthority || install !== null || (ref.kind === "service" && consent !== null)) &&
           this.auth.ceilingAdmits(context, cap, ref) &&
           fresh.allowed &&
           (callerAuthority || consent !== null);
@@ -5277,8 +5275,7 @@ export class JobService {
     if (!parsed.success) fail("terminal_runtime_destination_changed");
     const bindings = parsed.data;
     const index = bindings.findIndex(
-      (binding) =>
-        binding.machineId === machineId && binding.containerId === terminal.containerId,
+      (binding) => binding.machineId === machineId && binding.containerId === terminal.containerId,
     );
     if (index !== -1) {
       const binding = bindings[index]!;
@@ -5342,9 +5339,7 @@ export class JobService {
         .get(traceId);
       const previous =
         stored?.launchRecipe?.runtime ??
-        (stored?.runId === undefined
-          ? null
-          : this.terminalNativeJob(machineId, terminal)?.request);
+        (stored?.runId === undefined ? null : this.terminalNativeJob(machineId, terminal)?.request);
       if (
         target?.terminalId !== terminal.terminalId ||
         stored?.machineId !== machineId ||

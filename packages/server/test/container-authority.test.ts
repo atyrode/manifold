@@ -754,9 +754,14 @@ test("the carried authority follows the presser's lineage: a later deny or a rev
     expect(
       (await f.press(operator, "start", { profile: container(HOME), jobId: "denied" })).ok,
     ).toBe(true);
-    // The grant at the container is re-asked at use, so an administered deny written after the
-    // press withdraws it from the run exactly as it does from the presser: the session door's
-    // own rung now finds the cap held at no container at all.
+    // Continuous originating authority is checked before invoking the retained wake.
+    const woken: string[] = [];
+    const denyObserved = Promise.withResolvers<void>();
+    f.wake.current = (_ctx, settled) => {
+      woken.push(settled.jobId);
+      if (settled.jobId === "after-deny") denyObserved.resolve();
+      return Promise.resolve();
+    };
     const deny = f.auth.grant(
       {
         principal: { kind: "principal", id: operator.principal.id },
@@ -767,12 +772,12 @@ test("the carried authority follows the presser's lineage: a later deny or a rev
       },
       f.root,
     );
-    expect(await wakeAnswers(f, "denied", [session(HOME)])).toEqual([
-      {
-        ok: false,
-        refusal: `capability: ${DRAIN} -> ${CODE}.runSession (containers:write capability required)`,
-      },
-    ]);
+    f.settle("denied");
+    const other = f.operator("second");
+    expect((await f.press(other, "plain", { jobId: "after-deny" })).ok).toBe(true);
+    f.settle("after-deny");
+    await denyObserved.promise;
+    expect(woken).toEqual(["after-deny"]);
     f.auth.revokeGrant(deny.id, f.root);
 
     expect(
@@ -787,14 +792,9 @@ test("the carried authority follows the presser's lineage: a later deny or a rev
         containerGrants: job.containerGrants!,
       }),
     ).toBeNull();
-    const woken: string[] = [];
-    f.wake.current = (_ctx, settled) => {
-      woken.push(settled.jobId);
-      return Promise.resolve();
-    };
+    woken.length = 0;
     f.settle("revoked");
     // A later wake of another presser proves the fan-out ran past the revoked one.
-    const other = f.operator("second");
     expect((await f.press(other, "plain", { jobId: "after" })).ok).toBe(true);
     const after = Promise.withResolvers<void>();
     f.wake.current = (_ctx, settled) => {

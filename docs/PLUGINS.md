@@ -612,6 +612,16 @@ parser/preparer/code binding and native demand through awaits and acknowledgemen
 before commit refuses success and settles only the pending owned effect. Native jobs retain a
 hub-only faithful authority snapshot; signed owner requests keep their released vocabulary
 and omit ordinary-only capabilities. Snapshot-less retained jobs use their legacy restore path.
+Transport and readiness guards are admission-only: they retire after the owner acknowledges
+the birth or restart, not merely after a command is sent. Credential, sponsor, code,
+installation, resource, consent and native-owner identity guards remain live. Restored effects
+recheck the current installation against the capabilities actually admitted, including the
+selected prepared requirements; unused alternatives do not consume that ceiling.
+Trusted harness relaunch may refresh private input only for the exact retained session and
+native identity. The host captures its fresh demand and conjunctively extends the sealed
+fence before reservation, while preserving the original ordered requirements and credential.
+Known retained demand is checked before private relaunch even without a generic recipe;
+refusal or timeout retires only that attempt's fresh private credential.
 Installed and trusted bindings pin their verified artifact digest. Built-in source bindings
 also pin a once-per-process digest of actual source dependency bytes; compiled hubs hash their
 executable bytes. Deployment labels and `.dirty` version suffixes are not security identities:

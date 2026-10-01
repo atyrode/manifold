@@ -276,7 +276,9 @@ jobs; never use transport replacement to unload or replace the host.
   retained owner's positive declaration; enrollment and transport connection alone are insufficient.
 - Other machines' terminals are unaffected.
 - Flap test on a disposable node: interrupt the transport, not the host; the machine becomes
-  unavailable. Restart transport → retained PTYs re-adopt, with owner identity unchanged.
+  unavailable. Restart transport → retained PTYs re-adopt with owner identity unchanged.
+  Keep the mounted terminal focused with selected output: focus, selection and existing
+  output survive, and fresh typed input produces output after each replacement.
 
 ## Group enrolled accounts for display
 

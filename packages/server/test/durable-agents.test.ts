@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
-import { AuthService, type AuthContext } from "../src/auth.ts";
+import { AuthService, ServiceError, type AuthContext } from "../src/auth.ts";
 import { ServerStore } from "../src/stores.ts";
 import { openDatabase } from "../src/db.ts";
 import {
@@ -656,7 +656,8 @@ describe("durable Agent admission", () => {
       const childActor = fix.auth.authenticate(child.credential.token);
       expect(() =>
         fix.auth.reportRunActivity({ runId: sibling.run.id, activity: "done" }, childActor),
-      ).toThrow("harness_credential_required");
+      ).toThrow(ServiceError);
+      expect(fix.store.getAgentRun(sibling.run.id)?.activity).toBe(sibling.run.activity);
       expect(
         fix.auth.reportRunActivity({ runId: child.run.id, activity: "working" }, childActor).run
           .activity,

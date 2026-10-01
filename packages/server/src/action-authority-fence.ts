@@ -109,14 +109,16 @@ export class ActionAuthorityFence {
   }
 
   guard(check: () => void, lifetime: "continuation" | "admission" = "continuation"): void {
-    this.checks = [...this.checks, { check, admissionOnly: lifetime === "admission", active: true }];
+    this.checks = [
+      ...this.checks,
+      { check, admissionOnly: lifetime === "admission", active: true },
+    ];
     this.checkCurrent();
   }
 
   /** A committed effect retires only admission guards, including in its retained leases. */
   commit(): void {
-    for (const guard of this.checks)
-      if (guard.admissionOnly) guard.active = false;
+    for (const guard of this.checks) if (guard.admissionOnly) guard.active = false;
   }
 
   extend(requirements: readonly ActionAuthorityRequirement[]): void {
@@ -176,8 +178,7 @@ export class ActionAuthorityFence {
     }
     try {
       this.checkAuthority?.(current);
-      for (const guard of this.checks)
-        if (guard.active) guard.check();
+      for (const guard of this.checks) if (guard.active) guard.check();
     } catch (error) {
       this.close();
       throw error;

@@ -30,6 +30,14 @@ binding. Restore it through the central live evaluator. Absence is a legacy reco
 explicit empty scope remains no authority. Project only the released native wire vocabulary
 into signed requests; do not rewrite existing signed requests to add the hub's snapshot.
 
+Separate admission-only transport/readiness guards from ongoing authority and identity:
+retire the former only after owner acknowledgement, while the latter survive committed
+birth and restart. Restore against the current installed ceiling for the actual admitted
+mode, not the union of every alternative. An exact trusted-session relaunch captures fresh
+native demand and extends the same sealed fence conjunctively before reservation; missing
+generic recipes retain their known signed admission, and failed attempts retire only their
+new private credential, never the incumbent Run.
+
 The living contracts are [Pure conditional preparation](../PLUGINS.md#pure-conditional-preparation),
 [Protocol and compatibility](../CONTRACTS.md#protocol-and-compatibility) and the executable
 inventories in [REGISTRY.md](../../REGISTRY.md). This adds no pillar, hidden door, plugin-specific

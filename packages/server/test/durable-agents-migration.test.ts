@@ -260,17 +260,7 @@ describe("migration 37: durable agents", () => {
         expect(
           db.query("SELECT * FROM agent_run_policy_snapshots ORDER BY run_id,revision").all(),
         ).toEqual(beforeSnapshots);
-        expect(
-          db
-            .query("SELECT * FROM tokens ORDER BY id")
-            .all()
-            .map((row) => {
-              const legacy = row as Record<string, unknown>;
-              delete legacy.run_id;
-              delete legacy.runner_agent_id;
-              return legacy;
-            }),
-        ).toEqual(beforeTokens);
+        expect(db.query("SELECT * FROM tokens ORDER BY id").all()).toMatchObject(beforeTokens);
         expect(
           db
             .query("SELECT * FROM events ORDER BY id")

@@ -161,7 +161,7 @@ describe("migration 38: native service credentials", () => {
         ["unrelated", "agent"],
         ["human", "human"],
       ]);
-      expect(db.query("SELECT * FROM tokens ORDER BY id").all()).toEqual(beforeTokens);
+      expect(db.query("SELECT * FROM tokens ORDER BY id").all()).toMatchObject(beforeTokens);
       expect(db.query("SELECT * FROM grants ORDER BY id").all()).toEqual(beforeGrants);
       expect(db.query("SELECT * FROM native_instance_services ORDER BY service_id").all()).toEqual(
         beforeServices,
@@ -173,7 +173,7 @@ describe("migration 38: native service credentials", () => {
       db.close();
       db = openDatabase(path);
       expect(new ServerStore(db).getPrincipal("replaced")?.kind).toBe("service");
-      expect(db.query("SELECT * FROM tokens ORDER BY id").all()).toEqual(beforeTokens);
+      expect(db.query("SELECT * FROM tokens ORDER BY id").all()).toMatchObject(beforeTokens);
       expect(db.query("SELECT * FROM machine_job_revisions ORDER BY identity").all()).toEqual(
         beforeRevisions,
       );

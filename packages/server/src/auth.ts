@@ -3336,6 +3336,31 @@ export class AuthService {
     );
   }
 
+  /** Retires only rejected private launch custody; the incumbent Run and its tokens survive. */
+  revokeRunLaunchCredential(runId: string, raw: string, actorId: string): void {
+    this.store.transaction(() => {
+      const token = this.store.getTokenByHash(sha256Hex(raw));
+      if (token === null) return;
+      const run = this.store.getAgentRunByToken(token.id);
+      if (run?.id !== runId) throw new ServiceError("forbidden", "run_launch_credential_required");
+      if (token.revokedAt !== null) return;
+      const at = this.runtime.now();
+      const revoked = this.store.revokeToken(token.id, at);
+      this.store.addEvent(null, at, actorId, "token_revoked", {
+        subjectPrincipalId: token.principalId,
+        runId,
+        tokenId: token.id,
+        count: revoked.tokens,
+      });
+      this.store.afterCommit(() => {
+        const pending = this.pendingRunLaunches.get(runId);
+        if (pending !== undefined && secretsEqual(pending.token, raw))
+          this.pendingRunLaunches.delete(runId);
+        if (revoked.tokens > 0 || revoked.grants > 0) this.authorityChanged();
+      });
+    });
+  }
+
   reportRunActivity(input: ReportRunActivityRequest, actor: AuthContext): ReportRunActivityResult {
     this.legacyRunResult(this.authorizeRunInput(input.runId, actor));
     return this.legacyRunResult(this.reportRunActivityAuthority(input, actor));

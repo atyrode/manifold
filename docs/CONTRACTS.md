@@ -3942,6 +3942,11 @@ env? }` → server targets `machineId` when given (error `no_machine` if it is u
   IPC v3; replacing only the transport in front of a retained v2 host cannot create that
   evidence.
 
+  A replaceable transport does not retire a live viewer's room channel. Re-adoption refreshes
+  the occupant snapshot and restores writable input to the same retained PTY. A snapshot with
+  the already painted output sequence does not replace the terminal buffer or clear its
+  selection; a real restart still resets the session.
+
 - **A terminal is born with a home** (`homed: "eager"`). The home id is minted BEFORE the
   PTY, because the terminal-scoped agent token and the `MANIFOLD_CONTAINER` a program inside the
   terminal reads must both name the container the terminal LIVES in — and a canvas is never
@@ -4927,8 +4932,10 @@ policySha256, jobId }` or null), the expected revision, the resolved policy and 
   than executing them again; owner recovery clears old descendants before a new generation
   admits work. An unobserved reserved execution is `interrupted`/unknown, not safe to retry.
   Temporary transport unavailability does not itself revoke a retained run's grants.
-  Current authority, consent and exact installation/resource/policy pins still apply;
-  live readiness remains mandatory for new admission and each service effect.
+  Birth/restart readiness and exact transport guards retire only after the owner's
+  acknowledgement. Current credential and sponsor authority, consent, code, exact
+  installation/resource/policy pins and native-owner identity still apply; live readiness
+  remains mandatory for new admission and each service effect.
   Retained identity records prevent expired output/result retention from permitting replay.
   The journal is hash-chained and segmented, with no lifetime capacity (#848). A full segment
   is sealed by a checkpoint signed with the owner identity that continues the chain and
@@ -5161,9 +5168,10 @@ exitCode, reason, finishedAt, scheduleId?, revision?, outputs }` — the job's o
   fresh authority. A sibling's delayed guest preparation rechecks the lease before admission;
   queued isolate calls recheck that their request is still live before being served. Effects
   already admitted are not rolled back or retroactively cancelled.
-- **Carried container authority (ADR 0051).** A GOVERNED door — one whose `caps` include a
-  governed capability — may declare `containers:read` or `containers:write` with a
-  `requirements` target, and that target must be a container `ManifoldRef`; any other ref is
+- **Carried container authority (ADR 0051).** A GOVERNED door — one whose fixed or
+  sealed prepared requirements include a governed capability — may declare `containers:read`
+  or `containers:write` with a `requirements` target, and that target must be a container
+  `ManifoldRef`; any other ref is
   refused `invalid_args` (`containers:write requires a container target`). Admission discharges
   it against the CALLER at that container, its flat ceiling and the waterfall both, with no
   consent row, as for `terminals:*`: a caller lacking it there is refused `forbidden`
@@ -5194,6 +5202,9 @@ exitCode, reason, finishedAt, scheduleId?, revision?, outputs }` — the job's o
   so revocation, expiry, a pause or a deny ends the carried cap. Dispatches whose caller carries
   no grants through doors without container targets, and `delegates` (native-only), are
   unchanged.
+  Ordinary workspace, scene and terminal rights are also caller requirements, not native
+  consent. Retained prepared-action authority keeps these requirements beside the signed
+  request and rechecks them before a lifecycle continuation is invoked.
 - **Schedules.** The same admission path consumes durable schedule revision, nominal
   occurrence, interval, deadline, expiry and `skip`/`coalesce-one` offline policy. Occurrence
   identity is committed before enqueue. Original credential lineage/ceiling persists;

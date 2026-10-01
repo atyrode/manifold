@@ -266,6 +266,7 @@ import type {
 } from "@manifold/plugin";
 import { jobContext, jobDoors, type JobContext } from "./job-doors.ts";
 import type { JobService, SettledJobDelivery } from "./job-service.ts";
+import type { NativeDemandBinding } from "./authority-snapshot.ts";
 import { serviceContext, serviceDoors, serviceDoorSchemas } from "./service-doors.ts";
 import { machineDoors } from "./machine-doors.ts";
 import { jobSettledTimeouts, type JobSettledTimeouts } from "./settled-job-timeouts.ts";
@@ -5441,31 +5442,24 @@ export class PluginHost {
           if (terminal === null) return null;
           resolvedMachineId = terminal.machineId;
           resolvedContainerId = terminal.containerId;
+          const governed =
+            terminal.launchRecipe?.runtime !== undefined || terminal.runId !== undefined;
+          let native: NativeDemandBinding | null = null;
+          if (governed) {
+            if (this.jobs === null)
+              throw new ServiceError("forbidden", "terminal runtime unavailable");
+            native = this.jobs.storedTerminalDemandBinding(terminalId);
+            if (native === null)
+              throw new ServiceError("forbidden", "terminal runtime unavailable");
+            nativeBindings.push(native);
+          }
           return Object.freeze({
-            governed: terminal.launchRecipe?.runtime !== undefined || terminal.runId !== undefined,
+            governed,
             machineId: terminal.machineId,
             containerId: terminal.containerId,
-            ...(terminal.launchRecipe?.runtime === undefined
+            ...(native === null
               ? {}
-              : (() => {
-                  if (this.jobs === null)
-                    throw new ServiceError("forbidden", "terminal runtime unavailable");
-                  const runtime = terminal.launchRecipe.runtime;
-                  nativeBindings.push(
-                    this.jobs.terminalDemandBinding(
-                      runtime,
-                      terminal.machineId,
-                      terminal.containerId,
-                    ),
-                  );
-                  return {
-                    nativeRequirements: this.jobs.terminalDemand(
-                      runtime,
-                      terminal.machineId,
-                      terminal.containerId,
-                    ),
-                  };
-                })()),
+              : { nativeRequirements: structuredClone(native.requirements) }),
           });
         },
       }),
@@ -5727,7 +5721,48 @@ export class PluginHost {
         )
           throw new ServiceError("forbidden", "explicit version-bound consent required");
       },
-      // Host-captured demand bindings, not a guest assertion.
+      (current, requirements) => {
+        const additions = validatePreparedRequirements(
+          requirements.map(({ cap, node, ref, reach }) => ({
+            cap,
+            node: node ?? (ref === undefined ? undefined : formatManifoldUri(ref)),
+            reach: reach ?? "node",
+          })),
+          preparationCaps,
+        );
+        const nativeRequirements = [...admittedNativeRequirements];
+        for (const requirement of additions) {
+          if (!withinCeiling(requirement.cap, entry.plugin.capabilities))
+            throw new ServiceError("forbidden", "preparer requirement not declared by plugin");
+          if (
+            install !== undefined &&
+            !GOVERNED_CAPS.includes(requirement.cap) &&
+            !withinCeiling(requirement.cap, install.row.grantedCaps)
+          )
+            throw new ServiceError("forbidden", "preparer requirement not granted to plugin");
+          if (
+            !this.authService.allowsNode(
+              current,
+              requirement.cap,
+              requirement.node,
+              requirement.reach,
+            )
+          )
+            throw new ServiceError("forbidden", "prepared extension authority unavailable");
+          const ref = parseManifoldUri(requirement.node);
+          if (ref !== null && isEngineCap(requirement.cap) && requirement.cap !== "machines:shell")
+            nativeRequirements.push({ cap: requirement.cap, ref });
+        }
+        const native = governed || additions.some(({ cap }) => GOVERNED_CAPS.includes(cap));
+        if (
+          native &&
+          !this.authService.admitGoverned(current, pluginId, fullName, nativeRequirements).allowed
+        )
+          throw new ServiceError("forbidden", "explicit version-bound consent required");
+        for (const { cap } of additions) if (!nativeCaps.includes(cap)) nativeCaps.push(cap);
+        admittedNativeRequirements = nativeRequirements;
+        governed = native;
+      },
     );
     authorityFence.bind({
       originalArgsDigest: preparedEvidence.originalArgsDigest,

@@ -348,8 +348,13 @@ async function fixture(
     socket.send = (data) => {
       const bytes = send(data);
       const frame: unknown = JSON.parse(data);
-      if (frame !== null && typeof frame === "object" && "type" in frame &&
-          (frame.type === "terminal_error" || frame.type === "error")) finished.resolve();
+      if (
+        frame !== null &&
+        typeof frame === "object" &&
+        "type" in frame &&
+        (frame.type === "terminal_error" || frame.type === "error")
+      )
+        finished.resolve();
       return bytes;
     };
     const peer = new SessionChannel(runtime.newId(), socket, actor, containerId, "c1");
@@ -604,11 +609,13 @@ test("cross-machine session references and refused native admission leave no cor
         1,
       ),
     ).toThrow("terminal_runtime_session_destination_changed");
-    await expect(f.open({
-      ...f.descriptor,
-      installationRevision: "stale",
-      session: { ...session, machineId: f.descriptor.machineId },
-    })).rejects.toThrow();
+    await expect(
+      f.open({
+        ...f.descriptor,
+        installationRevision: "stale",
+        session: { ...session, machineId: f.descriptor.machineId },
+      }),
+    ).rejects.toThrow();
     expect(f.sent.filter((message) => message.type === "create")).toEqual([]);
     expect(f.store.listTerminals()).toEqual([]);
   } finally {
@@ -740,7 +747,9 @@ test("harness restart refuses a freshly bound unavailable input without replacin
       expect(f.sent.filter((message) => message.type === "kill")).toEqual([]);
       expect(f.store.getTerminal(create.terminalId)).toEqual(before);
       expect(f.rooms.get(before!.containerId)!.tileLayout()).toEqual(layout);
-      expect(f.store.db.query("SELECT job_id FROM machine_jobs ORDER BY job_id").all()).toEqual(jobs);
+      expect(f.store.db.query("SELECT job_id FROM machine_jobs ORDER BY job_id").all()).toEqual(
+        jobs,
+      );
       expect(liveRunTokens()).toEqual(originalTokens);
       expect(f.auth.authenticate(incumbentToken).agentRunId).toBe(run.id);
       Object.assign(f.descriptor, original);
@@ -853,7 +862,9 @@ test("run terminal restart relaunches its harness session with fresh private sig
       ownerGeneration: f.owner.generation,
       terminalHostId: f.owner.terminalHostId,
     });
-    expect(replacementSnapshot.native!.runtimeDigest).not.toBe(initialSnapshot.native!.runtimeDigest);
+    expect(replacementSnapshot.native!.runtimeDigest).not.toBe(
+      initialSnapshot.native!.runtimeDigest,
+    );
     expect(replacementSnapshot.action).toMatchObject({
       actionName: "core.terminals.restart",
       nativeDemand: [replacementSnapshot.native],
@@ -1535,17 +1546,20 @@ test.each(["legacy birth", "prepared birth", "restart"] as const)(
       f.replaceTransport();
       f.service.tick();
       expect(f.service.jobs.cancellation(jobId)).toBeNull();
-      expect(f.commands.filter((entry) => entry.type === "cancel" && entry.jobId === jobId))
-        .toEqual([]);
+      expect(
+        f.commands.filter((entry) => entry.type === "cancel" && entry.jobId === jobId),
+      ).toEqual([]);
       await admissionDrain(f, create.terminalId);
       f.service.tick();
       expect(f.service.jobs.get(jobId)?.state).toBe("started");
       expect(f.service.jobs.cancellation(jobId)).toBeNull();
-      expect(f.commands.filter((entry) => entry.type === "cancel" && entry.jobId === jobId))
-        .toEqual([]);
+      expect(
+        f.commands.filter((entry) => entry.type === "cancel" && entry.jobId === jobId),
+      ).toEqual([]);
       expect(f.store.getTerminal(create.terminalId)?.status).toBe("running");
-      expect(await f.broker.restartById(create.terminalId, f.root.principal.id))
-        .toBe("machine_draining");
+      expect(await f.broker.restartById(create.terminalId, f.root.principal.id)).toBe(
+        "machine_draining",
+      );
     } finally {
       f.close();
     }
@@ -1557,12 +1571,15 @@ test.each(["deny", "transport", "owner", "drain"] as const)(
   async (change) => {
     const f = await fixture();
     try {
-      const minted = f.auth.mintTokenV2({
-        principal: { name: "pending opener", kind: "human" },
-        scope: governedTerminalScope(f),
-        containerId: f.containerId,
-        expiresAt: f.runtime.now() + 60_000,
-      }, f.root);
+      const minted = f.auth.mintTokenV2(
+        {
+          principal: { name: "pending opener", kind: "human" },
+          scope: governedTerminalScope(f),
+          containerId: f.containerId,
+          expiresAt: f.runtime.now() + 60_000,
+        },
+        f.root,
+      );
       const actor = f.auth.authenticate(minted.token);
       const pending = f.host.dispatch(actor, "core.terminals.create", {
         containerId: f.containerId,
@@ -1576,13 +1593,16 @@ test.each(["deny", "transport", "owner", "drain"] as const)(
       const create = await admittedMessage(f.firstCreate, pending, "pending governed create");
       if (!create.runtime) throw new Error("governed create missing");
       if (change === "deny") {
-        f.auth.grant({
-          principal: { kind: "principal", id: actor.principal.id },
-          node: `manifold://container/${f.containerId}`,
-          caps: ["terminals:spawn"],
-          effect: "deny",
-          reach: "node",
-        }, f.root);
+        f.auth.grant(
+          {
+            principal: { kind: "principal", id: actor.principal.id },
+            node: `manifold://container/${f.containerId}`,
+            caps: ["terminals:spawn"],
+            effect: "deny",
+            reach: "node",
+          },
+          f.root,
+        );
       } else if (change === "drain") {
         await admissionDrain(f, create.terminalId);
       } else {
@@ -1595,11 +1615,14 @@ test.each(["deny", "transport", "owner", "drain"] as const)(
       f.broker.onCreated(f.descriptor.machineId, create.terminalId);
       expect((await pending).ok).toBe(false);
       expect(f.store.getTerminal(create.terminalId)).toBeNull();
-      expect(Object.values(f.rooms.get(f.containerId)?.tileLayout() ?? {})
-        .some((tile) => tile.ref?.kind === "terminal" && tile.ref.terminalId === create.terminalId))
-        .toBe(false);
-      const kills = f.sent.filter((entry) =>
-        entry.type === "kill" && entry.terminalId === create.terminalId);
+      expect(
+        Object.values(f.rooms.get(f.containerId)?.tileLayout() ?? {}).some(
+          (tile) => tile.ref?.kind === "terminal" && tile.ref.terminalId === create.terminalId,
+        ),
+      ).toBe(false);
+      const kills = f.sent.filter(
+        (entry) => entry.type === "kill" && entry.terminalId === create.terminalId,
+      );
       if (change === "owner") expect(kills).toEqual([]);
       else {
         expect(kills).toEqual([{ type: "kill", terminalId: create.terminalId }]);
@@ -1616,12 +1639,15 @@ test.each(["deny", "transport", "owner", "drain"] as const)(
   async (change) => {
     const f = await fixture();
     try {
-      const minted = f.auth.mintTokenV2({
-        principal: { name: "pending restarter", kind: "human" },
-        scope: governedTerminalScope(f),
-        containerId: f.containerId,
-        expiresAt: f.runtime.now() + 60_000,
-      }, f.root);
+      const minted = f.auth.mintTokenV2(
+        {
+          principal: { name: "pending restarter", kind: "human" },
+          scope: governedTerminalScope(f),
+          containerId: f.containerId,
+          expiresAt: f.runtime.now() + 60_000,
+        },
+        f.root,
+      );
       const actor = f.auth.authenticate(minted.token);
       const create = await governedCreated(f, actor);
       f.holdRestartAcknowledgement();
@@ -1631,13 +1657,16 @@ test.each(["deny", "transport", "owner", "drain"] as const)(
       const restart = await admittedMessage(f.firstRestart, pending, "pending governed restart");
       if (!restart.create.runtime) throw new Error("governed restart missing");
       if (change === "deny") {
-        f.auth.grant({
-          principal: { kind: "principal", id: actor.principal.id },
-          node: `manifold://container/${f.containerId}`,
-          caps: ["terminals:write"],
-          effect: "deny",
-          reach: "node",
-        }, f.root);
+        f.auth.grant(
+          {
+            principal: { kind: "principal", id: actor.principal.id },
+            node: `manifold://container/${f.containerId}`,
+            caps: ["terminals:write"],
+            effect: "deny",
+            reach: "node",
+          },
+          f.root,
+        );
       } else if (change === "drain") {
         await admissionDrain(f, create.terminalId);
       } else {
@@ -1653,15 +1682,17 @@ test.each(["deny", "transport", "owner", "drain"] as const)(
       });
       expect((await pending).ok).toBe(false);
       expect(f.store.getTerminal(create.terminalId)?.status).toBe("running");
-      expect(f.store.db.query(
-        "SELECT id FROM events WHERE type='terminal_restarted'",
-      ).all()).toEqual([]);
+      expect(
+        f.store.db.query("SELECT id FROM events WHERE type='terminal_restarted'").all(),
+      ).toEqual([]);
       if (change !== "owner")
-        expect(f.service.jobs.cancellation(restart.create.runtime.request.jobId)?.mode)
-          .toBe("cancel");
+        expect(f.service.jobs.cancellation(restart.create.runtime.request.jobId)?.mode).toBe(
+          "cancel",
+        );
       else
-        expect(f.sent.filter((entry) =>
-          entry.type === "kill" && entry.terminalId === create.terminalId)).toEqual([]);
+        expect(
+          f.sent.filter((entry) => entry.type === "kill" && entry.terminalId === create.terminalId),
+        ).toEqual([]);
     } finally {
       f.close();
     }
@@ -1669,41 +1700,53 @@ test.each(["deny", "transport", "owner", "drain"] as const)(
 );
 
 async function continuingGovernedRun(f: GovernedTerminalFixture, scope: AuthorityScope) {
-  const minted = f.auth.mintTokenV2({
-    principal: { name: "terminal sponsor", kind: "human" },
-    scope: scope.map((entry) => ({
-      ...entry,
-      caps: [...entry.caps, "agents:delegate"],
-    })),
-    containerId: f.containerId,
-    expiresAt: f.runtime.now() + 120_000,
-  }, f.root);
-  const sponsor = f.auth.authenticate(minted.token);
-  const registered = await f.auth.registerAgentV2({
-    name: "continuing native opener",
-    purpose: "Retain only the sponsored composition and native operation",
-    harness: "test-harness",
-    context: { profile: { label: "reviewed" } },
-    grant: {
-      scope,
-      maxRunLifetimeMs: 60_000,
-      delegation: { maxDepth: 0, maxDescendants: 0 },
+  const minted = f.auth.mintTokenV2(
+    {
+      principal: { name: "terminal sponsor", kind: "human" },
+      scope: scope.map((entry) => ({
+        ...entry,
+        caps: [...entry.caps, "agents:delegate"],
+      })),
+      containerId: f.containerId,
       expiresAt: f.runtime.now() + 120_000,
     },
-  }, sponsor);
+    f.root,
+  );
+  const sponsor = f.auth.authenticate(minted.token);
+  const registered = await f.auth.registerAgentV2(
+    {
+      name: "continuing native opener",
+      purpose: "Retain only the sponsored composition and native operation",
+      harness: "test-harness",
+      context: { profile: { label: "reviewed" } },
+      grant: {
+        scope,
+        maxRunLifetimeMs: 60_000,
+        delegation: { maxDepth: 0, maxDescendants: 0 },
+        expiresAt: f.runtime.now() + 120_000,
+      },
+    },
+    sponsor,
+  );
   if (registered.credential === undefined) throw new Error("fixture Agent must be new");
-  const created = f.auth.createRunV2({
-    agentId: registered.agent.agentId,
-    target: { containerId: f.containerId, machineId: f.descriptor.machineId },
-    lifetimeMs: 60_000,
-  }, f.auth.authenticate(registered.credential.token));
+  const created = f.auth.createRunV2(
+    {
+      agentId: registered.agent.agentId,
+      target: { containerId: f.containerId, machineId: f.descriptor.machineId },
+      lifetimeMs: 60_000,
+    },
+    f.auth.authenticate(registered.credential.token),
+  );
   if (created.credential === undefined) throw new Error("fixture Run must have custody");
   const issued = f.auth.authenticate(created.credential.token);
   const challenge = f.auth.agentPolicyChallenge(issued);
-  f.auth.acknowledgeAgentPolicyV2({
-    revision: challenge.revision,
-    acknowledgements: challenge.required.map(({ id, digest }) => ({ id, digest })),
-  }, issued);
+  f.auth.acknowledgeAgentPolicyV2(
+    {
+      revision: challenge.revision,
+      acknowledgements: challenge.required.map(({ id, digest }) => ({ id, digest })),
+    },
+    issued,
+  );
   const actor = f.auth.restoreCredential(f.auth.credentialReference(issued));
   if (actor === null) throw new Error("fixture Run credential must restore");
   expect(registered.agent.sponsorPrincipalId).toBe(sponsor.principal.id);
@@ -1723,17 +1766,23 @@ test.each(["deny", "expiry", "sponsor", "action", "installation", "owner", "cons
     try {
       const scope = governedTerminalScope(f).map((entry) => ({
         ...entry,
-        target: entry.target === "manifold://"
-          ? `manifold://container/${f.containerId}`
-          : entry.target,
+        target:
+          entry.target === "manifold://" ? `manifold://container/${f.containerId}` : entry.target,
       }));
       const sponsored = change === "sponsor" ? await continuingGovernedRun(f, scope) : undefined;
-      const actor = sponsored?.actor ?? f.auth.authenticate(f.auth.mintTokenV2({
-        principal: { name: "continuing opener", kind: "human" },
-        scope,
-        containerId: f.containerId,
-        expiresAt: f.runtime.now() + 30_000,
-      }, f.root).token);
+      const actor =
+        sponsored?.actor ??
+        f.auth.authenticate(
+          f.auth.mintTokenV2(
+            {
+              principal: { name: "continuing opener", kind: "human" },
+              scope,
+              containerId: f.containerId,
+              expiresAt: f.runtime.now() + 30_000,
+            },
+            f.root,
+          ).token,
+        );
       const create = await governedCreated(f, actor);
       if (!create.runtime) throw new Error("governed create missing");
       f.started(create.runtime);
@@ -1742,13 +1791,16 @@ test.each(["deny", "expiry", "sponsor", "action", "installation", "owner", "cons
       expect(f.service.jobs.cancellation(create.runtime.request.jobId)).toBeNull();
       switch (change) {
         case "deny":
-          f.auth.grant({
-            principal: { kind: "principal", id: actor.principal.id },
-            node: `manifold://container/${f.containerId}`,
-            caps: ["terminals:spawn"],
-            effect: "deny",
-            reach: "node",
-          }, f.root);
+          f.auth.grant(
+            {
+              principal: { kind: "principal", id: actor.principal.id },
+              node: `manifold://container/${f.containerId}`,
+              caps: ["terminals:spawn"],
+              effect: "deny",
+              reach: "node",
+            },
+            f.root,
+          );
           break;
         case "expiry":
           f.clock.advance(30_001);
@@ -1763,13 +1815,15 @@ test.each(["deny", "expiry", "sponsor", "action", "installation", "owner", "cons
           action.input = z.strictObject({});
           break;
         case "installation":
-          expect(() => f.service.install(f.root, {
-            machineId: f.descriptor.machineId,
-            pluginId,
-            installationRevision: "r2",
-            artifactSha256: hash,
-            machine,
-          })).toThrow("active_installation");
+          expect(() =>
+            f.service.install(f.root, {
+              machineId: f.descriptor.machineId,
+              pluginId,
+              installationRevision: "r2",
+              artifactSha256: hash,
+              machine,
+            }),
+          ).toThrow("active_installation");
           f.service.tick();
           expect(f.service.jobs.get(create.runtime.request.jobId)?.state).toBe("started");
           expect(f.service.jobs.cancellation(create.runtime.request.jobId)).toBeNull();
@@ -1778,37 +1832,48 @@ test.each(["deny", "expiry", "sponsor", "action", "installation", "owner", "cons
             artifact: hash,
             enabled: true,
           });
-          expect(f.commands.filter((entry) =>
-            entry.type === "install" && entry.installationRevision === "r2")).toEqual([]);
-          result(await f.host.dispatch(f.root, "engine.plugins.setEnabled", {
-            id: pluginId,
-            enabled: false,
-          }));
+          expect(
+            f.commands.filter(
+              (entry) => entry.type === "install" && entry.installationRevision === "r2",
+            ),
+          ).toEqual([]);
+          result(
+            await f.host.dispatch(f.root, "engine.plugins.setEnabled", {
+              id: pluginId,
+              enabled: false,
+            }),
+          );
           expect(f.service.jobs.installation(f.descriptor.machineId, pluginId)).toMatchObject({
             revision: "r1",
             artifact: hash,
             enabled: false,
           });
-          expect(f.commands).toContainEqual(expect.objectContaining({
-            type: "install",
-            action: "disable",
-            pluginId,
-            installationRevision: "r1",
-            artifactSha256: hash,
-          }));
+          expect(f.commands).toContainEqual(
+            expect.objectContaining({
+              type: "install",
+              action: "disable",
+              pluginId,
+              installationRevision: "r1",
+              artifactSha256: hash,
+            }),
+          );
           expect(f.service.jobs.cancellation(create.runtime.request.jobId)).toEqual({
             mode: "cancel",
             reason: "plugin_disabled",
           });
-          expect((await f.host.dispatch(actor, "core.terminals.create", {
-            containerId: f.containerId,
-            elementId: f.runtime.newId(),
-            machineId: f.descriptor.machineId,
-            placement: "tile",
-            cols: 80,
-            rows: 24,
-            runtime: f.descriptor,
-          })).ok).toBe(false);
+          expect(
+            (
+              await f.host.dispatch(actor, "core.terminals.create", {
+                containerId: f.containerId,
+                elementId: f.runtime.newId(),
+                machineId: f.descriptor.machineId,
+                placement: "tile",
+                cols: 80,
+                rows: 24,
+                runtime: f.descriptor,
+              })
+            ).ok,
+          ).toBe(false);
           expect(f.sent.filter((entry) => entry.type === "create")).toEqual([create]);
           break;
         case "owner":
@@ -1830,8 +1895,11 @@ test.each(["deny", "expiry", "sponsor", "action", "installation", "owner", "cons
       f.service.tick();
       expect(f.service.jobs.cancellation(create.runtime.request.jobId)?.mode).toBe("cancel");
       if (change !== "owner")
-        expect(f.commands.some((entry) =>
-          entry.type === "cancel" && entry.jobId === create.runtime!.request.jobId)).toBe(true);
+        expect(
+          f.commands.some(
+            (entry) => entry.type === "cancel" && entry.jobId === create.runtime!.request.jobId,
+          ),
+        ).toBe(true);
     } finally {
       action.input = originalInput;
       f.close();
