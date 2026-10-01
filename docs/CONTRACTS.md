@@ -4583,6 +4583,11 @@ provider handling and postconditions belong to plugins, never the common floor.
   will create — policy lookup, promoted binding, the owner inventory projection and the
   instance record — while the proved owner, protocol support, credential sources, the
   provider operation's own resources and the approving authority are evaluated live.
+  After plugin disable/re-enable, one such request can re-admit its explicitly selected
+  provider and consumers at the unchanged installation revision (#910). Only the exact
+  disabled, non-purging installation named by that instance-service proposal is evaluated
+  prospectively; an unselected or otherwise disabled provider still refuses. Apply retains
+  the matching owner acknowledgement and live provider/advertisement readiness fences.
   `reviewDigest` binds the prior record identity (`{ machineId, revision, enabled,
 policySha256, jobId }` or null), the expected revision, the resolved policy and the
   destination's `services:configure` authority.
