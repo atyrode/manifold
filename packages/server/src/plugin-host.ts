@@ -1915,42 +1915,115 @@ export class PluginHost {
               .filter((entry) => entry.caps.length > 0),
           }),
     };
-    const lease = this.dataLease(pluginId);
+    const credential = this.authService.credentialReference(nativeAuth);
+    const harness = def.harness;
+    const profileSchema = harness.profileSchema;
+    const launch = harness.launch;
+    const sessions = harness.sessions;
+    const resolveSession = harness.resolveSession;
+    const send = harness.send;
+    const epoch = this.actionEpochs.get(pluginId) ?? 0;
+    const checkHarnessCurrent = (): void => {
+      const currentDef = this.defs.find((entry) => entry.manifest.id === pluginId);
+      if (
+        this.closed ||
+        !this.assembled.enabled(pluginId) ||
+        this.replacing.has(pluginId) ||
+        (this.actionEpochs.get(pluginId) ?? 0) !== epoch ||
+        currentDef === undefined ||
+        currentDef.manifest !== def.manifest ||
+        currentDef.harness !== harness ||
+        harness.profileSchema !== profileSchema ||
+        harness.launch !== launch ||
+        harness.sessions !== sessions ||
+        harness.resolveSession !== resolveSession ||
+        harness.send !== send ||
+        this.installed.get(pluginId) !== install ||
+        harnessCaps.some(
+          (cap) =>
+            !withinCeiling(cap, currentDef.manifest.capabilities) ||
+            (install !== undefined &&
+              !GOVERNED_CAPS.includes(cap) &&
+              !withinCeiling(cap, install.row.grantedCaps)),
+        ) ||
+        this.authService.restoreCredential(credential) === null
+      )
+        throw new ServiceError("forbidden", "harness authority unavailable");
+    };
+    // Keep the originating door's full ordered authority separate from the harness's
+    // native credential. Retained native effects own this fence, not the data lease.
+    base.authorityFence?.guard(checkHarnessCurrent);
+    const authorityFence = base.authorityFence?.retain();
+    const checkCurrent = (): void => {
+      if (authorityFence === undefined) checkHarnessCurrent();
+      else authorityFence.checkCurrent();
+    };
+    const lease = this.dataLease(pluginId, undefined, undefined, checkCurrent);
     const settled = Promise.withResolvers<void>();
     let active = this.activeDispatches.get(pluginId);
     if (!active) this.activeDispatches.set(pluginId, (active = new Set()));
     active.add(settled.promise);
     const service = () => {
+      lease.check();
       if (!this.jobs) throw new ServiceError("forbidden", "job service unavailable");
       return this.jobs;
     };
     const shared = { ...base };
     delete shared.database;
     try {
-      return await invoke(
-        def.harness,
+      const result = await invoke(
+        {
+          ...harness,
+          async launch(ctx, run, agent, target) {
+            lease.check();
+            const prepared = await launch.call(harness, ctx, run, agent, target);
+            // The continuation may mint a fresh private Run credential. Refuse before
+            // handing it a descriptor prepared under a withdrawn door or harness.
+            lease.check();
+            return prepared;
+          },
+        },
         {
           ...shared,
           pluginId,
           // The host invokes a harness; the door's own caller did not call this plugin.
           callerPlugin: null,
-          actions: this.actionCalls(pluginId, current, session, base.traceId, [...stack, pluginId]),
-          credential: this.authService.credentialReference(nativeAuth),
-          jobs: jobContext(service, nativeAuth, pluginId, base.traceId),
+          ...(authorityFence === undefined ? {} : { authorityFence }),
+          actions: this.actionCalls(
+            pluginId,
+            current,
+            session,
+            base.traceId,
+            [...stack, pluginId],
+            lease.check,
+          ),
+          credential,
+          jobs: jobContext(
+            service,
+            nativeAuth,
+            pluginId,
+            base.traceId,
+            lease.check,
+            authorityFence,
+          ),
           services: serviceContext(
             service,
             nativeAuth,
             pluginId,
             base.traceId,
             withinCeiling("services:invoke", nativeAuth.caps) ? "invoke" : "read",
+            authorityFence,
           ),
           storage: lease.storage,
           ...(lease.database ? { database: lease.database } : {}),
         },
         pluginId,
       );
+      lease.check();
+      return result;
     } finally {
       lease.close();
+      authorityFence?.close();
       settled.resolve();
       active.delete(settled.promise);
       if (active.size === 0) this.activeDispatches.delete(pluginId);
