@@ -520,7 +520,8 @@ test("live workspace mint withdrawal retires a revealed token despite cached roo
     mode.value = 'workspace'; mode.dispatchEvent(new Event('change', {bubbles:true}));
     const account = [...form.querySelectorAll('label')].find(label => label.textContent.includes('Exact enrolled account')).querySelector('select');
     account.value = 'machine-one'; account.dispatchEvent(new Event('change', {bubbles:true}));
-    form.querySelector('input[name=expires]').value = '2030-01-01T00:00';
+    form.querySelector('input[name=expiresDate]').value = '2030-01-01';
+    form.querySelector('input[name=expiresTime]').value = '00:00';
   })()`);
   await ui.click("Mint finite automation credential");
   await ui.answer("core.access.mintTokenV2", {

@@ -864,8 +864,8 @@ button.chip:focus-visible {
   overflow-wrap: anywhere;
 }
 
-/* ── button ── sized to its label like the badge; an icon rides before the label in the
-   control's own colour. */
+/* ── button ── sized to its label until its container runs out of room, then wraps the
+   full action name. An icon rides before the label in the control's own colour. */
 .mf-vocab-button {
   display: inline-flex;
   flex: none;
@@ -873,6 +873,7 @@ button.chip:focus-visible {
   justify-content: center;
   gap: 0.3rem;
   width: fit-content;
+  max-width: 100%;
   border: 1px solid var(--mf-vocab-border);
   border-radius: var(--mf-vocab-radius);
   padding: 0.3rem 0.65rem;
@@ -881,7 +882,8 @@ button.chip:focus-visible {
   font-size: 0.76rem;
   font-weight: 600;
   line-height: 1.4;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
   cursor: pointer;
 }
 

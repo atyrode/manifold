@@ -9,7 +9,7 @@ import {
   type AskableCap,
   type MachineSummary,
 } from "@manifold/protocol";
-import { Chip, Stack } from "@manifold/ui";
+import { Button, Chip, Stack } from "@manifold/ui";
 import {
   useCallback,
   useLayoutEffect,
@@ -113,8 +113,8 @@ export function ShellAutomation({
   const ready = eligible && (mode === "workspace" || selectedComposition !== undefined);
   return (
     <Stack gap="0.4rem" data-testid="shell-automation">
-      <Chip
-        aria-expanded={open}
+      <Button
+        expanded={open}
         onClick={() => {
           epoch.current++;
           setPending(false);
@@ -124,7 +124,7 @@ export function ShellAutomation({
         }}
       >
         Delegate shell automation
-      </Chip>
+      </Button>
       {!open ? null : (
         <form
           className="credential-agent-form"
@@ -133,6 +133,8 @@ export function ShellAutomation({
             event.preventDefault();
             if (pending || !ready || !currentMayMint()) return;
             const data = new FormData(event.currentTarget);
+            const expiryDate = String(data.get("expiresDate") ?? "");
+            const expiryTime = String(data.get("expiresTime") ?? "");
             const target =
               mode === "workspace"
                 ? MANIFOLD_ROOT_URI
@@ -148,7 +150,7 @@ export function ShellAutomation({
                 },
               ],
               ...(mode === "composition" ? { containerId: compositionId } : {}),
-              expiresAt: new Date(String(data.get("expires") ?? "")).getTime(),
+              expiresAt: new Date(`${expiryDate}T${expiryTime}`).getTime(),
             });
             if (!request.success) {
               setFailure("Choose a valid finite credential expiry and exact placement/account.");
@@ -241,10 +243,19 @@ export function ShellAutomation({
               </select>
             </label>
             <label>
-              Credential expires
+              Credential expiry date
               <input
-                name="expires"
-                type="datetime-local"
+                name="expiresDate"
+                type="date"
+                required
+                disabled={pending || token !== null}
+              />
+            </label>
+            <label>
+              Credential expiry time
+              <input
+                name="expiresTime"
+                type="time"
                 required
                 disabled={pending || token !== null}
               />
