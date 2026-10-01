@@ -13,6 +13,7 @@ import {
   JOB_OWNER_PROTOCOL_VERSION,
   type AuthoredCap,
   type ActionPreparationCtx,
+  type AskableCap,
   type JobCommand,
   type JobOwner,
   type MachineHalf,
@@ -330,10 +331,8 @@ async function registeredFixture(pausePreparation: boolean) {
     }),
   };
   type Input = z.infer<typeof input>;
-  const preparationCaps: AuthoredCap[] = ["tokens:mint", "plugins:manage"];
-  const preparation = {
-    caps: preparationCaps,
-    prepare: async (_ctx: ActionPreparationCtx, raw: unknown) => {
+  const preparationCaps: AskableCap[] = ["tokens:mint", "plugins:manage"];
+  const makePreparer = () => async (_ctx: ActionPreparationCtx, raw: unknown) => {
       const args = input.parse(raw);
       if (pausePreparation) {
         entered.resolve();
@@ -346,10 +345,9 @@ async function registeredFixture(pausePreparation: boolean) {
           ? [{ cap: "tokens:mint" as const, node: "manifold://" as const, reach: "node" as const }]
           : [],
       };
-    },
   };
-  const handlers = {
-    prepared: async (ctx: ActionCtx, args: Input) => {
+  const preparation = { caps: preparationCaps, prepare: makePreparer() };
+  const makeHandler = () => async (ctx: ActionCtx, args: Input) => {
       await ctx.storage.set("recorded", args.scheduleId);
       await ctx.jobs.schedule({
         jobId: `template-${args.scheduleId}`,
@@ -366,8 +364,8 @@ async function registeredFixture(pausePreparation: boolean) {
         offlinePolicy: "coalesce-one",
       });
       return {};
-    },
   };
+  const handlers = { prepared: makeHandler() };
   const capabilities: AuthoredCap[] = [
     "machines:run", "machines:read", "tokens:mint", "plugins:manage",
   ];
@@ -404,16 +402,12 @@ async function registeredFixture(pausePreparation: boolean) {
         case "parser":
           action.input = scheduleInput();
           break;
-        case "handler": {
-          const previous = handlers.prepared;
-          handlers.prepared = async (ctx, args) => previous(ctx, args);
+        case "handler":
+          handlers.prepared = makeHandler();
           break;
-        }
-        case "preparer": {
-          const previous = preparation.prepare;
-          preparation.prepare = async (ctx, args) => previous(ctx, args);
+        case "preparer":
+          preparation.prepare = makePreparer();
           break;
-        }
         case "preparer ceiling":
           preparationCaps.pop();
           break;
