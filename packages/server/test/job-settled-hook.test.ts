@@ -290,6 +290,48 @@ test("a settled job wakes the half that started it, with its node and its own au
   }
 });
 
+test("an owner refusal retains its reason in the durable result and authorized settled wake", async () => {
+  const arrived = Promise.withResolvers<SettledJob>();
+  const f = await fixture([
+    def("sample.alpha", (_ctx, job) => {
+      arrived.resolve(job);
+    }),
+  ]);
+  try {
+    const jobId = "refused-start";
+    const job = f.service.execute(f.root, "sample.alpha", "trace-1", {
+      jobId,
+      machineId: f.machineId,
+      operationId: "sample.alpha.run",
+      input: { value: "safe" },
+      outputs: [],
+    });
+    expect(job.state).toBe("start-committed");
+    f.service.event(f.channel, { type: "refusal", jobId, reason: "journal_capacity" });
+    const settled = await arrived.promise;
+    expect(settled).toMatchObject({ jobId, state: "interrupted", reason: "journal_capacity" });
+    expect(f.service.jobs.get(jobId)?.result).toMatchObject({
+      state: "interrupted",
+      reason: "journal_capacity",
+    });
+    const node = {
+      kind: "job" as const,
+      machineId: f.machineId,
+      operationId: "sample.alpha.run",
+      jobId,
+    };
+    const journal = f.service.journal(f.root, node, 0, 128, "sample.alpha");
+    expect(journal.events.at(-1)?.event).toMatchObject({
+      type: "result",
+      result: { state: "interrupted", reason: "journal_capacity" },
+    });
+    f.service.event(f.channel, { type: "refusal", jobId, reason: "different_late_refusal" });
+    expect(f.service.jobs.get(jobId)?.result?.reason).toBe("journal_capacity");
+  } finally {
+    f.store.close();
+  }
+});
+
 test("a half that declared no hook is left alone, and the settle after it still lands", async () => {
   const woken: { plugin: string; jobId: string }[] = [];
   const arrived = Promise.withResolvers<void>();

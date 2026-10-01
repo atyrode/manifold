@@ -6203,7 +6203,7 @@ export class JobService {
       return;
     if (event.type === "refusal") {
       if (job.state === "queued") this.jobs.state(job.request.jobId, "refused");
-      else this.interrupt(job, "owner_refusal_unknown");
+      else this.interrupt(job, event.reason || "owner_refusal_unknown");
       return;
     }
     const fact = event.type === "result" ? event.result : event;
