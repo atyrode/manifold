@@ -287,7 +287,7 @@ async function nativeProfile(): Promise<void> {
         "--no-update-lock-file",
         "--max-jobs",
         "1",
-        `${flake}#${state.check}`,
+        `${derivation}^out`,
       ],
       NATIVE_PROFILE_TIMEOUT_MS,
       repoRoot,
