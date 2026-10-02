@@ -33,8 +33,8 @@ interface PendingEnrollment {
   state: "offered" | "consuming" | "authorizing";
   timer: Timer;
   authorizationTimer?: Timer;
-  authorize?: (reply: Pick<Authorized, "allowed" | "reason">) => void;
-  plaintext?: Uint8Array;
+  authorize?: ((reply: Pick<Authorized, "allowed" | "reason">) => void) | undefined;
+  plaintext?: Uint8Array | undefined;
   terminalReason?: ServiceCredentialEnrollmentRefusal;
 }
 interface EnrollmentTombstone {
@@ -151,8 +151,7 @@ export class JobCredentialEnrollment {
       if (!ownerOnly) throw new ServiceCredentialEnrollmentError("credential_unauthorized");
       if (this.closed || !this.options.active())
         throw new ServiceCredentialEnrollmentError("credential_owner_offline");
-      if (!this.authority)
-        throw new ServiceCredentialEnrollmentError("credential_owner_unproved");
+      if (!this.authority) throw new ServiceCredentialEnrollmentError("credential_owner_unproved");
       if (
         command.machineId !== this.options.machineId ||
         command.serverEpoch !== this.authority.serverEpoch ||
@@ -350,11 +349,7 @@ export class JobCredentialEnrollment {
 
   authorized(command: Authorized, ownerOnly = true): void {
     const pending = this.pending.get(command.requestId);
-    if (
-      ownerOnly &&
-      pending?.state === "authorizing" &&
-      pending.context.nonce === command.nonce
-    ) {
+    if (ownerOnly && pending?.state === "authorizing" && pending.context.nonce === command.nonce) {
       const resolve = pending.authorize;
       pending.authorize = undefined;
       resolve?.({ allowed: command.allowed, reason: command.reason });
@@ -366,10 +361,7 @@ export class JobCredentialEnrollment {
       if (!ownerOnly) throw new ServiceCredentialEnrollmentError("credential_unauthorized");
       const pending = this.pending.get(command.requestId);
       const recent = this.recent.get(command.requestId);
-      if (
-        command.nonce !== null &&
-        command.nonce !== (pending?.context.nonce ?? recent?.nonce)
-      )
+      if (command.nonce !== null && command.nonce !== (pending?.context.nonce ?? recent?.nonce))
         throw new ServiceCredentialEnrollmentError("credential_enrollment_unknown");
       if (recent?.published) {
         this.send({

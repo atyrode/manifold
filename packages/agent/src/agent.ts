@@ -508,7 +508,10 @@ export class Agent {
       });
   }
 
-  private forwardCredentialEnrollment(socket: WebSocket, command: CredentialEnrollmentCommand): void {
+  private forwardCredentialEnrollment(
+    socket: WebSocket,
+    command: CredentialEnrollmentCommand,
+  ): void {
     const owner = this.jobOwnerLink;
     if (!owner) {
       this.refuseCredentialEnrollment(socket, command, "credential_owner_offline");
@@ -572,8 +575,10 @@ export class Agent {
         this.helloSent !== socket ||
         socket.readyState !== WebSocket.OPEN
       ) {
-        if (event.type === "credential_enrollment_authorize" ||
-            (event.type === "credential_enrollment_prepared" && event.reply.kind === "prepared")) {
+        if (
+          event.type === "credential_enrollment_authorize" ||
+          (event.type === "credential_enrollment_prepared" && event.reply.kind === "prepared")
+        ) {
           try {
             this.jobOwnerLink?.send({
               type: "credential_enrollment_cancel",
@@ -597,7 +602,10 @@ export class Agent {
           this.abortCredentialEnrollments(socket);
           return;
         }
-      } else if (event.type !== "credential_enrollment_cancelled" || event.reply.kind !== "refused") {
+      } else if (
+        event.type !== "credential_enrollment_cancelled" ||
+        event.reply.kind !== "refused"
+      ) {
         this.credentialEnrollments.delete(event.requestId);
       }
       if (socket.bufferedAmount > MAX_SOCKET_BUFFERED_AMOUNT_BYTES) {

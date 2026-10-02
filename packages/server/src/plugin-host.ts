@@ -1226,146 +1226,146 @@ function engineBuiltinDefs(
   signal: AbortSignal,
 ): readonly ServerPluginDef[] {
   return [
-  jobDoors,
-  createServiceDoors(service, signal),
-  machineDoors,
-  {
-    manifest: enginePluginsManifest,
-    actions: enginePluginsActions,
-    handlers: {
-      async setEnabled(
-        ctx: EngineDoorCtx,
-        args: { id: string; enabled: boolean },
-      ): Promise<ActionRefused | Record<string, never>> {
-        const outcome = await ctx.host.setEnabled(args.id, args.enabled, ctx.principal.id);
-        if ("refused" in outcome) return outcome;
-        return {};
-      },
-      async purge(
-        ctx: EngineDoorCtx,
-        args: { id: string },
-      ): Promise<ActionRefused | PluginPurgeResult> {
-        return ctx.host.purge(args.id, ctx.principal.id);
-      },
-      /**
-       * The two doors onto a stranger's code (ADR 0016 §8 stage 2). Thin on purpose: every
-       * verdict — the artifact, the namespace, the grant, the assembly — is the host's, because
-       * the host owns the roster the install changes, and a door that decided any of it here
-       * would be a second reading of the same rules.
-       */
-      async install(
-        ctx: EngineDoorCtx,
-        args: PluginInstallRequest,
-      ): Promise<ActionRefused | PluginInstallResult> {
-        return ctx.host.install(args, ctx.principal.id, ctx.credential);
-      },
-      /**
-       * The reviewed update pair (#238). As thin as the install pair: the coordinator owns the
-       * review and its digest, the host owns the one atomic replacement. Authority is the
-       * caller's own and is asked again live, never frozen at dispatch.
-       */
-      async reviewUpdate(
-        ctx: EngineDoorCtx,
-        args: { id: string },
-      ): Promise<ActionRefused | PluginUpdateReviewResult> {
-        return ctx.host.reviewUpdate(args.id, {
-          principalId: ctx.principal.id,
-          credential: ctx.credential,
-          assertCurrent: () => {
-            if (!ctx.auth.isRoot) throw new Error(UPDATE_AUTHORITY_REFUSAL);
-          },
-        });
-      },
-      async applyUpdate(
-        ctx: EngineDoorCtx,
-        args: PluginUpdateApplyRequest,
-      ): Promise<ActionRefused | PluginUpdateApplyResult> {
-        return ctx.host.applyUpdate(args, {
-          principalId: ctx.principal.id,
-          credential: ctx.credential,
-          assertCurrent: () => {
-            if (!ctx.auth.isRoot) throw new Error(UPDATE_AUTHORITY_REFUSAL);
-          },
-        });
-      },
-      async listInstalled(ctx: EngineDoorCtx): Promise<InstalledPluginStates> {
-        return ctx.host.listInstalled();
-      },
-      async exportInstalled(ctx: EngineDoorCtx): Promise<InstalledPluginsSnapshot> {
-        return ctx.host.exportInstalled();
-      },
-      async uninstall(
-        ctx: EngineDoorCtx,
-        args: { id: string; purge?: boolean },
-      ): Promise<ActionRefused | Record<string, never>> {
-        const outcome = await ctx.host.uninstall(args.id, ctx.principal.id, args.purge === true);
-        if ("refused" in outcome) return outcome;
-        return {};
-      },
-      /**
-       * The two doors onto code written ON THIS INSTANCE (ADR 0025 §4). As thin as the install
-       * pair, for the same reason: the switch, the directory, the build and the row are the
-       * host's verdicts, and the door only names who asked.
-       */
-      async setDeveloperMode(
-        ctx: EngineDoorCtx,
-        args: { on: boolean },
-      ): Promise<ActionRefused | Record<string, never>> {
-        const outcome = await ctx.host.setDeveloperMode(args.on, ctx.principal.id);
-        if ("refused" in outcome) return outcome;
-        return {};
-      },
-      async author(
-        ctx: EngineDoorCtx,
-        args: PluginAuthorRequest,
-      ): Promise<ActionRefused | PluginAuthorResult> {
-        return ctx.host.author(args, ctx.principal.id, ctx.credential);
-      },
-      /** The single settings door: declaration, authority, value, then durable write. */
-      async setSetting(
-        ctx: EngineDoorCtx,
-        args: { plugin: string; setting: string; value: boolean | string | null },
-      ): Promise<ActionRefused | Record<string, never>> {
-        const refusal = settingWriteRefusal(ctx.host.roster(), args.plugin, args.setting);
-        if (refusal !== null) return { refused: refusal };
-        const ref = settingRefId(args.plugin, args.setting);
-        const setting = ctx.host
-          .roster()
-          .find((entry) => entry.manifest.id === args.plugin)!
-          .manifest.contributes.settings!.find((setting) => setting.id === args.setting)!;
-        if (setting.scope === "workspace" && !ctx.auth.allows("plugins:manage"))
-          return { refused: "plugins:manage capability required" };
-        if (
-          args.value !== null &&
-          !(setting.kind === "boolean"
-            ? typeof args.value === "boolean"
-            : setting.values.some((value) => value.id === args.value))
-        )
-          return { refused: `invalid_setting_value: ${ref}` };
-        if (setting.scope === "workspace") {
-          if ((ctx.store.workspacePluginSetting(ref) ?? null) === args.value) return {};
-          ctx.store.setWorkspacePluginSetting(ref, args.value);
-          ctx.emit(
-            { kind: "plugin", pluginId: enginePluginsManifest.id },
-            "plugin_setting_changed",
-            { plugin: args.plugin, setting: args.setting },
-          );
+    jobDoors,
+    createServiceDoors(service, signal),
+    machineDoors,
+    {
+      manifest: enginePluginsManifest,
+      actions: enginePluginsActions,
+      handlers: {
+        async setEnabled(
+          ctx: EngineDoorCtx,
+          args: { id: string; enabled: boolean },
+        ): Promise<ActionRefused | Record<string, never>> {
+          const outcome = await ctx.host.setEnabled(args.id, args.enabled, ctx.principal.id);
+          if ("refused" in outcome) return outcome;
           return {};
-        }
-        const current = ctx.store.pluginSettings(ctx.principal.id);
-        const next = { ...current };
-        if (args.value === null) {
-          if (current[ref] === undefined) return {};
-          delete next[ref];
-        } else {
-          if (current[ref] === args.value) return {};
-          next[ref] = args.value;
-        }
-        ctx.store.setPluginSettings(ctx.principal.id, next);
-        return {};
+        },
+        async purge(
+          ctx: EngineDoorCtx,
+          args: { id: string },
+        ): Promise<ActionRefused | PluginPurgeResult> {
+          return ctx.host.purge(args.id, ctx.principal.id);
+        },
+        /**
+         * The two doors onto a stranger's code (ADR 0016 §8 stage 2). Thin on purpose: every
+         * verdict — the artifact, the namespace, the grant, the assembly — is the host's, because
+         * the host owns the roster the install changes, and a door that decided any of it here
+         * would be a second reading of the same rules.
+         */
+        async install(
+          ctx: EngineDoorCtx,
+          args: PluginInstallRequest,
+        ): Promise<ActionRefused | PluginInstallResult> {
+          return ctx.host.install(args, ctx.principal.id, ctx.credential);
+        },
+        /**
+         * The reviewed update pair (#238). As thin as the install pair: the coordinator owns the
+         * review and its digest, the host owns the one atomic replacement. Authority is the
+         * caller's own and is asked again live, never frozen at dispatch.
+         */
+        async reviewUpdate(
+          ctx: EngineDoorCtx,
+          args: { id: string },
+        ): Promise<ActionRefused | PluginUpdateReviewResult> {
+          return ctx.host.reviewUpdate(args.id, {
+            principalId: ctx.principal.id,
+            credential: ctx.credential,
+            assertCurrent: () => {
+              if (!ctx.auth.isRoot) throw new Error(UPDATE_AUTHORITY_REFUSAL);
+            },
+          });
+        },
+        async applyUpdate(
+          ctx: EngineDoorCtx,
+          args: PluginUpdateApplyRequest,
+        ): Promise<ActionRefused | PluginUpdateApplyResult> {
+          return ctx.host.applyUpdate(args, {
+            principalId: ctx.principal.id,
+            credential: ctx.credential,
+            assertCurrent: () => {
+              if (!ctx.auth.isRoot) throw new Error(UPDATE_AUTHORITY_REFUSAL);
+            },
+          });
+        },
+        async listInstalled(ctx: EngineDoorCtx): Promise<InstalledPluginStates> {
+          return ctx.host.listInstalled();
+        },
+        async exportInstalled(ctx: EngineDoorCtx): Promise<InstalledPluginsSnapshot> {
+          return ctx.host.exportInstalled();
+        },
+        async uninstall(
+          ctx: EngineDoorCtx,
+          args: { id: string; purge?: boolean },
+        ): Promise<ActionRefused | Record<string, never>> {
+          const outcome = await ctx.host.uninstall(args.id, ctx.principal.id, args.purge === true);
+          if ("refused" in outcome) return outcome;
+          return {};
+        },
+        /**
+         * The two doors onto code written ON THIS INSTANCE (ADR 0025 §4). As thin as the install
+         * pair, for the same reason: the switch, the directory, the build and the row are the
+         * host's verdicts, and the door only names who asked.
+         */
+        async setDeveloperMode(
+          ctx: EngineDoorCtx,
+          args: { on: boolean },
+        ): Promise<ActionRefused | Record<string, never>> {
+          const outcome = await ctx.host.setDeveloperMode(args.on, ctx.principal.id);
+          if ("refused" in outcome) return outcome;
+          return {};
+        },
+        async author(
+          ctx: EngineDoorCtx,
+          args: PluginAuthorRequest,
+        ): Promise<ActionRefused | PluginAuthorResult> {
+          return ctx.host.author(args, ctx.principal.id, ctx.credential);
+        },
+        /** The single settings door: declaration, authority, value, then durable write. */
+        async setSetting(
+          ctx: EngineDoorCtx,
+          args: { plugin: string; setting: string; value: boolean | string | null },
+        ): Promise<ActionRefused | Record<string, never>> {
+          const refusal = settingWriteRefusal(ctx.host.roster(), args.plugin, args.setting);
+          if (refusal !== null) return { refused: refusal };
+          const ref = settingRefId(args.plugin, args.setting);
+          const setting = ctx.host
+            .roster()
+            .find((entry) => entry.manifest.id === args.plugin)!
+            .manifest.contributes.settings!.find((setting) => setting.id === args.setting)!;
+          if (setting.scope === "workspace" && !ctx.auth.allows("plugins:manage"))
+            return { refused: "plugins:manage capability required" };
+          if (
+            args.value !== null &&
+            !(setting.kind === "boolean"
+              ? typeof args.value === "boolean"
+              : setting.values.some((value) => value.id === args.value))
+          )
+            return { refused: `invalid_setting_value: ${ref}` };
+          if (setting.scope === "workspace") {
+            if ((ctx.store.workspacePluginSetting(ref) ?? null) === args.value) return {};
+            ctx.store.setWorkspacePluginSetting(ref, args.value);
+            ctx.emit(
+              { kind: "plugin", pluginId: enginePluginsManifest.id },
+              "plugin_setting_changed",
+              { plugin: args.plugin, setting: args.setting },
+            );
+            return {};
+          }
+          const current = ctx.store.pluginSettings(ctx.principal.id);
+          const next = { ...current };
+          if (args.value === null) {
+            if (current[ref] === undefined) return {};
+            delete next[ref];
+          } else {
+            if (current[ref] === args.value) return {};
+            next[ref] = args.value;
+          }
+          ctx.store.setPluginSettings(ctx.principal.id, next);
+          return {};
+        },
       },
     },
-  },
   ];
 }
 

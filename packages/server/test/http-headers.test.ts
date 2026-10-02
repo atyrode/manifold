@@ -93,7 +93,10 @@ test("private credential document and its independent assets reject aliases and 
     writeFileSync(join(webDist, "index.html"), shell);
     writeFileSync(join(webDist, "credential-entry.html"), entry);
     writeFileSync(join(webDist, "nested", "credential-entry.html"), entry);
-    writeFileSync(join(webDist, "credential-entry-assets", "entry.js"), "export const privateEntry = true;");
+    writeFileSync(
+      join(webDist, "credential-entry-assets", "entry.js"),
+      "export const privateEntry = true;",
+    );
     writeFileSync(join(webDist, "credential-entry-assets", "entry.css"), "body { color: white; }");
     writeFileSync(join(webDist, "credential-entry-assets", "credential-entry.html"), entry);
     server = await startServer({

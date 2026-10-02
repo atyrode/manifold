@@ -1,5 +1,13 @@
 import { describe, expect, spyOn, test, vi } from "bun:test";
-import { createHash, createPublicKey, generateKeyPairSync, randomBytes, randomUUID, sign, verify } from "node:crypto";
+import {
+  createHash,
+  createPublicKey,
+  generateKeyPairSync,
+  randomBytes,
+  randomUUID,
+  sign,
+  verify,
+} from "node:crypto";
 import { gzipSync } from "node:zlib";
 import { createConnection } from "node:net";
 import {
@@ -189,7 +197,8 @@ test.skipIf(!realBackend)(
           replace,
         });
         const event = events.findLast(
-          (event) => event.type === "credential_enrollment_prepared" && event.requestId === requestId,
+          (event) =>
+            event.type === "credential_enrollment_prepared" && event.requestId === requestId,
         );
         if (event?.type !== "credential_enrollment_prepared" || event.reply.kind !== "prepared")
           throw new Error("native_entry_prepare_refused");
@@ -261,32 +270,62 @@ test.skipIf(!realBackend)(
         owner: proof.owner,
       };
       expect(
-        verify(null, Buffer.from(canonicalJobJson(proofBody)), createPublicKey(initialIdentity.publicKey), Buffer.from(proof.signature, "base64")),
+        verify(
+          null,
+          Buffer.from(canonicalJobJson(proofBody)),
+          createPublicKey(initialIdentity.publicKey),
+          Buffer.from(proof.signature, "base64"),
+        ),
       ).toBe(true);
       expect(
-        verify(null, Buffer.from(canonicalJobJson({
-          ...proofBody,
-          owner: { ...proof.owner, credentialEnrollment: { ...proof.owner.credentialEnrollment!, keyId: "f".repeat(64) } },
-        })), createPublicKey(initialIdentity.publicKey), Buffer.from(proof.signature, "base64")),
+        verify(
+          null,
+          Buffer.from(
+            canonicalJobJson({
+              ...proofBody,
+              owner: {
+                ...proof.owner,
+                credentialEnrollment: {
+                  ...proof.owner.credentialEnrollment!,
+                  keyId: "f".repeat(64),
+                },
+              },
+            }),
+          ),
+          createPublicKey(initialIdentity.publicKey),
+          Buffer.from(proof.signature, "base64"),
+        ),
       ).toBe(false);
       await configure();
       expect(owner.identity.resources!.credentialReferences).toEqual([
         { ref: "fixture-key", origins: [server.url.origin], available: false },
       ]);
       const initial = await prepare(false);
-      await owner.execute({ type: "credential_enrollment_commit", envelope: await seal(initial, "synthetic-native-one") });
-      expect(events.findLast((event) => event.type === "credential_enrollment_result")).toMatchObject({
+      await owner.execute({
+        type: "credential_enrollment_commit",
+        envelope: await seal(initial, "synthetic-native-one"),
+      });
+      expect(
+        events.findLast((event) => event.type === "credential_enrollment_result"),
+      ).toMatchObject({
         reply: { kind: "stored", replaced: false, available: true },
       });
       expect(owner.identity.resources!.services[policy.serviceId]).toBe(jobDigest(policy));
       await read();
       const replacement = await prepare(true);
-      await owner.execute({ type: "credential_enrollment_commit", envelope: await seal(replacement, "synthetic-native-two") });
-      expect(events.findLast((event) => event.type === "credential_enrollment_result")).toMatchObject({
+      await owner.execute({
+        type: "credential_enrollment_commit",
+        envelope: await seal(replacement, "synthetic-native-two"),
+      });
+      expect(
+        events.findLast((event) => event.type === "credential_enrollment_result"),
+      ).toMatchObject({
         reply: { kind: "stored", replaced: true },
       });
       await read();
-      expect(upstream).toEqual(["synthetic-native-one", "synthetic-native-two"].map((value) => "Bearer " + value));
+      expect(upstream).toEqual(
+        ["synthetic-native-one", "synthetic-native-two"].map((value) => "Bearer " + value),
+      );
       expect(owner.identity.credentialEnrollment).toEqual(initialIdentity.credentialEnrollment);
 
       // Real final-authorize races: cancel, current full-proof replacement and seat loss.
@@ -300,7 +339,11 @@ test.skipIf(!realBackend)(
         });
         const authorization = await final.promise;
         if (fence === "cancel")
-          await owner.execute({ type: "credential_enrollment_cancel", requestId: authorization.requestId, nonce: authorization.nonce });
+          await owner.execute({
+            type: "credential_enrollment_cancel",
+            requestId: authorization.requestId,
+            nonce: authorization.nonce,
+          });
         if (fence === "proof") await prove();
         if (fence === "detach") detach();
         await owner.execute({
@@ -312,7 +355,10 @@ test.skipIf(!realBackend)(
         });
         await commit;
         holdAuthorization = undefined;
-        if (fence === "detach") { detach = attach(); await prove(); }
+        if (fence === "detach") {
+          detach = attach();
+          await prove();
+        }
         expect(readFileSync(join(root, "credentials", "key"), "utf8")).toBe("synthetic-native-two");
       }
       const oldOffer = await prepare(true);
@@ -326,25 +372,43 @@ test.skipIf(!realBackend)(
       expect(owner.identity.ownerId).toBe(initialIdentity.ownerId);
       expect(owner.identity.publicKey).toBe(initialIdentity.publicKey);
       expect(owner.identity.generation).toBe(initialIdentity.generation + 1);
-      expect(owner.identity.credentialEnrollment!.keyId).not.toBe(initialIdentity.credentialEnrollment!.keyId);
+      expect(owner.identity.credentialEnrollment!.keyId).not.toBe(
+        initialIdentity.credentialEnrollment!.keyId,
+      );
       owner.setDraining(false);
       detach = attach();
       await prove();
       await configure();
       await owner.execute({ type: "credential_enrollment_commit", envelope: oldEnvelope });
-      expect(events.findLast((event) => event.type === "credential_enrollment_result")).toMatchObject({
+      expect(
+        events.findLast((event) => event.type === "credential_enrollment_result"),
+      ).toMatchObject({
         reply: { kind: "refused", reason: "credential_owner_changed" },
       });
       await read();
       expect(upstream.at(-1)).toBe("Bearer " + "synthetic-native-two");
       const observed = JSON.stringify(events);
-      for (const value of ["synthetic-native-one", "synthetic-native-two", "synthetic-forbidden-", root, oldEnvelope.ciphertext])
+      for (const value of [
+        "synthetic-native-one",
+        "synthetic-native-two",
+        "synthetic-forbidden-",
+        root,
+        oldEnvelope.ciphertext,
+      ])
         expect(observed).not.toContain(value);
       for (const name of readdirSync(join(root, "journal"))) {
         const path = join(root, "journal", name);
         if (!lstatSync(path).isFile()) continue;
         const journal = readFileSync(path, "utf8");
-        for (const value of ["synthetic-native-one", "synthetic-native-two", "synthetic-forbidden-", oldOffer.context.nonce, oldOffer.context.requestId, oldEnvelope.ciphertext, join(root, "credentials")])
+        for (const value of [
+          "synthetic-native-one",
+          "synthetic-native-two",
+          "synthetic-forbidden-",
+          oldOffer.context.nonce,
+          oldOffer.context.requestId,
+          oldEnvelope.ciphertext,
+          join(root, "credentials"),
+        ])
           expect(journal).not.toContain(value);
       }
     } finally {

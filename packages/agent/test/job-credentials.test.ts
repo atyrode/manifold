@@ -41,7 +41,13 @@ describe.skipIf(process.platform !== "linux")("declared credential custody", () 
       // Changing the ambient pathname never redirects the retained directory capability.
       renameSync(path, join(root, "held-source"));
       mkdirSync(path, { mode: 0o700 });
-      const initial = sources.publish("key", origin, false, missing, Buffer.from("synthetic-one\n"));
+      const initial = sources.publish(
+        "key",
+        origin,
+        false,
+        missing,
+        Buffer.from("synthetic-one\n"),
+      );
       expect(initial).toMatchObject({ replaced: false, durable: true });
       expect(existsSync(join(path, "key"))).toBe(false);
       expect(readFileSync(join(root, "held-source", "key"), "utf8")).toBe("synthetic-one\n");
@@ -50,7 +56,13 @@ describe.skipIf(process.platform !== "linux")("declared credential custody", () 
       expect(() => sources.prepare("key", origin, false)).toThrow("credential_already_held");
       const oldFd = sources.currentDescriptor("key")!;
       const revision = sources.prepare("key", origin, true);
-      const replacement = sources.publish("key", origin, true, revision, Buffer.from("synthetic-two"));
+      const replacement = sources.publish(
+        "key",
+        origin,
+        true,
+        revision,
+        Buffer.from("synthetic-two"),
+      );
       expect(replacement).toMatchObject({ replaced: true, durable: true });
       expect(replacement.sourceRevision).not.toBe(initial.sourceRevision);
       expect(() => fstatSync(oldFd)).toThrow();
@@ -74,9 +86,9 @@ describe.skipIf(process.platform !== "linux")("declared credential custody", () 
     try {
       const revision = sources.prepare("key", origin, false);
       writeFileSync(join(root, "key"), "another-writer", { mode: 0o600 });
-      expect(() => sources.publish("key", origin, false, revision, Buffer.from("new-value"))).toThrow(
-        "credential_source_changed",
-      );
+      expect(() =>
+        sources.publish("key", origin, false, revision, Buffer.from("new-value")),
+      ).toThrow("credential_source_changed");
       expect(readFileSync(join(root, "key"), "utf8")).toBe("another-writer");
       expect(sources.currentDescriptor("key")).toBeUndefined();
       expect(sources.references()).toEqual([{ ref: "key", origins: [origin], available: false }]);
@@ -108,23 +120,26 @@ describe.skipIf(process.platform !== "linux")("declared credential custody", () 
     }
   });
 
-  test.each([0o755, 0o500])("readable mode %o parents never gain an enrollment fallback", (mode) => {
-    const root = mkdtempSync(join(tmpdir(), "credential-readonly-parent-"));
-    writeFileSync(join(root, "key"), "private-current", { mode: 0o600 });
-    chmodSync(root, mode);
-    const sources = new HeldServiceCredentialRegistry();
-    sources.declare("key", HeldDirectory.openAbsolute(root), "key", [origin]);
-    try {
-      expect(sources.references()).toEqual([{ ref: "key", origins: [origin], available: true }]);
-      expect(() => sources.prepare("key", origin, true)).toThrow("credential_source_read_only");
-      expect(readFileSync(join(root, "key"), "utf8")).toBe("private-current");
-      expect(readdirSync(root)).toEqual(["key"]);
-    } finally {
-      sources.close();
-      chmodSync(root, 0o700);
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
+  test.each([0o755, 0o500])(
+    "readable mode %o parents never gain an enrollment fallback",
+    (mode) => {
+      const root = mkdtempSync(join(tmpdir(), "credential-readonly-parent-"));
+      writeFileSync(join(root, "key"), "private-current", { mode: 0o600 });
+      chmodSync(root, mode);
+      const sources = new HeldServiceCredentialRegistry();
+      sources.declare("key", HeldDirectory.openAbsolute(root), "key", [origin]);
+      try {
+        expect(sources.references()).toEqual([{ ref: "key", origins: [origin], available: true }]);
+        expect(() => sources.prepare("key", origin, true)).toThrow("credential_source_read_only");
+        expect(readFileSync(join(root, "key"), "utf8")).toBe("private-current");
+        expect(readdirSync(root)).toEqual(["key"]);
+      } finally {
+        sources.close();
+        chmodSync(root, 0o700);
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   test("a declared read-only file, unknown ref and unadvertised origin are closed", () => {
     const root = mkdtempSync(join(tmpdir(), "credential-closed-target-"));
@@ -133,7 +148,9 @@ describe.skipIf(process.platform !== "linux")("declared credential custody", () 
     sources.declare("key", HeldDirectory.openAbsolute(root, { private: true }), "key", [origin]);
     try {
       expect(() => sources.prepare("key", origin, true)).toThrow("credential_source_read_only");
-      expect(() => sources.prepare("absent", origin, false)).toThrow("credential_reference_unknown");
+      expect(() => sources.prepare("absent", origin, false)).toThrow(
+        "credential_reference_unknown",
+      );
       expect(() => sources.prepare("key", "https://other.invalid", true)).toThrow(
         "credential_origin_disallowed",
       );

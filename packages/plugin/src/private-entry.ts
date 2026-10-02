@@ -1,11 +1,12 @@
 export type Bypass =
-  | { readonly phase: "checking" | "unsupported" }
+  | { readonly phase: "checking" }
+  | { readonly phase: "unsupported" }
   | {
-    readonly phase: "ready";
-    readonly hasWorker: boolean;
-    isCurrent(): boolean;
-    dispose(): void;
-  };
+      readonly phase: "ready";
+      readonly hasWorker: boolean;
+      isCurrent(): boolean;
+      dispose(): void;
+    };
 
 /** Capability negotiation contains no identity, target, envelope or typed credential data. */
 export async function privateCredentialEntryBypass(onChanged: () => void): Promise<Bypass> {
@@ -15,7 +16,9 @@ export async function privateCredentialEntryBypass(onChanged: () => void): Promi
       phase: "ready",
       hasWorker: false,
       isCurrent: () => !disposed && !("serviceWorker" in navigator),
-      dispose: () => { disposed = true; },
+      dispose: () => {
+        disposed = true;
+      },
     };
   }
   const container = navigator.serviceWorker;
@@ -29,12 +32,19 @@ export async function privateCredentialEntryBypass(onChanged: () => void): Promi
   let ready = false;
   const states = new Map<ServiceWorker, ServiceWorkerState>();
   const isCurrent = (): boolean => {
-    if (disposed || navigator.serviceWorker !== container || container.controller !== controller ||
+    if (
+      disposed ||
+      navigator.serviceWorker !== container ||
+      container.controller !== controller ||
       (controller !== null && controller.state !== "activated") ||
-      (registration !== undefined && (
-        registration.active !== active || active === null || active.state !== "activated" ||
-        registration.installing !== installing || registration.waiting !== waiting
-      ))) return false;
+      (registration !== undefined &&
+        (registration.active !== active ||
+          active === null ||
+          active.state !== "activated" ||
+          registration.installing !== installing ||
+          registration.waiting !== waiting))
+    )
+      return false;
     for (const [worker, state] of states) {
       if (worker.state !== state) return false;
     }
@@ -70,10 +80,18 @@ export async function privateCredentialEntryBypass(onChanged: () => void): Promi
     ]);
     if (!controllerSupported || !activeSupported || !isCurrent()) return { phase: "unsupported" };
     // Recheck scope selection as well as the live incarnation after asynchronous replies.
-    if (await container.getRegistration(CREDENTIAL_ENTRY_DOCUMENT_PATH) !== registration ||
-      !isCurrent()) return { phase: "unsupported" };
+    if (
+      (await container.getRegistration(CREDENTIAL_ENTRY_DOCUMENT_PATH)) !== registration ||
+      !isCurrent()
+    )
+      return { phase: "unsupported" };
     ready = true;
-    return { phase: "ready", hasWorker: controller !== null || active !== null, isCurrent, dispose };
+    return {
+      phase: "ready",
+      hasWorker: controller !== null || active !== null,
+      isCurrent,
+      dispose,
+    };
   } catch {
     return { phase: "unsupported" };
   } finally {
@@ -105,14 +123,20 @@ function acknowledgePrivateBypass(worker: ServiceWorker, signal: AbortSignal): P
     }
     channel.port1.onmessage = (event: MessageEvent<unknown>) => {
       const data = event.data;
-      finish(data !== null && typeof data === "object" &&
-        Reflect.get(data, "type") === "manifold.private-credential-bypass" &&
-        Reflect.get(data, "version") === 1 && Reflect.get(data, "supported") === true);
+      finish(
+        data !== null &&
+          typeof data === "object" &&
+          Reflect.get(data, "type") === "manifold.private-credential-bypass" &&
+          Reflect.get(data, "version") === 1 &&
+          Reflect.get(data, "supported") === true,
+      );
     };
     channel.port1.onmessageerror = aborted;
     try {
       // Query only the controller/active incarnation, never a waiting worker or activation.
-      worker.postMessage({ type: "manifold.private-credential-bypass", version: 1 }, [channel.port2]);
+      worker.postMessage({ type: "manifold.private-credential-bypass", version: 1 }, [
+        channel.port2,
+      ]);
     } catch {
       finish(false);
     }

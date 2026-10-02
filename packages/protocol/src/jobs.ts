@@ -1677,4 +1677,3 @@ export const SettledJobSchema = z.strictObject({
   outputs: JobResultSchema.shape.outputs,
 });
 export type SettledJob = z.infer<typeof SettledJobSchema>;
-

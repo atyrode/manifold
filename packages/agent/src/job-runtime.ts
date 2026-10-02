@@ -198,7 +198,10 @@ export async function openConfiguredJobOwner(
         continue;
       }
       anchors[name] = held;
-      operatorAnchors[name] = { path: definition.path, source: definition.source ?? definition.path };
+      operatorAnchors[name] = {
+        path: definition.path,
+        source: definition.source ?? definition.path,
+      };
     }
     const cache = state.openChild("artifacts", { create: true });
     const outputs = JobOutputStore.open(state.openChild("outputs", { create: true }));
@@ -214,7 +217,10 @@ export async function openConfiguredJobOwner(
     const runtimeTools: Record<string, LinuxJobBind[]> = {};
     // These sources live with the retained owner. Sharing their descriptors lets
     // independent tool groups compose without relaxing target-conflict checks.
-    const runtimeSources = { directory: new Map<string, number>(), file: new Map<string, number>() };
+    const runtimeSources = {
+      directory: new Map<string, number>(),
+      file: new Map<string, number>(),
+    };
     for (const [tool, definitions] of Object.entries(config.runtimeTools)) {
       runtimeTools[tool] = definitions.map((definition) => {
         const sources = runtimeSources[definition.kind];

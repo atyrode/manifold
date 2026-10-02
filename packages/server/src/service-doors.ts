@@ -197,18 +197,18 @@ export const serviceDoorMetadata: Pick<ServerPluginDef, "manifest" | "actions"> 
             : name === "cancelCredentialEnrollment"
               ? ServiceCredentialEnrollmentCancelReplySchema
               : name === "describe"
-          ? description
-          : name === "readConfiguration"
-            ? ServiceConfigurationReadSchema
-            : name === "configureConfiguration"
-              ? ServiceConfigurationSchema
-              : name === "describeInstance" || name === "configureInstance"
-                ? InstanceServiceDescriptionSchema
-                : name === "listInstances"
-                  ? InstanceServicesDescriptionSchema
-                  : name === "readInstanceConfiguration"
-                    ? InstanceServiceConfigurationReadSchema
-                    : ServiceReplySchema,
+                ? description
+                : name === "readConfiguration"
+                  ? ServiceConfigurationReadSchema
+                  : name === "configureConfiguration"
+                    ? ServiceConfigurationSchema
+                    : name === "describeInstance" || name === "configureInstance"
+                      ? InstanceServiceDescriptionSchema
+                      : name === "listInstances"
+                        ? InstanceServicesDescriptionSchema
+                        : name === "readInstanceConfiguration"
+                          ? InstanceServiceConfigurationReadSchema
+                          : ServiceReplySchema,
     }),
   ),
 };
@@ -220,62 +220,78 @@ export function createServiceDoors(
 ): ServerPluginDef {
   return {
     ...serviceDoorMetadata,
-  handlers: {
-    describe: (ctx: ActionCtx, args: z.infer<typeof machine>) =>
-      call(() => ctx.services.describe(args)),
-    readConfiguration: (ctx: ActionCtx, args: z.infer<typeof machine>) =>
-      call(() => ctx.services.readConfiguration(args)),
-    configureConfiguration: (
-      ctx: ActionCtx,
-      args: z.infer<typeof serviceDoorSchemas.configureConfiguration>,
-    ) => call(() => ctx.services.configureConfiguration(args)),
-    read: (ctx: ActionCtx, args: z.infer<typeof ServiceReadArgsSchema>) =>
-      call(() => ctx.services.read(args)),
-    invoke: (ctx: ActionCtx, args: z.infer<typeof ServiceInvokeArgsSchema>) =>
-      call(() => ctx.services.invoke(args), args.accounting !== undefined),
-    describeInstance: (ctx: ActionCtx, args: z.infer<typeof InstanceServiceTargetSchema>) =>
-      call(() => ctx.services.describeInstance(args)),
-    listInstances: (ctx: ActionCtx, args: Record<string, never>) =>
-      call(() => ctx.services.listInstances(args)),
-    readInstanceConfiguration: (
-      ctx: ActionCtx,
-      args: z.infer<typeof InstanceServiceTargetSchema>,
-    ) => call(() => ctx.services.readInstanceConfiguration(args)),
-    configureInstance: (ctx: ActionCtx, args: z.infer<typeof ConfigureInstanceServiceArgsSchema>) =>
-      call(() => ctx.services.configureInstance(args)),
-    readInstance: (ctx: ActionCtx, args: z.infer<typeof InstanceServiceReadArgsSchema>) =>
-      call(() => ctx.services.readInstance(args)),
-    invokeInstance: (ctx: ActionCtx, args: z.infer<typeof InstanceServiceInvokeArgsSchema>) =>
-      call(() => ctx.services.invokeInstance(args), args.accounting !== undefined),
-    prepareCredentialEnrollment: (
-      ctx: ActionCtx,
-      args: z.infer<typeof ServiceCredentialEnrollmentPrepareArgsSchema>,
-    ) => {
-      const jobs = service();
-      return jobs
-        ? jobs.prepareCredentialEnrollment(
-            ctx.credential, args, String(ctx.traceId), ctx.authorityFence, signal,
-          )
-        : Promise.resolve({ kind: "refused", reason: "credential_owner_offline" });
+    handlers: {
+      describe: (ctx: ActionCtx, args: z.infer<typeof machine>) =>
+        call(() => ctx.services.describe(args)),
+      readConfiguration: (ctx: ActionCtx, args: z.infer<typeof machine>) =>
+        call(() => ctx.services.readConfiguration(args)),
+      configureConfiguration: (
+        ctx: ActionCtx,
+        args: z.infer<typeof serviceDoorSchemas.configureConfiguration>,
+      ) => call(() => ctx.services.configureConfiguration(args)),
+      read: (ctx: ActionCtx, args: z.infer<typeof ServiceReadArgsSchema>) =>
+        call(() => ctx.services.read(args)),
+      invoke: (ctx: ActionCtx, args: z.infer<typeof ServiceInvokeArgsSchema>) =>
+        call(() => ctx.services.invoke(args), args.accounting !== undefined),
+      describeInstance: (ctx: ActionCtx, args: z.infer<typeof InstanceServiceTargetSchema>) =>
+        call(() => ctx.services.describeInstance(args)),
+      listInstances: (ctx: ActionCtx, args: Record<string, never>) =>
+        call(() => ctx.services.listInstances(args)),
+      readInstanceConfiguration: (
+        ctx: ActionCtx,
+        args: z.infer<typeof InstanceServiceTargetSchema>,
+      ) => call(() => ctx.services.readInstanceConfiguration(args)),
+      configureInstance: (
+        ctx: ActionCtx,
+        args: z.infer<typeof ConfigureInstanceServiceArgsSchema>,
+      ) => call(() => ctx.services.configureInstance(args)),
+      readInstance: (ctx: ActionCtx, args: z.infer<typeof InstanceServiceReadArgsSchema>) =>
+        call(() => ctx.services.readInstance(args)),
+      invokeInstance: (ctx: ActionCtx, args: z.infer<typeof InstanceServiceInvokeArgsSchema>) =>
+        call(() => ctx.services.invokeInstance(args), args.accounting !== undefined),
+      prepareCredentialEnrollment: (
+        ctx: ActionCtx,
+        args: z.infer<typeof ServiceCredentialEnrollmentPrepareArgsSchema>,
+      ) => {
+        const jobs = service();
+        return jobs
+          ? jobs.prepareCredentialEnrollment(
+              ctx.credential,
+              args,
+              String(ctx.traceId),
+              ctx.authorityFence,
+              signal,
+            )
+          : Promise.resolve({ kind: "refused", reason: "credential_owner_offline" });
+      },
+      commitCredentialEnrollment: (
+        ctx: ActionCtx,
+        args: z.infer<typeof ServiceCredentialEnrollmentCommitArgsSchema>,
+      ) => {
+        const jobs = service();
+        return jobs
+          ? jobs.commitCredentialEnrollment(
+              ctx.credential,
+              args,
+              String(ctx.traceId),
+              ctx.authorityFence,
+            )
+          : Promise.resolve({ kind: "refused", reason: "credential_owner_offline" });
+      },
+      cancelCredentialEnrollment: (
+        ctx: ActionCtx,
+        args: z.infer<typeof ServiceCredentialEnrollmentCancelArgsSchema>,
+      ) => {
+        const jobs = service();
+        return jobs
+          ? jobs.cancelCredentialEnrollment(
+              ctx.credential,
+              args,
+              String(ctx.traceId),
+              ctx.authorityFence,
+            )
+          : Promise.resolve({ kind: "refused", reason: "credential_owner_offline" });
+      },
     },
-    commitCredentialEnrollment: (
-      ctx: ActionCtx,
-      args: z.infer<typeof ServiceCredentialEnrollmentCommitArgsSchema>,
-    ) => {
-      const jobs = service();
-      return jobs
-        ? jobs.commitCredentialEnrollment(ctx.credential, args, String(ctx.traceId), ctx.authorityFence)
-        : Promise.resolve({ kind: "refused", reason: "credential_owner_offline" });
-    },
-    cancelCredentialEnrollment: (
-      ctx: ActionCtx,
-      args: z.infer<typeof ServiceCredentialEnrollmentCancelArgsSchema>,
-    ) => {
-      const jobs = service();
-      return jobs
-        ? jobs.cancelCredentialEnrollment(ctx.credential, args, String(ctx.traceId), ctx.authorityFence)
-        : Promise.resolve({ kind: "refused", reason: "credential_owner_offline" });
-    },
-  },
   };
 }

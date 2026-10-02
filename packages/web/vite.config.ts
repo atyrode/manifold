@@ -155,36 +155,42 @@ async function buildCredentialEntry(mode: string, outDir: string, write: boolean
     base: "/",
     publicDir: false,
     logLevel: "warn",
-    plugins: [{
-      name: "manifold-credential-graph-boundary",
-      enforce: "post",
-      generateBundle: {
-        order: "post",
-        handler(_options, bundle) {
-          for (const output of Object.values(bundle)) {
-            if (
-              output.fileName !== CREDENTIAL_ENTRY_DOCUMENT_PATH.slice(1) &&
-              !output.fileName.startsWith(CREDENTIAL_ENTRY_ASSETS_PREFIX.slice(1))
-            ) {
-              throw new Error("Private credential assets must have their own URL namespace");
-            }
-            if (output.type !== "chunk") continue;
-            for (const id of Object.keys(output.modules)) {
-              const path = id.split(sep).join("/");
+    plugins: [
+      {
+        name: "manifold-credential-graph-boundary",
+        enforce: "post",
+        generateBundle: {
+          order: "post",
+          handler(_options, bundle) {
+            for (const output of Object.values(bundle)) {
               if (
-                path.includes("/packages/plugins/") ||
-                /\/packages\/web\/src\/(?:main|app|identity|api|assembly|plugin-host|shared-registry)\.(?:ts|tsx)$/.test(path) ||
-                /\/packages\/plugin\/src\/(?:hooks|index|runtime)\.ts$/.test(path) ||
-                path.includes("/vite/dist/client/") ||
-                path === "/@vite/client"
+                output.fileName !== CREDENTIAL_ENTRY_DOCUMENT_PATH.slice(1) &&
+                !output.fileName.startsWith(CREDENTIAL_ENTRY_ASSETS_PREFIX.slice(1))
               ) {
-                throw new Error("The private credential entry must not load the plugin shell or HMR");
+                throw new Error("Private credential assets must have their own URL namespace");
+              }
+              if (output.type !== "chunk") continue;
+              for (const id of Object.keys(output.modules)) {
+                const path = id.split(sep).join("/");
+                if (
+                  path.includes("/packages/plugins/") ||
+                  /\/packages\/web\/src\/(?:main|app|identity|api|assembly|plugin-host|shared-registry)\.(?:ts|tsx)$/.test(
+                    path,
+                  ) ||
+                  /\/packages\/plugin\/src\/(?:hooks|index|runtime)\.ts$/.test(path) ||
+                  path.includes("/vite/dist/client/") ||
+                  path === "/@vite/client"
+                ) {
+                  throw new Error(
+                    "The private credential entry must not load the plugin shell or HMR",
+                  );
+                }
               }
             }
-          }
+          },
         },
       },
-    }],
+    ],
     build: {
       outDir,
       write,
@@ -232,17 +238,19 @@ function credentialEntry(): Plugin {
           for (const output of graph) {
             const path = `/${output.fileName}`;
             const source = output.type === "chunk" ? output.code : output.source;
-            const contentType = path === CREDENTIAL_ENTRY_DOCUMENT_PATH
-              ? "text/html; charset=utf-8"
-              : path.endsWith(".js")
-                ? "text/javascript; charset=utf-8"
-                : path.endsWith(".css")
-                  ? "text/css; charset=utf-8"
-                  : "application/octet-stream";
+            const contentType =
+              path === CREDENTIAL_ENTRY_DOCUMENT_PATH
+                ? "text/html; charset=utf-8"
+                : path.endsWith(".js")
+                  ? "text/javascript; charset=utf-8"
+                  : path.endsWith(".css")
+                    ? "text/css; charset=utf-8"
+                    : "application/octet-stream";
             const entry = {
               source,
               contentType,
-              contentLength: typeof source === "string" ? Buffer.byteLength(source) : source.byteLength,
+              contentLength:
+                typeof source === "string" ? Buffer.byteLength(source) : source.byteLength,
             };
             if (path === CREDENTIAL_ENTRY_DOCUMENT_PATH) document = entry;
             else assets.set(path, entry);
@@ -250,7 +258,10 @@ function credentialEntry(): Plugin {
           if (!document) throw new Error("The private credential build did not emit its document");
           return document;
         });
-        pending = next.then(() => {}, () => {});
+        pending = next.then(
+          () => {},
+          () => {},
+        );
         return next;
       }
       disposeDevGraph = async () => {
@@ -275,9 +286,8 @@ function credentialEntry(): Plugin {
             response.end();
             return;
           }
-          const entry = path === CREDENTIAL_ENTRY_DOCUMENT_PATH
-            ? await document()
-            : assets.get(path);
+          const entry =
+            path === CREDENTIAL_ENTRY_DOCUMENT_PATH ? await document() : assets.get(path);
           if (!entry) {
             response.statusCode = 404;
             response.end();

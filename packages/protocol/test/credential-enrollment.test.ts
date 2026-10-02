@@ -36,7 +36,10 @@ test("sealed enrollment authenticates every target, authority and replacement co
   const plaintext = new Uint8Array([83, 89, 78, 84, 72, 69, 84, 73, 67]);
   try {
     const binding = context(key.metadata.keyId);
-    const envelope = await sealServiceCredentialEnrollment({ context: binding, key: key.metadata }, plaintext);
+    const envelope = await sealServiceCredentialEnrollment(
+      { context: binding, key: key.metadata },
+      plaintext,
+    );
     const changes: Partial<ServiceCredentialEnrollmentContext>[] = [
       { machineId: "other-machine" },
       { ownerId: "other-owner" },
@@ -52,17 +55,25 @@ test("sealed enrollment authenticates every target, authority and replacement co
       { sourceRevision: crypto.randomUUID() },
     ];
     for (const change of changes) {
-      await expect(key.open({ ...envelope, context: { ...binding, ...change } })).rejects.toMatchObject({
+      await expect(
+        key.open({ ...envelope, context: { ...binding, ...change } }),
+      ).rejects.toMatchObject({
         reason: "credential_envelope_invalid",
       });
     }
     const ciphertext = base64ToBytes(envelope.ciphertext);
     ciphertext[0]! ^= 1;
-    await expect(key.open({ ...envelope, ciphertext: bytesToBase64(ciphertext) })).rejects.toMatchObject({
+    await expect(
+      key.open({ ...envelope, ciphertext: bytesToBase64(ciphertext) }),
+    ).rejects.toMatchObject({
       reason: "credential_envelope_invalid",
     });
     const opened = await key.open(envelope);
-    try { expect(opened).toEqual(plaintext); } finally { opened.fill(0); }
+    try {
+      expect(opened).toEqual(plaintext);
+    } finally {
+      opened.fill(0);
+    }
   } finally {
     plaintext.fill(0);
     key.close();
@@ -74,7 +85,10 @@ test("recipient rotation and closure make earlier sealed values unusable", async
   const next = await createServiceCredentialEnrollmentKey();
   const plaintext = new Uint8Array([83]);
   try {
-    const envelope = await sealServiceCredentialEnrollment({ context: context(first.metadata.keyId), key: first.metadata }, plaintext);
+    const envelope = await sealServiceCredentialEnrollment(
+      { context: context(first.metadata.keyId), key: first.metadata },
+      plaintext,
+    );
     await expect(next.open(envelope)).rejects.toMatchObject({ reason: "credential_key_changed" });
     first.close();
     await expect(first.open(envelope)).rejects.toMatchObject({ reason: "credential_key_changed" });
@@ -92,21 +106,38 @@ test("value and ciphertext bounds preserve the complete maximum credential and r
     const challenge = { context: context(key.metadata.keyId), key: key.metadata };
     const envelope = await sealServiceCredentialEnrollment(challenge, plaintext);
     const opened = await key.open(envelope);
-    try { expect(opened).toEqual(plaintext); } finally { opened.fill(0); }
-    await expect(sealServiceCredentialEnrollment(challenge, new Uint8Array())).rejects.toMatchObject({ reason: "credential_value_invalid" });
-    await expect(sealServiceCredentialEnrollment(challenge, new Uint8Array(CREDENTIAL_ENROLLMENT_MAX_VALUE_BYTES + 1))).rejects.toMatchObject({ reason: "credential_value_invalid" });
-    expect(ServiceCredentialEnrollmentEnvelopeSchema.safeParse({
-      ...envelope,
-      ciphertext: bytesToBase64(new Uint8Array(CREDENTIAL_ENROLLMENT_MAX_VALUE_BYTES + 17)),
-    }).success).toBe(false);
-    expect(ServiceCredentialEnrollmentEnvelopeSchema.safeParse({
-      ...envelope,
-      ciphertext: bytesToBase64(new Uint8Array(16)),
-    }).success).toBe(false);
-    expect(ServiceCredentialEnrollmentEnvelopeSchema.safeParse({
-      ...envelope,
-      enc: bytesToBase64(new Uint8Array(64)),
-    }).success).toBe(false);
+    try {
+      expect(opened).toEqual(plaintext);
+    } finally {
+      opened.fill(0);
+    }
+    await expect(
+      sealServiceCredentialEnrollment(challenge, new Uint8Array()),
+    ).rejects.toMatchObject({ reason: "credential_value_invalid" });
+    await expect(
+      sealServiceCredentialEnrollment(
+        challenge,
+        new Uint8Array(CREDENTIAL_ENROLLMENT_MAX_VALUE_BYTES + 1),
+      ),
+    ).rejects.toMatchObject({ reason: "credential_value_invalid" });
+    expect(
+      ServiceCredentialEnrollmentEnvelopeSchema.safeParse({
+        ...envelope,
+        ciphertext: bytesToBase64(new Uint8Array(CREDENTIAL_ENROLLMENT_MAX_VALUE_BYTES + 17)),
+      }).success,
+    ).toBe(false);
+    expect(
+      ServiceCredentialEnrollmentEnvelopeSchema.safeParse({
+        ...envelope,
+        ciphertext: bytesToBase64(new Uint8Array(16)),
+      }).success,
+    ).toBe(false);
+    expect(
+      ServiceCredentialEnrollmentEnvelopeSchema.safeParse({
+        ...envelope,
+        enc: bytesToBase64(new Uint8Array(64)),
+      }).success,
+    ).toBe(false);
   } finally {
     plaintext.fill(0);
     key.close();
@@ -119,8 +150,15 @@ test("unknown envelope/key versions refuse by name without using a different cry
   try {
     const challenge = { context: context(key.metadata.keyId), key: key.metadata };
     const envelope = await sealServiceCredentialEnrollment(challenge, plaintext);
-    await expect(key.open({ ...envelope, context: { ...envelope.context, version: 2 } })).rejects.toMatchObject({ reason: "credential_key_version_unsupported" });
-    await expect(sealServiceCredentialEnrollment({ ...challenge, key: { ...key.metadata, version: 2 } }, plaintext)).rejects.toMatchObject({ reason: "credential_key_version_unsupported" });
+    await expect(
+      key.open({ ...envelope, context: { ...envelope.context, version: 2 } }),
+    ).rejects.toMatchObject({ reason: "credential_key_version_unsupported" });
+    await expect(
+      sealServiceCredentialEnrollment(
+        { ...challenge, key: { ...key.metadata, version: 2 } },
+        plaintext,
+      ),
+    ).rejects.toMatchObject({ reason: "credential_key_version_unsupported" });
   } finally {
     plaintext.fill(0);
     key.close();

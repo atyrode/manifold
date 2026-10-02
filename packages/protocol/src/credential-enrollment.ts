@@ -19,7 +19,10 @@ const keyId = z.string().regex(/^[a-f0-9]{64}$/);
 function decodedBase64Bytes(value: string): number {
   return (value.length / 4) * 3 - (value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0);
 }
-const p256PublicKey = z.base64().length(88).refine((value) => decodedBase64Bytes(value) === 65);
+const p256PublicKey = z
+  .base64()
+  .length(88)
+  .refine((value) => decodedBase64Bytes(value) === 65);
 
 /** Public encryption metadata belongs to the immutable, signed owner announcement. */
 export const ServiceCredentialEnrollmentKeySchema = z.strictObject({

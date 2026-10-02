@@ -42,7 +42,7 @@ import {
   type JobRequest,
   type MachineHalf,
   type JobFollowUpdate,
-} from "../../protocol/src/jobs.ts";
+} from "@manifold/protocol";
 import { AuthService, type AuthContext } from "../src/auth.ts";
 import { openDatabase } from "../src/db.ts";
 import { JobService, type JobRecord, type SettledJobDelivery } from "../src/job-service.ts";

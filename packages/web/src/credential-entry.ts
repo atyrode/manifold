@@ -26,38 +26,54 @@ const ACTIONS = {
   commit: "engine.services.commitCredentialEnrollment",
   cancel: "engine.services.cancelCredentialEnrollment",
 } as const;
-const WORKER_CHANGE_MESSAGE = "A worker serving this entry changed. The entry was cleared; reopen from the ordinary workspace.";
+const WORKER_CHANGE_MESSAGE =
+  "A worker serving this entry changed. The entry was cleared; reopen from the ordinary workspace.";
 
 const REFUSAL_WORDS: Record<ServiceCredentialEnrollmentRefusal, string> = {
-  credential_unauthorized: "Your current root and exact-machine authority are required. Return to the ordinary workspace to sign in.",
+  credential_unauthorized:
+    "Your current root and exact-machine authority are required. Return to the ordinary workspace to sign in.",
   credential_machine_unknown: "The selected machine is not known to this hub.",
   credential_owner_offline: "The native owner is offline. No value was accepted.",
   credential_owner_unproved: "The native owner has not proved its current identity.",
-  credential_protocol_unsupported: "This hub or native owner does not support sealed credential enrollment. Update through the ordinary operator flow.",
+  credential_protocol_unsupported:
+    "This hub or native owner does not support sealed credential enrollment. Update through the ordinary operator flow.",
   credential_key_unavailable: "The native owner's enrollment key is unavailable.",
   credential_key_version_unsupported: "The native owner's enrollment key version is not supported.",
-  credential_key_changed: "The native owner's key changed. Refresh metadata and prepare a new challenge.",
+  credential_key_changed:
+    "The native owner's key changed. Refresh metadata and prepare a new challenge.",
   credential_reference_unknown: "This credential reference is not declared by the native owner.",
   credential_origin_disallowed: "This use origin is not approved for the credential reference.",
-  credential_already_held: "A value is already held. Replacement requires an explicit replacement decision.",
+  credential_already_held:
+    "A value is already held. Replacement requires an explicit replacement decision.",
   credential_source_unavailable: "The declared owner-local source is unavailable.",
-  credential_source_read_only: "The declared owner-local source is read-only and cannot be enrolled here.",
-  credential_source_changed: "The owner-local source changed. Refresh metadata before an explicit new attempt.",
+  credential_source_read_only:
+    "The declared owner-local source is read-only and cannot be enrolled here.",
+  credential_source_changed:
+    "The owner-local source changed. Refresh metadata before an explicit new attempt.",
   credential_source_invalid: "The declared owner-local source cannot safely accept this value.",
-  credential_enrollment_busy: "The native owner is busy with bounded enrollment work. Prepare a new challenge later.",
-  credential_enrollment_expired: "The challenge expired. The input was cleared; prepare a new challenge.",
+  credential_enrollment_busy:
+    "The native owner is busy with bounded enrollment work. Prepare a new challenge later.",
+  credential_enrollment_expired:
+    "The challenge expired. The input was cleared; prepare a new challenge.",
   credential_enrollment_replayed: "This challenge has already been consumed. It cannot be retried.",
   credential_enrollment_unknown: "This challenge is no longer known to the current owner.",
   credential_enrollment_cancelled: "This enrollment was cancelled. The input was cleared.",
-  credential_envelope_invalid: "The sealed enrollment was refused as invalid. No automatic retry is made.",
-  credential_value_invalid: "Enter between 1 and 16,384 UTF-8 bytes. The invalid input was cleared.",
+  credential_envelope_invalid:
+    "The sealed enrollment was refused as invalid. No automatic retry is made.",
+  credential_value_invalid:
+    "Enter between 1 and 16,384 UTF-8 bytes. The invalid input was cleared.",
   credential_storage_failed: "The native owner could not publish the declared credential source.",
-  credential_owner_changed: "The native owner changed. Refresh metadata and prepare against its new incarnation.",
-  credential_target_mismatch: "The challenge does not match the selected machine, reference and approved use origin.",
+  credential_owner_changed:
+    "The native owner changed. Refresh metadata and prepare against its new incarnation.",
+  credential_target_mismatch:
+    "The challenge does not match the selected machine, reference and approved use origin.",
 };
 
 class PrivateEntryFailure extends Error {
-  constructor(readonly reason: "unauthorized" | "unreachable" | "invalid_response" | "unsupported" | "worker_unsupported") {
+  constructor(
+    readonly reason:
+      "unauthorized" | "unreachable" | "invalid_response" | "unsupported" | "worker_unsupported",
+  ) {
     super(reason);
   }
 }
@@ -121,7 +137,8 @@ function clearInput(): void {
 }
 
 function controls(): void {
-  prepareButton.disabled = retired || !ready || needsRefresh || busy !== null || pendingCommit || challenge !== null;
+  prepareButton.disabled =
+    retired || !ready || needsRefresh || busy !== null || pendingCommit || challenge !== null;
   replace.disabled = retired || !ready || busy !== null || pendingCommit || challenge !== null;
   input.disabled = retired || challenge === null || busy !== null || pendingCommit;
   storeButton.disabled = input.disabled;
@@ -142,19 +159,26 @@ function dropChallenge(): ServiceCredentialEnrollmentChallenge | null {
 
 function currentIdentity(): boolean {
   const current = loadIdentity(hub);
-  return identity !== null && current !== null && !identityExpired(current) &&
-    current.token === identity.token && selectedInstanceOrigin() === hub;
+  return (
+    identity !== null &&
+    current !== null &&
+    !identityExpired(current) &&
+    current.token === identity.token &&
+    selectedInstanceOrigin() === hub
+  );
 }
 
 async function request<T>(name: string, args: unknown, schema: ReplySchema<T>): Promise<T> {
   if (identity === null) throw new PrivateEntryFailure("unauthorized");
-  if (name !== ACTIONS.cancel && !currentPrivateBypass()) throw new PrivateEntryFailure("worker_unsupported");
+  if (name !== ACTIONS.cancel && !currentPrivateBypass())
+    throw new PrivateEntryFailure("worker_unsupported");
   const { outcome } = await invokeAction(
     { origin: hub, token: identity.token, timeoutMs: 10_000, maxResponseBytes: 1024 * 1024 },
     name,
     args,
   );
-  if (name !== ACTIONS.cancel && !currentPrivateBypass()) throw new PrivateEntryFailure("worker_unsupported");
+  if (name !== ACTIONS.cancel && !currentPrivateBypass())
+    throw new PrivateEntryFailure("worker_unsupported");
   if (!outcome.ok) throw new PrivateEntryFailure("unauthorized");
   const parsed = schema.safeParse(outcome.result);
   if (!parsed.success) throw new PrivateEntryFailure("invalid_response");
@@ -163,12 +187,16 @@ async function request<T>(name: string, args: unknown, schema: ReplySchema<T>): 
 
 function failureWords(error: unknown): string {
   if (error instanceof ServiceCredentialEnrollmentError) return REFUSAL_WORDS[error.reason];
-  if (error instanceof ActionProtocolError ||
-    (error instanceof PrivateEntryFailure && error.reason === "unsupported")) {
+  if (
+    error instanceof ActionProtocolError ||
+    (error instanceof PrivateEntryFailure && error.reason === "unsupported")
+  ) {
     return "The selected hub's discovered protocol does not support this entry. Use the ordinary update flow.";
   }
-  if ((error instanceof ActionHttpError && (error.status === 401 || error.status === 403)) ||
-    (error instanceof PrivateEntryFailure && error.reason === "unauthorized")) {
+  if (
+    (error instanceof ActionHttpError && (error.status === 401 || error.status === 403)) ||
+    (error instanceof PrivateEntryFailure && error.reason === "unauthorized")
+  ) {
     return REFUSAL_WORDS.credential_unauthorized;
   }
   if (error instanceof PrivateEntryFailure && error.reason === "worker_unsupported") {
@@ -181,7 +209,11 @@ function failureWords(error: unknown): string {
   return "The outcome could not be confirmed. The input was cleared. Refresh reference metadata before a new attempt; no automatic retry is made.";
 }
 
-async function cancelChallenge(current: ServiceCredentialEnrollmentChallenge, stamp: number, notify: boolean): Promise<void> {
+async function cancelChallenge(
+  current: ServiceCredentialEnrollmentChallenge,
+  stamp: number,
+  notify: boolean,
+): Promise<void> {
   const args: ServiceCredentialEnrollmentCancelArgs = {
     machineId: current.context.machineId,
     requestId: current.context.requestId,
@@ -190,11 +222,12 @@ async function cancelChallenge(current: ServiceCredentialEnrollmentChallenge, st
   try {
     const reply = await request(ACTIONS.cancel, args, ServiceCredentialEnrollmentCancelReplySchema);
     if (!notify || stamp !== epoch || retired) return;
-    status.textContent = reply.kind === "cancelled"
-      ? "The native owner confirmed cancellation. The input and working bytes were cleared."
-      : reply.kind === "refused"
-        ? REFUSAL_WORDS[reply.reason]
-        : "Cancellation outcome is unconfirmed. Refresh reference metadata before preparing again.";
+    status.textContent =
+      reply.kind === "cancelled"
+        ? "The native owner confirmed cancellation. The input and working bytes were cleared."
+        : reply.kind === "refused"
+          ? REFUSAL_WORDS[reply.reason]
+          : "Cancellation outcome is unconfirmed. Refresh reference metadata before preparing again.";
   } catch (error: unknown) {
     if (notify && stamp === epoch && !retired) status.textContent = failureWords(error);
   } finally {
@@ -235,7 +268,8 @@ async function requirePrivateBypass(): Promise<void> {
     throw new PrivateEntryFailure("worker_unsupported");
   }
   bypass = result;
-  if (result.phase !== "ready" || !result.isCurrent()) throw new PrivateEntryFailure("worker_unsupported");
+  if (result.phase !== "ready" || !result.isCurrent())
+    throw new PrivateEntryFailure("worker_unsupported");
 }
 
 async function readMetadata(): Promise<void> {
@@ -257,33 +291,58 @@ async function readMetadata(): Promise<void> {
     await requirePrivateBypass();
     if (!currentIdentity()) throw new PrivateEntryFailure("unauthorized");
     if (!discovered) {
-      const protocol = await discoverActions({ origin: hub, token: identity.token, timeoutMs: 10_000, maxResponseBytes: 4 * 1024 * 1024 });
-      if (!Object.values(ACTIONS).every((name) => protocol.actions.some((action) => action.name === name))) {
+      const protocol = await discoverActions({
+        origin: hub,
+        token: identity.token,
+        timeoutMs: 10_000,
+        maxResponseBytes: 4 * 1024 * 1024,
+      });
+      if (
+        !Object.values(ACTIONS).every((name) =>
+          protocol.actions.some((action) => action.name === name),
+        )
+      ) {
         throw new PrivateEntryFailure("unsupported");
       }
       discovered = true;
     }
     if (stamp !== epoch || retired) return;
     if (!currentIdentity()) throw new PrivateEntryFailure("unauthorized");
-    const metadata = await request(ACTIONS.read, { machineId: target.machineId }, ServiceConfigurationReadSchema);
+    const metadata = await request(
+      ACTIONS.read,
+      { machineId: target.machineId },
+      ServiceConfigurationReadSchema,
+    );
     if (stamp !== epoch || retired) return;
     if (!currentIdentity()) throw new PrivateEntryFailure("unauthorized");
     if (!metadata.connected) throw new ServiceCredentialEnrollmentError("credential_owner_offline");
-    const references = metadata.credentialReferences.filter((reference) => reference.ref === target.credentialRef);
-    if (references.length !== 1) throw new ServiceCredentialEnrollmentError("credential_reference_unknown");
+    const references = metadata.credentialReferences.filter(
+      (reference) => reference.ref === target.credentialRef,
+    );
+    if (references.length !== 1)
+      throw new ServiceCredentialEnrollmentError("credential_reference_unknown");
     const reference = references[0]!;
-    if (!reference.origins.includes(target.origin)) throw new ServiceCredentialEnrollmentError("credential_origin_disallowed");
+    if (!reference.origins.includes(target.origin))
+      throw new ServiceCredentialEnrollmentError("credential_origin_disallowed");
     held = reference.available;
-    availability.textContent = held ? "A value is held; explicit replacement is required" : "No value is currently held";
+    availability.textContent = held
+      ? "A value is held; explicit replacement is required"
+      : "No value is currently held";
     ready = true;
     needsRefresh = false;
-    status.textContent = "Metadata verified. Prepare a single-use challenge before entering a value.";
+    status.textContent =
+      "Metadata verified. Prepare a single-use challenge before entering a value.";
   } catch (error: unknown) {
     if (stamp === epoch && !retired) {
       status.textContent = failureWords(error);
-      if ((error instanceof PrivateEntryFailure && ["unauthorized", "unsupported", "worker_unsupported", "invalid_response"].includes(error.reason)) ||
+      if (
+        (error instanceof PrivateEntryFailure &&
+          ["unauthorized", "unsupported", "worker_unsupported", "invalid_response"].includes(
+            error.reason,
+          )) ||
         error instanceof ActionProtocolError ||
-        (error instanceof ActionHttpError && (error.status === 401 || error.status === 403))) {
+        (error instanceof ActionHttpError && (error.status === 401 || error.status === 403))
+      ) {
         retire(failureWords(error));
       }
     }
@@ -296,7 +355,16 @@ async function readMetadata(): Promise<void> {
 }
 
 async function prepare(): Promise<void> {
-  if (retired || !ready || needsRefresh || target === null || busy !== null || pendingCommit || challenge !== null) return;
+  if (
+    retired ||
+    !ready ||
+    needsRefresh ||
+    target === null ||
+    busy !== null ||
+    pendingCommit ||
+    challenge !== null
+  )
+    return;
   clearInput();
   if (!currentPrivateBypass()) return;
   if (!currentIdentity()) {
@@ -304,7 +372,8 @@ async function prepare(): Promise<void> {
     return;
   }
   if (held && !replace.checked) {
-    validation.textContent = "A value is already held. Explicitly confirm replacement before preparing.";
+    validation.textContent =
+      "A value is already held. Explicitly confirm replacement before preparing.";
     replace.focus();
     return;
   }
@@ -312,36 +381,56 @@ async function prepare(): Promise<void> {
   const stamp = ++epoch;
   busy = "prepare";
   validation.textContent = "";
-  status.textContent = "Preparing a bounded, single-use challenge with the current proved native owner…";
+  status.textContent =
+    "Preparing a bounded, single-use challenge with the current proved native owner…";
   controls();
   try {
-    const reply = await request(ACTIONS.prepare, args, ServiceCredentialEnrollmentPrepareReplySchema);
+    const reply = await request(
+      ACTIONS.prepare,
+      args,
+      ServiceCredentialEnrollmentPrepareReplySchema,
+    );
     if (stamp !== epoch || retired) {
       if (reply.kind === "prepared") void cancelChallenge(reply.challenge, epoch, false);
       return;
     }
     if (!currentIdentity()) {
       if (reply.kind === "prepared") void cancelChallenge(reply.challenge, stamp, false);
-      retire("Your selected hub or sign-in changed. The entry was cleared; reopen from the ordinary workspace.");
+      retire(
+        "Your selected hub or sign-in changed. The entry was cleared; reopen from the ordinary workspace.",
+      );
       return;
     }
     if (reply.kind !== "prepared") {
       needsRefresh = true;
-      status.textContent = reply.kind === "refused" ? REFUSAL_WORDS[reply.reason] : "Preparation outcome is unconfirmed. Refresh metadata before preparing again.";
-      if (reply.kind === "refused" && reply.reason === "credential_unauthorized") retire(REFUSAL_WORDS[reply.reason]);
+      status.textContent =
+        reply.kind === "refused"
+          ? REFUSAL_WORDS[reply.reason]
+          : "Preparation outcome is unconfirmed. Refresh metadata before preparing again.";
+      if (reply.kind === "refused" && reply.reason === "credential_unauthorized")
+        retire(REFUSAL_WORDS[reply.reason]);
       return;
     }
     challenge = reply.challenge;
     const { context, key } = challenge;
-    if (context.machineId !== args.machineId || context.credentialRef !== args.credentialRef ||
-      context.origin !== args.origin || context.replace !== args.replace) {
+    if (
+      context.machineId !== args.machineId ||
+      context.credentialRef !== args.credentialRef ||
+      context.origin !== args.origin ||
+      context.replace !== args.replace
+    ) {
       throw new ServiceCredentialEnrollmentError("credential_target_mismatch");
     }
-    if (context.version !== CREDENTIAL_ENROLLMENT_VERSION || key.version !== CREDENTIAL_ENROLLMENT_VERSION) {
+    if (
+      context.version !== CREDENTIAL_ENROLLMENT_VERSION ||
+      key.version !== CREDENTIAL_ENROLLMENT_VERSION
+    ) {
       throw new ServiceCredentialEnrollmentError("credential_key_version_unsupported");
     }
-    if (context.keyId !== key.keyId) throw new ServiceCredentialEnrollmentError("credential_key_changed");
-    if (context.expiresAt <= Date.now()) throw new ServiceCredentialEnrollmentError("credential_enrollment_expired");
+    if (context.keyId !== key.keyId)
+      throw new ServiceCredentialEnrollmentError("credential_key_changed");
+    if (context.expiresAt <= Date.now())
+      throw new ServiceCredentialEnrollmentError("credential_enrollment_expired");
     challengeStatus.textContent = `Owner ${context.ownerId} · incarnation ${context.ownerGeneration} · expires ${new Date(context.expiresAt).toLocaleTimeString()}`;
     expiryTimer = window.setTimeout(() => {
       epoch++;
@@ -352,15 +441,19 @@ async function prepare(): Promise<void> {
       controls();
       if (expired !== null) void cancelChallenge(expired, epoch, false);
     }, context.expiresAt - Date.now());
-    status.textContent = "Challenge prepared. Enter the value only in this private document, then seal and store it.";
+    status.textContent =
+      "Challenge prepared. Enter the value only in this private document, then seal and store it.";
   } catch (error: unknown) {
     if (stamp === epoch && !retired) {
       needsRefresh = true;
       const previous = dropChallenge();
       if (previous !== null) void cancelChallenge(previous, stamp, false);
       status.textContent = failureWords(error);
-      if ((error instanceof ActionHttpError && (error.status === 401 || error.status === 403)) ||
-        (error instanceof PrivateEntryFailure && error.reason === "unauthorized")) retire(failureWords(error));
+      if (
+        (error instanceof ActionHttpError && (error.status === 401 || error.status === 403)) ||
+        (error instanceof PrivateEntryFailure && error.reason === "unauthorized")
+      )
+        retire(failureWords(error));
     }
   } finally {
     if (stamp === epoch && !retired) {
@@ -384,10 +477,13 @@ async function commit(): Promise<void> {
   try {
     if (!currentPrivateBypass()) return;
     if (!currentIdentity()) {
-      retire("Your selected hub or sign-in changed or expired. The input was cleared; reopen from the ordinary workspace.");
+      retire(
+        "Your selected hub or sign-in changed or expired. The input was cleared; reopen from the ordinary workspace.",
+      );
       return;
     }
-    if (Date.now() >= current.context.expiresAt) throw new ServiceCredentialEnrollmentError("credential_enrollment_expired");
+    if (Date.now() >= current.context.expiresAt)
+      throw new ServiceCredentialEnrollmentError("credential_enrollment_expired");
     bytes = new Uint8Array(CREDENTIAL_ENROLLMENT_MAX_VALUE_BYTES);
     plaintext = bytes;
     const encoded = new TextEncoder().encodeInto(input.value, bytes);
@@ -405,10 +501,13 @@ async function commit(): Promise<void> {
     plaintext = null;
     if (stamp !== epoch || retired) return;
     if (!currentIdentity()) {
-      retire("Your selected hub or sign-in changed. The entry was cleared; reopen from the ordinary workspace.");
+      retire(
+        "Your selected hub or sign-in changed. The entry was cleared; reopen from the ordinary workspace.",
+      );
       return;
     }
-    if (Date.now() >= current.context.expiresAt) throw new ServiceCredentialEnrollmentError("credential_enrollment_expired");
+    if (Date.now() >= current.context.expiresAt)
+      throw new ServiceCredentialEnrollmentError("credential_enrollment_expired");
     status.textContent = "Requesting native publication under your current authority…";
     const args: ServiceCredentialEnrollmentCommitArgs = { machineId: target.machineId, envelope };
     const reply = await request(ACTIONS.commit, args, ServiceCredentialEnrollmentCommitReplySchema);
@@ -430,7 +529,8 @@ async function commit(): Promise<void> {
       status.textContent = REFUSAL_WORDS[reply.reason];
       if (reply.reason === "credential_unauthorized") retire(REFUSAL_WORDS[reply.reason]);
     } else {
-      status.textContent = "Publication outcome is unconfirmed. Refresh reference metadata before a new attempt; do not automatically retry this challenge.";
+      status.textContent =
+        "Publication outcome is unconfirmed. Refresh reference metadata before a new attempt; do not automatically retry this challenge.";
     }
   } catch (error: unknown) {
     if (stamp === epoch && !retired) {
@@ -439,11 +539,17 @@ async function commit(): Promise<void> {
       const previous = dropChallenge();
       if (previous !== null) void cancelChallenge(previous, epoch, false);
       status.textContent = failureWords(error);
-      if (error instanceof ServiceCredentialEnrollmentError && error.reason === "credential_value_invalid") {
+      if (
+        error instanceof ServiceCredentialEnrollmentError &&
+        error.reason === "credential_value_invalid"
+      ) {
         validation.textContent = REFUSAL_WORDS.credential_value_invalid;
       }
-      if ((error instanceof ActionHttpError && (error.status === 401 || error.status === 403)) ||
-        (error instanceof PrivateEntryFailure && error.reason === "unauthorized")) retire(failureWords(error));
+      if (
+        (error instanceof ActionHttpError && (error.status === 401 || error.status === 403)) ||
+        (error instanceof PrivateEntryFailure && error.reason === "unauthorized")
+      )
+        retire(failureWords(error));
     }
   } finally {
     bytes?.fill(0);
@@ -462,9 +568,10 @@ function cancel(): void {
   const current = dropChallenge();
   needsRefresh = true;
   busy = current === null ? null : "cancel";
-  status.textContent = current === null
-    ? "The entry was cleared. Any late preparation response will be cancelled; refresh metadata before a new attempt."
-    : "The input was cleared. Asking the native owner to cancel the single-use challenge…";
+  status.textContent =
+    current === null
+      ? "The entry was cleared. Any late preparation response will be cancelled; refresh metadata before a new attempt."
+      : "The input was cleared. Asking the native owner to cancel the single-use challenge…";
   validation.textContent = "";
   replace.checked = false;
   controls();
@@ -475,28 +582,49 @@ form.addEventListener("submit", (event) => {
   event.preventDefault();
   void commit();
 });
-prepareButton.addEventListener("click", () => { void prepare(); });
+prepareButton.addEventListener("click", () => {
+  void prepare();
+});
 cancelButton.addEventListener("click", cancel);
-refreshButton.addEventListener("click", () => { void readMetadata(); });
-input.addEventListener("input", () => { validation.textContent = ""; });
+refreshButton.addEventListener("click", () => {
+  void readMetadata();
+});
+input.addEventListener("input", () => {
+  validation.textContent = "";
+});
 window.addEventListener("storage", () => {
-  if (!currentIdentity()) retire("Your selected hub or sign-in changed. The entry was cleared; reopen from the ordinary workspace.");
+  if (!currentIdentity())
+    retire(
+      "Your selected hub or sign-in changed. The entry was cleared; reopen from the ordinary workspace.",
+    );
 });
 window.addEventListener("offline", cancel);
 window.addEventListener("pagehide", () => retire("This entry was closed and its input cleared."));
 window.addEventListener("pageshow", (event) => {
-  if (event.persisted) retire("A restored document cannot reuse an enrollment challenge. Reopen from the ordinary workspace.");
+  if (event.persisted)
+    retire(
+      "A restored document cannot reuse an enrollment challenge. Reopen from the ordinary workspace.",
+    );
 });
 if (identity?.expiresInMs !== undefined && identity.receivedAt !== undefined) {
-  window.setTimeout(() => retire("Your local sign-in expired. The entry was cleared; return to the ordinary workspace to sign in."),
-    Math.max(0, identity.expiresInMs - (Date.now() - identity.receivedAt)));
+  window.setTimeout(
+    () =>
+      retire(
+        "Your local sign-in expired. The entry was cleared; return to the ordinary workspace to sign in.",
+      ),
+    Math.max(0, identity.expiresInMs - (Date.now() - identity.receivedAt)),
+  );
 }
 
 clearInput();
 if (window.top !== window) {
-  retire("Private credential entry cannot run inside a frame. Open it from the ordinary plugin manager.");
+  retire(
+    "Private credential entry cannot run inside a frame. Open it from the ordinary plugin manager.",
+  );
 } else if (target === null) {
-  retire("Open a declared credential reference from the ordinary plugin manager. No credential value can be entered without a verified target.");
+  retire(
+    "Open a declared credential reference from the ordinary plugin manager. No credential value can be entered without a verified target.",
+  );
 } else if (identity === null || identityExpired(identity)) {
   retire(REFUSAL_WORDS.credential_unauthorized);
 } else {

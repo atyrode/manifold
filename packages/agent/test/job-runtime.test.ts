@@ -203,8 +203,16 @@ function openCredentialFixture(options: FixtureOptions = {}) {
     chmodSync(join(root, "source"), options.parentMode ?? 0o755);
     const originalParent = lstatSync(join(root, "source"));
     const child = Bun.spawnSync(
-      [process.execPath, "-e", openFixture, root, String(options.runnerUid ?? ""), options.mode ?? ""],
+      [
+        process.execPath,
+        "-e",
+        openFixture,
+        root,
+        String(options.runnerUid ?? ""),
+        options.mode ?? "",
+      ],
       {
+        cwd: import.meta.dir,
         stdout: "pipe",
         stderr: "pipe",
         timeout: 10_000,
@@ -226,9 +234,7 @@ function openCredentialFixture(options: FixtureOptions = {}) {
         generationAdvanced: boolean;
         recipientRotated: boolean;
       };
-    } = JSON.parse(
-      child.stdout.toString(),
-    );
+    } = JSON.parse(child.stdout.toString());
     // Opening must retain the original private source, not chmod, copy or relocate it.
     const retainedParent = lstatSync(join(root, "source"));
     expect([
@@ -274,18 +280,29 @@ describe.skipIf(process.platform !== "linux")("native credential source opening"
     expect(openCredentialFixture({ missing: "parent" })).toMatchObject({ code: "ENOENT" });
   });
 
-  test.each([0o755, 0o500])("mode %o parents retain read access but refuse enrollment", (parentMode) => {
-    const result = openCredentialFixture({ parentMode, mode: "prepare" });
-    expect(result.references).toEqual([
-      { ref: "fixture", origins: ["https://service.invalid"], available: true },
-    ]);
-    expect(result.reply).toEqual({ kind: "refused", reason: "credential_source_read_only" });
-  });
+  test.each([0o755, 0o500])(
+    "mode %o parents retain read access but refuse enrollment",
+    (parentMode) => {
+      const result = openCredentialFixture({ parentMode, mode: "prepare" });
+      expect(result.references).toEqual([
+        { ref: "fixture", origins: ["https://service.invalid"], available: true },
+      ]);
+      expect(result.reply).toEqual({ kind: "refused", reason: "credential_source_read_only" });
+    },
+  );
 
-  test.skipIf(process.getuid?.() !== 0)("root-managed private parents never gain enrollment authority", () => {
-    const result = openCredentialFixture({ runnerUid: 65534, parentUid: 0, parentMode: 0o755, mode: "prepare" });
-    expect(result.reply).toEqual({ kind: "refused", reason: "credential_source_read_only" });
-  });
+  test.skipIf(process.getuid?.() !== 0)(
+    "root-managed private parents never gain enrollment authority",
+    () => {
+      const result = openCredentialFixture({
+        runnerUid: 65534,
+        parentUid: 0,
+        parentMode: 0o755,
+        mode: "prepare",
+      });
+      expect(result.reply).toEqual({ kind: "refused", reason: "credential_source_read_only" });
+    },
+  );
 
   test("a later bootstrap failure closes every held source descriptor and parent", () => {
     expect(openCredentialFixture({ missingBubblewrap: true, mode: "unwind" })).toMatchObject({
@@ -428,6 +445,7 @@ function withScratchRoot(body: (root: string) => void): void {
 }
 function startOwner(root: string): { generation?: number; error?: string; code?: string } {
   const child = Bun.spawnSync([process.execPath, "-e", openFixture, root, ""], {
+    cwd: import.meta.dir,
     stdout: "pipe",
     stderr: "pipe",
     timeout: 10_000,

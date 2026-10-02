@@ -130,10 +130,20 @@ it does not turn already trusted same-origin in-realm code, shared browser stora
 compromised origin/service worker into an untrusted security domain. No value accessor or
 enrollment method is added to plugin service context. Private documents/assets are not
 offline shell content, and opening one must not expose its DOM through a parent opener.
-An already controlling older root worker must prove support for private document/asset bypass
-before the metadata launcher opens entry; otherwise it requests ordinary user-driven worker
-activation and fails closed. Private entry never treats an offline cached plugin shell as its
-document. A page with no controller may use the ordinary network-only document route.
+Both the current controller and the active registration covering the destination must prove
+private document/asset bypass before the metadata launcher opens entry; an uncontrolled
+launcher is not proof that its new tab has no active worker. Unsupported workers fail closed
+and direct the operator to ordinary user-driven activation, never activate an update here.
+The accepted controller/registration incarnations are checked at launch and action boundaries;
+their state changes clear and retire entry. This does not isolate against trusted same-origin
+code creating a different registration after negotiation. A page with neither a controller nor
+an active destination registration may use the ordinary network-only document route. Private
+entry never treats an offline cached plugin shell as its document.
+
+Production and Vite development serve the same independent bundled private graph and privacy
+headers; private routes have no plugin-shell, source/HMR or missing-resource fallback. Static
+aliases are reserved without capturing authenticated plugin API namespaces. Input limits
+validate the complete UTF-8 value before sealing, rather than truncating a pasted prefix.
 
 ### Dependency decisions
 

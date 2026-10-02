@@ -23,7 +23,7 @@ import {
   type MachineHalf,
   type JobOwner,
   type JobAuthority,
-} from "../../protocol/src/jobs.ts";
+} from "@manifold/protocol";
 import type { ServerStore, TraceAttribution } from "./stores.ts";
 import type { JobOccurrence } from "./job-schedules.ts";
 import {

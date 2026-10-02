@@ -16,7 +16,7 @@ import {
   type JobOwner,
   type MachineHalf,
   type SettledJob,
-} from "../../protocol/src/jobs.ts";
+} from "@manifold/protocol";
 import { AuthService, type AuthContext } from "../src/auth.ts";
 import { serveCtxCall } from "../src/isolate/proxy-def.ts";
 import { JobService } from "../src/job-service.ts";

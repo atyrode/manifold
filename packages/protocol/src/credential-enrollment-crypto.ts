@@ -147,10 +147,7 @@ export async function sealServiceCredentialEnrollment(
   input: ServiceCredentialEnrollmentChallenge,
   plaintext: Uint8Array,
 ): Promise<ServiceCredentialEnrollmentEnvelope> {
-  if (
-    plaintext.byteLength === 0 ||
-    plaintext.byteLength > CREDENTIAL_ENROLLMENT_MAX_VALUE_BYTES
-  ) {
+  if (plaintext.byteLength === 0 || plaintext.byteLength > CREDENTIAL_ENROLLMENT_MAX_VALUE_BYTES) {
     throw new ServiceCredentialEnrollmentError("credential_value_invalid");
   }
   const parsed = ServiceCredentialEnrollmentChallengeSchema.safeParse(input);

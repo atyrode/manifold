@@ -1,6 +1,10 @@
 import type { SectionProps } from "@manifold/plugin";
 import { instanceOrigin, selectedInstanceOrigin } from "@manifold/plugin/instance";
-import { FALLBACK_POLL_MS, MACHINES_RESOURCE_OPTIONS, usePolledResource } from "@manifold/plugin/hooks";
+import {
+  FALLBACK_POLL_MS,
+  MACHINES_RESOURCE_OPTIONS,
+  usePolledResource,
+} from "@manifold/plugin/hooks";
 import {
   ServiceConfigurationReadSchema,
   type MachineSummary,
@@ -11,7 +15,8 @@ import { useEffect, useRef, useState, type ReactElement } from "react";
 import { privateCredentialEntryBypass, type Bypass } from "@manifold/plugin/private-entry";
 
 type Metadata = Pick<ServiceConfigurationRead, "connected" | "credentialReferences">;
-const UPDATE_GUIDANCE = "Private entry is closed until the current controller and the destination's active root worker prove bypass support. Accept the ordinary workspace update activation, then check again. No worker update is activated here.";
+const UPDATE_GUIDANCE =
+  "Private entry is closed until the current controller and the destination's active root worker prove bypass support. Accept the ordinary workspace update activation, then check again. No worker update is activated here.";
 
 /** Machine-wide metadata/launch source in the existing manager, never a plugin runtime form. */
 export function CredentialReferences({ host }: Pick<SectionProps, "host">): ReactElement {
@@ -36,13 +41,12 @@ export function CredentialReferences({ host }: Pick<SectionProps, "host">): Reac
   );
 
   useEffect(() => {
+    const epoch = requestEpoch;
     let current = true;
     let snapshot: Extract<Bypass, { phase: "ready" }> | null = null;
-    setPending(false);
-    setBypass({ phase: "checking" });
     const changed = (): void => {
       if (!current) return;
-      requestEpoch.current++;
+      epoch.current++;
       setMetadata(null);
       setPending(false);
       setBypass({ phase: "unsupported" });
@@ -58,7 +62,7 @@ export function CredentialReferences({ host }: Pick<SectionProps, "host">): Reac
     return () => {
       current = false;
       snapshot?.dispose();
-      requestEpoch.current++;
+      epoch.current++;
     };
   }, [bypassCheck]);
 
@@ -69,7 +73,9 @@ export function CredentialReferences({ host }: Pick<SectionProps, "host">): Reac
       setMetadata(null);
       setPending(false);
       setHubChanged(true);
-      setFailure("The selected Manifold hub changed. Reload the ordinary workspace before reading or launching a reference.");
+      setFailure(
+        "The selected Manifold hub changed. Reload the ordinary workspace before reading or launching a reference.",
+      );
     };
     window.addEventListener("storage", changed);
     return () => window.removeEventListener("storage", changed);
@@ -91,12 +97,20 @@ export function CredentialReferences({ host }: Pick<SectionProps, "host">): Reac
       }
       const parsed = ServiceConfigurationReadSchema.safeParse(outcome.result);
       if (!parsed.success) {
-        setFailure("The configuration metadata read was refused or invalid. No private entry was opened.");
+        setFailure(
+          "The configuration metadata read was refused or invalid. No private entry was opened.",
+        );
         return;
       }
-      setMetadata({ connected: parsed.data.connected, credentialReferences: parsed.data.credentialReferences });
+      setMetadata({
+        connected: parsed.data.connected,
+        credentialReferences: parsed.data.credentialReferences,
+      });
     } catch {
-      if (stamp === requestEpoch.current) setFailure("The authorized metadata read could not be confirmed. No private entry was opened.");
+      if (stamp === requestEpoch.current)
+        setFailure(
+          "The authorized metadata read could not be confirmed. No private entry was opened.",
+        );
     } finally {
       if (stamp === requestEpoch.current) setPending(false);
     }
@@ -114,10 +128,17 @@ export function CredentialReferences({ host }: Pick<SectionProps, "host">): Reac
   };
 
   return (
-    <section className="plugin-manager-credentials" aria-labelledby="plugin-manager-credentials-title" data-testid="plugin-manager-credential-references">
+    <section
+      className="plugin-manager-credentials"
+      aria-labelledby="plugin-manager-credentials-title"
+      data-testid="plugin-manager-credential-references"
+    >
       <Stack gap="0.45rem">
         <h3 id="plugin-manager-credentials-title">Native credential references</h3>
-        <p>Read declared reference metadata, then open a separate, host-owned private document. The plugin manager never asks for or receives the value.</p>
+        <p>
+          Read declared reference metadata, then open a separate, host-owned private document. The
+          plugin manager never asks for or receives the value.
+        </p>
         <label className="plugin-manager-install-field">
           <span>Machine for credential references</span>
           <select
@@ -133,32 +154,84 @@ export function CredentialReferences({ host }: Pick<SectionProps, "host">): Reac
             }}
           >
             <option value="">Choose a machine</option>
-            {machines?.map((machine) => <option key={machine.id} value={machine.id}>{machine.name} · {machine.revoked ? "revoked" : machine.online ? "online" : "offline"}</option>)}
+            {machines?.map((machine) => (
+              <option key={machine.id} value={machine.id}>
+                {machine.name} ·{" "}
+                {machine.revoked ? "revoked" : machine.online ? "online" : "offline"}
+              </option>
+            ))}
           </select>
         </label>
         <Cluster gap="0.4rem">
-          <button type="button" className="plugin-manager-filter" data-action="engine.services.readConfiguration" disabled={machineId === "" || pending || hubChanged} onClick={() => { void read(); }}>
+          <button
+            type="button"
+            className="plugin-manager-filter"
+            data-action="engine.services.readConfiguration"
+            disabled={machineId === "" || pending || hubChanged}
+            onClick={() => {
+              void read();
+            }}
+          >
             {pending ? "Reading metadata…" : "Read credential references"}
           </button>
-          {bypass.phase === "unsupported" ? <button type="button" className="plugin-manager-filter" onClick={() => setBypassCheck((value) => value + 1)}>Check private-entry support again</button> : null}
+          {bypass.phase === "unsupported" ? (
+            <button
+              type="button"
+              className="plugin-manager-filter"
+              onClick={() => {
+                requestEpoch.current++;
+                setMetadata(null);
+                setPending(false);
+                setFailure(null);
+                setBypass({ phase: "checking" });
+                setBypassCheck((value) => value + 1);
+              }}
+            >
+              Check private-entry support again
+            </button>
+          ) : null}
         </Cluster>
         <p role="status">
-          {bypass.phase === "checking" ? "Checking controller and destination-worker private bypass support…" : bypass.phase === "unsupported" ? UPDATE_GUIDANCE : !bypass.hasWorker ? "No covering worker registration or controller: private entry will be network-only." : "Every worker that could serve the private entry explicitly supports network-only document and asset bypass."}
+          {bypass.phase === "checking"
+            ? "Checking controller and destination-worker private bypass support…"
+            : bypass.phase === "unsupported"
+              ? UPDATE_GUIDANCE
+              : !bypass.hasWorker
+                ? "No covering worker registration or controller: private entry will be network-only."
+                : "Every worker that could serve the private entry explicitly supports network-only document and asset bypass."}
         </p>
-        {failure === null ? null : <p className="plugin-manager-error" role="alert">{failure}</p>}
-        {metadata === null ? null : !metadata.connected ? <p role="status">No current proved native owner is connected. Private entry is closed.</p> : metadata.credentialReferences.length === 0 ? <p>No credential references are declared by this owner.</p> : (
+        {failure === null ? null : (
+          <p className="plugin-manager-error" role="alert">
+            {failure}
+          </p>
+        )}
+        {metadata === null ? null : !metadata.connected ? (
+          <p role="status">No current proved native owner is connected. Private entry is closed.</p>
+        ) : metadata.credentialReferences.length === 0 ? (
+          <p>No credential references are declared by this owner.</p>
+        ) : (
           <ul className="plugin-manager-credential-list">
             {metadata.credentialReferences.map((reference) => (
               <li key={reference.ref}>
                 <strong>{reference.ref}</strong>
-                <span>{reference.available ? "Value held; explicit replacement required" : "No value held"}</span>
+                <span>
+                  {reference.available
+                    ? "Value held; explicit replacement required"
+                    : "No value held"}
+                </span>
                 <ul>
                   {reference.origins.map((origin) => {
-                    const search = new URLSearchParams({ machineId, credentialRef: reference.ref, origin });
+                    const search = new URLSearchParams({
+                      machineId,
+                      credentialRef: reference.ref,
+                      origin,
+                    });
                     return (
                       <li key={origin}>
                         <code>{origin}</code>
-                        {bypass.phase !== "ready" || hubChanged ? <span>Private entry unavailable</span> : (
+                        {bypass.phase !== "ready" || hubChanged ? (
+                          <span>Private entry unavailable</span>
+                        ) : (
                           <a
                             href={`/credential-entry.html?${search.toString()}`}
                             target="_blank"

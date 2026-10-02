@@ -45,6 +45,13 @@ import {
   type RuntimeDeps,
 } from "@manifold/protocol";
 import { composeDefaultLayout } from "@manifold/plugin";
+import {
+  CREDENTIAL_ENTRY_ASSETS_PREFIX,
+  CREDENTIAL_ENTRY_DOCUMENT_PATH,
+  CREDENTIAL_ENTRY_SECURITY_HEADERS,
+  privateCredentialEntryCsp,
+  privateCredentialEntryStaticPath,
+} from "@manifold/plugin/private-entry";
 import { ServiceError, type AuthContext, type AuthService } from "./auth.ts";
 import type { ServerConfig } from "./config.ts";
 import type { Logger } from "./log.ts";
@@ -90,15 +97,9 @@ function errorResponse(error: RequestError): Response {
   return jsonResponse(body, STATUS_BY_CODE[error.code]);
 }
 
-/** Reserved private paths, including noncanonical physical and encoded aliases, fail closed. */
-function credentialEntryPath(pathname: string): boolean {
-  // Recognize the reserved ASCII family even inside repeated percent escapes or an otherwise
-  // malformed path. Serving still requires the raw, exact canonical spelling below.
-  const decoded = pathname.replace(/%(?:25)*([0-9a-f]{2})/gi, (_escape, hex: string) =>
-    String.fromCharCode(Number.parseInt(hex, 16)),
-  );
-  return decoded.split(/[/\\]+/).some((part) => part.toLowerCase().startsWith("credential-entry"));
-}
+const CREDENTIAL_ENTRY_ASSET_PATH = new RegExp(
+  `^${CREDENTIAL_ENTRY_ASSETS_PREFIX}[A-Za-z0-9_-][A-Za-z0-9._-]*$`,
+);
 
 /**
  * The cross-origin permission every door answers with, applied by {@link HttpApp.fetch} rather
@@ -374,28 +375,11 @@ export class HttpApp {
         ? new Response(null, { status: 204 })
         : await respond(url);
     response.headers.set("x-content-type-options", "nosniff");
-    if (credentialEntryPath(url.pathname)) {
-      response.headers.set("cache-control", "no-store");
-      response.headers.set("referrer-policy", "no-referrer");
-      response.headers.set("x-frame-options", "DENY");
-      response.headers.set("cross-origin-opener-policy", "noopener-allow-popups");
-      response.headers.set("cross-origin-resource-policy", "same-origin");
-      response.headers.set(
-        "content-security-policy",
-        [
-          "default-src 'none'",
-          `script-src ${url.origin}/credential-entry-assets/`,
-          `style-src ${url.origin}/credential-entry-assets/`,
-          // Selected foreign hubs are device-local, unknown to this static responder. This is
-          // portable-lens compatibility, NOT a claim of destination network confinement.
-          "connect-src https: http:",
-          "base-uri 'none'",
-          "form-action 'none'",
-          "frame-ancestors 'none'",
-          "object-src 'none'",
-          "worker-src 'none'",
-        ].join("; "),
-      );
+    if (privateCredentialEntryStaticPath(url.pathname)) {
+      for (const [name, value] of CREDENTIAL_ENTRY_SECURITY_HEADERS) {
+        response.headers.set(name, value);
+      }
+      response.headers.set("content-security-policy", privateCredentialEntryCsp(url.origin));
     }
     // Callback documents deliberately carry the stricter no-referrer policy.
     if (!response.headers.has("referrer-policy")) {
@@ -406,9 +390,6 @@ export class HttpApp {
 
   private async route(request: Request, url: URL): Promise<Response> {
     try {
-      if (credentialEntryPath(url.pathname)) {
-        return this.credentialEntryFile(request, url.pathname);
-      }
       if (request.method === "GET" && url.pathname === "/healthz") {
         // What runs, by the one derivation the web bundle also carries (`scripts/build-identity.ts`);
         // protocol compatibility is a separate number and is the one the lens negotiates on.
@@ -488,6 +469,9 @@ export class HttpApp {
         );
       }
       if (url.pathname.startsWith("/api")) return await this.api(request, url.pathname);
+      if (privateCredentialEntryStaticPath(url.pathname)) {
+        return this.credentialEntryFile(request, url.pathname);
+      }
       if (
         request.method === "GET" &&
         !url.pathname.startsWith("/ws") &&
@@ -1081,10 +1065,8 @@ export class HttpApp {
   }
 
   private credentialEntryFile(request: Request, pathname: string): Response {
-    const document = pathname === "/credential-entry.html";
-    const asset =
-      /^\/credential-entry-assets\/[A-Za-z0-9_-][A-Za-z0-9._-]*$/.test(pathname) &&
-      !pathname.endsWith(".html");
+    const document = pathname === CREDENTIAL_ENTRY_DOCUMENT_PATH;
+    const asset = CREDENTIAL_ENTRY_ASSET_PATH.test(pathname) && !pathname.endsWith(".html");
     if ((request.method !== "GET" && request.method !== "HEAD") || (!document && !asset)) {
       throw new RequestError("not_found", "private credential entry route not found");
     }

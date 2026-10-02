@@ -116,16 +116,16 @@ import {
   type SettledJob,
   type JobFollowUpdate,
   type TerminalRuntime,
-} from "../../protocol/src/jobs.ts";
-import type { JobDescription } from "../../protocol/src/jobs.ts";
-import { JobOutputRuleSchema } from "../../protocol/src/jobs.ts";
+} from "@manifold/protocol";
+import type { JobDescription } from "@manifold/protocol";
+import { JobOutputRuleSchema } from "@manifold/protocol";
 import {
   JobResourceBindingsSchema,
   jobResourceBindingsFor,
   jobResourceRefusal,
   type JobResourceBindings,
   type JobResourceInventory,
-} from "../../protocol/src/job-resources.ts";
+} from "@manifold/protocol";
 import {
   ServiceConfigurationSchema,
   ServicePolicySchema,
@@ -140,7 +140,7 @@ import {
   type ServiceReadArgs,
   type ServiceInvokeArgs,
   type ServiceReply,
-} from "../../protocol/src/services.ts";
+} from "@manifold/protocol";
 import {
   ServiceError,
   type AuthContext,
@@ -213,19 +213,19 @@ type CredentialEnrollmentWaiter =
       phase: "prepare";
       resolve(reply: ServiceCredentialEnrollmentPrepareReply): void;
       credential: CredentialReference;
-      authorityFence?: ActionAuthorityFence;
+      authorityFence: ActionAuthorityFence | undefined;
     }
   | {
       phase: "commit";
       resolve(reply: ServiceCredentialEnrollmentCommitReply): void;
       credential: CredentialReference;
-      authorityFence?: ActionAuthorityFence;
+      authorityFence: ActionAuthorityFence | undefined;
     }
   | {
       phase: "cancel";
       resolve(reply: ServiceCredentialEnrollmentCancelReply): void;
       credential: CredentialReference;
-      authorityFence?: ActionAuthorityFence;
+      authorityFence: ActionAuthorityFence | undefined;
     };
 interface HubCredentialEnrollment {
   readonly command: Extract<JobCommand, { type: "credential_enrollment_prepare" }>;
@@ -1564,8 +1564,7 @@ export class JobService {
   ): Promise<ServiceCredentialEnrollmentPrepareReply> {
     try {
       const parsed = ServiceCredentialEnrollmentPrepareArgsSchema.safeParse(args);
-      if (!parsed.success)
-        throw new ServiceCredentialEnrollmentError("credential_target_mismatch");
+      if (!parsed.success) throw new ServiceCredentialEnrollmentError("credential_target_mismatch");
       const original = structuredClone(credential);
       this.credentialEnrollmentAuthority(original, parsed.data.machineId, authorityFence);
       const { live, key } = this.credentialEnrollmentTarget(parsed.data);
@@ -1576,13 +1575,15 @@ export class JobService {
         if (pending.channel === live.channel) count++;
       if (count >= CREDENTIAL_ENROLLMENT_PENDING_LIMIT)
         throw new ServiceCredentialEnrollmentError("credential_enrollment_busy");
-      const command: Extract<JobCommand, { type: "credential_enrollment_prepare" }> = Object.freeze({
-        type: "credential_enrollment_prepare",
-        requestId: randomUUID(),
-        serverEpoch: live.epoch,
-        ownerChallenge: live.nonce,
-        ...parsed.data,
-      });
+      const command: Extract<JobCommand, { type: "credential_enrollment_prepare" }> = Object.freeze(
+        {
+          type: "credential_enrollment_prepare",
+          requestId: randomUUID(),
+          serverEpoch: live.epoch,
+          ownerChallenge: live.nonce,
+          ...parsed.data,
+        },
+      );
       const { promise, resolve } = Promise.withResolvers<ServiceCredentialEnrollmentPrepareReply>();
       const pending: HubCredentialEnrollment = {
         command,
@@ -1634,7 +1635,12 @@ export class JobService {
       pending = this.credentialEnrollments.get(envelope.context.requestId);
       if (!pending)
         return Promise.resolve(
-          this.recentCredentialEnrollment(caller, machineId, envelope.context.requestId, envelope.context.nonce),
+          this.recentCredentialEnrollment(
+            caller,
+            machineId,
+            envelope.context.requestId,
+            envelope.context.nonce,
+          ),
         );
       if (!this.sameEnrollmentCredential(caller, pending.credential)) {
         pending = undefined;
@@ -1654,10 +1660,15 @@ export class JobService {
       pending.waiter = { phase: "commit", resolve, credential: caller, authorityFence };
       this.credentialEnrollmentDeadline(
         pending,
-        Math.min(pending.offerDeadline!, this.runtime.now() + CREDENTIAL_ENROLLMENT_CONTROL_TIMEOUT_MS),
+        Math.min(
+          pending.offerDeadline!,
+          this.runtime.now() + CREDENTIAL_ENROLLMENT_CONTROL_TIMEOUT_MS,
+        ),
       );
       // The envelope exists only on this synchronous dispatch stack, never in pending state.
-      if (!this.sendCredentialEnrollment(pending, { type: "credential_enrollment_commit", envelope }))
+      if (
+        !this.sendCredentialEnrollment(pending, { type: "credential_enrollment_commit", envelope })
+      )
         this.abandonCredentialEnrollment(pending, "credential_owner_offline");
       return promise;
     } catch (error) {
@@ -1676,14 +1687,16 @@ export class JobService {
     let pending: HubCredentialEnrollment | undefined;
     try {
       const parsed = ServiceCredentialEnrollmentCancelArgsSchema.safeParse(args);
-      if (!parsed.success)
-        throw new ServiceCredentialEnrollmentError("credential_target_mismatch");
+      if (!parsed.success) throw new ServiceCredentialEnrollmentError("credential_target_mismatch");
       const caller = structuredClone(credential);
       this.credentialEnrollmentAuthority(caller, parsed.data.machineId, authorityFence);
       pending = this.credentialEnrollments.get(parsed.data.requestId);
       if (!pending) {
         const reply = this.recentCredentialEnrollment(
-          caller, parsed.data.machineId, parsed.data.requestId, parsed.data.nonce,
+          caller,
+          parsed.data.machineId,
+          parsed.data.requestId,
+          parsed.data.nonce,
         );
         return Promise.resolve(
           reply.kind === "refused" && reply.reason === "credential_enrollment_cancelled"
@@ -1718,13 +1731,18 @@ export class JobService {
       pending.waiter = { phase: "cancel", resolve, credential: caller, authorityFence };
       this.credentialEnrollmentDeadline(
         pending,
-        Math.min(pending.offerDeadline!, this.runtime.now() + CREDENTIAL_ENROLLMENT_CONTROL_TIMEOUT_MS),
+        Math.min(
+          pending.offerDeadline!,
+          this.runtime.now() + CREDENTIAL_ENROLLMENT_CONTROL_TIMEOUT_MS,
+        ),
       );
-      if (!this.sendCredentialEnrollment(pending, {
-        type: "credential_enrollment_cancel",
-        requestId: parsed.data.requestId,
-        nonce: parsed.data.nonce,
-      }))
+      if (
+        !this.sendCredentialEnrollment(pending, {
+          type: "credential_enrollment_cancel",
+          requestId: parsed.data.requestId,
+          nonce: parsed.data.nonce,
+        })
+      )
         this.abandonCredentialEnrollment(pending, "credential_owner_offline");
       return promise;
     } catch (error) {
@@ -1736,10 +1754,16 @@ export class JobService {
 
   private credentialEnrollmentEvent(
     channel: JobChannel,
-    event: Extract<JobEvent, {
-      type: "credential_enrollment_prepared" | "credential_enrollment_result" |
-        "credential_enrollment_cancelled" | "credential_enrollment_authorize";
-    }>,
+    event: Extract<
+      JobEvent,
+      {
+        type:
+          | "credential_enrollment_prepared"
+          | "credential_enrollment_result"
+          | "credential_enrollment_cancelled"
+          | "credential_enrollment_authorize";
+      }
+    >,
   ): void {
     const pending = this.credentialEnrollments.get(event.requestId);
     if (!pending) {
@@ -1755,11 +1779,12 @@ export class JobService {
             requestId: event.requestId,
             nonce: parsed.data.nonce,
             allowed: false,
-            reason: recent.expiresAt <= this.runtime.now()
-              ? "credential_enrollment_expired"
-              : recent.reply.kind === "refused"
-                ? recent.reply.reason
-                : "credential_enrollment_unknown",
+            reason:
+              recent.expiresAt <= this.runtime.now()
+                ? "credential_enrollment_expired"
+                : recent.reply.kind === "refused"
+                  ? recent.reply.reason
+                  : "credential_enrollment_unknown",
           },
         });
       } catch {
@@ -1800,12 +1825,18 @@ export class JobService {
           context.replace !== pending.command.replace ||
           (!context.replace && context.sourceRevision !== null) ||
           context.expiresAt <= this.runtime.now() ||
-          context.expiresAt > this.runtime.now() + CREDENTIAL_ENROLLMENT_TTL_MS +
-            CREDENTIAL_ENROLLMENT_CONTROL_TIMEOUT_MS
+          context.expiresAt >
+            this.runtime.now() +
+              CREDENTIAL_ENROLLMENT_TTL_MS +
+              CREDENTIAL_ENROLLMENT_CONTROL_TIMEOUT_MS
         )
           throw new ServiceCredentialEnrollmentError("credential_target_mismatch");
         for (const other of this.credentialEnrollments.values())
-          if (other !== pending && other.channel === channel && other.challenge?.context.nonce === context.nonce)
+          if (
+            other !== pending &&
+            other.channel === channel &&
+            other.challenge?.context.nonce === context.nonce
+          )
             throw new ServiceCredentialEnrollmentError("credential_enrollment_replayed");
         for (const recent of this.credentialEnrollmentRecent.get(channel)?.values() ?? [])
           if (recent.expiresAt > this.runtime.now() && recent.nonce === context.nonce)
@@ -1818,7 +1849,10 @@ export class JobService {
         const waiter = pending.waiter;
         pending.waiter = null;
         pending.phase = "prepared";
-        pending.offerDeadline = Math.min(context.expiresAt, this.runtime.now() + CREDENTIAL_ENROLLMENT_TTL_MS);
+        pending.offerDeadline = Math.min(
+          context.expiresAt,
+          this.runtime.now() + CREDENTIAL_ENROLLMENT_TTL_MS,
+        );
         this.credentialEnrollmentDeadline(pending, pending.offerDeadline);
         waiter.resolve({ kind: "prepared", challenge: structuredClone(pending.challenge) });
         return;
@@ -1830,13 +1864,15 @@ export class JobService {
           pending.phase === "cancelling" &&
           parsed.data.nonce === pending.challenge?.context.nonce
         ) {
-          if (!this.sendCredentialEnrollment(pending, {
-            type: "credential_enrollment_authorized",
-            requestId: event.requestId,
-            nonce: parsed.data.nonce,
-            allowed: false,
-            reason: "credential_enrollment_cancelled",
-          }))
+          if (
+            !this.sendCredentialEnrollment(pending, {
+              type: "credential_enrollment_authorized",
+              requestId: event.requestId,
+              nonce: parsed.data.nonce,
+              allowed: false,
+              reason: "credential_enrollment_cancelled",
+            })
+          )
             this.abandonCredentialEnrollment(pending, "credential_owner_offline");
           return;
         }
@@ -1852,13 +1888,15 @@ export class JobService {
         this.credentialEnrollmentAudit(pending, "authorized");
         this.credentialEnrollmentCurrent(pending);
         pending.authorized = true;
-        if (!this.sendCredentialEnrollment(pending, {
-          type: "credential_enrollment_authorized",
-          requestId: event.requestId,
-          nonce: parsed.data.nonce,
-          allowed: true,
-          reason: null,
-        }))
+        if (
+          !this.sendCredentialEnrollment(pending, {
+            type: "credential_enrollment_authorized",
+            requestId: event.requestId,
+            nonce: parsed.data.nonce,
+            allowed: true,
+            reason: null,
+          })
+        )
           this.abandonCredentialEnrollment(pending, "credential_owner_offline");
         return;
       }
@@ -1868,7 +1906,11 @@ export class JobService {
           throw new ServiceCredentialEnrollmentError("credential_target_mismatch");
         if (pending.phase === "cancelling") {
           if (parsed.data.reply.kind === "stored" || parsed.data.reply.kind === "unknown")
-            this.settleCredentialEnrollment(pending, { kind: "unknown", reason: "credential_outcome_unknown" }, false);
+            this.settleCredentialEnrollment(
+              pending,
+              { kind: "unknown", reason: "credential_outcome_unknown" },
+              false,
+            );
           return;
         }
         if (pending.phase !== "committing" || pending.waiter?.phase !== "commit")
@@ -1887,14 +1929,15 @@ export class JobService {
           throw new ServiceCredentialEnrollmentError("credential_target_mismatch");
         this.credentialEnrollmentAudit(pending, "stored");
         const waiter = this.removeCredentialEnrollment(
-          pending, { kind: "refused", reason: "credential_enrollment_replayed" }, false,
+          pending,
+          { kind: "refused", reason: "credential_enrollment_replayed" },
+          false,
         );
         if (waiter?.phase === "commit") waiter.resolve(reply);
         return;
       }
       const parsed = ServiceCredentialEnrollmentCancelledEventSchema.safeParse(event);
-      if (!parsed.success)
-        throw new ServiceCredentialEnrollmentError("credential_target_mismatch");
+      if (!parsed.success) throw new ServiceCredentialEnrollmentError("credential_target_mismatch");
       if (pending.phase !== "cancelling" || pending.waiter?.phase !== "cancel") return;
       const reply = parsed.data.reply;
       if (reply.kind !== "cancelled") {
@@ -1903,7 +1946,9 @@ export class JobService {
       }
       this.credentialEnrollmentAudit(pending, "cancelled");
       const waiter = this.removeCredentialEnrollment(
-        pending, { kind: "refused", reason: "credential_enrollment_cancelled" }, false,
+        pending,
+        { kind: "refused", reason: "credential_enrollment_cancelled" },
+        false,
       );
       if (waiter?.phase === "cancel") waiter.resolve(reply);
     } catch (error) {

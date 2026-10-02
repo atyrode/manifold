@@ -105,10 +105,7 @@ self.addEventListener("message", (event) => {
     void self.skipWaiting();
     return;
   }
-  if (
-    event.data?.type === "manifold.private-credential-bypass" &&
-    event.data.version === 1
-  ) {
+  if (event.data?.type === "manifold.private-credential-bypass" && event.data.version === 1) {
     event.ports[0]?.postMessage({
       type: "manifold.private-credential-bypass",
       version: 1,

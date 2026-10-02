@@ -27,7 +27,7 @@ import {
   type JobCommand,
   type JobOwner,
   type MachineHalf,
-} from "../../protocol/src/jobs.ts";
+} from "@manifold/protocol";
 import { AuthService, ServiceError, type AuthContext } from "../src/auth.ts";
 import { InstanceDialer } from "../src/instance-dialer.ts";
 import type {

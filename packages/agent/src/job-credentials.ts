@@ -45,10 +45,7 @@ export class HeldServiceCredentialRegistry {
       safeComponent(leaf);
       const stat = parent.stat();
       // A root-managed traversable store can supply a private credential, but cannot gain writes.
-      if (
-        (stat.uid !== 0 && stat.uid !== process.getuid?.()) ||
-        (stat.mode & 0o022) !== 0
-      )
+      if ((stat.uid !== 0 && stat.uid !== process.getuid?.()) || (stat.mode & 0o022) !== 0)
         throw new Error("unsafe_service_credential_reference");
       try {
         fd = parent.openFile(leaf);
