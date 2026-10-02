@@ -2121,6 +2121,10 @@ must have a row AND a live `data-testid=` attribute in the row's renderer, and e
 be queried by some script — an unqueried row is stale and fails, exactly as a stale floor glob
 fails S6.
 
+Room admission belongs to the current document. A fixture's transport observer clears the
+previous document's bindings before navigation; a canvas gate also waits for `connection-state`
+to render `Open`, so receiving a frame is not mistaken for its consumer having applied it.
+
 This register holds the contracts, NOT the inventory. A `data-testid` no gate queries is
 ordinary markup and belongs nowhere near this list: `plugin-manager`, `sidebar-list` and
 `machines-rail` are live attributes with no row, and adding rows for them would be adding rows
